@@ -45,6 +45,7 @@ The pages an agent in this repo consults most often:
 | Portability | [Section 7 — Portability Story](https://oraclous.atlassian.net/wiki/spaces/OP/pages/753728) |
 | Migration plan | [Section 8 — Consolidation and Migration Plan](https://oraclous.atlassian.net/wiki/spaces/OP/pages/688329) |
 | Releases (current + planned) | [09. Releases](https://oraclous.atlassian.net/wiki/spaces/OP/pages/164160) |
+| **Agent Identity Convention (canonical)** | [09. Releases](https://oraclous.atlassian.net/wiki/spaces/OP/pages/164160) **Section 6** — authoritative for `Agent Owner` and `needs-human` field handling |
 | ADRs | [02. ADRs](https://oraclous.atlassian.net/wiki/spaces/OP/pages/589826) |
 | Per-service reference | See **§7 Services** below |
 | Test strategy | [Test Strategy](https://oraclous.atlassian.net/wiki/spaces/OP/pages/720940) |
@@ -179,30 +180,60 @@ Prototype or exploratory work that does not follow TDD is a **spike** and must b
 
 ## 5. Agent identity convention (operational)
 
-The full convention lives in [09. Releases Section 6](https://oraclous.atlassian.net/wiki/spaces/OP/pages/164160). The operational summary for this repo:
+The canonical convention lives in [09. Releases Section 6](https://oraclous.atlassian.net/wiki/spaces/OP/pages/164160). The operational summary for this repo:
 
-1. **Every Jira ticket I touch carries the `Agent Owner` custom field**, set to my agent name while I am working on it. When I hand off, I set it to the receiving agent's name.
+### 5.1 The `Agent Owner` Jira custom field
 
-2. **Every comment, worklog, and PR description I write begins with `[agent:NAME]`**, where NAME is my agent persona. The prefix is the only way the audit trail can attribute the comment to me rather than to the human whose account I share.
+- Field name: `Agent Owner`
+- Field ID: `customfield_10074`
+- Type: single-select
+- Values: the 11 agent persona names plus `human` (option ID `10031`)
+- Set this field to your persona's name while you are acting on a ticket. Update it when handing off.
 
-3. **My open work query** (substitute NAME):
-   ```jql
-   project = ORA AND "Agent Owner" = "NAME" AND status != Done ORDER BY priority DESC
-   ```
+### 5.2 The `needs-human` attention flag
 
-4. **Handing off:** set `Agent Owner` to the target agent, transition status, post a comment beginning `[agent:NAME]` and ending with a structured trailer:
-   ```
-   ---
-   agent: NAME
-   action: handoff_to
-   to: target-agent-name
-   ```
+- Field name: `needs-human` (display label may vary)
+- Field ID: `customfield_10075`
+- Type: **multi-checkbox custom field** (NOT a Jira label)
+- Option value: `needs-human`, option ID `10032`
+- To flag a ticket: write `customfield_10075: [{id: "10032"}]` via the Atlassian MCP.
+- To clear: write `customfield_10075: []`.
+- Query for tickets needing human attention: `project = ORA AND cf[10075] = "needs-human"`.
 
-5. **Escalating to human:** set `Agent Owner = human`, add the `needs-human` label, post a comment with action `escalation` and the reason.
+> **Why a multi-checkbox and not a label?** It is controlled (you can't typo it), it can't be removed by someone unfamiliar with the convention, and it is more queryable. This is the deliberate design.
 
-6. **Spike, observation, completion, review request:** each has an action trailer (`observation`, `complete`, `review_request`). See 09. Releases Section 6.3 for the full operation set.
+### 5.3 Comment prefix on everything you write
 
-This is enforced by skill discipline through R6. From R7 onward it is enforced by a Capability Registry entry — the standalone agent-MCP server listed as an R7 deliverable.
+Every Jira comment, every Jira worklog, every Confluence inline comment, every GitHub commit message, every GitHub PR description, and every GitHub PR review comment you write while acting as agent `NAME` begins with the line:
+
+```
+[agent:NAME]
+```
+
+Comments that carry an action end with a structured trailer:
+
+```
+---
+agent: NAME
+action: handoff_to | status_change | escalation | observation | review_request | complete
+to: target-agent-name (for handoff_to)
+from_status: STATUS (for status_change)
+to_status: STATUS (for status_change)
+```
+
+### 5.4 Operations
+
+| Operation | Implementation |
+| --- | --- |
+| `my_tasks` | JQL: `project = ORA AND "Agent Owner" = "<your-name>" AND status != Done ORDER BY priority DESC` |
+| `claim_next` | Find highest-priority unassigned ticket where the role matches; set `Agent Owner = $self`; transition to In Progress; post a claim comment |
+| `handoff_to` | Set `Agent Owner` to target; transition status; post handoff comment with `action: handoff_to` trailer |
+| `escalate_to_human` | (1) Set `Agent Owner = human`. (2) Set `customfield_10075: [{id: "10032"}]`. (3) Post structured escalation comment with `action: escalation` trailer. **All three together; partial escalations are bugs.** |
+| `complete` | Transition to Done; post completion comment with `action: complete` trailer summarising delivery against acceptance criteria |
+| `observe` | Post comment with `action: observation` trailer; no field or status change |
+| `review_request` | Set `Agent Owner` to the reviewer (`code-reviewer`, `security-architect`, or `solution-architect` per the work); transition to In Review; post `action: review_request` trailer |
+
+This is enforced by skill discipline through R6. From R7 onward it is enforced by a Capability Registry entry — the small standalone agent-MCP server listed as an R7 deliverable.
 
 ---
 
@@ -232,22 +263,22 @@ oraclous-backend/
 │   ├── docker-compose.yml          # local self-hosted stack
 │   ├── helm/                       # cloud-hosted production charts
 │   └── observability/              # logging, metrics, traces configs
-├── packages/                       # shared libraries (substrate primitives,
-│   ├── ohm/                        #   OHM types and validators,
-│   ├── substrate/                  #   ReBAC client, provenance collector,
-│   ├── governance/                 #   organisation_id propagation utilities,
-│   ├── provenance/                 #   telemetry, errors, logging)
+├── packages/                       # shared libraries
+│   ├── ohm/                        #   OHM types and validators
+│   ├── substrate/                  #   ReBAC client, provenance collector
+│   ├── governance/                 #   organisation_id propagation utilities
+│   ├── provenance/                 #   telemetry, errors, logging
 │   ├── rebac/
 │   ├── telemetry/
 │   └── errors/
-├── services/                       # one directory per service; matches
-│   ├── auth-service/               #   the names in 04. Services Reference.
-│   ├── credential-broker-service/  #   Each service has:
-│   ├── knowledge-graph-service/    #     - src/<service_name>/
-│   ├── knowledge-retriever-service/#     - Dockerfile
-│   ├── capability-registry-service/#     - pyproject.toml
-│   ├── harness-runtime-service/    #     - README.md (operator-facing)
-│   ├── execution-engine-service/   #
+├── services/                       # one directory per service
+│   ├── auth-service/               #   Each service has:
+│   ├── credential-broker-service/  #     - src/<service_name>/
+│   ├── knowledge-graph-service/    #     - Dockerfile
+│   ├── knowledge-retriever-service/#     - pyproject.toml
+│   ├── capability-registry-service/#     - README.md (operator-facing)
+│   ├── harness-runtime-service/    #     - tests/
+│   ├── execution-engine-service/
 │   └── application-gateway-service/
 └── tests/                          # cross-service integration tests
     ├── integration/
@@ -257,23 +288,21 @@ oraclous-backend/
     └── organization_isolation/
 ```
 
-Per-service unit tests live alongside the service code under `services/<name>/tests/`. Cross-service tests live at the repo root under `tests/`.
+### 6.1 `packages/` is shared infrastructure
 
-### 6.1 The `packages/` directory is shared infrastructure
+Code in `packages/` is consumed by multiple services. Adding a new package requires `solution-architect` approval.
 
-Code in `packages/` is consumed by multiple services. It is the only horizontal dependency in the repo. Adding a new package is a non-trivial architectural decision and requires `solution-architect` approval.
+### 6.2 `services/` is vertical
 
-### 6.2 Service directories are vertical
-
-A service owns its own code, its own tests, its own Dockerfile, and its own operator-facing README. Cross-service coupling goes through `packages/` (for libraries) or through service APIs (for runtime calls).
+A service owns its own code, tests, Dockerfile, and operator-facing README. Cross-service coupling goes through `packages/` or service APIs.
 
 ---
 
 ## 7. Services
 
-The eight backend services described in [04. Services Reference](https://oraclous.atlassian.net/wiki/spaces/OP/pages/786433). Each has its own Confluence page; consult it before doing any work in that service's directory.
+Eight backend services from [04. Services Reference](https://oraclous.atlassian.net/wiki/spaces/OP/pages/786433). Consult the service's Confluence page before touching its directory.
 
-| Service | Layer | Confluence | Brought into target shape in |
+| Service | Layer | Confluence | Target shape in |
 | --- | --- | --- | --- |
 | `auth-service` | Substrate | [Page 622756](https://oraclous.atlassian.net/wiki/spaces/OP/pages/622756) | R1 |
 | `credential-broker-service` | Substrate | [Page 753812](https://oraclous.atlassian.net/wiki/spaces/OP/pages/753812) | R1 |
@@ -284,13 +313,11 @@ The eight backend services described in [04. Services Reference](https://oraclou
 | `execution-engine-service` | Harness Runtime | [Page 884777](https://oraclous.atlassian.net/wiki/spaces/OP/pages/884777) | R5 |
 | `application-gateway-service` | Application Gateway | [Page 131124](https://oraclous.atlassian.net/wiki/spaces/OP/pages/131124) | R6 |
 
-Some services already exist in legacy form in the previous codebase and are being lifted into target shape phase by phase. Read [Section 8 — Consolidation and Migration Plan](https://oraclous.atlassian.net/wiki/spaces/OP/pages/688329) before touching any service to understand which phase you are in.
+Some services exist in legacy form at `/Users/reza/workspace/OraclousAI/legacy-reference/old-backend/` (worktree pinned to `develop`). Read [Section 8 — Consolidation and Migration Plan](https://oraclous.atlassian.net/wiki/spaces/OP/pages/688329) before touching any service to understand which migration phase you are in.
 
 ---
 
 ## 8. Gates
-
-Every story passes through these gates. The agent that owns each transition is named.
 
 | From | To | Owner | What's verified |
 | --- | --- | --- | --- |
@@ -312,7 +339,7 @@ A story is **done** when, and only when:
 1. Tests PR merged; implementation PR merged; both passed full CI.
 2. All gates have been transitioned through in order; no skips.
 3. Every required reviewer signed off explicitly (no silent approvals).
-4. `Agent Owner` is set to whoever last touched it (typically `tech-lead` after merge).
+4. `Agent Owner` (`customfield_10074`) is set to whoever last touched it (typically `tech-lead` after merge).
 5. Coverage on new code is adequate; no new flaky tests; no regressions in the full suite.
 6. If service behaviour changed: `docs-writer` has updated the affected service reference page or has an open ticket to do so within the sprint.
 7. If architecture-significant: a follow-up ADR is open if any architectural decision crystallised.
@@ -331,17 +358,39 @@ These are rejected at review with no negotiation:
 - Use `latest` for a Docker base image or any dependency version.
 - Add a credential path that lets Oraclous-the-company staff decrypt customer data in cloud-hosted mode.
 - Invoke a capability without writing provenance.
-- Merge a PR without explicit reviewer sign-off, or while the `needs-human` label is set.
+- Merge a PR without explicit reviewer sign-off, or while `customfield_10075` (`needs-human`) is ticked.
 - Reproduce verbatim text from a customer's manifest, prompt, or output in error messages, logs, or test fixtures.
 - Add or modify ADRs directly — propose to `solution-architect`.
 - Edit Confluence architecture pages directly — propose to `solution-architect`.
 - Treat a flaky test as "noise" — flakiness is a bug.
 - Hand-roll a fetch call from a service when the typed client could be used.
 - Write platform code that *is* the harness (rather than interpreting harnesses).
+- Read or write the `legacy-reference/` directory's git state — it is a read-only worktree.
 
 ---
 
-## 11. Working with Confluence
+## 11. Legacy reference
+
+The previous Oraclous backend codebase is available **read-only** at:
+
+```
+/Users/reza/workspace/OraclousAI/legacy-reference/old-backend/
+```
+
+It is a **git worktree pinned to the `develop` branch** of the previous backend repository. `develop` is the most current branch of that codebase.
+
+**Rules for the legacy reference:**
+
+- It is reference material for **behaviour to preserve**, not patterns to reproduce.
+- The target architecture is Architecture v1.1 (Confluence) — the platform that the migration plan is migrating *toward*. The legacy codebase is what we are migrating *from*.
+- When in doubt: Confluence wins, this `CLAUDE.md` wins, the legacy code is the third-place reference.
+- Read it to understand what existed and what worked. Do not copy directory structure, naming conventions, or service boundaries unless they explicitly match what the architecture document specifies.
+- Never write to `legacy-reference/`. It is a read-only worktree by convention.
+- If the worktree appears to be on a branch other than `develop`, that is a setup error — surface it to the human and stop, do not switch branches yourself.
+
+---
+
+## 12. Working with Confluence
 
 Before reaching into the web or your training, consult the right Confluence page. The pages live under space `OP` in `https://oraclous.atlassian.net/wiki/spaces/OP/`. Use the Atlassian MCP if available; otherwise the URLs in §2 are direct links.
 
@@ -349,7 +398,7 @@ When you discover that a Confluence page is stale (shipped reality has moved pas
 
 ---
 
-## 12. Working with Jira
+## 13. Working with Jira
 
 Project key: `ORA`. Cloud ID: `1eb21297-5f52-49a0-a303-3436694b148c`.
 
@@ -357,33 +406,35 @@ Project key: `ORA`. Cloud ID: `1eb21297-5f52-49a0-a303-3436694b148c`.
 | --- | --- |
 | My open work | `project = ORA AND "Agent Owner" = "<your-name>" AND status != Done ORDER BY priority DESC` |
 | Unassigned work suitable for me | `project = ORA AND "Agent Owner" is EMPTY AND <role-fits-me> AND status = Ready` |
-| Needs human attention | `project = ORA AND labels = needs-human` |
+| Needs human attention | `project = ORA AND cf[10075] = "needs-human"` |
 | Current sprint backlog | `project = ORA AND sprint in openSprints()` |
 | Done this week | `project = ORA AND status = Done AND resolved >= -7d` |
 
 Custom fields used by agents:
 
-- `Agent Owner` (single-select) — current owner; values are the 11 agent names plus `human`.
+- `Agent Owner` — `customfield_10074`, single-select, values are the 11 persona names plus `human` (option id `10031`).
+- `needs-human` — `customfield_10075`, multi-checkbox, option id `10032`. Tick to flag, untick to clear.
 
 ---
 
-## 13. Working with this file
+## 14. Working with this file
 
-This file is owned by `docs-writer`. Material changes go through a `[docs]` PR with `docs-writer` as the author and `tech-lead` as the approver. Cosmetic fixes (typos, broken links) can be batched into a periodic `[chore]` PR.
+This file is owned by `docs-writer`. Material changes go through a `[docs]` PR with `docs-writer` as the author and `tech-lead` as the approver. Cosmetic fixes can be batched into a periodic `[chore]` PR.
 
 When you find a gap in this file — something an agent needed and couldn't find — open a `docs-writer` ticket. Do not silently add it; this file is short on purpose.
 
 ---
 
-## 14. Resuming after a context reset
+## 15. Resuming after a context reset
 
 If you are resuming work mid-task and have lost prior session context:
 
 1. Read this file.
 2. Read your own skill page from [Agent Skills Catalogue](https://oraclous.atlassian.net/wiki/spaces/OP/pages/753852).
-3. Run the "my open work" JQL above; the ticket with `Agent Owner = you` and `In Progress` status is yours.
-4. Read the ticket's comments; the last `[agent:NAME]` comment with an action trailer tells you where you are.
-5. Read the linked tests PR (if at Implementation stage) or the brief (if at Tests Authoring).
-6. Continue.
+3. Read [09. Releases Section 6](https://oraclous.atlassian.net/wiki/spaces/OP/pages/164160) — the canonical Agent Identity Convention. If your skill page's Section 11 disagrees with it on the `needs-human` flag, Section 6 wins (the skill pages have known drift on this point pending `docs-writer` reconciliation).
+4. Run the "my open work" JQL above; the ticket with `Agent Owner = you` and `In Progress` status is yours.
+5. Read the ticket's comments; the last `[agent:NAME]` comment with an action trailer tells you where you are.
+6. Read the linked tests PR (if at Implementation stage) or the brief (if at Tests Authoring).
+7. Continue.
 
-If the trail is broken or contradictory, escalate to human (`Agent Owner = human`, label `needs-human`).
+If the trail is broken or contradictory, escalate to human via the `escalate_to_human` operation in §5.4.
