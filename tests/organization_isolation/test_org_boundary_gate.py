@@ -6,12 +6,15 @@ against real Neo4j / Postgres / Redis on the 0d harness (ORA-12):
 
     1. cross-organisation read denial      (Postgres, RLS driven from the org-context)
     2. cross-organisation write denial      (Postgres, RLS WITH CHECK + hidden-row UPDATE/DELETE)
-    3. cross-organisation Cypher-traversal denial (Neo4j, org-scoped traversal + ReBAC federation)
+    3. cross-organisation Cypher-traversal denial (Neo4j, org-scoped traversal; cross-org
+       ReBAC federation is the A3/ORA-18 retriever seam, deferred there)
     4. cross-organisation search denial      (Neo4j fulltext, org-scoped)
     5. cross-organisation cache miss          (Redis, organisation-then-graph scoped keys)
 
-plus the binding fail-closed criterion: with no organisation context bound, every
-scoped substrate access raises rather than defaulting to some organisation.
+plus, on the graph write path, that ``scoped_write_node`` tenants every node by the
+bound organisation and ignores a caller-supplied ``organisation_id`` (T1-M1, graph half),
+and the binding fail-closed criterion: with no organisation context bound, every scoped
+substrate access raises rather than defaulting to some organisation.
 
 **Binding acceptance criterion (ORA-20).** Each denial is asserted against a real
 store at the data layer: a principal bound to organisation A cannot touch
@@ -70,7 +73,6 @@ Threats: T1 — M1 (org-context fail-closed) + M3 (substrate org-scoping). ADR-0
 
 from __future__ import annotations
 
-import asyncio
 import contextlib
 import uuid
 from collections.abc import Iterator
@@ -175,7 +177,19 @@ def test_cross_organisation_read_is_denied_at_the_data_layer(
             (row_b_id,) = cur.fetchone()
         conn_b.commit()
 
-    # Organisation A, bound to its own context, must not see B's row by any shape.
+    # Organisation A seeds a row of its own, so the read below is a positive+negative
+    # proof: A must see exactly its own row and none of B's — not merely "A sees nothing".
+    with org_context(org_a), scoped_pg_connection(app_dsn) as conn_a:
+        with conn_a.cursor() as cur:
+            cur.execute(
+                "INSERT INTO knowledge_graphs (organisation_id, user_id, name) "
+                "VALUES (%s, %s, %s) RETURNING id",
+                (str(org_a), str(uuid.uuid4()), "org-a-own"),
+            )
+            (row_a_id,) = cur.fetchone()
+        conn_a.commit()
+
+    # Organisation A, bound to its own context, sees exactly its own row by any shape.
     with org_context(org_a), scoped_pg_connection(app_dsn) as conn_a:
         with conn_a.cursor() as cur:
             cur.execute("SELECT count(*) FROM knowledge_graphs WHERE id = %s", (row_b_id,))
@@ -187,8 +201,12 @@ def test_cross_organisation_read_is_denied_at_the_data_layer(
             )
             assert cur.fetchone()[0] == 0, "naming org B's organisation_id still leaked the row"
 
-            cur.execute("SELECT count(*) FROM knowledge_graphs")
-            assert cur.fetchone()[0] == 0, "unfiltered SELECT surfaced another org's rows"
+            cur.execute("SELECT id FROM knowledge_graphs")
+            visible = {row[0] for row in cur.fetchall()}
+            assert visible == {row_a_id}, (
+                "org A's unfiltered SELECT did not return exactly its own row "
+                f"(saw {visible!r}) — RLS is over- or under-scoping"
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -263,30 +281,11 @@ def _seed_org_path(
     )
 
 
-async def _federation_decision_without_grant(org_a: uuid.UUID, org_b: uuid.UUID):
-    """A cross-organisation traversal request with no relation present (ADR-004)."""
-    from oraclous_substrate.rebac import AccessDecisionClient, AccessRequest
-
-    class _NoRelations:
-        async def resolve(self, request: AccessRequest) -> bool | None:
-            return None  # nothing is known → indeterminate → must fail closed
-
-    client = AccessDecisionClient(_NoRelations())
-    return await client.check(
-        AccessRequest(
-            organisation_id=str(org_a),
-            subject=f"user:{uuid.uuid4()}",
-            resource=f"organisation:{org_b}/graph",
-            relation="reader",
-        )
-    )
-
-
 def test_cross_organisation_cypher_traversal_is_denied(
     neo4j_driver, two_orgs: tuple[uuid.UUID, uuid.UUID]
 ) -> None:
-    """An org-scoped Cypher traversal never crosses the organisation boundary, and a
-    cross-organisation (federation) traversal is denied unless ReBAC grants it."""
+    """An org-scoped Cypher traversal never crosses the organisation boundary: org A's
+    traversal reaches its own connected nodes and none of org B's."""
     from oraclous_substrate.access import scoped_traverse
 
     org_a, org_b = two_orgs
@@ -317,9 +316,12 @@ def test_cross_organisation_cypher_traversal_is_denied(
         assert "b-end" not in names, "org A's traversal reached org B's node — boundary crossed"
         assert "b-start" not in names, "org A's traversal surfaced org B's node"
 
-        # Federation across organisations must be ReBAC-gated and fail closed.
-        decision = asyncio.run(_federation_decision_without_grant(org_a, org_b))
-        assert decision.allowed is False, "cross-org traversal allowed without a ReBAC grant"
+        # NB: whether scoped_traverse *consults* ReBAC on a cross-organisation request
+        # (ADR-004 fail-closed federation, T1-M2) is the cross-org traversal path, which
+        # A3/ORA-18 owns and asserts at the retriever seam. This gate proves the intra-org
+        # data-layer scoping it owns. The earlier unit-level AccessDecisionClient sub-assertion
+        # here duplicated packages/substrate/tests/unit/test_rebac_client.py and was dropped at
+        # Tests Review (be-test-reviewer + security-architect — accepted residual on T1-M2).
     finally:
         neo4j_driver.execute_query(
             f"MATCH (n:`{_ENTITY_LABEL}` {{marker: $m}}) DETACH DELETE n", m=marker
@@ -372,6 +374,57 @@ def test_cross_organisation_search_is_denied(
         )
     finally:
         neo4j_driver.execute_query("MATCH (n:Chunk {marker: $m}) DETACH DELETE n", m=marker)
+
+
+# ---------------------------------------------------------------------------
+# Graph-store WRITE denial (Neo4j): organisation_id is stamped from the bound
+# context and is never honoured from the caller's payload (T1-M1, graph half).
+# The Postgres write path is covered above; this is the legacy MultiTenantKGWriter
+# tenant boundary — the writer unconditionally overwrites organisation_id.
+# ---------------------------------------------------------------------------
+
+
+def test_scoped_write_node_stamps_org_from_context_ignoring_caller(
+    neo4j_driver, two_orgs: tuple[uuid.UUID, uuid.UUID]
+) -> None:
+    """A node written through ``scoped_write_node`` carries the bound organisation's id,
+    taken from the authenticated context — never the request body. A caller that smuggles
+    a foreign ``organisation_id`` into the node payload does not land the node in that
+    organisation's tenant space (T1-M1 on the graph write path)."""
+    from oraclous_substrate.access import scoped_write_node
+
+    org_a, org_b = two_orgs
+    marker = f"ora20-{uuid.uuid4()}"
+    try:
+        # Org A writes a node while smuggling org B's id into the caller-supplied payload.
+        with org_context(org_a):
+            scoped_write_node(
+                neo4j_driver,
+                label=_ENTITY_LABEL,
+                properties={
+                    "organisation_id": str(org_b),
+                    "marker": marker,
+                    "name": "smuggled",
+                },
+            )
+
+        # The persisted node is stamped for org A (its context), not org B (the payload).
+        records, _, _ = neo4j_driver.execute_query(
+            f"MATCH (n:`{_ENTITY_LABEL}` {{marker: $m}}) RETURN n.organisation_id AS org",
+            m=marker,
+        )
+        stamped = sorted(r["org"] for r in records)
+        assert stamped == [str(org_a)], (
+            "scoped_write_node honoured a caller-supplied organisation_id "
+            f"(node tenanted as {stamped!r}, expected only org A {str(org_a)!r})"
+        )
+        assert str(org_b) not in stamped, (
+            "node was smuggled into org B's tenant space via the caller payload"
+        )
+    finally:
+        neo4j_driver.execute_query(
+            f"MATCH (n:`{_ENTITY_LABEL}` {{marker: $m}}) DETACH DELETE n", m=marker
+        )
 
 
 # ---------------------------------------------------------------------------
