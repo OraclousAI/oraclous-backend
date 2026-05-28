@@ -2,4 +2,7 @@
 
 Organisation-context propagation utilities (Layer 1, ADR-006).
 
-Placeholder shell (R0.5 story 0e / ORA-13). No behaviour yet; populated by its target-release story.
+Resolves and propagates the request-scoped `OrganisationContext` (ORA-14, story 0f):
+
+- `context` — the immutable `OrganisationContext`, the authenticated `Principal`/`PrincipalType`, the `MembershipResolver` seam, and `resolve_organisation_context(...)`. The `organisation_id` is sourced from an auth-issued claim or a fail-closed membership lookup, never from the request body.
+- `propagation` — binds a resolved context for the request via a `contextvars.ContextVar` (`use_organisation_context` / `current_organisation_context`); reading an unbound context fails closed.
