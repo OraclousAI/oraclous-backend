@@ -56,8 +56,19 @@ class _Membership:
         return list(self._orgs)
 
 
-def _principal(principal_type: PrincipalType = PrincipalType.USER) -> Principal:
-    return Principal(principal_id=uuid.uuid4(), principal_type=principal_type)
+def _principal(
+    principal_type: PrincipalType = PrincipalType.USER,
+    *,
+    organisation_claim: uuid.UUID | None = None,
+) -> Principal:
+    # ``organisation_id`` on the principal is the optional auth-issued org claim
+    # (R1 agent tokens, ORA-31); ``None`` models the R0.5 "identity only"
+    # principal that must be resolved against membership.
+    return Principal(
+        principal_id=uuid.uuid4(),
+        principal_type=principal_type,
+        organisation_id=organisation_claim,
+    )
 
 
 # ── the object ───────────────────────────────────────────────────────────────
@@ -126,6 +137,15 @@ async def test_service_account_principal_type_preserved() -> None:
     assert ctx.principal_type is PrincipalType.SERVICE_ACCOUNT
 
 
+async def test_agent_principal_type_preserved() -> None:
+    """An agent principal (R1 agent identity) is a first-class principal_type
+    alongside user and service_account."""
+    org = uuid.uuid4()
+    principal = _principal(PrincipalType.AGENT)
+    ctx = await resolve_organisation_context(principal, resolver=_Membership(org))
+    assert ctx.principal_type is PrincipalType.AGENT
+
+
 # ── resolution: fail-closed ──────────────────────────────────────────────────
 
 
@@ -166,9 +186,9 @@ async def test_selection_of_non_member_org_fails_closed() -> None:
     checked against membership: selecting an organisation the principal does NOT
     belong to is denied.
 
-    This is the proof that organisation_id can never be smuggled in from the
-    client — even an explicit selection must name a real membership
-    (ADR-006, T1-M1).
+    This is the proof that a body- or client-supplied organisation_id can never
+    be honoured: the only client-influenced channel is the validated header, and
+    even an explicit selection must name a real membership (ADR-006, T1-M1).
     """
     org_a, org_b = uuid.uuid4(), uuid.uuid4()
     outsider_org = uuid.uuid4()
@@ -190,3 +210,35 @@ async def test_single_org_principal_selecting_other_org_fails_closed() -> None:
         await resolve_organisation_context(
             _principal(), resolver=resolver, requested_organisation_id=other
         )
+
+
+# ── resolution: auth-issued organisation claim (R1 forward path) ──────────────
+
+
+async def test_org_claim_is_preferred_over_membership() -> None:
+    """When the authenticated principal carries an organisation_id claim (R1 agent
+    tokens), it is preferred over membership resolution and the per-request
+    membership lookup is skipped entirely.
+
+    Per Contract ORA-3's forward path: the claim is auth-issued (signed token =
+    authenticated context, not a request-body value), so it is a trusted single
+    source that removes the per-request lookup. The claim winning over a
+    *different* membership proves the preference; the resolver never being called
+    proves the lookup is skipped.
+    """
+    claim_org = uuid.uuid4()
+    other_org = uuid.uuid4()
+    resolver = _Membership(other_org)
+    principal = _principal(PrincipalType.AGENT, organisation_claim=claim_org)
+    ctx = await resolve_organisation_context(principal, resolver=resolver)
+    assert ctx.organisation_id == claim_org
+    assert resolver.calls == []
+
+
+async def test_org_claim_resolves_even_without_membership() -> None:
+    """A claimed organisation resolves even when the membership store would return
+    nothing — the auth-issued claim does not depend on a membership record."""
+    claim_org = uuid.uuid4()
+    principal = _principal(PrincipalType.AGENT, organisation_claim=claim_org)
+    ctx = await resolve_organisation_context(principal, resolver=_Membership())
+    assert ctx.organisation_id == claim_org
