@@ -1,0 +1,13 @@
+[project]
+name = "oraclous-provenance"
+version = "0.0.0"
+description = "Provenance records and collector helpers (Layer 1)."
+requires-python = "==3.12.*"
+dependencies = []
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/oraclous_provenance"]

@@ -1,0 +1,13 @@
+[project]
+name = "oraclous-rebac"
+version = "0.0.0"
+description = "ReBAC relation types and helpers (Layer 1)."
+requires-python = "==3.12.*"
+dependencies = []
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/oraclous_rebac"]
