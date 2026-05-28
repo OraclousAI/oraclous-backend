@@ -8,22 +8,27 @@ This repo is **`OraclousAI/oraclous-backend`** — the Python codebase for the O
 
 ## 1. Identity and scope
 
-This repo is owned by three implementer agents and reviewed by four others:
+This is the **backend execution** repository. The personas that live and act in this repo session are:
 
 | Agent | Activity here |
 | --- | --- |
-| `backend-implementer` | Authors all production Python code |
-| `test-author` | Authors tests *before* implementation in a separate PR |
-| `devops-implementer` | Owns `Dockerfile`, `docker-compose.yml`, Helm charts, GitHub Actions, observability config (lives in this repo for backend services) |
+| `backend-implementer` | Authors all production Python code (`[impl]` PRs) |
+| `test-author` | Authors tests *before* implementation (`[tests]` PRs) |
+| `be-test-reviewer` | Reviews `[tests]` PRs at the Tests Review gate (the narrow BE-only architecture+security verification persona) |
+| `code-reviewer` | Always on every `[impl]` PR for craft review |
 | `qa-engineer` | Verifies test suite, coverage, flakiness; authors regression tests under `tests/` |
-| `code-reviewer` | Always on every PR for craft review |
-| `security-architect` | On every security-marked, infra, or credential-touching PR |
-| `solution-architect` | On every architecture-touching PR; reviews tests-only PRs at the Tests Review gate |
-| `docs-writer` | Reads merged PRs; updates Confluence; drafts release notes |
 
 `tech-lead` (the human, Reza Jahankohan) is the final sign-off on every gate that requires human approval. See **§8 Gates** below.
 
-The full agent skill definitions live in Confluence under [Agent Skills Catalogue](https://oraclous.atlassian.net/wiki/spaces/OP/pages/753852). Read your own skill page on session start.
+### Personas that do NOT live here
+
+Planning, architecture, cross-cutting agreement, infra, and documentation happen in the **coordinator** session at the workspace root — not here. Specifically:
+
+- `product-planner`, `solution-architect`, `security-architect`, `devops-implementer`, `docs-writer` all live in the coordinator session. You receive **ready, briefed stories** with lift-tags from them via the `Agent Owner` field; you do not plan or architect here.
+- When this session needs an architecture decision, a Contract, a brief fix, threat tagging, infra, or a doc change, it **escalates to the coordinator** by setting `Agent Owner` to the relevant coordinator persona — it does not load that persona here.
+- The one apparent exception is review at the Tests Review gate: that is `be-test-reviewer` (a distinct narrow persona that lives here), **not** `solution-architect`/`security-architect`. `be-test-reviewer` verifies tests against already-made decisions and escalates decision-level problems up to the coordinator.
+
+Canonical residency map: [Session topology and persona residency](https://oraclous.atlassian.net/wiki/spaces/OP/pages/1736705). Full skill definitions: [Agent Skills Catalogue](https://oraclous.atlassian.net/wiki/spaces/OP/pages/753852). Read your own skill page on session start.
 
 ---
 
@@ -321,14 +326,14 @@ Some services exist in legacy form at `/Users/reza/workspace/OraclousAI/legacy-r
 
 | From | To | Owner | What's verified |
 | --- | --- | --- | --- |
-| Backlog | Ready | `product-planner` + `solution-architect` (arch review) + `security-architect` (threat tags) | Brief is testable; architecture references present; threat tags set |
-| Ready | Tests Authoring | `test-author` | Pickup |
-| Tests Authoring | Tests Review | `test-author` | `[tests]` PR opened with failing tests |
-| Tests Review | Implementation | `solution-architect` + `security-architect` (if security-marked) | Tests assert the right boundary; security tests genuinely exercise threats; merge `[tests]` PR |
-| Implementation | Code Review | implementer | `[impl]` PR with green tests |
-| Code Review | Done | `code-reviewer` + `qa-engineer` + any required architect + `tech-lead` (final) | Craft, coverage, security, architecture all signed off; merge `[impl]` PR |
+| Backlog | Ready | `product-planner` + `solution-architect` + `security-architect` — **all in the coordinator session** | Brief is testable; architecture references present; threat tags set; lift-tag assigned |
+| Ready | Tests Authoring | `test-author` (this session) | Pickup |
+| Tests Authoring | Tests Review | `test-author` (this session) | `[tests]` PR opened with failing tests; legacy tests lifted first for Lift/Reshape/Extract |
+| Tests Review | Implementation | `be-test-reviewer` (this session) | Tests assert the right boundary; security tests genuinely exercise threats; merge `[tests]` PR. Decision-level problems escalate to coordinator `solution-architect`/`security-architect` |
+| Implementation | Code Review | `backend-implementer` (this session) | `[impl]` PR with green tests |
+| Code Review | Done | `code-reviewer` + `qa-engineer` (this session) + `tech-lead` (human, final) | Craft, coverage, security, architecture all signed off; merge `[impl]` PR |
 
-Reference: [Definition of Done](https://oraclous.atlassian.net/wiki/spaces/OP/pages/66010).
+Reference: [Definition of Done](https://oraclous.atlassian.net/wiki/spaces/OP/pages/66010). Note: the Backlog → Ready gate happens entirely in the coordinator session before the ticket ever reaches this repo session. Infra (`[impl-infra]`) and docs (`[docs]`) PRs against this repo are opened by `devops-implementer` and `docs-writer` **from the coordinator session**, not here.
 
 ---
 
@@ -366,10 +371,12 @@ These are rejected at review with no negotiation:
 - Hand-roll a fetch call from a service when the typed client could be used.
 - Write platform code that *is* the harness (rather than interpreting harnesses).
 - Read or write the `legacy-reference/` directory's git state — it is a read-only worktree.
+- Default to a greenfield rewrite when the story carries a `Lift`, `Reshape`, or `Extract` tag — honour the tag and start from the named legacy source (§11).
+- Define a cross-repo data shape, API response, or relation locally — open a `Contract` issue and stop (§11.4).
 
 ---
 
-## 11. Legacy reference
+## 11. Legacy reference and the lift-vs-rewrite default
 
 The previous Oraclous backend codebase is available **read-only** at:
 
@@ -379,14 +386,34 @@ The previous Oraclous backend codebase is available **read-only** at:
 
 It is a **git worktree pinned to the `develop` branch** of the previous backend repository. `develop` is the most current branch of that codebase.
 
-**Rules for the legacy reference:**
+### 11.1 This is a migration, not a rewrite
 
-- It is reference material for **behaviour to preserve**, not patterns to reproduce.
-- The target architecture is Architecture v1.1 (Confluence) — the platform that the migration plan is migrating *toward*. The legacy codebase is what we are migrating *from*.
-- When in doubt: Confluence wins, this `CLAUDE.md` wins, the legacy code is the third-place reference.
-- Read it to understand what existed and what worked. Do not copy directory structure, naming conventions, or service boundaries unless they explicitly match what the architecture document specifies.
+Most existing backend services are production-grade and correctly factored (`auth-service`, `credential-broker-service`) or sprawling-but-salvageable (`knowledge-graph-builder`). The default for backend work is **lift-and-reshape against the four-layer model** — populate the new repo from the legacy service, then refactor under TDD to the target layer and conventions. **Greenfield is the exception, not the default**, applying only to genuinely new surfaces (the application gateway, the metering subsystem) that have no clean legacy precursor.
+
+> The legacy codebase is always at minimum the **behavioural specification** — even when its code is not reusable. New code passes when it does what the legacy did, plus the architectural invariants. "Start from scratch" must be justified, not assumed.
+
+### 11.2 The lift-vs-rewrite rubric
+
+You do not decide lift-vs-rewrite yourself per file. The verdict is decided once per deliverable in the release page's **Migration source map** (see [09. Releases](https://oraclous.atlassian.net/wiki/spaces/OP/pages/164160) Section 7) and arrives in your story brief as a **lift-tag**: `Lift`, `Reshape`, `Extract`, or `Greenfield`, with the specific legacy source path named. Your job is to honour the tag:
+
+- **Lift** — start from the named legacy code, light refactor only.
+- **Reshape** — start from the named legacy logic, refit it to the target layer boundary and conventions (organisation_id, OHM, ReBAC, fail-closed), keep the logic.
+- **Extract** — lift the behaviour out of a larger legacy service into its target service.
+- **Greenfield** — no usable legacy precursor; write fresh against the architecture. The legacy may still be the spec of what *not* to do.
+
+If a story brief lacks a lift-tag for code that you believe has a legacy precursor, that is a planning gap — flag it to `product-planner` (via the coordinator) rather than silently choosing greenfield.
+
+### 11.3 Rules for the legacy reference
+
+- Reference material for behaviour to preserve, read in light of the lift-tag.
+- When in doubt: Confluence wins, this `CLAUDE.md` wins, the legacy code is the behavioural reference.
+- For a `Greenfield`-tagged story, do not copy legacy directory structure, naming, or service boundaries unless they explicitly match the architecture.
 - Never write to `legacy-reference/`. It is a read-only worktree by convention.
 - If the worktree appears to be on a branch other than `develop`, that is a setup error — surface it to the human and stop, do not switch branches yourself.
+
+### 11.4 Cross-repo shapes are not yours to define
+
+If you need a data shape, API response, or relation that crosses the repo boundary (anything the frontend also consumes, anything that is a contract between two services), **you do not define it locally**. You open a `Contract` Jira issue with `Agent Owner = solution-architect` and stop, per the [Cross-cutting agreement protocol](https://oraclous.atlassian.net/wiki/spaces/OP/pages/1245185). The shape is decided by `solution-architect` and recorded canonically before either side implements. Defining a cross-repo shape locally is a process violation of the same class as editing tests to make them pass.
 
 ---
 
