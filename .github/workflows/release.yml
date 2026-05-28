@@ -1,0 +1,16 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  images:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and push service images
+        run: |
+          echo "Per-service image build/push to the registry runs here."
+          echo "No service Dockerfiles exist yet (services are shells); each"
+          echo "service adds its build+push step as it ships across R1–R6."

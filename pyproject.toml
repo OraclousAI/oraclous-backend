@@ -16,4 +16,67 @@ dev = [
     "ruff==0.15.9",
     "pytest==8.4.1",
     "pytest-asyncio>=0.23,<1.0",
+    "import-linter>=2.0,<3.0",
+    "mypy>=1.11,<2.0",
+]
+
+[tool.mypy]
+python_version = "3.12"
+explicit_package_bases = true
+namespace_packages = true
+ignore_missing_imports = true
+warn_unused_configs = true
+
+# Enforces the four-layer architecture (CLAUDE.md §3.1 / ADR-001): imports flow
+# downward only, and shared packages never import services. Run: uv run lint-imports
+[tool.importlinter]
+root_packages = [
+    "oraclous_ohm",
+    "oraclous_substrate",
+    "oraclous_governance",
+    "oraclous_provenance",
+    "oraclous_rebac",
+    "oraclous_telemetry",
+    "oraclous_errors",
+    "oraclous_auth_service",
+    "oraclous_credential_broker_service",
+    "oraclous_knowledge_graph_service",
+    "oraclous_knowledge_retriever_service",
+    "oraclous_capability_registry_service",
+    "oraclous_harness_runtime_service",
+    "oraclous_execution_engine_service",
+    "oraclous_application_gateway_service",
+]
+
+[[tool.importlinter.contracts]]
+name = "Four-layer architecture — imports flow downward only"
+type = "layers"
+layers = [
+    "oraclous_application_gateway_service",
+    "oraclous_harness_runtime_service | oraclous_execution_engine_service",
+    "oraclous_capability_registry_service",
+    "oraclous_auth_service | oraclous_credential_broker_service | oraclous_knowledge_graph_service | oraclous_knowledge_retriever_service",
+]
+
+[[tool.importlinter.contracts]]
+name = "Shared packages must not import services"
+type = "forbidden"
+source_modules = [
+    "oraclous_ohm",
+    "oraclous_substrate",
+    "oraclous_governance",
+    "oraclous_provenance",
+    "oraclous_rebac",
+    "oraclous_telemetry",
+    "oraclous_errors",
+]
+forbidden_modules = [
+    "oraclous_auth_service",
+    "oraclous_credential_broker_service",
+    "oraclous_knowledge_graph_service",
+    "oraclous_knowledge_retriever_service",
+    "oraclous_capability_registry_service",
+    "oraclous_harness_runtime_service",
+    "oraclous_execution_engine_service",
+    "oraclous_application_gateway_service",
 ]
