@@ -41,7 +41,6 @@ from oraclous_governance import (
     PrincipalType,
     use_organisation_context,
 )
-
 from oraclous_substrate.usage import (
     MAX_DIMENSION_KEY_LENGTH,
     MAX_DIMENSION_VALUE_LENGTH,

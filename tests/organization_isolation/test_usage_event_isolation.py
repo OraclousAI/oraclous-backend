@@ -23,7 +23,6 @@ from oraclous_governance import (
     PrincipalType,
     use_organisation_context,
 )
-
 from oraclous_substrate.usage import UsageEvent, UsageEventStream
 
 pytestmark = [pytest.mark.unit, pytest.mark.organization_isolation]
@@ -101,8 +100,6 @@ async def test_read_takes_no_caller_supplied_organisation() -> None:
     parameter through which a caller could request another organisation's data.
     """
     params = [
-        name
-        for name in inspect.signature(UsageEventStream.read).parameters
-        if name != "self"
+        name for name in inspect.signature(UsageEventStream.read).parameters if name != "self"
     ]
     assert params == []
