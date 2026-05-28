@@ -121,3 +121,32 @@ def test_relationships_carry_and_isolate_by_organisation_property(applied_neo4j)
         assert records[0]["c"] == 1
     finally:
         driver.execute_query("MATCH (n {_ora16_marker: $marker}) DETACH DELETE n", marker=marker)
+
+
+def test_apply_is_idempotent(applied_neo4j) -> None:
+    """Re-running apply() does not raise and does not create duplicate org-scoped indexes.
+
+    A real redeploy path: the count of org-scoped indexes per label/type must be stable
+    across a second apply (Neo4j ``CREATE INDEX`` without ``IF NOT EXISTS`` raises on a
+    duplicate, so this also pins that apply() guards against re-creation).
+    """
+    driver, schema = applied_neo4j
+    org_prop = getattr(schema, "ORG_PROPERTY", "organisation_id")
+
+    def org_index_counts() -> dict[str, int]:
+        counts: dict[str, int] = {}
+        for idx in _index_records(driver):
+            if org_prop not in (idx.get("properties") or []):
+                continue
+            for label in idx.get("labelsOrTypes") or []:
+                counts[label] = counts.get(label, 0) + 1
+        return counts
+
+    before = org_index_counts()
+    schema.apply(driver)  # second apply on the already-applied schema must not raise
+    after = org_index_counts()
+
+    assert after == before, (
+        "apply() is not idempotent: re-applying changed the per-label org-scoped index "
+        f"counts (before={before}, after={after})"
+    )

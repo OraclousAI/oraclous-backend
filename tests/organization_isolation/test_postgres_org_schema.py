@@ -86,3 +86,43 @@ def test_every_tenant_table_has_a_policy_parameterised_on_the_org_context(applie
             f"no policy on {table} references {org_col} and the org GUC {org_guc!r}; "
             f"found quals: {quals}"
         )
+
+
+def test_apply_is_idempotent(applied_schema) -> None:
+    """Re-running apply() on an already-applied schema is safe (a real redeploy path).
+
+    Per-table the RLS policy count and the relrowsecurity/relforcerowsecurity flags
+    must be unchanged after a second apply, and the second apply must not raise. This
+    guards the registry-drift risk in TENANT_TABLES (a re-apply must not duplicate
+    policies or silently relax forced RLS).
+    """
+    conn, pg_schema = applied_schema
+
+    def snapshot() -> dict[str, tuple[int, bool, bool]]:
+        state: dict[str, tuple[int, bool, bool]] = {}
+        for table in pg_schema.TENANT_TABLES:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT count(*) FROM pg_policies "
+                    "WHERE schemaname = 'public' AND tablename = %s",
+                    (table,),
+                )
+                policy_count = cur.fetchone()[0]
+                cur.execute(
+                    "SELECT relrowsecurity, relforcerowsecurity FROM pg_class "
+                    "WHERE relname = %s AND relnamespace = 'public'::regnamespace",
+                    (table,),
+                )
+                enabled, forced = cur.fetchone()
+            state[table] = (policy_count, enabled, forced)
+        return state
+
+    before = snapshot()
+    pg_schema.apply(conn)  # second apply on the already-applied schema must not raise
+    conn.commit()
+    after = snapshot()
+
+    assert after == before, (
+        "apply() is not idempotent: re-applying changed per-table policy counts or RLS "
+        f"flags (before={before}, after={after})"
+    )
