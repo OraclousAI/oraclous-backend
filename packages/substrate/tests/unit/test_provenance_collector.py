@@ -14,7 +14,6 @@ RED until backend-implementer creates ``oraclous_substrate.provenance``.
 from __future__ import annotations
 
 import pytest
-
 from oraclous_substrate.provenance import ProvenanceCollector, ProvenanceRecord
 
 pytestmark = [pytest.mark.unit, pytest.mark.audit]

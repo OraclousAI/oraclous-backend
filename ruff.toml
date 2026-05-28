@@ -18,7 +18,7 @@ select = [
 ignore = []
 
 [lint.per-file-ignores]
-"tests/**" = ["S101"]  # assert is expected in tests
+"**/tests/**" = ["S101"]  # assert is expected in tests (top-level and per-package)
 
 [format]
 docstring-code-format = true
