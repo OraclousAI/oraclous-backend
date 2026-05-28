@@ -17,7 +17,6 @@ RED until backend-implementer creates ``oraclous_substrate.rebac``.
 from __future__ import annotations
 
 import pytest
-
 from oraclous_substrate.rebac import (
     AccessDecision,
     AccessDecisionClient,
