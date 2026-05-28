@@ -1,0 +1,19 @@
+[project]
+name = "oraclous-backend"
+version = "0.0.0"
+description = "Oraclous Platform backend — substrate, capability registry, harness runtime, execution engine, and application gateway."
+requires-python = "==3.12.*"
+dependencies = []
+
+[tool.uv]
+package = false
+
+[tool.uv.workspace]
+members = ["packages/*", "services/*"]
+
+[dependency-groups]
+dev = [
+    "ruff==0.15.9",
+    "pytest==8.4.1",
+    "pytest-asyncio>=0.23,<1.0",
+]
