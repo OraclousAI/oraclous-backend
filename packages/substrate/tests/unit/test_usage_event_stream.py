@@ -43,7 +43,9 @@ from oraclous_governance import (
 )
 
 from oraclous_substrate.usage import (
+    MAX_DIMENSION_KEY_LENGTH,
     MAX_DIMENSION_VALUE_LENGTH,
+    MAX_DIMENSIONS,
     UsageEvent,
     UsageEventStream,
 )
@@ -276,6 +278,62 @@ async def test_dimension_value_length_is_bounded() -> None:
     oversized = "x" * (MAX_DIMENSION_VALUE_LENGTH + 1)
     with use_organisation_context(_context()), pytest.raises(ValueError):
         await _emit(stream, dimensions={"label": oversized})
+    assert store.writes == []
+
+
+@pytest.mark.security
+@pytest.mark.operator_separation
+async def test_dimension_key_length_is_bounded() -> None:
+    """T6: a dimension *key* is a bounded metering label, not a payload carrier.
+
+    A key longer than the published bound is rejected (nothing written), closing
+    the smuggle path where customer text rides in the key instead of the value.
+    """
+    store = _RecordingStore()
+    stream = UsageEventStream(store)
+    oversized_key = "k" * (MAX_DIMENSION_KEY_LENGTH + 1)
+    with use_organisation_context(_context()), pytest.raises(ValueError):
+        await _emit(stream, dimensions={oversized_key: 1})
+    assert store.writes == []
+
+
+@pytest.mark.security
+@pytest.mark.operator_separation
+@pytest.mark.parametrize(
+    "key",
+    [
+        "has space",  # whitespace
+        "new\nline",  # newline
+        "tab\there",  # tab
+        "null\x00byte",  # NUL control char
+        "bell\x07char",  # control char
+    ],
+)
+async def test_dimension_key_rejects_whitespace_and_control_characters(key: str) -> None:
+    """T6: dimension keys are constrained metering labels; whitespace / newline /
+    control characters (how prose payload would ride in a key) are rejected and
+    nothing is written.
+    """
+    store = _RecordingStore()
+    stream = UsageEventStream(store)
+    with use_organisation_context(_context()), pytest.raises(ValueError):
+        await _emit(stream, dimensions={key: 1})
+    assert store.writes == []
+
+
+@pytest.mark.security
+@pytest.mark.operator_separation
+async def test_dimensions_entry_count_is_capped() -> None:
+    """T6: dimensions cardinality is bounded — real metering dimensions are a
+    handful of labels. A mapping exceeding the published cap is rejected
+    (nothing written), closing the smuggle path of payload spread across many
+    entries.
+    """
+    store = _RecordingStore()
+    stream = UsageEventStream(store)
+    too_many = {f"k{i}": 1 for i in range(MAX_DIMENSIONS + 1)}
+    with use_organisation_context(_context()), pytest.raises(ValueError):
+        await _emit(stream, dimensions=too_many)
     assert store.writes == []
 
 
