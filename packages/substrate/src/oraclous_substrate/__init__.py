@@ -2,6 +2,14 @@
 
 from __future__ import annotations
 
+from oraclous_substrate.access import (
+    CrossOrganisationDenied,
+    authorise_cross_org_traversal,
+    bind_organisation_guc,
+    enforced_organisation_id,
+    org_scoped_cypher,
+    scoped_write_node,
+)
 from oraclous_substrate.metering import (
     CAPABILITY_INVOCATION,
     CROSS_WORKSPACE_TRAVERSAL,
@@ -36,6 +44,7 @@ __all__ = [
     "AccessDecision",
     "AccessDecisionClient",
     "AccessRequest",
+    "CrossOrganisationDenied",
     "MeteringHook",
     "PendingUsageEvent",
     "ProvenanceCollector",
@@ -46,4 +55,9 @@ __all__ = [
     "UsageEventStore",
     "UsageEventStream",
     "UsageReplayLog",
+    "authorise_cross_org_traversal",
+    "bind_organisation_guc",
+    "enforced_organisation_id",
+    "org_scoped_cypher",
+    "scoped_write_node",
 ]
