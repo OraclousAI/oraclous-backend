@@ -2,6 +2,26 @@ version = 1
 revision = 3
 requires-python = "==3.12.*"
 
+[manifest]
+members = [
+    "oraclous-application-gateway-service",
+    "oraclous-auth-service",
+    "oraclous-backend",
+    "oraclous-capability-registry-service",
+    "oraclous-credential-broker-service",
+    "oraclous-errors",
+    "oraclous-execution-engine-service",
+    "oraclous-governance",
+    "oraclous-harness-runtime-service",
+    "oraclous-knowledge-graph-service",
+    "oraclous-knowledge-retriever-service",
+    "oraclous-ohm",
+    "oraclous-provenance",
+    "oraclous-rebac",
+    "oraclous-substrate",
+    "oraclous-telemetry",
+]
+
 [[package]]
 name = "colorama"
 version = "0.4.6"
@@ -19,6 +39,16 @@ sdist = { url = "https://files.pythonhosted.org/packages/72/34/14ca021ce8e5dfedc
 wheels = [
     { url = "https://files.pythonhosted.org/packages/cb/b1/3846dd7f199d53cb17f49cba7e651e9ce294d8497c8c150530ed11865bb8/iniconfig-2.3.0-py3-none-any.whl", hash = "sha256:f631c04d2c48c52b84d0d0549c99ff3859c98df65b3101406327ecc7d53fbf12", size = 7484, upload-time = "2025-10-18T21:55:41.639Z" },
 ]
+
+[[package]]
+name = "oraclous-application-gateway-service"
+version = "0.0.0"
+source = { editable = "services/application-gateway-service" }
+
+[[package]]
+name = "oraclous-auth-service"
+version = "0.0.0"
+source = { editable = "services/auth-service" }
 
 [[package]]
 name = "oraclous-backend"
@@ -40,6 +70,71 @@ dev = [
     { name = "pytest-asyncio", specifier = ">=0.23,<1.0" },
     { name = "ruff", specifier = "==0.15.9" },
 ]
+
+[[package]]
+name = "oraclous-capability-registry-service"
+version = "0.0.0"
+source = { editable = "services/capability-registry-service" }
+
+[[package]]
+name = "oraclous-credential-broker-service"
+version = "0.0.0"
+source = { editable = "services/credential-broker-service" }
+
+[[package]]
+name = "oraclous-errors"
+version = "0.0.0"
+source = { editable = "packages/errors" }
+
+[[package]]
+name = "oraclous-execution-engine-service"
+version = "0.0.0"
+source = { editable = "services/execution-engine-service" }
+
+[[package]]
+name = "oraclous-governance"
+version = "0.0.0"
+source = { editable = "packages/governance" }
+
+[[package]]
+name = "oraclous-harness-runtime-service"
+version = "0.0.0"
+source = { editable = "services/harness-runtime-service" }
+
+[[package]]
+name = "oraclous-knowledge-graph-service"
+version = "0.0.0"
+source = { editable = "services/knowledge-graph-service" }
+
+[[package]]
+name = "oraclous-knowledge-retriever-service"
+version = "0.0.0"
+source = { editable = "services/knowledge-retriever-service" }
+
+[[package]]
+name = "oraclous-ohm"
+version = "0.0.0"
+source = { editable = "packages/ohm" }
+
+[[package]]
+name = "oraclous-provenance"
+version = "0.0.0"
+source = { editable = "packages/provenance" }
+
+[[package]]
+name = "oraclous-rebac"
+version = "0.0.0"
+source = { editable = "packages/rebac" }
+
+[[package]]
+name = "oraclous-substrate"
+version = "0.0.0"
+source = { editable = "packages/substrate" }
+
+[[package]]
+name = "oraclous-telemetry"
+version = "0.0.0"
+source = { editable = "packages/telemetry" }
 
 [[package]]
 name = "packaging"

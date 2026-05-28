@@ -1,0 +1,13 @@
+[project]
+name = "oraclous-application-gateway-service"
+version = "0.0.0"
+description = "Application Gateway layer; target release R6."
+requires-python = "==3.12.*"
+dependencies = []
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/oraclous_application_gateway_service"]

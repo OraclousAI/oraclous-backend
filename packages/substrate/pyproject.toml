@@ -1,0 +1,13 @@
+[project]
+name = "oraclous-substrate"
+version = "0.0.0"
+description = "Substrate seams: ReBAC client + provenance collector (Layer 1)."
+requires-python = "==3.12.*"
+dependencies = []
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/oraclous_substrate"]
