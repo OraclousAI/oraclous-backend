@@ -97,7 +97,9 @@ Reference: [ADR-002 — OHM as Canonical Manifest Format](https://oraclous.atlas
 
 Every write to the Substrate carries `organisation_id`. Every read is parameterised by `organisation_id`. There is no code path that reads or writes without it. This is the foundation of per-organisation isolation.
 
-Reference: [ADR-006 — Organisation as Outermost Tenancy Unit](https://oraclous.atlassian.net/wiki/spaces/OP/pages/393403).
+Tenant-scoped substrate access goes through the `oraclous_substrate.access` seam (the `scoped_*` functions), which sources `organisation_id` from the authenticated org-context and fails closed when none is bound. Two preconditions keep the row-level-security backstop real, not theatre: the production Postgres role is `NOSUPERUSER`/`NOBYPASSRLS` (a superuser or `BYPASSRLS` role silently bypasses RLS), and the org-GUC (`app.current_organisation_id`) is transaction-local (`SET LOCAL`) or reset before a pooled connection is reused (a stale GUC leaks one organisation's scope to the next caller).
+
+Reference: [ADR-006 — Organisation as Outermost Tenancy Unit](https://oraclous.atlassian.net/wiki/spaces/OP/pages/393403) and [ADR-012 — Substrate Tenancy Enforcement Seam and RLS Backstop Preconditions](https://oraclous.atlassian.net/wiki/spaces/OP/pages/2490396).
 
 ### 3.4 ReBAC mediates every cross-organisation traversal
 
@@ -357,6 +359,7 @@ A story is **done** when, and only when:
 These are rejected at review with no negotiation:
 
 - Add a code path that reads or writes without `organisation_id`.
+- Connect to Postgres as a superuser or `BYPASSRLS` role, or bind the org-GUC at session scope on a pooled connection — both silently void the RLS backstop (ADR-012).
 - Bypass the Substrate's ReBAC for a cross-organisation operation.
 - Add an upward import (Substrate importing from Capability Registry, etc.).
 - Modify tests during implementation to make them pass.
