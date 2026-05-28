@@ -1,0 +1,5 @@
+Oraclous Platform backend — Helm chart skeleton (R0.5 story 0c).
+
+This chart is a placeholder. Per-service Deployments, Services, and config are
+added here as each backend service ships across R1–R6. No workloads are
+rendered yet.

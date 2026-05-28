@@ -1,0 +1,6 @@
+apiVersion: v2
+name: oraclous-backend
+description: Cloud-hosted deployment chart for the Oraclous Platform backend (skeleton; service templates added per release).
+type: application
+version: 0.0.0
+appVersion: "0.0.0"
