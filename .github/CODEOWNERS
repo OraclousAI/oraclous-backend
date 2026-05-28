@@ -1,0 +1,10 @@
+# All agents share the human tech-lead account; CODEOWNERS routes review
+# requests to the human, who is the final approver on every gate.
+* @Jahankohan
+
+# Architecture- and security-significant surfaces (extra attention at review).
+/packages/governance/   @Jahankohan
+/packages/substrate/    @Jahankohan
+/deploy/                @Jahankohan
+/.github/               @Jahankohan
+/pyproject.toml         @Jahankohan

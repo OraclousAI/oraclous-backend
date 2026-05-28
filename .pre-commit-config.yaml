@@ -1,0 +1,41 @@
+# Run `pre-commit install` once per clone to enable.
+# Lifted from the legacy config; adds the import-linter and org-scoping guardrails.
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: check-merge-conflict
+      - id: check-added-large-files
+        args: ["--maxkb=1024"]
+      - id: check-yaml
+      - id: check-toml
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.9
+    hooks:
+      - id: ruff
+        args: ["--fix"]
+      - id: ruff-format
+
+  - repo: https://github.com/Yelp/detect-secrets
+    rev: v1.5.0
+    hooks:
+      - id: detect-secrets
+        args: ["--baseline", ".secrets.baseline"]
+
+  - repo: local
+    hooks:
+      - id: import-linter
+        name: import-linter (four-layer contracts)
+        entry: uv run lint-imports
+        language: system
+        pass_filenames: false
+        files: \.py$
+      - id: org-scoping
+        name: organisation-scoping guardrails (ADR-006)
+        entry: uv run python -m tools.lint.check_org_scoping packages services
+        language: system
+        pass_filenames: false
+        files: \.py$

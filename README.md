@@ -18,7 +18,7 @@ A [uv](https://docs.astral.sh/uv/)-managed workspace. Shared libraries live in `
 Requires Python 3.12 (see `.python-version`) and uv.
 
 ```bash
-uv sync                        # create the venv and install dev tooling
+uv sync --all-packages         # venv + all workspace members (editable) + dev tooling
 uv run ruff check .            # lint
 uv run ruff format --check .   # formatting check
 uv run pytest                  # run the test suite
