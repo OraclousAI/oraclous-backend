@@ -2,9 +2,21 @@
 
 Two best-effort, heuristic lint rules (guardrails, not proofs):
 
-  ORG001 — ``organisation_id`` must not be read from a request body / payload.
+  ORG001 — ``organisation_id`` must not be read from an untrusted request body.
            It is resolved from the authenticated principal context (the
            ``packages/governance`` org-context), never trusted from the body.
+           Flagged forms: dict-style extraction off a body/payload/request
+           (``body["organisation_id"]``); an attribute read off an unambiguous
+           HTTP-body name (``body.organisation_id`` / ``payload.organisation_id``);
+           and an inbound Pydantic ``BaseModel`` request schema
+           (a ``*Request``/``*Body``/``*Payload`` class) declaring
+           ``organisation_id`` as a field. Deliberately NOT flagged: a plain
+           domain value object (e.g. a frozen ``@dataclass``) that carries
+           ``organisation_id`` to pass it *through* a seam, and attribute reads
+           off ambiguous names (``request``/``req``/``data``) which routinely
+           name such domain objects. Best-effort heuristic — the authoritative
+           T1 control is the runtime org-context plus the organisation-isolation
+           tests, not this linter (ORA-40 / security-architect ruling).
   ORG002 — a substrate storage model (a class with ``__tablename__``) must
            declare an ``organisation_id`` column.
 
@@ -20,8 +32,16 @@ from dataclasses import dataclass
 from pathlib import Path
 
 ORG_NAMES = {"organisation_id", "organization_id"}
+# Dict-style subscript (body["organisation_id"]) is checked against the full set;
+# subscripting a domain value object to read its tenancy scope is not a real pattern.
 BODY_SOURCES = {"body", "payload", "request", "req", "data"}
+# Attribute reads (body.organisation_id) are checked only against unambiguous
+# HTTP-body names. `request`/`req`/`data` routinely name domain objects that
+# legitimately carry the tenancy scope through a seam, so flagging attribute reads
+# off them is a false positive (ORA-40 / security-architect ruling).
+ATTRIBUTE_BODY_SOURCES = {"body", "payload"}
 REQUEST_MODEL_SUFFIXES = ("Request", "Body", "Payload")
+PYDANTIC_BASES = {"BaseModel"}
 SKIP_DIRS = {".venv", "venv", "__pycache__", "build", "dist", ".git"}
 
 
@@ -38,6 +58,22 @@ class Violation:
 
 def _is_org_key(node: ast.expr) -> bool:
     return isinstance(node, ast.Constant) and node.value in ORG_NAMES
+
+
+def _is_pydantic_model(node: ast.ClassDef) -> bool:
+    """Best-effort: does this class directly inherit a Pydantic ``BaseModel``?
+
+    Domain value objects (frozen ``@dataclass``es) carrying ``organisation_id``
+    through a seam are not inbound request schemas and must not be flagged. A
+    model reached only via a project-local base class is not detected — accepted
+    as a best-effort limit.
+    """
+    for base in node.bases:
+        if isinstance(base, ast.Name) and base.id in PYDANTIC_BASES:
+            return True
+        if isinstance(base, ast.Attribute) and base.attr in PYDANTIC_BASES:
+            return True
+    return False
 
 
 class _Visitor(ast.NodeVisitor):
@@ -67,14 +103,14 @@ class _Visitor(ast.NodeVisitor):
     def visit_Attribute(self, node: ast.Attribute) -> None:
         if (
             isinstance(node.value, ast.Name)
-            and node.value.id in BODY_SOURCES
+            and node.value.id in ATTRIBUTE_BODY_SOURCES
             and node.attr in ORG_NAMES
         ):
             self._flag_body_read(node.lineno)
         self.generic_visit(node)
 
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
-        if node.name.endswith(REQUEST_MODEL_SUFFIXES):
+        if node.name.endswith(REQUEST_MODEL_SUFFIXES) and _is_pydantic_model(node):
             for stmt in node.body:
                 if (
                     isinstance(stmt, ast.AnnAssign)
