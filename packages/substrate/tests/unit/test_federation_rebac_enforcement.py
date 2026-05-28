@@ -1,7 +1,7 @@
 """Federation cross-organisation traversal is mediated by the ReBAC client
 (ORA-17 / A2, AC#3).
 
-RED until ``backend-implementer`` adds ``oraclous_substrate.query_scoping``.
+RED until ``backend-implementer`` adds ``oraclous_substrate.access``.
 
 Reshape (lift-tag **Reshape**) of the legacy fail-closed cross-tenant check in
 ``knowledge-graph-builder`` ``app/services/federation_service.py::_validate_and_filter``
@@ -26,7 +26,7 @@ from oraclous_governance.propagation import (
     MissingOrganisationContextError,
     use_organisation_context,
 )
-from oraclous_substrate.query_scoping import (
+from oraclous_substrate.access import (
     CrossOrganisationDenied,
     authorise_cross_org_traversal,
 )

@@ -1,6 +1,6 @@
 """Substrate query/write-path organisation enforcement — unit contracts (ORA-17 / A2).
 
-RED until ``backend-implementer`` adds ``oraclous_substrate.query_scoping``.
+RED until ``backend-implementer`` adds ``oraclous_substrate.access``.
 
 Reshape (lift-tag **Reshape**) of the organisation-blind tenant scoping in
 ``knowledge-graph-builder``:
@@ -34,7 +34,7 @@ from oraclous_governance.propagation import (
     MissingOrganisationContextError,
     use_organisation_context,
 )
-from oraclous_substrate.query_scoping import (
+from oraclous_substrate.access import (
     bind_organisation_guc,
     enforced_organisation_id,
     org_scoped_cypher,
