@@ -1,4 +1,4 @@
-"""oraclous-substrate — Layer 1 seams: ReBAC access decisions + provenance."""
+"""oraclous-substrate — Layer 1 seams: ReBAC, provenance, usage metering."""
 
 from __future__ import annotations
 
@@ -13,6 +13,11 @@ from oraclous_substrate.rebac import (
     AccessRequest,
     RelationResolver,
 )
+from oraclous_substrate.usage import (
+    UsageEvent,
+    UsageEventStore,
+    UsageEventStream,
+)
 
 __all__ = [
     "AccessDecision",
@@ -22,4 +27,7 @@ __all__ = [
     "ProvenanceRecord",
     "ProvenanceSink",
     "RelationResolver",
+    "UsageEvent",
+    "UsageEventStore",
+    "UsageEventStream",
 ]
