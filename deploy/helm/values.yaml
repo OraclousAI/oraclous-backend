@@ -1,0 +1,17 @@
+# Placeholder values for the oraclous-backend chart skeleton.
+# Real values are populated as services are built per release.
+global:
+  imageRegistry: ""
+  imagePullPolicy: IfNotPresent
+
+# Substrate connection settings (operator-provided in real deployments).
+substrate:
+  neo4j:
+    uri: ""
+  postgres:
+    dsn: ""
+  redis:
+    url: ""
+
+# Per-service overrides are added here as each service ships (R1–R6).
+services: {}

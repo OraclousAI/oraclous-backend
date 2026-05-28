@@ -1,0 +1,25 @@
+# Minimal OpenTelemetry Collector config (scaffold).
+# In local dev, services emit OTLP straight to the Jaeger all-in-one (jaeger:4317).
+# This collector config is the seam for when a dedicated collector is introduced.
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+processors:
+  batch: {}
+exporters:
+  debug:
+    verbosity: normal
+  otlp/jaeger:
+    endpoint: jaeger:4317
+    tls:
+      insecure: true
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [otlp/jaeger, debug]

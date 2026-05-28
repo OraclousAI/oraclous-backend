@@ -1,0 +1,25 @@
+# Concurrency override: run multiple isolated substrate stacks on one host.
+# Set a unique COMPOSE_PROJECT_NAME per agent / ticket; host ports are OS-assigned
+# (0:<container-port>) so concurrent stacks never collide. Pattern lifted from the
+# legacy docker-compose.agent.yml.
+#
+#   export COMPOSE_PROJECT_NAME=oraclous-ora-14
+#   docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.agent.yml up -d
+#   docker compose -p oraclous-ora-14 port neo4j 7687   # discover the assigned host port
+#   docker compose -p oraclous-ora-14 down -v           # tear the stack down
+services:
+  neo4j:
+    ports:
+      - "0:7474"
+      - "0:7687"
+  postgres:
+    ports:
+      - "0:5432"
+  redis:
+    ports:
+      - "0:6379"
+  jaeger:
+    ports:
+      - "0:16686"
+      - "0:4317"
+      - "0:4318"
