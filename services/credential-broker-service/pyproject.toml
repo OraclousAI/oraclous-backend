@@ -3,7 +3,11 @@ name = "oraclous-credential-broker-service"
 version = "0.0.0"
 description = "Substrate layer; target release R1."
 requires-python = "==3.12.*"
-dependencies = []
+dependencies = [
+    "pydantic-settings>=2.0,<3.0",
+    "sqlalchemy[asyncio]>=2.0,<3.0",
+    "asyncpg>=0.29,<0.31",
+]
 
 [build-system]
 requires = ["hatchling"]
