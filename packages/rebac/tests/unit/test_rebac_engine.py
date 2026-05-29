@@ -332,6 +332,29 @@ class TestRoleManagement:
         assert "user-b" in combined
         assert "graph-1" in combined
 
+    async def test_grant_invalidates_cache_for_user_and_graph(self) -> None:
+        """A grant must invalidate the cache too (AC#3) — else a freshly granted
+
+        role is masked by a stale deny for up to the 60s TTL. Legacy ``grant_role``
+        calls ``invalidate_permission_cache`` (rebac_service.py:617).
+        """
+        engine = ReBACEngine()
+        redis = _null_redis()
+        engine._redis = redis
+        driver, _, _ = _make_driver(single_return=None)
+        await engine.grant_role(
+            driver,
+            organisation_id=_ORG,
+            graph_id="graph-1",
+            target_user_id="user-b",
+            role_name="viewer",
+            granted_by="admin-user",
+        )
+        assert redis.delete.called, "grant_role must invalidate the permission cache"
+        combined = " ".join(str(c) for c in redis.delete.call_args_list)
+        assert "user-b" in combined
+        assert "graph-1" in combined
+
 
 # ── Bootstrap, members, subgraph ───────────────────────────────────────────
 

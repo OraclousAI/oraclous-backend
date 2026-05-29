@@ -277,7 +277,7 @@ class TestCacheIsOrgScoped:
         get_keys = " ".join(str(c) for c in redis.get.call_args_list)
         assert _ORG_A in get_keys, f"cache key not namespaced by organisation_id: {get_keys}"
 
-    async def test_invalidation_targets_org_namespaced_keys(self) -> None:
+    async def test_revoke_invalidation_targets_org_namespaced_keys(self) -> None:
         engine = ReBACEngine()
         redis = _null_redis()
         engine._redis = redis
@@ -291,3 +291,22 @@ class TestCacheIsOrgScoped:
         )
         deleted = " ".join(str(c) for c in redis.delete.call_args_list)
         assert _ORG_A in deleted
+
+    async def test_grant_invalidation_targets_org_namespaced_keys(self) -> None:
+        """Grant invalidation is org-scoped too — it must not clear another org's keys."""
+        engine = ReBACEngine()
+        redis = _null_redis()
+        engine._redis = redis
+        driver, _ = _make_driver(single_return=None)
+        await engine.grant_role(
+            driver,
+            organisation_id=_ORG_A,
+            graph_id="graph-1",
+            target_user_id="user-b",
+            role_name="viewer",
+            granted_by="admin",
+        )
+        deleted = " ".join(str(c) for c in redis.delete.call_args_list)
+        assert deleted, "grant_role must invalidate the permission cache"
+        assert _ORG_A in deleted
+        assert _OTHER_ORG not in deleted
