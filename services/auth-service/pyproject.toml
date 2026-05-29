@@ -3,7 +3,10 @@ name = "oraclous-auth-service"
 version = "0.0.0"
 description = "Substrate layer; target release R1."
 requires-python = "==3.12.*"
-dependencies = []
+dependencies = [
+    "sqlalchemy>=2.0,<3.0",
+    "bcrypt>=4.1,<5.0",
+]
 
 [build-system]
 requires = ["hatchling"]
