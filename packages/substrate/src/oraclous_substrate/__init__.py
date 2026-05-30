@@ -8,6 +8,11 @@ from oraclous_substrate.access import (
     bind_organisation_guc,
     enforced_organisation_id,
     org_scoped_cypher,
+    scoped_cache_get,
+    scoped_cache_set,
+    scoped_fulltext_search,
+    scoped_pg_connection,
+    scoped_traverse,
     scoped_write_node,
 )
 from oraclous_substrate.metering import (
@@ -59,5 +64,10 @@ __all__ = [
     "bind_organisation_guc",
     "enforced_organisation_id",
     "org_scoped_cypher",
+    "scoped_cache_get",
+    "scoped_cache_set",
+    "scoped_fulltext_search",
+    "scoped_pg_connection",
+    "scoped_traverse",
     "scoped_write_node",
 ]

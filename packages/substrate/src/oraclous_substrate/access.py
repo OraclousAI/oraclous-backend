@@ -19,16 +19,18 @@ as a defense-in-depth backstop, activated by ``bind_organisation_guc``.
 
 from __future__ import annotations
 
+import contextlib
 import re
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from oraclous_governance import current_organisation_context
 
+from oraclous_substrate.cache_keys import query_cache_key
 from oraclous_substrate.rebac import AccessRequest
 from oraclous_substrate.schema.postgres import ORG_GUC
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Iterator, Mapping
 
     from oraclous_substrate.rebac import AccessDecisionClient
 
@@ -135,3 +137,122 @@ def scoped_write_node(driver: object, *, label: str, properties: Mapping[str, ob
     props = dict(properties)
     props[_ORG] = org_id  # context wins; any body-supplied organisation_id is ignored
     driver.execute_query(f"CREATE (n:`{label}`) SET n = $props", props=props)  # type: ignore[attr-defined]
+
+
+# --------------------------------------------------------------------------- #
+# Scoped store operations (ADR-012 ratified surface, ORA-20 gate's call sites).
+# Each composes the enforcement primitives above. ``scoped_pg_connection``
+# centralises the NOSUPERUSER/NOBYPASSRLS role precondition (ADR-012 §3.3.4(a) /
+# Threat Catalogue T1-M3) as a structural chokepoint — never push it to callers.
+# --------------------------------------------------------------------------- #
+
+
+@contextlib.contextmanager
+def scoped_pg_connection(dsn: str) -> Iterator[Any]:
+    """Open a Postgres connection bound to the ambient organisation scope.
+
+    Fail-closed: the bound org is required *before* any connection is opened.
+    Asserts the connecting role is **NOSUPERUSER and NOBYPASSRLS** — a role with
+    either attribute silently voids the A1 RLS backstop (T1-M3), so this seam
+    refuses to bind under one rather than letting it through. Then binds the
+    org GUC ``transaction-locally`` on the connection's first transaction via
+    ``bind_organisation_guc``; the caller's subsequent statements run inside
+    that transaction and therefore under the bound scope. The caller owns
+    ``commit()`` / rollback.
+    """
+    enforced_organisation_id()  # fail-closed BEFORE opening any connection
+    import psycopg
+
+    conn = psycopg.connect(dsn)
+    try:
+        with conn.cursor() as cur:
+            # T1-M3 chokepoint: a superuser / BYPASSRLS session silently voids
+            # the A1 RLS backstop. Refuse to bind under such a role.
+            cur.execute("SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user")
+            row = cur.fetchone()
+            if row is None:
+                raise RuntimeError("scoped_pg_connection: current_user has no pg_roles entry")
+            rolsuper, rolbypassrls = row
+            if rolsuper or rolbypassrls:
+                raise RuntimeError(
+                    "scoped_pg_connection refuses to bind under a role that bypasses RLS "
+                    f"(rolsuper={rolsuper}, rolbypassrls={rolbypassrls}) — "
+                    "ADR-012 §3.3.4(a) requires NOSUPERUSER NOBYPASSRLS"
+                )
+            # Bind the org GUC locally to the implicit transaction now open; the
+            # caller's subsequent cursor work runs in the same transaction and
+            # sees the GUC. The caller's commit/rollback ends the transaction
+            # and resets the local GUC.
+            bind_organisation_guc(cur)
+        yield conn
+    finally:
+        conn.close()
+
+
+def scoped_traverse(driver: object, *, label: str, marker: str) -> list[dict[str, Any]]:
+    """Org-scoped Cypher traversal: return every ``(:label {marker})`` node that
+    the bound organisation owns, as a list of ``{"name": ...}``-shaped dicts.
+
+    The org filter is injected via ``org_scoped_cypher`` (bound parameter, never
+    interpolated). Fail-closed without a bound context.
+    """
+    if not _SAFE_LABEL.match(label):
+        raise ValueError(f"unsafe Neo4j label: {label!r}")
+    # Match variable matches ``org_scoped_cypher``'s default alias so the injected
+    # ``WHERE node.organisation_id = ...`` predicate binds correctly.
+    base = f"MATCH (node:`{label}` {{marker: $marker}})\nRETURN node.name AS name"
+    query, params = org_scoped_cypher(base)
+    records, _, _ = driver.execute_query(query, marker=marker, **params)  # type: ignore[attr-defined]
+    return [dict(r) for r in records]
+
+
+def scoped_fulltext_search(driver: object, *, index_name: str, query: str) -> list[dict[str, Any]]:
+    """Org-scoped Neo4j fulltext search: returns hits (property dicts) whose
+    ``organisation_id`` matches the bound context.
+
+    ``index_name`` travels as a bound parameter to ``db.index.fulltext.queryNodes``;
+    the org filter is post-applied on the YIELD'd node. Fail-closed without a
+    bound context.
+    """
+    org_id = enforced_organisation_id()
+    cypher = (
+        "CALL db.index.fulltext.queryNodes($index_name, $query) YIELD node, score "
+        "WHERE node.organisation_id = $organisation_id "
+        "RETURN properties(node) AS props, score "
+        "ORDER BY score DESC"
+    )
+    records, _, _ = driver.execute_query(  # type: ignore[attr-defined]
+        cypher,
+        index_name=index_name,
+        query=query,
+        organisation_id=org_id,
+    )
+    return [dict(r["props"]) for r in records]
+
+
+def scoped_cache_get(
+    redis: object, *, graph_id: str, query_text: str, retriever_type: str
+) -> str | None:
+    """Org-scoped Redis cache lookup using A1's ``query_cache_key`` (organisation
+    is the outermost scope). Returns the cached value, or ``None`` on miss.
+    Fail-closed without a bound context.
+    """
+    org_id = enforced_organisation_id()
+    key = query_cache_key(org_id, graph_id, query_text, retriever_type)
+    return redis.get(key)  # type: ignore[attr-defined]
+
+
+def scoped_cache_set(
+    redis: object,
+    *,
+    graph_id: str,
+    query_text: str,
+    retriever_type: str,
+    value: str,
+) -> None:
+    """Org-scoped Redis cache write using A1's ``query_cache_key``. Fail-closed
+    without a bound context.
+    """
+    org_id = enforced_organisation_id()
+    key = query_cache_key(org_id, graph_id, query_text, retriever_type)
+    redis.set(key, value)  # type: ignore[attr-defined]
