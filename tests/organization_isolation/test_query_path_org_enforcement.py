@@ -139,7 +139,7 @@ def test_scoped_write_node_stamps_context_org_and_ignores_body(neo4j_driver) -> 
 # ── Postgres: bind_organisation_guc activates RLS isolation at runtime ───────
 
 
-def test_org_guc_isolates_postgres_reads_and_writes(postgres_dsn: str) -> None:
+def test_org_guc_isolates_postgres_reads_and_writes(app_dsn: str) -> None:
     import psycopg
     from oraclous_governance.propagation import use_organisation_context
     from oraclous_substrate.access import bind_organisation_guc
@@ -153,10 +153,10 @@ def test_org_guc_isolates_postgres_reads_and_writes(postgres_dsn: str) -> None:
     )
     select_sql = "SELECT name FROM public.knowledge_graphs"
 
-    with psycopg.connect(postgres_dsn) as conn:
-        pg_schema.apply(conn)
-        conn.commit()
-
+    # ``app_dsn`` is a NOSUPERUSER/NOBYPASSRLS role with the A1 schema pre-applied
+    # (the ``app_dsn`` fixture applies the DDL as superuser). RLS only bites for a
+    # non-superuser role, so the isolation proven here is real (ADR-012 precondition).
+    with psycopg.connect(app_dsn) as conn:
         # WRITE org A's row with the GUC bound to org A (RLS WITH CHECK admits it).
         with conn.transaction(), conn.cursor() as cur:
             with use_organisation_context(_ctx(ORG_A)):
