@@ -30,6 +30,8 @@ jobs:
         run: uv run lint-imports
       - name: Organisation-scoping guardrails
         run: uv run python -m tools.lint.check_org_scoping packages services
+      - name: Test-import hygiene guardrail (TDD-window collection safety)
+        run: uv run python -m tools.lint.check_test_imports packages services tests
       - name: Unit tests
         run: |
           set +e
