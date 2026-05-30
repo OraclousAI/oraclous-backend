@@ -2,6 +2,15 @@
 
 from __future__ import annotations
 
+from oraclous_substrate.metering import (
+    CAPABILITY_INVOCATION,
+    CROSS_WORKSPACE_TRAVERSAL,
+    MODEL_TOKENS,
+    STORAGE_WRITE,
+    MeteringHook,
+    PendingUsageEvent,
+    UsageReplayLog,
+)
 from oraclous_substrate.provenance import (
     ProvenanceCollector,
     ProvenanceRecord,
@@ -20,9 +29,15 @@ from oraclous_substrate.usage import (
 )
 
 __all__ = [
+    "CAPABILITY_INVOCATION",
+    "CROSS_WORKSPACE_TRAVERSAL",
+    "MODEL_TOKENS",
+    "STORAGE_WRITE",
     "AccessDecision",
     "AccessDecisionClient",
     "AccessRequest",
+    "MeteringHook",
+    "PendingUsageEvent",
     "ProvenanceCollector",
     "ProvenanceRecord",
     "ProvenanceSink",
@@ -30,4 +45,5 @@ __all__ = [
     "UsageEvent",
     "UsageEventStore",
     "UsageEventStream",
+    "UsageReplayLog",
 ]
