@@ -11,43 +11,48 @@ capability-registry / substrate-write call sites will invoke. Those services are
 still empty scaffolds (R2/R4/R5), so these tests pin the hook layer, not the
 service wiring.
 
-The four metered actions (R0.5 deliverable 5 / ADR-009 "metered actions"):
+The four metered actions (ADR-009 Decision §5):
 
-* **model tokens** — LLM token consumption, split by kind (input/output). Lifts
-  the prompt/completion **token capture** from
+* **model tokens** — LLM token consumption, split by kind (input/output).
+  ``quantity = token count``, ``unit = tokens``, model carried as a dimension.
+  Lifts the prompt/completion **token capture** from
   ``knowledge-graph-builder/app/services/chat_history_service.py`` /
-  ``llm_pricing.py``.
-* **tool invocation** — capability invocation credits. Lifts the per-tool
-  ``calculate_credits`` signal from
-  ``oraclous-core-service/app/tools/base/internal_tool.py`` (L57-62) and the
-  ``credits_consumed`` accumulation in ``instance_repository``.
-* **storage write** — bytes written (net-new).
-* **cross-workspace traversal** — traversal count + bytes (net-new).
+  ``llm_pricing.py`` (the *signal*, not the USD rate table).
+* **capability invocation** — a tool / capability call.
+  ``action_type = capability_invocation``, ``quantity = 1``, ``unit = count``;
+  the **rating signals** (``tool_id``, ``operation``, ``row_count``, ``bytes``)
+  ride as dimensions, never as the emitted quantity. Lifts the *cost-driver
+  capture* from ``oraclous-core-service`` — explicitly **not** the per-tool
+  ``calculate_credits`` rate arithmetic.
+* **storage write** — bytes written (net-new). ``quantity = byte_count``,
+  ``unit = bytes``.
+* **cross-workspace traversal** — traversal count + bytes traversed (net-new).
+  ``quantity = count``, ``unit = count``, bytes as a dimension.
 
-Two deliberate interpretations are pinned here and flagged for the Tests Review
-gate (be-test-reviewer / solution-architect):
+Two architect rulings are **settled** on this story and pinned by this suite:
 
-1. **Tokens/credits are emitted as the raw metered *signal*, never as priced
-   USD.** ADR-009 makes billing a *separable downstream consumer*; pricing
-   (legacy ``estimate_cost_usd``'s USD table) belongs to billing, not the
-   substrate. So the lift is the token *counts* and the *credits* unit — not the
-   currency cost. The hooks emit ``unit="tokens"`` / ``unit="credits"``, and
-   never a currency unit. If the gate wants USD emitted at the substrate, these
-   tests change.
-2. **Failure classes are distinguished.** A *pipeline* failure (the durable
-   write / queue is unavailable) is non-blocking: the metered op completes and
-   the event is captured for replay (R0.5 Risks: "if the metering pipeline
-   fails, the operation still completes but the metering record is logged for
-   replay"). A *fail-closed tenancy* failure (no organisation context bound) is
-   NOT a replayable pipeline error — it must propagate, never be swallowed
-   (CLAUDE.md §3.5 fail-closed; Threat Catalogue T1-M1). A blanket
-   ``except Exception`` around emit would wrongly swallow the latter; these tests
-   forbid that.
+1. **No priced/rated unit at the substrate.** Per ADR-009 ruling
+   (solution-architect, ORA-22 comments 10133 + 10167), the substrate emits the
+   raw cost-driving signal only — never USD and never *credits*. ``credits`` is
+   a per-operation rated unit (the legacy ``calculate_credits`` is a rate table,
+   not a count), categorically identical to USD for ADR-009 purposes: a price
+   book that lives in the metering path makes a pricing change a substrate
+   change. The rate arithmetic lives in the downstream billing/rater, not here.
+   Pinned by ``test_no_metered_action_emits_a_priced_or_rated_unit`` and
+   ``test_capability_invocation_emits_raw_cost_driver_dimensions``.
+2. **Failure classes are distinguished** (security-architect ruling, ORA-22
+   comment 10134). A *pipeline* failure (the durable write / queue is
+   unavailable) is non-blocking: the metered op completes, the event is captured
+   for replay. A *missing org-context* is a T1-M1 fail-closed tenancy violation
+   and must propagate — never be swallowed by the replay path. A blanket
+   ``except Exception`` around emit collapses the two and is forbidden. Pinned
+   by ``test_missing_context_is_not_swallowed_as_a_pipeline_failure``.
 
-Threats pinned: **T7-M1** (every substrate state change emits a structured
-event — the single validated emit path), **T7-M3** (append-only/tamper-evident,
-inherited from C1), and **T1-M1** (identity from the bound context, never a
-caller-supplied ``organisation_id``).
+Threats pinned: **T7-M1** (every substrate state change emits via the single
+validated emit path), **T7-M3** (append-only / tamper-evident, inherited from
+C1), and **T1-M1** (identity from the bound context, never a caller-supplied
+``organisation_id``; metered ops with no org scope halt rather than emit
+unattributed events).
 
 RED until backend-implementer creates ``oraclous_substrate.metering``.
 """
@@ -57,7 +62,6 @@ from __future__ import annotations
 import inspect
 import uuid
 from collections.abc import Callable, Coroutine
-from decimal import Decimal
 from typing import Any
 
 import pytest
@@ -68,10 +72,10 @@ from oraclous_governance import (
     use_organisation_context,
 )
 from oraclous_substrate.metering import (
+    CAPABILITY_INVOCATION,
     CROSS_WORKSPACE_TRAVERSAL,
     MODEL_TOKENS,
     STORAGE_WRITE,
-    TOOL_INVOCATION,
     MeteringHook,
 )
 from oraclous_substrate.usage import UsageEvent, UsageEventStream
@@ -81,15 +85,23 @@ pytestmark = [pytest.mark.unit]
 WORKSPACE_ID = "ws-alpha"
 TARGET_WORKSPACE_ID = "ws-beta"
 
-# The four canonical metered action types C2 emits. The literal action_type
-# strings are owned by the implementer (these are imported constants, not
-# hard-coded literals); the *set* of metered actions is the contract.
+# The four canonical metered actions C2 emits. The literal action_type strings
+# are owned by the implementer (these are imported constants, not hard-coded
+# literals); the *set* of metered actions is the contract.
 _ALL_ACTION_TYPES = frozenset(
-    {MODEL_TOKENS, TOOL_INVOCATION, STORAGE_WRITE, CROSS_WORKSPACE_TRAVERSAL}
+    {MODEL_TOKENS, CAPABILITY_INVOCATION, STORAGE_WRITE, CROSS_WORKSPACE_TRAVERSAL}
 )
 
-# Units must be raw metering signal, never a priced currency (ADR-009).
-_CURRENCY_UNITS = frozenset({"usd", "USD", "$", "dollars", "cents"})
+# Priced or rated units the substrate must NOT emit (ADR-009 ruling 10167).
+# USD is a currency; credits is the platform's rated billing unit. Both belong
+# downstream of the substrate, not on a usage event.
+_FORBIDDEN_PRICED_UNITS = frozenset(
+    {"usd", "USD", "$", "dollars", "cents", "credits", "credit"}
+)
+
+# Dimension-key fragments that would smuggle a priced/rated number onto a usage
+# event (cost, price, credits). The substrate emits raw cost-driver signal only.
+_FORBIDDEN_DIMENSION_KEY_FRAGMENTS = ("usd", "cost", "price", "credit")
 
 
 class _RecordingStore:
@@ -160,10 +172,12 @@ def _meter_calls(hook: MeteringHook) -> dict[str, Callable[[], Coroutine[Any, An
             prompt_tokens=100,
             completion_tokens=20,
         ),
-        TOOL_INVOCATION: lambda: hook.meter_tool_invocation(
+        CAPABILITY_INVOCATION: lambda: hook.meter_capability_invocation(
             workspace_id=WORKSPACE_ID,
-            capability_id="notion-reader",
-            credits=0.1,
+            tool_id="postgresql-reader",
+            operation="query",
+            row_count=42,
+            byte_count=1024,
         ),
         STORAGE_WRITE: lambda: hook.meter_storage_write(
             workspace_id=WORKSPACE_ID,
@@ -190,7 +204,7 @@ async def test_every_metered_action_emits_org_scoped_event_with_workspace() -> N
     workspace_id (T7-M1 emission; the event has no workspace_id field of its own,
     so it rides in dimensions)."""
     ctx = _context()
-    for action_type, call in _meter_calls(_hook()[0]).items():
+    for action_type in _meter_calls(_hook()[0]):
         store = _RecordingStore()
         replay = _RecordingReplayLog()
         hook = MeteringHook(stream=UsageEventStream(store), replay=replay)
@@ -247,39 +261,62 @@ async def test_model_tokens_skips_uncaptured_kind() -> None:
 
 
 @pytest.mark.audit
-async def test_tool_invocation_emits_credits_event() -> None:
-    """Lift fidelity: the per-tool ``calculate_credits`` signal becomes one
-    credits usage event keyed to the capability, quantity = credits, unit =
-    credits."""
+async def test_capability_invocation_emits_raw_cost_driver_dimensions() -> None:
+    """Lift fidelity (ADR-009 ruling 10167): the *signal* lifted from legacy
+    tool execution is the raw cost-driver capture — ``tool_id``, ``operation``,
+    and the per-operation rating inputs (``row_count``, ``bytes``) — carried as
+    dimensions. The substrate does NOT lift the per-tool ``calculate_credits``
+    rate arithmetic and does NOT emit a credit-rated quantity; the downstream
+    rater (billing) applies the rate table to these raw dimensions.
+
+    Mirrors a representative legacy case
+    (``postgresql_reader.calculate_credits`` for ``operation=query`` with
+    ``row_count=N``): the substrate emits the dimensions; the
+    ``0.1 + N*0.001`` arithmetic does not live here."""
     hook, store, _ = _hook()
     with use_organisation_context(_context()):
-        await hook.meter_tool_invocation(
-            workspace_id=WORKSPACE_ID, capability_id="notion-reader", credits=0.1
+        await hook.meter_capability_invocation(
+            workspace_id=WORKSPACE_ID,
+            tool_id="postgresql-reader",
+            operation="query",
+            row_count=42,
+            byte_count=1024,
         )
 
     assert len(store.writes) == 1
     event = store.writes[0]
-    assert event.action_type == TOOL_INVOCATION
-    assert event.unit == "credits"
-    assert event.quantity == pytest.approx(0.1)
-    assert event.dimensions.get("capability_id") == "notion-reader"
+    assert event.action_type == CAPABILITY_INVOCATION
+    assert event.unit == "count"
+    assert event.quantity == 1  # one invocation
+    assert event.dimensions.get("tool_id") == "postgresql-reader"
+    assert event.dimensions.get("operation") == "query"
+    assert event.dimensions.get("row_count") == 42
+    assert event.dimensions.get("bytes") == 1024
 
 
 @pytest.mark.audit
-async def test_tool_invocation_accepts_legacy_decimal_credits() -> None:
-    """The legacy credit signal is a ``Decimal``; the stream's quantity contract
-    is numeric (int/float). The reshape converts the lifted ``Decimal`` to a
-    numeric quantity rather than re-deriving credits at the substrate."""
+async def test_capability_invocation_omits_unsupplied_cost_drivers() -> None:
+    """Optional cost-driver dimensions (``row_count``, ``bytes``) are emitted
+    only when supplied — they are not invented as zeros. A minimal invocation
+    (``tool_id`` + ``operation`` only) still emits the action with
+    ``quantity = 1`` and carries no fabricated rating signal."""
     hook, store, _ = _hook()
     with use_organisation_context(_context()):
-        await hook.meter_tool_invocation(
+        await hook.meter_capability_invocation(
             workspace_id=WORKSPACE_ID,
-            capability_id="postgresql-reader",
-            credits=Decimal("0.1"),
+            tool_id="list-tables-tool",
+            operation="list_tables",
         )
 
     assert len(store.writes) == 1
-    assert store.writes[0].quantity == pytest.approx(0.1)
+    event = store.writes[0]
+    assert event.action_type == CAPABILITY_INVOCATION
+    assert event.unit == "count"
+    assert event.quantity == 1
+    assert event.dimensions.get("tool_id") == "list-tables-tool"
+    assert event.dimensions.get("operation") == "list_tables"
+    assert "row_count" not in event.dimensions
+    assert "bytes" not in event.dimensions
 
 
 @pytest.mark.audit
@@ -299,9 +336,10 @@ async def test_storage_write_emits_bytes_event() -> None:
 
 @pytest.mark.audit
 async def test_cross_workspace_traversal_emits_count_and_bytes() -> None:
-    """Net-new: a cross-workspace traversal emits a traversal event recording
-    the traversal count (quantity) and the bytes traversed (dimension), naming
-    both the acting (source) workspace and the target workspace."""
+    """Net-new: a cross-workspace traversal emits a substrate-operations event
+    (ADR-009 "substrate operations rated by count") with ``quantity = count`` and
+    ``unit = count``, naming both the acting (source) workspace and the target,
+    and carrying bytes traversed as a dimension."""
     hook, store, _ = _hook()
     with use_organisation_context(_context()):
         await hook.meter_cross_workspace_traversal(
@@ -314,7 +352,7 @@ async def test_cross_workspace_traversal_emits_count_and_bytes() -> None:
     assert len(store.writes) == 1
     event = store.writes[0]
     assert event.action_type == CROSS_WORKSPACE_TRAVERSAL
-    assert event.unit == "traversals"
+    assert event.unit == "count"
     assert event.quantity == 3
     assert event.dimensions.get("workspace_id") == WORKSPACE_ID
     assert event.dimensions.get("target_workspace_id") == TARGET_WORKSPACE_ID
@@ -322,15 +360,18 @@ async def test_cross_workspace_traversal_emits_count_and_bytes() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# ADR-009 — substrate emits raw signal, billing prices it downstream
+# ADR-009 ruling 10167 — substrate emits raw signal; no priced/rated units
 # --------------------------------------------------------------------------- #
 
 
 @pytest.mark.audit
-async def test_no_metered_action_emits_a_priced_currency_unit() -> None:
-    """ADR-009 (billing separable): the substrate emits the raw metered signal
-    (tokens/credits/bytes/traversals), never a priced currency. No emitted unit
-    is a currency, and no dimension smuggles a USD cost in."""
+async def test_no_metered_action_emits_a_priced_or_rated_unit() -> None:
+    """ADR-009 ruling (comments 10133 + 10167): the substrate emits the raw
+    metered signal only — never a priced currency (USD) and never the rated
+    ``credits`` unit (the legacy ``calculate_credits`` rate table is billing,
+    not metering). No emitted unit is currency or credits, and no dimension
+    smuggles a cost / price / credits number in. All units fall in ADR-009's
+    canonical ``{tokens, count, bytes}`` vocabulary."""
     ctx = _context()
     store = _RecordingStore()
     hook = MeteringHook(stream=UsageEventStream(store), replay=_RecordingReplayLog())
@@ -340,9 +381,28 @@ async def test_no_metered_action_emits_a_priced_currency_unit() -> None:
 
     assert store.writes
     for event in store.writes:
-        assert event.unit not in _CURRENCY_UNITS
-        assert not any(
-            "usd" in str(k).lower() or "cost" in str(k).lower() for k in event.dimensions
+        assert event.unit not in _FORBIDDEN_PRICED_UNITS
+        assert event.unit in {"tokens", "count", "bytes"}
+        for key in event.dimensions:
+            assert not any(
+                fragment in str(key).lower()
+                for fragment in _FORBIDDEN_DIMENSION_KEY_FRAGMENTS
+            )
+
+
+@pytest.mark.security
+def test_capability_invocation_does_not_accept_a_rated_quantity_parameter() -> None:
+    """ADR-009 ruling 10167: the rate arithmetic (``calculate_credits``) lives
+    in the downstream rater, not the substrate hook. So the capability-invocation
+    method must not accept a pre-rated quantity (``credits``, ``cost``,
+    ``price``, ``rate``) as a parameter — the only inputs it takes are the raw
+    cost-driver signals (``tool_id``, ``operation``, ``row_count``,
+    ``byte_count``). This forbids reintroducing the rate table by the back door."""
+    params = set(inspect.signature(MeteringHook.meter_capability_invocation).parameters)
+    for forbidden in ("credits", "credit", "cost", "cost_usd", "price", "rate", "rated_quantity"):
+        assert forbidden not in params, (
+            f"meter_capability_invocation must not accept a rated/priced parameter "
+            f"({forbidden!r}); ratings belong downstream of the substrate"
         )
 
 
@@ -356,7 +416,7 @@ async def test_no_metered_action_emits_a_priced_currency_unit() -> None:
     "method_name",
     [
         "meter_model_tokens",
-        "meter_tool_invocation",
+        "meter_capability_invocation",
         "meter_storage_write",
         "meter_cross_workspace_traversal",
     ],
@@ -454,10 +514,13 @@ async def test_successful_emit_does_not_touch_replay_log() -> None:
 
 @pytest.mark.security
 async def test_missing_context_is_not_swallowed_as_a_pipeline_failure() -> None:
-    """Fail-closed (CLAUDE.md §3.5, T1-M1): a missing organisation context is a
-    tenancy violation, not a replayable pipeline error. It must propagate — never
-    be swallowed by the non-blocking path — and nothing is written or replayed.
-    This forbids a blanket ``except Exception`` around emit."""
+    """Fail-closed (CLAUDE.md §3.5, T1-M1; security-architect ruling 10134): a
+    missing organisation context is a tenancy violation, not a replayable
+    pipeline error. It must propagate — never be swallowed by the non-blocking
+    path — and nothing is written or replayed. This forbids a blanket
+    ``except Exception`` around emit; transport/durable-write failures must be
+    caught narrowly so ``MissingOrganisationContextError`` (and any other
+    tenancy/authorization error) propagates."""
     store = _RecordingStore()
     replay = _RecordingReplayLog()
     hook = MeteringHook(stream=UsageEventStream(store), replay=replay)
