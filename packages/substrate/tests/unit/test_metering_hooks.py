@@ -95,9 +95,7 @@ _ALL_ACTION_TYPES = frozenset(
 # Priced or rated units the substrate must NOT emit (ADR-009 ruling 10167).
 # USD is a currency; credits is the platform's rated billing unit. Both belong
 # downstream of the substrate, not on a usage event.
-_FORBIDDEN_PRICED_UNITS = frozenset(
-    {"usd", "USD", "$", "dollars", "cents", "credits", "credit"}
-)
+_FORBIDDEN_PRICED_UNITS = frozenset({"usd", "USD", "$", "dollars", "cents", "credits", "credit"})
 
 # Dimension-key fragments that would smuggle a priced/rated number onto a usage
 # event (cost, price, credits). The substrate emits raw cost-driver signal only.
@@ -385,8 +383,7 @@ async def test_no_metered_action_emits_a_priced_or_rated_unit() -> None:
         assert event.unit in {"tokens", "count", "bytes"}
         for key in event.dimensions:
             assert not any(
-                fragment in str(key).lower()
-                for fragment in _FORBIDDEN_DIMENSION_KEY_FRAGMENTS
+                fragment in str(key).lower() for fragment in _FORBIDDEN_DIMENSION_KEY_FRAGMENTS
             )
 
 
