@@ -22,6 +22,7 @@ C2 and out of scope here.
 
 from __future__ import annotations
 
+import math
 import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -96,6 +97,12 @@ class UsageEventStream:
         _require_nonempty("unit", unit)
         if isinstance(quantity, bool) or not isinstance(quantity, (int, float)):
             raise ValueError("usage event quantity must be a number")
+        # nan/inf/-inf are float instances and slip past the isinstance guard,
+        # but poison downstream billing aggregation the moment they enter the
+        # append-only stream — ADR-009 forbids retroactive correction, so the
+        # rejection has to happen at emit.
+        if not math.isfinite(quantity):
+            raise ValueError("usage event quantity must be finite")
         event = UsageEvent(
             organisation_id=context.organisation_id,
             principal=context.principal_id,
