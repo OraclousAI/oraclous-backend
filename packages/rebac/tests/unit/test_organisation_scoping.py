@@ -101,7 +101,7 @@ class TestOrganisationIdRequired:
             await engine.check_graph_permission(
                 driver,
                 organisation_id=blank,
-                user_id="user-a",
+                subject={"type": "user", "id": "user-a"},
                 graph_id="graph-1",
                 required_level="read",
             )
@@ -160,7 +160,7 @@ class TestOrganisationIdBoundToQueries:
         await engine.check_graph_permission(
             driver,
             organisation_id=_ORG_A,
-            user_id="user-a",
+            subject={"type": "user", "id": "user-a"},
             graph_id="graph-1",
             required_level="read",
         )
@@ -230,7 +230,7 @@ class TestCrossOrgParamIsolation:
         await engine.check_graph_permission(
             driver,
             organisation_id=_ORG_A,
-            user_id="user-a",
+            subject={"type": "user", "id": "user-a"},
             graph_id="graph-1",
             required_level="read",
         )
@@ -269,7 +269,7 @@ class TestCacheIsOrgScoped:
         await engine.check_graph_permission(
             driver,
             organisation_id=_ORG_A,
-            user_id="user-a",
+            subject={"type": "user", "id": "user-a"},
             graph_id="graph-1",
             required_level="read",
         )

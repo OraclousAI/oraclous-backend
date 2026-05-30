@@ -104,7 +104,7 @@ class TestPermissionCheckPhaseB:
         allowed = await engine.check_graph_permission(
             driver,
             organisation_id=_ORG,
-            user_id="owner-user",
+            subject={"type": "user", "id": "owner-user"},
             graph_id="graph-1",
             required_level="read",
         )
@@ -117,7 +117,7 @@ class TestPermissionCheckPhaseB:
         allowed = await engine.check_graph_permission(
             driver,
             organisation_id=_ORG,
-            user_id="viewer-user",
+            subject={"type": "user", "id": "viewer-user"},
             graph_id="graph-1",
             required_level="write",
         )
@@ -144,7 +144,7 @@ class TestPermissionCheckPhaseB:
         allowed = await engine.check_graph_permission(
             driver,
             organisation_id=_ORG,
-            user_id="legacy-user",
+            subject={"type": "user", "id": "legacy-user"},
             graph_id="graph-1",
             required_level="read",
         )
@@ -169,7 +169,7 @@ class TestPermissionCheckFailClosed:
         allowed = await engine.check_graph_permission(
             driver,
             organisation_id=_ORG,
-            user_id="user-a",
+            subject={"type": "user", "id": "user-a"},
             graph_id="graph-1",
             required_level="read",
         )
@@ -186,7 +186,7 @@ class TestPermissionCheckFailClosed:
         allowed = await engine.check_graph_permission(
             driver,
             organisation_id=_ORG,
-            user_id="user-a",
+            subject={"type": "user", "id": "user-a"},
             graph_id="graph-1",
             required_level="read",
         )
@@ -214,7 +214,7 @@ class TestPermissionCheckFailClosed:
         await engine.check_graph_permission(
             driver,
             organisation_id=_ORG,
-            user_id=injection,
+            subject={"type": "user", "id": injection},
             graph_id="graph-1",
             required_level="read",
         )
@@ -235,7 +235,7 @@ class TestGraphIdValidation:
             await engine.check_graph_permission(
                 driver,
                 organisation_id=_ORG,
-                user_id="user-a",
+                subject={"type": "user", "id": "user-a"},
                 graph_id="",
                 required_level="read",
             )
