@@ -2,12 +2,34 @@
 + revocation propagation (ORA-35 / R1-C2; lift-tag **Greenfield**, builds on
 C1 / [ORA-34]).
 
+**Q1 revision (ratified by solution-architect, comment 10261; bounced via
+be-test-reviewer, comment 10269):** the engine's permission check is
+**polymorphic** over the principal type, per ADR-013 §3 (Bounds on adapter
+logic). The substrate seam's ``AccessRequest`` carries a polymorphic
+subject; separate per-subject-type check methods on the engine would force
+every future resolver adapter to dispatch on principal type — violating
+the thin-adapter commitment.
+
+Concretely:
+
+* The engine exposes a **single** check method, ``check_graph_permission``,
+  that accepts a ``subject`` discriminator of shape
+  ``{"type": "user" | "agent", "id": "…"}``. The type set is **closed**:
+  any other value (``"service-account"``, ``""``, ``None``) is
+  **fail-closed** (raises ``ValueError`` — mirrors the unknown-relation
+  rejection in the substrate seam and the C1 ``_require_org`` guard).
+* The delegation **CRUD** methods stay separate (``delegate_to_agent`` /
+  ``revoke_agent_delegation``) — CRUD separation is genuinely a distinct
+  concern, and the C1 precedent of separate operations per role concern
+  continues to hold. The check method is where unification matters
+  precisely because the seam contract calls it polymorphically.
+
 These tests pin the *contract* the engine must grow on top of the C1 surface:
 
-1.  An ``Agent`` is a first-class ReBAC subject — ``ReBACEngine`` exposes a
-    permission-check entry point for agents that resolves through a
-    delegation traversal phase, returning the agent's effective (scope-bounded)
-    access (AC#1).
+1.  An ``Agent`` is a first-class ReBAC subject — the existing
+    ``check_graph_permission`` resolves agent subjects through a
+    delegation traversal phase, returning the agent's effective
+    (scope-bounded) access (AC#1).
 2.  Revoking the delegation invalidates the delegation cache so the **next**
     invocation fails — the T2-M2 stale-relation tolerance applies (AC#2;
     the 0d-harness data-layer side is asserted in
@@ -18,10 +40,11 @@ These tests pin the *contract* the engine must grow on top of the C1 surface:
     organisation delegation is structurally impossible (AC#4; T1 + the no-
     cross-org-delegation R5 deferral).
 
-RED until ``backend-implementer`` adds the delegation surface to
-``oraclous_rebac.ReBACEngine``. The C1 helpers (``_make_driver``,
-``_null_redis``, ``_engine``) are duplicated here intentionally — these tests
-must not depend on test-private internals of ``test_rebac_engine.py``.
+RED until ``backend-implementer`` adds the polymorphic ``subject``
+parameter to ``check_graph_permission`` and the new delegation surface to
+``oraclous_rebac.ReBACEngine``. The C1 user-side tests (currently calling
+``user_id=…``) will need a paired update in the same ``[impl]`` PR — that
+is the implementer's concern, not this file's.
 
 Methods are called with keyword arguments so these tests pin the *contract*
 (names + ``organisation_id`` scoping + scope discriminator) without pinning
@@ -34,6 +57,7 @@ the AC.
 
 from __future__ import annotations
 
+import inspect
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -46,6 +70,11 @@ _OTHER_ORG = "org-bbbb"
 _BLANK = ["", "   "]
 
 
+def _agent(id: str = "agent-1") -> dict:
+    """The polymorphic-subject literal for an agent principal."""
+    return {"type": "agent", "id": id}
+
+
 # ── Mock plumbing (mirrors test_rebac_engine.py exactly) ───────────────────
 
 
@@ -54,13 +83,6 @@ def _null_redis():
     redis.get.return_value = None  # cache miss
     redis.set.return_value = True
     redis.delete.return_value = 1
-    redis.scan_iter = MagicMock()
-
-    async def _empty(*_a, **_kw):
-        for _ in ():
-            yield _
-
-    redis.scan_iter.return_value = _empty()
     return redis
 
 
@@ -121,13 +143,15 @@ def _queries_of(session) -> list[str]:
     return [call[0][0] for call in session.run.call_args_list]
 
 
-# ── 1. Agent delegation API surface exists ─────────────────────────────────
+# ── 1. Agent delegation API surface ────────────────────────────────────────
 
 
 class TestDelegationApiSurface:
-    """The engine grows three async methods on its public surface — the
-    minimum set the brief implies. Names + signature are part of the
-    contract; positional vs keyword call shape is not (we always use kw).
+    """The engine grows two delegation-CRUD methods (``delegate_to_agent`` /
+    ``revoke_agent_delegation``) and extends ``check_graph_permission`` to
+    accept a polymorphic ``subject`` discriminator. Names + signature are
+    part of the contract; positional vs keyword call shape is not (we
+    always use kw).
     """
 
     def test_engine_exposes_delegate_to_agent(self) -> None:
@@ -140,9 +164,21 @@ class TestDelegationApiSurface:
             "ReBACEngine.revoke_agent_delegation must exist (AC#2)"
         )
 
-    def test_engine_exposes_check_agent_graph_permission(self) -> None:
-        assert callable(getattr(ReBACEngine, "check_agent_graph_permission", None)), (
-            "ReBACEngine.check_agent_graph_permission must exist (AC#1)"
+    def test_check_graph_permission_accepts_subject_kwarg(self) -> None:
+        """The existing ``check_graph_permission`` is extended with a
+        ``subject`` kwarg (the polymorphic discriminator, per ADR-013 §3).
+
+        Asserted by signature introspection rather than by call — a missing
+        parameter is unambiguous in the signature object and doesn't
+        require constructing a driver mock just to fail. RED until the
+        implementer adds ``subject`` to ``check_graph_permission``'s
+        signature.
+        """
+        sig = inspect.signature(ReBACEngine.check_graph_permission)
+        assert "subject" in sig.parameters, (
+            "ReBACEngine.check_graph_permission must accept a `subject` "
+            "kwarg (polymorphic principal type per ADR-013 §3); current "
+            f"signature: {sig}"
         )
 
 
@@ -184,10 +220,10 @@ class TestOrganisationIdRequired:
         engine = _engine()
         driver, _, _ = _make_driver()
         with pytest.raises(ValueError):
-            await engine.check_agent_graph_permission(
+            await engine.check_graph_permission(
                 driver,
                 organisation_id=blank,
-                agent_id="agent-1",
+                subject=_agent(),
                 graph_id="graph-1",
                 required_level="read",
             )
@@ -228,10 +264,10 @@ class TestGraphIdRequired:
         engine = _engine()
         driver, _, _ = _make_driver()
         with pytest.raises(ValueError):
-            await engine.check_agent_graph_permission(
+            await engine.check_graph_permission(
                 driver,
                 organisation_id=_ORG_A,
-                agent_id="agent-1",
+                subject=_agent(),
                 graph_id="",
                 required_level="read",
             )
@@ -277,15 +313,15 @@ class TestOrganisationIdBoundToQueries:
     async def test_check_binds_organisation_id_on_every_query(self) -> None:
         engine = _engine()
         driver, session = _delegation_session(authorized=False)
-        await engine.check_agent_graph_permission(
+        await engine.check_graph_permission(
             driver,
             organisation_id=_ORG_A,
-            agent_id="agent-1",
+            subject=_agent(),
             graph_id="graph-1",
             required_level="read",
         )
         all_params = _params_of(session)
-        assert all_params, "check_agent_graph_permission issued no queries"
+        assert all_params, "check_graph_permission issued no queries"
         for params in all_params:
             assert params.get("organisation_id") == _ORG_A, (
                 f"check query missing organisation_id binding: {params}"
@@ -314,10 +350,10 @@ class TestCrossOrgIsolation:
     async def test_check_never_leaks_another_org_id(self) -> None:
         engine = _engine()
         driver, session = _delegation_session(authorized=False)
-        await engine.check_agent_graph_permission(
+        await engine.check_graph_permission(
             driver,
             organisation_id=_ORG_A,
-            agent_id="agent-1",
+            subject=_agent(),
             graph_id="graph-1",
             required_level="read",
         )
@@ -347,10 +383,10 @@ class TestAgentAsSubjectCheckResolvesDelegation:
         """A traversal that finds a valid member→agent delegation grants access."""
         engine = _engine()
         driver, _ = _delegation_session(authorized=True)
-        allowed = await engine.check_agent_graph_permission(
+        allowed = await engine.check_graph_permission(
             driver,
             organisation_id=_ORG_A,
-            agent_id="agent-1",
+            subject=_agent(),
             graph_id="graph-1",
             required_level="read",
         )
@@ -360,57 +396,81 @@ class TestAgentAsSubjectCheckResolvesDelegation:
         """No delegation path → deny."""
         engine = _engine()
         driver, _ = _delegation_session(authorized=False)
-        allowed = await engine.check_agent_graph_permission(
+        allowed = await engine.check_graph_permission(
             driver,
             organisation_id=_ORG_A,
-            agent_id="agent-1",
+            subject=_agent(),
             graph_id="graph-1",
             required_level="read",
         )
         assert allowed is False
 
     async def test_check_query_references_delegation_relation(self) -> None:
-        """The traversal Cypher names a delegation edge — the brief explicitly
-        names ``delegated_by`` / ``delegated_to``. The implementer is free on
-        direction; this test asserts at least one of those tokens appears in
-        the generated query text.
+        """When the subject is an agent, the traversal Cypher names a
+        delegation edge — the brief explicitly names ``delegated_by`` /
+        ``delegated_to``. The implementer is free on direction; this test
+        asserts at least one of those tokens appears in the generated
+        query text.
         """
         engine = _engine()
         driver, session = _delegation_session(authorized=False)
-        await engine.check_agent_graph_permission(
+        await engine.check_graph_permission(
             driver,
             organisation_id=_ORG_A,
-            agent_id="agent-1",
+            subject=_agent(),
             graph_id="graph-1",
             required_level="read",
         )
         queries = _queries_of(session)
-        assert queries, "check_agent_graph_permission issued no queries"
+        assert queries, "check_graph_permission issued no queries"
         combined = " ".join(queries).upper()
         assert "DELEGATED_TO" in combined or "DELEGATED_BY" in combined, (
             "delegation traversal Cypher must reference a delegated_to / "
             f"delegated_by relation; saw: {combined[:200]}"
         )
 
-    async def test_check_query_references_agent_subject(self) -> None:
-        """The traversal Cypher acknowledges the agent subject — the
-        ``agent_id`` is bound as a query parameter (not interpolated into the
-        query text — that would be a Cypher-injection regression vs C1).
+    async def test_check_binds_agent_id_as_parameter_not_literal(self) -> None:
+        """The agent identifier must be bound as a Cypher *parameter value*
+        (Cypher-injection safe — same convention as ``$user_id`` in C1).
+
+        The architect's polymorphic-subject directive does not pin the
+        binding *name* — the implementer may use ``$subject_id``, ``$id``,
+        ``$agent_id``, or thread the whole subject dict through. The
+        contract is: (a) the identifier appears as a parameter *value*, and
+        (b) it is *never* interpolated as a literal into the query text.
         """
         engine = _engine()
         driver, session = _delegation_session(authorized=False)
-        await engine.check_agent_graph_permission(
+        await engine.check_graph_permission(
             driver,
             organisation_id=_ORG_A,
-            agent_id="agent-distinct",
+            subject=_agent("agent-distinct"),
             graph_id="graph-1",
             required_level="read",
         )
         params_list = _params_of(session)
         assert params_list, "check issued no queries"
-        assert any(p.get("agent_id") == "agent-distinct" for p in params_list), (
-            "the agent identifier must be bound as $agent_id (parameterised, "
-            f"injection-safe — same convention as $user_id in C1); saw: {params_list}"
+        # The agent id must appear as a parameter value somewhere — under
+        # any binding name. Walk every value in every params dict.
+        flat_values = [
+            v
+            for params in params_list
+            for v in (params.values() if isinstance(params, dict) else ())
+        ]
+
+        def _contains_agent_id(value: object) -> bool:
+            if value == "agent-distinct":
+                return True
+            if isinstance(value, dict) and value.get("id") == "agent-distinct":
+                return True
+            if isinstance(value, list):
+                return any(_contains_agent_id(v) for v in value)
+            return False
+
+        assert any(_contains_agent_id(v) for v in flat_values), (
+            "the agent identifier must be bound as a Cypher parameter value "
+            "(any binding name — implementer's choice on shape), not "
+            f"literal-interpolated; saw: {params_list}"
         )
 
     async def test_cache_hit_short_circuits_neo4j(self) -> None:
@@ -422,15 +482,85 @@ class TestAgentAsSubjectCheckResolvesDelegation:
         redis.get.return_value = "1"
         engine._redis = redis
         driver, session, _ = _make_driver()
-        allowed = await engine.check_agent_graph_permission(
+        allowed = await engine.check_graph_permission(
             driver,
             organisation_id=_ORG_A,
-            agent_id="agent-1",
+            subject=_agent(),
             graph_id="graph-1",
             required_level="read",
         )
         assert allowed is True
         session.run.assert_not_called()
+
+
+# ── 6b. Subject-type discrimination is closed (fail-closed, per ADR-013) ──
+
+
+class TestSubjectTypeRejection:
+    """The architect's directive (ratification of Q1, comment 10261):
+    the ``subject`` discriminator's ``type`` set is **closed** against
+    ``{"user", "agent"}``. Any unrecognised value, missing field, or
+    malformed shape **fails closed** (raises ``ValueError``) — mirrors the
+    unknown-relation rejection pattern in the substrate seam tests and the
+    C1 ``_require_org`` guard.
+
+    Why this matters: a silent fallback (e.g. treat unknown type as
+    ``"user"`` and run the C1 path) would be a privilege-escalation bug —
+    a future principal type could land in production without explicit
+    ReBAC support and accidentally inherit user-style traversal.
+    """
+
+    async def test_check_rejects_unknown_subject_type(self) -> None:
+        engine = _engine()
+        driver, _, _ = _make_driver()
+        with pytest.raises(ValueError):
+            await engine.check_graph_permission(
+                driver,
+                organisation_id=_ORG_A,
+                subject={"type": "service-account", "id": "sa-1"},
+                graph_id="graph-1",
+                required_level="read",
+            )
+
+    async def test_check_rejects_subject_missing_type(self) -> None:
+        engine = _engine()
+        driver, _, _ = _make_driver()
+        with pytest.raises(ValueError):
+            await engine.check_graph_permission(
+                driver,
+                organisation_id=_ORG_A,
+                subject={"id": "agent-1"},  # no type
+                graph_id="graph-1",
+                required_level="read",
+            )
+
+    async def test_check_rejects_subject_missing_id(self) -> None:
+        engine = _engine()
+        driver, _, _ = _make_driver()
+        with pytest.raises(ValueError):
+            await engine.check_graph_permission(
+                driver,
+                organisation_id=_ORG_A,
+                subject={"type": "agent"},  # no id
+                graph_id="graph-1",
+                required_level="read",
+            )
+
+    async def test_check_rejects_subject_with_blank_id(self) -> None:
+        """A blank id under a valid type is the same class of error as a
+        blank ``organisation_id``: silently allowing it would let a request
+        with no real principal succeed.
+        """
+        engine = _engine()
+        driver, _, _ = _make_driver()
+        with pytest.raises(ValueError):
+            await engine.check_graph_permission(
+                driver,
+                organisation_id=_ORG_A,
+                subject={"type": "agent", "id": ""},
+                graph_id="graph-1",
+                required_level="read",
+            )
 
 
 # ── 7. Scope-bounded delegation (graph / subgraph) ────────────────────────
@@ -516,10 +646,10 @@ class TestScopeBoundedDelegation:
         """
         engine = _engine()
         driver, session = _delegation_session(authorized=False)
-        await engine.check_agent_graph_permission(
+        await engine.check_graph_permission(
             driver,
             organisation_id=_ORG_A,
-            agent_id="agent-1",
+            subject=_agent(),
             graph_id="graph-1",
             required_level="read",
             subgraph_id="sg-secret",
@@ -542,8 +672,11 @@ class TestTransitiveDelegationRejected:
         Engines that simply trust the caller create a transitive-escalation
         path (agent_X delegates further to agent_Y), which T2-M ("transitive
         escalation") forbids. The brief allows an "explicit scope narrowing"
-        carve-out; that is **out of scope for C2** — the API has no shape to
-        express it yet, so any agent-as-delegator call must raise.
+        carve-out; that is **out of scope for C2** (ratified by
+        solution-architect, comment 10261: "rejection is T2-safer; if R4
+        surfaces a real narrow-scope need it's a future Contract — schema
+        adds the relation, no migration"). Any agent-as-delegator call
+        must raise.
         """
         engine = _engine()
         driver, _, _ = _make_driver(single_return=None)
@@ -570,10 +703,10 @@ class TestTransitiveDelegationRejected:
         """
         engine = _engine()
         driver, session = _delegation_session(authorized=False)
-        await engine.check_agent_graph_permission(
+        await engine.check_graph_permission(
             driver,
             organisation_id=_ORG_A,
-            agent_id="agent-1",
+            subject=_agent(),
             graph_id="graph-1",
             required_level="read",
         )
@@ -717,10 +850,10 @@ class TestDelegationCacheOrgScoped:
         redis = _null_redis()
         engine._redis = redis
         driver, _ = _delegation_session(authorized=False)
-        await engine.check_agent_graph_permission(
+        await engine.check_graph_permission(
             driver,
             organisation_id=_ORG_A,
-            agent_id="agent-1",
+            subject=_agent(),
             graph_id="graph-1",
             required_level="read",
         )
@@ -745,10 +878,10 @@ class TestFailClosed:
         driver = MagicMock()
         driver.session.return_value = cm
 
-        allowed = await engine.check_agent_graph_permission(
+        allowed = await engine.check_graph_permission(
             driver,
             organisation_id=_ORG_A,
-            agent_id="agent-1",
+            subject=_agent(),
             graph_id="graph-1",
             required_level="read",
         )
@@ -761,10 +894,10 @@ class TestFailClosed:
         engine = _engine()
         driver, session = _delegation_session(authorized=False)
         injection = "agent'; DROP DATABASE neo4j; --"
-        await engine.check_agent_graph_permission(
+        await engine.check_graph_permission(
             driver,
             organisation_id=_ORG_A,
-            agent_id=injection,
+            subject=_agent(injection),
             graph_id="graph-1",
             required_level="read",
         )
