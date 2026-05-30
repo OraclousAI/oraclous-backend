@@ -36,6 +36,7 @@ active rows.
 from __future__ import annotations
 
 import inspect
+import uuid
 from collections.abc import AsyncIterator
 
 import pytest
@@ -49,11 +50,6 @@ pytestmark = [
     pytest.mark.organization_isolation,
     pytest.mark.security,
 ]
-
-
-_ORG_A = "org-aaaa"
-_ORG_B = "org-bbbb"
-_ADMIN = "user-admin-1"
 
 
 def _asyncpg_url(dsn: str) -> str:
@@ -75,56 +71,91 @@ def repo(store: PostgresCredentialStore) -> AgentRepository:
     return AgentRepository(store=store)
 
 
+@pytest.fixture
+def org_a() -> str:
+    """A unique organisation id for the test's primary org per run.
+
+    Per-test uniqueness keeps the session-scoped Postgres container's
+    accumulated rows from bleeding into ``list_for_organisation`` /
+    ``get_credential`` assertions that expect a known cardinality.
+    """
+    return f"org-{uuid.uuid4()}"
+
+
+@pytest.fixture
+def org_b() -> str:
+    """A second unique organisation id, distinct from ``org_a``."""
+    return f"org-{uuid.uuid4()}"
+
+
+@pytest.fixture
+def admin() -> str:
+    """A unique admin/creating-user id per test."""
+    return f"user-admin-{uuid.uuid4()}"
+
+
 # --- (b) Admin paths are org-scoped within auth-service ---------------------
 
 
 async def test_list_for_organisation_returns_only_that_orgs_credentials(
-    repo: AgentRepository, store: PostgresCredentialStore
+    repo: AgentRepository,
+    store: PostgresCredentialStore,
+    org_a: str,
+    org_b: str,
+    admin: str,
 ) -> None:
     """An admin in org A listing agent credentials must not see org B's."""
-    _raw_a, agent_a = await repo.create_agent(organisation_id=_ORG_A, created_by_user_id=_ADMIN)
-    _raw_b, _agent_b = await repo.create_agent(organisation_id=_ORG_B, created_by_user_id=_ADMIN)
+    _raw_a, agent_a = await repo.create_agent(organisation_id=org_a, created_by_user_id=admin)
+    _raw_b, _agent_b = await repo.create_agent(organisation_id=org_b, created_by_user_id=admin)
 
-    listed = await store.list_for_organisation(_ORG_A)
+    listed = await store.list_for_organisation(org_a)
     assert [c.agent_id for c in listed] == [agent_a.id]
-    assert all(c.organisation_id == _ORG_A for c in listed)
+    assert all(c.organisation_id == org_a for c in listed)
 
 
 async def test_get_credential_within_organisation_returns_credential(
-    repo: AgentRepository, store: PostgresCredentialStore
+    repo: AgentRepository, store: PostgresCredentialStore, org_a: str, admin: str
 ) -> None:
     """Happy path: the credential's owning org can fetch it by id."""
-    _raw, _agent = await repo.create_agent(organisation_id=_ORG_A, created_by_user_id=_ADMIN)
-    (created,) = await store.list_for_organisation(_ORG_A)
+    _raw, _agent = await repo.create_agent(organisation_id=org_a, created_by_user_id=admin)
+    (created,) = await store.list_for_organisation(org_a)
 
-    fetched = await store.get_credential(organisation_id=_ORG_A, credential_id=created.id)
+    fetched = await store.get_credential(organisation_id=org_a, credential_id=created.id)
     assert fetched is not None
     assert fetched.id == created.id
 
 
 async def test_cross_organisation_get_credential_is_denied(
-    repo: AgentRepository, store: PostgresCredentialStore
+    repo: AgentRepository,
+    store: PostgresCredentialStore,
+    org_a: str,
+    org_b: str,
+    admin: str,
 ) -> None:
     """ADR-012 §1a (b): an admin in org B cannot fetch org A's credential by id."""
-    _raw, _agent = await repo.create_agent(organisation_id=_ORG_A, created_by_user_id=_ADMIN)
-    (created,) = await store.list_for_organisation(_ORG_A)
+    _raw, _agent = await repo.create_agent(organisation_id=org_a, created_by_user_id=admin)
+    (created,) = await store.list_for_organisation(org_a)
 
-    leaked = await store.get_credential(organisation_id=_ORG_B, credential_id=created.id)
+    leaked = await store.get_credential(organisation_id=org_b, credential_id=created.id)
     assert leaked is None, "an agent credential must not be readable from another organisation"
 
 
 async def test_cross_organisation_revoke_credential_is_denied(
-    repo: AgentRepository, store: PostgresCredentialStore
+    repo: AgentRepository,
+    store: PostgresCredentialStore,
+    org_a: str,
+    org_b: str,
+    admin: str,
 ) -> None:
     """ADR-012 §1a (b): a cross-org revoke is a no-op and the victim survives."""
-    raw, agent = await repo.create_agent(organisation_id=_ORG_A, created_by_user_id=_ADMIN)
-    (created,) = await store.list_for_organisation(_ORG_A)
+    raw, agent = await repo.create_agent(organisation_id=org_a, created_by_user_id=admin)
+    (created,) = await store.list_for_organisation(org_a)
 
-    revoked = await store.revoke_credential(organisation_id=_ORG_B, credential_id=created.id)
+    revoked = await store.revoke_credential(organisation_id=org_b, credential_id=created.id)
     assert revoked is False, "cross-org revoke must not affect the victim's credential"
 
     # The owning org's credential survives both the admin read and the pre-auth validate.
-    survivor = await store.get_credential(organisation_id=_ORG_A, credential_id=created.id)
+    survivor = await store.get_credential(organisation_id=org_a, credential_id=created.id)
     assert survivor is not None
     assert survivor.status == "active"
     assert await repo.validate_credential(raw) == agent.id
@@ -150,7 +181,7 @@ def test_validate_credential_takes_no_organisation_parameter() -> None:
 
 
 async def test_validate_credential_resolves_without_any_org_context(
-    repo: AgentRepository,
+    repo: AgentRepository, org_a: str, admin: str
 ) -> None:
     """Functional pin: a credential validates from a bare prefix, no org needed.
 
@@ -159,13 +190,13 @@ async def test_validate_credential_resolves_without_any_org_context(
     Routing this path through ``oraclous_substrate.access`` would be both
     architecturally wrong (ADR-012 §1a) and operationally impossible.
     """
-    raw, agent = await repo.create_agent(organisation_id=_ORG_A, created_by_user_id=_ADMIN)
+    raw, agent = await repo.create_agent(organisation_id=org_a, created_by_user_id=admin)
     # No org-context fixture, no org argument — validate just works.
     assert await repo.validate_credential(raw) == agent.id
 
 
 async def test_active_prefix_is_globally_unique_at_persistence_layer(
-    repo: AgentRepository, postgres_dsn: str
+    repo: AgentRepository, postgres_dsn: str, org_a: str, org_b: str, admin: str
 ) -> None:
     """ADR-012 §1a (a): the active-prefix index resolves to exactly one principal.
 
@@ -176,13 +207,11 @@ async def test_active_prefix_is_globally_unique_at_persistence_layer(
     keeps ``active_credentials_by_prefix`` from becoming a cross-org
     enumeration surface — a prefix maps to at most one active agent, ever.
     """
-    import uuid
-
     import psycopg
 
     # Seed an active credential in org A through the public path so we have a
     # known-good prefix bound to an active row.
-    raw_a, _agent_a = await repo.create_agent(organisation_id=_ORG_A, created_by_user_id=_ADMIN)
+    raw_a, _agent_a = await repo.create_agent(organisation_id=org_a, created_by_user_id=admin)
     prefix = raw_a[:12]
 
     # Attempt to insert a second active row sharing the prefix, via raw SQL,
@@ -199,7 +228,7 @@ async def test_active_prefix_is_globally_unique_at_persistence_layer(
             (
                 str(uuid.uuid4()),
                 str(uuid.uuid4()),
-                _ORG_B,
+                org_b,
                 "$2b$12$not.a.real.hash.collision.placeholder.value.string.padding.x",
                 prefix,
             ),

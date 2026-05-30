@@ -29,6 +29,7 @@ implementing the ORA-30 ``CredentialStore`` port against SQLAlchemy + Postgres.
 
 from __future__ import annotations
 
+import uuid
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 
@@ -39,10 +40,6 @@ from oraclous_auth_service.repositories.postgres_credential_store import (
 )
 
 pytestmark = pytest.mark.integration
-
-_ORG = "org-aaaa"
-_OTHER_ORG = "org-bbbb"
-_USER = "user-1234"
 
 
 def _asyncpg_url(dsn: str) -> str:
@@ -60,8 +57,9 @@ def _asyncpg_url(dsn: str) -> str:
 async def store(postgres_dsn: str) -> AsyncIterator[PostgresCredentialStore]:
     """A fresh PostgresCredentialStore against the session-scoped container.
 
-    Tables are created idempotently per test; tests use fresh UUIDs/orgs so they
-    do not collide on shared rows.
+    Tables are created idempotently per test; tests mint fresh per-test org and
+    user ids (``org`` / ``other_org`` / ``user`` fixtures) so the session-scoped
+    container's accumulated rows cannot bleed across tests.
     """
     s = PostgresCredentialStore(_asyncpg_url(postgres_dsn))
     await s.create_tables()
@@ -77,11 +75,34 @@ def repo(store: PostgresCredentialStore) -> AgentRepository:
     return AgentRepository(store=store)
 
 
+@pytest.fixture
+def org() -> str:
+    """A unique organisation id per test (the agent ``organisation_id`` is ``String``).
+
+    Per-test uniqueness is what makes ``list_for_organisation(org)`` strict-
+    equality assertions safe under the session-scoped Postgres container —
+    otherwise a previous test's rows leak into this test's view.
+    """
+    return f"org-{uuid.uuid4()}"
+
+
+@pytest.fixture
+def other_org() -> str:
+    """A second unique organisation id, distinct from ``org``."""
+    return f"org-{uuid.uuid4()}"
+
+
+@pytest.fixture
+def user() -> str:
+    """A unique creating-user id per test."""
+    return f"user-{uuid.uuid4()}"
+
+
 # --- ORA-30 port contract against real SQL ----------------------------------
 
 
 async def test_create_persists_agent_and_credential_in_sql(
-    repo: AgentRepository, store: PostgresCredentialStore
+    repo: AgentRepository, store: PostgresCredentialStore, org: str, user: str
 ) -> None:
     """``persist`` writes both the agent and its credential row to Postgres.
 
@@ -89,32 +110,32 @@ async def test_create_persists_agent_and_credential_in_sql(
     is not silently a no-op (a regression that would pass the in-memory unit
     suite trivially).
     """
-    raw, agent = await repo.create_agent(organisation_id=_ORG, created_by_user_id=_USER)
+    raw, agent = await repo.create_agent(organisation_id=org, created_by_user_id=user)
     assert raw.startswith("oag_")
 
-    persisted = await store.list_for_organisation(_ORG)
+    persisted = await store.list_for_organisation(org)
     assert [c.agent_id for c in persisted] == [agent.id]
-    assert persisted[0].organisation_id == _ORG
+    assert persisted[0].organisation_id == org
     assert persisted[0].status == "active"
 
 
 async def test_round_trip_validate_returns_owning_agent_id(
-    repo: AgentRepository,
+    repo: AgentRepository, org: str, user: str
 ) -> None:
     """A freshly created credential validates to its owning agent's id."""
-    raw, agent = await repo.create_agent(organisation_id=_ORG, created_by_user_id=_USER)
+    raw, agent = await repo.create_agent(organisation_id=org, created_by_user_id=user)
     assert await repo.validate_credential(raw) == agent.id
 
 
 async def test_active_credentials_by_prefix_excludes_revoked_at_sql_layer(
-    repo: AgentRepository, store: PostgresCredentialStore
+    repo: AgentRepository, store: PostgresCredentialStore, org: str, user: str
 ) -> None:
     """``WHERE status='active'`` lives in the SQL — revoked rows are filtered.
 
     Pins the contract the ORA-30 unit suite asserts on the double: the status
     filter belongs in the store, not the repository.
     """
-    raw, agent = await repo.create_agent(organisation_id=_ORG, created_by_user_id=_USER)
+    raw, agent = await repo.create_agent(organisation_id=org, created_by_user_id=user)
     prefix = raw[:12]
 
     before = await store.active_credentials_by_prefix(prefix)
@@ -128,10 +149,10 @@ async def test_active_credentials_by_prefix_excludes_revoked_at_sql_layer(
 
 
 async def test_revoke_agent_credentials_persists_update_and_breaks_validate(
-    repo: AgentRepository,
+    repo: AgentRepository, org: str, user: str
 ) -> None:
     """``revoke_agent_credentials`` runs the SQL ``UPDATE`` and validate then fails."""
-    raw, agent = await repo.create_agent(organisation_id=_ORG, created_by_user_id=_USER)
+    raw, agent = await repo.create_agent(organisation_id=org, created_by_user_id=user)
     assert await repo.validate_credential(raw) == agent.id
 
     revoked = await repo.revoke_agent(agent.id)
@@ -140,17 +161,15 @@ async def test_revoke_agent_credentials_persists_update_and_breaks_validate(
     assert await repo.validate_credential(raw) is None
 
 
-async def test_revoke_is_idempotent_at_sql(
-    repo: AgentRepository,
-) -> None:
+async def test_revoke_is_idempotent_at_sql(repo: AgentRepository, org: str, user: str) -> None:
     """A second revoke for the same agent reports zero affected rows."""
-    _raw, agent = await repo.create_agent(organisation_id=_ORG, created_by_user_id=_USER)
+    _raw, agent = await repo.create_agent(organisation_id=org, created_by_user_id=user)
     assert await repo.revoke_agent(agent.id) == 1
     assert await repo.revoke_agent(agent.id) == 0
 
 
 async def test_expired_credential_is_rejected_by_repo_not_store(
-    repo: AgentRepository, store: PostgresCredentialStore
+    repo: AgentRepository, store: PostgresCredentialStore, org: str, user: str
 ) -> None:
     """Repo-side expiry check: the row is still ``status='active'`` in SQL.
 
@@ -160,8 +179,8 @@ async def test_expired_credential_is_rejected_by_repo_not_store(
     into SQL would change the rowcount returned by the bare port method.
     """
     raw, _agent = await repo.create_agent(
-        organisation_id=_ORG,
-        created_by_user_id=_USER,
+        organisation_id=org,
+        created_by_user_id=user,
         expires_at=datetime.now(UTC) - timedelta(minutes=1),
     )
 
@@ -177,26 +196,26 @@ async def test_expired_credential_is_rejected_by_repo_not_store(
 
 
 async def test_unexpired_credential_validates_against_real_sql(
-    repo: AgentRepository,
+    repo: AgentRepository, other_org: str, user: str
 ) -> None:
     """A credential with a future expiry validates end-to-end via SQL."""
     raw, agent = await repo.create_agent(
-        organisation_id=_OTHER_ORG,
-        created_by_user_id=_USER,
+        organisation_id=other_org,
+        created_by_user_id=user,
         expires_at=datetime.now(UTC) + timedelta(hours=1),
     )
     assert await repo.validate_credential(raw) == agent.id
 
 
 async def test_tampered_credential_fails_bcrypt_after_real_sql_prefix_hit(
-    repo: AgentRepository,
+    repo: AgentRepository, org: str, user: str
 ) -> None:
     """A tampered credential sharing a real prefix is rejected by bcrypt verify.
 
     Re-asserts (against real SQL) the unit suite's bcrypt-verify branch: the
     prefix lookup hits, then the bcrypt check refuses the wrong body.
     """
-    raw, _agent = await repo.create_agent(organisation_id=_ORG, created_by_user_id=_USER)
+    raw, _agent = await repo.create_agent(organisation_id=org, created_by_user_id=user)
     tampered = raw[:-1] + ("A" if raw[-1] != "A" else "B")
 
     assert await repo.validate_credential(tampered) is None
