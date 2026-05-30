@@ -1,19 +1,41 @@
 """ReBAC engine — extracted from the legacy ``knowledge-graph-builder`` and
-reshaped to scope every relation edge by ``organisation_id`` (ORA-34, ADR-006).
+reshaped to scope every relation edge by ``organisation_id`` (ORA-34, ADR-006),
+then extended with agent-as-subject delegation (ORA-35 / R1-C2, ADR-013 §3).
 
 Behavioural reference: ``app/services/rebac_service.py`` in the legacy
 codebase. Preserved here: cache→Phase B→Phase A resolution order, fail-closed
 on any backend error, the 60-second permission cache, soft-revoke (no DELETE),
 live-checked grant expiry, parameterised Cypher (injection-safe).
 
-Reshape (the new contract pinned by the merged ORA-34 ``[tests]`` PR):
+Reshape (the contract pinned by the merged ORA-34 + ORA-35 ``[tests]`` PRs):
 
 * ``organisation_id`` is the outermost scope on every entry point — passed as a
   keyword argument, validated non-blank, and bound into every Cypher query as
-  ``$organisation_id`` so HAS_ROLE / CAN_ACCESS edges are written and filtered
-  by it (Threat T1 — the tenant loop).
+  ``$organisation_id`` so HAS_ROLE / CAN_ACCESS / DELEGATED_TO edges are
+  written and filtered by it (Threat T1 — the tenant loop).
 * the permission cache key is namespaced by ``organisation_id`` so a cached
   decision in one org can never satisfy a check in another.
+* ``check_graph_permission`` is **polymorphic** over the principal type
+  (ADR-013 §3 — Bounds on adapter logic). It accepts a ``subject``
+  discriminator of shape ``{"type": "user" | "agent", "id": "…"}`` and
+  dispatches internally to the user path (Phase B → Phase A) or the agent
+  path (delegation traversal). The closed type set fails closed on any
+  other value so a new principal type cannot accidentally inherit
+  user-style resolution.
+* Agent subjects resolve through a single-shot **delegation traversal**:
+  find an active ``(member:User)-[:DELEGATED_TO]->(:Agent)`` edge
+  scoped by org + graph + (graph | subgraph), then verify the delegating
+  member has the required role on the graph. Transitive ``Agent→Agent``
+  edges are invisible to the traversal (T2 mitigation — the ``:User``
+  label on the delegator side is the structural guard).
+* Delegation CRUD is its own surface (``delegate_to_agent`` /
+  ``revoke_agent_delegation``) — separate per C1 precedent. Both
+  invalidate the org-scoped delegation cache so the next check sees the
+  new state (T2-M2 revocation propagation; 60s bounded stale-relation
+  tolerance, same TTL as the permission cache).
+* Transitive ``Agent→Agent`` delegation is rejected at the API boundary
+  by a prefix heuristic on ``member_user_id`` (AC#3); the Cypher-level
+  ``:User`` guard is the second line of defence.
 
 This module deliberately does not adapt the engine into ``oraclous_substrate``'s
 ``resolve(AccessRequest) -> bool | None`` resolver protocol. The substrate seam
@@ -21,10 +43,12 @@ This module deliberately does not adapt the engine into ``oraclous_substrate``'s
 test-double; whether to wire ``ReBACEngine`` as the production resolver is an
 open question for the coordinator ``solution-architect`` and is deferred.
 
-Out of scope for ORA-34 (not in the merged test suite, not in this impl):
+Out of scope (not in the merged test suites, not in this impl):
 schema initialisation / system-permission seeding / legacy Phase A sync,
 ``register_new_graph``, ``get_user_access_filter``, ``list_subgraphs``,
-agent-delegation relations (C2). Add when their consuming stories land.
+cross-organisation delegation (R5 federation), an explicit-scope-narrowing
+agent→agent variant (architect: defer until R4 surfaces a real need —
+schema accepts the relation; no migration needed to add later).
 """
 
 from __future__ import annotations
@@ -264,6 +288,83 @@ RETURN sg.subgraph_id AS subgraph_id, sg.name AS name,
 """
 
 
+# ── R1-C2 (ORA-35) delegation surface ──────────────────────────────────────
+# Polymorphic subject discriminator per ADR-013 §3 (Bounds on adapter logic):
+# the substrate seam's AccessRequest carries a polymorphic subject, so the
+# engine's check is polymorphic too. The CRUD methods (delegate_to_agent /
+# revoke_agent_delegation) stay separate per CRUD-separation precedent.
+
+_SUBJECT_TYPES = ("user", "agent")
+# Heuristic agent-id prefixes used to reject transitive agent→agent
+# delegation at the delegate_to_agent boundary (T2). The Cypher-level guard
+# (``MATCH (m:User …)``) is the second line of defence.
+_AGENT_ID_PREFIXES = ("agent-", "agt-", "agt_", "oag_")
+_DELEGATION_SCOPES = ("graph", "subgraph")
+_DELEGATION_CACHE_TTL = 60  # seconds — mirrors _PERM_CACHE_TTL (T2-M2 budget)
+
+# Single-shot traversal: (member User)-[:DELEGATED_TO]->(:Agent), restricted
+# by org + graph + scope, joined to the member's HAS_ROLE permission check.
+# Returns one row with ``authorized: bool``. The :User label on the
+# delegator is the structural guard against transitive Agent→Agent
+# authorisation (T2 mitigation, AC#3) — even if an Agent-sourced
+# DELEGATED_TO edge exists in the graph, this MATCH never sees it.
+_DELEGATION_TRAVERSAL_QUERY = """
+MATCH (m:User:__Platform__)
+  -[d:DELEGATED_TO]->(:Agent:__Platform__ {agent_id: $agent_id})
+WHERE d.organisation_id = $organisation_id
+  AND d.graph_id = $graph_id
+  AND d.is_active = true
+  AND (d.expires_at IS NULL OR d.expires_at > datetime())
+  AND (d.scope = 'graph'
+       OR (d.scope = 'subgraph' AND d.subgraph_id = $subgraph_id))
+MATCH (m)-[hr:HAS_ROLE]->(r:Role:__System__ {
+    graph_id: $graph_id, organisation_id: $organisation_id
+})
+WHERE hr.graph_id = $graph_id
+  AND hr.organisation_id = $organisation_id
+  AND hr.is_active = true
+  AND (hr.expires_at IS NULL OR hr.expires_at > datetime())
+
+OPTIONAL MATCH (r)-[:HAS_PERMISSION|INHERITS_FROM*0..5]->
+               (:Role)-[:HAS_PERMISSION]->(p1:Permission {name: $perm})
+
+OPTIONAL MATCH (r)-[:HAS_PERMISSION]->(p2:Permission:__System__ {name: $perm})
+
+WITH count(p1) + count(p2) AS perm_count
+RETURN perm_count > 0 AS authorized
+LIMIT 1
+"""
+
+_DELEGATION_GRANT_QUERY = """
+MERGE (m:User:__Platform__ {user_id: $member_user_id})
+ON CREATE SET m.created_at = $now, m.is_service_account = false
+MERGE (a:Agent:__Platform__ {agent_id: $agent_id})
+ON CREATE SET a.created_at = $now
+MERGE (m)-[d:DELEGATED_TO {
+    graph_id: $graph_id,
+    organisation_id: $organisation_id,
+    scope: $scope,
+    subgraph_id: $subgraph_id
+}]->(a)
+ON CREATE SET d.granted_at = $now, d.granted_by = $granted_by,
+              d.expires_at = $expires_at, d.is_active = true
+ON MATCH SET d.granted_at = $now, d.granted_by = $granted_by,
+             d.expires_at = $expires_at, d.is_active = true
+"""
+
+_DELEGATION_REVOKE_QUERY = """
+MATCH (m:User:__Platform__ {user_id: $member_user_id})
+  -[d:DELEGATED_TO {
+    graph_id: $graph_id,
+    organisation_id: $organisation_id,
+    scope: $scope,
+    subgraph_id: $subgraph_id
+  }]->(a:Agent:__Platform__ {agent_id: $agent_id})
+SET d.is_active = false
+RETURN count(d) AS revoked_count
+"""
+
+
 def _require_org(organisation_id: str) -> None:
     if not organisation_id or not organisation_id.strip():
         raise ValueError("organisation_id is required (ADR-006)")
@@ -272,6 +373,59 @@ def _require_org(organisation_id: str) -> None:
 def _require_graph(graph_id: str) -> None:
     if not graph_id:
         raise ValueError("graph_id is required")
+
+
+def _require_subject(subject: Any) -> tuple[str, str]:
+    """Validate the polymorphic subject discriminator (ADR-013 §3).
+
+    Returns ``(type, id)`` for a well-formed subject. Fail-closed on any
+    deviation — unknown type, missing field, or blank id — mirrors the
+    substrate seam's unknown-relation rejection and the C1 ``_require_org``
+    guard. A silent fallback (e.g. treating an unknown type as ``"user"``)
+    would be a privilege-escalation bug.
+    """
+    if not isinstance(subject, dict):
+        raise ValueError(
+            "subject must be a dict with 'type' and 'id' fields "
+            "(polymorphic principal type per ADR-013 §3)"
+        )
+    if "type" not in subject:
+        raise ValueError("subject.type is required")
+    if "id" not in subject:
+        raise ValueError("subject.id is required")
+    subject_type = subject["type"]
+    subject_id = subject["id"]
+    if subject_type not in _SUBJECT_TYPES:
+        raise ValueError(
+            f"subject.type must be one of {_SUBJECT_TYPES}, got {subject_type!r} "
+            "(closed type set; fail-closed on unknown principal type)"
+        )
+    if not isinstance(subject_id, str) or not subject_id.strip():
+        raise ValueError("subject.id must be a non-blank string")
+    return subject_type, subject_id
+
+
+def _require_scope(scope: str, subgraph_id: str | None) -> None:
+    """Validate the delegation scope discriminator. Closed set, fail-closed."""
+    if scope not in _DELEGATION_SCOPES:
+        raise ValueError(f"scope must be one of {_DELEGATION_SCOPES}, got {scope!r}")
+    if scope == "subgraph" and not subgraph_id:
+        raise ValueError(
+            "scope='subgraph' requires a non-blank subgraph_id "
+            "(silent fallback to graph-scope would widen the grant)"
+        )
+
+
+def _looks_like_agent(identifier: str) -> bool:
+    """Heuristic API-level guard against transitive agent→agent delegation
+    (T2, AC#3). Conventional agent identifiers start with one of
+    ``_AGENT_ID_PREFIXES``; passing such an id as ``member_user_id`` to
+    ``delegate_to_agent`` is rejected here. The Cypher traversal's
+    ``MATCH (m:User …)`` is the second line of defence — even if a
+    misformatted id slipped past this check, the User-typed match would
+    refuse to authorise through it.
+    """
+    return identifier.startswith(_AGENT_ID_PREFIXES)
 
 
 class ReBACEngine:
@@ -301,18 +455,59 @@ class ReBACEngine:
         driver: AsyncDriver,
         *,
         organisation_id: str,
-        user_id: str,
+        subject: dict[str, str],
         graph_id: str,
         required_level: str,
+        subgraph_id: str | None = None,
     ) -> bool:
-        """Return True iff ``user_id`` has at least ``required_level`` access to
-        ``graph_id`` *within* ``organisation_id``. Resolution order: Redis
-        cache → Phase B HAS_ROLE traversal → Phase A CAN_ACCESS fallback.
+        """Polymorphic permission check (ADR-013 §3).
+
+        ``subject`` is the discriminator ``{"type": "user" | "agent", "id":
+        "…"}``. Closed type set: any other value is fail-closed (``ValueError``).
+        For ``user`` subjects, runs the C1 Phase B HAS_ROLE → Phase A
+        CAN_ACCESS resolution. For ``agent`` subjects, runs the delegation
+        traversal phase (R1-C2): find an active (member→agent)
+        ``DELEGATED_TO`` edge in (org, graph, scope) and check the
+        delegating member's role. ``subgraph_id`` narrows the agent-path
+        check to a specific subgraph (graph-scope delegations still match).
+
         Fail-closed on any backend error.
         """
         _require_org(organisation_id)
         _require_graph(graph_id)
+        subject_type, subject_id = _require_subject(subject)
 
+        if subject_type == "user":
+            return await self._check_user_graph_permission(
+                driver,
+                organisation_id=organisation_id,
+                user_id=subject_id,
+                graph_id=graph_id,
+                required_level=required_level,
+            )
+        # subject_type == "agent" — closed set, no other branch is reachable
+        return await self._check_agent_graph_permission(
+            driver,
+            organisation_id=organisation_id,
+            agent_id=subject_id,
+            graph_id=graph_id,
+            required_level=required_level,
+            subgraph_id=subgraph_id,
+        )
+
+    async def _check_user_graph_permission(
+        self,
+        driver: AsyncDriver,
+        *,
+        organisation_id: str,
+        user_id: str,
+        graph_id: str,
+        required_level: str,
+    ) -> bool:
+        """The C1 user-subject permission resolution. Pre-existing behaviour
+        — cache → Phase B HAS_ROLE → Phase A CAN_ACCESS, fail-closed,
+        60s Redis cache, parameterised queries.
+        """
         acceptable = _ACCEPTABLE_LEVELS.get(required_level, ["admin"])
         required_perm = _LEVEL_TO_PERM.get(required_level, "graph:manage_access")
         cache_key = f"perm:{organisation_id}:{user_id}:{graph_id}:{required_level}"
@@ -396,6 +591,168 @@ class ReBACEngine:
                 await redis.delete(f"perm:{organisation_id}:{user_id}:{graph_id}:{level}")
         except Exception as exc:  # pragma: no cover
             logger.warning("Redis permission cache invalidation error: %s", exc)
+
+    # ── Agent delegation (R1-C2, ORA-35) ─────────────────────────────────
+
+    async def _check_agent_graph_permission(
+        self,
+        driver: AsyncDriver,
+        *,
+        organisation_id: str,
+        agent_id: str,
+        graph_id: str,
+        required_level: str,
+        subgraph_id: str | None = None,
+    ) -> bool:
+        """The agent-subject branch of ``check_graph_permission`` (R1-C2).
+        Runs a single-shot delegation traversal: find an active
+        (member→agent) ``DELEGATED_TO`` edge restricted by org / graph /
+        scope and check that the delegating member has the required role.
+        Fail-closed on any backend error. 60s org-namespaced cache (T2-M2).
+        """
+        required_perm = _LEVEL_TO_PERM.get(required_level, "graph:manage_access")
+        cache_key = f"del:{organisation_id}:{agent_id}:{graph_id}:{required_level}"
+
+        redis: Any | None = None
+        try:
+            redis = await self._get_redis()
+            cached = await redis.get(cache_key)
+            if cached is not None:
+                return cached == "1"
+        except Exception as exc:  # pragma: no cover — covered behaviourally
+            logger.warning("Redis delegation cache read error: %s", exc)
+
+        authorized = False
+        try:
+            async with driver.session() as session:
+                result = await session.run(
+                    _DELEGATION_TRAVERSAL_QUERY,
+                    {
+                        "organisation_id": organisation_id,
+                        "agent_id": agent_id,
+                        "graph_id": graph_id,
+                        "subgraph_id": subgraph_id,
+                        "perm": required_perm,
+                    },
+                )
+                record = await result.single()
+                authorized = bool(record and record["authorized"])
+        except Exception as exc:
+            logger.error("ReBAC delegation traversal Neo4j error: %s", exc)
+            return False
+
+        if redis is not None:
+            try:
+                await redis.set(cache_key, "1" if authorized else "0", ex=_DELEGATION_CACHE_TTL)
+            except Exception as exc:  # cache write is best-effort
+                logger.debug("Redis delegation-cache write skipped: %s", exc)
+        return authorized
+
+    async def delegate_to_agent(
+        self,
+        driver: AsyncDriver,
+        *,
+        organisation_id: str,
+        member_user_id: str,
+        agent_id: str,
+        graph_id: str,
+        scope: str,
+        granted_by: str,
+        subgraph_id: str | None = None,
+        expires_at: str | None = None,
+    ) -> None:
+        """Grant ``agent_id`` an effective scope-bounded delegation from
+        ``member_user_id`` on ``graph_id`` within ``organisation_id`` (AC#1).
+        Closed scope set (``graph`` / ``subgraph``); subgraph requires a
+        ``subgraph_id``. Transitive agent→agent delegation is rejected at
+        the API boundary (T2 / AC#3). Idempotent (MERGE). Invalidates the
+        org-scoped delegation cache so a freshly granted scope is not
+        masked by a stale deny (the same stale-deny mitigation C1's
+        ``grant_role`` applies).
+        """
+        _require_org(organisation_id)
+        _require_graph(graph_id)
+        _require_scope(scope, subgraph_id)
+        if _looks_like_agent(member_user_id):
+            raise ValueError(
+                f"transitive agent→agent delegation is forbidden (T2 / AC#3): "
+                f"member_user_id={member_user_id!r} looks like an agent identifier"
+            )
+
+        async with driver.session() as session:
+            await session.run(
+                _DELEGATION_GRANT_QUERY,
+                {
+                    "member_user_id": member_user_id,
+                    "agent_id": agent_id,
+                    "graph_id": graph_id,
+                    "organisation_id": organisation_id,
+                    "scope": scope,
+                    "subgraph_id": subgraph_id,
+                    "granted_by": granted_by,
+                    "expires_at": expires_at,
+                    "now": _now(),
+                },
+            )
+        await self.invalidate_agent_delegation_cache(
+            organisation_id=organisation_id, agent_id=agent_id, graph_id=graph_id
+        )
+
+    async def revoke_agent_delegation(
+        self,
+        driver: AsyncDriver,
+        *,
+        organisation_id: str,
+        member_user_id: str,
+        agent_id: str,
+        graph_id: str,
+        scope: str,
+        subgraph_id: str | None = None,
+    ) -> int:
+        """Soft-revoke (``is_active = false``, never DELETE) the delegation
+        edge matching (org, member, agent, graph, scope, subgraph_id).
+        Returns the count of edges revoked (0 = no matching edge).
+        Invalidates the org-scoped delegation cache so the **next**
+        invocation fails (T2-M2 / AC#2).
+        """
+        _require_org(organisation_id)
+        _require_graph(graph_id)
+        _require_scope(scope, subgraph_id)
+
+        async with driver.session() as session:
+            result = await session.run(
+                _DELEGATION_REVOKE_QUERY,
+                {
+                    "member_user_id": member_user_id,
+                    "agent_id": agent_id,
+                    "graph_id": graph_id,
+                    "organisation_id": organisation_id,
+                    "scope": scope,
+                    "subgraph_id": subgraph_id,
+                },
+            )
+            record = await result.single()
+            count = int(record["revoked_count"]) if record else 0
+
+        await self.invalidate_agent_delegation_cache(
+            organisation_id=organisation_id, agent_id=agent_id, graph_id=graph_id
+        )
+        return count
+
+    async def invalidate_agent_delegation_cache(
+        self, *, organisation_id: str, agent_id: str, graph_id: str
+    ) -> None:
+        """Drop all cached delegation entries for this (org, agent, graph)
+        triple. Iterates the three acceptable-level keys (``read`` /
+        ``write`` / ``admin``) the agent-check populates; the cache key is
+        org-namespaced so this never touches another org's keys.
+        """
+        try:
+            redis = await self._get_redis()
+            for level in ("read", "write", "admin"):
+                await redis.delete(f"del:{organisation_id}:{agent_id}:{graph_id}:{level}")
+        except Exception as exc:  # pragma: no cover
+            logger.warning("Redis delegation cache invalidation error: %s", exc)
 
     # ── Role management ──────────────────────────────────────────────────
 
