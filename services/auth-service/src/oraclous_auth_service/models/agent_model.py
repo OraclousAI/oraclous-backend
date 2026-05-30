@@ -1,0 +1,54 @@
+"""ORM models for the agent principal and its credentials (ORA-30 / R1-A1).
+
+Reshaped from the legacy service-account-key pattern
+(``auth-service/app/models/service_account_model.AgentServiceAccountKey``) onto a
+first-class ``agent`` principal. The raw credential is NEVER persisted — only its
+bcrypt hash and a prefix index. ``organisation_id`` is carried on both the
+principal and its credentials per ADR-006 (legacy held it on the credential as
+``tenant_id``).
+
+Note: no ``from __future__ import annotations`` here — SQLAlchemy resolves the
+``Mapped[...]`` annotations at mapper configuration, so they must be real types.
+"""
+
+from datetime import datetime
+
+from sqlalchemy import TIMESTAMP, String, func
+from sqlalchemy.orm import Mapped, mapped_column
+
+from oraclous_auth_service.models.base import Base
+
+
+class Agent(Base):
+    """An agent principal, scoped to the organisation it is created in."""
+
+    __tablename__ = "agents"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    organisation_id: Mapped[str] = mapped_column(String, index=True, nullable=False)
+    created_by_user_id: Mapped[str] = mapped_column(String, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class AgentCredential(Base):
+    """A bcrypt-hashed, prefix-indexed credential for an :class:`Agent`.
+
+    The raw credential exists only in the issuing call's return value; this
+    record stores the hash and the lookup prefix, never the secret.
+    """
+
+    __tablename__ = "agent_credentials"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    agent_id: Mapped[str] = mapped_column(String, index=True, nullable=False)
+    organisation_id: Mapped[str] = mapped_column(String, index=True, nullable=False)
+    credential_hash: Mapped[str] = mapped_column(String, nullable=False)
+    credential_prefix: Mapped[str] = mapped_column(String, index=True, nullable=False)
+    status: Mapped[str] = mapped_column(String, nullable=False, default="active")
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), server_default=func.now(), nullable=False
+    )
+    expires_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
