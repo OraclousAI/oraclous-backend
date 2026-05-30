@@ -619,6 +619,12 @@ source = { editable = "packages/provenance" }
 name = "oraclous-rebac"
 version = "0.0.0"
 source = { editable = "packages/rebac" }
+dependencies = [
+    { name = "oraclous-substrate" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "oraclous-substrate", editable = "packages/substrate" }]
 
 [[package]]
 name = "oraclous-substrate"

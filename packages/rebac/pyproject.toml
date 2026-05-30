@@ -3,7 +3,12 @@ name = "oraclous-rebac"
 version = "0.0.0"
 description = "ReBAC relation types and helpers (Layer 1)."
 requires-python = "==3.12.*"
-dependencies = []
+dependencies = [
+    "oraclous-substrate",
+]
+
+[tool.uv.sources]
+oraclous-substrate = { workspace = true }
 
 [build-system]
 requires = ["hatchling"]
