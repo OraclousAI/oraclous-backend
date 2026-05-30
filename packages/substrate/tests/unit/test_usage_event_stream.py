@@ -242,6 +242,82 @@ async def test_emit_rejects_non_numeric_quantity() -> None:
 
 
 # --------------------------------------------------------------------------- #
+# ORA-44 — metering-integrity hardening: non-finite quantity is rejected
+#
+# nan / inf / -inf are float instances and therefore pass the existing
+# ``isinstance(quantity, (int, float))`` guard, but they corrupt downstream
+# billing aggregation (C3) the moment they enter the append-only stream
+# (max(x, nan) is nan; sum(x, inf) is inf — irrecoverable without a rewrite
+# of history that ADR-009 explicitly forbids). The seam must fail closed at
+# the same validation site that already rejects blank and non-numeric values,
+# *before* the store.write call — must land before C2 so no call site can ever
+# pass one through. Non-blocking residual raised by code-reviewer and
+# security-architect on ORA-21 PR #20.
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.audit
+@pytest.mark.parametrize(
+    "quantity",
+    [
+        float("nan"),
+        float("inf"),
+        float("-inf"),
+    ],
+    ids=["nan", "inf", "-inf"],
+)
+async def test_emit_rejects_non_finite_quantity(quantity: float) -> None:
+    """A non-finite quantity (nan / +inf / -inf) is rejected fail-closed.
+
+    The append-only stream cannot be retroactively corrected (ADR-009), so a
+    poisoning value has to be stopped at the emit seam rather than later in
+    the billing pipeline. ``ValueError`` is the existing contract for the
+    "quantity is not a metered amount" failure mode, and nothing is written.
+    """
+    store = _RecordingStore()
+    stream = UsageEventStream(store)
+    with use_organisation_context(_context()), pytest.raises(ValueError):
+        await _emit(stream, quantity=quantity)
+    assert store.writes == []
+
+
+@pytest.mark.audit
+@pytest.mark.parametrize(
+    "quantity",
+    [
+        0,
+        0.0,
+        -1,
+        -3.5,
+        1,
+        2.5,
+    ],
+    ids=[
+        "zero-int",
+        "zero-float",
+        "negative-int",
+        "negative-float",
+        "positive-int",
+        "positive-float",
+    ],
+)
+async def test_emit_accepts_finite_quantity(quantity: float) -> None:
+    """The finite/non-finite split is not over-broad.
+
+    Zero is a legitimate metered amount (a no-op tick); negative values are
+    the ADR-009 compensating-event mechanism — corrections happen by emitting
+    an offsetting event, never by editing history. Both must remain emittable
+    after the non-finite guard lands.
+    """
+    store = _RecordingStore()
+    stream = UsageEventStream(store)
+    with use_organisation_context(_context()):
+        await _emit(stream, quantity=quantity)
+    assert len(store.writes) == 1
+    assert store.writes[0].quantity == quantity
+
+
+# --------------------------------------------------------------------------- #
 # AC3 — no plaintext customer payload in dimensions (T6 operator-separation)
 # --------------------------------------------------------------------------- #
 
