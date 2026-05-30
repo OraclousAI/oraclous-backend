@@ -1,21 +1,26 @@
 """Outer organisation-scoping layer above the legacy ``graph_id`` injection
-(ORA-18 / Epic A3, the *Extend* step).
+for the three multi-tenant retrievers (ORA-18 / Epic A3, the *Extend* step —
+retriever half).
 
-These tests pin the new contract: every multi-tenant retriever and the
-multi-tenant writer scope by ``organisation_id`` (taken from the resolved
-``OrganisationContext`` — never from a request body) before they apply the
+These tests pin the new contract for the ``OrganisationScoped*`` retriever
+surface: scope by ``organisation_id`` (taken from the resolved
+``OrganisationContext`` — never from a request body) before applying the
 legacy ``graph_id`` filter. ``organisation_id`` is outermost; ``graph_id`` is
-inner; the existing legacy behaviour covered in
-[test_multi_tenant_retrievers.py](./test_multi_tenant_retrievers.py) and
-[test_multi_tenant_writer.py](./test_multi_tenant_writer.py) is preserved.
+inner; the existing legacy retriever behaviour covered in
+[test_multi_tenant_retrievers.py](./test_multi_tenant_retrievers.py) is
+preserved.
 
 Threats mitigated: T1 (cross-tenant data leakage). The fail-closed
 construction pattern aligns with ADR-006 (organisation_id on every operation)
 and the [A2] enforcement story (ORA-17).
 
-Lift-tag: Lift + extend. The "extend" surface is the new
-``OrganisationScoped*`` set; the legacy ``MultiTenant*`` wrappers remain the
-inner layer and keep their existing graph-scoped behaviour.
+Module placement: ``solution-architect`` ratified Option B (split) on
+31 May 2026 — the three retrievers live in ``knowledge-retriever-service``
+(read path); the writer's organisation-scoping tests live in
+``services/knowledge-graph-service/tests/unit/test_organisation_scoped_writer.py``.
+Both consume the substrate seam ``oraclous_substrate.access`` per
+[ADR-012](https://oraclous.atlassian.net/wiki/spaces/OP/pages/2490396) §1;
+neither forks org-scoping.
 
 Imports of the not-yet-built seams ``oraclous_governance.context`` (ORA-14)
 and ``oraclous_knowledge_retriever_service.multi_tenant`` (ORA-18 impl) are
@@ -36,7 +41,7 @@ pytestmark = pytest.mark.unit
 
 
 # ---------------------------------------------------------------------------
-# Local-import helpers (one per SUT module)
+# Local-import helpers
 # ---------------------------------------------------------------------------
 
 
@@ -57,17 +62,16 @@ def _context(organisation_id: uuid.UUID = _ORG_A):
     )
 
 
-def _classes():
-    """Return the four SUT classes as a single tuple; imports the seam locally.
+def _retrievers():
+    """Return the three retriever SUT classes; imports the seam locally.
 
     Returned in this fixed order so each test can destructure exactly the
     subset it cares about::
 
-        VR, VCR, HR, Writer = _classes()
+        VR, VCR, HR = _retrievers()
     """
     from oraclous_knowledge_retriever_service.multi_tenant import (
         OrganisationScopedHybridRetriever,
-        OrganisationScopedKGWriter,
         OrganisationScopedVectorCypherRetriever,
         OrganisationScopedVectorRetriever,
     )
@@ -76,7 +80,6 @@ def _classes():
         OrganisationScopedVectorRetriever,
         OrganisationScopedVectorCypherRetriever,
         OrganisationScopedHybridRetriever,
-        OrganisationScopedKGWriter,
     )
 
 
@@ -116,44 +119,13 @@ class _FakeBaseRetriever:
         return _FakeResult(items=list(self._items))
 
 
-@dataclass
-class _Node:
-    id: str
-    label: str
-    properties: dict[str, Any] | None = None
-
-
-@dataclass
-class _Rel:
-    type: str
-    start_node_id: str
-    end_node_id: str
-    properties: dict[str, Any] | None = None
-
-
-@dataclass
-class _Graph:
-    nodes: list[_Node] = field(default_factory=list)
-    relationships: list[_Rel] = field(default_factory=list)
-
-
-class _CapturingBaseWriter:
-    def __init__(self) -> None:
-        self.runs: list[_Graph] = []
-        self.driver = object()
-        self.neo4j_database = "neo4j"
-
-    async def run(self, graph: _Graph) -> None:
-        self.runs.append(graph)
-
-
 # ---------------------------------------------------------------------------
 # Construction: organisation context is REQUIRED and fail-closed
 # ---------------------------------------------------------------------------
 
 
 class TestConstructionFailClosed:
-    """The wrappers cannot be constructed without an authenticated
+    """The retriever wrappers cannot be constructed without an authenticated
     ``OrganisationContext`` — there is no implicit / default scope.
 
     Threat: T1. Aligns with ADR-006 and the [A2] enforcement contract
@@ -161,8 +133,10 @@ class TestConstructionFailClosed:
     never from a request body or a default.
     """
 
+    pytestmark = [pytest.mark.unit, pytest.mark.security]
+
     def test_vector_retriever_requires_organisation_context(self) -> None:
-        VR, _VCR, _HR, _Writer = _classes()
+        VR, _VCR, _HR = _retrievers()
         with pytest.raises((TypeError, ValueError)):
             VR(
                 base_retriever=_FakeBaseRetriever(),
@@ -171,7 +145,7 @@ class TestConstructionFailClosed:
             )
 
     def test_vector_cypher_retriever_requires_organisation_context(self) -> None:
-        _VR, VCR, _HR, _Writer = _classes()
+        _VR, VCR, _HR = _retrievers()
         with pytest.raises((TypeError, ValueError)):
             VCR(
                 base_retriever=_FakeBaseRetriever(),
@@ -180,19 +154,10 @@ class TestConstructionFailClosed:
             )
 
     def test_hybrid_retriever_requires_organisation_context(self) -> None:
-        _VR, _VCR, HR, _Writer = _classes()
+        _VR, _VCR, HR = _retrievers()
         with pytest.raises((TypeError, ValueError)):
             HR(
                 base_retriever=_FakeBaseRetriever(),
-                context=None,  # type: ignore[arg-type]
-                graph_id="graph-A",
-            )
-
-    def test_writer_requires_organisation_context(self) -> None:
-        _VR, _VCR, _HR, Writer = _classes()
-        with pytest.raises((TypeError, ValueError)):
-            Writer(
-                base_writer=_CapturingBaseWriter(),
                 context=None,  # type: ignore[arg-type]
                 graph_id="graph-A",
             )
@@ -209,7 +174,7 @@ class TestRetrieverOrganisationScopeInjection:
     survives unchanged."""
 
     def test_organisation_id_added_to_filters(self) -> None:
-        VR, _VCR, _HR, _Writer = _classes()
+        VR, _VCR, _HR = _retrievers()
         base = _FakeBaseRetriever()
         retriever = VR(base_retriever=base, context=_context(_ORG_A), graph_id="graph-A")
 
@@ -220,7 +185,7 @@ class TestRetrieverOrganisationScopeInjection:
         assert filters["graph_id"] == "graph-A"
 
     def test_organisation_id_added_to_query_params(self) -> None:
-        VR, _VCR, _HR, _Writer = _classes()
+        VR, _VCR, _HR = _retrievers()
         base = _FakeBaseRetriever()
         retriever = VR(base_retriever=base, context=_context(_ORG_A), graph_id="graph-A")
 
@@ -230,10 +195,11 @@ class TestRetrieverOrganisationScopeInjection:
         assert params["organisation_id"] == str(_ORG_A)
         assert params["graph_id"] == "graph-A"
 
+    @pytest.mark.security
     def test_caller_supplied_organisation_id_filter_is_overwritten(self) -> None:
         """A caller passing ``filters={"organisation_id": "other"}`` MUST NOT be
         able to widen the scope. T1: prevents request-body org-id override."""
-        VR, _VCR, _HR, _Writer = _classes()
+        VR, _VCR, _HR = _retrievers()
         base = _FakeBaseRetriever()
         retriever = VR(base_retriever=base, context=_context(_ORG_A), graph_id="graph-A")
 
@@ -241,8 +207,9 @@ class TestRetrieverOrganisationScopeInjection:
 
         assert base.calls[0]["filters"]["organisation_id"] == str(_ORG_A)
 
+    @pytest.mark.security
     def test_caller_supplied_organisation_id_query_param_is_overwritten(self) -> None:
-        VR, _VCR, _HR, _Writer = _classes()
+        VR, _VCR, _HR = _retrievers()
         base = _FakeBaseRetriever()
         retriever = VR(base_retriever=base, context=_context(_ORG_A), graph_id="graph-A")
 
@@ -261,10 +228,12 @@ class TestCypherOrganisationScope:
     clause filtering on BOTH ``organisation_id`` and ``graph_id`` so the index
     cannot return another tenant's nodes."""
 
+    pytestmark = [pytest.mark.unit, pytest.mark.security]
+
     def test_where_clause_filters_both_organisation_and_graph(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        _VR, VCR, _HR, _Writer = _classes()
+        _VR, VCR, _HR = _retrievers()
         captured: dict[str, Any] = {}
 
         def _fake_base(**kwargs: Any) -> _FakeBaseRetriever:
@@ -296,7 +265,7 @@ class TestCypherOrganisationScope:
     ) -> None:
         """Cypher injection guard: ``organisation_id`` is never spliced into
         the query string."""
-        _VR, VCR, _HR, _Writer = _classes()
+        _VR, VCR, _HR = _retrievers()
         captured: dict[str, Any] = {}
 
         def _fake_base(**kwargs: Any) -> _FakeBaseRetriever:
@@ -333,7 +302,7 @@ class TestTenantIndexNamingIncludesOrganisation:
     def test_vector_index_name_carries_organisation_id(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        VR, _VCR, _HR, _Writer = _classes()
+        VR, _VCR, _HR = _retrievers()
         captured: dict[str, Any] = {}
 
         def _fake_base(**kwargs: Any) -> _FakeBaseRetriever:
@@ -357,7 +326,7 @@ class TestTenantIndexNamingIncludesOrganisation:
         assert "graph-A" in captured["index_name"]
 
     def test_hybrid_indices_carry_organisation_id(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        _VR, _VCR, HR, _Writer = _classes()
+        _VR, _VCR, HR = _retrievers()
         captured: dict[str, Any] = {}
 
         def _fake_base(**kwargs: Any) -> _FakeBaseRetriever:
@@ -392,10 +361,12 @@ class TestOrganisationPostFilterBackstop:
     expected ``organisation_id`` (or claims another organisation), the wrapper
     drops it before returning."""
 
+    pytestmark = [pytest.mark.unit, pytest.mark.security]
+
     def test_drops_items_from_other_organisation_even_when_graph_id_matches(
         self,
     ) -> None:
-        VR, _VCR, _HR, _Writer = _classes()
+        VR, _VCR, _HR = _retrievers()
         items = [
             _FakeItem(
                 content="ours",
@@ -417,7 +388,7 @@ class TestOrganisationPostFilterBackstop:
     def test_drops_items_with_missing_organisation_id_metadata(self) -> None:
         """Fail-closed: an item with no ``organisation_id`` metadata is
         indeterminate and is dropped, never returned."""
-        VR, _VCR, _HR, _Writer = _classes()
+        VR, _VCR, _HR = _retrievers()
         items = [
             _FakeItem(
                 content="ours",
@@ -434,115 +405,6 @@ class TestOrganisationPostFilterBackstop:
 
 
 # ---------------------------------------------------------------------------
-# Writer: organisation_id injected, unconditionally overwritten
-# ---------------------------------------------------------------------------
-
-
-class TestWriterOrganisationScopeInjection:
-    """The outer writer layer stamps ``organisation_id`` on every node and
-    relationship, unconditionally overriding any caller-supplied value (T1).
-
-    Mirrors the existing ``graph_id`` security contract proven in
-    [test_multi_tenant_writer.py::TestGraphIdOverwriteSecurity]."""
-
-    async def test_writer_injects_organisation_id_on_every_node(self) -> None:
-        _VR, _VCR, _HR, Writer = _classes()
-        base = _CapturingBaseWriter()
-        writer = Writer(base_writer=base, context=_context(_ORG_A), graph_id="graph-A")
-        graph = _Graph(
-            nodes=[
-                _Node(id="n1", label="Person", properties={"name": "Alice"}),
-                _Node(id="n2", label="Person", properties={"name": "Bob"}),
-            ]
-        )
-
-        await writer.run(graph)
-
-        assert all(n.properties["organisation_id"] == str(_ORG_A) for n in graph.nodes)
-
-    async def test_writer_injects_organisation_id_on_every_relationship(self) -> None:
-        _VR, _VCR, _HR, Writer = _classes()
-        base = _CapturingBaseWriter()
-        writer = Writer(base_writer=base, context=_context(_ORG_A), graph_id="graph-A")
-        graph = _Graph(
-            nodes=[
-                _Node(id="a", label="Person", properties={"name": "Alice"}),
-                _Node(id="b", label="Person", properties={"name": "Bob"}),
-            ],
-            relationships=[
-                _Rel(type="KNOWS", start_node_id="a", end_node_id="b"),
-            ],
-        )
-
-        await writer.run(graph)
-
-        assert graph.relationships[0].properties["organisation_id"] == str(_ORG_A)
-
-    async def test_writer_unconditionally_overwrites_caller_supplied_organisation_id_on_node(
-        self,
-    ) -> None:
-        """T1: a node whose properties include a different ``organisation_id``
-        MUST NOT be written to that other organisation."""
-        _VR, _VCR, _HR, Writer = _classes()
-        base = _CapturingBaseWriter()
-        writer = Writer(base_writer=base, context=_context(_ORG_A), graph_id="graph-A")
-        graph = _Graph(
-            nodes=[
-                _Node(
-                    id="n1",
-                    label="Person",
-                    properties={"name": "Alice", "organisation_id": str(_ORG_B)},
-                )
-            ]
-        )
-
-        await writer.run(graph)
-
-        assert graph.nodes[0].properties["organisation_id"] == str(_ORG_A)
-
-    async def test_writer_unconditionally_overwrites_caller_organisation_id_on_rel(
-        self,
-    ) -> None:
-        _VR, _VCR, _HR, Writer = _classes()
-        base = _CapturingBaseWriter()
-        writer = Writer(base_writer=base, context=_context(_ORG_A), graph_id="graph-A")
-        graph = _Graph(
-            nodes=[
-                _Node(id="a", label="Person", properties={"name": "Alice"}),
-                _Node(id="b", label="Person", properties={"name": "Bob"}),
-            ],
-            relationships=[
-                _Rel(
-                    type="KNOWS",
-                    start_node_id="a",
-                    end_node_id="b",
-                    properties={"organisation_id": str(_ORG_B)},
-                )
-            ],
-        )
-
-        await writer.run(graph)
-
-        assert graph.relationships[0].properties["organisation_id"] == str(_ORG_A)
-
-    async def test_writer_preserves_legacy_graph_id_alongside_organisation_id(
-        self,
-    ) -> None:
-        """``organisation_id`` is added *alongside* ``graph_id`` — the inner
-        ``graph_id`` boundary survives unchanged (Lift step preserved)."""
-        _VR, _VCR, _HR, Writer = _classes()
-        base = _CapturingBaseWriter()
-        writer = Writer(base_writer=base, context=_context(_ORG_A), graph_id="graph-A")
-        graph = _Graph(nodes=[_Node(id="n1", label="Person", properties={"name": "Alice"})])
-
-        await writer.run(graph)
-
-        props = graph.nodes[0].properties
-        assert props["organisation_id"] == str(_ORG_A)
-        assert props["graph_id"] == "graph-A"
-
-
-# ---------------------------------------------------------------------------
 # Single-org regression: seed-org context preserves legacy behaviour
 # ---------------------------------------------------------------------------
 
@@ -550,16 +412,16 @@ class TestWriterOrganisationScopeInjection:
 class TestSingleOrgRegression:
     """Acceptance criterion: "Single-organisation behaviour unchanged".
 
-    When the resolved context is the seed organisation, the wrappers behave
-    identically to the legacy single-graph_id wrapper — ``organisation_id``
-    is injected but the graph_id-only behaviour matches what existed before.
+    With the seed organisation, the retriever behaves identically to the
+    legacy single-graph_id wrapper — ``organisation_id`` is injected but the
+    graph_id-only behaviour matches what existed before.
     """
 
     def test_retriever_in_seed_org_returns_same_items_as_graph_id_filter_alone(
         self,
     ) -> None:
         """With a single org and matching graph_id, all items pass through."""
-        VR, _VCR, _HR, _Writer = _classes()
+        VR, _VCR, _HR = _retrievers()
         items = [
             _FakeItem(
                 content="one",
@@ -576,23 +438,3 @@ class TestSingleOrgRegression:
         result = retriever.get_search_results(query_text="hi")
 
         assert [i.content for i in result.items] == ["one", "two"]
-
-    async def test_writer_in_seed_org_writes_nodes_unchanged_except_for_org_id(
-        self,
-    ) -> None:
-        """Single-org regression: the only new property is ``organisation_id``;
-        all legacy properties (``graph_id``, timestamps, ``created_by``) are
-        identical to the lift-only flow."""
-        _VR, _VCR, _HR, Writer = _classes()
-        base = _CapturingBaseWriter()
-        writer = Writer(base_writer=base, context=_context(_SEED_ORG), graph_id="graph-A")
-        graph = _Graph(nodes=[_Node(id="n1", label="Person", properties={"name": "Alice"})])
-
-        await writer.run(graph)
-
-        props = graph.nodes[0].properties
-        assert props["organisation_id"] == str(_SEED_ORG)
-        assert props["graph_id"] == "graph-A"
-        assert "transaction_time" in props
-        assert "ingestion_time" in props
-        assert props["created_by"] == "multi_tenant_pipeline"

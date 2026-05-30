@@ -8,15 +8,19 @@ provenance contract — unconditional ``graph_id`` overwrite, ingestion-source
 sanitisation, empty-name entity drop, duplicate-relationship dedup with weight,
 bitemporal timestamps — so the lift cannot regress them. The *outer
 organisation-scoping layer* added by ORA-18 is covered in
-[test_organisation_scoping_layer.py](./test_organisation_scoping_layer.py).
+[test_organisation_scoped_writer.py](./test_organisation_scoped_writer.py).
 
-Module-placement note for review (be-test-reviewer / solution-architect): the
-writer is co-located with the retrievers here because the brief enumerates
-both under a single deliverable. The architect may direct the implementer to
-split the writer into ``knowledge-graph-service`` at the Tests Review gate.
+Module placement: ``solution-architect`` ratified Option B (split) on
+31 May 2026 — the writer lives in ``knowledge-graph-service`` (write path),
+while the three retrievers live in ``knowledge-retriever-service`` (read path).
+Both consume the substrate seam ``oraclous_substrate.access`` per
+[ADR-012](https://oraclous.atlassian.net/wiki/spaces/OP/pages/2490396) §1;
+neither forks org-scoping. Per the [Services Reference for
+knowledge-graph-service](https://oraclous.atlassian.net/wiki/spaces/OP/pages/753832),
+"Multi-tenant component wrappers for write paths" are owned here.
 
 RED until backend-implementer creates
-``oraclous_knowledge_retriever_service.multi_tenant``.
+``oraclous_knowledge_graph_service.multi_tenant``.
 """
 
 from __future__ import annotations
@@ -77,7 +81,7 @@ def _writer(
 ):
     """Local-import factory keeping the SUT module-level import out of test
     collection (ORA-48 / TST001 — TDD-window collection safety)."""
-    from oraclous_knowledge_retriever_service.multi_tenant import MultiTenantKGWriter
+    from oraclous_knowledge_graph_service.multi_tenant import MultiTenantKGWriter
 
     return MultiTenantKGWriter(
         base_writer=base,
@@ -144,6 +148,8 @@ class TestGraphIdOverwriteSecurity:
     organisation's scope.
     """
 
+    pytestmark = [pytest.mark.unit, pytest.mark.security]
+
     async def test_node_with_caller_supplied_graph_id_is_overwritten(self) -> None:
         base = _CapturingBaseWriter()
         writer = _writer(base, graph_id="graph-A")
@@ -199,6 +205,8 @@ class TestIngestionSourceSanitisation:
 
     Legacy reference: L257-268 (``_sanitize_source``), L360-365 (node strip).
     """
+
+    pytestmark = [pytest.mark.unit, pytest.mark.security]
 
     async def test_caller_supplied_ingestion_source_on_node_is_stripped(self) -> None:
         base = _CapturingBaseWriter()

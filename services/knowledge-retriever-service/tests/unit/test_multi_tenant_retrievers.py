@@ -266,6 +266,7 @@ class TestCypherWhereInjection:
 
         assert captured["retrieval_query"] == already
 
+    @pytest.mark.security
     def test_injects_parameterised_filter_not_string_interpolated(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -331,6 +332,7 @@ class TestPostFilterBackstop:
 
         assert [i.content for i in result.items] == ["ok-1", "ok-2"]
 
+    @pytest.mark.security
     def test_post_filter_drops_items_from_other_tenant_metadata(self) -> None:
         """Defense-in-depth: if a base retriever returns another tenant's item,
         the wrapper drops it before returning."""
