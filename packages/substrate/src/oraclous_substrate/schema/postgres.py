@@ -82,5 +82,12 @@ def apply(conn) -> None:
             cur.execute(f'DROP POLICY IF EXISTS "{policy}" ON public."{table}"')
             cur.execute(  # noqa: S608 — only trusted constants are interpolated
                 f'CREATE POLICY "{policy}" ON public."{table}" '
-                f"USING ({ORG_COLUMN} = current_setting('{ORG_GUC}', true)::uuid)"
+                # NULLIF guards the ``::uuid`` cast against the empty-string GUC
+                # that a custom (period-named) parameter reverts to once it has
+                # been SET LOCAL in a prior transaction on a pooled connection.
+                # Without it, an unbound scope errors with InvalidTextRepresentation
+                # instead of cleanly denying — same end-state (no data leaks) but
+                # fragile; with NULLIF the GUC's '' and unset both fail-closed to
+                # zero rows (T1-M1; A2/ORA-17 integration test fail-closed half).
+                f"USING ({ORG_COLUMN} = NULLIF(current_setting('{ORG_GUC}', true), '')::uuid)"
             )
