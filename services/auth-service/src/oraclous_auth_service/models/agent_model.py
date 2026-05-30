@@ -13,7 +13,7 @@ Note: no ``from __future__ import annotations`` here — SQLAlchemy resolves the
 
 from datetime import datetime
 
-from sqlalchemy import TIMESTAMP, String, func
+from sqlalchemy import TIMESTAMP, Index, String, func, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from oraclous_auth_service.models.base import Base
@@ -52,3 +52,16 @@ class AgentCredential(Base):
     )
     expires_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
     revoked_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+
+    # ADR-012 §1a (a): a prefix maps to at most one *active* principal, ever —
+    # pinning the invariant at the schema layer keeps the
+    # ``active_credentials_by_prefix`` lookup from becoming a cross-org
+    # enumeration surface, regardless of how the application code is wired.
+    __table_args__ = (
+        Index(
+            "ix_agent_credentials_active_prefix_unique",
+            "credential_prefix",
+            unique=True,
+            postgresql_where=text("status = 'active'"),
+        ),
+    )
