@@ -1,5 +1,7 @@
 """Tests proving the organisation-scoping guardrails fire (ORA-10 / 0b)."""
 
+from pathlib import Path
+
 import pytest
 from tools.lint.check_org_scoping import check_source
 
@@ -232,3 +234,99 @@ def test_org005_vector_index_with_interpolated_org_passes() -> None:
         "ON (n.{ORG_PROPERTY}) OPTIONS {{}}'\n"
     )
     assert "ORG005" not in _rules(src)
+
+
+# --- ORA-51: YAML as canonical source for ORG_SCOPED_LABELS (v2 mechanism) -----
+#
+# The v1 mirror constant in tools/lint/check_org_scoping.py is being replaced.
+# The lint rule must read the YAML at lint time (no substrate import) so
+# adding a label to the YAML is the *only* change needed for ORG003 to
+# recognise it. The seam is a keyword-only `org_scoped_labels_yaml: Path | None`
+# argument on `check_source`; when None, the rule resolves the canonical path.
+
+
+def _write_yaml(path: Path, labels: list[str], relationship_types: list[str] | None = None) -> None:
+    """Write a v1-schema YAML for the loader to consume."""
+    rels = relationship_types or []
+    text = "schema_version: 1\nlabels:\n"
+    for label in labels:
+        text += f'  - "{label}"\n'
+    text += "relationship_types:\n"
+    for rel in rels:
+        text += f'  - "{rel}"\n'
+    path.write_text(text, encoding="utf-8")
+
+
+def test_org003_new_yaml_label_is_recognised_with_no_other_code_change(tmp_path: Path) -> None:
+    """Brief AC, restated: adding a label to the YAML makes ORG003 flag a DDL
+    omitting org on that label, with no other code change."""
+    yaml_path = tmp_path / "org_scoped_labels.yaml"
+    _write_yaml(yaml_path, ["__Entity__", "__Community__", "__Contradiction__", "Chunk", "FooBar"])
+    src = "Q = 'CREATE INDEX foobar_idx IF NOT EXISTS FOR (n:`FooBar`) ON (n.graph_id)'\n"
+    violations = check_source(src, org_scoped_labels_yaml=yaml_path)
+    assert any(v.rule == "ORG003" for v in violations), violations
+
+
+def test_org003_yaml_label_with_org_passes(tmp_path: Path) -> None:
+    """Symmetry guard: the same new label, with org in the ON clause, does not
+    flag — the recognition only fires when org is missing."""
+    yaml_path = tmp_path / "org_scoped_labels.yaml"
+    _write_yaml(yaml_path, ["__Entity__", "Chunk", "FooBar"])
+    src = (
+        "Q = 'CREATE INDEX foobar_idx IF NOT EXISTS "
+        "FOR (n:`FooBar`) ON (n.organisation_id, n.graph_id)'\n"
+    )
+    violations = check_source(src, org_scoped_labels_yaml=yaml_path)
+    assert not any(v.rule == "ORG003" for v in violations), violations
+
+
+def test_org003_recognition_drops_label_when_yaml_drops_it(tmp_path: Path) -> None:
+    """Negative-side symmetry: removing a label from the YAML removes ORG003
+    coverage on it. Together with the additive test this proves the rule's
+    recognition set IS the YAML, not a superset / subset."""
+    yaml_path = tmp_path / "org_scoped_labels.yaml"
+    _write_yaml(yaml_path, ["Chunk"])  # __Entity__ deliberately dropped
+    src = "Q = 'CREATE INDEX entity_idx IF NOT EXISTS FOR (n:`__Entity__`) ON (n.graph_id)'\n"
+    violations = check_source(src, org_scoped_labels_yaml=yaml_path)
+    assert not any(v.rule == "ORG003" for v in violations), violations
+
+
+def test_org003_existing_canonical_yaml_recognises_entity(tmp_path: Path) -> None:
+    """The lint resolves to the canonical YAML when no override is passed and
+    finds ``__Entity__`` (and the other current four) there — equivalent to
+    the v1 behaviour, now sourced from the YAML."""
+    # No override => the rule reads the canonical
+    # packages/substrate/.../schema/org_scoped_labels.yaml.
+    src = "Q = 'CREATE INDEX entity_idx IF NOT EXISTS FOR (n:`__Entity__`) ON (n.graph_id)'\n"
+    assert "ORG003" in _rules(src)
+
+
+def test_no_mirror_constant_in_lint_source() -> None:
+    """The structural-drift-impossible property: the lint module must not
+    declare an ``ORG_SCOPED_NEO4J_LABELS`` mirror constant. The YAML at
+    ``packages/substrate/.../schema/org_scoped_labels.yaml`` is the single
+    source of truth; a Python mirror re-opens the drift surface the v2
+    swap exists to close."""
+    import inspect
+
+    import tools.lint.check_org_scoping as mod
+
+    source = inspect.getsource(mod)
+    assert "ORG_SCOPED_NEO4J_LABELS" not in source, (
+        "lint module must not declare an ORG_SCOPED_NEO4J_LABELS mirror "
+        "constant; the YAML at packages/substrate/src/oraclous_substrate/"
+        "schema/org_scoped_labels.yaml is the single source of truth (ORA-51)"
+    )
+
+
+def test_check_source_accepts_org_scoped_labels_yaml_kwarg(tmp_path: Path) -> None:
+    """The testability seam: ``check_source`` must accept the keyword-only
+    ``org_scoped_labels_yaml`` path. Without this signature, the lint cannot
+    be unit-tested for YAML-driven recognition (would have to mutate the
+    canonical YAML at the canonical path — a global side effect)."""
+    import inspect
+
+    sig = inspect.signature(check_source)
+    assert "org_scoped_labels_yaml" in sig.parameters, list(sig.parameters)
+    param = sig.parameters["org_scoped_labels_yaml"]
+    assert param.kind == inspect.Parameter.KEYWORD_ONLY, param.kind
