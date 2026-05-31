@@ -1,0 +1,8 @@
+{
+  "error": {
+    "code": "UNSUPPORTED_MEDIA_TYPE",
+    "message": "The request content type is not supported.",
+    "requestId": "req_01J9ZQ8XK3M2N7P5R1T0VWABCJ",
+    "retryable": false
+  }
+}

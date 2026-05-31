@@ -1,0 +1,33 @@
+{
+  "$comment": "Negative-test pattern set for Contract ORA-37 / Interface Contracts §3 'Sensitive-data rules — must NEVER appear in an error body'. If any pattern matches a serialised error response body, the body leaks. 'rule' maps to the numbered §3 rule. 'example' is a deliberately-fake string the pattern must match (powers the scanner self-test); examples are non-functional placeholders, never real secrets. 'flags' is a subset of 'ims'.",
+  "contract": "ORA-37",
+  "canonical_home": "https://oraclous.atlassian.net/wiki/spaces/OP/pages/1277953",
+  "patterns": [
+    { "id": "py_traceback_header", "rule": 1, "flags": "", "description": "Python traceback header", "regex": "Traceback \\(most recent call last\\)", "example": "Traceback (most recent call last):" },
+    { "id": "stack_frame_with_location", "rule": 1, "flags": "", "description": "JVM/JS-style stack frame with source location", "regex": "\\bat [\\w$.<>]+\\([^)]*:\\d+\\)", "example": "at com.oraclous.Svc.handle(Svc.java:142)" },
+    { "id": "source_file_line", "rule": 1, "flags": "", "description": "Source file path with a line number", "regex": "\\b[\\w./-]+\\.(py|java|ts|tsx|js|jsx|rb|go|cs)\\b[:\\s,]+line\\s*\\d+|\\b[\\w./-]+\\.(py|java|ts|tsx|js|jsx|rb|go|cs):\\d+", "example": "gateway/handlers.py, line 88" },
+    { "id": "exception_class_name", "rule": 1, "flags": "", "description": "CamelCase exception/error class name", "regex": "\\b[A-Z]\\w*(Error|Exception)\\b", "example": "NullPointerException" },
+    { "id": "private_ip_10", "rule": 2, "flags": "", "description": "RFC1918 10.0.0.0/8 address", "regex": "\\b10\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\b", "example": "10.4.12.9" },
+    { "id": "private_ip_192_168", "rule": 2, "flags": "", "description": "RFC1918 192.168.0.0/16 address", "regex": "\\b192\\.168\\.\\d{1,3}\\.\\d{1,3}\\b", "example": "192.168.1.20" },
+    { "id": "private_ip_172", "rule": 2, "flags": "", "description": "RFC1918 172.16.0.0/12 address", "regex": "\\b172\\.(1[6-9]|2\\d|3[01])\\.\\d{1,3}\\.\\d{1,3}\\b", "example": "172.18.0.5" },
+    { "id": "internal_dns_suffix", "rule": 2, "flags": "i", "description": "Internal/cluster DNS suffix", "regex": "\\b[\\w-]+\\.(internal|local|svc\\.cluster\\.local)\\b", "example": "auth-svc.svc.cluster.local" },
+    { "id": "localhost_with_port", "rule": 2, "flags": "i", "description": "localhost with an explicit port", "regex": "\\blocalhost:\\d+", "example": "localhost:5432" },
+    { "id": "sql_select_from", "rule": 3, "flags": "i", "description": "SQL SELECT ... FROM fragment", "regex": "\\bSELECT\\b[\\s\\S]+?\\bFROM\\b", "example": "SELECT id FROM users" },
+    { "id": "sql_dml", "rule": 3, "flags": "i", "description": "SQL INSERT/UPDATE/DELETE fragment", "regex": "\\b(INSERT\\s+INTO|UPDATE\\s+\\w+\\s+SET|DELETE\\s+FROM)\\b", "example": "INSERT INTO sessions" },
+    { "id": "orm_or_driver_name", "rule": 3, "flags": "i", "description": "ORM / DB driver name", "regex": "\\b(sqlalchemy|psycopg2?|asyncpg|hibernate|sequelize|prisma|typeorm)\\b", "example": "sqlalchemy.exc" },
+    { "id": "db_constraint_violation", "rule": 3, "flags": "i", "description": "Database constraint violation text", "regex": "violates (unique|foreign key|not-null|check) constraint|constraint \"[^\"]+\"", "example": "violates unique constraint" },
+    { "id": "bearer_token", "rule": 4, "flags": "", "description": "Bearer token", "regex": "Bearer\\s+[A-Za-z0-9._-]{8,}", "example": "Bearer abcdef0123456789EXAMPLE" },
+    { "id": "jwt", "rule": 4, "flags": "", "description": "JWT-shaped string", "regex": "\\beyJ[A-Za-z0-9_-]{6,}\\.[A-Za-z0-9_-]{6,}", "example": "eyJhbGciOiEXAMPLE.eyJzdWIiEXAMPLE" },
+    { "id": "openai_style_key", "rule": 4, "flags": "", "description": "sk- prefixed secret key", "regex": "\\bsk-[A-Za-z0-9]{16,}", "example": "sk-EXAMPLEEXAMPLEEXAMPLE0000" },
+    { "id": "aws_access_key_id", "rule": 4, "flags": "", "description": "AWS access key id", "regex": "\\bAKIA[0-9A-Z]{16}\\b", "example": "AKIAIOSFODNN7EXAMPLE" },
+    { "id": "pem_private_key", "rule": 4, "flags": "", "description": "PEM private key block header", "regex": "-----BEGIN (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----", "example": "-----BEGIN PRIVATE KEY-----" },
+    { "id": "secret_assignment", "rule": 4, "flags": "i", "description": "Secret-like key/value assignment", "regex": "\\b(password|secret|api[_-]?key|access[_-]?token|client[_-]?secret)\\b\\s*[=:]\\s*\\S+", "example": "password=hunter2" },
+    { "id": "framework_version", "rule": 5, "flags": "i", "description": "Framework/library name with version (fingerprinting)", "regex": "\\b(django|flask|fastapi|starlette|werkzeug|gunicorn|uvicorn|express|spring(?:boot)?|rails|laravel|nginx|openresty)[\\s/]v?\\d+\\.\\d+", "example": "Werkzeug/2.3.7" },
+    { "id": "server_fingerprint_header", "rule": 5, "flags": "i", "description": "Server / X-Powered-By style fingerprint header", "regex": "\\b(Server|X-Powered-By)\\b\\s*[:=]\\s*\\S+", "example": "X-Powered-By: Express" },
+    { "id": "email_address", "rule": 6, "flags": "i", "description": "Email address (PII / reflected value) — heuristic", "regex": "[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}", "example": "person@example.com" },
+    { "id": "long_digit_run", "rule": 6, "flags": "", "description": "13-19 consecutive digits (card/account-like) — heuristic", "regex": "\\b\\d{13,19}\\b", "example": "4111111111111111" },
+    { "id": "auth_differential", "rule": 7, "flags": "i", "description": "Auth differential messaging (user-vs-password)", "regex": "\\b(user (not found|does not exist)|no such user|unknown user|wrong password|incorrect password|password (is )?(incorrect|invalid|wrong)|invalid username)\\b", "example": "wrong password" },
+    { "id": "upstream_conn_error", "rule": 8, "flags": "i", "description": "Raw upstream connection error", "regex": "\\b(ECONNREFUSED|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|getaddrinfo|connection refused)\\b", "example": "ECONNREFUSED" },
+    { "id": "raw_upstream_http_status", "rule": 8, "flags": "i", "description": "Raw upstream HTTP status text passed through", "regex": "\\b50[234]\\s+(Bad Gateway|Service Unavailable|Gateway Time-?out)\\b", "example": "502 Bad Gateway" }
+  ]
+}

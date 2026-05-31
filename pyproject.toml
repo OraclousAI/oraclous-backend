@@ -29,6 +29,7 @@ dev = [
     "redis>=5.0,<7.0",
     "psycopg[binary]>=3.2,<4.0",
     "PyYAML>=6.0,<7.0",
+    "jsonschema>=4.21,<5.0",
 ]
 
 [tool.mypy]

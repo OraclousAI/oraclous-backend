@@ -1,0 +1,20 @@
+{
+  "$comment": "Machine-readable form of the Interface Contracts §3 error-code taxonomy. The HTTP status and retryable_default are GUIDANCE, not schema-enforced: retryable is server-authoritative and decoupled from code, so the schema does not constrain code->retryable. Consumers may assert their own emissions against this table; they must not hardcode it as the source of retryability.",
+  "contract": "ORA-37",
+  "canonical_home": "https://oraclous.atlassian.net/wiki/spaces/OP/pages/1277953",
+  "codes": [
+    { "code": "VALIDATION_FAILED", "http": 400, "retryable_default": false, "retryable_overridable": false, "details_required": true, "when": "schema validation failed; details[] set" },
+    { "code": "MALFORMED_REQUEST", "http": 400, "retryable_default": false, "retryable_overridable": false, "details_required": false, "when": "unparseable body / bad content-type" },
+    { "code": "UNAUTHENTICATED", "http": 401, "retryable_default": false, "retryable_overridable": false, "details_required": false, "when": "missing/invalid/expired credentials (generic — no user-vs-password differential)" },
+    { "code": "UNAUTHORIZED", "http": 403, "retryable_default": false, "retryable_overridable": false, "details_required": false, "when": "authenticated, ReBAC denies, and caller may already know the resource exists" },
+    { "code": "NOT_FOUND", "http": 404, "retryable_default": false, "retryable_overridable": false, "details_required": false, "when": "resource absent, or hidden from a caller without read permission (existence-hiding)" },
+    { "code": "METHOD_NOT_ALLOWED", "http": 405, "retryable_default": false, "retryable_overridable": false, "details_required": false, "when": "method not permitted on resource" },
+    { "code": "CONFLICT", "http": 409, "retryable_default": false, "retryable_overridable": false, "details_required": false, "when": "state/version conflict" },
+    { "code": "PAYLOAD_TOO_LARGE", "http": 413, "retryable_default": false, "retryable_overridable": false, "details_required": false, "when": "body exceeds limit" },
+    { "code": "UNSUPPORTED_MEDIA_TYPE", "http": 415, "retryable_default": false, "retryable_overridable": false, "details_required": false, "when": "content-type not supported" },
+    { "code": "RATE_LIMITED", "http": 429, "retryable_default": true, "retryable_overridable": false, "details_required": false, "when": "throttle; retry hint via Retry-After header, not body" },
+    { "code": "INTERNAL_ERROR", "http": 500, "retryable_default": false, "retryable_overridable": true, "details_required": false, "when": "unexpected fault; message always generic (server may set retryable true when transient)" },
+    { "code": "SERVICE_UNAVAILABLE", "http": 503, "retryable_default": true, "retryable_overridable": false, "details_required": false, "when": "dependency down / draining" },
+    { "code": "GATEWAY_TIMEOUT", "http": 504, "retryable_default": true, "retryable_overridable": false, "details_required": false, "when": "upstream timeout" }
+  ]
+}

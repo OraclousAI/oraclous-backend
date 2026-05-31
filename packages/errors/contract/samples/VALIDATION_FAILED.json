@@ -1,0 +1,11 @@
+{
+  "error": {
+    "code": "VALIDATION_FAILED",
+    "message": "One or more fields are invalid.",
+    "requestId": "req_01J9ZQ8XK3M2N7P5R1T0VWABCA",
+    "retryable": false,
+    "details": [
+      { "field": "email", "issue": "INVALID_FORMAT" }
+    ]
+  }
+}

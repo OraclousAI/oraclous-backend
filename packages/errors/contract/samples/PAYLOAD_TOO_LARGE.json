@@ -1,0 +1,8 @@
+{
+  "error": {
+    "code": "PAYLOAD_TOO_LARGE",
+    "message": "The request payload is too large.",
+    "requestId": "req_01J9ZQ8XK3M2N7P5R1T0VWABCH",
+    "retryable": false
+  }
+}

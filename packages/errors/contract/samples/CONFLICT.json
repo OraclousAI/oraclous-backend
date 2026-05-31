@@ -1,0 +1,8 @@
+{
+  "error": {
+    "code": "CONFLICT",
+    "message": "The request conflicts with the current state of the resource.",
+    "requestId": "req_01J9ZQ8XK3M2N7P5R1T0VWABCG",
+    "retryable": false
+  }
+}
