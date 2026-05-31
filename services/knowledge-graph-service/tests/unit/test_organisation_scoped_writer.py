@@ -34,6 +34,10 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import pytest
+from oraclous_governance.propagation import (
+    MissingOrganisationContextError,
+    use_organisation_context,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -110,25 +114,32 @@ class _CapturingBaseWriter:
 # ---------------------------------------------------------------------------
 
 
-class TestWriterConstructionFailClosed:
-    """The writer cannot be constructed without an authenticated
-    ``OrganisationContext`` — there is no implicit / default scope.
+class TestWriterRuntimeFailClosed:
+    """The writer fails closed at *runtime* when no ``OrganisationContext`` is
+    bound — there is no implicit / default scope.
 
-    Threat: T1. Aligns with ADR-006 and the [A2] enforcement contract
-    (ORA-17): ``organisation_id`` comes from authenticated context only,
-    never from a request body or a default.
+    The 'no implicit / default scope' invariant originally lived at
+    construction (ORA-18) but moved to runtime in ORA-52 / ADR-012 §1b: the
+    writer sources its ``organisation_id`` live from the substrate seam at
+    stamping time, so a request body cannot redirect scope at construction
+    (T1-M1). The same fail-closed guarantee is preserved — just at the
+    runtime boundary instead of ``__init__``.
     """
 
     pytestmark = [pytest.mark.unit, pytest.mark.security]
 
-    def test_writer_requires_organisation_context(self) -> None:
+    async def test_writer_fails_closed_without_bound_context_at_runtime(
+        self,
+    ) -> None:
         Writer = _writer_cls()
-        with pytest.raises((TypeError, ValueError)):
-            Writer(
-                base_writer=_CapturingBaseWriter(),
-                context=None,  # type: ignore[arg-type]
-                graph_id="graph-A",
-            )
+        base = _CapturingBaseWriter()
+        # Construction without a bound context is allowed (the constructor
+        # is now a no-op for scope sourcing); the runtime stamp call fails
+        # closed.
+        writer = Writer(base_writer=base, graph_id="graph-A")
+        graph = _Graph(nodes=[_Node(id="n1", label="Person", properties={"name": "Alice"})])
+        with pytest.raises((MissingOrganisationContextError, ValueError, RuntimeError)):
+            await writer.run(graph)
 
 
 # ---------------------------------------------------------------------------
@@ -146,7 +157,7 @@ class TestWriterOrganisationScopeInjection:
     async def test_writer_injects_organisation_id_on_every_node(self) -> None:
         Writer = _writer_cls()
         base = _CapturingBaseWriter()
-        writer = Writer(base_writer=base, context=_context(_ORG_A), graph_id="graph-A")
+        writer = Writer(base_writer=base, graph_id="graph-A")
         graph = _Graph(
             nodes=[
                 _Node(id="n1", label="Person", properties={"name": "Alice"}),
@@ -154,14 +165,15 @@ class TestWriterOrganisationScopeInjection:
             ]
         )
 
-        await writer.run(graph)
+        with use_organisation_context(_context(_ORG_A)):
+            await writer.run(graph)
 
         assert all(n.properties["organisation_id"] == str(_ORG_A) for n in graph.nodes)
 
     async def test_writer_injects_organisation_id_on_every_relationship(self) -> None:
         Writer = _writer_cls()
         base = _CapturingBaseWriter()
-        writer = Writer(base_writer=base, context=_context(_ORG_A), graph_id="graph-A")
+        writer = Writer(base_writer=base, graph_id="graph-A")
         graph = _Graph(
             nodes=[
                 _Node(id="a", label="Person", properties={"name": "Alice"}),
@@ -172,7 +184,8 @@ class TestWriterOrganisationScopeInjection:
             ],
         )
 
-        await writer.run(graph)
+        with use_organisation_context(_context(_ORG_A)):
+            await writer.run(graph)
 
         assert graph.relationships[0].properties["organisation_id"] == str(_ORG_A)
 
@@ -184,7 +197,7 @@ class TestWriterOrganisationScopeInjection:
         MUST NOT be written to that other organisation."""
         Writer = _writer_cls()
         base = _CapturingBaseWriter()
-        writer = Writer(base_writer=base, context=_context(_ORG_A), graph_id="graph-A")
+        writer = Writer(base_writer=base, graph_id="graph-A")
         graph = _Graph(
             nodes=[
                 _Node(
@@ -195,7 +208,8 @@ class TestWriterOrganisationScopeInjection:
             ]
         )
 
-        await writer.run(graph)
+        with use_organisation_context(_context(_ORG_A)):
+            await writer.run(graph)
 
         assert graph.nodes[0].properties["organisation_id"] == str(_ORG_A)
 
@@ -205,7 +219,7 @@ class TestWriterOrganisationScopeInjection:
     ) -> None:
         Writer = _writer_cls()
         base = _CapturingBaseWriter()
-        writer = Writer(base_writer=base, context=_context(_ORG_A), graph_id="graph-A")
+        writer = Writer(base_writer=base, graph_id="graph-A")
         graph = _Graph(
             nodes=[
                 _Node(id="a", label="Person", properties={"name": "Alice"}),
@@ -221,7 +235,8 @@ class TestWriterOrganisationScopeInjection:
             ],
         )
 
-        await writer.run(graph)
+        with use_organisation_context(_context(_ORG_A)):
+            await writer.run(graph)
 
         assert graph.relationships[0].properties["organisation_id"] == str(_ORG_A)
 
@@ -232,10 +247,11 @@ class TestWriterOrganisationScopeInjection:
         ``graph_id`` boundary survives unchanged (Lift step preserved)."""
         Writer = _writer_cls()
         base = _CapturingBaseWriter()
-        writer = Writer(base_writer=base, context=_context(_ORG_A), graph_id="graph-A")
+        writer = Writer(base_writer=base, graph_id="graph-A")
         graph = _Graph(nodes=[_Node(id="n1", label="Person", properties={"name": "Alice"})])
 
-        await writer.run(graph)
+        with use_organisation_context(_context(_ORG_A)):
+            await writer.run(graph)
 
         props = graph.nodes[0].properties
         assert props["organisation_id"] == str(_ORG_A)
@@ -263,10 +279,11 @@ class TestWriterSingleOrgRegression:
         identical to the lift-only flow."""
         Writer = _writer_cls()
         base = _CapturingBaseWriter()
-        writer = Writer(base_writer=base, context=_context(_SEED_ORG), graph_id="graph-A")
+        writer = Writer(base_writer=base, graph_id="graph-A")
         graph = _Graph(nodes=[_Node(id="n1", label="Person", properties={"name": "Alice"})])
 
-        await writer.run(graph)
+        with use_organisation_context(_context(_SEED_ORG)):
+            await writer.run(graph)
 
         props = graph.nodes[0].properties
         assert props["organisation_id"] == str(_SEED_ORG)

@@ -36,6 +36,10 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import pytest
+from oraclous_governance.propagation import (
+    MissingOrganisationContextError,
+    use_organisation_context,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -124,43 +128,45 @@ class _FakeBaseRetriever:
 # ---------------------------------------------------------------------------
 
 
-class TestConstructionFailClosed:
-    """The retriever wrappers cannot be constructed without an authenticated
-    ``OrganisationContext`` — there is no implicit / default scope.
+class TestRuntimeFailClosed:
+    """The retriever wrappers fail closed at *runtime* when no
+    ``OrganisationContext`` is bound — there is no implicit / default scope.
 
-    Threat: T1. Aligns with ADR-006 and the [A2] enforcement contract
-    (ORA-17): ``organisation_id`` comes from authenticated context only,
-    never from a request body or a default.
+    The 'no implicit / default scope' invariant originally lived at
+    construction (ORA-18) but moved to runtime in ORA-52 / ADR-012 §1b: the
+    wrapper sources its ``organisation_id`` live from the substrate seam
+    (``current_organisation_context()``) so a request body cannot redirect
+    scope at construction. The same fail-closed guarantee is preserved —
+    just at the runtime boundary instead of ``__init__``.
+
+    Threat: T1-M1.
     """
 
     pytestmark = [pytest.mark.unit, pytest.mark.security]
 
-    def test_vector_retriever_requires_organisation_context(self) -> None:
+    def test_vector_retriever_fails_closed_without_bound_context_at_runtime(
+        self,
+    ) -> None:
         VR, _VCR, _HR = _retrievers()
-        with pytest.raises((TypeError, ValueError)):
-            VR(
-                base_retriever=_FakeBaseRetriever(),
-                context=None,  # type: ignore[arg-type]
-                graph_id="graph-A",
-            )
+        retriever = VR(base_retriever=_FakeBaseRetriever(), graph_id="graph-A")
+        with pytest.raises((MissingOrganisationContextError, ValueError, RuntimeError)):
+            retriever.get_search_results(query_text="hi")
 
-    def test_vector_cypher_retriever_requires_organisation_context(self) -> None:
+    def test_vector_cypher_retriever_fails_closed_without_bound_context_at_runtime(
+        self,
+    ) -> None:
         _VR, VCR, _HR = _retrievers()
-        with pytest.raises((TypeError, ValueError)):
-            VCR(
-                base_retriever=_FakeBaseRetriever(),
-                context=None,  # type: ignore[arg-type]
-                graph_id="graph-A",
-            )
+        retriever = VCR(base_retriever=_FakeBaseRetriever(), graph_id="graph-A")
+        with pytest.raises((MissingOrganisationContextError, ValueError, RuntimeError)):
+            retriever.get_search_results(query_text="hi")
 
-    def test_hybrid_retriever_requires_organisation_context(self) -> None:
+    def test_hybrid_retriever_fails_closed_without_bound_context_at_runtime(
+        self,
+    ) -> None:
         _VR, _VCR, HR = _retrievers()
-        with pytest.raises((TypeError, ValueError)):
-            HR(
-                base_retriever=_FakeBaseRetriever(),
-                context=None,  # type: ignore[arg-type]
-                graph_id="graph-A",
-            )
+        retriever = HR(base_retriever=_FakeBaseRetriever(), graph_id="graph-A")
+        with pytest.raises((MissingOrganisationContextError, ValueError, RuntimeError)):
+            retriever.get_search_results(query_text="hi")
 
 
 # ---------------------------------------------------------------------------
@@ -176,9 +182,10 @@ class TestRetrieverOrganisationScopeInjection:
     def test_organisation_id_added_to_filters(self) -> None:
         VR, _VCR, _HR = _retrievers()
         base = _FakeBaseRetriever()
-        retriever = VR(base_retriever=base, context=_context(_ORG_A), graph_id="graph-A")
+        retriever = VR(base_retriever=base, graph_id="graph-A")
 
-        retriever.get_search_results(query_text="hi")
+        with use_organisation_context(_context(_ORG_A)):
+            retriever.get_search_results(query_text="hi")
 
         filters = base.calls[0]["filters"]
         assert filters["organisation_id"] == str(_ORG_A)
@@ -187,9 +194,10 @@ class TestRetrieverOrganisationScopeInjection:
     def test_organisation_id_added_to_query_params(self) -> None:
         VR, _VCR, _HR = _retrievers()
         base = _FakeBaseRetriever()
-        retriever = VR(base_retriever=base, context=_context(_ORG_A), graph_id="graph-A")
+        retriever = VR(base_retriever=base, graph_id="graph-A")
 
-        retriever.get_search_results(query_text="hi")
+        with use_organisation_context(_context(_ORG_A)):
+            retriever.get_search_results(query_text="hi")
 
         params = base.calls[0]["query_params"]
         assert params["organisation_id"] == str(_ORG_A)
@@ -201,9 +209,10 @@ class TestRetrieverOrganisationScopeInjection:
         able to widen the scope. T1: prevents request-body org-id override."""
         VR, _VCR, _HR = _retrievers()
         base = _FakeBaseRetriever()
-        retriever = VR(base_retriever=base, context=_context(_ORG_A), graph_id="graph-A")
+        retriever = VR(base_retriever=base, graph_id="graph-A")
 
-        retriever.get_search_results(query_text="hi", filters={"organisation_id": str(_ORG_B)})
+        with use_organisation_context(_context(_ORG_A)):
+            retriever.get_search_results(query_text="hi", filters={"organisation_id": str(_ORG_B)})
 
         assert base.calls[0]["filters"]["organisation_id"] == str(_ORG_A)
 
@@ -211,9 +220,12 @@ class TestRetrieverOrganisationScopeInjection:
     def test_caller_supplied_organisation_id_query_param_is_overwritten(self) -> None:
         VR, _VCR, _HR = _retrievers()
         base = _FakeBaseRetriever()
-        retriever = VR(base_retriever=base, context=_context(_ORG_A), graph_id="graph-A")
+        retriever = VR(base_retriever=base, graph_id="graph-A")
 
-        retriever.get_search_results(query_text="hi", query_params={"organisation_id": str(_ORG_B)})
+        with use_organisation_context(_context(_ORG_A)):
+            retriever.get_search_results(
+                query_text="hi", query_params={"organisation_id": str(_ORG_B)}
+            )
 
         assert base.calls[0]["query_params"]["organisation_id"] == str(_ORG_A)
 
@@ -245,14 +257,14 @@ class TestCypherOrganisationScope:
             _fake_base,
         )
 
-        VCR.create(
-            driver=object(),
-            index_name="entity_embeddings",
-            embedder=object(),
-            retrieval_query="MATCH (node:Entity) RETURN node",
-            context=_context(_ORG_A),
-            graph_id="graph-A",
-        )
+        with use_organisation_context(_context(_ORG_A)):
+            VCR.create(
+                driver=object(),
+                index_name="entity_embeddings",
+                embedder=object(),
+                retrieval_query="MATCH (node:Entity) RETURN node",
+                graph_id="graph-A",
+            )
 
         q = captured["retrieval_query"]
         assert "$organisation_id" in q
@@ -277,14 +289,14 @@ class TestCypherOrganisationScope:
             _fake_base,
         )
 
-        VCR.create(
-            driver=object(),
-            index_name="entity_embeddings",
-            embedder=object(),
-            retrieval_query="MATCH (node:Entity) RETURN node",
-            context=_context(_ORG_A),
-            graph_id="graph-A",
-        )
+        with use_organisation_context(_context(_ORG_A)):
+            VCR.create(
+                driver=object(),
+                index_name="entity_embeddings",
+                embedder=object(),
+                retrieval_query="MATCH (node:Entity) RETURN node",
+                graph_id="graph-A",
+            )
 
         assert str(_ORG_A) not in captured["retrieval_query"]
 
@@ -314,13 +326,13 @@ class TestTenantIndexNamingIncludesOrganisation:
             _fake_base,
         )
 
-        VR.create(
-            driver=object(),
-            index_name="entity_embeddings",
-            embedder=object(),
-            context=_context(_ORG_A),
-            graph_id="graph-A",
-        )
+        with use_organisation_context(_context(_ORG_A)):
+            VR.create(
+                driver=object(),
+                index_name="entity_embeddings",
+                embedder=object(),
+                graph_id="graph-A",
+            )
 
         assert str(_ORG_A) in captured["index_name"]
         assert "graph-A" in captured["index_name"]
@@ -338,14 +350,14 @@ class TestTenantIndexNamingIncludesOrganisation:
             _fake_base,
         )
 
-        HR.create(
-            driver=object(),
-            vector_index_name="entity_embeddings",
-            fulltext_index_name="entity_text_fulltext",
-            embedder=object(),
-            context=_context(_ORG_A),
-            graph_id="graph-A",
-        )
+        with use_organisation_context(_context(_ORG_A)):
+            HR.create(
+                driver=object(),
+                vector_index_name="entity_embeddings",
+                fulltext_index_name="entity_text_fulltext",
+                embedder=object(),
+                graph_id="graph-A",
+            )
 
         assert str(_ORG_A) in captured["vector_index_name"]
         assert str(_ORG_A) in captured["fulltext_index_name"]
@@ -379,9 +391,10 @@ class TestOrganisationPostFilterBackstop:
             ),
         ]
         base = _FakeBaseRetriever(items=items)
-        retriever = VR(base_retriever=base, context=_context(_ORG_A), graph_id="graph-A")
+        retriever = VR(base_retriever=base, graph_id="graph-A")
 
-        result = retriever.get_search_results(query_text="hi")
+        with use_organisation_context(_context(_ORG_A)):
+            result = retriever.get_search_results(query_text="hi")
 
         assert [i.content for i in result.items] == ["ours"]
 
@@ -397,9 +410,10 @@ class TestOrganisationPostFilterBackstop:
             _FakeItem(content="orphan", metadata={"graph_id": "graph-A"}),
         ]
         base = _FakeBaseRetriever(items=items)
-        retriever = VR(base_retriever=base, context=_context(_ORG_A), graph_id="graph-A")
+        retriever = VR(base_retriever=base, graph_id="graph-A")
 
-        result = retriever.get_search_results(query_text="hi")
+        with use_organisation_context(_context(_ORG_A)):
+            result = retriever.get_search_results(query_text="hi")
 
         assert [i.content for i in result.items] == ["ours"]
 
@@ -433,8 +447,9 @@ class TestSingleOrgRegression:
             ),
         ]
         base = _FakeBaseRetriever(items=items)
-        retriever = VR(base_retriever=base, context=_context(_SEED_ORG), graph_id="graph-A")
+        retriever = VR(base_retriever=base, graph_id="graph-A")
 
-        result = retriever.get_search_results(query_text="hi")
+        with use_organisation_context(_context(_SEED_ORG)):
+            result = retriever.get_search_results(query_text="hi")
 
         assert [i.content for i in result.items] == ["one", "two"]
