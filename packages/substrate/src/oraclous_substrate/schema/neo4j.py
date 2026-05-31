@@ -13,18 +13,24 @@ A1 provides the org-scoped indexes + data-layer scoping (ADR-006).
 ``apply(driver)`` takes a neo4j driver and is idempotent via
 ``CREATE INDEX … IF NOT EXISTS`` — a second run neither raises nor duplicates an
 index. Identifiers below are trusted module constants, never request input.
+
+The label and relationship-type sets are derived from the canonical YAML at
+``org_scoped_labels.yaml`` at module-import time (ORA-51); the lint guardrail
+in ``tools.lint.check_org_scoping`` reads the same file at lint time. Adding
+an entry to the YAML extends both this module's ``apply()`` coverage and the
+ORG003 recognition set with no other code change.
 """
 
 from __future__ import annotations
 
+from .org_scoped_labels import CANONICAL_YAML_PATH, load
+
 ORG_PROPERTY = "organisation_id"
 
-# Node labels that carry tenant data and so must be organisation-scoped (reshaped
-# from the legacy graph-content labels). The first is used as the canonical label.
-ORG_SCOPED_LABELS: tuple[str, ...] = ("__Entity__", "__Community__", "__Contradiction__", "Chunk")
+_SPEC = load(CANONICAL_YAML_PATH)
 
-# Relationship types whose legacy graph_id indexes reshape to org-scoped indexes.
-ORG_SCOPED_RELATIONSHIP_TYPES: tuple[str, ...] = ("IN_COMMUNITY",)
+ORG_SCOPED_LABELS: tuple[str, ...] = _SPEC.labels
+ORG_SCOPED_RELATIONSHIP_TYPES: tuple[str, ...] = _SPEC.relationship_types
 
 
 def _index_name(token: str) -> str:
