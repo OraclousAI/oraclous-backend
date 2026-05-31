@@ -1,7 +1,7 @@
 """Idempotent pre-R1 agent-identity backfill (ORA-36 / R1-D1).
 
 RED until ``backend-implementer`` adds
-``oraclous_substrate.migrations.agent_identity_backfill``.
+``oraclous_auth_service.migrations.agent_identity_backfill``.
 
 Reshape (lift-tag **Reshape**) of the legacy
 ``knowledge-graph-builder/scripts/backfill_default_orgs.py`` Neo4j-traversal
@@ -21,6 +21,30 @@ the three artifacts R1 declares for an agent principal:
     (``oraclous_rebac.ReBACEngine.check_graph_permission`` with
     ``subject={"type": "agent", …}``) reads from.
 
+**Module decomposition (ratified by solution-architect comment 10345 +
+security-architect co-sign comment 10346):** this is a two-domain migration
+— Postgres principal + credential are written by *auth-service*, the Neo4j
+subject-node ``organisation_id`` stamp is written by *substrate* — each
+store written by its owner (ADR-001 / ADR-012 §1a / §1b). Concretely:
+
+* The orchestrator the tests import (``backfill_agent_identity`` /
+  ``rollback_agent_identity``) lives in **auth-service**:
+  ``oraclous_auth_service.migrations.agent_identity_backfill``.
+* The Postgres writes use auth-service-owned helpers (hash / prefix /
+  active-prefix-unique convention from ORA-30 / ADR-012 §1a, kept in one
+  home) over the caller's ``postgres_conn`` (caller-controlled txn —
+  mirrors ``org_backfill``).
+* The Neo4j stamp composes a new context-free, explicit-org node-writer
+  living in the *substrate migrations namespace*
+  (``oraclous_substrate.migrations.*`` — sibling of ``org_backfill``,
+  alongside the explicit-``SEED_ORGANISATION_ID`` pattern that namespace
+  already uses). Per security-architect R2: this writer is **never**
+  exposed on the request-path access seam beside ``scoped_write_node`` —
+  a caller-chooses-org writer at the request boundary is a T1 cross-org-
+  write primitive. The canonical ``organisation_id`` / label spelling is
+  single-sourced from ``oraclous_substrate.access`` (§1b); the dangerous
+  capability stays out of the seam.
+
 The migration is asserted against the real ORA-12 substrate harness
 (``neo4j_driver`` + ``postgres_dsn``). Per the brief the migration is
 *authored and rehearsed* now; this suite is the staging-rehearsal contract.
@@ -37,8 +61,12 @@ T2 (the brief's threat tag) is the through-line: "no agent without a
 correctly-scoped principal = no implicit-escalation gap". A migrated
 principal must (a) exist in every store, (b) carry the same
 ``organisation_id`` everywhere, and (c) carry **no** authority — no
-``DELEGATED_TO`` edge, no role grant, no credential a known string can
-authenticate against. The security-marked tests below pin each leg.
+``DELEGATED_TO`` edge, no role grant, and a **structurally inert
+credential** (security-architect R1): ``validate_credential`` returns
+``None`` for any input, and the row is excluded from
+``active_credentials_by_prefix`` (keeping the partial-unique active-prefix
+slot free for the first real credential an admin later issues — defense
+in depth, so inertness does not rest solely on bcrypt preimage resistance).
 """
 
 from __future__ import annotations
@@ -233,14 +261,19 @@ class TestMigrationContractSurface:
     """
 
     def test_backfill_agent_identity_is_importable(self) -> None:
-        from oraclous_substrate.migrations import agent_identity_backfill  # noqa: F401
+        """The orchestrator the tests import lives in **auth-service**, per
+        the solution-architect ruling (comment 10345). The substrate
+        migrations namespace owns the Neo4j explicit-org helper that this
+        orchestrator composes; it is never imported here directly.
+        """
+        from oraclous_auth_service.migrations import agent_identity_backfill  # noqa: F401
 
         assert callable(
             getattr(agent_identity_backfill, "backfill_agent_identity", None)
         ), "agent_identity_backfill.backfill_agent_identity must exist"
 
     def test_rollback_agent_identity_is_importable(self) -> None:
-        from oraclous_substrate.migrations import agent_identity_backfill
+        from oraclous_auth_service.migrations import agent_identity_backfill
 
         assert callable(
             getattr(agent_identity_backfill, "rollback_agent_identity", None)
@@ -253,11 +286,30 @@ class TestMigrationContractSurface:
         """
         import inspect
 
-        from oraclous_substrate.migrations import agent_identity_backfill
+        from oraclous_auth_service.migrations import agent_identity_backfill
 
         sig = inspect.signature(agent_identity_backfill.backfill_agent_identity)
         assert "postgres_conn" in sig.parameters, sig
         assert "neo4j_driver" in sig.parameters, sig
+
+    def test_orchestrator_does_not_live_in_substrate_migrations(self) -> None:
+        """Solution-architect ruling Q1 (comment 10345): the orchestrator
+        lives in **auth-service**, not substrate. The substrate
+        ``migrations`` namespace owns the Neo4j explicit-org node-writer
+        that the orchestrator composes, but the orchestrator itself
+        crossing into substrate would invert the layer dependency
+        (auth-service depends on substrate, never the reverse — ADR-001 +
+        ADR-012 §1a).
+        """
+        from oraclous_substrate import migrations as substrate_migrations
+
+        assert not hasattr(substrate_migrations, "agent_identity_backfill"), (
+            "the agent-identity orchestrator must NOT be exposed from "
+            "oraclous_substrate.migrations — solution-architect Q1 ruling: "
+            "the orchestrator lives in auth-service. The substrate "
+            "migrations namespace owns only the Neo4j explicit-org helper "
+            "the orchestrator composes."
+        )
 
 
 # ── AC#1: zero orphans across every store ──────────────────────────────────
@@ -276,7 +328,7 @@ class TestZeroOrphansAcrossEveryStore:
     def test_every_legacy_neo4j_agent_has_a_postgres_principal(
         self, legacy_neo4j, fresh_pg: psycopg.Connection
     ) -> None:
-        from oraclous_substrate.migrations import agent_identity_backfill
+        from oraclous_auth_service.migrations import agent_identity_backfill
 
         agent_identity_backfill.backfill_agent_identity(
             postgres_conn=fresh_pg, neo4j_driver=legacy_neo4j
@@ -297,7 +349,7 @@ class TestZeroOrphansAcrossEveryStore:
     def test_every_postgres_principal_has_at_least_one_credential(
         self, legacy_neo4j, fresh_pg: psycopg.Connection
     ) -> None:
-        from oraclous_substrate.migrations import agent_identity_backfill
+        from oraclous_auth_service.migrations import agent_identity_backfill
 
         agent_identity_backfill.backfill_agent_identity(
             postgres_conn=fresh_pg, neo4j_driver=legacy_neo4j
@@ -324,7 +376,7 @@ class TestZeroOrphansAcrossEveryStore:
         backfill, regardless of whether it originally had ``org_id`` or
         nothing at all (Agent-C). The C2 delegation traversal filters on
         ``organisation_id`` — a missing value is a silent permission deny."""
-        from oraclous_substrate.migrations import agent_identity_backfill
+        from oraclous_auth_service.migrations import agent_identity_backfill
 
         agent_identity_backfill.backfill_agent_identity(
             postgres_conn=fresh_pg, neo4j_driver=legacy_neo4j
@@ -345,7 +397,7 @@ class TestZeroOrphansAcrossEveryStore:
         """The return value reports counts so an operator running the
         migration has a concrete ledger of what changed (the brief's
         staging-rehearsal expectation)."""
-        from oraclous_substrate.migrations import agent_identity_backfill
+        from oraclous_auth_service.migrations import agent_identity_backfill
 
         summary = agent_identity_backfill.backfill_agent_identity(
             postgres_conn=fresh_pg, neo4j_driver=legacy_neo4j
@@ -373,7 +425,7 @@ class TestOrganisationIdMatchesEverywhere:
     def test_principal_credential_and_subject_node_share_organisation_id(
         self, legacy_neo4j, marker: str, fresh_pg: psycopg.Connection
     ) -> None:
-        from oraclous_substrate.migrations import agent_identity_backfill
+        from oraclous_auth_service.migrations import agent_identity_backfill
 
         agent_identity_backfill.backfill_agent_identity(
             postgres_conn=fresh_pg, neo4j_driver=legacy_neo4j
@@ -416,7 +468,7 @@ class TestOrganisationIdMatchesEverywhere:
         migration must preserve them — overwriting both to the seed org
         would be a cross-org bleed (T1) and a violation of ADR-006 (the
         outermost tenancy scope is the one the data already carries)."""
-        from oraclous_substrate.migrations import agent_identity_backfill
+        from oraclous_auth_service.migrations import agent_identity_backfill
 
         agent_identity_backfill.backfill_agent_identity(
             postgres_conn=fresh_pg, neo4j_driver=legacy_neo4j
@@ -446,7 +498,7 @@ class TestOrganisationIdMatchesEverywhere:
         the documented fallback (ADR-006 + ORA-24 precedent). A backfill
         that left this agent without a principal would be the exact T2
         gap the brief calls out."""
-        from oraclous_substrate.migrations import agent_identity_backfill
+        from oraclous_auth_service.migrations import agent_identity_backfill
         from oraclous_substrate.organisation import SEED_ORGANISATION_ID
 
         agent_identity_backfill.backfill_agent_identity(
@@ -476,7 +528,7 @@ class TestIdempotency:
     def test_second_backfill_does_not_duplicate_principals(
         self, legacy_neo4j, fresh_pg: psycopg.Connection
     ) -> None:
-        from oraclous_substrate.migrations import agent_identity_backfill
+        from oraclous_auth_service.migrations import agent_identity_backfill
 
         agent_identity_backfill.backfill_agent_identity(
             postgres_conn=fresh_pg, neo4j_driver=legacy_neo4j
@@ -502,7 +554,7 @@ class TestIdempotency:
         outright reject a duplicate active row, but the migration should
         guard *before* the index does so the rerun is a clean no-op.
         """
-        from oraclous_substrate.migrations import agent_identity_backfill
+        from oraclous_auth_service.migrations import agent_identity_backfill
 
         agent_identity_backfill.backfill_agent_identity(
             postgres_conn=fresh_pg, neo4j_driver=legacy_neo4j
@@ -525,7 +577,7 @@ class TestIdempotency:
     ) -> None:
         """The Neo4j Agent count + ``organisation_id`` distribution must
         be byte-identical after a second run."""
-        from oraclous_substrate.migrations import agent_identity_backfill
+        from oraclous_auth_service.migrations import agent_identity_backfill
 
         agent_identity_backfill.backfill_agent_identity(
             postgres_conn=fresh_pg, neo4j_driver=legacy_neo4j
@@ -557,7 +609,7 @@ class TestIdempotency:
         run the migration. A re-run must complete the missing rows but
         not duplicate Agent A's principal.
         """
-        from oraclous_substrate.migrations import agent_identity_backfill
+        from oraclous_auth_service.migrations import agent_identity_backfill
 
         with fresh_pg.cursor() as cur:
             cur.execute(
@@ -601,7 +653,7 @@ class TestRollback:
     def test_rollback_removes_backfilled_postgres_principals(
         self, legacy_neo4j, fresh_pg: psycopg.Connection
     ) -> None:
-        from oraclous_substrate.migrations import agent_identity_backfill
+        from oraclous_auth_service.migrations import agent_identity_backfill
 
         agent_identity_backfill.backfill_agent_identity(
             postgres_conn=fresh_pg, neo4j_driver=legacy_neo4j
@@ -624,7 +676,7 @@ class TestRollback:
     def test_rollback_removes_backfilled_postgres_credentials(
         self, legacy_neo4j, fresh_pg: psycopg.Connection
     ) -> None:
-        from oraclous_substrate.migrations import agent_identity_backfill
+        from oraclous_auth_service.migrations import agent_identity_backfill
 
         agent_identity_backfill.backfill_agent_identity(
             postgres_conn=fresh_pg, neo4j_driver=legacy_neo4j
@@ -653,7 +705,7 @@ class TestRollback:
         ``organisation_id`` property it stamped, but the nodes themselves
         and their ``agent_id`` must remain readable so a subsequent
         re-attempt has a source to migrate again.)"""
-        from oraclous_substrate.migrations import agent_identity_backfill
+        from oraclous_auth_service.migrations import agent_identity_backfill
 
         agent_identity_backfill.backfill_agent_identity(
             postgres_conn=fresh_pg, neo4j_driver=legacy_neo4j
@@ -679,7 +731,7 @@ class TestRollback:
         """A second rollback after the first must be a clean no-op (the
         rollback operator's safety net — re-running the rollback after a
         crash must not raise)."""
-        from oraclous_substrate.migrations import agent_identity_backfill
+        from oraclous_auth_service.migrations import agent_identity_backfill
 
         agent_identity_backfill.backfill_agent_identity(
             postgres_conn=fresh_pg, neo4j_driver=legacy_neo4j
@@ -701,7 +753,7 @@ class TestRollback:
         """Operator may invoke rollback defensively before discovering the
         migration never ran. That call must not raise and must not delete
         the legacy Neo4j Agent nodes."""
-        from oraclous_substrate.migrations import agent_identity_backfill
+        from oraclous_auth_service.migrations import agent_identity_backfill
 
         agent_identity_backfill.rollback_agent_identity(
             postgres_conn=fresh_pg, neo4j_driver=legacy_neo4j
@@ -726,7 +778,7 @@ class TestNoImplicitEscalation:
     def test_backfill_creates_no_delegated_to_edges(
         self, legacy_neo4j, marker: str, fresh_pg: psycopg.Connection
     ) -> None:
-        from oraclous_substrate.migrations import agent_identity_backfill
+        from oraclous_auth_service.migrations import agent_identity_backfill
 
         agent_identity_backfill.backfill_agent_identity(
             postgres_conn=fresh_pg, neo4j_driver=legacy_neo4j
@@ -747,7 +799,7 @@ class TestNoImplicitEscalation:
     def test_backfill_creates_no_role_grants_to_backfilled_agents(
         self, legacy_neo4j, marker: str, fresh_pg: psycopg.Connection
     ) -> None:
-        from oraclous_substrate.migrations import agent_identity_backfill
+        from oraclous_auth_service.migrations import agent_identity_backfill
 
         agent_identity_backfill.backfill_agent_identity(
             postgres_conn=fresh_pg, neo4j_driver=legacy_neo4j
@@ -764,42 +816,116 @@ class TestNoImplicitEscalation:
         )
 
     @pytest.mark.security
-    def test_backfilled_credential_does_not_validate_against_a_blank_or_obvious_secret(
+    def test_backfilled_credential_is_structurally_inert(
         self, legacy_neo4j, fresh_pg: psycopg.Connection
     ) -> None:
-        """The raw credential is, by construction, unrecoverable — the
-        backfill cannot ``bcrypt.hashpw`` a known string and write its
-        hash, because that string would then authenticate every
-        backfilled agent.
+        """Security-architect R1 (comment 10346): a backfilled principal
+        closes the T2 gap only if the credential is *structurally inert*.
+        Pin the behaviour — ``validate_credential`` returns ``None`` for
+        *any* input — not a specific sentinel-hash spelling.
 
-        Pinned via the live ``AgentRepository``: a sample of obvious
-        strings (blank, the prefix alone, the agent id itself) must
-        **not** validate against the backfilled credential row. This is
-        a sanity backstop — not a proof of unrecoverability, but it
-        catches the most likely backfill-shortcut mistakes.
+        Mechanism is the implementer's call: a bcrypt hash of a freshly-
+        generated random secret that is discarded *plus* a status that
+        excludes the row from the active-prefix lookup (the partial
+        UNIQUE INDEX on ``credential_prefix WHERE status='active'`` stays
+        free for the first real credential an admin later issues —
+        defense in depth, so inertness does not rest solely on bcrypt
+        preimage resistance).
+
+        Inputs below are illustrative (empty string, bare credential
+        prefix, agent id, fresh random ``oag_…`` tokens). They do not
+        lock down a credential-format spelling — they sample the space
+        where an honest backfill MUST refuse and a known-shortcut
+        backfill (T2 mistake) WOULD authenticate.
         """
-        from oraclous_auth_service.repositories.agent_repository import (
-            AgentRepository,
-            CredentialStore,
+        from oraclous_auth_service.migrations import agent_identity_backfill
+
+        agent_identity_backfill.backfill_agent_identity(
+            postgres_conn=fresh_pg, neo4j_driver=legacy_neo4j
         )
-        from oraclous_auth_service.models.agent_model import AgentCredential
-        from oraclous_substrate.migrations import agent_identity_backfill
+        fresh_pg.commit()
+        repo, creds = self._repo_over_backfilled_rows(fresh_pg, _AGENT_A)
+        assert creds, "no agent_credentials row for Agent A after backfill"
+
+        import asyncio
+        import secrets
+
+        candidates = [
+            "",
+            creds[0].credential_prefix,
+            _AGENT_A,
+            f"oag_{_AGENT_A}",
+            f"oag_{secrets.token_urlsafe(32)}",
+            f"oag_{secrets.token_urlsafe(32)}",
+        ]
+        for candidate in candidates:
+            assert asyncio.run(repo.validate_credential(candidate)) is None, (
+                f"backfilled credential authenticated against {candidate!r} "
+                "— T2 violation: an honest backfill cannot produce a hash "
+                "that matches any input the implementer did not retain"
+            )
+
+    @pytest.mark.security
+    def test_backfilled_credential_is_excluded_from_active_prefix_lookup(
+        self, legacy_neo4j, fresh_pg: psycopg.Connection
+    ) -> None:
+        """Security-architect R1 (comment 10346) — defense in depth: even
+        before the bcrypt verify gets a chance, the backfilled row must
+        not be returned by ``active_credentials_by_prefix``. The status
+        excludes the row from the active set so the partial-unique
+        ``credential_prefix WHERE status='active'`` slot stays free for
+        the first real credential an admin later issues, *and* a misused
+        prefix-injection attack on the lookup path finds no row to
+        challenge bcrypt against.
+        """
+        from oraclous_auth_service.migrations import agent_identity_backfill
 
         agent_identity_backfill.backfill_agent_identity(
             postgres_conn=fresh_pg, neo4j_driver=legacy_neo4j
         )
         fresh_pg.commit()
 
-        # Build a CredentialStore double over the now-populated Postgres rows.
         with fresh_pg.cursor() as cur:
+            cur.execute(
+                "SELECT count(*) FROM public.agent_credentials "
+                "WHERE agent_id = %s AND status = 'active'",
+                (_AGENT_A,),
+            )
+            active_count = cur.fetchone()[0]
+        assert active_count == 0, (
+            "backfilled credential is `status='active'` — would occupy the "
+            "partial-unique active-prefix slot and reach the bcrypt verify "
+            "path on every prefix-lookup attempt (R1 defense-in-depth "
+            "violation)"
+        )
+
+    # ── helpers (shared between R1 tests) ──────────────────────────────────
+
+    @staticmethod
+    def _repo_over_backfilled_rows(
+        conn: psycopg.Connection, agent_id: str
+    ) -> tuple[Any, list[Any]]:
+        """Build a live ``AgentRepository`` backed by an in-memory snapshot
+        of the backfilled rows. Lets the R1 tests exercise the real
+        repository ``validate_credential`` path without needing the
+        async-SQLAlchemy ``PostgresCredentialStore`` — the SQL
+        ``status='active'`` filter is faithfully reproduced in the
+        in-memory ``active_credentials_by_prefix``.
+        """
+        from oraclous_auth_service.models.agent_model import AgentCredential
+        from oraclous_auth_service.repositories.agent_repository import (
+            AgentRepository,
+            CredentialStore,
+        )
+
+        with conn.cursor() as cur:
             cur.execute(
                 "SELECT id, agent_id, organisation_id, credential_hash, "
                 "credential_prefix, status, created_at, expires_at, revoked_at "
                 "FROM public.agent_credentials WHERE agent_id = %s",
-                (_AGENT_A,),
+                (agent_id,),
             )
             rows = cur.fetchall()
-        assert rows, "no agent_credentials row for Agent A after backfill"
 
         def _row_to_cred(row: tuple[Any, ...]) -> AgentCredential:
             cred = AgentCredential(
@@ -816,45 +942,158 @@ class TestNoImplicitEscalation:
             return cred
 
         creds = [_row_to_cred(r) for r in rows]
-        active_prefix = next(
-            (c.credential_prefix for c in creds if c.status == "active"),
-            creds[0].credential_prefix,
-        )
 
-        class _ReadOnlyStore:
-            async def persist(self, *_a, **_k) -> None:  # noqa: D401
+        class _SnapshotStore:
+            async def persist(self, *_a, **_k) -> None:
                 raise AssertionError("validate-only fixture")
 
             async def active_credentials_by_prefix(
                 self, prefix: str
             ) -> list[AgentCredential]:
-                return [c for c in creds if c.status == "active" and c.credential_prefix == prefix]
+                return [
+                    c
+                    for c in creds
+                    if c.status == "active" and c.credential_prefix == prefix
+                ]
 
             async def revoke_agent_credentials(self, _agent_id: str) -> int:
                 raise AssertionError("validate-only fixture")
 
-        store: CredentialStore = _ReadOnlyStore()
-        repo = AgentRepository(store=store)
+        store: CredentialStore = _SnapshotStore()
+        return AgentRepository(store=store), creds
 
-        import asyncio
 
-        async def _try(raw: str) -> str | None:
-            return await repo.validate_credential(raw)
+# ── R2: the request-path access seam admits no caller-supplied-org write ──
 
-        # None of these obvious strings may authenticate as the backfilled
-        # principal; an honest backfill *cannot* produce a hash that matches
-        # any of them (the implementer cannot regenerate the lost raw).
-        candidates = [
-            "",
-            active_prefix,
-            f"{active_prefix}0",
-            f"{active_prefix}backfill",
-            f"oag_{_AGENT_A}",
-            "oag_BACKFILL",
-        ]
-        for candidate in candidates:
-            assert asyncio.run(_try(candidate)) is None, (
-                f"backfilled credential authenticated against an obvious "
-                f"shortcut string {candidate!r} — T2 violation: every legacy "
-                "agent would be authenticatable at migration time"
+
+class TestAccessSeamRemainsCallerOrgFree:
+    """Security-architect R2 (comment 10346): the new context-free,
+    explicit-``organisation_id`` Neo4j node-writer that the agent-identity
+    migration composes lives in ``oraclous_substrate.migrations``
+    (alongside ``org_backfill``) — NOT on the request-path access seam
+    beside ``scoped_write_node``.
+
+    A caller-chooses-org writer at the seam is a T1 cross-org-write
+    primitive the moment it reaches a request path: any handler holding
+    a stray ``organisation_id`` value (a user-supplied id, a deserialized
+    body field, a confused-deputy parameter) could write into another
+    organisation's substrate. The migration needs the capability; the
+    request path must never have it. The seam continues to source
+    ``organisation_id`` from the bound governance context only (ADR-006 /
+    T1-M1 / ADR-012 §1b).
+    """
+
+    def test_scoped_write_node_takes_no_caller_supplied_organisation_id(self) -> None:
+        """The seam's writer signature stays caller-org-free. A regression
+        that added ``organisation_id`` as a parameter (even with a
+        ``None`` default) would let a request handler override the bound
+        context — the exact T1 surface R2 forbids.
+        """
+        import inspect
+
+        from oraclous_substrate import access
+
+        sig = inspect.signature(access.scoped_write_node)
+        assert "organisation_id" not in sig.parameters, (
+            "oraclous_substrate.access.scoped_write_node must NOT accept "
+            "an `organisation_id` parameter — the seam takes org from the "
+            "bound governance context only (ADR-006 / ADR-012 §1b). The "
+            "explicit-org writer the agent-identity migration composes "
+            "lives in oraclous_substrate.migrations, never on the seam. "
+            f"Current signature: {sig}"
+        )
+
+    def test_access_seam_neo4j_callable_takes_no_caller_supplied_organisation_id(
+        self,
+    ) -> None:
+        """The seam's Neo4j-touching callables (those taking a ``driver``
+        argument — the seam's writer/reader convention) must all source
+        ``organisation_id`` from the bound context, never from a caller
+        parameter. The agent-identity migration's explicit-org node-writer
+        lives in ``oraclous_substrate.migrations``, never on this seam
+        (security-architect R2).
+
+        Restricted to ``driver``-taking callables on purpose: pure data
+        containers (``AccessRequest``) and cache-key builders
+        (``query_cache_key``) are re-exported through the access module
+        but are not Neo4j surfaces; they legitimately accept
+        ``organisation_id`` as a value-carrying argument.
+        """
+        import inspect
+
+        from oraclous_substrate import access
+
+        offenders: list[str] = []
+        for name in dir(access):
+            if name.startswith("_"):
+                continue
+            obj = getattr(access, name)
+            if not callable(obj):
+                continue
+            try:
+                sig = inspect.signature(obj)
+            except (TypeError, ValueError):
+                continue
+            if "driver" not in sig.parameters:
+                continue
+            if "organisation_id" in sig.parameters:
+                offenders.append(f"{name}{sig}")
+        assert not offenders, (
+            "oraclous_substrate.access exposes a Neo4j-touching callable "
+            "that accepts `organisation_id` as a parameter — a T1 cross-"
+            "org-write primitive at the request boundary (security-"
+            f"architect R2 / ORA-36). Offenders: {offenders}. The new "
+            "explicit-org writer the agent-identity migration composes "
+            "MUST live in oraclous_substrate.migrations, never on the seam."
+        )
+
+    def test_substrate_migrations_namespace_is_where_the_explicit_org_writer_lives(
+        self,
+    ) -> None:
+        """The new explicit-org Neo4j node-writer is housed in
+        ``oraclous_substrate.migrations`` (sibling of ``org_backfill``).
+        The orchestrator in auth-service composes it; the seam never
+        sees it.
+
+        Asserted constructively: at least one public callable in
+        ``oraclous_substrate.migrations`` accepts an ``organisation_id``
+        parameter — ``org_backfill`` already satisfies this for the
+        existing reshape, and the new agent-identity helper joins the
+        same namespace. The negative test above pins the seam-side
+        invariant; this one anchors the positive side so the namespace
+        cannot quietly drift to housing the writer somewhere illegal.
+        """
+        import inspect
+        import pkgutil
+
+        import oraclous_substrate.migrations as migrations_pkg
+
+        found_explicit_org_writer = False
+        for module_info in pkgutil.iter_modules(migrations_pkg.__path__):
+            module = __import__(
+                f"{migrations_pkg.__name__}.{module_info.name}",
+                fromlist=["*"],
             )
+            for name in dir(module):
+                if name.startswith("_"):
+                    continue
+                obj = getattr(module, name)
+                if not callable(obj):
+                    continue
+                try:
+                    sig = inspect.signature(obj)
+                except (TypeError, ValueError):
+                    continue
+                if "organisation_id" in sig.parameters:
+                    found_explicit_org_writer = True
+                    break
+            if found_explicit_org_writer:
+                break
+        assert found_explicit_org_writer, (
+            "oraclous_substrate.migrations must house at least one public "
+            "callable that accepts `organisation_id` as a parameter — the "
+            "context-free, explicit-org writer the agent-identity migration "
+            "composes (security-architect R2). The seam is intentionally "
+            "off-limits for this capability; the migrations namespace is "
+            "its only home."
+        )
