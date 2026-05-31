@@ -1,0 +1,16 @@
+# Source of truth: org-scoped Neo4j labels and relationship types (ADR-006,
+# ADR-012). Adding a label or relationship type here is required for the
+# substrate to apply org-scoping to it AND for the ORG003 lint guardrail to
+# recognise it. There is no second source: the substrate
+# (oraclous_substrate.schema.neo4j) and the linter (tools.lint.check_org_scoping)
+# both derive from this file at module-import time / lint time respectively.
+# The validator at tools/lint/check_org_scoped_labels_schema.py pins the
+# allowed shape. (ORA-51)
+schema_version: 1
+labels:
+  - "__Entity__"
+  - "__Community__"
+  - "__Contradiction__"
+  - "Chunk"
+relationship_types:
+  - "IN_COMMUNITY"

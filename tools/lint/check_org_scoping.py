@@ -43,13 +43,13 @@ NOT a runtime substitute for RLS (security-architect concurrence, ORA-41).
            regardless of runtime filters). Flags such a ``CREATE VECTOR INDEX`` /
            ``CREATE FULLTEXT INDEX`` omitting org; passes when org is present.
 
-``ORG_SCOPED_NEO4J_LABELS`` below is a maintained MIRROR for static analysis —
-the linter cannot import the substrate at lint time. The AUTHORITATIVE source is
-``packages/substrate/src/oraclous_substrate/schema/neo4j.py :: ORG_SCOPED_LABELS``.
-Maintenance owners: ``security-architect`` + ``test-author`` (verified at the
-Tests Review gate). A new org-scoped Neo4j label MUST be mirrored here or the
-ORG003 guardrail goes blind on it; a standing maintenance ticket tracks keeping
-the mirror in sync (security-architect precondition #1, ORA-41).
+The set of org-scoped labels is loaded from the single source of truth at
+``packages/substrate/src/oraclous_substrate/schema/org_scoped_labels.yaml``
+(ORA-51). Both the substrate (at module-import time) and this linter (at
+lint time) derive from the same file, so structural drift is impossible —
+adding a label to the YAML extends both the substrate's ``apply()`` coverage
+and the ORG003 recognition set with no other code change. The YAML's shape is
+validated in CI by ``tools.lint.check_org_scoped_labels_schema``.
 
 Run:  uv run python -m tools.lint.check_org_scoping <path> [<path> ...]
 Exits non-zero (1) if any violation is found; 0 otherwise.
@@ -58,10 +58,13 @@ Exits non-zero (1) if any violation is found; 0 otherwise.
 from __future__ import annotations
 
 import ast
+import functools
 import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+
+import yaml
 
 ORG_NAMES = {"organisation_id", "organization_id"}
 # Dict-style subscript (body["organisation_id"]) is checked against the full set;
@@ -76,15 +79,38 @@ REQUEST_MODEL_SUFFIXES = ("Request", "Body", "Payload")
 PYDANTIC_BASES = {"BaseModel"}
 SKIP_DIRS = {".venv", "venv", "__pycache__", "build", "dist", ".git"}
 
-# --- ORA-41: Neo4j label / Redis prefix / index DDL coverage --------------------
+# --- ORA-41 / ORA-51: Neo4j label / Redis prefix / index DDL coverage -----------
 
-# Maintained MIRROR of oraclous_substrate.schema.neo4j.ORG_SCOPED_LABELS (see the
-# module docstring for the authority + maintenance contract).
-ORG_SCOPED_NEO4J_LABELS = ("__Entity__", "__Community__", "__Contradiction__", "Chunk")
+# Canonical YAML path. Resolved from this module's filesystem location
+# (tools/lint/check_org_scoping.py -> repo root -> packages/substrate/...). The
+# linter NEVER imports the substrate at lint time; it reads the YAML directly,
+# the same file the substrate consumes at module-import time.
+_DEFAULT_ORG_SCOPED_LABELS_YAML = (
+    Path(__file__).resolve().parents[2]
+    / "packages"
+    / "substrate"
+    / "src"
+    / "oraclous_substrate"
+    / "schema"
+    / "org_scoped_labels.yaml"
+)
+
+
+@functools.cache
+def _load_org_scoped_labels(path: Path) -> tuple[str, ...]:
+    """Read the labels list from the (canonical or override) YAML at lint time.
+
+    Cached per-path so that ``check_paths`` scanning hundreds of files does not
+    re-read the YAML hundreds of times. Tests using ``tmp_path`` get distinct
+    cache entries; the canonical path is read once per process.
+    """
+    data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    return tuple(data.get("labels") or ())
+
 
 # Loop-variable idiom: a DDL f-string interpolating one of these names is building
 # an index/constraint over the org-scoped label set (the canonical ``apply()`` loop
-# in schema/neo4j.py iterates ORG_SCOPED_LABELS / ORG_SCOPED_RELATIONSHIP_TYPES).
+# in schema/neo4j.py iterates the substrate's label / relationship-type tuples).
 LABEL_LOOP_VAR_NAMES = {
     "label",
     "labels",
@@ -218,9 +244,9 @@ def _ddl_has_org(parts: list[tuple[str, object]]) -> bool:
     return any(_is_org_expr(expr) for expr in _exprs(parts))
 
 
-def _ddl_targets_org_scoped_label(parts: list[tuple[str, object]]) -> bool:
+def _ddl_targets_org_scoped_label(parts: list[tuple[str, object]], labels: tuple[str, ...]) -> bool:
     text = _static_text(parts)
-    for label in ORG_SCOPED_NEO4J_LABELS:
+    for label in labels:
         # The label appears as a literal Cypher token: `Label`, :Label, (n:Label).
         if f"`{label}`" in text or re.search(r"[`:\s(]" + re.escape(label) + r"[`)\s,]", text):
             return True
@@ -318,11 +344,13 @@ class _Visitor(ast.NodeVisitor):
         source: str,
         qcache_prefix_names: set[str],
         docstring_ids: set[int],
+        org_scoped_labels: tuple[str, ...],
     ) -> None:
         self.path = path
         self.source_lines = source.splitlines()
         self.qcache_prefix_names = qcache_prefix_names
         self.docstring_ids = docstring_ids
+        self.org_scoped_labels = org_scoped_labels
         self.violations: list[Violation] = []
 
     def _flag_body_read(self, line: int) -> None:
@@ -438,7 +466,7 @@ class _Visitor(ast.NodeVisitor):
             return
         if (
             not (is_vector or is_fulltext)
-            and _ddl_targets_org_scoped_label(parts)
+            and _ddl_targets_org_scoped_label(parts, self.org_scoped_labels)
             and not _ddl_has_org(parts)
         ):
             self.violations.append(
@@ -482,19 +510,38 @@ class _Visitor(ast.NodeVisitor):
         return any(GLOBAL_OPT_OUT_MARKER in line.lower() for line in self.source_lines[start:end])
 
 
-def check_source(source: str, path: str = "<string>") -> list[Violation]:
+def check_source(
+    source: str,
+    path: str = "<string>",
+    *,
+    org_scoped_labels_yaml: Path | None = None,
+) -> list[Violation]:
+    """Run the guardrails over a single source string.
+
+    ``org_scoped_labels_yaml`` overrides the canonical YAML lookup; when ``None``
+    the canonical ``packages/substrate/.../schema/org_scoped_labels.yaml`` is
+    used. The override exists so tests can exercise the YAML-driven recognition
+    without globally mutating the canonical file.
+    """
     tree = ast.parse(source, filename=path)
+    yaml_path = org_scoped_labels_yaml or _DEFAULT_ORG_SCOPED_LABELS_YAML
+    labels = _load_org_scoped_labels(yaml_path)
     visitor = _Visitor(
         path,
         source,
         _collect_qcache_prefix_names(tree),
         _collect_docstring_ids(tree),
+        labels,
     )
     visitor.visit(tree)
     return visitor.violations
 
 
-def check_paths(paths: list[str]) -> list[Violation]:
+def check_paths(
+    paths: list[str],
+    *,
+    org_scoped_labels_yaml: Path | None = None,
+) -> list[Violation]:
     out: list[Violation] = []
     for raw in paths:
         root = Path(raw)
@@ -502,7 +549,13 @@ def check_paths(paths: list[str]) -> list[Violation]:
         for f in files:
             if any(part in SKIP_DIRS for part in f.parts):
                 continue
-            out.extend(check_source(f.read_text(encoding="utf-8"), str(f)))
+            out.extend(
+                check_source(
+                    f.read_text(encoding="utf-8"),
+                    str(f),
+                    org_scoped_labels_yaml=org_scoped_labels_yaml,
+                )
+            )
     return out
 
 

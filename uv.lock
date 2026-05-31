@@ -692,6 +692,12 @@ requires-dist = [{ name = "oraclous-substrate", editable = "packages/substrate" 
 name = "oraclous-substrate"
 version = "0.0.0"
 source = { editable = "packages/substrate" }
+dependencies = [
+    { name = "pyyaml" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "pyyaml", specifier = ">=6.0,<7.0" }]
 
 [[package]]
 name = "oraclous-telemetry"

@@ -3,7 +3,7 @@ name = "oraclous-substrate"
 version = "0.0.0"
 description = "Substrate seams: ReBAC client + provenance collector (Layer 1)."
 requires-python = "==3.12.*"
-dependencies = []
+dependencies = ["PyYAML>=6.0,<7.0"]
 
 [build-system]
 requires = ["hatchling"]
