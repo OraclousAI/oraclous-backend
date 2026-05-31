@@ -58,12 +58,24 @@ the AC.
 from __future__ import annotations
 
 import inspect
+import re
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from oraclous_rebac import ReBACEngine
 
 pytestmark = [pytest.mark.unit, pytest.mark.rebac, pytest.mark.security]
+
+# Match the property map *inside the DELEGATED_TO relationship pattern* —
+# i.e. the ``{...}`` that immediately follows ``:DELEGATED_TO`` inside a
+# ``[...]-` relationship segment. This is what Neo4j chokes on when a
+# property value is null in a MERGE, and what makes a MATCH return zero
+# rows under three-valued logic. The regex deliberately ignores
+# WHERE-clause references to ``subgraph_id``, which are safe.
+_REL_PROPERTY_MAP_RE = re.compile(
+    r"\[\s*\w*\s*:\s*DELEGATED_TO\s*\{([^}]*)\}\s*\]",
+    re.IGNORECASE | re.DOTALL,
+)
 
 _ORG_A = "org-aaaa"
 _OTHER_ORG = "org-bbbb"
@@ -905,3 +917,148 @@ class TestFailClosed:
             assert injection not in q, (
                 "injection string must never appear in delegation-traversal query text"
             )
+
+
+# ── 14. Null-subgraph_id regression backstop (ORA-37 R1-gate discovery) ───
+#
+# The R1 adversarial suite caught a T2-M2 defeat that the mocked-driver
+# suite above missed: the original `_DELEGATION_GRANT_QUERY` and
+# `_DELEGATION_REVOKE_QUERY` carried `subgraph_id` inside the DELEGATED_TO
+# relationship *pattern key*. Under real Neo4j, that meant
+#   * MERGE with `$subgraph_id=null` crashed
+#     (SemanticError: "Cannot merge … because of null property value"), so
+#     `delegate_to_agent(scope='graph')` could never write an edge; and
+#   * MATCH with `$subgraph_id=null` matched zero rows
+#     (Cypher three-valued logic), so revoking a graph-scope delegation
+#     returned 0 and the edge stayed *active* — T2-M2 silently did not
+#     fire for graph-scope delegations.
+#
+# The mocked driver doesn't validate Cypher, so these tests assert on the
+# *generated query text*: the DELEGATED_TO relationship-pattern map must
+# never carry `subgraph_id` on the graph-scope path. WHERE-clause
+# references are safe (they short-circuit under three-valued logic when
+# guarded by the scope discriminant) and not flagged by the regex.
+
+
+class TestGraphScopeOmitsNullSubgraphIdFromRelPattern:
+    """The DELEGATED_TO relationship pattern (the ``{...}`` immediately
+    after ``:DELEGATED_TO`` inside ``[...]``) must not include
+    ``subgraph_id`` on the graph-scope path. ORA-37 R1-gate regression
+    backstop — without this, the real-substrate adversarial suite is the
+    only line of defence and a future refactor could re-introduce the
+    null-property bug without a unit-level warning.
+    """
+
+    async def test_grant_graph_scope_omits_subgraph_id_from_rel_pattern(self) -> None:
+        engine = _engine()
+        driver, session, _ = _make_driver(single_return=None)
+        await engine.delegate_to_agent(
+            driver,
+            organisation_id=_ORG_A,
+            member_user_id="member-a",
+            agent_id="agent-1",
+            graph_id="graph-1",
+            scope="graph",
+            granted_by="admin",
+        )
+        for q in _queries_of(session):
+            for pattern in _REL_PROPERTY_MAP_RE.findall(q):
+                assert "subgraph_id" not in pattern, (
+                    "graph-scope delegate_to_agent must not put `subgraph_id` "
+                    "inside the DELEGATED_TO relationship-pattern key — Neo4j "
+                    "MERGE rejects null property values in patterns "
+                    f"(SemanticError). Offending pattern: {{{pattern}}}"
+                )
+
+    async def test_grant_subgraph_scope_includes_subgraph_id_in_rel_pattern(self) -> None:
+        """Sanity check for the dispatch: the subgraph-scope variant DOES
+        put ``subgraph_id`` in the MERGE key — it has to, because two
+        subgraph delegations to the same (member, agent, graph) under
+        different subgraphs must produce distinct edges.
+        """
+        engine = _engine()
+        driver, session, _ = _make_driver(single_return=None)
+        await engine.delegate_to_agent(
+            driver,
+            organisation_id=_ORG_A,
+            member_user_id="member-a",
+            agent_id="agent-1",
+            graph_id="graph-1",
+            scope="subgraph",
+            subgraph_id="sg-secret",
+            granted_by="admin",
+        )
+        patterns = [p for q in _queries_of(session) for p in _REL_PROPERTY_MAP_RE.findall(q)]
+        assert patterns, "subgraph-scope grant issued no DELEGATED_TO relationship pattern"
+        assert any("subgraph_id" in p for p in patterns), (
+            "subgraph-scope delegate_to_agent must include subgraph_id in the "
+            f"MERGE relationship-pattern key; saw: {patterns}"
+        )
+
+    async def test_revoke_graph_scope_omits_subgraph_id_from_rel_pattern(self) -> None:
+        """The revoke MATCH on the DELEGATED_TO relationship pattern must
+        not include ``subgraph_id``: ``MATCH ()-[:DELEGATED_TO {subgraph_id:
+        null}]-()`` matches zero rows under Cypher three-valued logic, so
+        revoke would silently no-op and the privilege would persist past
+        revocation (T2-M2 defeat). WHERE-clause references guarded by
+        ``$scope = 'subgraph'`` are safe and not flagged.
+        """
+        engine = _engine()
+        driver, session, _ = _make_driver(single_return={"revoked_count": 1})
+        await engine.revoke_agent_delegation(
+            driver,
+            organisation_id=_ORG_A,
+            member_user_id="member-a",
+            agent_id="agent-1",
+            graph_id="graph-1",
+            scope="graph",
+        )
+        for q in _queries_of(session):
+            for pattern in _REL_PROPERTY_MAP_RE.findall(q):
+                assert "subgraph_id" not in pattern, (
+                    "graph-scope revoke_agent_delegation must not put "
+                    "`subgraph_id` inside the DELEGATED_TO relationship-"
+                    "pattern key — `{subgraph_id: null}` matches zero rows "
+                    "under Cypher three-valued logic and silently fails to "
+                    f"revoke (T2-M2 defeat). Offending pattern: {{{pattern}}}"
+                )
+
+    async def test_revoke_subgraph_scope_constrains_on_subgraph_id(self) -> None:
+        """Subgraph-scope revoke must still constrain on the specific
+        subgraph_id (either in the rel pattern or in WHERE) — otherwise it
+        would revoke every subgraph delegation for the (member, agent,
+        graph) triple, not just the named one. Asserted by checking that
+        the generated query text mentions ``subgraph_id`` *somewhere*.
+        """
+        engine = _engine()
+        driver, session, _ = _make_driver(single_return={"revoked_count": 1})
+        await engine.revoke_agent_delegation(
+            driver,
+            organisation_id=_ORG_A,
+            member_user_id="member-a",
+            agent_id="agent-1",
+            graph_id="graph-1",
+            scope="subgraph",
+            subgraph_id="sg-secret",
+        )
+        assert any("subgraph_id" in q for q in _queries_of(session)), (
+            "subgraph-scope revoke must reference subgraph_id (in pattern "
+            "or WHERE) so it scopes to the specific subgraph"
+        )
+
+    async def test_revoke_graph_scope_returns_count_from_result(self) -> None:
+        """End-to-end (mocked) check that the graph-scope revoke flows
+        through the result.single() → revoked_count path the production
+        code reads.
+        """
+        engine = _engine()
+        driver, _, _ = _make_driver(single_return={"revoked_count": 1})
+        count = await engine.revoke_agent_delegation(
+            driver,
+            organisation_id=_ORG_A,
+            member_user_id="member-a",
+            agent_id="agent-1",
+            graph_id="graph-1",
+            scope="graph",
+        )
+        assert count == 1

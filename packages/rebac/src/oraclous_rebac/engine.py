@@ -335,7 +335,32 @@ RETURN perm_count > 0 AS authorized
 LIMIT 1
 """
 
-_DELEGATION_GRANT_QUERY = """
+# Grant queries are dispatched by scope (ORA-37 R1-gate discovery): Neo4j
+# rejects MERGE on a relationship whose key map contains a null property
+# value (``SemanticError: Cannot merge … because of null property value
+# for 'subgraph_id'``). The graph-scope variant therefore omits
+# ``subgraph_id`` from the MERGE key entirely; the subgraph-scope variant
+# keeps it (subgraph_id is non-null on that path — guarded by
+# ``_require_scope``). Both queries take the same parameter set, minus
+# ``$subgraph_id`` for the graph-scope query.
+
+_DELEGATION_GRANT_QUERY_GRAPH = """
+MERGE (m:User:__Platform__ {user_id: $member_user_id})
+ON CREATE SET m.created_at = $now, m.is_service_account = false
+MERGE (a:Agent:__Platform__ {agent_id: $agent_id})
+ON CREATE SET a.created_at = $now
+MERGE (m)-[d:DELEGATED_TO {
+    graph_id: $graph_id,
+    organisation_id: $organisation_id,
+    scope: $scope
+}]->(a)
+ON CREATE SET d.granted_at = $now, d.granted_by = $granted_by,
+              d.expires_at = $expires_at, d.is_active = true
+ON MATCH SET d.granted_at = $now, d.granted_by = $granted_by,
+             d.expires_at = $expires_at, d.is_active = true
+"""
+
+_DELEGATION_GRANT_QUERY_SUBGRAPH = """
 MERGE (m:User:__Platform__ {user_id: $member_user_id})
 ON CREATE SET m.created_at = $now, m.is_service_account = false
 MERGE (a:Agent:__Platform__ {agent_id: $agent_id})
@@ -352,14 +377,24 @@ ON MATCH SET d.granted_at = $now, d.granted_by = $granted_by,
              d.expires_at = $expires_at, d.is_active = true
 """
 
+# Revoke is a single query with the scope/subgraph_id check in WHERE rather
+# than in the relationship pattern key — the ORA-37 R1-gate discovery: a
+# pattern like ``{subgraph_id: $subgraph_id}`` with ``$subgraph_id=null``
+# matches **zero** rows under Cypher three-valued logic, so the pre-fix
+# revoke silently no-op'd for every graph-scope delegation and the edge
+# stayed active (T2-M2 defeat). The ``$scope = 'graph' OR …`` short-circuit
+# means the ``d.subgraph_id = $subgraph_id`` arm is only evaluated when
+# scope is 'subgraph' (where subgraph_id is guaranteed non-null by
+# ``_require_scope``).
+
 _DELEGATION_REVOKE_QUERY = """
 MATCH (m:User:__Platform__ {user_id: $member_user_id})
-  -[d:DELEGATED_TO {
-    graph_id: $graph_id,
-    organisation_id: $organisation_id,
-    scope: $scope,
-    subgraph_id: $subgraph_id
-  }]->(a:Agent:__Platform__ {agent_id: $agent_id})
+  -[d:DELEGATED_TO]->(a:Agent:__Platform__ {agent_id: $agent_id})
+WHERE d.graph_id = $graph_id
+  AND d.organisation_id = $organisation_id
+  AND d.scope = $scope
+  AND ($scope = 'graph'
+       OR ($scope = 'subgraph' AND d.subgraph_id = $subgraph_id))
 SET d.is_active = false
 RETURN count(d) AS revoked_count
 """
@@ -679,21 +714,30 @@ class ReBACEngine:
                 f"member_user_id={member_user_id!r} looks like an agent identifier"
             )
 
+        # Dispatch by scope (ORA-37 fix): the graph-scope query omits
+        # ``subgraph_id`` from the MERGE relationship-pattern key so Neo4j
+        # does not crash on the null value. ``scope`` is still passed in
+        # params under both branches — kept for symmetry with the revoke
+        # query and to satisfy the C2 unit suite's "delegate binds $scope"
+        # contract.
+        params = {
+            "member_user_id": member_user_id,
+            "agent_id": agent_id,
+            "graph_id": graph_id,
+            "organisation_id": organisation_id,
+            "scope": scope,
+            "granted_by": granted_by,
+            "expires_at": expires_at,
+            "now": _now(),
+        }
+        if scope == "subgraph":
+            params["subgraph_id"] = subgraph_id
+            query = _DELEGATION_GRANT_QUERY_SUBGRAPH
+        else:
+            query = _DELEGATION_GRANT_QUERY_GRAPH
+
         async with driver.session() as session:
-            await session.run(
-                _DELEGATION_GRANT_QUERY,
-                {
-                    "member_user_id": member_user_id,
-                    "agent_id": agent_id,
-                    "graph_id": graph_id,
-                    "organisation_id": organisation_id,
-                    "scope": scope,
-                    "subgraph_id": subgraph_id,
-                    "granted_by": granted_by,
-                    "expires_at": expires_at,
-                    "now": _now(),
-                },
-            )
+            await session.run(query, params)
         await self.invalidate_agent_delegation_cache(
             organisation_id=organisation_id, agent_id=agent_id, graph_id=graph_id
         )
