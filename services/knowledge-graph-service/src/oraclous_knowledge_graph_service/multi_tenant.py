@@ -29,6 +29,11 @@ from typing import TYPE_CHECKING
 # Module-level neo4j-graphrag imports so tests can monkeypatch ``Neo4jWriter``.
 from neo4j_graphrag.experimental.components.kg_writer import Neo4jWriter
 
+# Module-level (NOT a ``from-import``) so the substrate's canonical
+# ``ORGANISATION_ID_PROPERTY`` is reached via attribute lookup at use-time —
+# this is what makes it a single source of truth (ADR-012 §1b / ORA-52).
+from oraclous_substrate import access
+
 if TYPE_CHECKING:
     from oraclous_governance import OrganisationContext
 
@@ -196,42 +201,51 @@ class MultiTenantKGWriter:
 
 class OrganisationScopedKGWriter(MultiTenantKGWriter):
     """Outer organisation-scoping wrapper above ``MultiTenantKGWriter``
-    (ORA-18 / A3 Extend step).
+    (ORA-18 / A3 Extend step; ORA-52 follow-up).
 
-    Stamps ``organisation_id`` (from the bound ``OrganisationContext``) on every
-    node and relationship in addition to ``graph_id``. ``organisation_id`` is
-    outermost; ``graph_id`` is inner; a caller / LLM-extracted
-    ``organisation_id`` on a node or relationship is unconditionally
-    overwritten with the context's value (T1 defence).
+    Stamps ``organisation_id`` on every node and relationship in addition to
+    ``graph_id``. The stamp value is sourced live from the substrate seam
+    via ``access.enforced_organisation_id`` at run time — never from a
+    constructor argument or a request body (ADR-012 §1b / T1-M1 / ORA-52
+    AC2). ``organisation_id`` is outermost; ``graph_id`` is inner; a caller /
+    LLM-extracted ``organisation_id`` on a node or relationship is
+    unconditionally overwritten with the bound-context value (T1 defence).
 
-    Fail-closed: refuses to construct without a context, per ADR-006 and the
-    [A2] enforcement contract (ORA-17 / ADR-012 §1).
+    The property key is sourced from the substrate's canonical
+    ``access.ORGANISATION_ID_PROPERTY`` (ORA-52 AC1 — single source of truth)
+    so a rename of the property name propagates from one site.
+
+    The ``context`` keyword argument is accepted for backward compatibility
+    with the original ORA-18 call sites but is **deliberately ignored** —
+    the substrate seam is the single source of truth.
+
+    Fail-closed: ``.run()`` raises ``MissingOrganisationContextError`` if no
+    context is bound at runtime (T1-M1 / ADR-012 §1b).
     """
 
     def __init__(
         self,
         *,
         base_writer: Neo4jWriter,
-        context: OrganisationContext,
         graph_id: str,
+        context: OrganisationContext | None = None,  # noqa: ARG002 — deprecated; ignored
         user_id: str | None = None,
         ingestion_source: str | None = None,
     ) -> None:
-        if context is None:
-            raise ValueError(
-                "OrganisationScopedKGWriter requires an OrganisationContext "
-                "(fail-closed; T1 / ADR-006)"
-            )
         super().__init__(
             base_writer=base_writer,
             graph_id=graph_id,
             user_id=user_id,
             ingestion_source=ingestion_source,
         )
-        self.context = context
 
     def _injected_properties(self, now: datetime) -> dict[str, object]:
-        """Add ``organisation_id`` (outermost scope) to the legacy stamps."""
+        """Add ``organisation_id`` (outermost scope) to the legacy stamps.
+
+        Key from the substrate's canonical constant (AC1); value from the
+        bound seam (AC2). Raises ``MissingOrganisationContextError`` when no
+        context is bound at run time — fail-closed (T1-M1).
+        """
         props = super()._injected_properties(now)
-        props["organisation_id"] = str(self.context.organisation_id)
+        props[access.ORGANISATION_ID_PROPERTY] = access.enforced_organisation_id()
         return props

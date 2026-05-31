@@ -34,8 +34,13 @@ if TYPE_CHECKING:
 
     from oraclous_substrate.rebac import AccessDecisionClient
 
-# The canonical tenancy property/parameter name (ADR-006).
-_ORG = "organisation_id"
+# The canonical tenancy property/parameter name (ADR-006, ADR-012 §1b).
+# Single source of truth: every storage stamp and every Cypher parameter
+# scoping a read MUST reference this constant rather than embed the string
+# literal ``"organisation_id"``. A rename here propagates to every site that
+# composes the constant or ``org_scope_predicate``. (ORA-52 follow-up to the
+# ORA-18 Code Review architecture sign-off.)
+ORGANISATION_ID_PROPERTY = "organisation_id"
 
 # A Neo4j label is an identifier, never request input: validate before it is
 # composed into Cypher (labels cannot be passed as a bound parameter).
@@ -56,6 +61,20 @@ def enforced_organisation_id() -> str:
     return str(current_organisation_context().organisation_id)
 
 
+def org_scope_predicate(alias: str = "node") -> str:
+    """The canonical parameterised Cypher predicate fragment scoping a read
+    to the bound organisation (ADR-012 §1b; ORA-52).
+
+    Returns ``<alias>.organisation_id = $organisation_id``. Both the property
+    name on the left and the parameter name on the right are sourced from
+    ``ORGANISATION_ID_PROPERTY`` so a rename propagates from one site. Every
+    site that composes the substrate org-scope predicate (the seam's own
+    ``org_scoped_cypher`` and the A3 retriever's ``_build_scoped_query``)
+    MUST compose this helper rather than re-derive the predicate inline.
+    """
+    return f"{alias}.{ORGANISATION_ID_PROPERTY} = ${ORGANISATION_ID_PROPERTY}"
+
+
 def org_scoped_cypher(query: str, *, alias: str = "node") -> tuple[str, dict[str, str]]:
     """Scope a Cypher read to the bound organisation (reshape of
     ``_inject_graph_id_filter``).
@@ -65,12 +84,15 @@ def org_scoped_cypher(query: str, *, alias: str = "node") -> tuple[str, dict[str
     travels only as the ``$organisation_id`` parameter — never interpolated into
     the query text (injection-safe; T1). Idempotent: a query already carrying
     ``$organisation_id`` is returned unchanged. Fail-closed without a context.
+
+    Composes ``org_scope_predicate`` for the WHERE-clause fragment so the
+    predicate spelling stays in one place (ADR-012 §1b / ORA-52).
     """
-    params = {_ORG: enforced_organisation_id()}
-    if f"${_ORG}" in query:
+    params = {ORGANISATION_ID_PROPERTY: enforced_organisation_id()}
+    if f"${ORGANISATION_ID_PROPERTY}" in query:
         return query, params
 
-    predicate = f"{alias}.{_ORG} = ${_ORG}"
+    predicate = org_scope_predicate(alias=alias)
     lines = query.split("\n")
     # Prefer merging into the first existing WHERE; else add a WHERE after MATCH.
     for idx, line in enumerate(lines):
@@ -135,7 +157,11 @@ def scoped_write_node(driver: object, *, label: str, properties: Mapping[str, ob
     if not _SAFE_LABEL.match(label):
         raise ValueError(f"unsafe Neo4j label: {label!r}")
     props = dict(properties)
-    props[_ORG] = org_id  # context wins; any body-supplied organisation_id is ignored
+    # Stamp via the canonical constant so a rename propagates from one site
+    # (ADR-012 §1b / ORA-52). Context wins; any caller-supplied org id is
+    # silently overwritten — Neo4j community has no WITH-CHECK backstop, so
+    # this stamping is the primary write-isolation control.
+    props[ORGANISATION_ID_PROPERTY] = org_id
     driver.execute_query(f"CREATE (n:`{label}`) SET n = $props", props=props)  # type: ignore[attr-defined]
 
 

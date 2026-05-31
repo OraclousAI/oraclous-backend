@@ -37,6 +37,14 @@ from neo4j_graphrag.retrievers import (
 )
 from neo4j_graphrag.types import RetrieverResult
 
+# Module-level (NOT a ``from-import``) so the substrate's canonical helpers
+# (``ORGANISATION_ID_PROPERTY``, ``org_scope_predicate``) are reached via
+# attribute lookup at use-time — this is what makes them a single source of
+# truth (ADR-012 §1b / ORA-52). A ``from oraclous_substrate.access import
+# ORGANISATION_ID_PROPERTY`` would capture the string at import time and
+# silently break the contract.
+from oraclous_substrate import access
+
 if TYPE_CHECKING:
     from neo4j import Driver
     from neo4j_graphrag.embeddings.base import Embedder
@@ -87,12 +95,18 @@ class MultiTenantRetriever:
         """Post-filter back-stop: drop any item whose metadata does not match
         ``graph_id``. Defence-in-depth against a base retriever that does not
         honour the index filter.
+
+        Strict metadata equality only (ORA-52 / AC3): a missing ``metadata``
+        attribute, a missing ``graph_id`` key, or a mismatched value all drop
+        the item. The legacy ``graph_id``-substring-in-``content`` fallback is
+        gone — it trusted LLM-generated text to decide tenancy, which an
+        attacker who controls document content can exploit to cause
+        cross-graph retrieval (security-architect hygiene finding on the
+        ORA-18 Code Review).
         """
-        if hasattr(item, "metadata") and item.metadata.get("graph_id") == self.graph_id:
-            return True
-        if hasattr(item, "content") and self.graph_id in str(getattr(item, "content", "")):
-            return True
-        return False
+        if not hasattr(item, "metadata"):
+            return False
+        return item.metadata.get("graph_id") == self.graph_id
 
     def get_search_results(
         self,
@@ -240,13 +254,21 @@ def _build_scoped_query(query: str) -> str:
     valid for single-line ``MATCH ... RETURN ...`` templates as well as
     multi-line ones (a naive after-MATCH splice produces
     ``RETURN ...\\nWHERE ...`` which Neo4j rejects).
+
+    Sources the ``organisation_id`` predicate fragment from the substrate
+    seam via ``access.org_scope_predicate`` rather than re-deriving it
+    inline (ADR-012 §1b / ORA-52 AC1 — single source of truth).
     """
     if "$graph_id" in query and "$organisation_id" in query:
         return query
     if "MATCH" not in query.upper():
         # Nothing to anchor the scope to — refuse rather than emit unscoped.
         raise ValueError("build_scoped_query: no MATCH clause to anchor org scope")
-    predicate = "node.graph_id = $graph_id AND node.organisation_id = $organisation_id"
+    # Compose the org predicate from the substrate (single source of truth).
+    # The graph_id half stays local — it's a retriever-internal scope, not a
+    # substrate concept.
+    org_predicate = access.org_scope_predicate(alias="node")
+    predicate = f"node.graph_id = $graph_id AND {org_predicate}"
     # If a WHERE already exists, AND-extend the first one.
     where_match = re.search(r"\bWHERE\b", query, re.IGNORECASE)
     if where_match is not None:
@@ -265,38 +287,48 @@ class OrganisationScopedRetriever(MultiTenantRetriever):
     """Outer organisation-scoping wrapper above ``MultiTenantRetriever``
     (Extend step).
 
-    Fail-closed: refuses construction without an ``OrganisationContext``. At
-    runtime, injects ``organisation_id`` into ``filters`` + ``query_params``
+    Fail-closed at runtime: ``organisation_id`` is sourced live from the
+    authenticated bound context via
+    ``oraclous_substrate.access.enforced_organisation_id`` — never from a
+    constructor argument or a request body (ADR-012 §1b / T1-M1 / ORA-52
+    AC2). Injects ``organisation_id`` into ``filters`` + ``query_params``
     alongside the legacy ``graph_id``; post-filters items whose metadata does
     not match (drops cross-org items AND items with missing
     ``organisation_id`` — fail-closed on indeterminate).
+
+    The ``context`` keyword argument is accepted for backward compatibility
+    with the original ORA-18 call sites but is **deliberately ignored** —
+    the substrate seam is the single source of truth and a
+    request-body-supplied ``organisation_id`` cannot redirect scope at
+    construction (T1-M1).
     """
 
     def __init__(
         self,
         base_retriever: Retriever,
-        context: OrganisationContext,
         graph_id: str,
+        context: OrganisationContext | None = None,  # noqa: ARG002 — deprecated; ignored
     ) -> None:
-        if context is None:
-            raise ValueError(
-                "OrganisationScopedRetriever requires an OrganisationContext "
-                "(fail-closed; T1 / ADR-006)"
-            )
         super().__init__(base_retriever, graph_id)
-        self.context = context
 
     @property
     def _organisation_id(self) -> str:
-        return str(self.context.organisation_id)
+        """Read live from the substrate seam — never captured at construction
+        and never sourced from a constructor argument (AC2 / T1-M1).
+        Raises ``MissingOrganisationContextError`` when no context is bound.
+        """
+        return access.enforced_organisation_id()
 
     def _inject_runtime_scope(self, kwargs: dict[str, Any]) -> dict[str, Any]:
         # Legacy graph_id injection first
         kwargs = super()._inject_runtime_scope(kwargs)
         # Then unconditionally overwrite organisation_id (T1: caller cannot
-        # widen scope via filters/query_params).
-        kwargs["filters"]["organisation_id"] = self._organisation_id
-        kwargs["query_params"]["organisation_id"] = self._organisation_id
+        # widen scope via filters/query_params). The key comes from the
+        # substrate's canonical constant (AC1 — single source of truth);
+        # the value comes from the bound seam (AC2 — authenticated context).
+        org_id = self._organisation_id  # raises if no bound context (live)
+        kwargs["filters"][access.ORGANISATION_ID_PROPERTY] = org_id
+        kwargs["query_params"][access.ORGANISATION_ID_PROPERTY] = org_id
         return kwargs
 
     def _keep_item(self, item: object) -> bool:
@@ -304,13 +336,22 @@ class OrganisationScopedRetriever(MultiTenantRetriever):
         if not super()._keep_item(item):
             return False
         # Then strict organisation_id check — fail-closed on missing metadata.
+        # Key from the substrate (AC1); value from the bound seam (AC2).
         if not hasattr(item, "metadata"):
             return False
-        return item.metadata.get("organisation_id") == self._organisation_id
+        return item.metadata.get(access.ORGANISATION_ID_PROPERTY) == self._organisation_id
 
 
 class OrganisationScopedVectorRetriever(OrganisationScopedRetriever):
-    """Outer organisation-scoping vector retriever factory."""
+    """Outer organisation-scoping vector retriever factory.
+
+    Fail-closed at construction: ``.create()`` resolves ``organisation_id``
+    via the substrate seam (``access.enforced_organisation_id``) so the
+    tenant index name carries the *authenticated* organisation — a
+    request-body-supplied ``organisation_id`` cannot redirect index naming
+    (AC2 / T1-M1). The ``context`` kwarg is accepted for backward
+    compatibility but is ignored (ORA-52).
+    """
 
     @classmethod
     def create(
@@ -318,28 +359,31 @@ class OrganisationScopedVectorRetriever(OrganisationScopedRetriever):
         driver: Driver,
         index_name: str,
         embedder: Embedder,
-        context: OrganisationContext,
         graph_id: str,
+        *,
+        context: OrganisationContext | None = None,  # noqa: ARG003 — deprecated; ignored
         return_properties: list[str] | None = None,
         **kwargs: Any,
     ) -> OrganisationScopedVectorRetriever:
-        if context is None:
-            raise ValueError("OrganisationScopedVectorRetriever requires an OrganisationContext")
+        org_id = access.enforced_organisation_id()  # fail-closed at construction (AC2)
         base_retriever = VectorRetriever(
             driver=driver,
-            index_name=_tenant_index_name_org(index_name, str(context.organisation_id), graph_id),
+            index_name=_tenant_index_name_org(index_name, org_id, graph_id),
             embedder=embedder,
             return_properties=return_properties or ["text", "chunk_index"],
             **kwargs,
         )
-        return cls(base_retriever, context, graph_id)
+        return cls(base_retriever, graph_id)
 
 
 class OrganisationScopedVectorCypherRetriever(OrganisationScopedRetriever):
     """Outer organisation-scoping vector+cypher retriever factory.
 
     The Cypher template gets both ``$organisation_id`` and ``$graph_id`` WHERE
-    predicates spliced in, parameterised — never interpolated.
+    predicates spliced in via the substrate's canonical
+    ``access.org_scope_predicate`` (AC1 — single source of truth),
+    parameterised — never interpolated. Construction fail-closes on the
+    bound seam (AC2 / T1-M1).
     """
 
     @classmethod
@@ -349,23 +393,21 @@ class OrganisationScopedVectorCypherRetriever(OrganisationScopedRetriever):
         index_name: str,
         embedder: Embedder,
         retrieval_query: str,
-        context: OrganisationContext,
         graph_id: str,
+        *,
+        context: OrganisationContext | None = None,  # noqa: ARG003 — deprecated; ignored
         **kwargs: Any,
     ) -> OrganisationScopedVectorCypherRetriever:
-        if context is None:
-            raise ValueError(
-                "OrganisationScopedVectorCypherRetriever requires an OrganisationContext"
-            )
+        org_id = access.enforced_organisation_id()  # fail-closed at construction (AC2)
         scoped_query = _build_scoped_query(retrieval_query)
         base_retriever = VectorCypherRetriever(
             driver=driver,
-            index_name=_tenant_index_name_org(index_name, str(context.organisation_id), graph_id),
+            index_name=_tenant_index_name_org(index_name, org_id, graph_id),
             embedder=embedder,
             retrieval_query=scoped_query,
             **kwargs,
         )
-        return cls(base_retriever, context, graph_id)
+        return cls(base_retriever, graph_id)
 
     @staticmethod
     def build_scoped_query(query: str) -> str:
@@ -376,7 +418,11 @@ class OrganisationScopedVectorCypherRetriever(OrganisationScopedRetriever):
 
 
 class OrganisationScopedHybridRetriever(OrganisationScopedRetriever):
-    """Outer organisation-scoping hybrid (vector + fulltext) retriever factory."""
+    """Outer organisation-scoping hybrid (vector + fulltext) retriever factory.
+
+    Construction fail-closes on the bound seam (AC2 / T1-M1); the ``context``
+    kwarg is accepted but ignored (ORA-52).
+    """
 
     @classmethod
     def create(
@@ -385,13 +431,12 @@ class OrganisationScopedHybridRetriever(OrganisationScopedRetriever):
         vector_index_name: str,
         fulltext_index_name: str,
         embedder: Embedder,
-        context: OrganisationContext,
         graph_id: str,
+        *,
+        context: OrganisationContext | None = None,  # noqa: ARG003 — deprecated; ignored
         **kwargs: Any,
     ) -> OrganisationScopedHybridRetriever:
-        if context is None:
-            raise ValueError("OrganisationScopedHybridRetriever requires an OrganisationContext")
-        org_id = str(context.organisation_id)
+        org_id = access.enforced_organisation_id()  # fail-closed at construction (AC2)
         base_retriever = HybridRetriever(
             driver=driver,
             vector_index_name=_tenant_index_name_org(vector_index_name, org_id, graph_id),
@@ -399,4 +444,4 @@ class OrganisationScopedHybridRetriever(OrganisationScopedRetriever):
             embedder=embedder,
             **kwargs,
         )
-        return cls(base_retriever, context, graph_id)
+        return cls(base_retriever, graph_id)

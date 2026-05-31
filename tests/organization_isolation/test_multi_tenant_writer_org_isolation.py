@@ -34,6 +34,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 import pytest
+from oraclous_governance.propagation import use_organisation_context
 
 if TYPE_CHECKING:
     from neo4j import Driver
@@ -151,7 +152,6 @@ class TestWriterStampsCorrectOrganisationId:
         Writer = _writer_cls()
         writer = Writer(
             base_writer=_DirectCypherWriter(clean_neo4j),
-            context=_context(_ORG_A),
             graph_id=_SHARED_GRAPH_ID,
         )
         graph = _Graph(
@@ -161,7 +161,8 @@ class TestWriterStampsCorrectOrganisationId:
             ]
         )
 
-        await writer.run(graph)
+        with use_organisation_context(_context(_ORG_A)):
+            await writer.run(graph)
 
         records, _, _ = clean_neo4j.execute_query(
             "MATCH (n:Person) RETURN n.organisation_id AS org, n.name AS name"
@@ -178,12 +179,14 @@ class TestWriterStampsCorrectOrganisationId:
         for org, name in ((_ORG_A, "Alice"), (_ORG_B, "Bob")):
             writer = Writer(
                 base_writer=_DirectCypherWriter(clean_neo4j),
-                context=_context(org),
                 graph_id=_SHARED_GRAPH_ID,
             )
-            await writer.run(
-                _Graph(nodes=[_Node(id=name.lower(), label="Person", properties={"name": name})])
-            )
+            with use_organisation_context(_context(org)):
+                await writer.run(
+                    _Graph(
+                        nodes=[_Node(id=name.lower(), label="Person", properties={"name": name})]
+                    )
+                )
 
         # Org A's view
         a_rows, _, _ = clean_neo4j.execute_query(
@@ -207,7 +210,6 @@ class TestWriterStampsCorrectOrganisationId:
         Writer = _writer_cls()
         writer = Writer(
             base_writer=_DirectCypherWriter(clean_neo4j),
-            context=_context(_ORG_A),
             graph_id=_SHARED_GRAPH_ID,
         )
         graph = _Graph(
@@ -223,7 +225,8 @@ class TestWriterStampsCorrectOrganisationId:
             ]
         )
 
-        await writer.run(graph)
+        with use_organisation_context(_context(_ORG_A)):
+            await writer.run(graph)
 
         records, _, _ = clean_neo4j.execute_query(
             "MATCH (n:Person {id: 'trick'}) RETURN n.organisation_id AS org"
@@ -236,7 +239,6 @@ class TestWriterStampsCorrectOrganisationId:
         Writer = _writer_cls()
         writer = Writer(
             base_writer=_DirectCypherWriter(clean_neo4j),
-            context=_context(_ORG_A),
             graph_id=_SHARED_GRAPH_ID,
         )
         graph = _Graph(
@@ -254,7 +256,8 @@ class TestWriterStampsCorrectOrganisationId:
             ],
         )
 
-        await writer.run(graph)
+        with use_organisation_context(_context(_ORG_A)):
+            await writer.run(graph)
 
         records, _, _ = clean_neo4j.execute_query(
             "MATCH ()-[r:KNOWS]->() RETURN r.organisation_id AS org"
