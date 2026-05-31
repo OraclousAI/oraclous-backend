@@ -1,0 +1,8 @@
+{
+  "error": {
+    "code": "GATEWAY_TIMEOUT",
+    "message": "The upstream service timed out.",
+    "requestId": "req_01J9ZQ8XK3M2N7P5R1T0VWABCP",
+    "retryable": true
+  }
+}

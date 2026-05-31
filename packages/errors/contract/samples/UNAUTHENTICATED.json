@@ -1,0 +1,8 @@
+{
+  "error": {
+    "code": "UNAUTHENTICATED",
+    "message": "Authentication is required.",
+    "requestId": "req_01J9ZQ8XK3M2N7P5R1T0VWABCC",
+    "retryable": false
+  }
+}

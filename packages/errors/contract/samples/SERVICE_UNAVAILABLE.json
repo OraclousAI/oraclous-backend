@@ -1,0 +1,8 @@
+{
+  "error": {
+    "code": "SERVICE_UNAVAILABLE",
+    "message": "The service is temporarily unavailable.",
+    "requestId": "req_01J9ZQ8XK3M2N7P5R1T0VWABCN",
+    "retryable": true
+  }
+}

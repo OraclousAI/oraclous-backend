@@ -1,0 +1,8 @@
+{
+  "error": {
+    "code": "METHOD_NOT_ALLOWED",
+    "message": "That method is not allowed on this resource.",
+    "requestId": "req_01J9ZQ8XK3M2N7P5R1T0VWABCF",
+    "retryable": false
+  }
+}

@@ -1,0 +1,84 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://oraclous.dev/contracts/error-envelope/v1.json",
+  "title": "Gateway error envelope",
+  "description": "Canonical shape for every 4xx/5xx response the gateway produces and the frontend api-client consumes. Contract ORA-37; canonical home Interface Contracts §3. additionalProperties is false at every level so no stack/cause/exception/trace field can ever exist.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["error"],
+  "properties": {
+    "error": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "message", "requestId", "retryable"],
+      "properties": {
+        "code": {
+          "description": "Closed machine-readable taxonomy; the FE's only branch key. Never branch on message.",
+          "type": "string",
+          "enum": [
+            "VALIDATION_FAILED",
+            "MALFORMED_REQUEST",
+            "UNAUTHENTICATED",
+            "UNAUTHORIZED",
+            "NOT_FOUND",
+            "METHOD_NOT_ALLOWED",
+            "CONFLICT",
+            "PAYLOAD_TOO_LARGE",
+            "UNSUPPORTED_MEDIA_TYPE",
+            "RATE_LIMITED",
+            "INTERNAL_ERROR",
+            "SERVICE_UNAVAILABLE",
+            "GATEWAY_TIMEOUT"
+          ]
+        },
+        "message": {
+          "description": "Curated, generic, human-readable. Never an exception message, never reflects request content.",
+          "type": "string",
+          "minLength": 1
+        },
+        "requestId": {
+          "description": "Opaque correlation handle; the ONLY trace exposed. Maps server-side to the full trace.",
+          "type": "string",
+          "pattern": "^req_[0-9A-Za-z]+$"
+        },
+        "retryable": {
+          "description": "Server-authoritative, decoupled from code: may a retry succeed? The FE reads this boolean and never hardcodes which codes are retryable.",
+          "type": "boolean"
+        },
+        "details": {
+          "description": "Present only for VALIDATION_FAILED. Closed sub-vocabulary; never the raw offending value.",
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["field", "issue"],
+            "properties": {
+              "field": {
+                "description": "The offending field name or path. Never the value.",
+                "type": "string",
+                "minLength": 1
+              },
+              "issue": {
+                "description": "Machine-readable issue token (e.g. INVALID_FORMAT). Describes the problem, not the value.",
+                "type": "string",
+                "pattern": "^[A-Z][A-Z0-9_]*$"
+              }
+            }
+          }
+        }
+      },
+      "allOf": [
+        {
+          "$comment": "details exists iff code is VALIDATION_FAILED.",
+          "if": {
+            "required": ["code"],
+            "properties": { "code": { "const": "VALIDATION_FAILED" } }
+          },
+          "then": { "required": ["details"] },
+          "else": { "not": { "required": ["details"] } }
+        }
+      ]
+    }
+  }
+}
