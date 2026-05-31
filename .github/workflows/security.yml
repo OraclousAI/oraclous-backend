@@ -23,3 +23,12 @@ jobs:
           code=$?
           if [ "$code" -eq 5 ]; then echo "No security tests collected yet (skeleton)."; exit 0; fi
           exit "$code"
+
+      - name: R1 gate — adversarial delegation suite (ORA-37 / T2 verification)
+        # The R1 release gate: "R1 ships nothing until this is green" (ORA-37
+        # AC #2). Distinct from the permissive marker step above so a missing
+        # file or a future no-collection skeleton mode cannot let R1 ship
+        # silently — the suite must collect AND pass for this step to succeed.
+        # No `if [ -eq 5 ]` escape branch: an empty R1 gate is a failure mode,
+        # not a skeleton.
+        run: uv run pytest --strict-markers tests/security/test_adversarial_delegation.py
