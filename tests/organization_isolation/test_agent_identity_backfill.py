@@ -103,9 +103,7 @@ _LEGACY_ORG_B = "ora36-legacy-org-bbbb"
 
 def _neo4j_clean(driver, marker: str) -> None:
     """Remove every node carrying our per-suite marker (covers seed + backfill)."""
-    driver.execute_query(
-        f"MATCH (n) WHERE n.{_NEO4J_MARKER_PROP} = $m DETACH DELETE n", m=marker
-    )
+    driver.execute_query(f"MATCH (n) WHERE n.{_NEO4J_MARKER_PROP} = $m DETACH DELETE n", m=marker)
 
 
 def _seed_legacy_agents(driver, marker: str) -> None:
@@ -118,22 +116,19 @@ def _seed_legacy_agents(driver, marker: str) -> None:
     ``org_id`` at all — a truly orphaned legacy agent.
     """
     driver.execute_query(
-        f"CREATE (a:Agent:__Platform__ {{"
-        f"agent_id: $aid, org_id: $org, {_NEO4J_MARKER_PROP}: $m}})",
+        f"CREATE (a:Agent:__Platform__ {{agent_id: $aid, org_id: $org, {_NEO4J_MARKER_PROP}: $m}})",
         aid=_AGENT_A,
         org=_LEGACY_ORG_A,
         m=marker,
     )
     driver.execute_query(
-        f"CREATE (a:Agent:__Platform__ {{"
-        f"agent_id: $aid, org_id: $org, {_NEO4J_MARKER_PROP}: $m}})",
+        f"CREATE (a:Agent:__Platform__ {{agent_id: $aid, org_id: $org, {_NEO4J_MARKER_PROP}: $m}})",
         aid=_AGENT_B,
         org=_LEGACY_ORG_B,
         m=marker,
     )
     driver.execute_query(
-        f"CREATE (a:Agent:__Platform__ {{"
-        f"agent_id: $aid, {_NEO4J_MARKER_PROP}: $m}})",
+        f"CREATE (a:Agent:__Platform__ {{agent_id: $aid, {_NEO4J_MARKER_PROP}: $m}})",
         aid=_AGENT_C_NO_ORG,
         m=marker,
     )
@@ -268,16 +263,16 @@ class TestMigrationContractSurface:
         """
         from oraclous_auth_service.migrations import agent_identity_backfill  # noqa: F401
 
-        assert callable(
-            getattr(agent_identity_backfill, "backfill_agent_identity", None)
-        ), "agent_identity_backfill.backfill_agent_identity must exist"
+        assert callable(getattr(agent_identity_backfill, "backfill_agent_identity", None)), (
+            "agent_identity_backfill.backfill_agent_identity must exist"
+        )
 
     def test_rollback_agent_identity_is_importable(self) -> None:
         from oraclous_auth_service.migrations import agent_identity_backfill
 
-        assert callable(
-            getattr(agent_identity_backfill, "rollback_agent_identity", None)
-        ), "agent_identity_backfill.rollback_agent_identity must exist"
+        assert callable(getattr(agent_identity_backfill, "rollback_agent_identity", None)), (
+            "agent_identity_backfill.rollback_agent_identity must exist"
+        )
 
     def test_backfill_accepts_keyword_only_postgres_and_neo4j(self) -> None:
         """The brief calls out *both* stores — ``postgres_conn`` and
@@ -335,12 +330,7 @@ class TestZeroOrphansAcrossEveryStore:
         )
         fresh_pg.commit()
         with fresh_pg.cursor() as cur:
-            principals = {
-                row[0]
-                for row in cur.execute(
-                    "SELECT id FROM public.agents"
-                ).fetchall()
-            }
+            principals = {row[0] for row in cur.execute("SELECT id FROM public.agents").fetchall()}
         assert {_AGENT_A, _AGENT_B, _AGENT_C_NO_ORG} <= principals, (
             "missing principals after backfill: "
             f"{ {_AGENT_A, _AGENT_B, _AGENT_C_NO_ORG} - principals }"
@@ -391,9 +381,7 @@ class TestZeroOrphansAcrossEveryStore:
             "organisation_id after backfill — violates AC#1 / T2"
         )
 
-    def test_returns_summary_dict(
-        self, legacy_neo4j, fresh_pg: psycopg.Connection
-    ) -> None:
+    def test_returns_summary_dict(self, legacy_neo4j, fresh_pg: psycopg.Connection) -> None:
         """The return value reports counts so an operator running the
         migration has a concrete ledger of what changed (the brief's
         staging-rehearsal expectation)."""
@@ -542,9 +530,7 @@ class TestIdempotency:
         fresh_pg.commit()
         with fresh_pg.cursor() as cur:
             second = _count(cur, "SELECT count(*) FROM public.agents")
-        assert first == second, (
-            f"re-run duplicated principals: {first} -> {second}"
-        )
+        assert first == second, f"re-run duplicated principals: {first} -> {second}"
 
     def test_second_backfill_does_not_duplicate_credentials(
         self, legacy_neo4j, fresh_pg: psycopg.Connection
@@ -568,9 +554,7 @@ class TestIdempotency:
         fresh_pg.commit()
         with fresh_pg.cursor() as cur:
             second = _count(cur, "SELECT count(*) FROM public.agent_credentials")
-        assert first == second, (
-            f"re-run duplicated credentials: {first} -> {second}"
-        )
+        assert first == second, f"re-run duplicated credentials: {first} -> {second}"
 
     def test_second_backfill_is_a_no_op_on_neo4j_subject_nodes(
         self, legacy_neo4j, marker: str, fresh_pg: psycopg.Connection
@@ -597,8 +581,7 @@ class TestIdempotency:
         )
         after = _snapshot()
         assert before == after, (
-            f"backfill_agent_identity is not idempotent on Neo4j: "
-            f"before={before}, after={after}"
+            f"backfill_agent_identity is not idempotent on Neo4j: before={before}, after={after}"
         )
 
     def test_partial_state_resume_does_not_double_insert(
@@ -626,10 +609,7 @@ class TestIdempotency:
             agent_a_count = _count(
                 cur, "SELECT count(*) FROM public.agents WHERE id = %s", (_AGENT_A,)
             )
-            all_present = {
-                row[0]
-                for row in cur.execute("SELECT id FROM public.agents").fetchall()
-            }
+            all_present = {row[0] for row in cur.execute("SELECT id FROM public.agents").fetchall()}
         assert agent_a_count == 1, (
             f"partial-state resume duplicated Agent A's principal: {agent_a_count}"
         )
@@ -669,9 +649,7 @@ class TestRollback:
                 "SELECT count(*) FROM public.agents WHERE id IN (%s, %s, %s)",
                 (_AGENT_A, _AGENT_B, _AGENT_C_NO_ORG),
             )
-        assert principals == 0, (
-            f"rollback left {principals} backfilled principal(s) in Postgres"
-        )
+        assert principals == 0, f"rollback left {principals} backfilled principal(s) in Postgres"
 
     def test_rollback_removes_backfilled_postgres_credentials(
         self, legacy_neo4j, fresh_pg: psycopg.Connection
@@ -689,13 +667,10 @@ class TestRollback:
         with fresh_pg.cursor() as cur:
             creds = _count(
                 cur,
-                "SELECT count(*) FROM public.agent_credentials "
-                "WHERE agent_id IN (%s, %s, %s)",
+                "SELECT count(*) FROM public.agent_credentials WHERE agent_id IN (%s, %s, %s)",
                 (_AGENT_A, _AGENT_B, _AGENT_C_NO_ORG),
             )
-        assert creds == 0, (
-            f"rollback left {creds} backfilled credential(s) in Postgres"
-        )
+        assert creds == 0, f"rollback left {creds} backfilled credential(s) in Postgres"
 
     def test_rollback_preserves_legacy_neo4j_agent_nodes(
         self, legacy_neo4j, marker: str, fresh_pg: psycopg.Connection
@@ -721,13 +696,10 @@ class TestRollback:
         )
         surviving_ids = set(records[0]["ids"])
         assert {_AGENT_A, _AGENT_B, _AGENT_C_NO_ORG} == surviving_ids, (
-            "rollback deleted (or fabricated) legacy Agent node(s); "
-            f"survivors: {surviving_ids}"
+            f"rollback deleted (or fabricated) legacy Agent node(s); survivors: {surviving_ids}"
         )
 
-    def test_rollback_is_idempotent(
-        self, legacy_neo4j, fresh_pg: psycopg.Connection
-    ) -> None:
+    def test_rollback_is_idempotent(self, legacy_neo4j, fresh_pg: psycopg.Connection) -> None:
         """A second rollback after the first must be a clean no-op (the
         rollback operator's safety net — re-running the rollback after a
         crash must not raise)."""
@@ -811,8 +783,7 @@ class TestNoImplicitEscalation:
             m=marker,
         )
         assert records[0]["c"] == 0, (
-            "backfill granted a role to a backfilled agent — T2 "
-            "implicit-escalation violation"
+            "backfill granted a role to a backfilled agent — T2 implicit-escalation violation"
         )
 
     @pytest.mark.security
@@ -947,14 +918,8 @@ class TestNoImplicitEscalation:
             async def persist(self, *_a, **_k) -> None:
                 raise AssertionError("validate-only fixture")
 
-            async def active_credentials_by_prefix(
-                self, prefix: str
-            ) -> list[AgentCredential]:
-                return [
-                    c
-                    for c in creds
-                    if c.status == "active" and c.credential_prefix == prefix
-                ]
+            async def active_credentials_by_prefix(self, prefix: str) -> list[AgentCredential]:
+                return [c for c in creds if c.status == "active" and c.credential_prefix == prefix]
 
             async def revoke_agent_credentials(self, _agent_id: str) -> int:
                 raise AssertionError("validate-only fixture")
