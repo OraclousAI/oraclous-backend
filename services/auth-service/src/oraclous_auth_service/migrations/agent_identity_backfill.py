@@ -63,10 +63,15 @@ def _enumerate_legacy_agents(neo4j_driver) -> list[dict[str, Any]]:
     """Read every legacy ``(:Agent:__Platform__)`` node with its ``agent_id``,
     the legacy ``org_id`` (may be NULL), and any already-set ``organisation_id``
     so a partial-prior run is detected and not duplicated.
+
+    Skips degenerate rows where ``agent_id`` is NULL **or blank** — the
+    downstream substrate stamp helper rejects blank identifiers via
+    ``_require``, so filtering here prevents a degenerate legacy row from
+    crashing the migration mid-loop (code-reviewer suggestion on PR #57).
     """
     records, _, _ = neo4j_driver.execute_query(
         f"MATCH (a:{_LEGACY_AGENT_LABEL}) "
-        "WHERE a.agent_id IS NOT NULL "
+        "WHERE a.agent_id IS NOT NULL AND trim(a.agent_id) <> '' "
         "RETURN a.agent_id AS agent_id, "
         "       a.org_id AS legacy_org_id, "
         "       a.organisation_id AS organisation_id"
@@ -95,43 +100,45 @@ def _resolve_organisation_id(agent: dict[str, Any], seed: str) -> str:
 # --- Postgres writes (auth-service identity domain) -------------------------
 
 
-def _principal_exists(conn, agent_id: str) -> bool:
-    with conn.cursor() as cur:
-        cur.execute("SELECT 1 FROM public.agents WHERE id = %s", (agent_id,))
-        return cur.fetchone() is not None
+def _insert_principal_if_missing(conn, *, agent_id: str, organisation_id: str) -> bool:
+    """Atomically insert the principal iff it does not already exist.
 
-
-def _credential_exists(conn, agent_id: str) -> bool:
-    """Any credential of record — including admin-issued post-backfill ones
-    — counts. The migration's job is to ensure each principal has ≥1
-    credential row of any status; once that's true the migration is done
-    for this agent.
+    ``ON CONFLICT (id) DO NOTHING`` closes the TOCTOU window the prior
+    check-then-insert pattern had against concurrent callers (code-reviewer
+    suggestion on PR #57). Returns ``True`` if a row was inserted,
+    ``False`` if the principal already existed.
     """
     with conn.cursor() as cur:
         cur.execute(
-            "SELECT 1 FROM public.agent_credentials WHERE agent_id = %s LIMIT 1",
-            (agent_id,),
+            "INSERT INTO public.agents (id, organisation_id, created_by_user_id) "
+            "VALUES (%s, %s, %s) "
+            "ON CONFLICT (id) DO NOTHING "
+            "RETURNING id",
+            (agent_id, organisation_id, _BACKFILL_USER_ID),
         )
         return cur.fetchone() is not None
 
 
-def _insert_principal(conn, *, agent_id: str, organisation_id: str) -> None:
-    with conn.cursor() as cur:
-        cur.execute(
-            "INSERT INTO public.agents (id, organisation_id, created_by_user_id) "
-            "VALUES (%s, %s, %s)",
-            (agent_id, organisation_id, _BACKFILL_USER_ID),
-        )
+def _insert_inert_credential_if_missing(conn, *, agent_id: str, organisation_id: str) -> bool:
+    """Atomically insert a structurally inert credential iff the agent has
+    no credential of record yet (sec-arch R1).
 
+    The ``INSERT … SELECT … WHERE NOT EXISTS`` form makes the check + write
+    one atomic SQL statement — closes the TOCTOU window the prior
+    check-then-insert pattern had against concurrent callers (code-reviewer
+    suggestion on PR #57). Returns ``True`` if a row was inserted,
+    ``False`` if a credential of any status already existed for this agent.
 
-def _insert_inert_credential(conn, *, agent_id: str, organisation_id: str) -> None:
-    """Insert a structurally inert credential row (sec-arch R1).
+    The bcrypt hash is computed before the SQL so an idempotent re-run
+    burns a hash that doesn't get written; acceptable for a one-shot
+    migration. Inertness invariants from R1:
 
-    The raw secret is generated and discarded — its bcrypt hash is the only
-    persisted artefact, and the hash's preimage is unrecoverable. The row's
-    status excludes it from ``active_credentials_by_prefix``, so even a
-    correctly-guessed prefix can never reach the bcrypt verify path until
-    an admin issues a real (status='active') credential.
+    * The raw secret is generated and discarded — the bcrypt hash's
+      preimage is unrecoverable.
+    * ``status = _BACKFILL_STATUS`` excludes the row from
+      ``active_credentials_by_prefix``, so even a correctly-guessed prefix
+      cannot reach the bcrypt verify path until an admin issues a real
+      (``status='active'``) credential.
     """
     raw = secrets.token_urlsafe(32)
     credential_hash = bcrypt.hashpw(raw.encode(), bcrypt.gensalt(rounds=_BCRYPT_ROUNDS)).decode()
@@ -144,7 +151,11 @@ def _insert_inert_credential(conn, *, agent_id: str, organisation_id: str) -> No
         cur.execute(
             "INSERT INTO public.agent_credentials "
             "(id, agent_id, organisation_id, credential_hash, credential_prefix, status) "
-            "VALUES (%s, %s, %s, %s, %s, %s)",
+            "SELECT %s, %s, %s, %s, %s, %s "
+            "WHERE NOT EXISTS ("
+            "  SELECT 1 FROM public.agent_credentials WHERE agent_id = %s"
+            ") "
+            "RETURNING id",
             (
                 credential_id,
                 agent_id,
@@ -152,8 +163,10 @@ def _insert_inert_credential(conn, *, agent_id: str, organisation_id: str) -> No
                 credential_hash,
                 prefix,
                 _BACKFILL_STATUS,
+                agent_id,
             ),
         )
+        return cur.fetchone() is not None
 
 
 # --- Public migration API ---------------------------------------------------
@@ -190,12 +203,14 @@ def backfill_agent_identity(
         target_org = _resolve_organisation_id(agent, seed)
         agent_id = agent["agent_id"]
 
-        if not _principal_exists(postgres_conn, agent_id):
-            _insert_principal(postgres_conn, agent_id=agent_id, organisation_id=target_org)
+        if _insert_principal_if_missing(
+            postgres_conn, agent_id=agent_id, organisation_id=target_org
+        ):
             summary["principals_created"] += 1
 
-        if not _credential_exists(postgres_conn, agent_id):
-            _insert_inert_credential(postgres_conn, agent_id=agent_id, organisation_id=target_org)
+        if _insert_inert_credential_if_missing(
+            postgres_conn, agent_id=agent_id, organisation_id=target_org
+        ):
             summary["credentials_created"] += 1
 
         if stamp_agent_subject_node(neo4j_driver, agent_id=agent_id, organisation_id=target_org):
