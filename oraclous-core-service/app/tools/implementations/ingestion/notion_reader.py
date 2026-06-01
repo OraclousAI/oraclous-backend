@@ -5,6 +5,9 @@ from decimal import Decimal
 
 from app.utils.tool_id_generator import generate_tool_id
 from app.tools.base.internal_tool import InternalTool
+from app.tools.plugin import CapabilityKindPlugin, plugin_registry
+from app.tools.registry import tool_registry
+from app.models.capability_descriptor import DescriptorKind
 from app.schemas.tool_instance import ExecutionContext, ExecutionResult
 from app.schemas.tool_definition import (
     ToolDefinition,
@@ -15,7 +18,7 @@ from app.schemas.tool_definition import (
 from app.schemas.common import ToolCategory, ToolType, CredentialType
 
 
-class NotionReader(InternalTool):
+class NotionReader(InternalTool, CapabilityKindPlugin):
     """
     Tool for reading data from Notion databases and pages
     """
@@ -471,3 +474,38 @@ class NotionReader(InternalTool):
         row_credits = Decimal(str(row_count)) * Decimal("0.001")
 
         return base_credits + row_credits
+
+    @classmethod
+    def get_ohm_descriptor(cls) -> dict:
+        return {
+            "kind": "tool",
+            "id": "notion-reader",
+            "version": {"hash": "sha256:notion-v1-0-0", "tags": ["1.0.0"]},
+            "metadata": {
+                "name": "Notion Reader",
+                "description": "Read and extract data from Notion databases and pages",
+            },
+            "spec": {
+                "implementation": {
+                    "type": "internal",
+                    "handler": "app.tools.implementations.ingestion.notion_reader.NotionReader",
+                },
+                "input_schema": {"type": "object", "properties": {}},
+                "output_schema": {"type": "object", "properties": {}},
+                "credential_requirements": [
+                    {"type": "api_key", "required": True, "provider": "notion"},
+                ],
+            },
+        }
+
+    @classmethod
+    def get_kind(cls) -> DescriptorKind:
+        return DescriptorKind.TOOL
+
+    @classmethod
+    def get_plugin_id(cls) -> str:
+        return "notion-reader"
+
+
+plugin_registry.register(NotionReader)
+tool_registry.register_tool(NotionReader)

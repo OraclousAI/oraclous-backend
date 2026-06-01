@@ -6,6 +6,9 @@ from googleapiclient.http import MediaIoBaseDownload
 from decimal import Decimal
 
 from app.tools.base.auth_tool import OAuthTool
+from app.tools.plugin import CapabilityKindPlugin, plugin_registry
+from app.tools.registry import tool_registry
+from app.models.capability_descriptor import DescriptorKind
 from app.schemas.tool_instance import ExecutionContext, ExecutionResult
 from app.schemas.tool_definition import (
     ToolDefinition,
@@ -17,7 +20,7 @@ from app.schemas.common import ToolCategory, ToolType, CredentialType
 from app.utils.tool_id_generator import generate_tool_id
 
 
-class GoogleDriveReader(OAuthTool):
+class GoogleDriveReader(OAuthTool, CapabilityKindPlugin):
     """
     Tool for reading files from Google Drive
     Supports various file types: CSV, Excel, Docs, Sheets, etc.
@@ -528,3 +531,38 @@ class GoogleDriveReader(OAuthTool):
         row_credits = Decimal(str(row_count)) * Decimal("0.001")
 
         return base_credits + row_credits
+
+    @classmethod
+    def get_ohm_descriptor(cls) -> dict:
+        return {
+            "kind": "tool",
+            "id": "google-drive-reader",
+            "version": {"hash": "sha256:gdrive-v1-0-0", "tags": ["1.0.0"]},
+            "metadata": {
+                "name": "Google Drive Reader",
+                "description": "Read and extract data from Google Drive files including Sheets, Docs, CSV, and Excel files",
+            },
+            "spec": {
+                "implementation": {
+                    "type": "internal",
+                    "handler": "app.tools.implementations.ingestion.google_drive_reader.GoogleDriveReader",
+                },
+                "input_schema": {"type": "object", "properties": {}},
+                "output_schema": {"type": "object", "properties": {}},
+                "credential_requirements": [
+                    {"type": "oauth2", "required": True, "provider": "google"},
+                ],
+            },
+        }
+
+    @classmethod
+    def get_kind(cls) -> DescriptorKind:
+        return DescriptorKind.TOOL
+
+    @classmethod
+    def get_plugin_id(cls) -> str:
+        return "google-drive-reader"
+
+
+plugin_registry.register(GoogleDriveReader)
+tool_registry.register_tool(GoogleDriveReader)
