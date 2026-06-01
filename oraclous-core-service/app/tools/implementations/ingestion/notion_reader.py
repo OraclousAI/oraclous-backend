@@ -480,7 +480,7 @@ class NotionReader(InternalTool, CapabilityKindPlugin):
         return {
             "kind": "tool",
             "id": "notion-reader",
-            "version": {"hash": "sha256:notion-v1-0-0", "tags": ["1.0.0"]},
+            "version": {"hash": "", "tags": ["1.0.0"]},
             "metadata": {
                 "name": "Notion Reader",
                 "description": "Read and extract data from Notion databases and pages",

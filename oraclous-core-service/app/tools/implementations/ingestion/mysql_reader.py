@@ -262,7 +262,7 @@ class MySQLReader(DatabaseTool, CapabilityKindPlugin):
         return {
             "kind": "tool",
             "id": "mysql-reader",
-            "version": {"hash": "sha256:mysql-v1-0-0", "tags": ["1.0.0"]},
+            "version": {"hash": "", "tags": ["1.0.0"]},
             "metadata": {
                 "name": "MySQL Reader",
                 "description": "Execute queries and read data from MySQL databases",

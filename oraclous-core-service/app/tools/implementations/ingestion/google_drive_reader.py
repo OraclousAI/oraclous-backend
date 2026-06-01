@@ -537,7 +537,7 @@ class GoogleDriveReader(OAuthTool, CapabilityKindPlugin):
         return {
             "kind": "tool",
             "id": "google-drive-reader",
-            "version": {"hash": "sha256:gdrive-v1-0-0", "tags": ["1.0.0"]},
+            "version": {"hash": "", "tags": ["1.0.0"]},
             "metadata": {
                 "name": "Google Drive Reader",
                 "description": "Read and extract data from Google Drive files including Sheets, Docs, CSV, and Excel files",

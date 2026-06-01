@@ -265,7 +265,7 @@ class PostgreSQLReader(DatabaseTool, CapabilityKindPlugin):
         return {
             "kind": "tool",
             "id": "postgresql-reader",
-            "version": {"hash": "sha256:postgresql-v1-0-0", "tags": ["1.0.0"]},
+            "version": {"hash": "", "tags": ["1.0.0"]},
             "metadata": {
                 "name": "PostgreSQL Reader",
                 "description": "Execute queries and read data from PostgreSQL databases",

@@ -92,6 +92,7 @@ async def sync_plugins_to_registry(
         }
         canonical = json.dumps(to_hash, sort_keys=True, separators=(",", ":"))
         content_hash = f"sha256:{hashlib.sha256(canonical.encode()).hexdigest()}"
+        descriptor["version"]["hash"] = content_hash
         row = await svc.create(
             org_id=org_id,
             kind=plugin_cls.get_kind(),
