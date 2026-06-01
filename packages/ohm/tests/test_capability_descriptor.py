@@ -19,11 +19,11 @@ Discriminator kind set — 5 values defined by ORAA-68:
   ORAA-68 substitutes `human_role` for `capability_pack` so that human actors in a harness
   are first-class addressable registry entries. `capability_pack` handling is out of scope
   for this story (S2.x adapter work). The architectural decision to elevate `human_role` to
-  a first-class kind is pending ADR formalisation — see ORAA-100 (ADR request).
+  a first-class kind is pending ADR formalisation — see ORAA-101 (ADR request).
 
 `human_role` as first-class kind (ORAA-90 finding B):
   Section 4 shows `human_role` only as an inline harness actor attribute, not as a
-  standalone versioned registry entry. ORAA-100 captures the ADR request for solution-architect
+  standalone versioned registry entry. ORAA-101 captures the ADR request for solution-architect
   to formalise this decision. Tests B05 / B25 are correct per ORAA-68 scope; they will be
   validated against the accepted ADR before the impl PR is approved.
 
@@ -32,7 +32,7 @@ Behaviours covered:
   B02  kind:skill descriptor validates with full spec
   B03  kind:agent descriptor validates with full spec
   B04  kind:harness descriptor validates with full spec
-  B05  kind:human_role descriptor validates with full spec  [pending ADR — ORAA-100]
+  B05  kind:human_role descriptor validates with full spec  [pending ADR — ORAA-101]
   B06  invalid kind value is rejected at parse time
   B07  missing kind field is rejected
   B08  CapabilityDescriptor dispatches to correct subtype for each kind
@@ -53,7 +53,7 @@ Behaviours covered:
   B22  kind:skill missing required loaded_when is rejected
   B23  kind:agent missing required role field is rejected
   B24  kind:harness missing required goal is rejected
-  B25  kind:human_role missing required role_name is rejected  [pending ADR — ORAA-100]
+  B25  kind:human_role missing required role_name is rejected  [pending ADR — ORAA-101]
 
 NOTE: All imports below will fail with ImportError until the implementer creates
       packages/ohm/. That failure is intentional — this file is written test-first.
