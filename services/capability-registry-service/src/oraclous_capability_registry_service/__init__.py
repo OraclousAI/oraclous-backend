@@ -1,1 +1,1 @@
-"""oraclous-capability-registry-service — placeholder shell (ORA-13)."""
+"""oraclous-capability-registry-service — Capability Registry layer (R2)."""
