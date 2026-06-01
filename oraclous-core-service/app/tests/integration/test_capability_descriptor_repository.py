@@ -246,7 +246,9 @@ async def test_create_capability_descriptor_tool(async_session):
     assert isinstance(row, CapabilityDescriptorDB)
     assert row.kind == DescriptorKind.TOOL
     assert row.org_id == _ORG_A
-    assert row.content_hash is None
+    assert row.content_hash is not None
+    assert isinstance(row.content_hash, str)
+    assert len(row.content_hash) == 64
     assert row.descriptor["id"] == "google-drive-reader"
     assert row.id is not None
 
