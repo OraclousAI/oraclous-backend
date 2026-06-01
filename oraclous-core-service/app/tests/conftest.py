@@ -39,11 +39,16 @@ from sqlalchemy.ext.asyncio import (
 
 CORE_SERVICE_DIR = Path(__file__).parent.parent.parent  # oraclous-core-service/
 APP_DIR = CORE_SERVICE_DIR / "app"
+PACKAGES_DIR = CORE_SERVICE_DIR.parent / "packages"
 
 # Ensure `from app.models...` / `from app.repositories...` are importable during
 # pytest collection without requiring a PYTHONPATH env var.
 if str(CORE_SERVICE_DIR) not in sys.path:
     sys.path.insert(0, str(CORE_SERVICE_DIR))
+
+# Ensure `from ohm.hashing import ...` is importable (packages/ohm is a shared utility).
+if str(PACKAGES_DIR) not in sys.path:
+    sys.path.insert(0, str(PACKAGES_DIR))
 
 
 # ---------------------------------------------------------------------------
