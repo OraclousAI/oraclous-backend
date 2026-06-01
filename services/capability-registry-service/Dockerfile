@@ -41,20 +41,20 @@ FROM python:3.12.10-slim AS runtime
 
 WORKDIR /app
 
-# Copy the populated virtualenv from the builder stage
+# Copy the populated virtualenv from the builder stage (packages installed non-editable)
 COPY --from=builder /app/.venv /app/.venv
 
-# Copy service source (installed as editable would need the source tree)
+# Copy service source (packages are in the venv; only the service entrypoint is needed)
 COPY services/capability-registry-service/src/ \
      ./services/capability-registry-service/src/
 
-# Copy shared packages source (needed for any workspace package imports)
-COPY packages/ ./packages/
-
 ENV PATH="/app/.venv/bin:$PATH" \
-    PYTHONPATH="/app/services/capability-registry-service/src:/app/packages/ohm/src:/app/packages/substrate/src:/app/packages/governance/src:/app/packages/provenance/src:/app/packages/rebac/src:/app/packages/telemetry/src:/app/packages/errors/src"
+    PYTHONPATH="/app/services/capability-registry-service/src"
 
 EXPOSE 8000
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"
 
 CMD ["uvicorn", "oraclous_capability_registry_service.main:app", \
      "--host", "0.0.0.0", "--port", "8000"]

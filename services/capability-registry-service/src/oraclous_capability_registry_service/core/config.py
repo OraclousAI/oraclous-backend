@@ -16,8 +16,8 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
-    DATABASE_URL: str = "postgresql+asyncpg://oraclous:oraclous@localhost/oraclous"
-    INTERNAL_SERVICE_KEY: str = ""
+    DATABASE_URL: str
+    INTERNAL_SERVICE_KEY: str
     AUTH_SERVICE_URL: str = "http://auth-service:8000"
     APP_NAME: str = "oraclous-capability-registry-service"
     VERSION: str = "0.0.0"
