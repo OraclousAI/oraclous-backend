@@ -85,6 +85,31 @@ services:
       start_period: 20s
     networks: [substrate]
 
+  capability-registry-service:
+    build:
+      context: ..
+      dockerfile: services/capability-registry-service/Dockerfile
+    image: oraclous-capability-registry-service:${IMAGE_TAG:-dev}
+    restart: unless-stopped
+    ports:
+      - "8001:8000"
+    environment:
+      DATABASE_URL: "postgresql+asyncpg://oraclous:oraclous@postgres/oraclous"
+      INTERNAL_SERVICE_KEY: "${CAPABILITY_REGISTRY_INTERNAL_KEY:-dev-internal-key}"
+      AUTH_SERVICE_URL: "http://auth-service:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    profiles: [services]
+    networks: [substrate]
+
 networks:
   substrate:
     driver: bridge

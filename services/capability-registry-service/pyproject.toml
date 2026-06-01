@@ -3,7 +3,11 @@ name = "oraclous-capability-registry-service"
 version = "0.0.0"
 description = "Capability Registry layer; target release R2."
 requires-python = "==3.12.*"
-dependencies = []
+dependencies = [
+    "fastapi>=0.115,<1.0",
+    "pydantic-settings>=2.0,<3.0",
+    "uvicorn[standard]>=0.32,<1.0",
+]
 
 [build-system]
 requires = ["hatchling"]

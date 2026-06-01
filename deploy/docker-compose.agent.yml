@@ -23,3 +23,6 @@ services:
       - "0:16686"
       - "0:4317"
       - "0:4318"
+  capability-registry-service:
+    ports:
+      - "0:8000"
