@@ -33,12 +33,11 @@ import copy
 import uuid
 
 import pytest
-from sqlalchemy.ext.asyncio import AsyncSession
-
 from app.models.capability_descriptor import DescriptorKind
 from app.repositories.capability_descriptor_repository import (
     CapabilityDescriptorRepository,
 )
+from sqlalchemy.ext.asyncio import AsyncSession
 
 # ---------------------------------------------------------------------------
 # Test data

@@ -48,6 +48,10 @@ from __future__ import annotations
 import uuid
 
 import pytest
+from app.models.capability_descriptor import (  # noqa: E402
+    CapabilityDescriptorDB,
+    DescriptorKind,
+)
 
 # ---------------------------------------------------------------------------
 # This import will fail with ImportError until the implementer creates
@@ -55,11 +59,6 @@ import pytest
 # initial test failure under TDD (ADR-010).
 # ---------------------------------------------------------------------------
 from app.services.capability_registry import CapabilityRegistryService  # noqa: E402
-
-from app.models.capability_descriptor import (  # noqa: E402
-    CapabilityDescriptorDB,
-    DescriptorKind,
-)
 
 # ---------------------------------------------------------------------------
 # Test org UUIDs
@@ -252,9 +251,7 @@ async def test_create_all_valid_kind_values(async_session, kind, descriptor):
 async def test_get_by_id_returns_existing_row(async_session):
     """get_by_id() returns the previously created row by UUID."""
     svc = CapabilityRegistryService(async_session)
-    created = await svc.create(
-        org_id=_ORG_A, kind=DescriptorKind.TOOL, descriptor=_TOOL_DESCRIPTOR
-    )
+    created = await svc.create(org_id=_ORG_A, kind=DescriptorKind.TOOL, descriptor=_TOOL_DESCRIPTOR)
     fetched = await svc.get_by_id(created.id)
     assert fetched is not None
     assert fetched.id == created.id
@@ -283,9 +280,7 @@ async def test_get_by_id_unknown_uuid_returns_none(async_session):
 async def test_update_replaces_descriptor_durably(async_session):
     """update() replaces the descriptor JSONB and the new value survives a re-fetch."""
     svc = CapabilityRegistryService(async_session)
-    created = await svc.create(
-        org_id=_ORG_A, kind=DescriptorKind.TOOL, descriptor=_TOOL_DESCRIPTOR
-    )
+    created = await svc.create(org_id=_ORG_A, kind=DescriptorKind.TOOL, descriptor=_TOOL_DESCRIPTOR)
     new_descriptor = {**_TOOL_DESCRIPTOR, "id": "file-reader-v2"}
     updated = await svc.update(created.id, descriptor=new_descriptor)
     assert updated is not None
@@ -317,9 +312,7 @@ async def test_update_unknown_id_returns_none(async_session):
 async def test_delete_removes_row(async_session):
     """delete() removes the capability row; get_by_id() returns None afterwards."""
     svc = CapabilityRegistryService(async_session)
-    created = await svc.create(
-        org_id=_ORG_A, kind=DescriptorKind.TOOL, descriptor=_TOOL_DESCRIPTOR
-    )
+    created = await svc.create(org_id=_ORG_A, kind=DescriptorKind.TOOL, descriptor=_TOOL_DESCRIPTOR)
     deleted = await svc.delete(created.id)
     assert deleted is True
     assert await svc.get_by_id(created.id) is None
@@ -440,9 +433,7 @@ async def test_org_isolation_list_by_org(async_session):
     await svc.create(org_id=_ORG_A, kind=DescriptorKind.SKILL, descriptor=_SKILL_DESCRIPTOR)
 
     org_b_rows = await svc.list_by_org(_ORG_B)
-    assert org_b_rows == [], (
-        f"org_B must not see org_A capabilities; got {len(org_b_rows)} rows"
-    )
+    assert org_b_rows == [], f"org_B must not see org_A capabilities; got {len(org_b_rows)} rows"
 
 
 # ---------------------------------------------------------------------------

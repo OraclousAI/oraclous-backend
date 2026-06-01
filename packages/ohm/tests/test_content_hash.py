@@ -31,12 +31,12 @@ NOTE: All imports below will fail with ImportError until the implementer creates
 import copy
 
 import pytest
+from ohm.schemas import CapabilityDescriptor  # noqa: E402
 from pydantic import TypeAdapter
 
 # These imports will fail until ohm/hashing.py is implemented.
 # The ImportError is the expected initial test failure under TDD.
 from ohm.hashing import compute_content_hash  # noqa: E402
-from ohm.schemas import CapabilityDescriptor  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Shared test data — minimal valid payload for each descriptor kind
@@ -288,9 +288,7 @@ def test_compute_content_hash_sorts_nested_keys_deeply():
     original_hash = compute_content_hash(_TOOL)
     reordered = copy.deepcopy(_TOOL)
     # Reverse the key order inside spec
-    reordered["spec"] = {
-        k: _TOOL["spec"][k] for k in reversed(list(_TOOL["spec"].keys()))
-    }
+    reordered["spec"] = {k: _TOOL["spec"][k] for k in reversed(list(_TOOL["spec"].keys()))}
     assert compute_content_hash(reordered) == original_hash
 
 
