@@ -26,6 +26,16 @@ uv run pytest                  # run the test suite
 
 Test markers (`unit`, `integration`, `security`, `isolation`, `byom`, `organization_isolation`) are declared in `pytest.ini`; select with `uv run pytest -m <marker>`.
 
+## Git hooks setup
+
+Commit-message policy is enforced by a hook in `.githooks/`. Activate once after cloning:
+
+```bash
+git config core.hooksPath .githooks
+```
+
+The hook rejects forbidden attribution trailers (`Co-Authored-By`, `Generated with/by`, `claude.ai`, `anthropic`, `paperclip.ing`, `🤖`). See `CLAUDE.md` §4.5 for the expected commit format.
+
 ## Contributing
 
 All work is test-driven and flows through PRs against protected `main` per `CLAUDE.md` §4. PR prefixes: `[tests]`, `[impl]`, `[impl-infra]`, `[regression]`, `[docs]`, `[chore]`.
