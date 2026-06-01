@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Annotated, Any, Literal, Optional, Union
+from typing import Annotated, Any, List, Literal, Optional, Union
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -36,6 +36,9 @@ class ToolSpec(BaseModel):
     input_schema: dict[str, Any]
     output_schema: dict[str, Any]
     credential_requirements: list[CredentialRequirement] = []
+    # Legacy fields from oraclous-core-service ToolDefinition; preserved for round-trip migration (ORAA-106)
+    tags: Optional[List[str]] = None
+    category: Optional[str] = None
 
 
 class ToolDescriptor(BaseModel):

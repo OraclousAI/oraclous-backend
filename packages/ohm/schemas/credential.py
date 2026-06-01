@@ -17,13 +17,15 @@ class CredentialRequirement(BaseModel):
     type: CredentialType
     provider: str
     scopes: Optional[list[str]] = None
+    # required is a legacy field from the core-service ToolDefinition schema; preserved for round-trip migration (ORAA-106)
+    required: bool = True
 
     @model_validator(mode="after")
     def _validate_oauth_scopes(self) -> "CredentialRequirement":
-        # T2-M3: oauth_token must explicitly declare at least one scope
+        # T2-M3: oauth_token must explicitly declare at least one non-empty scope
         if self.type == CredentialType.OAUTH_TOKEN:
-            if not self.scopes:
+            if not self.scopes or any(s.strip() == "" for s in self.scopes):
                 raise ValueError(
-                    "oauth_token credential_requirements must declare at least one scope (T2-M3)"
+                    "oauth_token credential_requirements must declare at least one non-empty scope (T2-M3)"
                 )
         return self
