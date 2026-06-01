@@ -1,3 +1,5 @@
+import hashlib
+import json
 import uuid
 from typing import Any, Dict, List, Optional
 
@@ -5,6 +7,17 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.capability_descriptor import CapabilityDescriptorDB, DescriptorKind
+
+# Sentinel that distinguishes "caller did not pass content_hash" from
+# "caller explicitly passed content_hash=None".  When omitted, the hash is
+# computed server-side.  When explicitly passed (including None), the caller-
+# supplied value is stored as-is.
+_UNSET: Any = object()
+
+
+def _compute_content_hash(descriptor: Dict[str, Any]) -> str:
+    canonical = json.dumps(descriptor, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode()).hexdigest()
 
 
 class CapabilityDescriptorRepository:
@@ -16,8 +29,10 @@ class CapabilityDescriptorRepository:
         org_id: uuid.UUID,
         kind: DescriptorKind,
         descriptor: Dict[str, Any],
-        content_hash: Optional[str] = None,
+        content_hash: Optional[str] = _UNSET,
     ) -> CapabilityDescriptorDB:
+        if content_hash is _UNSET:
+            content_hash = _compute_content_hash(descriptor)
         row = CapabilityDescriptorDB(
             org_id=org_id,
             kind=kind,
@@ -42,6 +57,7 @@ class CapabilityDescriptorRepository:
         if row is None:
             return None
         row.descriptor = descriptor
+        row.content_hash = _compute_content_hash(descriptor)
         await self.db.flush()
         await self.db.refresh(row)
         return row
