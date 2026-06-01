@@ -19,7 +19,10 @@ Behaviours covered:
   B06  invalid kind value is rejected at parse time
   B07  missing kind field is rejected
   B08  CapabilityDescriptor dispatches to correct subtype for each kind
-  B09  existing ToolDefinition data is representable as kind:tool without data loss
+  B09  existing ToolDefinition data is structurally representable as kind:tool
+         NOTE: legacy-only fields (required on CredentialRequirement, spec.tags,
+         spec.category) are acknowledged as not carried forward by the OHM schema.
+         See ORAA-95 for rationale.
   B10  credential_requirements: oauth_token with scopes list validates (T2-M3)
   B11  credential_requirements: api_key without scopes validates
   B12  credential_requirements: connection_string without scopes validates
@@ -369,16 +372,23 @@ def test_capability_descriptor_dispatches_to_correct_subtype(payload, expected_t
 
 
 # ---------------------------------------------------------------------------
-# B09  existing ToolDefinition shape is representable as kind:tool without data loss
+# B09  existing ToolDefinition shape is structurally representable as kind:tool
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.unit
-def test_legacy_tool_definition_representable_as_tool_descriptor():
+def test_legacy_tool_definition_structurally_representable_as_tool_descriptor():
     """
-    Fields from the legacy ToolDefinition schema (oraclous-core-service) map
-    onto kind:tool without data loss. This test verifies backward compatibility
-    so the migration from app/schemas/tool_definition.py does not break consumers.
+    A legacy ToolDefinition payload (oraclous-core-service) parses as a valid
+    kind:tool descriptor. Confirms structural compatibility so the migration from
+    app/schemas/tool_definition.py does not break consumers.
+
+    Acknowledged legacy-only fields NOT carried forward by the OHM schema
+    (ORAA-95 — Option B: weaken claim rather than extend schema):
+      - CredentialRequirement.required (True on api_key entry) — silently dropped
+      - spec.tags (["ingestion", "etl"]) — silently dropped
+      - spec.category ("INGESTION") — silently dropped
+    These fields are intentionally out of scope for the OHM ToolDescriptor.
     """
     legacy_data = {
         "kind": "tool",
@@ -403,8 +413,10 @@ def test_legacy_tool_definition_representable_as_tool_descriptor():
                 "properties": {"records_ingested": {"type": "integer"}},
             },
             "credential_requirements": [
+                # required=True is a legacy-only field; OHM drops it silently.
                 {"type": "api_key", "provider": "data-source", "required": True}
             ],
+            # tags and category are legacy-only fields; OHM drops them silently.
             "tags": ["ingestion", "etl"],
             "category": "INGESTION",
         },
