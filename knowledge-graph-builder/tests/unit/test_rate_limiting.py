@@ -22,10 +22,9 @@ from slowapi.errors import RateLimitExceeded
 
 def _make_app():
     """Build a minimal FastAPI app with the rate limiter attached."""
+    from app.core.rate_limiter import limiter
     from fastapi import FastAPI
     from slowapi.errors import RateLimitExceeded
-
-    from app.core.rate_limiter import limiter
 
     app = FastAPI()
     app.state.limiter = limiter
@@ -41,9 +40,8 @@ def _make_app():
 @pytest.mark.unit
 def test_limiter_uses_remote_address_key_func():
     """Limiter is configured to key on the client IP address."""
-    from slowapi.util import get_remote_address
-
     from app.core.rate_limiter import limiter
+    from slowapi.util import get_remote_address
 
     assert limiter._key_func is get_remote_address
 
@@ -231,8 +229,7 @@ def test_main_app_has_rate_limit_exception_handler():
         patch("app.core.telemetry.setup_telemetry"),
         patch("app.core.telemetry.instrument_fastapi"),
     ):
-        from slowapi.errors import RateLimitExceeded
-
         from app.main import app
+        from slowapi.errors import RateLimitExceeded
 
         assert RateLimitExceeded in app.exception_handlers
