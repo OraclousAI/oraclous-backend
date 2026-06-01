@@ -1,0 +1,32 @@
+import enum
+
+from sqlalchemy import Column, Enum as SAEnum, String
+from sqlalchemy.dialects.postgresql import JSONB, UUID
+
+from app.models.base import Base, TimestampMixin, UUIDMixin
+
+
+class DescriptorKind(str, enum.Enum):
+    TOOL = "tool"
+    SKILL = "skill"
+    AGENT = "agent"
+    HARNESS = "harness"
+    HUMAN_ROLE = "human_role"
+
+
+class CapabilityDescriptorDB(Base, UUIDMixin, TimestampMixin):
+    __tablename__ = "capability_descriptor"
+
+    org_id = Column(UUID(as_uuid=True), nullable=False, index=True)
+    kind = Column(
+        SAEnum(
+            DescriptorKind,
+            name="descriptorkind",
+            create_type=False,
+            values_callable=lambda x: [e.value for e in x],
+        ),
+        nullable=False,
+        index=True,
+    )
+    content_hash = Column(String(255), nullable=True)
+    descriptor = Column(JSONB, nullable=False)
