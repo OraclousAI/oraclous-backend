@@ -48,9 +48,12 @@ Behaviours covered:
   B12  credential_requirements: connection_string without scopes validates
   B13  credential_requirements: username_password without scopes validates
   B14  credential_requirements: unknown/invalid credential type is rejected
-  B15a credential_requirements: oauth_token with empty scopes list is rejected (scope must be declared)
-  B15b credential_requirements: oauth_token with scopes=None (omitted) is rejected (T2-M3 gap — ORAA-99)
-  B15c credential_requirements: oauth_token with scopes=[""] (empty string scope) is rejected (ORAA-109)
+  B15a credential_requirements: oauth_token with empty scopes list is rejected
+       (scope must be declared)
+  B15b credential_requirements: oauth_token with scopes=None (omitted) is rejected
+       (T2-M3 gap — ORAA-99)
+  B15c credential_requirements: oauth_token with scopes=[""] (empty string scope) is rejected
+       (ORAA-109)
   B16  credential_requirements: missing provider field is rejected
   B17  credential_requirements: multiple requirements in one tool descriptor validate
   B18  kind:tool with no credential_requirements (empty list) validates
@@ -67,19 +70,19 @@ NOTE: All imports below will fail with ImportError until the implementer creates
 """
 
 import pytest
+from ohm.schemas.credential import CredentialRequirement, CredentialType  # noqa: E402
 from pydantic import TypeAdapter, ValidationError
 
 # These imports will fail until packages/ohm/ is implemented.
 # The ImportError is the expected initial test failure under TDD.
 from ohm.schemas import (  # noqa: E402
-    CapabilityDescriptor,
-    ToolDescriptor,
-    SkillDescriptor,
     AgentDescriptor,
+    CapabilityDescriptor,
     HarnessDescriptor,
     HumanRoleDescriptor,
+    SkillDescriptor,
+    ToolDescriptor,
 )
-from ohm.schemas.credential import CredentialRequirement, CredentialType  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Shared TypeAdapter — used for all discriminated-union validation
@@ -173,7 +176,9 @@ MINIMAL_HARNESS: dict = {
                 "role": "brand_lead",
             },
         ],
-        "orchestration": "1. Researcher finds prospects.\n2. Drafter drafts.\n3. Reviewer approves.",
+        "orchestration": (
+            "1. Researcher finds prospects.\n2. Drafter drafts.\n3. Reviewer approves."
+        ),
     },
 }
 
