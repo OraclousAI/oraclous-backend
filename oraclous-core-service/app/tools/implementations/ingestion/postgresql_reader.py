@@ -4,6 +4,9 @@ from decimal import Decimal
 
 from app.utils.tool_id_generator import generate_tool_id
 from app.tools.base.database_tool import DatabaseTool
+from app.tools.plugin import CapabilityKindPlugin, plugin_registry
+from app.tools.registry import tool_registry
+from app.models.capability_descriptor import DescriptorKind
 from app.schemas.tool_instance import ExecutionContext, ExecutionResult
 from app.schemas.tool_definition import (
     ToolDefinition,
@@ -14,7 +17,7 @@ from app.schemas.tool_definition import (
 from app.schemas.common import ToolCategory, ToolType, CredentialType
 
 
-class PostgreSQLReader(DatabaseTool):
+class PostgreSQLReader(DatabaseTool, CapabilityKindPlugin):
     """
     Tool for reading data from PostgreSQL databases
     """
@@ -256,3 +259,38 @@ class PostgreSQLReader(DatabaseTool):
             base_credits = Decimal("0.1")
             row_credits = Decimal(row_count) * Decimal("0.001")
             return base_credits + row_credits
+
+    @classmethod
+    def get_ohm_descriptor(cls) -> dict:
+        return {
+            "kind": "tool",
+            "id": "postgresql-reader",
+            "version": {"hash": "sha256:postgresql-v1-0-0", "tags": ["1.0.0"]},
+            "metadata": {
+                "name": "PostgreSQL Reader",
+                "description": "Execute queries and read data from PostgreSQL databases",
+            },
+            "spec": {
+                "implementation": {
+                    "type": "internal",
+                    "handler": "app.tools.implementations.ingestion.postgresql_reader.PostgreSQLReader",
+                },
+                "input_schema": {"type": "object", "properties": {}},
+                "output_schema": {"type": "object", "properties": {}},
+                "credential_requirements": [
+                    {"type": "database", "required": True, "provider": "postgresql"},
+                ],
+            },
+        }
+
+    @classmethod
+    def get_kind(cls) -> DescriptorKind:
+        return DescriptorKind.TOOL
+
+    @classmethod
+    def get_plugin_id(cls) -> str:
+        return "postgresql-reader"
+
+
+plugin_registry.register(PostgreSQLReader)
+tool_registry.register_tool(PostgreSQLReader)
