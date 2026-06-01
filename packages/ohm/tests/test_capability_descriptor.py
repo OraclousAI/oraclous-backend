@@ -10,22 +10,40 @@ Architecture refs:
 
 Security tier: T2-M3 — credential_requirements declares scope (be-test-reviewer co-sign required)
 
+Discriminator kind set — 5 values defined by ORAA-68:
+  tool, skill, agent, harness, human_role
+
+`capability_pack` exclusion rationale (ORAA-90 finding C):
+  Section 4 (OP/425993) lists `capability_pack` as an OHM manifest kind but it is an
+  adapter meta-format (source-to-OHM translation wrapper), not a capability-registry entry.
+  ORAA-68 substitutes `human_role` for `capability_pack` so that human actors in a harness
+  are first-class addressable registry entries. `capability_pack` handling is out of scope
+  for this story (S2.x adapter work). The architectural decision to elevate `human_role` to
+  a first-class kind is pending ADR formalisation — see ORAA-100 (ADR request).
+
+`human_role` as first-class kind (ORAA-90 finding B):
+  Section 4 shows `human_role` only as an inline harness actor attribute, not as a
+  standalone versioned registry entry. ORAA-100 captures the ADR request for solution-architect
+  to formalise this decision. Tests B05 / B25 are correct per ORAA-68 scope; they will be
+  validated against the accepted ADR before the impl PR is approved.
+
 Behaviours covered:
   B01  kind:tool descriptor validates with full spec
   B02  kind:skill descriptor validates with full spec
   B03  kind:agent descriptor validates with full spec
   B04  kind:harness descriptor validates with full spec
-  B05  kind:human_role descriptor validates with full spec
+  B05  kind:human_role descriptor validates with full spec  [pending ADR — ORAA-100]
   B06  invalid kind value is rejected at parse time
   B07  missing kind field is rejected
   B08  CapabilityDescriptor dispatches to correct subtype for each kind
-  B09  existing ToolDefinition data is representable as kind:tool without data loss
+  B09  legacy ToolDefinition fields forward-carry onto kind:tool without data loss
   B10  credential_requirements: oauth_token with scopes list validates (T2-M3)
   B11  credential_requirements: api_key without scopes validates
   B12  credential_requirements: connection_string without scopes validates
   B13  credential_requirements: username_password without scopes validates
   B14  credential_requirements: unknown/invalid credential type is rejected
-  B15  credential_requirements: oauth_token with empty scopes list is rejected (scope must be declared)
+  B15a credential_requirements: oauth_token with empty scopes list is rejected (scope must be declared)
+  B15b credential_requirements: oauth_token with scopes=None (omitted) is rejected (T2-M3 gap — ORAA-99)
   B16  credential_requirements: missing provider field is rejected
   B17  credential_requirements: multiple requirements in one tool descriptor validate
   B18  kind:tool with no credential_requirements (empty list) validates
@@ -35,7 +53,7 @@ Behaviours covered:
   B22  kind:skill missing required loaded_when is rejected
   B23  kind:agent missing required role field is rejected
   B24  kind:harness missing required goal is rejected
-  B25  kind:human_role missing required role_name is rejected
+  B25  kind:human_role missing required role_name is rejected  [pending ADR — ORAA-100]
 
 NOTE: All imports below will fail with ImportError until the implementer creates
       packages/ohm/. That failure is intentional — this file is written test-first.
@@ -369,16 +387,19 @@ def test_capability_descriptor_dispatches_to_correct_subtype(payload, expected_t
 
 
 # ---------------------------------------------------------------------------
-# B09  existing ToolDefinition shape is representable as kind:tool without data loss
+# B09  legacy ToolDefinition fields forward-carry onto kind:tool without data loss
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.unit
-def test_legacy_tool_definition_representable_as_tool_descriptor():
+def test_legacy_tool_definition_fields_carry_onto_tool_descriptor():
     """
-    Fields from the legacy ToolDefinition schema (oraclous-core-service) map
-    onto kind:tool without data loss. This test verifies backward compatibility
-    so the migration from app/schemas/tool_definition.py does not break consumers.
+    Fields present in the legacy ToolDefinition schema (oraclous-core-service/app/schemas/)
+    must survive the round-trip through kind:tool without loss. Specifically:
+      - spec.tags carries through
+      - spec.category carries through
+      - credential_requirements[0].required carries through (defaults True; explicit True preserved)
+    This test verifies the migration from app/schemas/tool_definition.py preserves all fields.
     """
     legacy_data = {
         "kind": "tool",
@@ -411,8 +432,13 @@ def test_legacy_tool_definition_representable_as_tool_descriptor():
     }
     result = _parse(legacy_data)
     assert isinstance(result, ToolDescriptor)
+    # Core schema fields
     assert result.spec.input_schema["required"] == ["source_url"]
     assert result.spec.credential_requirements[0].type == CredentialType.API_KEY
+    # Forward-carry: legacy fields must survive (no data loss)
+    assert result.spec.tags == ["ingestion", "etl"]
+    assert result.spec.category == "INGESTION"
+    assert result.spec.credential_requirements[0].required is True
 
 
 # ---------------------------------------------------------------------------
@@ -491,7 +517,7 @@ def test_credential_requirement_invalid_type_is_rejected():
 
 
 # ---------------------------------------------------------------------------
-# B15  credential_requirements: oauth_token with empty scopes list is rejected  [T2-M3]
+# B15a  credential_requirements: oauth_token with empty scopes list is rejected  [T2-M3]
 # ---------------------------------------------------------------------------
 
 
@@ -508,6 +534,29 @@ def test_credential_requirement_oauth_token_empty_scopes_rejected():
         CredentialRequirement(
             type=CredentialType.OAUTH_TOKEN, provider="google", scopes=[]
         )
+
+
+# ---------------------------------------------------------------------------
+# B15b  credential_requirements: oauth_token with scopes=None is rejected  [T2-M3 / ORAA-99]
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+@pytest.mark.security
+def test_credential_requirement_oauth_token_null_scopes_rejected():
+    """
+    An oauth_token requirement with scopes omitted (None) is an undeclared-scope
+    credential and must be rejected at schema validation time (T2-M3).
+
+    This is distinct from B15a (empty list): `scopes=None` means the field was not
+    provided at all. Under a naive `Optional[List[str]] = None` default, this would
+    silently pass — a T2-M3 violation. The schema must make scopes required for
+    oauth_token regardless of whether the caller passes [] or None.
+
+    Gap identified by security-architect / be-test-reviewer co-sign (ORAA-99).
+    """
+    with pytest.raises(ValidationError):
+        CredentialRequirement(type=CredentialType.OAUTH_TOKEN, provider="google")
 
 
 # ---------------------------------------------------------------------------
