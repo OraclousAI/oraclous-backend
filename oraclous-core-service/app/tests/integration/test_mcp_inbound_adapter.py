@@ -34,12 +34,6 @@ from app.models.capability_descriptor import CapabilityDescriptorDB, DescriptorK
 from app.services.capability_registry import CapabilityRegistryService
 
 # ---------------------------------------------------------------------------
-# These imports will fail with ImportError until the implementer creates
-# app/tools/base/mcp_tool.py.  The ImportError IS the expected initial TDD failure.
-# ---------------------------------------------------------------------------
-from app.tools.base.mcp_tool import import_mcp_server  # noqa: E402
-
-# ---------------------------------------------------------------------------
 # Test org UUIDs
 # ---------------------------------------------------------------------------
 
@@ -127,6 +121,8 @@ async def test_import_mcp_server_creates_one_row_per_tool(async_session):
     import_mcp_server() must produce exactly one CapabilityDescriptorDB row for
     each tool in the MCP server spec.  The 3-tool mock server must yield 3 rows.
     """
+    from app.tools.base.mcp_tool import import_mcp_server
+
     rows = await import_mcp_server(
         server_spec=_MOCK_MCP_SERVER,
         org_id=_ORG_A,
@@ -148,6 +144,8 @@ async def test_import_mcp_server_creates_one_row_per_tool(async_session):
 @pytest.mark.integration
 async def test_import_mcp_server_rows_have_kind_tool(async_session):
     """Each row created by import_mcp_server() must have kind == DescriptorKind.TOOL."""
+    from app.tools.base.mcp_tool import import_mcp_server
+
     rows = await import_mcp_server(
         server_spec=_MOCK_MCP_SERVER,
         org_id=_ORG_A,
@@ -170,6 +168,8 @@ async def test_import_mcp_server_rows_have_implementation_type_mcp(async_session
     Each imported row's JSONB descriptor must have spec.implementation.type == 'mcp'.
     This is the OHM contract for tools imported from external MCP servers.
     """
+    from app.tools.base.mcp_tool import import_mcp_server
+
     rows = await import_mcp_server(
         server_spec=_MOCK_MCP_SERVER,
         org_id=_ORG_A,
@@ -195,6 +195,8 @@ async def test_import_mcp_server_rows_have_content_hash(async_session):
     Each row imported by import_mcp_server() must have a non-null content_hash
     column, satisfying the S3.1 content-hash versioning requirement.
     """
+    from app.tools.base.mcp_tool import import_mcp_server
+
     rows = await import_mcp_server(
         server_spec=_MOCK_MCP_SERVER,
         org_id=_ORG_A,
@@ -228,6 +230,8 @@ async def test_import_mcp_server_skips_untranslatable_tools(async_session, caplo
     """
     import logging
 
+    from app.tools.base.mcp_tool import import_mcp_server
+
     with caplog.at_level(logging.WARNING):
         rows = await import_mcp_server(
             server_spec=_MIXED_MCP_SERVER,
@@ -260,6 +264,8 @@ async def test_import_mcp_server_is_idempotent(async_session):
     duplicate rows in the capability registry.  The second call must detect
     existing tools (by stable id) and return the existing rows without creating new ones.
     """
+    from app.tools.base.mcp_tool import import_mcp_server
+
     svc = CapabilityRegistryService(async_session)
 
     rows_first = await import_mcp_server(
@@ -298,6 +304,8 @@ async def test_imported_tools_are_scoped_to_org(async_session):
     MCP tools imported for org_A must not appear when listing capabilities for org_B.
     This verifies the fundamental org_id tenancy boundary on imported capabilities.
     """
+    from app.tools.base.mcp_tool import import_mcp_server
+
     svc = CapabilityRegistryService(async_session)
 
     await import_mcp_server(
