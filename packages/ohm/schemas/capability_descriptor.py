@@ -1,0 +1,164 @@
+from __future__ import annotations
+
+from typing import Annotated, Any, Literal
+
+from pydantic import BaseModel, ConfigDict, Field
+
+from .credential import CredentialRequirement
+
+
+class _VersionInfo(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    hash: str
+    tags: list[str] = []
+
+
+class _Metadata(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    name: str
+    description: str
+
+
+# ---------------------------------------------------------------------------
+# Tool
+# ---------------------------------------------------------------------------
+
+
+class _ToolImplementation(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    type: str
+    handler: str
+
+
+class ToolSpec(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    implementation: _ToolImplementation
+    input_schema: dict[str, Any]
+    output_schema: dict[str, Any]
+    credential_requirements: list[CredentialRequirement] = []
+
+
+class ToolDescriptor(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    kind: Literal["tool"]
+    id: str
+    version: _VersionInfo
+    metadata: _Metadata
+    spec: ToolSpec
+
+
+# ---------------------------------------------------------------------------
+# Skill
+# ---------------------------------------------------------------------------
+
+
+class SkillSpec(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    loaded_when: str
+    instructions: str
+    capability_requirements: list[Any] = []
+
+
+class SkillDescriptor(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    kind: Literal["skill"]
+    id: str
+    version: _VersionInfo
+    metadata: _Metadata
+    spec: SkillSpec
+
+
+# ---------------------------------------------------------------------------
+# Agent
+# ---------------------------------------------------------------------------
+
+
+class _AgentScope(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    workspaces: list[str] = []
+
+
+class _AgentLlmConfig(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    provider_ref: str
+
+
+class AgentSpec(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    role: str
+    llm_config: _AgentLlmConfig | None = None
+    capabilities: list[Any] = []
+    scope: _AgentScope | None = None
+
+
+class AgentDescriptor(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    kind: Literal["agent"]
+    id: str
+    version: _VersionInfo
+    metadata: _Metadata
+    spec: AgentSpec
+
+
+# ---------------------------------------------------------------------------
+# Harness
+# ---------------------------------------------------------------------------
+
+
+class _HarnessActor(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    id: str
+    kind: str
+    ref: dict[str, Any] | None = None
+    role: str | None = None
+
+
+class HarnessSpec(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    goal: str
+    actors: list[_HarnessActor] = []
+    orchestration: str | None = None
+
+
+class HarnessDescriptor(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    kind: Literal["harness"]
+    id: str
+    version: _VersionInfo
+    metadata: _Metadata
+    spec: HarnessSpec
+
+
+# ---------------------------------------------------------------------------
+# HumanRole
+# ---------------------------------------------------------------------------
+
+
+class _HumanRoleFallback(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    role: str
+
+
+class HumanRoleSpec(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    role_name: str
+    fallback: _HumanRoleFallback | None = None
+
+
+class HumanRoleDescriptor(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    kind: Literal["human_role"]
+    id: str
+    version: _VersionInfo
+    metadata: _Metadata
+    spec: HumanRoleSpec
+
+
+# ---------------------------------------------------------------------------
+# Discriminated union
+# ---------------------------------------------------------------------------
+
+CapabilityDescriptor = Annotated[
+    ToolDescriptor | SkillDescriptor | AgentDescriptor | HarnessDescriptor | HumanRoleDescriptor,
+    Field(discriminator="kind"),
+]

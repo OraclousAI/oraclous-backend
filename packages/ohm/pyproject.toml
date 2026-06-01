@@ -3,7 +3,7 @@ name = "oraclous-ohm"
 version = "0.0.0"
 description = "OHM manifest types and validators (shared)."
 requires-python = "==3.12.*"
-dependencies = []
+dependencies = ["pydantic>=2.0"]
 
 [build-system]
 requires = ["hatchling"]
