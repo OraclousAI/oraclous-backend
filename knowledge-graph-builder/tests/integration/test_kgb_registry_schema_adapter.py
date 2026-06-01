@@ -20,22 +20,16 @@ delivers the registry-backed schema generation.
 
 Covered behaviours:
   R01  CapabilityRegistryClient importable from app.services.capability_registry_client
-  R02  tool_schemas_from_registry() resolves descriptors by tool name via the
-       registry client
+  R02  tool_schemas_from_registry() resolves descriptors by tool name via the registry client
   R03  OHM tool descriptor → OpenAI provider format produces the correct wrapper shape
-  R04  OHM tool descriptor → Anthropic provider format produces the correct
-       wrapper shape
+  R04  OHM tool descriptor → Anthropic provider format produces the correct wrapper shape
   R05  graph_id is never exposed to the LLM in registry-backed schema generation
-  R06  Tools absent from the registry are silently dropped
-       (pre-ORAA-76 contract preserved)
+  R06  Tools absent from the registry are silently dropped (pre-ORAA-76 contract preserved)
   R07  Empty allowlist returns empty list without calling the registry
-  R08  Static _TOOL_SCHEMAS dict no longer exists in agent_tool_schemas
-       (no dual-storage)
+  R08  Static _TOOL_SCHEMAS dict no longer exists in agent_tool_schemas (no dual-storage)
   R09  Registry client error propagates to schema generation (fail-closed, not silent)
-  R10  Regression: AgentExecutor._tool_use_loop builds schemas from registry
-       in research mode
-  R11  All 12 KGB tools from the original static list are addressable via
-       OHM descriptors
+  R10  Regression: AgentExecutor._tool_use_loop builds schemas from registry in research mode
+  R11  All 12 KGB tools from the original static list are addressable via OHM descriptors
 """
 
 from __future__ import annotations
@@ -46,8 +40,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 # ---------------------------------------------------------------------------
-# R01  CapabilityRegistryClient is importable from
-#      app.services.capability_registry_client.
+# R01  CapabilityRegistryClient is importable from app.services.capability_registry_client.
 # This import FAILS on the current codebase — expected TDD failure (ADR-010).
 # The implementer must create app/services/capability_registry_client.py.
 # ---------------------------------------------------------------------------
@@ -132,7 +125,7 @@ _KGB_TOOL_DESCRIPTORS: dict[str, dict[str, Any]] = {
     ),
     "neighbors": _ohm_tool(
         "neighbors",
-        ("Breadth-first traversal from a known node, optionally filtered by relationship type."),
+        "Breadth-first traversal from a known node, optionally filtered by relationship type.",
         {
             "type": "object",
             "properties": {
@@ -269,7 +262,7 @@ _KGB_TOOL_DESCRIPTORS: dict[str, dict[str, Any]] = {
             "properties": {
                 "query": {
                     "type": "string",
-                    "description": ("Natural-language query to match against community summaries."),
+                    "description": "Natural-language query to match against community summaries.",
                 },
                 "kind": {
                     "type": ["string", "null"],
@@ -330,10 +323,7 @@ _KGB_TOOL_DESCRIPTORS: dict[str, dict[str, Any]] = {
     ),
     "describe_community": _ohm_tool(
         "describe_community",
-        (
-            "Return metadata for one community: its summary, key entities, "
-            "excerpt, size, and sample members."
-        ),
+        "Return metadata for one community: its summary, key entities, excerpt, size, and sample members.",
         {
             "type": "object",
             "properties": {
@@ -381,8 +371,7 @@ def _make_registry_client_stub(
 @pytest.mark.integration
 @pytest.mark.skipif(CapabilityRegistryClient is None, reason="impl not yet available")
 def test_capability_registry_client_is_importable():
-    """CapabilityRegistryClient must be importable from
-    app.services.capability_registry_client."""
+    """CapabilityRegistryClient must be importable from app.services.capability_registry_client."""
     from app.services.capability_registry_client import CapabilityRegistryClient as CRC
 
     assert CRC is not None
@@ -423,11 +412,12 @@ async def test_schema_generation_calls_registry_client():
 @pytest.mark.skipif(CapabilityRegistryClient is None, reason="impl not yet available")
 async def test_ohm_descriptor_to_openai_format():
     """An OHM tool descriptor fetched from the registry must produce a valid
-    OpenAI-format schema: {type: 'function', function:
-    {name, description, parameters}}."""
+    OpenAI-format schema: {type: 'function', function: {name, description, parameters}}."""
     from app.services.agent_tool_schemas import tool_schemas_from_registry
 
-    client = _make_registry_client_stub({"graph_search": _KGB_TOOL_DESCRIPTORS["graph_search"]})
+    client = _make_registry_client_stub(
+        {"graph_search": _KGB_TOOL_DESCRIPTORS["graph_search"]}
+    )
     schemas = await tool_schemas_from_registry(
         allowed_tools=["graph_search"],
         provider_format="openai",
@@ -455,11 +445,12 @@ async def test_ohm_descriptor_to_openai_format():
 @pytest.mark.skipif(CapabilityRegistryClient is None, reason="impl not yet available")
 async def test_ohm_descriptor_to_anthropic_format():
     """An OHM tool descriptor fetched from the registry must produce a valid
-    Anthropic-format schema: {name, description, input_schema}
-    with no 'function' key."""
+    Anthropic-format schema: {name, description, input_schema} with no 'function' key."""
     from app.services.agent_tool_schemas import tool_schemas_from_registry
 
-    client = _make_registry_client_stub({"graph_search": _KGB_TOOL_DESCRIPTORS["graph_search"]})
+    client = _make_registry_client_stub(
+        {"graph_search": _KGB_TOOL_DESCRIPTORS["graph_search"]}
+    )
     schemas = await tool_schemas_from_registry(
         allowed_tools=["graph_search"],
         provider_format="anthropic",
@@ -501,7 +492,9 @@ async def test_graph_id_absent_from_registry_backed_schema(tool_name: str):
             provider_format=fmt,  # type: ignore[arg-type]
             registry_client=client,
         )
-        assert len(schemas) == 1, f"Expected 1 schema for {tool_name!r} in {fmt!r} format"
+        assert len(schemas) == 1, (
+            f"Expected 1 schema for {tool_name!r} in {fmt!r} format"
+        )
         schema = schemas[0]
 
         if fmt == "openai":
@@ -531,7 +524,9 @@ async def test_tool_absent_from_registry_is_silently_dropped():
     from app.services.agent_tool_schemas import tool_schemas_from_registry
 
     # Registry only has graph_search; allowlist asks for graph_search + a ghost tool
-    client = _make_registry_client_stub({"graph_search": _KGB_TOOL_DESCRIPTORS["graph_search"]})
+    client = _make_registry_client_stub(
+        {"graph_search": _KGB_TOOL_DESCRIPTORS["graph_search"]}
+    )
     schemas = await tool_schemas_from_registry(
         allowed_tools=["graph_search", "nonexistent_ghost_tool"],
         provider_format="openai",
@@ -556,8 +551,12 @@ async def test_empty_allowlist_returns_empty_without_registry_call():
     from app.services.agent_tool_schemas import tool_schemas_from_registry
 
     client = _make_registry_client_stub()
-    result_openai = await tool_schemas_from_registry([], "openai", registry_client=client)
-    result_anthropic = await tool_schemas_from_registry([], "anthropic", registry_client=client)
+    result_openai = await tool_schemas_from_registry(
+        [], "openai", registry_client=client
+    )
+    result_anthropic = await tool_schemas_from_registry(
+        [], "anthropic", registry_client=client
+    )
 
     assert result_openai == []
     assert result_anthropic == []
@@ -601,7 +600,9 @@ async def test_registry_client_error_propagates():
     from app.services.agent_tool_schemas import tool_schemas_from_registry
 
     client = MagicMock(spec=CapabilityRegistryClient)
-    client.get_tool_descriptor = AsyncMock(side_effect=RuntimeError("registry unavailable"))
+    client.get_tool_descriptor = AsyncMock(
+        side_effect=RuntimeError("registry unavailable")
+    )
 
     with pytest.raises((RuntimeError, Exception)):
         await tool_schemas_from_registry(
@@ -667,7 +668,9 @@ async def test_agent_executor_tool_use_loop_uses_registry_schemas():
 
     # Registry was called to resolve graph_search schema
     assert registry_client.get_tool_descriptor.call_count >= 1
-    called_names = {call.args[0] for call in registry_client.get_tool_descriptor.call_args_list}
+    called_names = {
+        call.args[0] for call in registry_client.get_tool_descriptor.call_args_list
+    }
     assert "graph_search" in called_names, (
         "AgentExecutor._tool_use_loop did not call registry_client.get_tool_descriptor "
         "for graph_search — schemas are still coming from the static dict."
