@@ -535,9 +535,7 @@ def test_credential_requirement_connection_string_validates():
     Schema pre-enforcement: validates schema acceptance at construction time, not runtime
     T2-M3 ReBAC invocation (committed for implementation PR).
     """
-    req = CredentialRequirement(
-        type=CredentialType.CONNECTION_STRING, provider="postgres"
-    )
+    req = CredentialRequirement(type=CredentialType.CONNECTION_STRING, provider="postgres")
     assert req.type == CredentialType.CONNECTION_STRING
 
 
@@ -554,9 +552,7 @@ def test_credential_requirement_username_password_validates():
     Schema pre-enforcement: validates schema acceptance at construction time, not runtime
     T2-M3 ReBAC invocation (committed for implementation PR).
     """
-    req = CredentialRequirement(
-        type=CredentialType.USERNAME_PASSWORD, provider="legacy-erp"
-    )
+    req = CredentialRequirement(type=CredentialType.USERNAME_PASSWORD, provider="legacy-erp")
     assert req.type == CredentialType.USERNAME_PASSWORD
 
 
@@ -595,9 +591,7 @@ def test_credential_requirement_oauth_token_empty_scopes_rejected():
     Runtime T2-M3 invocation enforcement is committed for the implementation PR.
     """
     with pytest.raises(ValidationError):
-        CredentialRequirement(
-            type=CredentialType.OAUTH_TOKEN, provider="google", scopes=[]
-        )
+        CredentialRequirement(type=CredentialType.OAUTH_TOKEN, provider="google", scopes=[])
 
 
 # ---------------------------------------------------------------------------
@@ -647,9 +641,7 @@ def test_credential_requirement_oauth_token_empty_string_scope_rejected():
     Added in ORAA-109 (FINDING-3) as a required boundary complement to B15a and B15b.
     """
     with pytest.raises(ValidationError):
-        CredentialRequirement(
-            type=CredentialType.OAUTH_TOKEN, provider="google", scopes=[""]
-        )
+        CredentialRequirement(type=CredentialType.OAUTH_TOKEN, provider="google", scopes=[""])
 
 
 # ---------------------------------------------------------------------------
@@ -666,9 +658,7 @@ def test_credential_requirement_missing_provider_rejected():
     T2-M3 ReBAC invocation (committed for implementation PR).
     """
     with pytest.raises(ValidationError):
-        CredentialRequirement(
-            type=CredentialType.OAUTH_TOKEN, scopes=["drive.readonly"]
-        )
+        CredentialRequirement(type=CredentialType.OAUTH_TOKEN, scopes=["drive.readonly"])
 
 
 # ---------------------------------------------------------------------------
@@ -733,9 +723,7 @@ def test_tool_descriptor_empty_credential_requirements_validates():
 @pytest.mark.unit
 def test_tool_descriptor_missing_input_schema_rejected():
     """A tool descriptor without input_schema raises ValidationError — it is required."""
-    spec_without_input = {
-        k: v for k, v in MINIMAL_TOOL["spec"].items() if k != "input_schema"
-    }
+    spec_without_input = {k: v for k, v in MINIMAL_TOOL["spec"].items() if k != "input_schema"}
     data = {**MINIMAL_TOOL, "spec": spec_without_input}
     with pytest.raises(ValidationError):
         _parse(data)
@@ -749,9 +737,7 @@ def test_tool_descriptor_missing_input_schema_rejected():
 @pytest.mark.unit
 def test_tool_descriptor_missing_output_schema_rejected():
     """A tool descriptor without output_schema raises ValidationError — it is required."""
-    spec_without_output = {
-        k: v for k, v in MINIMAL_TOOL["spec"].items() if k != "output_schema"
-    }
+    spec_without_output = {k: v for k, v in MINIMAL_TOOL["spec"].items() if k != "output_schema"}
     data = {**MINIMAL_TOOL, "spec": spec_without_output}
     with pytest.raises(ValidationError):
         _parse(data)
@@ -781,9 +767,7 @@ def test_skill_descriptor_missing_instructions_rejected():
 @pytest.mark.unit
 def test_skill_descriptor_missing_loaded_when_rejected():
     """A skill descriptor without loaded_when raises ValidationError."""
-    spec_without_lw = {
-        k: v for k, v in MINIMAL_SKILL["spec"].items() if k != "loaded_when"
-    }
+    spec_without_lw = {k: v for k, v in MINIMAL_SKILL["spec"].items() if k != "loaded_when"}
     data = {**MINIMAL_SKILL, "spec": spec_without_lw}
     with pytest.raises(ValidationError):
         _parse(data)
@@ -811,9 +795,7 @@ def test_agent_descriptor_missing_role_rejected():
 @pytest.mark.unit
 def test_harness_descriptor_missing_goal_rejected():
     """A harness descriptor without a goal prose field raises ValidationError."""
-    spec_without_goal = {
-        k: v for k, v in MINIMAL_HARNESS["spec"].items() if k != "goal"
-    }
+    spec_without_goal = {k: v for k, v in MINIMAL_HARNESS["spec"].items() if k != "goal"}
     data = {**MINIMAL_HARNESS, "spec": spec_without_goal}
     with pytest.raises(ValidationError):
         _parse(data)
