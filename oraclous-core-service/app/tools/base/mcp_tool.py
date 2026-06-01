@@ -22,7 +22,6 @@ def _server_slug(server_endpoint: str) -> str:
 
 def _compute_content_hash(descriptor: dict) -> str:
     """sha256 over canonical JSON of descriptor with version.hash excluded from input."""
-    version = descriptor.get("version", {})
     to_hash = {
         k: (
             {vk: vv for vk, vv in v.items() if vk != "hash"}
@@ -90,6 +89,12 @@ async def import_mcp_server(
     """
     svc = CapabilityRegistryService(session)
     server_endpoint = server_spec.get("url", "")
+    if not server_endpoint:
+        logger.warning(
+            "MCP server spec has no 'url'; cannot import tools: %s",
+            json.dumps(server_spec),
+        )
+        return []
     tools = server_spec.get("tools", [])
 
     result: List[CapabilityDescriptorDB] = []
