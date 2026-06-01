@@ -73,9 +73,15 @@ _TOOL_DESCRIPTOR: dict = {
     "metadata": {"name": "Google Drive Reader", "description": "Read files from Google Drive."},
     "spec": {
         "implementation": {"type": "internal", "handler": "gdr.GoogleDriveReader"},
-        "input_schema": {"type": "object", "required": ["file_id"], "properties": {"file_id": {"type": "string"}}},  # noqa: E501
+        "input_schema": {
+            "type": "object",
+            "required": ["file_id"],
+            "properties": {"file_id": {"type": "string"}},
+        },  # noqa: E501
         "output_schema": {"type": "object", "properties": {"content": {"type": "string"}}},
-        "credential_requirements": [{"type": "oauth_token", "provider": "google", "scopes": ["drive.readonly"]}],  # noqa: E501
+        "credential_requirements": [
+            {"type": "oauth_token", "provider": "google", "scopes": ["drive.readonly"]}
+        ],  # noqa: E501
     },
 }
 
@@ -111,7 +117,13 @@ _HARNESS_DESCRIPTOR: dict = {
     "metadata": {"name": "Cold Outreach Pipeline", "description": "End-to-end pipeline."},
     "spec": {
         "goal": "Identify prospects, draft messages, get approval, and send.",
-        "actors": [{"id": "drafter", "kind": "agent", "ref": {"id": "outreach-drafter-agent", "version_tag": "stable"}}],  # noqa: E501
+        "actors": [
+            {
+                "id": "drafter",
+                "kind": "agent",
+                "ref": {"id": "outreach-drafter-agent", "version_tag": "stable"},
+            }
+        ],  # noqa: E501
         "orchestration": "1. Researcher finds. 2. Drafter drafts.",
     },
 }
@@ -392,9 +404,7 @@ async def test_search_by_jsonb_containment_match(async_session):
     await repo.create(org_id=_ORG_A, kind=DescriptorKind.TOOL, descriptor=_TOOL_DESCRIPTOR)
     await repo.create(org_id=_ORG_A, kind=DescriptorKind.SKILL, descriptor=_SKILL_DESCRIPTOR)
 
-    results = await repo.search_by_descriptor(
-        _ORG_A, {"kind": "tool"}
-    )
+    results = await repo.search_by_descriptor(_ORG_A, {"kind": "tool"})
     assert len(results) >= 1
     assert all(r.descriptor.get("kind") == "tool" for r in results)
 
@@ -410,9 +420,7 @@ async def test_search_by_jsonb_containment_no_match(async_session):
     repo = CapabilityDescriptorRepository(async_session)
     await repo.create(org_id=_ORG_A, kind=DescriptorKind.TOOL, descriptor=_TOOL_DESCRIPTOR)
 
-    results = await repo.search_by_descriptor(
-        _ORG_A, {"id": "nonexistent-capability-xyz"}
-    )
+    results = await repo.search_by_descriptor(_ORG_A, {"id": "nonexistent-capability-xyz"})
     assert results == []
 
 
@@ -433,9 +441,7 @@ async def test_org_b_cannot_read_org_a_rows(async_session):
     await repo.create(org_id=_ORG_A, kind=DescriptorKind.SKILL, descriptor=_SKILL_DESCRIPTOR)
 
     org_b_rows = await repo.list_by_org(_ORG_B)
-    assert org_b_rows == [], (
-        f"org_B must not see org_A rows; got {len(org_b_rows)} rows"
-    )
+    assert org_b_rows == [], f"org_B must not see org_A rows; got {len(org_b_rows)} rows"
 
 
 # ---------------------------------------------------------------------------

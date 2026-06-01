@@ -250,7 +250,8 @@ def alembic_runner(postgres_dsn: str, async_engine: AsyncEngine):
                     str(alembic_ini),
                     "-x",
                     f"sqlalchemy.url={async_dsn}",
-                ] + list(args),
+                ]
+                + list(args),
                 cwd=str(APP_DIR),
                 capture_output=True,
                 text=True,

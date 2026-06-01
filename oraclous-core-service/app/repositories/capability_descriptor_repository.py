@@ -53,9 +53,7 @@ class CapabilityDescriptorRepository:
 
     async def list_by_org(self, org_id: uuid.UUID) -> list[CapabilityDescriptorDB]:
         result = await self.db.execute(
-            select(CapabilityDescriptorDB).where(
-                CapabilityDescriptorDB.org_id == org_id
-            )
+            select(CapabilityDescriptorDB).where(CapabilityDescriptorDB.org_id == org_id)
         )
         return list(result.scalars().all())
 
