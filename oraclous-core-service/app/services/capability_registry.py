@@ -1,7 +1,10 @@
+import logging
 import uuid
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
 from sqlalchemy.ext.asyncio import AsyncSession
+
+logger = logging.getLogger(__name__)
 
 from app.models.capability_descriptor import CapabilityDescriptorDB, DescriptorKind
 from app.repositories.capability_descriptor_repository import CapabilityDescriptorRepository
@@ -40,22 +43,22 @@ def _capability_to_tool_definition(capability: CapabilityDescriptorDB) -> "ToolD
                     description=cr.get("description"),
                 )
             )
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("Skipping malformed credential_requirement entry for capability %s: %s", capability.id, e)
 
     capabilities: List[ToolCapability] = []
     for cap in spec.get("capabilities", []):
         try:
             capabilities.append(ToolCapability(**cap))
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("Skipping malformed capability entry for capability %s: %s", capability.id, e)
 
     def _schema(data: Any) -> ToolSchema:
         if isinstance(data, dict):
             try:
                 return ToolSchema(**data)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning("Malformed schema dict for capability %s, using empty object: %s", capability.id, e)
         return ToolSchema(type="object")
 
     raw_category = spec.get("category", "INGESTION")

@@ -19,6 +19,7 @@ from app.schemas.tool_instance import (
 )
 from app.schemas.common import InstanceStatus
 from app.schemas.tool_definition import ToolDefinition
+from app.services.capability_registry import CapabilityRegistryService
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +32,7 @@ class InstanceManagerService(BaseInstanceManager):
     def __init__(
         self,
         instance_repo: InstanceRepository,
-        tool_registry: Any,
+        tool_registry: CapabilityRegistryService,
         credential_client: CredentialClient,
     ):
         self.repo = instance_repo

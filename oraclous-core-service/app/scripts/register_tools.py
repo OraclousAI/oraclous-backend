@@ -2,7 +2,6 @@
 Script to register all available tools with the in-memory executor registry.
 """
 
-import asyncio
 import sys
 import os
 

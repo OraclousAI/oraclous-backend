@@ -379,6 +379,10 @@ class ToolExecutionService:
         Requires org context to enumerate capabilities — callers that need
         a scoped list should call CapabilityRegistryService.list_by_org() directly.
         """
+        logger.warning(
+            "list_available_tools called without org context — returning empty list; "
+            "use CapabilityRegistryService.list_by_org() for org-scoped results"
+        )
         return {"tools": [], "total": 0}
 
     # ================== INTERNAL METHODS ==================

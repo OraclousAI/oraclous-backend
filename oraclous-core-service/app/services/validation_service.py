@@ -2,6 +2,7 @@ import logging
 from typing import Any, Dict, List
 from uuid import UUID
 
+from app.services.capability_registry import CapabilityRegistryService
 from app.services.credential_client import CredentialClient
 from app.tools.registry import tool_registry
 from app.schemas.tool_instance import ToolInstance
@@ -18,7 +19,7 @@ class ValidationService:
     def __init__(
         self,
         credential_client: CredentialClient,
-        tool_registry_service: Any,
+        tool_registry_service: CapabilityRegistryService,
     ):
         self.credential_client = credential_client
         self.tool_registry_service = tool_registry_service
