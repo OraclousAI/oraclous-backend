@@ -57,7 +57,7 @@ from app.repositories.capability_descriptor_repository import (  # noqa: E402
     CapabilityDescriptorRepository,
 )
 from sqlalchemy import text
-from sqlalchemy.exc import DBAPIError, DataError, IntegrityError
+from sqlalchemy.exc import DataError, DBAPIError, IntegrityError
 
 # ---------------------------------------------------------------------------
 # Fixtures: minimal valid JSONB descriptors for each kind
