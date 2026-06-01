@@ -126,8 +126,18 @@ def migrated_db(postgres_dsn: str) -> Iterator[str]:
 
 @pytest.fixture(scope="session")
 def async_engine(async_postgres_dsn: str, migrated_db: str) -> AsyncEngine:
-    """Async SQLAlchemy engine connected to the migrated test DB."""
-    return create_async_engine(async_postgres_dsn, echo=False)
+    """Async SQLAlchemy engine connected to the migrated test DB.
+
+    statement_cache_size=0 disables asyncpg's prepared-statement cache.
+    Without this, tests that drop and re-create types (D17/D18 downgrade/upgrade)
+    leave stale OIDs in the cache, causing "cache lookup failed for type N"
+    on the first query after the schema change.
+    """
+    return create_async_engine(
+        async_postgres_dsn,
+        echo=False,
+        connect_args={"statement_cache_size": 0},
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -166,16 +176,33 @@ async def async_session(async_engine: AsyncEngine) -> AsyncGenerator[AsyncSessio
 
 
 @pytest.fixture
-def alembic_runner(postgres_dsn: str):
+def alembic_runner(postgres_dsn: str, async_engine: AsyncEngine):
     """
     Helper for running alembic commands against the test DB.
 
     Returned object has .upgrade(rev) and .downgrade(rev) methods.
     Used by migration reversibility tests (D18).
+
+    After each migration, the engine pool is disposed in a background thread
+    so subsequent async tests receive fresh connections without stale Postgres
+    type OIDs ("cache lookup failed for type N" errors that occur when the
+    descriptorkind enum is dropped and re-created by down/up migration cycles).
+    Disposing in a separate thread avoids the main thread's event loop state.
     """
+    import concurrent.futures
 
     alembic_ini = APP_DIR / "alembic.ini"
     async_dsn = postgres_dsn.replace("postgresql://", "postgresql+asyncpg://", 1)
+
+    def _dispose_pool_sync() -> None:
+        """Dispose engine pool in an isolated thread so the session loop is unaffected."""
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            loop.run_until_complete(async_engine.dispose())
+        finally:
+            loop.close()
+            asyncio.set_event_loop(None)
 
     class _Runner:
         def _run(self, *args: str) -> None:
@@ -201,9 +228,13 @@ def alembic_runner(postgres_dsn: str):
 
         def upgrade(self, rev: str = "head") -> None:
             self._run("upgrade", rev)
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+                ex.submit(_dispose_pool_sync).result()
 
         def downgrade(self, rev: str = "-1") -> None:
             self._run("downgrade", rev)
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+                ex.submit(_dispose_pool_sync).result()
 
     return _Runner()
 
