@@ -275,7 +275,7 @@ class MySQLReader(DatabaseTool, CapabilityKindPlugin):
                 "input_schema": {"type": "object", "properties": {}},
                 "output_schema": {"type": "object", "properties": {}},
                 "credential_requirements": [
-                    {"type": "database", "required": True, "provider": "mysql"},
+                    {"type": "connection_string", "provider": "mysql"},
                 ],
             },
         }

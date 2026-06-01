@@ -550,7 +550,11 @@ class GoogleDriveReader(OAuthTool, CapabilityKindPlugin):
                 "input_schema": {"type": "object", "properties": {}},
                 "output_schema": {"type": "object", "properties": {}},
                 "credential_requirements": [
-                    {"type": "oauth2", "required": True, "provider": "google"},
+                    {
+                        "type": "oauth_token",
+                        "provider": "google",
+                        "scopes": ["https://www.googleapis.com/auth/drive.readonly"],
+                    },
                 ],
             },
         }

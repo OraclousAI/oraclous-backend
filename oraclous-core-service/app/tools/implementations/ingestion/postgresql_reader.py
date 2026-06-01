@@ -278,7 +278,7 @@ class PostgreSQLReader(DatabaseTool, CapabilityKindPlugin):
                 "input_schema": {"type": "object", "properties": {}},
                 "output_schema": {"type": "object", "properties": {}},
                 "credential_requirements": [
-                    {"type": "database", "required": True, "provider": "postgresql"},
+                    {"type": "connection_string", "provider": "postgresql"},
                 ],
             },
         }
