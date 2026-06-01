@@ -783,6 +783,12 @@ source = { editable = "services/knowledge-retriever-service" }
 name = "oraclous-ohm"
 version = "0.0.0"
 source = { editable = "packages/ohm" }
+dependencies = [
+    { name = "pydantic" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "pydantic", specifier = ">=2.0" }]
 
 [[package]]
 name = "oraclous-provenance"

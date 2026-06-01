@@ -43,12 +43,6 @@ from __future__ import annotations
 import uuid
 
 import pytest
-
-# ---------------------------------------------------------------------------
-# These imports will fail with ImportError until the implementer creates the
-# model + repository modules.  The ImportError IS the expected initial test
-# failure under TDD.
-# ---------------------------------------------------------------------------
 from app.models.capability_descriptor import (  # noqa: E402
     CapabilityDescriptorDB,
     DescriptorKind,
@@ -56,8 +50,14 @@ from app.models.capability_descriptor import (  # noqa: E402
 from app.repositories.capability_descriptor_repository import (  # noqa: E402
     CapabilityDescriptorRepository,
 )
+
+# ---------------------------------------------------------------------------
+# These imports will fail with ImportError until the implementer creates the
+# model + repository modules.  The ImportError IS the expected initial test
+# failure under TDD.
+# ---------------------------------------------------------------------------
 from sqlalchemy import text
-from sqlalchemy.exc import DBAPIError, DataError, IntegrityError
+from sqlalchemy.exc import DataError, DBAPIError, IntegrityError
 
 # ---------------------------------------------------------------------------
 # Fixtures: minimal valid JSONB descriptors for each kind
