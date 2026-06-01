@@ -10,6 +10,12 @@ Architecture refs:
 
 Security tier: T2-M3 — credential_requirements declares scope (be-test-reviewer co-sign required)
 
+FINDING-1 resolution (ORAA-109, Option A):
+  B10–B17 are schema pre-enforcement tests: they verify CredentialRequirement accepts/rejects
+  declarations at schema-validation time. They do NOT test runtime T2-M3 invocation enforcement
+  (live principal + real ReBAC call path). T2-M3 invocation enforcement tests carrying markers
+  ["security", "rebac"] are committed for the implementation PR (post-merge of this PR).
+
 Discriminator kind set — 5 values defined by ORAA-68:
   tool, skill, agent, harness, human_role
 
@@ -44,6 +50,7 @@ Behaviours covered:
   B14  credential_requirements: unknown/invalid credential type is rejected
   B15a credential_requirements: oauth_token with empty scopes list is rejected (scope must be declared)
   B15b credential_requirements: oauth_token with scopes=None (omitted) is rejected (T2-M3 gap — ORAA-99)
+  B15c credential_requirements: oauth_token with scopes=[""] (empty string scope) is rejected (ORAA-109)
   B16  credential_requirements: missing provider field is rejected
   B17  credential_requirements: multiple requirements in one tool descriptor validate
   B18  kind:tool with no credential_requirements (empty list) validates
@@ -466,7 +473,12 @@ def test_legacy_tool_definition_fields_carry_onto_tool_descriptor():
 @pytest.mark.unit
 @pytest.mark.security
 def test_credential_requirement_oauth_token_with_scopes_validates():
-    """An oauth_token credential requirement carrying a non-empty scopes list is valid (T2-M3)."""
+    """
+    An oauth_token credential requirement carrying a non-empty scopes list is valid (T2-M3).
+    Schema pre-enforcement: validates that the schema accepts a correctly-declared oauth_token
+    credential at construction time. Runtime T2-M3 invocation enforcement (live principal +
+    real ReBAC call) is covered by ["security", "rebac"] tests in the implementation PR.
+    """
     req = CredentialRequirement(
         type=CredentialType.OAUTH_TOKEN,
         provider="google",
@@ -484,7 +496,11 @@ def test_credential_requirement_oauth_token_with_scopes_validates():
 @pytest.mark.unit
 @pytest.mark.security
 def test_credential_requirement_api_key_without_scopes_validates():
-    """An api_key credential requirement does not require a scopes list."""
+    """
+    An api_key credential requirement does not require a scopes list.
+    Schema pre-enforcement: validates schema acceptance at construction time, not runtime
+    T2-M3 ReBAC invocation (committed for implementation PR).
+    """
     req = CredentialRequirement(type=CredentialType.API_KEY, provider="stripe")
     assert req.type == CredentialType.API_KEY
     assert req.scopes is None or req.scopes == []
@@ -498,7 +514,11 @@ def test_credential_requirement_api_key_without_scopes_validates():
 @pytest.mark.unit
 @pytest.mark.security
 def test_credential_requirement_connection_string_validates():
-    """A connection_string credential requirement validates without scopes."""
+    """
+    A connection_string credential requirement validates without scopes.
+    Schema pre-enforcement: validates schema acceptance at construction time, not runtime
+    T2-M3 ReBAC invocation (committed for implementation PR).
+    """
     req = CredentialRequirement(
         type=CredentialType.CONNECTION_STRING, provider="postgres"
     )
@@ -513,7 +533,11 @@ def test_credential_requirement_connection_string_validates():
 @pytest.mark.unit
 @pytest.mark.security
 def test_credential_requirement_username_password_validates():
-    """A username_password credential requirement validates without scopes."""
+    """
+    A username_password credential requirement validates without scopes.
+    Schema pre-enforcement: validates schema acceptance at construction time, not runtime
+    T2-M3 ReBAC invocation (committed for implementation PR).
+    """
     req = CredentialRequirement(
         type=CredentialType.USERNAME_PASSWORD, provider="legacy-erp"
     )
@@ -528,7 +552,11 @@ def test_credential_requirement_username_password_validates():
 @pytest.mark.unit
 @pytest.mark.security
 def test_credential_requirement_invalid_type_is_rejected():
-    """An unrecognised credential type string raises ValidationError."""
+    """
+    An unrecognised credential type string raises ValidationError.
+    Schema pre-enforcement: validates schema rejection at construction time, not runtime
+    T2-M3 ReBAC invocation (committed for implementation PR).
+    """
     with pytest.raises(ValidationError):
         CredentialRequirement(type="magic_token", provider="wizard-service")
 
@@ -546,6 +574,9 @@ def test_credential_requirement_oauth_token_empty_scopes_rejected():
     T2-M3 mandates that credential_requirements explicitly declare scope — an
     empty oauth scope list is an undeclared-scope credential and must not be
     permitted at schema validation time.
+
+    Schema pre-enforcement: validates schema-level constraint at construction time.
+    Runtime T2-M3 invocation enforcement is committed for the implementation PR.
     """
     with pytest.raises(ValidationError):
         CredentialRequirement(
@@ -571,9 +602,38 @@ def test_credential_requirement_oauth_token_null_scopes_rejected():
     oauth_token regardless of whether the caller passes [] or None.
 
     Gap identified by security-architect / be-test-reviewer co-sign (ORAA-99).
+
+    Schema pre-enforcement: validates schema-level constraint at construction time.
+    Runtime T2-M3 invocation enforcement is committed for the implementation PR.
     """
     with pytest.raises(ValidationError):
         CredentialRequirement(type=CredentialType.OAUTH_TOKEN, provider="google")
+
+
+# ---------------------------------------------------------------------------
+# B15c credential_requirements: oauth_token with scopes=[""] is rejected  [ORAA-109]
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+@pytest.mark.security
+def test_credential_requirement_oauth_token_empty_string_scope_rejected():
+    """
+    An oauth_token requirement with scopes=[""] (a list containing an empty string) must be
+    rejected. An empty-string scope element is an invalid OAuth 2.0 scope — it is neither a
+    declared scope nor a meaningful absence of scope declaration.
+
+    This is distinct from B15a (empty list: scopes=[]) and B15b (scopes omitted/None):
+    the empty string element passes the "non-empty list" check but is itself malformed.
+    Schema validation must reject it (ValidationError) so that undeclared scopes cannot
+    slip through via whitespace or empty strings.
+
+    Added in ORAA-109 (FINDING-3) as a required boundary complement to B15a and B15b.
+    """
+    with pytest.raises(ValidationError):
+        CredentialRequirement(
+            type=CredentialType.OAUTH_TOKEN, provider="google", scopes=[""]
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -584,7 +644,11 @@ def test_credential_requirement_oauth_token_null_scopes_rejected():
 @pytest.mark.unit
 @pytest.mark.security
 def test_credential_requirement_missing_provider_rejected():
-    """A credential requirement without a provider field raises ValidationError."""
+    """
+    A credential requirement without a provider field raises ValidationError.
+    Schema pre-enforcement: validates schema rejection at construction time, not runtime
+    T2-M3 ReBAC invocation (committed for implementation PR).
+    """
     with pytest.raises(ValidationError):
         CredentialRequirement(
             type=CredentialType.OAUTH_TOKEN, scopes=["drive.readonly"]
@@ -599,7 +663,11 @@ def test_credential_requirement_missing_provider_rejected():
 @pytest.mark.unit
 @pytest.mark.security
 def test_tool_descriptor_multiple_credential_requirements():
-    """A tool that needs both an API key and an OAuth token can declare both requirements."""
+    """
+    A tool that needs both an API key and an OAuth token can declare both requirements.
+    Schema pre-enforcement: validates schema acceptance of a multi-entry list at
+    construction time, not runtime T2-M3 ReBAC invocation (committed for implementation PR).
+    """
     data = {
         **MINIMAL_TOOL,
         "spec": {
@@ -625,8 +693,13 @@ def test_tool_descriptor_multiple_credential_requirements():
 
 
 @pytest.mark.unit
+@pytest.mark.security
 def test_tool_descriptor_empty_credential_requirements_validates():
-    """A tool that needs no credentials can declare an empty list — not every tool needs creds."""
+    """
+    A tool that needs no credentials can declare an empty list — not every tool needs creds.
+    Security boundary: the zero-credential case must be explicitly permitted; the absence of
+    credential_requirements is a valid and distinct state from an omitted field.
+    """
     data = {
         **MINIMAL_TOOL,
         "spec": {**MINIMAL_TOOL["spec"], "credential_requirements": []},
