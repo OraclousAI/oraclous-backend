@@ -234,8 +234,8 @@ def test_translated_descriptor_name_in_metadata_and_id():
         "metadata.name must match the MCP tool name"
     )
     descriptor_id = result.get("id", "")
-    assert _VALID_MCP_TOOL["name"] in descriptor_id or descriptor_id != "", (
-        "descriptor id must be non-empty and incorporate the tool name"
+    assert _VALID_MCP_TOOL["name"] in descriptor_id, (
+        "descriptor id must incorporate the tool name"
     )
 
 
