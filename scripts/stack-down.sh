@@ -13,7 +13,11 @@ if [[ -z "$TICKET" ]]; then
   exit 2
 fi
 
-TICKET="$(echo "$TICKET" | tr '[:upper:]' '[:lower:]')"
+TICKET="$(echo "$TICKET" | tr '[:upper:]' '[:lower:]' | tr -cd '[:alnum:]-')"
+if [[ -z "$TICKET" ]]; then
+  echo "error: ticket normalised to empty string" >&2
+  exit 2
+fi
 PROJECT="oraclous-${TICKET}"
 
 COMPOSE_FILES="-f $REPO_ROOT/deploy/docker-compose.yml -f $REPO_ROOT/deploy/docker-compose.agent.yml"
