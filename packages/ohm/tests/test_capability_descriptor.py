@@ -74,8 +74,6 @@ import pytest
 from pydantic import TypeAdapter, ValidationError
 
 try:
-    from ohm.schemas.credential import CredentialRequirement, CredentialType
-
     from ohm.schemas import (
         AgentDescriptor,
         CapabilityDescriptor,
@@ -84,11 +82,21 @@ try:
         SkillDescriptor,
         ToolDescriptor,
     )
+    from ohm.schemas.credential import CredentialRequirement, CredentialType
 
     _ta: TypeAdapter = TypeAdapter(CapabilityDescriptor)
     _OHM_AVAILABLE = True
 except ImportError:
     _OHM_AVAILABLE = False
+    AgentDescriptor = None
+    CapabilityDescriptor = None
+    CredentialRequirement = None
+    CredentialType = None
+    HarnessDescriptor = None
+    HumanRoleDescriptor = None
+    SkillDescriptor = None
+    ToolDescriptor = None
+    _ta = None
 
 pytestmark = pytest.mark.skipif(not _OHM_AVAILABLE, reason="ohm package not yet implemented")
 
