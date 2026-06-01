@@ -42,6 +42,11 @@ from sqlalchemy.ext.asyncio import (
 CORE_SERVICE_DIR = Path(__file__).parent.parent.parent  # oraclous-core-service/
 APP_DIR = CORE_SERVICE_DIR / "app"
 
+# Ensure `from app.models...` / `from app.repositories...` are importable during
+# pytest collection without requiring a PYTHONPATH env var.
+if str(CORE_SERVICE_DIR) not in sys.path:
+    sys.path.insert(0, str(CORE_SERVICE_DIR))
+
 
 # ---------------------------------------------------------------------------
 # Event-loop preservation — guard against asyncio.run() side-effects
