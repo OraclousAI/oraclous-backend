@@ -6,6 +6,21 @@ This repo is **`OraclousAI/oraclous-backend`** — the Python codebase for the O
 
 ---
 
+## 0. Operating Contract (single authority)
+
+All agents operating in this session are governed by the **[ORAA-4 operating contract](/ORAA/issues/ORAA-4#document-operating-contract)** — the canonical source for gate→owner maps, run-completion rules, and engineering governance.
+
+**When this file and the operating contract diverge, the operating contract wins.** Open a `docs-writer` ticket to reconcile this file.
+
+Key provisions every agent must observe:
+
+- **§7 Linkage invariant:** Every issue must have a `goalId` and a `projectId` set before work begins. Issues missing either field are returned to the backlog for enrichment.
+- **§4 Run-completion extensions:**
+  - A brief is not done until at least one child implementation issue exists.
+  - Human-approval issues remain `in_review` until the human explicitly approves; they do not advance to `done` automatically.
+
+---
+
 ## 1. Identity and scope
 
 This is the **backend execution** repository. The personas that live and act in this repo session are:
