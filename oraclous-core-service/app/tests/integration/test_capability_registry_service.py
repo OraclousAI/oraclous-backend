@@ -22,7 +22,7 @@ the unified registry.
 
 Behaviours covered:
   R01  CapabilityRegistryService is importable from app.services.capability_registry
-  R02  create() with kind=tool persists a row and returns a CapabilityDescriptorDB
+  R02  create() with kind=tool persists a row; content_hash is auto-computed (non-null) via repo delegation
   R03  create() with kind=skill persists a skill row
   R04  create() accepts an explicit content_hash and stores it
   R05  create() with all 5 valid kind values succeeds (parametrized)
@@ -182,7 +182,13 @@ async def test_capability_registry_service_is_importable():
 
 @pytest.mark.integration
 async def test_create_tool_capability(async_session):
-    """create() with kind=tool returns a persisted CapabilityDescriptorDB row."""
+    """create() with kind=tool returns a persisted CapabilityDescriptorDB row.
+
+    The service delegates to CapabilityDescriptorRepository.create(), which
+    auto-computes content_hash when none is supplied (C13 in
+    test_content_hash_versioning.py).  The service therefore inherits that
+    behaviour: content_hash must be non-null on the returned row.
+    """
     svc = CapabilityRegistryService(async_session)
     row = await svc.create(
         org_id=_ORG_A,
@@ -194,7 +200,7 @@ async def test_create_tool_capability(async_session):
     assert row.org_id == _ORG_A
     assert row.kind == DescriptorKind.TOOL
     assert row.descriptor["id"] == "file-reader"
-    assert row.content_hash is None
+    assert row.content_hash is not None  # repo auto-computes; see C13
 
 
 # ---------------------------------------------------------------------------
