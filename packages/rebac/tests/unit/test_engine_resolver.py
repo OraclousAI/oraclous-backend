@@ -160,7 +160,7 @@ async def test_argument_mapping_pins_field_correspondence() -> None:
     assert len(check.calls) == 1, "engine called exactly once on a recognised request"
     call = check.calls[0]
     assert call["organisation_id"] == "org-xxxx"
-    assert call["subject"] == {"type": "user", "id": "user-alice"}, "subject must map to subject dict"
+    assert call["subject"] == {"type": "user", "id": "user-alice"}  # subject must map to subject dict
     assert call["graph_id"] == "graph-roadmap", "resource must map to graph_id"
     assert call["required_level"] == "write", "relation must map via the defined lookup"
     assert call["driver"] is sentinel_driver, "configured driver is threaded through"
