@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import uuid
 from abc import ABC, abstractmethod
 from typing import List, Type
@@ -79,10 +81,22 @@ async def sync_plugins_to_registry(
         if pid in existing_by_id:
             synced.append(existing_by_id[pid])
             continue
+        descriptor = plugin_cls.get_ohm_descriptor()
+        to_hash = {
+            k: (
+                {vk: vv for vk, vv in v.items() if vk != "hash"}
+                if k == "version"
+                else v
+            )
+            for k, v in descriptor.items()
+        }
+        canonical = json.dumps(to_hash, sort_keys=True, separators=(",", ":"))
+        content_hash = f"sha256:{hashlib.sha256(canonical.encode()).hexdigest()}"
         row = await svc.create(
             org_id=org_id,
             kind=plugin_cls.get_kind(),
-            descriptor=plugin_cls.get_ohm_descriptor(),
+            descriptor=descriptor,
+            content_hash=content_hash,
         )
         synced.append(row)
     return synced
