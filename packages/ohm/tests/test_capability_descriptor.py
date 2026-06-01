@@ -74,6 +74,8 @@ import pytest
 from pydantic import TypeAdapter, ValidationError
 
 try:
+    from ohm.schemas.credential import CredentialRequirement, CredentialType
+
     from ohm.schemas import (
         AgentDescriptor,
         CapabilityDescriptor,
@@ -82,7 +84,6 @@ try:
         SkillDescriptor,
         ToolDescriptor,
     )
-    from ohm.schemas.credential import CredentialRequirement, CredentialType
 
     _ta: TypeAdapter = TypeAdapter(CapabilityDescriptor)
     _OHM_AVAILABLE = True
