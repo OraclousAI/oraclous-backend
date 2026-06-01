@@ -553,7 +553,7 @@ async def test_invalid_kind_raises_integrity_error(async_session):
             text(
                 "INSERT INTO capability_descriptor"
                 " (id, org_id, kind, descriptor, created_at, updated_at)"
-                " VALUES (:id, :org_id, :kind, :descriptor::jsonb, NOW(), NOW())"
+                " VALUES (:id, :org_id, :kind, CAST(:descriptor AS jsonb), NOW(), NOW())"
             ),
             {
                 "id": str(uuid.uuid4()),
