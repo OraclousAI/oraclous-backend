@@ -2,7 +2,6 @@ name: CI
 
 on:
   pull_request:
-    branches: [main]
   push:
     branches: [main]
 
@@ -60,3 +59,33 @@ jobs:
           code=$?
           if [ "$code" -eq 5 ]; then echo "No integration tests collected yet."; exit 0; fi
           exit "$code"
+
+  worktree-test:
+    name: "Per-run worktree isolation probe (ORAA-130)"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Verify git repo validity
+        run: |
+          git rev-parse --is-inside-work-tree
+          echo "Toplevel: $(git rev-parse --show-toplevel)"
+          echo "HEAD: $(git rev-parse HEAD)"
+      - name: git worktree add — detached HEAD
+        run: |
+          git worktree add /tmp/wt-probe-detached --detach HEAD
+          git -C /tmp/wt-probe-detached rev-parse --is-inside-work-tree
+      - name: git worktree add — named branch (simulates per-run agent isolation)
+        run: |
+          git branch wt-ci-probe HEAD
+          git worktree add /tmp/wt-probe-branch wt-ci-probe
+          git -C /tmp/wt-probe-branch rev-parse --is-inside-work-tree
+          git worktree list
+      - name: Cleanup and report
+        run: |
+          git worktree remove /tmp/wt-probe-detached --force
+          git worktree remove /tmp/wt-probe-branch --force
+          git branch -d wt-ci-probe
+          echo "RESULT: git worktree add is fully supported in GitHub Actions."
+          echo "Recommendation: restore per-run worktree isolation in agent config."
