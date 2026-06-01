@@ -44,7 +44,7 @@ import uuid
 import pytest
 import pytest_asyncio
 from sqlalchemy import text
-from sqlalchemy.exc import DataError, IntegrityError
+from sqlalchemy.exc import DBAPIError, DataError, IntegrityError
 
 # ---------------------------------------------------------------------------
 # These imports will fail with ImportError until the implementer creates the
@@ -540,13 +540,15 @@ async def test_invalid_kind_raises_integrity_error(async_session):
     """
     Inserting a row with an invalid kind string must be rejected by the DB enum constraint.
     The DB-level enforcement ensures no application bug can silently write a bad kind value.
-    PostgreSQL raises DataError (invalid_text_representation) for enum violations.
+    PostgreSQL raises SQLSTATE 22P02 (invalid_text_representation) for enum violations.
+    The SQLAlchemy asyncpg dialect does not map asyncpg.DataError → sqlalchemy.exc.DataError;
+    it falls back to the parent DBAPIError. Accept all three to cover both sync and async paths.
     """
-    with pytest.raises((DataError, IntegrityError)):
+    with pytest.raises((DataError, IntegrityError, DBAPIError)):
         await async_session.execute(
             text(
                 "INSERT INTO capability_descriptor (id, org_id, kind, descriptor, created_at, updated_at) "
-                "VALUES (:id, :org_id, :kind, :descriptor::jsonb, NOW(), NOW())"
+                "VALUES (:id, :org_id, :kind, CAST(:descriptor AS jsonb), NOW(), NOW())"
             ),
             {
                 "id": str(uuid.uuid4()),

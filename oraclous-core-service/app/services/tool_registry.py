@@ -9,6 +9,12 @@ from app.interfaces.tool_registry import BaseToolRegistry
 from app.schemas.tool_definition import ToolDefinition, ToolQuery
 from app.schemas.common import ToolCategory
 from app.models.tool_definition import ToolDefinitionDB
+# These side-effect imports register all models in the SQLAlchemy mapper registry
+# before mapper configuration runs, resolving string-based relationship references.
+import app.models.tool_instance  # noqa: F401
+import app.models.workflow  # noqa: F401
+import app.models.execution  # noqa: F401
+import app.models.jobs  # noqa: F401
 from app.utils.validation import ToolValidationMixin
 
 

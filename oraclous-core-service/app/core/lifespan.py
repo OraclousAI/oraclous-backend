@@ -3,7 +3,6 @@ import logging
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
-from app.services.tool_sync_service import tool_sync_service
 from app.core.database import init_db, close_db
 
 logger = logging.getLogger(__name__)
@@ -22,16 +21,7 @@ async def lifespan(app: FastAPI):
         logger.info("Initializing database...")
         await init_db()
 
-        # Sync tools from database to in-memory registry
-        logger.info("Synchronizing tools...")
-        sync_result = await tool_sync_service.sync_tools_on_startup()
-
-        # Store sync result in app state for monitoring
-        app.state.tool_sync_result = sync_result
-
-        logger.info(
-            f"Startup completed successfully. Synced {sync_result['synced_successfully']} tools."
-        )
+        logger.info("Startup completed successfully.")
 
     except Exception as e:
         logger.error(f"Startup failed: {str(e)}")
@@ -64,10 +54,7 @@ async def startup_event():
 
     try:
         await init_db()
-        sync_result = await tool_sync_service.sync_tools_on_startup()
-        logger.info(
-            f"Startup completed. Synced {sync_result['synced_successfully']} tools."
-        )
+        logger.info("Startup completed.")
 
     except Exception as e:
         logger.error(f"Startup failed: {str(e)}")

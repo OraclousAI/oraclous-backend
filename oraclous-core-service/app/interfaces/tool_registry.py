@@ -30,6 +30,26 @@ class BaseToolRegistry(ABC):
         pass
 
     @abstractmethod
+    async def list_tools(
+        self,
+        category: Optional[ToolCategory] = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> List[ToolDefinition]:
+        """List tools with pagination"""
+        pass
+
+    @abstractmethod
+    async def update_tool(self, tool_id: str, definition: ToolDefinition) -> bool:
+        """Update an existing tool definition"""
+        pass
+
+    @abstractmethod
+    async def delete_tool(self, tool_id: str) -> bool:
+        """Delete a tool definition"""
+        pass
+
+    @abstractmethod
     async def match_capabilities(
         self, required_capabilities: List[str]
     ) -> List[ToolDefinition]:
