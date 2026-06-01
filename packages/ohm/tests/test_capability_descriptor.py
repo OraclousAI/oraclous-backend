@@ -36,7 +36,7 @@ Behaviours covered:
   B06  invalid kind value is rejected at parse time
   B07  missing kind field is rejected
   B08  CapabilityDescriptor dispatches to correct subtype for each kind
-  B09  legacy ToolDefinition fields forward-carry onto kind:tool without data loss
+  B09  legacy ToolDefinition fields round-trip onto kind:tool [CONTRACT: ROUND-TRIP — ORAA-106]
   B10  credential_requirements: oauth_token with scopes list validates (T2-M3)
   B11  credential_requirements: api_key without scopes validates
   B12  credential_requirements: connection_string without scopes validates
@@ -387,19 +387,36 @@ def test_capability_descriptor_dispatches_to_correct_subtype(payload, expected_t
 
 
 # ---------------------------------------------------------------------------
-# B09  legacy ToolDefinition fields forward-carry onto kind:tool without data loss
+# B09  legacy ToolDefinition fields — CONTRACT: ROUND-TRIP
+#
+# Decision: legacy fields round-trip (preserved), not explicitly dropped.
+#
+# Reasoning:
+#   - ToolSpec explicitly declares `tags: Optional[List[str]]` and
+#     `category: Optional[str]` for migration compatibility with the legacy
+#     ToolDefinition schema in oraclous-core-service/app/schemas/tool_definition.py.
+#   - CredentialRequirement explicitly declares `required: bool = True` for backward
+#     compatibility; existing payloads carry this field and must read back correctly.
+#   - Dropping these fields at parse time would silently discard data from any
+#     ToolDefinition migrated to kind:tool, breaking the migration path.
+#   - ADR-016 scopes this as a test-correctness fix, not a schema change — the schema
+#     already carries the fields; the test asserts they survive the round-trip unchanged.
+#
+# If a future ADR removes these fields (explicit-drop contract), rewrite to assert
+# their absence and update with the ADR reference. See ORAA-106.
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.unit
 def test_legacy_tool_definition_fields_carry_onto_tool_descriptor():
     """
+    CONTRACT: ROUND-TRIP — legacy fields are preserved through serialise → deserialise.
+
     Fields present in the legacy ToolDefinition schema (oraclous-core-service/app/schemas/)
-    must survive the round-trip through kind:tool without loss. Specifically:
-      - spec.tags carries through
-      - spec.category carries through
-      - credential_requirements[0].required carries through (defaults True; explicit True preserved)
-    This test verifies the migration from app/schemas/tool_definition.py preserves all fields.
+    must survive the round-trip through kind:tool unchanged. Specifically:
+      - spec.tags round-trips with the exact list value
+      - spec.category round-trips with the exact string value
+      - credential_requirements[0].required round-trips as True (explicit True preserved)
     """
     legacy_data = {
         "kind": "tool",
@@ -435,7 +452,7 @@ def test_legacy_tool_definition_fields_carry_onto_tool_descriptor():
     # Core schema fields
     assert result.spec.input_schema["required"] == ["source_url"]
     assert result.spec.credential_requirements[0].type == CredentialType.API_KEY
-    # Forward-carry: legacy fields must survive (no data loss)
+    # Round-trip contract: legacy fields must be present and unchanged after deserialisation
     assert result.spec.tags == ["ingestion", "etl"]
     assert result.spec.category == "INGESTION"
     assert result.spec.credential_requirements[0].required is True
