@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Annotated, Any, Literal, Optional, Union
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -86,9 +86,9 @@ class _AgentLlmConfig(BaseModel):
 class AgentSpec(BaseModel):
     model_config = ConfigDict(extra="ignore")
     role: str
-    llm_config: Optional[_AgentLlmConfig] = None
+    llm_config: _AgentLlmConfig | None = None
     capabilities: list[Any] = []
-    scope: Optional[_AgentScope] = None
+    scope: _AgentScope | None = None
 
 
 class AgentDescriptor(BaseModel):
@@ -109,15 +109,15 @@ class _HarnessActor(BaseModel):
     model_config = ConfigDict(extra="ignore")
     id: str
     kind: str
-    ref: Optional[dict[str, Any]] = None
-    role: Optional[str] = None
+    ref: dict[str, Any] | None = None
+    role: str | None = None
 
 
 class HarnessSpec(BaseModel):
     model_config = ConfigDict(extra="ignore")
     goal: str
     actors: list[_HarnessActor] = []
-    orchestration: Optional[str] = None
+    orchestration: str | None = None
 
 
 class HarnessDescriptor(BaseModel):
@@ -142,7 +142,7 @@ class _HumanRoleFallback(BaseModel):
 class HumanRoleSpec(BaseModel):
     model_config = ConfigDict(extra="ignore")
     role_name: str
-    fallback: Optional[_HumanRoleFallback] = None
+    fallback: _HumanRoleFallback | None = None
 
 
 class HumanRoleDescriptor(BaseModel):
@@ -159,12 +159,6 @@ class HumanRoleDescriptor(BaseModel):
 # ---------------------------------------------------------------------------
 
 CapabilityDescriptor = Annotated[
-    Union[
-        ToolDescriptor,
-        SkillDescriptor,
-        AgentDescriptor,
-        HarnessDescriptor,
-        HumanRoleDescriptor,
-    ],
+    ToolDescriptor | SkillDescriptor | AgentDescriptor | HarnessDescriptor | HumanRoleDescriptor,
     Field(discriminator="kind"),
 ]
