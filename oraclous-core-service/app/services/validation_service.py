@@ -1,9 +1,9 @@
 import logging
-from typing import Dict, Any, List
+from typing import Any, Dict, List
 from uuid import UUID
 
+from app.services.capability_registry import CapabilityRegistryService
 from app.services.credential_client import CredentialClient
-from app.services.tool_registry import ToolRegistryService
 from app.tools.registry import tool_registry
 from app.schemas.tool_instance import ToolInstance
 
@@ -19,7 +19,7 @@ class ValidationService:
     def __init__(
         self,
         credential_client: CredentialClient,
-        tool_registry_service: ToolRegistryService,
+        tool_registry_service: CapabilityRegistryService,
     ):
         self.credential_client = credential_client
         self.tool_registry_service = tool_registry_service
@@ -84,7 +84,7 @@ class ValidationService:
     ):
         """Validate tool definition exists and is accessible"""
         try:
-            tool_definition = await self.tool_registry_service.get_tool(
+            tool_definition = await self.tool_registry_service.get_tool_definition(
                 instance.tool_definition_id
             )
 
@@ -184,7 +184,7 @@ class ValidationService:
         """Comprehensive credential validation with user-friendly messages"""
         try:
             # Get tool definition for credential requirements
-            tool_definition = await self.tool_registry_service.get_tool(
+            tool_definition = await self.tool_registry_service.get_tool_definition(
                 instance.tool_definition_id
             )
             if not tool_definition:
@@ -344,7 +344,7 @@ class ValidationService:
         """Validate tool configuration"""
         try:
             # Get tool definition for configuration schema
-            tool_definition = await self.tool_registry_service.get_tool(
+            tool_definition = await self.tool_registry_service.get_tool_definition(
                 instance.tool_definition_id
             )
             if not tool_definition:

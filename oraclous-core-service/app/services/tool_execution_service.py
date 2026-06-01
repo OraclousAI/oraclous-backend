@@ -1,6 +1,7 @@
 # app/services/tool_execution_service.py
 import asyncio
 import logging
+import uuid as _uuid
 from typing import Dict, Any, Optional, AsyncGenerator
 from uuid import UUID, uuid4
 from datetime import datetime
@@ -316,8 +317,8 @@ class ToolExecutionService:
         """Get capabilities and metadata for a tool definition"""
         try:
             # Get tool definition from registry
-            tool_definition = await self.instance_manager.tool_registry.get_tool(
-                tool_definition_id
+            tool_definition = await self.instance_manager.tool_registry.get_tool_definition(
+                _uuid.UUID(tool_definition_id)
             )
             if not tool_definition:
                 return {"error": "Tool definition not found", "capabilities": []}
@@ -373,21 +374,16 @@ class ToolExecutionService:
             return {"error": str(e), "capabilities": []}
 
     async def list_available_tools(self) -> Dict[str, Any]:
-        """List all available tools with their capabilities"""
-        try:
-            tools = await self.instance_manager.tool_registry.list_tools(limit=1000)
+        """List all available tools with their capabilities.
 
-            available_tools = []
-            for tool in tools:
-                tool_info = await self.get_tool_capabilities(tool.id)
-                if "error" not in tool_info:
-                    available_tools.append(tool_info)
-
-            return {"tools": available_tools, "total": len(available_tools)}
-
-        except Exception as e:
-            logger.error(f"Failed to list available tools: {str(e)}")
-            return {"error": str(e), "tools": []}
+        Requires org context to enumerate capabilities — callers that need
+        a scoped list should call CapabilityRegistryService.list_by_org() directly.
+        """
+        logger.warning(
+            "list_available_tools called without org context — returning empty list; "
+            "use CapabilityRegistryService.list_by_org() for org-scoped results"
+        )
+        return {"tools": [], "total": 0}
 
     # ================== INTERNAL METHODS ==================
 

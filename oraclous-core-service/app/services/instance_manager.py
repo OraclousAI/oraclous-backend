@@ -1,11 +1,11 @@
 # app/services/instance_manager.py
-from typing import List, Optional, Dict, Any
+import uuid
+from typing import Any, Dict, List, Optional
 from uuid import UUID
 import logging
 
 from app.interfaces.instance_manager import BaseInstanceManager
 from app.repositories.instance_repository import InstanceRepository
-from app.services.tool_registry import ToolRegistryService
 from app.services.credential_client import CredentialClient
 from app.schemas.tool_instance import (
     ToolInstance,
@@ -19,6 +19,7 @@ from app.schemas.tool_instance import (
 )
 from app.schemas.common import InstanceStatus
 from app.schemas.tool_definition import ToolDefinition
+from app.services.capability_registry import CapabilityRegistryService
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +32,7 @@ class InstanceManagerService(BaseInstanceManager):
     def __init__(
         self,
         instance_repo: InstanceRepository,
-        tool_registry: ToolRegistryService,
+        tool_registry: CapabilityRegistryService,
         credential_client: CredentialClient,
     ):
         self.repo = instance_repo
@@ -47,7 +48,9 @@ class InstanceManagerService(BaseInstanceManager):
     ) -> ToolInstance:
         """Create a new tool instance with automatic credential check"""
         # 1. Validate tool definition exists
-        tool_definition = await self.tool_registry.get_tool(tool_definition_id)
+        tool_definition = await self.tool_registry.get_tool_definition(
+            uuid.UUID(str(tool_definition_id))
+        )
         if not tool_definition:
             raise ValueError(f"Tool definition {tool_definition_id} not found")
 
@@ -140,7 +143,7 @@ class InstanceManagerService(BaseInstanceManager):
             raise ValueError(f"Instance {instance_id} not found for user {user_id}")
 
         # 2. Get tool definition for validation
-        tool_definition = await self.tool_registry.get_tool(instance.tool_definition_id)
+        tool_definition = await self.tool_registry.get_tool_definition(instance.tool_definition_id)
         if not tool_definition:
             raise ValueError(f"Tool definition {instance.tool_definition_id} not found")
 
@@ -170,7 +173,7 @@ class InstanceManagerService(BaseInstanceManager):
             raise ValueError(f"Instance {instance_id} not found for user {user_id}")
 
         # 2. Get tool definition
-        tool_definition = await self.tool_registry.get_tool(instance.tool_definition_id)
+        tool_definition = await self.tool_registry.get_tool_definition(instance.tool_definition_id)
         if not tool_definition:
             raise ValueError(f"Tool definition {instance.tool_definition_id} not found")
 
@@ -327,7 +330,7 @@ class InstanceManagerService(BaseInstanceManager):
             raise ValueError(f"Instance {instance_id} not found for user {user_id}")
 
         # 2. Get tool definition
-        tool_definition = await self.tool_registry.get_tool(instance.tool_definition_id)
+        tool_definition = await self.tool_registry.get_tool_definition(instance.tool_definition_id)
         if not tool_definition:
             raise ValueError(f"Tool definition {instance.tool_definition_id} not found")
 

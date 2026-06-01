@@ -16,7 +16,7 @@ from app.schemas.common import InstanceStatus
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.services.instance_manager import InstanceManagerService
 from app.repositories.instance_repository import InstanceRepository
-from app.services.tool_registry import ToolRegistryService
+from app.services.capability_registry import CapabilityRegistryService
 from app.services.credential_client import CredentialClient
 from app.services.tool_execution_service import ToolExecutionService
 from app.services.validation_service import ValidationService
@@ -40,12 +40,12 @@ async def get_instance_service(
     db: AsyncSession = Depends(get_session),
 ) -> InstanceManagerService:
     instance_repo = InstanceRepository(db)
-    tool_registry = ToolRegistryService(db)
+    capability_registry = CapabilityRegistryService(db)
     credential_client = CredentialClient()
 
     return InstanceManagerService(
         instance_repo=instance_repo,
-        tool_registry=tool_registry,
+        tool_registry=capability_registry,
         credential_client=credential_client,
     )
 
@@ -94,7 +94,7 @@ async def refresh_instance_credentials(
         instance = await service.get_user_instance(instance_id, user_id)
         if not instance:
             raise HTTPException(status_code=404, detail="Instance not found")
-        tool_definition = await service.tool_registry.get_tool(
+        tool_definition = await service.tool_registry.get_tool_definition(
             instance.tool_definition_id
         )
         required_scopes = service._build_required_scopes_map(tool_definition)
@@ -618,7 +618,7 @@ async def get_available_credentials(
         if not instance:
             raise HTTPException(status_code=404, detail="Instance not found")
 
-        tool_definition = await service.tool_registry.get_tool(
+        tool_definition = await service.tool_registry.get_tool_definition(
             instance.tool_definition_id
         )
         if not tool_definition:
