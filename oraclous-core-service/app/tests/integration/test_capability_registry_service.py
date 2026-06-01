@@ -22,7 +22,7 @@ the unified registry.
 
 Behaviours covered:
   R01  CapabilityRegistryService is importable from app.services.capability_registry
-  R02  create() with kind=tool persists a row; content_hash is auto-computed (non-null) via repo delegation
+  R02  create() with kind=tool persists a row; content_hash is auto-computed (non-null)
   R03  create() with kind=skill persists a skill row
   R04  create() accepts an explicit content_hash and stores it
   R05  create() with all 5 valid kind values succeeds (parametrized)
