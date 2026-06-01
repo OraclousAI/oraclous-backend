@@ -1,10 +1,9 @@
 import uuid
-from typing import Any, Dict, List, Optional
-
-from sqlalchemy import delete, select
-from sqlalchemy.ext.asyncio import AsyncSession
+from typing import Any
 
 from app.models.capability_descriptor import CapabilityDescriptorDB, DescriptorKind
+from sqlalchemy import delete, select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 
 class CapabilityDescriptorRepository:
@@ -15,8 +14,8 @@ class CapabilityDescriptorRepository:
         self,
         org_id: uuid.UUID,
         kind: DescriptorKind,
-        descriptor: Dict[str, Any],
-        content_hash: Optional[str] = None,
+        descriptor: dict[str, Any],
+        content_hash: str | None = None,
     ) -> CapabilityDescriptorDB:
         row = CapabilityDescriptorDB(
             org_id=org_id,
@@ -29,15 +28,15 @@ class CapabilityDescriptorRepository:
         await self.db.refresh(row)
         return row
 
-    async def get_by_id(self, id: uuid.UUID) -> Optional[CapabilityDescriptorDB]:
+    async def get_by_id(self, id: uuid.UUID) -> CapabilityDescriptorDB | None:
         result = await self.db.execute(
             select(CapabilityDescriptorDB).where(CapabilityDescriptorDB.id == id)
         )
         return result.scalar_one_or_none()
 
     async def update_descriptor(
-        self, id: uuid.UUID, descriptor: Dict[str, Any]
-    ) -> Optional[CapabilityDescriptorDB]:
+        self, id: uuid.UUID, descriptor: dict[str, Any]
+    ) -> CapabilityDescriptorDB | None:
         row = await self.get_by_id(id)
         if row is None:
             return None
@@ -52,7 +51,7 @@ class CapabilityDescriptorRepository:
         )
         return result.rowcount > 0
 
-    async def list_by_org(self, org_id: uuid.UUID) -> List[CapabilityDescriptorDB]:
+    async def list_by_org(self, org_id: uuid.UUID) -> list[CapabilityDescriptorDB]:
         result = await self.db.execute(
             select(CapabilityDescriptorDB).where(
                 CapabilityDescriptorDB.org_id == org_id
@@ -62,7 +61,7 @@ class CapabilityDescriptorRepository:
 
     async def list_by_kind(
         self, org_id: uuid.UUID, kind: DescriptorKind
-    ) -> List[CapabilityDescriptorDB]:
+    ) -> list[CapabilityDescriptorDB]:
         result = await self.db.execute(
             select(CapabilityDescriptorDB).where(
                 CapabilityDescriptorDB.org_id == org_id,
@@ -72,8 +71,8 @@ class CapabilityDescriptorRepository:
         return list(result.scalars().all())
 
     async def search_by_descriptor(
-        self, org_id: uuid.UUID, filter_dict: Dict[str, Any]
-    ) -> List[CapabilityDescriptorDB]:
+        self, org_id: uuid.UUID, filter_dict: dict[str, Any]
+    ) -> list[CapabilityDescriptorDB]:
         result = await self.db.execute(
             select(CapabilityDescriptorDB).where(
                 CapabilityDescriptorDB.org_id == org_id,

@@ -24,11 +24,9 @@ from collections.abc import AsyncGenerator, Iterator
 from pathlib import Path
 
 import asyncpg
-
 import pytest
 import pytest_asyncio
 from sqlalchemy.ext.asyncio import (
-    AsyncConnection,
     AsyncEngine,
     AsyncSession,
     async_sessionmaker,
@@ -101,7 +99,7 @@ def postgres_dsn() -> Iterator[str]:
     from testcontainers.postgres import PostgresContainer  # type: ignore[import]
 
     PG_USER = "oraclous"
-    PG_PASS = "oraclous"
+    PG_PASS = "oraclous"  # noqa: S105
     PG_DB = "oraclous_test"
 
     with PostgresContainer("postgres:16", username=PG_USER, password=PG_PASS, dbname=PG_DB) as pg:
@@ -132,7 +130,7 @@ def migrated_db(postgres_dsn: str) -> Iterator[str]:
     failure after the import-level failure is resolved.
     """
     alembic_ini = APP_DIR / "alembic.ini"
-    result = subprocess.run(
+    result = subprocess.run(  # noqa: S603
         [
             sys.executable,
             "-m",
@@ -243,7 +241,7 @@ def alembic_runner(postgres_dsn: str, async_engine: AsyncEngine):
 
     class _Runner:
         def _run(self, *args: str) -> None:
-            result = subprocess.run(
+            result = subprocess.run(  # noqa: S603
                 [
                     sys.executable,
                     "-m",
@@ -260,7 +258,8 @@ def alembic_runner(postgres_dsn: str, async_engine: AsyncEngine):
             )
             if result.returncode != 0:
                 pytest.fail(
-                    f"alembic {' '.join(args)} failed:\nSTDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
+                    f"alembic {' '.join(args)} failed:"
+                    f"\nSTDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
                 )
 
         def upgrade(self, rev: str = "head") -> None:

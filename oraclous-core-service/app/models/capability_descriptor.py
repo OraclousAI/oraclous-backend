@@ -1,12 +1,12 @@
 import enum
 
-from sqlalchemy import Column, Enum as SAEnum, String
+from app.models.base import Base, TimestampMixin, UUIDMixin
+from sqlalchemy import Column, String
+from sqlalchemy import Enum as SAEnum
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 
-from app.models.base import Base, TimestampMixin, UUIDMixin
 
-
-class DescriptorKind(str, enum.Enum):
+class DescriptorKind(enum.StrEnum):
     TOOL = "tool"
     SKILL = "skill"
     AGENT = "agent"
