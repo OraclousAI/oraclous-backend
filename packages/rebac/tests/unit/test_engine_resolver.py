@@ -6,7 +6,8 @@ ORA-34 ``ReBACEngine``'s ``check_graph_permission``. The seam remains the
 single fail-closed chokepoint; the adapter:
 
 * maps the seam's vocabulary onto the engine's: ``organisation_id→organisation_id``,
-  ``subject→user_id``, ``resource→graph_id``, ``relation→required_level`` via a
+  ``subject→subject`` (as ``{"type": "user", "id": <value>}``),
+  ``resource→graph_id``, ``relation→required_level`` via a
   **defined** lookup into ``{read, write, admin}`` (not identity);
 * returns ``None`` for unknown relations and for out-of-domain subjects
   (non-``user-``) and resources (non-``graph-``) — never a best-effort call into
@@ -64,9 +65,9 @@ class _RecordingCheck:
     Records each call's kwargs (so argument mapping is assertable) and returns
     a configured ``bool``, or raises a configured exception. The signature
     mirrors ``ReBACEngine.check_graph_permission`` — driver positional, then
-    keyword-only ``organisation_id``, ``user_id``, ``graph_id``,
+    keyword-only ``organisation_id``, ``subject``, ``graph_id``,
     ``required_level`` — so a wiring mistake (e.g. passing the relation
-    verbatim, or threading the wrong field as ``user_id``) surfaces here.
+    verbatim, or threading the wrong field as ``subject``) surfaces here.
     """
 
     def __init__(
@@ -84,7 +85,7 @@ class _RecordingCheck:
         driver: object,
         *,
         organisation_id: str,
-        user_id: str,
+        subject: dict,
         graph_id: str,
         required_level: str,
     ) -> bool:
@@ -92,7 +93,7 @@ class _RecordingCheck:
             {
                 "driver": driver,
                 "organisation_id": organisation_id,
-                "user_id": user_id,
+                "subject": subject,
                 "graph_id": graph_id,
                 "required_level": required_level,
             }
@@ -137,7 +138,7 @@ async def test_returns_false_when_engine_definitively_denies() -> None:
 
 
 async def test_argument_mapping_pins_field_correspondence() -> None:
-    """ORA-46 AC: organisation_id→organisation_id, subject→user_id,
+    """ORA-46 AC: organisation_id→organisation_id, subject→subject (dict),
     resource→graph_id, relation→required_level (via defined lookup).
 
     A wiring mistake here would silently authorise the wrong tenant or wrong
@@ -159,7 +160,7 @@ async def test_argument_mapping_pins_field_correspondence() -> None:
     assert len(check.calls) == 1, "engine called exactly once on a recognised request"
     call = check.calls[0]
     assert call["organisation_id"] == "org-xxxx"
-    assert call["user_id"] == "user-alice", "subject must map to user_id"
+    assert call["subject"] == {"type": "user", "id": "user-alice"}, "subject must map to subject dict"
     assert call["graph_id"] == "graph-roadmap", "resource must map to graph_id"
     assert call["required_level"] == "write", "relation must map via the defined lookup"
     assert call["driver"] is sentinel_driver, "configured driver is threaded through"
