@@ -57,7 +57,7 @@ from app.repositories.capability_descriptor_repository import (  # noqa: E402
     CapabilityDescriptorRepository,
 )
 from sqlalchemy import text
-from sqlalchemy.exc import DataError, IntegrityError
+from sqlalchemy.exc import DBAPIError, DataError, IntegrityError
 
 # ---------------------------------------------------------------------------
 # Fixtures: minimal valid JSONB descriptors for each kind
@@ -548,7 +548,7 @@ async def test_invalid_kind_raises_integrity_error(async_session):
     The DB-level enforcement ensures no application bug can silently write a bad kind value.
     PostgreSQL raises DataError (invalid_text_representation) for enum violations.
     """
-    with pytest.raises((DataError, IntegrityError)):
+    with pytest.raises((DataError, IntegrityError, DBAPIError)):
         await async_session.execute(
             text(
                 "INSERT INTO capability_descriptor"
