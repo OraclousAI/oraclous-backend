@@ -1,13 +1,11 @@
 import asyncio
-import os
 import sys
 from logging.config import fileConfig
 from pathlib import Path
 
+from alembic import context
 from sqlalchemy import pool
 from sqlalchemy.ext.asyncio import create_async_engine
-
-from alembic import context
 
 # Ensure the oraclous-core-service/ directory is on sys.path so that
 # app.models.* imports work the same way they do when running pytest.

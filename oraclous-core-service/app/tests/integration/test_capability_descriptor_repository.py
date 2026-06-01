@@ -16,7 +16,8 @@ That ImportError is intentional — this file is written test-first (TDD / ADR-0
 
 Behaviours covered:
   D01  capability_descriptor table exists in the DB after migration
-  D02  table has all required columns: id, org_id, kind, content_hash, descriptor, created_at, updated_at
+  D02  table has all required columns:
+       id, org_id, kind, content_hash, descriptor, created_at, updated_at
   D03  kind column is backed by a Postgres enum with exactly 5 values
   D04  content_hash column is nullable (S3.1 leaves it empty)
   D05  descriptor column is JSONB type
@@ -42,9 +43,6 @@ from __future__ import annotations
 import uuid
 
 import pytest
-import pytest_asyncio
-from sqlalchemy import text
-from sqlalchemy.exc import DataError, IntegrityError
 
 # ---------------------------------------------------------------------------
 # These imports will fail with ImportError until the implementer creates the
@@ -58,6 +56,8 @@ from app.models.capability_descriptor import (  # noqa: E402
 from app.repositories.capability_descriptor_repository import (  # noqa: E402
     CapabilityDescriptorRepository,
 )
+from sqlalchemy import text
+from sqlalchemy.exc import DataError, IntegrityError
 
 # ---------------------------------------------------------------------------
 # Fixtures: minimal valid JSONB descriptors for each kind
@@ -73,9 +73,9 @@ _TOOL_DESCRIPTOR: dict = {
     "metadata": {"name": "Google Drive Reader", "description": "Read files from Google Drive."},
     "spec": {
         "implementation": {"type": "internal", "handler": "gdr.GoogleDriveReader"},
-        "input_schema": {"type": "object", "required": ["file_id"], "properties": {"file_id": {"type": "string"}}},
+        "input_schema": {"type": "object", "required": ["file_id"], "properties": {"file_id": {"type": "string"}}},  # noqa: E501
         "output_schema": {"type": "object", "properties": {"content": {"type": "string"}}},
-        "credential_requirements": [{"type": "oauth_token", "provider": "google", "scopes": ["drive.readonly"]}],
+        "credential_requirements": [{"type": "oauth_token", "provider": "google", "scopes": ["drive.readonly"]}],  # noqa: E501
     },
 }
 
@@ -111,7 +111,7 @@ _HARNESS_DESCRIPTOR: dict = {
     "metadata": {"name": "Cold Outreach Pipeline", "description": "End-to-end pipeline."},
     "spec": {
         "goal": "Identify prospects, draft messages, get approval, and send.",
-        "actors": [{"id": "drafter", "kind": "agent", "ref": {"id": "outreach-drafter-agent", "version_tag": "stable"}}],
+        "actors": [{"id": "drafter", "kind": "agent", "ref": {"id": "outreach-drafter-agent", "version_tag": "stable"}}],  # noqa: E501
         "orchestration": "1. Researcher finds. 2. Drafter drafts.",
     },
 }
@@ -150,7 +150,7 @@ async def test_capability_descriptor_table_exists(async_session):
 
 @pytest.mark.integration
 async def test_capability_descriptor_has_required_columns(async_session):
-    """capability_descriptor must have: id, org_id, kind, content_hash, descriptor, created_at, updated_at."""
+    """capability_descriptor must have: id, org_id, kind, content_hash, descriptor, created_at, updated_at."""  # noqa: E501
     result = await async_session.execute(
         text(
             "SELECT column_name FROM information_schema.columns "
@@ -545,8 +545,9 @@ async def test_invalid_kind_raises_integrity_error(async_session):
     with pytest.raises((DataError, IntegrityError)):
         await async_session.execute(
             text(
-                "INSERT INTO capability_descriptor (id, org_id, kind, descriptor, created_at, updated_at) "
-                "VALUES (:id, :org_id, :kind, :descriptor::jsonb, NOW(), NOW())"
+                "INSERT INTO capability_descriptor"
+                " (id, org_id, kind, descriptor, created_at, updated_at)"
+                " VALUES (:id, :org_id, :kind, :descriptor::jsonb, NOW(), NOW())"
             ),
             {
                 "id": str(uuid.uuid4()),
