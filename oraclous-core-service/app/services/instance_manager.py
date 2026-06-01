@@ -1,4 +1,5 @@
 # app/services/instance_manager.py
+import uuid
 from typing import Any, Dict, List, Optional
 from uuid import UUID
 import logging
@@ -46,7 +47,9 @@ class InstanceManagerService(BaseInstanceManager):
     ) -> ToolInstance:
         """Create a new tool instance with automatic credential check"""
         # 1. Validate tool definition exists
-        tool_definition = await self.tool_registry.get_tool(tool_definition_id)
+        tool_definition = await self.tool_registry.get_tool_definition(
+            uuid.UUID(str(tool_definition_id))
+        )
         if not tool_definition:
             raise ValueError(f"Tool definition {tool_definition_id} not found")
 
@@ -139,7 +142,7 @@ class InstanceManagerService(BaseInstanceManager):
             raise ValueError(f"Instance {instance_id} not found for user {user_id}")
 
         # 2. Get tool definition for validation
-        tool_definition = await self.tool_registry.get_tool(instance.tool_definition_id)
+        tool_definition = await self.tool_registry.get_tool_definition(instance.tool_definition_id)
         if not tool_definition:
             raise ValueError(f"Tool definition {instance.tool_definition_id} not found")
 
@@ -169,7 +172,7 @@ class InstanceManagerService(BaseInstanceManager):
             raise ValueError(f"Instance {instance_id} not found for user {user_id}")
 
         # 2. Get tool definition
-        tool_definition = await self.tool_registry.get_tool(instance.tool_definition_id)
+        tool_definition = await self.tool_registry.get_tool_definition(instance.tool_definition_id)
         if not tool_definition:
             raise ValueError(f"Tool definition {instance.tool_definition_id} not found")
 
@@ -326,7 +329,7 @@ class InstanceManagerService(BaseInstanceManager):
             raise ValueError(f"Instance {instance_id} not found for user {user_id}")
 
         # 2. Get tool definition
-        tool_definition = await self.tool_registry.get_tool(instance.tool_definition_id)
+        tool_definition = await self.tool_registry.get_tool_definition(instance.tool_definition_id)
         if not tool_definition:
             raise ValueError(f"Tool definition {instance.tool_definition_id} not found")
 

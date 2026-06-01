@@ -83,7 +83,7 @@ class ValidationService:
     ):
         """Validate tool definition exists and is accessible"""
         try:
-            tool_definition = await self.tool_registry_service.get_tool(
+            tool_definition = await self.tool_registry_service.get_tool_definition(
                 instance.tool_definition_id
             )
 
@@ -183,7 +183,7 @@ class ValidationService:
         """Comprehensive credential validation with user-friendly messages"""
         try:
             # Get tool definition for credential requirements
-            tool_definition = await self.tool_registry_service.get_tool(
+            tool_definition = await self.tool_registry_service.get_tool_definition(
                 instance.tool_definition_id
             )
             if not tool_definition:
@@ -343,7 +343,7 @@ class ValidationService:
         """Validate tool configuration"""
         try:
             # Get tool definition for configuration schema
-            tool_definition = await self.tool_registry_service.get_tool(
+            tool_definition = await self.tool_registry_service.get_tool_definition(
                 instance.tool_definition_id
             )
             if not tool_definition:

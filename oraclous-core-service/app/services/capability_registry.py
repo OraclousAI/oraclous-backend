@@ -1,10 +1,91 @@
 import uuid
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.capability_descriptor import CapabilityDescriptorDB, DescriptorKind
 from app.repositories.capability_descriptor_repository import CapabilityDescriptorRepository
+
+if TYPE_CHECKING:
+    from app.schemas.tool_definition import ToolDefinition
+
+
+def _capability_to_tool_definition(capability: CapabilityDescriptorDB) -> "ToolDefinition":
+    """Convert a CapabilityDescriptorDB (OHM descriptor) to a ToolDefinition schema object."""
+    from app.schemas.tool_definition import (
+        ToolDefinition,
+        ToolCapability,
+        CredentialRequirement,
+        ToolSchema,
+    )
+    from app.schemas.common import ToolCategory, ToolType, CredentialType
+
+    d = capability.descriptor
+    meta = d.get("metadata", {})
+    spec = d.get("spec", {})
+    version_info = d.get("version", {})
+
+    tags = version_info.get("tags", [])
+    version_str = tags[0] if tags else "1.0.0"
+
+    cred_reqs: List[CredentialRequirement] = []
+    for cr in spec.get("credential_requirements", []):
+        try:
+            cred_reqs.append(
+                CredentialRequirement(
+                    type=CredentialType(cr["type"]),
+                    required=cr.get("required", True),
+                    provider=cr.get("provider", cr.get("type", "unknown")),
+                    scopes=cr.get("scopes"),
+                    description=cr.get("description"),
+                )
+            )
+        except Exception:
+            pass
+
+    capabilities: List[ToolCapability] = []
+    for cap in spec.get("capabilities", []):
+        try:
+            capabilities.append(ToolCapability(**cap))
+        except Exception:
+            pass
+
+    def _schema(data: Any) -> ToolSchema:
+        if isinstance(data, dict):
+            try:
+                return ToolSchema(**data)
+            except Exception:
+                pass
+        return ToolSchema(type="object")
+
+    raw_category = spec.get("category", "INGESTION")
+    try:
+        category = ToolCategory(raw_category)
+    except ValueError:
+        category = ToolCategory.INGESTION
+
+    raw_type = spec.get("type", "INTERNAL")
+    try:
+        tool_type = ToolType(raw_type)
+    except ValueError:
+        tool_type = ToolType.INTERNAL
+
+    config_data = spec.get("configuration_schema")
+    config_schema = _schema(config_data) if config_data else None
+
+    return ToolDefinition(
+        id=capability.id,
+        name=meta.get("name", d.get("id", str(capability.id))),
+        description=meta.get("description", ""),
+        version=version_str,
+        category=category,
+        type=tool_type,
+        capabilities=capabilities,
+        input_schema=_schema(spec.get("input_schema")),
+        output_schema=_schema(spec.get("output_schema")),
+        configuration_schema=config_schema,
+        credential_requirements=cred_reqs,
+    )
 
 
 class CapabilityRegistryService:
@@ -27,6 +108,13 @@ class CapabilityRegistryService:
 
     async def get_by_id(self, id: uuid.UUID) -> Optional[CapabilityDescriptorDB]:
         return await self._repo.get_by_id(id)
+
+    async def get_tool_definition(self, id: uuid.UUID) -> Optional["ToolDefinition"]:
+        """Look up a capability descriptor by UUID and return as ToolDefinition."""
+        capability = await self.get_by_id(id)
+        if capability is None:
+            return None
+        return _capability_to_tool_definition(capability)
 
     async def update(
         self, id: uuid.UUID, descriptor: Dict[str, Any]
