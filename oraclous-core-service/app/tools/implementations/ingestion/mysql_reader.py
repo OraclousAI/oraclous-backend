@@ -4,6 +4,9 @@ from decimal import Decimal
 
 from app.utils.tool_id_generator import generate_tool_id
 from app.tools.base.database_tool import DatabaseTool
+from app.tools.plugin import CapabilityKindPlugin, plugin_registry
+from app.tools.registry import tool_registry
+from app.models.capability_descriptor import DescriptorKind
 from app.schemas.tool_instance import ExecutionContext, ExecutionResult
 from app.schemas.tool_definition import (
     ToolDefinition,
@@ -14,7 +17,7 @@ from app.schemas.tool_definition import (
 from app.schemas.common import ToolCategory, ToolType, CredentialType
 
 
-class MySQLReader(DatabaseTool):
+class MySQLReader(DatabaseTool, CapabilityKindPlugin):
     """
     Tool for reading data from MySQL databases
     """
@@ -253,3 +256,38 @@ class MySQLReader(DatabaseTool):
             base_credits = Decimal("0.1")
             row_credits = Decimal(row_count) * Decimal("0.001")
             return base_credits + row_credits
+
+    @classmethod
+    def get_ohm_descriptor(cls) -> dict:
+        return {
+            "kind": "tool",
+            "id": "mysql-reader",
+            "version": {"hash": "sha256:mysql-v1-0-0", "tags": ["1.0.0"]},
+            "metadata": {
+                "name": "MySQL Reader",
+                "description": "Execute queries and read data from MySQL databases",
+            },
+            "spec": {
+                "implementation": {
+                    "type": "internal",
+                    "handler": "app.tools.implementations.ingestion.mysql_reader.MySQLReader",
+                },
+                "input_schema": {"type": "object", "properties": {}},
+                "output_schema": {"type": "object", "properties": {}},
+                "credential_requirements": [
+                    {"type": "database", "required": True, "provider": "mysql"},
+                ],
+            },
+        }
+
+    @classmethod
+    def get_kind(cls) -> DescriptorKind:
+        return DescriptorKind.TOOL
+
+    @classmethod
+    def get_plugin_id(cls) -> str:
+        return "mysql-reader"
+
+
+plugin_registry.register(MySQLReader)
+tool_registry.register_tool(MySQLReader)
