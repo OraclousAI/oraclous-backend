@@ -44,6 +44,38 @@ APP_DIR = CORE_SERVICE_DIR / "app"
 
 
 # ---------------------------------------------------------------------------
+# Event-loop preservation — guard against asyncio.run() side-effects
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _preserve_event_loop():
+    """
+    Preserve the session event loop across sync tests that call asyncio.run().
+
+    asyncio.run() calls asyncio.set_event_loop(None) on exit (Python ≥ 3.10).
+    D17 (test_legacy_tool_definition_migrated_as_tool_kind) is a sync test
+    that calls asyncio.run() in its body.  Without this fixture the session
+    event loop is deregistered from the policy and D19/D20 (async, session
+    scope) fail with "There is no current event loop".
+
+    Strategy: capture the current loop before each test; if the loop has been
+    cleared after the test, re-register the same loop object (which is still
+    open) so the next async test can proceed normally.
+    """
+    try:
+        loop = asyncio.get_event_loop()
+    except RuntimeError:
+        loop = None
+    yield
+    if loop is not None and not loop.is_closed():
+        try:
+            asyncio.get_event_loop()
+        except RuntimeError:
+            asyncio.set_event_loop(loop)
+
+
+# ---------------------------------------------------------------------------
 # Session-scoped Postgres container
 # ---------------------------------------------------------------------------
 
