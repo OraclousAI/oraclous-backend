@@ -16,7 +16,7 @@ from app.schemas.common import InstanceStatus
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.services.instance_manager import InstanceManagerService
 from app.repositories.instance_repository import InstanceRepository
-from app.services.tool_registry import ToolRegistryService
+from app.services.capability_registry import CapabilityRegistryService
 from app.services.credential_client import CredentialClient
 from app.services.tool_execution_service import ToolExecutionService
 from app.services.validation_service import ValidationService
@@ -40,12 +40,12 @@ async def get_instance_service(
     db: AsyncSession = Depends(get_session),
 ) -> InstanceManagerService:
     instance_repo = InstanceRepository(db)
-    tool_registry = ToolRegistryService(db)
+    capability_registry = CapabilityRegistryService(db)
     credential_client = CredentialClient()
 
     return InstanceManagerService(
         instance_repo=instance_repo,
-        tool_registry=tool_registry,
+        tool_registry=capability_registry,
         credential_client=credential_client,
     )
 

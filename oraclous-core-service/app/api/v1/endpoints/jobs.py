@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from app.services.instance_manager import InstanceManagerService
 from app.repositories.instance_repository import InstanceRepository
 from sqlalchemy.ext.asyncio import AsyncSession
-from app.services.tool_registry import ToolRegistryService
+from app.services.capability_registry import CapabilityRegistryService
 from app.services.credential_client import CredentialClient
 from app.services.validation_service import ValidationService
 from app.services.tool_execution_service import ToolExecutionService
@@ -22,7 +22,7 @@ async def get_instance_service(
     db: AsyncSession = Depends(get_session),
 ) -> InstanceManagerService:
     instance_repo = InstanceRepository(db)
-    tool_registry = ToolRegistryService(db)
+    tool_registry = CapabilityRegistryService(db)
     credential_client = CredentialClient()
 
     return InstanceManagerService(
