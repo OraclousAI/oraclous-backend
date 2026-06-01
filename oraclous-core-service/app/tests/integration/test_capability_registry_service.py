@@ -48,6 +48,11 @@ from __future__ import annotations
 import uuid
 
 import pytest
+from app.models.capability_descriptor import (
+    CapabilityDescriptorDB,
+    DescriptorKind,
+)
+from app.services.capability_registry import CapabilityRegistryService
 
 # ---------------------------------------------------------------------------
 # Test org UUIDs
@@ -131,35 +136,13 @@ _HUMAN_ROLE_DESCRIPTOR: dict = {
     },
 }
 
-# Collection guard: these imports fail until the implementation modules exist.
-# pytestmark below skips all tests so pytest can collect the file without error.
-# The skip IS the TDD red state (ADR-010); remove this guard when impl lands.
-try:
-    from app.models.capability_descriptor import (
-        CapabilityDescriptorDB,
-        DescriptorKind,
-    )
-    from app.services.capability_registry import CapabilityRegistryService
-
-    _ALL_KIND_DESCRIPTORS = [
-        pytest.param(DescriptorKind.TOOL, _TOOL_DESCRIPTOR, id="tool"),
-        pytest.param(DescriptorKind.SKILL, _SKILL_DESCRIPTOR, id="skill"),
-        pytest.param(DescriptorKind.AGENT, _AGENT_DESCRIPTOR, id="agent"),
-        pytest.param(DescriptorKind.HARNESS, _HARNESS_DESCRIPTOR, id="harness"),
-        pytest.param(DescriptorKind.HUMAN_ROLE, _HUMAN_ROLE_DESCRIPTOR, id="human_role"),
-    ]
-    _APP_AVAILABLE = True
-except ImportError:
-    CapabilityDescriptorDB = None  # type: ignore[assignment]
-    DescriptorKind = None  # type: ignore[assignment]
-    CapabilityRegistryService = None  # type: ignore[assignment]
-    _ALL_KIND_DESCRIPTORS = []
-    _APP_AVAILABLE = False
-
-pytestmark = pytest.mark.skipif(
-    not _APP_AVAILABLE,
-    reason="app.services.capability_registry not yet implemented — TDD red state (ADR-010)",
-)
+_ALL_KIND_DESCRIPTORS = [
+    (DescriptorKind.TOOL, _TOOL_DESCRIPTOR),
+    (DescriptorKind.SKILL, _SKILL_DESCRIPTOR),
+    (DescriptorKind.AGENT, _AGENT_DESCRIPTOR),
+    (DescriptorKind.HARNESS, _HARNESS_DESCRIPTOR),
+    (DescriptorKind.HUMAN_ROLE, _HUMAN_ROLE_DESCRIPTOR),
+]
 
 
 # ---------------------------------------------------------------------------
@@ -246,7 +229,11 @@ async def test_create_with_explicit_content_hash(async_session):
 
 
 @pytest.mark.integration
-@pytest.mark.parametrize("kind,descriptor", _ALL_KIND_DESCRIPTORS)
+@pytest.mark.parametrize(
+    "kind,descriptor",
+    _ALL_KIND_DESCRIPTORS,
+    ids=["tool", "skill", "agent", "harness", "human_role"],
+)
 async def test_create_all_valid_kind_values(async_session, kind, descriptor):
     """create() must accept all five valid DescriptorKind values without error."""
     svc = CapabilityRegistryService(async_session)
