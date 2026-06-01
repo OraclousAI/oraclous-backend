@@ -22,6 +22,10 @@ htmlcov/
 .env.*
 !.env.example
 
+# Ephemeral stack state (auto-managed by scripts/stack-up.sh / stack-down.sh)
+.stack-env
+.stack-registry.json
+
 # OS / editor
 .DS_Store
 *.swp
