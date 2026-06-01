@@ -7,12 +7,11 @@ Architecture refs:
   - R2 release page:             https://oraclous.atlassian.net/wiki/spaces/OP/pages/688482
   - Test Strategy:               https://oraclous.atlassian.net/wiki/spaces/OP/pages/720940
 
-All imports from app.tools.plugin will fail with ImportError until the implementer creates:
-  - app/tools/plugin.py  (CapabilityKindPlugin, discover_registered_plugins, plugin_registry)
-  - Reshapes app/tools/__init__.py  (removes _register_all_tools hard-coded list)
+All imports from app.tools.plugin are done function-locally (inside each test/fixture) per
+ADR-010 / CLAUDE.md §4.1 — so pytest collection succeeds and each test fails at runtime with
+ImportError (RED-by-design, on its own marker only, never masking other suites).
 
-The ImportError on the module-level import below IS the expected initial TDD failure (ADR-010).
-Every test in this file is intentionally red until the implementer delivers the plugin module.
+Until the implementer creates app/tools/plugin.py, every test here fails individually at runtime.
 
 Behaviours covered:
   P01  CapabilityKindPlugin base class is importable from app.tools.plugin
@@ -29,16 +28,6 @@ from __future__ import annotations
 import pytest
 
 from app.models.capability_descriptor import DescriptorKind
-
-# ---------------------------------------------------------------------------
-# This import will fail with ImportError until the implementer creates
-# app/tools/plugin.py.  The ImportError IS the expected initial TDD failure.
-# ---------------------------------------------------------------------------
-from app.tools.plugin import (  # noqa: E402
-    CapabilityKindPlugin,
-    discover_registered_plugins,
-    plugin_registry,
-)
 
 # ---------------------------------------------------------------------------
 # Minimal OHM-format descriptor used by the mock fixture below
@@ -76,6 +65,7 @@ def mock_plugin():
     capability kind becomes discoverable purely by calling plugin_registry.register()
     — no modification to app/tools/__init__.py or app/tools/factory.py is required.
     """
+    from app.tools.plugin import CapabilityKindPlugin, plugin_registry  # function-local: ADR-010
 
     class MockToolPlugin(CapabilityKindPlugin):
         @classmethod
@@ -116,6 +106,7 @@ def test_capability_kind_plugin_is_importable():
 @pytest.mark.unit
 def test_discover_registered_plugins_returns_iterable():
     """discover_registered_plugins() must be callable and return an iterable."""
+    from app.tools.plugin import discover_registered_plugins  # function-local: ADR-010
     result = discover_registered_plugins()
     assert hasattr(result, "__iter__"), (
         "discover_registered_plugins() must return an iterable of CapabilityKindPlugin classes"
@@ -130,6 +121,7 @@ def test_discover_registered_plugins_returns_iterable():
 @pytest.mark.unit
 def test_plugin_registry_exposes_register():
     """plugin_registry must expose a callable register() method."""
+    from app.tools.plugin import plugin_registry  # function-local: ADR-010
     assert callable(getattr(plugin_registry, "register", None)), (
         "plugin_registry must expose a callable register() method for capability kinds "
         "to self-register without modifying core files"
@@ -150,6 +142,7 @@ def test_mock_plugin_discoverable_after_registration(mock_plugin):
     This is the central ORAA-73 invariant: zero core-file edits required to add a
     new capability kind to the discoverable set.
     """
+    from app.tools.plugin import discover_registered_plugins  # function-local: ADR-010
     discovered_ids = {p.get_plugin_id() for p in discover_registered_plugins()}
     assert "mock-test-tool" in discovered_ids, (
         f"mock-test-tool not found in discovered plugins: {discovered_ids!r}"
@@ -167,6 +160,7 @@ def test_registered_plugin_descriptor_has_kind_key(mock_plugin):
     Each plugin returned by discover_registered_plugins() must expose
     get_ohm_descriptor() returning a dict that contains a 'kind' key.
     """
+    from app.tools.plugin import discover_registered_plugins  # function-local: ADR-010
     discovered = list(discover_registered_plugins())
     mock = next(
         (p for p in discovered if p.get_plugin_id() == "mock-test-tool"), None

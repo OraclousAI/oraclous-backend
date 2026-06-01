@@ -7,15 +7,11 @@ Architecture refs:
   - R2 release page:             https://oraclous.atlassian.net/wiki/spaces/OP/pages/688482
   - Test Strategy:               https://oraclous.atlassian.net/wiki/spaces/OP/pages/720940
 
-All imports from app.tools.plugin will fail with ImportError until the implementer creates:
-  - app/tools/plugin.py         (CapabilityKindPlugin, discover_registered_plugins,
-                                  plugin_registry, sync_plugins_to_registry)
-  - Reshapes app/tools/__init__.py to use plugin auto-discovery
-  - Reshapes app/tools/factory.py to remove hard-coded executor additions
-  - Each of the 4 shipped tools self-registers via plugin_registry.register()
+All imports from app.tools.plugin are done function-locally (inside each test/fixture) per
+ADR-010 / CLAUDE.md §4.1 — so pytest collection succeeds and each test fails at runtime with
+ImportError (RED-by-design, on its own marker only, never masking other suites).
 
-The ImportError on the module-level import below IS the expected initial TDD failure (ADR-010).
-Every test in this file is intentionally red until the implementer delivers the above.
+Until the implementer creates app/tools/plugin.py, every test here fails individually at runtime.
 
 Behaviours covered:
   P06  GoogleDriveReader is discoverable via discover_registered_plugins() after app.tools import
@@ -33,19 +29,7 @@ import uuid
 
 import pytest
 
-import app.tools  # noqa: F401 — triggers auto-discovery of all shipped tool plugins
 from app.models.capability_descriptor import CapabilityDescriptorDB, DescriptorKind
-
-# ---------------------------------------------------------------------------
-# This import will fail with ImportError until the implementer creates
-# app/tools/plugin.py.  The ImportError IS the expected initial TDD failure.
-# ---------------------------------------------------------------------------
-from app.tools.plugin import (  # noqa: E402
-    CapabilityKindPlugin,
-    discover_registered_plugins,
-    plugin_registry,
-    sync_plugins_to_registry,
-)
 
 # ---------------------------------------------------------------------------
 # Test org UUID
@@ -97,6 +81,7 @@ _MOCK_SKILL_DESCRIPTOR: dict = {
 @pytest.fixture
 def mock_tool_plugin():
     """Register a mock tool plugin; unregister on teardown."""
+    from app.tools.plugin import CapabilityKindPlugin, plugin_registry  # function-local: ADR-010
 
     class MockIntegrationTool(CapabilityKindPlugin):
         @classmethod
@@ -119,6 +104,7 @@ def mock_tool_plugin():
 @pytest.fixture
 def mock_skill_plugin():
     """Register a mock skill plugin; unregister on teardown."""
+    from app.tools.plugin import CapabilityKindPlugin, plugin_registry  # function-local: ADR-010
 
     class MockIntegrationSkill(CapabilityKindPlugin):
         @classmethod
@@ -152,6 +138,8 @@ def test_google_drive_reader_discoverable_via_plugin():
     Fails until GoogleDriveReader self-registers via plugin_registry.register()
     and app/tools/__init__.py triggers auto-discovery on import.
     """
+    import app.tools  # noqa: F401 — triggers auto-discovery of all shipped tool plugins
+    from app.tools.plugin import discover_registered_plugins  # function-local: ADR-010
     discovered_names = {p.__name__ for p in discover_registered_plugins()}
     assert "GoogleDriveReader" in discovered_names, (
         f"GoogleDriveReader not found in discovered plugins: {discovered_names!r}. "
@@ -169,6 +157,8 @@ def test_notion_reader_discoverable_via_plugin():
     """
     After `import app.tools`, NotionReader must appear in discover_registered_plugins().
     """
+    import app.tools  # noqa: F401 — triggers auto-discovery of all shipped tool plugins
+    from app.tools.plugin import discover_registered_plugins  # function-local: ADR-010
     discovered_names = {p.__name__ for p in discover_registered_plugins()}
     assert "NotionReader" in discovered_names, (
         f"NotionReader not found in discovered plugins: {discovered_names!r}. "
@@ -186,6 +176,8 @@ def test_postgresql_reader_discoverable_via_plugin():
     """
     After `import app.tools`, PostgreSQLReader must appear in discover_registered_plugins().
     """
+    import app.tools  # noqa: F401 — triggers auto-discovery of all shipped tool plugins
+    from app.tools.plugin import discover_registered_plugins  # function-local: ADR-010
     discovered_names = {p.__name__ for p in discover_registered_plugins()}
     assert "PostgreSQLReader" in discovered_names, (
         f"PostgreSQLReader not found in discovered plugins: {discovered_names!r}. "
@@ -203,6 +195,8 @@ def test_mysql_reader_discoverable_via_plugin():
     """
     After `import app.tools`, MySQLReader must appear in discover_registered_plugins().
     """
+    import app.tools  # noqa: F401 — triggers auto-discovery of all shipped tool plugins
+    from app.tools.plugin import discover_registered_plugins  # function-local: ADR-010
     discovered_names = {p.__name__ for p in discover_registered_plugins()}
     assert "MySQLReader" in discovered_names, (
         f"MySQLReader not found in discovered plugins: {discovered_names!r}. "
@@ -226,6 +220,7 @@ async def test_mock_plugin_persisted_to_capability_descriptor(
     This is the core acceptance criterion: a capability kind registered via the plugin
     mechanism appears in the DB without any factory.py or __init__.py modification.
     """
+    from app.tools.plugin import sync_plugins_to_registry  # function-local: ADR-010
     rows = await sync_plugins_to_registry(_ORG_PLUGIN_TEST, async_session)
     assert len(rows) >= 1, "sync_plugins_to_registry() must return at least one persisted row"
 
@@ -252,6 +247,7 @@ async def test_persisted_plugin_row_kind_matches_declared_kind(
     The capability_descriptor row written by sync_plugins_to_registry() must have
     kind == the DescriptorKind returned by the plugin's get_kind() method.
     """
+    from app.tools.plugin import sync_plugins_to_registry  # function-local: ADR-010
     rows = await sync_plugins_to_registry(_ORG_PLUGIN_TEST, async_session)
     mock_row = next(
         (r for r in rows if r.descriptor.get("id") == "mock-integration-tool"), None
@@ -278,6 +274,7 @@ async def test_sync_plugins_idempotent_no_duplicates(async_session, mock_tool_pl
     would corrupt list_by_kind() and search_by_descriptor() results.
     """
     from app.services.capability_registry import CapabilityRegistryService
+    from app.tools.plugin import sync_plugins_to_registry  # function-local: ADR-010
 
     await sync_plugins_to_registry(_ORG_PLUGIN_TEST, async_session)
     await sync_plugins_to_registry(_ORG_PLUGIN_TEST, async_session)
@@ -304,6 +301,7 @@ async def test_skill_plugin_persisted_with_kind_skill(async_session, mock_skill_
     in capability_descriptor — confirming the plugin mechanism handles all 5 kinds,
     not just tools.
     """
+    from app.tools.plugin import sync_plugins_to_registry  # function-local: ADR-010
     rows = await sync_plugins_to_registry(_ORG_PLUGIN_TEST, async_session)
     skill_rows = [r for r in rows if r.descriptor.get("id") == "mock-integration-skill"]
     assert len(skill_rows) == 1, (
