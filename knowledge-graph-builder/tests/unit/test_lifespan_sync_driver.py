@@ -17,7 +17,7 @@ import pytest
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_lifespan_calls_connect_sync(monkeypatch):
+async def test_lifespan_calls_connect_sync(monkeypatch, request):
     """connect_sync() must be called during lifespan startup (ORA-218 regression)."""
     # Stub modules that are unavailable in unit-test context.
     # Use monkeypatch.setitem so sys.modules is restored after test teardown,
@@ -53,7 +53,12 @@ async def test_lifespan_calls_connect_sync(monkeypatch):
         monkeypatch.setitem(sys.modules, "slowapi.errors", slowapi_errors_stub)
 
     # Ensure app.main is re-imported fresh (cleared via monkeypatch for auto-restore).
+    # monkeypatch.delitem only records a restore when the key was already present;
+    # if app.main was absent the stub-backed import that follows would escape teardown
+    # and poison sys.modules for subsequent tests (e.g. test_main_app_has_limiter_attached).
+    # The request finalizer removes it unconditionally after the test.
     monkeypatch.delitem(sys.modules, "app.main", raising=False)
+    request.addfinalizer(lambda: sys.modules.pop("app.main", None))
 
     # Build mock neo4j_client
     mock_client = MagicMock()
