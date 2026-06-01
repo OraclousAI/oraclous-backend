@@ -5,6 +5,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.capability_descriptor import CapabilityDescriptorDB, DescriptorKind
+from ohm.hashing import compute_content_hash
 
 
 class CapabilityDescriptorRepository:
@@ -22,7 +23,7 @@ class CapabilityDescriptorRepository:
             org_id=org_id,
             kind=kind,
             descriptor=descriptor,
-            content_hash=content_hash,
+            content_hash=compute_content_hash(descriptor),
         )
         self.db.add(row)
         await self.db.flush()
@@ -42,6 +43,7 @@ class CapabilityDescriptorRepository:
         if row is None:
             return None
         row.descriptor = descriptor
+        row.content_hash = compute_content_hash(descriptor)
         await self.db.flush()
         await self.db.refresh(row)
         return row
