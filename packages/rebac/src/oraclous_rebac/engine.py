@@ -523,9 +523,7 @@ class ReBACEngine:
             if user_id is not None:
                 subject = {"type": "user", "id": user_id}
             else:
-                raise ValueError(
-                    "check_graph_permission requires either 'subject' or 'user_id'"
-                )
+                raise ValueError("check_graph_permission requires either 'subject' or 'user_id'")
         subject_type, subject_id = _require_subject(subject)
 
         if subject_type == "user":
