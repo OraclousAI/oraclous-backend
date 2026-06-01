@@ -1,0 +1,24 @@
+# Fixed-port overlay for the long-lived shared fe-target stack.
+# frontend-implementer always sources .stack-env.fe-target and points here.
+#
+# Bring up:
+#   COMPOSE_PROJECT_NAME=oraclous-fe-target \
+#     docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.fe-target.yml up -d
+#
+# Do NOT manage with stack-up/stack-down (long-lived; bring up/down manually).
+services:
+  neo4j:
+    ports:
+      - "17687:7687"
+      - "17474:7474"
+  postgres:
+    ports:
+      - "15432:5432"
+  redis:
+    ports:
+      - "16379:6379"
+  jaeger:
+    ports:
+      - "26686:16686"
+      - "14317:4317"
+      - "14318:4318"
