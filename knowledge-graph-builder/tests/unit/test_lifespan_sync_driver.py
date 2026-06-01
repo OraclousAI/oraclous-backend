@@ -160,6 +160,4 @@ def test_main_py_calls_connect_sync_after_connect():
 
     connect_idx = call_names.index("connect")
     connect_sync_idx = call_names.index("connect_sync")
-    assert connect_idx < connect_sync_idx, (
-        "connect_sync() must be called after connect()"
-    )
+    assert connect_idx < connect_sync_idx, "connect_sync() must be called after connect()"
