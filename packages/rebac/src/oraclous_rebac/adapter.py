@@ -7,7 +7,8 @@ AccessRequest) -> bool | None`` — by dispatching to
 chokepoint; this adapter:
 
 * maps the seam vocabulary onto the engine's: ``organisation_id`` →
-  ``organisation_id``, ``subject`` → ``user_id``, ``resource`` → ``graph_id``,
+  ``organisation_id``, ``subject`` → ``subject`` (as ``{"type": "user",
+  "id": <value>}``), ``resource`` → ``graph_id``,
   ``relation`` → ``required_level`` via a defined ``{read, write, admin}``
   lookup;
 * returns ``None`` for unknown relations and for out-of-domain subjects /
@@ -62,7 +63,7 @@ class _PermissionCheck(Protocol):
         driver: object,
         *,
         organisation_id: str,
-        user_id: str,
+        subject: dict[str, str],
         graph_id: str,
         required_level: str,
     ) -> bool: ...
@@ -92,7 +93,7 @@ class ReBACEngineResolver:
         return await self._permission_check(
             self._driver,
             organisation_id=request.organisation_id,
-            user_id=request.subject,
+            subject={"type": "user", "id": request.subject},
             graph_id=request.resource,
             required_level=required_level,
         )
