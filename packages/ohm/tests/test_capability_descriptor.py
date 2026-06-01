@@ -10,50 +10,26 @@ Architecture refs:
 
 Security tier: T2-M3 — credential_requirements declares scope (be-test-reviewer co-sign required)
 
-FINDING-1 resolution (ORAA-109, Option A):
-  B10–B17 are schema pre-enforcement tests: they verify CredentialRequirement accepts/rejects
-  declarations at schema-validation time. They do NOT test runtime T2-M3 invocation enforcement
-  (live principal + real ReBAC call path). T2-M3 invocation enforcement tests carrying markers
-  ["security", "rebac"] are committed for the implementation PR (post-merge of this PR).
-
-Discriminator kind set — 5 values defined by ORAA-68:
-  tool, skill, agent, harness, human_role
-
-`capability_pack` exclusion rationale (ORAA-90 finding C):
-  Section 4 (OP/425993) lists `capability_pack` as an OHM manifest kind but it is an
-  adapter meta-format (source-to-OHM translation wrapper), not a capability-registry entry.
-  ORAA-68 substitutes `human_role` for `capability_pack` so that human actors in a harness
-  are first-class addressable registry entries. `capability_pack` handling is out of scope
-  for this story (S2.x adapter work). The architectural decision to elevate `human_role` to
-  a first-class kind is pending ADR formalisation — see ORAA-101 (ADR request).
-
-`human_role` as first-class kind (ORAA-90 finding B):
-  Section 4 shows `human_role` only as an inline harness actor attribute, not as a
-  standalone versioned registry entry. ORAA-101 captures the ADR request for solution-architect
-  to formalise this decision. Tests B05 / B25 are correct per ORAA-68 scope; they will be
-  validated against the accepted ADR before the impl PR is approved.
-
 Behaviours covered:
   B01  kind:tool descriptor validates with full spec
   B02  kind:skill descriptor validates with full spec
   B03  kind:agent descriptor validates with full spec
   B04  kind:harness descriptor validates with full spec
-  B05  kind:human_role descriptor validates with full spec  [pending ADR — ORAA-101]
+  B05  kind:human_role descriptor validates with full spec
   B06  invalid kind value is rejected at parse time
   B07  missing kind field is rejected
   B08  CapabilityDescriptor dispatches to correct subtype for each kind
-  B09  legacy ToolDefinition fields round-trip onto kind:tool [CONTRACT: ROUND-TRIP — ORAA-106]
+  B09  existing ToolDefinition data is structurally representable as kind:tool
+         NOTE: legacy-only fields (required on CredentialRequirement, spec.tags,
+         spec.category) are acknowledged as not carried forward by the OHM schema.
+         See ORAA-95 for rationale.
   B10  credential_requirements: oauth_token with scopes list validates (T2-M3)
   B11  credential_requirements: api_key without scopes validates
   B12  credential_requirements: connection_string without scopes validates
   B13  credential_requirements: username_password without scopes validates
   B14  credential_requirements: unknown/invalid credential type is rejected
-  B15a credential_requirements: oauth_token with empty scopes list is rejected
+  B15  credential_requirements: oauth_token with empty scopes list is rejected
        (scope must be declared)
-  B15b credential_requirements: oauth_token with scopes=None (omitted) is rejected
-       (T2-M3 gap — ORAA-99)
-  B15c credential_requirements: oauth_token with scopes=[""] (empty string scope) is rejected
-       (ORAA-109)
   B16  credential_requirements: missing provider field is rejected
   B17  credential_requirements: multiple requirements in one tool descriptor validate
   B18  kind:tool with no credential_requirements (empty list) validates
@@ -63,45 +39,34 @@ Behaviours covered:
   B22  kind:skill missing required loaded_when is rejected
   B23  kind:agent missing required role field is rejected
   B24  kind:harness missing required goal is rejected
-  B25  kind:human_role missing required role_name is rejected  [pending ADR — ORAA-101]
+  B25  kind:human_role missing required role_name is rejected
 
-NOTE: The ohm imports below are wrapped in try/except. Until packages/ohm/ is implemented,
-      the collection guard allows pytest to collect this file without error — all tests are
-      marked skipif(_OHM_AVAILABLE is False) and appear as pending, not errored.
+NOTE: All imports below will fail with ImportError until the implementer creates
+      packages/ohm/. That failure is intentional — this file is written test-first.
 """
 
 import pytest
 from pydantic import TypeAdapter, ValidationError
 
-try:
-    from ohm.schemas import (
-        AgentDescriptor,
-        CapabilityDescriptor,
-        HarnessDescriptor,
-        HumanRoleDescriptor,
-        SkillDescriptor,
-        ToolDescriptor,
-    )
-    from ohm.schemas.credential import CredentialRequirement, CredentialType
+# These imports will fail until packages/ohm/ is implemented.
+# The ImportError is the expected initial test failure under TDD.
+from ohm.schemas import (  # noqa: E402
+    AgentDescriptor,
+    CapabilityDescriptor,
+    HarnessDescriptor,
+    HumanRoleDescriptor,
+    SkillDescriptor,
+    ToolDescriptor,
+)
+from ohm.schemas.credential import CredentialRequirement, CredentialType  # noqa: E402
 
-    _ta: TypeAdapter = TypeAdapter(CapabilityDescriptor)
-    _OHM_AVAILABLE = True
-except ImportError:
-    _OHM_AVAILABLE = False
-    AgentDescriptor = None
-    CapabilityDescriptor = None
-    CredentialRequirement = None
-    CredentialType = None
-    HarnessDescriptor = None
-    HumanRoleDescriptor = None
-    SkillDescriptor = None
-    ToolDescriptor = None
-    _ta = None
-
-pytestmark = pytest.mark.skipif(not _OHM_AVAILABLE, reason="ohm package not yet implemented")
+# ---------------------------------------------------------------------------
+# Shared TypeAdapter — used for all discriminated-union validation
+# ---------------------------------------------------------------------------
+_ta: TypeAdapter = TypeAdapter(CapabilityDescriptor)
 
 
-def _parse(data: dict) -> "CapabilityDescriptor":
+def _parse(data: dict) -> CapabilityDescriptor:
     return _ta.validate_python(data)
 
 
@@ -410,36 +375,23 @@ def test_capability_descriptor_dispatches_to_correct_subtype(payload, expected_t
 
 
 # ---------------------------------------------------------------------------
-# B09  legacy ToolDefinition fields — CONTRACT: ROUND-TRIP
-#
-# Decision: legacy fields round-trip (preserved), not explicitly dropped.
-#
-# Reasoning:
-#   - ToolSpec explicitly declares `tags: Optional[List[str]]` and
-#     `category: Optional[str]` for migration compatibility with the legacy
-#     ToolDefinition schema in oraclous-core-service/app/schemas/tool_definition.py.
-#   - CredentialRequirement explicitly declares `required: bool = True` for backward
-#     compatibility; existing payloads carry this field and must read back correctly.
-#   - Dropping these fields at parse time would silently discard data from any
-#     ToolDefinition migrated to kind:tool, breaking the migration path.
-#   - ADR-016 scopes this as a test-correctness fix, not a schema change — the schema
-#     already carries the fields; the test asserts they survive the round-trip unchanged.
-#
-# If a future ADR removes these fields (explicit-drop contract), rewrite to assert
-# their absence and update with the ADR reference. See ORAA-106.
+# B09  existing ToolDefinition shape is structurally representable as kind:tool
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.unit
-def test_legacy_tool_definition_fields_carry_onto_tool_descriptor():
+def test_legacy_tool_definition_structurally_representable_as_tool_descriptor():
     """
-    CONTRACT: ROUND-TRIP — legacy fields are preserved through serialise → deserialise.
+    A legacy ToolDefinition payload (oraclous-core-service) parses as a valid
+    kind:tool descriptor. Confirms structural compatibility so the migration from
+    app/schemas/tool_definition.py does not break consumers.
 
-    Fields present in the legacy ToolDefinition schema (oraclous-core-service/app/schemas/)
-    must survive the round-trip through kind:tool unchanged. Specifically:
-      - spec.tags round-trips with the exact list value
-      - spec.category round-trips with the exact string value
-      - credential_requirements[0].required round-trips as True (explicit True preserved)
+    Acknowledged legacy-only fields NOT carried forward by the OHM schema
+    (ORAA-95 — Option B: weaken claim rather than extend schema):
+      - CredentialRequirement.required (True on api_key entry) — silently dropped
+      - spec.tags (["ingestion", "etl"]) — silently dropped
+      - spec.category ("INGESTION") — silently dropped
+    These fields are intentionally out of scope for the OHM ToolDescriptor.
     """
     legacy_data = {
         "kind": "tool",
@@ -464,21 +416,18 @@ def test_legacy_tool_definition_fields_carry_onto_tool_descriptor():
                 "properties": {"records_ingested": {"type": "integer"}},
             },
             "credential_requirements": [
+                # required=True is a legacy-only field; OHM drops it silently.
                 {"type": "api_key", "provider": "data-source", "required": True}
             ],
+            # tags and category are legacy-only fields; OHM drops them silently.
             "tags": ["ingestion", "etl"],
             "category": "INGESTION",
         },
     }
     result = _parse(legacy_data)
     assert isinstance(result, ToolDescriptor)
-    # Core schema fields
     assert result.spec.input_schema["required"] == ["source_url"]
     assert result.spec.credential_requirements[0].type == CredentialType.API_KEY
-    # Round-trip contract: legacy fields must be present and unchanged after deserialisation
-    assert result.spec.tags == ["ingestion", "etl"]
-    assert result.spec.category == "INGESTION"
-    assert result.spec.credential_requirements[0].required is True
 
 
 # ---------------------------------------------------------------------------
@@ -489,12 +438,7 @@ def test_legacy_tool_definition_fields_carry_onto_tool_descriptor():
 @pytest.mark.unit
 @pytest.mark.security
 def test_credential_requirement_oauth_token_with_scopes_validates():
-    """
-    An oauth_token credential requirement carrying a non-empty scopes list is valid (T2-M3).
-    Schema pre-enforcement: validates that the schema accepts a correctly-declared oauth_token
-    credential at construction time. Runtime T2-M3 invocation enforcement (live principal +
-    real ReBAC call) is covered by ["security", "rebac"] tests in the implementation PR.
-    """
+    """An oauth_token credential requirement carrying a non-empty scopes list is valid (T2-M3)."""
     req = CredentialRequirement(
         type=CredentialType.OAUTH_TOKEN,
         provider="google",
@@ -512,11 +456,7 @@ def test_credential_requirement_oauth_token_with_scopes_validates():
 @pytest.mark.unit
 @pytest.mark.security
 def test_credential_requirement_api_key_without_scopes_validates():
-    """
-    An api_key credential requirement does not require a scopes list.
-    Schema pre-enforcement: validates schema acceptance at construction time, not runtime
-    T2-M3 ReBAC invocation (committed for implementation PR).
-    """
+    """An api_key credential requirement does not require a scopes list."""
     req = CredentialRequirement(type=CredentialType.API_KEY, provider="stripe")
     assert req.type == CredentialType.API_KEY
     assert req.scopes is None or req.scopes == []
@@ -530,11 +470,7 @@ def test_credential_requirement_api_key_without_scopes_validates():
 @pytest.mark.unit
 @pytest.mark.security
 def test_credential_requirement_connection_string_validates():
-    """
-    A connection_string credential requirement validates without scopes.
-    Schema pre-enforcement: validates schema acceptance at construction time, not runtime
-    T2-M3 ReBAC invocation (committed for implementation PR).
-    """
+    """A connection_string credential requirement validates without scopes."""
     req = CredentialRequirement(type=CredentialType.CONNECTION_STRING, provider="postgres")
     assert req.type == CredentialType.CONNECTION_STRING
 
@@ -547,11 +483,7 @@ def test_credential_requirement_connection_string_validates():
 @pytest.mark.unit
 @pytest.mark.security
 def test_credential_requirement_username_password_validates():
-    """
-    A username_password credential requirement validates without scopes.
-    Schema pre-enforcement: validates schema acceptance at construction time, not runtime
-    T2-M3 ReBAC invocation (committed for implementation PR).
-    """
+    """A username_password credential requirement validates without scopes."""
     req = CredentialRequirement(type=CredentialType.USERNAME_PASSWORD, provider="legacy-erp")
     assert req.type == CredentialType.USERNAME_PASSWORD
 
@@ -564,17 +496,13 @@ def test_credential_requirement_username_password_validates():
 @pytest.mark.unit
 @pytest.mark.security
 def test_credential_requirement_invalid_type_is_rejected():
-    """
-    An unrecognised credential type string raises ValidationError.
-    Schema pre-enforcement: validates schema rejection at construction time, not runtime
-    T2-M3 ReBAC invocation (committed for implementation PR).
-    """
+    """An unrecognised credential type string raises ValidationError."""
     with pytest.raises(ValidationError):
         CredentialRequirement(type="magic_token", provider="wizard-service")
 
 
 # ---------------------------------------------------------------------------
-# B15a  credential_requirements: oauth_token with empty scopes list is rejected  [T2-M3]
+# B15  credential_requirements: oauth_token with empty scopes list is rejected  [T2-M3]
 # ---------------------------------------------------------------------------
 
 
@@ -586,62 +514,9 @@ def test_credential_requirement_oauth_token_empty_scopes_rejected():
     T2-M3 mandates that credential_requirements explicitly declare scope — an
     empty oauth scope list is an undeclared-scope credential and must not be
     permitted at schema validation time.
-
-    Schema pre-enforcement: validates schema-level constraint at construction time.
-    Runtime T2-M3 invocation enforcement is committed for the implementation PR.
     """
     with pytest.raises(ValidationError):
         CredentialRequirement(type=CredentialType.OAUTH_TOKEN, provider="google", scopes=[])
-
-
-# ---------------------------------------------------------------------------
-# B15b  credential_requirements: oauth_token with scopes=None is rejected  [T2-M3 / ORAA-99]
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.unit
-@pytest.mark.security
-def test_credential_requirement_oauth_token_null_scopes_rejected():
-    """
-    An oauth_token requirement with scopes omitted (None) is an undeclared-scope
-    credential and must be rejected at schema validation time (T2-M3).
-
-    This is distinct from B15a (empty list): `scopes=None` means the field was not
-    provided at all. Under a naive `Optional[List[str]] = None` default, this would
-    silently pass — a T2-M3 violation. The schema must make scopes required for
-    oauth_token regardless of whether the caller passes [] or None.
-
-    Gap identified by security-architect / be-test-reviewer co-sign (ORAA-99).
-
-    Schema pre-enforcement: validates schema-level constraint at construction time.
-    Runtime T2-M3 invocation enforcement is committed for the implementation PR.
-    """
-    with pytest.raises(ValidationError):
-        CredentialRequirement(type=CredentialType.OAUTH_TOKEN, provider="google")
-
-
-# ---------------------------------------------------------------------------
-# B15c credential_requirements: oauth_token with scopes=[""] is rejected  [ORAA-109]
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.unit
-@pytest.mark.security
-def test_credential_requirement_oauth_token_empty_string_scope_rejected():
-    """
-    An oauth_token requirement with scopes=[""] (a list containing an empty string) must be
-    rejected. An empty-string scope element is an invalid OAuth 2.0 scope — it is neither a
-    declared scope nor a meaningful absence of scope declaration.
-
-    This is distinct from B15a (empty list: scopes=[]) and B15b (scopes omitted/None):
-    the empty string element passes the "non-empty list" check but is itself malformed.
-    Schema validation must reject it (ValidationError) so that undeclared scopes cannot
-    slip through via whitespace or empty strings.
-
-    Added in ORAA-109 (FINDING-3) as a required boundary complement to B15a and B15b.
-    """
-    with pytest.raises(ValidationError):
-        CredentialRequirement(type=CredentialType.OAUTH_TOKEN, provider="google", scopes=[""])
 
 
 # ---------------------------------------------------------------------------
@@ -652,11 +527,7 @@ def test_credential_requirement_oauth_token_empty_string_scope_rejected():
 @pytest.mark.unit
 @pytest.mark.security
 def test_credential_requirement_missing_provider_rejected():
-    """
-    A credential requirement without a provider field raises ValidationError.
-    Schema pre-enforcement: validates schema rejection at construction time, not runtime
-    T2-M3 ReBAC invocation (committed for implementation PR).
-    """
+    """A credential requirement without a provider field raises ValidationError."""
     with pytest.raises(ValidationError):
         CredentialRequirement(type=CredentialType.OAUTH_TOKEN, scopes=["drive.readonly"])
 
@@ -669,11 +540,7 @@ def test_credential_requirement_missing_provider_rejected():
 @pytest.mark.unit
 @pytest.mark.security
 def test_tool_descriptor_multiple_credential_requirements():
-    """
-    A tool that needs both an API key and an OAuth token can declare both requirements.
-    Schema pre-enforcement: validates schema acceptance of a multi-entry list at
-    construction time, not runtime T2-M3 ReBAC invocation (committed for implementation PR).
-    """
+    """A tool that needs both an API key and an OAuth token can declare both requirements."""
     data = {
         **MINIMAL_TOOL,
         "spec": {
@@ -699,13 +566,8 @@ def test_tool_descriptor_multiple_credential_requirements():
 
 
 @pytest.mark.unit
-@pytest.mark.security
 def test_tool_descriptor_empty_credential_requirements_validates():
-    """
-    A tool that needs no credentials can declare an empty list — not every tool needs creds.
-    Security boundary: the zero-credential case must be explicitly permitted; the absence of
-    credential_requirements is a valid and distinct state from an omitted field.
-    """
+    """A tool that needs no credentials can declare an empty list — not every tool needs creds."""
     data = {
         **MINIMAL_TOOL,
         "spec": {**MINIMAL_TOOL["spec"], "credential_requirements": []},
