@@ -490,10 +490,11 @@ class ReBACEngine:
         driver: AsyncDriver,
         *,
         organisation_id: str,
-        subject: dict[str, str],
         graph_id: str,
         required_level: str,
+        subject: dict[str, str] | None = None,
         subgraph_id: str | None = None,
+        user_id: str | None = None,
     ) -> bool:
         """Polymorphic permission check (ADR-013 §3).
 
@@ -506,10 +507,25 @@ class ReBACEngine:
         delegating member's role. ``subgraph_id`` narrows the agent-path
         check to a specific subgraph (graph-scope delegations still match).
 
+        ``user_id`` is a legacy alias for ``subject={"type": "user", "id":
+        user_id}`` accepted for backward-compat with the ORA-46 adapter
+        (ORAA-125). Prefer passing ``subject`` directly.
+
         Fail-closed on any backend error.
         """
         _require_org(organisation_id)
         _require_graph(graph_id)
+        # Backward-compat: ORA-46 adapter was written against the ORA-34 engine
+        # signature (user_id: str). ORA-35 added the polymorphic subject dict;
+        # the adapter was not updated then. Accept user_id as a legacy alias so
+        # the adapter and its unit tests continue to work (ORAA-125).
+        if subject is None:
+            if user_id is not None:
+                subject = {"type": "user", "id": user_id}
+            else:
+                raise ValueError(
+                    "check_graph_permission requires either 'subject' or 'user_id'"
+                )
         subject_type, subject_id = _require_subject(subject)
 
         if subject_type == "user":
