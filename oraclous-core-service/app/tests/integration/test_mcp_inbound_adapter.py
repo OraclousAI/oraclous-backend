@@ -29,7 +29,6 @@ from __future__ import annotations
 import uuid
 
 import pytest
-
 from app.models.capability_descriptor import CapabilityDescriptorDB, DescriptorKind
 from app.services.capability_registry import CapabilityRegistryService
 
@@ -287,8 +286,10 @@ async def test_import_mcp_server_is_idempotent(async_session):
 
     # There must be exactly 3 tool rows in the registry (not 6)
     all_tools = await svc.list_by_kind(_ORG_A, DescriptorKind.TOOL)
-    assert len(all_tools) == 3, (
-        f"Expected 3 distinct rows in the registry after two identical imports, got {len(all_tools)}"
+    expected = 3
+    got = len(all_tools)
+    assert got == expected, (
+        f"Expected {expected} distinct rows in the registry after two identical imports, got {got}"
     )
 
 

@@ -4,11 +4,9 @@ import hashlib
 import json
 import uuid
 from abc import ABC, abstractmethod
-from typing import List, Type
-
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.capability_descriptor import CapabilityDescriptorDB, DescriptorKind
+from sqlalchemy.ext.asyncio import AsyncSession
 
 
 class CapabilityKindPlugin(ABC):
@@ -41,13 +39,13 @@ class _PluginRegistry:
     """In-process registry of capability-kind plugin classes."""
 
     def __init__(self) -> None:
-        self._plugins: dict[str, Type[CapabilityKindPlugin]] = {}
+        self._plugins: dict[str, type[CapabilityKindPlugin]] = {}
 
-    def register(self, plugin_cls: Type[CapabilityKindPlugin]) -> None:
+    def register(self, plugin_cls: type[CapabilityKindPlugin]) -> None:
         """Register a plugin class by its plugin_id."""
         self._plugins[plugin_cls.get_plugin_id()] = plugin_cls
 
-    def unregister(self, plugin_cls: Type[CapabilityKindPlugin]) -> None:
+    def unregister(self, plugin_cls: type[CapabilityKindPlugin]) -> None:
         """Unregister a plugin class (used in test teardown)."""
         self._plugins.pop(plugin_cls.get_plugin_id(), None)
 
@@ -55,7 +53,7 @@ class _PluginRegistry:
 plugin_registry = _PluginRegistry()
 
 
-def discover_registered_plugins() -> List[Type[CapabilityKindPlugin]]:
+def discover_registered_plugins() -> list[type[CapabilityKindPlugin]]:
     """Return all currently registered plugin classes."""
     return list(plugin_registry._plugins.values())
 
@@ -63,7 +61,7 @@ def discover_registered_plugins() -> List[Type[CapabilityKindPlugin]]:
 async def sync_plugins_to_registry(
     org_id: uuid.UUID,
     session: AsyncSession,
-) -> List[CapabilityDescriptorDB]:
+) -> list[CapabilityDescriptorDB]:
     """Persist every registered plugin's OHM descriptor to capability_descriptor for org_id.
 
     Idempotent: existing rows (matched by descriptor["id"]) are not duplicated.
@@ -75,7 +73,7 @@ async def sync_plugins_to_registry(
     existing = await svc.list_by_org(org_id)
     existing_by_id = {r.descriptor.get("id"): r for r in existing}
 
-    synced: List[CapabilityDescriptorDB] = []
+    synced: list[CapabilityDescriptorDB] = []
     for plugin_cls in discover_registered_plugins():
         pid = plugin_cls.get_plugin_id()
         if pid in existing_by_id:

@@ -193,7 +193,9 @@ def test_translated_descriptor_preserves_input_schema():
     assert input_schema.get("type") == original["type"], (
         "input_schema type must match MCP inputSchema type"
     )
-    assert set(input_schema.get("properties", {}).keys()) == set(original.get("properties", {}).keys()), (
+    schema_keys = set(input_schema.get("properties", {}).keys())
+    original_keys = set(original.get("properties", {}).keys())
+    assert schema_keys == original_keys, (
         "input_schema properties must match MCP inputSchema properties"
     )
     assert input_schema.get("required") == original.get("required"), (
