@@ -95,9 +95,7 @@ def test_translate_mcp_tool_returns_ohm_kind_tool():
     result = translate_mcp_tool(_VALID_MCP_TOOL, _SERVER_ENDPOINT)
     assert result is not None, "Expected a translated descriptor, got None"
     assert isinstance(result, dict), "translate_mcp_tool() must return a dict"
-    assert result.get("kind") == "tool", (
-        f"Expected kind='tool', got kind={result.get('kind')!r}"
-    )
+    assert result.get("kind") == "tool", f"Expected kind='tool', got kind={result.get('kind')!r}"
 
 
 # ---------------------------------------------------------------------------
@@ -166,7 +164,7 @@ def test_translated_descriptor_carries_content_hash():
     assert content_hash.startswith("sha256:"), (
         f"content_hash must start with 'sha256:', got {content_hash!r}"
     )
-    hex_part = content_hash[len("sha256:"):]
+    hex_part = content_hash[len("sha256:") :]
     assert len(hex_part) == 64, (
         f"sha256 hex digest must be 64 chars, got {len(hex_part)}: {hex_part!r}"
     )
@@ -241,9 +239,7 @@ def test_translated_descriptor_name_in_metadata_and_id():
         "metadata.name must match the MCP tool name"
     )
     descriptor_id = result.get("id", "")
-    assert _VALID_MCP_TOOL["name"] in descriptor_id, (
-        "descriptor id must incorporate the tool name"
-    )
+    assert _VALID_MCP_TOOL["name"] in descriptor_id, "descriptor id must incorporate the tool name"
 
 
 # ---------------------------------------------------------------------------
@@ -267,14 +263,10 @@ def test_translate_mcp_tool_returns_none_for_missing_name(caplog):
     with caplog.at_level(logging.WARNING):
         result = translate_mcp_tool(_MCP_TOOL_NO_NAME, _SERVER_ENDPOINT)
 
-    assert result is None, (
-        f"Expected None for MCP tool missing 'name', got {result!r}"
-    )
+    assert result is None, f"Expected None for MCP tool missing 'name', got {result!r}"
     # The original payload must appear in the log so operators can diagnose
     log_text = caplog.text
-    assert log_text != "", (
-        "translate_mcp_tool() must log a warning when it cannot translate a tool"
-    )
+    assert log_text != "", "translate_mcp_tool() must log a warning when it cannot translate a tool"
 
 
 # ---------------------------------------------------------------------------
