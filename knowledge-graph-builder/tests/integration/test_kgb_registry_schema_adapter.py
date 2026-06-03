@@ -323,7 +323,8 @@ _KGB_TOOL_DESCRIPTORS: dict[str, dict[str, Any]] = {
     ),
     "describe_community": _ohm_tool(
         "describe_community",
-        "Return metadata for one community: its summary, key entities, excerpt, size, and sample members.",
+        "Return metadata for one community: its summary, key entities, "
+        "excerpt, size, and sample members.",
         {
             "type": "object",
             "properties": {
