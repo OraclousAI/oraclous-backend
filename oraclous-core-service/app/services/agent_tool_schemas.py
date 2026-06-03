@@ -18,7 +18,7 @@ from __future__ import annotations
 import copy
 from typing import Any, Literal
 
-from app.services.capability_registry_client import CapabilityRegistryClient
+from app.services.capability_registry_client import RemoteCapabilityRegistryClient
 
 ProviderFormat = Literal["openai", "anthropic"]
 
@@ -63,7 +63,7 @@ async def tool_schemas_from_registry(
     allowed_tools: list[str] | set[str],
     provider_format: ProviderFormat,
     *,
-    registry_client: CapabilityRegistryClient,
+    registry_client: RemoteCapabilityRegistryClient,
 ) -> list[dict[str, Any]]:
     """Return provider-formatted schemas by fetching OHM descriptors from the
     capability registry for each tool in *allowed_tools*.
