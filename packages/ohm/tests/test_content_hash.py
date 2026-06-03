@@ -37,9 +37,8 @@ from pydantic import TypeAdapter
 # Tests are marked skipif so pytest can collect this file without error.
 # The underlying skip IS the TDD red state — ADR-010.
 try:
-    from ohm.schemas import CapabilityDescriptor
-
     from ohm.hashing import compute_content_hash
+    from ohm.schemas import CapabilityDescriptor
 
     _ta: TypeAdapter = TypeAdapter(CapabilityDescriptor)
     _OHM_AVAILABLE = True
