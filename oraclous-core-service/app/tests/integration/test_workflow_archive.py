@@ -24,7 +24,7 @@ Behaviours covered:
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import UTC, datetime
 
 import pytest
 from sqlalchemy import text
@@ -122,7 +122,7 @@ async def test_archived_workflows_allows_insertion(async_session):
     """
     row_id = uuid.uuid4()
     owner_id = uuid.uuid4()
-    archived_at = datetime.now(datetime.UTC)
+    archived_at = datetime.now(UTC)
 
     await async_session.execute(
         text(
