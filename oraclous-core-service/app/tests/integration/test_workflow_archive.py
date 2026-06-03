@@ -24,7 +24,7 @@ Behaviours covered:
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime
 
 import pytest
 from sqlalchemy import text
@@ -122,7 +122,7 @@ async def test_archived_workflows_allows_insertion(async_session):
     """
     row_id = uuid.uuid4()
     owner_id = uuid.uuid4()
-    archived_at = datetime.now(timezone.utc)
+    archived_at = datetime.now(datetime.UTC)
 
     await async_session.execute(
         text(
@@ -146,8 +146,6 @@ async def test_archived_workflows_allows_insertion(async_session):
         {"id": str(row_id)},
     )
     row = result.fetchone()
-    assert row is not None, (
-        f"Inserted row with id={row_id} not found in archived_workflows"
-    )
+    assert row is not None, f"Inserted row with id={row_id} not found in archived_workflows"
     assert row[0] == "smoke-test-archived-workflow"
     assert row[1] is not None, "archived_at must not be NULL"

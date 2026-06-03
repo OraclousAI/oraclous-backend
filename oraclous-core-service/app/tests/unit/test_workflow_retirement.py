@@ -17,7 +17,8 @@ Behaviours covered:
   W03  app/api/v1/endpoints/workflow_routes.py file is deleted (importer removed)
   W04  app.api.v1.router no longer references workflow_routes
   W05  no Python source file in app/ imports from app.services.workflow_service
-  W06  no Python source file in app/ contains any reference to pipeline_generator or PipelineGenerator
+  W06  no Python source file in app/ contains any reference to pipeline_generator
+       or PipelineGenerator
 
 NOTE on W01/W02 approach: file-existence checks are used (not import-error assertions)
 because the workflow modules import optional dependencies (langgraph, etc.) that may
@@ -162,13 +163,11 @@ def test_no_python_source_imports_workflow_service():
         str(f.relative_to(_APP_DIR))
         for f in _APP_DIR.rglob("*.py")
         if "migrations" not in f.parts
-        and "tests"
-        not in f.parts  # test files may reference deleted names in docstrings
+        and "tests" not in f.parts  # test files may reference deleted names in docstrings
         and _WORKFLOW_SERVICE_IMPORT_RE.search(f.read_text())
     ]
-    assert not culprits, (
-        f"{len(culprits)} file(s) still import workflow_service:\n"
-        + "\n".join(f"  {c}" for c in culprits)
+    assert not culprits, f"{len(culprits)} file(s) still import workflow_service:\n" + "\n".join(
+        f"  {c}" for c in culprits
     )
 
 
@@ -194,12 +193,8 @@ def test_no_python_source_references_pipeline_generator():
         str(f.relative_to(_APP_DIR))
         for f in _APP_DIR.rglob("*.py")
         if "migrations" not in f.parts
-        and "tests"
-        not in f.parts  # test files may reference deleted names in docstrings
-        and (
-            "pipeline_generator" in f.read_text()
-            or "PipelineGenerator" in f.read_text()
-        )
+        and "tests" not in f.parts  # test files may reference deleted names in docstrings
+        and ("pipeline_generator" in f.read_text() or "PipelineGenerator" in f.read_text())
     ]
     assert not culprits, (
         f"{len(culprits)} file(s) still reference pipeline_generator:\n"
