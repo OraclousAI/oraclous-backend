@@ -43,13 +43,6 @@ from __future__ import annotations
 import uuid
 
 import pytest
-from app.models.capability_descriptor import (  # noqa: E402
-    CapabilityDescriptorDB,
-    DescriptorKind,
-)
-from app.repositories.capability_descriptor_repository import (  # noqa: E402
-    CapabilityDescriptorRepository,
-)
 
 # ---------------------------------------------------------------------------
 # These imports will fail with ImportError until the implementer creates the
@@ -58,6 +51,14 @@ from app.repositories.capability_descriptor_repository import (  # noqa: E402
 # ---------------------------------------------------------------------------
 from sqlalchemy import text
 from sqlalchemy.exc import DataError, DBAPIError, IntegrityError
+
+from app.models.capability_descriptor import (  # noqa: E402
+    CapabilityDescriptorDB,
+    DescriptorKind,
+)
+from app.repositories.capability_descriptor_repository import (  # noqa: E402
+    CapabilityDescriptorRepository,
+)
 
 # ---------------------------------------------------------------------------
 # Fixtures: minimal valid JSONB descriptors for each kind

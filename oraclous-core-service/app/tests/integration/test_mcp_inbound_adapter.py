@@ -29,6 +29,7 @@ from __future__ import annotations
 import uuid
 
 import pytest
+
 from app.models.capability_descriptor import CapabilityDescriptorDB, DescriptorKind
 
 try:
@@ -256,7 +257,7 @@ async def test_import_mcp_server_skips_untranslatable_tools(async_session, caplo
 
 
 @pytest.mark.integration
-@pytest.mark.skipif(CapabilityRegistryService is None, reason="impl not yet available")
+@pytest.mark.skipif(import_mcp_server is None, reason="impl not yet available")
 async def test_import_mcp_server_is_idempotent(async_session):
     """
     Calling import_mcp_server() twice with the same server spec must not create
@@ -296,7 +297,7 @@ async def test_import_mcp_server_is_idempotent(async_session):
 
 @pytest.mark.integration
 @pytest.mark.organization_isolation
-@pytest.mark.skipif(CapabilityRegistryService is None, reason="impl not yet available")
+@pytest.mark.skipif(import_mcp_server is None, reason="impl not yet available")
 async def test_imported_tools_are_scoped_to_org(async_session):
     """
     MCP tools imported for org_A must not appear when listing capabilities for org_B.
