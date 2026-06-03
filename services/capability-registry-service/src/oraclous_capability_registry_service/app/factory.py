@@ -62,14 +62,14 @@ def create_app() -> FastAPI:
     async def list_capabilities() -> _CapabilityListResponse:
         return _CapabilityListResponse(capabilities=[], total=0)
 
-    @app.get("/api/v1/capabilities/{capability_id}")
+    @app.get("/api/v1/capabilities/{capability_id}", response_model=None)
     async def get_capability(capability_id: str) -> NoReturn:
         raise HTTPException(
             status_code=status.HTTP_501_NOT_IMPLEMENTED,
             detail="Capability resolution not yet implemented (R2)",
         )
 
-    @app.post("/api/v1/capabilities", status_code=status.HTTP_201_CREATED)
+    @app.post("/api/v1/capabilities", status_code=status.HTTP_201_CREATED, response_model=None)
     async def register_capability() -> NoReturn:
         raise HTTPException(
             status_code=status.HTTP_501_NOT_IMPLEMENTED,
@@ -82,14 +82,14 @@ def create_app() -> FastAPI:
     async def list_tools() -> _ToolListResponse:
         return _ToolListResponse(tools=[], total=0)
 
-    @app.get("/api/v1/tools/{tool_id}")
+    @app.get("/api/v1/tools/{tool_id}", response_model=None)
     async def get_tool(tool_id: str) -> NoReturn:
         raise HTTPException(
             status_code=status.HTTP_501_NOT_IMPLEMENTED,
             detail="Tool resolution not yet implemented (R2)",
         )
 
-    @app.post("/api/v1/tools", status_code=status.HTTP_201_CREATED)
+    @app.post("/api/v1/tools", status_code=status.HTTP_201_CREATED, response_model=None)
     async def register_tool() -> NoReturn:
         raise HTTPException(
             status_code=status.HTTP_501_NOT_IMPLEMENTED,
