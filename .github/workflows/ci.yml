@@ -33,6 +33,8 @@ jobs:
         run: uv run python -m tools.lint.check_org_scoped_labels_schema
       - name: Test-import hygiene guardrail (TDD-window collection safety)
         run: uv run python -m tools.lint.check_test_imports packages services tests
+      - name: Neo4j write-role bypass guardrail (ORAA-53 / T6)
+        run: uv run python -m tools.lint.check_neo4j_write_role
       - name: Contract fixture integrity (error envelope, ORA-37)
         run: uv run python -m tools.contract.verify_checksums
       - name: Unit tests
