@@ -8,7 +8,8 @@ Two SDK paths are supported:
 - OpenAI-compatible (AsyncOpenAI / OpenRouter / Azure): llm.chat.completions.create
 - Anthropic native (AsyncAnthropic): llm.messages.create
 
-graph_id is injected by the executor before dispatch; the LLM never sees it.
+graph_id is stripped from LLM-visible schemas by tool_schemas_from_registry;
+the toolkit injects it at dispatch via prov.
 """
 
 from __future__ import annotations

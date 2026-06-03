@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import Any
 
 
-class CapabilityRegistryClient:
+class RemoteCapabilityRegistryClient:
     """HTTP client for the capability registry service.
 
     Fetches OHM v1.0 tool descriptors by name.  Concrete deployments
