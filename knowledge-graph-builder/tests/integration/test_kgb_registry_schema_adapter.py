@@ -416,9 +416,7 @@ async def test_ohm_descriptor_to_openai_format():
     OpenAI-format schema: {type: 'function', function: {name, description, parameters}}."""
     from app.services.agent_tool_schemas import tool_schemas_from_registry
 
-    client = _make_registry_client_stub(
-        {"graph_search": _KGB_TOOL_DESCRIPTORS["graph_search"]}
-    )
+    client = _make_registry_client_stub({"graph_search": _KGB_TOOL_DESCRIPTORS["graph_search"]})
     schemas = await tool_schemas_from_registry(
         allowed_tools=["graph_search"],
         provider_format="openai",
@@ -449,9 +447,7 @@ async def test_ohm_descriptor_to_anthropic_format():
     Anthropic-format schema: {name, description, input_schema} with no 'function' key."""
     from app.services.agent_tool_schemas import tool_schemas_from_registry
 
-    client = _make_registry_client_stub(
-        {"graph_search": _KGB_TOOL_DESCRIPTORS["graph_search"]}
-    )
+    client = _make_registry_client_stub({"graph_search": _KGB_TOOL_DESCRIPTORS["graph_search"]})
     schemas = await tool_schemas_from_registry(
         allowed_tools=["graph_search"],
         provider_format="anthropic",
@@ -493,9 +489,7 @@ async def test_graph_id_absent_from_registry_backed_schema(tool_name: str):
             provider_format=fmt,  # type: ignore[arg-type]
             registry_client=client,
         )
-        assert len(schemas) == 1, (
-            f"Expected 1 schema for {tool_name!r} in {fmt!r} format"
-        )
+        assert len(schemas) == 1, f"Expected 1 schema for {tool_name!r} in {fmt!r} format"
         schema = schemas[0]
 
         if fmt == "openai":
@@ -525,9 +519,7 @@ async def test_tool_absent_from_registry_is_silently_dropped():
     from app.services.agent_tool_schemas import tool_schemas_from_registry
 
     # Registry only has graph_search; allowlist asks for graph_search + a ghost tool
-    client = _make_registry_client_stub(
-        {"graph_search": _KGB_TOOL_DESCRIPTORS["graph_search"]}
-    )
+    client = _make_registry_client_stub({"graph_search": _KGB_TOOL_DESCRIPTORS["graph_search"]})
     schemas = await tool_schemas_from_registry(
         allowed_tools=["graph_search", "nonexistent_ghost_tool"],
         provider_format="openai",
@@ -552,12 +544,8 @@ async def test_empty_allowlist_returns_empty_without_registry_call():
     from app.services.agent_tool_schemas import tool_schemas_from_registry
 
     client = _make_registry_client_stub()
-    result_openai = await tool_schemas_from_registry(
-        [], "openai", registry_client=client
-    )
-    result_anthropic = await tool_schemas_from_registry(
-        [], "anthropic", registry_client=client
-    )
+    result_openai = await tool_schemas_from_registry([], "openai", registry_client=client)
+    result_anthropic = await tool_schemas_from_registry([], "anthropic", registry_client=client)
 
     assert result_openai == []
     assert result_anthropic == []
@@ -601,9 +589,7 @@ async def test_registry_client_error_propagates():
     from app.services.agent_tool_schemas import tool_schemas_from_registry
 
     client = MagicMock(spec=CapabilityRegistryClient)
-    client.get_tool_descriptor = AsyncMock(
-        side_effect=RuntimeError("registry unavailable")
-    )
+    client.get_tool_descriptor = AsyncMock(side_effect=RuntimeError("registry unavailable"))
 
     with pytest.raises((RuntimeError, Exception)):
         await tool_schemas_from_registry(
@@ -669,9 +655,7 @@ async def test_agent_executor_tool_use_loop_uses_registry_schemas():
 
     # Registry was called to resolve graph_search schema
     assert registry_client.get_tool_descriptor.call_count >= 1
-    called_names = {
-        call.args[0] for call in registry_client.get_tool_descriptor.call_args_list
-    }
+    called_names = {call.args[0] for call in registry_client.get_tool_descriptor.call_args_list}
     assert "graph_search" in called_names, (
         "AgentExecutor._tool_use_loop did not call registry_client.get_tool_descriptor "
         "for graph_search — schemas are still coming from the static dict."
