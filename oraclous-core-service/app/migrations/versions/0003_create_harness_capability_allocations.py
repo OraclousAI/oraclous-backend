@@ -14,7 +14,7 @@ from collections.abc import Sequence
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = "0003_harness_capability_allocations"
+revision: str = "0003_capability_allocations"
 down_revision: str | Sequence[str] | None = "0002_capability_descriptor"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
