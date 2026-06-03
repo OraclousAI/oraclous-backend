@@ -75,6 +75,7 @@ from pydantic import TypeAdapter
 
 def _parse(data: dict):
     from ohm.schemas import CapabilityDescriptor
+
     return TypeAdapter(CapabilityDescriptor).validate_python(data)
 
 
@@ -88,6 +89,7 @@ def _parse(data: dict):
 def test_google_drive_reader_descriptor_kind_is_tool():
     """GoogleDriveReader.get_ohm_descriptor() must return a dict with kind == 'tool'."""
     from app.tools.implementations.ingestion.google_drive_reader import GoogleDriveReader
+
     descriptor = GoogleDriveReader.get_ohm_descriptor()
     assert descriptor.get("kind") == "tool", (
         "GoogleDriveReader OHM descriptor must declare kind='tool'"
@@ -108,6 +110,7 @@ def test_google_drive_reader_descriptor_validates_as_tool_descriptor():
     from app.tools.implementations.ingestion.google_drive_reader import GoogleDriveReader
 
     from ohm.schemas import ToolDescriptor
+
     descriptor = GoogleDriveReader.get_ohm_descriptor()
     result = _parse(descriptor)
     assert isinstance(result, ToolDescriptor), (
@@ -126,11 +129,10 @@ def test_google_drive_reader_credential_type_is_oauth_token():
     CredentialType.OAUTH_TOKEN serialises to 'oauth_token' in OHM v1.0.
     """
     from app.tools.implementations.ingestion.google_drive_reader import GoogleDriveReader
+
     descriptor = GoogleDriveReader.get_ohm_descriptor()
     creds = descriptor.get("spec", {}).get("credential_requirements", [])
-    assert len(creds) >= 1, (
-        "GoogleDriveReader must declare at least one credential requirement"
-    )
+    assert len(creds) >= 1, "GoogleDriveReader must declare at least one credential requirement"
     actual_type = creds[0].get("type")
     assert actual_type == "oauth_token", (
         f"Expected credential type 'oauth_token'; got {actual_type!r}. "
@@ -151,6 +153,7 @@ def test_google_drive_reader_oauth_scopes_declared():
     FAILS until fixed: the current descriptor has no 'scopes' key.
     """
     from app.tools.implementations.ingestion.google_drive_reader import GoogleDriveReader
+
     descriptor = GoogleDriveReader.get_ohm_descriptor()
     creds = descriptor.get("spec", {}).get("credential_requirements", [])
     assert len(creds) >= 1
@@ -174,6 +177,7 @@ def test_google_drive_reader_oauth_scopes_include_drive_readonly():
     FAILS until fixed: the current descriptor declares no scopes.
     """
     from app.tools.implementations.ingestion.google_drive_reader import GoogleDriveReader
+
     descriptor = GoogleDriveReader.get_ohm_descriptor()
     creds = descriptor.get("spec", {}).get("credential_requirements", [])
     assert len(creds) >= 1
@@ -195,6 +199,7 @@ def test_google_drive_reader_implementation_handler():
     to it; it does not replace it.
     """
     from app.tools.implementations.ingestion.google_drive_reader import GoogleDriveReader
+
     descriptor = GoogleDriveReader.get_ohm_descriptor()
     handler = descriptor.get("spec", {}).get("implementation", {}).get("handler", "")
     assert "GoogleDriveReader" in handler, (
@@ -210,11 +215,10 @@ def test_google_drive_reader_implementation_handler():
 def test_google_drive_reader_implementation_type_is_internal():
     """GoogleDriveReader OHM descriptor implementation.type must be 'internal'."""
     from app.tools.implementations.ingestion.google_drive_reader import GoogleDriveReader
+
     descriptor = GoogleDriveReader.get_ohm_descriptor()
     impl_type = descriptor.get("spec", {}).get("implementation", {}).get("type")
-    assert impl_type == "internal", (
-        f"implementation.type must be 'internal'; got {impl_type!r}"
-    )
+    assert impl_type == "internal", f"implementation.type must be 'internal'; got {impl_type!r}"
 
 
 # GDR-08  GoogleDriveReader get_kind() returns DescriptorKind.TOOL
@@ -223,6 +227,7 @@ def test_google_drive_reader_get_kind_returns_tool():
     """GoogleDriveReader.get_kind() must return DescriptorKind.TOOL."""
     from app.models.capability_descriptor import DescriptorKind
     from app.tools.implementations.ingestion.google_drive_reader import GoogleDriveReader
+
     assert GoogleDriveReader.get_kind() == DescriptorKind.TOOL
 
 
@@ -231,6 +236,7 @@ def test_google_drive_reader_get_kind_returns_tool():
 def test_google_drive_reader_get_plugin_id():
     """GoogleDriveReader.get_plugin_id() must return stable ID 'google-drive-reader'."""
     from app.tools.implementations.ingestion.google_drive_reader import GoogleDriveReader
+
     assert GoogleDriveReader.get_plugin_id() == "google-drive-reader"
 
 
@@ -244,6 +250,7 @@ def test_google_drive_reader_descriptor_id_matches_plugin_id():
     idempotent sync: sync_plugins_to_registry() uses the plugin_id to avoid duplicates.
     """
     from app.tools.implementations.ingestion.google_drive_reader import GoogleDriveReader
+
     descriptor = GoogleDriveReader.get_ohm_descriptor()
     assert descriptor.get("id") == GoogleDriveReader.get_plugin_id(), (
         f"descriptor['id'] must equal get_plugin_id(). "
@@ -262,10 +269,9 @@ def test_google_drive_reader_descriptor_id_matches_plugin_id():
 def test_notion_reader_descriptor_kind_is_tool():
     """NotionReader.get_ohm_descriptor() must return a dict with kind == 'tool'."""
     from app.tools.implementations.ingestion.notion_reader import NotionReader
+
     descriptor = NotionReader.get_ohm_descriptor()
-    assert descriptor.get("kind") == "tool", (
-        "NotionReader OHM descriptor must declare kind='tool'"
-    )
+    assert descriptor.get("kind") == "tool", "NotionReader OHM descriptor must declare kind='tool'"
 
 
 # NR-02  NotionReader OHM descriptor validates as ToolDescriptor
@@ -278,6 +284,7 @@ def test_notion_reader_descriptor_validates_as_tool_descriptor():
     from app.tools.implementations.ingestion.notion_reader import NotionReader
 
     from ohm.schemas import ToolDescriptor
+
     descriptor = NotionReader.get_ohm_descriptor()
     result = _parse(descriptor)
     assert isinstance(result, ToolDescriptor), (
@@ -295,13 +302,12 @@ def test_notion_reader_credential_type_is_api_key():
     The OHM CredentialType.API_KEY serialises as 'api_key'.
     """
     from app.tools.implementations.ingestion.notion_reader import NotionReader
+
     descriptor = NotionReader.get_ohm_descriptor()
     creds = descriptor.get("spec", {}).get("credential_requirements", [])
     assert len(creds) >= 1, "NotionReader must declare at least one credential requirement"
     actual_type = creds[0].get("type")
-    assert actual_type == "api_key", (
-        f"Expected credential type 'api_key'; got {actual_type!r}"
-    )
+    assert actual_type == "api_key", f"Expected credential type 'api_key'; got {actual_type!r}"
 
 
 # NR-04  NotionReader credential provider is "notion"
@@ -309,13 +315,12 @@ def test_notion_reader_credential_type_is_api_key():
 def test_notion_reader_credential_provider_is_notion():
     """NotionReader's credential_requirement must declare provider='notion'."""
     from app.tools.implementations.ingestion.notion_reader import NotionReader
+
     descriptor = NotionReader.get_ohm_descriptor()
     creds = descriptor.get("spec", {}).get("credential_requirements", [])
     assert len(creds) >= 1
     provider = creds[0].get("provider")
-    assert provider == "notion", (
-        f"Expected provider='notion'; got {provider!r}"
-    )
+    assert provider == "notion", f"Expected provider='notion'; got {provider!r}"
 
 
 # NR-05  NotionReader implementation.handler references the NotionReader class
@@ -326,6 +331,7 @@ def test_notion_reader_implementation_handler():
     NotionReader class by its fully-qualified module path.
     """
     from app.tools.implementations.ingestion.notion_reader import NotionReader
+
     descriptor = NotionReader.get_ohm_descriptor()
     handler = descriptor.get("spec", {}).get("implementation", {}).get("handler", "")
     assert "NotionReader" in handler, (
@@ -341,11 +347,10 @@ def test_notion_reader_implementation_handler():
 def test_notion_reader_implementation_type_is_internal():
     """NotionReader OHM descriptor implementation.type must be 'internal'."""
     from app.tools.implementations.ingestion.notion_reader import NotionReader
+
     descriptor = NotionReader.get_ohm_descriptor()
     impl_type = descriptor.get("spec", {}).get("implementation", {}).get("type")
-    assert impl_type == "internal", (
-        f"implementation.type must be 'internal'; got {impl_type!r}"
-    )
+    assert impl_type == "internal", f"implementation.type must be 'internal'; got {impl_type!r}"
 
 
 # NR-07  NotionReader get_kind() returns DescriptorKind.TOOL
@@ -354,6 +359,7 @@ def test_notion_reader_get_kind_returns_tool():
     """NotionReader.get_kind() must return DescriptorKind.TOOL."""
     from app.models.capability_descriptor import DescriptorKind
     from app.tools.implementations.ingestion.notion_reader import NotionReader
+
     assert NotionReader.get_kind() == DescriptorKind.TOOL
 
 
@@ -362,6 +368,7 @@ def test_notion_reader_get_kind_returns_tool():
 def test_notion_reader_get_plugin_id():
     """NotionReader.get_plugin_id() must return stable ID 'notion-reader'."""
     from app.tools.implementations.ingestion.notion_reader import NotionReader
+
     assert NotionReader.get_plugin_id() == "notion-reader"
 
 
@@ -370,6 +377,7 @@ def test_notion_reader_get_plugin_id():
 def test_notion_reader_descriptor_id_matches_plugin_id():
     """The 'id' field in NotionReader's OHM descriptor must match get_plugin_id()."""
     from app.tools.implementations.ingestion.notion_reader import NotionReader
+
     descriptor = NotionReader.get_ohm_descriptor()
     assert descriptor.get("id") == NotionReader.get_plugin_id(), (
         f"descriptor['id'] must equal get_plugin_id(). "
@@ -388,6 +396,7 @@ def test_notion_reader_descriptor_id_matches_plugin_id():
 def test_postgresql_reader_descriptor_kind_is_tool():
     """PostgreSQLReader.get_ohm_descriptor() must return a dict with kind == 'tool'."""
     from app.tools.implementations.ingestion.postgresql_reader import PostgreSQLReader
+
     descriptor = PostgreSQLReader.get_ohm_descriptor()
     assert descriptor.get("kind") == "tool", (
         "PostgreSQLReader OHM descriptor must declare kind='tool'"
@@ -408,6 +417,7 @@ def test_postgresql_reader_descriptor_validates_as_tool_descriptor():
     from app.tools.implementations.ingestion.postgresql_reader import PostgreSQLReader
 
     from ohm.schemas import ToolDescriptor
+
     descriptor = PostgreSQLReader.get_ohm_descriptor()
     result = _parse(descriptor)
     assert isinstance(result, ToolDescriptor), (
@@ -425,11 +435,10 @@ def test_postgresql_reader_credential_type_is_connection_string():
     OHM CredentialType. CredentialType.CONNECTION_STRING serialises as 'connection_string'.
     """
     from app.tools.implementations.ingestion.postgresql_reader import PostgreSQLReader
+
     descriptor = PostgreSQLReader.get_ohm_descriptor()
     creds = descriptor.get("spec", {}).get("credential_requirements", [])
-    assert len(creds) >= 1, (
-        "PostgreSQLReader must declare at least one credential requirement"
-    )
+    assert len(creds) >= 1, "PostgreSQLReader must declare at least one credential requirement"
     actual_type = creds[0].get("type")
     assert actual_type == "connection_string", (
         f"Expected credential type 'connection_string'; got {actual_type!r}. "
@@ -442,13 +451,12 @@ def test_postgresql_reader_credential_type_is_connection_string():
 def test_postgresql_reader_credential_provider_is_postgresql():
     """PostgreSQLReader's credential_requirement must declare provider='postgresql'."""
     from app.tools.implementations.ingestion.postgresql_reader import PostgreSQLReader
+
     descriptor = PostgreSQLReader.get_ohm_descriptor()
     creds = descriptor.get("spec", {}).get("credential_requirements", [])
     assert len(creds) >= 1
     provider = creds[0].get("provider")
-    assert provider == "postgresql", (
-        f"Expected provider='postgresql'; got {provider!r}"
-    )
+    assert provider == "postgresql", f"Expected provider='postgresql'; got {provider!r}"
 
 
 # PG-05  PostgreSQLReader implementation.handler references the PostgreSQLReader class
@@ -459,6 +467,7 @@ def test_postgresql_reader_implementation_handler():
     PostgreSQLReader class by its fully-qualified module path.
     """
     from app.tools.implementations.ingestion.postgresql_reader import PostgreSQLReader
+
     descriptor = PostgreSQLReader.get_ohm_descriptor()
     handler = descriptor.get("spec", {}).get("implementation", {}).get("handler", "")
     assert "PostgreSQLReader" in handler, (
@@ -474,11 +483,10 @@ def test_postgresql_reader_implementation_handler():
 def test_postgresql_reader_implementation_type_is_internal():
     """PostgreSQLReader OHM descriptor implementation.type must be 'internal'."""
     from app.tools.implementations.ingestion.postgresql_reader import PostgreSQLReader
+
     descriptor = PostgreSQLReader.get_ohm_descriptor()
     impl_type = descriptor.get("spec", {}).get("implementation", {}).get("type")
-    assert impl_type == "internal", (
-        f"implementation.type must be 'internal'; got {impl_type!r}"
-    )
+    assert impl_type == "internal", f"implementation.type must be 'internal'; got {impl_type!r}"
 
 
 # PG-07  PostgreSQLReader get_kind() returns DescriptorKind.TOOL
@@ -487,6 +495,7 @@ def test_postgresql_reader_get_kind_returns_tool():
     """PostgreSQLReader.get_kind() must return DescriptorKind.TOOL."""
     from app.models.capability_descriptor import DescriptorKind
     from app.tools.implementations.ingestion.postgresql_reader import PostgreSQLReader
+
     assert PostgreSQLReader.get_kind() == DescriptorKind.TOOL
 
 
@@ -495,6 +504,7 @@ def test_postgresql_reader_get_kind_returns_tool():
 def test_postgresql_reader_get_plugin_id():
     """PostgreSQLReader.get_plugin_id() must return stable ID 'postgresql-reader'."""
     from app.tools.implementations.ingestion.postgresql_reader import PostgreSQLReader
+
     assert PostgreSQLReader.get_plugin_id() == "postgresql-reader"
 
 
@@ -503,6 +513,7 @@ def test_postgresql_reader_get_plugin_id():
 def test_postgresql_reader_descriptor_id_matches_plugin_id():
     """The 'id' field in PostgreSQLReader's OHM descriptor must match get_plugin_id()."""
     from app.tools.implementations.ingestion.postgresql_reader import PostgreSQLReader
+
     descriptor = PostgreSQLReader.get_ohm_descriptor()
     assert descriptor.get("id") == PostgreSQLReader.get_plugin_id(), (
         f"descriptor['id'] must equal get_plugin_id(). "
@@ -521,10 +532,9 @@ def test_postgresql_reader_descriptor_id_matches_plugin_id():
 def test_mysql_reader_descriptor_kind_is_tool():
     """MySQLReader.get_ohm_descriptor() must return a dict with kind == 'tool'."""
     from app.tools.implementations.ingestion.mysql_reader import MySQLReader
+
     descriptor = MySQLReader.get_ohm_descriptor()
-    assert descriptor.get("kind") == "tool", (
-        "MySQLReader OHM descriptor must declare kind='tool'"
-    )
+    assert descriptor.get("kind") == "tool", "MySQLReader OHM descriptor must declare kind='tool'"
 
 
 # MY-02  MySQLReader OHM descriptor validates as ToolDescriptor
@@ -541,6 +551,7 @@ def test_mysql_reader_descriptor_validates_as_tool_descriptor():
     from app.tools.implementations.ingestion.mysql_reader import MySQLReader
 
     from ohm.schemas import ToolDescriptor
+
     descriptor = MySQLReader.get_ohm_descriptor()
     result = _parse(descriptor)
     assert isinstance(result, ToolDescriptor), (
@@ -558,6 +569,7 @@ def test_mysql_reader_credential_type_is_connection_string():
     OHM CredentialType. CredentialType.CONNECTION_STRING serialises as 'connection_string'.
     """
     from app.tools.implementations.ingestion.mysql_reader import MySQLReader
+
     descriptor = MySQLReader.get_ohm_descriptor()
     creds = descriptor.get("spec", {}).get("credential_requirements", [])
     assert len(creds) >= 1, "MySQLReader must declare at least one credential requirement"
@@ -573,13 +585,12 @@ def test_mysql_reader_credential_type_is_connection_string():
 def test_mysql_reader_credential_provider_is_mysql():
     """MySQLReader's credential_requirement must declare provider='mysql'."""
     from app.tools.implementations.ingestion.mysql_reader import MySQLReader
+
     descriptor = MySQLReader.get_ohm_descriptor()
     creds = descriptor.get("spec", {}).get("credential_requirements", [])
     assert len(creds) >= 1
     provider = creds[0].get("provider")
-    assert provider == "mysql", (
-        f"Expected provider='mysql'; got {provider!r}"
-    )
+    assert provider == "mysql", f"Expected provider='mysql'; got {provider!r}"
 
 
 # MY-05  MySQLReader implementation.handler references the MySQLReader class
@@ -590,6 +601,7 @@ def test_mysql_reader_implementation_handler():
     MySQLReader class by its fully-qualified module path.
     """
     from app.tools.implementations.ingestion.mysql_reader import MySQLReader
+
     descriptor = MySQLReader.get_ohm_descriptor()
     handler = descriptor.get("spec", {}).get("implementation", {}).get("handler", "")
     assert "MySQLReader" in handler, (
@@ -605,11 +617,10 @@ def test_mysql_reader_implementation_handler():
 def test_mysql_reader_implementation_type_is_internal():
     """MySQLReader OHM descriptor implementation.type must be 'internal'."""
     from app.tools.implementations.ingestion.mysql_reader import MySQLReader
+
     descriptor = MySQLReader.get_ohm_descriptor()
     impl_type = descriptor.get("spec", {}).get("implementation", {}).get("type")
-    assert impl_type == "internal", (
-        f"implementation.type must be 'internal'; got {impl_type!r}"
-    )
+    assert impl_type == "internal", f"implementation.type must be 'internal'; got {impl_type!r}"
 
 
 # MY-07  MySQLReader get_kind() returns DescriptorKind.TOOL
@@ -618,6 +629,7 @@ def test_mysql_reader_get_kind_returns_tool():
     """MySQLReader.get_kind() must return DescriptorKind.TOOL."""
     from app.models.capability_descriptor import DescriptorKind
     from app.tools.implementations.ingestion.mysql_reader import MySQLReader
+
     assert MySQLReader.get_kind() == DescriptorKind.TOOL
 
 
@@ -626,6 +638,7 @@ def test_mysql_reader_get_kind_returns_tool():
 def test_mysql_reader_get_plugin_id():
     """MySQLReader.get_plugin_id() must return stable ID 'mysql-reader'."""
     from app.tools.implementations.ingestion.mysql_reader import MySQLReader
+
     assert MySQLReader.get_plugin_id() == "mysql-reader"
 
 
@@ -634,6 +647,7 @@ def test_mysql_reader_get_plugin_id():
 def test_mysql_reader_descriptor_id_matches_plugin_id():
     """The 'id' field in MySQLReader's OHM descriptor must match get_plugin_id()."""
     from app.tools.implementations.ingestion.mysql_reader import MySQLReader
+
     descriptor = MySQLReader.get_ohm_descriptor()
     assert descriptor.get("id") == MySQLReader.get_plugin_id(), (
         f"descriptor['id'] must equal get_plugin_id(). "

@@ -81,11 +81,7 @@ async def sync_plugins_to_registry(
             continue
         descriptor = plugin_cls.get_ohm_descriptor()
         to_hash = {
-            k: (
-                {vk: vv for vk, vv in v.items() if vk != "hash"}
-                if k == "version"
-                else v
-            )
+            k: ({vk: vv for vk, vv in v.items() if vk != "hash"} if k == "version" else v)
             for k, v in descriptor.items()
         }
         canonical = json.dumps(to_hash, sort_keys=True, separators=(",", ":"))

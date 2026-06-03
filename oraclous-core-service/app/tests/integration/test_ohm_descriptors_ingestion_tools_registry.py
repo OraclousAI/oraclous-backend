@@ -55,22 +55,27 @@ from pydantic import TypeAdapter
 
 def _parse(data: dict):
     from ohm.schemas import CapabilityDescriptor
+
     return TypeAdapter(CapabilityDescriptor).validate_python(data)
+
 
 _ORG_ORAA74 = uuid.UUID("74747474-0000-0000-0000-000000000074")
 
-_INGESTION_PLUGIN_IDS = frozenset({
-    "google-drive-reader",
-    "notion-reader",
-    "postgresql-reader",
-    "mysql-reader",
-})
+_INGESTION_PLUGIN_IDS = frozenset(
+    {
+        "google-drive-reader",
+        "notion-reader",
+        "postgresql-reader",
+        "mysql-reader",
+    }
+)
 
 
 def _get_plugin(plugin_id: str):
     """Return the plugin class for the given plugin_id, or None if not found."""
     import app.tools  # noqa: F401 — triggers auto-discovery of all shipped tool plugins
     from app.tools.plugin import discover_registered_plugins
+
     return next(
         (p for p in discover_registered_plugins() if p.get_plugin_id() == plugin_id),
         None,
@@ -91,6 +96,7 @@ def test_google_drive_reader_discoverable_via_plugin():
     """
     import app.tools  # noqa: F401 — triggers auto-discovery of all shipped tool plugins
     from app.tools.plugin import discover_registered_plugins
+
     discovered_ids = {p.get_plugin_id() for p in discover_registered_plugins()}
     assert "google-drive-reader" in discovered_ids, (
         f"'google-drive-reader' not found in plugin registry: {discovered_ids!r}"
@@ -109,6 +115,7 @@ def test_google_drive_reader_discovered_descriptor_validates():
     add the required scopes to satisfy T2-M3.
     """
     from ohm.schemas import ToolDescriptor
+
     plugin = _get_plugin("google-drive-reader")
     assert plugin is not None, "'google-drive-reader' plugin not registered"
     descriptor = plugin.get_ohm_descriptor()
@@ -135,10 +142,9 @@ async def test_google_drive_reader_synced_descriptor_validates(async_session):
     from app.tools.plugin import sync_plugins_to_registry
 
     from ohm.schemas import ToolDescriptor
+
     rows = await sync_plugins_to_registry(_ORG_ORAA74, async_session)
-    gdrive_row = next(
-        (r for r in rows if r.descriptor.get("id") == "google-drive-reader"), None
-    )
+    gdrive_row = next((r for r in rows if r.descriptor.get("id") == "google-drive-reader"), None)
     assert gdrive_row is not None, (
         "No capability_descriptor row found for 'google-drive-reader' after sync"
     )
@@ -163,6 +169,7 @@ def test_notion_reader_discoverable_via_plugin():
     """
     import app.tools  # noqa: F401 — triggers auto-discovery of all shipped tool plugins
     from app.tools.plugin import discover_registered_plugins
+
     discovered_ids = {p.get_plugin_id() for p in discover_registered_plugins()}
     assert "notion-reader" in discovered_ids, (
         f"'notion-reader' not found in plugin registry: {discovered_ids!r}"
@@ -177,6 +184,7 @@ def test_notion_reader_discovered_descriptor_validates():
     an OHM ToolDescriptor.
     """
     from ohm.schemas import ToolDescriptor
+
     plugin = _get_plugin("notion-reader")
     assert plugin is not None, "'notion-reader' plugin not registered"
     descriptor = plugin.get_ohm_descriptor()
@@ -198,10 +206,9 @@ async def test_notion_reader_synced_descriptor_validates(async_session):
     from app.tools.plugin import sync_plugins_to_registry
 
     from ohm.schemas import ToolDescriptor
+
     rows = await sync_plugins_to_registry(_ORG_ORAA74, async_session)
-    notion_row = next(
-        (r for r in rows if r.descriptor.get("id") == "notion-reader"), None
-    )
+    notion_row = next((r for r in rows if r.descriptor.get("id") == "notion-reader"), None)
     assert notion_row is not None, (
         "No capability_descriptor row found for 'notion-reader' after sync"
     )
@@ -226,6 +233,7 @@ def test_postgresql_reader_discoverable_via_plugin():
     """
     import app.tools  # noqa: F401 — triggers auto-discovery of all shipped tool plugins
     from app.tools.plugin import discover_registered_plugins
+
     discovered_ids = {p.get_plugin_id() for p in discover_registered_plugins()}
     assert "postgresql-reader" in discovered_ids, (
         f"'postgresql-reader' not found in plugin registry: {discovered_ids!r}"
@@ -243,6 +251,7 @@ def test_postgresql_reader_discovered_descriptor_validates():
     not a valid CredentialType. The implementer must change it to 'connection_string'.
     """
     from ohm.schemas import ToolDescriptor
+
     plugin = _get_plugin("postgresql-reader")
     assert plugin is not None, "'postgresql-reader' plugin not registered"
     descriptor = plugin.get_ohm_descriptor()
@@ -266,10 +275,9 @@ async def test_postgresql_reader_synced_descriptor_validates(async_session):
     from app.tools.plugin import sync_plugins_to_registry
 
     from ohm.schemas import ToolDescriptor
+
     rows = await sync_plugins_to_registry(_ORG_ORAA74, async_session)
-    pg_row = next(
-        (r for r in rows if r.descriptor.get("id") == "postgresql-reader"), None
-    )
+    pg_row = next((r for r in rows if r.descriptor.get("id") == "postgresql-reader"), None)
     assert pg_row is not None, (
         "No capability_descriptor row found for 'postgresql-reader' after sync"
     )
@@ -294,6 +302,7 @@ def test_mysql_reader_discoverable_via_plugin():
     """
     import app.tools  # noqa: F401 — triggers auto-discovery of all shipped tool plugins
     from app.tools.plugin import discover_registered_plugins
+
     discovered_ids = {p.get_plugin_id() for p in discover_registered_plugins()}
     assert "mysql-reader" in discovered_ids, (
         f"'mysql-reader' not found in plugin registry: {discovered_ids!r}"
@@ -311,6 +320,7 @@ def test_mysql_reader_discovered_descriptor_validates():
     not a valid CredentialType. The implementer must change it to 'connection_string'.
     """
     from ohm.schemas import ToolDescriptor
+
     plugin = _get_plugin("mysql-reader")
     assert plugin is not None, "'mysql-reader' plugin not registered"
     descriptor = plugin.get_ohm_descriptor()
@@ -334,13 +344,10 @@ async def test_mysql_reader_synced_descriptor_validates(async_session):
     from app.tools.plugin import sync_plugins_to_registry
 
     from ohm.schemas import ToolDescriptor
+
     rows = await sync_plugins_to_registry(_ORG_ORAA74, async_session)
-    mysql_row = next(
-        (r for r in rows if r.descriptor.get("id") == "mysql-reader"), None
-    )
-    assert mysql_row is not None, (
-        "No capability_descriptor row found for 'mysql-reader' after sync"
-    )
+    mysql_row = next((r for r in rows if r.descriptor.get("id") == "mysql-reader"), None)
+    assert mysql_row is not None, "No capability_descriptor row found for 'mysql-reader' after sync"
     assert isinstance(mysql_row, CapabilityDescriptorDB)
     parsed = _parse(mysql_row.descriptor)
     assert isinstance(parsed, ToolDescriptor), (
@@ -366,6 +373,7 @@ def test_all_four_ingestion_tools_discoverable():
     """
     import app.tools  # noqa: F401 — triggers auto-discovery of all shipped tool plugins
     from app.tools.plugin import discover_registered_plugins
+
     discovered_ids = {p.get_plugin_id() for p in discover_registered_plugins()}
     missing = _INGESTION_PLUGIN_IDS - discovered_ids
     assert not missing, (
@@ -385,6 +393,7 @@ def test_each_ingestion_tool_descriptor_validates(plugin_id: str):
     postgresql-reader (database), mysql-reader (database).
     """
     from ohm.schemas import ToolDescriptor
+
     plugin = _get_plugin(plugin_id)
     assert plugin is not None, f"Plugin '{plugin_id}' not found in registry"
     descriptor = plugin.get_ohm_descriptor()
@@ -405,6 +414,7 @@ async def test_sync_persists_all_four_ingestion_tools(async_session):
     """
     import app.tools  # noqa: F401 — triggers auto-discovery of all shipped tool plugins
     from app.tools.plugin import sync_plugins_to_registry
+
     rows = await sync_plugins_to_registry(_ORG_ORAA74, async_session)
     persisted_ids = {r.descriptor.get("id") for r in rows}
     missing = _INGESTION_PLUGIN_IDS - persisted_ids
@@ -423,11 +433,10 @@ async def test_all_synced_ingestion_tools_have_kind_tool(async_session):
     import app.tools  # noqa: F401 — triggers auto-discovery of all shipped tool plugins
     from app.models.capability_descriptor import DescriptorKind
     from app.tools.plugin import sync_plugins_to_registry
+
     rows = await sync_plugins_to_registry(_ORG_ORAA74, async_session)
     ingestion_rows = [r for r in rows if r.descriptor.get("id") in _INGESTION_PLUGIN_IDS]
-    assert len(ingestion_rows) == 4, (
-        f"Expected 4 ingestion tool rows; got {len(ingestion_rows)}"
-    )
+    assert len(ingestion_rows) == 4, f"Expected 4 ingestion tool rows; got {len(ingestion_rows)}"
     for row in ingestion_rows:
         assert row.kind == DescriptorKind.TOOL, (
             f"Row for '{row.descriptor.get('id')}' has kind={row.kind!r}; "
