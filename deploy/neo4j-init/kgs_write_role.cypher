@@ -15,8 +15,17 @@
 // This script is idempotent: `CREATE USER … IF NOT EXISTS` and
 // `GRANT ROLE … TO` are safe to re-run on an already-initialised database.
 //
-// The password here is the dev-only default.  Production deployments inject
-// KGS_NEO4J_PASSWORD via K8s secrets; see deploy/README.md § Neo4j write role.
+// Execution — supply the password via cypher-shell's --param flag:
+//
+//   cypher-shell -a bolt://<host>:7687 -u neo4j -p <admin-password> \
+//     --param 'kgs_writer_password => "<strong-password>"' \
+//     -f deploy/neo4j-init/kgs_write_role.cypher
+//
+// Local dev: docker-compose provisions roles with a hardcoded dev password via
+// the `neo4j-role-setup` service; this file is not used there.
+//
+// Production: the future Helm neo4jRoleInit Job will mount this file and inject
+// the password from a K8s Secret via --param.  See deploy/README.md § Production.
 
 CREATE USER kgs_writer IF NOT EXISTS
   SET PASSWORD $kgs_writer_password

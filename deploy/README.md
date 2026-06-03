@@ -164,8 +164,19 @@ The knowledge-graph-service reads these env vars:
      adminSecretName: neo4j-admin
    ```
 
-4. The Helm chart's `neo4jRoleInit` Job runs `deploy/neo4j-init/kgs_write_role.cypher`
-   via `cypher-shell` once on install/upgrade to create the roles idempotently.
+4. **The `neo4jRoleInit` block in `values.yaml` is scaffolding for a future Helm Job
+   template** (`deploy/helm/templates/neo4j-role-init-job.yaml`). That template does not
+   exist yet — `deploy/helm/templates/` currently contains only `NOTES.txt` and
+   `_helpers.tpl`. Setting `neo4jRoleInit.enabled: true` and running `helm upgrade` has
+   no effect until the Job template is added in a future release.
+
+   Until then, provision roles manually from a pod that can reach the Neo4j bolt port:
+   ```bash
+   kubectl run neo4j-init --rm -it --image=neo4j:5.23-community --restart=Never -- \
+     cypher-shell -a bolt://<neo4j-host>:7687 -u neo4j -p <admin-password> \
+       --param 'kgs_writer_password => "<strong-password>"' \
+       -f /dev/stdin < deploy/neo4j-init/kgs_write_role.cypher
+   ```
 
 ### Static analysis
 
