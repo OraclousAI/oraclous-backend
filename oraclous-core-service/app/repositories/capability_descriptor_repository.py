@@ -5,6 +5,13 @@ from app.models.capability_descriptor import CapabilityDescriptorDB, DescriptorK
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ohm.hashing import compute_content_hash
+
+# Sentinel distinguishing "caller omitted content_hash" from "caller passed None".
+# When omitted, the hash is computed server-side.
+# When explicitly passed (including None), the caller-supplied value is stored as-is.
+_UNSET: Any = object()
+
 
 class CapabilityDescriptorRepository:
     def __init__(self, db: AsyncSession):
@@ -15,8 +22,10 @@ class CapabilityDescriptorRepository:
         org_id: uuid.UUID,
         kind: DescriptorKind,
         descriptor: dict[str, Any],
-        content_hash: str | None = None,
+        content_hash: str | None = _UNSET,
     ) -> CapabilityDescriptorDB:
+        if content_hash is _UNSET:
+            content_hash = compute_content_hash(descriptor)
         row = CapabilityDescriptorDB(
             org_id=org_id,
             kind=kind,
@@ -41,6 +50,7 @@ class CapabilityDescriptorRepository:
         if row is None:
             return None
         row.descriptor = descriptor
+        row.content_hash = compute_content_hash(descriptor)
         await self.db.flush()
         await self.db.refresh(row)
         return row
