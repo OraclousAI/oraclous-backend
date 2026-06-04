@@ -144,11 +144,18 @@ GLOBAL_OPT_OUT_MARKER = "org-scoping: global"
 # A non-tenant-scoped table opts out of ORG002 with one of these comments inside the class body:
 #   cross-org-principal — a principal that spans organisations (e.g. ``users``: org via membership)
 #   scope-root          — the tenancy anchor itself (e.g. ``organisations``: its id IS the org)
+#   pre-auth-ephemeral  — transient handshake state that exists before any principal/org is resolved
+#                         (e.g. ``oauth_states``: the OAuth login handshake precedes authentication)
 # Org-scoped tenant-data tables (and single-org principals like ``agents``) must still declare
 # ``organisation_id``.
 CROSS_ORG_PRINCIPAL_MARKER = "org-scoping: cross-org-principal"
 SCOPE_ROOT_MARKER = "org-scoping: scope-root"
-ORG002_OPT_OUT_MARKERS = (CROSS_ORG_PRINCIPAL_MARKER, SCOPE_ROOT_MARKER)
+PRE_AUTH_EPHEMERAL_MARKER = "org-scoping: pre-auth-ephemeral"
+ORG002_OPT_OUT_MARKERS = (
+    CROSS_ORG_PRINCIPAL_MARKER,
+    SCOPE_ROOT_MARKER,
+    PRE_AUTH_EPHEMERAL_MARKER,
+)
 
 _WORD_SPLIT_RE = re.compile(r"[^a-z0-9]+")
 
