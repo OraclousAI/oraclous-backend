@@ -1,8 +1,10 @@
-"""FastAPI application factory for knowledge-retriever-service (ORAA-56)."""
+"""FastAPI application factory for knowledge-retriever-service (ORAA-56, ORAA-60)."""
 
 from __future__ import annotations
 
 from fastapi import FastAPI
+
+from oraclous_knowledge_retriever_service.app.routers import graph, search
 
 
 def create_app() -> FastAPI:
@@ -16,5 +18,8 @@ def create_app() -> FastAPI:
     @app.get("/health")
     async def health() -> dict:
         return {"status": "healthy", "version": "0.0.0"}
+
+    app.include_router(search.router)
+    app.include_router(graph.router)
 
     return app
