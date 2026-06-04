@@ -15,8 +15,9 @@
 // This script is idempotent: `CREATE USER … IF NOT EXISTS` and
 // `GRANT ROLE … TO` are safe to re-run on an already-initialised database.
 //
-// The password here is the dev-only default.  Production deployments inject
-// KRS_NEO4J_PASSWORD via K8s secrets; see deploy/README.md § Neo4j roles.
+// `$krs_reader_password` is a required Cypher parameter — no default is baked
+// in.  Pass it explicitly via `cypher-shell --param`; see deploy/README.md
+// § Neo4j roles for the dev invocation and production injection path.
 
 CREATE USER krs_reader IF NOT EXISTS
   SET PASSWORD $krs_reader_password

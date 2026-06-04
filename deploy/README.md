@@ -97,3 +97,39 @@ COMPOSE_PROJECT_NAME=oraclous-fe-target \
 | OTLP HTTP | 14318 |
 
 Contact the CTO if the fe-target stack is down.
+
+## Neo4j roles
+
+`deploy/neo4j-init/krs_read_role.cypher` creates the `krs_reader` user and grants it the built-in `reader` role (read-only: ACCESS + MATCH only; no write/schema/admin capabilities). It must be applied once against any new Neo4j instance before the knowledge-retriever-service starts.
+
+`$krs_reader_password` is a **required Cypher parameter** — there is no baked-in default. Pass it explicitly via `--param`.
+
+### Dev (local stack)
+
+The dev default password is `krs_reader_dev` (matches `KRS_NEO4J_PASSWORD` in `.env.dev`).
+
+```bash
+# From repo root, with the local stack running:
+cypher-shell -a bolt://localhost:7687 \
+  -u neo4j -p password \
+  --param 'krs_reader_password => "krs_reader_dev"' \
+  --file deploy/neo4j-init/krs_read_role.cypher
+```
+
+The script is idempotent — safe to re-run on an already-initialised database.
+
+### Production (K8s)
+
+The password is injected at deploy time from the `krs-neo4j-credentials` Kubernetes Secret:
+
+```yaml
+# helm/templates/jobs/neo4j-init-job.yaml (excerpt)
+env:
+  - name: KRS_READER_PASSWORD
+    valueFrom:
+      secretKeyRef:
+        name: krs-neo4j-credentials
+        key: krs_reader_password
+```
+
+The init Job runs `cypher-shell --param "krs_reader_password => \"$KRS_READER_PASSWORD\""` against the cluster Neo4j endpoint before the KRS deployment rolls out. See `helm/values.yaml` for the secret reference and `helm/templates/jobs/` for the full Job spec.
