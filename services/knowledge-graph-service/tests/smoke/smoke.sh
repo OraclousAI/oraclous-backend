@@ -189,4 +189,37 @@ poll_done "$CGID" "$rczid" >/dev/null
 fns2=$(cypher "MATCH (fn:Function {graph_id:'${CGID}'}) RETURN count(fn)" | tail -1 | tr -d ' ')
 [[ "$fns2" == "$fns" ]] && pass "re-ingest idempotent (still ${fns2} functions)" || fail "dup: $fns -> $fns2"
 
-printf '\n\033[32mS1+S2+S3+S4 smoke passed.\033[0m  text/doc + CSV/JSON + code (tree-sitter) -> real org-scoped graph, key-free, idempotent.\n'
+CSV_BODY='name,age\nAda,36\nCharles,49\nGrace,53'
+
+# ---------------------------------------------------------------------------
+# S5 — ontology (STRICT/COERCE) + temporal passthrough
+# ---------------------------------------------------------------------------
+step "17. ontology STRICT rejects off-label records"
+OG1=$(curl -fsS "${AUTH[@]}" -X POST "${BASE}/api/v1/graphs" -d '{"name":"onto-strict"}' | jget "['id']")
+curl -fsS "${AUTH[@]}" -X PUT "${BASE}/api/v1/graphs/${OG1}/ontology" -d '{"allowed_labels":["Person"],"mode":"strict"}' >/dev/null
+got=$(curl -fsS "${AUTH[@]}" "${BASE}/api/v1/graphs/${OG1}/ontology" | jget "['mode']")
+[[ "$got" == "strict" ]] && pass "ontology set strict[Person]" || fail "ontology get: $got"
+sj=$(curl -fsS "${AUTH[@]}" -X POST "${BASE}/api/v1/graphs/${OG1}/ingest" \
+  -d "{\"content\":\"${CSV_BODY}\",\"source_type\":\"csv\",\"filename\":\"p.csv\"}" | jget "['id']")
+poll_done "$OG1" "$sj" >/dev/null
+recs=$(cypher "MATCH (r:Record {graph_id:'${OG1}'}) RETURN count(r)" | tail -1 | tr -d ' ')
+[[ "$recs" == "0" ]] && pass "STRICT rejected default :Record (count=0)" || fail "STRICT leaked :Record=$recs"
+
+step "18. ontology COERCE maps near-labels"
+OG2=$(curl -fsS "${AUTH[@]}" -X POST "${BASE}/api/v1/graphs" -d '{"name":"onto-coerce"}' | jget "['id']")
+curl -fsS "${AUTH[@]}" -X PUT "${BASE}/api/v1/graphs/${OG2}/ontology" -d '{"allowed_labels":["Recordd"],"mode":"coerce"}' >/dev/null
+cj=$(curl -fsS "${AUTH[@]}" -X POST "${BASE}/api/v1/graphs/${OG2}/ingest" \
+  -d "{\"content\":\"${CSV_BODY}\",\"source_type\":\"csv\",\"filename\":\"p.csv\"}" | jget "['id']")
+poll_done "$OG2" "$cj" >/dev/null
+coerced=$(cypher "MATCH (r:Recordd {graph_id:'${OG2}'}) RETURN count(r)" | tail -1 | tr -d ' ')
+[[ "$coerced" == "3" ]] && pass "COERCE mapped Record -> :Recordd (count=3)" || fail "coerce count=$coerced"
+
+step "19. temporal passthrough (valid_from stamped on entities)"
+TG=$(curl -fsS "${AUTH[@]}" -X POST "${BASE}/api/v1/graphs" -d '{"name":"temporal"}' | jget "['id']")
+tj=$(curl -fsS "${AUTH[@]}" -X POST "${BASE}/api/v1/graphs/${TG}/ingest" \
+  -d "{\"content\":\"${CSV_BODY}\",\"source_type\":\"csv\",\"filename\":\"p.csv\",\"valid_from\":\"2020-01-01T00:00:00Z\"}" | jget "['id']")
+poll_done "$TG" "$tj" >/dev/null
+vf=$(cypher "MATCH (r:Record {graph_id:'${TG}'}) RETURN r.valid_from LIMIT 1" | tail -1 | tr -d ' "')
+[[ "$vf" == "2020-01-01T00:00:00Z" ]] && pass "valid_from stamped on :Record" || fail "valid_from=$vf"
+
+printf '\n\033[32mFULL KGS smoke passed (S1-S5).\033[0m  text/doc + CSV/JSON + code + ontology + temporal -> real org-scoped graph, key-free.\n'

@@ -18,6 +18,9 @@ class IngestTextRequest(BaseModel):
     filename: str | None = None
     source_type: str = "text"  # text|md|csv|json|... — structured types route to the recipe engine
     recipe_id: str | None = None  # structured only: a stored recipe (else a default is synthesised)
+    valid_from: str | None = None  # temporal passthrough (structured) — stamped on entity nodes
+    valid_to: str | None = None
+    event_time: str | None = None
 
 
 class JobResponse(BaseModel):

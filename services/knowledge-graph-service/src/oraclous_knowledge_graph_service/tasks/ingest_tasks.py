@@ -22,6 +22,8 @@ from oraclous_substrate.access import enforced_organisation_id
 from oraclous_knowledge_graph_service.core.config import get_settings
 from oraclous_knowledge_graph_service.core.database import make_sessionmaker, make_worker_engine
 from oraclous_knowledge_graph_service.core.neo4j import make_neo4j_driver
+from oraclous_knowledge_graph_service.domain.ontology import Ontology
+from oraclous_knowledge_graph_service.repositories.graph_repository import GraphRepository
 from oraclous_knowledge_graph_service.repositories.graph_write_repository import (
     GraphWriteRepository,
 )
@@ -116,14 +118,23 @@ async def _ingest_async(job_id_s: str, organisation_id_s: str) -> dict[str, Any]
 
 
 async def _ingest_structured(*, driver, maker, settings, payload, data: bytes) -> dict[str, Any]:
-    """CSV/JSON: decompose -> recipe (stored or default) -> engine over the org-scoped writer."""
+    """CSV/JSON: decompose -> recipe (stored or default) -> engine over the org-scoped writer.
+
+    Applies the graph's ontology (STRICT/COERCE) + temporal passthrough (valid_from/valid_to/
+    event_time) at projection time."""
     text = data.decode("utf-8", errors="replace")
     recipe = None
-    if payload.recipe_id:
-        async with maker() as session:
+    async with maker() as session:
+        if payload.recipe_id:
             recipe = await RecipeRepository(session).get_latest(payload.recipe_id)
-        if recipe is None:
-            raise RuntimeError(f"recipe {payload.recipe_id!r} not found")
+            if recipe is None:
+                raise RuntimeError(f"recipe {payload.recipe_id!r} not found")
+        ontology_data = await GraphRepository(session).get_ontology(payload.graph_id)
+    temporal = {
+        "valid_from": payload.valid_from,
+        "valid_to": payload.valid_to,
+        "event_time": payload.event_time,
+    }
     service = StructuredIngestionService(
         driver=driver,
         organisation_id=enforced_organisation_id(),
@@ -136,6 +147,8 @@ async def _ingest_structured(*, driver, maker, settings, payload, data: bytes) -
         text=text,
         source_type=payload.source_type,
         recipe=recipe,
+        ontology=Ontology.of(ontology_data),
+        temporal=temporal,
     )
     return {
         "entities": result["nodes_written"] + result["containers_written"],

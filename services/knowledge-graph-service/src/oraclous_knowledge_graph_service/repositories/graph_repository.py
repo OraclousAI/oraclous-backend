@@ -101,3 +101,27 @@ class GraphRepository:
         await self._session.delete(row)
         await self._session.flush()
         return True
+
+    async def get_ontology(self, graph_id: uuid.UUID) -> dict | None:
+        """The graph's ontology config (from schema_config.ontology), org-scoped. None if unset."""
+        row = await self._get_row(graph_id)
+        if row is None:
+            return None
+        return (row.schema_config or {}).get("ontology")
+
+    async def set_ontology(self, graph_id: uuid.UUID, ontology: dict) -> bool:
+        row = await self._get_row(graph_id)
+        if row is None:
+            return False
+        config = dict(row.schema_config or {})
+        config["ontology"] = ontology
+        row.schema_config = config
+        await self._session.flush()
+        return True
+
+    async def _get_row(self, graph_id: uuid.UUID) -> KnowledgeGraph | None:
+        stmt = select(KnowledgeGraph).where(
+            KnowledgeGraph.id == graph_id,
+            KnowledgeGraph.organisation_id == self._org(),
+        )
+        return (await self._session.execute(stmt)).scalar_one_or_none()

@@ -35,6 +35,9 @@ async def ingest_text(
             filename=body.filename or default_name,
             source_type=body.source_type,
             recipe_id=body.recipe_id,
+            valid_from=body.valid_from,
+            valid_to=body.valid_to,
+            event_time=body.event_time,
         )
     except GraphNotFound:
         raise _GRAPH_NOT_FOUND from None
