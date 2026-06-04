@@ -43,6 +43,7 @@ from oraclous_knowledge_graph_service.repositories.job_repository import Ingesti
 from oraclous_knowledge_graph_service.repositories.recipe_repository import RecipeRepository
 from oraclous_knowledge_graph_service.services.graph_service import GraphService
 from oraclous_knowledge_graph_service.services.job_service import JobService
+from oraclous_knowledge_graph_service.services.ontology_service import OntologyService
 from oraclous_knowledge_graph_service.services.recipe_service import RecipeService
 from oraclous_knowledge_graph_service.services.recipes.engine import get_recipe_engine
 
@@ -147,9 +148,17 @@ def get_recipe_service(
     return RecipeService(RecipeRepository(session), get_recipe_engine())
 
 
+def get_ontology_service(
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+    graph_service: Annotated[GraphService, Depends(get_graph_service)],
+) -> OntologyService:
+    return OntologyService(GraphRepository(session), graph_service)
+
+
 # Public dependency aliases for route signatures.
 GraphServiceDep = Annotated[GraphService, Depends(get_graph_service)]
 UserIdDep = Annotated[uuid.UUID, Depends(get_current_user_id)]
 JobServiceDep = Annotated[JobService, Depends(get_job_service)]
 GraphWriteRepoDep = Annotated[GraphWriteRepository, Depends(get_graph_write_repo)]
 RecipeServiceDep = Annotated[RecipeService, Depends(get_recipe_service)]
+OntologyServiceDep = Annotated[OntologyService, Depends(get_ontology_service)]

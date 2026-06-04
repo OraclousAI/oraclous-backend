@@ -75,7 +75,7 @@ class _FakeJobRepo:
     def __init__(self) -> None:
         self.rows: dict[uuid.UUID, IngestionJobRecord] = {}
 
-    async def create(self, *, graph_id, source_type, filename, source_content, recipe_id=None):
+    async def create(self, *, graph_id, source_type, filename, source_content, recipe_id=None, **_):
         rec = _record(graph_id)
         self.rows[rec.id] = rec
         return rec

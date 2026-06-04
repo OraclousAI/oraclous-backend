@@ -51,6 +51,9 @@ class IngestionJobRepository:
         filename: str | None,
         source_content: str | None,
         recipe_id: str | None = None,
+        valid_from: str | None = None,
+        valid_to: str | None = None,
+        event_time: str | None = None,
     ) -> IngestionJobRecord:
         row = IngestionJob(
             organisation_id=self._org(),
@@ -59,6 +62,9 @@ class IngestionJobRepository:
             filename=filename,
             source_content=source_content,
             recipe_id=recipe_id,
+            valid_from=valid_from,
+            valid_to=valid_to,
+            event_time=event_time,
             status="pending",
             progress=0,
         )
@@ -93,6 +99,9 @@ class IngestionJobRepository:
             filename=row.filename,
             source_content=row.source_content,
             recipe_id=row.recipe_id,
+            valid_from=row.valid_from,
+            valid_to=row.valid_to,
+            event_time=row.event_time,
         )
 
     async def update_status(

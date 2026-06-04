@@ -34,3 +34,6 @@ class IngestionPayload:
     filename: str | None
     source_content: str | None
     recipe_id: str | None
+    valid_from: str | None
+    valid_to: str | None
+    event_time: str | None

@@ -74,6 +74,11 @@ class IngestionJob(Base):
     recipe_id: Mapped[str | None] = mapped_column(
         String(255), nullable=True
     )  # structured: optional
+    valid_from: Mapped[str | None] = mapped_column(
+        String(64), nullable=True
+    )  # temporal passthrough
+    valid_to: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    event_time: Mapped[str | None] = mapped_column(String(64), nullable=True)
     status: Mapped[str] = mapped_column(String(50), default="pending", nullable=False)
     progress: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)

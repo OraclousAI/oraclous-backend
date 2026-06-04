@@ -8,6 +8,7 @@ caller (the worker, from the bound context) and passed in explicitly — no cont
 
 from __future__ import annotations
 
+from oraclous_knowledge_graph_service.domain.ontology import Ontology
 from oraclous_knowledge_graph_service.domain.structural import ExtractionMode
 from oraclous_knowledge_graph_service.repositories.recipe_write_repository import RecipeGraphWriter
 from oraclous_knowledge_graph_service.services.recipes.engine import get_recipe_engine
@@ -44,6 +45,8 @@ class StructuredIngestionService:
         text: str,
         source_type: str,
         recipe: dict | None = None,
+        ontology: Ontology | None = None,
+        temporal: dict | None = None,
     ) -> dict:
         family = "csv" if (source_type or "").lower() in {"csv", "tsv"} else "json"
         primitive = self._primitives[family]
@@ -55,5 +58,7 @@ class StructuredIngestionService:
         writer = RecipeGraphWriter(
             self._driver, graph_id=graph_id, organisation_id=self._org, database=self._db
         )
-        result = self._engine.execute(active_recipe, representation, writer)
+        result = self._engine.execute(
+            active_recipe, representation, writer, ontology=ontology, temporal=temporal
+        )
         return result.as_dict()

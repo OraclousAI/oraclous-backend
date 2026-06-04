@@ -47,3 +47,9 @@ def ensure_schema(driver: Driver, *, database: str | None = None) -> None:
             f"CREATE INDEX {name} IF NOT EXISTS FOR (n:{label}) ON (n.organisation_id, n.graph_id)"
         )
         driver.execute_query(stmt, database_=database)
+    # Temporal (bitemporal) range index — supports valid-time reads (composite, Community-safe).
+    driver.execute_query(
+        "CREATE INDEX kgs_entity_valid_time IF NOT EXISTS "
+        "FOR (n:__Entity__) ON (n.organisation_id, n.graph_id, n.valid_from, n.valid_to)",
+        database_=database,
+    )

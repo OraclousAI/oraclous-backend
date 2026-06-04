@@ -19,9 +19,9 @@
 services:
   # R3.5 graph-first order. All flags false today: every service below is HOLLOW and being rebuilt.
   knowledge-graph-service:
-    release: R3.5            # service #1
-    structure_enforced: false
-    claimed_done: false
+    release: R3.5            # service #1 — rebuilt to §21 across S1-S5; structure now ENFORCED
+    structure_enforced: true
+    claimed_done: false      # flip to true at the §22 8-gate sign-off (Reza smoke acceptance)
   knowledge-retriever-service:
     release: R3.5            # service #2
     structure_enforced: false

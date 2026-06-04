@@ -21,6 +21,7 @@ from typing import Any
 
 from jsonschema import Draft202012Validator
 
+from oraclous_knowledge_graph_service.domain.ontology import Ontology, resolve_label
 from oraclous_knowledge_graph_service.domain.structural import (
     StructuralRepresentation,
     StructuralUnit,
@@ -102,6 +103,8 @@ class ExecutionResult:
     edges_written: int = 0
     properties_written: int = 0
     units_skipped: int = 0
+    ontology_violations: int = 0
+    ontology_coercions: int = 0
     warnings: list[str] = field(default_factory=list)
 
     def as_dict(self) -> dict[str, Any]:
@@ -115,6 +118,8 @@ class ExecutionResult:
             "edges_written": self.edges_written,
             "properties_written": self.properties_written,
             "units_skipped": self.units_skipped,
+            "ontology_violations": self.ontology_violations,
+            "ontology_coercions": self.ontology_coercions,
             "warnings": self.warnings,
         }
 
@@ -217,6 +222,9 @@ class RecipeExecutionEngine:
         recipe: dict[str, Any],
         representation: StructuralRepresentation,
         writer: RecipeGraphWriter,
+        *,
+        ontology: Ontology | None = None,
+        temporal: dict[str, Any] | None = None,
     ) -> ExecutionResult:
         self._validate_recipe(recipe)
         graph_id = writer.graph_id
@@ -230,6 +238,8 @@ class RecipeExecutionEngine:
             "recipe_version": recipe_version,
             "ingestion_time": ingestion_time,
         }
+        self._ontology = ontology
+        self._temporal = {k: v for k, v in (temporal or {}).items() if v is not None}
         payload_cache = {u.unit_id: self._resolve_unit_payload(u) for u in representation.units}
         defaults = recipe.get("defaults", {})
 
@@ -330,6 +340,15 @@ class RecipeExecutionEngine:
         result,
     ) -> str | None:
         label = rule["label"]
+        # Ontology enforcement (inline): resolve the label against the graph's ontology.
+        resolved_label, coerced = resolve_label(getattr(self, "_ontology", None), label)
+        if resolved_label is None:
+            result.ontology_violations += 1
+            result.units_skipped += 1
+            return None
+        if coerced:
+            result.ontology_coercions += 1
+        label = resolved_label
         payload = payload_cache.get(unit.unit_id, {})
         identity = rule["identity"]
         normalize_ops = identity.get("normalize", [])
@@ -345,7 +364,9 @@ class RecipeExecutionEngine:
             result.units_skipped += 1
             return None
         entity_id = _deterministic_id(graph_id, label, identity_key)
-        props: dict[str, Any] = {}
+        props: dict[str, Any] = dict(
+            getattr(self, "_temporal", {})
+        )  # valid_from/valid_to/event_time
         for prop in rule.get("properties", []):
             value = self._read_field(payload, unit, prop["value_from"])
             if value is not None:
