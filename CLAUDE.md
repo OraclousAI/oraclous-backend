@@ -14,8 +14,8 @@ All agents operating in this session are governed by the **ORAA-4 Operating Cont
 
 Key provisions every agent must observe:
 
-- **§5 Mandatory local pre-push gate.** Before any `git push`, run the cheap checks CI's `quality` job runs, locally, and push only if clean (see §4.7).
-- **§6 Review depth by severity.** High-severity changes get the full gate; low-severity changes get a light ≥1-reviewer gate; when in doubt, treat as High (see §8).
+- **§5 Pre-push gate is an enforced hook.** This repo ships `.githooks/pre-push` (`core.hooksPath=.githooks`); a push that fails is **blocked locally**. The hook mirrors the **full CI `quality` job** (ruff check/format, mypy, import-contracts, org-scoping, labels-schema, test-import hygiene, neo4j write-role, contract checksums) — not a subset (see §4.7).
+- **§6 Review depth + server-side gate.** High-severity changes get the full gate; low-severity get a light ≥1-reviewer gate; when in doubt, treat as High (see §8). `main` is protected by a **GitHub ruleset** (public repo, no admin bypass): required CI checks + a non-author approving review + up-to-date base. The CTO merges via `oraclous-knowledge/operations/gated_merge.sh`. See ORAA-4 §20.
 - **§12 Workspace discipline.** Per-run git worktrees are currently OFF; every writer shares one checkout, so writer runs serialize and always end clean (see §4.8).
 - **Run-completion.** A run may only end by reassigning the issue to a named next owner, creating an assigned child issue, or escalating with a specific question — never "done, nothing assigned" (see §5.4). A brief is not done until at least one child implementation issue exists.
 
@@ -25,7 +25,7 @@ Key provisions every agent must observe:
 
 This is a pointer, not a restatement: ORAA-4 (the PaperClip document `operating-contract`) is authoritative, and on any divergence ORAA-4 wins. The gates that bite most in this repo:
 
-- **§5 commits + pre-push + no attribution.** Commit messages are `[ORAA-xx] [agent:NAME] msg`, one commit per concern. Never write `Co-Authored-By`, `Generated`, `claude`, `paperclip`, or 🤖 in commits, PR bodies, or comments. Before any push, run `uv run ruff check . && uv run ruff format --check . && uv run pytest --collect-only`. The commit-message format is enforced by the `commit-msg` hook (`core.hooksPath=.githooks`).
+- **§5 commits + pre-push + no attribution.** Commit messages are `[ORAA-xx] [agent:NAME] msg`, one commit per concern. Never write `Co-Authored-By`, `Generated`, `claude`, `paperclip`, or 🤖 in commits, PR bodies, or comments. The `pre-push` hook (mirroring the full CI `quality` job) and the `commit-msg` hook (commit format + no-attribution) are both wired via `core.hooksPath=.githooks` and block bad pushes/commits locally.
 - **§13.1 pre-open readiness.** Before OPENING a PR for review it must be pre-push-clean, CI-green, and rebased onto current `main` (not BEHIND). You own this; a reviewer never discovers red CI or a needed rebase.
 - **§13.4 branch-from-merged-tests.** An `[impl]` PR branches from / rebases onto the commit where its `[tests]` PR merged, before opening — this kills add/add conflicts and preserves ADR-010 two-PR independence.
 - **§9 DoD + handoff.** Done = CI-green + mergeable + non-implementer review + PR merged + handed off to the next owner (§9.1 — never finish your part and leave the issue parked). Small conflicts/misalignments are folded into the current PR, not new tickets (§9.2).
