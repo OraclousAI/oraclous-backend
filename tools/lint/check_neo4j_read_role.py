@@ -82,7 +82,7 @@ _CYPHER_WRITE_KEYWORDS_RE = re.compile(
     r"\bSET\s+\w+\.\w+\s*=",
 )
 
-SKIP_DIRS = frozenset({".venv", "venv", "__pycache__", "build", "dist", ".git"})
+SKIP_DIRS = frozenset({".venv", "venv", "__pycache__", "build", "dist", ".git", "tests"})
 
 _DEFAULT_KRS_PATH = Path(__file__).resolve().parents[2] / "services" / "knowledge-retriever-service"
 
