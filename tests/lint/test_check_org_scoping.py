@@ -109,6 +109,17 @@ def test_org002_without_marker_still_flagged() -> None:
     assert "ORG002" in _rules(src)
 
 
+def test_org002_scope_root_marker_exempts_the_org_table() -> None:
+    # the organisations table is the scope-root: its id IS the org, so it has no org column
+    src = (
+        "class Organisation(Base):\n"
+        "    '''The tenant org. org-scoping: scope-root — its id is the organisation_id.'''\n"
+        "    __tablename__ = 'organisations'\n"
+        "    id = Column(String)\n"
+    )
+    assert "ORG002" not in _rules(src)
+
+
 def test_clean_source_has_no_violations() -> None:
     assert _rules("def add(a, b):\n    return a + b\n") == set()
 
