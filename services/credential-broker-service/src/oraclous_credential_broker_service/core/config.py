@@ -23,6 +23,11 @@ class Settings(BaseSettings):
     AUTH_SERVICE_URL: str = "http://auth-service:8000"
     INTERNAL_SERVICE_KEY: str
 
+    @property
+    def sync_database_url(self) -> str:
+        """psycopg (sync) DSN derived from the async one — used by Alembic."""
+        return self.DATABASE_URL.replace("+asyncpg", "+psycopg")
+
 
 @lru_cache
 def get_settings() -> Settings:
