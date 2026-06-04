@@ -10,8 +10,10 @@ checker enforces the structural invariants that the hollowness failure violated.
            ``GraphNodeService``-inside-a-route anti-pattern). Only Pydantic request/response
            models may be defined in a route module.
   STR003 — a file under ``routes/`` imports a DB/Neo4j/Redis driver.
-  STR004 — a DB/Neo4j/Redis driver is imported anywhere outside ``repositories/`` (the single
-           exception is ``core/lifespan.py``, where connections are opened).
+  STR004 — a DB/Neo4j/Redis driver is imported anywhere outside ``repositories/`` (the
+           exception is the ``core/`` connection layer — config/database/dependencies/lifespan —
+           where the engine, sessionmaker and DI session providers are built; §21 rule 3,
+           "connection setup excepted in core").
   STR005 — a ``*_service.py`` file sits directly under the package root (scattered/unwired
            utility drift) instead of under ``services/``.
 
@@ -99,7 +101,7 @@ def check_package(root: Path) -> list[Violation]:
         rel_parts = f.relative_to(root).parts
         in_routes = "routes" in rel_parts
         in_repositories = "repositories" in rel_parts
-        is_lifespan = rel_parts == ("core", "lifespan.py")
+        in_core = bool(rel_parts) and rel_parts[0] == "core"
         directly_under_root = f.parent == root
 
         try:
@@ -134,7 +136,7 @@ def check_package(root: Path) -> list[Violation]:
                             f"DB/Neo4j/Redis driver '{mod}' imported in a route module",
                         )
                     )
-            elif not in_repositories and not is_lifespan:
+            elif not in_repositories and not in_core:
                 for ln, mod in driver_hits:
                     out.append(
                         Violation(

@@ -78,6 +78,16 @@ def test_str004_allows_driver_in_lifespan(tmp_path: Path) -> None:
     assert "STR004" not in _codes(pkg)
 
 
+def test_str004_allows_driver_in_core_connection_layer(tmp_path: Path) -> None:
+    # §21 rule 3: the whole core/ connection layer may open connections, not just lifespan.py.
+    pkg = _make_service(tmp_path)
+    (pkg / "core" / "database.py").write_text("import sqlalchemy\n")
+    (pkg / "core" / "dependencies.py").write_text(
+        "from sqlalchemy.ext.asyncio import AsyncSession\n"
+    )
+    assert "STR004" not in _codes(pkg)
+
+
 def test_str005_scattered_service_module_at_package_root(tmp_path: Path) -> None:
     pkg = _make_service(tmp_path)
     (pkg / "federation_service.py").write_text("X = 1\n")
