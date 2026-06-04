@@ -61,7 +61,7 @@ def _make_client(cache: dict | None = None):
     """Instantiate a SchemaClient with optional pre-populated cache."""
     from oraclous_knowledge_retriever_service.schema_client import SchemaClient  # ORA-48
 
-    return SchemaClient(kgs_base_url=KGS_BASE_URL, cache=cache or {})
+    return SchemaClient(kgs_base_url=KGS_BASE_URL, cache=cache if cache is not None else {})
 
 
 def _ok_response(body: dict) -> MagicMock:
