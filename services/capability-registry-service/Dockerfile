@@ -53,6 +53,10 @@ ENV PATH="/app/.venv/bin:$PATH" \
 
 EXPOSE 8000
 
+RUN addgroup --system svc && adduser --system --ingroup svc --no-create-home svc
+RUN chown -R svc:svc /app
+USER svc
+
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"
 
