@@ -9,7 +9,7 @@ Architecture refs:
 
 All imports from app.services.capability_registry_client will fail with ImportError
 until the implementer creates:
-  - app/services/capability_registry_client.py  (CapabilityRegistryClient)
+  - app/services/capability_registry_client.py  (RemoteCapabilityRegistryClient)
 
 And all assertions against agent_tool_schemas._TOOL_SCHEMAS will pass once the
 implementer removes the static descriptor dict from that module.
@@ -19,23 +19,17 @@ The ImportError on the module-level import IS the expected initial TDD failure
 delivers the registry-backed schema generation.
 
 Covered behaviours:
-  R01  CapabilityRegistryClient importable from app.services.capability_registry_client
-  R02  tool_schemas_from_registry() resolves descriptors by tool name via the
-       registry client
+  R01  RemoteCapabilityRegistryClient importable from app.services.capability_registry_client
+  R02  tool_schemas_from_registry() resolves descriptors by tool name via the registry client
   R03  OHM tool descriptor → OpenAI provider format produces the correct wrapper shape
-  R04  OHM tool descriptor → Anthropic provider format produces the correct
-       wrapper shape
+  R04  OHM tool descriptor → Anthropic provider format produces the correct wrapper shape
   R05  graph_id is never exposed to the LLM in registry-backed schema generation
-  R06  Tools absent from the registry are silently dropped
-       (pre-ORAA-76 contract preserved)
+  R06  Tools absent from the registry are silently dropped (pre-ORAA-76 contract preserved)
   R07  Empty allowlist returns empty list without calling the registry
-  R08  Static _TOOL_SCHEMAS dict no longer exists in agent_tool_schemas
-       (no dual-storage)
+  R08  Static _TOOL_SCHEMAS dict no longer exists in agent_tool_schemas (no dual-storage)
   R09  Registry client error propagates to schema generation (fail-closed, not silent)
-  R10  Regression: AgentExecutor._tool_use_loop builds schemas from registry
-       in research mode
-  R11  All 12 KGB tools from the original static list are addressable via
-       OHM descriptors
+  R10  Regression: AgentExecutor._tool_use_loop builds schemas from registry in research mode
+  R11  All 12 KGB tools from the original static list are addressable via OHM descriptors
 """
 
 from __future__ import annotations
@@ -46,15 +40,14 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 # ---------------------------------------------------------------------------
-# R01  CapabilityRegistryClient is importable from
-#      app.services.capability_registry_client.
+# R01  RemoteCapabilityRegistryClient is importable from app.services.capability_registry_client.
 # This import FAILS on the current codebase — expected TDD failure (ADR-010).
 # The implementer must create app/services/capability_registry_client.py.
 # ---------------------------------------------------------------------------
 try:
-    from app.services.capability_registry_client import CapabilityRegistryClient
+    from app.services.capability_registry_client import RemoteCapabilityRegistryClient
 except ImportError:
-    CapabilityRegistryClient = None  # type: ignore[assignment,misc]
+    RemoteCapabilityRegistryClient = None  # type: ignore[assignment,misc]
 
 
 # ---------------------------------------------------------------------------
@@ -132,7 +125,7 @@ _KGB_TOOL_DESCRIPTORS: dict[str, dict[str, Any]] = {
     ),
     "neighbors": _ohm_tool(
         "neighbors",
-        ("Breadth-first traversal from a known node, optionally filtered by relationship type."),
+        "Breadth-first traversal from a known node, optionally filtered by relationship type.",
         {
             "type": "object",
             "properties": {
@@ -269,7 +262,7 @@ _KGB_TOOL_DESCRIPTORS: dict[str, dict[str, Any]] = {
             "properties": {
                 "query": {
                     "type": "string",
-                    "description": ("Natural-language query to match against community summaries."),
+                    "description": "Natural-language query to match against community summaries.",
                 },
                 "kind": {
                     "type": ["string", "null"],
@@ -330,10 +323,8 @@ _KGB_TOOL_DESCRIPTORS: dict[str, dict[str, Any]] = {
     ),
     "describe_community": _ohm_tool(
         "describe_community",
-        (
-            "Return metadata for one community: its summary, key entities, "
-            "excerpt, size, and sample members."
-        ),
+        "Return metadata for one community: its summary, key entities, "
+        "excerpt, size, and sample members.",
         {
             "type": "object",
             "properties": {
@@ -354,8 +345,8 @@ _KGB_TOOL_DESCRIPTORS: dict[str, dict[str, Any]] = {
 
 def _make_registry_client_stub(
     descriptors: dict[str, dict[str, Any]] | None = None,
-) -> CapabilityRegistryClient:
-    """Build a CapabilityRegistryClient double that returns OHM descriptors from a dict.
+) -> RemoteCapabilityRegistryClient:
+    """Build a RemoteCapabilityRegistryClient double that returns OHM descriptors from a dict.
 
     ``descriptors`` maps tool name → OHM descriptor dict.  When a tool name
     is absent the stub returns None (simulating registry miss).
@@ -363,7 +354,7 @@ def _make_registry_client_stub(
     """
     store = descriptors if descriptors is not None else _KGB_TOOL_DESCRIPTORS
 
-    client = MagicMock(spec=CapabilityRegistryClient)
+    client = MagicMock(spec=RemoteCapabilityRegistryClient)
 
     async def _get(tool_name: str) -> dict[str, Any] | None:
         return store.get(tool_name)
@@ -373,17 +364,16 @@ def _make_registry_client_stub(
 
 
 # ---------------------------------------------------------------------------
-# R01  CapabilityRegistryClient is importable
+# R01  RemoteCapabilityRegistryClient is importable
 # (covered by the module-level import; this test makes the intent explicit)
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.integration
-@pytest.mark.skipif(CapabilityRegistryClient is None, reason="impl not yet available")
+@pytest.mark.skipif(RemoteCapabilityRegistryClient is None, reason="impl not yet available")
 def test_capability_registry_client_is_importable():
-    """CapabilityRegistryClient must be importable from
-    app.services.capability_registry_client."""
-    from app.services.capability_registry_client import CapabilityRegistryClient as CRC
+    """RemoteCapabilityRegistryClient must be importable from app.services.capability_registry_client."""  # noqa: E501
+    from app.services.capability_registry_client import RemoteCapabilityRegistryClient as CRC
 
     assert CRC is not None
 
@@ -394,7 +384,7 @@ def test_capability_registry_client_is_importable():
 
 
 @pytest.mark.integration
-@pytest.mark.skipif(CapabilityRegistryClient is None, reason="impl not yet available")
+@pytest.mark.skipif(RemoteCapabilityRegistryClient is None, reason="impl not yet available")
 async def test_schema_generation_calls_registry_client():
     """tool_schemas_from_registry() must call get_tool_descriptor() on the client
     for each name in the allowlist, not read from any static in-module dict."""
@@ -420,11 +410,10 @@ async def test_schema_generation_calls_registry_client():
 
 
 @pytest.mark.integration
-@pytest.mark.skipif(CapabilityRegistryClient is None, reason="impl not yet available")
+@pytest.mark.skipif(RemoteCapabilityRegistryClient is None, reason="impl not yet available")
 async def test_ohm_descriptor_to_openai_format():
     """An OHM tool descriptor fetched from the registry must produce a valid
-    OpenAI-format schema: {type: 'function', function:
-    {name, description, parameters}}."""
+    OpenAI-format schema: {type: 'function', function: {name, description, parameters}}."""
     from app.services.agent_tool_schemas import tool_schemas_from_registry
 
     client = _make_registry_client_stub({"graph_search": _KGB_TOOL_DESCRIPTORS["graph_search"]})
@@ -452,11 +441,10 @@ async def test_ohm_descriptor_to_openai_format():
 
 
 @pytest.mark.integration
-@pytest.mark.skipif(CapabilityRegistryClient is None, reason="impl not yet available")
+@pytest.mark.skipif(RemoteCapabilityRegistryClient is None, reason="impl not yet available")
 async def test_ohm_descriptor_to_anthropic_format():
     """An OHM tool descriptor fetched from the registry must produce a valid
-    Anthropic-format schema: {name, description, input_schema}
-    with no 'function' key."""
+    Anthropic-format schema: {name, description, input_schema} with no 'function' key."""
     from app.services.agent_tool_schemas import tool_schemas_from_registry
 
     client = _make_registry_client_stub({"graph_search": _KGB_TOOL_DESCRIPTORS["graph_search"]})
@@ -484,7 +472,7 @@ async def test_ohm_descriptor_to_anthropic_format():
 
 
 @pytest.mark.integration
-@pytest.mark.skipif(CapabilityRegistryClient is None, reason="impl not yet available")
+@pytest.mark.skipif(RemoteCapabilityRegistryClient is None, reason="impl not yet available")
 @pytest.mark.parametrize("tool_name", list(_KGB_TOOL_DESCRIPTORS.keys()))
 async def test_graph_id_absent_from_registry_backed_schema(tool_name: str):
     """graph_id must never appear in any parameter of a registry-backed schema.
@@ -523,7 +511,7 @@ async def test_graph_id_absent_from_registry_backed_schema(tool_name: str):
 
 
 @pytest.mark.integration
-@pytest.mark.skipif(CapabilityRegistryClient is None, reason="impl not yet available")
+@pytest.mark.skipif(RemoteCapabilityRegistryClient is None, reason="impl not yet available")
 async def test_tool_absent_from_registry_is_silently_dropped():
     """When a tool in the allowlist has no OHM descriptor in the registry,
     it must be silently omitted from the returned schemas — no crash.
@@ -549,7 +537,7 @@ async def test_tool_absent_from_registry_is_silently_dropped():
 
 
 @pytest.mark.integration
-@pytest.mark.skipif(CapabilityRegistryClient is None, reason="impl not yet available")
+@pytest.mark.skipif(RemoteCapabilityRegistryClient is None, reason="impl not yet available")
 async def test_empty_allowlist_returns_empty_without_registry_call():
     """An empty allowlist must return [] and must not call the registry client at all.
     No reason to pay the round-trip for a no-op call."""
@@ -570,7 +558,7 @@ async def test_empty_allowlist_returns_empty_without_registry_call():
 
 
 @pytest.mark.integration
-@pytest.mark.skipif(CapabilityRegistryClient is None, reason="impl not yet available")
+@pytest.mark.skipif(RemoteCapabilityRegistryClient is None, reason="impl not yet available")
 def test_static_tool_schemas_dict_removed():
     """_TOOL_SCHEMAS must not exist in app.services.agent_tool_schemas after ORAA-76.
 
@@ -593,14 +581,14 @@ def test_static_tool_schemas_dict_removed():
 
 
 @pytest.mark.integration
-@pytest.mark.skipif(CapabilityRegistryClient is None, reason="impl not yet available")
+@pytest.mark.skipif(RemoteCapabilityRegistryClient is None, reason="impl not yet available")
 async def test_registry_client_error_propagates():
     """When the registry client raises, tool_schemas_from_registry must not silently
     return empty schemas.  The caller (AgentExecutor) needs to see the error so it
     can decide whether to abort the turn or serve a degraded response."""
     from app.services.agent_tool_schemas import tool_schemas_from_registry
 
-    client = MagicMock(spec=CapabilityRegistryClient)
+    client = MagicMock(spec=RemoteCapabilityRegistryClient)
     client.get_tool_descriptor = AsyncMock(side_effect=RuntimeError("registry unavailable"))
 
     with pytest.raises((RuntimeError, Exception)):
@@ -617,13 +605,13 @@ async def test_registry_client_error_propagates():
 
 
 @pytest.mark.integration
-@pytest.mark.skipif(CapabilityRegistryClient is None, reason="impl not yet available")
+@pytest.mark.skipif(RemoteCapabilityRegistryClient is None, reason="impl not yet available")
 async def test_agent_executor_tool_use_loop_uses_registry_schemas():
     """AgentExecutor._tool_use_loop must build tool schemas by calling the registry
     client, not by importing _TOOL_SCHEMAS from agent_tool_schemas.
 
     This regression test confirms the executor wiring is updated: the agent
-    definition or DI container must supply a CapabilityRegistryClient, and
+    definition or DI container must supply a RemoteCapabilityRegistryClient, and
     _tool_use_loop calls tool_schemas_from_registry with it.
     """
     from unittest.mock import AsyncMock, MagicMock
@@ -680,7 +668,7 @@ async def test_agent_executor_tool_use_loop_uses_registry_schemas():
 
 
 @pytest.mark.integration
-@pytest.mark.skipif(CapabilityRegistryClient is None, reason="impl not yet available")
+@pytest.mark.skipif(RemoteCapabilityRegistryClient is None, reason="impl not yet available")
 @pytest.mark.parametrize("tool_name", list(_KGB_TOOL_DESCRIPTORS.keys()))
 async def test_all_kgb_tools_fetchable_from_registry(tool_name: str):
     """Every KGB tool that was previously in the static _TOOL_SCHEMAS must be

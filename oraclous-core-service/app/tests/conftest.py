@@ -293,7 +293,7 @@ def seeded_migrated_db(postgres_dsn: str, alembic_runner):
     into capability_descriptor with kind=tool.
 
     Sequence:
-      1. downgrade -1  → restores tool_definitions, drops capability_descriptor
+      1. downgrade to 0001_create_tool_definitions  → drops capability_descriptor
       2. seed one tool_definitions row via asyncpg
       3. upgrade head  → migration must forward-fill capability_descriptor
 
@@ -302,8 +302,10 @@ def seeded_migrated_db(postgres_dsn: str, alembic_runner):
     """
     seeded_id = str(uuid.uuid4())
 
-    # 1. Downgrade to the revision before capability_descriptor was introduced
-    alembic_runner.downgrade("-1")
+    # 1. Downgrade to exactly 0001 (before capability_descriptor was introduced).
+    # Using an explicit revision rather than "-1" so this fixture stays correct
+    # regardless of how many migrations are added above 0002 in the future.
+    alembic_runner.downgrade("0001_create_tool_definitions")
 
     # 2. Seed a minimally valid tool_definitions row
     async def _seed() -> None:

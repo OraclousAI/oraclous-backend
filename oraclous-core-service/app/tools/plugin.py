@@ -5,8 +5,9 @@ import json
 import uuid
 from abc import ABC, abstractmethod
 
-from app.models.capability_descriptor import CapabilityDescriptorDB, DescriptorKind
 from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.models.capability_descriptor import CapabilityDescriptorDB, DescriptorKind
 
 
 class CapabilityKindPlugin(ABC):

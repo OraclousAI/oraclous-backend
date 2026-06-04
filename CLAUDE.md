@@ -21,6 +21,21 @@ Key provisions every agent must observe:
 
 ---
 
+## Governance gates — canonical in ORAA-4
+
+This is a pointer, not a restatement: ORAA-4 (the PaperClip document `operating-contract`) is authoritative, and on any divergence ORAA-4 wins. The gates that bite most in this repo:
+
+- **§5 commits + pre-push + no attribution.** Commit messages are `[ORAA-xx] [agent:NAME] msg`, one commit per concern. Never write `Co-Authored-By`, `Generated`, `claude`, `paperclip`, or 🤖 in commits, PR bodies, or comments. Before any push, run `uv run ruff check . && uv run ruff format --check . && uv run pytest --collect-only`. The commit-message format is enforced by the `commit-msg` hook (`core.hooksPath=.githooks`).
+- **§13.1 pre-open readiness.** Before OPENING a PR for review it must be pre-push-clean, CI-green, and rebased onto current `main` (not BEHIND). You own this; a reviewer never discovers red CI or a needed rebase.
+- **§13.4 branch-from-merged-tests.** An `[impl]` PR branches from / rebases onto the commit where its `[tests]` PR merged, before opening — this kills add/add conflicts and preserves ADR-010 two-PR independence.
+- **§9 DoD + handoff.** Done = CI-green + mergeable + non-implementer review + PR merged + handed off to the next owner (§9.1 — never finish your part and leave the issue parked). Small conflicts/misalignments are folded into the current PR, not new tickets (§9.2).
+- **§9.3 docker.** Multi-service functionality is `docker-required`; run its integration tests on Docker. If the daemon is down, raise an error and block `needs-human` — never skip.
+- **§17 structure.** New code lives under `services/<service>/`; do not extend the legacy `oraclous-core-service`; never commit `__pycache__`/`*.pyc`.
+- **§16 KB currency.** If you change `oraclous-knowledge`, keep the docs current and refresh graphify in the same change.
+- Full text: ORAA-4 + `oraclous-knowledge/engineering/`.
+
+---
+
 ## 1. Identity and scope
 
 This is the **backend execution** repository. The personas that live and act in this repo session are:

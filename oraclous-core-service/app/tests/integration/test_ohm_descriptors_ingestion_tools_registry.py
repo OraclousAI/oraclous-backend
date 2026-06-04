@@ -140,7 +140,6 @@ async def test_google_drive_reader_synced_descriptor_validates(async_session):
     import app.tools  # noqa: F401 — triggers auto-discovery of all shipped tool plugins
     from app.models.capability_descriptor import CapabilityDescriptorDB
     from app.tools.plugin import sync_plugins_to_registry
-
     from ohm.schemas import ToolDescriptor
 
     rows = await sync_plugins_to_registry(_ORG_ORAA74, async_session)
@@ -204,7 +203,6 @@ async def test_notion_reader_synced_descriptor_validates(async_session):
     import app.tools  # noqa: F401 — triggers auto-discovery of all shipped tool plugins
     from app.models.capability_descriptor import CapabilityDescriptorDB
     from app.tools.plugin import sync_plugins_to_registry
-
     from ohm.schemas import ToolDescriptor
 
     rows = await sync_plugins_to_registry(_ORG_ORAA74, async_session)
@@ -273,7 +271,6 @@ async def test_postgresql_reader_synced_descriptor_validates(async_session):
     import app.tools  # noqa: F401 — triggers auto-discovery of all shipped tool plugins
     from app.models.capability_descriptor import CapabilityDescriptorDB
     from app.tools.plugin import sync_plugins_to_registry
-
     from ohm.schemas import ToolDescriptor
 
     rows = await sync_plugins_to_registry(_ORG_ORAA74, async_session)
@@ -342,7 +339,6 @@ async def test_mysql_reader_synced_descriptor_validates(async_session):
     import app.tools  # noqa: F401 — triggers auto-discovery of all shipped tool plugins
     from app.models.capability_descriptor import CapabilityDescriptorDB
     from app.tools.plugin import sync_plugins_to_registry
-
     from ohm.schemas import ToolDescriptor
 
     rows = await sync_plugins_to_registry(_ORG_ORAA74, async_session)

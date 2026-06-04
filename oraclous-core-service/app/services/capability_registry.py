@@ -3,9 +3,10 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.models.capability_descriptor import CapabilityDescriptorDB, DescriptorKind
 from app.repositories.capability_descriptor_repository import CapabilityDescriptorRepository
-from sqlalchemy.ext.asyncio import AsyncSession
 
 # Mirrors the repo sentinel: when omitted, the repo auto-computes the hash.
 # When explicitly passed (including None), the caller's value is stored as-is.
