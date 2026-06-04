@@ -10,10 +10,11 @@ checker enforces the structural invariants that the hollowness failure violated.
            ``GraphNodeService``-inside-a-route anti-pattern). Only Pydantic request/response
            models may be defined in a route module.
   STR003 — a file under ``routes/`` imports a DB/Neo4j/Redis driver.
-  STR004 — a DB/Neo4j/Redis driver is imported anywhere outside ``repositories/`` (the
-           exception is the ``core/`` connection layer — config/database/dependencies/lifespan —
-           where the engine, sessionmaker and DI session providers are built; §21 rule 3,
-           "connection setup excepted in core").
+  STR004 — a DB/Neo4j/Redis driver is imported anywhere outside ``repositories/`` (exceptions:
+           the ``core/`` connection layer — config/database/dependencies/lifespan — where the
+           engine, sessionmaker and DI session providers are built; and a ``models/`` layer, which
+           holds ORM *declarations* (Mapped columns) — declaring schema is not driver/connection
+           ACCESS. §21 rule 3, "connection setup excepted in core").
   STR005 — a ``*_service.py`` file sits directly under the package root (scattered/unwired
            utility drift) instead of under ``services/``.
 
@@ -102,6 +103,10 @@ def check_package(root: Path) -> list[Violation]:
         in_routes = "routes" in rel_parts
         in_repositories = "repositories" in rel_parts
         in_core = bool(rel_parts) and rel_parts[0] == "core"
+        # ORM *declarations* (Mapped columns) may import the ORM in a dedicated `models/` layer:
+        # declaring schema is not driver/connection ACCESS (that stays in repositories/ + core/).
+        # Both `repositories/models.py` (colocated) and a sibling `models/` package are accepted.
+        in_models = "models" in rel_parts
         directly_under_root = f.parent == root
 
         try:
@@ -136,14 +141,14 @@ def check_package(root: Path) -> list[Violation]:
                             f"DB/Neo4j/Redis driver '{mod}' imported in a route module",
                         )
                     )
-            elif not in_repositories and not in_core:
+            elif not in_repositories and not in_core and not in_models:
                 for ln, mod in driver_hits:
                     out.append(
                         Violation(
                             f,
                             ln,
                             "STR004",
-                            f"driver '{mod}' outside repositories/ (only repos + core/lifespan.py)",
+                            f"driver '{mod}' outside repositories/ (only repos, core/, models/)",
                         )
                     )
 
