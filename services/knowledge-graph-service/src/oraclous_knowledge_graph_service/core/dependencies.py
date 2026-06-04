@@ -19,6 +19,7 @@ from typing import Annotated
 
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from neo4j import Driver
 from oraclous_governance import (
     OrganisationContext,
     Principal,
@@ -35,7 +36,12 @@ from oraclous_knowledge_graph_service.core.auth import (
 from oraclous_knowledge_graph_service.core.config import get_settings
 from oraclous_knowledge_graph_service.core.database import session_scope
 from oraclous_knowledge_graph_service.repositories.graph_repository import GraphRepository
+from oraclous_knowledge_graph_service.repositories.graph_write_repository import (
+    GraphWriteRepository,
+)
+from oraclous_knowledge_graph_service.repositories.job_repository import IngestionJobRepository
 from oraclous_knowledge_graph_service.services.graph_service import GraphService
+from oraclous_knowledge_graph_service.services.job_service import JobService
 
 _bearer = HTTPBearer(auto_error=False)
 
@@ -94,6 +100,45 @@ def get_graph_service(
     return GraphService(GraphRepository(session))
 
 
+def get_neo4j_driver(request: Request) -> Driver:
+    """The app-scoped Neo4j driver opened in lifespan. 503 if the substrate is unconfigured/down."""
+    driver = getattr(request.app.state, "neo4j_driver", None)
+    if driver is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="knowledge graph store unavailable (KGS_NEO4J_URI not configured)",
+        )
+    return driver
+
+
+def _enqueue_ingest(job_id: str, organisation_id: str) -> None:
+    # Lazy import: keep the Celery app out of the request module's import graph.
+    from oraclous_knowledge_graph_service.tasks.ingest_tasks import ingest_document_task
+
+    ingest_document_task.delay(job_id, organisation_id)
+
+
+def get_job_service(
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+    graph_service: Annotated[GraphService, Depends(get_graph_service)],
+) -> JobService:
+    """Build the ingestion-job service. `graph_service` already bound the org scope + session."""
+    return JobService(
+        job_repo=IngestionJobRepository(session),
+        graph_service=graph_service,
+        enqueue=_enqueue_ingest,
+    )
+
+
+def get_graph_write_repo(
+    driver: Annotated[Driver, Depends(get_neo4j_driver)],
+    _org: Annotated[OrganisationContext, Depends(bind_org_context)],
+) -> GraphWriteRepository:
+    return GraphWriteRepository(driver, database=get_settings().neo4j_database)
+
+
 # Public dependency aliases for route signatures.
 GraphServiceDep = Annotated[GraphService, Depends(get_graph_service)]
 UserIdDep = Annotated[uuid.UUID, Depends(get_current_user_id)]
+JobServiceDep = Annotated[JobService, Depends(get_job_service)]
+GraphWriteRepoDep = Annotated[GraphWriteRepository, Depends(get_graph_write_repo)]
