@@ -22,7 +22,7 @@ NEO4J_IMAGE = "neo4j:5.23-community"
 
 @pytest.fixture(scope="session")
 def _krs_neo4j_url() -> Iterator[str]:
-    """``bolt://…`` URL for an ephemeral Neo4j container shared across KRS integration tests."""
+    """bolt URI for an ephemeral Neo4j container shared across KRS integration tests."""
     from testcontainers.neo4j import Neo4jContainer
 
     container = Neo4jContainer(NEO4J_IMAGE).with_env("NEO4J_AUTH", "neo4j/password")
