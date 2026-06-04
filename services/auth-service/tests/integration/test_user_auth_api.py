@@ -7,46 +7,10 @@ the §22 "real endpoints vs real substrate" gate for Slice 1.
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
-
 import pytest
-from httpx import ASGITransport, AsyncClient
-from oraclous_auth_service.app.factory import create_app
-from oraclous_auth_service.models import Base
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from httpx import AsyncClient
 
 pytestmark = pytest.mark.integration
-
-
-class _FakeAgentRepo:
-    """create_app needs an agent repo; the user routes never touch it (all calls are inert)."""
-
-    async def create_agent(self, **_: object) -> tuple[str, object]:  # pragma: no cover
-        return "", object()
-
-    async def validate_credential(self, _: str) -> str | None:  # pragma: no cover
-        return None
-
-    async def revoke_agent(self, _: str) -> int:  # pragma: no cover
-        return 0
-
-    async def organisation_id_for(self, _: str) -> str | None:  # pragma: no cover
-        return None
-
-
-@pytest.fixture
-async def client(postgres_dsn: str, monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[AsyncClient]:
-    monkeypatch.setenv("JWT_SECRET", "integration-test-secret")
-    monkeypatch.setenv("JWT_ALGORITHM", "HS256")
-    engine = create_async_engine(postgres_dsn.replace("postgresql://", "postgresql+asyncpg://", 1))
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-    app = create_app(agent_repository=_FakeAgentRepo(), internal_service_key="x")
-    app.state.sessionmaker = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://auth.test") as c:
-        yield c
-    await engine.dispose()
 
 
 async def test_register_login_refresh_me_flow(client: AsyncClient) -> None:

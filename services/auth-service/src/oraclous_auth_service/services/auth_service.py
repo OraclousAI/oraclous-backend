@@ -6,8 +6,9 @@ SQL only; this layer orchestrates them with the domain (password policy) and the
 
 Threat posture: login + register return generic failures (no account enumeration, T-ENUM); a reused
 refresh token revokes its whole family (T-REFRESH); every token carries the user's active
-``organisation_id`` (ADR-006). In S1 that org is the user's generated personal-org id; S2 makes it a
-real membership-backed selection.
+``organisation_id`` (ADR-006). S2: registration creates a real personal organisation (the user owns
+it); the active org is a validated ``X-Organisation-Id`` selection at login (else the default),
+and refresh preserves the active org from the presented refresh token.
 """
 
 from __future__ import annotations
@@ -30,6 +31,7 @@ from oraclous_auth_service.domain.passwords import (
 from oraclous_auth_service.models.user_model import User
 from oraclous_auth_service.repositories.refresh_token_repository import RefreshTokenRepository
 from oraclous_auth_service.repositories.user_repository import UserRepository
+from oraclous_auth_service.services.org_service import OrgService
 
 
 class AuthenticationError(Exception):
@@ -54,18 +56,25 @@ class TokenBundle:
 
 
 class AuthService:
-    def __init__(self, *, users: UserRepository, refresh_tokens: RefreshTokenRepository) -> None:
+    def __init__(
+        self,
+        *,
+        users: UserRepository,
+        refresh_tokens: RefreshTokenRepository,
+        orgs: OrgService,
+    ) -> None:
         self._users = users
         self._refresh = refresh_tokens
+        self._orgs = orgs
 
-    async def _issue_pair(self, user: User, *, family_id: str) -> TokenBundle:
+    async def _issue_pair(self, user: User, *, organisation_id: str, family_id: str) -> TokenBundle:
         access_token, expires_in = create_user_token(
-            user_id=user.id, organisation_id=user.default_organisation_id, email=user.email
+            user_id=user.id, organisation_id=organisation_id, email=user.email
         )
         jti = str(uuid.uuid4())
         refresh_token, refresh_ttl = create_user_refresh_token(
             user_id=user.id,
-            organisation_id=user.default_organisation_id,
+            organisation_id=organisation_id,
             email=user.email,
             jti=jti,
         )
@@ -73,13 +82,13 @@ class AuthService:
             jti=jti,
             family_id=family_id,
             user_id=user.id,
-            organisation_id=user.default_organisation_id,
+            organisation_id=organisation_id,
             expires_at=datetime.now(UTC) + timedelta(seconds=refresh_ttl),
         )
         return TokenBundle(
             user_id=user.id,
             email=user.email,
-            organisation_id=user.default_organisation_id,
+            organisation_id=organisation_id,
             access_token=access_token,
             refresh_token=refresh_token,
             expires_in=expires_in,
@@ -90,23 +99,33 @@ class AuthService:
         validate_password_strength(password)
         if await self._users.get_by_email(email) is not None:
             raise EmailAlreadyRegisteredError("email already registered")
+        # Create a real personal organisation (the user is its owner), then the user pointing at it.
+        user_id = str(uuid.uuid4())
+        local = email.split("@", 1)[0]
+        org = await self._orgs.create_org(name=f"{local}'s workspace", owner_user_id=user_id)
         user = await self._users.create_user(
+            id=user_id,
             email=email,
             password_hash=hash_password(password),
-            # S1→S2 seam: a generated personal-org id is the token's organisation_id until S2 turns
-            # it into a real membership-backed org.
-            default_organisation_id=str(uuid.uuid4()),
+            default_organisation_id=org.id,
         )
-        return await self._issue_pair(user, family_id=str(uuid.uuid4()))
+        return await self._issue_pair(user, organisation_id=org.id, family_id=str(uuid.uuid4()))
 
-    async def login(self, *, email: str, password: str) -> TokenBundle:
+    async def login(
+        self, *, email: str, password: str, requested_org_id: str | None = None
+    ) -> TokenBundle:
         user = await self._users.get_by_email(email)
         # Generic failure on both unknown-email and bad-password (no enumeration, T-ENUM).
         if user is None or not verify_password(password, user.password_hash):
             raise AuthenticationError("invalid email or password")
         if not user.is_active:
             raise AuthenticationError("account is disabled")
-        return await self._issue_pair(user, family_id=str(uuid.uuid4()))
+        organisation_id = await self._orgs.resolve_active_org(
+            user=user, requested_org_id=requested_org_id
+        )
+        return await self._issue_pair(
+            user, organisation_id=organisation_id, family_id=str(uuid.uuid4())
+        )
 
     async def refresh(self, *, refresh_token: str) -> TokenBundle:
         try:
@@ -127,7 +146,11 @@ class AuthService:
         if user is None or not user.is_active:
             raise AuthenticationError("user no longer active")
         await self._refresh.mark_rotated(jti, rotated_at=datetime.now(UTC))
-        return await self._issue_pair(user, family_id=row.family_id)
+        # Preserve the active org the refresh token was issued for.
+        organisation_id = claims.get("organisation_id") or user.default_organisation_id
+        return await self._issue_pair(
+            user, organisation_id=organisation_id, family_id=row.family_id
+        )
 
     async def change_password(self, *, user_id: str, new_password: str) -> None:
         validate_password_strength(new_password)

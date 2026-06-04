@@ -7,7 +7,9 @@ translated to HTTP by the exception handlers registered in `app/factory.py` — 
 
 from __future__ import annotations
 
-from fastapi import APIRouter, status
+from typing import Annotated
+
+from fastapi import APIRouter, Header, status
 
 from oraclous_auth_service.core.dependencies import AuthServiceDep, UserClaimsDep
 from oraclous_auth_service.schema.auth_schemas import (
@@ -39,8 +41,16 @@ async def register(body: RegisterRequest, auth: AuthServiceDep) -> TokenResponse
 
 
 @router.post("/login", response_model=TokenResponse)
-async def login(body: LoginRequest, auth: AuthServiceDep) -> TokenResponse:
-    return _token_response(await auth.login(email=body.email, password=body.password))
+async def login(
+    body: LoginRequest,
+    auth: AuthServiceDep,
+    x_organisation_id: Annotated[str | None, Header(alias="X-Organisation-Id")] = None,
+) -> TokenResponse:
+    # X-Organisation-Id selects the active org for this session (validated against membership).
+    bundle = await auth.login(
+        email=body.email, password=body.password, requested_org_id=x_organisation_id
+    )
+    return _token_response(bundle)
 
 
 @router.post("/refresh", response_model=TokenResponse)
