@@ -33,4 +33,6 @@ uv run python -m tools.lint.check_org_scoped_labels_schema                  || f
 uv run python -m tools.lint.check_test_imports packages services tests      || fail "test-import hygiene (TDD-window collection safety)"
 uv run python -m tools.lint.check_neo4j_write_role                          || fail "neo4j write-role guardrail"
 uv run python -m tools.contract.verify_checksums                            || fail "contract fixture integrity"
+uv run python -m tools.lint.check_service_structure services                || fail "service architecture guardrail (ORAA-4 §21)"
+uv run python -m tools.lint.check_no_stubs services                         || fail "no-hollow guardrail (ORAA-4 §22)"
 echo "[pre-push] ✅ quality gate passed." >&2

@@ -1,0 +1,60 @@
+# service_status.yaml — the source of truth for R3.5 per-service enforcement state.
+#
+# This file gates the two R3.5 structural checkers so that enforcement is OPT-IN PER SERVICE:
+# a check fails CI for a service ONLY when that service's flag is flipped to true. This lets the
+# checkers ship and run on every push while the hollow services are rebuilt one at a time — a
+# service that has not been rebuilt yet is reported (informational) but does not break the build.
+#
+# Flags per service:
+#   structure_enforced: true  -> tools.lint.check_service_structure FAILS on STR violations for this service
+#                                (flip true once the service is rebuilt to the §21 canonical layout)
+#   claimed_done:       true  -> tools.lint.check_no_stubs FAILS on HOL violations for this service
+#                                (flip true only when the §22 8-gate per-service DoD is met; a stub then
+#                                 can never be marked done — flipping this is what makes "hollow = not done")
+#   port_source:        true  -> this dir is a legacy port-source kept until its logic is ported (read-only ref)
+#   deletable:          false -> may NOT be deleted (salvage-then-delete is human-gated, ORAA-4 §15/§23)
+#
+# Canonical authority: ORAA-4 §21/§22/§23; narrative: oraclous-knowledge/engineering/service-architecture-standard.md.
+
+services:
+  # R3.5 graph-first order. All flags false today: every service below is HOLLOW and being rebuilt.
+  knowledge-graph-service:
+    release: R3.5            # service #1
+    structure_enforced: false
+    claimed_done: false
+  knowledge-retriever-service:
+    release: R3.5            # service #2
+    structure_enforced: false
+    claimed_done: false
+  auth-service:
+    release: R3.5            # split: machine principals stay here; humans/orgs -> identity-org-service (#3)
+    structure_enforced: false
+    claimed_done: false
+  credential-broker-service:
+    release: R3.5            # service #4
+    structure_enforced: false
+    claimed_done: false
+  capability-registry-service:
+    release: R3.5            # service #5 — ported from oraclous-core-service
+    structure_enforced: false
+    claimed_done: false
+  application-gateway-service:
+    release: R3.5            # service #6 — built last
+    structure_enforced: false
+    claimed_done: false
+  harness-runtime-service:
+    release: R4-deferred     # placeholder; not in R3.5 scope
+    structure_enforced: false
+    claimed_done: false
+  execution-engine-service:
+    release: R5-deferred     # placeholder; not in R3.5 scope
+    structure_enforced: false
+    claimed_done: false
+
+# Legacy port-source — dead shadow (~6,300 LOC); the source the capability-registry ports FROM.
+# Must NOT be deleted until its logic is ported+tested into the real service AND Reza signs off
+# (destructive-change protocol, ORAA-4 §15/§23). The audit asserts emptiness before delete.
+legacy:
+  oraclous-core-service:
+    port_source: true
+    deletable: false
