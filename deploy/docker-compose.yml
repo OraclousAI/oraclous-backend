@@ -110,6 +110,14 @@ services:
     profiles: [services]
     networks: [substrate]
 
+  knowledge-graph-service:
+    build:
+      context: ..
+      dockerfile: services/knowledge-graph-service/Dockerfile
+    image: oraclous-knowledge-graph-service:${IMAGE_TAG:-dev}
+    profiles: [services]
+    networks: [substrate]
+
 networks:
   substrate:
     driver: bridge
