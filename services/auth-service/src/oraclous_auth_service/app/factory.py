@@ -19,9 +19,12 @@ ORA-3 / ADR-006 contract.
 
 from __future__ import annotations
 
+import os
+import secrets
 from typing import Protocol
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, status
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError
@@ -54,6 +57,22 @@ from oraclous_auth_service.services.oauth_service import (
     OAuthProviderUnconfiguredError,
 )
 from oraclous_auth_service.services.org_service import OrgForbiddenError, OrgNotFoundError
+
+
+def _add_cors(app: FastAPI) -> None:
+    """Explicit CORS allowlist from ``AUTH_CORS_ORIGINS`` (comma-separated). No wildcard + creds —
+    an empty/unset list adds no middleware (same-origin only). Replaces permissive regex (T-CORS).
+    """
+    raw = os.environ.get("AUTH_CORS_ORIGINS", "")
+    origins = [o.strip() for o in raw.split(",") if o.strip()]
+    if origins:
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=origins,
+            allow_credentials=True,
+            allow_methods=["*"],
+            allow_headers=["*"],
+        )
 
 
 def _register_user_identity(app: FastAPI) -> None:
@@ -218,7 +237,12 @@ def _make_internal_key_verifier(expected: str):
     """
 
     async def verify(x_internal_key: str | None = Header(default=None)) -> None:
-        if not expected or x_internal_key != expected:
+        # Constant-time compare (T-INTERNAL): never short-circuit on a prefix mismatch.
+        if (
+            not expected
+            or x_internal_key is None
+            or not secrets.compare_digest(x_internal_key, expected)
+        ):
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Invalid or missing internal service key",
@@ -277,6 +301,7 @@ def create_app(
     if not hasattr(app.state, "sessionmaker"):
         app.state.sessionmaker = None
 
+    _add_cors(app)
     _register_user_identity(app)
 
     verify_internal_key = _make_internal_key_verifier(internal_service_key)

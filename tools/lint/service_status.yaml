@@ -27,9 +27,9 @@ services:
     structure_enforced: true
     claimed_done: false      # flip to true at the §22 8-gate sign-off (Reza smoke acceptance)
   auth-service:
-    release: R3.5            # split: machine principals stay here; humans/orgs -> identity-org-service (#3)
-    structure_enforced: false
-    claimed_done: false
+    release: R3.5            # service #3 — full identity: users/orgs/members/invites/SA/OAuth; ENFORCED
+    structure_enforced: true
+    claimed_done: false      # flip to true at the §22 8-gate sign-off (Reza smoke acceptance)
   credential-broker-service:
     release: R3.5            # service #4
     structure_enforced: false

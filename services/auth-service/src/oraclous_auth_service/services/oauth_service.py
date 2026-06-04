@@ -20,6 +20,7 @@ from urllib.parse import urlencode
 from oraclous_auth_service.core.encryption import decrypt, encrypt
 from oraclous_auth_service.core.oauth_providers import ProviderConfig, get_provider
 from oraclous_auth_service.domain.oauth import generate_pkce, generate_state, merge_scopes
+from oraclous_auth_service.repositories.audit_repository import AuditRepository
 from oraclous_auth_service.repositories.oauth_repository import (
     OAuthAccountRepository,
     OAuthStateRepository,
@@ -72,6 +73,7 @@ class OAuthService:
         accounts: OAuthAccountRepository,
         states: OAuthStateRepository,
         client: ProviderClient,
+        audit: AuditRepository | None = None,
     ) -> None:
         self._users = users
         self._orgs = orgs
@@ -79,6 +81,7 @@ class OAuthService:
         self._accounts = accounts
         self._states = states
         self._client = client
+        self._audit = audit
 
     @staticmethod
     def _provider_or_503(name: str) -> ProviderConfig:
@@ -124,6 +127,14 @@ class OAuthService:
 
         user = await self._upsert_user(profile)
         await self._store_tokens(user, provider_name, token_set)
+        if self._audit is not None:
+            await self._audit.record(
+                event="oauth.login",
+                actor_type="user",
+                actor_id=user.id,
+                organisation_id=user.default_organisation_id,
+                target=provider_name,
+            )
         return await self._auth.issue_for_user(
             user=user, organisation_id=user.default_organisation_id
         )
