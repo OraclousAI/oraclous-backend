@@ -142,7 +142,15 @@ c=$(code -H "X-Internal-Key: ${INTKEY}X" -H "Content-Type: application/json" \
   -X POST "${AUTH}/internal/agent-credentials" -d "{\"organisation_id\":\"${ORG2}\",\"created_by_user_id\":\"x\"}")
 [[ "$c" == "401" ]] && pass "wrong internal key rejected (401)" || fail "internal-key gate weak: $c"
 
-step "10. KRS jwt-mode accepts the same identity (read side)"
+step "10. S5: the OAuth surface is wired and fails closed without provider keys (key-free check)"
+# The dev stack configures no OAuth client credentials, so login must 503 (not 500/404) — the route
+# is live and fail-closed. The full Google/GitHub/Notion flow is the needs-human real-key sign-off;
+# the fake-provider end-to-end flow is covered by the integration suite.
+c=$(code "${AUTH}/oauth/google/login?redirect_uri=https://app.example/cb")
+[[ "$c" == "503" ]] && pass "OAuth /login wired + fails closed (503) with no provider config" \
+  || fail "OAuth login expected 503 (unconfigured), got $c"
+
+step "11. KRS jwt-mode accepts the same identity (read side)"
 c=$(code -H "Authorization: Bearer ${ACCESS}" -H "Content-Type: application/json" \
   -X POST "${KRS}/v1/search/semantic" -d "{\"query\":\"x\",\"graph_id\":\"${gid}\"}")
 [[ "$c" != "401" ]] && pass "KRS accepts the user token (HTTP $c, not 401)" \

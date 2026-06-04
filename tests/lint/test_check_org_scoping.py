@@ -120,6 +120,17 @@ def test_org002_scope_root_marker_exempts_the_org_table() -> None:
     assert "ORG002" not in _rules(src)
 
 
+def test_org002_pre_auth_ephemeral_marker_exempts_handshake_state() -> None:
+    # oauth_states exists during the login handshake, before any principal/org is resolved
+    src = (
+        "class OAuthState(Base):\n"
+        "    '''Handshake state. org-scoping: pre-auth-ephemeral — precedes authentication.'''\n"
+        "    __tablename__ = 'oauth_states'\n"
+        "    state = Column(String)\n"
+    )
+    assert "ORG002" not in _rules(src)
+
+
 def test_clean_source_has_no_violations() -> None:
     assert _rules("def add(a, b):\n    return a + b\n") == set()
 

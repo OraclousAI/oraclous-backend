@@ -95,6 +95,16 @@ class AuthService:
             is_superuser=user.is_superuser,
         )
 
+    async def issue_for_user(self, *, user: User, organisation_id: str) -> TokenBundle:
+        """Issue a fresh access+refresh pair for an already-authenticated user (e.g. via OAuth).
+
+        Public entry point onto the same rotation-family issuance as register/login, for other
+        services-layer flows that have authenticated a user out-of-band.
+        """
+        return await self._issue_pair(
+            user, organisation_id=organisation_id, family_id=str(uuid.uuid4())
+        )
+
     async def register(self, *, email: str, password: str) -> TokenBundle:
         validate_password_strength(password)
         if await self._users.get_by_email(email) is not None:
