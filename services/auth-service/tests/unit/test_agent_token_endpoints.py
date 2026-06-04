@@ -71,7 +71,7 @@ class _FakeAgentRepository:
     revoked_agent_ids: set[str] = field(default_factory=set)
 
     async def create_agent(
-        self, *, organisation_id: str, created_by_user_id: str
+        self, *, organisation_id: str, created_by_user_id: str, principal_type: str = "agent"
     ) -> tuple[str, object]:
         import secrets
         import uuid
@@ -82,6 +82,7 @@ class _FakeAgentRepository:
             "id": agent_id,
             "organisation_id": organisation_id,
             "created_by_user_id": created_by_user_id,
+            "principal_type": principal_type,
         }
         self.raw_to_agent_id[raw] = agent_id
 
@@ -110,6 +111,12 @@ class _FakeAgentRepository:
             return None
         record = self.agents_by_id.get(agent_id)
         return record["organisation_id"] if record else None
+
+    async def principal_type_for(self, agent_id: str) -> str | None:
+        if agent_id in self.revoked_agent_ids:
+            return None
+        record = self.agents_by_id.get(agent_id)
+        return record.get("principal_type", "agent") if record else None
 
 
 # --- Fixtures --------------------------------------------------------------

@@ -42,6 +42,8 @@ class CredentialStore(Protocol):
 
     async def organisation_id_for(self, agent_id: str) -> str | None: ...
 
+    async def principal_type_for(self, agent_id: str) -> str | None: ...
+
 
 def _generate_credential() -> tuple[str, str]:
     """Return ``(raw_credential, prefix)`` — ``oag_`` + base62(32 random bytes)."""
@@ -66,6 +68,7 @@ class AgentRepository:
         *,
         organisation_id: str,
         created_by_user_id: str,
+        principal_type: str = "agent",
         expires_at: datetime | None = None,
     ) -> tuple[str, Agent]:
         """Create an agent + its first credential; return ``(raw_credential, agent)``.
@@ -87,6 +90,7 @@ class AgentRepository:
             id=str(uuid.uuid4()),
             agent_id=agent.id,
             organisation_id=organisation_id,
+            principal_type=principal_type,
             credential_hash=credential_hash,
             credential_prefix=prefix,
             status="active",
@@ -124,3 +128,7 @@ class AgentRepository:
     async def organisation_id_for(self, agent_id: str) -> str | None:
         """Return the agent's org iff it still has an active credential, else ``None`` (T2)."""
         return await self._store.organisation_id_for(agent_id)
+
+    async def principal_type_for(self, agent_id: str) -> str | None:
+        """Return the principal_type (agent|service_account) of an active credential, else None."""
+        return await self._store.principal_type_for(agent_id)

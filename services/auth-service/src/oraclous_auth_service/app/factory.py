@@ -27,7 +27,11 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError
 from pydantic import BaseModel
 
-from oraclous_auth_service.core.jwt_handler import create_agent_token, decode_token
+from oraclous_auth_service.core.jwt_handler import (
+    create_agent_token,
+    create_service_account_token,
+    decode_token,
+)
 from oraclous_auth_service.core.rate_limiter import (
     enforce_agent_credential_prefix_rate_limit,
 )
@@ -108,7 +112,11 @@ class AgentRepositoryPort(Protocol):
     """
 
     async def create_agent(
-        self, *, organisation_id: str, created_by_user_id: str
+        self,
+        *,
+        organisation_id: str,
+        created_by_user_id: str,
+        principal_type: str = "agent",
     ) -> tuple[str, object]: ...
 
     async def validate_credential(self, raw_credential: str) -> str | None: ...
@@ -116,6 +124,8 @@ class AgentRepositoryPort(Protocol):
     async def revoke_agent(self, agent_id: str) -> int: ...
 
     async def organisation_id_for(self, agent_id: str) -> str | None: ...
+
+    async def principal_type_for(self, agent_id: str) -> str | None: ...
 
 
 # --- Request/Response schemas ----------------------------------------------
@@ -158,11 +168,14 @@ class _CreateAgentInput(BaseModel):
 
     organisation_id: str
     created_by_user_id: str
+    # "agent" (default) or "service_account" — the machine-principal type this credential mints.
+    principal_type: str = "agent"
 
 
 class _CreateAgentResponse(BaseModel):
     agent_id: str
     credential: str  # raw — returned exactly once
+    principal_type: str = "agent"
 
 
 class _RevokeResponse(BaseModel):
@@ -275,8 +288,19 @@ def create_app(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Invalid or revoked credential",
             )
-        token, expires_in = create_agent_token(agent_id=agent_id, organisation_id=organisation_id)
-        return _AgentTokenResponse(access_token=token, expires_in=expires_in)
+        # Mint the token type the credential's principal is (agent | service_account).
+        principal_type = await repo.principal_type_for(agent_id) or "agent"
+        if principal_type == "service_account":
+            token, expires_in = create_service_account_token(
+                service_account_id=agent_id, organisation_id=organisation_id
+            )
+        else:
+            token, expires_in = create_agent_token(
+                agent_id=agent_id, organisation_id=organisation_id
+            )
+        return _AgentTokenResponse(
+            access_token=token, expires_in=expires_in, principal_type=principal_type
+        )
 
     # --- POST /internal/agent-credentials --------------------------------
 
@@ -293,8 +317,11 @@ def create_app(
         raw, agent = await repo.create_agent(
             organisation_id=create_input.organisation_id,
             created_by_user_id=create_input.created_by_user_id,
+            principal_type=create_input.principal_type,
         )
-        return _CreateAgentResponse(agent_id=agent.id, credential=raw)
+        return _CreateAgentResponse(
+            agent_id=agent.id, credential=raw, principal_type=create_input.principal_type
+        )
 
     # --- DELETE /internal/agent-credentials/{agent_id} -------------------
 
@@ -317,7 +344,7 @@ def create_app(
     ) -> _MeResponse:
         principal_type = claims.get("principal_type")
         sub = claims.get("sub")
-        if not sub or principal_type != "agent":
+        if not sub or principal_type not in ("agent", "service_account"):
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Unsupported principal type",
@@ -327,12 +354,12 @@ def create_app(
         organisation_id = await repo.organisation_id_for(sub)
         if not organisation_id:
             # Revocation race (T2): even with an unexpired token, a revoked
-            # agent can never re-authenticate.
+            # machine principal can never re-authenticate.
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Agent has been revoked",
+                detail="Credential has been revoked",
                 headers={"WWW-Authenticate": "Bearer"},
             )
-        return _MeResponse(id=sub, principal_type="agent", organisation_id=organisation_id)
+        return _MeResponse(id=sub, principal_type=principal_type, organisation_id=organisation_id)
 
     return app

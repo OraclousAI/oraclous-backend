@@ -44,6 +44,11 @@ class AgentCredential(Base):
     id: Mapped[str] = mapped_column(String, primary_key=True)
     agent_id: Mapped[str] = mapped_column(String, index=True, nullable=False)
     organisation_id: Mapped[str] = mapped_column(String, index=True, nullable=False)
+    # Which machine-principal type this credential mints: "agent" (default) or "service_account".
+    # server_default mirrors migration 0004 so raw inserts (org-isolation tests) default too.
+    principal_type: Mapped[str] = mapped_column(
+        String, nullable=False, default="agent", server_default=text("'agent'")
+    )
     credential_hash: Mapped[str] = mapped_column(String, nullable=False)
     credential_prefix: Mapped[str] = mapped_column(String, index=True, nullable=False)
     status: Mapped[str] = mapped_column(String, nullable=False, default="active")

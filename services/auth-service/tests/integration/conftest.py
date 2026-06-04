@@ -31,6 +31,9 @@ class _FakeAgentRepo:
     async def organisation_id_for(self, _: str) -> str | None:  # pragma: no cover
         return None
 
+    async def principal_type_for(self, _: str) -> str | None:  # pragma: no cover
+        return None
+
 
 @pytest.fixture
 async def client(postgres_dsn: str, monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[AsyncClient]:
