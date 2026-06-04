@@ -32,6 +32,7 @@ dev = [
     "PyYAML>=6.0,<7.0",
     "jsonschema>=4.21,<5.0",
     "alembic>=1.16,<2.0",
+    "asyncpg>=0.30.0",
 ]
 
 [tool.mypy]
