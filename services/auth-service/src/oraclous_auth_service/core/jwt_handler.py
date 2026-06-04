@@ -27,8 +27,16 @@ from jose import jwt
 from oraclous_auth_service.core.config import get_settings
 
 
-def _encode(payload: dict, *, ttl_seconds: int, principal_type: str, kind: str,
-            organisation_id: str, sub: str, jti: str | None = None) -> tuple[str, int, str]:
+def _encode(
+    payload: dict,
+    *,
+    ttl_seconds: int,
+    principal_type: str,
+    kind: str,
+    organisation_id: str,
+    sub: str,
+    jti: str | None = None,
+) -> tuple[str, int, str]:
     """Build + sign a token from the shared claim skeleton. Returns (token, ttl, jti)."""
     if not sub:
         raise ValueError("sub is required")
@@ -56,8 +64,12 @@ def create_user_token(*, user_id: str, organisation_id: str, email: str) -> tupl
     """Issue a short-lived user ACCESS JWT. Returns ``(access_token, expires_in_seconds)``."""
     ttl = get_settings().user_access_token_ttl_minutes * 60
     token, expires_in, _ = _encode(
-        {"email": email}, ttl_seconds=ttl, principal_type="user", kind="access",
-        organisation_id=organisation_id, sub=user_id,
+        {"email": email},
+        ttl_seconds=ttl,
+        principal_type="user",
+        kind="access",
+        organisation_id=organisation_id,
+        sub=user_id,
     )
     return token, expires_in
 
@@ -72,8 +84,13 @@ def create_user_refresh_token(
     """
     ttl = get_settings().refresh_token_ttl_days * 24 * 3600
     token, expires_in, _ = _encode(
-        {"email": email}, ttl_seconds=ttl, principal_type="user", kind="refresh",
-        organisation_id=organisation_id, sub=user_id, jti=jti,
+        {"email": email},
+        ttl_seconds=ttl,
+        principal_type="user",
+        kind="refresh",
+        organisation_id=organisation_id,
+        sub=user_id,
+        jti=jti,
     )
     return token, expires_in
 
@@ -89,8 +106,12 @@ def create_agent_token(*, agent_id: str, organisation_id: str) -> tuple[str, int
         raise ValueError("agent_id is required")
     ttl = get_settings().agent_token_ttl_minutes * 60
     token, expires_in, _ = _encode(
-        {}, ttl_seconds=ttl, principal_type="agent", kind="access",
-        organisation_id=organisation_id, sub=agent_id,
+        {},
+        ttl_seconds=ttl,
+        principal_type="agent",
+        kind="access",
+        organisation_id=organisation_id,
+        sub=agent_id,
     )
     return token, expires_in
 

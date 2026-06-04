@@ -25,7 +25,7 @@ class User(Base):
     """A human user. Email is the unique login handle (stored lowercased).
 
     org-scoping: cross-org-principal — a human belongs to many organisations via membership (S2), so
-    this identity table is deliberately not org-scoped; the active org is carried on the issued token
+    this identity table is deliberately not org-scoped; the active org rides on the issued token
     (``default_organisation_id`` until S2) and the ``org_members`` edge, never as a column here.
     """
 

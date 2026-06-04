@@ -28,8 +28,11 @@ name: oraclous-backend
 # (organisation_id stamps + scoped reads), not Neo4j RBAC, so the default user is safe for dev; prod
 # (Helm/Enterprise) uses kgs_writer. The service's own config default is still kgs_writer.
 x-kgs-env: &kgs-env
-  KGS_AUTH_MODE: "dev"
+  # Auth: dev-mode (Bearer dev-token) by default; set KGS_AUTH_MODE=jwt to consume real auth-service
+  # tokens. The shared HS256 secret (AUTH_JWT_SECRET) is the SAME value the auth-service signs with.
+  KGS_AUTH_MODE: "${KGS_AUTH_MODE:-dev}"
   KGS_DEV_BEARER: "dev-token"
+  KGS_JWT_SECRET: "${AUTH_JWT_SECRET:-dev-jwt-secret}"
   KGS_DATABASE_URL: "postgresql+asyncpg://oraclous:oraclous@postgres:5432/oraclous"
   KGS_NEO4J_URI: "bolt://neo4j:7687"
   KGS_NEO4J_USER: "neo4j"
@@ -260,8 +263,9 @@ services:
     ports:
       - "8004:8000"
     environment:
-      KRS_AUTH_MODE: "dev"
+      KRS_AUTH_MODE: "${KRS_AUTH_MODE:-dev}"
       KRS_DEV_BEARER: "dev-token"
+      KRS_JWT_SECRET: "${AUTH_JWT_SECRET:-dev-jwt-secret}"
       KRS_NEO4J_URI: "bolt://neo4j:7687"
       KRS_NEO4J_USER: "neo4j"
       KRS_NEO4J_PASSWORD: "password"
@@ -269,6 +273,55 @@ services:
     depends_on:
       neo4j:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    profiles: [services]
+    networks: [substrate]
+
+  # R3.5 service #3 — identity/auth service: Alembic schema one-shot (agents + users + refresh).
+  auth-migrate:
+    build:
+      context: ..
+      dockerfile: services/auth-service/Dockerfile
+    image: oraclous-auth-service:${IMAGE_TAG:-dev}
+    environment:
+      DATABASE_URL: "postgresql+asyncpg://oraclous:oraclous@postgres:5432/oraclous"
+    command: ["alembic", "upgrade", "head"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+    profiles: [services]
+    networks: [substrate]
+
+  # R3.5 service #3 Slice 1 — identity/auth service: users (email/password), JWT issuance, agents.
+  # Issues the HS256 tokens KGS/KRS verify in jwt-mode (shared AUTH_JWT_SECRET).
+  auth-service:
+    build:
+      context: ..
+      dockerfile: services/auth-service/Dockerfile
+    image: oraclous-auth-service:${IMAGE_TAG:-dev}
+    restart: unless-stopped
+    ports:
+      - "8005:8000"
+    environment:
+      DATABASE_URL: "postgresql+asyncpg://oraclous:oraclous@postgres:5432/oraclous"
+      REDIS_URL: "redis://redis:6379/0"
+      JWT_SECRET: "${AUTH_JWT_SECRET:-dev-jwt-secret}"
+      JWT_ALGORITHM: "HS256"
+      INTERNAL_SERVICE_KEY: "${AUTH_INTERNAL_KEY:-dev-internal-key}"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      auth-migrate:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD", "python", "-c",
              "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]

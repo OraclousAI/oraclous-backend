@@ -73,9 +73,7 @@ async def test_register_login_refresh_me_flow(client: AsyncClient) -> None:
 
     # login works; bad password and unknown email are the SAME generic 401 (no enumeration)
     assert (
-        await client.post(
-            "/v1/auth/login", json={"email": "alice@ex.com", "password": "GoodPass1"}
-        )
+        await client.post("/v1/auth/login", json={"email": "alice@ex.com", "password": "GoodPass1"})
     ).status_code == 200
     assert (
         await client.post(

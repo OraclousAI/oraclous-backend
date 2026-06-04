@@ -141,6 +141,12 @@ _CYPHER_FULLTEXT_RE = re.compile(r"\bFULLTEXT\s+INDEX\b", re.IGNORECASE)
 # A deliberately-global Redis key opts out of ORG004 with this comment on its line.
 GLOBAL_OPT_OUT_MARKER = "org-scoping: global"
 
+# A cross-org *principal/identity* table (e.g. ``users`` — a human belongs to many organisations via
+# membership, so the table itself is not org-scoped; the active org is carried on the issued token,
+# not the row) opts out of ORG002 with this comment inside the class body. Org-scoped tenant-data
+# tables (and single-org principals like ``agents``) must still declare ``organisation_id``.
+CROSS_ORG_PRINCIPAL_MARKER = "org-scoping: cross-org-principal"
+
 _WORD_SPLIT_RE = re.compile(r"[^a-z0-9]+")
 
 
@@ -407,6 +413,14 @@ class _Visitor(ast.NodeVisitor):
             for s in node.body
         )
         if not has_tablename:
+            return
+        # A cross-org principal/identity table opts out (ORG002): its org scope is carried on the
+        # issued token + a membership table, not on the row.
+        cls_start, cls_end = node.lineno - 1, (getattr(node, "end_lineno", None) or node.lineno)
+        if any(
+            CROSS_ORG_PRINCIPAL_MARKER in line.lower()
+            for line in self.source_lines[cls_start:cls_end]
+        ):
             return
         declares_org = False
         for s in node.body:

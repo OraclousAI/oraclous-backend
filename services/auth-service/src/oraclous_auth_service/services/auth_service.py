@@ -54,9 +54,7 @@ class TokenBundle:
 
 
 class AuthService:
-    def __init__(
-        self, *, users: UserRepository, refresh_tokens: RefreshTokenRepository
-    ) -> None:
+    def __init__(self, *, users: UserRepository, refresh_tokens: RefreshTokenRepository) -> None:
         self._users = users
         self._refresh = refresh_tokens
 
