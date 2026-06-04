@@ -46,6 +46,7 @@ class JobService:
         data: bytes,
         filename: str | None,
         source_type: str,
+        recipe_id: str | None = None,
     ) -> IngestionJobRecord:
         # owner gate (raises GraphNotFound -> 404 at the route) before any write
         await self._graphs.get_graph(graph_id=graph_id, user_id=user_id)
@@ -55,6 +56,7 @@ class JobService:
             source_type=source_type,
             filename=filename,
             source_content=source_content,
+            recipe_id=recipe_id,
         )
         self._enqueue(str(job.id), enforced_organisation_id())
         return job

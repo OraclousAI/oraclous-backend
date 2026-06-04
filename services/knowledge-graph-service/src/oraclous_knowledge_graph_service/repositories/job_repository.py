@@ -50,6 +50,7 @@ class IngestionJobRepository:
         source_type: str,
         filename: str | None,
         source_content: str | None,
+        recipe_id: str | None = None,
     ) -> IngestionJobRecord:
         row = IngestionJob(
             organisation_id=self._org(),
@@ -57,6 +58,7 @@ class IngestionJobRepository:
             source_type=source_type,
             filename=filename,
             source_content=source_content,
+            recipe_id=recipe_id,
             status="pending",
             progress=0,
         )
@@ -90,6 +92,7 @@ class IngestionJobRepository:
             source_type=row.source_type,
             filename=row.filename,
             source_content=row.source_content,
+            recipe_id=row.recipe_id,
         )
 
     async def update_status(

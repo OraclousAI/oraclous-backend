@@ -19,6 +19,9 @@ from typing import Any
 _HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*$", re.MULTILINE)
 _TEXT_EXTS = {"txt", "text", "log", ""}
 _MD_EXTS = {"md", "markdown", "mdown"}
+# Structured kinds (csv/tsv/json/jsonl) are recognised by _kind so /upload validates + stores the
+# right source_type, but extract_text never handles them — the worker routes structured sources to
+# StructuredIngestionService instead.
 
 
 class ExtractionError(Exception):
@@ -35,11 +38,15 @@ def _kind(source_type: str | None, filename: str | None) -> str:
     st = (source_type or "").lower()
     if st in {"text", "txt", "md", "markdown", "pdf", "docx", "doc"}:
         return "md" if st in {"md", "markdown"} else ("docx" if st in {"docx", "doc"} else st)
+    if st in {"csv", "tsv", "json", "jsonl"}:
+        return st
     ext = _ext(filename)
     if ext == "pdf":
         return "pdf"
     if ext in {"docx", "doc"}:
         return "docx"
+    if ext in {"csv", "tsv", "json", "jsonl"}:
+        return ext
     if ext in _MD_EXTS:
         return "md"
     if ext in _TEXT_EXTS:

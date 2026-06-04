@@ -33,3 +33,4 @@ class IngestionPayload:
     source_type: str
     filename: str | None
     source_content: str | None
+    recipe_id: str | None

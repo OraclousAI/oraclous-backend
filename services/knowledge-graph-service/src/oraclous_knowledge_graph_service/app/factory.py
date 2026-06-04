@@ -14,17 +14,19 @@ from oraclous_knowledge_graph_service.routes import (
     health_routes,
     ingest_routes,
     internal_routes,
+    recipe_routes,
 )
 
 
 def create_app() -> FastAPI:
     app = FastAPI(
         title="knowledge-graph-service",
-        version="0.2.0",
+        version="0.3.0",
         lifespan=lifespan,
     )
     app.include_router(health_routes.router)
     app.include_router(graph_routes.router)
     app.include_router(ingest_routes.router)
     app.include_router(internal_routes.router)
+    app.include_router(recipe_routes.router)
     return app

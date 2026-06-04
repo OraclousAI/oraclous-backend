@@ -101,4 +101,58 @@ echo "  schema -> ${schema}"
 echo "$schema" | grep -q '"Document"' && pass "schema has :Document" || fail "no :Document in schema"
 echo "$schema" | grep -q '"Chunk"' && pass "schema has :Chunk" || fail "no :Chunk in schema"
 
-printf '\n\033[32mS2 smoke passed.\033[0m  text + upload -> real Neo4j :Document/:Chunk (org-scoped, key-free, idempotent).\n'
+# ---------------------------------------------------------------------------
+# S3 — structured (CSV / JSON) ingestion via the recipe engine (key-free, default recipe)
+# ---------------------------------------------------------------------------
+poll_done() {  # $1=graph $2=job
+  for _ in $(seq 1 30); do
+    s=$(curl -fsS "${AUTH[@]}" "${BASE}/api/v1/graphs/$1/jobs/$2" | jget "['status']")
+    [[ "$s" == "completed" || "$s" == "failed" ]] && { echo "$s"; return; }; sleep 2
+  done; echo "timeout"
+}
+
+step "11. ingest a CSV (default recipe) -> :Table + :Record:__Entity__"
+SGID=$(curl -fsS "${AUTH[@]}" -X POST "${BASE}/api/v1/graphs" -d '{"name":"structured"}' | jget "['id']")
+printf 'name,age,city\nAda,36,London\nCharles,49,Devon\nGrace,53,NY\n' > /tmp/kgs_people.csv
+csvjob=$(curl -fsS -H "Authorization: Bearer dev-token" -F "file=@/tmp/kgs_people.csv;type=text/csv" \
+  "${BASE}/api/v1/graphs/${SGID}/upload")
+cjid=$(echo "$csvjob" | jget "['id']")
+[[ "$(echo "$csvjob" | jget "['source_type']")" == "csv" ]] && pass "csv accepted" || fail "csv: $csvjob"
+[[ "$(poll_done "$SGID" "$cjid")" == "completed" ]] && pass "csv job completed" || fail "csv job failed"
+recs=$(cypher "MATCH (r:Record {graph_id:'${SGID}'}) RETURN count(r)" | tail -1 | tr -d ' ')
+tables=$(cypher "MATCH (t:Table {graph_id:'${SGID}'}) RETURN count(t)" | tail -1 | tr -d ' ')
+[[ "$recs" == "3" ]] && pass ":Record count=3" || fail ":Record count=$recs"
+[[ "$tables" == "1" ]] && pass ":Table count=1" || fail ":Table count=$tables"
+props=$(cypher "MATCH (r:Record {graph_id:'${SGID}'}) WHERE r.name='Ada' RETURN r.age, r.city" | tail -1)
+echo "  Ada -> ${props}"
+echo "$props" | grep -q "36" && pass "row properties projected (age/city)" || fail "props missing: $props"
+org=$(cypher "MATCH (r:Record {graph_id:'${SGID}'}) RETURN r.organisation_id LIMIT 1" | tail -1 | tr -d ' "')
+[[ "$org" == "00000000-0000-0000-0000-00000000050a" ]] && pass "organisation_id stamped" || fail "org=$org"
+
+step "12. idempotent CSV re-ingest (deterministic recipe ids -> MERGE)"
+rj=$(curl -fsS -H "Authorization: Bearer dev-token" -F "file=@/tmp/kgs_people.csv;type=text/csv" \
+  "${BASE}/api/v1/graphs/${SGID}/upload" | jget "['id']")
+poll_done "$SGID" "$rj" >/dev/null
+recs2=$(cypher "MATCH (r:Record {graph_id:'${SGID}'}) RETURN count(r)" | tail -1 | tr -d ' ')
+[[ "$recs2" == "3" ]] && pass "re-ingest idempotent (still 3 records)" || fail "duplicated: 3 -> $recs2"
+
+step "13. custom recipe -> custom :Person label"
+RECIPE='{"recipe":{"recipe_format_version":"0.2","id":"rcp_people","version":1,"status":"draft","concern":"people","applies_to":{"source_type":"csv","shape_signature":"any"},"mappings":[{"id":"p","project_to":"node","label":"Person","match":{"unit_kind":"record"},"identity":{"scheme":"deterministic","from":["column:name"]},"properties":[{"name":"age","value_from":"column:age"}]}]}}'
+stored=$(curl -fsS "${AUTH[@]}" -X POST "${BASE}/api/v1/recipes" -d "$RECIPE")
+[[ "$(echo "$stored" | jget "['id']")" == "rcp_people" ]] && pass "recipe stored" || fail "store: $stored"
+pj=$(curl -fsS -H "Authorization: Bearer dev-token" -F "file=@/tmp/kgs_people.csv;type=text/csv" \
+  -F "recipe_id=rcp_people" "${BASE}/api/v1/graphs/${SGID}/upload" | jget "['id']")
+[[ "$(poll_done "$SGID" "$pj")" == "completed" ]] && pass "custom-recipe job completed" || fail "custom job failed"
+persons=$(cypher "MATCH (p:Person {graph_id:'${SGID}'}) RETURN count(p)" | tail -1 | tr -d ' ')
+[[ "$persons" == "3" ]] && pass ":Person count=3 (custom label)" || fail ":Person count=$persons"
+
+step "14. inline JSON ingestion -> :Record"
+JGID=$(curl -fsS "${AUTH[@]}" -X POST "${BASE}/api/v1/graphs" -d '{"name":"json"}' | jget "['id']")
+jjob=$(curl -fsS "${AUTH[@]}" -X POST "${BASE}/api/v1/graphs/${JGID}/ingest" \
+  -d '{"content":"[{\"name\":\"Ada\",\"age\":36},{\"name\":\"Grace\",\"age\":53}]","source_type":"json","filename":"people.json"}')
+jjid=$(echo "$jjob" | jget "['id']")
+[[ "$(poll_done "$JGID" "$jjid")" == "completed" ]] && pass "json job completed" || fail "json failed: $jjob"
+jrecs=$(cypher "MATCH (r:Record {graph_id:'${JGID}'}) RETURN count(r)" | tail -1 | tr -d ' ')
+[[ "$jrecs" == "2" ]] && pass "json :Record count=2" || fail "json records=$jrecs"
+
+printf '\n\033[32mS1+S2+S3 smoke passed.\033[0m  text/doc + CSV/JSON (recipe engine) -> real org-scoped graph, key-free, idempotent.\n'

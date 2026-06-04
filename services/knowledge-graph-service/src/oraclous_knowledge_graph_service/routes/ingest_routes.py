@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import uuid
 
-from fastapi import APIRouter, File, HTTPException, UploadFile, status
+from fastapi import APIRouter, File, Form, HTTPException, UploadFile, status
 
 from oraclous_knowledge_graph_service.core.dependencies import JobServiceDep, UserIdDep
 from oraclous_knowledge_graph_service.schema.ingest_schemas import IngestTextRequest, JobResponse
@@ -26,13 +26,15 @@ _GRAPH_NOT_FOUND = HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="
 async def ingest_text(
     graph_id: uuid.UUID, body: IngestTextRequest, service: JobServiceDep, user_id: UserIdDep
 ) -> JobResponse:
+    default_name = "inline.txt" if body.source_type == "text" else f"inline.{body.source_type}"
     try:
         job = await service.submit(
             user_id=user_id,
             graph_id=graph_id,
             data=body.content.encode("utf-8"),
-            filename=body.filename or "inline.txt",
-            source_type="text",
+            filename=body.filename or default_name,
+            source_type=body.source_type,
+            recipe_id=body.recipe_id,
         )
     except GraphNotFound:
         raise _GRAPH_NOT_FOUND from None
@@ -45,6 +47,7 @@ async def upload_document(
     service: JobServiceDep,
     user_id: UserIdDep,
     file: UploadFile = File(...),  # noqa: B008 — FastAPI File() marker is the idiom
+    recipe_id: str | None = Form(default=None),  # noqa: B008 — FastAPI Form() marker is the idiom
 ) -> JobResponse:
     try:
         source_type = source_type_for(file.filename)
@@ -60,6 +63,7 @@ async def upload_document(
             data=data,
             filename=file.filename,
             source_type=source_type,
+            recipe_id=recipe_id,
         )
     except GraphNotFound:
         raise _GRAPH_NOT_FOUND from None
