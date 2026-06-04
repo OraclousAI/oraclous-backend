@@ -10,7 +10,11 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  quality:
+  # `lint` is ALWAYS green by design (no test execution) and is the REQUIRED merge-gate
+  # status check. It mirrors the .githooks/pre-push hook exactly. Splitting it out from the
+  # tests lets the ruleset block avoidable lint/format/type churn WITHOUT freezing ADR-010's
+  # two-PR TDD, where `unit`/`integration` are intentionally RED until the `[impl]` lands.
+  lint:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -39,6 +43,18 @@ jobs:
         run: uv run python -m tools.contract.verify_checksums
       - name: Neo4j read-role bypass guardrail (ORAA-58 / T6)
         run: uv run python -m tools.lint.check_neo4j_read_role
+
+  # `unit` runs the unit suite. It is intentionally RED during the TDD tests->impl window
+  # (a `[tests]` PR lands failing tests for an unbuilt seam), so it is NOT a required gate.
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          version: "0.11.7"
+      - run: uv python install 3.12
+      - run: uv sync --all-packages --frozen
       - name: Unit tests
         run: |
           set +e
