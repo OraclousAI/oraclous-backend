@@ -34,12 +34,17 @@ def _ext(filename: str | None) -> str:
     return filename.rsplit(".", 1)[-1].lower()
 
 
+_CODE_EXTS = {"py", "ts", "tsx", "js", "jsx", "go", "java", "zip"}
+
+
 def _kind(source_type: str | None, filename: str | None) -> str:
     st = (source_type or "").lower()
     if st in {"text", "txt", "md", "markdown", "pdf", "docx", "doc"}:
         return "md" if st in {"md", "markdown"} else ("docx" if st in {"docx", "doc"} else st)
     if st in {"csv", "tsv", "json", "jsonl"}:
         return st
+    if st == "code":
+        return "code"
     ext = _ext(filename)
     if ext == "pdf":
         return "pdf"
@@ -47,6 +52,8 @@ def _kind(source_type: str | None, filename: str | None) -> str:
         return "docx"
     if ext in {"csv", "tsv", "json", "jsonl"}:
         return ext
+    if ext in _CODE_EXTS:
+        return "code"
     if ext in _MD_EXTS:
         return "md"
     if ext in _TEXT_EXTS:
