@@ -41,7 +41,7 @@ _CHAT_QUERY = "What do we know about the organisation's strategic goals?"
 _NODE_ID = "node-strategy-001"
 _TIMESTAMP = "2026-06-04T00:00:00Z"
 _LATENCY_BUDGET_MS = 500.0  # pre-R3 baseline (ASGI in-process)
-_LATENCY_TOLERANCE = 0.05   # 5 %
+_LATENCY_TOLERANCE = 0.05  # 5 %
 
 
 async def _make_client():
@@ -77,9 +77,7 @@ def _assert_chat_grounding_compatible(items: list[Any]) -> None:
         assert isinstance(item["type"], str) and item["type"], (
             "NodeResult.type must be a non-empty string"
         )
-        assert isinstance(item["properties"], dict), (
-            "NodeResult.properties must be a dict"
-        )
+        assert isinstance(item["properties"], dict), "NodeResult.properties must be a dict"
 
 
 # ---------------------------------------------------------------------------
@@ -98,45 +96,35 @@ class TestChatPathQueriesSucceed:
     async def test_semantic_search_handles_chat_query(self) -> None:
         """POST /v1/search/semantic accepts a natural-language chat query."""
         async with await _make_client() as client:
-            response = await client.post(
-                "/v1/search/semantic", json={"query": _CHAT_QUERY}
-            )
+            response = await client.post("/v1/search/semantic", json={"query": _CHAT_QUERY})
         assert response.status_code == 200
         _assert_chat_grounding_compatible(response.json())
 
     async def test_fulltext_search_handles_chat_query(self) -> None:
         """POST /v1/search/fulltext accepts a natural-language chat query."""
         async with await _make_client() as client:
-            response = await client.post(
-                "/v1/search/fulltext", json={"query": _CHAT_QUERY}
-            )
+            response = await client.post("/v1/search/fulltext", json={"query": _CHAT_QUERY})
         assert response.status_code == 200
         _assert_chat_grounding_compatible(response.json())
 
     async def test_hybrid_search_handles_chat_query(self) -> None:
         """POST /v1/search/hybrid accepts a natural-language chat query."""
         async with await _make_client() as client:
-            response = await client.post(
-                "/v1/search/hybrid", json={"query": _CHAT_QUERY}
-            )
+            response = await client.post("/v1/search/hybrid", json={"query": _CHAT_QUERY})
         assert response.status_code == 200
         _assert_chat_grounding_compatible(response.json())
 
     async def test_graph_traverse_handles_chat_node(self) -> None:
         """GET /v1/graph/traverse handles a node_id arising from a chat context."""
         async with await _make_client() as client:
-            response = await client.get(
-                "/v1/graph/traverse", params={"node_id": _NODE_ID}
-            )
+            response = await client.get("/v1/graph/traverse", params={"node_id": _NODE_ID})
         assert response.status_code == 200
         _assert_chat_grounding_compatible(response.json())
 
     async def test_temporal_slice_handles_chat_timestamp(self) -> None:
         """GET /v1/graph/temporal accepts a ISO-8601 timestamp from a chat session."""
         async with await _make_client() as client:
-            response = await client.get(
-                "/v1/graph/temporal", params={"ts": _TIMESTAMP}
-            )
+            response = await client.get("/v1/graph/temporal", params={"ts": _TIMESTAMP})
         assert response.status_code == 200
         _assert_chat_grounding_compatible(response.json())
 
@@ -146,18 +134,15 @@ class TestChatPathQueriesSucceed:
             routes = [
                 ("POST", "/v1/search/semantic", {"query": _CHAT_QUERY}),
                 ("POST", "/v1/search/fulltext", {"query": _CHAT_QUERY}),
-                ("POST", "/v1/search/hybrid",   {"query": _CHAT_QUERY}),
-                ("GET",  "/v1/graph/traverse",  None),
-                ("GET",  "/v1/graph/temporal",  None),
+                ("POST", "/v1/search/hybrid", {"query": _CHAT_QUERY}),
+                ("GET", "/v1/graph/traverse", None),
+                ("GET", "/v1/graph/temporal", None),
             ]
             for method, path, body in routes:
                 if method == "POST":
                     r = await client.post(path, json=body)
                 else:
-                    params = (
-                        {"node_id": _NODE_ID} if "traverse" in path
-                        else {"ts": _TIMESTAMP}
-                    )
+                    params = {"node_id": _NODE_ID} if "traverse" in path else {"ts": _TIMESTAMP}
                     r = await client.get(path, params=params)
                 assert r.status_code != 404, (
                     f"Chat-path endpoint {method} {path} returned 404 — not routed"
@@ -251,9 +236,7 @@ class TestNodeResultSourceInfoCompatibility:
     async def test_semantic_result_maps_to_source_info(self) -> None:
         """POST /v1/search/semantic result can be mapped to SourceInfo fields."""
         async with await _make_client() as client:
-            response = await client.post(
-                "/v1/search/semantic", json={"query": _CHAT_QUERY}
-            )
+            response = await client.post("/v1/search/semantic", json={"query": _CHAT_QUERY})
         items = response.json()
         assert len(items) > 0
         first = items[0]
@@ -268,9 +251,7 @@ class TestNodeResultSourceInfoCompatibility:
     async def test_hybrid_result_maps_to_source_info(self) -> None:
         """POST /v1/search/hybrid result can be mapped to SourceInfo fields."""
         async with await _make_client() as client:
-            response = await client.post(
-                "/v1/search/hybrid", json={"query": _CHAT_QUERY}
-            )
+            response = await client.post("/v1/search/hybrid", json={"query": _CHAT_QUERY})
         items = response.json()
         first = items[0]
         assert isinstance(first.get("id"), str)
@@ -280,9 +261,7 @@ class TestNodeResultSourceInfoCompatibility:
     async def test_traverse_result_maps_to_source_info(self) -> None:
         """GET /v1/graph/traverse result can be mapped to SourceInfo fields."""
         async with await _make_client() as client:
-            response = await client.get(
-                "/v1/graph/traverse", params={"node_id": _NODE_ID}
-            )
+            response = await client.get("/v1/graph/traverse", params={"node_id": _NODE_ID})
         items = response.json()
         first = items[0]
         assert isinstance(first.get("id"), str)
@@ -297,9 +276,7 @@ class TestNodeResultSourceInfoCompatibility:
         graph depth) must live inside properties.
         """
         async with await _make_client() as client:
-            response = await client.post(
-                "/v1/search/semantic", json={"query": _CHAT_QUERY}
-            )
+            response = await client.post("/v1/search/semantic", json={"query": _CHAT_QUERY})
         for item in response.json():
             extra = set(item.keys()) - {"id", "type", "properties"}
             assert not extra, (
@@ -316,9 +293,7 @@ class TestNodeResultSourceInfoCompatibility:
         the envelope carries useful data for grounding rather than being empty.
         """
         async with await _make_client() as client:
-            response = await client.post(
-                "/v1/search/hybrid", json={"query": _CHAT_QUERY}
-            )
+            response = await client.post("/v1/search/hybrid", json={"query": _CHAT_QUERY})
         for item in response.json():
             props = item.get("properties", {})
             assert isinstance(props, dict), "properties must be a dict"
@@ -334,9 +309,7 @@ class TestNodeResultSourceInfoCompatibility:
         sources incorrectly, leading to hallucination-risk gaps in grounding.
         """
         async with await _make_client() as client:
-            response = await client.post(
-                "/v1/search/semantic", json={"query": _CHAT_QUERY}
-            )
+            response = await client.post("/v1/search/semantic", json={"query": _CHAT_QUERY})
         items = response.json()
         ids = [item["id"] for item in items]
         assert len(ids) == len(set(ids)), (
@@ -353,16 +326,11 @@ class TestNodeResultSourceInfoCompatibility:
         """
         query = "What is the strategic vision for 2027?"
         async with await _make_client() as client:
-            response = await client.post(
-                "/v1/search/semantic", json={"query": query}
-            )
+            response = await client.post("/v1/search/semantic", json={"query": query})
         items = response.json()
         assert len(items) > 0
         first_props = items[0]["properties"]
-        assert any(
-            isinstance(v, str) and query in v
-            for v in first_props.values()
-        ), (
+        assert any(isinstance(v, str) and query in v for v in first_props.values()), (
             "At least one property value should carry the originating query "
             "so the chat service can attribute grounding back to the user input; "
             "this ensures AC3 compatibility with the pre-R3 provenance contract"
@@ -441,7 +409,7 @@ class TestKGSShimChatProxyPath:
                 captured_body.append(await request.aread())
                 return httpx.Response(
                     200,
-                    content=b'{}',
+                    content=b"{}",
                     headers={"content-type": "application/json"},
                     request=request,
                 )
@@ -460,6 +428,5 @@ class TestKGSShimChatProxyPath:
         assert captured_body, "Shim must produce a request body when forwarding to KRS"
         body_text = captured_body[0].decode()
         assert chat_query in body_text, (
-            f"KRS request body must contain the chat query {chat_query!r}; "
-            f"got: {body_text!r}"
+            f"KRS request body must contain the chat query {chat_query!r}; got: {body_text!r}"
         )
