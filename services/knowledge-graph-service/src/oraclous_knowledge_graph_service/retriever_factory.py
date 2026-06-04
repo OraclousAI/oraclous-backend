@@ -2,6 +2,8 @@
 
 This module is a backwards-compatibility shim.  Callers must migrate to
 oraclous_knowledge_retriever_service.retriever_factory.
+
+Note: ``**kwargs`` are accepted for signature compatibility with KRS but are not forwarded to KRS.
 """
 
 from __future__ import annotations
@@ -29,4 +31,5 @@ class RetrieverFactory:
                 f"{krs_base_url}/factory/create",
                 json={"retriever_type": retriever_type},
             )
+            resp.raise_for_status()
             return resp.json()

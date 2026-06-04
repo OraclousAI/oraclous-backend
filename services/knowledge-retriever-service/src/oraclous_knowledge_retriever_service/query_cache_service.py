@@ -6,5 +6,5 @@ from typing import Any
 
 
 class QueryCacheService:
-    async def get(self, key: str, **kwargs: Any) -> Any:
+    async def get(self, key: str, **kwargs: Any) -> dict:
         raise NotImplementedError("cache not yet implemented")

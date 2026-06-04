@@ -2,6 +2,8 @@
 
 This module is a backwards-compatibility shim.  Callers must migrate to
 oraclous_knowledge_retriever_service.query_cache_service.
+
+Note: ``**kwargs`` are accepted for signature compatibility with KRS but are not forwarded to KRS.
 """
 
 from __future__ import annotations
@@ -26,4 +28,5 @@ class QueryCacheService:
         krs_base_url = os.environ.get("KRS_BASE_URL", "http://krs-service:8006")
         async with httpx.AsyncClient(transport=_transport or httpx.AsyncHTTPTransport()) as client:
             resp = await client.get(f"{krs_base_url}/cache", params={"key": key})
+            resp.raise_for_status()
             return resp.json()
