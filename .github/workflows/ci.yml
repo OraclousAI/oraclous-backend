@@ -37,6 +37,8 @@ jobs:
         run: uv run python -m tools.lint.check_neo4j_write_role
       - name: Contract fixture integrity (error envelope, ORA-37)
         run: uv run python -m tools.contract.verify_checksums
+      - name: Neo4j read-role bypass guardrail (ORAA-58 / T6)
+        run: uv run python -m tools.lint.check_neo4j_read_role
       - name: Unit tests
         run: |
           set +e

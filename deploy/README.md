@@ -98,7 +98,7 @@ COMPOSE_PROJECT_NAME=oraclous-fe-target \
 
 Contact the CTO if the fe-target stack is down.
 
-## Neo4j write role (ORAA-53)
+## Neo4j roles (ORAA-53 / ORAA-58)
 
 The knowledge-graph-service (write path) connects to Neo4j as a dedicated
 `kgs_writer` user with the `publisher` role (read + write + schema-element
@@ -107,7 +107,7 @@ with the `reader` role.  Neither service uses the `neo4j` admin account.  This
 follows principle of least privilege (Threat T6): a compromised KGS or KRS
 credential does not grant admin access to Neo4j.
 
-### Neo4j roles
+### Role summary
 
 | User | Neo4j role | Capabilities | Service |
 |---|---|---|---|
@@ -137,6 +137,14 @@ The knowledge-graph-service reads these env vars:
 | `KGS_NEO4J_USER` | `kgs_writer` | Write-capable Neo4j user |
 | `KGS_NEO4J_PASSWORD` | `kgs-writer-pass` | Dev-only; K8s secret in production |
 
+The knowledge-retriever-service reads these env vars:
+
+| Env var | Dev value | Description |
+|---|---|---|
+| `KRS_NEO4J_URI` | `bolt://neo4j:7687` | Bolt URI for the KRS Neo4j connection |
+| `KRS_NEO4J_USER` | `krs_reader` | Read-only Neo4j user |
+| `KRS_NEO4J_PASSWORD` | `krs-reader-pass` | Dev-only; K8s secret in production |
+
 ### Production (Kubernetes / Helm)
 
 1. Create a K8s Secret containing the `kgs_writer` password:
@@ -145,13 +153,19 @@ The knowledge-graph-service reads these env vars:
      --from-literal=password=<strong-password>
    ```
 
-2. Create a K8s Secret for the Neo4j admin password (used by the init Job):
+2. Create a K8s Secret containing the `krs_reader` password:
+   ```bash
+   kubectl create secret generic neo4j-krs-reader \
+     --from-literal=password=<strong-password>
+   ```
+
+3. Create a K8s Secret for the Neo4j admin password (used by the init Job):
    ```bash
    kubectl create secret generic neo4j-admin \
      --from-literal=password=<admin-password>
    ```
 
-3. Set Helm values (see `deploy/helm/values.yaml` `neo4jRoles.kgsWriter`):
+4. Set Helm values (see `deploy/helm/values.yaml` `neo4jRoles.kgsWriter`):
    ```yaml
    neo4jRoles:
      kgsWriter:
@@ -164,7 +178,7 @@ The knowledge-graph-service reads these env vars:
      adminSecretName: neo4j-admin
    ```
 
-4. **The `neo4jRoleInit` block in `values.yaml` is scaffolding for a future Helm Job
+5. **The `neo4jRoleInit` block in `values.yaml` is scaffolding for a future Helm Job
    template** (`deploy/helm/templates/neo4j-role-init-job.yaml`). That template does not
    exist yet — `deploy/helm/templates/` currently contains only `NOTES.txt` and
    `_helpers.tpl`. Setting `neo4jRoleInit.enabled: true` and running `helm upgrade` has
@@ -172,10 +186,17 @@ The knowledge-graph-service reads these env vars:
 
    Until then, provision roles manually from a pod that can reach the Neo4j bolt port:
    ```bash
+   # KGS write role
    kubectl run neo4j-init --rm -it --image=neo4j:5.23-community --restart=Never -- \
      cypher-shell -a bolt://<neo4j-host>:7687 -u neo4j -p <admin-password> \
        --param 'kgs_writer_password => "<strong-password>"' \
        -f /dev/stdin < deploy/neo4j-init/kgs_write_role.cypher
+
+   # KRS read role — $krs_reader_password is a required parameter, no baked-in default
+   kubectl run neo4j-init --rm -it --image=neo4j:5.23-community --restart=Never -- \
+     cypher-shell -a bolt://<neo4j-host>:7687 -u neo4j -p <admin-password> \
+       --param 'krs_reader_password => "<strong-password>"' \
+       -f /dev/stdin < deploy/neo4j-init/krs_read_role.cypher
    ```
 
 ### Static analysis
@@ -185,7 +206,12 @@ A CI guardrail (`tools/lint/check_neo4j_write_role.py`) enforces that no code in
 `NEO4J_PASSWORD` admin env vars or hardcodes a `bolt://` URI.  Any bypass is
 flagged as a NEO4J001/NEO4J002 violation and blocks the CI `quality` job.
 
+A second guardrail (`tools/lint/check_neo4j_read_role.py`) enforces the same for
+`services/knowledge-retriever-service/` — no write Cypher (CREATE/MERGE/SET/DELETE)
+and no admin env var usage (NEO4J002/NEO4J003).
+
 ```bash
 uv run python -m tools.lint.check_neo4j_write_role
-# exits 0 — no bypass patterns found
+uv run python -m tools.lint.check_neo4j_read_role
+# both exit 0 — no violations found
 ```
