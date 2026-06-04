@@ -91,7 +91,7 @@ SET l.min_role   = 'viewer',
 _CLEANUP_CYPHER = """
 MATCH (n)
 WHERE n.graph_id IN [$alpha, $beta]
-   OR (n:User:__Platform__ {user_id: $user})
+   OR (n:User AND n:__Platform__ AND n.user_id = $user)
 DETACH DELETE n
 """
 
