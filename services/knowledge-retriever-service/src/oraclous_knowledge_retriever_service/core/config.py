@@ -17,11 +17,15 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="KRS_", extra="ignore")
 
-    # --- identity seam (dev-auth / single-tenant; same dev org as KGS) ---
+    # --- identity seam (dev-auth by default; `jwt` consumes the real auth-service token) ---
     auth_mode: Literal["dev", "jwt"] = "dev"
     dev_bearer: str = "dev-token"
     dev_user_id: str = "00000000-0000-0000-0000-0000000000d5"
     dev_org_id: str = "00000000-0000-0000-0000-00000000050a"
+    # jwt mode: the shared HS256 secret the auth-service signs with (compose injects KRS_JWT_SECRET
+    # = the auth-service JWT_SECRET). No default — jwt mode fails closed without it.
+    jwt_secret: str | None = None
+    jwt_algorithm: str = "HS256"
 
     # --- Neo4j (read role krs_reader, ORAA-53). No hardcoded URI default. ---
     neo4j_uri: str | None = None

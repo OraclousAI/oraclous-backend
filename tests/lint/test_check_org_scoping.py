@@ -92,6 +92,23 @@ def test_org002_storage_model_with_org_passes() -> None:
     assert "ORG002" not in _rules(src)
 
 
+def test_org002_cross_org_principal_marker_exempts_identity_table() -> None:
+    # a cross-org principal table (e.g. users) opts out: org is on the token + membership, not a row
+    src = (
+        "class User(Base):\n"
+        "    '''A human user. org-scoping: cross-org-principal — org via membership.'''\n"
+        "    __tablename__ = 'users'\n"
+        "    id = Column(String)\n"
+    )
+    assert "ORG002" not in _rules(src)
+
+
+def test_org002_without_marker_still_flagged() -> None:
+    # the exemption is opt-in only — an unmarked org-less table is still flagged
+    src = "class Untenanted(Base):\n    __tablename__ = 'untenanted'\n    id = Column(String)\n"
+    assert "ORG002" in _rules(src)
+
+
 def test_clean_source_has_no_violations() -> None:
     assert _rules("def add(a, b):\n    return a + b\n") == set()
 

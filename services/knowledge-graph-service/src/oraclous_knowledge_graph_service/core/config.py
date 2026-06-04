@@ -18,11 +18,15 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="KGS_", extra="ignore")
 
-    # --- identity seam (S1 dev-auth / single-tenant; swapped for the real identity service) ---
+    # --- identity seam (dev-auth by default; `jwt` consumes the real auth-service token) ---
     auth_mode: Literal["dev", "jwt"] = "dev"
     dev_bearer: str = "dev-token"
     dev_user_id: str = "00000000-0000-0000-0000-0000000000d5"
     dev_org_id: str = "00000000-0000-0000-0000-00000000050a"
+    # jwt mode: the shared HS256 secret the auth-service signs with (compose injects KGS_JWT_SECRET
+    # = the auth-service JWT_SECRET). No default — jwt mode fails closed without it.
+    jwt_secret: str | None = None
+    jwt_algorithm: str = "HS256"
 
     # --- Postgres (graph metadata + ingestion jobs) ---
     database_url: str = "postgresql+asyncpg://oraclous:oraclous@postgres:5432/oraclous"
