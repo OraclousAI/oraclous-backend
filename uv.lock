@@ -775,6 +775,18 @@ source = { editable = "services/harness-runtime-service" }
 name = "oraclous-knowledge-graph-service"
 version = "0.0.0"
 source = { editable = "services/knowledge-graph-service" }
+dependencies = [
+    { name = "fastapi" },
+    { name = "httpx" },
+    { name = "pydantic" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "fastapi", specifier = ">=0.115,<1.0" },
+    { name = "httpx", specifier = ">=0.27,<1.0" },
+    { name = "pydantic", specifier = ">=2.0,<3.0" },
+]
 
 [[package]]
 name = "oraclous-knowledge-retriever-service"
