@@ -97,3 +97,57 @@ async def enforce_agent_credential_prefix_rate_limit(request: Request) -> None:
             detail="Rate limit exceeded for this credential prefix. Try again later.",
             headers={"Retry-After": str(retry_after)},
         )
+
+
+_INVITE_KEY_NS = "rl:invite:pfx:"
+
+
+def _extract_token(body_bytes: bytes) -> str:
+    """Return the ``token`` field from the request body, or an empty string (fail-open shape)."""
+    try:
+        data: Any = json.loads(body_bytes)
+    except (ValueError, TypeError):
+        return ""
+    if not isinstance(data, dict):
+        return ""
+    raw = data.get("token", "") or ""
+    return raw if isinstance(raw, str) else ""
+
+
+async def enforce_invitation_token_prefix_rate_limit(request: Request) -> None:
+    """Cap invitation peek/accept attempts per token-prefix window (T-INVITE brute-force guard).
+
+    Same window + fail-open-on-Redis-fault discipline as the agent limiter, on a distinct namespace
+    and the ``token`` body field.
+    """
+    token = _extract_token(await request.body())
+    prefix = token[:_PREFIX_WINDOW_LEN]
+    if not prefix:
+        return
+    redis_client = getattr(request.app.state, "redis", None)
+    if redis_client is None:
+        logger.warning("rate_limiter: Redis not available, skipping invitation prefix check")
+        return
+    redis_key = f"{_INVITE_KEY_NS}{prefix}"
+    try:
+        async with redis_client.pipeline(transaction=True) as pipe:
+            await pipe.incr(redis_key)
+            await pipe.expire(redis_key, _PREFIX_WINDOW_SECONDS)
+            results = await pipe.execute()
+        count = int(results[0])
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001 — fail-open per legacy precedent
+        logger.error("rate_limiter: Redis error during invitation prefix check: %s", exc)
+        return
+    if count > _PREFIX_LIMIT:
+        try:
+            ttl = await redis_client.ttl(redis_key)
+        except Exception:  # noqa: BLE001 — fall back to minimum retry
+            ttl = 1
+        retry_after = max(int(ttl) if ttl is not None else 1, 1)
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Rate limit exceeded for this invitation token. Try again later.",
+            headers={"Retry-After": str(retry_after)},
+        )

@@ -94,7 +94,34 @@ echo "$listed" | grep -q "$g2" && fail "ISOLATION BREACH: personal-org token saw
 echo "$listed" | grep -q "$gid" && pass "personal-org token still sees its own graph" \
   || fail "personal-org token lost its own graph"
 
-step "8. KRS jwt-mode accepts the same identity (read side)"
+step "8. S3: invite an email into org2, accept it, and confirm the new membership"
+INVTOK=$(curl -fsS -H "Authorization: Bearer ${T2}" -H "Content-Type: application/json" \
+  -X POST "${AUTH}/v1/orgs/${ORG2}/invitations" -d '{"email":"invitee@oraclous.dev"}' \
+  | jget "['token']")
+[[ -n "$INVTOK" ]] && pass "owner invited invitee@oraclous.dev (hashed token issued)" \
+  || fail "invitation create failed"
+peekrole=$(curl -fsS -H "Content-Type: application/json" -X POST "${AUTH}/v1/invitations/peek" \
+  -d "{\"token\":\"${INVTOK}\"}" | jget "['role']")
+[[ "$peekrole" == "member" ]] && pass "public peek resolves the invitation (role=member)" \
+  || fail "peek failed: $peekrole"
+# the invitee registers (fresh) or logs in, then accepts
+ireg=$(curl -s -H "Content-Type: application/json" -X POST "${AUTH}/v1/auth/register" \
+  -d '{"email":"invitee@oraclous.dev","password":"InviteePass1"}')
+IACCESS=$(echo "$ireg" | jget "['access_token']" 2>/dev/null || echo "")
+[[ -z "$IACCESS" ]] && IACCESS=$(curl -fsS -H "Content-Type: application/json" \
+  -X POST "${AUTH}/v1/auth/login" -d '{"email":"invitee@oraclous.dev","password":"InviteePass1"}' \
+  | jget "['access_token']")
+acceptedorg=$(curl -fsS -H "Authorization: Bearer ${IACCESS}" -H "Content-Type: application/json" \
+  -X POST "${AUTH}/v1/invitations/accept" -d "{\"token\":\"${INVTOK}\"}" | jget "['organisation_id']")
+[[ "$acceptedorg" == "$ORG2" ]] && pass "invitee accepted -> member of org2" \
+  || fail "accept did not join org2: $acceptedorg"
+# replay the (now accepted) token -> generic 400
+c=$(code -H "Authorization: Bearer ${IACCESS}" -H "Content-Type: application/json" \
+  -X POST "${AUTH}/v1/invitations/accept" -d "{\"token\":\"${INVTOK}\"}")
+[[ "$c" == "400" ]] && pass "replayed invitation token rejected (generic 400)" \
+  || fail "replayed token expected 400, got $c"
+
+step "9. KRS jwt-mode accepts the same identity (read side)"
 c=$(code -H "Authorization: Bearer ${ACCESS}" -H "Content-Type: application/json" \
   -X POST "${KRS}/v1/search/semantic" -d "{\"query\":\"x\",\"graph_id\":\"${gid}\"}")
 [[ "$c" != "401" ]] && pass "KRS accepts the user token (HTTP $c, not 401)" \
