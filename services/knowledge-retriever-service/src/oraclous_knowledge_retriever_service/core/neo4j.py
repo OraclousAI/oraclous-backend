@@ -27,8 +27,10 @@ def make_neo4j_driver(settings: Settings) -> Driver:
 
 
 def ensure_schema(driver: Driver, settings: Settings, *, database: str | None = None) -> None:
+    # organisation_id is indexed alongside text (ADR-006 / ORG005): the index is org-aware, and
+    # every fulltext query still post-filters node.organisation_id (Community has no RLS backstop).
     driver.execute_query(
         f"CREATE FULLTEXT INDEX {settings.chunk_fulltext_index} IF NOT EXISTS "
-        "FOR (c:Chunk) ON EACH [c.text]",
+        "FOR (c:Chunk) ON EACH [c.text, c.organisation_id]",
         database_=database,
     )
