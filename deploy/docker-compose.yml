@@ -22,6 +22,22 @@
 #   KGS_NEO4J_PASSWORD kgs-writer-pass   (dev); K8s secret in production
 name: oraclous-backend
 
+# Shared KGS environment (API + worker). S2 wires Neo4j + Redis/Celery for ingestion.
+# Dev uses the default `neo4j` user: the kgs_writer least-privilege role (ORAA-53) is an Enterprise
+# feature (GRANT ROLE), and this dev stack runs Neo4j Community. Org isolation here is property-based
+# (organisation_id stamps + scoped reads), not Neo4j RBAC, so the default user is safe for dev; prod
+# (Helm/Enterprise) uses kgs_writer. The service's own config default is still kgs_writer.
+x-kgs-env: &kgs-env
+  KGS_AUTH_MODE: "dev"
+  KGS_DEV_BEARER: "dev-token"
+  KGS_DATABASE_URL: "postgresql+asyncpg://oraclous:oraclous@postgres:5432/oraclous"
+  KGS_NEO4J_URI: "bolt://neo4j:7687"
+  KGS_NEO4J_USER: "neo4j"
+  KGS_NEO4J_PASSWORD: "password"
+  KGS_REDIS_URL: "redis://redis:6379/0"
+  KGS_EMBEDDER: "hashing"
+  KGS_EXTRACTOR: "null"
+
 services:
   neo4j:
     image: neo4j:5.23-community
@@ -186,13 +202,13 @@ services:
     ports:
       - "8003:8000"
     environment:
-      # Identity seam — dev mode: fixed bearer -> fixed dev principal/org (R3.5-P3 swaps to jwt).
-      KGS_AUTH_MODE: "dev"
-      KGS_DEV_BEARER: "dev-token"
-      KGS_DATABASE_URL: "postgresql+asyncpg://oraclous:oraclous@postgres:5432/oraclous"
-      # S1 is Postgres-only. Neo4j / Redis / embedder env are added by S2 when ingestion is wired.
+      <<: *kgs-env
     depends_on:
       postgres:
+        condition: service_healthy
+      neo4j:
+        condition: service_healthy
+      redis:
         condition: service_healthy
       kgs-migrate:
         condition: service_completed_successfully
@@ -205,6 +221,31 @@ services:
       timeout: 5s
       retries: 5
       start_period: 20s
+    profiles: [services]
+    networks: [substrate]
+
+  # R3.5-P1-S2 — Celery worker: runs the async ingest pipeline (extract -> chunk -> embed -> write).
+  knowledge-graph-worker:
+    image: oraclous-knowledge-graph-service:${IMAGE_TAG:-dev}
+    restart: unless-stopped
+    command:
+      - celery
+      - -A
+      - oraclous_knowledge_graph_service.tasks.celery_app:celery_app
+      - worker
+      - --loglevel=info
+      - --concurrency=2
+    environment:
+      <<: *kgs-env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      neo4j:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kgs-migrate:
+        condition: service_completed_successfully
     profiles: [services]
     networks: [substrate]
 
