@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# .githooks/pre-push — ENFORCED local quality gate (ORAA-4 §5 / §13.1), enacted 2026-06-04 (ORAA-250).
+#
+# Mirrors CI's `quality` job exactly (the static checks) so lint/format/type/
+# import-contract/guardrail failures NEVER reach CI or a reviewer. A failing
+# push is BLOCKED here — it does not become a CI round-trip or a [fix] ticket.
+#
+# This is a mechanism, not a rule: it physically prevents red-quality pushes.
+# Bypass is possible with `git push --no-verify` but is a §5 violation except
+# for the one-time hook-bootstrap commit.
+set -uo pipefail
+
+if ! command -v uv >/dev/null 2>&1; then
+  echo "[pre-push] WARNING: uv not found — cannot run the quality gate locally." >&2
+  echo "[pre-push] Install uv to enforce (https://docs.astral.sh/uv/). Allowing push." >&2
+  exit 0
+fi
+
+fail() {
+  echo "" >&2
+  echo "[pre-push] ❌ BLOCKED: $1 failed." >&2
+  echo "[pre-push] Fix it before pushing — do not push red (ORAA-4 §13.1). Never spawn a [fix] ticket for this (§9.2)." >&2
+  exit 1
+}
+
+echo "[pre-push] running local quality gate (mirrors CI 'quality' job)…" >&2
+uv run ruff check .                                                          || fail "ruff lint (uv run ruff check .)"
+uv run ruff format --check .                                                 || fail "ruff format (run: uv run ruff format .)"
+uv run mypy tools                                                            || fail "mypy tools"
+uv run lint-imports                                                          || fail "import contracts (lint-imports)"
+uv run python -m tools.lint.check_org_scoping packages services             || fail "org-scoping guardrail"
+uv run python -m tools.lint.check_org_scoped_labels_schema                  || fail "org-scoped-labels YAML schema"
+uv run python -m tools.lint.check_test_imports packages services tests      || fail "test-import hygiene (TDD-window collection safety)"
+uv run python -m tools.lint.check_neo4j_write_role                          || fail "neo4j write-role guardrail"
+uv run python -m tools.contract.verify_checksums                            || fail "contract fixture integrity"
+echo "[pre-push] ✅ quality gate passed." >&2
