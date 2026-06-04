@@ -44,12 +44,23 @@ COPY --from=builder /app/.venv /app/.venv
 # Copy service source (packages are in the venv; only the service module is needed)
 COPY services/knowledge-graph-service/src/ \
      ./services/knowledge-graph-service/src/
+# Migrations + alembic config + dev seed (run by the kgs-migrate / kgs-seed one-shots)
+COPY services/knowledge-graph-service/migrations/ \
+     ./services/knowledge-graph-service/migrations/
+COPY services/knowledge-graph-service/alembic.ini \
+     ./services/knowledge-graph-service/alembic.ini
+COPY services/knowledge-graph-service/scripts/ \
+     ./services/knowledge-graph-service/scripts/
 
 ENV PATH="/app/.venv/bin:$PATH" \
     PYTHONPATH="/app/services/knowledge-graph-service/src"
+WORKDIR /app/services/knowledge-graph-service
 
 RUN addgroup --system svc && adduser --system --ingroup svc --no-create-home svc
 RUN chown -R svc:svc /app
 USER svc
 
-CMD ["python", "-c", "import oraclous_knowledge_graph_service; print('oraclous-knowledge-graph-service: import OK')"]
+# Default: serve the API. The compose one-shots override this to run
+# `alembic upgrade head` (kgs-migrate) and `python scripts/seed_dev.py` (kgs-seed).
+EXPOSE 8000
+CMD ["uvicorn", "oraclous_knowledge_graph_service.main:app", "--host", "0.0.0.0", "--port", "8000"]

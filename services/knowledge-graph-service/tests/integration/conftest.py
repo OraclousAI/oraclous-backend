@@ -1,12 +1,9 @@
-"""Integration-test fixtures for knowledge-graph-service API layer (ORAA-55, ORAA-57).
+"""Integration-test fixtures for the knowledge-graph-service API layer (R3.5-P1-S1).
 
-Provides an ``async_client`` HTTP test client fixture that targets the KGS
-FastAPI application. All imports of the SUT are function-local (ORA-48 /
-TST001) so this conftest can be collected while the HTTP application layer is
-still unwritten.
-
-RED until ``oraclous_knowledge_graph_service.app.create_app()`` is implemented
-with the full API layer (graph endpoints + internal schema router) mounted.
+`async_client` targets the real `create_app()` ASGI app. The DB is NOT touched: tests override the
+`get_graph_service` dependency with an in-memory fake (see `test_graph_api.py`), so these run with
+no Postgres. The real dev-auth seam (`verify_token`, `get_principal`) IS exercised — 401 paths are
+real. Cross-org scoping against a live DB is covered by the docker smoke (tests/smoke/smoke.sh).
 """
 
 from __future__ import annotations
@@ -15,17 +12,15 @@ import pytest
 
 
 @pytest.fixture
-async def async_client():
-    """Async HTTPX client wired to the knowledge-graph-service ASGI app.
+def app():
+    from oraclous_knowledge_graph_service.app import create_app
 
-    Import is deferred (ORA-48) so pytest --collect-only succeeds during the
-    TDD window before the HTTP layer is implemented.
-    """
+    return create_app()
+
+
+@pytest.fixture
+async def async_client(app):
     from httpx import ASGITransport, AsyncClient
-    from oraclous_knowledge_graph_service.app import (  # RED: not yet implemented
-        create_app,
-    )
 
-    app = create_app()
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         yield client

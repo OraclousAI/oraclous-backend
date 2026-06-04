@@ -148,11 +148,63 @@ services:
     profiles: [services]
     networks: [substrate]
 
+  # R3.5-P1-S1 — schema migration one-shot (runs `alembic upgrade head`, then exits).
+  kgs-migrate:
+    build:
+      context: ..
+      dockerfile: services/knowledge-graph-service/Dockerfile
+    image: oraclous-knowledge-graph-service:${IMAGE_TAG:-dev}
+    environment:
+      KGS_DATABASE_URL: "postgresql+asyncpg://oraclous:oraclous@postgres:5432/oraclous"
+    command: ["alembic", "upgrade", "head"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+    profiles: [services]
+    networks: [substrate]
+
+  # R3.5-P1-S1 — idempotent dev-org seed one-shot (runs after migrate, then exits).
+  kgs-seed:
+    image: oraclous-knowledge-graph-service:${IMAGE_TAG:-dev}
+    environment:
+      KGS_DATABASE_URL: "postgresql+asyncpg://oraclous:oraclous@postgres:5432/oraclous"
+    command: ["python", "scripts/seed_dev.py"]
+    depends_on:
+      kgs-migrate:
+        condition: service_completed_successfully
+    restart: "no"
+    profiles: [services]
+    networks: [substrate]
+
   knowledge-graph-service:
     build:
       context: ..
       dockerfile: services/knowledge-graph-service/Dockerfile
     image: oraclous-knowledge-graph-service:${IMAGE_TAG:-dev}
+    restart: unless-stopped
+    ports:
+      - "8003:8000"
+    environment:
+      # Identity seam — dev mode: fixed bearer -> fixed dev principal/org (R3.5-P3 swaps to jwt).
+      KGS_AUTH_MODE: "dev"
+      KGS_DEV_BEARER: "dev-token"
+      KGS_DATABASE_URL: "postgresql+asyncpg://oraclous:oraclous@postgres:5432/oraclous"
+      # S1 is Postgres-only. Neo4j / Redis / embedder env are added by S2 when ingestion is wired.
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kgs-migrate:
+        condition: service_completed_successfully
+      kgs-seed:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
     profiles: [services]
     networks: [substrate]
 
