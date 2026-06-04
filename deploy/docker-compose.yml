@@ -249,6 +249,36 @@ services:
     profiles: [services]
     networks: [substrate]
 
+  # R3.5 service #2 — knowledge-retriever-service: READ side over the graph KGS writes.
+  # Dev uses the default neo4j user (krs_reader is the Enterprise/prod role; Community has no RBAC).
+  knowledge-retriever-service:
+    build:
+      context: ..
+      dockerfile: services/knowledge-retriever-service/Dockerfile
+    image: oraclous-knowledge-retriever-service:${IMAGE_TAG:-dev}
+    restart: unless-stopped
+    ports:
+      - "8004:8000"
+    environment:
+      KRS_AUTH_MODE: "dev"
+      KRS_DEV_BEARER: "dev-token"
+      KRS_NEO4J_URI: "bolt://neo4j:7687"
+      KRS_NEO4J_USER: "neo4j"
+      KRS_NEO4J_PASSWORD: "password"
+      KRS_EMBEDDING_DIM: "512"
+    depends_on:
+      neo4j:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    profiles: [services]
+    networks: [substrate]
+
 networks:
   substrate:
     driver: bridge

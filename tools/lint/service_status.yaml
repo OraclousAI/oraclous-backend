@@ -23,9 +23,9 @@ services:
     structure_enforced: true
     claimed_done: false      # flip to true at the §22 8-gate sign-off (Reza smoke acceptance)
   knowledge-retriever-service:
-    release: R3.5            # service #2
-    structure_enforced: false
-    claimed_done: false
+    release: R3.5            # service #2 — rebuilt to §21 (read-only retrieval); structure ENFORCED
+    structure_enforced: true
+    claimed_done: false      # flip to true at the §22 8-gate sign-off (Reza smoke acceptance)
   auth-service:
     release: R3.5            # split: machine principals stay here; humans/orgs -> identity-org-service (#3)
     structure_enforced: false
