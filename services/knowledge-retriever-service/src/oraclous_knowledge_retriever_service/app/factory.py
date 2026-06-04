@@ -1,25 +1,20 @@
-"""FastAPI application factory for knowledge-retriever-service (ORAA-56, ORAA-60)."""
+"""Application assembly (ORAA-4 §21 app layer) — build FastAPI, include routers, NO handlers."""
 
 from __future__ import annotations
 
 from fastapi import FastAPI
 
-from oraclous_knowledge_retriever_service.app.routers import graph, search
+from oraclous_knowledge_retriever_service.core.lifespan import lifespan
+from oraclous_knowledge_retriever_service.routes import (
+    graph_routes,
+    health_routes,
+    search_routes,
+)
 
 
 def create_app() -> FastAPI:
-    """Build and return the knowledge-retriever-service FastAPI app."""
-    app = FastAPI(
-        title="knowledge-retriever-service",
-        version="0.0.0",
-        description="R3 canonical retrieval API.",
-    )
-
-    @app.get("/health")
-    async def health() -> dict:
-        return {"status": "healthy", "version": "0.0.0"}
-
-    app.include_router(search.router)
-    app.include_router(graph.router)
-
+    app = FastAPI(title="knowledge-retriever-service", version="0.1.0", lifespan=lifespan)
+    app.include_router(health_routes.router)
+    app.include_router(search_routes.router)
+    app.include_router(graph_routes.router)
     return app
