@@ -116,6 +116,29 @@ def create_agent_token(*, agent_id: str, organisation_id: str) -> tuple[str, int
     return token, expires_in
 
 
+def create_service_account_token(
+    *, service_account_id: str, organisation_id: str
+) -> tuple[str, int]:
+    """Issue a short-lived service-account JWT (principal_type="service_account").
+
+    Same short-life cap + org-scoping as the agent token; a service account is a non-human machine
+    principal (a service integration) on the same credential infrastructure, distinguished only by
+    its principal_type claim.
+    """
+    if not service_account_id:
+        raise ValueError("service_account_id is required")
+    ttl = get_settings().agent_token_ttl_minutes * 60
+    token, expires_in, _ = _encode(
+        {},
+        ttl_seconds=ttl,
+        principal_type="service_account",
+        kind="access",
+        organisation_id=organisation_id,
+        sub=service_account_id,
+    )
+    return token, expires_in
+
+
 def decode_token(token: str) -> dict:
     """Decode and verify a JWT issued by this service.
 

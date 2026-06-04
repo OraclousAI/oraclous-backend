@@ -121,7 +121,28 @@ c=$(code -H "Authorization: Bearer ${IACCESS}" -H "Content-Type: application/jso
 [[ "$c" == "400" ]] && pass "replayed invitation token rejected (generic 400)" \
   || fail "replayed token expected 400, got $c"
 
-step "9. KRS jwt-mode accepts the same identity (read side)"
+step "9. S4: a service-account credential mints a service_account token that KGS authorises"
+INTKEY="${AUTH_INTERNAL_KEY:-dev-internal-key}"
+sacred=$(curl -fsS -H "X-Internal-Key: ${INTKEY}" -H "Content-Type: application/json" \
+  -X POST "${AUTH}/internal/agent-credentials" \
+  -d "{\"organisation_id\":\"${ORG2}\",\"created_by_user_id\":\"smoke\",\"principal_type\":\"service_account\"}")
+SARAW=$(echo "$sacred" | jget "['credential']")
+[[ "$(echo "$sacred" | jget "['principal_type']")" == "service_account" ]] \
+  && pass "created a service_account credential (internal-key gated)" || fail "SA create failed: $sacred"
+saexch=$(curl -fsS -H "Content-Type: application/json" -X POST "${AUTH}/agent-token" \
+  -d "{\"credential\":\"${SARAW}\"}")
+SATOK=$(echo "$saexch" | jget "['access_token']")
+[[ "$(echo "$saexch" | jget "['principal_type']")" == "service_account" ]] \
+  && pass "exchange minted a service_account JWT" || fail "SA exchange wrong type: $saexch"
+c=$(code -H "Authorization: Bearer ${SATOK}" -X GET "${KGS}/api/v1/graphs")
+[[ "$c" == "200" ]] && pass "KGS jwt-mode authorises the service_account token (200)" \
+  || fail "KGS rejected the service_account token: $c"
+# wrong internal key is rejected (no SA minted)
+c=$(code -H "X-Internal-Key: ${INTKEY}X" -H "Content-Type: application/json" \
+  -X POST "${AUTH}/internal/agent-credentials" -d "{\"organisation_id\":\"${ORG2}\",\"created_by_user_id\":\"x\"}")
+[[ "$c" == "401" ]] && pass "wrong internal key rejected (401)" || fail "internal-key gate weak: $c"
+
+step "10. KRS jwt-mode accepts the same identity (read side)"
 c=$(code -H "Authorization: Bearer ${ACCESS}" -H "Content-Type: application/json" \
   -X POST "${KRS}/v1/search/semantic" -d "{\"query\":\"x\",\"graph_id\":\"${gid}\"}")
 [[ "$c" != "401" ]] && pass "KRS accepts the user token (HTTP $c, not 401)" \

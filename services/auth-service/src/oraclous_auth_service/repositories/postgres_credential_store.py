@@ -119,6 +119,22 @@ class PostgresCredentialStore:
             )
             return result.scalar_one_or_none()
 
+    async def principal_type_for(self, agent_id: str) -> str | None:
+        """The principal_type (agent|service_account) of an active credential, else ``None``.
+
+        Used by ``/agent-token`` to mint the right token type for the credential's principal.
+        """
+        async with self._session_factory() as session:
+            result = await session.execute(
+                select(AgentCredential.principal_type)
+                .where(
+                    AgentCredential.agent_id == agent_id,
+                    AgentCredential.status == "active",
+                )
+                .limit(1)
+            )
+            return result.scalar_one_or_none()
+
     # --- ADR-012 §1a (b): org-scoped administrative surface -------------------
 
     async def list_for_organisation(self, organisation_id: str) -> list[AgentCredential]:
