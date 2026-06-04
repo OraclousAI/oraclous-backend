@@ -14,12 +14,22 @@ from sqlalchemy.ext.asyncio import (
     async_sessionmaker,
     create_async_engine,
 )
+from sqlalchemy.pool import NullPool
 
 from oraclous_knowledge_graph_service.core.config import get_settings
 
 
 def make_engine() -> AsyncEngine:
     return create_async_engine(get_settings().database_url, pool_pre_ping=True, future=True)
+
+
+def make_worker_engine() -> AsyncEngine:
+    """Task-scoped engine for the Celery worker — NullPool (no shared pool in workers, ADR-012).
+
+    A worker owns its connection per task and disposes it after; never share the request-path
+    pool across the process boundary.
+    """
+    return create_async_engine(get_settings().database_url, poolclass=NullPool, future=True)
 
 
 def make_sessionmaker(engine: AsyncEngine) -> async_sessionmaker[AsyncSession]:

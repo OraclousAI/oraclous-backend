@@ -1,10 +1,10 @@
 """Service configuration (ORAA-4 §21 core layer) — env → Settings.
 
-R3.5-P1-S1. Pydantic-settings; each knob is a `KGS_`-prefixed env var with a dev-friendly default
-so the service runs from `docker compose` with no secrets (the dev-auth seam). This declares ONLY
-what S1 uses — the dev identity seam and Postgres. Neo4j / Redis / embedder / extractor are added by
-S2 when the ingestion path is wired (the Neo4j URI then comes from `KGS_NEO4J_URI` with no
-hardcoded default, per ORAA-53).
+Pydantic-settings; each knob is a `KGS_`-prefixed env var with a dev-friendly default so the
+service runs from `docker compose` with no secrets (the dev-auth + hashing-embedder seams). S2 adds
+the ingestion surface: Neo4j (write role kgs_writer), Redis/Celery, and the embedder/extractor
+seams. `neo4j_uri` has NO hardcoded default (ORAA-53) — it must come from `KGS_NEO4J_URI`; when
+unset the service runs in graph-CRUD-only mode and ingestion endpoints report the missing substrate.
 """
 
 from __future__ import annotations
@@ -27,10 +27,35 @@ class Settings(BaseSettings):
     # --- Postgres (graph metadata + ingestion jobs) ---
     database_url: str = "postgresql+asyncpg://oraclous:oraclous@postgres:5432/oraclous"
 
+    # --- Neo4j (kgs_writer role, ORAA-53). No hardcoded URI default. ---
+    neo4j_uri: str | None = None
+    neo4j_user: str = "kgs_writer"
+    neo4j_password: str = "kgs-writer-pass"  # noqa: S105 — dev default; prod injects via secret
+    neo4j_database: str | None = None
+
+    # --- Redis / Celery (async ingestion spine) ---
+    redis_url: str = "redis://redis:6379/0"
+    celery_broker_url: str | None = None
+    celery_result_backend: str | None = None
+
+    # --- ingestion seams (key-free defaults: deterministic hashing embedder, no LLM extraction) ---
+    embedder: Literal["hashing", "openai"] = "hashing"
+    embedding_dim: int = 512
+    extractor: Literal["null", "openai"] = "null"
+    openai_api_key: str | None = None
+
     @property
     def sync_database_url(self) -> str:
         """psycopg3 (sync) DSN derived from the async one — used by Alembic + seed_dev."""
         return self.database_url.replace("+asyncpg", "+psycopg")
+
+    @property
+    def celery_broker(self) -> str:
+        return self.celery_broker_url or self.redis_url
+
+    @property
+    def celery_backend(self) -> str:
+        return self.celery_result_backend or self.redis_url
 
 
 @lru_cache(maxsize=1)
