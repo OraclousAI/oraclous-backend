@@ -1,0 +1,183 @@
+openapi: "3.1.0"
+
+info:
+  title: knowledge-graph-service — internal API
+  version: "0.0.0"
+  description: |
+    Internal (service-to-service) endpoints exposed by knowledge-graph-service.
+    These routes are NOT reachable from the public API gateway and carry no
+    bearer-token auth requirement. They are intended for intra-cluster calls
+    only (e.g. knowledge-retriever-service fetching schema metadata).
+
+    Mounted at: /internal/v1/
+
+paths:
+  /internal/v1/schema/{graph_id}:
+    get:
+      operationId: internal_get_schema
+      summary: Fetch OHM-schema envelope for a graph
+      description: |
+        Returns the OHM-schema envelope for the identified graph.
+
+        Used by knowledge-retriever-service to discover graph structure
+        before executing retrieval operations. The circuit breaker in
+        knowledge-retriever-service caches successful responses and serves
+        the cached copy when this endpoint is temporarily unavailable.
+
+        Raises 404 when the graph_id is not known. This 404 must be
+        propagated by the caller — it must not be masked by a stale cache.
+      tags:
+        - internal-schema
+      parameters:
+        - name: graph_id
+          in: path
+          required: true
+          description: UUID of the graph whose schema is requested.
+          schema:
+            type: string
+            format: uuid
+            example: "3fa85f64-5717-4562-b3fc-2c963f66afa6"
+      responses:
+        "200":
+          description: OHM-schema envelope for the graph.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OhmSchemaEnvelope"
+              example:
+                graph_id: "3fa85f64-5717-4562-b3fc-2c963f66afa6"
+                schema_version: "v1"
+                nodes:
+                  Company:
+                    label: Company
+                    properties:
+                      name: string
+                      graph_id: string
+                    sample_count: 5
+                    indexes:
+                      - Company.name
+                relationships:
+                  WORKS_FOR:
+                    from: Person
+                    to: Company
+                constraints:
+                  - "UNIQUE Company.name"
+                indexes:
+                  - Company.name
+                last_updated: "2026-06-04T00:00:00Z"
+        "404":
+          description: |
+            Graph not found. The graph_id does not correspond to any known
+            graph in the knowledge-graph-service. Callers must not serve a
+            stale cached schema in response to this status.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorDetail"
+              example:
+                detail: "Graph schema not found"
+        "503":
+          description: |
+            Schema service temporarily unavailable. The schema_manager
+            dependency (Neo4j) is unreachable or the internal router is
+            not yet wired. Callers may fall back to a cached schema if one
+            exists.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorDetail"
+              example:
+                detail: "Schema service temporarily unavailable"
+
+components:
+  schemas:
+    NodeSchema:
+      type: object
+      description: Schema descriptor for a single node label.
+      required:
+        - label
+        - properties
+        - sample_count
+        - indexes
+      properties:
+        label:
+          type: string
+          description: Neo4j node label.
+          example: Company
+        properties:
+          type: object
+          description: Map of property name → value type string.
+          additionalProperties:
+            type: string
+          example:
+            name: string
+            graph_id: string
+        sample_count:
+          type: integer
+          description: Number of nodes sampled when building the schema.
+          example: 5
+        indexes:
+          type: array
+          description: List of index names covering this label.
+          items:
+            type: string
+          example:
+            - Company.name
+
+    OhmSchemaEnvelope:
+      type: object
+      description: |
+        OHM-schema envelope returned by the internal schema-lookup endpoint.
+        Serialised form of the GraphSchema Pydantic model.
+      required:
+        - graph_id
+        - schema_version
+        - nodes
+        - relationships
+        - constraints
+        - indexes
+        - last_updated
+      properties:
+        graph_id:
+          type: string
+          format: uuid
+          description: UUID of the graph this schema describes.
+        schema_version:
+          type: string
+          description: Schema format version identifier.
+          example: "v1"
+        nodes:
+          type: object
+          description: Map of node label → NodeSchema descriptor.
+          additionalProperties:
+            $ref: "#/components/schemas/NodeSchema"
+        relationships:
+          type: object
+          description: |
+            Map of relationship type → relationship descriptor.
+            Shape is open-ended and may be extended in future schema versions.
+          additionalProperties: true
+        constraints:
+          type: array
+          description: List of database constraints applying to this graph.
+          items: {}
+        indexes:
+          type: array
+          description: List of database indexes defined for this graph.
+          items: {}
+        last_updated:
+          type: string
+          format: date-time
+          description: ISO-8601 timestamp of when the schema was last extracted.
+          example: "2026-06-04T00:00:00Z"
+
+    ErrorDetail:
+      type: object
+      description: FastAPI error envelope.
+      required:
+        - detail
+      properties:
+        detail:
+          type: string
+          description: Human-readable error description.
+          example: "Graph schema not found"
