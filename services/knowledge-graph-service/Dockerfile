@@ -48,4 +48,8 @@ COPY services/knowledge-graph-service/src/ \
 ENV PATH="/app/.venv/bin:$PATH" \
     PYTHONPATH="/app/services/knowledge-graph-service/src"
 
+RUN addgroup --system svc && adduser --system --ingroup svc --no-create-home svc
+RUN chown -R svc:svc /app
+USER svc
+
 CMD ["python", "-c", "import oraclous_knowledge_graph_service; print('oraclous-knowledge-graph-service: import OK')"]
