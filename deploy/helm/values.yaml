@@ -7,11 +7,46 @@ global:
 # Substrate connection settings (operator-provided in real deployments).
 substrate:
   neo4j:
+    # Admin / general-purpose bolt URI.  Not used by application services directly;
+    # each service has its own role-scoped credential below (ORAA-53).
     uri: ""
   postgres:
     dsn: ""
   redis:
     url: ""
+
+# Per-service Neo4j role credentials (ORAA-53 — principle of least privilege).
+# Each service connects with its own dedicated Neo4j user; no service uses the
+# admin (neo4j) account.  Values are operator-supplied via K8s secrets in production.
+neo4jRoles:
+  # knowledge-graph-service write role — `publisher` (read + write + schema creation).
+  # Env vars injected into the knowledge-graph-service pod:
+  #   KGS_NEO4J_URI      → neo4j bolt URI (typically same as substrate.neo4j.uri)
+  #   KGS_NEO4J_USER     → kgs_writer (or operator-chosen name)
+  #   KGS_NEO4J_PASSWORD → from secretName / secretKey below
+  kgsWriter:
+    uri: ""          # KGS_NEO4J_URI
+    user: "kgs_writer"  # KGS_NEO4J_USER
+    secretName: ""   # K8s Secret containing KGS_NEO4J_PASSWORD
+    secretKey: "password"
+
+  # knowledge-retriever-service read role — `reader` (read-only).
+  # Env vars injected into the knowledge-retriever-service pod:
+  #   KRS_NEO4J_URI, KRS_NEO4J_USER, KRS_NEO4J_PASSWORD
+  krsReader:
+    uri: ""
+    user: "krs_reader"
+    secretName: ""
+    secretKey: "password"
+
+# Neo4j role provisioning job (runs once post-install / on upgrade).
+# Creates the kgs_writer and krs_reader users via a K8s Job using cypher-shell.
+# Requires neo4jRoles.*.secretName to be populated before install.
+neo4jRoleInit:
+  enabled: true
+  image: "neo4j:5.23-community"
+  adminSecretName: ""   # K8s Secret containing the Neo4j admin password
+  adminSecretKey: "password"
 
 # Per-service overrides are added here as each service ships (R1–R6).
 services: {}

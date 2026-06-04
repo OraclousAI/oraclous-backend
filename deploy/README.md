@@ -97,3 +97,95 @@ COMPOSE_PROJECT_NAME=oraclous-fe-target \
 | OTLP HTTP | 14318 |
 
 Contact the CTO if the fe-target stack is down.
+
+## Neo4j write role (ORAA-53)
+
+The knowledge-graph-service (write path) connects to Neo4j as a dedicated
+`kgs_writer` user with the `publisher` role (read + write + schema-element
+creation).  The knowledge-retriever-service (read path) connects as `krs_reader`
+with the `reader` role.  Neither service uses the `neo4j` admin account.  This
+follows principle of least privilege (Threat T6): a compromised KGS or KRS
+credential does not grant admin access to Neo4j.
+
+### Neo4j roles
+
+| User | Neo4j role | Capabilities | Service |
+|---|---|---|---|
+| `neo4j` | `admin` | Full admin | dev/ops only |
+| `kgs_writer` | `publisher` | Read + write + CREATE INDEX/CONSTRAINT | knowledge-graph-service |
+| `krs_reader` | `reader` | Read-only | knowledge-retriever-service |
+
+### Local development
+
+The `neo4j-role-setup` service in `docker-compose.yml` creates both users
+automatically when the substrate stack starts:
+
+```bash
+docker compose -f deploy/docker-compose.yml up -d
+# neo4j-role-setup runs after neo4j is healthy and creates kgs_writer + krs_reader
+```
+
+Dev defaults (never used in production):
+- `kgs_writer` / `kgs-writer-pass`
+- `krs_reader` / `krs-reader-pass`
+
+The knowledge-graph-service reads these env vars:
+
+| Env var | Dev value | Description |
+|---|---|---|
+| `KGS_NEO4J_URI` | `bolt://neo4j:7687` | Bolt URI for the KGS Neo4j connection |
+| `KGS_NEO4J_USER` | `kgs_writer` | Write-capable Neo4j user |
+| `KGS_NEO4J_PASSWORD` | `kgs-writer-pass` | Dev-only; K8s secret in production |
+
+### Production (Kubernetes / Helm)
+
+1. Create a K8s Secret containing the `kgs_writer` password:
+   ```bash
+   kubectl create secret generic neo4j-kgs-writer \
+     --from-literal=password=<strong-password>
+   ```
+
+2. Create a K8s Secret for the Neo4j admin password (used by the init Job):
+   ```bash
+   kubectl create secret generic neo4j-admin \
+     --from-literal=password=<admin-password>
+   ```
+
+3. Set Helm values (see `deploy/helm/values.yaml` `neo4jRoles.kgsWriter`):
+   ```yaml
+   neo4jRoles:
+     kgsWriter:
+       uri: bolt://<neo4j-host>:7687
+       user: kgs_writer
+       secretName: neo4j-kgs-writer
+       secretKey: password
+   neo4jRoleInit:
+     enabled: true
+     adminSecretName: neo4j-admin
+   ```
+
+4. **The `neo4jRoleInit` block in `values.yaml` is scaffolding for a future Helm Job
+   template** (`deploy/helm/templates/neo4j-role-init-job.yaml`). That template does not
+   exist yet — `deploy/helm/templates/` currently contains only `NOTES.txt` and
+   `_helpers.tpl`. Setting `neo4jRoleInit.enabled: true` and running `helm upgrade` has
+   no effect until the Job template is added in a future release.
+
+   Until then, provision roles manually from a pod that can reach the Neo4j bolt port:
+   ```bash
+   kubectl run neo4j-init --rm -it --image=neo4j:5.23-community --restart=Never -- \
+     cypher-shell -a bolt://<neo4j-host>:7687 -u neo4j -p <admin-password> \
+       --param 'kgs_writer_password => "<strong-password>"' \
+       -f /dev/stdin < deploy/neo4j-init/kgs_write_role.cypher
+   ```
+
+### Static analysis
+
+A CI guardrail (`tools/lint/check_neo4j_write_role.py`) enforces that no code in
+`services/knowledge-graph-service/` uses the generic `NEO4J_URI` / `NEO4J_USER` /
+`NEO4J_PASSWORD` admin env vars or hardcodes a `bolt://` URI.  Any bypass is
+flagged as a NEO4J001/NEO4J002 violation and blocks the CI `quality` job.
+
+```bash
+uv run python -m tools.lint.check_neo4j_write_role
+# exits 0 — no bypass patterns found
+```

@@ -10,6 +10,16 @@
 # Concurrent isolated stacks (per agent / ticket) — see docker-compose.agent.yml:
 #   COMPOSE_PROJECT_NAME=oraclous-ora-14 \
 #     docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.agent.yml up -d
+#
+# Neo4j users provisioned by this stack:
+#   neo4j / password  — admin (dev-only; never expose in production)
+#   kgs_writer / kgs-writer-pass — publisher role; used by knowledge-graph-service (ORAA-53)
+#   krs_reader / krs-reader-pass — reader role; used by knowledge-retriever-service (ORAA-53)
+#
+# The knowledge-graph-service reads these env vars:
+#   KGS_NEO4J_URI      bolt://neo4j:7687
+#   KGS_NEO4J_USER     kgs_writer
+#   KGS_NEO4J_PASSWORD kgs-writer-pass   (dev); K8s secret in production
 name: oraclous-backend
 
 services:
@@ -37,6 +47,34 @@ services:
       - neo4j_logs:/logs
       - neo4j_plugins:/plugins
     networks: [substrate]
+
+  # Idempotent one-shot container that provisions the write-capable `kgs_writer`
+  # user (publisher role) and the read-only `krs_reader` user (reader role) after
+  # Neo4j is healthy.  Runs `CREATE USER … IF NOT EXISTS` so re-starts are safe.
+  # Dev-only credentials below; production injects KGS_NEO4J_PASSWORD via K8s secret.
+  # ORAA-53 — Neo4j write-role configuration for knowledge-graph-service.
+  neo4j-role-setup:
+    image: neo4j:5.23-community
+    depends_on:
+      neo4j:
+        condition: service_healthy
+    entrypoint:
+      - cypher-shell
+      - -a
+      - bolt://neo4j:7687
+      - -u
+      - neo4j
+      - -p
+      - password
+      - >-
+        CREATE USER kgs_writer IF NOT EXISTS
+          SET PASSWORD 'kgs-writer-pass' CHANGE NOT REQUIRED;
+        GRANT ROLE publisher TO kgs_writer;
+        CREATE USER krs_reader IF NOT EXISTS
+          SET PASSWORD 'krs-reader-pass' CHANGE NOT REQUIRED;
+        GRANT ROLE reader TO krs_reader;
+    networks: [substrate]
+    restart: "no"
 
   postgres:
     image: postgres:16
