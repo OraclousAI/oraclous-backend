@@ -682,6 +682,7 @@ source = { virtual = "." }
 [package.dev-dependencies]
 dev = [
     { name = "alembic" },
+    { name = "httpx" },
     { name = "import-linter" },
     { name = "jsonschema" },
     { name = "mypy" },
@@ -701,6 +702,7 @@ dev = [
 [package.metadata.requires-dev]
 dev = [
     { name = "alembic", specifier = ">=1.16,<2.0" },
+    { name = "httpx", specifier = ">=0.27,<1.0" },
     { name = "import-linter", specifier = ">=2.0,<3.0" },
     { name = "jsonschema", specifier = ">=4.21,<5.0" },
     { name = "mypy", specifier = ">=1.11,<2.0" },
