@@ -341,6 +341,54 @@ services:
     profiles: [services]
     networks: [substrate]
 
+  # R3.5 service #4 — credential-broker: Alembic schema one-shot (user_credentials + delegated_tokens).
+  credbroker-migrate:
+    build:
+      context: ..
+      dockerfile: services/credential-broker-service/Dockerfile
+    image: oraclous-credential-broker-service:${IMAGE_TAG:-dev}
+    environment:
+      DATABASE_URL: "postgresql+asyncpg://oraclous:oraclous@postgres:5432/oraclous"
+      ENCRYPTION_KEY: "${CRED_BROKER_ENCRYPTION_KEY:-MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=}"
+      INTERNAL_SERVICE_KEY: "${CRED_BROKER_INTERNAL_KEY:-dev-internal-key}"
+    command: ["alembic", "upgrade", "head"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+    profiles: [services]
+    networks: [substrate]
+
+  # R3.5 service #4 — credential-broker: encrypted per-user/org credential store + delegation.
+  credential-broker-service:
+    build:
+      context: ..
+      dockerfile: services/credential-broker-service/Dockerfile
+    image: oraclous-credential-broker-service:${IMAGE_TAG:-dev}
+    restart: unless-stopped
+    ports:
+      - "8002:8000"
+    environment:
+      DATABASE_URL: "postgresql+asyncpg://oraclous:oraclous@postgres:5432/oraclous"
+      # Dev-only AES-256-GCM key (32 bytes b64) + internal key → key-free smokes; prod injects secrets.
+      ENCRYPTION_KEY: "${CRED_BROKER_ENCRYPTION_KEY:-MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=}"
+      INTERNAL_SERVICE_KEY: "${CRED_BROKER_INTERNAL_KEY:-dev-internal-key}"
+      AUTH_SERVICE_URL: "http://auth-service:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      credbroker-migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    profiles: [services]
+    networks: [substrate]
+
 networks:
   substrate:
     driver: bridge

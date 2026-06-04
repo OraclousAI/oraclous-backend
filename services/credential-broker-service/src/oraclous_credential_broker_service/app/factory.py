@@ -6,9 +6,7 @@ from fastapi import FastAPI
 
 
 def create_app(*, lifespan=None) -> FastAPI:
-    app = FastAPI(
-        title="oraclous-credential-broker-service", version="0.0.1", lifespan=lifespan
-    )
+    app = FastAPI(title="oraclous-credential-broker-service", version="0.0.1", lifespan=lifespan)
 
     @app.get("/health")
     async def health() -> dict:

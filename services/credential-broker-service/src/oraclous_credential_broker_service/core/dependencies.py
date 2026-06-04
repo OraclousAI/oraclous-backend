@@ -41,8 +41,10 @@ def get_delegation_service(request: Request) -> DelegationService:
 async def verify_internal_key(x_internal_key: Annotated[str | None, Header()] = None) -> None:
     """Gate service-to-service endpoints on ``X-Internal-Key`` (constant-time, fail-closed 401)."""
     expected = get_settings().INTERNAL_SERVICE_KEY
-    if not expected or x_internal_key is None or not secrets.compare_digest(
-        x_internal_key, expected
+    if (
+        not expected
+        or x_internal_key is None
+        or not secrets.compare_digest(x_internal_key, expected)
     ):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
