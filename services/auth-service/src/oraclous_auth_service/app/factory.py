@@ -33,15 +33,18 @@ from oraclous_auth_service.core.rate_limiter import (
 )
 from oraclous_auth_service.domain.passwords import PasswordPolicyError
 from oraclous_auth_service.routes.auth_routes import router as auth_router
+from oraclous_auth_service.routes.org_routes import router as org_router
 from oraclous_auth_service.services.auth_service import (
     AuthenticationError,
     EmailAlreadyRegisteredError,
 )
+from oraclous_auth_service.services.org_service import OrgForbiddenError, OrgNotFoundError
 
 
 def _register_user_identity(app: FastAPI) -> None:
-    """Mount the user-identity router, map its domain exceptions to HTTP, and add `/health`."""
+    """Mount the user-identity + org routers, map domain exceptions to HTTP, and add `/health`."""
     app.include_router(auth_router)
+    app.include_router(org_router)
 
     @app.exception_handler(AuthenticationError)
     async def _on_auth_error(_: Request, exc: AuthenticationError) -> JSONResponse:
@@ -60,6 +63,14 @@ def _register_user_identity(app: FastAPI) -> None:
         return JSONResponse(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, content={"detail": str(exc)}
         )
+
+    @app.exception_handler(OrgNotFoundError)
+    async def _on_org_not_found(_: Request, exc: OrgNotFoundError) -> JSONResponse:
+        return JSONResponse(status_code=status.HTTP_404_NOT_FOUND, content={"detail": str(exc)})
+
+    @app.exception_handler(OrgForbiddenError)
+    async def _on_org_forbidden(_: Request, exc: OrgForbiddenError) -> JSONResponse:
+        return JSONResponse(status_code=status.HTTP_403_FORBIDDEN, content={"detail": str(exc)})
 
     @app.get("/health")
     async def health() -> dict:

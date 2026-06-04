@@ -38,6 +38,7 @@ class UserRepository:
     async def create_user(
         self,
         *,
+        id: str | None = None,
         email: str,
         password_hash: str | None,
         default_organisation_id: str,
@@ -46,7 +47,7 @@ class UserRepository:
         is_email_verified: bool = False,
     ) -> User:
         user = User(
-            id=str(uuid.uuid4()),
+            id=id or str(uuid.uuid4()),
             email=normalize_email(email),
             password_hash=password_hash,
             default_organisation_id=default_organisation_id,

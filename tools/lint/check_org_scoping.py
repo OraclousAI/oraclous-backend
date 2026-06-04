@@ -141,11 +141,14 @@ _CYPHER_FULLTEXT_RE = re.compile(r"\bFULLTEXT\s+INDEX\b", re.IGNORECASE)
 # A deliberately-global Redis key opts out of ORG004 with this comment on its line.
 GLOBAL_OPT_OUT_MARKER = "org-scoping: global"
 
-# A cross-org *principal/identity* table (e.g. ``users`` — a human belongs to many organisations via
-# membership, so the table itself is not org-scoped; the active org is carried on the issued token,
-# not the row) opts out of ORG002 with this comment inside the class body. Org-scoped tenant-data
-# tables (and single-org principals like ``agents``) must still declare ``organisation_id``.
+# A non-tenant-scoped table opts out of ORG002 with one of these comments inside the class body:
+#   cross-org-principal — a principal that spans organisations (e.g. ``users``: org via membership)
+#   scope-root          — the tenancy anchor itself (e.g. ``organisations``: its id IS the org)
+# Org-scoped tenant-data tables (and single-org principals like ``agents``) must still declare
+# ``organisation_id``.
 CROSS_ORG_PRINCIPAL_MARKER = "org-scoping: cross-org-principal"
+SCOPE_ROOT_MARKER = "org-scoping: scope-root"
+ORG002_OPT_OUT_MARKERS = (CROSS_ORG_PRINCIPAL_MARKER, SCOPE_ROOT_MARKER)
 
 _WORD_SPLIT_RE = re.compile(r"[^a-z0-9]+")
 
@@ -414,13 +417,11 @@ class _Visitor(ast.NodeVisitor):
         )
         if not has_tablename:
             return
-        # A cross-org principal/identity table opts out (ORG002): its org scope is carried on the
-        # issued token + a membership table, not on the row.
+        # A non-tenant-scoped table opts out (ORG002): a cross-org principal (org via membership) or
+        # the scope-root itself (its id IS the org). Tenant-data tables must still declare it.
         cls_start, cls_end = node.lineno - 1, (getattr(node, "end_lineno", None) or node.lineno)
-        if any(
-            CROSS_ORG_PRINCIPAL_MARKER in line.lower()
-            for line in self.source_lines[cls_start:cls_end]
-        ):
+        cls_text = "\n".join(self.source_lines[cls_start:cls_end]).lower()
+        if any(marker in cls_text for marker in ORG002_OPT_OUT_MARKERS):
             return
         declares_org = False
         for s in node.body:

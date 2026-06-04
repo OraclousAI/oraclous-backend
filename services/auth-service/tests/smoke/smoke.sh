@@ -40,13 +40,17 @@ for url in "${AUTH}" "${KGS}"; do
 done
 pass "auth-service + KGS healthy"
 
-step "3. register a human user"
-reg=$(curl -fsS -H "Content-Type: application/json" -X POST "${AUTH}/v1/auth/register" \
-  -d '{"email":"smoke@oraclous.dev","password":"SmokePass1"}')
-ACCESS=$(echo "$reg" | jget "['access_token']")
+step "3. register a human user (fall back to login if the smoke DB already has them)"
+CRED='{"email":"smoke@oraclous.dev","password":"SmokePass1"}'
+reg=$(curl -s -H "Content-Type: application/json" -X POST "${AUTH}/v1/auth/register" -d "$CRED")
+ACCESS=$(echo "$reg" | jget "['access_token']" 2>/dev/null || echo "")
+if [[ -z "$ACCESS" ]]; then
+  reg=$(curl -fsS -H "Content-Type: application/json" -X POST "${AUTH}/v1/auth/login" -d "$CRED")
+  ACCESS=$(echo "$reg" | jget "['access_token']")
+fi
 REFRESH=$(echo "$reg" | jget "['refresh_token']")
-[[ -n "$ACCESS" && -n "$REFRESH" ]] && pass "registered -> access + refresh tokens issued" \
-  || fail "register did not return tokens: $reg"
+[[ -n "$ACCESS" && -n "$REFRESH" ]] && pass "user has access + refresh tokens" \
+  || fail "no tokens from register/login: $reg"
 
 step "4. KGS jwt-mode authorises the user token (was a 401 stub before R3.5-P3)"
 c=$(code -X GET "${KGS}/api/v1/graphs")
@@ -72,11 +76,29 @@ LACCESS=$(echo "$log" | jget "['access_token']")
 c=$(code -H "Authorization: Bearer ${LACCESS}" -X GET "${KGS}/api/v1/graphs")
 [[ "$c" == "200" ]] && pass "login token -> KGS 200" || fail "login token rejected by KGS: $c"
 
-step "7. KRS jwt-mode accepts the same identity (read side)"
+step "7. S2: multi-org — active-org selection flows to KGS scoping + cross-org isolation"
+ORG2=$(curl -fsS -H "Authorization: Bearer ${ACCESS}" -H "Content-Type: application/json" \
+  -X POST "${AUTH}/v1/orgs" -d '{"name":"Second Workspace"}' | jget "['id']")
+[[ -n "$ORG2" ]] && pass "created a second organisation ${ORG2}" || fail "org create failed"
+# log in selecting org2 as the active org -> the token is scoped to org2
+T2=$(curl -fsS -H "Content-Type: application/json" -H "X-Organisation-Id: ${ORG2}" \
+  -X POST "${AUTH}/v1/auth/login" -d '{"email":"smoke@oraclous.dev","password":"SmokePass1"}' \
+  | jget "['access_token']")
+g2=$(curl -fsS -H "Authorization: Bearer ${T2}" -H "Content-Type: application/json" \
+  -X POST "${KGS}/api/v1/graphs" -d '{"name":"org2-graph"}' | jget "['id']")
+[[ -n "$g2" ]] && pass "org2 token wrote a graph ${g2} in KGS" || fail "org2 graph create failed"
+# the personal-org token must NOT see org2's graph (org isolation at the data layer)
+listed=$(curl -fsS -H "Authorization: Bearer ${ACCESS}" -X GET "${KGS}/api/v1/graphs")
+echo "$listed" | grep -q "$g2" && fail "ISOLATION BREACH: personal-org token saw org2's graph" \
+  || pass "personal-org token cannot see org2's graph (active-org scoping holds)"
+echo "$listed" | grep -q "$gid" && pass "personal-org token still sees its own graph" \
+  || fail "personal-org token lost its own graph"
+
+step "8. KRS jwt-mode accepts the same identity (read side)"
 c=$(code -H "Authorization: Bearer ${ACCESS}" -H "Content-Type: application/json" \
   -X POST "${KRS}/v1/search/semantic" -d "{\"query\":\"x\",\"graph_id\":\"${gid}\"}")
 [[ "$c" != "401" ]] && pass "KRS accepts the user token (HTTP $c, not 401)" \
   || fail "KRS rejected the user token (401) — jwt-mode not wired"
 
-printf '\n\033[32mIdentity smoke passed.\033[0m  auth-service issues tokens that KGS+KRS jwt-mode '
-printf 'authorise end-to-end, org-scoped to the registering user.\n'
+printf '\n\033[32mIdentity smoke passed.\033[0m  auth issues tokens that KGS+KRS jwt-mode authorise '
+printf 'end-to-end; multi-org active-org selection scopes KGS writes + isolation holds.\n'
