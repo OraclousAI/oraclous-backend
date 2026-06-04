@@ -103,15 +103,9 @@ class TestWriteSideAbsentFromKRS:
 
         If this test passes (no ImportError), the write-side has leaked into KRS.
         """
-        try:
-            from oraclous_knowledge_retriever_service import linked_to_service  # ORA-48
+        from oraclous_knowledge_retriever_service import linked_to_service  # ORA-48
 
-            present = hasattr(linked_to_service, symbol)
-        except ModuleNotFoundError:
-            # Module not yet extracted — this is the expected RED state.
-            pytest.skip("linked_to_service not yet in KRS (RED window)")
-            return
-
+        present = hasattr(linked_to_service, symbol)
         assert not present, (
             f"'{symbol}' must NOT be present in the KRS linked_to_service module. "
             "Write operations belong in KGS only (R3-KRS-5 MT split)."
@@ -119,11 +113,7 @@ class TestWriteSideAbsentFromKRS:
 
     def test_initialize_schema_not_in_krs(self) -> None:
         """``initialize_schema`` (write/schema op) must NOT be in KRS linked_to_service."""
-        try:
-            from oraclous_knowledge_retriever_service import linked_to_service  # ORA-48
-        except ModuleNotFoundError:
-            pytest.skip("linked_to_service not yet in KRS (RED window)")
-            return
+        from oraclous_knowledge_retriever_service import linked_to_service  # ORA-48
 
         assert not hasattr(linked_to_service, "initialize_schema"), (
             "initialize_schema is a write/schema op and must live in KGS, not KRS"

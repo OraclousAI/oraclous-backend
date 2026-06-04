@@ -133,7 +133,7 @@ class FederationService:
                 key = (entity.name, entity.type)
                 groups.setdefault(key, []).append(entity)
             for group in groups.values():
-                distinct_graphs = list({e.source_graph_id for e in group})
+                distinct_graphs = sorted({e.source_graph_id for e in group})
                 if len(distinct_graphs) >= 2:
                     for i in range(len(distinct_graphs) - 1):
                         cross_graph_links.append(
@@ -172,11 +172,13 @@ class FederationService:
 
     async def find_same_as_candidates(
         self,
+        user_id: str,
         source_graph_id: str,
         target_graph_ids: list[str],
         *,
         threshold: float = 0.8,
     ) -> list[SameAsCandidate]:
+        await self._validate_graphs(user_id, [source_graph_id] + list(target_graph_ids))
         async with self._driver.session(**self._session_kwargs()) as session:
             result = await session.run(
                 "MATCH (ea:__Entity__ {graph_id: $source}) "
@@ -206,11 +208,13 @@ class FederationService:
 
     async def resolve_entity(
         self,
+        user_id: str,
         entity_id: str,
         graph_id: str,
         *,
         include_same_as: bool = False,
     ) -> dict[str, Any]:
+        await self._validate_graphs(user_id, [graph_id])
         async with self._driver.session(**self._session_kwargs()) as session:
             result = await session.run(
                 "MATCH (e:__Entity__ {id: $entity_id, graph_id: $graph_id}) "
@@ -232,11 +236,13 @@ class FederationService:
 
     async def find_federation_candidates(
         self,
+        user_id: str,
         graph_id: str,
         target_graph_ids: list[str],
         *,
         min_score: float = 0.5,
     ) -> list[dict[str, Any]]:
+        await self._validate_graphs(user_id, [graph_id] + list(target_graph_ids))
         async with self._driver.session(**self._session_kwargs()) as session:
             result = await session.run(
                 "MATCH (ea:__Entity__ {graph_id: $source}) "

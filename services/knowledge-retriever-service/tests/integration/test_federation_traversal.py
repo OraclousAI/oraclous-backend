@@ -245,6 +245,7 @@ class TestFindFederationCandidates:
 
         svc = FederationService(neo4j_driver)
         candidates = await svc.find_federation_candidates(
+            _USER_ALICE,
             graph_id=_GRAPH_ALPHA,
             target_graph_ids=[_GRAPH_BETA],
         )
@@ -262,6 +263,7 @@ class TestFindFederationCandidates:
 
         svc = FederationService(neo4j_driver)
         candidates = await svc.find_federation_candidates(
+            _USER_ALICE,
             graph_id=_GRAPH_ALPHA,
             target_graph_ids=[_GRAPH_BETA],
         )
