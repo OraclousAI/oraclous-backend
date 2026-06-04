@@ -11,11 +11,13 @@ NullPool engine + a task-scoped Neo4j driver, both disposed per task (ADR-012 wo
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import uuid
 from typing import Any
 
 from oraclous_governance import OrganisationContext, PrincipalType, use_organisation_context
+from oraclous_substrate.access import enforced_organisation_id
 
 from oraclous_knowledge_graph_service.core.config import get_settings
 from oraclous_knowledge_graph_service.core.database import make_sessionmaker, make_worker_engine
@@ -24,8 +26,13 @@ from oraclous_knowledge_graph_service.repositories.graph_write_repository import
     GraphWriteRepository,
 )
 from oraclous_knowledge_graph_service.repositories.job_repository import IngestionJobRepository
+from oraclous_knowledge_graph_service.repositories.recipe_repository import RecipeRepository
 from oraclous_knowledge_graph_service.services.embedder import make_embedder
 from oraclous_knowledge_graph_service.services.ingestion_service import IngestionService
+from oraclous_knowledge_graph_service.services.structured_ingestion_service import (
+    StructuredIngestionService,
+    is_structured,
+)
 from oraclous_knowledge_graph_service.tasks.celery_app import AsyncTaskExecutor, celery_app
 
 
@@ -59,14 +66,24 @@ async def _ingest_async(job_id_s: str, organisation_id_s: str) -> dict[str, Any]
 
             try:
                 data = base64.b64decode(payload.source_content or "")
-                write_repo = GraphWriteRepository(driver, database=settings.neo4j_database)
-                ingestion = IngestionService(write_repo, make_embedder(settings))
-                result = await ingestion.ingest(
-                    graph_id=str(payload.graph_id),
-                    document=payload.filename or "inline",
-                    data=data,
-                    source_type=payload.source_type,
-                )
+                if is_structured(payload.source_type):
+                    summary = await _ingest_structured(
+                        driver=driver, maker=maker, settings=settings, payload=payload, data=data
+                    )
+                else:
+                    write_repo = GraphWriteRepository(driver, database=settings.neo4j_database)
+                    ingestion = IngestionService(write_repo, make_embedder(settings))
+                    result = await ingestion.ingest(
+                        graph_id=str(payload.graph_id),
+                        document=payload.filename or "inline",
+                        data=data,
+                        source_type=payload.source_type,
+                    )
+                    summary = {
+                        "entities": result.nodes,
+                        "relationships": result.relationships,
+                        "detail": {"nodes": result.nodes, "chunks": result.chunks},
+                    }
             except Exception as exc:
                 async with maker() as session:
                     await IngestionJobRepository(session).update_status(
@@ -80,17 +97,40 @@ async def _ingest_async(job_id_s: str, organisation_id_s: str) -> dict[str, Any]
                     job_id,
                     status="completed",
                     progress=100,
-                    extracted_entities=result.nodes,
-                    extracted_relationships=result.relationships,
+                    extracted_entities=summary["entities"],
+                    extracted_relationships=summary["relationships"],
                 )
                 await session.commit()
-            return {
-                "status": "completed",
-                "job_id": job_id_s,
-                "nodes": result.nodes,
-                "relationships": result.relationships,
-                "chunks": result.chunks,
-            }
+            return {"status": "completed", "job_id": job_id_s, **summary}
         finally:
             driver.close()
             await engine.dispose()
+
+
+async def _ingest_structured(*, driver, maker, settings, payload, data: bytes) -> dict[str, Any]:
+    """CSV/JSON: decompose -> recipe (stored or default) -> engine over the org-scoped writer."""
+    text = data.decode("utf-8", errors="replace")
+    recipe = None
+    if payload.recipe_id:
+        async with maker() as session:
+            recipe = await RecipeRepository(session).get_latest(payload.recipe_id)
+        if recipe is None:
+            raise RuntimeError(f"recipe {payload.recipe_id!r} not found")
+    service = StructuredIngestionService(
+        driver=driver,
+        organisation_id=enforced_organisation_id(),
+        database=settings.neo4j_database,
+    )
+    result = await asyncio.to_thread(
+        service.ingest,
+        graph_id=str(payload.graph_id),
+        document=payload.filename or "inline",
+        text=text,
+        source_type=payload.source_type,
+        recipe=recipe,
+    )
+    return {
+        "entities": result["nodes_written"] + result["containers_written"],
+        "relationships": result["edges_written"],
+        "detail": result,
+    }

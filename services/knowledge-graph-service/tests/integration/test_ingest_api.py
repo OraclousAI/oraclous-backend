@@ -45,7 +45,7 @@ class _FakeJobService:
         self.jobs: dict[uuid.UUID, IngestionJobRecord] = {}
         self.owned = True
 
-    async def submit(self, *, user_id, graph_id, data, filename, source_type):
+    async def submit(self, *, user_id, graph_id, data, filename, source_type, recipe_id=None):
         if not self.owned:
             raise GraphNotFound(str(graph_id))
         rec = _record(graph_id)

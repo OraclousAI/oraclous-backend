@@ -16,6 +16,8 @@ from oraclous_knowledge_graph_service.domain.job import IngestionJobRecord
 class IngestTextRequest(BaseModel):
     content: str = Field(min_length=1)
     filename: str | None = None
+    source_type: str = "text"  # text|md|csv|json|... — structured types route to the recipe engine
+    recipe_id: str | None = None  # structured only: a stored recipe (else a default is synthesised)
 
 
 class JobResponse(BaseModel):

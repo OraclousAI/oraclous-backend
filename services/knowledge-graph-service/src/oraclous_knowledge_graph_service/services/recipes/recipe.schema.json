@@ -1,0 +1,188 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://oraclous.dev/schemas/recipe/0.2",
+  "title": "Oraclous Ingestion Recipe",
+  "$comment": "Formalizes knowledge-graph-builder/docs/recipe-spec.md (TASK-220, STORY-034, ADR-022). A recipe is data, not code.",
+  "type": "object",
+  "required": ["recipe_format_version", "id", "version", "status", "concern", "applies_to", "mappings"],
+  "additionalProperties": false,
+  "properties": {
+    "recipe_format_version": { "const": "0.2" },
+    "id": { "type": "string", "pattern": "^rcp_[A-Za-z0-9._-]+$" },
+    "version": { "type": "integer", "minimum": 1 },
+    "status": { "enum": ["draft", "promoted"] },
+    "concern": { "type": "string", "minLength": 1 },
+    "applies_to": {
+      "type": "object",
+      "required": ["source_type", "shape_signature"],
+      "additionalProperties": false,
+      "properties": {
+        "source_type": {
+          "enum": ["relational", "csv", "json", "text", "code", "timeseries", "event_log", "geospatial", "graph"]
+        },
+        "shape_signature": { "type": "string", "minLength": 1 }
+      }
+    },
+    "defaults": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "provenance": { "enum": ["EXTRACTED", "INFERRED"] },
+        "materialize_fine_grain": { "type": "boolean" }
+      }
+    },
+    "authoring": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "authored_by": { "type": "string" },
+        "created": { "type": "string", "format": "date" },
+        "sample_basis": { "type": "string" },
+        "design_notes_ref": { "type": "string" }
+      }
+    },
+    "mappings": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/mapping" }
+    }
+  },
+  "$defs": {
+    "safe_identifier": {
+      "type": "string",
+      "pattern": "^(?!__)[A-Za-z_][A-Za-z0-9_]*$",
+      "$comment": "Cypher-safe identifier; the (?!__) guard rejects the ADR-015 reserved __wrapped__ namespace."
+    },
+    "match": {
+      "type": "object",
+      "required": ["unit_kind"],
+      "additionalProperties": false,
+      "properties": {
+        "unit_kind": { "type": "string", "minLength": 1 },
+        "name": { "type": "string" },
+        "role": { "type": "string" }
+      }
+    },
+    "identity": {
+      "type": "object",
+      "required": ["scheme", "from"],
+      "additionalProperties": false,
+      "properties": {
+        "scheme": { "const": "deterministic" },
+        "from": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } },
+        "normalize": {
+          "type": "array",
+          "items": { "enum": ["casefold", "trim", "collapse_whitespace"] }
+        }
+      }
+    },
+    "property_projection": {
+      "type": "object",
+      "required": ["name", "value_from"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "$ref": "#/$defs/safe_identifier" },
+        "value_from": { "type": "string", "minLength": 1 }
+      }
+    },
+    "mapping": {
+      "$comment": "A mapping rule is a discriminated union on project_to; exactly one branch matches.",
+      "oneOf": [
+        { "$ref": "#/$defs/rule_node" },
+        { "$ref": "#/$defs/rule_edge" },
+        { "$ref": "#/$defs/rule_property" },
+        { "$ref": "#/$defs/rule_skip" },
+        { "$ref": "#/$defs/rule_text_extraction" }
+      ]
+    },
+    "rule_node": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "match", "project_to", "label", "identity"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "match": { "$ref": "#/$defs/match" },
+        "project_to": { "const": "node" },
+        "label": { "$ref": "#/$defs/safe_identifier" },
+        "identity": { "$ref": "#/$defs/identity" },
+        "materialize": { "type": "boolean" },
+        "properties": { "type": "array", "items": { "$ref": "#/$defs/property_projection" } },
+        "provenance": { "enum": ["EXTRACTED", "INFERRED"] }
+      }
+    },
+    "rule_edge": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "match", "project_to", "type", "from", "to"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "match": { "$ref": "#/$defs/match" },
+        "project_to": { "const": "edge" },
+        "type": { "$ref": "#/$defs/safe_identifier" },
+        "from": {
+          "type": "object",
+          "required": ["node_rule"],
+          "additionalProperties": false,
+          "properties": { "node_rule": { "type": "string", "minLength": 1 } }
+        },
+        "to": {
+          "type": "object",
+          "required": ["node_rule", "resolve_by"],
+          "additionalProperties": false,
+          "properties": {
+            "node_rule": { "type": "string", "minLength": 1 },
+            "resolve_by": { "enum": ["fk_target", "identity", "self"] }
+          }
+        },
+        "properties": { "type": "array", "items": { "$ref": "#/$defs/property_projection" } },
+        "provenance": { "enum": ["EXTRACTED", "INFERRED"] }
+      }
+    },
+    "rule_property": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "match", "project_to", "on", "name"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "match": { "$ref": "#/$defs/match" },
+        "project_to": { "const": "property" },
+        "on": { "type": "string", "minLength": 1 },
+        "name": { "$ref": "#/$defs/safe_identifier" },
+        "value_from": { "type": "string", "minLength": 1 }
+      }
+    },
+    "rule_skip": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "match", "project_to", "reason"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "match": { "$ref": "#/$defs/match" },
+        "project_to": { "const": "skip" },
+        "reason": { "type": "string", "minLength": 1 }
+      }
+    },
+    "rule_text_extraction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "match", "project_to", "primitive", "link_to", "provenance"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "match": { "$ref": "#/$defs/match" },
+        "project_to": { "const": "text_extraction" },
+        "primitive": { "type": "string", "minLength": 1 },
+        "params": { "type": "object" },
+        "link_to": {
+          "type": "object",
+          "required": ["node_rule", "edge_type"],
+          "additionalProperties": false,
+          "properties": {
+            "node_rule": { "type": "string", "minLength": 1 },
+            "edge_type": { "$ref": "#/$defs/safe_identifier" }
+          }
+        },
+        "provenance": { "const": "INFERRED" }
+      }
+    }
+  }
+}

@@ -40,8 +40,11 @@ from oraclous_knowledge_graph_service.repositories.graph_write_repository import
     GraphWriteRepository,
 )
 from oraclous_knowledge_graph_service.repositories.job_repository import IngestionJobRepository
+from oraclous_knowledge_graph_service.repositories.recipe_repository import RecipeRepository
 from oraclous_knowledge_graph_service.services.graph_service import GraphService
 from oraclous_knowledge_graph_service.services.job_service import JobService
+from oraclous_knowledge_graph_service.services.recipe_service import RecipeService
+from oraclous_knowledge_graph_service.services.recipes.engine import get_recipe_engine
 
 _bearer = HTTPBearer(auto_error=False)
 
@@ -137,8 +140,16 @@ def get_graph_write_repo(
     return GraphWriteRepository(driver, database=get_settings().neo4j_database)
 
 
+def get_recipe_service(
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+    _org: Annotated[OrganisationContext, Depends(bind_org_context)],
+) -> RecipeService:
+    return RecipeService(RecipeRepository(session), get_recipe_engine())
+
+
 # Public dependency aliases for route signatures.
 GraphServiceDep = Annotated[GraphService, Depends(get_graph_service)]
 UserIdDep = Annotated[uuid.UUID, Depends(get_current_user_id)]
 JobServiceDep = Annotated[JobService, Depends(get_job_service)]
 GraphWriteRepoDep = Annotated[GraphWriteRepository, Depends(get_graph_write_repo)]
+RecipeServiceDep = Annotated[RecipeService, Depends(get_recipe_service)]
