@@ -41,19 +41,20 @@ import uuid
 
 import pytest
 
+# Module-level import IS the expected TDD RED signal (ADR-010).
+# Fails with ImportError until the implementer creates:
+#   services/knowledge-retriever-service/src/
+#   oraclous_knowledge_retriever_service/capability_registration.py
+from oraclous_knowledge_retriever_service.capability_registration import (
+    RETRIEVER_CAPABILITY_DESCRIPTORS,
+    register_retriever_capabilities,
+)
+
 from app.models.capability_descriptor import (
     CapabilityDescriptorDB,
     DescriptorKind,
 )
 from app.services.capability_registry import CapabilityRegistryService
-
-# Module-level import IS the expected TDD RED signal (ADR-010).
-# Fails with ImportError until the implementer creates:
-#   services/knowledge-retriever-service/src/oraclous_knowledge_retriever_service/capability_registration.py
-from oraclous_knowledge_retriever_service.capability_registration import (
-    RETRIEVER_CAPABILITY_DESCRIPTORS,
-    register_retriever_capabilities,
-)
 
 # ---------------------------------------------------------------------------
 # Test org UUIDs
@@ -95,10 +96,13 @@ def test_capability_registration_module_is_importable():
 
 @pytest.mark.integration
 def test_retriever_capability_descriptors_has_five_entries():
-    """RETRIEVER_CAPABILITY_DESCRIPTORS must expose exactly five capability dicts — one per endpoint."""
+    """RETRIEVER_CAPABILITY_DESCRIPTORS must expose exactly five capability dicts
+    — one per endpoint."""
     assert len(RETRIEVER_CAPABILITY_DESCRIPTORS) == 5, (
-        f"Expected 5 retriever capability descriptors, got {len(RETRIEVER_CAPABILITY_DESCRIPTORS)}. "
-        "Covered endpoints: semantic_search, full_text_search, hybrid_search, graph_traverse, temporal_slice"
+        "Expected 5 retriever capability descriptors, "
+        f"got {len(RETRIEVER_CAPABILITY_DESCRIPTORS)}. "
+        "Covered endpoints: semantic_search, full_text_search, hybrid_search, "
+        "graph_traverse, temporal_slice"
     )
 
 
@@ -173,16 +177,13 @@ def test_descriptor_ids_match_canonical_retriever_endpoints():
     ids=[d.get("id", f"descriptor-{i}") for i, d in enumerate(RETRIEVER_CAPABILITY_DESCRIPTORS)],
 )
 def test_descriptor_has_input_and_output_schemas(descriptor):
-    """Each descriptor spec must define both input_schema and output_schema (OHM ToolSpec contract)."""
+    """Each descriptor spec must define both input_schema and output_schema
+    (OHM ToolSpec contract)."""
     spec = descriptor.get("spec", {})
     input_schema = spec.get("input_schema")
     output_schema = spec.get("output_schema")
-    assert input_schema, (
-        f"Descriptor {descriptor.get('id')!r} is missing input_schema in spec"
-    )
-    assert output_schema, (
-        f"Descriptor {descriptor.get('id')!r} is missing output_schema in spec"
-    )
+    assert input_schema, f"Descriptor {descriptor.get('id')!r} is missing input_schema in spec"
+    assert output_schema, f"Descriptor {descriptor.get('id')!r} is missing output_schema in spec"
     assert isinstance(input_schema, dict), (
         f"Descriptor {descriptor.get('id')!r} input_schema must be a dict"
     )
@@ -206,9 +207,7 @@ async def test_register_retriever_capabilities_persists_five_rows(async_session)
     svc = CapabilityRegistryService(async_session)
     rows = await register_retriever_capabilities(svc, org_id=_ORG_KRS)
 
-    assert len(rows) == 5, (
-        f"register_retriever_capabilities() must return 5 rows; got {len(rows)}"
-    )
+    assert len(rows) == 5, f"register_retriever_capabilities() must return 5 rows; got {len(rows)}"
     for row in rows:
         assert isinstance(row, CapabilityDescriptorDB)
         assert row.id is not None
@@ -232,9 +231,7 @@ async def test_list_by_kind_returns_all_five_retriever_tools(async_session):
     await register_retriever_capabilities(svc, org_id=_ORG_KRS)
 
     tools = await svc.list_by_kind(_ORG_KRS, DescriptorKind.TOOL)
-    assert len(tools) == 5, (
-        f"Expected 5 tool capabilities after KRS provisioning; got {len(tools)}"
-    )
+    assert len(tools) == 5, f"Expected 5 tool capabilities after KRS provisioning; got {len(tools)}"
     registered_ids = {row.descriptor["id"] for row in tools}
     assert registered_ids == _EXPECTED_DESCRIPTOR_IDS, (
         f"Registry tool IDs mismatch after provisioning.\n"

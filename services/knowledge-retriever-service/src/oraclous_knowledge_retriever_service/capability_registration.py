@@ -4,8 +4,6 @@ Registers all five KRS retrieval endpoints as OHM kind:tool descriptors in the
 capability registry.  One module-level list (`RETRIEVER_CAPABILITY_DESCRIPTORS`)
 holds the static descriptor dicts; `register_retriever_capabilities` persists
 them for a given org via `CapabilityRegistryService.create`.
-
-Story: ORAA-62 [R3-CAP-1]
 """
 
 from __future__ import annotations
@@ -385,7 +383,7 @@ async def register_retriever_capabilities(
     returns the persisted DB rows.  The repository auto-computes `content_hash`
     from the descriptor body on each call.
     """
-    from app.models.capability_descriptor import DescriptorKind
+    from app.models.capability_descriptor import DescriptorKind  # cross-package boundary
 
     rows = []
     for descriptor in RETRIEVER_CAPABILITY_DESCRIPTORS:
