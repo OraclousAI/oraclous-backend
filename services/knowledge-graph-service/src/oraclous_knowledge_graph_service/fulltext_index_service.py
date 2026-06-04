@@ -1,7 +1,7 @@
-"""KGS deprecation shim: retriever_factory — HTTP proxy to KRS (ADR-014 Option B, ORAA-56).
+"""KGS deprecation shim: fulltext_index_service — HTTP proxy to KRS (ADR-014 Option B, ORAA-56).
 
 This module is a backwards-compatibility shim.  Callers must migrate to
-oraclous_knowledge_retriever_service.retriever_factory.
+oraclous_knowledge_retriever_service.fulltext_index_service.
 """
 
 from __future__ import annotations
@@ -17,16 +17,16 @@ logger = logging.getLogger(__name__)
 _transport: httpx.AsyncBaseTransport | None = None
 
 
-class RetrieverFactory:
-    async def create(self, retriever_type: str, **kwargs: Any) -> dict:
+class FulltextIndexService:
+    async def build(self, graph_id: str, **kwargs: Any) -> dict:
         logger.warning(
-            "oraclous_knowledge_graph_service.retriever_factory is deprecated; "
+            "oraclous_knowledge_graph_service.fulltext_index_service is deprecated; "
             "migrate to oraclous_knowledge_retriever_service"
         )
         krs_base_url = os.environ.get("KRS_BASE_URL", "http://krs-service:8006")
         async with httpx.AsyncClient(transport=_transport or httpx.AsyncHTTPTransport()) as client:
             resp = await client.post(
-                f"{krs_base_url}/factory/create",
-                json={"retriever_type": retriever_type},
+                f"{krs_base_url}/fulltext/build",
+                json={"graph_id": graph_id},
             )
             return resp.json()
