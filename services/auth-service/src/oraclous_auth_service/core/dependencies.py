@@ -18,11 +18,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from oraclous_auth_service.core.database import session_scope
 from oraclous_auth_service.core.jwt_handler import decode_token
+from oraclous_auth_service.repositories.invitation_repository import InvitationRepository
 from oraclous_auth_service.repositories.org_member_repository import OrgMemberRepository
 from oraclous_auth_service.repositories.organisation_repository import OrganisationRepository
 from oraclous_auth_service.repositories.refresh_token_repository import RefreshTokenRepository
 from oraclous_auth_service.repositories.user_repository import UserRepository
 from oraclous_auth_service.services.auth_service import AuthService
+from oraclous_auth_service.services.invitation_service import InvitationService
 from oraclous_auth_service.services.org_service import OrgService
 
 _bearer = HTTPBearer(auto_error=False)
@@ -43,6 +45,16 @@ def get_org_service(session: Annotated[AsyncSession, Depends(get_session)]) -> O
     return OrgService(
         organisations=OrganisationRepository(session),
         members=OrgMemberRepository(session),
+    )
+
+
+def get_invitation_service(
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> InvitationService:
+    return InvitationService(
+        invitations=InvitationRepository(session),
+        members=OrgMemberRepository(session),
+        organisations=OrganisationRepository(session),
     )
 
 
@@ -86,4 +98,5 @@ def current_user_claims(
 
 AuthServiceDep = Annotated[AuthService, Depends(get_auth_service)]
 OrgServiceDep = Annotated[OrgService, Depends(get_org_service)]
+InvitationServiceDep = Annotated[InvitationService, Depends(get_invitation_service)]
 UserClaimsDep = Annotated[dict, Depends(current_user_claims)]
