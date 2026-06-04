@@ -84,7 +84,7 @@ def _chunk_row(cid: str, text: str, score: float) -> dict:
 
 async def test_semantic_returns_node_results() -> None:
     driver = _FakeDriver([[_chunk_row("c1", "ada", 0.9), _chunk_row("c2", "babbage", 0.5)]])
-    svc = RetrievalService(driver, HashingEmbedder(8), fulltext_index="ft")
+    svc = RetrievalService(driver, HashingEmbedder(8))
     with _ctx():
         results = await svc.semantic(graph_id="g1", query="who wrote it", top_k=10)
     assert [r["type"] for r in results] == ["Chunk", "Chunk"]
@@ -99,7 +99,7 @@ async def test_hybrid_rrf_fuses_and_dedupes() -> None:
             [_chunk_row("c2", "b", 3.1), _chunk_row("c3", "c", 1.0)],  # fulltext call
         ]
     )
-    svc = RetrievalService(driver, HashingEmbedder(8), fulltext_index="ft")
+    svc = RetrievalService(driver, HashingEmbedder(8))
     with _ctx():
         results = await svc.hybrid(graph_id="g1", query="b", top_k=10)
     ids = [r["id"] for r in results]
@@ -122,7 +122,7 @@ async def test_neighbors_carries_relationship() -> None:
             ]
         ]
     )
-    svc = RetrievalService(driver, HashingEmbedder(8), fulltext_index="ft")
+    svc = RetrievalService(driver, HashingEmbedder(8))
     with _ctx():
         results = await svc.neighbors(graph_id="g1", node_id="n1", top_k=10)
     assert results[0]["properties"]["relationship"] == "PART_OF"

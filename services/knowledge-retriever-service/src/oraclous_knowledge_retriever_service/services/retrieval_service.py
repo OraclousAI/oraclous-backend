@@ -1,6 +1,6 @@
 """Retrieval use-cases (ORAA-4 §21 services layer) — the five read modalities.
 
-semantic (cosine over chunk embeddings, key-free), fulltext (Lucene index), hybrid (explicit RRF
+semantic (cosine over chunk embeddings, key-free), fulltext (index-free CONTAINS scan), hybrid (RRF
 fusion, k=60), graph-traverse (1-hop neighbours), temporal (valid as-of). Every result is the
 canonical `NodeResult` envelope {id, type, properties}; modality data (score, text, relationship,
 …) lives inside properties (never at top level), and the embedding vector is never echoed. Org scope
@@ -57,12 +57,10 @@ class RetrievalService:
         driver,
         embedder: HashingEmbedder,
         *,
-        fulltext_index: str,
         database: str | None = None,
     ) -> None:
         self._driver = driver
         self._embedder = embedder
-        self._fulltext_index = fulltext_index
         self._db = database
 
     def _repo(self) -> RetrievalRepository:
@@ -81,7 +79,6 @@ class RetrievalService:
         rows = await asyncio.to_thread(
             repo.fulltext,
             graph_id=graph_id,
-            index_name=self._fulltext_index,
             query=query,
             top_k=top_k,
         )

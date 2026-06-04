@@ -42,15 +42,16 @@ class RetrievalRepository:
             top_k=top_k,
         )
 
-    def fulltext(self, *, graph_id: str, index_name: str, query: str, top_k: int) -> list[dict]:
+    def fulltext(self, *, graph_id: str, query: str, top_k: int) -> list[dict]:
+        # Index-free, read-only lexical match (ORAA-58 / T6: KRS issues no write Cypher, so it never
+        # creates a fulltext index). Case-insensitive substring over :Chunk text, org+graph scoped.
         return self._query(
-            "CALL db.index.fulltext.queryNodes($index_name, $query) YIELD node, score "
-            "WHERE node.graph_id = $graph_id AND node.organisation_id = $organisation_id "
-            "RETURN elementId(node) AS id, labels(node) AS labels, "
-            "properties(node) AS props, score "
-            "ORDER BY score DESC LIMIT $top_k",
+            "MATCH (c:Chunk) "
+            "WHERE c.graph_id = $graph_id AND c.organisation_id = $organisation_id "
+            "AND c.text IS NOT NULL AND toLower(c.text) CONTAINS toLower($query) "
+            "RETURN elementId(c) AS id, labels(c) AS labels, properties(c) AS props, 1.0 AS score "
+            "LIMIT $top_k",
             graph_id=graph_id,
-            index_name=index_name,
             query=query,
             top_k=top_k,
         )

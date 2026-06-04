@@ -84,7 +84,6 @@ def get_retrieval_service(
     return RetrievalService(
         driver,
         HashingEmbedder(dim=settings.embedding_dim),
-        fulltext_index=settings.chunk_fulltext_index,
         database=settings.neo4j_database,
     )
 

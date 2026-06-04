@@ -1,4 +1,4 @@
-"""App lifecycle (ORAA-4 §21 core layer) — open/close the Neo4j read driver + fulltext index."""
+"""App lifecycle (ORAA-4 §21 core layer) — open/close the read-only Neo4j driver (no schema)."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from fastapi import FastAPI
 from neo4j import Driver
 
 from oraclous_knowledge_retriever_service.core.config import get_settings
-from oraclous_knowledge_retriever_service.core.neo4j import ensure_schema, make_neo4j_driver
+from oraclous_knowledge_retriever_service.core.neo4j import make_neo4j_driver
 
 logger = logging.getLogger(__name__)
 
@@ -20,9 +20,8 @@ def _open_neo4j() -> Driver | None:
     settings = get_settings()
     if not settings.neo4j_uri:
         return None
-    driver = make_neo4j_driver(settings)
-    ensure_schema(driver, settings, database=settings.neo4j_database)
-    return driver
+    # KRS is read-only (ORAA-58 / T6): it opens the driver but never creates schema/indexes.
+    return make_neo4j_driver(settings)
 
 
 @asynccontextmanager

@@ -31,7 +31,6 @@ class Settings(BaseSettings):
 
     # --- retrieval embedder (MUST match the KGS write-side hashing embedder for convergence) ---
     embedding_dim: int = 512
-    chunk_fulltext_index: str = "chunk_text_fulltext"
     default_top_k: int = 10
 
 
