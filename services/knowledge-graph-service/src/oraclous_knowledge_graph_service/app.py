@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from fastapi import FastAPI
 
+from oraclous_knowledge_graph_service.api.internal.schema import router as internal_schema_router
 from oraclous_knowledge_graph_service.api.v1.endpoints.graphs import router as graphs_router
 
 
@@ -19,4 +20,5 @@ def create_app() -> FastAPI:
         description="R3 graph management API with T1 ownership-gate enforcement.",
     )
     app.include_router(graphs_router, prefix="/api/v1")
+    app.include_router(internal_schema_router, prefix="/internal/v1")
     return app
