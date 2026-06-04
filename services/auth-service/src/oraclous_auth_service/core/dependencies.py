@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from oraclous_auth_service.core.database import session_scope
 from oraclous_auth_service.core.jwt_handler import decode_token
+from oraclous_auth_service.repositories.audit_repository import AuditRepository
 from oraclous_auth_service.repositories.invitation_repository import InvitationRepository
 from oraclous_auth_service.repositories.oauth_repository import (
     OAuthAccountRepository,
@@ -61,6 +62,7 @@ def get_invitation_service(
         invitations=InvitationRepository(session),
         members=OrgMemberRepository(session),
         organisations=OrganisationRepository(session),
+        audit=AuditRepository(session),
     )
 
 
@@ -85,6 +87,7 @@ def get_oauth_service(
         accounts=OAuthAccountRepository(session),
         states=OAuthStateRepository(session),
         client=client,
+        audit=AuditRepository(session),
     )
 
 
@@ -96,6 +99,7 @@ def get_auth_service(session: Annotated[AsyncSession, Depends(get_session)]) -> 
             organisations=OrganisationRepository(session),
             members=OrgMemberRepository(session),
         ),
+        audit=AuditRepository(session),
     )
 
 

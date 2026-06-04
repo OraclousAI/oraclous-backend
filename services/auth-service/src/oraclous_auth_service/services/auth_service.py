@@ -29,6 +29,7 @@ from oraclous_auth_service.domain.passwords import (
     verify_password,
 )
 from oraclous_auth_service.models.user_model import User
+from oraclous_auth_service.repositories.audit_repository import AuditRepository
 from oraclous_auth_service.repositories.refresh_token_repository import RefreshTokenRepository
 from oraclous_auth_service.repositories.user_repository import UserRepository
 from oraclous_auth_service.services.org_service import OrgService
@@ -62,10 +63,21 @@ class AuthService:
         users: UserRepository,
         refresh_tokens: RefreshTokenRepository,
         orgs: OrgService,
+        audit: AuditRepository | None = None,
     ) -> None:
         self._users = users
         self._refresh = refresh_tokens
         self._orgs = orgs
+        self._audit = audit
+
+    async def _record(self, event: str, *, actor_id: str, organisation_id: str) -> None:
+        if self._audit is not None:
+            await self._audit.record(
+                event=event,
+                actor_type="user",
+                actor_id=actor_id,
+                organisation_id=organisation_id,
+            )
 
     async def _issue_pair(self, user: User, *, organisation_id: str, family_id: str) -> TokenBundle:
         access_token, expires_in = create_user_token(
@@ -119,7 +131,9 @@ class AuthService:
             password_hash=hash_password(password),
             default_organisation_id=org.id,
         )
-        return await self._issue_pair(user, organisation_id=org.id, family_id=str(uuid.uuid4()))
+        bundle = await self._issue_pair(user, organisation_id=org.id, family_id=str(uuid.uuid4()))
+        await self._record("user.register", actor_id=user.id, organisation_id=org.id)
+        return bundle
 
     async def login(
         self, *, email: str, password: str, requested_org_id: str | None = None
@@ -133,6 +147,7 @@ class AuthService:
         organisation_id = await self._orgs.resolve_active_org(
             user=user, requested_org_id=requested_org_id
         )
+        await self._record("user.login", actor_id=user.id, organisation_id=organisation_id)
         return await self._issue_pair(
             user, organisation_id=organisation_id, family_id=str(uuid.uuid4())
         )

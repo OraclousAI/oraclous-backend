@@ -3,6 +3,7 @@ autogenerate + ``upgrade head`` and ``create_all`` all see the full schema.
 """
 
 from oraclous_auth_service.models.agent_model import Agent, AgentCredential
+from oraclous_auth_service.models.audit_model import AuthAuditLog
 from oraclous_auth_service.models.base import Base
 from oraclous_auth_service.models.invitation_model import OrgInvitation
 from oraclous_auth_service.models.oauth_model import OAuthAccount, OAuthState
@@ -13,6 +14,7 @@ from oraclous_auth_service.models.user_model import User
 __all__ = [
     "Agent",
     "AgentCredential",
+    "AuthAuditLog",
     "Base",
     "OAuthAccount",
     "OAuthState",

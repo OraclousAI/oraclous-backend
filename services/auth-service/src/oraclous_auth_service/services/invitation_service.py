@@ -18,6 +18,7 @@ from oraclous_auth_service.domain.invitations import (
 )
 from oraclous_auth_service.domain.organisations import OrgRole, can_manage
 from oraclous_auth_service.models.invitation_model import OrgInvitation
+from oraclous_auth_service.repositories.audit_repository import AuditRepository
 from oraclous_auth_service.repositories.invitation_repository import InvitationRepository
 from oraclous_auth_service.repositories.org_member_repository import OrgMemberRepository
 from oraclous_auth_service.repositories.organisation_repository import OrganisationRepository
@@ -43,10 +44,12 @@ class InvitationService:
         invitations: InvitationRepository,
         members: OrgMemberRepository,
         organisations: OrganisationRepository,
+        audit: AuditRepository | None = None,
     ) -> None:
         self._inv = invitations
         self._members = members
         self._orgs = organisations
+        self._audit = audit
 
     async def _require_admin(self, *, org_id: str, user_id: str) -> None:
         role = await self._members.role_for(organisation_id=org_id, user_id=user_id)
@@ -129,4 +132,12 @@ class InvitationService:
             accepted_by_user_id=accepter_user_id,
             accepted_at=datetime.now(UTC),
         )
+        if self._audit is not None:
+            await self._audit.record(
+                event="invitation.accept",
+                actor_type="user",
+                actor_id=accepter_user_id,
+                organisation_id=inv.organisation_id,
+                target=inv.id,
+            )
         return {"organisation_id": inv.organisation_id, "role": inv.org_role}
