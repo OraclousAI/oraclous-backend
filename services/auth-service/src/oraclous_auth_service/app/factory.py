@@ -39,6 +39,7 @@ from oraclous_auth_service.domain.passwords import PasswordPolicyError
 from oraclous_auth_service.routes.auth_routes import router as auth_router
 from oraclous_auth_service.routes.invitation_routes import org_router as invitation_org_router
 from oraclous_auth_service.routes.invitation_routes import token_router as invitation_token_router
+from oraclous_auth_service.routes.oauth_routes import router as oauth_router
 from oraclous_auth_service.routes.org_routes import router as org_router
 from oraclous_auth_service.services.auth_service import (
     AuthenticationError,
@@ -48,15 +49,20 @@ from oraclous_auth_service.services.invitation_service import (
     InvitationInvalidError,
     InvitationRoleError,
 )
+from oraclous_auth_service.services.oauth_service import (
+    OAuthError,
+    OAuthProviderUnconfiguredError,
+)
 from oraclous_auth_service.services.org_service import OrgForbiddenError, OrgNotFoundError
 
 
 def _register_user_identity(app: FastAPI) -> None:
-    """Mount the user-identity + org + invitation routers, map domain exceptions, add `/health`."""
+    """Mount the user-identity + org + invitation + oauth routers, map exceptions, add `/health`."""
     app.include_router(auth_router)
     app.include_router(org_router)
     app.include_router(invitation_org_router)
     app.include_router(invitation_token_router)
+    app.include_router(oauth_router)
 
     @app.exception_handler(AuthenticationError)
     async def _on_auth_error(_: Request, exc: AuthenticationError) -> JSONResponse:
@@ -92,6 +98,18 @@ def _register_user_identity(app: FastAPI) -> None:
     async def _on_invitation_role(_: Request, exc: InvitationRoleError) -> JSONResponse:
         return JSONResponse(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, content={"detail": str(exc)}
+        )
+
+    @app.exception_handler(OAuthError)
+    async def _on_oauth_error(_: Request, exc: OAuthError) -> JSONResponse:
+        return JSONResponse(status_code=status.HTTP_400_BAD_REQUEST, content={"detail": str(exc)})
+
+    @app.exception_handler(OAuthProviderUnconfiguredError)
+    async def _on_oauth_unconfigured(
+        _: Request, exc: OAuthProviderUnconfiguredError
+    ) -> JSONResponse:
+        return JSONResponse(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, content={"detail": str(exc)}
         )
 
     @app.get("/health")
