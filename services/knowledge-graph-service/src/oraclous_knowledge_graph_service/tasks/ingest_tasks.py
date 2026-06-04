@@ -27,6 +27,10 @@ from oraclous_knowledge_graph_service.repositories.graph_write_repository import
 )
 from oraclous_knowledge_graph_service.repositories.job_repository import IngestionJobRepository
 from oraclous_knowledge_graph_service.repositories.recipe_repository import RecipeRepository
+from oraclous_knowledge_graph_service.services.code_ingestion_service import (
+    CodeIngestionService,
+    is_code,
+)
 from oraclous_knowledge_graph_service.services.embedder import make_embedder
 from oraclous_knowledge_graph_service.services.ingestion_service import IngestionService
 from oraclous_knowledge_graph_service.services.structured_ingestion_service import (
@@ -69,6 +73,10 @@ async def _ingest_async(job_id_s: str, organisation_id_s: str) -> dict[str, Any]
                 if is_structured(payload.source_type):
                     summary = await _ingest_structured(
                         driver=driver, maker=maker, settings=settings, payload=payload, data=data
+                    )
+                elif is_code(payload.source_type):
+                    summary = await _ingest_code(
+                        driver=driver, settings=settings, payload=payload, data=data
                     )
                 else:
                     write_repo = GraphWriteRepository(driver, database=settings.neo4j_database)
@@ -134,3 +142,19 @@ async def _ingest_structured(*, driver, maker, settings, payload, data: bytes) -
         "relationships": result["edges_written"],
         "detail": result,
     }
+
+
+async def _ingest_code(*, driver, settings, payload, data: bytes) -> dict[str, Any]:
+    """Code (zip / single file): tree-sitter parse -> :File/:Function/:Class via the code writer."""
+    service = CodeIngestionService(
+        driver=driver, organisation_id=enforced_organisation_id(), database=settings.neo4j_database
+    )
+    counts = await asyncio.to_thread(
+        service.ingest,
+        graph_id=str(payload.graph_id),
+        document=payload.filename or "code.zip",
+        data=data,
+    )
+    entities = counts["files"] + counts["functions"] + counts["classes"] + counts["variables"]
+    relationships = counts["calls"] + counts["imports"] + counts["inherits"]
+    return {"entities": entities, "relationships": relationships, "detail": counts}

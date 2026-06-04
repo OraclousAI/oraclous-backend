@@ -155,4 +155,38 @@ jjid=$(echo "$jjob" | jget "['id']")
 jrecs=$(cypher "MATCH (r:Record {graph_id:'${JGID}'}) RETURN count(r)" | tail -1 | tr -d ' ')
 [[ "$jrecs" == "2" ]] && pass "json :Record count=2" || fail "json records=$jrecs"
 
-printf '\n\033[32mS1+S2+S3 smoke passed.\033[0m  text/doc + CSV/JSON (recipe engine) -> real org-scoped graph, key-free, idempotent.\n'
+# ---------------------------------------------------------------------------
+# S4 — code ingestion (tree-sitter): a zip of Python sources -> :File/:Function/:Class
+# ---------------------------------------------------------------------------
+step "15. ingest a code zip -> :File / :Class / :Function (+ CALLS / METHOD_OF)"
+CGID=$(curl -fsS "${AUTH[@]}" -X POST "${BASE}/api/v1/graphs" -d '{"name":"code"}' | jget "['id']")
+workdir=$(mktemp -d); mkdir -p "${workdir}/pkg"
+printf 'from pkg.util import helper\n\n\nclass Greeter:\n    def greet(self, name):\n        return helper(name)\n' > "${workdir}/pkg/greeter.py"
+printf 'def helper(name):\n    return name.upper()\n' > "${workdir}/pkg/util.py"
+( cd "${workdir}" && zip -qr /tmp/kgs_repo.zip pkg )
+czjob=$(curl -fsS -H "Authorization: Bearer dev-token" -F "file=@/tmp/kgs_repo.zip;type=application/zip" \
+  "${BASE}/api/v1/graphs/${CGID}/upload")
+czid=$(echo "$czjob" | jget "['id']")
+[[ "$(echo "$czjob" | jget "['source_type']")" == "code" ]] && pass "code zip accepted" || fail "code: $czjob"
+[[ "$(poll_done "$CGID" "$czid")" == "completed" ]] && pass "code job completed" || fail "code job failed"
+files=$(cypher "MATCH (f:File {graph_id:'${CGID}'}) RETURN count(f)" | tail -1 | tr -d ' ')
+fns=$(cypher "MATCH (fn:Function {graph_id:'${CGID}'}) RETURN count(fn)" | tail -1 | tr -d ' ')
+cls=$(cypher "MATCH (c:Class {graph_id:'${CGID}'}) RETURN count(c)" | tail -1 | tr -d ' ')
+[[ "$files" == "2" ]] && pass ":File count=2" || fail ":File count=$files"
+[[ "$fns" -ge 2 ]] && pass ":Function count=${fns}" || fail ":Function count=$fns"
+[[ "$cls" == "1" ]] && pass ":Class count=1" || fail ":Class count=$cls"
+calls=$(cypher "MATCH (:Function {graph_id:'${CGID}'})-[r:CALLS]->(:Function {graph_id:'${CGID}'}) RETURN count(r)" | tail -1 | tr -d ' ')
+[[ "$calls" -ge 1 ]] && pass "CALLS edge resolved (greet -> helper)" || fail "no CALLS edge ($calls)"
+mof=$(cypher "MATCH (:Function {graph_id:'${CGID}'})-[r:METHOD_OF]->(:Class {graph_id:'${CGID}'}) RETURN count(r)" | tail -1 | tr -d ' ')
+[[ "$mof" -ge 1 ]] && pass "METHOD_OF edge (greet -> Greeter)" || fail "no METHOD_OF ($mof)"
+corg=$(cypher "MATCH (f:File {graph_id:'${CGID}'}) RETURN f.organisation_id LIMIT 1" | tail -1 | tr -d ' "')
+[[ "$corg" == "00000000-0000-0000-0000-00000000050a" ]] && pass "organisation_id stamped" || fail "org=$corg"
+
+step "16. idempotent code re-ingest (replace-per-file -> no duplicates)"
+rczid=$(curl -fsS -H "Authorization: Bearer dev-token" -F "file=@/tmp/kgs_repo.zip;type=application/zip" \
+  "${BASE}/api/v1/graphs/${CGID}/upload" | jget "['id']")
+poll_done "$CGID" "$rczid" >/dev/null
+fns2=$(cypher "MATCH (fn:Function {graph_id:'${CGID}'}) RETURN count(fn)" | tail -1 | tr -d ' ')
+[[ "$fns2" == "$fns" ]] && pass "re-ingest idempotent (still ${fns2} functions)" || fail "dup: $fns -> $fns2"
+
+printf '\n\033[32mS1+S2+S3+S4 smoke passed.\033[0m  text/doc + CSV/JSON + code (tree-sitter) -> real org-scoped graph, key-free, idempotent.\n'
