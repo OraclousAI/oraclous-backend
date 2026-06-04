@@ -22,6 +22,7 @@ from __future__ import annotations
 from typing import Protocol
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, status
+from fastapi.responses import JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError
 from pydantic import BaseModel
@@ -30,6 +31,40 @@ from oraclous_auth_service.core.jwt_handler import create_agent_token, decode_to
 from oraclous_auth_service.core.rate_limiter import (
     enforce_agent_credential_prefix_rate_limit,
 )
+from oraclous_auth_service.domain.passwords import PasswordPolicyError
+from oraclous_auth_service.routes.auth_routes import router as auth_router
+from oraclous_auth_service.services.auth_service import (
+    AuthenticationError,
+    EmailAlreadyRegisteredError,
+)
+
+
+def _register_user_identity(app: FastAPI) -> None:
+    """Mount the user-identity router, map its domain exceptions to HTTP, and add `/health`."""
+    app.include_router(auth_router)
+
+    @app.exception_handler(AuthenticationError)
+    async def _on_auth_error(_: Request, exc: AuthenticationError) -> JSONResponse:
+        return JSONResponse(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            content={"detail": str(exc)},
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    @app.exception_handler(EmailAlreadyRegisteredError)
+    async def _on_email_taken(_: Request, exc: EmailAlreadyRegisteredError) -> JSONResponse:
+        return JSONResponse(status_code=status.HTTP_409_CONFLICT, content={"detail": str(exc)})
+
+    @app.exception_handler(PasswordPolicyError)
+    async def _on_weak_password(_: Request, exc: PasswordPolicyError) -> JSONResponse:
+        return JSONResponse(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, content={"detail": str(exc)}
+        )
+
+    @app.get("/health")
+    async def health() -> dict:
+        return {"status": "ok"}
+
 
 # --- Protocol ---------------------------------------------------------------
 
@@ -161,16 +196,28 @@ def _principal_from_bearer(
 # --- App factory ------------------------------------------------------------
 
 
-def create_app(*, agent_repository: AgentRepositoryPort, internal_service_key: str) -> FastAPI:
-    """Build the auth-service FastAPI app with explicit dependencies."""
-    app = FastAPI(title="oraclous-auth-service", version="0.0.1")
+def create_app(
+    *, agent_repository: AgentRepositoryPort, internal_service_key: str, lifespan=None
+) -> FastAPI:
+    """Build the auth-service FastAPI app with explicit dependencies.
+
+    ``lifespan`` is supplied by ``main.py`` in production (it opens the Postgres sessionmaker +
+    Redis into ``app.state``); tests omit it and wire ``app.state.sessionmaker`` directly when they
+    exercise the user-identity routes (agent-only tests never touch them, so the unset → 503 path is
+    harmless there).
+    """
+    app = FastAPI(title="oraclous-auth-service", version="0.0.1", lifespan=lifespan)
     app.state.agent_repository = agent_repository
     app.state.internal_service_key = internal_service_key
-    # Production wires app.state.redis at startup; tests leave it unset and the
-    # limiter then fails open. Keeping the attribute pre-declared as None lets
-    # the limiter's ``getattr(..., "redis", None)`` resolve without surprise.
+    # Production wires app.state.redis / app.state.sessionmaker at startup; tests leave them unset
+    # and the limiter fails open / identity routes 503. Pre-declaring keeps the getattr lookups
+    # surprise-free.
     if not hasattr(app.state, "redis"):
         app.state.redis = None
+    if not hasattr(app.state, "sessionmaker"):
+        app.state.sessionmaker = None
+
+    _register_user_identity(app)
 
     verify_internal_key = _make_internal_key_verifier(internal_service_key)
 

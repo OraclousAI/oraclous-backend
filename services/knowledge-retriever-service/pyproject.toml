@@ -12,6 +12,7 @@ dependencies = [
     "neo4j>=5.23,<6.0",
     "oraclous-governance",
     "oraclous-substrate",
+    "python-jose[cryptography]>=3.3,<4.0",
 ]
 
 [tool.uv.sources]

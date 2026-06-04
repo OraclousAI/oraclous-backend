@@ -40,6 +40,8 @@ class CredentialStore(Protocol):
 
     async def revoke_agent_credentials(self, agent_id: str) -> int: ...
 
+    async def organisation_id_for(self, agent_id: str) -> str | None: ...
+
 
 def _generate_credential() -> tuple[str, str]:
     """Return ``(raw_credential, prefix)`` — ``oag_`` + base62(32 random bytes)."""
@@ -118,3 +120,7 @@ class AgentRepository:
     async def revoke_agent(self, agent_id: str) -> int:
         """Revoke all active credentials for an agent; return the number revoked."""
         return await self._store.revoke_agent_credentials(agent_id)
+
+    async def organisation_id_for(self, agent_id: str) -> str | None:
+        """Return the agent's org iff it still has an active credential, else ``None`` (T2)."""
+        return await self._store.organisation_id_for(agent_id)
