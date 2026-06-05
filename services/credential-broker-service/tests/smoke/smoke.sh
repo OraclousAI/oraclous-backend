@@ -99,5 +99,23 @@ dsr=$(curl -fsS "${AUTH[@]}" -X GET "${CB}/credentials/available-data-sources?us
 echo "$dsr" | grep -q '"drive"' && pass "available-data-sources returns the catalogue for them" \
   || fail "data-source discovery wrong: $dsr"
 
-printf '\n\033[32mcredential-broker S4 smoke passed.\033[0m  encrypted CRUD + catalogue + runtime '
-printf 'OAuth resolution + provider/data-source discovery, all over the running stack.\n'
+step "8. S5b: delegated-token mint -> validate -> revoke (internal-key gated)"
+ORGD="00000000-0000-0000-0000-0000000007de"; MEMD=$(uuidgen); AGD=$(uuidgen)
+mint=$(curl -fsS -H "X-Internal-Key: ${INTKEY}" -H "Content-Type: application/json" \
+  -X POST "${CB}/internal/delegated-tokens" \
+  -d "{\"organisation_id\":\"${ORGD}\",\"member_id\":\"${MEMD}\",\"agent_id\":\"${AGD}\",\"scopes\":[\"read\"],\"expires_at\":\"2999-01-01T00:00:00+00:00\"}")
+DRAW=$(echo "$mint" | jget "['token']"); DID=$(echo "$mint" | jget "['token_id']")
+[[ -n "$DRAW" && -n "$DID" ]] && pass "minted a delegated token (raw bearer returned once)" || fail "mint failed: $mint"
+# DB stores only hash+prefix, never the raw bearer
+inrow=$(${COMPOSE} exec -T postgres psql -U oraclous -d oraclous -tAc "SELECT token_hash FROM delegated_tokens WHERE id='${DID}'")
+echo "$inrow" | grep -q "$DRAW" && fail "RAW BEARER AT REST" || pass "DB stores only the hash+prefix (raw bearer absent)"
+v=$(curl -fsS -H "X-Internal-Key: ${INTKEY}" -H "Content-Type: application/json" -X POST "${CB}/internal/delegated-tokens/validate" \
+  -d "{\"organisation_id\":\"${ORGD}\",\"raw_token\":\"${DRAW}\",\"requesting_agent_id\":\"${AGD}\",\"requested_scopes\":[\"read\"]}")
+echo "$v" | grep -q '"success":true' && pass "validate (bound agent + subset scopes) succeeds" || fail "validate failed: $v"
+curl -fsS -H "X-Internal-Key: ${INTKEY}" -H "Content-Type: application/json" -X POST "${CB}/internal/delegated-tokens/${DID}/revoke" -d "{\"organisation_id\":\"${ORGD}\"}" >/dev/null
+v2=$(curl -fsS -H "X-Internal-Key: ${INTKEY}" -H "Content-Type: application/json" -X POST "${CB}/internal/delegated-tokens/validate" \
+  -d "{\"organisation_id\":\"${ORGD}\",\"raw_token\":\"${DRAW}\",\"requesting_agent_id\":\"${AGD}\",\"requested_scopes\":[\"read\"]}")
+echo "$v2" | grep -q '"revoked"' && pass "after revoke, validate -> revoked" || fail "revoke didn't take: $v2"
+
+printf '\n\033[32mcredential-broker COMPLETE smoke passed.\033[0m  encrypted CRUD + catalogue + runtime '
+printf 'OAuth resolution + discovery + delegated-token lifecycle, all over the running stack.\n'

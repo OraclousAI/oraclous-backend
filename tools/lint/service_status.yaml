@@ -31,9 +31,9 @@ services:
     structure_enforced: true
     claimed_done: false      # flip to true at the §22 8-gate sign-off (Reza smoke acceptance)
   credential-broker-service:
-    release: R3.5            # service #4
-    structure_enforced: false
-    claimed_done: false
+    release: R3.5            # service #4 — encrypted creds + runtime OAuth + delegation; ENFORCED
+    structure_enforced: true
+    claimed_done: false      # flip to true at the §22 8-gate sign-off (Reza smoke acceptance)
   capability-registry-service:
     release: R3.5            # service #5 — ported from oraclous-core-service
     structure_enforced: false

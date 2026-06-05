@@ -8,6 +8,7 @@ guardrail / ORA-40 security-architect ruling, ADR-006).
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Literal
 from uuid import UUID
 
@@ -91,3 +92,44 @@ class RuntimeTokenResponse(BaseModel):
     error_code: str | None = None
     missing_scopes: list[str] | None = None
     login_url: str | None = None
+
+
+class MintDelegatedTokenInput(BaseModel):
+    """Internal (X-Internal-Key) delegated-token mint. Trusted caller supplies organisation_id."""
+
+    organisation_id: UUID
+    member_id: UUID
+    agent_id: UUID
+    scopes: list[str]
+    expires_at: datetime
+
+
+class DelegatedTokenMintResponse(BaseModel):
+    token: str  # the raw bearer — returned exactly once
+    token_id: UUID
+    member_id: UUID
+    agent_id: UUID
+    scopes: list[str]
+    expires_at: datetime
+
+
+class ValidateDelegatedTokenInput(BaseModel):
+    """Internal per-use validation of a delegated token."""
+
+    organisation_id: UUID
+    raw_token: str
+    requesting_agent_id: UUID
+    requested_scopes: list[str]
+
+
+class DelegationValidationResponse(BaseModel):
+    success: bool
+    reason: str | None = None
+    token_id: UUID | None = None
+    member_id: UUID | None = None
+    agent_id: UUID | None = None
+    granted_scopes: list[str] | None = None
+
+
+class RevokeDelegatedTokenInput(BaseModel):
+    organisation_id: UUID

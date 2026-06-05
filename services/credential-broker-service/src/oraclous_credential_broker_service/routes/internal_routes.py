@@ -6,10 +6,13 @@ the provider catalogue; S3/S5b add runtime-token + delegation endpoints under th
 
 from __future__ import annotations
 
+from uuid import UUID
+
 from fastapi import APIRouter, Depends
 
 from oraclous_credential_broker_service.core.dependencies import (
     CredentialBrokerServiceDep,
+    DelegationServiceDep,
     verify_internal_key,
 )
 from oraclous_credential_broker_service.domain.providers import (
@@ -17,9 +20,14 @@ from oraclous_credential_broker_service.domain.providers import (
     required_scopes_for,
 )
 from oraclous_credential_broker_service.schema.credential_schema import (
+    DelegatedTokenMintResponse,
+    DelegationValidationResponse,
     EnsureDataSourceInput,
+    MintDelegatedTokenInput,
+    RevokeDelegatedTokenInput,
     RuntimeTokenInput,
     RuntimeTokenResponse,
+    ValidateDelegatedTokenInput,
 )
 from oraclous_credential_broker_service.services.credential_broker_service import TokenResult
 
@@ -78,3 +86,53 @@ async def ensure_data_source_access(
         required_scopes=required,
     )
     return _to_response(result)
+
+
+# --- delegated-token API (S5b): wires the shipped delegation service + store to HTTP ---
+@router.post("/delegated-tokens", response_model=DelegatedTokenMintResponse)
+async def mint_delegated_token(
+    mint_input: MintDelegatedTokenInput, delegation: DelegationServiceDep
+) -> DelegatedTokenMintResponse:
+    raw, record = await delegation.mint(
+        organisation_id=mint_input.organisation_id,
+        member_id=mint_input.member_id,
+        agent_id=mint_input.agent_id,
+        scopes=mint_input.scopes,
+        expires_at=mint_input.expires_at,
+    )
+    return DelegatedTokenMintResponse(
+        token=raw,
+        token_id=record.id,
+        member_id=record.member_id,
+        agent_id=record.agent_id,
+        scopes=sorted(record.scopes),
+        expires_at=record.expires_at,
+    )
+
+
+@router.post("/delegated-tokens/validate", response_model=DelegationValidationResponse)
+async def validate_delegated_token(
+    validate_input: ValidateDelegatedTokenInput, delegation: DelegationServiceDep
+) -> DelegationValidationResponse:
+    v = await delegation.validate(
+        raw_token=validate_input.raw_token,
+        organisation_id=validate_input.organisation_id,
+        requesting_agent_id=validate_input.requesting_agent_id,
+        requested_scopes=validate_input.requested_scopes,
+    )
+    return DelegationValidationResponse(
+        success=v.success,
+        reason=v.reason,
+        token_id=v.token_id,
+        member_id=v.member_id,
+        agent_id=v.agent_id,
+        granted_scopes=sorted(v.granted_scopes) if v.granted_scopes is not None else None,
+    )
+
+
+@router.post("/delegated-tokens/{token_id}/revoke")
+async def revoke_delegated_token(
+    token_id: UUID, revoke_input: RevokeDelegatedTokenInput, delegation: DelegationServiceDep
+) -> dict:
+    count = await delegation.revoke(token_id=token_id, organisation_id=revoke_input.organisation_id)
+    return {"revoked_count": count}

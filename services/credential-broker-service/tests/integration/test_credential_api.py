@@ -49,10 +49,10 @@ async def client(postgres_dsn: str, monkeypatch: pytest.MonkeyPatch) -> AsyncIte
     from oraclous_credential_broker_service.repositories.credential_repository import (
         CredentialRepository,
     )
-    from oraclous_credential_broker_service.services.delegation_service import DelegationService
-    from oraclous_credential_broker_service.services.postgres_delegated_token_store import (
+    from oraclous_credential_broker_service.repositories.postgres_delegated_token_store import (
         PostgresDelegatedTokenStore,
     )
+    from oraclous_credential_broker_service.services.delegation_service import DelegationService
 
     app = create_app(lifespan=None)
     cred_repo = CredentialRepository(async_dsn)
