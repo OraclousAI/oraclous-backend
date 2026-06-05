@@ -14,6 +14,9 @@ import httpx
 from fastapi import FastAPI
 
 from oraclous_application_gateway_service.core.config import get_settings
+from oraclous_application_gateway_service.domain.route_table import build_route_table
+from oraclous_application_gateway_service.repositories.upstream_client import UpstreamClient
+from oraclous_application_gateway_service.services.proxy_service import ProxyService
 
 
 @asynccontextmanager
@@ -27,6 +30,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     )
     client = httpx.AsyncClient(timeout=timeout, follow_redirects=False)
     app.state.http_client = client
+    app.state.route_table = build_route_table(settings)
+    app.state.proxy_service = ProxyService(
+        route_table=app.state.route_table, upstream_client=UpstreamClient(client)
+    )
     try:
         yield
     finally:
