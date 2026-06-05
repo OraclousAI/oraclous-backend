@@ -28,10 +28,12 @@ name: oraclous-backend
 # (organisation_id stamps + scoped reads), not Neo4j RBAC, so the default user is safe for dev; prod
 # (Helm/Enterprise) uses kgs_writer. The service's own config default is still kgs_writer.
 x-kgs-env: &kgs-env
-  # Auth: dev-mode (Bearer dev-token) by default; set KGS_AUTH_MODE=jwt to consume real auth-service
-  # tokens. The shared HS256 secret (AUTH_JWT_SECRET) is the SAME value the auth-service signs with.
+  # Auth: dev-mode (Bearer dev-token) by default for the standalone smoke. The full stack runs
+  # KGS_AUTH_MODE=gateway (ADR-018 edge-auth): trust the gateway's X-Principal-*/X-Organisation-Id,
+  # gated on the shared X-Internal-Key. `jwt` validates a real token directly if reached un-gatewayed.
   KGS_AUTH_MODE: "${KGS_AUTH_MODE:-dev}"
   KGS_DEV_BEARER: "dev-token"
+  KGS_INTERNAL_SERVICE_KEY: "${INTERNAL_SERVICE_KEY:-dev-internal-key}"
   KGS_JWT_SECRET: "${AUTH_JWT_SECRET:-dev-jwt-secret}"
   KGS_DATABASE_URL: "postgresql+asyncpg://oraclous:oraclous@postgres:5432/oraclous"
   KGS_NEO4J_URI: "bolt://neo4j:7687"
@@ -446,6 +448,9 @@ services:
       GATEWAY_AUTH_MODE: "${GATEWAY_AUTH_MODE:-dev}"
       DEV_BEARER: "dev-token"
       JWT_SECRET: "${AUTH_JWT_SECRET:-dev-jwt-secret}"
+      # edge-auth (ADR-018): injected as X-Internal-Key on every forwarded request so upstreams in
+      # gateway-mode can prove the request came through the gateway. Shared with the data services.
+      INTERNAL_SERVICE_KEY: "${INTERNAL_SERVICE_KEY:-dev-internal-key}"
       GATEWAY_CORS_ORIGINS: "${GATEWAY_CORS_ORIGINS:-*}"
     healthcheck:
       test: ["CMD", "python", "-c",
