@@ -19,7 +19,12 @@ platform-internal `/internal/*` plane (X-Internal-Key, service-to-service) is **
   bounded timeouts; `services/proxy_service` resolves + applies the forward header policy (drops
   `host` + hop-by-hop); a catch-all route streams the upstream response back. Fail-closed: unknown
   prefix → 404, upstream down → 502, timeout → 504. No edge auth yet (GW-3).
-- GW-3 — edge JWT termination + identity forwarding (`X-Principal-*`), public auth allow-list.
+- **GW-3 (this slice)** — edge JWT termination + identity forwarding. `core/auth` verifies the bearer
+  ONCE (reusing `oraclous-governance` + the substrate claim contract; `dev`/`jwt` modes); a
+  closed public allow-list (`/v1/auth/*`, `/oauth/*`) proxies through unauthenticated. On a verified
+  request the gateway forwards `X-Principal-Id`/`X-Principal-Type`/`X-Organisation-Id` downstream
+  (keeping the original Bearer) and **strips any client-forged identity headers** (anti-spoof).
+  Fail-closed: missing/invalid/expired → 401 before any upstream call.
 - GW-4 — all five upstreams routed (longest-prefix match) + CORS termination.
 - GW-5 — aggregated upstream health + gateway own-error envelope subset + §22 sign-off.
 

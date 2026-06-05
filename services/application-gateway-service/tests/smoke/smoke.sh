@@ -43,13 +43,14 @@ echo "$tools" | grep -q '"PostgreSQL Reader"' \
   && pass "gateway forwarded /api/v1/tools -> capability-registry returned real data (catalogue)" \
   || fail "forward returned no real data: $tools"
 
-step "4. GW-2: the upstream's own status passes through (no edge auth yet)"
+step "4. GW-3: edge JWT termination rejects unauthenticated requests (before any upstream call)"
 code=$(curl -s -o /dev/null -w '%{http_code}' "${GW}/api/v1/tools")  # no bearer
-[[ "$code" == "401" ]] && pass "no bearer -> upstream 401 passed through verbatim" \
-  || fail "expected upstream 401, got $code"
+[[ "$code" == "401" ]] && pass "no bearer -> gateway 401 (edge auth)" || fail "expected 401, got $code"
+code=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer bogus" "${GW}/api/v1/tools")
+[[ "$code" == "401" ]] && pass "invalid bearer -> gateway 401" || fail "expected 401, got $code"
 
 step "5. GW-2: unknown prefix is a gateway 404 (closed allow-list, not forwarded)"
-nope=$(curl -s -w '\n%{http_code}' "${GW}/totally/unknown")
+nope=$(curl -s -w '\n%{http_code}' -H "Authorization: Bearer dev-token" "${GW}/totally/unknown")
 echo "$nope" | grep -q '"route_not_found"' && echo "$nope" | tail -1 | grep -q 404 \
   && pass "unknown prefix -> gateway 404 route_not_found" || fail "expected gateway 404: $nope"
 
@@ -60,6 +61,6 @@ code=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer dev-toke
   || fail "expected 502/504, got $code"
 ${COMPOSE} up -d capability-registry-service >/dev/null 2>&1
 
-printf '\n\033[32mapplication-gateway GW-1+GW-2 smoke passed.\033[0m  the gateway reverse-proxies a '
-printf 'routed request to a real upstream (real data through the edge), passes upstream status '
-printf 'through, 404s unknown prefixes, and 502s a downed upstream — over the stack.\n'
+printf '\n\033[32mapplication-gateway GW-1..GW-3 smoke passed.\033[0m  the gateway terminates edge '
+printf 'JWT (401 unauthenticated), reverse-proxies an authenticated request to a real upstream (real '
+printf 'data through the edge), 404s unknown prefixes, and 502s a downed upstream — over the stack.\n'
