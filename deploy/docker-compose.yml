@@ -374,6 +374,11 @@ services:
       ENCRYPTION_KEY: "${CRED_BROKER_ENCRYPTION_KEY:-MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=}"
       INTERNAL_SERVICE_KEY: "${CRED_BROKER_INTERNAL_KEY:-dev-internal-key}"
       AUTH_SERVICE_URL: "http://auth-service:8000"
+      # Identity seam: dev-auth (Bearer dev-token → dev org) by default; AUTH_MODE=jwt consumes the
+      # real auth-service token via the shared JWT_SECRET (same value as the auth-service signs with).
+      AUTH_MODE: "${CRED_BROKER_AUTH_MODE:-dev}"
+      DEV_BEARER: "dev-token"
+      JWT_SECRET: "${AUTH_JWT_SECRET:-dev-jwt-secret}"
     depends_on:
       postgres:
         condition: service_healthy
