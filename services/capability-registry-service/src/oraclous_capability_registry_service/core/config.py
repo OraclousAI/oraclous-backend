@@ -25,6 +25,13 @@ class Settings(BaseSettings):
     APP_NAME: str = "oraclous-capability-registry-service"
     VERSION: str = "0.0.1"
 
+    # --- credential-broker seam (tool execution resolves credentials here; never decrypts) ---
+    CREDENTIAL_BROKER_URL: str = "http://credential-broker-service:8000"
+    CREDENTIAL_BROKER_MODE: str = "fake"  # "fake" (dev/CI, key-free) | "real"
+    # Fake-broker connection string for relational connectors; defaults to this service's own DB so
+    # the PostgreSQL connector runs a real query in the key-free smoke. Override to point elsewhere.
+    FAKE_DB_DSN: str | None = None
+
     # --- identity seam (dev-auth by default; `jwt` consumes the real auth-service token) ---
     AUTH_MODE: str = "dev"  # "dev" | "jwt"
     DEV_BEARER: str = "dev-token"

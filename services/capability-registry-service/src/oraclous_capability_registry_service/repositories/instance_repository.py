@@ -8,6 +8,7 @@ supplied by the caller from the authenticated principal, never a request body (O
 from __future__ import annotations
 
 import uuid
+from decimal import Decimal
 from typing import Any
 
 from sqlalchemy import select
@@ -77,6 +78,34 @@ class InstanceRepository:
                 .order_by(ToolInstance.created_at)
             )
             return list(result.scalars().all())
+
+    async def record_execution(
+        self,
+        instance_id: uuid.UUID,
+        organisation_id: uuid.UUID,
+        *,
+        execution_id: uuid.UUID,
+        status: InstanceStatus,
+        credits_consumed: Decimal,
+    ) -> ToolInstance | None:
+        """Bump the instance's execution counters + last_execution_id after a dispatch."""
+        async with self._session() as session:
+            async with session.begin():
+                result = await session.execute(
+                    select(ToolInstance).where(
+                        ToolInstance.id == instance_id,
+                        ToolInstance.organisation_id == organisation_id,
+                    )
+                )
+                row = result.scalars().first()
+                if row is None:
+                    return None
+                row.last_execution_id = execution_id
+                row.execution_count = (row.execution_count or 0) + 1
+                row.total_credits_consumed = (row.total_credits_consumed or 0) + credits_consumed
+                row.status = status
+            await session.refresh(row)
+            return row
 
     async def set_credentials_and_status(
         self,

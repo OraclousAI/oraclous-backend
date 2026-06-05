@@ -98,6 +98,15 @@ def test_str004_allows_orm_import_in_models_layer(tmp_path: Path) -> None:
     assert "STR004" not in _codes(pkg)
 
 
+def test_str004_allows_external_driver_in_connectors_layer(tmp_path: Path) -> None:
+    # a connectors/ layer holds tool executors that speak a DB protocol to an EXTERNAL data source;
+    # that outbound driver use is the tool's payload, not the service's own persistence.
+    pkg = _make_service(tmp_path)
+    (pkg / "domain" / "connectors").mkdir(parents=True, exist_ok=True)
+    (pkg / "domain" / "connectors" / "postgresql.py").write_text("import asyncpg\n")
+    assert "STR004" not in _codes(pkg)
+
+
 def test_str005_scattered_service_module_at_package_root(tmp_path: Path) -> None:
     pkg = _make_service(tmp_path)
     (pkg / "federation_service.py").write_text("X = 1\n")

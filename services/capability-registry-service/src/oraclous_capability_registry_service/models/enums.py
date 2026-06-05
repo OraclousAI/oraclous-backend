@@ -34,3 +34,12 @@ class InstanceStatus(enum.StrEnum):
     SUCCESS = "SUCCESS"
     FAILED = "FAILED"
     PAUSED = "PAUSED"
+
+
+class ExecutionStatus(enum.StrEnum):
+    """Lifecycle of a single tool dispatch (provenance record)."""
+
+    QUEUED = "QUEUED"
+    RUNNING = "RUNNING"
+    SUCCESS = "SUCCESS"
+    FAILED = "FAILED"

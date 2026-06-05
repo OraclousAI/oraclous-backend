@@ -20,11 +20,18 @@ from oraclous_capability_registry_service.core.config import get_settings
 from oraclous_capability_registry_service.repositories.capability_repository import (
     CapabilityRepository,
 )
+from oraclous_capability_registry_service.repositories.execution_repository import (
+    ExecutionRepository,
+)
 from oraclous_capability_registry_service.repositories.instance_repository import InstanceRepository
 from oraclous_capability_registry_service.services.capability_registry_service import (
     CapabilityRegistryService,
 )
+from oraclous_capability_registry_service.services.credential_client import CredentialBrokerPort
 from oraclous_capability_registry_service.services.instance_manager import InstanceManager
+from oraclous_capability_registry_service.services.tool_execution_service import (
+    ToolExecutionService,
+)
 from oraclous_capability_registry_service.services.validation_service import ValidationService
 
 _bearer = HTTPBearer(auto_error=False)
@@ -68,6 +75,37 @@ def get_validation_service(
     capabilities: Annotated[CapabilityRepository, Depends(get_capability_repository)],
 ) -> ValidationService:
     return ValidationService(instances=instances, capabilities=capabilities)
+
+
+def get_execution_repository(request: Request) -> ExecutionRepository:
+    repo = getattr(request.app.state, "execution_repository", None)
+    if repo is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="execution store unavailable (DATABASE_URL not configured)",
+        )
+    return repo
+
+
+def get_credential_broker(request: Request) -> CredentialBrokerPort:
+    broker = getattr(request.app.state, "credential_broker", None)
+    if broker is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="credential broker unavailable",
+        )
+    return broker
+
+
+def get_tool_execution_service(
+    instances: Annotated[InstanceRepository, Depends(get_instance_repository)],
+    capabilities: Annotated[CapabilityRepository, Depends(get_capability_repository)],
+    executions: Annotated[ExecutionRepository, Depends(get_execution_repository)],
+    broker: Annotated[CredentialBrokerPort, Depends(get_credential_broker)],
+) -> ToolExecutionService:
+    return ToolExecutionService(
+        instances=instances, capabilities=capabilities, executions=executions, broker=broker
+    )
 
 
 async def verify_internal_key(x_internal_key: Annotated[str | None, Header()] = None) -> None:
@@ -124,5 +162,7 @@ CapabilityRegistryServiceDep = Annotated[
 ]
 InstanceManagerDep = Annotated[InstanceManager, Depends(get_instance_manager)]
 ValidationServiceDep = Annotated[ValidationService, Depends(get_validation_service)]
+ToolExecutionServiceDep = Annotated[ToolExecutionService, Depends(get_tool_execution_service)]
+ExecutionRepositoryDep = Annotated[ExecutionRepository, Depends(get_execution_repository)]
 PrincipalDep = Annotated[Principal, Depends(get_principal)]
 OrganisationIdDep = Annotated[uuid.UUID, Depends(get_organisation_id)]

@@ -12,9 +12,11 @@ checker enforces the structural invariants that the hollowness failure violated.
   STR003 — a file under ``routes/`` imports a DB/Neo4j/Redis driver.
   STR004 — a DB/Neo4j/Redis driver is imported anywhere outside ``repositories/`` (exceptions:
            the ``core/`` connection layer — config/database/dependencies/lifespan — where the
-           engine, sessionmaker and DI session providers are built; and a ``models/`` layer, which
+           engine, sessionmaker and DI session providers are built; a ``models/`` layer, which
            holds ORM *declarations* (Mapped columns) — declaring schema is not driver/connection
-           ACCESS. §21 rule 3, "connection setup excepted in core").
+           ACCESS; and a ``connectors/`` layer, whose tool executors speak a DB/HTTP protocol to an
+           EXTERNAL third-party data source — that outbound driver use is the tool's payload, not
+           the service's own persistence, so it is exempt. §21 rule 3, "connection setup excepted").
   STR005 — a ``*_service.py`` file sits directly under the package root (scattered/unwired
            utility drift) instead of under ``services/``.
 
@@ -107,6 +109,12 @@ def check_package(root: Path) -> list[Violation]:
         # declaring schema is not driver/connection ACCESS (that stays in repositories/ + core/).
         # Both `repositories/models.py` (colocated) and a sibling `models/` package are accepted.
         in_models = "models" in rel_parts
+        # A `connectors/` layer (under domain/) holds tool executors that speak a DB/HTTP protocol
+        # to an EXTERNAL, third-party data source (a user's Postgres/MySQL, a SaaS API). That
+        # outbound driver use is the tool's payload, categorically different from the service's OWN
+        # persistence (which stays in repositories/). Connectors never touch the app DB; they are
+        # exempt from STR004 the same way models/ is. §21 rule 3.
+        in_connectors = "connectors" in rel_parts
         directly_under_root = f.parent == root
 
         try:
@@ -141,14 +149,15 @@ def check_package(root: Path) -> list[Violation]:
                             f"DB/Neo4j/Redis driver '{mod}' imported in a route module",
                         )
                     )
-            elif not in_repositories and not in_core and not in_models:
+            elif not in_repositories and not in_core and not in_models and not in_connectors:
                 for ln, mod in driver_hits:
                     out.append(
                         Violation(
                             f,
                             ln,
                             "STR004",
-                            f"driver '{mod}' outside repositories/ (only repos, core/, models/)",
+                            f"driver '{mod}' outside repositories/ "
+                            "(only repos, core/, models/, connectors/)",
                         )
                     )
 

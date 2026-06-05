@@ -18,9 +18,13 @@ from oraclous_capability_registry_service.domain.errors import (
 from oraclous_capability_registry_service.routes.capability_routes import (
     router as capability_router,
 )
+from oraclous_capability_registry_service.routes.execution_routes import router as execution_router
 from oraclous_capability_registry_service.routes.instance_routes import router as instance_router
 from oraclous_capability_registry_service.routes.tool_routes import router as tool_router
 from oraclous_capability_registry_service.services.instance_manager import InstanceNotFoundError
+from oraclous_capability_registry_service.services.tool_execution_service import (
+    ExecutionNotReadyError,
+)
 
 
 def create_app(*, lifespan=None) -> FastAPI:
@@ -29,6 +33,7 @@ def create_app(*, lifespan=None) -> FastAPI:
     app.include_router(capability_router)
     app.include_router(tool_router)
     app.include_router(instance_router)
+    app.include_router(execution_router)
 
     @app.exception_handler(CapabilityNotFoundError)
     async def _on_not_found(_: Request, exc: CapabilityNotFoundError) -> JSONResponse:
@@ -37,6 +42,13 @@ def create_app(*, lifespan=None) -> FastAPI:
     @app.exception_handler(InstanceNotFoundError)
     async def _on_instance_not_found(_: Request, exc: InstanceNotFoundError) -> JSONResponse:
         return JSONResponse(status_code=status.HTTP_404_NOT_FOUND, content={"detail": str(exc)})
+
+    @app.exception_handler(ExecutionNotReadyError)
+    async def _on_not_ready(_: Request, exc: ExecutionNotReadyError) -> JSONResponse:
+        return JSONResponse(
+            status_code=status.HTTP_409_CONFLICT,
+            content={"detail": str(exc), "error_code": exc.error_code, **exc.detail},
+        )
 
     @app.exception_handler(InvalidDescriptorError)
     async def _on_invalid(_: Request, exc: InvalidDescriptorError) -> JSONResponse:

@@ -103,6 +103,32 @@ rep2=$(curl -fsS "${AUTH[@]}" -X GET "${CR}/api/v1/instances/${iid}/validate-exe
 echo "$rep2" | grep -q '"is_ready":true' && pass "validate-execution is_ready=true" \
   || fail "still not ready: $rep2"
 
-printf '\n\033[32mcapability-registry S1-S3 smoke passed.\033[0m  boot + own-version_table migrate + '
-printf 'descriptor CRUD + capability matching + validation + plugin-seeded catalogue + deterministic '
-printf 'tool registration + instance lifecycle (CONFIGURATION_REQUIRED->READY), over the stack.\n'
+step "11. S4: execute a PostgreSQL Reader instance end-to-end (fake broker -> real query)"
+pgid=$(curl -fsS "${AUTH[@]}" -X GET "${CR}/api/v1/tools" \
+  | python3 -c "import sys,json;ts=json.load(sys.stdin)['capabilities'];print(next(t['id'] for t in ts if t['name']=='PostgreSQL Reader'))")
+piid=$(curl -fsS "${AUTH[@]}" -X POST "${CR}/api/v1/instances" \
+  -d "{\"capability_id\":\"${pgid}\",\"name\":\"pg\"}" | jget "['id']")
+curl -fsS "${AUTH[@]}" -X POST "${CR}/api/v1/instances/${piid}/configure-credentials" \
+  -d '{"credential_mappings":{"connection_string":"cred-smoke"}}' >/dev/null
+exec_out=$(curl -fsS "${AUTH[@]}" -X POST "${CR}/api/v1/instances/${piid}/execute" \
+  -d '{"input_data":{"operation":"list_tables"}}')
+echo "$exec_out" | grep -q '"status":"SUCCESS"' && pass "execution SUCCESS (real list_tables over the DB)" \
+  || fail "execution failed: $exec_out"
+echo "$exec_out" | grep -q 'capability_descriptors' \
+  && pass "real rows returned (capability_descriptors among the tables)" || fail "no real rows: $exec_out"
+echo "$exec_out" | grep -q '"type":"connection_string"' \
+  && pass "executions row records credential_refs (type only)" || fail "no credential_refs: $exec_out"
+echo "$exec_out" | grep -q 'postgresql://' && fail "SECRET LEAK: a DSN appears in the execution output" \
+  || pass "no resolved secret (DSN) echoed in the execution output"
+
+step "12. S4: a tool without an executor is not executable (409)"
+nid=$(curl -fsS "${AUTH[@]}" -X GET "${CR}/api/v1/tools" \
+  | python3 -c "import sys,json;ts=json.load(sys.stdin)['capabilities'];print(next(t['id'] for t in ts if t['name']=='Notion Reader'))")
+niid=$(curl -fsS "${AUTH[@]}" -X POST "${CR}/api/v1/instances" -d "{\"capability_id\":\"${nid}\",\"name\":\"n\"}" | jget "['id']")
+curl -fsS "${AUTH[@]}" -X POST "${CR}/api/v1/instances/${niid}/configure-credentials" -d '{"credential_mappings":{"api_key":"k"}}' >/dev/null
+code=$(curl -s -o /dev/null -w '%{http_code}' "${AUTH[@]}" -X POST "${CR}/api/v1/instances/${niid}/execute" -d '{"input_data":{}}')
+[[ "$code" == "409" ]] && pass "no-executor tool -> 409 (fail-closed, no silent no-op)" || fail "expected 409, got $code"
+
+printf '\n\033[32mcapability-registry S1-S4 smoke passed.\033[0m  boot + migrate + descriptor CRUD + '
+printf 'matching + validation + plugin catalogue + instance lifecycle + REAL sync execution '
+printf '(PostgreSQL connector via the credential-broker seam, provenance, no secret leak), over the stack.\n'
