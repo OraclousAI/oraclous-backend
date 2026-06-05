@@ -74,14 +74,38 @@ nope=$(curl -s -w '\n%{http_code}' -H "Authorization: Bearer dev-token" "${GW}/i
 echo "$nope" | grep -q '"route_not_found"' && echo "$nope" | tail -1 | grep -q 404 \
   && pass "/internal/* -> gateway 404 (never forwarded)" || fail "expected gateway 404: $nope"
 
-step "9. GW-2: upstream down -> 502 (fail-closed, no hang)"
+step "9. GW-5: aggregated upstream health (/health/upstreams rolls up per-service + overall)"
+agg=$(curl -fsS "${GW}/health/upstreams")
+echo "$agg" | python3 -c "
+import sys,json
+d=json.load(sys.stdin); ups={u['name']:u['status'] for u in d['upstreams']}
+assert len(d['upstreams'])==5, d
+# the two upstreams this smoke launched must be ok
+assert ups['capability-registry']=='ok', ups
+assert ups['credential-broker']=='ok', ups
+# overall is a correct rollup of the per-service statuses (ok iff every upstream is ok)
+expected = 'ok' if all(s=='ok' for s in ups.values()) else 'degraded'
+assert d['overall']==expected, d
+print(f'  rollup consistent: overall={d[\"overall\"]} statuses={ups}')
+" && pass "/health/upstreams aggregates per-service health + consistent overall rollup (HTTP 200)" \
+  || fail "aggregated health wrong: $agg"
+
+step "10. GW-5: the gateway own-error envelope (request_id) on its own errors"
+env=$(curl -s -D - -H "Authorization: Bearer dev-token" "${GW}/totally/unknown")
+echo "$env" | grep -q '"error_code":"route_not_found"' && echo "$env" | grep -q '"request_id"' \
+  && echo "$env" | tr -d '\r' | grep -qi '^x-request-id:' \
+  && pass "gateway 404 -> envelope {error_code,message,request_id} + X-Request-Id header" \
+  || fail "envelope missing: $env"
+
+step "11. GW-2: upstream down -> 502 (fail-closed, no hang)"
 ${COMPOSE} stop capability-registry-service >/dev/null 2>&1
 code=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer dev-token" "${GW}/api/v1/tools")
 [[ "$code" == "502" || "$code" == "504" ]] && pass "upstream down -> ${code} (gateway did not hang)" \
   || fail "expected 502/504, got $code"
 ${COMPOSE} up -d capability-registry-service >/dev/null 2>&1
 
-printf '\n\033[32mapplication-gateway GW-1..GW-4 smoke passed.\033[0m  edge JWT termination, '
+printf '\n\033[32mapplication-gateway GW-1..GW-5 smoke passed.\033[0m  edge JWT termination, '
 printf 'reverse-proxy to TWO real upstreams (capability-registry + credential-broker), CORS '
-printf 'termination, /internal not edge-routed, unknown-prefix 404, and downed-upstream 502 — '
-printf 'over the stack.\n'
+printf 'termination, /internal not edge-routed, aggregated upstream health, own-error envelope, '
+printf 'unknown-prefix 404, and downed-upstream 502 — over the stack.\n'
+printf '%s\n' "" "(For the full §22 sign-off, run the whole stack: 'docker compose --profile services up -d --build' — then /health/upstreams rolls up all five as ok.)"

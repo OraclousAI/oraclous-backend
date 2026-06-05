@@ -29,7 +29,12 @@ platform-internal `/internal/*` plane (X-Internal-Key, service-to-service) is **
   termination** at the edge (Starlette `CORSMiddleware`, `GATEWAY_CORS_ORIGINS`), so upstreams don't
   each carry CORS. The platform-internal `/internal/*` plane is confirmed **not** edge-routed
   (gateway 404, never forwarded).
-- GW-5 — aggregated upstream health + gateway own-error envelope subset + §22 sign-off.
+- **GW-5 (this slice)** — aggregated upstream health + gateway own-error envelope.
+  `GET /health/upstreams` fans out to each upstream's `/health` (per-service `{name,status,latency_ms}`
+  + an overall rollup; always HTTP 200, body reflects degraded). The gateway's **own** errors
+  (401/404/502/503/504) return the forward-compatible envelope `{error_code, message, request_id}`
+  (id echoed in `X-Request-Id`); upstream errors still pass through verbatim (full cross-service
+  normalization → R6). Carries the **§22 sign-off** (`needs-human`).
 
 ## Run / smoke
 
