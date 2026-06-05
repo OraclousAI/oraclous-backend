@@ -153,15 +153,14 @@ async def test_forged_delegated_token_rejected_at_load(
     prefix. A forger who learned a prefix from logs cannot mint a working
     bearer.
     """
-    from oraclous_credential_broker_service.services.delegation_service import (
-        DelegationService,
-    )
-
     # Function-local: the Postgres-backed store is the [impl] deliverable. The
     # unit suite already pins the in-memory store; the gate proves the
     # production store conforms to the same protocol against real Postgres.
-    from oraclous_credential_broker_service.services.postgres_delegated_token_store import (  # noqa: E501, PLC0415
+    from oraclous_credential_broker_service.repositories.postgres_delegated_token_store import (  # noqa: E501, PLC0415
         PostgresDelegatedTokenStore,
+    )
+    from oraclous_credential_broker_service.services.delegation_service import (
+        DelegationService,
     )
 
     store = PostgresDelegatedTokenStore(engine=broker_engine)
@@ -234,11 +233,11 @@ async def test_expired_delegated_token_rejected_at_validation(
     suite uses object-mutation; the data-layer gate must prove the broker
     re-reads from the row).
     """
+    from oraclous_credential_broker_service.repositories.postgres_delegated_token_store import (  # noqa: E501, PLC0415
+        PostgresDelegatedTokenStore,
+    )
     from oraclous_credential_broker_service.services.delegation_service import (
         DelegationService,
-    )
-    from oraclous_credential_broker_service.services.postgres_delegated_token_store import (  # noqa: E501, PLC0415
-        PostgresDelegatedTokenStore,
     )
     from sqlalchemy import text
 
@@ -291,11 +290,11 @@ async def test_scope_creep_rejected_at_validation(
     Proves T2 core: the broker, not the agent runtime, is the gate
     deciding what a delegated token may do.
     """
+    from oraclous_credential_broker_service.repositories.postgres_delegated_token_store import (  # noqa: E501, PLC0415
+        PostgresDelegatedTokenStore,
+    )
     from oraclous_credential_broker_service.services.delegation_service import (
         DelegationService,
-    )
-    from oraclous_credential_broker_service.services.postgres_delegated_token_store import (  # noqa: E501, PLC0415
-        PostgresDelegatedTokenStore,
     )
 
     store = PostgresDelegatedTokenStore(engine=broker_engine)
