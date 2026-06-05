@@ -39,9 +39,9 @@ services:
     structure_enforced: true
     claimed_done: true       # §22 8-gate sign-off accepted (Reza ran both smokes) — no-stubs ENFORCED
   application-gateway-service:
-    release: R3.5            # service #6 — built last
-    structure_enforced: false
-    claimed_done: false
+    release: R3.5            # service #6 — reverse-proxy edge; structure ENFORCED (GW-1)
+    structure_enforced: true
+    claimed_done: false      # flip to true at the §22 8-gate sign-off (Reza smoke acceptance)
   harness-runtime-service:
     release: R4-deferred     # placeholder; not in R3.5 scope
     structure_enforced: false

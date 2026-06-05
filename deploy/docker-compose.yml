@@ -424,6 +424,39 @@ services:
     profiles: [services]
     networks: [substrate]
 
+  # R3.5 service #6 — application-gateway: the single reverse-proxy edge fronting the services.
+  # Stateless (no DB). /health is dependency-free; it routes path-prefixes to the upstreams over the
+  # substrate network. Until it fronts everything, the services also stay reachable directly by port.
+  application-gateway-service:
+    build:
+      context: ..
+      dockerfile: services/application-gateway-service/Dockerfile
+    image: oraclous-application-gateway-service:${IMAGE_TAG:-dev}
+    restart: unless-stopped
+    ports:
+      - "8006:8000"
+    environment:
+      # upstream base URLs (the route table maps path-prefixes onto these over the substrate net)
+      AUTH_SERVICE_URL: "http://auth-service:8000"
+      CREDENTIAL_BROKER_URL: "http://credential-broker-service:8000"
+      KNOWLEDGE_GRAPH_URL: "http://knowledge-graph-service:8000"
+      KNOWLEDGE_RETRIEVER_URL: "http://knowledge-retriever-service:8000"
+      CAPABILITY_REGISTRY_URL: "http://capability-registry-service:8000"
+      # identity seam: dev-auth by default; AUTH_MODE=jwt verifies the real token via the shared secret
+      GATEWAY_AUTH_MODE: "${GATEWAY_AUTH_MODE:-dev}"
+      DEV_BEARER: "dev-token"
+      JWT_SECRET: "${AUTH_JWT_SECRET:-dev-jwt-secret}"
+      GATEWAY_CORS_ORIGINS: "${GATEWAY_CORS_ORIGINS:-*}"
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    profiles: [services]
+    networks: [substrate]
+
 networks:
   substrate:
     driver: bridge
