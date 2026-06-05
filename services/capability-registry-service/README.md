@@ -37,7 +37,13 @@ bearer; `AUTH_MODE=jwt` decodes the real auth-service HS256 token).
   with `credential_refs` (never the secret) → scrubs the in-memory credentials → bumps instance
   counters. `POST /api/v1/instances/{id}/execute`, `GET /api/v1/executions/{id}`. The PostgreSQL
   connector runs **parameterized** queries only.
-- S5 — connector breadth + real-broker integration smoke (Reza sign-off).
+- **S5a (this slice)** — real credential-broker integration. The broker gains
+  `POST /internal/resolve-credential` (X-Internal-Key) returning a stored credential's decrypted
+  payload by id; `RealCredentialBroker` resolves OAuth via `/internal/runtime-token` and non-OAuth
+  via `/internal/resolve-credential` (the instance's mapped `credential_id`). With
+  `CREDENTIAL_BROKER_MODE=real` the PostgreSQL connector executes against a credential resolved by
+  the live broker (`tests/smoke/smoke_real_broker.sh`).
+- S5b — connector breadth (MySQL + Notion + GitHub) + Reza §22 sign-off.
 
 ## Run / smoke
 

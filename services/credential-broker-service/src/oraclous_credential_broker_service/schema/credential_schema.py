@@ -133,3 +133,20 @@ class DelegationValidationResponse(BaseModel):
 
 class RevokeDelegatedTokenInput(BaseModel):
     organisation_id: UUID
+
+
+class ResolveCredentialInput(BaseModel):
+    """Internal (X-Internal-Key) resolution of a stored credential's secret by id. ``*Input`` (not
+    ``*Request``): the trusted caller supplies ``organisation_id`` — service→service plumbing."""
+
+    organisation_id: UUID
+    credential_id: UUID
+
+
+class ResolveCredentialResponse(BaseModel):
+    """The decrypted credential payload for a trusted service caller (e.g. a connection_string)."""
+
+    credential_id: UUID
+    provider: str
+    cred_type: str
+    credential: dict

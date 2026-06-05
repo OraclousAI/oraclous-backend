@@ -50,6 +50,7 @@ class CredentialBrokerPort(Protocol):
         organisation_id: uuid.UUID,
         user_id: uuid.UUID,
         requirement: dict[str, Any],
+        credential_id: str | None = None,
     ) -> ResolvedCredential: ...
 
     async def aclose(self) -> None: ...
@@ -68,7 +69,12 @@ class FakeCredentialBroker:
         self._closed = False
 
     async def resolve(
-        self, *, organisation_id: uuid.UUID, user_id: uuid.UUID, requirement: dict[str, Any]
+        self,
+        *,
+        organisation_id: uuid.UUID,
+        user_id: uuid.UUID,
+        requirement: dict[str, Any],
+        credential_id: str | None = None,  # noqa: ARG002 — fake ignores the stored id
     ) -> ResolvedCredential:
         ctype = requirement.get("type")
         provider = requirement.get("provider", "")
@@ -103,15 +109,28 @@ class FakeCredentialBroker:
 class RealCredentialBroker:
     """Resolves credentials against the running credential-broker over ``/internal/*``."""
 
-    def __init__(self, *, base_url: str, internal_key: str, timeout: float = 30.0) -> None:
+    def __init__(
+        self,
+        *,
+        base_url: str,
+        internal_key: str,
+        timeout: float = 30.0,
+        transport: httpx.AsyncBaseTransport | None = None,
+    ) -> None:
         self._client = httpx.AsyncClient(
             base_url=base_url.rstrip("/"),
             headers={"X-Internal-Key": internal_key, "Content-Type": "application/json"},
             timeout=timeout,
+            transport=transport,
         )
 
     async def resolve(
-        self, *, organisation_id: uuid.UUID, user_id: uuid.UUID, requirement: dict[str, Any]
+        self,
+        *,
+        organisation_id: uuid.UUID,
+        user_id: uuid.UUID,
+        requirement: dict[str, Any],
+        credential_id: str | None = None,
     ) -> ResolvedCredential:
         ctype = requirement.get("type")
         if ctype == "oauth_token":
@@ -144,12 +163,25 @@ class RealCredentialBroker:
                     "scopes": body.get("scopes", []),
                 },
             )
-        # Non-OAuth resolution over the real broker arrives with the S5 real-broker integration; for
-        # now real-mode callers of non-OAuth tools get an explicit, surfaced configuration error.
-        raise CredentialResolutionError(
-            f"real-broker resolution of '{ctype}' credentials is not yet wired",
-            error_code="real_resolution_unavailable",
+        # Non-OAuth (connection_string / api_key / username_password): resolve the stored
+        # credential's decrypted payload by id via the broker's internal endpoint (X-Internal-Key).
+        if not credential_id:
+            raise CredentialResolutionError(
+                f"no credential is mapped for '{ctype}'", error_code="credential_not_mapped"
+            )
+        resp = await self._client.post(
+            "/internal/resolve-credential",
+            json={"organisation_id": str(organisation_id), "credential_id": credential_id},
         )
+        if resp.status_code == 404:
+            raise CredentialResolutionError(
+                "credential not found in the broker", error_code="credential_not_found"
+            )
+        if resp.status_code != 200:
+            raise CredentialResolutionError(
+                f"broker resolve-credential returned {resp.status_code}", error_code="broker_error"
+            )
+        return ResolvedCredential(credential_type=ctype, payload=resp.json()["credential"])
 
     async def aclose(self) -> None:
         await self._client.aclose()

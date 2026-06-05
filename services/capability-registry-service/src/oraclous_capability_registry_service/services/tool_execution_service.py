@@ -94,12 +94,16 @@ class ToolExecutionService:
 
         # Resolve every required credential via the broker seam (fail-closed; no execution on miss).
         requirements = _credential_requirements(descriptor)
+        mappings = dict(instance.credential_mappings or {})
         credentials: dict[str, Any] = {}
         credential_refs: list[dict[str, Any]] = []
         for req in requirements:
             try:
                 resolved = await self._broker.resolve(
-                    organisation_id=organisation_id, user_id=user_id, requirement=req
+                    organisation_id=organisation_id,
+                    user_id=user_id,
+                    requirement=req,
+                    credential_id=mappings.get(req.get("type")),
                 )
             except CredentialResolutionError as exc:
                 raise ExecutionNotReadyError(
