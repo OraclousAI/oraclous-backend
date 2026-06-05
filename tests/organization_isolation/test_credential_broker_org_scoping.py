@@ -63,13 +63,23 @@ def _make_create(*, user_id: uuid.UUID, name: str = "primary") -> CreateCredenti
 
 
 @pytest.fixture
-async def broker_repo(postgres_dsn: str) -> AsyncIterator[CredentialRepository]:
+async def broker_repo(
+    postgres_dsn: str, monkeypatch: pytest.MonkeyPatch
+) -> AsyncIterator[CredentialRepository]:
+    # The repo now encrypts on write (AES-256-GCM), so the Settings secrets must be present.
+    monkeypatch.setenv("ENCRYPTION_KEY", "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=")  # noqa: S105
+    monkeypatch.setenv("DATABASE_URL", _asyncpg_url(postgres_dsn))
+    monkeypatch.setenv("INTERNAL_SERVICE_KEY", "test-internal-key")  # noqa: S105
+    from oraclous_credential_broker_service.core.config import get_settings
+
+    get_settings.cache_clear()
     repo = CredentialRepository(_asyncpg_url(postgres_dsn))
     await repo.create_tables()
     try:
         yield repo
     finally:
         await repo.close()
+        get_settings.cache_clear()
 
 
 async def test_create_persists_organisation_id(broker_repo: CredentialRepository) -> None:
