@@ -59,3 +59,35 @@ class RequestCredentialsResponse(BaseModel):
     tool_id: UUID
     cred_type: str
     credential: dict
+
+
+class RuntimeTokenInput(BaseModel):
+    """Internal (X-Internal-Key) runtime-token request. ``*Input`` (not ``*Request``): the trusted
+    caller supplies ``organisation_id`` — this is service→service plumbing, not a public body."""
+
+    organisation_id: UUID
+    user_id: UUID
+    provider: str
+    required_scopes: list[str] | None = None
+
+
+class EnsureDataSourceInput(BaseModel):
+    """Internal runtime-token request scoped to a data source (scopes from the catalogue)."""
+
+    organisation_id: UUID
+    user_id: UUID
+    provider: str
+    data_source: str
+
+
+class RuntimeTokenResponse(BaseModel):
+    """Success/error union for runtime-token resolution."""
+
+    success: bool
+    access_token: str | None = None
+    expires_at: str | None = None
+    scopes: list[str] = []
+    provider: str = ""
+    error_code: str | None = None
+    missing_scopes: list[str] | None = None
+    login_url: str | None = None

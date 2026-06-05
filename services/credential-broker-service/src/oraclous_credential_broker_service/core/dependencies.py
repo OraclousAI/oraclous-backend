@@ -18,8 +18,12 @@ from oraclous_credential_broker_service.core.config import get_settings
 from oraclous_credential_broker_service.repositories.credential_repository import (
     CredentialRepository,
 )
+from oraclous_credential_broker_service.services.credential_broker_service import (
+    CredentialBrokerService,
+)
 from oraclous_credential_broker_service.services.credential_service import CredentialService
 from oraclous_credential_broker_service.services.delegation_service import DelegationService
+from oraclous_credential_broker_service.services.refresh_client import HttpxRefreshClient
 
 _bearer = HTTPBearer(auto_error=False)
 
@@ -89,7 +93,19 @@ def get_credential_service(
     return CredentialService(repository=repo)
 
 
+def get_credential_broker_service(
+    request: Request,
+    repo: Annotated[CredentialRepository, Depends(get_credential_repository)],
+) -> CredentialBrokerService:
+    # The provider refresh client is injectable via app.state (tests set a fake; prod uses httpx).
+    client = getattr(request.app.state, "refresh_client", None) or HttpxRefreshClient()
+    return CredentialBrokerService(credentials=repo, refresh_client=client)
+
+
 CredentialRepositoryDep = Annotated[CredentialRepository, Depends(get_credential_repository)]
 CredentialServiceDep = Annotated[CredentialService, Depends(get_credential_service)]
+CredentialBrokerServiceDep = Annotated[
+    CredentialBrokerService, Depends(get_credential_broker_service)
+]
 DelegationServiceDep = Annotated[DelegationService, Depends(get_delegation_service)]
 OrganisationIdDep = Annotated[uuid.UUID, Depends(get_organisation_id)]

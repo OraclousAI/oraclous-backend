@@ -103,6 +103,24 @@ class CredentialRepository:
                 obj.encrypted_cred = encrypt_secret(update.credential)
             return obj
 
+    async def update_encrypted_credential(
+        self, cred_id: UUID, organisation_id: UUID, credential: dict
+    ) -> bool:
+        """Re-encrypt + store a credential's secret in place (used by runtime-token refresh)."""
+        async with self._session() as session:
+            async with session.begin():
+                result = await session.execute(
+                    select(UserCredential).where(
+                        UserCredential.id == cred_id,
+                        UserCredential.organisation_id == organisation_id,
+                    )
+                )
+                obj = result.scalars().first()
+                if obj is None:
+                    return False
+                obj.encrypted_cred = encrypt_secret(credential)
+            return True
+
     async def delete_credential(self, cred_id: UUID, organisation_id: UUID) -> bool:
         async with self._session() as session:
             async with session.begin():
