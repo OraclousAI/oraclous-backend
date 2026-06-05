@@ -71,5 +71,25 @@ cat=$(curl -fsS -H "X-Internal-Key: ${INTKEY}" -X GET "${CB}/internal/providers"
 echo "$cat" | grep -q '"google"' && echo "$cat" | grep -q '"github"' \
   && pass "valid internal key -> provider catalogue (google/notion/github)" || fail "bad catalogue: $cat"
 
-printf '\n\033[32mcredential-broker S2 smoke passed.\033[0m  encrypted CRUD + internal-key-gated provider '
-printf 'catalogue, all over the running stack.\n'
+step "6. S3: runtime OAuth-token resolution (internal-key gated)"
+RTUSER="44444444-4444-4444-4444-444444444444"
+DEVORG="00000000-0000-0000-0000-00000000050a"
+DRIVE="https://www.googleapis.com/auth/drive.readonly"
+# seed a stored OAuth credential (far-future expiry) for the dev org via the CRUD API
+curl -fsS "${AUTH[@]}" -X POST "${CB}/credentials/" \
+  -d "{\"tool_id\":\"55555555-5555-5555-5555-555555555555\",\"user_id\":\"${RTUSER}\",\"name\":\"g\",\"provider\":\"google\",\"cred_type\":\"oauth\",\"credential\":{\"access_token\":\"rt-stored\",\"refresh_token\":\"r\",\"scopes\":[\"${DRIVE}\"],\"expires_at\":\"2999-01-01T00:00:00+00:00\"}}" >/dev/null
+ok=$(curl -fsS -H "X-Internal-Key: ${INTKEY}" -H "Content-Type: application/json" \
+  -X POST "${CB}/internal/runtime-token" \
+  -d "{\"organisation_id\":\"${DEVORG}\",\"user_id\":\"${RTUSER}\",\"provider\":\"google\",\"required_scopes\":[\"${DRIVE}\"]}")
+echo "$ok" | grep -q '"access_token":"rt-stored"' && pass "runtime-token resolves the stored token" \
+  || fail "runtime-token failed: $ok"
+short=$(curl -fsS -H "X-Internal-Key: ${INTKEY}" -H "Content-Type: application/json" \
+  -X POST "${CB}/internal/runtime-token" \
+  -d "{\"organisation_id\":\"${DEVORG}\",\"user_id\":\"${RTUSER}\",\"provider\":\"google\",\"required_scopes\":[\"https://www.googleapis.com/auth/gmail.send\"]}")
+echo "$short" | grep -q '"oauth_insufficient_scopes"' && echo "$short" | grep -q "login_url" \
+  && pass "scope-shortfall returns missing_scopes + login_url" || fail "scope-shortfall wrong: $short"
+c=$(curl -s -o /dev/null -w '%{http_code}' -X POST "${CB}/internal/runtime-token" -H "Content-Type: application/json" -d '{}')
+[[ "$c" == "401" ]] && pass "runtime-token requires the internal key (401)" || fail "expected 401, got $c"
+
+printf '\n\033[32mcredential-broker S3 smoke passed.\033[0m  encrypted CRUD + provider catalogue + '
+printf 'runtime OAuth-token resolution (resolve/scope-shortfall), all over the running stack.\n'
