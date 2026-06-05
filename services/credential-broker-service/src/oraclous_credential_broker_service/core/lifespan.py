@@ -17,10 +17,10 @@ from oraclous_credential_broker_service.core.config import get_settings
 from oraclous_credential_broker_service.repositories.credential_repository import (
     CredentialRepository,
 )
-from oraclous_credential_broker_service.services.delegation_service import DelegationService
-from oraclous_credential_broker_service.services.postgres_delegated_token_store import (
+from oraclous_credential_broker_service.repositories.postgres_delegated_token_store import (
     PostgresDelegatedTokenStore,
 )
+from oraclous_credential_broker_service.services.delegation_service import DelegationService
 
 logger = logging.getLogger(__name__)
 
