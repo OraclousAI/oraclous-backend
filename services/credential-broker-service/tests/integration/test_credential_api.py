@@ -148,3 +148,37 @@ async def test_auth_required(client: AsyncClient) -> None:
     assert (
         await client.get(f"/credentials/{uuid.uuid4()}", headers=_auth("wrong"))
     ).status_code == 401
+
+
+async def test_discovery_lists_connected_providers_and_data_sources(client: AsyncClient) -> None:
+    user = str(uuid.uuid4())
+
+    def cred(provider: str) -> dict:
+        return {
+            "tool_id": str(uuid.uuid4()),
+            "user_id": user,
+            "name": provider,
+            "provider": provider,
+            "cred_type": "oauth",
+            "credential": {"access_token": "t"},
+        }
+
+    assert (
+        await client.post("/credentials/", json=cred("google"), headers=_auth())
+    ).status_code == 201
+    assert (
+        await client.post("/credentials/", json=cred("github"), headers=_auth())
+    ).status_code == 201
+
+    provs = await client.get("/credentials/providers", params={"user_id": user}, headers=_auth())
+    assert provs.status_code == 200
+    assert set(provs.json()["providers"]) == {"google", "github"}
+
+    ds = await client.get(
+        "/credentials/available-data-sources", params={"user_id": user}, headers=_auth()
+    )
+    assert ds.status_code == 200
+    sources = ds.json()["data_sources"]
+    assert "drive" in sources["google"] and "repositories" in sources["github"]
+    # discovery requires auth
+    assert (await client.get("/credentials/providers", params={"user_id": user})).status_code == 401
