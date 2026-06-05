@@ -32,7 +32,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.http_client = client
     app.state.route_table = build_route_table(settings)
     app.state.proxy_service = ProxyService(
-        route_table=app.state.route_table, upstream_client=UpstreamClient(client)
+        route_table=app.state.route_table,
+        upstream_client=UpstreamClient(client),
+        internal_key=settings.INTERNAL_SERVICE_KEY,
     )
     try:
         yield

@@ -31,18 +31,21 @@ _HOP_BY_HOP = frozenset(
 
 
 def forward_request_headers(
-    raw_headers: list[tuple[bytes, bytes]], principal: Principal | None
+    raw_headers: list[tuple[bytes, bytes]], principal: Principal | None, *, internal_key: str
 ) -> list[tuple[bytes, bytes]]:
     """Headers to send upstream. Drops ``host`` (httpx sets it) + hop-by-hop. When the request is
     authenticated, STRIPS any client-supplied trusted-identity headers (anti-spoof) and injects the
     verified ``X-Principal-Id``/``X-Principal-Type``/``X-Organisation-Id``; the original ``Bearer``
     is kept (upstream defense-in-depth). On public paths (no principal) ``X-Principal-*`` are still
-    stripped, but a client ``X-Organisation-Id`` passes through (e.g. multi-org login selection)."""
+    stripped, but a client ``X-Organisation-Id`` passes through (e.g. multi-org login selection).
+    Every forwarded request carries ``X-Internal-Key`` (a client-supplied copy is stripped first) so
+    upstreams can prove the request came through the gateway (ADR-018 edge-auth attestation)."""
     strip = set(_HOP_BY_HOP)
     strip.add("host")
-    # X-Principal-* are pure trust assertions — never accept them from the client, ever.
+    # X-Principal-* + X-Internal-Key are pure trust assertions — never accept them from the client.
     strip.add("x-principal-id")
     strip.add("x-principal-type")
+    strip.add("x-internal-key")
     if principal is not None:
         strip.add("x-organisation-id")  # gateway asserts the verified org on authenticated paths
     out = [(key, value) for key, value in raw_headers if key.decode("latin-1").lower() not in strip]
@@ -51,6 +54,7 @@ def forward_request_headers(
         out.append((b"x-principal-type", str(principal.principal_type.value).encode()))
         if principal.organisation_id is not None:
             out.append((b"x-organisation-id", str(principal.organisation_id).encode()))
+    out.append((b"x-internal-key", internal_key.encode()))
     return out
 
 
@@ -67,9 +71,12 @@ def response_headers(raw_headers: list[tuple[bytes, bytes]]) -> list[tuple[str, 
 
 
 class ProxyService:
-    def __init__(self, *, route_table: RouteTable, upstream_client: UpstreamClient) -> None:
+    def __init__(
+        self, *, route_table: RouteTable, upstream_client: UpstreamClient, internal_key: str
+    ) -> None:
         self._route_table = route_table
         self._client = upstream_client
+        self._internal_key = internal_key
 
     async def open_upstream(
         self,
@@ -87,7 +94,9 @@ class ProxyService:
         return await self._client.open(
             method=method,
             url=entry.upstream_url + path,
-            headers=forward_request_headers(raw_headers, principal),
+            headers=forward_request_headers(
+                raw_headers, principal, internal_key=self._internal_key
+            ),
             params=query or None,
             content=body,
         )

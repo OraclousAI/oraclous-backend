@@ -38,6 +38,10 @@ class Settings(BaseSettings):
     JWT_SECRET: str | None = None
     JWT_ALGORITHM: str = "HS256"
 
+    # --- edge-auth attestation: the shared secret injected as X-Internal-Key on every forwarded
+    # request so upstreams can prove a request actually came through the gateway (ADR-018). ---
+    INTERNAL_SERVICE_KEY: str = "dev-internal-key"
+
     # --- CORS (terminated once at the edge); comma-separated origins ---
     GATEWAY_CORS_ORIGINS: str = "*"
 
