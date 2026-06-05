@@ -35,9 +35,9 @@ services:
     structure_enforced: true
     claimed_done: false      # flip to true at the §22 8-gate sign-off (Reza smoke acceptance)
   capability-registry-service:
-    release: R3.5            # service #5 — ported from oraclous-core-service; structure ENFORCED
+    release: R3.5            # service #5 — ported from oraclous-core-service; DONE (Reza §22 sign-off)
     structure_enforced: true
-    claimed_done: false      # flip to true at the §22 8-gate sign-off (Reza smoke acceptance)
+    claimed_done: true       # §22 8-gate sign-off accepted (Reza ran both smokes) — no-stubs ENFORCED
   application-gateway-service:
     release: R3.5            # service #6 — built last
     structure_enforced: false
