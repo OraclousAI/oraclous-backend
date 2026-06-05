@@ -24,6 +24,13 @@ class CreateCapability(BaseModel):
     descriptor_id: uuid.UUID | None = None
 
 
+class RegisterTool(BaseModel):
+    """Register a tool. ``kind`` is implicitly ``tool``; the id is derived deterministically from
+    the descriptor's ``metadata.name``/``version``/``category`` (no caller-supplied id)."""
+
+    descriptor: dict[str, Any]
+
+
 class UpdateCapability(BaseModel):
     descriptor: dict[str, Any]
 

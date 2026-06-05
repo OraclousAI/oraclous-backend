@@ -62,6 +62,50 @@ class CapabilityRepository:
             await session.refresh(row)
             return row
 
+    async def upsert_by_id(
+        self,
+        *,
+        organisation_id: uuid.UUID,
+        descriptor_id: uuid.UUID,
+        kind: DescriptorKind,
+        descriptor: dict[str, Any],
+    ) -> tuple[CapabilityDescriptor, str]:
+        """Idempotently sync a descriptor by (id, org). Status is created|updated|unchanged.
+
+        Used by plugin discovery: re-seeding the same descriptor is a no-op; a changed manifest
+        (different content_hash) updates in place; a new descriptor is created.
+        """
+        new_hash = compute_content_hash(descriptor)
+        async with self._session() as session:
+            async with session.begin():
+                result = await session.execute(
+                    select(CapabilityDescriptor).where(
+                        CapabilityDescriptor.id == descriptor_id,
+                        CapabilityDescriptor.organisation_id == organisation_id,
+                    )
+                )
+                row = result.scalars().first()
+                if row is None:
+                    row = CapabilityDescriptor(
+                        id=descriptor_id,
+                        organisation_id=organisation_id,
+                        kind=kind,
+                        name=descriptor_name(descriptor),
+                        descriptor=descriptor,
+                        content_hash=new_hash,
+                    )
+                    session.add(row)
+                    status = "created"
+                elif row.content_hash != new_hash:
+                    row.descriptor = descriptor
+                    row.name = descriptor_name(descriptor)
+                    row.content_hash = new_hash
+                    status = "updated"
+                else:
+                    status = "unchanged"
+            await session.refresh(row)
+            return row, status
+
     async def get_by_id(
         self, descriptor_id: uuid.UUID, organisation_id: uuid.UUID
     ) -> CapabilityDescriptor | None:

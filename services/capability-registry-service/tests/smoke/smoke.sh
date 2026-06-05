@@ -67,5 +67,20 @@ c=$(curl -s -o /dev/null -w '%{http_code}' -X GET "${CR}/api/v1/capabilities")
 c=$(curl -s -o /dev/null -w '%{http_code}' "${AUTH[@]}" -X GET "${CR}/api/v1/capabilities/33333333-3333-3333-3333-333333333333")
 [[ "$c" == "404" ]] && pass "unknown id -> 404 (org-scoped)" || fail "expected 404, got $c"
 
-printf '\n\033[32mcapability-registry S1 smoke passed.\033[0m  boot + own-version_table migrate + '
-printf 'org-scoped descriptor CRUD + capability matching + fail-closed validation, over the stack.\n'
+step "7. S2: startup plugin discovery seeded the built-in tool catalogue"
+tools=$(curl -fsS "${AUTH[@]}" -X GET "${CR}/api/v1/tools")
+echo "$tools" | grep -q '"PostgreSQL Reader"' && echo "$tools" | grep -q '"Google Drive Reader"' \
+  && pass "GET /api/v1/tools lists the seeded connector tools" || fail "tools not seeded: $tools"
+total=$(echo "$tools" | jget "['total']")
+[[ "$total" -ge 5 ]] && pass "catalogue has >=5 built-in tools (total=$total)" || fail "too few tools: $total"
+
+step "8. S2: register a tool -> deterministic id, idempotent re-register"
+TDESC='{"descriptor":{"kind":"tool","metadata":{"name":"Smoke Echo Tool","category":"UTILITY"},"version":{"semver":"1.0.0"},"spec":{"type":"INTERNAL","capabilities":[{"name":"echo","description":"echo"}],"credential_requirements":[]}}}'
+t1=$(curl -fsS "${AUTH[@]}" -X POST "${CR}/api/v1/tools" -d "${TDESC}" | jget "['id']")
+t2=$(curl -fsS "${AUTH[@]}" -X POST "${CR}/api/v1/tools" -d "${TDESC}" | jget "['id']")
+[[ -n "$t1" && "$t1" == "$t2" ]] && pass "re-register yields the same deterministic id ($t1)" \
+  || fail "tool ids not deterministic: $t1 vs $t2"
+
+printf '\n\033[32mcapability-registry S1+S2 smoke passed.\033[0m  boot + own-version_table migrate + '
+printf 'org-scoped descriptor CRUD + capability matching + validation + plugin-seeded tool catalogue '
+printf '+ deterministic tool registration, over the stack.\n'

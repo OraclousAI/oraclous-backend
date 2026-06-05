@@ -18,12 +18,14 @@ from oraclous_capability_registry_service.domain.errors import (
 from oraclous_capability_registry_service.routes.capability_routes import (
     router as capability_router,
 )
+from oraclous_capability_registry_service.routes.tool_routes import router as tool_router
 
 
 def create_app(*, lifespan=None) -> FastAPI:
     settings = get_settings()
     app = FastAPI(title=settings.APP_NAME, version=settings.VERSION, lifespan=lifespan)
     app.include_router(capability_router)
+    app.include_router(tool_router)
 
     @app.exception_handler(CapabilityNotFoundError)
     async def _on_not_found(_: Request, exc: CapabilityNotFoundError) -> JSONResponse:
