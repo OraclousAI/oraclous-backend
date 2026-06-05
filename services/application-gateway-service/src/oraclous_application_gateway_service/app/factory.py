@@ -2,18 +2,23 @@
 
 ``/health`` + ``/health/upstreams`` are served locally; the catch-all reverse-proxy forwards
 everything else. The health router is included FIRST so health is never shadowed. CORS is terminated
-once at the edge. The gateway's OWN errors (401/404/502/503/504) are returned as the
-forward-compatible error envelope; upstream errors pass through verbatim.
+once at the edge, and ``RequestIdMiddleware`` mints the correlation id. Every error the gateway
+returns — its own and any unhandled exception — is the canonical ORA-37 envelope; an exception body
+never leaks a traceback or detail (Interface Contracts §3).
 """
 
 from __future__ import annotations
 
-from fastapi import FastAPI, Request, status
+import logging
+
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from oraclous_errors import ErrorCode, status_to_code
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from oraclous_application_gateway_service.core.config import get_settings
+from oraclous_application_gateway_service.core.middleware import RequestIdMiddleware
 from oraclous_application_gateway_service.domain.errors import (
     RouteNotFoundError,
     UpstreamTimeoutError,
@@ -22,6 +27,8 @@ from oraclous_application_gateway_service.domain.errors import (
 from oraclous_application_gateway_service.routes.health_routes import router as health_router
 from oraclous_application_gateway_service.routes.proxy_routes import router as proxy_router
 from oraclous_application_gateway_service.schema.error import gateway_error
+
+logger = logging.getLogger(__name__)
 
 
 def create_app(*, lifespan=None) -> FastAPI:
@@ -34,43 +41,38 @@ def create_app(*, lifespan=None) -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+    # Outermost: mint the req_ id + set X-Request-Id on every response (success and error).
+    app.add_middleware(RequestIdMiddleware)
 
     @app.exception_handler(RouteNotFoundError)
     async def _on_route_not_found(request: Request, exc: RouteNotFoundError) -> JSONResponse:
-        return gateway_error(
-            request,
-            status_code=status.HTTP_404_NOT_FOUND,
-            error_code="route_not_found",
-            message=f"no upstream route for {request.url.path}",
-        )
+        return gateway_error(request, code=ErrorCode.NOT_FOUND, status_code=404)
 
     @app.exception_handler(UpstreamUnavailableError)
     async def _on_unavailable(request: Request, exc: UpstreamUnavailableError) -> JSONResponse:
-        return gateway_error(
-            request,
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            error_code="upstream_unavailable",
-            message="the upstream could not be reached",
-        )
+        # 502 Bad Gateway (upstream unreachable); nearest closed-enum code is SERVICE_UNAVAILABLE.
+        return gateway_error(request, code=ErrorCode.SERVICE_UNAVAILABLE, status_code=502)
 
     @app.exception_handler(UpstreamTimeoutError)
     async def _on_timeout(request: Request, exc: UpstreamTimeoutError) -> JSONResponse:
-        return gateway_error(
-            request,
-            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
-            error_code="upstream_timeout",
-            message="the upstream did not respond in time",
-        )
+        return gateway_error(request, code=ErrorCode.GATEWAY_TIMEOUT, status_code=504)
 
     @app.exception_handler(StarletteHTTPException)
     async def _on_http_exc(request: Request, exc: StarletteHTTPException) -> JSONResponse:
-        # the gateway's own HTTP errors (401 edge-auth, 503 unavailable, …) → envelope
+        # Gateway own HTTP errors (401 edge-auth, 405, 503 unavailable, …). Re-attach exc.headers so
+        # WWW-Authenticate: Bearer survives on 401; map the status to a closed-enum code.
         return gateway_error(
             request,
+            code=status_to_code(exc.status_code),
             status_code=exc.status_code,
-            error_code=f"http_{exc.status_code}",
-            message=str(exc.detail),
+            headers=dict(exc.headers or {}),
         )
+
+    @app.exception_handler(Exception)
+    async def _on_unhandled(request: Request, exc: Exception) -> JSONResponse:
+        # Never leak an exception or traceback to the client (§3); log it server-side instead.
+        logger.exception("unhandled gateway error")
+        return gateway_error(request, code=ErrorCode.INTERNAL_ERROR, status_code=500)
 
     app.include_router(health_router)
     # the proxy catch-all must be LAST so specific routes (e.g. /health) win

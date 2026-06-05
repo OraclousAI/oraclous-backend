@@ -776,6 +776,7 @@ source = { editable = "services/application-gateway-service" }
 dependencies = [
     { name = "fastapi" },
     { name = "httpx" },
+    { name = "oraclous-errors" },
     { name = "oraclous-governance" },
     { name = "pydantic" },
     { name = "pydantic-settings" },
@@ -787,6 +788,7 @@ dependencies = [
 requires-dist = [
     { name = "fastapi", specifier = ">=0.115,<1.0" },
     { name = "httpx", specifier = ">=0.27,<1.0" },
+    { name = "oraclous-errors", editable = "packages/errors" },
     { name = "oraclous-governance", editable = "packages/governance" },
     { name = "pydantic", specifier = ">=2.0,<3.0" },
     { name = "pydantic-settings", specifier = ">=2.0,<3.0" },

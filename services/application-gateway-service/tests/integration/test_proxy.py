@@ -102,7 +102,7 @@ async def test_health_is_not_proxied(client: AsyncClient) -> None:
 async def test_unknown_prefix_is_gateway_404(client: AsyncClient) -> None:
     r = await client.get("/totally/unknown", headers=_auth())
     assert r.status_code == 404
-    assert r.json()["error_code"] == "route_not_found"
+    assert r.json()["error"]["code"] == "NOT_FOUND"
 
 
 async def test_connect_failure_is_502() -> None:
@@ -113,8 +113,8 @@ async def test_connect_failure_is_502() -> None:
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://gw.test") as c:
         r = await c.get("/v1/search", headers=_auth())
     await upstream.aclose()
-    assert r.status_code == 502
-    assert r.json()["error_code"] == "upstream_unavailable"
+    assert r.status_code == 502  # Bad Gateway status preserved
+    assert r.json()["error"]["code"] == "SERVICE_UNAVAILABLE"
 
 
 async def test_timeout_is_504() -> None:
@@ -126,4 +126,4 @@ async def test_timeout_is_504() -> None:
         r = await c.get("/v1/search", headers=_auth())
     await upstream.aclose()
     assert r.status_code == 504
-    assert r.json()["error_code"] == "upstream_timeout"
+    assert r.json()["error"]["code"] == "GATEWAY_TIMEOUT"
