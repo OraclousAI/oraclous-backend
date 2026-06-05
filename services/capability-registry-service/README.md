@@ -17,7 +17,11 @@ bearer; `AUTH_MODE=jwt` decodes the real auth-service HS256 token).
   matching via JSONB containment.
   - `GET/POST /api/v1/capabilities`, `GET/PUT/DELETE /api/v1/capabilities/{id}`,
     `POST /api/v1/capabilities/match`.
-- S2 — tool registry + plugin discovery + manifest seeding.
+- **S2 (this slice)** — tool registry + plugin discovery + manifest seeding. A tool is a
+  `kind=tool` descriptor with a deterministic UUIDv5 id (`generate_tool_id`). Built-in connector
+  plugins (PostgreSQL/MySQL/Notion/GitHub/Google Drive readers) register at import and are seeded
+  into the dev org at startup (idempotent — re-seeding is a no-op). `GET/POST /api/v1/tools`,
+  `GET /api/v1/tools/{id}`.
 - S3 — tool instances + execution-readiness validation.
 - S4 — execution engine (sync) + credential-broker seam + PostgreSQL connector.
 - S5 — connector breadth + real-broker integration smoke (Reza sign-off).
