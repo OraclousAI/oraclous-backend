@@ -8,11 +8,12 @@ route signatures.
 
 from __future__ import annotations
 
+import secrets
 import uuid
 from collections.abc import AsyncIterator
 from typing import Annotated
 
-from fastapi import Depends, HTTPException, Request, status
+from fastapi import Depends, Header, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from neo4j import Driver
 from oraclous_governance import (
@@ -25,6 +26,7 @@ from oraclous_governance import (
 from oraclous_knowledge_retriever_service.core.auth import (
     AuthError,
     StaticMembershipResolver,
+    principal_from_gateway_headers,
     verify_token,
 )
 from oraclous_knowledge_retriever_service.core.config import get_settings
@@ -34,23 +36,47 @@ from oraclous_knowledge_retriever_service.services.retrieval_service import Retr
 _bearer = HTTPBearer(auto_error=False)
 
 
+def _unauthorized(detail: str) -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail=detail,
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+
+
+def _require_internal_key(provided: str | None) -> None:
+    """Fail-closed: a gateway-mode request must carry the shared X-Internal-Key (constant-time)."""
+    expected = get_settings().internal_service_key
+    if not expected or not provided or not secrets.compare_digest(provided, expected):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="request did not originate at the gateway"
+        )
+
+
 async def get_principal(
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(_bearer)],
+    x_principal_id: Annotated[str | None, Header()] = None,
+    x_principal_type: Annotated[str | None, Header()] = None,
+    x_organisation_id: Annotated[str | None, Header()] = None,
+    x_internal_key: Annotated[str | None, Header()] = None,
 ) -> Principal:
+    settings = get_settings()
+    # gateway mode (ADR-018): trust the gateway's verified identity headers + X-Internal-Key.
+    if settings.auth_mode == "gateway":
+        _require_internal_key(x_internal_key)
+        try:
+            return principal_from_gateway_headers(
+                x_principal_id, x_principal_type, x_organisation_id
+            )
+        except AuthError as exc:
+            raise _unauthorized(str(exc)) from exc
+    # dev / jwt modes: resolve the bearer token directly.
     if credentials is None:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="missing bearer token",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
+        raise _unauthorized("missing bearer token")
     try:
         return await verify_token(credentials.credentials)
     except AuthError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=str(exc),
-            headers={"WWW-Authenticate": "Bearer"},
-        ) from exc
+        raise _unauthorized(str(exc)) from exc
 
 
 async def bind_org_context(
