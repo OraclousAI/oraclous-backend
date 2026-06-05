@@ -13,7 +13,11 @@ from typing import Annotated
 from fastapi import Depends, Header, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
-from oraclous_credential_broker_service.core.auth import AuthError, verify_token
+from oraclous_credential_broker_service.core.auth import (
+    AuthError,
+    organisation_id_from_gateway_headers,
+    verify_token,
+)
 from oraclous_credential_broker_service.core.config import get_settings
 from oraclous_credential_broker_service.repositories.credential_repository import (
     CredentialRepository,
@@ -64,8 +68,23 @@ async def verify_internal_key(x_internal_key: Annotated[str | None, Header()] = 
 
 async def get_organisation_id(
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(_bearer)],
+    x_organisation_id: Annotated[str | None, Header()] = None,
+    x_internal_key: Annotated[str | None, Header()] = None,
 ) -> uuid.UUID:
     """Resolve the caller org from the authenticated principal (ORG001 — never the body)."""
+    settings = get_settings()
+    # gateway mode (ADR-018): trust the gateway's verified X-Organisation-Id header, gated by the
+    # existing constant-time X-Internal-Key verifier — no token validation at the edge.
+    if settings.AUTH_MODE == "gateway":
+        await verify_internal_key(x_internal_key)
+        try:
+            return organisation_id_from_gateway_headers(x_organisation_id)
+        except AuthError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail=str(exc),
+                headers={"WWW-Authenticate": "Bearer"},
+            ) from exc
     if credentials is None or not credentials.credentials:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
