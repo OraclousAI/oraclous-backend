@@ -26,7 +26,7 @@ from oraclous_application_gateway_service.domain.errors import (
 )
 from oraclous_application_gateway_service.routes.health_routes import router as health_router
 from oraclous_application_gateway_service.routes.proxy_routes import router as proxy_router
-from oraclous_application_gateway_service.schema.error import gateway_error
+from oraclous_application_gateway_service.schema.error import gateway_error, request_id_of
 
 logger = logging.getLogger(__name__)
 
@@ -71,8 +71,15 @@ def create_app(*, lifespan=None) -> FastAPI:
     @app.exception_handler(Exception)
     async def _on_unhandled(request: Request, exc: Exception) -> JSONResponse:
         # Never leak an exception or traceback to the client (§3); log it server-side instead.
+        # This handler runs at ServerErrorMiddleware — OUTSIDE RequestIdMiddleware — so the
+        # X-Request-Id header is stamped here explicitly (the middleware never wraps this path).
         logger.exception("unhandled gateway error")
-        return gateway_error(request, code=ErrorCode.INTERNAL_ERROR, status_code=500)
+        return gateway_error(
+            request,
+            code=ErrorCode.INTERNAL_ERROR,
+            status_code=500,
+            headers={"X-Request-Id": request_id_of(request)},
+        )
 
     app.include_router(health_router)
     # the proxy catch-all must be LAST so specific routes (e.g. /health) win

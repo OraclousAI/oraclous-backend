@@ -2,8 +2,9 @@
 
 Mints a server-authoritative ``req_`` request id at the edge of every request,
 stashes it on ``scope["state"]`` (readable as ``request.state.request_id`` by the
-error handlers), and sets the ``X-Request-Id`` response header on every response —
-success or error, streamed or buffered. It is pure ASGI rather than
+error handlers), and sets the ``X-Request-Id`` response header on every response it
+wraps — streamed or buffered. (The catch-all 500 handler runs at ServerErrorMiddleware,
+outside this middleware, and stamps the header itself.) It is pure ASGI rather than
 ``BaseHTTPMiddleware`` so it never buffers the streaming reverse-proxy responses,
 and it strips any client-supplied ``x-request-id`` so a caller cannot forge the
 correlation handle.

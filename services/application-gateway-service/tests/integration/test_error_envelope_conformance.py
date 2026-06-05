@@ -119,3 +119,27 @@ async def test_timeout_is_conformant() -> None:
     await upstream.aclose()
     assert r.status_code == 504
     _assert_conformant(r)
+
+
+class _BoomProxy:
+    """A proxy service whose open_upstream raises a non-domain exception — exercises the catch-all
+    ``@app.exception_handler(Exception)`` 500 path (which runs OUTSIDE RequestIdMiddleware)."""
+
+    async def open_upstream(self, **_kwargs: object) -> httpx.Response:
+        raise RuntimeError("non-domain boom")
+
+
+async def test_unhandled_exception_is_conformant() -> None:
+    from oraclous_application_gateway_service.app.factory import create_app
+    from oraclous_application_gateway_service.core.config import get_settings
+
+    get_settings.cache_clear()
+    app = create_app(lifespan=None)
+    app.state.proxy_service = _BoomProxy()
+    transport = ASGITransport(app=app, raise_app_exceptions=False)
+    async with AsyncClient(transport=transport, base_url="http://gw.test") as c:
+        r = await c.get("/v1/search", headers=_auth())
+    assert r.status_code == 500
+    assert r.json()["error"]["code"] == "INTERNAL_ERROR"
+    # the catch-all 500 must still carry X-Request-Id == body.requestId (regression guard)
+    _assert_conformant(r)

@@ -42,14 +42,21 @@ async def proxy(
     if upstream.status_code >= 400:
         # Drain + close the upstream error body and re-emit the canonical envelope under the same
         # status; the upstream's body is never relayed (it may carry internals — §3 rule 8).
+        # aread() already closes on exhaustion; the explicit aclose() is the idempotent safety net.
         await upstream.aread()
         await upstream.aclose()
         return gateway_error(
             request, code=status_to_code(upstream.status_code), status_code=upstream.status_code
         )
-    return StreamingResponse(
-        upstream.aiter_raw(),
-        status_code=upstream.status_code,
-        headers=dict(response_headers(upstream.headers.raw)),
-        background=BackgroundTask(upstream.aclose),
-    )
+    # Close-ownership transfers to the StreamingResponse only once BackgroundTask is attached; guard
+    # the open-but-unowned window so any failure here cannot leak the upstream connection.
+    try:
+        return StreamingResponse(
+            upstream.aiter_raw(),
+            status_code=upstream.status_code,
+            headers=dict(response_headers(upstream.headers.raw)),
+            background=BackgroundTask(upstream.aclose),
+        )
+    except BaseException:
+        await upstream.aclose()
+        raise
