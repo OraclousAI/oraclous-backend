@@ -23,6 +23,14 @@ class Settings(BaseSettings):
     AUTH_SERVICE_URL: str = "http://auth-service:8000"
     INTERNAL_SERVICE_KEY: str
 
+    # --- identity seam (dev-auth by default; `jwt` consumes the real auth-service token) ---
+    AUTH_MODE: str = "dev"  # "dev" | "jwt"
+    DEV_BEARER: str = "dev-token"
+    DEV_USER_ID: str = "00000000-0000-0000-0000-0000000000d5"
+    DEV_ORG_ID: str = "00000000-0000-0000-0000-00000000050a"
+    JWT_SECRET: str | None = None
+    JWT_ALGORITHM: str = "HS256"
+
     @property
     def sync_database_url(self) -> str:
         """psycopg (sync) DSN derived from the async one — used by Alembic."""

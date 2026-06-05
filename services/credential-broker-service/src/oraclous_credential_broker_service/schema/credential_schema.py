@@ -36,3 +36,26 @@ class CredentialsUpdate(BaseModel):
     tool_id: UUID
     cred_type: Literal["oauth", "api_key", "raw"]
     credential: dict
+
+
+class CredentialOut(BaseModel):
+    """Create/update response — metadata only; the secret is never echoed back here."""
+
+    id: UUID
+    name: str | None = None
+    provider: str
+    user_id: UUID
+    tool_id: UUID
+    cred_type: str
+
+
+class RequestCredentialsResponse(BaseModel):
+    """Read response — includes the DECRYPTED credential (only on explicit retrieval)."""
+
+    id: UUID
+    name: str | None = None
+    provider: str
+    user_id: UUID
+    tool_id: UUID
+    cred_type: str
+    credential: dict

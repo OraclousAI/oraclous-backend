@@ -9,12 +9,12 @@ authenticated context, never from a request body.
 
 from __future__ import annotations
 
-import json
 from uuid import UUID
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+from oraclous_credential_broker_service.core.security import encrypt_secret
 from oraclous_credential_broker_service.models.base_model import Base
 from oraclous_credential_broker_service.models.credential_model import UserCredential
 from oraclous_credential_broker_service.models.enums import CredentialType
@@ -46,7 +46,7 @@ class CredentialRepository:
             provider=cred.provider,
             user_id=cred.user_id,
             tool_id=cred.tool_id,
-            encrypted_cred=json.dumps(cred.credential),
+            encrypted_cred=encrypt_secret(cred.credential),
             cred_type=CredentialType(cred.cred_type),
         )
         async with self._session() as session:
@@ -100,7 +100,7 @@ class CredentialRepository:
                 obj.user_id = update.user_id
                 obj.tool_id = update.tool_id
                 obj.cred_type = CredentialType(update.cred_type)
-                obj.encrypted_cred = json.dumps(update.credential)
+                obj.encrypted_cred = encrypt_secret(update.credential)
             return obj
 
     async def delete_credential(self, cred_id: UUID, organisation_id: UUID) -> bool:
