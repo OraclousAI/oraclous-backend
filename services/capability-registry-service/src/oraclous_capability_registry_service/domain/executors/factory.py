@@ -10,18 +10,30 @@ from __future__ import annotations
 
 from typing import Any
 
+from oraclous_capability_registry_service.domain.connectors.github import GitHubReader
+from oraclous_capability_registry_service.domain.connectors.mysql import MySQLReader
+from oraclous_capability_registry_service.domain.connectors.notion import NotionReader
 from oraclous_capability_registry_service.domain.connectors.postgresql import PostgreSQLReader
 from oraclous_capability_registry_service.domain.executors.base import BaseToolExecutor
-from oraclous_capability_registry_service.domain.plugins.builtin import PostgreSQLReaderPlugin
+from oraclous_capability_registry_service.domain.plugins.builtin import (
+    GitHubReaderPlugin,
+    MySQLReaderPlugin,
+    NotionReaderPlugin,
+    PostgreSQLReaderPlugin,
+)
 
 
 class NoExecutorError(Exception):
     """No executor is registered for the descriptor (the tool is registered but not executable)."""
 
 
-# descriptor id (deterministic tool UUIDv5, as str) -> executor class
+# descriptor id (deterministic tool UUIDv5, as str) -> executor class. The Google Drive Reader's
+# live OAuth connector is deferred (no key-free smoke); its descriptor stays registered.
 _EXECUTORS: dict[str, type[BaseToolExecutor]] = {
     PostgreSQLReaderPlugin.plugin_id(): PostgreSQLReader,
+    MySQLReaderPlugin.plugin_id(): MySQLReader,
+    NotionReaderPlugin.plugin_id(): NotionReader,
+    GitHubReaderPlugin.plugin_id(): GitHubReader,
 }
 
 

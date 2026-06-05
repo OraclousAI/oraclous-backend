@@ -6,8 +6,8 @@ or stores secrets (ADR-008 operator separation). ``CredentialBrokerPort`` resolv
 credential requirement into the payload the executor needs. Two implementations:
 
 * ``RealCredentialBroker`` — talks to the broker over ``/internal/*`` with ``X-Internal-Key``.
-  OAuth provider tokens resolve via ``/internal/runtime-token``; broadening non-OAuth resolution to
-  the real broker lands with the S5 real-broker integration.
+  OAuth provider tokens resolve via ``/internal/runtime-token``; non-OAuth secrets
+  (connection_string / api_key) resolve by id via ``/internal/resolve-credential``.
 * ``FakeCredentialBroker`` — deterministic, key-free; selected by ``CREDENTIAL_BROKER_MODE=fake``
   (the dev/CI default) so slices 4–5 reach a real end-to-end smoke without external provider keys.
 """
@@ -64,8 +64,9 @@ def _libpq_dsn(database_url: str) -> str:
 class FakeCredentialBroker:
     """Deterministic, key-free broker for dev/CI: real execution without external provider keys."""
 
-    def __init__(self, *, fake_db_dsn: str) -> None:
+    def __init__(self, *, fake_db_dsn: str, dsn_by_provider: dict[str, str] | None = None) -> None:
         self._fake_db_dsn = fake_db_dsn
+        self._dsn_by_provider = dsn_by_provider or {}
         self._closed = False
 
     async def resolve(
@@ -79,9 +80,8 @@ class FakeCredentialBroker:
         ctype = requirement.get("type")
         provider = requirement.get("provider", "")
         if ctype == "connection_string":
-            return ResolvedCredential(
-                credential_type=ctype, payload={"connection_string": self._fake_db_dsn}
-            )
+            dsn = self._dsn_by_provider.get(provider, self._fake_db_dsn)
+            return ResolvedCredential(credential_type=ctype, payload={"connection_string": dsn})
         if ctype == "oauth_token":
             return ResolvedCredential(
                 credential_type=ctype,
