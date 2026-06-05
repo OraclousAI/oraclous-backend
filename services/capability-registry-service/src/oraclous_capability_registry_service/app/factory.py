@@ -15,6 +15,9 @@ from oraclous_capability_registry_service.domain.errors import (
     CapabilityNotFoundError,
     InvalidDescriptorError,
 )
+from oraclous_capability_registry_service.repositories.capability_repository import (
+    CapabilityConflictError,
+)
 from oraclous_capability_registry_service.routes.capability_routes import (
     router as capability_router,
 )
@@ -38,6 +41,10 @@ def create_app(*, lifespan=None) -> FastAPI:
     @app.exception_handler(CapabilityNotFoundError)
     async def _on_not_found(_: Request, exc: CapabilityNotFoundError) -> JSONResponse:
         return JSONResponse(status_code=status.HTTP_404_NOT_FOUND, content={"detail": str(exc)})
+
+    @app.exception_handler(CapabilityConflictError)
+    async def _on_conflict(_: Request, exc: CapabilityConflictError) -> JSONResponse:
+        return JSONResponse(status_code=status.HTTP_409_CONFLICT, content={"detail": str(exc)})
 
     @app.exception_handler(InstanceNotFoundError)
     async def _on_instance_not_found(_: Request, exc: InstanceNotFoundError) -> JSONResponse:

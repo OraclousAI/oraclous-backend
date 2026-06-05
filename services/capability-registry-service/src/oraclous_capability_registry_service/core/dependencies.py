@@ -140,7 +140,7 @@ async def get_principal(
     In ``dev``/``jwt`` mode the bearer token is resolved directly.
     """
     if get_settings().AUTH_MODE == "gateway":
-        # Reuse the existing fail-closed constant-time internal-key gate (403 if not from gateway).
+        # Reuse the existing fail-closed constant-time internal-key gate (401 if not from gateway).
         await verify_internal_key(x_internal_key)
         try:
             principal = principal_from_gateway_headers(

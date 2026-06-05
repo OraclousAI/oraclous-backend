@@ -8,10 +8,12 @@ denormalised ``name`` unless the caller passes an explicit hash.
 
 Global/platform tools: when a ``platform_org_id`` is configured, *reads* are widened to also return
 descriptors owned by that platform org (the built-in catalogue), so every tenant org sees the global
-tools alongside its own. Results are de-duplicated by id preferring the caller-org row, so a tenant
-custom tool with a colliding deterministic id shadows the platform built-in. *Writes* stay strict to
-the caller org. When ``platform_org_id`` is None or equals the caller org, behaviour is exactly the
-old single-org equality.
+tools alongside its own. ``id`` is a GLOBAL primary key, so a descriptor id resolves to at most one
+row table-wide — reads de-duplicate defensively by id, and a tenant cannot register a tool whose
+deterministic id collides with a platform built-in (the write raises ``CapabilityConflictError`` →
+409, never a 500). *Writes* stay strict to the caller org (a tenant can never mutate a platform
+built-in). When ``platform_org_id`` is None or equals the caller org, behaviour is exactly the old
+single-org equality.
 """
 
 from __future__ import annotations
@@ -20,6 +22,7 @@ import uuid
 from typing import Any
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from oraclous_capability_registry_service.domain.hashing import compute_content_hash
@@ -30,6 +33,11 @@ from oraclous_capability_registry_service.models.enums import DescriptorKind
 
 # Sentinel: "caller omitted content_hash" (auto-compute) vs "caller passed a value" (store as-is).
 _AUTO: Any = object()
+
+
+class CapabilityConflictError(Exception):
+    """A descriptor id is already taken table-wide (e.g. a tenant tried to register a tool whose
+    deterministic id collides with a platform built-in). Maps to HTTP 409."""
 
 
 class CapabilityRepository:
@@ -50,8 +58,10 @@ class CapabilityRepository:
     def _dedupe_prefer_caller(
         self, rows: list[CapabilityDescriptor], organisation_id: uuid.UUID
     ) -> list[CapabilityDescriptor]:
-        """De-duplicate widened read results by id, preferring the caller-org row over the platform
-        row (a tenant custom tool shadows a colliding built-in). First-seen order is preserved."""
+        """Defensive de-dup of widened read results by id. With a GLOBAL primary key on ``id`` each
+        id resolves to one row, so this is a no-op today; it is kept (preferring the caller-org row)
+        so that if the schema ever moves to a composite (id, org) key the read stays single-valued
+        per id. First-seen order is preserved."""
         if self._platform_org_id is None or self._platform_org_id == organisation_id:
             return rows
         by_id: dict[uuid.UUID, CapabilityDescriptor] = {}
@@ -94,8 +104,13 @@ class CapabilityRepository:
             ),
         )
         async with self._session() as session:
-            async with session.begin():
-                session.add(row)
+            try:
+                async with session.begin():
+                    session.add(row)
+            except IntegrityError as exc:
+                raise CapabilityConflictError(
+                    f"a capability with id {row.id} already exists"
+                ) from exc
             await session.refresh(row)
             return row
 
@@ -114,32 +129,37 @@ class CapabilityRepository:
         """
         new_hash = compute_content_hash(descriptor)
         async with self._session() as session:
-            async with session.begin():
-                result = await session.execute(
-                    select(CapabilityDescriptor).where(
-                        CapabilityDescriptor.id == descriptor_id,
-                        CapabilityDescriptor.organisation_id == organisation_id,
+            try:
+                async with session.begin():
+                    result = await session.execute(
+                        select(CapabilityDescriptor).where(
+                            CapabilityDescriptor.id == descriptor_id,
+                            CapabilityDescriptor.organisation_id == organisation_id,
+                        )
                     )
-                )
-                row = result.scalars().first()
-                if row is None:
-                    row = CapabilityDescriptor(
-                        id=descriptor_id,
-                        organisation_id=organisation_id,
-                        kind=kind,
-                        name=descriptor_name(descriptor),
-                        descriptor=descriptor,
-                        content_hash=new_hash,
-                    )
-                    session.add(row)
-                    status = "created"
-                elif row.content_hash != new_hash:
-                    row.descriptor = descriptor
-                    row.name = descriptor_name(descriptor)
-                    row.content_hash = new_hash
-                    status = "updated"
-                else:
-                    status = "unchanged"
+                    row = result.scalars().first()
+                    if row is None:
+                        row = CapabilityDescriptor(
+                            id=descriptor_id,
+                            organisation_id=organisation_id,
+                            kind=kind,
+                            name=descriptor_name(descriptor),
+                            descriptor=descriptor,
+                            content_hash=new_hash,
+                        )
+                        session.add(row)
+                        status = "created"
+                    elif row.content_hash != new_hash:
+                        row.descriptor = descriptor
+                        row.name = descriptor_name(descriptor)
+                        row.content_hash = new_hash
+                        status = "updated"
+                    else:
+                        status = "unchanged"
+            except IntegrityError as exc:
+                raise CapabilityConflictError(
+                    f"a capability with id {descriptor_id} already exists"
+                ) from exc
             await session.refresh(row)
             return row, status
 
