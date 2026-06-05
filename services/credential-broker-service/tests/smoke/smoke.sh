@@ -91,5 +91,13 @@ echo "$short" | grep -q '"oauth_insufficient_scopes"' && echo "$short" | grep -q
 c=$(curl -s -o /dev/null -w '%{http_code}' -X POST "${CB}/internal/runtime-token" -H "Content-Type: application/json" -d '{}')
 [[ "$c" == "401" ]] && pass "runtime-token requires the internal key (401)" || fail "expected 401, got $c"
 
-printf '\n\033[32mcredential-broker S3 smoke passed.\033[0m  encrypted CRUD + provider catalogue + '
-printf 'runtime OAuth-token resolution (resolve/scope-shortfall), all over the running stack.\n'
+step "7. S4: provider + data-source discovery (org-scoped from the principal)"
+provs=$(curl -fsS "${AUTH[@]}" -X GET "${CB}/credentials/providers?user_id=${RTUSER}")
+echo "$provs" | grep -q '"google"' && pass "discovery lists the user's connected providers" \
+  || fail "providers discovery wrong: $provs"
+dsr=$(curl -fsS "${AUTH[@]}" -X GET "${CB}/credentials/available-data-sources?user_id=${RTUSER}")
+echo "$dsr" | grep -q '"drive"' && pass "available-data-sources returns the catalogue for them" \
+  || fail "data-source discovery wrong: $dsr"
+
+printf '\n\033[32mcredential-broker S4 smoke passed.\033[0m  encrypted CRUD + catalogue + runtime '
+printf 'OAuth resolution + provider/data-source discovery, all over the running stack.\n'

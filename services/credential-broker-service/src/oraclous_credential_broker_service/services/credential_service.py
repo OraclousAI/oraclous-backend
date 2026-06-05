@@ -11,6 +11,7 @@ from __future__ import annotations
 from uuid import UUID
 
 from oraclous_credential_broker_service.core.security import decrypt_secret
+from oraclous_credential_broker_service.domain.providers import data_sources_for
 from oraclous_credential_broker_service.models.credential_model import UserCredential
 from oraclous_credential_broker_service.repositories.credential_repository import (
     CredentialRepository,
@@ -81,3 +82,21 @@ class CredentialService:
     async def delete(self, *, credential_id: UUID, organisation_id: UUID) -> None:
         if not await self._repo.delete_credential(credential_id, organisation_id):
             raise CredentialNotFoundError("credential not found")
+
+    async def list_providers(self, *, user_id: UUID, organisation_id: UUID) -> list[str]:
+        """The distinct providers a user has connected (order-stable), org-scoped."""
+        rows = await self._repo.list_credentials(
+            RequestCredentials(user_id=user_id), organisation_id
+        )
+        out: list[str] = []
+        for r in rows:
+            if r.provider not in out:
+                out.append(r.provider)
+        return out
+
+    async def available_data_sources(
+        self, *, user_id: UUID, organisation_id: UUID
+    ) -> dict[str, dict]:
+        """The catalogue data sources unlocked by the user's connected providers (org-scoped)."""
+        providers = await self.list_providers(user_id=user_id, organisation_id=organisation_id)
+        return {p: data_sources_for(p) for p in providers}

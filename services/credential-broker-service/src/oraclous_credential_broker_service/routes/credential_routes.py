@@ -33,6 +33,28 @@ async def create_credential(
     return await svc.create(cred=body, organisation_id=organisation_id)
 
 
+# NOTE: the literal /providers + /available-data-sources paths are declared BEFORE the
+# parameterized /{credential_id} so they aren't shadowed by it (Starlette matches in order).
+@router.get("/providers")
+async def list_providers(
+    user_id: UUID, organisation_id: OrganisationIdDep, svc: CredentialServiceDep
+) -> dict:
+    """Which providers a user has connected (org-scoped from the authenticated principal)."""
+    return {"providers": await svc.list_providers(user_id=user_id, organisation_id=organisation_id)}
+
+
+@router.get("/available-data-sources")
+async def available_data_sources(
+    user_id: UUID, organisation_id: OrganisationIdDep, svc: CredentialServiceDep
+) -> dict:
+    """The catalogue data sources unlocked by the user's connected providers."""
+    return {
+        "data_sources": await svc.available_data_sources(
+            user_id=user_id, organisation_id=organisation_id
+        )
+    }
+
+
 @router.get("/{credential_id}", response_model=RequestCredentialsResponse)
 async def get_credential(
     credential_id: UUID, organisation_id: OrganisationIdDep, svc: CredentialServiceDep
