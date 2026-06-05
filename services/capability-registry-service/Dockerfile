@@ -47,9 +47,14 @@ COPY --from=builder /app/.venv /app/.venv
 # Copy service source (packages are in the venv; only the service entrypoint is needed)
 COPY services/capability-registry-service/src/ \
      ./services/capability-registry-service/src/
+COPY services/capability-registry-service/migrations/ \
+     ./services/capability-registry-service/migrations/
+COPY services/capability-registry-service/alembic.ini \
+     ./services/capability-registry-service/alembic.ini
 
 ENV PATH="/app/.venv/bin:$PATH" \
     PYTHONPATH="/app/services/capability-registry-service/src"
+WORKDIR /app/services/capability-registry-service
 
 EXPOSE 8000
 

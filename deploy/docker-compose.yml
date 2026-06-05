@@ -142,6 +142,24 @@ services:
       start_period: 20s
     networks: [substrate]
 
+  # R3.5 service #5 — capability-registry: Alembic schema one-shot (capability_descriptors).
+  capreg-migrate:
+    build:
+      context: ..
+      dockerfile: services/capability-registry-service/Dockerfile
+    image: oraclous-capability-registry-service:${IMAGE_TAG:-dev}
+    environment:
+      DATABASE_URL: "postgresql+asyncpg://oraclous:oraclous@postgres:5432/oraclous"
+      INTERNAL_SERVICE_KEY: "${CAPABILITY_REGISTRY_INTERNAL_KEY:-dev-internal-key}"
+    command: ["alembic", "upgrade", "head"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+    profiles: [services]
+    networks: [substrate]
+
+  # R3.5 service #5 — capability-registry: unified capability/tool registry + execution.
   capability-registry-service:
     build:
       context: ..
@@ -151,12 +169,19 @@ services:
     ports:
       - "8001:8000"
     environment:
-      DATABASE_URL: "postgresql+asyncpg://oraclous:oraclous@postgres/oraclous"
+      DATABASE_URL: "postgresql+asyncpg://oraclous:oraclous@postgres:5432/oraclous"
       INTERNAL_SERVICE_KEY: "${CAPABILITY_REGISTRY_INTERNAL_KEY:-dev-internal-key}"
       AUTH_SERVICE_URL: "http://auth-service:8000"
+      # Identity seam: dev-auth (Bearer dev-token → dev org) by default; AUTH_MODE=jwt consumes the
+      # real auth-service token via the shared JWT_SECRET (same value as the auth-service signs with).
+      AUTH_MODE: "${CAPABILITY_REGISTRY_AUTH_MODE:-dev}"
+      DEV_BEARER: "dev-token"
+      JWT_SECRET: "${AUTH_JWT_SECRET:-dev-jwt-secret}"
     depends_on:
       postgres:
         condition: service_healthy
+      capreg-migrate:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD", "python", "-c",
              "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]

@@ -1,99 +1,46 @@
-"""FastAPI app factory for capability-registry-service (R2 shell).
+"""FastAPI app factory (ORAA-4 §21) — build the app, wire routers, no business logic here.
 
-Endpoints:
-
-* ``GET /health`` — readiness/liveness probe; returns service status.
-* ``GET /api/v1/health`` — v1-prefixed alias for legacy clients.
-* ``GET /api/v1/capabilities`` — list capabilities (stub; 501 until R2 impl).
-* ``GET /api/v1/capabilities/{capability_id}`` — resolve capability (stub).
-* ``POST /api/v1/capabilities`` — register capability (stub).
-* ``GET /api/v1/tools`` — list tools (stub; lifts from oraclous-core-service tool registry).
-* ``POST /api/v1/tools`` — register tool definition (stub).
-* ``GET /api/v1/tools/{tool_id}`` — get tool definition (stub).
-
-Workflow and pipeline routes from oraclous-core-service are retired (ADR-005).
+Replaces the R2 stub shell: capability descriptor CRUD + search/match are real, org-scoped, and
+backed by Postgres. ``GET /health`` stays a dependency-free probe so the container is healthy even
+when Postgres is unreachable (the data routes then report 503).
 """
 
 from __future__ import annotations
 
-from typing import Any, NoReturn
-
-from fastapi import FastAPI, HTTPException, status
-from pydantic import BaseModel
+from fastapi import FastAPI, Request, status
+from fastapi.responses import JSONResponse
 
 from oraclous_capability_registry_service.core.config import get_settings
+from oraclous_capability_registry_service.domain.errors import (
+    CapabilityNotFoundError,
+    InvalidDescriptorError,
+)
+from oraclous_capability_registry_service.routes.capability_routes import (
+    router as capability_router,
+)
 
 
-class _HealthResponse(BaseModel):
-    status: str
-    version: str
-
-
-class _CapabilityListResponse(BaseModel):
-    capabilities: list[Any]
-    total: int
-
-
-class _ToolListResponse(BaseModel):
-    tools: list[Any]
-    total: int
-
-
-def create_app() -> FastAPI:
-    """Build the capability-registry-service FastAPI app."""
+def create_app(*, lifespan=None) -> FastAPI:
     settings = get_settings()
-    app = FastAPI(title=settings.APP_NAME, version=settings.VERSION)
+    app = FastAPI(title=settings.APP_NAME, version=settings.VERSION, lifespan=lifespan)
+    app.include_router(capability_router)
 
-    # --- GET /health (Kubernetes probe) -----------------------------------
+    @app.exception_handler(CapabilityNotFoundError)
+    async def _on_not_found(_: Request, exc: CapabilityNotFoundError) -> JSONResponse:
+        return JSONResponse(status_code=status.HTTP_404_NOT_FOUND, content={"detail": str(exc)})
 
-    @app.get("/health", response_model=_HealthResponse)
-    async def health() -> _HealthResponse:
-        return _HealthResponse(status="healthy", version=settings.VERSION)
-
-    # --- GET /api/v1/health (legacy-compatible alias) ---------------------
-
-    @app.get("/api/v1/health", response_model=_HealthResponse)
-    async def api_v1_health() -> _HealthResponse:
-        return _HealthResponse(status="healthy", version=settings.VERSION)
-
-    # --- Capability routes (stub — R2 implementation deferred) -----------
-
-    @app.get("/api/v1/capabilities", response_model=_CapabilityListResponse)
-    async def list_capabilities() -> _CapabilityListResponse:
-        return _CapabilityListResponse(capabilities=[], total=0)
-
-    @app.get("/api/v1/capabilities/{capability_id}", response_model=None)
-    async def get_capability(capability_id: str) -> NoReturn:
-        raise HTTPException(
-            status_code=status.HTTP_501_NOT_IMPLEMENTED,
-            detail="Capability resolution not yet implemented (R2)",
+    @app.exception_handler(InvalidDescriptorError)
+    async def _on_invalid(_: Request, exc: InvalidDescriptorError) -> JSONResponse:
+        return JSONResponse(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, content={"detail": str(exc)}
         )
 
-    @app.post("/api/v1/capabilities", status_code=status.HTTP_201_CREATED, response_model=None)
-    async def register_capability() -> NoReturn:
-        raise HTTPException(
-            status_code=status.HTTP_501_NOT_IMPLEMENTED,
-            detail="Capability registration not yet implemented (R2)",
-        )
+    @app.get("/health")
+    async def health() -> dict:
+        return {"status": "healthy", "service": "capability-registry", "version": settings.VERSION}
 
-    # --- Tool routes (stub — lifts from oraclous-core-service tool registry) ---
-
-    @app.get("/api/v1/tools", response_model=_ToolListResponse)
-    async def list_tools() -> _ToolListResponse:
-        return _ToolListResponse(tools=[], total=0)
-
-    @app.get("/api/v1/tools/{tool_id}", response_model=None)
-    async def get_tool(tool_id: str) -> NoReturn:
-        raise HTTPException(
-            status_code=status.HTTP_501_NOT_IMPLEMENTED,
-            detail="Tool resolution not yet implemented (R2)",
-        )
-
-    @app.post("/api/v1/tools", status_code=status.HTTP_201_CREATED, response_model=None)
-    async def register_tool() -> NoReturn:
-        raise HTTPException(
-            status_code=status.HTTP_501_NOT_IMPLEMENTED,
-            detail="Tool registration not yet implemented (R2)",
-        )
+    @app.get("/api/v1/health")
+    async def api_v1_health() -> dict:
+        return {"status": "healthy", "service": "capability-registry", "version": settings.VERSION}
 
     return app
