@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import logging
 import uuid
 
 from oraclous_knowledge_graph_service.domain.graph import Graph
@@ -16,6 +17,8 @@ from oraclous_knowledge_graph_service.repositories.graph_repository import Graph
 from oraclous_knowledge_graph_service.repositories.graph_write_repository import (
     GraphWriteRepository,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class GraphNotFound(Exception):
@@ -41,11 +44,18 @@ class GraphService:
         """
         if self._write_repo is None:
             return graph
-        node_count, relationship_count = await asyncio.to_thread(
-            self._write_repo.count_for_graph,
-            graph_id=str(graph.id),
-            organisation_id=str(graph.organisation_id),
-        )
+        try:
+            node_count, relationship_count = await asyncio.to_thread(
+                self._write_repo.count_for_graph,
+                graph_id=str(graph.id),
+                organisation_id=str(graph.organisation_id),
+            )
+        except Exception as exc:  # noqa: BLE001 — degrade-don't-crash: a Neo4j hiccup must not
+            # turn a Postgres-backed metadata read into a 500; fall back to the stored columns.
+            logger.warning(
+                "live Neo4j count failed for graph %s; using stored counts: %s", graph.id, exc
+            )
+            return graph
         return dataclasses.replace(
             graph, node_count=node_count, relationship_count=relationship_count
         )
