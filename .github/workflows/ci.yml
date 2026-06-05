@@ -84,18 +84,11 @@ jobs:
           if [ "$code" -eq 5 ]; then echo "No integration tests collected yet."; exit 0; fi
           exit "$code"
 
-  r2-gate:
-    name: "R2 acceptance gate — 9-deliverable verification (ORAA-80)"
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
-        with:
-          version: "0.11.7"
-      - run: uv python install 3.12
-      - run: uv sync --all-packages --frozen
-      - name: R2 gate (static + schema checks; no substrate required)
-        run: uv run pytest -m r2_gate -v --tb=short
+  # The R2 acceptance gate (ORAA-80) is RETIRED: it verified the hollow R2 deliverables inside the
+  # legacy oraclous-core-service (deleted under §15) and several surfaces deferred to R4/R6 (MCP,
+  # agent schemas, scope-allocation). R3.5 rebuilt those deliverables for real in the new services;
+  # the `r3_5_gate` below + each service's own unit/integration suites + the §22 sign-offs are the
+  # live acceptance now.
 
   worktree-test:
     name: "Per-run worktree isolation probe (ORAA-130)"
