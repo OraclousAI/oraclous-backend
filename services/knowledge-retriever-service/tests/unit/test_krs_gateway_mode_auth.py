@@ -40,6 +40,9 @@ def test_rejects_missing_identity_headers() -> None:
         principal_from_gateway_headers(None, "user", _ORG)
     with pytest.raises(AuthError):
         principal_from_gateway_headers(_USER, None, _ORG)
+    # the org header is REQUIRED — never silently fall back to a default org
+    with pytest.raises(AuthError):
+        principal_from_gateway_headers(_USER, "user", None)
 
 
 def test_rejects_malformed_identity_headers() -> None:

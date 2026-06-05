@@ -30,14 +30,15 @@ def principal_from_gateway_headers(
 
     The gateway terminates auth and injects ``X-Principal-Id``/``X-Principal-Type``/
     ``X-Organisation-Id`` (stripping any client-supplied copies); this service trusts them and does
-    NOT re-validate a token. Fail-closed if the identity is absent or malformed."""
-    if not principal_id or not principal_type:
+    NOT re-validate a token. Fail-closed if the identity is absent or malformed; the org header is
+    REQUIRED (these are org-scoped services — never silently fall back to a default org)."""
+    if not principal_id or not principal_type or not organisation_id:
         raise AuthError("gateway identity headers missing")
     try:
         return Principal(
             principal_id=uuid.UUID(principal_id),
             principal_type=PrincipalType(principal_type),
-            organisation_id=uuid.UUID(organisation_id) if organisation_id else None,
+            organisation_id=uuid.UUID(organisation_id),
         )
     except ValueError as exc:
         raise AuthError("malformed gateway identity headers") from exc
