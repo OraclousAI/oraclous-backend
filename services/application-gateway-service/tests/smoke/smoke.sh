@@ -16,11 +16,11 @@ fail() { printf '  \033[31mFAIL\033[0m %s\n' "$1"; exit 1; }
 step() { printf '\n\033[1m== %s ==\033[0m\n' "$1"; }
 
 if [[ "${GW_SMOKE_NO_COMPOSE:-0}" != "1" ]]; then
-  step "1. build + bring up an upstream (capability-registry) + the application-gateway"
+  step "1. build + bring up two real upstreams (capability-registry + credential-broker) + the gateway"
   ${COMPOSE} up -d --build postgres
-  ${COMPOSE} build capability-registry-service application-gateway-service
-  ${COMPOSE} up capreg-migrate
-  ${COMPOSE} up -d capability-registry-service application-gateway-service
+  ${COMPOSE} build capability-registry-service credential-broker-service application-gateway-service
+  ${COMPOSE} up capreg-migrate credbroker-migrate
+  ${COMPOSE} up -d capability-registry-service credential-broker-service application-gateway-service
 fi
 
 step "2. wait for healthy"
@@ -54,13 +54,34 @@ nope=$(curl -s -w '\n%{http_code}' -H "Authorization: Bearer dev-token" "${GW}/t
 echo "$nope" | grep -q '"route_not_found"' && echo "$nope" | tail -1 | grep -q 404 \
   && pass "unknown prefix -> gateway 404 route_not_found" || fail "expected gateway 404: $nope"
 
-step "6. GW-2: upstream down -> 502 (fail-closed, no hang)"
+step "6. GW-4: route to a SECOND real upstream (credential-broker) — multi-upstream live"
+for i in $(seq 1 30); do curl -fsS "http://localhost:8002/health" >/dev/null 2>&1 && break; \
+  [[ $i -eq 30 ]] && fail "credential-broker upstream not healthy"; sleep 2; done
+provs=$(curl -fsS -H "Authorization: Bearer dev-token" "${GW}/credentials/providers?user_id=00000000-0000-0000-0000-0000000000c5")
+echo "$provs" | grep -q '"providers"' \
+  && pass "gateway routed /credentials/* -> credential-broker (2nd live upstream)" \
+  || fail "credential-broker route failed: $provs"
+
+step "7. GW-4: CORS preflight is answered at the edge"
+hdrs=$(curl -s -D - -o /dev/null -X OPTIONS \
+  -H "Origin: https://app.test" -H "Access-Control-Request-Method: GET" "${GW}/api/v1/tools")
+echo "$hdrs" | tr -d '\r' | grep -qi '^access-control-allow-origin:' \
+  && pass "OPTIONS preflight -> access-control-allow-origin header set by the edge" \
+  || fail "no CORS header on preflight: $hdrs"
+
+step "8. GW-4: the platform-internal /internal plane is NOT edge-routed"
+nope=$(curl -s -w '\n%{http_code}' -H "Authorization: Bearer dev-token" "${GW}/internal/agent-credentials")
+echo "$nope" | grep -q '"route_not_found"' && echo "$nope" | tail -1 | grep -q 404 \
+  && pass "/internal/* -> gateway 404 (never forwarded)" || fail "expected gateway 404: $nope"
+
+step "9. GW-2: upstream down -> 502 (fail-closed, no hang)"
 ${COMPOSE} stop capability-registry-service >/dev/null 2>&1
 code=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer dev-token" "${GW}/api/v1/tools")
 [[ "$code" == "502" || "$code" == "504" ]] && pass "upstream down -> ${code} (gateway did not hang)" \
   || fail "expected 502/504, got $code"
 ${COMPOSE} up -d capability-registry-service >/dev/null 2>&1
 
-printf '\n\033[32mapplication-gateway GW-1..GW-3 smoke passed.\033[0m  the gateway terminates edge '
-printf 'JWT (401 unauthenticated), reverse-proxies an authenticated request to a real upstream (real '
-printf 'data through the edge), 404s unknown prefixes, and 502s a downed upstream — over the stack.\n'
+printf '\n\033[32mapplication-gateway GW-1..GW-4 smoke passed.\033[0m  edge JWT termination, '
+printf 'reverse-proxy to TWO real upstreams (capability-registry + credential-broker), CORS '
+printf 'termination, /internal not edge-routed, unknown-prefix 404, and downed-upstream 502 — '
+printf 'over the stack.\n'
