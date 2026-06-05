@@ -1,7 +1,7 @@
 [project]
 name = "oraclous-errors"
 version = "0.0.0"
-description = "Shared error taxonomy (shared)."
+description = "Shared error taxonomy and ORA-37 envelope emitter (shared)."
 requires-python = "==3.12.*"
 dependencies = []
 
