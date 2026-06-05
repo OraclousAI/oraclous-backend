@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # R3.5 service #6 — application-gateway acceptance smoke.
 # GW-1: the gateway boots as a real §21 service and serves /health.
-# GW-2: it reverse-proxies a routed request to a real upstream (capability-registry), passes the
-#       upstream's response/status through, 404s an unknown prefix, and 502s when the upstream is down.
+# GW-2: it reverse-proxies a routed request to a real upstream (capability-registry), streams a
+#       successful response through, normalises an upstream error into the ORA-37 envelope, 404s an
+#       unknown prefix, and 502s when the upstream is down.
 #
 # Usage (from repo root):  bash services/application-gateway-service/tests/smoke/smoke.sh
 set -euo pipefail
@@ -51,8 +52,8 @@ code=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer bogus" "
 
 step "5. GW-2: unknown prefix is a gateway 404 (closed allow-list, not forwarded)"
 nope=$(curl -s -w '\n%{http_code}' -H "Authorization: Bearer dev-token" "${GW}/totally/unknown")
-echo "$nope" | grep -q '"route_not_found"' && echo "$nope" | tail -1 | grep -q 404 \
-  && pass "unknown prefix -> gateway 404 route_not_found" || fail "expected gateway 404: $nope"
+echo "$nope" | grep -q '"code":"NOT_FOUND"' && echo "$nope" | tail -1 | grep -q 404 \
+  && pass "unknown prefix -> gateway 404 NOT_FOUND envelope" || fail "expected gateway 404: $nope"
 
 step "6. GW-4: route to a SECOND real upstream (credential-broker) — multi-upstream live"
 for i in $(seq 1 30); do curl -fsS "http://localhost:8002/health" >/dev/null 2>&1 && break; \
@@ -71,7 +72,7 @@ echo "$hdrs" | tr -d '\r' | grep -qi '^access-control-allow-origin:' \
 
 step "8. GW-4: the platform-internal /internal plane is NOT edge-routed"
 nope=$(curl -s -w '\n%{http_code}' -H "Authorization: Bearer dev-token" "${GW}/internal/agent-credentials")
-echo "$nope" | grep -q '"route_not_found"' && echo "$nope" | tail -1 | grep -q 404 \
+echo "$nope" | grep -q '"code":"NOT_FOUND"' && echo "$nope" | tail -1 | grep -q 404 \
   && pass "/internal/* -> gateway 404 (never forwarded)" || fail "expected gateway 404: $nope"
 
 step "9. GW-5: aggregated upstream health (/health/upstreams rolls up per-service + overall)"
@@ -90,18 +91,27 @@ print(f'  rollup consistent: overall={d[\"overall\"]} statuses={ups}')
 " && pass "/health/upstreams aggregates per-service health + consistent overall rollup (HTTP 200)" \
   || fail "aggregated health wrong: $agg"
 
-step "10. GW-5: the gateway own-error envelope (request_id) on its own errors"
-env=$(curl -s -D - -H "Authorization: Bearer dev-token" "${GW}/totally/unknown")
-echo "$env" | grep -q '"error_code":"route_not_found"' && echo "$env" | grep -q '"request_id"' \
-  && echo "$env" | tr -d '\r' | grep -qi '^x-request-id:' \
-  && pass "gateway 404 -> envelope {error_code,message,request_id} + X-Request-Id header" \
-  || fail "envelope missing: $env"
+step "10. GW-5: the gateway own-error is the canonical ORA-37 envelope"
+hdrs=$(curl -s -D - -o /tmp/gw_404.json -H "Authorization: Bearer dev-token" "${GW}/totally/unknown")
+python3 -c "
+import json, re
+d = json.load(open('/tmp/gw_404.json'))['error']
+assert d['code'] == 'NOT_FOUND', d
+assert d['message'] and d['retryable'] is False, d
+assert re.match(r'^req_[0-9A-Za-z]+\$', d['requestId']), d
+assert set(d) == {'code', 'message', 'requestId', 'retryable'}, d
+" && echo "$hdrs" | tr -d '\r' | grep -qi '^x-request-id:' \
+  && pass "gateway 404 -> ORA-37 envelope {error:{code,message,requestId,retryable}} + X-Request-Id" \
+  || fail "envelope missing/non-conformant: $(cat /tmp/gw_404.json)"
 
-step "11. GW-2: upstream down -> 502 (fail-closed, no hang)"
+step "11. GW-2: upstream down -> 502 envelope (fail-closed, no hang)"
 ${COMPOSE} stop capability-registry-service >/dev/null 2>&1
-code=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer dev-token" "${GW}/api/v1/tools")
-[[ "$code" == "502" || "$code" == "504" ]] && pass "upstream down -> ${code} (gateway did not hang)" \
-  || fail "expected 502/504, got $code"
+down=$(curl -s -w '\n%{http_code}' -H "Authorization: Bearer dev-token" "${GW}/api/v1/tools")
+code=$(echo "$down" | tail -1)
+{ [[ "$code" == "502" || "$code" == "504" ]] \
+  && echo "$down" | grep -qE '"code":"(SERVICE_UNAVAILABLE|GATEWAY_TIMEOUT)"'; } \
+  && pass "upstream down -> ${code} ORA-37 envelope (gateway did not hang)" \
+  || fail "expected 502/504 envelope, got: $down"
 ${COMPOSE} up -d capability-registry-service >/dev/null 2>&1
 
 printf '\n\033[32mapplication-gateway GW-1..GW-5 smoke passed.\033[0m  edge JWT termination, '
