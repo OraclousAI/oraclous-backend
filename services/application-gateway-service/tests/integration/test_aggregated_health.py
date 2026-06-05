@@ -2,12 +2,14 @@
 
 The gateway's upstream client uses a MockTransport that answers ``/health`` 200 for some upstreams
 and refuses others; ``GET /health/upstreams`` rolls them up (HTTP 200, body reflects degraded). The
-gateway's own errors (404/401) carry the forward-compatible envelope {error_code, message,
-request_id} with the id echoed in X-Request-Id; upstream errors are not enveloped.
+gateway's own errors (404/401) carry the canonical ORA-37 envelope
+``{"error": {"code", "message", "requestId", "retryable"}}`` with a server-minted ``requestId``
+echoed in ``X-Request-Id``.
 """
 
 from __future__ import annotations
 
+import re
 from collections.abc import AsyncIterator
 
 import httpx
@@ -15,6 +17,8 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 pytestmark = pytest.mark.integration
+
+_REQUEST_ID = re.compile(r"^req_[0-9A-Za-z]+$")
 
 
 def _health_handler(down_host: str | None):
@@ -79,24 +83,32 @@ async def test_one_upstream_down_rolls_up_to_degraded() -> None:
 async def test_gateway_404_carries_the_error_envelope(all_up: AsyncClient) -> None:
     r = await all_up.get("/totally/unknown", headers={"Authorization": "Bearer dev-token"})
     assert r.status_code == 404
-    body = r.json()
-    assert body["error_code"] == "route_not_found"
-    assert body["message"]
-    assert body["request_id"]
-    assert r.headers["x-request-id"] == body["request_id"]
+    err = r.json()["error"]
+    assert err["code"] == "NOT_FOUND"
+    assert err["message"]
+    assert err["retryable"] is False
+    assert _REQUEST_ID.match(err["requestId"])
+    assert r.headers["x-request-id"] == err["requestId"]
 
 
-async def test_incoming_request_id_is_preserved(all_up: AsyncClient) -> None:
+async def test_client_request_id_is_not_trusted(all_up: AsyncClient) -> None:
+    # A client-supplied X-Request-Id is never echoed as the requestId (anti-spoof): the gateway
+    # mints its own server-authoritative, contract-shaped id instead.
     r = await all_up.get(
         "/totally/unknown",
         headers={"Authorization": "Bearer dev-token", "X-Request-Id": "rid-123"},
     )
-    assert r.json()["request_id"] == "rid-123"
+    err = r.json()["error"]
+    assert err["requestId"] != "rid-123"
+    assert _REQUEST_ID.match(err["requestId"])
+    assert r.headers["x-request-id"] == err["requestId"]
 
 
 async def test_edge_401_carries_the_error_envelope(all_up: AsyncClient) -> None:
     r = await all_up.get("/v1/search")  # no token
     assert r.status_code == 401
-    body = r.json()
-    assert body["error_code"] == "http_401"
-    assert body["request_id"]
+    err = r.json()["error"]
+    assert err["code"] == "UNAUTHENTICATED"
+    assert _REQUEST_ID.match(err["requestId"])
+    # WWW-Authenticate: Bearer must survive the envelope (it was dropped before the fix)
+    assert r.headers.get("www-authenticate") == "Bearer"

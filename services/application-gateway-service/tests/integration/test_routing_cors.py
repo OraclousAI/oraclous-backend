@@ -97,4 +97,4 @@ async def test_internal_plane_is_not_edge_routed(client: AsyncClient) -> None:
     # /internal/* has no route entry — even authenticated, it is a gateway 404 (never forwarded)
     r = await client.get("/internal/agent-credentials", headers=_auth())
     assert r.status_code == 404
-    assert r.json()["error_code"] == "route_not_found"
+    assert r.json()["error"]["code"] == "NOT_FOUND"

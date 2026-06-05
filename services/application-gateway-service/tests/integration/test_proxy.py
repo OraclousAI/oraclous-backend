@@ -16,6 +16,7 @@ from httpx import ASGITransport, AsyncClient
 from starlette.applications import Starlette
 from starlette.responses import JSONResponse
 from starlette.routing import Route
+from tools.contract.error_envelope import scan_forbidden
 
 pytestmark = pytest.mark.integration
 
@@ -34,14 +35,22 @@ async def _search(request):  # noqa: ANN001 — starlette handler; echoes inject
     )
 
 
-async def _caps(request):  # noqa: ANN001 — distinct upstream status for the passthrough proof
+async def _caps(request):  # noqa: ANN001 — distinct upstream status for the normalisation proof
     return JSONResponse({"detail": "upstream says no"}, status_code=403)
+
+
+async def _leaky(request):  # noqa: ANN001 — a 500 whose body would leak internals if relayed
+    return JSONResponse(
+        {"detail": "NullPointerException at com.x.Y(Y.java:10) on db-1.internal 10.0.0.5"},
+        status_code=500,
+    )
 
 
 _UPSTREAM_APP = Starlette(
     routes=[
         Route("/v1/search", _search, methods=["GET"]),
         Route("/api/v1/capabilities", _caps, methods=["GET"]),
+        Route("/api/v1/tools/boom", _leaky, methods=["GET"]),
     ]
 )
 
@@ -87,10 +96,23 @@ async def test_authed_request_is_forwarded_with_injected_identity(client: AsyncC
     assert body["x_principal"]  # gateway injected the verified principal id
 
 
-async def test_upstream_status_passes_through(client: AsyncClient) -> None:
+async def test_upstream_error_is_normalised(client: AsyncClient) -> None:
+    # the upstream's own 403 status is preserved, but its body is replaced by the canonical envelope
     r = await client.get("/api/v1/capabilities", headers=_auth())
-    assert r.status_code == 403  # the upstream's own status, passed through (not a gateway error)
-    assert r.json()["detail"] == "upstream says no"
+    assert r.status_code == 403
+    assert r.json()["error"]["code"] == "UNAUTHORIZED"
+    assert "detail" not in r.json()  # the upstream's raw body is not relayed
+    assert "upstream says no" not in r.text
+
+
+async def test_upstream_error_body_is_not_leaked(client: AsyncClient) -> None:
+    # an upstream 500 whose body carries a stack trace + internal host/IP must not leak through (§3)
+    r = await client.get("/api/v1/tools/boom", headers=_auth())
+    assert r.status_code == 500
+    assert r.json()["error"]["code"] == "INTERNAL_ERROR"
+    assert scan_forbidden(r.text) == []
+    assert "NullPointerException" not in r.text
+    assert "10.0.0.5" not in r.text
 
 
 async def test_health_is_not_proxied(client: AsyncClient) -> None:
@@ -102,7 +124,7 @@ async def test_health_is_not_proxied(client: AsyncClient) -> None:
 async def test_unknown_prefix_is_gateway_404(client: AsyncClient) -> None:
     r = await client.get("/totally/unknown", headers=_auth())
     assert r.status_code == 404
-    assert r.json()["error_code"] == "route_not_found"
+    assert r.json()["error"]["code"] == "NOT_FOUND"
 
 
 async def test_connect_failure_is_502() -> None:
@@ -113,8 +135,8 @@ async def test_connect_failure_is_502() -> None:
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://gw.test") as c:
         r = await c.get("/v1/search", headers=_auth())
     await upstream.aclose()
-    assert r.status_code == 502
-    assert r.json()["error_code"] == "upstream_unavailable"
+    assert r.status_code == 502  # Bad Gateway status preserved
+    assert r.json()["error"]["code"] == "SERVICE_UNAVAILABLE"
 
 
 async def test_timeout_is_504() -> None:
@@ -126,4 +148,4 @@ async def test_timeout_is_504() -> None:
         r = await c.get("/v1/search", headers=_auth())
     await upstream.aclose()
     assert r.status_code == 504
-    assert r.json()["error_code"] == "upstream_timeout"
+    assert r.json()["error"]["code"] == "GATEWAY_TIMEOUT"
