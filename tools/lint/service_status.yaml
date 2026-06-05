@@ -51,10 +51,8 @@ services:
     structure_enforced: false
     claimed_done: false
 
-# Legacy port-source — dead shadow (~6,300 LOC); the source the capability-registry ports FROM.
-# Must NOT be deleted until its logic is ported+tested into the real service AND Reza signs off
-# (destructive-change protocol, ORAA-4 §15/§23). The audit asserts emptiness before delete.
-legacy:
-  oraclous-core-service:
-    port_source: true
-    deletable: false
+# Legacy port-source registry — now EMPTY. oraclous-core-service (~6,300 LOC) was the port-source for
+# service #5 (capability-registry); its logic is ported+tested+signed-off and the dead shadow was
+# removed under the §15 destructive-change protocol with explicit Reza approval (R3.5). No legacy
+# port-sources remain; re-add an entry here only when a new salvage-then-delete is in flight.
+legacy: {}
