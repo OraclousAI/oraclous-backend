@@ -177,6 +177,11 @@ services:
       AUTH_MODE: "${CAPABILITY_REGISTRY_AUTH_MODE:-dev}"
       DEV_BEARER: "dev-token"
       JWT_SECRET: "${AUTH_JWT_SECRET:-dev-jwt-secret}"
+      # Tool execution resolves credentials via the credential-broker seam. Default "fake" (key-free,
+      # deterministic) so the connector smoke runs without external provider keys; set "real" to use
+      # the running credential-broker over /internal/* (S5 real-broker integration).
+      CREDENTIAL_BROKER_URL: "http://credential-broker-service:8000"
+      CREDENTIAL_BROKER_MODE: "${CAPABILITY_REGISTRY_BROKER_MODE:-fake}"
     depends_on:
       postgres:
         condition: service_healthy

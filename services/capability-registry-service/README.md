@@ -29,7 +29,14 @@ bearer; `AUTH_MODE=jwt` decodes the real auth-service HS256 token).
   exists, required credentials present, config). Live token resolution lands in S4.
   `POST /api/v1/instances`, `GET /{id}`, `POST /{id}/configure-credentials`,
   `GET /{id}/validate-execution`, `GET /{id}/health`.
-- S4 — execution engine (sync) + credential-broker seam + PostgreSQL connector.
+- **S4 (this slice)** — synchronous execution engine + credential-broker seam + PostgreSQL
+  connector. `executions` provenance table; `BaseToolExecutor`/`InternalTool`/`DatabaseTool` (hard
+  timeout, credential redaction); `ToolFactory` maps a descriptor → executor; `CredentialBrokerPort`
+  with `FakeCredentialBroker` (key-free dev/CI default) + `RealCredentialBroker` (`/internal/*`);
+  `execute_sync` validates → resolves credentials → records QUEUED → dispatches → persists outcome
+  with `credential_refs` (never the secret) → scrubs the in-memory credentials → bumps instance
+  counters. `POST /api/v1/instances/{id}/execute`, `GET /api/v1/executions/{id}`. The PostgreSQL
+  connector runs **parameterized** queries only.
 - S5 — connector breadth + real-broker integration smoke (Reza sign-off).
 
 ## Run / smoke
