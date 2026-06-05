@@ -12,6 +12,7 @@ from fastapi import APIRouter, Depends
 
 from oraclous_credential_broker_service.core.dependencies import (
     CredentialBrokerServiceDep,
+    CredentialServiceDep,
     DelegationServiceDep,
     verify_internal_key,
 )
@@ -24,6 +25,8 @@ from oraclous_credential_broker_service.schema.credential_schema import (
     DelegationValidationResponse,
     EnsureDataSourceInput,
     MintDelegatedTokenInput,
+    ResolveCredentialInput,
+    ResolveCredentialResponse,
     RevokeDelegatedTokenInput,
     RuntimeTokenInput,
     RuntimeTokenResponse,
@@ -136,3 +139,22 @@ async def revoke_delegated_token(
 ) -> dict:
     count = await delegation.revoke(token_id=token_id, organisation_id=revoke_input.organisation_id)
     return {"revoked_count": count}
+
+
+# --- non-OAuth credential resolution for trusted services (capability-registry tool execution) ---
+@router.post("/resolve-credential", response_model=ResolveCredentialResponse)
+async def resolve_credential(
+    resolve_input: ResolveCredentialInput, svc: CredentialServiceDep
+) -> ResolveCredentialResponse:
+    """Return a stored credential's DECRYPTED payload by id (org-scoped). For service→service
+    resolution of non-OAuth secrets (connection_string / api_key) used by tool execution; the
+    OAuth flow stays on ``/runtime-token``. CredentialNotFoundError → 404 (cross-org mask)."""
+    out = await svc.get(
+        credential_id=resolve_input.credential_id, organisation_id=resolve_input.organisation_id
+    )
+    return ResolveCredentialResponse(
+        credential_id=out.id,
+        provider=out.provider,
+        cred_type=out.cred_type,
+        credential=out.credential,
+    )
