@@ -141,6 +141,32 @@ class GraphWriteRepository:
             database_=self._database,
         )
 
+    def count_for_graph(self, *, graph_id: str, organisation_id: str) -> tuple[int, int]:
+        """Live org+graph-scoped (node_count, relationship_count) from Neo4j (bound params; sync).
+
+        The stale `node_count`/`relationship_count` Postgres columns are never updated by ingestion
+        (real nodes land in Neo4j), so the GraphResponse must reflect these live counts. ALL graph
+        nodes are counted: the unified model carries `__KGBuilder__`/`__Entity__` bookkeeping labels
+        on every real node (Source/Document/Chunk/Entity/Table/...), so a `__`-prefix exclusion
+        would wrongly drop the entire graph.
+        """
+        node_records, _, _ = self._driver.execute_query(
+            "MATCH (n {graph_id: $graph_id}) WHERE n.organisation_id = $organisation_id "
+            "RETURN count(n) AS c",
+            graph_id=graph_id,
+            organisation_id=organisation_id,
+            database_=self._database,
+        )
+        rel_records, _, _ = self._driver.execute_query(
+            "MATCH (s {graph_id: $graph_id})-[r]->(e {graph_id: $graph_id}) "
+            "WHERE s.organisation_id = $organisation_id AND e.organisation_id = $organisation_id "
+            "RETURN count(r) AS c",
+            graph_id=graph_id,
+            organisation_id=organisation_id,
+            database_=self._database,
+        )
+        return int(node_records[0]["c"]), int(rel_records[0]["c"])
+
     def schema(self, *, graph_id: str, organisation_id: str) -> dict[str, list[dict[str, object]]]:
         """Org+graph-scoped label/relationship counts (bound params; sync driver call)."""
         label_records, _, _ = self._driver.execute_query(

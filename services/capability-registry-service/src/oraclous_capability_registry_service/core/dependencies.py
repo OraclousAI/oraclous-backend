@@ -15,7 +15,11 @@ from fastapi import Depends, Header, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from oraclous_governance import Principal
 
-from oraclous_capability_registry_service.core.auth import AuthError, verify_token
+from oraclous_capability_registry_service.core.auth import (
+    AuthError,
+    principal_from_gateway_headers,
+    verify_token,
+)
 from oraclous_capability_registry_service.core.config import get_settings
 from oraclous_capability_registry_service.repositories.capability_repository import (
     CapabilityRepository,
@@ -124,22 +128,45 @@ async def verify_internal_key(x_internal_key: Annotated[str | None, Header()] = 
 
 async def get_principal(
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(_bearer)],
+    x_principal_id: Annotated[str | None, Header()] = None,
+    x_principal_type: Annotated[str | None, Header()] = None,
+    x_organisation_id: Annotated[str | None, Header()] = None,
+    x_internal_key: Annotated[str | None, Header()] = None,
 ) -> Principal:
-    """Resolve the authenticated principal from the bearer token (org + user come from here)."""
-    if credentials is None or not credentials.credentials:
+    """Resolve the authenticated principal (org + user come from here).
+
+    In ``gateway`` mode (ADR-018) the gateway terminates auth and injects the verified
+    X-Principal-*/X-Organisation-Id headers, gated by X-Internal-Key — no token validation here.
+    In ``dev``/``jwt`` mode the bearer token is resolved directly.
+    """
+    if get_settings().AUTH_MODE == "gateway":
+        # Reuse the existing fail-closed constant-time internal-key gate (401 if not from gateway).
+        await verify_internal_key(x_internal_key)
+        try:
+            principal = principal_from_gateway_headers(
+                x_principal_id, x_principal_type, x_organisation_id
+            )
+        except AuthError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail=str(exc),
+                headers={"WWW-Authenticate": "Bearer"},
+            ) from exc
+    elif credentials is None or not credentials.credentials:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="missing bearer token",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    try:
-        principal = await verify_token(credentials.credentials)
-    except AuthError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=str(exc),
-            headers={"WWW-Authenticate": "Bearer"},
-        ) from exc
+    else:
+        try:
+            principal = await verify_token(credentials.credentials)
+        except AuthError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail=str(exc),
+                headers={"WWW-Authenticate": "Bearer"},
+            ) from exc
     if principal.organisation_id is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="token has no organisation scope"

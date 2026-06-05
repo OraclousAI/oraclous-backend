@@ -17,11 +17,15 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="KRS_", extra="ignore")
 
-    # --- identity seam (dev-auth by default; `jwt` consumes the real auth-service token) ---
-    auth_mode: Literal["dev", "jwt"] = "dev"
+    # --- identity seam. `gateway` (production, ADR-018): trust the gateway's verified
+    # X-Principal-*/X-Organisation-Id headers, gated by X-Internal-Key — no token validation here.
+    # `dev`: a fixed bearer for the standalone smoke. `jwt`: decode a real auth-service token. ---
+    auth_mode: Literal["gateway", "dev", "jwt"] = "dev"
     dev_bearer: str = "dev-token"
     dev_user_id: str = "00000000-0000-0000-0000-0000000000d5"
     dev_org_id: str = "00000000-0000-0000-0000-00000000050a"
+    # gateway mode: the shared secret the gateway sends as X-Internal-Key; fail-closed if unset.
+    internal_service_key: str | None = None
     # jwt mode: the shared HS256 secret the auth-service signs with (compose injects KRS_JWT_SECRET
     # = the auth-service JWT_SECRET). No default — jwt mode fails closed without it.
     jwt_secret: str | None = None

@@ -51,7 +51,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     execution_repo: ExecutionRepository | None = None
     broker: CredentialBrokerPort | None = None
     try:
-        repo = CapabilityRepository(settings.DATABASE_URL)
+        repo = CapabilityRepository(
+            settings.DATABASE_URL, platform_org_id=uuid.UUID(settings.PLATFORM_ORG_ID)
+        )
         instance_repo = InstanceRepository(settings.DATABASE_URL)
         execution_repo = ExecutionRepository(settings.DATABASE_URL)
         broker = build_credential_broker(settings)
@@ -66,15 +68,16 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         app.state.execution_repository = None
         app.state.credential_broker = None
 
-    # Seed the built-in tool catalogue into the dev org (idempotent plugin discovery). In jwt mode a
-    # real per-org seed is driven elsewhere; the dev seam keeps the dev org's catalogue populated so
-    # the stack is usable out of the box. A seed failure degrades to an empty catalogue (no crash).
+    # Seed the built-in tool catalogue into the platform org (idempotent plugin discovery). Every
+    # tenant org reads it via the repository's widened reads, so a freshly-provisioned org sees the
+    # global tools without per-org re-seeding. A seed failure degrades to an empty catalogue (no
+    # crash).
     if repo is not None:
         try:
             statuses = await sync_plugins(
-                repository=repo, organisation_id=uuid.UUID(settings.DEV_ORG_ID)
+                repository=repo, organisation_id=uuid.UUID(settings.PLATFORM_ORG_ID)
             )
-            logger.info("seeded built-in tools into dev org: %s", statuses)
+            logger.info("seeded built-in tools into platform org: %s", statuses)
         except Exception as exc:  # noqa: BLE001 — degrade: catalogue empty, service still serves
             logger.warning("plugin seed skipped: %s", exc)
 

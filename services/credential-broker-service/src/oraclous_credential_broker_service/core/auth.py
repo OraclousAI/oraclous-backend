@@ -21,6 +21,20 @@ class AuthError(Exception):
     """Authentication failed. Maps to HTTP 401."""
 
 
+def organisation_id_from_gateway_headers(organisation_id: str | None) -> uuid.UUID:
+    """Resolve the bound org from the gateway's verified ``X-Organisation-Id`` header (ADR-018).
+
+    The gateway terminates auth and injects the org id (stripping any client-supplied copy); the
+    user-facing edge trusts it and does NOT re-validate a token. Credential rows are org-scoped, so
+    only the org is needed here. Fail-closed if absent or malformed."""
+    if not organisation_id:
+        raise AuthError("gateway organisation header missing")
+    try:
+        return uuid.UUID(organisation_id)
+    except ValueError as exc:
+        raise AuthError("malformed gateway organisation header") from exc
+
+
 def _principal_from_claims(claims: dict) -> Principal:
     if claims.get("type") != "access":
         raise AuthError("an access token is required")

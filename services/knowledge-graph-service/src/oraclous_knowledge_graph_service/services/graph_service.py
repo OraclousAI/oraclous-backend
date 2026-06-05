@@ -7,10 +7,18 @@ Replaces the legacy inline `GraphNodeService` stub that lived *inside* the route
 
 from __future__ import annotations
 
+import asyncio
+import dataclasses
+import logging
 import uuid
 
 from oraclous_knowledge_graph_service.domain.graph import Graph
 from oraclous_knowledge_graph_service.repositories.graph_repository import GraphRepository
+from oraclous_knowledge_graph_service.repositories.graph_write_repository import (
+    GraphWriteRepository,
+)
+
+logger = logging.getLogger(__name__)
 
 
 class GraphNotFound(Exception):
@@ -20,8 +28,37 @@ class GraphNotFound(Exception):
 class GraphService:
     """Graph CRUD use-cases. Owner-gated on top of org-scoping."""
 
-    def __init__(self, repo: GraphRepository) -> None:
+    def __init__(
+        self, repo: GraphRepository, write_repo: GraphWriteRepository | None = None
+    ) -> None:
         self._repo = repo
+        self._write_repo = write_repo
+
+    async def _with_live_counts(self, graph: Graph) -> Graph:
+        """Overlay the LIVE Neo4j node/relationship counts onto the graph (org+graph scoped).
+
+        The `node_count`/`relationship_count` Postgres columns are stale (ingestion writes real
+        nodes to Neo4j, never back to Postgres), so when a Neo4j-backed write repo is wired we
+        replace them with the live counts. When it is not (unit tests / unconfigured substrate),
+        the graph is returned unchanged — the Postgres-column fallback.
+        """
+        if self._write_repo is None:
+            return graph
+        try:
+            node_count, relationship_count = await asyncio.to_thread(
+                self._write_repo.count_for_graph,
+                graph_id=str(graph.id),
+                organisation_id=str(graph.organisation_id),
+            )
+        except Exception as exc:  # noqa: BLE001 — degrade-don't-crash: a Neo4j hiccup must not
+            # turn a Postgres-backed metadata read into a 500; fall back to the stored columns.
+            logger.warning(
+                "live Neo4j count failed for graph %s; using stored counts: %s", graph.id, exc
+            )
+            return graph
+        return dataclasses.replace(
+            graph, node_count=node_count, relationship_count=relationship_count
+        )
 
     async def create_graph(
         self, *, user_id: uuid.UUID, name: str, description: str | None
@@ -29,26 +66,32 @@ class GraphService:
         return await self._repo.create(user_id=user_id, name=name, description=description)
 
     async def list_graphs(self, *, user_id: uuid.UUID) -> list[Graph]:
-        return await self._repo.list_for_user(user_id=user_id)
+        graphs = await self._repo.list_for_user(user_id=user_id)
+        return [await self._with_live_counts(g) for g in graphs]
 
-    async def get_graph(self, *, graph_id: uuid.UUID, user_id: uuid.UUID) -> Graph:
+    async def _owned_or_404(self, *, graph_id: uuid.UUID, user_id: uuid.UUID) -> Graph:
+        """Owner gate (no live-count overlay) — the raw stored graph or a 404-mapped error."""
         graph = await self._repo.get(graph_id)
         if graph is None or graph.user_id != user_id:
             raise GraphNotFound(str(graph_id))
         return graph
 
+    async def get_graph(self, *, graph_id: uuid.UUID, user_id: uuid.UUID) -> Graph:
+        graph = await self._owned_or_404(graph_id=graph_id, user_id=user_id)
+        return await self._with_live_counts(graph)
+
     async def update_graph(
         self, *, graph_id: uuid.UUID, user_id: uuid.UUID, name: str | None, description: str | None
     ) -> Graph:
         # owner gate first (a graph owned by another user in the same org -> 404, no leak)
-        await self.get_graph(graph_id=graph_id, user_id=user_id)
+        await self._owned_or_404(graph_id=graph_id, user_id=user_id)
         updated = await self._repo.update(graph_id, name=name, description=description)
         if updated is None:
             raise GraphNotFound(str(graph_id))
         return updated
 
     async def delete_graph(self, *, graph_id: uuid.UUID, user_id: uuid.UUID) -> None:
-        await self.get_graph(graph_id=graph_id, user_id=user_id)
+        await self._owned_or_404(graph_id=graph_id, user_id=user_id)
         await self._repo.delete(graph_id)
 
 

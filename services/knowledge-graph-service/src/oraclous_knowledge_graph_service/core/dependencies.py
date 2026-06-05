@@ -122,12 +122,26 @@ def get_current_user_id(principal: Annotated[Principal, Depends(get_principal)])
 
 
 def get_graph_service(
+    request: Request,
     session: Annotated[AsyncSession, Depends(get_db_session)],
     _org: Annotated[OrganisationContext, Depends(bind_org_context)],
 ) -> GraphService:
     """Build the graph use-case service. Depends on `bind_org_context` so the org scope is
-    already bound before any repository query runs."""
-    return GraphService(GraphRepository(session))
+    already bound before any repository query runs.
+
+    Wires the Neo4j-backed write repo when the substrate is configured, so GraphResponse counts
+    reflect the LIVE Neo4j node/relationship counts (the Postgres columns are stale). Resolved off
+    app.state directly — NOT via `get_neo4j_driver` — so graph CRUD never 503s when Neo4j is
+    unconfigured; in that case `write_repo` is None and the service falls back to the stored
+    Postgres columns.
+    """
+    driver = getattr(request.app.state, "neo4j_driver", None)
+    write_repo = (
+        GraphWriteRepository(driver, database=get_settings().neo4j_database)
+        if driver is not None
+        else None
+    )
+    return GraphService(GraphRepository(session), write_repo)
 
 
 def get_neo4j_driver(request: Request) -> Driver:

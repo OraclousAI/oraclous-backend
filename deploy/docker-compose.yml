@@ -152,7 +152,7 @@ services:
     image: oraclous-capability-registry-service:${IMAGE_TAG:-dev}
     environment:
       DATABASE_URL: "postgresql+asyncpg://oraclous:oraclous@postgres:5432/oraclous"
-      INTERNAL_SERVICE_KEY: "${CAPABILITY_REGISTRY_INTERNAL_KEY:-dev-internal-key}"
+      INTERNAL_SERVICE_KEY: "${INTERNAL_SERVICE_KEY:-dev-internal-key}"
     command: ["alembic", "upgrade", "head"]
     depends_on:
       postgres:
@@ -172,13 +172,16 @@ services:
       - "8001:8000"
     environment:
       DATABASE_URL: "postgresql+asyncpg://oraclous:oraclous@postgres:5432/oraclous"
-      INTERNAL_SERVICE_KEY: "${CAPABILITY_REGISTRY_INTERNAL_KEY:-dev-internal-key}"
+      INTERNAL_SERVICE_KEY: "${INTERNAL_SERVICE_KEY:-dev-internal-key}"
       AUTH_SERVICE_URL: "http://auth-service:8000"
       # Identity seam: dev-auth (Bearer dev-token → dev org) by default; AUTH_MODE=jwt consumes the
-      # real auth-service token via the shared JWT_SECRET (same value as the auth-service signs with).
+      # real auth-service token via the shared JWT_SECRET. AUTH_MODE=gateway (ADR-018) trusts the
+      # gateway's X-Principal-*/X-Organisation-Id gated on the shared X-Internal-Key (no token validation).
       AUTH_MODE: "${CAPABILITY_REGISTRY_AUTH_MODE:-dev}"
       DEV_BEARER: "dev-token"
       JWT_SECRET: "${AUTH_JWT_SECRET:-dev-jwt-secret}"
+      # Platform org that owns the built-in connector catalogue; read-unioned into every org's view.
+      PLATFORM_ORG_ID: "${CAPABILITY_REGISTRY_PLATFORM_ORG_ID:-00000000-0000-0000-0000-0000000000a0}"
       # Tool execution resolves credentials via the credential-broker seam. Default "fake" (key-free,
       # deterministic) so the connector smoke runs without external provider keys; set "real" to use
       # the running credential-broker over /internal/* (S5 real-broker integration).
@@ -295,8 +298,11 @@ services:
     ports:
       - "8004:8000"
     environment:
+      # Auth: dev by default for the standalone smoke. Full stack runs KRS_AUTH_MODE=gateway
+      # (ADR-018): trust the gateway's X-Principal-*/X-Organisation-Id, gated on the shared X-Internal-Key.
       KRS_AUTH_MODE: "${KRS_AUTH_MODE:-dev}"
       KRS_DEV_BEARER: "dev-token"
+      KRS_INTERNAL_SERVICE_KEY: "${INTERNAL_SERVICE_KEY:-dev-internal-key}"
       KRS_JWT_SECRET: "${AUTH_JWT_SECRET:-dev-jwt-secret}"
       KRS_NEO4J_URI: "bolt://neo4j:7687"
       KRS_NEO4J_USER: "neo4j"
@@ -382,7 +388,7 @@ services:
     environment:
       DATABASE_URL: "postgresql+asyncpg://oraclous:oraclous@postgres:5432/oraclous"
       ENCRYPTION_KEY: "${CRED_BROKER_ENCRYPTION_KEY:-MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=}"
-      INTERNAL_SERVICE_KEY: "${CRED_BROKER_INTERNAL_KEY:-dev-internal-key}"
+      INTERNAL_SERVICE_KEY: "${INTERNAL_SERVICE_KEY:-dev-internal-key}"
     command: ["alembic", "upgrade", "head"]
     depends_on:
       postgres:
@@ -404,10 +410,11 @@ services:
       DATABASE_URL: "postgresql+asyncpg://oraclous:oraclous@postgres:5432/oraclous"
       # Dev-only AES-256-GCM key (32 bytes b64) + internal key → key-free smokes; prod injects secrets.
       ENCRYPTION_KEY: "${CRED_BROKER_ENCRYPTION_KEY:-MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=}"
-      INTERNAL_SERVICE_KEY: "${CRED_BROKER_INTERNAL_KEY:-dev-internal-key}"
+      INTERNAL_SERVICE_KEY: "${INTERNAL_SERVICE_KEY:-dev-internal-key}"
       AUTH_SERVICE_URL: "http://auth-service:8000"
       # Identity seam: dev-auth (Bearer dev-token → dev org) by default; AUTH_MODE=jwt consumes the
-      # real auth-service token via the shared JWT_SECRET (same value as the auth-service signs with).
+      # real auth-service token via the shared JWT_SECRET. AUTH_MODE=gateway (ADR-018) trusts the
+      # gateway's X-Organisation-Id on the user-facing edge, gated on the shared X-Internal-Key.
       AUTH_MODE: "${CRED_BROKER_AUTH_MODE:-dev}"
       DEV_BEARER: "dev-token"
       JWT_SECRET: "${AUTH_JWT_SECRET:-dev-jwt-secret}"

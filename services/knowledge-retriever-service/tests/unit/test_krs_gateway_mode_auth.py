@@ -1,4 +1,4 @@
-"""KGS gateway-mode auth (ADR-018 edge-auth): the service trusts the gateway's verified identity
+"""KRS gateway-mode auth (ADR-018 edge-auth): the service trusts the gateway's verified identity
 headers and validates NO token. Identity comes from X-Principal-*/X-Organisation-Id; the request is
 gated on the shared X-Internal-Key (fail-closed). No DB / no network.
 """
@@ -8,9 +8,9 @@ from __future__ import annotations
 import pytest
 from fastapi import HTTPException
 from oraclous_governance import PrincipalType
-from oraclous_knowledge_graph_service.core.auth import AuthError, principal_from_gateway_headers
-from oraclous_knowledge_graph_service.core.config import get_settings
-from oraclous_knowledge_graph_service.core.dependencies import _require_internal_key
+from oraclous_knowledge_retriever_service.core.auth import AuthError, principal_from_gateway_headers
+from oraclous_knowledge_retriever_service.core.config import get_settings
+from oraclous_knowledge_retriever_service.core.dependencies import _require_internal_key
 
 pytestmark = pytest.mark.unit
 
@@ -21,8 +21,8 @@ _KEY = "test-internal-key"  # noqa: S105 — test attestation key
 
 @pytest.fixture(autouse=True)
 def _gw_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("KGS_AUTH_MODE", "gateway")
-    monkeypatch.setenv("KGS_INTERNAL_SERVICE_KEY", _KEY)
+    monkeypatch.setenv("KRS_AUTH_MODE", "gateway")
+    monkeypatch.setenv("KRS_INTERNAL_SERVICE_KEY", _KEY)
     get_settings.cache_clear()
     yield
     get_settings.cache_clear()
