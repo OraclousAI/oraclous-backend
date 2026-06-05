@@ -17,6 +17,7 @@ from oraclous_capability_registry_service.core.config import get_settings
 from oraclous_capability_registry_service.repositories.capability_repository import (
     CapabilityRepository,
 )
+from oraclous_capability_registry_service.repositories.instance_repository import InstanceRepository
 from oraclous_capability_registry_service.services.plugin_sync import sync_plugins
 
 logger = logging.getLogger(__name__)
@@ -26,12 +27,16 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
     repo: CapabilityRepository | None = None
+    instance_repo: InstanceRepository | None = None
     try:
         repo = CapabilityRepository(settings.DATABASE_URL)
+        instance_repo = InstanceRepository(settings.DATABASE_URL)
         app.state.capability_repository = repo
+        app.state.instance_repository = instance_repo
     except Exception as exc:  # noqa: BLE001 — degrade: data routes 503, /health still serves
         logger.warning("Postgres unavailable at startup; data routes disabled: %s", exc)
         app.state.capability_repository = None
+        app.state.instance_repository = None
 
     # Seed the built-in tool catalogue into the dev org (idempotent plugin discovery). In jwt mode a
     # real per-org seed is driven elsewhere; the dev seam keeps the dev org's catalogue populated so
@@ -50,3 +55,5 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     finally:
         if repo is not None:
             await repo.close()
+        if instance_repo is not None:
+            await instance_repo.close()

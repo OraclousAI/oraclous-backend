@@ -81,6 +81,28 @@ t2=$(curl -fsS "${AUTH[@]}" -X POST "${CR}/api/v1/tools" -d "${TDESC}" | jget "[
 [[ -n "$t1" && "$t1" == "$t2" ]] && pass "re-register yields the same deterministic id ($t1)" \
   || fail "tool ids not deterministic: $t1 vs $t2"
 
-printf '\n\033[32mcapability-registry S1+S2 smoke passed.\033[0m  boot + own-version_table migrate + '
-printf 'org-scoped descriptor CRUD + capability matching + validation + plugin-seeded tool catalogue '
-printf '+ deterministic tool registration, over the stack.\n'
+step "9. S3: create a tool instance -> CONFIGURATION_REQUIRED (oauth credential not mapped)"
+gid=$(curl -fsS "${AUTH[@]}" -X GET "${CR}/api/v1/tools" \
+  | python3 -c "import sys,json;ts=json.load(sys.stdin)['capabilities'];print(next(t['id'] for t in ts if t['name']=='Google Drive Reader'))")
+[[ -n "$gid" ]] && pass "resolved seeded Google Drive Reader id ($gid)" || fail "drive tool not found"
+inst=$(curl -fsS "${AUTH[@]}" -X POST "${CR}/api/v1/instances" \
+  -d "{\"capability_id\":\"${gid}\",\"name\":\"my drive\"}")
+iid=$(echo "$inst" | jget "['id']"); istatus=$(echo "$inst" | jget "['status']")
+[[ "$istatus" == "CONFIGURATION_REQUIRED" ]] && pass "new instance is CONFIGURATION_REQUIRED" \
+  || fail "unexpected instance status: $istatus"
+rep=$(curl -fsS "${AUTH[@]}" -X GET "${CR}/api/v1/instances/${iid}/validate-execution")
+echo "$rep" | grep -q '"is_ready":false' && echo "$rep" | grep -q '"oauth_token"' \
+  && pass "validate-execution reports the missing oauth credential" || fail "validate wrong: $rep"
+
+step "10. S3: configure credentials -> READY -> validate is_ready"
+conf=$(curl -fsS "${AUTH[@]}" -X POST "${CR}/api/v1/instances/${iid}/configure-credentials" \
+  -d '{"credential_mappings":{"oauth_token":"cred-smoke-123"}}')
+echo "$conf" | grep -q '"status":"READY"' && pass "instance is READY after mapping the credential" \
+  || fail "configure didn't make it READY: $conf"
+rep2=$(curl -fsS "${AUTH[@]}" -X GET "${CR}/api/v1/instances/${iid}/validate-execution")
+echo "$rep2" | grep -q '"is_ready":true' && pass "validate-execution is_ready=true" \
+  || fail "still not ready: $rep2"
+
+printf '\n\033[32mcapability-registry S1-S3 smoke passed.\033[0m  boot + own-version_table migrate + '
+printf 'descriptor CRUD + capability matching + validation + plugin-seeded catalogue + deterministic '
+printf 'tool registration + instance lifecycle (CONFIGURATION_REQUIRED->READY), over the stack.\n'

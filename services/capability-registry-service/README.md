@@ -22,7 +22,13 @@ bearer; `AUTH_MODE=jwt` decodes the real auth-service HS256 token).
   plugins (PostgreSQL/MySQL/Notion/GitHub/Google Drive readers) register at import and are seeded
   into the dev org at startup (idempotent — re-seeding is a no-op). `GET/POST /api/v1/tools`,
   `GET /api/v1/tools/{id}`.
-- S3 — tool instances + execution-readiness validation.
+- **S3 (this slice)** — tool instances + execution-readiness validation. `tool_instances`
+  (org-scoped, `capability_id` FK, no `workflow_id`); creating an instance derives its required
+  credential types from the descriptor and sets `READY`/`CONFIGURATION_REQUIRED`; mapping
+  credentials re-derives the status; `validate-execution` returns a readiness report (descriptor
+  exists, required credentials present, config). Live token resolution lands in S4.
+  `POST /api/v1/instances`, `GET /{id}`, `POST /{id}/configure-credentials`,
+  `GET /{id}/validate-execution`, `GET /{id}/health`.
 - S4 — execution engine (sync) + credential-broker seam + PostgreSQL connector.
 - S5 — connector breadth + real-broker integration smoke (Reza sign-off).
 

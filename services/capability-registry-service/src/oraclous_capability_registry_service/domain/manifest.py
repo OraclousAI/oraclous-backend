@@ -66,3 +66,19 @@ def descriptor_name(descriptor: dict[str, Any]) -> str | None:
         if isinstance(name, str) and name:
             return name[:255]
     return None
+
+
+def required_credential_types(descriptor: dict[str, Any]) -> list[str]:
+    """The distinct *required* credential types a tool descriptor declares (order-stable)."""
+    spec = descriptor.get("spec")
+    if not isinstance(spec, dict):
+        return []
+    out: list[str] = []
+    for req in spec.get("credential_requirements", []) or []:
+        if not isinstance(req, dict):
+            continue
+        if req.get("required", True) and isinstance(req.get("type"), str):
+            ctype = req["type"]
+            if ctype not in out:
+                out.append(ctype)
+    return out

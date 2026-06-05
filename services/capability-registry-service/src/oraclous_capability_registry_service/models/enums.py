@@ -17,3 +17,20 @@ class DescriptorKind(enum.StrEnum):
     AGENT = "agent"
     HARNESS = "harness"
     HUMAN_ROLE = "human_role"
+
+
+class InstanceStatus(enum.StrEnum):
+    """Lifecycle of a configured tool instance.
+
+    ``PENDING`` just created; ``CONFIGURATION_REQUIRED`` missing credential mappings;
+    ``READY`` all required credentials mapped and executable; the remaining states are set by the
+    execution engine (S4+).
+    """
+
+    PENDING = "PENDING"
+    CONFIGURATION_REQUIRED = "CONFIGURATION_REQUIRED"
+    READY = "READY"
+    RUNNING = "RUNNING"
+    SUCCESS = "SUCCESS"
+    FAILED = "FAILED"
+    PAUSED = "PAUSED"

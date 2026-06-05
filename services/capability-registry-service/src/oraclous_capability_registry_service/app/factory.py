@@ -18,7 +18,9 @@ from oraclous_capability_registry_service.domain.errors import (
 from oraclous_capability_registry_service.routes.capability_routes import (
     router as capability_router,
 )
+from oraclous_capability_registry_service.routes.instance_routes import router as instance_router
 from oraclous_capability_registry_service.routes.tool_routes import router as tool_router
+from oraclous_capability_registry_service.services.instance_manager import InstanceNotFoundError
 
 
 def create_app(*, lifespan=None) -> FastAPI:
@@ -26,9 +28,14 @@ def create_app(*, lifespan=None) -> FastAPI:
     app = FastAPI(title=settings.APP_NAME, version=settings.VERSION, lifespan=lifespan)
     app.include_router(capability_router)
     app.include_router(tool_router)
+    app.include_router(instance_router)
 
     @app.exception_handler(CapabilityNotFoundError)
     async def _on_not_found(_: Request, exc: CapabilityNotFoundError) -> JSONResponse:
+        return JSONResponse(status_code=status.HTTP_404_NOT_FOUND, content={"detail": str(exc)})
+
+    @app.exception_handler(InstanceNotFoundError)
+    async def _on_instance_not_found(_: Request, exc: InstanceNotFoundError) -> JSONResponse:
         return JSONResponse(status_code=status.HTTP_404_NOT_FOUND, content={"detail": str(exc)})
 
     @app.exception_handler(InvalidDescriptorError)
