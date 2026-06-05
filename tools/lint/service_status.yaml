@@ -17,23 +17,23 @@
 # Canonical authority: ORAA-4 §21/§22/§23; narrative: oraclous-knowledge/engineering/service-architecture-standard.md.
 
 services:
-  # R3.5 graph-first order. All flags false today: every service below is HOLLOW and being rebuilt.
+  # R3.5: all six services rebuilt real, end-to-end, and §22-signed-off (claimed_done locks no-stubs).
   knowledge-graph-service:
     release: R3.5            # service #1 — rebuilt to §21 across S1-S5; structure now ENFORCED
     structure_enforced: true
-    claimed_done: false      # flip to true at the §22 8-gate sign-off (Reza smoke acceptance)
+    claimed_done: true       # §22 8-gate sign-off accepted — no-stubs ENFORCED
   knowledge-retriever-service:
     release: R3.5            # service #2 — rebuilt to §21 (read-only retrieval); structure ENFORCED
     structure_enforced: true
-    claimed_done: false      # flip to true at the §22 8-gate sign-off (Reza smoke acceptance)
+    claimed_done: true       # §22 8-gate sign-off accepted — no-stubs ENFORCED
   auth-service:
     release: R3.5            # service #3 — full identity: users/orgs/members/invites/SA/OAuth; ENFORCED
     structure_enforced: true
-    claimed_done: false      # flip to true at the §22 8-gate sign-off (Reza smoke acceptance)
+    claimed_done: true       # §22 8-gate sign-off accepted — no-stubs ENFORCED
   credential-broker-service:
     release: R3.5            # service #4 — encrypted creds + runtime OAuth + delegation; ENFORCED
     structure_enforced: true
-    claimed_done: false      # flip to true at the §22 8-gate sign-off (Reza smoke acceptance)
+    claimed_done: true       # §22 8-gate sign-off accepted — no-stubs ENFORCED
   capability-registry-service:
     release: R3.5            # service #5 — ported from oraclous-core-service; DONE (Reza §22 sign-off)
     structure_enforced: true
@@ -41,7 +41,7 @@ services:
   application-gateway-service:
     release: R3.5            # service #6 — reverse-proxy edge; structure ENFORCED (GW-1)
     structure_enforced: true
-    claimed_done: false      # flip to true at the §22 8-gate sign-off (Reza smoke acceptance)
+    claimed_done: true       # §22 8-gate sign-off accepted — no-stubs ENFORCED
   harness-runtime-service:
     release: R4-deferred     # placeholder; not in R3.5 scope
     structure_enforced: false
