@@ -38,4 +38,28 @@ ${COMPOSE} exec -T postgres psql -U oraclous -d oraclous -c "\dt alembic_version
   2>/dev/null | grep -q alembic_version_credential_broker \
   && pass "own alembic version_table (no shared-DB collision)" || fail "version_table missing"
 
-printf '\n\033[32mcredential-broker S0 smoke passed.\033[0m  boots + migrates its own schema + serves /health.\n'
+step "4. S1: encrypted credential CRUD (dev-auth bearer binds the org)"
+AUTH=(-H "Authorization: Bearer dev-token" -H "Content-Type: application/json")
+jget() { python3 -c "import sys,json;print(json.load(sys.stdin)$1)"; }
+TOOL="11111111-1111-1111-1111-111111111111"; USR="22222222-2222-2222-2222-222222222222"
+cid=$(curl -fsS "${AUTH[@]}" -X POST "${CB}/credentials/" \
+  -d "{\"tool_id\":\"${TOOL}\",\"user_id\":\"${USR}\",\"name\":\"g\",\"provider\":\"google\",\"cred_type\":\"oauth\",\"credential\":{\"access_token\":\"smoke-secret-123\"}}" \
+  | jget "['id']")
+[[ -n "$cid" ]] && pass "created credential ${cid}" || fail "credential create failed"
+# the stored value is ciphertext, not the plaintext secret
+stored=$(${COMPOSE} exec -T postgres psql -U oraclous -d oraclous -tAc \
+  "SELECT encrypted_cred FROM user_credentials WHERE id='${cid}'")
+echo "$stored" | grep -q "smoke-secret-123" && fail "PLAINTEXT AT REST: secret found in DB" \
+  || pass "credential is AES-256-GCM encrypted at rest (no plaintext in DB)"
+# GET decrypts back to the original secret
+sec=$(curl -fsS "${AUTH[@]}" -X GET "${CB}/credentials/${cid}" | jget "['credential']['access_token']")
+[[ "$sec" == "smoke-secret-123" ]] && pass "GET decrypts the credential back to plaintext" \
+  || fail "decrypt mismatch: $sec"
+# no token -> 401; unknown id -> 404 (org-scoped)
+c=$(curl -s -o /dev/null -w '%{http_code}' -X GET "${CB}/credentials/${cid}")
+[[ "$c" == "401" ]] && pass "no bearer -> 401" || fail "expected 401, got $c"
+c=$(curl -s -o /dev/null -w '%{http_code}' "${AUTH[@]}" -X GET "${CB}/credentials/33333333-3333-3333-3333-333333333333")
+[[ "$c" == "404" ]] && pass "unknown id -> 404 (org-scoped)" || fail "expected 404, got $c"
+
+printf '\n\033[32mcredential-broker S1 smoke passed.\033[0m  boots + migrates + encrypted credential CRUD '
+printf '(AES-256-GCM at rest, org-scoped from the authenticated principal).\n'
