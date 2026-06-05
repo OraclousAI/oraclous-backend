@@ -43,7 +43,11 @@ bearer; `AUTH_MODE=jwt` decodes the real auth-service HS256 token).
   via `/internal/resolve-credential` (the instance's mapped `credential_id`). With
   `CREDENTIAL_BROKER_MODE=real` the PostgreSQL connector executes against a credential resolved by
   the live broker (`tests/smoke/smoke_real_broker.sh`).
-- S5b — connector breadth (MySQL + Notion + GitHub) + Reza §22 sign-off.
+- **S5b (this slice)** — connector breadth. MySQL connector (aiomysql, real, parameterized,
+  MySQL-testcontainer verified) + Notion & GitHub HTTP connectors (real httpx, api_key; live call
+  key-gated, the resolution+dispatch seam verified via a mocked transport). The Google Drive Reader's
+  live OAuth connector is deferred (no key-free smoke); its descriptor stays registered → executing it
+  returns 409 `no_executor`. **Carries `needs-human` for Reza's §22 8-gate sign-off.**
 
 ## Run / smoke
 

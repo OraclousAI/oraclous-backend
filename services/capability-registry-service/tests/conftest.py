@@ -16,6 +16,9 @@ PG_PASSWORD = "oraclous"  # noqa: S105 — ephemeral test container, not a real 
 PG_DB = "oraclous"
 
 
+MYSQL_IMAGE = "mysql:8.0"
+
+
 @pytest.fixture(scope="session")
 def postgres_dsn() -> Iterator[str]:
     """A libpq DSN for an ephemeral Postgres container."""
@@ -28,3 +31,15 @@ def postgres_dsn() -> Iterator[str]:
         host = container.get_container_host_ip()
         port = container.get_exposed_port(5432)
         yield f"postgresql://{PG_USER}:{PG_PASSWORD}@{host}:{port}/{PG_DB}"
+
+
+@pytest.fixture(scope="session")
+def mysql_dsn() -> Iterator[str]:
+    """A ``mysql://`` DSN for an ephemeral MySQL container (for the MySQL connector test)."""
+    from testcontainers.mysql import MySqlContainer
+
+    container = MySqlContainer(MYSQL_IMAGE, username=PG_USER, password=PG_PASSWORD, dbname=PG_DB)
+    with container:
+        host = container.get_container_host_ip()
+        port = container.get_exposed_port(3306)
+        yield f"mysql://{PG_USER}:{PG_PASSWORD}@{host}:{port}/{PG_DB}"

@@ -122,10 +122,10 @@ echo "$exec_out" | grep -q 'postgresql://' && fail "SECRET LEAK: a DSN appears i
   || pass "no resolved secret (DSN) echoed in the execution output"
 
 step "12. S4: a tool without an executor is not executable (409)"
+# Google Drive Reader is registered but its live OAuth connector is deferred (no executor in R3.5).
 nid=$(curl -fsS "${AUTH[@]}" -X GET "${CR}/api/v1/tools" \
-  | python3 -c "import sys,json;ts=json.load(sys.stdin)['capabilities'];print(next(t['id'] for t in ts if t['name']=='Notion Reader'))")
+  | python3 -c "import sys,json;ts=json.load(sys.stdin)['capabilities'];print(next(t['id'] for t in ts if t['name']=='Google Drive Reader'))")
 niid=$(curl -fsS "${AUTH[@]}" -X POST "${CR}/api/v1/instances" -d "{\"capability_id\":\"${nid}\",\"name\":\"n\"}" | jget "['id']")
-curl -fsS "${AUTH[@]}" -X POST "${CR}/api/v1/instances/${niid}/configure-credentials" -d '{"credential_mappings":{"api_key":"k"}}' >/dev/null
 code=$(curl -s -o /dev/null -w '%{http_code}' "${AUTH[@]}" -X POST "${CR}/api/v1/instances/${niid}/execute" -d '{"input_data":{}}')
 [[ "$code" == "409" ]] && pass "no-executor tool -> 409 (fail-closed, no silent no-op)" || fail "expected 409, got $code"
 

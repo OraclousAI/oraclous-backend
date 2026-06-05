@@ -153,9 +153,9 @@ async def test_parameterized_query_returns_rows(ctx: dict) -> None:
 
 async def test_tool_without_executor_is_409(ctx: dict) -> None:
     client: AsyncClient = ctx["client"]
-    # Notion Reader is registered (S2) but has no executor in R3.5 → not executable.
-    cap_id = await _tool_id(client, "Notion Reader")
-    iid = await _ready_instance(client, cap_id, "api_key")
+    # Google Drive Reader is registered but its live OAuth connector is deferred (no executor).
+    cap_id = await _tool_id(client, "Google Drive Reader")
+    iid = await _ready_instance(client, cap_id, "oauth_token")
     resp = await client.post(
         f"/api/v1/instances/{iid}/execute", json={"input_data": {}}, headers=_auth()
     )
