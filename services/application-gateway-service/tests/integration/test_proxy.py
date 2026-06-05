@@ -1,11 +1,9 @@
-"""Integration: the reverse-proxy forwards to the upstream + fails closed (GW-2).
+"""Integration: the reverse-proxy forwards + fails closed, under edge auth (GW-2 + GW-3).
 
-The gateway app runs via ASGITransport; its internal upstream client is pointed at a real mock
-upstream ASGI app (also via ASGITransport, which streams correctly) for the forward/passthrough
-proofs, and at an httpx MockTransport that raises for the connect/timeout proofs. Proves: a routed
-request is forwarded and the upstream's status/body stream back; the upstream's own status passes
-through; ``/health`` is not proxied; an unknown prefix → gateway 404; connect failure → 502;
-timeout → 504. The real cross-service forward is also proven by the docker smoke.
+The gateway app runs via ASGITransport; its internal upstream client points at a real mock upstream
+(ASGITransport, which streams) for forward/passthrough/identity proofs, and at an httpx Mock
+transport that raises for connect/timeout proofs. Authenticated requests carry the dev bearer; the
+echoes the trusted identity headers the gateway injected.
 """
 
 from __future__ import annotations
@@ -21,16 +19,25 @@ from starlette.routing import Route
 
 pytestmark = pytest.mark.integration
 
-
-async def _search(request):  # noqa: ANN001 — starlette handler
-    return JSONResponse({"results": ["r1"], "via": "krs", "echo_q": request.url.query})
+_DEV_ORG = "00000000-0000-0000-0000-00000000050a"
 
 
-async def _caps(request):  # noqa: ANN001 — starlette handler
-    return JSONResponse({"detail": "missing bearer"}, status_code=401)
+async def _search(request):  # noqa: ANN001 — starlette handler; echoes injected identity
+    return JSONResponse(
+        {
+            "results": ["r1"],
+            "via": "krs",
+            "echo_q": request.url.query,
+            "x_org": request.headers.get("x-organisation-id"),
+            "x_principal": request.headers.get("x-principal-id"),
+        }
+    )
 
 
-# a real ASGI upstream (streams properly under ASGITransport, unlike MockTransport)
+async def _caps(request):  # noqa: ANN001 — distinct upstream status for the passthrough proof
+    return JSONResponse({"detail": "upstream says no"}, status_code=403)
+
+
 _UPSTREAM_APP = Starlette(
     routes=[
         Route("/v1/search", _search, methods=["GET"]),
@@ -58,6 +65,10 @@ def _gateway_with(transport: httpx.AsyncBaseTransport):
     return app, upstream
 
 
+def _auth() -> dict:
+    return {"Authorization": "Bearer dev-token"}
+
+
 @pytest.fixture
 async def client() -> AsyncIterator[AsyncClient]:
     app, upstream = _gateway_with(ASGITransport(app=_UPSTREAM_APP))
@@ -66,20 +77,20 @@ async def client() -> AsyncIterator[AsyncClient]:
     await upstream.aclose()
 
 
-async def test_routed_request_is_forwarded_and_response_streams_back(client: AsyncClient) -> None:
-    r = await client.get("/v1/search?q=hello")
+async def test_authed_request_is_forwarded_with_injected_identity(client: AsyncClient) -> None:
+    r = await client.get("/v1/search?q=hello", headers=_auth())
     assert r.status_code == 200
     body = r.json()
     assert body["via"] == "krs"
-    assert body["results"] == ["r1"]
-    assert body["echo_q"] == "q=hello"  # query string forwarded verbatim
+    assert body["echo_q"] == "q=hello"  # query forwarded verbatim
+    assert body["x_org"] == _DEV_ORG  # gateway injected the verified org downstream
+    assert body["x_principal"]  # gateway injected the verified principal id
 
 
 async def test_upstream_status_passes_through(client: AsyncClient) -> None:
-    # the capability-registry upstream returns 401 (no bearer) — the gateway passes it through
-    r = await client.get("/api/v1/capabilities")
-    assert r.status_code == 401
-    assert r.json()["detail"] == "missing bearer"
+    r = await client.get("/api/v1/capabilities", headers=_auth())
+    assert r.status_code == 403  # the upstream's own status, passed through (not a gateway error)
+    assert r.json()["detail"] == "upstream says no"
 
 
 async def test_health_is_not_proxied(client: AsyncClient) -> None:
@@ -89,7 +100,7 @@ async def test_health_is_not_proxied(client: AsyncClient) -> None:
 
 
 async def test_unknown_prefix_is_gateway_404(client: AsyncClient) -> None:
-    r = await client.get("/totally/unknown")
+    r = await client.get("/totally/unknown", headers=_auth())
     assert r.status_code == 404
     assert r.json()["error_code"] == "route_not_found"
 
@@ -100,7 +111,7 @@ async def test_connect_failure_is_502() -> None:
 
     app, upstream = _gateway_with(httpx.MockTransport(boom))
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://gw.test") as c:
-        r = await c.get("/v1/search")
+        r = await c.get("/v1/search", headers=_auth())
     await upstream.aclose()
     assert r.status_code == 502
     assert r.json()["error_code"] == "upstream_unavailable"
@@ -112,7 +123,7 @@ async def test_timeout_is_504() -> None:
 
     app, upstream = _gateway_with(httpx.MockTransport(slow))
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://gw.test") as c:
-        r = await c.get("/v1/search")
+        r = await c.get("/v1/search", headers=_auth())
     await upstream.aclose()
     assert r.status_code == 504
     assert r.json()["error_code"] == "upstream_timeout"
