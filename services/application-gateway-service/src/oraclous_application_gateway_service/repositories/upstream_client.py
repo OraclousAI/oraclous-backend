@@ -41,3 +41,12 @@ class UpstreamClient:
             raise UpstreamTimeoutError(str(exc)) from exc
         except httpx.HTTPError as exc:  # ConnectError, ReadError, etc. → upstream unreachable
             raise UpstreamUnavailableError(str(exc)) from exc
+
+    async def health_check(self, base_url: str, *, timeout_s: float) -> int | None:
+        """GET ``{base_url}/health`` and return its status code, or None if unreachable/timed out
+        (used by the aggregated health endpoint; never raises)."""
+        try:
+            resp = await self._client.get(f"{base_url}/health", timeout=timeout_s)
+            return resp.status_code
+        except httpx.HTTPError:
+            return None

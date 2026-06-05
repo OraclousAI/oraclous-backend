@@ -13,7 +13,11 @@ from fastapi import Depends, HTTPException, Request, status
 from oraclous_governance import Principal
 
 from oraclous_application_gateway_service.core.auth import AuthError, verify_token
+from oraclous_application_gateway_service.core.config import get_settings
 from oraclous_application_gateway_service.domain.auth_policy import is_public
+from oraclous_application_gateway_service.domain.upstreams import upstream_health_targets
+from oraclous_application_gateway_service.repositories.upstream_client import UpstreamClient
+from oraclous_application_gateway_service.services.health_service import HealthService
 from oraclous_application_gateway_service.services.proxy_service import ProxyService
 
 
@@ -66,6 +70,15 @@ def get_edge_principal(request: Request) -> Principal | None:
         ) from exc
 
 
+def get_health_service(request: Request) -> HealthService:
+    client = get_http_client(request)
+    return HealthService(
+        upstream_client=UpstreamClient(client),
+        targets=upstream_health_targets(get_settings()),
+    )
+
+
 HttpClientDep = Annotated[httpx.AsyncClient, Depends(get_http_client)]
 ProxyServiceDep = Annotated[ProxyService, Depends(get_proxy_service)]
 EdgePrincipalDep = Annotated[Principal | None, Depends(get_edge_principal)]
+HealthServiceDep = Annotated[HealthService, Depends(get_health_service)]
