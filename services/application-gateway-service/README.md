@@ -25,7 +25,10 @@ platform-internal `/internal/*` plane (X-Internal-Key, service-to-service) is **
   request the gateway forwards `X-Principal-Id`/`X-Principal-Type`/`X-Organisation-Id` downstream
   (keeping the original Bearer) and **strips any client-forged identity headers** (anti-spoof).
   Fail-closed: missing/invalid/expired → 401 before any upstream call.
-- GW-4 — all five upstreams routed (longest-prefix match) + CORS termination.
+- **GW-4 (this slice)** — all five upstreams routed (verified each prefix → its upstream) + **CORS
+  termination** at the edge (Starlette `CORSMiddleware`, `GATEWAY_CORS_ORIGINS`), so upstreams don't
+  each carry CORS. The platform-internal `/internal/*` plane is confirmed **not** edge-routed
+  (gateway 404, never forwarded).
 - GW-5 — aggregated upstream health + gateway own-error envelope subset + §22 sign-off.
 
 ## Run / smoke
