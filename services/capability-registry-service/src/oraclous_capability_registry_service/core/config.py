@@ -12,6 +12,7 @@ environment to be populated.
 from __future__ import annotations
 
 from functools import lru_cache
+from typing import Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -25,6 +26,11 @@ class Settings(BaseSettings):
     APP_NAME: str = "oraclous-capability-registry-service"
     VERSION: str = "0.0.1"
 
+    # The org that owns the built-in/platform tool catalogue (global tools). Distinct from
+    # ``DEV_ORG_ID``: the catalogue is seeded under this org and every tenant org reads it (widened
+    # reads), so a freshly-provisioned org sees the platform tools without per-org re-seeding.
+    PLATFORM_ORG_ID: str = "00000000-0000-0000-0000-0000000000a0"
+
     # --- credential-broker seam (tool execution resolves credentials here; never decrypts) ---
     CREDENTIAL_BROKER_URL: str = "http://credential-broker-service:8000"
     CREDENTIAL_BROKER_MODE: str = "fake"  # "fake" (dev/CI, key-free) | "real"
@@ -32,8 +38,11 @@ class Settings(BaseSettings):
     # the PostgreSQL connector runs a real query in the key-free smoke. Override to point elsewhere.
     FAKE_DB_DSN: str | None = None
 
-    # --- identity seam (dev-auth by default; `jwt` consumes the real auth-service token) ---
-    AUTH_MODE: str = "dev"  # "dev" | "jwt"
+    # --- identity seam. `gateway` (production, ADR-018): trust the gateway's verified
+    # X-Principal-*/X-Organisation-Id headers, gated by X-Internal-Key — no token validation here.
+    # `dev`: a fixed bearer → fixed dev principal+org. `jwt`: decode a real HS256 auth-service token
+    # directly (used when a caller reaches the service without the gateway). ---
+    AUTH_MODE: Literal["gateway", "dev", "jwt"] = "dev"
     DEV_BEARER: str = "dev-token"
     DEV_USER_ID: str = "00000000-0000-0000-0000-0000000000c5"
     DEV_ORG_ID: str = "00000000-0000-0000-0000-00000000050a"

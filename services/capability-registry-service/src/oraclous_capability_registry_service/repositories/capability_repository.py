@@ -5,6 +5,13 @@ The ONLY place that touches the DB driver for capability descriptors. Every read
 scoped by ``organisation_id`` (ADR-006) — supplied by the caller from the authenticated principal,
 never a request body (ORG001). Writes auto-compute ``content_hash`` (canonical SHA-256) and the
 denormalised ``name`` unless the caller passes an explicit hash.
+
+Global/platform tools: when a ``platform_org_id`` is configured, *reads* are widened to also return
+descriptors owned by that platform org (the built-in catalogue), so every tenant org sees the global
+tools alongside its own. Results are de-duplicated by id preferring the caller-org row, so a tenant
+custom tool with a colliding deterministic id shadows the platform built-in. *Writes* stay strict to
+the caller org. When ``platform_org_id`` is None or equals the caller org, behaviour is exactly the
+old single-org equality.
 """
 
 from __future__ import annotations
@@ -26,9 +33,39 @@ _AUTO: Any = object()
 
 
 class CapabilityRepository:
-    def __init__(self, db_url: str) -> None:
+    def __init__(self, db_url: str, *, platform_org_id: uuid.UUID | None = None) -> None:
         self._engine = create_async_engine(db_url, echo=False)
         self._session = async_sessionmaker(self._engine, expire_on_commit=False)
+        self._platform_org_id = platform_org_id
+
+    def _read_org_filter(self, organisation_id: uuid.UUID) -> Any:
+        """Org-scope predicate for *reads*. Widened to the platform org (global tools) when one is
+        configured and distinct from the caller; otherwise strict caller-org equality."""
+        if self._platform_org_id is not None and self._platform_org_id != organisation_id:
+            return CapabilityDescriptor.organisation_id.in_(
+                (organisation_id, self._platform_org_id)
+            )
+        return CapabilityDescriptor.organisation_id == organisation_id
+
+    def _dedupe_prefer_caller(
+        self, rows: list[CapabilityDescriptor], organisation_id: uuid.UUID
+    ) -> list[CapabilityDescriptor]:
+        """De-duplicate widened read results by id, preferring the caller-org row over the platform
+        row (a tenant custom tool shadows a colliding built-in). First-seen order is preserved."""
+        if self._platform_org_id is None or self._platform_org_id == organisation_id:
+            return rows
+        by_id: dict[uuid.UUID, CapabilityDescriptor] = {}
+        for row in rows:
+            existing = by_id.get(row.id)
+            if existing is None:
+                by_id[row.id] = row
+            elif (
+                existing.organisation_id == self._platform_org_id
+                and row.organisation_id == organisation_id
+            ):
+                # Replace the platform row with the caller-org row (caller shadows the built-in).
+                by_id[row.id] = row
+        return list(by_id.values())
 
     async def create_tables(self) -> None:
         async with self._engine.begin() as conn:
@@ -113,19 +150,20 @@ class CapabilityRepository:
             result = await session.execute(
                 select(CapabilityDescriptor).where(
                     CapabilityDescriptor.id == descriptor_id,
-                    CapabilityDescriptor.organisation_id == organisation_id,
+                    self._read_org_filter(organisation_id),
                 )
             )
-            return result.scalars().first()
+            rows = self._dedupe_prefer_caller(list(result.scalars().all()), organisation_id)
+            return rows[0] if rows else None
 
     async def list_by_org(self, organisation_id: uuid.UUID) -> list[CapabilityDescriptor]:
         async with self._session() as session:
             result = await session.execute(
                 select(CapabilityDescriptor)
-                .where(CapabilityDescriptor.organisation_id == organisation_id)
+                .where(self._read_org_filter(organisation_id))
                 .order_by(CapabilityDescriptor.created_at)
             )
-            return list(result.scalars().all())
+            return self._dedupe_prefer_caller(list(result.scalars().all()), organisation_id)
 
     async def list_by_kind(
         self, organisation_id: uuid.UUID, kind: DescriptorKind
@@ -134,25 +172,26 @@ class CapabilityRepository:
             result = await session.execute(
                 select(CapabilityDescriptor)
                 .where(
-                    CapabilityDescriptor.organisation_id == organisation_id,
+                    self._read_org_filter(organisation_id),
                     CapabilityDescriptor.kind == kind,
                 )
                 .order_by(CapabilityDescriptor.created_at)
             )
-            return list(result.scalars().all())
+            return self._dedupe_prefer_caller(list(result.scalars().all()), organisation_id)
 
     async def search_by_descriptor(
         self, organisation_id: uuid.UUID, filter_dict: dict[str, Any]
     ) -> list[CapabilityDescriptor]:
-        """Org-scoped JSONB containment (``descriptor @> filter_dict``)."""
+        """Org-scoped JSONB containment (``descriptor @> filter_dict``); widened to the platform
+        org (global tools) when configured."""
         async with self._session() as session:
             result = await session.execute(
                 select(CapabilityDescriptor).where(
-                    CapabilityDescriptor.organisation_id == organisation_id,
+                    self._read_org_filter(organisation_id),
                     CapabilityDescriptor.descriptor.contains(filter_dict),
                 )
             )
-            return list(result.scalars().all())
+            return self._dedupe_prefer_caller(list(result.scalars().all()), organisation_id)
 
     async def match_capabilities(
         self, organisation_id: uuid.UUID, capability_names: list[str]
@@ -160,7 +199,8 @@ class CapabilityRepository:
         """Tool descriptors whose ``spec.capabilities`` includes any of ``capability_names``.
 
         Uses JSONB containment per name (``descriptor @> {"spec":{"capabilities":[{"name":n}]}}``),
-        unioned by descriptor id with first-seen order preserved (deterministic).
+        unioned by descriptor id with first-seen order preserved (deterministic). Reads are widened
+        to the platform org (global tools); the caller-org row shadows a colliding built-in id.
         """
         seen: dict[uuid.UUID, CapabilityDescriptor] = {}
         for name in capability_names:
@@ -168,7 +208,16 @@ class CapabilityRepository:
                 organisation_id, {"spec": {"capabilities": [{"name": name}]}}
             )
             for row in rows:
-                seen.setdefault(row.id, row)
+                existing = seen.get(row.id)
+                if existing is None:
+                    seen[row.id] = row
+                elif (
+                    self._platform_org_id is not None
+                    and existing.organisation_id == self._platform_org_id
+                    and row.organisation_id == organisation_id
+                ):
+                    # Caller-org row shadows the platform built-in seen under an earlier name.
+                    seen[row.id] = row
         return list(seen.values())
 
     async def update_descriptor(

@@ -21,6 +21,26 @@ class AuthError(Exception):
     """Authentication failed. Maps to HTTP 401."""
 
 
+def principal_from_gateway_headers(
+    principal_id: str | None, principal_type: str | None, organisation_id: str | None
+) -> Principal:
+    """Build a Principal from the gateway's verified identity headers (ADR-018 edge-auth).
+
+    The gateway terminates auth and injects ``X-Principal-Id``/``X-Principal-Type``/
+    ``X-Organisation-Id`` (stripping any client-supplied copies); this service trusts them and does
+    NOT re-validate a token. Fail-closed if the identity is absent or malformed."""
+    if not principal_id or not principal_type:
+        raise AuthError("gateway identity headers missing")
+    try:
+        return Principal(
+            principal_id=uuid.UUID(principal_id),
+            principal_type=PrincipalType(principal_type),
+            organisation_id=uuid.UUID(organisation_id) if organisation_id else None,
+        )
+    except ValueError as exc:
+        raise AuthError("malformed gateway identity headers") from exc
+
+
 def _principal_from_claims(claims: dict) -> Principal:
     if claims.get("type") != "access":
         raise AuthError("an access token is required")
