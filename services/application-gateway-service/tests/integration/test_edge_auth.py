@@ -55,7 +55,7 @@ async def client() -> AsyncIterator[AsyncClient]:
     table = build_route_table(get_settings())
     app.state.route_table = table
     app.state.proxy_service = ProxyService(
-        route_table=table, upstream_client=UpstreamClient(upstream)
+        route_table=table, upstream_client=UpstreamClient(upstream), internal_key="ik-test"
     )
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://gw.test") as c:
         yield c

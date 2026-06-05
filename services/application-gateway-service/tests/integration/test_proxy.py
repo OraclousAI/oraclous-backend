@@ -69,7 +69,7 @@ def _gateway_with(transport: httpx.AsyncBaseTransport):
     table = build_route_table(get_settings())
     app.state.route_table = table
     app.state.proxy_service = ProxyService(
-        route_table=table, upstream_client=UpstreamClient(upstream)
+        route_table=table, upstream_client=UpstreamClient(upstream), internal_key="ik-test"
     )
     return app, upstream
 
