@@ -61,5 +61,15 @@ c=$(curl -s -o /dev/null -w '%{http_code}' -X GET "${CB}/credentials/${cid}")
 c=$(curl -s -o /dev/null -w '%{http_code}' "${AUTH[@]}" -X GET "${CB}/credentials/33333333-3333-3333-3333-333333333333")
 [[ "$c" == "404" ]] && pass "unknown id -> 404 (org-scoped)" || fail "expected 404, got $c"
 
-printf '\n\033[32mcredential-broker S1 smoke passed.\033[0m  boots + migrates + encrypted credential CRUD '
-printf '(AES-256-GCM at rest, org-scoped from the authenticated principal).\n'
+step "5. S2: internal-key gate on the provider catalogue"
+INTKEY="${CRED_BROKER_INTERNAL_KEY:-dev-internal-key}"
+c=$(curl -s -o /dev/null -w '%{http_code}' -X GET "${CB}/internal/providers")
+[[ "$c" == "401" ]] && pass "no internal key -> 401" || fail "expected 401, got $c"
+c=$(curl -s -o /dev/null -w '%{http_code}' -H "X-Internal-Key: ${INTKEY}X" -X GET "${CB}/internal/providers")
+[[ "$c" == "401" ]] && pass "wrong internal key -> 401 (constant-time compare)" || fail "expected 401, got $c"
+cat=$(curl -fsS -H "X-Internal-Key: ${INTKEY}" -X GET "${CB}/internal/providers")
+echo "$cat" | grep -q '"google"' && echo "$cat" | grep -q '"github"' \
+  && pass "valid internal key -> provider catalogue (google/notion/github)" || fail "bad catalogue: $cat"
+
+printf '\n\033[32mcredential-broker S2 smoke passed.\033[0m  encrypted CRUD + internal-key-gated provider '
+printf 'catalogue, all over the running stack.\n'
