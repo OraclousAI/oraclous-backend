@@ -13,7 +13,7 @@ from fastapi.responses import JSONResponse
 from starlette.background import BackgroundTask
 from starlette.responses import StreamingResponse
 
-from oraclous_application_gateway_service.core.dependencies import ProxyServiceDep
+from oraclous_application_gateway_service.core.dependencies import EdgePrincipalDep, ProxyServiceDep
 from oraclous_application_gateway_service.domain.errors import (
     RouteNotFoundError,
     UpstreamTimeoutError,
@@ -28,7 +28,7 @@ _METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"]
 
 @router.api_route("/{path:path}", methods=_METHODS, response_model=None)
 async def proxy(
-    path: str, request: Request, svc: ProxyServiceDep
+    path: str, request: Request, svc: ProxyServiceDep, principal: EdgePrincipalDep
 ) -> StreamingResponse | JSONResponse:
     body = await request.body()
     try:
@@ -38,6 +38,7 @@ async def proxy(
             query=request.url.query,
             raw_headers=request.headers.raw,
             body=body,
+            principal=principal,
         )
     except RouteNotFoundError:
         return JSONResponse(

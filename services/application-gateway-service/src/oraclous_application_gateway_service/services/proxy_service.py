@@ -9,6 +9,7 @@ to stream back. Connect/timeout failures surface as gateway domain errors (→ 5
 from __future__ import annotations
 
 import httpx
+from oraclous_governance import Principal
 
 from oraclous_application_gateway_service.domain.errors import RouteNotFoundError
 from oraclous_application_gateway_service.domain.route_table import RouteTable
@@ -29,15 +30,27 @@ _HOP_BY_HOP = frozenset(
 )
 
 
-def forward_request_headers(raw_headers: list[tuple[bytes, bytes]]) -> list[tuple[bytes, bytes]]:
-    """Headers to send upstream: drop ``host`` (httpx sets it) + hop-by-hop; keep everything else
-    (Authorization, X-Organisation-Id, content-type, …) verbatim."""
-    out: list[tuple[bytes, bytes]] = []
-    for key, value in raw_headers:
-        name = key.decode("latin-1").lower()
-        if name == "host" or name in _HOP_BY_HOP:
-            continue
-        out.append((key, value))
+def forward_request_headers(
+    raw_headers: list[tuple[bytes, bytes]], principal: Principal | None
+) -> list[tuple[bytes, bytes]]:
+    """Headers to send upstream. Drops ``host`` (httpx sets it) + hop-by-hop. When the request is
+    authenticated, STRIPS any client-supplied trusted-identity headers (anti-spoof) and injects the
+    verified ``X-Principal-Id``/``X-Principal-Type``/``X-Organisation-Id``; the original ``Bearer``
+    is kept (upstream defense-in-depth). On public paths (no principal) ``X-Principal-*`` are still
+    stripped, but a client ``X-Organisation-Id`` passes through (e.g. multi-org login selection)."""
+    strip = set(_HOP_BY_HOP)
+    strip.add("host")
+    # X-Principal-* are pure trust assertions — never accept them from the client, ever.
+    strip.add("x-principal-id")
+    strip.add("x-principal-type")
+    if principal is not None:
+        strip.add("x-organisation-id")  # gateway asserts the verified org on authenticated paths
+    out = [(key, value) for key, value in raw_headers if key.decode("latin-1").lower() not in strip]
+    if principal is not None:
+        out.append((b"x-principal-id", str(principal.principal_id).encode()))
+        out.append((b"x-principal-type", str(principal.principal_type.value).encode()))
+        if principal.organisation_id is not None:
+            out.append((b"x-organisation-id", str(principal.organisation_id).encode()))
     return out
 
 
@@ -66,6 +79,7 @@ class ProxyService:
         query: str,
         raw_headers: list[tuple[bytes, bytes]],
         body: bytes,
+        principal: Principal | None = None,
     ) -> httpx.Response:
         entry = self._route_table.resolve(path)
         if entry is None:
@@ -73,7 +87,7 @@ class ProxyService:
         return await self._client.open(
             method=method,
             url=entry.upstream_url + path,
-            headers=forward_request_headers(raw_headers),
+            headers=forward_request_headers(raw_headers, principal),
             params=query or None,
             content=body,
         )
