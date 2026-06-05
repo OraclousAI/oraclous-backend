@@ -1,9 +1,20 @@
 [project]
 name = "oraclous-application-gateway-service"
 version = "0.0.0"
-description = "Application Gateway layer; target release R6."
+description = "Application gateway — single reverse-proxy edge fronting the backend services; R3.5 service #6."
 requires-python = "==3.12.*"
-dependencies = []
+dependencies = [
+    "fastapi>=0.115,<1.0",
+    "pydantic>=2.0,<3.0",
+    "pydantic-settings>=2.0,<3.0",
+    "uvicorn[standard]>=0.32,<1.0",
+    "httpx>=0.27,<1.0",
+    "python-jose[cryptography]>=3.3,<4.0",
+    "oraclous-governance",
+]
+
+[tool.uv.sources]
+oraclous-governance = { workspace = true }
 
 [build-system]
 requires = ["hatchling"]
