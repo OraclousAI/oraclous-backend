@@ -58,6 +58,18 @@ async def refresh(body: RefreshRequest, auth: AuthServiceDep) -> TokenResponse:
     return _token_response(await auth.refresh(refresh_token=body.refresh_token))
 
 
+@router.post("/switch-org", response_model=TokenResponse)
+async def switch_org(
+    claims: UserClaimsDep,
+    auth: AuthServiceDep,
+    x_organisation_id: Annotated[str, Header(alias="X-Organisation-Id")],
+) -> TokenResponse:
+    # The target org is taken from the header (like login), never the body — org id is never request
+    # input (ORG001); it is validated against the user's membership before re-issuing the session.
+    bundle = await auth.switch_org(user_id=claims["sub"], organisation_id=x_organisation_id)
+    return _token_response(bundle)
+
+
 @router.post("/change-password", status_code=status.HTTP_204_NO_CONTENT)
 async def change_password(
     body: ChangePasswordRequest, claims: UserClaimsDep, auth: AuthServiceDep
