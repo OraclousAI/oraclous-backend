@@ -23,3 +23,23 @@ class NodeResult(TypedDict):
     id: str
     type: str
     properties: dict[str, Any]
+
+
+class EdgeResult(TypedDict):
+    """A directed relationship between two nodes in a returned subgraph.
+
+    ``source``/``target`` are the ``id`` of the corresponding :class:`NodeResult`
+    (Neo4j elementId), and ``type`` is the relationship type.
+    """
+
+    source: str
+    target: str
+    type: str
+
+
+class SubgraphResult(TypedDict):
+    """A bounded slice of a graph for visualisation: a capped set of nodes plus
+    the edges that fall entirely within that set (org+graph scoped)."""
+
+    nodes: list[NodeResult]
+    edges: list[EdgeResult]

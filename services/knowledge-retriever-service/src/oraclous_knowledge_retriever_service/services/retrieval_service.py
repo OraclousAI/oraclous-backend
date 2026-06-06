@@ -14,7 +14,7 @@ import asyncio
 
 from oraclous_substrate.access import enforced_organisation_id
 
-from oraclous_knowledge_retriever_service.contracts import NodeResult
+from oraclous_knowledge_retriever_service.contracts import EdgeResult, NodeResult, SubgraphResult
 from oraclous_knowledge_retriever_service.repositories.retrieval_repository import (
     RetrievalRepository,
 )
@@ -49,6 +49,10 @@ def _to_node_result(row: dict) -> NodeResult:
     if row.get("relationship") is not None:
         properties["relationship"] = row["relationship"]
     return NodeResult(id=row["id"], type=labels[0] if labels else "Node", properties=properties)
+
+
+def _to_edge_result(row: dict) -> EdgeResult:
+    return EdgeResult(source=row["source"], target=row["target"], type=row["type"])
 
 
 class RetrievalService:
@@ -116,3 +120,11 @@ class RetrievalService:
         repo = self._repo()
         rows = await asyncio.to_thread(repo.temporal, graph_id=graph_id, as_of=as_of, top_k=top_k)
         return [_to_node_result(r) for r in rows]
+
+    async def subgraph(self, *, graph_id: str, limit: int) -> SubgraphResult:
+        repo = self._repo()
+        data = await asyncio.to_thread(repo.subgraph, graph_id=graph_id, limit=limit)
+        return SubgraphResult(
+            nodes=[_to_node_result(n) for n in data["nodes"]],
+            edges=[_to_edge_result(e) for e in data["edges"]],
+        )

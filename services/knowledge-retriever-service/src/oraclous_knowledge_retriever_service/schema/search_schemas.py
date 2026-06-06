@@ -22,6 +22,21 @@ class NodeResultModel(BaseModel):
     properties: dict[str, Any]
 
 
+class EdgeResultModel(BaseModel):
+    """A directed relationship between two nodes in a subgraph; endpoints are node ids."""
+
+    source: str
+    target: str
+    type: str
+
+
+class SubgraphResultModel(BaseModel):
+    """A bounded graph slice for visualisation: capped nodes + the edges among them."""
+
+    nodes: list[NodeResultModel]
+    edges: list[EdgeResultModel]
+
+
 class HealthResponse(BaseModel):
     status: str
     service: str
