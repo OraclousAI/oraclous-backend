@@ -11,9 +11,15 @@ from fastapi import APIRouter
 
 from oraclous_auth_service.core.dependencies import OAuthServiceDep
 from oraclous_auth_service.schema.auth_schemas import TokenResponse
-from oraclous_auth_service.schema.oauth_schemas import LoginUrlResponse
+from oraclous_auth_service.schema.oauth_schemas import LoginUrlResponse, ProvidersResponse
 
 router = APIRouter(prefix="/oauth", tags=["oauth"])
+
+
+# Declared before the parameterized /{provider}/* routes so the literal path matches first.
+@router.get("/providers", response_model=ProvidersResponse)
+async def oauth_providers(oauth: OAuthServiceDep) -> ProvidersResponse:
+    return ProvidersResponse(providers=oauth.available_providers())
 
 
 @router.get("/{provider}/login", response_model=LoginUrlResponse)
