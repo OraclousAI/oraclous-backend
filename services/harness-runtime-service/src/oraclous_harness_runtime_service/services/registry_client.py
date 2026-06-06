@@ -10,24 +10,28 @@ the registry sees the same tenant and its org-scoping holds end-to-end.
 
 from __future__ import annotations
 
+import re
 import uuid
 from typing import Any
 
 import httpx
+
+_NON_ALNUM = re.compile(r"[^a-z0-9]+")
 
 
 class RegistryError(Exception):
     """A capability-registry call failed (non-2xx or transport error)."""
 
 
+def _slug(text: str) -> str:
+    """Lowercase + collapse every run of non-alphanumerics to a single ``-`` (both sides match)."""
+    return _NON_ALNUM.sub("-", text.lower()).strip("-")
+
+
 def _ref_slug(ref: str) -> str:
-    """``core/postgresql-reader@1.0.0`` → ``postgresql-reader`` (the comparable name slug)."""
-    tail = ref.split("/")[-1]  # drop core/ or org:<id>/ prefix
-    return tail.split("@")[0].strip().lower()
-
-
-def _name_slug(name: str) -> str:
-    return name.strip().lower().replace(" ", "-")
+    """``core/postgresql-reader@1.0.0`` → ``postgresql-reader`` (drop the prefix + @version)."""
+    tail = ref.split("/")[-1].split("@")[0]  # drop core/ or org:<id>/ prefix and @version
+    return _slug(tail)
 
 
 class RegistryClient:
@@ -67,7 +71,7 @@ class RegistryClient:
                 raise RegistryError(f"capability_id {explicit_id} not found in the registry")
             return found
         slug = _ref_slug(ref)
-        found = next((t for t in tools if _name_slug(t.get("name", "")) == slug), None)
+        found = next((t for t in tools if _slug(t.get("name", "")) == slug), None)
         if found is None:
             raise RegistryError(f"no registry capability matches ref {ref!r} (slug {slug!r})")
         return found

@@ -127,3 +127,24 @@ async def test_unknown_tool_is_recorded_as_error() -> None:
     )
     assert result.status is HarnessStatus.SUCCEEDED
     assert any("unknown_tool" in (s.detail or "") for s in result.steps)
+
+
+async def test_llm_failure_is_a_hard_fail() -> None:
+    class _BrokenLLM:
+        protocol_shape = "fake"
+
+        async def complete(self, *, messages, system, tools):  # noqa: ANN001, ANN202
+            raise RuntimeError("provider 503")
+
+    result = await run_tool_use_loop(
+        llm=_BrokenLLM(),
+        system="",
+        user_input="go",
+        tool_specs=[_SPEC],
+        dispatch=_ok_dispatch,
+        max_iterations=6,
+    )
+    # an LLM-call failure is terminal (FAILED), distinct from a tool error (which is fed back).
+    assert result.status is HarnessStatus.FAILED
+    assert result.error_type == "RuntimeError"
+    assert "provider 503" in (result.error_message or "")

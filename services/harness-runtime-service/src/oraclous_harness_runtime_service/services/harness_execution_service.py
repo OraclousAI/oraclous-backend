@@ -55,7 +55,11 @@ class HarnessExecutionService:
         self, *, manifest_raw: str | dict[str, Any], user_input: str, principal: Principal
     ) -> HarnessExecution:
         manifest = load_ohm(manifest_raw)  # OHMError → route maps to 422
-        org_id = principal.organisation_id or manifest.metadata.owner_organization_id
+        # Fail-closed tenancy (ADR-006/T1-M1): the org comes from the authenticated principal ONLY —
+        # never from the client-controlled manifest. The route guarantees it in every auth mode.
+        if principal.organisation_id is None:
+            raise HarnessExecutionError("authenticated principal has no organisation scope")
+        org_id = principal.organisation_id
         execution_id = uuid.uuid4()
         resource = f"harness_execution:{execution_id}"
         prov_principal = str(principal.principal_id)
@@ -106,11 +110,9 @@ class HarnessExecutionService:
             max_iterations=self._max_iterations,
         )
 
-        await self._emit_provenance(
-            result, org_id=str(org_id), principal=prov_principal, resource=resource
-        )
-
-        return await self._executions.create(
+        # Persist the durable run record FIRST, then emit provenance — an audit-emit failure must
+        # never discard a run whose side effects (real registry executions) have already happened.
+        row = await self._executions.create(
             execution_id=execution_id,
             organisation_id=org_id,
             user_id=principal.principal_id,
@@ -133,6 +135,10 @@ class HarnessExecutionService:
                 for s in result.steps
             ],
         )
+        await self._emit_provenance(
+            result, org_id=str(org_id), principal=prov_principal, resource=resource
+        )
+        return row
 
     async def _emit_provenance(
         self, result: LoopResult, *, org_id: str, principal: str, resource: str
@@ -140,13 +146,16 @@ class HarnessExecutionService:
         """One provenance event per step + a closure event (the single write-through path)."""
         for step in result.steps:
             action = "llm.complete" if step.kind == StepKind.LLM else "capability.invoke"
+            # coalesce so a model-supplied (possibly empty) tool name can't fail the required-field
+            # contract on the substrate collector.
+            outcome = f"{step.name or '<unnamed>'}:{step.status or 'unknown'}"
             await self._provenance.emit(
                 ProvenanceRecord(
                     organisation_id=org_id,
                     principal=principal,
                     action=action,
                     resource=resource,
-                    outcome=f"{step.name}:{step.status}",
+                    outcome=outcome,
                 )
             )
         await self._provenance.emit(

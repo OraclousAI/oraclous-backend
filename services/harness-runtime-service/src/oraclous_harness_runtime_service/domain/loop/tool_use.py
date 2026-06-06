@@ -60,7 +60,20 @@ async def run_tool_use_loop(
     last_text = ""
 
     for iteration in range(1, max_iterations + 1):
-        resp = await llm.complete(messages=messages, system=system, tools=tool_specs)
+        try:
+            resp = await llm.complete(messages=messages, system=system, tools=tool_specs)
+        except Exception as exc:  # noqa: BLE001 — an LLM-call failure is a hard fail for the run
+            steps.append(
+                LoopStep(len(steps), StepKind.LLM, "primary", "error", _truncate(str(exc)))
+            )
+            return LoopResult(
+                status=HarnessStatus.FAILED,
+                output=last_text or None,
+                steps=steps,
+                iterations=iteration,
+                error_type=type(exc).__name__,
+                error_message=str(exc),
+            )
         last_text = resp.text
 
         if not resp.tool_calls:
