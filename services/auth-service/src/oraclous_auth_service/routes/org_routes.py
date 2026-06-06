@@ -9,10 +9,13 @@ from __future__ import annotations
 from fastapi import APIRouter, status
 
 from oraclous_auth_service.core.dependencies import OrgServiceDep, UserClaimsDep
+from oraclous_auth_service.domain.organisations import MemberView
 from oraclous_auth_service.models.organisation_model import Organisation
 from oraclous_auth_service.schema.org_schemas import (
     CreateOrgRequest,
+    OrgMemberResponse,
     OrgResponse,
+    UpdateMemberRoleRequest,
     UpdateOrgRequest,
 )
 
@@ -28,6 +31,12 @@ def _org_response(org: Organisation) -> OrgResponse:
         logo_url=org.logo_url,
         owner_user_id=org.owner_user_id,
         status=org.status,
+    )
+
+
+def _member_response(member: MemberView) -> OrgMemberResponse:
+    return OrgMemberResponse(
+        user_id=member.user_id, email=member.email, role=member.role, since=member.since
     )
 
 
@@ -63,3 +72,32 @@ async def update_org(
         logo_url=body.logo_url,
     )
     return _org_response(org)
+
+
+@router.get("/{org_id}/members", response_model=list[OrgMemberResponse])
+async def list_members(
+    org_id: str, claims: UserClaimsDep, orgs: OrgServiceDep
+) -> list[OrgMemberResponse]:
+    members = await orgs.list_members(org_id=org_id, user_id=claims["sub"])
+    return [_member_response(m) for m in members]
+
+
+@router.patch("/{org_id}/members/{user_id}", response_model=OrgMemberResponse)
+async def change_member_role(
+    org_id: str,
+    user_id: str,
+    body: UpdateMemberRoleRequest,
+    claims: UserClaimsDep,
+    orgs: OrgServiceDep,
+) -> OrgMemberResponse:
+    member = await orgs.change_member_role(
+        org_id=org_id, actor_user_id=claims["sub"], target_user_id=user_id, role=body.role
+    )
+    return _member_response(member)
+
+
+@router.delete("/{org_id}/members/{user_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def remove_member(
+    org_id: str, user_id: str, claims: UserClaimsDep, orgs: OrgServiceDep
+) -> None:
+    await orgs.remove_member(org_id=org_id, actor_user_id=claims["sub"], target_user_id=user_id)

@@ -8,10 +8,22 @@ that authorises org-management actions (threat T-PRIV).
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
+from datetime import datetime
 from enum import StrEnum
 
 _SLUG_STRIP = re.compile(r"[^a-z0-9]+")
 _SLUG_MAX = 63
+
+
+@dataclass(frozen=True)
+class MemberView:
+    """A read projection of an org membership joined with the member's email (no I/O)."""
+
+    user_id: str
+    email: str | None
+    role: str
+    since: datetime
 
 
 class OrgRole(StrEnum):

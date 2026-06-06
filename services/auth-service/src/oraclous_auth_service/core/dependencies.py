@@ -52,6 +52,7 @@ def get_org_service(session: Annotated[AsyncSession, Depends(get_session)]) -> O
     return OrgService(
         organisations=OrganisationRepository(session),
         members=OrgMemberRepository(session),
+        users=UserRepository(session),
     )
 
 
@@ -74,6 +75,7 @@ def get_oauth_service(
     org_service = OrgService(
         organisations=OrganisationRepository(session),
         members=OrgMemberRepository(session),
+        users=UserRepository(session),
     )
     auth_service = AuthService(
         users=UserRepository(session),
@@ -98,6 +100,7 @@ def get_auth_service(session: Annotated[AsyncSession, Depends(get_session)]) -> 
         orgs=OrgService(
             organisations=OrganisationRepository(session),
             members=OrgMemberRepository(session),
+            users=UserRepository(session),
         ),
         audit=AuditRepository(session),
     )

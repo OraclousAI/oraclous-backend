@@ -6,6 +6,9 @@ plain create/update payloads + the org projection.
 
 from __future__ import annotations
 
+from datetime import datetime
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 
@@ -27,3 +30,15 @@ class OrgResponse(BaseModel):
     logo_url: str | None = None
     owner_user_id: str
     status: str
+
+
+# Role changes are constrained to non-owner roles — ownership transfer is a separate concern.
+class UpdateMemberRoleRequest(BaseModel):
+    role: Literal["admin", "member"]
+
+
+class OrgMemberResponse(BaseModel):
+    user_id: str
+    email: str | None = None
+    role: str
+    since: datetime

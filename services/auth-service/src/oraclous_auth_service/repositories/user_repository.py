@@ -35,6 +35,13 @@ class UserRepository:
     async def get_by_id(self, user_id: str) -> User | None:
         return await self._session.get(User, user_id)
 
+    async def list_by_ids(self, ids: list[str]) -> list[User]:
+        """Batch-resolve users by id (e.g. to attach emails to an org member roster)."""
+        if not ids:
+            return []
+        result = await self._session.execute(select(User).where(User.id.in_(ids)))
+        return list(result.scalars().all())
+
     async def create_user(
         self,
         *,
