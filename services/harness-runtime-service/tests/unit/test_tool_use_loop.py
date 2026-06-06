@@ -14,9 +14,29 @@ from oraclous_harness_runtime_service.domain.llm.base import (
     ToolSpec,
 )
 from oraclous_harness_runtime_service.domain.loop.tool_use import run_tool_use_loop
+from oraclous_harness_runtime_service.domain.policy import PolicyEnvelope
 from oraclous_harness_runtime_service.models.enums import HarnessStatus, StepKind
 
 pytestmark = pytest.mark.unit
+
+
+def _env(
+    *,
+    max_iterations: int = 6,
+    max_tool_calls: int | None = None,
+    max_wall: int | None = None,
+    gated: frozenset[str] = frozenset(),
+    redact: tuple[str, ...] = (),
+) -> PolicyEnvelope:
+    return PolicyEnvelope(
+        max_iterations=max_iterations,
+        max_tool_calls=max_tool_calls,
+        max_wall_time_seconds=max_wall,
+        max_tokens=None,
+        gated_bindings=gated,
+        redact_patterns=redact,
+    )
+
 
 _SPEC = ToolSpec(
     name="pg__list_tables",
@@ -67,7 +87,7 @@ async def test_converges_after_one_tool_call() -> None:
         user_input="go",
         tool_specs=[_SPEC],
         dispatch=_ok_dispatch,
-        max_iterations=6,
+        policy=_env(),
     )
     assert result.status is HarnessStatus.SUCCEEDED
     assert "tables" in (result.output or "")
@@ -83,7 +103,7 @@ async def test_tool_error_is_fed_back_not_fatal() -> None:
         user_input="go",
         tool_specs=[_SPEC],
         dispatch=_boom_dispatch,
-        max_iterations=6,
+        policy=_env(),
     )
     # the agent still answers (observed the error); the trace records the tool failure.
     assert result.status is HarnessStatus.SUCCEEDED
@@ -100,7 +120,7 @@ async def test_iteration_cap_escalates() -> None:
         user_input="go",
         tool_specs=[_SPEC],
         dispatch=_ok_dispatch,
-        max_iterations=3,
+        policy=_env(max_iterations=3),
     )
     assert result.status is HarnessStatus.ESCALATED
     assert result.error_type == "iteration_cap"
@@ -123,7 +143,7 @@ async def test_unknown_tool_is_recorded_as_error() -> None:
         user_input="go",
         tool_specs=[_SPEC],
         dispatch=_ok_dispatch,
-        max_iterations=6,
+        policy=_env(),
     )
     assert result.status is HarnessStatus.SUCCEEDED
     assert any("unknown_tool" in (s.detail or "") for s in result.steps)
@@ -142,9 +162,77 @@ async def test_llm_failure_is_a_hard_fail() -> None:
         user_input="go",
         tool_specs=[_SPEC],
         dispatch=_ok_dispatch,
-        max_iterations=6,
+        policy=_env(),
     )
     # an LLM-call failure is terminal (FAILED), distinct from a tool error (which is fed back).
     assert result.status is HarnessStatus.FAILED
     assert result.error_type == "RuntimeError"
     assert "provider 503" in (result.error_message or "")
+
+
+# ── slice 3 — coded governance enforcement (code wins over prose) ─────────────────────────────────
+
+
+async def test_tool_call_budget_halts() -> None:
+    result = await run_tool_use_loop(
+        llm=_ScriptedLLM(),
+        system="",
+        user_input="go",
+        tool_specs=[_SPEC],
+        dispatch=_ok_dispatch,
+        policy=_env(max_tool_calls=0),  # no tool calls allowed
+    )
+    assert result.status is HarnessStatus.ESCALATED
+    assert result.error_type == "tool_call_budget"
+    assert any(s.kind is StepKind.GATE for s in result.steps)
+
+
+async def test_hitl_gate_halts_before_dispatch() -> None:
+    dispatched = False
+
+    async def _watch(spec: ToolSpec, args: dict) -> dict:
+        nonlocal dispatched
+        dispatched = True
+        return {}
+
+    result = await run_tool_use_loop(
+        llm=_ScriptedLLM(),
+        system="",
+        user_input="go",
+        tool_specs=[_SPEC],
+        dispatch=_watch,
+        policy=_env(gated=frozenset({"pg"})),
+    )
+    assert result.status is HarnessStatus.ESCALATED
+    assert result.error_type == "hitl_required"
+    assert dispatched is False  # the gated capability was NOT executed
+
+
+async def test_wall_time_budget_halts() -> None:
+    result = await run_tool_use_loop(
+        llm=_LoopingLLM(),
+        system="",
+        user_input="go",
+        tool_specs=[_SPEC],
+        dispatch=_ok_dispatch,
+        policy=_env(max_wall=0),  # any elapsed time exhausts the budget
+    )
+    assert result.status is HarnessStatus.ESCALATED
+    assert result.error_type == "wall_time"
+
+
+async def test_output_is_redacted() -> None:
+    async def _secret(spec: ToolSpec, args: dict) -> dict:
+        return {"token": "SECRET123"}
+
+    result = await run_tool_use_loop(
+        llm=_ScriptedLLM(),
+        system="",
+        user_input="go",
+        tool_specs=[_SPEC],
+        dispatch=_secret,
+        policy=_env(redact=("SECRET123",)),
+    )
+    assert result.status is HarnessStatus.SUCCEEDED
+    assert "SECRET123" not in (result.output or "")
+    assert "[REDACTED]" in (result.output or "")
