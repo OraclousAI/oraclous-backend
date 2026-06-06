@@ -21,8 +21,12 @@ import yaml
 from oraclous_governance import Principal
 from oraclous_substrate import ProvenanceCollector, ProvenanceRecord
 
-from oraclous_harness_runtime_service.domain.llm.base import ToolSpec
-from oraclous_harness_runtime_service.domain.llm.factory import build_llm_client
+from oraclous_harness_runtime_service.domain.llm.base import LLMClient, ToolSpec
+from oraclous_harness_runtime_service.domain.llm.factory import (
+    LLMConfigError,
+    build_fake_client,
+    build_live_client,
+)
 from oraclous_harness_runtime_service.domain.loop.tool_use import LoopResult, run_tool_use_loop
 from oraclous_harness_runtime_service.domain.ohm.canonical import content_hash
 from oraclous_harness_runtime_service.domain.ohm.errors import OHMParseError, OHMReferenceError
@@ -38,6 +42,7 @@ from oraclous_harness_runtime_service.domain.tool_schemas import tool_specs_for
 from oraclous_harness_runtime_service.models.enums import StepKind
 from oraclous_harness_runtime_service.models.execution import HarnessExecution
 from oraclous_harness_runtime_service.repositories.execution_repository import ExecutionRepository
+from oraclous_harness_runtime_service.services.broker_client import BrokerClient, BrokerError
 from oraclous_harness_runtime_service.services.registry_client import RegistryClient, RegistryError
 
 _RESERVED_CONFIG_KEYS = ("credential_mappings", "capability_id")
@@ -52,21 +57,27 @@ class HarnessExecutionService:
         self,
         *,
         registry: RegistryClient,
+        broker: BrokerClient,
         executions: ExecutionRepository,
         provenance: ProvenanceCollector,
         trust: TrustStore,
         require_signature: bool,
         force_policy_set: str | None,
         llm_mode: str,
+        llm_base_urls: dict[str, str],
+        llm_timeout: float,
         max_iterations: int,
     ) -> None:
         self._registry = registry
+        self._broker = broker
         self._executions = executions
         self._provenance = provenance
         self._trust = trust
         self._require_signature = require_signature
         self._force_policy_set = force_policy_set
         self._llm_mode = llm_mode
+        self._llm_base_urls = llm_base_urls
+        self._llm_timeout = llm_timeout
         self._max_iterations = max_iterations
 
     async def execute(
@@ -116,14 +127,20 @@ class HarnessExecutionService:
             return execution.get("output_data") or {}
 
         prompt = manifest.primary_prompt()
-        result = await run_tool_use_loop(
-            llm=build_llm_client(self._llm_mode),
-            system=prompt.body if prompt else "",
-            user_input=user_input,
-            tool_specs=tool_specs,
-            dispatch=dispatch,
-            policy=envelope,
-        )
+        llm = await self._build_llm(manifest, org_id)
+        try:
+            result = await run_tool_use_loop(
+                llm=llm,
+                system=prompt.body if prompt else "",
+                user_input=user_input,
+                tool_specs=tool_specs,
+                dispatch=dispatch,
+                policy=envelope,
+            )
+        finally:
+            aclose = getattr(llm, "aclose", None)
+            if aclose is not None:
+                await aclose()
 
         # Persist the durable run record FIRST, then emit provenance — an audit-emit failure must
         # never discard a run whose side effects (real registry executions) have already happened.
@@ -155,6 +172,45 @@ class HarnessExecutionService:
             result, org_id=str(org_id), principal=str(principal.principal_id), resource=resource
         )
         return row
+
+    async def _build_llm(self, manifest, org_id: uuid.UUID) -> LLMClient:  # noqa: ANN001
+        """Build the loop's LLM client: the key-free fake, or a live client from the OHM's primary
+        model + a BYOM key resolved via the broker (ADR-008 — no platform fallback)."""
+        if self._llm_mode == "fake":
+            return build_fake_client()
+        model = manifest.primary_model()
+        if model is None:
+            raise HarnessExecutionError("live LLM mode requires a model in the OHM")
+        provider, _, model_id = model.binding.partition("/")
+        if not model_id:
+            raise HarnessExecutionError(
+                f"model binding {model.binding!r} must be '<provider>/<model-id>'"
+            )
+        base_url = self._llm_base_urls.get(provider)
+        if not base_url:
+            raise HarnessExecutionError(f"no base URL configured for LLM provider {provider!r}")
+        credential_id = model.config.get("credential_id")
+        if not credential_id:
+            raise HarnessExecutionError("live LLM requires a BYOM key (model.config.credential_id)")
+        try:
+            payload = await self._broker.resolve_credential(
+                credential_id=str(credential_id), organisation_id=org_id
+            )
+        except BrokerError as exc:
+            raise HarnessExecutionError(f"model credential resolution failed: {exc}") from exc
+        api_key = payload.get("api_key") or payload.get("key")
+        if not api_key:
+            raise HarnessExecutionError("the resolved model credential has no api_key")
+        try:
+            return build_live_client(
+                protocol_shape=model.protocol_shape,
+                base_url=base_url,
+                api_key=str(api_key),
+                model=model_id,
+                timeout=self._llm_timeout,
+            )
+        except LLMConfigError as exc:
+            raise HarnessExecutionError(str(exc)) from exc
 
     async def _source_document(
         self, manifest_inline: str | dict[str, Any] | None, manifest_ref: str | None

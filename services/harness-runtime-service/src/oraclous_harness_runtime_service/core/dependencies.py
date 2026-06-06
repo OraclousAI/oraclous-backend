@@ -25,6 +25,7 @@ from oraclous_harness_runtime_service.core.auth import (
 from oraclous_harness_runtime_service.core.config import Settings, get_settings
 from oraclous_harness_runtime_service.domain.ohm.signatures import TrustStore
 from oraclous_harness_runtime_service.repositories.execution_repository import ExecutionRepository
+from oraclous_harness_runtime_service.services.broker_client import BrokerClient
 from oraclous_harness_runtime_service.services.harness_execution_service import (
     HarnessExecutionService,
 )
@@ -103,6 +104,17 @@ async def get_registry_client(
         await client.aclose()
 
 
+async def get_broker_client() -> AsyncIterator[BrokerClient]:
+    settings = get_settings()
+    client = BrokerClient(
+        settings.credential_broker_url, internal_key=settings.internal_service_key or ""
+    )
+    try:
+        yield client
+    finally:
+        await client.aclose()
+
+
 def get_execution_repository(request: Request) -> ExecutionRepository:
     repo = getattr(request.app.state, "execution_repository", None)
     if repo is None:
@@ -130,6 +142,7 @@ def get_trust_store(request: Request) -> TrustStore:
 
 def get_harness_service(
     registry: Annotated[RegistryClient, Depends(get_registry_client)],
+    broker: Annotated[BrokerClient, Depends(get_broker_client)],
     executions: Annotated[ExecutionRepository, Depends(get_execution_repository)],
     provenance: Annotated[ProvenanceCollector, Depends(get_provenance)],
     trust: Annotated[TrustStore, Depends(get_trust_store)],
@@ -137,12 +150,15 @@ def get_harness_service(
     settings = get_settings()
     return HarnessExecutionService(
         registry=registry,
+        broker=broker,
         executions=executions,
         provenance=provenance,
         trust=trust,
         require_signature=settings.ohm_require_signature,
         force_policy_set=settings.force_policy_set,
         llm_mode=settings.llm_mode,
+        llm_base_urls=settings.llm_base_urls,
+        llm_timeout=settings.llm_request_timeout,
         max_iterations=settings.max_iterations,
     )
 
