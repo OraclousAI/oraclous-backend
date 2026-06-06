@@ -451,6 +451,7 @@ services:
       KNOWLEDGE_GRAPH_URL: "http://knowledge-graph-service:8000"
       KNOWLEDGE_RETRIEVER_URL: "http://knowledge-retriever-service:8000"
       CAPABILITY_REGISTRY_URL: "http://capability-registry-service:8000"
+      HARNESS_RUNTIME_URL: "http://harness-runtime-service:8000"
       # identity seam: dev-auth by default; AUTH_MODE=jwt verifies the real token via the shared secret
       GATEWAY_AUTH_MODE: "${GATEWAY_AUTH_MODE:-dev}"
       DEV_BEARER: "dev-token"
@@ -459,6 +460,60 @@ services:
       # gateway-mode can prove the request came through the gateway. Shared with the data services.
       INTERNAL_SERVICE_KEY: "${INTERNAL_SERVICE_KEY:-dev-internal-key}"
       GATEWAY_CORS_ORIGINS: "${GATEWAY_CORS_ORIGINS:-*}"
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    profiles: [services]
+    networks: [substrate]
+
+  # R4-S1 — harness-runtime schema migration one-shot (runs `alembic upgrade head`, then exits).
+  harness-migrate:
+    build:
+      context: ..
+      dockerfile: services/harness-runtime-service/Dockerfile
+    image: oraclous-harness-runtime-service:${IMAGE_TAG:-dev}
+    environment:
+      HARNESS_DATABASE_URL: "postgresql+asyncpg://oraclous:oraclous@postgres:5432/oraclous"
+    command: ["alembic", "upgrade", "head"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+    profiles: [services]
+    networks: [substrate]
+
+  # R4 — harness-runtime-service: loads an OHM and runs the agent tool-use loop over registry tools.
+  harness-runtime-service:
+    build:
+      context: ..
+      dockerfile: services/harness-runtime-service/Dockerfile
+    image: oraclous-harness-runtime-service:${IMAGE_TAG:-dev}
+    restart: unless-stopped
+    ports:
+      - "8007:8000"
+    environment:
+      HARNESS_DATABASE_URL: "postgresql+asyncpg://oraclous:oraclous@postgres:5432/oraclous"
+      # Identity seam: dev-auth by default; AUTH_MODE=gateway (ADR-018) trusts the gateway's
+      # X-Principal-*/X-Organisation-Id gated on the shared X-Internal-Key. The runtime forwards the
+      # same identity to the registry on every dispatch.
+      HARNESS_AUTH_MODE: "${HARNESS_AUTH_MODE:-dev}"
+      HARNESS_DEV_BEARER: "dev-token"
+      HARNESS_JWT_SECRET: "${AUTH_JWT_SECRET:-dev-jwt-secret}"
+      HARNESS_INTERNAL_SERVICE_KEY: "${INTERNAL_SERVICE_KEY:-dev-internal-key}"
+      HARNESS_CAPABILITY_REGISTRY_URL: "http://capability-registry-service:8000"
+      HARNESS_CREDENTIAL_BROKER_URL: "http://credential-broker-service:8000"
+      HARNESS_KNOWLEDGE_RETRIEVER_URL: "http://knowledge-retriever-service:8000"
+      # The LLM seam. `fake` (default) is key-free for CI/smoke; real provider shapes land in slice 4.
+      HARNESS_LLM_MODE: "${HARNESS_LLM_MODE:-fake}"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      harness-migrate:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD", "python", "-c",
              "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
