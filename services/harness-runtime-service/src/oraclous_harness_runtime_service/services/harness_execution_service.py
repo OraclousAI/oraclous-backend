@@ -50,6 +50,7 @@ class HarnessExecutionService:
         executions: ExecutionRepository,
         provenance: ProvenanceCollector,
         trust: TrustStore,
+        require_signature: bool,
         llm_mode: str,
         max_iterations: int,
     ) -> None:
@@ -57,6 +58,7 @@ class HarnessExecutionService:
         self._executions = executions
         self._provenance = provenance
         self._trust = trust
+        self._require_signature = require_signature
         self._llm_mode = llm_mode
         self._max_iterations = max_iterations
 
@@ -75,7 +77,7 @@ class HarnessExecutionService:
 
         # Source + harden the manifest (load-time, atomic; OHMError → 422).
         document = await self._source_document(manifest_inline, manifest_ref)
-        verify_signatures(document, self._trust)
+        verify_signatures(document, self._trust, require=self._require_signature)
         chash = content_hash(document)
         manifest = load_ohm(document)
         resolved = await self._resolve_all(manifest)
@@ -87,8 +89,11 @@ class HarnessExecutionService:
         instance_by_binding, tool_specs = await self._materialise(manifest, resolved)
 
         async def dispatch(spec: ToolSpec, args: dict[str, Any]) -> dict[str, Any]:
+            instance_id = instance_by_binding.get(spec.binding)
+            if instance_id is None:  # invariant: every emitted tool_spec.binding was materialised
+                raise RegistryError(f"no instance for capability binding {spec.binding!r}")
             execution = await self._registry.execute(
-                instance_by_binding[spec.binding], {"operation": spec.operation, **args}
+                instance_id, {"operation": spec.operation, **args}
             )
             if execution.get("status") != "SUCCESS":
                 detail = execution.get("error_message") or execution.get("status")
@@ -174,25 +179,45 @@ class HarnessExecutionService:
         manifest,
         resolved: dict[str, dict[str, Any]],  # noqa: ANN001
     ) -> tuple[dict[str, uuid.UUID], list[ToolSpec]]:
-        """Create a registry instance per capability binding and build the agent's full toolset."""
+        """Find-or-create a registry instance per capability + build the agent's full toolset.
+
+        Idempotent: each capability maps to a deterministically-named instance
+        (``harness:<id>:<binding>``), reused across runs rather than recreated — so retries don't
+        accumulate instances and a partial setup failure has a bounded, reusable footprint (the
+        registry has no instance-delete endpoint to compensate-delete against). Tool names are
+        ``<binding>__<operation>``; bindings are load-time-unique (parse), so they never collide.
+        """
         instance_by_binding: dict[str, uuid.UUID] = {}
         tool_specs: list[ToolSpec] = []
+        seen_tools: set[str] = set()
         try:
+            existing = {i.get("name"): i for i in await self._registry.list_instances()}
             for cap in manifest.capabilities:
                 item = resolved[cap.binding]
-                instance = await self._registry.create_instance(
-                    capability_id=str(item["id"]),
-                    name=f"harness:{manifest.metadata.id}:{cap.binding}",
-                    configuration={
-                        k: v for k, v in cap.config.items() if k not in _RESERVED_CONFIG_KEYS
-                    },
-                )
-                instance_id = uuid.UUID(str(instance["id"]))
+                name = f"harness:{manifest.metadata.id}:{cap.binding}"
+                prior = existing.get(name)
+                if prior is not None and str(prior.get("capability_id")) == str(item["id"]):
+                    instance_id = uuid.UUID(str(prior["id"]))
+                else:
+                    instance = await self._registry.create_instance(
+                        capability_id=str(item["id"]),
+                        name=name,
+                        configuration={
+                            k: v for k, v in cap.config.items() if k not in _RESERVED_CONFIG_KEYS
+                        },
+                    )
+                    instance_id = uuid.UUID(str(instance["id"]))
                 instance_by_binding[cap.binding] = instance_id
                 mappings = cap.config.get("credential_mappings") or {}
                 if mappings:
                     await self._registry.configure_credentials(instance_id, mappings)
-                tool_specs.extend(tool_specs_for(cap.binding, item.get("descriptor") or {}))
+                for spec in tool_specs_for(cap.binding, item.get("descriptor") or {}):
+                    if (
+                        spec.name in seen_tools
+                    ):  # de-dup duplicate operation names within a descriptor
+                        continue
+                    seen_tools.add(spec.name)
+                    tool_specs.append(spec)
         except RegistryError as exc:
             raise HarnessExecutionError(f"capability setup failed: {exc}") from exc
         return instance_by_binding, tool_specs

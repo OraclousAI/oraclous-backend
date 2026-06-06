@@ -87,3 +87,15 @@ def test_key_type_mismatch_fails() -> None:
     trust = TrustStore({"k1": _pub_pem(rsa_priv.public_key())})
     with pytest.raises(OHMSignatureError):
         verify_signatures(signed, trust)
+
+
+def test_require_signature_rejects_unsigned() -> None:
+    with pytest.raises(OHMSignatureError):
+        verify_signatures(_DOC, TrustStore({}), require=True)  # no signatures + require → reject
+
+
+def test_require_signature_accepts_validly_signed() -> None:
+    priv = ed25519.Ed25519PrivateKey.generate()
+    trust = TrustStore({"k1": _pub_pem(priv.public_key())})
+    signed = _signed(_DOC, signer="k1", algorithm="EdDSA", private_key=priv)
+    verify_signatures(signed, trust, require=True)  # valid signature satisfies the requirement

@@ -63,10 +63,16 @@ def _verify_one(public_key: PublicKeyTypes, algorithm: str, signature: bytes, da
         raise OHMSignatureError(f"unsupported signature algorithm {algorithm!r}")
 
 
-def verify_signatures(document: dict[str, Any], trust: TrustStore) -> None:
-    """Verify every signature on the OHM vs the trust store (fail-closed); no-op if unsigned."""
+def verify_signatures(
+    document: dict[str, Any], trust: TrustStore, *, require: bool = False
+) -> None:
+    """Verify every signature on the OHM vs the trust store (fail-closed). When ``require`` is set,
+    an unsigned OHM is rejected (closes signature-stripping); else unsigned verifies trivially."""
+    entries = document.get("signatures") or []
+    if require and not entries:
+        raise OHMSignatureError("a signed OHM is required but none was provided")
     data = canonical_bytes(document)
-    for entry in document.get("signatures") or []:
+    for entry in entries:
         signer = entry.get("signer")
         algorithm = entry.get("algorithm")
         raw = entry.get("signature")
