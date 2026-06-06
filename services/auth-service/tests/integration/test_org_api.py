@@ -97,3 +97,47 @@ async def test_cross_org_isolation(client: AsyncClient) -> None:
 async def test_org_routes_require_auth(client: AsyncClient) -> None:
     assert (await client.get("/v1/orgs")).status_code == 401
     assert (await client.post("/v1/orgs", json={"name": "x"})).status_code == 401
+
+
+async def test_switch_org_reissues_token_and_survives_refresh(client: AsyncClient) -> None:
+    body = await _register(client, "switch@ex.com")
+    token = body["access_token"]
+    personal_id = _org_claim(token)
+    second = (await client.post("/v1/orgs", headers=_auth(token), json={"name": "Second"})).json()
+
+    switched = await client.post(
+        "/v1/auth/switch-org", headers={**_auth(token), "X-Organisation-Id": second["id"]}
+    )
+    assert switched.status_code == 200, switched.text
+    new = switched.json()
+    assert second["id"] != personal_id
+    assert _org_claim(new["access_token"]) == second["id"]
+
+    # the switched-to org is carried on the refresh token, so it survives a silent refresh
+    refreshed = await client.post("/v1/auth/refresh", json={"refresh_token": new["refresh_token"]})
+    assert refreshed.status_code == 200
+    assert _org_claim(refreshed.json()["access_token"]) == second["id"]
+
+
+async def test_switch_to_foreign_org_is_404(client: AsyncClient) -> None:
+    a = await _register(client, "switch-a@ex.com")
+    b = await _register(client, "switch-b@ex.com")
+    b_org = (await client.get("/v1/orgs", headers=_auth(b["access_token"]))).json()[0]
+    # A is not a member of B's org -> 404 mask (not 403)
+    r = await client.post(
+        "/v1/auth/switch-org",
+        headers={**_auth(a["access_token"]), "X-Organisation-Id": b_org["id"]},
+    )
+    assert r.status_code == 404
+
+
+async def test_switch_org_requires_auth_and_header(client: AsyncClient) -> None:
+    # unauthenticated -> 401
+    assert (
+        await client.post("/v1/auth/switch-org", headers={"X-Organisation-Id": "x"})
+    ).status_code == 401
+    # the X-Organisation-Id header is required -> 422 when absent
+    body = await _register(client, "switch-v@ex.com")
+    assert (
+        await client.post("/v1/auth/switch-org", headers=_auth(body["access_token"]))
+    ).status_code == 422

@@ -177,6 +177,18 @@ class AuthService:
             user, organisation_id=organisation_id, family_id=row.family_id
         )
 
+    async def switch_org(self, *, user_id: str, organisation_id: str) -> TokenBundle:
+        """Re-issue the session scoped to another organisation the authenticated user belongs to.
+
+        Membership is validated by ``resolve_active_org`` (a non-member is 404-masked); a fresh
+        rotation family is issued for the selected org, and that org is carried on the new refresh
+        token so it survives subsequent refreshes (active-org switch without re-login).
+        """
+        user = await self.get_user(user_id=user_id)
+        resolved = await self._orgs.resolve_active_org(user=user, requested_org_id=organisation_id)
+        await self._record("user.switch_org", actor_id=user.id, organisation_id=resolved)
+        return await self.issue_for_user(user=user, organisation_id=resolved)
+
     async def change_password(self, *, user_id: str, new_password: str) -> None:
         validate_password_strength(new_password)
         user = await self._users.set_password(user_id, hash_password(new_password))
