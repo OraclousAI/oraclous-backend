@@ -69,6 +69,27 @@ class RetrievalRepository:
             top_k=top_k,
         )
 
+    def subgraph(self, *, graph_id: str, limit: int) -> dict:
+        # A bounded slice for visualisation: take up to `limit` nodes (org+graph scoped), then the
+        # edges whose BOTH endpoints fall inside that set. Edges come from a directed pattern
+        # comprehension per node (no APOC); collect() always yields one row (even for an empty
+        # graph), so the FE gets {nodes, edges} without an empty-result special case.
+        rows = self._query(
+            "MATCH (n) WHERE n.graph_id = $graph_id AND n.organisation_id = $organisation_id "
+            "WITH n LIMIT $limit "
+            "WITH collect(n) AS ns "
+            "RETURN [a IN ns | {id: elementId(a), labels: labels(a), props: properties(a)}] "
+            "AS nodes, [a IN ns | [(a)-[r]->(b) WHERE b IN ns | "
+            "{source: elementId(a), target: elementId(b), type: type(r)}]] AS edge_groups",
+            graph_id=graph_id,
+            limit=limit,
+        )
+        if not rows:
+            return {"nodes": [], "edges": []}
+        row = rows[0]
+        edges = [edge for group in row.get("edge_groups", []) for edge in group]
+        return {"nodes": row.get("nodes", []), "edges": edges}
+
     def temporal(self, *, graph_id: str, as_of: str, top_k: int) -> list[dict]:
         return self._query(
             "MATCH (n) WHERE n.graph_id = $graph_id AND n.organisation_id = $organisation_id "

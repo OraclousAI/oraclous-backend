@@ -7,7 +7,7 @@ from __future__ import annotations
 import uuid
 
 import pytest
-from oraclous_knowledge_retriever_service.contracts import NodeResult
+from oraclous_knowledge_retriever_service.contracts import EdgeResult, NodeResult, SubgraphResult
 from oraclous_knowledge_retriever_service.core.dependencies import get_retrieval_service
 
 pytestmark = pytest.mark.integration
@@ -32,6 +32,15 @@ class _FakeRetrievalService:
 
     async def temporal(self, *, graph_id, as_of, top_k):
         return [NodeResult(id="4:z:3", type="Record", properties={"valid_from": as_of})]
+
+    async def subgraph(self, *, graph_id, limit):
+        return SubgraphResult(
+            nodes=[
+                NodeResult(id="4:x:1", type="Document", properties={"name": "A"}),
+                NodeResult(id="4:y:2", type="Chunk", properties={"text": "b"}),
+            ],
+            edges=[EdgeResult(source="4:x:1", target="4:y:2", type="HAS_CHUNK")],
+        )
 
 
 @pytest.fixture
@@ -83,3 +92,18 @@ async def test_fulltext_and_hybrid_and_graph(client) -> None:
     assert nb.status_code == 200 and nb.json()[0]["properties"]["relationship"] == "PART_OF"
     tp = await client.get(f"/v1/graph/{gid}/temporal?as_of=2020-01-01", headers=_AUTH)
     assert tp.status_code == 200 and tp.json()[0]["type"] == "Record"
+
+
+async def test_subgraph_returns_nodes_and_edges(client) -> None:
+    gid = str(uuid.uuid4())
+    resp = await client.get(f"/v1/graph/{gid}/subgraph?limit=50", headers=_AUTH)
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert set(body.keys()) == {"nodes", "edges"}  # strict {nodes, edges} envelope
+    assert {n["id"] for n in body["nodes"]} == {"4:x:1", "4:y:2"}
+    assert body["edges"] == [{"source": "4:x:1", "target": "4:y:2", "type": "HAS_CHUNK"}]
+
+
+async def test_subgraph_requires_auth(client) -> None:
+    resp = await client.get(f"/v1/graph/{uuid.uuid4()}/subgraph")
+    assert resp.status_code == 401

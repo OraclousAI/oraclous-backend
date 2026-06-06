@@ -126,3 +126,44 @@ async def test_neighbors_carries_relationship() -> None:
     with _ctx():
         results = await svc.neighbors(graph_id="g1", node_id="n1", top_k=10)
     assert results[0]["properties"]["relationship"] == "PART_OF"
+
+
+async def test_subgraph_maps_nodes_and_flattens_edges() -> None:
+    # one Cypher row: nodes + edge_groups (a per-node list of edges); the repo flattens the groups
+    # and the service maps each node through the NodeResult projection (labels/embedding stripped).
+    driver = _FakeDriver(
+        [
+            [
+                {
+                    "nodes": [
+                        {
+                            "id": "n1",
+                            "labels": ["Document"],
+                            "props": {"name": "A", "embedding": [0.1] * 4},
+                        },
+                        {"id": "n2", "labels": ["Chunk", "__KGBuilder__"], "props": {"text": "b"}},
+                    ],
+                    "edge_groups": [
+                        [{"source": "n1", "target": "n2", "type": "HAS_CHUNK"}],
+                        [],
+                    ],
+                }
+            ]
+        ]
+    )
+    svc = RetrievalService(driver, HashingEmbedder(8))
+    with _ctx():
+        result = await svc.subgraph(graph_id="g1", limit=100)
+    assert [n["id"] for n in result["nodes"]] == ["n1", "n2"]
+    assert result["nodes"][0]["type"] == "Document"
+    assert result["nodes"][1]["type"] == "Chunk"  # internal label dropped
+    assert "embedding" not in result["nodes"][0]["properties"]  # vector never echoed
+    assert result["edges"] == [{"source": "n1", "target": "n2", "type": "HAS_CHUNK"}]
+
+
+async def test_subgraph_empty_graph_returns_empty() -> None:
+    driver = _FakeDriver([[]])  # no rows -> defensive empty result
+    svc = RetrievalService(driver, HashingEmbedder(8))
+    with _ctx():
+        result = await svc.subgraph(graph_id="g1", limit=100)
+    assert result == {"nodes": [], "edges": []}
