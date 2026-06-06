@@ -26,8 +26,16 @@ verification** (Ed25519 / ES256 / RS256) against a config trust store (`HARNESS_
 **`manifest_ref`** — run a registered `kind=harness` descriptor by id. Unsigned OHMs still load (a
 *required* signature is a slice-3 policy).
 
-Later slices: governance/policy/budget (S3); live Anthropic + BYOM (S4); human-actor dispatch (S5);
-consciousness hook + §22 sign-off (S6).
+**Slice 3 — governance** ("code wins over prose", Section 6): an OHM's `governance.policy_set_ref`
+resolves to a built-in **policy set** (Structured Governance Taxonomy v1.0) that drives coded
+enforcement — **signature requirement**, **capability allocation** (allowed registries + forbidden
+capabilities) and **BYOM limits** (allowed providers / protocol shapes) at load; and a runtime
+**`PolicyEnvelope`** the tool-use loop enforces: **tool-call + wall-time budgets** (→ ESCALATED),
+**HITL gates** (capabilities flagged `config.hitl` halt before dispatch), and **output redaction**
+(`governance.redact_patterns`). The prompt cannot relax any of it.
+
+Later slices: live Anthropic + BYOM (S4); human-actor dispatch (S5); consciousness hook + §22
+sign-off (S6).
 
 ## Smoke (key-free)
 

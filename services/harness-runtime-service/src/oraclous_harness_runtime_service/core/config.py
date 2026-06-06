@@ -43,16 +43,20 @@ class Settings(BaseSettings):
     # --- the LLM seam. `fake`: a deterministic, key-free responder (CI/smoke). Real protocol
     # shapes (native/openai-compatible/gemini-compatible) + BYOM creds land in slice 4. ---
     llm_mode: Literal["fake", "anthropic", "openai", "gemini"] = "fake"
-    # hard cap on tool-use iterations (one LLM turn + its dispatches). Policy-tunable in slice 3.
-    max_iterations: int = 6
+    # Safety backstop on tool-use iterations (one LLM turn + its dispatches). The per-tier tool-call
+    # budget (policy set) is the real governance limit and binds within this cap.
+    max_iterations: int = 25
 
-    # --- OHM signature trust store: signer-id → public-key PEM. Set via HARNESS_OHM_TRUST_KEYS as a
-    # JSON object. Empty by default (unsigned OHMs load; whether a signature is *required* is a
-    # governance/policy decision in slice 3). ---
+    # --- OHM signature trust store: signer-id → public-key PEM, via HARNESS_OHM_TRUST_KEYS (JSON).
+    # Empty by default; a *required* signature comes from the policy set or the flag below. ---
     ohm_trust_keys: dict[str, str] = {}
-    # When true, an OHM with no valid signature is rejected (closes signature-stripping). Default
-    # false at S2 (open); slice-3 policy sets the requirement per harness/workspace.
+    # When true, an unsigned OHM is rejected (closes signature-stripping). ORed with the resolved
+    # policy set's require_signature — fail-closed: either source requiring it makes it required.
     ohm_require_signature: bool = False
+    # Deployment governance floor: when set, this policy set is FORCED for every run, ignoring the
+    # manifest's policy_set_ref — so an author can't self-select a weaker tier. Unset → the author's
+    # referenced set (defaulting to development-default) applies.
+    force_policy_set: str | None = None
 
     @property
     def sync_database_url(self) -> str:

@@ -29,6 +29,11 @@ from oraclous_harness_runtime_service.domain.ohm.errors import OHMParseError, OH
 from oraclous_harness_runtime_service.domain.ohm.parse import load_ohm
 from oraclous_harness_runtime_service.domain.ohm.references import resolve_capabilities
 from oraclous_harness_runtime_service.domain.ohm.signatures import TrustStore, verify_signatures
+from oraclous_harness_runtime_service.domain.policy import (
+    build_envelope,
+    enforce_load_policy,
+    resolve_policy_set,
+)
 from oraclous_harness_runtime_service.domain.tool_schemas import tool_specs_for
 from oraclous_harness_runtime_service.models.enums import StepKind
 from oraclous_harness_runtime_service.models.execution import HarnessExecution
@@ -51,6 +56,7 @@ class HarnessExecutionService:
         provenance: ProvenanceCollector,
         trust: TrustStore,
         require_signature: bool,
+        force_policy_set: str | None,
         llm_mode: str,
         max_iterations: int,
     ) -> None:
@@ -59,6 +65,7 @@ class HarnessExecutionService:
         self._provenance = provenance
         self._trust = trust
         self._require_signature = require_signature
+        self._force_policy_set = force_policy_set
         self._llm_mode = llm_mode
         self._max_iterations = max_iterations
 
@@ -75,12 +82,20 @@ class HarnessExecutionService:
             raise HarnessExecutionError("authenticated principal has no organisation scope")
         org_id = principal.organisation_id
 
-        # Source + harden the manifest (load-time, atomic; OHMError → 422).
+        # Source + harden the manifest (load-time, atomic; OHMError → 422). The policy set (from
+        # governance.policy_set_ref) drives coded enforcement: signature requirement, capability
+        # allocation + BYOM limits at load, and the runtime budget/HITL/redaction envelope.
         document = await self._source_document(manifest_inline, manifest_ref)
-        verify_signatures(document, self._trust, require=self._require_signature)
-        chash = content_hash(document)
         manifest = load_ohm(document)
+        # A deployment-forced policy set overrides the author's choice (governance floor, M1).
+        policy = resolve_policy_set(self._force_policy_set or manifest.governance.policy_set_ref)
+        verify_signatures(
+            document, self._trust, require=self._require_signature or policy.require_signature
+        )
+        enforce_load_policy(manifest, policy)
+        chash = content_hash(document)
         resolved = await self._resolve_all(manifest)
+        envelope = build_envelope(manifest, policy, hard_max_iterations=self._max_iterations)
 
         execution_id = uuid.uuid4()
         resource = f"harness_execution:{execution_id}"
@@ -107,7 +122,7 @@ class HarnessExecutionService:
             user_input=user_input,
             tool_specs=tool_specs,
             dispatch=dispatch,
-            max_iterations=self._max_iterations,
+            policy=envelope,
         )
 
         # Persist the durable run record FIRST, then emit provenance — an audit-emit failure must
@@ -226,8 +241,13 @@ class HarnessExecutionService:
         self, result: LoopResult, *, org_id: str, principal: str, resource: str
     ) -> None:
         """One provenance event per step + a closure event (the single write-through path)."""
+        _action = {
+            StepKind.LLM: "llm.complete",
+            StepKind.TOOL: "capability.invoke",
+            StepKind.GATE: "governance.gate",
+        }
         for step in result.steps:
-            action = "llm.complete" if step.kind == StepKind.LLM else "capability.invoke"
+            action = _action.get(step.kind, "capability.invoke")
             # coalesce so a model-supplied (possibly empty) tool name can't fail the required-field
             # contract on the substrate collector.
             outcome = f"{step.name or '<unnamed>'}:{step.status or 'unknown'}"

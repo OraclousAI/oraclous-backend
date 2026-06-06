@@ -58,6 +58,9 @@ class OHMGovernance(BaseModel):
 
     policy_set_ref: str | None = None
     rebac_bindings: list[dict[str, Any]] = Field(default_factory=list)
+    # regexes redacted from tool results + the final answer before they leave the runtime (Section 6
+    # output redaction). A runtime mechanism keyed off the OHM until the taxonomy parametrises it.
+    redact_patterns: list[str] = Field(default_factory=list)
 
 
 class OHMRuntime(BaseModel):

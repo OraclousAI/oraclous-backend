@@ -19,3 +19,4 @@ class StepKind(enum.StrEnum):
 
     LLM = "llm"  # one model turn
     TOOL = "tool"  # one capability dispatch
+    GATE = "gate"  # a governance decision (budget halt / HITL gate / forbidden)
