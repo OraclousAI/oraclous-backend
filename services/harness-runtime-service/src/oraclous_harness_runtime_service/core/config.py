@@ -46,6 +46,11 @@ class Settings(BaseSettings):
     # hard cap on tool-use iterations (one LLM turn + its dispatches). Policy-tunable in slice 3.
     max_iterations: int = 6
 
+    # --- OHM signature trust store: signer-id → public-key PEM. Set via HARNESS_OHM_TRUST_KEYS as a
+    # JSON object. Empty by default (unsigned OHMs load; whether a signature is *required* is a
+    # governance/policy decision in slice 3). ---
+    ohm_trust_keys: dict[str, str] = {}
+
     @property
     def sync_database_url(self) -> str:
         """The synchronous psycopg DSN Alembic uses (swaps the asyncpg driver for psycopg)."""

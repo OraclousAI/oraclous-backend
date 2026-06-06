@@ -17,6 +17,7 @@ dependencies = [
     "oraclous-governance",
     "oraclous-substrate",
     "python-jose[cryptography]>=3.3,<4.0",
+    "cryptography>=42,<46",
 ]
 
 [tool.uv.sources]

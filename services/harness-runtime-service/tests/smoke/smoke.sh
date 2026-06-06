@@ -24,8 +24,27 @@ export GATEWAY_AUTH_MODE=jwt HARNESS_AUTH_MODE=gateway CAPABILITY_REGISTRY_AUTH_
        CRED_BROKER_AUTH_MODE=gateway KGS_AUTH_MODE=gateway KRS_AUTH_MODE=gateway \
        CAPABILITY_REGISTRY_BROKER_MODE=real HARNESS_LLM_MODE=fake
 
+# S2 — mint an OHM signing key (Ed25519) the harness will trust, and a sign() helper that runs the
+# harness image (it has cryptography + the package). The private key persists in a host-mounted dir.
+_SIGN_PY='import json,sys
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import ed25519
+from oraclous_harness_runtime_service.domain.ohm.signatures import make_signature
+KEY="/keys/priv.pem"
+if sys.argv[1]=="keygen":
+    k=ed25519.Ed25519PrivateKey.generate()
+    open(KEY,"wb").write(k.private_bytes(serialization.Encoding.PEM,serialization.PrivateFormat.PKCS8,serialization.NoEncryption()))
+    sys.stdout.write(k.public_key().public_bytes(serialization.Encoding.PEM,serialization.PublicFormat.SubjectPublicKeyInfo).decode())
+else:
+    d=json.load(sys.stdin); k=serialization.load_pem_private_key(open(KEY,"rb").read(),password=None)
+    d["signatures"]=[make_signature(d,signer="smoke-signer",algorithm="EdDSA",private_key=k)]; sys.stdout.write(json.dumps(d))'
+KEYDIR=$(mktemp -d)
+ohm_sign() { docker run --rm -i -v "${KEYDIR}:/keys" oraclous-harness-runtime-service:dev python -c "$_SIGN_PY" "$@"; }
+
 if [[ "${HARNESS_SMOKE_NO_COMPOSE:-0}" != "1" ]]; then
-  step "1. bring up the full stack (gateway mode, real broker) + migrate the harness schema"
+  step "1. bring up the full stack (gateway mode, real broker) + a trusted OHM signing key"
+  ${COMPOSE} build harness-runtime-service
+  export HARNESS_OHM_TRUST_KEYS=$(python3 -c "import json,sys;print(json.dumps({'smoke-signer':sys.stdin.read()}))" <<<"$(ohm_sign keygen)")
   ${COMPOSE} --profile services up -d --build
   ${COMPOSE} up harness-migrate
   ${COMPOSE} up -d harness-runtime-service application-gateway-service
@@ -115,4 +134,36 @@ c=$(curl -s -o /dev/null -w '%{http_code}' -X POST "${GW}/v1/harnesses/execute" 
   -H 'Content-Type: application/json' -d '{"manifest":{},"input":"x"}')
 [[ "$c" == "401" ]] && pass "unauthenticated execute -> 401" || fail "expected 401, got $c"
 
-printf '\n\033[32mAll harness-runtime slice-1 smoke checks passed.\033[0m\n'
+# ── slice 2 — full OHM: content hash, signatures, manifest_ref ────────────────────────────────────
+step "10. S2: the run recorded a content hash"
+echo "$got" | grep -qE '"content_hash":"[0-9a-f]{64}"' \
+  && pass "execution carries a 64-hex OHM content_hash" || fail "no content_hash: $got"
+
+# Build the OHM document (object form) once; reuse for signing + manifest_ref.
+OHM_DOC=$(python3 -c "import json;print(json.dumps({'ohm_version':'1.0','metadata':{'id':'01976e3a-7c9b-7b00-9c45-cccccccccccc','name':'Signed PG','owner_organization_id':'01976e3a-0000-7000-9c45-000000000000'},'capabilities':[{'ref':'core/postgresql-reader@1.0.0','binding':'pg','config':{'credential_mappings':{'connection_string':'${CRED}'}}}],'models':[{'role':'primary','binding':'anthropic/claude-opus-4-8','protocol_shape':'native'}],'prompts':[{'role':'primary','source':'inline','body':'List the tables.'}],'runtime':{'entrypoint':'pg'}}))")
+
+step "11. S2: a SIGNED OHM is accepted"
+SIGNED=$(printf '%s' "$OHM_DOC" | ohm_sign sign)
+sbody=$(curl -s "${AUTH[@]}" -X POST "${GW}/v1/harnesses/execute" \
+  -d "$(python3 -c "import json,sys;print(json.dumps({'manifest':json.loads(sys.argv[1]),'input':'go'}))" "$SIGNED")")
+echo "$sbody" | grep -q '"status":"SUCCEEDED"' && pass "signed OHM verified + executed" || fail "signed run: $sbody"
+
+step "12. S2: a TAMPERED signature and an UNKNOWN signer are rejected (422)"
+tampered=$(python3 -c "import json,sys;d=json.loads(sys.argv[1]);d['prompts'][0]['body']='HACKED';print(json.dumps({'manifest':d,'input':'go'}))" "$SIGNED")
+c=$(curl -s -o /dev/null -w '%{http_code}' "${AUTH[@]}" -X POST "${GW}/v1/harnesses/execute" -d "$tampered")
+[[ "$c" == "422" ]] && pass "tampered signature -> 422" || fail "expected 422, got $c"
+unknown=$(python3 -c "import json,sys;d=json.loads(sys.argv[1]);d['signatures'][0]['signer']='nobody';print(json.dumps({'manifest':d,'input':'go'}))" "$SIGNED")
+c=$(curl -s -o /dev/null -w '%{http_code}' "${AUTH[@]}" -X POST "${GW}/v1/harnesses/execute" -d "$unknown")
+[[ "$c" == "422" ]] && pass "unknown signer -> 422" || fail "expected 422, got $c"
+
+step "13. S2: manifest_ref — register a kind=harness descriptor, then run it by reference"
+REFID=$(curl -fsS "${AUTH[@]}" -X POST "${GW}/api/v1/capabilities" \
+  -d "$(python3 -c "import json,sys;print(json.dumps({'kind':'harness','descriptor':json.loads(sys.argv[1])}))" "$OHM_DOC")" \
+  | jget "['id']")
+[[ -n "$REFID" ]] && pass "registered harness descriptor ${REFID}" || fail "harness register failed"
+rbody=$(curl -s "${AUTH[@]}" -X POST "${GW}/v1/harnesses/execute" \
+  -d "$(python3 -c "import json,sys;print(json.dumps({'manifest_ref':sys.argv[1],'input':'go'}))" "$REFID")")
+echo "$rbody" | grep -q '"status":"SUCCEEDED"' && pass "ran harness by manifest_ref" || fail "manifest_ref run: $rbody"
+
+[[ "${HARNESS_SMOKE_NO_COMPOSE:-0}" == "1" ]] || rm -rf "${KEYDIR}"
+printf '\n\033[32mAll harness-runtime slice-2 smoke checks passed.\033[0m\n'

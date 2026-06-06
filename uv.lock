@@ -968,6 +968,7 @@ source = { editable = "services/harness-runtime-service" }
 dependencies = [
     { name = "alembic" },
     { name = "asyncpg" },
+    { name = "cryptography" },
     { name = "fastapi" },
     { name = "httpx" },
     { name = "oraclous-governance" },
@@ -985,6 +986,7 @@ dependencies = [
 requires-dist = [
     { name = "alembic", specifier = ">=1.13,<2.0" },
     { name = "asyncpg", specifier = ">=0.29,<1.0" },
+    { name = "cryptography", specifier = ">=42,<46" },
     { name = "fastapi", specifier = ">=0.115,<1.0" },
     { name = "httpx", specifier = ">=0.27,<1.0" },
     { name = "oraclous-governance", editable = "packages/governance" },

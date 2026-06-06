@@ -22,18 +22,22 @@ class HealthResponse(BaseModel):
 
 
 class ExecuteHarnessRequest(BaseModel):
-    """Run a harness. Supply the OHM inline as raw YAML (``manifest_yaml``) or as an already-parsed
-    object (``manifest``) — exactly one. ``input`` is the goal/message handed to the entrypoint
-    actor."""
+    """Run a harness. Supply the OHM exactly one of three ways: inline raw YAML (``manifest_yaml``),
+    an already-parsed object (``manifest``), or by reference to a registered ``kind=harness``
+    descriptor (``manifest_ref`` — a capability id). ``input`` is the goal handed to the agent."""
 
     manifest_yaml: str | None = None
     manifest: dict[str, Any] | None = None
+    manifest_ref: str | None = None
     input: str = Field(min_length=1)
 
     @model_validator(mode="after")
     def _exactly_one_manifest(self) -> ExecuteHarnessRequest:
-        if (self.manifest_yaml is None) == (self.manifest is None):
-            raise ValueError("supply exactly one of 'manifest_yaml' or 'manifest'")
+        provided = sum(
+            x is not None for x in (self.manifest_yaml, self.manifest, self.manifest_ref)
+        )
+        if provided != 1:
+            raise ValueError("supply exactly one of 'manifest_yaml', 'manifest', or 'manifest_ref'")
         return self
 
 
@@ -54,6 +58,7 @@ class HarnessExecutionOut(BaseModel):
     organisation_id: uuid.UUID
     harness_id: uuid.UUID
     harness_name: str
+    content_hash: str | None
     status: HarnessStatus
     output: str | None
     error_type: str | None

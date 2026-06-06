@@ -20,8 +20,14 @@ services over HTTP (it never imports them): the **capability-registry** (resolve
 - Durable Postgres store: `harness_executions` + a provenance sink behind the substrate collector.
 - `POST /v1/harnesses/execute`, `GET /v1/harnesses/executions/{id}`, `GET /health`. Port `8007:8000`.
 
-Later slices: full OHM + signatures + atomic refs (S2); governance/policy/budget (S3); live Anthropic
-+ BYOM (S4); human-actor dispatch (S5); consciousness hook + §22 sign-off (S6).
+**Slice 2 — full OHM** adds: **atomic reference resolution** of every capability (all-or-nothing) so
+an agent gets its full toolset (multi-tool); **canonical serialisation + content hash**; **signature
+verification** (Ed25519 / ES256 / RS256) against a config trust store (`HARNESS_OHM_TRUST_KEYS`); and
+**`manifest_ref`** — run a registered `kind=harness` descriptor by id. Unsigned OHMs still load (a
+*required* signature is a slice-3 policy).
+
+Later slices: governance/policy/budget (S3); live Anthropic + BYOM (S4); human-actor dispatch (S5);
+consciousness hook + §22 sign-off (S6).
 
 ## Smoke (key-free)
 

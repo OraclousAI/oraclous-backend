@@ -14,6 +14,7 @@ from fastapi import FastAPI
 from oraclous_substrate import ProvenanceCollector
 
 from oraclous_harness_runtime_service.core.config import get_settings
+from oraclous_harness_runtime_service.domain.ohm.signatures import TrustStore
 from oraclous_harness_runtime_service.repositories.execution_repository import ExecutionRepository
 from oraclous_harness_runtime_service.repositories.provenance_sink import PostgresProvenanceSink
 
@@ -34,6 +35,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         logger.warning("Postgres unavailable at startup; execute/read disabled: %s", exc)
         app.state.execution_repository = None
         app.state.provenance = None
+
+    # OHM signature trust store (config-driven). A malformed key degrades to an empty store so
+    # /health still serves; verification then fail-closes on any signed OHM (unknown signer).
+    try:
+        app.state.trust_store = TrustStore(settings.ohm_trust_keys)
+    except Exception as exc:  # noqa: BLE001 — degrade: empty trust store, fail-closed on signed OHMs
+        logger.warning("OHM trust store failed to load; treating as empty: %s", exc)
+        app.state.trust_store = TrustStore({})
 
     try:
         yield
