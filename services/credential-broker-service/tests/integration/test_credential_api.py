@@ -1,8 +1,9 @@
 """Integration: encrypted credential CRUD vs real Postgres (S1).
 
-Proves create → DB stores AES-GCM ciphertext (not readable JSON) → GET decrypts to the original →
-cross-org read is denied (404, T1) → update re-encrypts → delete. Dev-auth seam binds the org from
-the bearer (ORG001). Key-free (dev ENCRYPTION_KEY + dev bearer).
+Proves create → DB stores AES-GCM ciphertext (not readable JSON) → the user-facing GET/retrieve
+return METADATA ONLY (the decrypted secret is never exposed on this surface; runtime resolution uses
+the X-Internal-Key /internal path) → cross-org/cross-user read is 404 (T1) → update → delete.
+Dev-auth binds org + user from the bearer (ORG001). Key-free (dev key + bearer).
 """
 
 from __future__ import annotations
@@ -83,7 +84,7 @@ def _payload() -> dict:
     }
 
 
-async def test_create_is_encrypted_at_rest_and_round_trips(client: AsyncClient) -> None:
+async def test_create_encrypts_at_rest_and_reads_are_metadata_only(client: AsyncClient) -> None:
     body = _payload()
     created = await client.post("/credentials/", json=body, headers=_auth())
     assert created.status_code == 201, created.text
@@ -105,10 +106,18 @@ async def test_create_is_encrypted_at_rest_and_round_trips(client: AsyncClient) 
     await engine.dispose()
     assert "super-secret" not in stored and "access_token" not in stored
 
-    # GET decrypts back to the original secret
+    # the user-facing GET returns metadata only — the decrypted secret is NEVER exposed here
     got = await client.get(f"/credentials/{cred_id}", headers=_auth())
     assert got.status_code == 200
-    assert got.json()["credential"] == body["credential"]
+    assert "credential" not in got.json()
+    assert got.json()["provider"] == "google" and got.json()["id"] == cred_id
+
+    # the retrieve/list roster is likewise metadata-only (no secret on any item)
+    listed = await client.post(
+        "/credentials/retrieve/", json={"user_id": body["user_id"]}, headers=_auth()
+    )
+    assert listed.status_code == 200
+    assert listed.json() and all("credential" not in item for item in listed.json())
 
 
 async def test_cross_org_read_is_denied(client: AsyncClient) -> None:
@@ -136,9 +145,9 @@ async def test_update_and_delete(client: AsyncClient) -> None:
     }
     r = await client.put(f"/credentials/{cred_id}", json=upd, headers=_auth())
     assert r.status_code == 200 and r.json()["name"] == "renamed"
-    # the rotated secret decrypts
+    # the user-facing read stays metadata-only after an update (no decrypted secret returned)
     got = await client.get(f"/credentials/{cred_id}", headers=_auth())
-    assert got.json()["credential"] == {"access_token": "rotated"}
+    assert got.status_code == 200 and "credential" not in got.json()
     assert (await client.delete(f"/credentials/{cred_id}", headers=_auth())).status_code == 204
     assert (await client.get(f"/credentials/{cred_id}", headers=_auth())).status_code == 404
 

@@ -16,6 +16,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from oraclous_credential_broker_service.core.auth import (
     AuthError,
     organisation_id_from_gateway_headers,
+    principal_id_from_gateway_headers,
     verify_token,
 )
 from oraclous_credential_broker_service.core.config import get_settings
@@ -106,6 +107,41 @@ async def get_organisation_id(
     return principal.organisation_id
 
 
+async def get_principal_user_id(
+    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(_bearer)],
+    x_principal_id: Annotated[str | None, Header()] = None,
+    x_internal_key: Annotated[str | None, Header()] = None,
+) -> uuid.UUID:
+    """Resolve the authenticated user from the principal — credentials are personal, so a caller
+    can only ever act on their own (the user id is never taken from the request body/query)."""
+    settings = get_settings()
+    if settings.AUTH_MODE == "gateway":
+        await verify_internal_key(x_internal_key)
+        try:
+            return principal_id_from_gateway_headers(x_principal_id)
+        except AuthError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail=str(exc),
+                headers={"WWW-Authenticate": "Bearer"},
+            ) from exc
+    if credentials is None or not credentials.credentials:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="missing bearer token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    try:
+        principal = await verify_token(credentials.credentials)
+    except AuthError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=str(exc),
+            headers={"WWW-Authenticate": "Bearer"},
+        ) from exc
+    return principal.principal_id
+
+
 def get_credential_service(
     repo: Annotated[CredentialRepository, Depends(get_credential_repository)],
 ) -> CredentialService:
@@ -128,3 +164,4 @@ CredentialBrokerServiceDep = Annotated[
 ]
 DelegationServiceDep = Annotated[DelegationService, Depends(get_delegation_service)]
 OrganisationIdDep = Annotated[uuid.UUID, Depends(get_organisation_id)]
+PrincipalUserIdDep = Annotated[uuid.UUID, Depends(get_principal_user_id)]

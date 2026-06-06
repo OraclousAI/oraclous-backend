@@ -149,7 +149,7 @@ async def resolve_credential(
     """Return a stored credential's DECRYPTED payload by id (org-scoped). For service→service
     resolution of non-OAuth secrets (connection_string / api_key) used by tool execution; the
     OAuth flow stays on ``/runtime-token``. CredentialNotFoundError → 404 (cross-org mask)."""
-    out = await svc.get(
+    out = await svc.resolve_decrypted(
         credential_id=resolve_input.credential_id, organisation_id=resolve_input.organisation_id
     )
     return ResolveCredentialResponse(
