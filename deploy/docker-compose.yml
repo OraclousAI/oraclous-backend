@@ -507,11 +507,14 @@ services:
       HARNESS_CAPABILITY_REGISTRY_URL: "http://capability-registry-service:8000"
       HARNESS_CREDENTIAL_BROKER_URL: "http://credential-broker-service:8000"
       HARNESS_KNOWLEDGE_RETRIEVER_URL: "http://knowledge-retriever-service:8000"
-      # The LLM seam. `fake` (default) is key-free for CI/smoke; real provider shapes land in slice 4.
+      # The LLM seam. `fake` (default) is key-free for CI/smoke; `live` builds the real client from
+      # the OHM model's protocol_shape + a BYOM key resolved via the broker (ADR-008, no platform key).
       HARNESS_LLM_MODE: "${HARNESS_LLM_MODE:-fake}"
       # OHM signature trust store (signer-id → public-key PEM, JSON). Empty by default; set to verify
-      # signed OHMs. Unsigned OHMs load regardless (a *required* signature is a slice-3 policy).
+      # signed OHMs. Unsigned OHMs load regardless unless a policy/flag requires a signature.
       HARNESS_OHM_TRUST_KEYS: "${HARNESS_OHM_TRUST_KEYS:-}"
+      # Deployment governance floor: force a policy set for every run (author can't downgrade).
+      HARNESS_FORCE_POLICY_SET: "${HARNESS_FORCE_POLICY_SET:-}"
     depends_on:
       postgres:
         condition: service_healthy

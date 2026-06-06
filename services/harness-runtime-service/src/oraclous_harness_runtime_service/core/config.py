@@ -40,9 +40,17 @@ class Settings(BaseSettings):
     credential_broker_url: str = "http://credential-broker-service:8000"
     knowledge_retriever_url: str = "http://knowledge-retriever-service:8000"
 
-    # --- the LLM seam. `fake`: a deterministic, key-free responder (CI/smoke). Real protocol
-    # shapes (native/openai-compatible/gemini-compatible) + BYOM creds land in slice 4. ---
-    llm_mode: Literal["fake", "anthropic", "openai", "gemini"] = "fake"
+    # --- the LLM seam. `fake`: key-free deterministic responder (CI/smoke). `live`: a real client
+    # from the OHM model's protocol_shape + a per-execution BYOM key via the broker (ADR-008; the
+    # harness never holds a model key in its own env). ---
+    llm_mode: Literal["fake", "live"] = "fake"
+    # provider (the first segment of an OHM model binding) → OpenAI-compatible base URL. OpenRouter
+    # serves Claude/OpenAI/Gemini/etc. behind one OpenAI-compatible endpoint + one key.
+    llm_base_urls: dict[str, str] = {
+        "openrouter": "https://openrouter.ai/api/v1",
+        "openai": "https://api.openai.com/v1",
+    }
+    llm_request_timeout: float = 120.0
     # Safety backstop on tool-use iterations (one LLM turn + its dispatches). The per-tier tool-call
     # budget (policy set) is the real governance limit and binds within this cap.
     max_iterations: int = 25

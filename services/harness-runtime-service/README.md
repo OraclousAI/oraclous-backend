@@ -34,10 +34,18 @@ capabilities) and **BYOM limits** (allowed providers / protocol shapes) at load;
 **HITL gates** (capabilities flagged `config.hitl` halt before dispatch), and **output redaction**
 (`governance.redact_patterns`). The prompt cannot relax any of it.
 
-Later slices: live Anthropic + BYOM (S4); human-actor dispatch (S5); consciousness hook + §22
-sign-off (S6).
+**Slice 4 — live LLM (BYOM)** adds the real tool-use loop: `HARNESS_LLM_MODE=live` builds a client
+from the OHM model's `protocol_shape` + a **BYOM key resolved via the credential-broker** (ADR-008 —
+no platform fallback key; the harness never holds a model key). The **openai-compatible** shape is
+wired (OpenRouter serves Claude/OpenAI/Gemini/etc. behind one key); `native`/`gemini` fail closed
+until their direct providers land. The OHM names the model as `<provider>/<model-id>` (e.g.
+`openrouter/anthropic/claude-sonnet-4`) with `config.credential_id` → the broker credential.
 
-## Smoke (key-free)
+Later slices: human-actor dispatch (S5); consciousness hook + §22 sign-off (S6).
 
-`tests/smoke/smoke.sh` runs the full stack, submits an OHM whose agent calls the **real** PostgreSQL
-Reader against the stack's own Postgres, and asserts a real result + a provenance trail.
+## Smoke
+
+`tests/smoke/smoke.sh` (key-free) runs the full stack on the **fake** LLM and asserts the OHM /
+signature / governance behaviour end-to-end. The **live** LLM path (S4) is covered by the unit suite
+(OpenAI-compatible marshalling, factory, broker resolution) + a manual OpenRouter run — CI never makes
+billable model calls.
