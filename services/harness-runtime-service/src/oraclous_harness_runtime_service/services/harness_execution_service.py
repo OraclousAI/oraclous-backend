@@ -182,6 +182,14 @@ class HarnessExecutionService:
         await self._emit_provenance(
             result, org_id=str(org_id), principal=str(principal.principal_id), resource=resource
         )
+        await self._emit_consciousness(
+            org_id=str(org_id),
+            principal=str(principal.principal_id),
+            resource=resource,
+            harness_name=manifest.metadata.name,
+            status=result.status.value,
+            summary=result.output,
+        )
         return row
 
     async def _dispatch_human(
@@ -246,6 +254,14 @@ class HarnessExecutionService:
                 resource=resource,
                 outcome=HarnessStatus.ESCALATED.value,
             )
+        )
+        await self._emit_consciousness(
+            org_id=str(org_id),
+            principal=prov,
+            resource=resource,
+            harness_name=manifest.metadata.name,
+            status=HarnessStatus.ESCALATED.value,
+            summary=f"assigned to human role {human_role!r}",
         )
         return row
 
@@ -399,5 +415,29 @@ class HarnessExecutionService:
                 action="harness.execute",
                 resource=resource,
                 outcome=result.status.value,
+            )
+        )
+
+    async def _emit_consciousness(
+        self,
+        *,
+        org_id: str,
+        principal: str,
+        resource: str,
+        harness_name: str,
+        status: str,
+        summary: str | None,
+    ) -> None:
+        """Write-through a consciousness record (a provenance/event hook, NOT a privileged path) —
+        captures the run's outcome so future interactions can retrieve it (the retrieval side is a
+        later capability). Emitted via the same single provenance write path."""
+        note = (summary or "").strip().replace("\n", " ")[:200] or "(no output)"
+        await self._provenance.emit(
+            ProvenanceRecord(
+                organisation_id=org_id,
+                principal=principal,
+                action="consciousness.write",
+                resource=resource,
+                outcome=f"{harness_name} → {status}: {note}",
             )
         )

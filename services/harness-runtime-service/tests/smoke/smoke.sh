@@ -209,5 +209,11 @@ curl -fsS "${AUTH[@]}" "${GW}/v1/harnesses/executions" \
   | python3 -c "import json,sys;d=json.load(sys.stdin);assert d['total']>=1 and 'total_tokens' in d['executions'][0],d" \
   && pass "GET /executions lists runs (with total_tokens)" || fail "executions not listed"
 
+# ── slice 6 — consciousness write-through hook ───────────────────────────────────────────────────
+step "20. S6: a consciousness record was written for the run (EXID from step 6)"
+c=$(${COMPOSE} exec -T postgres psql -U oraclous -d oraclous -tAc \
+  "select count(*) from harness_provenance where resource = 'harness_execution:${EXID}' and action='consciousness.write'")
+[[ "${c//[[:space:]]/}" -ge 1 ]] && pass "consciousness.write event recorded" || fail "no consciousness event"
+
 [[ "${HARNESS_SMOKE_NO_COMPOSE:-0}" == "1" ]] || rm -rf "${KEYDIR}"
-printf '\n\033[32mAll harness-runtime slice-5 smoke checks passed.\033[0m\n'
+printf '\n\033[32mAll harness-runtime slice-6 smoke checks passed (R4 complete; awaiting §22 sign-off).\033[0m\n'

@@ -48,7 +48,29 @@ the loop; **token-usage metering** (the live client reports `total_tokens`, reco
 also makes the policy **`max_tokens` budget** enforceable; and read surfaces `GET /v1/harnesses/
 executions` (list) + `GET /v1/harnesses/assignments` (the task board).
 
-Last slice: consciousness hook + §22 sign-off (S6).
+**Slice 6 — consciousness + sign-off** adds a **consciousness write-through hook**: every run emits a
+`consciousness.write` provenance event capturing its outcome (a hook for future consciousness
+retrieval — a later capability; deliberately the same provenance write path, not a privileged one).
+This completes the R4 build.
+
+## Definition of Done (ORAA-4 §22 — 8 gates)
+
+| # | Gate | Status |
+| --- | --- | --- |
+| 1 | Structurally conformant (§21 layout + import contracts) | ✅ CI (`structure_enforced: true`) |
+| 2 | Not hollow (no stubs/NotImplemented) | ✅ CI `check_no_stubs` |
+| 3 | It runs (`docker compose up` healthy, `/health` 200) | ✅ `smoke.sh` step 2 |
+| 4 | Real endpoints (no stub/501) vs real substrate | ✅ live e2e + `smoke.sh` |
+| 5 | End-to-end smoke vs real substrate | ✅ `smoke.sh` (20 steps, through the gateway) |
+| 6 | **Reza personally runs the smoke + signs off** | ⏳ **pending** |
+| 7 | `needs-human` until accepted | ⏳ pending |
+| 8 | `claimed_done` flipped only after sign-off | ⏳ pending |
+
+**To sign off** (gates 6-8): bring up the stack and run
+`bash services/harness-runtime-service/tests/smoke/smoke.sh` (key-free; add `HARNESS_SMOKE_OPENROUTER_KEY`
+for the optional live-LLM check). When it passes to your satisfaction, flip
+`tools/lint/service_status.yaml` → `harness-runtime-service.claimed_done: true` (which then locks the
+no-stubs gate on it forever).
 
 ## Smoke
 
