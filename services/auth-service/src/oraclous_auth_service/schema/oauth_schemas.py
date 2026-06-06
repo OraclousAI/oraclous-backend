@@ -7,3 +7,9 @@ from pydantic import BaseModel
 
 class LoginUrlResponse(BaseModel):
     authorize_url: str
+
+
+class ProvidersResponse(BaseModel):
+    """The OAuth providers that have credentials configured (so the UI shows only working ones)."""
+
+    providers: list[str]

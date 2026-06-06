@@ -132,3 +132,11 @@ async def test_unconfigured_provider_is_503(oauth_ctx) -> None:
     # github has no client credentials in env -> 503, service still up
     resp = await client.get("/oauth/github/login", params={"redirect_uri": "https://app/cb"})
     assert resp.status_code == 503
+
+
+async def test_providers_lists_only_configured(oauth_ctx) -> None:
+    client, _ = oauth_ctx
+    # only google has credentials in this fixture; github/notion are omitted (no secrets exposed).
+    resp = await client.get("/oauth/providers")
+    assert resp.status_code == 200
+    assert resp.json() == {"providers": ["google"]}

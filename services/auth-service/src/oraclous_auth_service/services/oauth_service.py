@@ -18,7 +18,7 @@ from typing import Protocol
 from urllib.parse import urlencode
 
 from oraclous_auth_service.core.encryption import decrypt, encrypt
-from oraclous_auth_service.core.oauth_providers import ProviderConfig, get_provider
+from oraclous_auth_service.core.oauth_providers import SUPPORTED, ProviderConfig, get_provider
 from oraclous_auth_service.domain.oauth import generate_pkce, generate_state, merge_scopes
 from oraclous_auth_service.repositories.audit_repository import AuditRepository
 from oraclous_auth_service.repositories.oauth_repository import (
@@ -89,6 +89,11 @@ class OAuthService:
         if provider is None:
             raise OAuthProviderUnconfiguredError(f"OAuth provider '{name}' is not configured")
         return provider
+
+    @staticmethod
+    def available_providers() -> list[str]:
+        """Supported providers that have credentials configured (names only — no secrets)."""
+        return [name for name in SUPPORTED if get_provider(name) is not None]
 
     async def begin_login(self, *, provider_name: str, redirect_uri: str) -> str:
         provider = self._provider_or_503(provider_name)
