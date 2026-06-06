@@ -56,6 +56,7 @@ class HarnessExecutionService:
         provenance: ProvenanceCollector,
         trust: TrustStore,
         require_signature: bool,
+        force_policy_set: str | None,
         llm_mode: str,
         max_iterations: int,
     ) -> None:
@@ -64,6 +65,7 @@ class HarnessExecutionService:
         self._provenance = provenance
         self._trust = trust
         self._require_signature = require_signature
+        self._force_policy_set = force_policy_set
         self._llm_mode = llm_mode
         self._max_iterations = max_iterations
 
@@ -85,7 +87,8 @@ class HarnessExecutionService:
         # allocation + BYOM limits at load, and the runtime budget/HITL/redaction envelope.
         document = await self._source_document(manifest_inline, manifest_ref)
         manifest = load_ohm(document)
-        policy = resolve_policy_set(manifest.governance.policy_set_ref)
+        # A deployment-forced policy set overrides the author's choice (governance floor, M1).
+        policy = resolve_policy_set(self._force_policy_set or manifest.governance.policy_set_ref)
         verify_signatures(
             document, self._trust, require=self._require_signature or policy.require_signature
         )

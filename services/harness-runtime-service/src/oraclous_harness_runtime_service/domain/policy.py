@@ -14,6 +14,7 @@ wins.** Every check here is deterministic and fail-closed; a violation is an ``O
 from __future__ import annotations
 
 import fnmatch
+import re
 from dataclasses import dataclass, field
 
 from oraclous_harness_runtime_service.domain.ohm.errors import OHMGovernanceError
@@ -108,27 +109,46 @@ def resolve_policy_set(ref: str | None) -> PolicySet:
     return policy
 
 
+# Redaction patterns are author-supplied — bound count/length and compile-validate to keep a
+# malformed pattern a clean 422 (not a 500) and limit the catastrophic-backtracking (ReDoS) surface.
+_MAX_REDACT_PATTERNS = 25
+_MAX_REDACT_PATTERN_LEN = 200
+
+
 def _registry_of(ref: str) -> str:
-    """``core/echo@1`` → ``core``; ``org:<id>/x@1`` → ``org:<id>``."""
-    head = ref.split("/", 1)[0]
-    return head
+    """``core/echo@1`` → ``core``; ``org:<id>/x@1`` → ``org:<id>`` (lowercased)."""
+    return ref.split("/", 1)[0].strip().lower()
+
+
+def _name_part(value: str) -> str:
+    """Drop the ``@version`` and lowercase — the version-/case-independent identity for matching."""
+    return value.split("@", 1)[0].strip().lower()
 
 
 def _registry_allowed(registry: str, allowed: tuple[str, ...]) -> bool:
-    return any(fnmatch.fnmatch(registry, pattern) for pattern in allowed)
+    return any(fnmatch.fnmatch(registry, pattern.lower()) for pattern in allowed)
+
+
+def _is_forbidden(ref: str, patterns: tuple[str, ...]) -> bool:
+    name = _name_part(ref)
+    return any(fnmatch.fnmatch(name, _name_part(pattern)) for pattern in patterns)
+
+
+def _hitl_flagged(value: object) -> bool:
+    return value is True or (isinstance(value, str) and value.strip().lower() == "true")
 
 
 def enforce_load_policy(manifest: OHMManifest, policy: PolicySet) -> None:
-    """Coded load-time governance: capability allocation + BYOM limits (fail-closed)."""
+    """Coded load-time governance: capability allocation + BYOM limits (fail-closed). Matching is
+    version- and case-independent so an unversioned/odd-cased ref can't dodge a forbidden glob."""
     for cap in manifest.capabilities:
         registry = _registry_of(cap.ref)
         if not _registry_allowed(registry, policy.allowed_registries):
             raise OHMGovernanceError(
                 f"capability {cap.ref!r} is in registry {registry!r}, not allowed by {policy.id}"
             )
-        for pattern in policy.forbidden_capabilities:
-            if fnmatch.fnmatch(cap.ref, pattern):
-                raise OHMGovernanceError(f"capability {cap.ref!r} is forbidden by {policy.id}")
+        if _is_forbidden(cap.ref, policy.forbidden_capabilities):
+            raise OHMGovernanceError(f"capability {cap.ref!r} is forbidden by {policy.id}")
     for model in manifest.models:
         provider = model.binding.split("/", 1)[0]
         if policy.allowed_providers is not None and provider not in policy.allowed_providers:
@@ -142,15 +162,37 @@ def enforce_load_policy(manifest: OHMManifest, policy: PolicySet) -> None:
             )
 
 
+def _validated_redact_patterns(patterns: list[str]) -> tuple[str, ...]:
+    if len(patterns) > _MAX_REDACT_PATTERNS:
+        raise OHMGovernanceError(f"too many redact_patterns (max {_MAX_REDACT_PATTERNS})")
+    out: list[str] = []
+    for pattern in patterns:
+        text = str(pattern)
+        if len(text) > _MAX_REDACT_PATTERN_LEN:
+            raise OHMGovernanceError("a redact pattern exceeds the maximum length")
+        try:
+            re.compile(text)
+        except re.error as exc:
+            raise OHMGovernanceError(f"invalid redact pattern {text!r}: {exc}") from exc
+        out.append(text)
+    return tuple(out)
+
+
 def build_envelope(
     manifest: OHMManifest, policy: PolicySet, *, hard_max_iterations: int
 ) -> PolicyEnvelope:
-    """Build the effective runtime envelope: the stricter of the service cap and the policy budget,
-    plus HITL gates (capabilities flagged ``config.hitl: true``) and OHM redaction patterns."""
-    gated = frozenset(c.binding for c in manifest.capabilities if c.config.get("hitl") is True)
-    redact = tuple(str(p) for p in (manifest.governance.redact_patterns or []))
-    # iteration cap: the loop's own guard, bounded by the service hard cap (and tool-call budget).
-    max_iterations = hard_max_iterations
+    """Build the effective runtime envelope. The iteration cap is a safety backstop derived from the
+    policy's tool-call budget (so a stricter tier's smaller budget actually binds), bounded by the
+    service hard cap. HITL gates come from capabilities flagged ``config.hitl``; redaction patterns
+    are validated (a bad pattern is a governance error, not a 500)."""
+    gated = frozenset(
+        c.binding for c in manifest.capabilities if _hitl_flagged(c.config.get("hitl"))
+    )
+    redact = _validated_redact_patterns(manifest.governance.redact_patterns or [])
+    if policy.max_tool_calls is not None:
+        max_iterations = min(hard_max_iterations, policy.max_tool_calls + 1)
+    else:
+        max_iterations = hard_max_iterations
     return PolicyEnvelope(
         max_iterations=max_iterations,
         max_tool_calls=policy.max_tool_calls,

@@ -141,6 +141,7 @@ def get_harness_service(
         provenance=provenance,
         trust=trust,
         require_signature=settings.ohm_require_signature,
+        force_policy_set=settings.force_policy_set,
         llm_mode=settings.llm_mode,
         max_iterations=settings.max_iterations,
     )

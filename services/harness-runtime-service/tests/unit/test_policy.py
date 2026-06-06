@@ -85,3 +85,34 @@ def test_envelope_carries_budget_gates_and_redaction() -> None:
     assert env.max_iterations == 9  # service hard cap
     assert env.gated_bindings == frozenset({"pg"})  # config.hitl: true
     assert env.redact_patterns == ("secret-\\d+",)
+
+
+def test_forbidden_matches_an_unversioned_ref() -> None:
+    # H2: an unversioned/odd-cased ref must not dodge a "core/shell-exec@*" forbidden glob.
+    strict = resolve_policy_set("policy-set:production-strict@1.0.0")
+    with pytest.raises(OHMGovernanceError):
+        enforce_load_policy(_ohm(cap_ref="core/shell-exec"), strict)
+    with pytest.raises(OHMGovernanceError):
+        enforce_load_policy(_ohm(cap_ref="core/Shell-Exec@2.0.0"), strict)
+
+
+def test_tool_call_budget_binds_within_the_iteration_cap() -> None:
+    # M2: the per-tier tool-call budget shapes the iteration cap (so tiers actually differ).
+    strict = resolve_policy_set("policy-set:production-strict@1.0.0")  # max_tool_calls=20
+    env = build_envelope(_ohm(), strict, hard_max_iterations=25)
+    assert env.max_iterations == 21  # min(25, 20 + 1)
+
+
+def test_bad_redact_pattern_is_a_governance_error() -> None:
+    # M4: a malformed author-supplied regex is a clean 422, not a 500.
+    with pytest.raises(OHMGovernanceError):
+        build_envelope(_ohm(redact=["("]), resolve_policy_set(None), hard_max_iterations=25)
+
+
+def test_too_many_redact_patterns_rejected() -> None:
+    with pytest.raises(OHMGovernanceError):
+        build_envelope(
+            _ohm(redact=[f"p{i}" for i in range(30)]),
+            resolve_policy_set(None),
+            hard_max_iterations=25,
+        )

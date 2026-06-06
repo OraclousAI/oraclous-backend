@@ -35,11 +35,19 @@ def _ref_slug(ref: str) -> str:
 
 
 class RegistryClient:
-    def __init__(self, base_url: str, *, headers: dict[str, str], timeout: float = 30.0) -> None:
+    def __init__(
+        self,
+        base_url: str,
+        *,
+        headers: dict[str, str],
+        timeout: float = 30.0,
+        transport: httpx.AsyncBaseTransport | None = None,
+    ) -> None:
         self._client = httpx.AsyncClient(
             base_url=base_url.rstrip("/"),
             headers={"Content-Type": "application/json", **headers},
             timeout=timeout,
+            transport=transport,
         )
 
     async def aclose(self) -> None:
@@ -70,16 +78,22 @@ class RegistryClient:
     async def resolve_capability(
         self, ref: str, *, explicit_id: str | None = None
     ) -> dict[str, Any]:
-        """Resolve an OHM capability ``ref`` to a registry tool item (carries ``id`` + a
-        ``descriptor``). An explicit ``capability_id`` (from the OHM capability ``config``) wins;
-        otherwise match the ref's name slug to a tool's top-level ``name``."""
+        """Resolve an OHM capability ``ref`` to a registry tool item (carries ``id`` + descriptor).
+        A ``config.capability_id`` selects the row, but its resolved name MUST still match the ref's
+        name slug — else a benign ref could smuggle in a different (forbidden) capability by id.
+        Without an id, match the ref's name slug to a tool's ``name``. Fail-closed."""
         tools = await self.list_tools()
+        slug = _ref_slug(ref)
         if explicit_id:
             found = next((t for t in tools if str(t.get("id")) == explicit_id), None)
             if found is None:
                 raise RegistryError(f"capability_id {explicit_id} not found in the registry")
+            if _slug(found.get("name", "")) != slug:
+                raise RegistryError(
+                    f"capability_id {explicit_id} resolves to {found.get('name')!r}, "
+                    f"not matching ref {ref!r} (slug {slug!r})"
+                )
             return found
-        slug = _ref_slug(ref)
         found = next((t for t in tools if _slug(t.get("name", "")) == slug), None)
         if found is None:
             raise RegistryError(f"no registry capability matches ref {ref!r} (slug {slug!r})")

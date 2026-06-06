@@ -77,22 +77,25 @@ async def run_tool_use_loop(
     tool_calls_made = 0
     started = time.monotonic()
 
-    def _escalate(name: str, reason: str, message: str) -> LoopResult:
+    def _over_wall_time() -> bool:
+        return policy.max_wall_time_seconds is not None and (
+            time.monotonic() - started > policy.max_wall_time_seconds
+        )
+
+    def _escalate(name: str, reason: str, message: str, iterations: int) -> LoopResult:
         steps.append(LoopStep(len(steps), StepKind.GATE, name, reason, message))
         return LoopResult(
             status=HarnessStatus.ESCALATED,
             output=last_text or None,
             steps=steps,
-            iterations=tool_calls_made,
+            iterations=iterations,
             error_type=reason,
             error_message=message,
         )
 
     for iteration in range(1, policy.max_iterations + 1):
-        if policy.max_wall_time_seconds is not None and (
-            time.monotonic() - started > policy.max_wall_time_seconds
-        ):
-            return _escalate("budget", "wall_time", "wall-time budget exhausted")
+        if _over_wall_time():
+            return _escalate("budget", "wall_time", "wall-time budget exhausted", iteration)
 
         try:
             resp = await llm.complete(messages=messages, system=system, tools=tool_specs)
@@ -138,17 +141,25 @@ async def run_tool_use_loop(
         for tc in resp.tool_calls:
             spec = by_name.get(tc.name)
             # Coded governance — enforced BEFORE any dispatch, regardless of what the prose said.
+            # Re-checked per tool call so a batched turn can't overrun the budget mid-batch.
+            if _over_wall_time():
+                return _escalate("budget", "wall_time", "wall-time budget exhausted", iteration)
             if spec is not None and spec.binding in policy.gated_bindings:
                 return _escalate(
                     f"{spec.binding}.{spec.operation}",
                     "hitl_required",
                     "capability requires human approval (HITL gate)",
+                    iteration,
                 )
             if policy.max_tool_calls is not None and tool_calls_made >= policy.max_tool_calls:
-                return _escalate("budget", "tool_call_budget", "tool-call budget exhausted")
+                return _escalate(
+                    "budget", "tool_call_budget", "tool-call budget exhausted", iteration
+                )
 
             if spec is None:
-                content = json.dumps({"error": "unknown_tool", "detail": tc.name})
+                content = _redact(
+                    json.dumps({"error": "unknown_tool", "detail": tc.name}), redactors
+                )
                 status = "error"
                 step_name = tc.name
             else:
@@ -159,7 +170,9 @@ async def run_tool_use_loop(
                     content = _redact(json.dumps(result, default=str), redactors)
                     status = "ok"
                 except Exception as exc:  # noqa: BLE001 — feed the error back so the model can adapt
-                    content = json.dumps({"error": type(exc).__name__, "detail": str(exc)})
+                    content = _redact(
+                        json.dumps({"error": type(exc).__name__, "detail": str(exc)}), redactors
+                    )
                     status = "error"
             messages.append(
                 {"role": "tool", "tool_call_id": tc.id, "name": tc.name, "content": content}
@@ -167,4 +180,6 @@ async def run_tool_use_loop(
             steps.append(LoopStep(len(steps), StepKind.TOOL, step_name, status, _truncate(content)))
 
     # iteration cap reached without a final answer → escalate.
-    return _escalate("budget", "iteration_cap", "tool-use loop did not converge")
+    return _escalate(
+        "budget", "iteration_cap", "tool-use loop did not converge", policy.max_iterations
+    )
