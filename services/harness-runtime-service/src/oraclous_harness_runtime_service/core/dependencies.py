@@ -23,6 +23,7 @@ from oraclous_harness_runtime_service.core.auth import (
     verify_token,
 )
 from oraclous_harness_runtime_service.core.config import Settings, get_settings
+from oraclous_harness_runtime_service.domain.ohm.signatures import TrustStore
 from oraclous_harness_runtime_service.repositories.execution_repository import ExecutionRepository
 from oraclous_harness_runtime_service.services.harness_execution_service import (
     HarnessExecutionService,
@@ -122,16 +123,24 @@ def get_provenance(request: Request) -> ProvenanceCollector:
     return collector
 
 
+def get_trust_store(request: Request) -> TrustStore:
+    store = getattr(request.app.state, "trust_store", None)
+    return store if store is not None else TrustStore({})
+
+
 def get_harness_service(
     registry: Annotated[RegistryClient, Depends(get_registry_client)],
     executions: Annotated[ExecutionRepository, Depends(get_execution_repository)],
     provenance: Annotated[ProvenanceCollector, Depends(get_provenance)],
+    trust: Annotated[TrustStore, Depends(get_trust_store)],
 ) -> HarnessExecutionService:
     settings = get_settings()
     return HarnessExecutionService(
         registry=registry,
         executions=executions,
         provenance=provenance,
+        trust=trust,
+        require_signature=settings.ohm_require_signature,
         llm_mode=settings.llm_mode,
         max_iterations=settings.max_iterations,
     )

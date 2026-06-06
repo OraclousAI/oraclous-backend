@@ -73,6 +73,17 @@ def test_entrypoint_must_match_a_capability_binding() -> None:
         load_ohm(bad)
 
 
+def test_duplicate_capability_binding_rejected() -> None:
+    # two capabilities sharing a binding would silently shadow each other downstream (H2).
+    dup = _MINIMAL.replace(
+        '  - ref: "core/echo@1.0.0"\n    binding: "echo"\n',
+        '  - ref: "core/echo@1.0.0"\n    binding: "echo"\n'
+        '  - ref: "core/other@1.0.0"\n    binding: "echo"\n',
+    )
+    with pytest.raises(OHMSchemaError):
+        load_ohm(dup)
+
+
 def test_non_mapping_document_raises_parse_error() -> None:
     with pytest.raises(OHMParseError):
         load_ohm("- just\n- a\n- list")

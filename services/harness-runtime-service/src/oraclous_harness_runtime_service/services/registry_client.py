@@ -58,6 +58,15 @@ class RegistryClient:
         body = await self._json(resp)
         return body.get("capabilities") or []
 
+    async def get_capability(self, capability_id: str) -> dict[str, Any]:
+        """Fetch one capability descriptor by id (used to resolve a harness ``manifest_ref``)."""
+        return await self._json(await self._client.get(f"/api/v1/capabilities/{capability_id}"))
+
+    async def list_instances(self) -> list[dict[str, Any]]:
+        """List the caller-org's tool instances (used to find-or-reuse a harness's instances)."""
+        body = await self._json(await self._client.get("/api/v1/instances"))
+        return body.get("instances") or []
+
     async def resolve_capability(
         self, ref: str, *, explicit_id: str | None = None
     ) -> dict[str, Any]:

@@ -53,4 +53,18 @@ def load_ohm(raw: str | dict[str, Any]) -> OHMManifest:
             f"runtime.entrypoint {manifest.runtime.entrypoint!r} does not match any "
             "capabilities[].binding"
         )
+
+    # Bindings + roles are dispatch keys downstream — duplicates would silently shadow each other
+    # (wrong instance dispatched / dropped tools), so reject them at load time.
+    _reject_duplicates([c.binding for c in manifest.capabilities], "capabilities[].binding")
+    _reject_duplicates([m.role for m in manifest.models], "models[].role")
+    _reject_duplicates([p.role for p in manifest.prompts], "prompts[].role")
     return manifest
+
+
+def _reject_duplicates(values: list[str], field: str) -> None:
+    seen: set[str] = set()
+    for v in values:
+        if v in seen:
+            raise OHMSchemaError(f"duplicate {field}: {v!r}")
+        seen.add(v)

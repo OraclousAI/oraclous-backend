@@ -32,9 +32,11 @@ router = APIRouter(prefix="/v1/harnesses", tags=["harnesses"])
 async def execute_harness(
     body: ExecuteHarnessRequest, principal: PrincipalDep, service: HarnessServiceDep
 ) -> HarnessExecutionOut:
+    manifest_inline = body.manifest_yaml if body.manifest_yaml is not None else body.manifest
     try:
         row = await service.execute(
-            manifest_raw=body.manifest_yaml if body.manifest_yaml is not None else body.manifest,
+            manifest_inline=manifest_inline,
+            manifest_ref=body.manifest_ref,
             user_input=body.input,
             principal=principal,
         )
