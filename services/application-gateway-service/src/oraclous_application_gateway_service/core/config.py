@@ -25,6 +25,7 @@ class Settings(BaseSettings):
     KNOWLEDGE_GRAPH_URL: str = "http://knowledge-graph-service:8000"
     KNOWLEDGE_RETRIEVER_URL: str = "http://knowledge-retriever-service:8000"
     CAPABILITY_REGISTRY_URL: str = "http://capability-registry-service:8000"
+    HARNESS_RUNTIME_URL: str = "http://harness-runtime-service:8000"
 
     # --- proxy behaviour ---
     UPSTREAM_CONNECT_TIMEOUT: float = 5.0

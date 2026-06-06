@@ -43,9 +43,9 @@ services:
     structure_enforced: true
     claimed_done: true       # §22 8-gate sign-off accepted — no-stubs ENFORCED
   harness-runtime-service:
-    release: R4-deferred     # placeholder; not in R3.5 scope
-    structure_enforced: false
-    claimed_done: false
+    release: R4              # R4 — full OHM harness runtime, built in vertical slices
+    structure_enforced: true # rebuilt to the §21 canonical layout (S1) — structure ENFORCED
+    claimed_done: false      # no-stubs locks at the §22 8-gate sign-off (slice 6)
   execution-engine-service:
     release: R5-deferred     # placeholder; not in R3.5 scope
     structure_enforced: false
