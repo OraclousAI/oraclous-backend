@@ -63,10 +63,21 @@ class OHMGovernance(BaseModel):
     redact_patterns: list[str] = Field(default_factory=list)
 
 
+class OHMActor(BaseModel):
+    """A harness actor (section-4 ``actors[]``). An ``agent`` runs the tool-use loop; a ``human``
+    is dispatched as a task-board assignment (R4 halts → escalation; durable resume is R5)."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    role: str = Field(min_length=1)
+    kind: Literal["agent", "human"]
+    human_role: str | None = None  # for human actors: the workspace role to assign the task to
+
+
 class OHMRuntime(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
-    entrypoint: str = Field(min_length=1)  # a capability binding name
+    entrypoint: str = Field(min_length=1)  # a capability binding (no actors) OR an actor role
     budget: dict[str, Any] = Field(default_factory=dict)
     observability_tags: dict[str, str] = Field(default_factory=dict)
 
@@ -79,6 +90,7 @@ class OHMManifest(BaseModel):
     capabilities: list[OHMCapability] = Field(default_factory=list)
     models: list[OHMModel] = Field(default_factory=list)
     prompts: list[OHMPrompt] = Field(default_factory=list)
+    actors: list[OHMActor] = Field(default_factory=list)
     governance: OHMGovernance = Field(default_factory=OHMGovernance)
     runtime: OHMRuntime
     signatures: list[dict[str, Any]] = Field(default_factory=list)
@@ -89,6 +101,13 @@ class OHMManifest(BaseModel):
 
     def entrypoint_capability(self) -> OHMCapability | None:
         return self.capability_by_binding(self.runtime.entrypoint)
+
+    def actor_by_role(self, role: str) -> OHMActor | None:
+        return next((a for a in self.actors if a.role == role), None)
+
+    def entrypoint_actor(self) -> OHMActor | None:
+        """The actor the run starts with (None when the OHM declares no actors — implicit agent)."""
+        return self.actor_by_role(self.runtime.entrypoint)
 
     def model_by_role(self, role: str) -> OHMModel | None:
         return next((m for m in self.models if m.role == role), None)

@@ -10,15 +10,20 @@ from __future__ import annotations
 import uuid
 
 from fastapi import APIRouter, HTTPException, status
+from oraclous_governance import Principal
 
 from oraclous_harness_runtime_service.core.dependencies import (
+    AssignmentRepositoryDep,
     ExecutionRepositoryDep,
     HarnessServiceDep,
     PrincipalDep,
 )
 from oraclous_harness_runtime_service.domain.ohm.errors import OHMError
 from oraclous_harness_runtime_service.schema.harness_schemas import (
+    AssignmentListResponse,
+    AssignmentOut,
     ExecuteHarnessRequest,
+    ExecutionListResponse,
     HarnessExecutionOut,
 )
 from oraclous_harness_runtime_service.services.harness_execution_service import (
@@ -26,6 +31,14 @@ from oraclous_harness_runtime_service.services.harness_execution_service import 
 )
 
 router = APIRouter(prefix="/v1/harnesses", tags=["harnesses"])
+
+
+def _require_org(principal: Principal) -> uuid.UUID:
+    if principal.organisation_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="no organisation scope"
+        )
+    return principal.organisation_id
 
 
 @router.post("/execute", response_model=HarnessExecutionOut, status_code=status.HTTP_201_CREATED)
@@ -49,16 +62,30 @@ async def execute_harness(
     return HarnessExecutionOut.model_validate(row)
 
 
+@router.get("/executions", response_model=ExecutionListResponse)
+async def list_executions(
+    principal: PrincipalDep, executions: ExecutionRepositoryDep
+) -> ExecutionListResponse:
+    rows = await executions.list_for_org(_require_org(principal))
+    out = [HarnessExecutionOut.model_validate(r) for r in rows]
+    return ExecutionListResponse(executions=out, total=len(out))
+
+
 @router.get("/executions/{execution_id}", response_model=HarnessExecutionOut)
 async def get_execution(
     execution_id: uuid.UUID, principal: PrincipalDep, executions: ExecutionRepositoryDep
 ) -> HarnessExecutionOut:
-    org_id = principal.organisation_id
-    if org_id is None:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED, detail="no organisation scope"
-        )
-    row = await executions.get(execution_id, org_id)
+    row = await executions.get(execution_id, _require_org(principal))
     if row is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="execution not found")
     return HarnessExecutionOut.model_validate(row)
+
+
+@router.get("/assignments", response_model=AssignmentListResponse)
+async def list_assignments(
+    principal: PrincipalDep, assignments: AssignmentRepositoryDep
+) -> AssignmentListResponse:
+    """The human task board: pending human-actor assignments for the caller's organisation."""
+    rows = await assignments.list_for_org(_require_org(principal), status="PENDING")
+    out = [AssignmentOut.model_validate(r) for r in rows]
+    return AssignmentListResponse(assignments=out, total=len(out))

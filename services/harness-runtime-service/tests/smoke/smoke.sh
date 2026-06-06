@@ -192,5 +192,22 @@ c=$(curl -s -o /dev/null -w '%{http_code}' "${AUTH[@]}" -X POST "${GW}/v1/harnes
   -d "$(gov_ohm false '[]' 'policy-set:does-not-exist@9.9')")
 [[ "$c" == "422" ]] && pass "unknown policy_set_ref -> 422" || fail "expected 422, got $c"
 
+# ── slice 5 — human-actor dispatch + the task board + execution listing ──────────────────────────
+step "17. S5: a human entrypoint actor escalates to a task-board assignment"
+HUMAN_OHM=$(python3 -c "import json;print(json.dumps({'manifest':{'ohm_version':'1.0','metadata':{'id':'01976e3a-7c9b-7b00-9c45-222222222222','name':'Review','owner_organization_id':'01976e3a-0000-7000-9c45-000000000000'},'capabilities':[],'models':[{'role':'primary','binding':'openrouter/x','protocol_shape':'openai-compatible'}],'prompts':[{'role':'primary','source':'inline','body':'review'}],'actors':[{'role':'reviewer','kind':'human','human_role':'admin'}],'runtime':{'entrypoint':'reviewer'}},'input':'review this'}))")
+hb=$(curl -s "${AUTH[@]}" -X POST "${GW}/v1/harnesses/execute" -d "$HUMAN_OHM")
+echo "$hb" | grep -q '"status":"ESCALATED"' && echo "$hb" | grep -q '"error_type":"human_assignment"' \
+  && pass "human actor → ESCALATED with a task assignment" || fail "human dispatch: $hb"
+
+step "18. S5: the task board lists the pending assignment (org-scoped)"
+curl -fsS "${AUTH[@]}" "${GW}/v1/harnesses/assignments" \
+  | python3 -c "import json,sys;d=json.load(sys.stdin);assert d['total']>=1 and any(a['human_role']=='admin' and a['status']=='PENDING' for a in d['assignments']),d" \
+  && pass "GET /assignments shows the PENDING admin assignment" || fail "assignments not listed"
+
+step "19. S5: execution listing returns the org's runs"
+curl -fsS "${AUTH[@]}" "${GW}/v1/harnesses/executions" \
+  | python3 -c "import json,sys;d=json.load(sys.stdin);assert d['total']>=1 and 'total_tokens' in d['executions'][0],d" \
+  && pass "GET /executions lists runs (with total_tokens)" || fail "executions not listed"
+
 [[ "${HARNESS_SMOKE_NO_COMPOSE:-0}" == "1" ]] || rm -rf "${KEYDIR}"
-printf '\n\033[32mAll harness-runtime slice-3 smoke checks passed.\033[0m\n'
+printf '\n\033[32mAll harness-runtime slice-5 smoke checks passed.\033[0m\n'

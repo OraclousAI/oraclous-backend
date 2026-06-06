@@ -38,6 +38,7 @@ class ExecutionRepository:
         error_type: str | None,
         error_message: str | None,
         iterations: int,
+        total_tokens: int,
         steps: list[dict[str, Any]],
     ) -> HarnessExecution:
         row = HarnessExecution(
@@ -53,6 +54,7 @@ class ExecutionRepository:
             error_type=error_type,
             error_message=error_message,
             iterations=iterations,
+            total_tokens=total_tokens,
             steps=steps,
         )
         async with self._session() as session:
@@ -72,3 +74,15 @@ class ExecutionRepository:
                 )
             )
             return result.scalar_one_or_none()
+
+    async def list_for_org(
+        self, organisation_id: uuid.UUID, *, limit: int = 50
+    ) -> list[HarnessExecution]:
+        async with self._session() as session:
+            result = await session.execute(
+                select(HarnessExecution)
+                .where(HarnessExecution.organisation_id == organisation_id)
+                .order_by(HarnessExecution.created_at.desc())
+                .limit(limit)
+            )
+            return list(result.scalars().all())

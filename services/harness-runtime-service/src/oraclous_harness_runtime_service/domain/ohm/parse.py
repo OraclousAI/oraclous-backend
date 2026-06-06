@@ -47,8 +47,14 @@ def load_ohm(raw: str | dict[str, Any]) -> OHMManifest:
     except ValidationError as exc:
         raise OHMSchemaError(f"OHM failed schema validation: {exc}") from exc
 
-    # entrypoint must name a declared capability binding (structural cross-check).
-    if manifest.entrypoint_capability() is None:
+    # entrypoint cross-check: with actors declared it names an actor role; otherwise a capability
+    # binding (the implicit single-agent case).
+    if manifest.actors:
+        if manifest.entrypoint_actor() is None:
+            raise OHMSchemaError(
+                f"runtime.entrypoint {manifest.runtime.entrypoint!r} matches no actors[].role"
+            )
+    elif manifest.entrypoint_capability() is None:
         raise OHMSchemaError(
             f"runtime.entrypoint {manifest.runtime.entrypoint!r} does not match any "
             "capabilities[].binding"
@@ -59,6 +65,7 @@ def load_ohm(raw: str | dict[str, Any]) -> OHMManifest:
     _reject_duplicates([c.binding for c in manifest.capabilities], "capabilities[].binding")
     _reject_duplicates([m.role for m in manifest.models], "models[].role")
     _reject_duplicates([p.role for p in manifest.prompts], "prompts[].role")
+    _reject_duplicates([a.role for a in manifest.actors], "actors[].role")
     return manifest
 
 

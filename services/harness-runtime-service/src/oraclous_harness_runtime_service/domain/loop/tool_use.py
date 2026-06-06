@@ -46,6 +46,7 @@ class LoopResult:
     output: str | None
     steps: list[LoopStep] = field(default_factory=list)
     iterations: int = 0
+    total_tokens: int = 0
     error_type: str | None = None
     error_message: str | None = None
 
@@ -75,6 +76,7 @@ async def run_tool_use_loop(
     steps: list[LoopStep] = []
     last_text = ""
     tool_calls_made = 0
+    tokens_used = 0
     started = time.monotonic()
 
     def _over_wall_time() -> bool:
@@ -89,6 +91,7 @@ async def run_tool_use_loop(
             output=last_text or None,
             steps=steps,
             iterations=iterations,
+            total_tokens=tokens_used,
             error_type=reason,
             error_message=message,
         )
@@ -108,16 +111,23 @@ async def run_tool_use_loop(
                 output=last_text or None,
                 steps=steps,
                 iterations=iteration,
+                total_tokens=tokens_used,
                 error_type=type(exc).__name__,
                 error_message=str(exc),
             )
+        tokens_used += resp.total_tokens
         last_text = _redact(resp.text, redactors)
+        # token budget (S3 PolicyEnvelope.max_tokens, now enforceable with real usage from S4).
+        if policy.max_tokens is not None and tokens_used > policy.max_tokens:
+            return _escalate("budget", "token_budget", "token budget exhausted", iteration)
 
         if not resp.tool_calls:
             steps.append(
                 LoopStep(len(steps), StepKind.LLM, "primary", "answer", _truncate(last_text))
             )
-            return LoopResult(HarnessStatus.SUCCEEDED, last_text, steps, iteration)
+            return LoopResult(
+                HarnessStatus.SUCCEEDED, last_text, steps, iteration, total_tokens=tokens_used
+            )
 
         steps.append(
             LoopStep(

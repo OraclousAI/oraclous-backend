@@ -87,3 +87,41 @@ def test_duplicate_capability_binding_rejected() -> None:
 def test_non_mapping_document_raises_parse_error() -> None:
     with pytest.raises(OHMParseError):
         load_ohm("- just\n- a\n- list")
+
+
+def _with_actors(entrypoint: str, actors: list[dict]) -> dict:
+    return {
+        "ohm_version": "1.0",
+        "metadata": {
+            "id": "01976e3a-7c9b-7b00-9c45-1234567890ab",
+            "name": "Actor Harness",
+            "owner_organization_id": "01976e3a-0000-7000-9c45-000000000000",
+        },
+        "capabilities": [{"ref": "core/echo@1.0.0", "binding": "echo"}],
+        "models": [
+            {"role": "primary", "binding": "openrouter/x", "protocol_shape": "openai-compatible"}
+        ],
+        "prompts": [{"role": "primary", "source": "inline", "body": "go"}],
+        "actors": actors,
+        "runtime": {"entrypoint": entrypoint},
+    }
+
+
+def test_human_actor_entrypoint_resolves() -> None:
+    m = load_ohm(
+        _with_actors("reviewer", [{"role": "reviewer", "kind": "human", "human_role": "admin"}])
+    )
+    actor = m.entrypoint_actor()
+    assert actor is not None and actor.kind == "human" and actor.human_role == "admin"
+
+
+def test_actors_entrypoint_must_name_an_actor_role() -> None:
+    with pytest.raises(OHMSchemaError):
+        load_ohm(_with_actors("nobody", [{"role": "reviewer", "kind": "human"}]))
+
+
+def test_duplicate_actor_role_rejected() -> None:
+    with pytest.raises(OHMSchemaError):
+        load_ohm(
+            _with_actors("a", [{"role": "a", "kind": "agent"}, {"role": "a", "kind": "human"}])
+        )

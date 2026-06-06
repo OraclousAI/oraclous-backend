@@ -15,6 +15,7 @@ from oraclous_substrate import ProvenanceCollector
 
 from oraclous_harness_runtime_service.core.config import get_settings
 from oraclous_harness_runtime_service.domain.ohm.signatures import TrustStore
+from oraclous_harness_runtime_service.repositories.assignment_repository import AssignmentRepository
 from oraclous_harness_runtime_service.repositories.execution_repository import ExecutionRepository
 from oraclous_harness_runtime_service.repositories.provenance_sink import PostgresProvenanceSink
 
@@ -25,15 +26,19 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
     execution_repo: ExecutionRepository | None = None
+    assignment_repo: AssignmentRepository | None = None
     sink: PostgresProvenanceSink | None = None
     try:
         execution_repo = ExecutionRepository(settings.database_url)
+        assignment_repo = AssignmentRepository(settings.database_url)
         sink = PostgresProvenanceSink(settings.database_url)
         app.state.execution_repository = execution_repo
+        app.state.assignment_repository = assignment_repo
         app.state.provenance = ProvenanceCollector(sink)
     except Exception as exc:  # noqa: BLE001 — degrade: data routes 503, /health still serves
         logger.warning("Postgres unavailable at startup; execute/read disabled: %s", exc)
         app.state.execution_repository = None
+        app.state.assignment_repository = None
         app.state.provenance = None
 
     # OHM signature trust store (config-driven). A malformed key degrades to an empty store so
@@ -49,5 +54,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     finally:
         if execution_repo is not None:
             await execution_repo.close()
+        if assignment_repo is not None:
+            await assignment_repo.close()
         if sink is not None:
             await sink.close()

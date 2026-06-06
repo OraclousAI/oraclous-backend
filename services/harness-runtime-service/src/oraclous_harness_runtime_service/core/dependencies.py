@@ -24,6 +24,7 @@ from oraclous_harness_runtime_service.core.auth import (
 )
 from oraclous_harness_runtime_service.core.config import Settings, get_settings
 from oraclous_harness_runtime_service.domain.ohm.signatures import TrustStore
+from oraclous_harness_runtime_service.repositories.assignment_repository import AssignmentRepository
 from oraclous_harness_runtime_service.repositories.execution_repository import ExecutionRepository
 from oraclous_harness_runtime_service.services.broker_client import BrokerClient
 from oraclous_harness_runtime_service.services.harness_execution_service import (
@@ -125,6 +126,16 @@ def get_execution_repository(request: Request) -> ExecutionRepository:
     return repo
 
 
+def get_assignment_repository(request: Request) -> AssignmentRepository:
+    repo = getattr(request.app.state, "assignment_repository", None)
+    if repo is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="harness store unavailable (DATABASE_URL not reachable)",
+        )
+    return repo
+
+
 def get_provenance(request: Request) -> ProvenanceCollector:
     collector = getattr(request.app.state, "provenance", None)
     if collector is None:
@@ -144,6 +155,7 @@ def get_harness_service(
     registry: Annotated[RegistryClient, Depends(get_registry_client)],
     broker: Annotated[BrokerClient, Depends(get_broker_client)],
     executions: Annotated[ExecutionRepository, Depends(get_execution_repository)],
+    assignments: Annotated[AssignmentRepository, Depends(get_assignment_repository)],
     provenance: Annotated[ProvenanceCollector, Depends(get_provenance)],
     trust: Annotated[TrustStore, Depends(get_trust_store)],
 ) -> HarnessExecutionService:
@@ -152,6 +164,7 @@ def get_harness_service(
         registry=registry,
         broker=broker,
         executions=executions,
+        assignments=assignments,
         provenance=provenance,
         trust=trust,
         require_signature=settings.ohm_require_signature,
@@ -165,4 +178,5 @@ def get_harness_service(
 
 PrincipalDep = Annotated[Principal, Depends(get_principal)]
 ExecutionRepositoryDep = Annotated[ExecutionRepository, Depends(get_execution_repository)]
+AssignmentRepositoryDep = Annotated[AssignmentRepository, Depends(get_assignment_repository)]
 HarnessServiceDep = Annotated[HarnessExecutionService, Depends(get_harness_service)]

@@ -41,7 +41,14 @@ wired (OpenRouter serves Claude/OpenAI/Gemini/etc. behind one key); `native`/`ge
 until their direct providers land. The OHM names the model as `<provider>/<model-id>` (e.g.
 `openrouter/anthropic/claude-sonnet-4`) with `config.credential_id` → the broker credential.
 
-Later slices: human-actor dispatch (S5); consciousness hook + §22 sign-off (S6).
+**Slice 5 — human actors + metering** adds: **actor dispatch** (OHM `actors[]`) — a `human`
+entrypoint actor halts the run as a **task-board assignment** (`harness_assignments`, status PENDING)
+and returns ESCALATED (R4 halts; durable resume is R5), while an `agent` actor (or no actors) runs
+the loop; **token-usage metering** (the live client reports `total_tokens`, recorded per run) which
+also makes the policy **`max_tokens` budget** enforceable; and read surfaces `GET /v1/harnesses/
+executions` (list) + `GET /v1/harnesses/assignments` (the task board).
+
+Last slice: consciousness hook + §22 sign-off (S6).
 
 ## Smoke
 
