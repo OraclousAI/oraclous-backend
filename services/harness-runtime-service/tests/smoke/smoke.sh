@@ -198,6 +198,7 @@ HUMAN_OHM=$(python3 -c "import json;print(json.dumps({'manifest':{'ohm_version':
 hb=$(curl -s "${AUTH[@]}" -X POST "${GW}/v1/harnesses/execute" -d "$HUMAN_OHM")
 echo "$hb" | grep -q '"status":"ESCALATED"' && echo "$hb" | grep -q '"error_type":"human_assignment"' \
   && pass "human actor → ESCALATED with a task assignment" || fail "human dispatch: $hb"
+HEXID=$(echo "$hb" | python3 -c "import json,sys;print(json.load(sys.stdin)['id'])")
 
 step "18. S5: the task board lists the pending assignment (org-scoped)"
 curl -fsS "${AUTH[@]}" "${GW}/v1/harnesses/assignments" \
@@ -209,11 +210,11 @@ curl -fsS "${AUTH[@]}" "${GW}/v1/harnesses/executions" \
   | python3 -c "import json,sys;d=json.load(sys.stdin);assert d['total']>=1 and 'total_tokens' in d['executions'][0],d" \
   && pass "GET /executions lists runs (with total_tokens)" || fail "executions not listed"
 
-# ── slice 6 — consciousness write-through hook ───────────────────────────────────────────────────
-step "20. S6: a consciousness record was written for the run (EXID from step 6)"
+# ── slice 6 — consciousness write-through hook (both the agent run and the human run) ─────────────
+step "20. S6: a consciousness record was written for both the agent run and the human run"
 c=$(${COMPOSE} exec -T postgres psql -U oraclous -d oraclous -tAc \
-  "select count(*) from harness_provenance where resource = 'harness_execution:${EXID}' and action='consciousness.write'")
-[[ "${c//[[:space:]]/}" -ge 1 ]] && pass "consciousness.write event recorded" || fail "no consciousness event"
+  "select count(distinct resource) from harness_provenance where action='consciousness.write' and resource in ('harness_execution:${EXID}','harness_execution:${HEXID}')")
+[[ "${c//[[:space:]]/}" -ge 2 ]] && pass "consciousness.write recorded for agent + human runs" || fail "missing consciousness event(s)"
 
 [[ "${HARNESS_SMOKE_NO_COMPOSE:-0}" == "1" ]] || rm -rf "${KEYDIR}"
 printf '\n\033[32mAll harness-runtime slice-6 smoke checks passed (R4 complete; awaiting §22 sign-off).\033[0m\n'
