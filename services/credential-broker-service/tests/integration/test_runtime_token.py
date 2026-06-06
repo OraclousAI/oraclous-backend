@@ -95,6 +95,7 @@ async def _seed(repo, **overrides) -> None:
             credential=cred,
         ),
         _ORG,
+        _USER,
     )
 
 

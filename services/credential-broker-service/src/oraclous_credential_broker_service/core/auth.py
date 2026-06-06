@@ -35,6 +35,20 @@ def organisation_id_from_gateway_headers(organisation_id: str | None) -> uuid.UU
         raise AuthError("malformed gateway organisation header") from exc
 
 
+def principal_id_from_gateway_headers(principal_id: str | None) -> uuid.UUID:
+    """Resolve the authenticated user from the gateway's verified ``X-Principal-Id`` (ADR-018).
+
+    The gateway terminates auth and injects the principal id (stripping any client-supplied copy);
+    the user-facing edge trusts it. Credentials are personal, so the caller can only ever act on
+    their own — the user id is taken from here, never from the request body/query. Fail-closed."""
+    if not principal_id:
+        raise AuthError("gateway principal header missing")
+    try:
+        return uuid.UUID(principal_id)
+    except ValueError as exc:
+        raise AuthError("malformed gateway principal header") from exc
+
+
 def _principal_from_claims(claims: dict) -> Principal:
     if claims.get("type") != "access":
         raise AuthError("an access token is required")

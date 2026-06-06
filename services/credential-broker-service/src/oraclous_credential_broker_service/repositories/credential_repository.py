@@ -38,13 +38,14 @@ class CredentialRepository:
         await self._engine.dispose()
 
     async def create_credential(
-        self, cred: CreateCredential, organisation_id: UUID
+        self, cred: CreateCredential, organisation_id: UUID, user_id: UUID
     ) -> UserCredential:
+        # user_id is bound from the authenticated principal, never the request body.
         obj = UserCredential(
             organisation_id=organisation_id,
             name=cred.name,
             provider=cred.provider,
-            user_id=cred.user_id,
+            user_id=user_id,
             tool_id=cred.tool_id,
             encrypted_cred=encrypt_secret(cred.credential),
             cred_type=CredentialType(cred.cred_type),
@@ -56,15 +57,18 @@ class CredentialRepository:
             return obj
 
     async def get_credential_by_id(
-        self, cred_id: UUID, organisation_id: UUID
+        self, cred_id: UUID, organisation_id: UUID, user_id: UUID | None = None
     ) -> UserCredential | None:
+        # user_id filters the user-facing read to the caller's own credential; the trusted runtime
+        # resolver (service→service) passes None and scopes by org only.
         async with self._session() as session:
-            result = await session.execute(
-                select(UserCredential).where(
-                    UserCredential.id == cred_id,
-                    UserCredential.organisation_id == organisation_id,
-                )
+            stmt = select(UserCredential).where(
+                UserCredential.id == cred_id,
+                UserCredential.organisation_id == organisation_id,
             )
+            if user_id is not None:
+                stmt = stmt.where(UserCredential.user_id == user_id)
+            result = await session.execute(stmt)
             return result.scalars().first()
 
     async def list_credentials(
@@ -81,7 +85,7 @@ class CredentialRepository:
             return list(result.scalars().all())
 
     async def update_credential(
-        self, update: CredentialsUpdate, organisation_id: UUID
+        self, update: CredentialsUpdate, organisation_id: UUID, user_id: UUID
     ) -> UserCredential | None:
         async with self._session() as session:
             async with session.begin():
@@ -89,6 +93,7 @@ class CredentialRepository:
                     select(UserCredential).where(
                         UserCredential.id == update.id,
                         UserCredential.organisation_id == organisation_id,
+                        UserCredential.user_id == user_id,
                     )
                 )
                 obj = result.scalars().first()
@@ -97,7 +102,8 @@ class CredentialRepository:
                 if update.name is not None:
                     obj.name = update.name
                 obj.provider = update.provider
-                obj.user_id = update.user_id
+                # ownership is immutable here — keep the credential bound to the authenticated user.
+                obj.user_id = user_id
                 obj.tool_id = update.tool_id
                 obj.cred_type = CredentialType(update.cred_type)
                 obj.encrypted_cred = encrypt_secret(update.credential)
@@ -121,13 +127,14 @@ class CredentialRepository:
                 obj.encrypted_cred = encrypt_secret(credential)
             return True
 
-    async def delete_credential(self, cred_id: UUID, organisation_id: UUID) -> bool:
+    async def delete_credential(self, cred_id: UUID, organisation_id: UUID, user_id: UUID) -> bool:
         async with self._session() as session:
             async with session.begin():
                 result = await session.execute(
                     select(UserCredential).where(
                         UserCredential.id == cred_id,
                         UserCredential.organisation_id == organisation_id,
+                        UserCredential.user_id == user_id,
                     )
                 )
                 obj = result.scalars().first()

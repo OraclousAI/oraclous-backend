@@ -1,9 +1,11 @@
 """Credential use-cases (ORAA-4 §21 services layer).
 
-Orchestrates the org-scoped repository with the encryption seam: the repository encrypts on
-write (AES-256-GCM); this service DECRYPTS on read (``decrypt_secret``) when a caller retrieves a
-credential, and projects metadata-only on create/update (the secret is never echoed back). Each
-call carries the ``organisation_id`` from the authenticated principal (ORG001 — never the body).
+Orchestrates the org-scoped repository with the encryption seam: the repository encrypts on write
+(AES-256-GCM). Credentials are personal, so every user-facing read/write is scoped by BOTH the
+authenticated principal's ``organisation_id`` AND ``user_id`` (never from the request body/query) —
+a caller can only see/manage their own credentials. The user-facing surface projects metadata only;
+the decrypted secret is NEVER returned here — runtime resolution goes through the X-Internal-Key
+``/internal/*`` path (``CredentialBrokerService``), not this service.
 """
 
 from __future__ import annotations
@@ -26,7 +28,7 @@ from oraclous_credential_broker_service.schema.credential_schema import (
 
 
 class CredentialNotFoundError(Exception):
-    """Credential does not exist in the caller's organisation — maps to HTTP 404 (mask)."""
+    """Credential does not exist for the caller's (org, user) — maps to HTTP 404 (mask)."""
 
 
 def _metadata(row: UserCredential) -> CredentialOut:
@@ -41,6 +43,8 @@ def _metadata(row: UserCredential) -> CredentialOut:
 
 
 def _with_secret(row: UserCredential) -> RequestCredentialsResponse:
+    """Decrypt the stored secret. ONLY for the trusted X-Internal-Key runtime resolver — never the
+    user-facing surface."""
     return RequestCredentialsResponse(
         id=row.id,
         name=row.name,
@@ -56,35 +60,50 @@ class CredentialService:
     def __init__(self, *, repository: CredentialRepository) -> None:
         self._repo = repository
 
-    async def create(self, *, cred: CreateCredential, organisation_id: UUID) -> CredentialOut:
-        return _metadata(await self._repo.create_credential(cred, organisation_id))
+    async def create(
+        self, *, cred: CreateCredential, organisation_id: UUID, user_id: UUID
+    ) -> CredentialOut:
+        return _metadata(await self._repo.create_credential(cred, organisation_id, user_id))
 
     async def get(
+        self, *, credential_id: UUID, organisation_id: UUID, user_id: UUID
+    ) -> CredentialOut:
+        row = await self._repo.get_credential_by_id(credential_id, organisation_id, user_id)
+        if row is None:
+            raise CredentialNotFoundError("credential not found")
+        return _metadata(row)
+
+    async def resolve_decrypted(
         self, *, credential_id: UUID, organisation_id: UUID
     ) -> RequestCredentialsResponse:
+        """Decrypted credential by id, ORG-scoped (no user filter). Trusted runtime path ONLY
+        (X-Internal-Key) — resolving a non-OAuth secret for tool execution."""
         row = await self._repo.get_credential_by_id(credential_id, organisation_id)
         if row is None:
             raise CredentialNotFoundError("credential not found")
         return _with_secret(row)
 
     async def list(
-        self, *, request: RequestCredentials, organisation_id: UUID
-    ) -> list[RequestCredentialsResponse]:
+        self, *, organisation_id: UUID, user_id: UUID, tool_id: UUID | None = None
+    ) -> list[CredentialOut]:
+        request = RequestCredentials(user_id=user_id, tool_id=tool_id)
         rows = await self._repo.list_credentials(request, organisation_id)
-        return [_with_secret(r) for r in rows]
+        return [_metadata(r) for r in rows]
 
-    async def update(self, *, update: CredentialsUpdate, organisation_id: UUID) -> CredentialOut:
-        row = await self._repo.update_credential(update, organisation_id)
+    async def update(
+        self, *, update: CredentialsUpdate, organisation_id: UUID, user_id: UUID
+    ) -> CredentialOut:
+        row = await self._repo.update_credential(update, organisation_id, user_id)
         if row is None:
             raise CredentialNotFoundError("credential not found")
         return _metadata(row)
 
-    async def delete(self, *, credential_id: UUID, organisation_id: UUID) -> None:
-        if not await self._repo.delete_credential(credential_id, organisation_id):
+    async def delete(self, *, credential_id: UUID, organisation_id: UUID, user_id: UUID) -> None:
+        if not await self._repo.delete_credential(credential_id, organisation_id, user_id):
             raise CredentialNotFoundError("credential not found")
 
     async def list_providers(self, *, user_id: UUID, organisation_id: UUID) -> list[str]:
-        """The distinct providers a user has connected (order-stable), org-scoped."""
+        """The distinct providers a user has connected (order-stable), org+user scoped."""
         rows = await self._repo.list_credentials(
             RequestCredentials(user_id=user_id), organisation_id
         )
@@ -97,6 +116,6 @@ class CredentialService:
     async def available_data_sources(
         self, *, user_id: UUID, organisation_id: UUID
     ) -> dict[str, dict]:
-        """The catalogue data sources unlocked by the user's connected providers (org-scoped)."""
+        """Data sources unlocked by the user's connected providers (org+user scoped)."""
         providers = await self.list_providers(user_id=user_id, organisation_id=organisation_id)
         return {p: data_sources_for(p) for p in providers}
