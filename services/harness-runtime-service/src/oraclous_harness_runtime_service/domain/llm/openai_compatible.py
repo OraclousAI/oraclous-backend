@@ -108,7 +108,8 @@ class OpenAICompatibleClient:
         resp = await self._client.post("/chat/completions", json=body)
         if resp.status_code // 100 != 2:
             raise LLMClientError(f"LLM call → {resp.status_code}: {resp.text[:300]}")
-        choice = (resp.json().get("choices") or [{}])[0]
+        body = resp.json()
+        choice = (body.get("choices") or [{}])[0]
         msg = choice.get("message") or {}
         calls: list[ToolCall] = []
         for raw in msg.get("tool_calls") or []:
@@ -118,4 +119,7 @@ class OpenAICompatibleClient:
             except (json.JSONDecodeError, TypeError):
                 args = {}
             calls.append(ToolCall(id=raw.get("id") or "call", name=fn.get("name") or "", args=args))
-        return LLMResponse(text=msg.get("content") or "", tool_calls=calls)
+        total_tokens = int((body.get("usage") or {}).get("total_tokens") or 0)
+        return LLMResponse(
+            text=msg.get("content") or "", tool_calls=calls, total_tokens=total_tokens
+        )

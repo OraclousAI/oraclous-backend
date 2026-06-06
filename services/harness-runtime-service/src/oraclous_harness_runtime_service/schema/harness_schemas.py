@@ -64,5 +64,31 @@ class HarnessExecutionOut(BaseModel):
     error_type: str | None
     error_message: str | None
     iterations: int
+    total_tokens: int
     steps: list[StepOut]
     created_at: datetime | None
+
+
+class ExecutionListResponse(BaseModel):
+    executions: list[HarnessExecutionOut]
+    total: int
+
+
+class AssignmentOut(BaseModel):
+    """A human-actor task-board assignment (R4 creates it PENDING; resume is R5)."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    organisation_id: uuid.UUID
+    execution_id: uuid.UUID
+    harness_id: uuid.UUID
+    human_role: str
+    status: str
+    input: str
+    created_at: datetime | None
+
+
+class AssignmentListResponse(BaseModel):
+    assignments: list[AssignmentOut]
+    total: int

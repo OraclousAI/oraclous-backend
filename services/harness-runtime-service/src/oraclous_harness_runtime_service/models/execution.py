@@ -30,4 +30,5 @@ class HarnessExecution(BaseModel):
     error_type = Column(String(128), nullable=True)
     error_message = Column(Text, nullable=True)
     iterations = Column(Integer, nullable=False, default=0)
+    total_tokens = Column(Integer, nullable=False, default=0)
     steps = Column(JSONB, nullable=False, default=list)

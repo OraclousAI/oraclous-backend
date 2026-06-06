@@ -25,6 +25,7 @@ def _env(
     max_iterations: int = 6,
     max_tool_calls: int | None = None,
     max_wall: int | None = None,
+    max_tokens: int | None = None,
     gated: frozenset[str] = frozenset(),
     redact: tuple[str, ...] = (),
 ) -> PolicyEnvelope:
@@ -32,7 +33,7 @@ def _env(
         max_iterations=max_iterations,
         max_tool_calls=max_tool_calls,
         max_wall_time_seconds=max_wall,
-        max_tokens=None,
+        max_tokens=max_tokens,
         gated_bindings=gated,
         redact_patterns=redact,
     )
@@ -219,6 +220,45 @@ async def test_wall_time_budget_halts() -> None:
     )
     assert result.status is HarnessStatus.ESCALATED
     assert result.error_type == "wall_time"
+
+
+class _TokenLLM:
+    """Reports token usage on each turn; answers immediately."""
+
+    protocol_shape = "fake"
+
+    def __init__(self, tokens: int) -> None:
+        self._tokens = tokens
+
+    async def complete(self, *, messages, system, tools):  # noqa: ANN001, ANN202
+        return LLMResponse(text="done", tool_calls=[], total_tokens=self._tokens)
+
+
+async def test_token_budget_halts() -> None:
+    result = await run_tool_use_loop(
+        llm=_TokenLLM(150),
+        system="",
+        user_input="go",
+        tool_specs=[_SPEC],
+        dispatch=_ok_dispatch,
+        policy=_env(max_tokens=100),  # the first turn's 150 tokens exceeds the budget
+    )
+    assert result.status is HarnessStatus.ESCALATED
+    assert result.error_type == "token_budget"
+    assert result.total_tokens == 150
+
+
+async def test_total_tokens_recorded_on_success() -> None:
+    result = await run_tool_use_loop(
+        llm=_TokenLLM(42),
+        system="",
+        user_input="go",
+        tool_specs=[_SPEC],
+        dispatch=_ok_dispatch,
+        policy=_env(max_tokens=1000),
+    )
+    assert result.status is HarnessStatus.SUCCEEDED
+    assert result.total_tokens == 42
 
 
 async def test_output_is_redacted() -> None:

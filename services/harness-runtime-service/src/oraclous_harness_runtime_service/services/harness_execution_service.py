@@ -39,8 +39,9 @@ from oraclous_harness_runtime_service.domain.policy import (
     resolve_policy_set,
 )
 from oraclous_harness_runtime_service.domain.tool_schemas import tool_specs_for
-from oraclous_harness_runtime_service.models.enums import StepKind
+from oraclous_harness_runtime_service.models.enums import HarnessStatus, StepKind
 from oraclous_harness_runtime_service.models.execution import HarnessExecution
+from oraclous_harness_runtime_service.repositories.assignment_repository import AssignmentRepository
 from oraclous_harness_runtime_service.repositories.execution_repository import ExecutionRepository
 from oraclous_harness_runtime_service.services.broker_client import BrokerClient, BrokerError
 from oraclous_harness_runtime_service.services.registry_client import RegistryClient, RegistryError
@@ -59,6 +60,7 @@ class HarnessExecutionService:
         registry: RegistryClient,
         broker: BrokerClient,
         executions: ExecutionRepository,
+        assignments: AssignmentRepository,
         provenance: ProvenanceCollector,
         trust: TrustStore,
         require_signature: bool,
@@ -71,6 +73,7 @@ class HarnessExecutionService:
         self._registry = registry
         self._broker = broker
         self._executions = executions
+        self._assignments = assignments
         self._provenance = provenance
         self._trust = trust
         self._require_signature = require_signature
@@ -105,6 +108,13 @@ class HarnessExecutionService:
         )
         enforce_load_policy(manifest, policy)
         chash = content_hash(document)
+
+        # Actor dispatch: a human entrypoint actor halts the run as a task-board assignment
+        # (R4 escalation; durable resume is R5). An agent actor (or no actors) runs the loop below.
+        actor = manifest.entrypoint_actor()
+        if actor is not None and actor.kind == "human":
+            return await self._dispatch_human(manifest, actor, org_id, principal, user_input, chash)
+
         resolved = await self._resolve_all(manifest)
         envelope = build_envelope(manifest, policy, hard_max_iterations=self._max_iterations)
 
@@ -157,6 +167,7 @@ class HarnessExecutionService:
             error_type=result.error_type,
             error_message=result.error_message,
             iterations=result.iterations,
+            total_tokens=result.total_tokens,
             steps=[
                 {
                     "index": s.index,
@@ -170,6 +181,71 @@ class HarnessExecutionService:
         )
         await self._emit_provenance(
             result, org_id=str(org_id), principal=str(principal.principal_id), resource=resource
+        )
+        return row
+
+    async def _dispatch_human(
+        self,
+        manifest,  # noqa: ANN001
+        actor,  # noqa: ANN001
+        org_id: uuid.UUID,
+        principal: Principal,
+        user_input: str,
+        chash: str,
+    ) -> HarnessExecution:
+        """Human entrypoint actor → a task-board assignment + an ESCALATED run (resume is R5)."""
+        execution_id = uuid.uuid4()
+        resource = f"harness_execution:{execution_id}"
+        human_role = actor.human_role or actor.role
+        assignment = await self._assignments.create(
+            organisation_id=org_id,
+            execution_id=execution_id,
+            harness_id=manifest.metadata.id,
+            human_role=human_role,
+            input_text=user_input,
+        )
+        row = await self._executions.create(
+            execution_id=execution_id,
+            organisation_id=org_id,
+            user_id=principal.principal_id,
+            harness_id=manifest.metadata.id,
+            harness_name=manifest.metadata.name,
+            content_hash=chash,
+            status=HarnessStatus.ESCALATED.value,
+            input_text=user_input,
+            output=f"assigned to human role {human_role!r} (assignment {assignment.id})",
+            error_type="human_assignment",
+            error_message=f"awaiting human role {human_role!r}",
+            iterations=0,
+            total_tokens=0,
+            steps=[
+                {
+                    "index": 0,
+                    "kind": StepKind.GATE.value,
+                    "name": human_role,
+                    "status": "assigned",
+                    "detail": str(assignment.id),
+                }
+            ],
+        )
+        prov = str(principal.principal_id)
+        await self._provenance.emit(
+            ProvenanceRecord(
+                organisation_id=str(org_id),
+                principal=prov,
+                action="human.assign",
+                resource=resource,
+                outcome=f"{human_role}:assigned",
+            )
+        )
+        await self._provenance.emit(
+            ProvenanceRecord(
+                organisation_id=str(org_id),
+                principal=prov,
+                action="harness.execute",
+                resource=resource,
+                outcome=HarnessStatus.ESCALATED.value,
+            )
         )
         return row
 

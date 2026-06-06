@@ -42,6 +42,7 @@ class LLMResponse:
 
     text: str
     tool_calls: list[ToolCall] = field(default_factory=list)
+    total_tokens: int = 0  # metered token usage for this call (0 when the provider omits it / fake)
 
 
 @runtime_checkable
