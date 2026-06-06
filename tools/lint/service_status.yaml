@@ -43,9 +43,12 @@ services:
     structure_enforced: true
     claimed_done: true       # §22 8-gate sign-off accepted — no-stubs ENFORCED
   harness-runtime-service:
-    release: R4              # R4 — full OHM harness runtime, built in vertical slices
-    structure_enforced: true # rebuilt to the §21 canonical layout (S1) — structure ENFORCED
-    claimed_done: false      # no-stubs locks at the §22 8-gate sign-off (slice 6)
+    release: R4              # R4 — full OHM harness runtime, built S1-S6 (all merged)
+    structure_enforced: true # rebuilt to the §21 canonical layout — structure ENFORCED
+    # Code-complete (S1-S6): OHM load+signatures, tool-use loop, governance, live LLM (BYOM),
+    # human-actor dispatch, consciousness hook. Flip claimed_done → true at the §22 Reza sign-off
+    # (run services/harness-runtime-service/tests/smoke/smoke.sh); that locks the no-stubs gate.
+    claimed_done: false
   execution-engine-service:
     release: R5-deferred     # placeholder; not in R3.5 scope
     structure_enforced: false
