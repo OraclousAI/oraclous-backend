@@ -60,3 +60,20 @@ class OrgMemberRepository:
     async def organisations_for(self, user_id: str) -> list[uuid.UUID]:
         """Governance ``MembershipResolver`` shape: the orgs a user belongs to, as UUIDs."""
         return [uuid.UUID(oid) for oid in await self.organisation_ids_for(user_id)]
+
+    async def update_role(
+        self, *, organisation_id: str, user_id: str, role: str
+    ) -> OrgMember | None:
+        member = await self.get(organisation_id=organisation_id, user_id=user_id)
+        if member is not None:
+            member.org_role = role
+            await self._session.flush()
+        return member
+
+    async def remove(self, *, organisation_id: str, user_id: str) -> bool:
+        member = await self.get(organisation_id=organisation_id, user_id=user_id)
+        if member is None:
+            return False
+        await self._session.delete(member)
+        await self._session.flush()
+        return True
