@@ -11,10 +11,18 @@ lands in slice 4).
 
 from __future__ import annotations
 
+import json
 from functools import lru_cache
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import field_validator
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
+
+# Default OpenAI-compatible base URLs (also the fallback when the env supplies a blank override).
+_DEFAULT_LLM_BASE_URLS = {
+    "openrouter": "https://openrouter.ai/api/v1",
+    "openai": "https://api.openai.com/v1",
+}
 
 
 class Settings(BaseSettings):
@@ -46,10 +54,7 @@ class Settings(BaseSettings):
     llm_mode: Literal["fake", "live"] = "fake"
     # provider (the first segment of an OHM model binding) → OpenAI-compatible base URL. OpenRouter
     # serves Claude/OpenAI/Gemini/etc. behind one OpenAI-compatible endpoint + one key.
-    llm_base_urls: dict[str, str] = {
-        "openrouter": "https://openrouter.ai/api/v1",
-        "openai": "https://api.openai.com/v1",
-    }
+    llm_base_urls: Annotated[dict[str, str], NoDecode] = dict(_DEFAULT_LLM_BASE_URLS)
     llm_request_timeout: float = 120.0
     # Safety backstop on tool-use iterations (one LLM turn + its dispatches). The per-tier tool-call
     # budget (policy set) is the real governance limit and binds within this cap.
@@ -57,7 +62,7 @@ class Settings(BaseSettings):
 
     # --- OHM signature trust store: signer-id → public-key PEM, via HARNESS_OHM_TRUST_KEYS (JSON).
     # Empty by default; a *required* signature comes from the policy set or the flag below. ---
-    ohm_trust_keys: dict[str, str] = {}
+    ohm_trust_keys: Annotated[dict[str, str], NoDecode] = {}
     # When true, an unsigned OHM is rejected (closes signature-stripping). ORed with the resolved
     # policy set's require_signature — fail-closed: either source requiring it makes it required.
     ohm_require_signature: bool = False
@@ -65,6 +70,21 @@ class Settings(BaseSettings):
     # manifest's policy_set_ref — so an author can't self-select a weaker tier. Unset → the author's
     # referenced set (defaulting to development-default) applies.
     force_policy_set: str | None = None
+
+    @field_validator("ohm_trust_keys", "llm_base_urls", mode="before")
+    @classmethod
+    def _blank_or_json_dict(cls, v: object, info: object) -> object:
+        """Tolerate a blank env override (compose ``${VAR:-}`` yields an empty string).
+
+        With NoDecode the env source hands us the raw string: blank → the field default; non-blank →
+        parsed JSON. Prevents a SettingsError crash on startup when the var is set-but-empty.
+        """
+        if isinstance(v, str):
+            if not v.strip():
+                # mypy: info is a FieldValidationInfo; only used for the field name here.
+                return _DEFAULT_LLM_BASE_URLS if info.field_name == "llm_base_urls" else {}  # type: ignore[attr-defined]
+            return json.loads(v)
+        return v
 
     @property
     def sync_database_url(self) -> str:
