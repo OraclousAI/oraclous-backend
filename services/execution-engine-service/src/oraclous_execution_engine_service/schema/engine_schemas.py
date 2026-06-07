@@ -1,0 +1,65 @@
+"""Engine DTOs (ORAA-4 §21 schema layer) — Pydantic request/response models only.
+
+organisation_id/user_id are never inbound (ORG001); both come from the authenticated principal in
+the route. A job runs an OHM supplied inline (``manifest``) or by reference (``manifest_ref``).
+"""
+
+from __future__ import annotations
+
+import uuid
+from datetime import datetime
+from typing import Any
+
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+from oraclous_execution_engine_service.models.enums import EngineJobState
+
+
+class HealthResponse(BaseModel):
+    status: str
+    service: str
+
+
+class SubmitJobRequest(BaseModel):
+    """Submit a durable harness job. Supply the OHM as exactly one of an inline parsed object
+    (``manifest``) or a registered reference (``manifest_ref``). ``input`` is the goal."""
+
+    manifest: dict[str, Any] | None = None
+    manifest_ref: str | None = None
+    input: str = Field(min_length=1)
+    max_retries: int = Field(default=0, ge=0, le=10)
+    timeout_seconds: int | None = Field(default=None, ge=1)
+
+    @model_validator(mode="after")
+    def _exactly_one_manifest(self) -> SubmitJobRequest:
+        if sum(x is not None for x in (self.manifest, self.manifest_ref)) != 1:
+            raise ValueError("supply exactly one of 'manifest' or 'manifest_ref'")
+        return self
+
+
+class JobOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    organisation_id: uuid.UUID
+    user_id: uuid.UUID
+    state: EngineJobState
+    manifest_ref: str | None
+    input_text: str
+    harness_execution_id: uuid.UUID | None
+    assignment_id: uuid.UUID | None
+    schedule_id: uuid.UUID | None
+    retry_count: int
+    max_retries: int
+    timeout_seconds: int | None
+    progress: int
+    output: str | None
+    error_type: str | None
+    error_message: str | None
+    created_at: datetime | None
+    updated_at: datetime | None
+
+
+class JobListResponse(BaseModel):
+    jobs: list[JobOut]
+    total: int
