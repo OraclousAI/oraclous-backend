@@ -46,14 +46,13 @@ services:
     release: R4              # R4 — full OHM harness runtime, built S1-S6 (all merged)
     structure_enforced: true # rebuilt to the §21 canonical layout — structure ENFORCED
     # Code-complete (S1-S6): OHM load+signatures, tool-use loop, governance, live LLM (BYOM),
-    # human-actor dispatch, consciousness hook. Flip claimed_done → true at the §22 Reza sign-off
-    # (run services/harness-runtime-service/tests/smoke/smoke.sh); that locks the no-stubs gate.
-    claimed_done: false
+    # human-actor dispatch, consciousness hook + the R5 HITL claim/complete/resume endpoints.
+    claimed_done: true       # §22 Reza sign-off accepted (smoke green) — no-stubs ENFORCED
   execution-engine-service:
-    release: R5              # R5 — durable execution engine, built in vertical slices (S1+)
-    structure_enforced: true # built to the §21 canonical layout (S1) — structure ENFORCED
-    # Flip claimed_done → true at the §22 Reza sign-off (run the engine smoke); locks no-stubs.
-    claimed_done: false
+    release: R5              # R5 — durable execution engine, all 7 slices merged (#185-#193)
+    structure_enforced: true # built to the §21 canonical layout — structure ENFORCED
+    # Jobs/retry/timeout/reaper, task board, mid-loop HITL resume, schedules, round-table.
+    claimed_done: true       # §22 Reza sign-off accepted (consolidated smoke green) — no-stubs ENFORCED
 
 # Legacy port-source registry — now EMPTY. oraclous-core-service (~6,300 LOC) was the port-source for
 # service #5 (capability-registry); its logic is ported+tested+signed-off and the dead shadow was
