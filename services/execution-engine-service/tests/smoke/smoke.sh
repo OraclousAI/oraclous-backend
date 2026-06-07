@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# R5 service — execution-engine acceptance smoke (slice 2 — async worker + cancel).
+# R5 service — execution-engine acceptance smoke (slice 3 — retry + timeout).
 # Proves the engine boots, migrates its own schema (own version_table — no shared-DB collision),
 # serves /health, and runs durable harness jobs ASYNC THROUGH THE GATEWAY: submit returns 202 +
 # QUEUED, a Celery worker calls the harness /execute over HTTP → the engine checkpoints the terminal
@@ -87,11 +87,20 @@ poll_job "$JID" SUCCEEDED && pass "worker ran it -> SUCCEEDED" || fail "PG job d
 [[ "$(curl -fsS "${GW}/v1/engine/jobs/${JID}" "${AUTH[@]}" | python3 -c 'import sys,json;print(json.load(sys.stdin)["harness_execution_id"] or "")')" != "" ]] \
   && pass "harness_execution_id set" || fail "no harness_execution_id"
 
-step "7. cancel the (ESCALATED) human job -> CANCELLED"
+step "7. S3: a failing job with max_retries=2 retries then ends FAILED with retry_count=2"
+# an OHM whose runtime.entrypoint matches no capability binding -> the harness rejects it (422) ->
+# the engine marks the attempt FAILED and re-queues until the retry budget is spent.
+BAD=$(python3 -c "import json,sys;print(json.dumps({'manifest':{'ohm_version':'1.0','metadata':{'id':'01976e3a-7c9b-7b00-9c45-aaa000000003','name':'Eng Bad','owner_organization_id':sys.argv[1]},'capabilities':[{'ref':'core/echo@1.0.0','binding':'echo'}],'models':[{'role':'primary','binding':'openrouter/x','protocol_shape':'openai-compatible'}],'prompts':[{'role':'primary','source':'inline','body':'x'}],'runtime':{'entrypoint':'does-not-exist'}},'input':'x','max_retries':2}))" "$ORG")
+BJID=$(curl -fsS "${GW}/v1/engine/jobs" "${AUTH[@]}" -d "$BAD" | python3 -c 'import sys,json;print(json.load(sys.stdin)["id"])')
+poll_job "$BJID" FAILED && pass "exhausted retries -> FAILED" || fail "bad job did not reach FAILED"
+[[ "$(curl -fsS "${GW}/v1/engine/jobs/${BJID}" "${AUTH[@]}" | python3 -c 'import sys,json;print(json.load(sys.stdin)["retry_count"])')" == "2" ]] \
+  && pass "retry_count == 2 (retries were attempted)" || fail "retry_count wrong"
+
+step "8. cancel the (ESCALATED) human job -> CANCELLED"
 curl -fsS "${GW}/v1/engine/jobs/${HJID}/cancel" "${AUTH[@]}" -X POST \
   | grep -q '"state":"CANCELLED"' && pass "cancel -> CANCELLED" || fail "cancel failed"
 
-step "8. read surfaces + edge auth"
+step "9. read surfaces + edge auth"
 [[ "$(curl -s -o /dev/null -w '%{http_code}' "${GW}/v1/engine/jobs/${JID}" "${AUTH[@]}")" == "200" ]] \
   && pass "GET /jobs/{id} -> 200" || fail "GET by id failed"
 curl -fsS "${GW}/v1/engine/jobs" "${AUTH[@]}" \
@@ -100,9 +109,9 @@ curl -fsS "${GW}/v1/engine/jobs" "${AUTH[@]}" \
 [[ "$(curl -s -o /dev/null -w '%{http_code}' "${GW}/v1/engine/jobs")" == "401" ]] \
   && pass "no-auth -> 401 (edge-gated)" || fail "expected 401"
 
-step "9. provenance was written for the job (submit + run)"
+step "10. provenance was written for the job (submit + run)"
 c=$(${COMPOSE} exec -T postgres psql -U oraclous -d oraclous -tAc \
   "select count(*) from engine_provenance where resource='engine_job:${JID}' and action in ('engine.job.submit','engine.job.run')")
 [[ "${c//[[:space:]]/}" -ge 2 ]] && pass "engine.job.submit + run provenance recorded" || fail "no provenance"
 
-printf '\n\033[32mAll execution-engine slice-2 smoke checks passed.\033[0m\n'
+printf '\n\033[32mAll execution-engine slice-3 smoke checks passed.\033[0m\n'

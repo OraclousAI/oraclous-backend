@@ -12,6 +12,7 @@ run (ADR-012 worker invariant).
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from oraclous_governance import (
@@ -56,13 +57,40 @@ async def _run_async(job_id_s: str, org_id_s: str, user_id_s: str) -> dict[str, 
             timeout=settings.harness_request_timeout,
         )
         try:
-            service = JobService(jobs=jobs, provenance=ProvenanceCollector(sink), harness=harness)
+            # enqueue too: a FAILED/TIMED_OUT job under its retry cap is re-queued by the worker.
+            service = JobService(
+                jobs=jobs,
+                provenance=ProvenanceCollector(sink),
+                harness=harness,
+                enqueue=enqueue_job,
+            )
             result = await service.execute(job_id, principal)
             return {"job_id": job_id_s, "state": result.state}
         finally:
             await harness.aclose()
             await jobs.close()
             await sink.close()
+
+
+@celery_app.task(name="engine.reap_stale")
+def reap_stale_running_task() -> dict[str, int]:  # noqa: ANN201
+    """Periodic system sweep (scheduled by Celery Beat in S5): time out jobs stuck RUNNING past the
+    lease, retrying eligible ones. Closes the worker/DB-blip stranded-RUNNING gap."""
+    return AsyncTaskExecutor.run_async_task(_reap_async)
+
+
+async def _reap_async() -> dict[str, int]:
+    settings = get_settings()
+    jobs = JobRepository(settings.database_url, worker_pool=True)
+    sink = PostgresProvenanceSink(settings.database_url, worker_pool=True)
+    try:
+        service = JobService(jobs=jobs, provenance=ProvenanceCollector(sink), enqueue=enqueue_job)
+        older_than = datetime.now(UTC) - timedelta(seconds=settings.running_lease_seconds)
+        reaped = await service.reap_stale(older_than=older_than)
+        return {"reaped": reaped}
+    finally:
+        await jobs.close()
+        await sink.close()
 
 
 def enqueue_job(job_id: uuid.UUID, organisation_id: uuid.UUID, user_id: uuid.UUID) -> None:

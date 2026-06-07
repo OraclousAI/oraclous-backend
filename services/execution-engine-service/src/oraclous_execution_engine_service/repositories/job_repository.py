@@ -7,6 +7,7 @@ resolved ``organisation_id`` and reads filter on it, so a tenant never reads ano
 from __future__ import annotations
 
 import uuid
+from datetime import datetime
 from typing import Any
 
 from sqlalchemy import select
@@ -101,6 +102,24 @@ class JobRepository:
                 )
             )
             return result.scalar_one_or_none()
+
+    async def list_stale_running(
+        self, older_than: datetime, *, limit: int = 100
+    ) -> list[EngineJob]:
+        """RUNNING jobs whose last update predates the lease — the reaper's system cross-org sweep.
+        ADR-006 carve-out (precedent: auth-service's credential store / ADR-012): a no-principal
+        maintenance op reads across orgs, but each reaped row is then settled + audited under its
+        own organisation_id — no row crosses a tenant boundary."""
+        async with self._session() as session:
+            result = await session.execute(
+                select(EngineJob)
+                .where(
+                    EngineJob.state == EngineJobState.RUNNING.value,
+                    EngineJob.updated_at < older_than,
+                )
+                .limit(limit)
+            )
+            return list(result.scalars().all())
 
     async def list_for_org(
         self, organisation_id: uuid.UUID, *, state: str | None = None, limit: int = 50
