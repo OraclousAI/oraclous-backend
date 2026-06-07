@@ -33,6 +33,8 @@ _ROUTES: tuple[tuple[str, str], ...] = (
     ("/api/v1/executions", "CAPABILITY_REGISTRY_URL"),
     # harness-runtime (authenticated; never on the public allow-list)
     ("/v1/harnesses", "HARNESS_RUNTIME_URL"),
+    # execution-engine (authenticated; never on the public allow-list)
+    ("/v1/engine", "EXECUTION_ENGINE_URL"),
 )
 
 

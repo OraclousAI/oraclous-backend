@@ -50,8 +50,9 @@ services:
     # (run services/harness-runtime-service/tests/smoke/smoke.sh); that locks the no-stubs gate.
     claimed_done: false
   execution-engine-service:
-    release: R5-deferred     # placeholder; not in R3.5 scope
-    structure_enforced: false
+    release: R5              # R5 — durable execution engine, built in vertical slices (S1+)
+    structure_enforced: true # built to the §21 canonical layout (S1) — structure ENFORCED
+    # Flip claimed_done → true at the §22 Reza sign-off (run the engine smoke); locks no-stubs.
     claimed_done: false
 
 # Legacy port-source registry — now EMPTY. oraclous-core-service (~6,300 LOC) was the port-source for
