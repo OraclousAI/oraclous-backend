@@ -27,12 +27,21 @@ from oraclous_execution_engine_service.services.harness_client import (
 )
 
 _TERMINAL = frozenset({"SUCCEEDED", "FAILED", "CANCELLED"})
+# Hard ceiling on total turns (max_rounds × actors) so one driver task can't fan out into thousands
+# of harness calls and get SIGKILLed by the Celery time limit, stranding the round-table RUNNING.
+_MAX_TOTAL_TURNS = 64
+_MAX_ENTRY_OUTPUT = 4000  # bound each transcript entry so the replayed context can't grow unbounded
 # A driver hand-off: (roundtable_id, organisation_id, user_id) → fire the worker task. Injected.
 EnqueueFn = Callable[[uuid.UUID, uuid.UUID, uuid.UUID], None]
 
 
 class RoundtableError(Exception):
-    """A round-table could not be created/advanced (missing, bad shape, wrong state). HTTP 4xx."""
+    """A round-table could not be created/advanced (missing, bad shape, wrong state). Carries the
+    HTTP status: 400 bad request (default), 404 not found, 409 wrong state."""
+
+    def __init__(self, message: str, status_code: int = 400) -> None:
+        super().__init__(message)
+        self.status_code = status_code
 
 
 class RoundtableService:
@@ -60,6 +69,10 @@ class RoundtableService:
         org_id = self._require_org(principal)
         if not actors:
             raise RoundtableError("a round-table needs at least one actor")
+        if max_rounds * len(actors) > _MAX_TOTAL_TURNS:
+            raise RoundtableError(
+                f"max_rounds × actors must not exceed {_MAX_TOTAL_TURNS} total turns"
+            )
         for actor in actors:
             kind = actor.get("kind")
             if kind not in ("agent", "human"):
@@ -90,16 +103,22 @@ class RoundtableService:
             raise RoundtableError("no harness client configured")
         rt = await self._roundtables.get(roundtable_id, org_id)
         if rt is None:
-            raise RoundtableError("round-table not found")
-        if rt.state in _TERMINAL:
-            return rt
+            raise RoundtableError("round-table not found", 404)
+        # Single-driver claim: only a QUEUED round-table may start driving. A concurrent or
+        # redelivered driver (acks_late) that finds it already RUNNING/ESCALATED/terminal no-ops —
+        # so turns are never double-run and the transcript can't suffer a lost update.
+        claimed, ok = await self._roundtables.transition(
+            rt.id, org_id, new_state="RUNNING", allowed_from=frozenset({"QUEUED"})
+        )
+        if not ok:
+            return claimed or rt
+        rt = claimed
 
         actors = rt.actors
         n = len(actors)
         total_turns = rt.max_rounds * n
         transcript = list(rt.transcript or [])
         turn = rt.current_turn
-        await self._roundtables.update(rt.id, org_id, state="RUNNING")
 
         while turn < total_turns:
             actor = actors[turn % n]
@@ -129,7 +148,7 @@ class RoundtableService:
                     "turn": turn,
                     "role": actor.get("role"),
                     "kind": "agent",
-                    "output": result.get("output"),
+                    "output": _bounded(result.get("output")),
                 }
             )
             turn += 1
@@ -156,23 +175,32 @@ class RoundtableService:
         org_id = self._require_org(principal)
         rt = await self._roundtables.get(roundtable_id, org_id)
         if rt is None:
-            raise RoundtableError("round-table not found")
+            raise RoundtableError("round-table not found", 404)
         if rt.state != "ESCALATED":
-            raise RoundtableError("round-table is not awaiting a human turn")
+            raise RoundtableError("round-table is not awaiting a human turn", 409)
         actor = rt.actors[rt.current_turn % len(rt.actors)]
         if actor.get("kind") != "human":
-            raise RoundtableError("the current turn is not a human turn")
+            raise RoundtableError("the current turn is not a human turn", 409)
         transcript = list(rt.transcript or [])
         transcript.append(
-            {"turn": rt.current_turn, "role": actor.get("role"), "kind": "human", "output": output}
+            {
+                "turn": rt.current_turn,
+                "role": actor.get("role"),
+                "kind": "human",
+                "output": _bounded(output),
+            }
         )
-        updated = await self._roundtables.update(
+        # CAS ESCALATED→QUEUED so a concurrent double-respond applies exactly once (the loser 409s).
+        updated, ok = await self._roundtables.transition(
             rt.id,
             org_id,
+            new_state="QUEUED",
+            allowed_from=frozenset({"ESCALATED"}),
             current_turn=rt.current_turn + 1,
             transcript=transcript,
-            state="QUEUED",
         )
+        if not ok:
+            raise RoundtableError("round-table is not awaiting a human turn", 409)
         await self._emit(
             org_id,
             principal.principal_id,
@@ -183,6 +211,26 @@ class RoundtableService:
         if self._enqueue is not None:
             self._enqueue(rt.id, org_id, principal.principal_id)
         return updated or rt
+
+    async def reap_stale(self, *, older_than: object) -> int:
+        """System sweep (with the job reaper): re-queue round-tables stuck RUNNING past the
+        lease — a driver that died mid-turn — so a fresh driver re-claims them. The CAS claim makes
+        the re-drive idempotent. Each row is re-queued + re-enqueued under its OWN org."""
+        reaped = 0
+        for rt in await self._roundtables.list_stale_running(older_than):
+            try:
+                _, ok = await self._roundtables.transition(
+                    rt.id,
+                    rt.organisation_id,
+                    new_state="QUEUED",
+                    allowed_from=frozenset({"RUNNING"}),
+                )
+                if ok and self._enqueue is not None:
+                    self._enqueue(rt.id, rt.organisation_id, rt.user_id)
+                    reaped += 1
+            except Exception:  # noqa: BLE001, S112 — best-effort maintenance; skip the row, continue
+                continue
+        return reaped
 
     async def _fail(
         self,
@@ -225,6 +273,15 @@ class RoundtableService:
                 outcome=outcome,
             )
         )
+
+
+def _bounded(value: object) -> str | None:
+    """Bound a transcript entry's output so the replayed context (and the JSONB row) can't grow
+    without bound across turns."""
+    if value is None:
+        return None
+    text = str(value)
+    return text if len(text) <= _MAX_ENTRY_OUTPUT else text[:_MAX_ENTRY_OUTPUT] + "…"
 
 
 def _render_context(topic: str, transcript: list[dict[str, Any]]) -> str:

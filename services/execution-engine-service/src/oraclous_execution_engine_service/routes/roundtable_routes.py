@@ -34,7 +34,7 @@ async def create_roundtable(
             max_rounds=body.max_rounds,
         )
     except RoundtableError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
     return RoundtableOut.model_validate(row)
 
 
@@ -58,5 +58,5 @@ async def respond_roundtable(
     try:
         row = await service.respond(roundtable_id, principal, body.output)
     except RoundtableError as exc:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
     return RoundtableOut.model_validate(row)

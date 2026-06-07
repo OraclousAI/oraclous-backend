@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from datetime import datetime
 from typing import Any
 
 from sqlalchemy import select
@@ -59,11 +60,43 @@ class RoundtableRepository:
             )
             return result.scalar_one_or_none()
 
+    async def transition(
+        self,
+        roundtable_id: uuid.UUID,
+        organisation_id: uuid.UUID,
+        *,
+        new_state: str,
+        allowed_from: frozenset[str],
+        **fields: Any,
+    ) -> tuple[EngineRoundtable | None, bool]:
+        """CAS the round-table into ``new_state`` only if its current state is in ``allowed_from``,
+        under a row lock; returns (row, applied). This is the single-driver claim — a redelivered or
+        concurrent driver that finds the round-table already RUNNING/terminal becomes a no-op."""
+        async with self._session() as session:
+            async with session.begin():
+                result = await session.execute(
+                    select(EngineRoundtable)
+                    .where(
+                        EngineRoundtable.id == roundtable_id,
+                        EngineRoundtable.organisation_id == organisation_id,
+                    )
+                    .with_for_update()
+                )
+                row = result.scalar_one_or_none()
+                if row is None or row.state not in allowed_from:
+                    return row, False
+                row.state = new_state
+                for key, value in fields.items():
+                    setattr(row, key, value)
+            if row is not None:
+                await session.refresh(row)
+            return row, True
+
     async def update(
         self, roundtable_id: uuid.UUID, organisation_id: uuid.UUID, **fields: Any
     ) -> EngineRoundtable | None:
-        """Patch an org-scoped round-table (state/current_turn/transcript/final_output) under a row
-        lock — the drive loop advances it turn by turn."""
+        """Patch an org-scoped round-table mid-drive (transcript/current_turn) under a lock. Safe
+        without a CAS because the QUEUED→RUNNING claim guarantees a single driver holds the row."""
         async with self._session() as session:
             async with session.begin():
                 result = await session.execute(
@@ -81,3 +114,20 @@ class RoundtableRepository:
                     setattr(row, key, value)
             await session.refresh(row)
             return row
+
+    async def list_stale_running(
+        self, older_than: datetime, *, limit: int = 100
+    ) -> list[EngineRoundtable]:
+        """RUNNING round-tables whose last update predates the lease — the reaper's system sweep for
+        a driver that died mid-turn. NOT org-scoped (maintenance); each row re-queues under its own
+        org (same ADR-006 carve-out as the job reaper)."""
+        async with self._session() as session:
+            result = await session.execute(
+                select(EngineRoundtable)
+                .where(
+                    EngineRoundtable.state == "RUNNING",
+                    EngineRoundtable.updated_at < older_than,
+                )
+                .limit(limit)
+            )
+            return list(result.scalars().all())

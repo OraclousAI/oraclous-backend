@@ -44,6 +44,18 @@ class _FakeRepo:
             setattr(row, k, v)
         return row
 
+    async def transition(self, rt_id, org, *, new_state, allowed_from, **fields):  # noqa: ANN001, ANN002, ANN003, ANN202
+        row = self.rows.get(rt_id)
+        if row is None or row.organisation_id != org or row.state not in allowed_from:
+            return row, False
+        row.state = new_state
+        for k, v in fields.items():
+            setattr(row, k, v)
+        return row, True
+
+    async def list_stale_running(self, older_than, *, limit: int = 100):  # noqa: ANN001, ANN202
+        return [r for r in self.rows.values() if r.state == "RUNNING"]
+
 
 class _FakeHarness:
     def __init__(self, *, status: str = "SUCCEEDED") -> None:
@@ -96,6 +108,13 @@ async def test_create_agent_without_manifest_raises() -> None:
         )
 
 
+async def test_create_caps_total_turns() -> None:
+    svc, *_ = _request_svc()
+    actors = [{**_AGENT, "role": f"a{i}"} for i in range(9)]  # 9 actors × 10 rounds = 90 > 64
+    with pytest.raises(RoundtableError):
+        await svc.create(_principal(), topic="t", actors=actors, max_rounds=10)
+
+
 # ── drive ─────────────────────────────────────────────────────────────────────────────────────────
 async def test_drive_all_agent_completes() -> None:
     harness = _FakeHarness()
@@ -128,6 +147,18 @@ async def test_drive_agent_failure_fails_the_roundtable() -> None:
     )
     out = await svc.drive(rt.id, _principal())
     assert out.state == "FAILED" and out.error_message
+
+
+async def test_drive_noops_when_not_queued() -> None:
+    # a concurrent/redelivered driver finds it already RUNNING → claim fails → no turns run.
+    harness = _FakeHarness()
+    svc, repo, _, _ = _request_svc(harness)
+    rt = await repo.create(
+        organisation_id=_ORG, user_id=_USER, topic="t", actors=[_AGENT], max_rounds=2
+    )
+    rt.state = "RUNNING"  # another driver already claimed it
+    out = await svc.drive(rt.id, _principal())
+    assert out.state == "RUNNING" and harness.calls == []  # no double-run
 
 
 async def test_drive_harness_unreachable_fails() -> None:
@@ -169,6 +200,28 @@ async def test_respond_when_not_escalated_raises() -> None:
     )  # state QUEUED, not ESCALATED
     with pytest.raises(RoundtableError):
         await svc.respond(rt.id, _principal(), "x")
+
+
+async def test_respond_twice_second_is_rejected() -> None:
+    harness = _FakeHarness()
+    svc, repo, _, _ = _request_svc(harness)
+    rt = await repo.create(
+        organisation_id=_ORG, user_id=_USER, topic="t", actors=[_AGENT, _HUMAN], max_rounds=1
+    )
+    await svc.drive(rt.id, _principal())  # → ESCALATED
+    await svc.respond(rt.id, _principal(), "first")  # ESCALATED→QUEUED
+    with pytest.raises(RoundtableError):  # the CAS now finds it QUEUED, not ESCALATED → 409
+        await svc.respond(rt.id, _principal(), "second")
+
+
+async def test_reap_requeues_a_stale_running_roundtable() -> None:
+    svc, repo, _, calls = _request_svc(_FakeHarness())
+    rt = await repo.create(
+        organisation_id=_ORG, user_id=_USER, topic="t", actors=[_AGENT], max_rounds=1
+    )
+    rt.state = "RUNNING"  # a driver died mid-turn
+    reaped = await svc.reap_stale(older_than=object())
+    assert reaped == 1 and rt.state == "QUEUED" and rt.id in calls  # re-queued + re-enqueued
 
 
 async def test_no_org_scope_raises() -> None:

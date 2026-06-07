@@ -143,7 +143,7 @@ class CreateRoundtableRequest(BaseModel):
     """Start a round-table: a topic + ≥1 ordered actors, driven for ``max_rounds`` full rounds."""
 
     topic: str = Field(min_length=1)
-    actors: list[RoundtableActorIn] = Field(min_length=1)
+    actors: list[RoundtableActorIn] = Field(min_length=1, max_length=16)
     max_rounds: int = Field(default=1, ge=1, le=10)
 
 

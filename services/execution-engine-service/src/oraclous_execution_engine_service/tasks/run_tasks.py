@@ -88,14 +88,22 @@ def reap_stale_running_task() -> dict[str, int]:  # noqa: ANN201
 async def _reap_async() -> dict[str, int]:
     settings = get_settings()
     jobs = JobRepository(settings.database_url, worker_pool=True)
+    roundtables = RoundtableRepository(settings.database_url, worker_pool=True)
     sink = PostgresProvenanceSink(settings.database_url, worker_pool=True)
     try:
-        service = JobService(jobs=jobs, provenance=ProvenanceCollector(sink), enqueue=enqueue_job)
+        collector = ProvenanceCollector(sink)
         older_than = datetime.now(UTC) - timedelta(seconds=settings.running_lease_seconds)
-        reaped = await service.reap_stale(older_than=older_than)
-        return {"reaped": reaped}
+        reaped = await JobService(jobs=jobs, provenance=collector, enqueue=enqueue_job).reap_stale(
+            older_than=older_than
+        )
+        # also re-queue round-tables whose driver died mid-turn (re-claim is CAS-idempotent).
+        rt_reaped = await RoundtableService(
+            roundtables=roundtables, provenance=collector, enqueue=enqueue_roundtable
+        ).reap_stale(older_than=older_than)
+        return {"reaped": reaped, "roundtables_reaped": rt_reaped}
     finally:
         await jobs.close()
+        await roundtables.close()
         await sink.close()
 
 
