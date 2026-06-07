@@ -1,6 +1,6 @@
 # Oraclous API — Postman collection
 
-A complete Postman collection for the Oraclous backend: **92 endpoints across all 7 services**,
+A complete Postman collection for the Oraclous backend: **108 endpoints across all 8 services**,
 callable through the **application-gateway** (the real entrypoint) or directly per service.
 
 | File | What |
@@ -22,8 +22,15 @@ CLI: `newman run oraclous.postman_collection.json -e oraclous.postman_environmen
 ## How it's organised
 
 - **One folder per service** (Auth & Identity, Credentials, Capability Registry, Knowledge Graph,
-  Knowledge Retriever, Harness Runtime, Gateway) — business routes that go **through the gateway**
-  via `{{base_url}}`.
+  Knowledge Retriever, Harness Runtime, **Execution Engine**, Gateway) — business routes that go
+  **through the gateway** via `{{base_url}}`.
+- **Execution Engine (R5)** — durable orchestration above the harness (`/v1/engine`): async jobs
+  (submit/get/list/cancel), the human task board (`/tasks` + `/complete` for entrypoint tasks,
+  `/approve` for mid-loop HITL), cron schedules, and the round-table multi-actor primitive. POST
+  `/jobs`, `/schedules`, and `/roundtables` capture `{{job_id}}` / `{{schedule_id}}` /
+  `{{roundtable_id}}` for the follow-up requests. The new harness HITL routes
+  (`/v1/harnesses/{id}/resume`, `assignments/{id}/{claim,complete}`) live in the Harness Runtime
+  folder.
 - **Health checks** — each service's `/health`, hit **directly** on its own port.
 - **Internal (service-to-service)** — `/internal/*` routes that are **never** exposed through the
   gateway; called directly with `X-Internal-Key: {{internal_service_key}}`. Debugging only.
@@ -50,6 +57,7 @@ injected — direct access is for debugging, not the happy path.
 | knowledge-retriever | `{{kr_url}}` | 8004 |
 | auth | `{{auth_url}}` | 8005 |
 | harness-runtime | `{{harness_url}}` | 8007 |
+| execution-engine | `{{engine_url}}` | 8008 |
 
 ## Keeping it current
 
