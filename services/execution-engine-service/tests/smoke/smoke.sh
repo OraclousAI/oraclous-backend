@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# R5 service — execution-engine acceptance smoke (slice 6 — HITL approve).
+# R5 service — execution-engine acceptance smoke (slice 7 — round-table).
 # Proves the engine boots, migrates its own schema (own version_table — no shared-DB collision),
 # serves /health, and runs durable harness jobs ASYNC THROUGH THE GATEWAY: submit returns 202 +
 # QUEUED, a Celery worker calls the harness /execute over HTTP → the engine checkpoints the terminal
@@ -130,6 +130,23 @@ curl -fsS "${AUTH[@]}" -X POST "${GW}/v1/engine/tasks/${HJID2}/approve" -d '{"de
   | python3 -c "import sys,json;d=json.load(sys.stdin);assert d['state']=='SUCCEEDED',d" \
   && pass "approve -> harness resumed the loop, the engine job is SUCCEEDED" || fail "HITL approve failed"
 
+step "6e. S7: a round-table (agent + human) -> driver runs the agent turn -> pauses for the human -> respond -> SUCCEEDED"
+# actor 0 = the PG-Reader agent (runs through the harness); actor 1 = a human turn (pause/respond).
+AGENT_M=$(python3 -c "import json,sys;print(json.dumps({'ohm_version':'1.0','metadata':{'id':'01976e3a-7c9b-7b00-9c45-aaa000000007','name':'RT Agent','owner_organization_id':sys.argv[1]},'capabilities':[{'ref':'core/postgresql-reader@1.0.0','binding':'pg','config':{'credential_mappings':{'connection_string':sys.argv[2]}}}],'models':[{'role':'primary','binding':'openrouter/x','protocol_shape':'openai-compatible'}],'prompts':[{'role':'primary','source':'inline','body':'List the tables using the tool.'}],'runtime':{'entrypoint':'pg'}}))" "$ORG" "$CRED")
+RT=$(python3 -c "import json,sys;print(json.dumps({'topic':'which tables exist?','max_rounds':1,'actors':[{'role':'analyst','kind':'agent','manifest':json.loads(sys.argv[1])},{'role':'approver','kind':'human','prompt':'sign off?'}]}))" "$AGENT_M")
+RTID=$(curl -fsS "${GW}/v1/engine/roundtables" "${AUTH[@]}" -d "$RT" | python3 -c 'import sys,json;print(json.load(sys.stdin)["id"])')
+pass "round-table ${RTID} created (202, driver enqueued)"
+rt_state() { curl -fsS "${GW}/v1/engine/roundtables/$1" "${AUTH[@]}" | python3 -c 'import sys,json;print(json.load(sys.stdin)["state"])'; }
+for _ in $(seq 1 30); do s=$(rt_state "$RTID"); [[ "$s" == "ESCALATED" ]] && break; case "$s" in SUCCEEDED|FAILED) break;; esac; sleep 2; done
+curl -fsS "${GW}/v1/engine/roundtables/${RTID}" "${AUTH[@]}" \
+  | python3 -c "import sys,json;d=json.load(sys.stdin);assert d['state']=='ESCALATED' and len(d['transcript'])==1 and d['transcript'][0]['kind']=='agent',d" \
+  && pass "driver ran the agent turn, paused ESCALATED at the human turn (1 agent entry)" || fail "round-table did not pause at the human turn"
+curl -fsS "${AUTH[@]}" -X POST "${GW}/v1/engine/roundtables/${RTID}/respond" -d '{"output":"signed off"}' >/dev/null
+for _ in $(seq 1 20); do s=$(rt_state "$RTID"); [[ "$s" == "SUCCEEDED" ]] && break; case "$s" in FAILED) break;; esac; sleep 2; done
+curl -fsS "${GW}/v1/engine/roundtables/${RTID}" "${AUTH[@]}" \
+  | python3 -c "import sys,json;d=json.load(sys.stdin);assert d['state']=='SUCCEEDED' and d['transcript'][-1]['kind']=='human' and d['final_output']=='signed off',d" \
+  && pass "respond -> driver finished -> SUCCEEDED with the human's final turn" || fail "round-table did not complete"
+
 step "7. S3: a failing job with max_retries=2 retries then ends FAILED with retry_count=2"
 # an OHM whose runtime.entrypoint matches no capability binding -> the harness rejects it (422) ->
 # the engine marks the attempt FAILED and re-queues until the retry budget is spent.
@@ -157,4 +174,4 @@ c=$(${COMPOSE} exec -T postgres psql -U oraclous -d oraclous -tAc \
   "select count(*) from engine_provenance where resource='engine_job:${JID}' and action in ('engine.job.submit','engine.job.run')")
 [[ "${c//[[:space:]]/}" -ge 2 ]] && pass "engine.job.submit + run provenance recorded" || fail "no provenance"
 
-printf '\n\033[32mAll execution-engine slice-6 smoke checks passed.\033[0m\n'
+printf '\n\033[32mAll execution-engine slice-7 smoke checks passed.\033[0m\n'

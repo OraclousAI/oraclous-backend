@@ -25,12 +25,16 @@ from oraclous_execution_engine_service.core.auth import (
 )
 from oraclous_execution_engine_service.core.config import get_settings
 from oraclous_execution_engine_service.repositories.job_repository import JobRepository
+from oraclous_execution_engine_service.repositories.roundtable_repository import (
+    RoundtableRepository,
+)
 from oraclous_execution_engine_service.repositories.schedule_repository import ScheduleRepository
 from oraclous_execution_engine_service.services.harness_client import HarnessClient
 from oraclous_execution_engine_service.services.job_service import JobService
+from oraclous_execution_engine_service.services.roundtable_service import RoundtableService
 from oraclous_execution_engine_service.services.schedule_service import ScheduleService
 from oraclous_execution_engine_service.services.task_service import TaskService
-from oraclous_execution_engine_service.tasks.run_tasks import enqueue_job
+from oraclous_execution_engine_service.tasks.run_tasks import enqueue_job, enqueue_roundtable
 
 _bearer = HTTPBearer(auto_error=False)
 
@@ -123,6 +127,26 @@ def get_schedule_service(
     return ScheduleService(schedules=schedules, jobs=jobs, provenance=provenance)
 
 
+def get_roundtable_repository(request: Request) -> RoundtableRepository:
+    repo = getattr(request.app.state, "roundtable_repository", None)
+    if repo is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="engine store unavailable (DATABASE_URL not reachable)",
+        )
+    return repo
+
+
+def get_roundtable_service(
+    roundtables: Annotated[RoundtableRepository, Depends(get_roundtable_repository)],
+    provenance: Annotated[ProvenanceCollector, Depends(get_provenance)],
+) -> RoundtableService:
+    # the request path creates + responds (enqueues the driver); the worker drives via the harness.
+    return RoundtableService(
+        roundtables=roundtables, provenance=provenance, enqueue=enqueue_roundtable
+    )
+
+
 async def get_harness_client(
     principal: Annotated[Principal, Depends(get_principal)],
 ) -> AsyncIterator[HarnessClient]:
@@ -152,3 +176,4 @@ JobRepositoryDep = Annotated[JobRepository, Depends(get_job_repository)]
 JobServiceDep = Annotated[JobService, Depends(get_job_service)]
 TaskServiceDep = Annotated[TaskService, Depends(get_task_service)]
 ScheduleServiceDep = Annotated[ScheduleService, Depends(get_schedule_service)]
+RoundtableServiceDep = Annotated[RoundtableService, Depends(get_roundtable_service)]

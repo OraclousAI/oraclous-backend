@@ -27,9 +27,13 @@ from oraclous_execution_engine_service.core.auth import build_downstream_headers
 from oraclous_execution_engine_service.core.config import get_settings
 from oraclous_execution_engine_service.repositories.job_repository import JobRepository
 from oraclous_execution_engine_service.repositories.provenance_sink import PostgresProvenanceSink
+from oraclous_execution_engine_service.repositories.roundtable_repository import (
+    RoundtableRepository,
+)
 from oraclous_execution_engine_service.repositories.schedule_repository import ScheduleRepository
 from oraclous_execution_engine_service.services.harness_client import HarnessClient
 from oraclous_execution_engine_service.services.job_service import JobService
+from oraclous_execution_engine_service.services.roundtable_service import RoundtableService
 from oraclous_execution_engine_service.services.schedule_service import ScheduleService
 from oraclous_execution_engine_service.tasks.celery_app import AsyncTaskExecutor, celery_app
 
@@ -84,14 +88,22 @@ def reap_stale_running_task() -> dict[str, int]:  # noqa: ANN201
 async def _reap_async() -> dict[str, int]:
     settings = get_settings()
     jobs = JobRepository(settings.database_url, worker_pool=True)
+    roundtables = RoundtableRepository(settings.database_url, worker_pool=True)
     sink = PostgresProvenanceSink(settings.database_url, worker_pool=True)
     try:
-        service = JobService(jobs=jobs, provenance=ProvenanceCollector(sink), enqueue=enqueue_job)
+        collector = ProvenanceCollector(sink)
         older_than = datetime.now(UTC) - timedelta(seconds=settings.running_lease_seconds)
-        reaped = await service.reap_stale(older_than=older_than)
-        return {"reaped": reaped}
+        reaped = await JobService(jobs=jobs, provenance=collector, enqueue=enqueue_job).reap_stale(
+            older_than=older_than
+        )
+        # also re-queue round-tables whose driver died mid-turn (re-claim is CAS-idempotent).
+        rt_reaped = await RoundtableService(
+            roundtables=roundtables, provenance=collector, enqueue=enqueue_roundtable
+        ).reap_stale(older_than=older_than)
+        return {"reaped": reaped, "roundtables_reaped": rt_reaped}
     finally:
         await jobs.close()
+        await roundtables.close()
         await sink.close()
 
 
@@ -121,6 +133,49 @@ async def _fire_schedules_async() -> dict[str, int]:
         await sink.close()
 
 
+@celery_app.task(bind=True, name="engine.drive_roundtable")
+def drive_roundtable_task(  # noqa: ANN001, ANN201
+    self, roundtable_id: str, organisation_id: str, user_id: str
+):  # noqa: ARG001
+    return AsyncTaskExecutor.run_async_task(
+        _drive_roundtable_async, roundtable_id, organisation_id, user_id
+    )
+
+
+async def _drive_roundtable_async(rt_id_s: str, org_id_s: str, user_id_s: str) -> dict[str, Any]:
+    settings = get_settings()
+    rt_id, org_id, user_id = uuid.UUID(rt_id_s), uuid.UUID(org_id_s), uuid.UUID(user_id_s)
+    principal = Principal(
+        principal_id=user_id, principal_type=PrincipalType.USER, organisation_id=org_id
+    )
+    context = OrganisationContext(
+        organisation_id=org_id, principal_id=user_id, principal_type=PrincipalType.USER
+    )
+    with use_organisation_context(context):
+        roundtables = RoundtableRepository(settings.database_url, worker_pool=True)
+        sink = PostgresProvenanceSink(settings.database_url, worker_pool=True)
+        harness = HarnessClient(
+            settings.harness_runtime_url,
+            headers=build_downstream_headers(principal, settings),
+            timeout=settings.harness_request_timeout,
+        )
+        try:
+            service = RoundtableService(
+                roundtables=roundtables, provenance=ProvenanceCollector(sink), harness=harness
+            )
+            result = await service.drive(rt_id, principal)
+            return {"roundtable_id": rt_id_s, "state": result.state}
+        finally:
+            await harness.aclose()
+            await roundtables.close()
+            await sink.close()
+
+
 def enqueue_job(job_id: uuid.UUID, organisation_id: uuid.UUID, user_id: uuid.UUID) -> None:
     """Fire-and-forget: hand a QUEUED job to the worker over the broker."""
     run_engine_job_task.delay(str(job_id), str(organisation_id), str(user_id))
+
+
+def enqueue_roundtable(rt_id: uuid.UUID, organisation_id: uuid.UUID, user_id: uuid.UUID) -> None:
+    """Fire-and-forget: hand a round-table to the driver over the broker."""
+    drive_roundtable_task.delay(str(rt_id), str(organisation_id), str(user_id))
