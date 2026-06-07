@@ -19,6 +19,10 @@ class Settings(BaseSettings):
     APP_NAME: str = "oraclous-application-gateway-service"
     VERSION: str = "0.0.1"
 
+    # --- published public contract (ADR-015) ---
+    # Path to openapi/v1.yaml; empty => the loader searches upward for it (in-image + source).
+    OPENAPI_SPEC_PATH: str = ""
+
     # --- upstream base URLs (the route table maps path-prefixes onto these) ---
     AUTH_SERVICE_URL: str = "http://auth-service:8000"
     CREDENTIAL_BROKER_URL: str = "http://credential-broker-service:8000"

@@ -25,6 +25,7 @@ from oraclous_application_gateway_service.domain.errors import (
     UpstreamUnavailableError,
 )
 from oraclous_application_gateway_service.routes.health_routes import router as health_router
+from oraclous_application_gateway_service.routes.openapi_routes import router as openapi_router
 from oraclous_application_gateway_service.routes.proxy_routes import router as proxy_router
 from oraclous_application_gateway_service.schema.error import gateway_error, request_id_of
 
@@ -33,7 +34,16 @@ logger = logging.getLogger(__name__)
 
 def create_app(*, lifespan=None) -> FastAPI:
     settings = get_settings()
-    app = FastAPI(title=settings.APP_NAME, version=settings.VERSION, lifespan=lifespan)
+    # The published contract is served from routes/openapi_routes (ADR-015), NOT FastAPI's auto-spec
+    # (which only sees /health + the catch-all and would leak the `/{path:path}` proxy as an op).
+    app = FastAPI(
+        title=settings.APP_NAME,
+        version=settings.VERSION,
+        lifespan=lifespan,
+        openapi_url=None,
+        docs_url=None,
+        redoc_url=None,
+    )
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origins,
@@ -82,6 +92,9 @@ def create_app(*, lifespan=None) -> FastAPI:
         )
 
     app.include_router(health_router)
-    # the proxy catch-all must be LAST so specific routes (e.g. /health) win
+    # the published contract (/v1/openapi.json, /v1/openapi.yaml, /docs) is served at the edge —
+    # registered before the catch-all so the proxy never shadows it.
+    app.include_router(openapi_router)
+    # the proxy catch-all must be LAST so specific routes (e.g. /health, /v1/openapi.json) win
     app.include_router(proxy_router)
     return app

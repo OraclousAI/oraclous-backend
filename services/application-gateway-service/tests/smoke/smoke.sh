@@ -114,6 +114,43 @@ code=$(echo "$down" | tail -1)
   || fail "expected 502/504 envelope, got: $down"
 ${COMPOSE} up -d capability-registry-service >/dev/null 2>&1
 
+step "12. GW-6: the published OpenAPI v1 contract is served at the edge (ADR-015) + matches the ORA-37 taxonomy"
+curl -fsS "${GW}/v1/openapi.json" -o /tmp/gw_openapi.json
+ROOT_DIR="$ROOT" python3 -c "
+import json, os
+spec = json.load(open('/tmp/gw_openapi.json'))
+assert str(spec['openapi']).startswith('3.'), spec.get('openapi')
+assert spec['info']['title'] == 'Oraclous Platform API', spec['info']
+# the published error component's code enum must equal the cross-repo ORA-37 taxonomy, byte-for-byte
+published = spec['components']['schemas']['ErrorEnvelope']['properties']['error']['properties']['code']['enum']
+canonical = json.load(open(os.path.join(os.environ['ROOT_DIR'],
+    'packages/errors/contract/error-envelope.schema.json')))['properties']['error']['properties']['code']['enum']
+assert published == canonical, (published, canonical)
+# the contract documents real proxied operations and never the internal plane
+assert '/v1/engine/jobs' in spec['paths'] and '/api/v1/tools' in spec['paths'], list(spec['paths'])
+assert not any(p.startswith('/internal') for p in spec['paths']), 'internal plane disclosed'
+print(f'  served OpenAPI {spec[\"openapi\"]} — {len(spec[\"paths\"])} paths, error enum == ORA-37 taxonomy')
+" && pass "/v1/openapi.json -> valid OpenAPI 3.x, error component == ORA-37 taxonomy, no /internal" \
+  || fail "published contract missing/inconsistent: $(head -c 200 /tmp/gw_openapi.json)"
+
+# the reverse-proxy catch-all must NOT shadow the served contract (it is the edge route, public)
+sc=$(curl -s -o /dev/null -w '%{http_code}' "${GW}/v1/openapi.json")  # no bearer — public
+[[ "$sc" == "200" ]] && pass "catch-all does not shadow /v1/openapi.json (served public, 200)" \
+  || fail "expected 200 for the served contract, got $sc"
+sc=$(curl -s -o /dev/null -w '%{http_code}' "${GW}/docs")
+[[ "$sc" == "200" ]] && pass "/docs (Swagger UI) served at the edge" || fail "expected 200 for /docs, got $sc"
+
+# the gateway's actual error body conforms to the published contract: code is in the published enum
+python3 -c "
+import json
+spec = json.load(open('/tmp/gw_openapi.json'))
+enum = spec['components']['schemas']['ErrorEnvelope']['properties']['error']['properties']['code']['enum']
+err = json.load(open('/tmp/gw_404.json'))['error']  # captured in step 10
+assert err['code'] in enum, (err['code'], enum)
+assert set(err) == {'code','message','requestId','retryable'}, err
+" && pass "the gateway's emitted error body conforms to its own published ORA-37 contract" \
+  || fail "emitted error does not match the published contract"
+
 printf '\n\033[32mapplication-gateway GW-1..GW-5 smoke passed.\033[0m  edge JWT termination, '
 printf 'reverse-proxy to TWO real upstreams (capability-registry + credential-broker), CORS '
 printf 'termination, /internal not edge-routed, aggregated upstream health, own-error envelope, '
