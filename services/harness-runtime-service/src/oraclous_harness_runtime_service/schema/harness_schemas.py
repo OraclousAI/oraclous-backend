@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -98,3 +98,11 @@ class CompleteAssignmentRequest(BaseModel):
     """The human's output for a completed task — becomes the parked run's output on SUCCEEDED."""
 
     output: str = Field(min_length=1)
+
+
+class ResumeHarnessRequest(BaseModel):
+    """A human's decision on a mid-loop HITL pause. APPROVED resumes the loop (the gated tool runs);
+    DENIED terminates the run FAILED. ``decision_reason`` is an optional audit note."""
+
+    decision: Literal["APPROVED", "DENIED"]
+    decision_reason: str | None = None

@@ -6,6 +6,8 @@ tools, feeds results back, records a step trace, and escalates when it does not 
 
 from __future__ import annotations
 
+import json
+
 import pytest
 from oraclous_harness_runtime_service.domain.llm.base import (
     LLMResponse,
@@ -276,3 +278,77 @@ async def test_output_is_redacted() -> None:
     assert result.status is HarnessStatus.SUCCEEDED
     assert "SECRET123" not in (result.output or "")
     assert "[REDACTED]" in (result.output or "")
+
+
+# ── slice S6 — mid-loop HITL checkpoint + resume ─────────────────────────────────────────────────
+
+
+async def test_hitl_gate_carries_a_resumable_checkpoint() -> None:
+    result = await run_tool_use_loop(
+        llm=_ScriptedLLM(),
+        system="",
+        user_input="go",
+        tool_specs=[_SPEC],
+        dispatch=_ok_dispatch,
+        policy=_env(gated=frozenset({"pg"})),
+    )
+    assert result.status is HarnessStatus.ESCALATED and result.error_type == "hitl_required"
+    cp = result.checkpoint
+    assert cp is not None
+    assert cp.approved_tool_call_id == "c1"
+    assert [t["id"] for t in cp.pending_tool_calls] == ["c1"]  # the gated call, not yet dispatched
+    assert any(m.get("role") == "assistant" for m in cp.messages)  # transcript captured
+
+
+async def test_resume_dispatches_the_approved_tool_and_converges() -> None:
+    paused = await run_tool_use_loop(
+        llm=_ScriptedLLM(),
+        system="",
+        user_input="go",
+        tool_specs=[_SPEC],
+        dispatch=_ok_dispatch,
+        policy=_env(gated=frozenset({"pg"})),
+    )
+    dispatched = False
+
+    async def _watch(spec: ToolSpec, args: dict) -> dict:
+        nonlocal dispatched
+        dispatched = True
+        return {"tables": ["a", "b"]}
+
+    resumed = await run_tool_use_loop(
+        llm=_ScriptedLLM(),
+        system="",
+        user_input="go",
+        tool_specs=[_SPEC],
+        dispatch=_watch,
+        policy=_env(gated=frozenset({"pg"})),
+        resume_state=paused.checkpoint,
+    )
+    assert dispatched is True  # the approved gated tool ran on resume (bypassed the gate once)
+    assert resumed.status is HarnessStatus.SUCCEEDED
+    assert "tables" in (resumed.output or "")
+
+
+async def test_checkpoint_messages_never_persist_a_secret() -> None:
+    # the model echoes a secret in its assistant text; the checkpoint must store it redacted.
+    class _SecretLLM:
+        protocol_shape = "fake"
+
+        async def complete(self, *, messages, system, tools):  # noqa: ANN001, ANN202
+            return LLMResponse(
+                text="my secret is SECRET123", tool_calls=[ToolCall("c1", tools[0].name, {})]
+            )
+
+    result = await run_tool_use_loop(
+        llm=_SecretLLM(),
+        system="",
+        user_input="go",
+        tool_specs=[_SPEC],
+        dispatch=_ok_dispatch,
+        policy=_env(gated=frozenset({"pg"}), redact=("SECRET123",)),
+    )
+    cp = result.checkpoint
+    assert cp is not None
+    blob = json.dumps(cp.messages)
+    assert "SECRET123" not in blob and "[REDACTED]" in blob

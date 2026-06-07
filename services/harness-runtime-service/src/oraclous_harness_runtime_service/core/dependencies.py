@@ -25,6 +25,7 @@ from oraclous_harness_runtime_service.core.auth import (
 from oraclous_harness_runtime_service.core.config import Settings, get_settings
 from oraclous_harness_runtime_service.domain.ohm.signatures import TrustStore
 from oraclous_harness_runtime_service.repositories.assignment_repository import AssignmentRepository
+from oraclous_harness_runtime_service.repositories.checkpoint_repository import CheckpointRepository
 from oraclous_harness_runtime_service.repositories.execution_repository import ExecutionRepository
 from oraclous_harness_runtime_service.services.assignment_service import AssignmentService
 from oraclous_harness_runtime_service.services.broker_client import BrokerClient
@@ -137,6 +138,16 @@ def get_assignment_repository(request: Request) -> AssignmentRepository:
     return repo
 
 
+def get_checkpoint_repository(request: Request) -> CheckpointRepository:
+    repo = getattr(request.app.state, "checkpoint_repository", None)
+    if repo is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="harness store unavailable (DATABASE_URL not reachable)",
+        )
+    return repo
+
+
 def get_provenance(request: Request) -> ProvenanceCollector:
     collector = getattr(request.app.state, "provenance", None)
     if collector is None:
@@ -157,6 +168,7 @@ def get_harness_service(
     broker: Annotated[BrokerClient, Depends(get_broker_client)],
     executions: Annotated[ExecutionRepository, Depends(get_execution_repository)],
     assignments: Annotated[AssignmentRepository, Depends(get_assignment_repository)],
+    checkpoints: Annotated[CheckpointRepository, Depends(get_checkpoint_repository)],
     provenance: Annotated[ProvenanceCollector, Depends(get_provenance)],
     trust: Annotated[TrustStore, Depends(get_trust_store)],
 ) -> HarnessExecutionService:
@@ -166,6 +178,7 @@ def get_harness_service(
         broker=broker,
         executions=executions,
         assignments=assignments,
+        checkpoints=checkpoints,
         provenance=provenance,
         trust=trust,
         require_signature=settings.ohm_require_signature,

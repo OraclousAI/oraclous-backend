@@ -106,6 +106,45 @@ class ExecutionRepository:
             await session.refresh(row)
             return row
 
+    async def update_run(
+        self,
+        execution_id: uuid.UUID,
+        organisation_id: uuid.UUID,
+        *,
+        status: str,
+        output: str | None,
+        error_type: str | None,
+        error_message: str | None,
+        iterations: int,
+        total_tokens: int,
+        steps: list[dict[str, Any]],
+    ) -> HarnessExecution | None:
+        """Full in-place update of an org-scoped run — the S6 resume path overwrites status/output/
+        error/iterations/tokens and REPLACES the step trace (caller appends the new tail). Unlike
+        update_status this sets error fields verbatim (a DENIED resume preserves human_rejected)."""
+        async with self._session() as session:
+            async with session.begin():
+                result = await session.execute(
+                    select(HarnessExecution)
+                    .where(
+                        HarnessExecution.id == execution_id,
+                        HarnessExecution.organisation_id == organisation_id,
+                    )
+                    .with_for_update()
+                )
+                row = result.scalar_one_or_none()
+                if row is None:
+                    return None
+                row.status = status
+                row.output = output
+                row.error_type = error_type
+                row.error_message = error_message
+                row.iterations = iterations
+                row.total_tokens = total_tokens
+                row.steps = steps
+            await session.refresh(row)
+            return row
+
     async def list_for_org(
         self, organisation_id: uuid.UUID, *, limit: int = 50
     ) -> list[HarnessExecution]:
