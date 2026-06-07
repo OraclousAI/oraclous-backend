@@ -60,15 +60,22 @@ class _FakeCheckpoints:
     def __init__(self, pending=True) -> None:  # noqa: ANN001
         self._pending = pending
         self.decided: str | None = None
+        self.reverted = False
 
     async def get_latest_pending(self, execution_id, organisation_id):  # noqa: ANN001, ANN202
-        return SimpleNamespace(id=uuid.uuid4()) if self._pending else None
+        if not self._pending:
+            return None
+        # manifest_doc={} is an invalid OHM → load_ohm raises (used by the compensation test).
+        return SimpleNamespace(id=uuid.uuid4(), manifest_doc={})
 
     async def set_decision(self, checkpoint_id, organisation_id, new_status):  # noqa: ANN001, ANN202
         if self.decided is not None:  # already decided → CAS no-op
             return None
         self.decided = new_status
         return SimpleNamespace(id=checkpoint_id, status=new_status)
+
+    async def revert_to_pending(self, checkpoint_id, organisation_id):  # noqa: ANN001, ANN202
+        self.reverted = True
 
 
 class _FakeProv:
@@ -127,6 +134,18 @@ async def test_resume_no_org_scope_401() -> None:
             execution_id=uuid.uuid4(), principal=_principal(org=None), decision="APPROVED"
         )
     assert exc.value.status_code == 401
+
+
+async def test_resume_failure_after_cas_reverts_checkpoint_to_pending() -> None:
+    # the approve claimed the checkpoint, then applying it failed (here: invalid manifest_doc →
+    # load_ohm raises). The checkpoint must be un-claimed so the run is retryable, not stranded.
+    row = _execution()
+    execs, ckpts, prov = _FakeExecutions(row), _FakeCheckpoints(), _FakeProv()
+    svc = _service(execs, ckpts, prov)
+    with pytest.raises(Exception):  # noqa: B017, PT011 — load_ohm raises on the invalid doc
+        await svc.resume(execution_id=row.id, principal=_principal(), decision="APPROVED")
+    assert ckpts.decided == "APPROVED"  # it was claimed
+    assert ckpts.reverted is True  # ...then un-claimed on failure (retryable)
 
 
 async def test_resume_denied_terminates_failed_with_reason() -> None:

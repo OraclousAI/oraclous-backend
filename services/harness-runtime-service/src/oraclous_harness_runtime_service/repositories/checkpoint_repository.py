@@ -87,3 +87,20 @@ class CheckpointRepository:
                 row.status = new_status
             await session.refresh(row)
             return row
+
+    async def revert_to_pending(self, checkpoint_id: uuid.UUID, organisation_id: uuid.UUID) -> None:
+        """Compensation: un-claim a decision when the resume that claimed it then failed — so the
+        run is retryable instead of stranded ESCALATED with a no-longer-PENDING checkpoint."""
+        async with self._session() as session:
+            async with session.begin():
+                result = await session.execute(
+                    select(HarnessCheckpoint)
+                    .where(
+                        HarnessCheckpoint.id == checkpoint_id,
+                        HarnessCheckpoint.organisation_id == organisation_id,
+                    )
+                    .with_for_update()
+                )
+                row = result.scalar_one_or_none()
+                if row is not None:
+                    row.status = "PENDING"

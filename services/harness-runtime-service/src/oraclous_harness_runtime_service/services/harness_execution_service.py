@@ -265,9 +265,17 @@ class HarnessExecutionService:
         if await self._checkpoints.set_decision(checkpoint.id, org_id, decision) is None:
             raise ResumeError("checkpoint already decided", 409)
 
-        if decision == "DENIED":
-            return await self._resume_denied(execution, org_id, prov, resource, decision_reason)
-        return await self._resume_approved(execution, checkpoint, org_id, prov, resource)
+        # If applying the decision then fails (e.g. the registry/LLM is transiently down while
+        # rebuilding the runnable), un-claim the checkpoint so the run stays retryable rather than
+        # stranded ESCALATED with a no-longer-PENDING checkpoint. (A failure AFTER the loop already
+        # dispatched a tool may re-run it on retry — the common failure is pre-loop in build.)
+        try:
+            if decision == "DENIED":
+                return await self._resume_denied(execution, org_id, prov, resource, decision_reason)
+            return await self._resume_approved(execution, checkpoint, org_id, prov, resource)
+        except Exception:
+            await self._checkpoints.revert_to_pending(checkpoint.id, org_id)
+            raise
 
     async def _resume_denied(
         self,
@@ -329,8 +337,16 @@ class HarnessExecutionService:
         resource: str,
     ) -> HarnessExecution:
         # Replay the EXACT paused manifest (stored on the checkpoint → no drift, hash stable).
-        manifest = load_ohm(checkpoint.manifest_doc)
+        document = checkpoint.manifest_doc
+        manifest = load_ohm(document)
         policy = resolve_policy_set(self._force_policy_set or manifest.governance.policy_set_ref)
+        # Re-enforce the load-time gates on resume: the manifest can't have drifted, but the policy
+        # floor may have tightened since the pause — a now-forbidden capability/provider/signature
+        # must fail-closed here exactly as a fresh execute() would, not slip through on resume.
+        verify_signatures(
+            document, self._trust, require=self._require_signature or policy.require_signature
+        )
+        enforce_load_policy(manifest, policy)
         envelope, tool_specs, dispatch, llm = await self._build_runnable(manifest, policy, org_id)
         cursor = checkpoint.resume_cursor
         resume_state = LoopCheckpoint(
@@ -377,7 +393,8 @@ class HarnessExecutionService:
             execution.id,
             org_id,
             status=result.status.value,
-            output=result.output,
+            output=result.output
+            or execution.output,  # keep the prior partial on a chained re-pause
             error_type=result.error_type,
             error_message=result.error_message,
             iterations=result.iterations,  # cumulative — the cursor carried the prior iteration
