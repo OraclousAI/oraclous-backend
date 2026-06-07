@@ -120,3 +120,49 @@ class ScheduleOut(BaseModel):
 class ScheduleListResponse(BaseModel):
     schedules: list[ScheduleOut]
     total: int
+
+
+class RoundtableActorIn(BaseModel):
+    """One participant. An ``agent`` actor runs an OHM (inline ``manifest`` or ``manifest_ref``); a
+    ``human`` actor pauses the round-table to respond. ``role`` labels its turns in the script."""
+
+    role: str = Field(min_length=1, max_length=128)
+    kind: Literal["agent", "human"]
+    manifest: dict[str, Any] | None = None
+    manifest_ref: str | None = Field(default=None, max_length=512)
+    prompt: str | None = None
+
+    @model_validator(mode="after")
+    def _agent_needs_a_manifest(self) -> RoundtableActorIn:
+        if self.kind == "agent" and not (self.manifest or self.manifest_ref):
+            raise ValueError("an agent actor needs a 'manifest' or 'manifest_ref'")
+        return self
+
+
+class CreateRoundtableRequest(BaseModel):
+    """Start a round-table: a topic + ≥1 ordered actors, driven for ``max_rounds`` full rounds."""
+
+    topic: str = Field(min_length=1)
+    actors: list[RoundtableActorIn] = Field(min_length=1)
+    max_rounds: int = Field(default=1, ge=1, le=10)
+
+
+class RespondRoundtableRequest(BaseModel):
+    """A human's contribution to the paused turn; appended to the transcript, the driver resumes."""
+
+    output: str = Field(min_length=1)
+
+
+class RoundtableOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    organisation_id: uuid.UUID
+    topic: str
+    state: str
+    current_turn: int
+    max_rounds: int
+    transcript: list[dict[str, Any]]
+    final_output: str | None
+    error_message: str | None
+    created_at: datetime | None
