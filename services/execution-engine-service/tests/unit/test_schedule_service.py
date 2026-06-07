@@ -179,6 +179,19 @@ async def test_fire_due_skips_already_fired_window() -> None:
     assert fired == 0 and jrepo.created == [] and calls == []
 
 
+async def test_fire_due_isolates_a_bad_cron_and_still_fires_the_rest() -> None:
+    # `0 0 30 2 *` (Feb 30) passes croniter.is_valid but raises on get_prev — it must NOT abort the
+    # sweep and stall every other org's schedule.
+    bad = _schedule(cron="0 0 30 2 *", last_fired=None)
+    good = _schedule(cron="* * * * *", last_fired=None)
+    srepo = _FakeSchedRepo([bad, good])
+    jrepo = _FakeJobRepo()
+    calls: list = []
+    svc, _ = _svc(srepo, jrepo, enqueue=lambda j, o, u: calls.append(j))
+    fired = await svc.fire_due(_NOW)
+    assert fired == 1 and len(calls) == 1  # the good schedule fired despite the bad one
+
+
 async def test_fire_due_idempotent_create_advances_without_double_enqueue() -> None:
     sched = _schedule(cron="* * * * *", last_fired=None)
     srepo = _FakeSchedRepo([sched])

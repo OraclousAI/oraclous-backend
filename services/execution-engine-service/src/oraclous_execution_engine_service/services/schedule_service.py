@@ -10,7 +10,7 @@ its schedule's OWN org (ADR-006 carve-out, like the reaper).
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import UTC, datetime
 
 from croniter import croniter
 from oraclous_governance import Principal
@@ -83,29 +83,41 @@ class ScheduleService:
         """Beat sweep: fire every enabled cron schedule whose latest window hasn't fired yet."""
         fired = 0
         for sched in await self._schedules.list_enabled_cron():
-            if not sched.cron or not croniter.is_valid(sched.cron):
+            try:  # one bad schedule must NOT abort the whole cross-org tick (cf. the reaper)
+                fired += await self._fire_one(sched, now)
+            except Exception:  # noqa: BLE001, S112 — best-effort sweep; skip this schedule, continue
                 continue
-            prev = croniter(sched.cron, now).get_prev(datetime)  # most recent window <= now
-            if sched.last_fired_at is not None and sched.last_fired_at >= prev:
-                continue  # already fired this window
-            key = f"{sched.id}:{prev.isoformat()}"
-            job = await self._jobs.create_scheduled(
-                organisation_id=sched.organisation_id,
-                user_id=sched.user_id,
-                manifest_inline=sched.manifest_inline,
-                manifest_ref=sched.manifest_ref,
-                input_text=sched.input_text,
-                schedule_id=sched.id,
-                idempotency_key=key,
+        return fired
+
+    async def _fire_one(self, sched: EngineSchedule, now: datetime) -> int:
+        # is_valid can pass for an impossible date (e.g. Feb 30) on which get_prev raises — the
+        # surrounding try in fire_due isolates that so it never stalls the other orgs' schedules.
+        if not sched.cron or not croniter.is_valid(sched.cron):
+            return 0
+        prev = croniter(sched.cron, now).get_prev(datetime)  # most recent window strictly < now
+        # defensive: keep the comparison aware-vs-aware across croniter versions.
+        prev = prev if prev.tzinfo else prev.replace(tzinfo=UTC)
+        if sched.last_fired_at is not None and sched.last_fired_at >= prev:
+            return 0  # already fired this window
+        key = f"{sched.id}:{prev.isoformat()}"
+        job = await self._jobs.create_scheduled(
+            organisation_id=sched.organisation_id,
+            user_id=sched.user_id,
+            manifest_inline=sched.manifest_inline,
+            manifest_ref=sched.manifest_ref,
+            input_text=sched.input_text,
+            schedule_id=sched.id,
+            idempotency_key=key,
+        )
+        fired = 0
+        if job is not None and self._enqueue is not None:
+            self._enqueue(job.id, sched.organisation_id, sched.user_id)
+            await self._emit(
+                sched.organisation_id, sched.user_id, sched.id, "engine.schedule.fire", key
             )
-            if job is not None and self._enqueue is not None:
-                self._enqueue(job.id, sched.organisation_id, sched.user_id)
-                await self._emit(
-                    sched.organisation_id, sched.user_id, sched.id, "engine.schedule.fire", key
-                )
-                fired += 1
-            # advance the cursor regardless (a duplicate-window create returned None but is fired).
-            await self._schedules.set_last_fired(sched.id, prev)
+            fired = 1
+        # advance the cursor regardless (a duplicate-window create returned None but is fired).
+        await self._schedules.set_last_fired(sched.id, prev)
         return fired
 
     @staticmethod
