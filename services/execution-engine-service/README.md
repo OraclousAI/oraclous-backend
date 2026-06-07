@@ -9,17 +9,31 @@ harness-runtime over HTTP** — it never imports it (four-layer contract; both a
 by API exactly as the harness calls the registry). Org-scoped (ADR-006), governed, and reached through
 the gateway at `/v1/engine`.
 
-## Slice 1 — durable job backbone (sync passthrough)
+## Durable jobs (async)
 
-`POST /v1/engine/jobs` submits a durable harness job: the engine persists a `QUEUED` `engine_jobs`
-row, calls the harness `POST /v1/harnesses/execute` over HTTP, maps the harness status onto the engine
-state machine (`QUEUED → RUNNING → SUCCEEDED | FAILED | ESCALATED | TIMED_OUT | CANCELLED`), checkpoints
-the terminal state, and writes a provenance event per transition. In S1 the run is **synchronous,
-in-request** (S2 moves it to a Celery worker). `GET /v1/engine/jobs/{id}` + `GET /v1/engine/jobs`
-read prior jobs (org-scoped).
+`POST /v1/engine/jobs` accepts a durable harness job (**202**): the engine persists a `QUEUED`
+`engine_jobs` row and enqueues it on Redis; a **Celery worker** then calls the harness `POST
+/v1/harnesses/execute` over HTTP, maps the harness status onto the engine state machine (`QUEUED →
+RUNNING → SUCCEEDED | FAILED | ESCALATED | TIMED_OUT | CANCELLED`), and checkpoints the terminal state
+with a provenance event per transition. Poll `GET /v1/engine/jobs/{id}` for the outcome; `GET
+/v1/engine/jobs` lists the org's jobs. `POST /v1/engine/jobs/{id}/cancel` cancels a
+QUEUED/RUNNING/ESCALATED job.
 
-A run that escalates to a human (`error_type=human_assignment`) parks the job `ESCALATED` and captures
-the harness `assignment_id` — the seam the S4 task board resumes from.
+Every state change is a **CAS transition under a row lock** (`JobRepository.transition`), so a
+concurrent cancel can never race the worker — `can_transition`/`sources_for` (domain/state.py) define
+the only legal moves. A run that escalates to a human (`error_type=human_assignment`) parks the job
+`ESCALATED` and captures the harness `assignment_id` — the seam the S4 task board resumes from.
+
+The worker (`tasks/run_tasks.py`) reconstructs the principal from the durable job's stored
+`user_id`/`organisation_id`, binds the org context, forwards the same downstream identity to the
+harness (ADR-018), and uses a NullPool engine disposed per task (ADR-012).
+
+**Durability semantics (S2):** the queue is at-least-once with `task_acks_late` — a worker that dies
+before committing `QUEUED→RUNNING` redelivers, and the CAS makes the re-run idempotent. A submit that
+can't enqueue fails the row (`error_type=enqueue_failed`) rather than orphaning a phantom QUEUED job.
+Two gaps close in **S3**: a job stuck `RUNNING` (worker/DB blip after RUNNING, no terminal checkpoint)
+is reaped by a lease sweep, and `cancel` is best-effort on the record — it does not abort an in-flight
+harness run (the harness keeps running; the engine job reflects the cancel).
 
 ## Identity
 

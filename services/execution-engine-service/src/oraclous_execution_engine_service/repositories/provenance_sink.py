@@ -10,13 +10,15 @@ import uuid
 
 from oraclous_substrate import ProvenanceRecord, ProvenanceSink
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlalchemy.pool import NullPool
 
 from oraclous_execution_engine_service.models.provenance import EngineProvenanceEvent
 
 
 class PostgresProvenanceSink(ProvenanceSink):
-    def __init__(self, db_url: str) -> None:
-        self._engine = create_async_engine(db_url, echo=False)
+    def __init__(self, db_url: str, *, worker_pool: bool = False) -> None:
+        kwargs = {"poolclass": NullPool} if worker_pool else {}
+        self._engine = create_async_engine(db_url, echo=False, **kwargs)
         self._session = async_sessionmaker(self._engine, expire_on_commit=False)
 
     async def close(self) -> None:
