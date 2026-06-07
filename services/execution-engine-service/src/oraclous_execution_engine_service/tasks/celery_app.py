@@ -35,6 +35,11 @@ celery_app.conf.update(
     task_soft_time_limit=50 * 60,
     worker_prefetch_multiplier=1,
     worker_max_tasks_per_child=1000,
+    # Ack AFTER the task finishes: if a worker dies before it commits QUEUED→RUNNING, the message is
+    # redelivered — and the QUEUED→RUNNING CAS makes the re-run idempotent (a no-op if already past
+    # QUEUED). A worker dying AFTER RUNNING leaves the job RUNNING (reaped by the S3 lease sweep).
+    task_acks_late=True,
+    task_reject_on_worker_lost=True,
 )
 
 

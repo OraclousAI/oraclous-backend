@@ -19,7 +19,10 @@ TERMINAL: frozenset[EngineJobState] = frozenset(
 )
 
 _ALLOWED: dict[EngineJobState, frozenset[EngineJobState]] = {
-    EngineJobState.QUEUED: frozenset({EngineJobState.RUNNING, EngineJobState.CANCELLED}),
+    # QUEUED → FAILED covers a submit that couldn't enqueue (no orphaned QUEUED row).
+    EngineJobState.QUEUED: frozenset(
+        {EngineJobState.RUNNING, EngineJobState.FAILED, EngineJobState.CANCELLED}
+    ),
     EngineJobState.RUNNING: frozenset(
         {
             EngineJobState.SUCCEEDED,

@@ -28,6 +28,13 @@ The worker (`tasks/run_tasks.py`) reconstructs the principal from the durable jo
 `user_id`/`organisation_id`, binds the org context, forwards the same downstream identity to the
 harness (ADR-018), and uses a NullPool engine disposed per task (ADR-012).
 
+**Durability semantics (S2):** the queue is at-least-once with `task_acks_late` — a worker that dies
+before committing `QUEUED→RUNNING` redelivers, and the CAS makes the re-run idempotent. A submit that
+can't enqueue fails the row (`error_type=enqueue_failed`) rather than orphaning a phantom QUEUED job.
+Two gaps close in **S3**: a job stuck `RUNNING` (worker/DB blip after RUNNING, no terminal checkpoint)
+is reaped by a lease sweep, and `cancel` is best-effort on the record — it does not abort an in-flight
+harness run (the harness keeps running; the engine job reflects the cancel).
+
 ## Identity
 
 The gateway/dev/jwt seam mirrors the other services (ADR-018): in `gateway` mode the engine trusts the

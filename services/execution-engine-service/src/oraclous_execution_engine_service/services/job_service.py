@@ -70,8 +70,20 @@ class JobService:
             max_retries=max_retries,
             timeout_seconds=timeout_seconds,
         )
-        await self._emit(org_id, principal, job.id, "engine.job.submit", "QUEUED")
-        self._enqueue(job.id, org_id, principal.principal_id)
+        # The QUEUED row is durable before the (fallible) enqueue — so if provenance or the broker
+        # hand-off fails, fail the row instead of orphaning it as a phantom QUEUED job.
+        try:
+            await self._emit(org_id, principal, job.id, "engine.job.submit", "QUEUED")
+            self._enqueue(job.id, org_id, principal.principal_id)
+        except Exception:
+            await self._jobs.transition(
+                job.id,
+                org_id,
+                new_state=EngineJobState.FAILED.value,
+                allowed_from=frozenset({EngineJobState.QUEUED.value}),
+                error_type="enqueue_failed",
+            )
+            raise
         return job
 
     async def execute(self, job_id: uuid.UUID, principal: Principal) -> EngineJob:

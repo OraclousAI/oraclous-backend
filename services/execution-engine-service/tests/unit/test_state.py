@@ -38,6 +38,7 @@ def test_retry_and_resume_transitions() -> None:
     assert can_transition(S.TIMED_OUT, S.QUEUED)  # retry
     assert can_transition(S.ESCALATED, S.QUEUED)  # resume
     assert can_transition(S.ESCALATED, S.SUCCEEDED)  # human complete
+    assert can_transition(S.QUEUED, S.FAILED)  # enqueue failed before pickup
 
 
 def test_terminal_never_transitions() -> None:

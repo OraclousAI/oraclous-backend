@@ -111,6 +111,20 @@ async def test_no_org_scope_raises() -> None:
         await svc.submit(principal=_principal(org=None), input_text="go", manifest_inline={})
 
 
+async def test_enqueue_failure_fails_the_row_not_orphan_queued() -> None:
+    repo = _FakeRepo()
+
+    def boom(_j: object, _o: object, _u: object) -> None:
+        raise RuntimeError("broker down")
+
+    svc = JobService(jobs=repo, provenance=_FakeProvenance(), enqueue=boom)  # type: ignore[arg-type]
+    with pytest.raises(RuntimeError):
+        await svc.submit(principal=_principal(), input_text="go", manifest_inline={})
+    rows = list(repo.rows.values())
+    assert len(rows) == 1
+    assert rows[0].state == S.FAILED.value and rows[0].error_type == "enqueue_failed"
+
+
 # ── execute (worker path) ─────────────────────────────────────────────────────────────────────────
 async def test_execute_succeeds() -> None:
     repo = _FakeRepo()
