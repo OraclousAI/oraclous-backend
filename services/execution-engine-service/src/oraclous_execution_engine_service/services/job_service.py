@@ -94,8 +94,9 @@ class JobService:
             harness_execution_id=_as_uuid(result.get("id")),
             assignment_id=_assignment_from(result),
             output=result.get("output"),
-            error_type=result.get("error_type"),
-            error_message=result.get("error_message"),
+            error_type=(result.get("error_type") or None) and str(result["error_type"])[:128],
+            error_message=(result.get("error_message") or None)
+            and str(result["error_message"])[:2000],
             progress=100 if state is not EngineJobState.ESCALATED else job.progress,
         )
         await self._emit(org_id, principal, job_id, "engine.job.run", state.value)

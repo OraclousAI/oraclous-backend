@@ -54,7 +54,10 @@ class HarnessClient:
             body["manifest_ref"] = manifest_ref
         else:
             raise HarnessClientError("a manifest_inline or manifest_ref is required")
-        resp = await self._client.post("/v1/harnesses/execute", json=body)
+        try:
+            resp = await self._client.post("/v1/harnesses/execute", json=body)
+        except httpx.HTTPError as exc:  # transport/timeout — surface as a clean failure, not a 500
+            raise HarnessClientError(f"harness unreachable: {type(exc).__name__}") from exc
         if resp.status_code // 100 != 2:
             raise HarnessClientError(f"harness execute → {resp.status_code}: {resp.text[:300]}")
         return resp.json()

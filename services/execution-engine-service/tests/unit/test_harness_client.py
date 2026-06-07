@@ -58,3 +58,12 @@ async def test_non_2xx_raises() -> None:
 
     with pytest.raises(HarnessClientError):
         await _client(handler).execute(input_text="go", manifest_inline={})
+
+
+async def test_transport_error_becomes_client_error() -> None:
+    # harness down / timeout must surface as HarnessClientError (→ a clean FAILED job, never a 500).
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("connection refused")
+
+    with pytest.raises(HarnessClientError):
+        await _client(handler).execute(input_text="go", manifest_inline={})
