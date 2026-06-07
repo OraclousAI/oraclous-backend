@@ -9,6 +9,7 @@ and exposes the job service. The Postgres repository + provenance collector are 
 from __future__ import annotations
 
 import secrets
+from collections.abc import AsyncIterator
 from typing import Annotated
 
 from fastapi import Depends, Header, HTTPException, Request, status
@@ -18,12 +19,15 @@ from oraclous_substrate import ProvenanceCollector
 
 from oraclous_execution_engine_service.core.auth import (
     AuthError,
+    build_downstream_headers,
     principal_from_gateway_headers,
     verify_token,
 )
 from oraclous_execution_engine_service.core.config import get_settings
 from oraclous_execution_engine_service.repositories.job_repository import JobRepository
+from oraclous_execution_engine_service.services.harness_client import HarnessClient
 from oraclous_execution_engine_service.services.job_service import JobService
+from oraclous_execution_engine_service.services.task_service import TaskService
 from oraclous_execution_engine_service.tasks.run_tasks import enqueue_job
 
 _bearer = HTTPBearer(auto_error=False)
@@ -98,6 +102,31 @@ def get_job_service(
     return JobService(jobs=jobs, provenance=provenance, enqueue=enqueue_job)
 
 
+async def get_harness_client(
+    principal: Annotated[Principal, Depends(get_principal)],
+) -> AsyncIterator[HarnessClient]:
+    # the task-board complete is a request-path call to the harness — forward the caller's identity.
+    settings = get_settings()
+    client = HarnessClient(
+        settings.harness_runtime_url,
+        headers=build_downstream_headers(principal, settings),
+        timeout=settings.harness_request_timeout,
+    )
+    try:
+        yield client
+    finally:
+        await client.aclose()
+
+
+def get_task_service(
+    jobs: Annotated[JobRepository, Depends(get_job_repository)],
+    harness: Annotated[HarnessClient, Depends(get_harness_client)],
+    provenance: Annotated[ProvenanceCollector, Depends(get_provenance)],
+) -> TaskService:
+    return TaskService(jobs=jobs, harness=harness, provenance=provenance)
+
+
 PrincipalDep = Annotated[Principal, Depends(get_principal)]
 JobRepositoryDep = Annotated[JobRepository, Depends(get_job_repository)]
 JobServiceDep = Annotated[JobService, Depends(get_job_service)]
+TaskServiceDep = Annotated[TaskService, Depends(get_task_service)]

@@ -22,7 +22,16 @@ QUEUED/RUNNING/ESCALATED job.
 Every state change is a **CAS transition under a row lock** (`JobRepository.transition`), so a
 concurrent cancel can never race the worker — `can_transition`/`sources_for` (domain/state.py) define
 the only legal moves. A run that escalates to a human (`error_type=human_assignment`) parks the job
-`ESCALATED` and captures the harness `assignment_id` — the seam the S4 task board resumes from.
+`ESCALATED` and captures the harness `assignment_id`.
+
+## Task board (S4 — human resume)
+
+`GET /v1/engine/tasks` is the open human task board: the org's `ESCALATED` jobs (each parked on a
+harness assignment). `POST /v1/engine/tasks/{job_id}/complete` submits the human's output — the engine
+calls the harness `POST /v1/harnesses/assignments/{id}/complete` over HTTP (which marks the assignment
+COMPLETED and flips the parked harness run ESCALATED→SUCCEEDED with that output), then flips its own
+job `ESCALATED→SUCCEEDED`. So a human-entrypoint OHM runs end to end: submit → ESCALATED on the board
+→ the human completes it → both the harness run and the engine job are SUCCEEDED with the human output.
 
 The worker (`tasks/run_tasks.py`) reconstructs the principal from the durable job's stored
 `user_id`/`organisation_id`, binds the org context, forwards the same downstream identity to the

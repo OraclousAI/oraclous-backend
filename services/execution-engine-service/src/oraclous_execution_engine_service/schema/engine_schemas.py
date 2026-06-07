@@ -63,3 +63,16 @@ class JobOut(BaseModel):
 class JobListResponse(BaseModel):
     jobs: list[JobOut]
     total: int
+
+
+class TaskListResponse(BaseModel):
+    """The human task board — the org's ESCALATED jobs (each parked on a harness assignment)."""
+
+    tasks: list[JobOut]
+    total: int
+
+
+class CompleteTaskRequest(BaseModel):
+    """The human's output, forwarded to the harness; flips the parked run + the engine job."""
+
+    output: str = Field(min_length=1)
