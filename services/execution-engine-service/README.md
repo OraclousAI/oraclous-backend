@@ -28,12 +28,18 @@ The worker (`tasks/run_tasks.py`) reconstructs the principal from the durable jo
 `user_id`/`organisation_id`, binds the org context, forwards the same downstream identity to the
 harness (ADR-018), and uses a NullPool engine disposed per task (ADR-012).
 
-**Durability semantics (S2):** the queue is at-least-once with `task_acks_late` — a worker that dies
-before committing `QUEUED→RUNNING` redelivers, and the CAS makes the re-run idempotent. A submit that
-can't enqueue fails the row (`error_type=enqueue_failed`) rather than orphaning a phantom QUEUED job.
-Two gaps close in **S3**: a job stuck `RUNNING` (worker/DB blip after RUNNING, no terminal checkpoint)
-is reaped by a lease sweep, and `cancel` is best-effort on the record — it does not abort an in-flight
-harness run (the harness keeps running; the engine job reflects the cancel).
+**Retry + timeout (S3):** a submit may declare `max_retries` and `timeout_seconds`. A `FAILED` or
+`TIMED_OUT` attempt under its retry cap is automatically re-queued (`retry_count` increments, an
+`engine.job.retry` provenance event is written) until the budget is spent. `timeout_seconds` is the
+harness call's wall-clock — exceeding it marks the job `TIMED_OUT` (then retried if eligible).
+
+**Durability semantics:** the queue is at-least-once with `task_acks_late` — a worker that dies before
+committing `QUEUED→RUNNING` redelivers, and the CAS makes the re-run idempotent. A submit that can't
+enqueue fails the row (`error_type=enqueue_failed`) rather than orphaning a phantom QUEUED job. A job
+stuck `RUNNING` past `running_lease_seconds` (a worker/DB blip after RUNNING, no terminal checkpoint)
+is timed out by the **reaper** (`engine.reap_stale` — the logic lands here; Celery Beat schedules it
+in S5). `cancel` is best-effort on the record — it does not abort an in-flight harness run (the
+harness keeps running; the engine job reflects the cancel).
 
 ## Identity
 

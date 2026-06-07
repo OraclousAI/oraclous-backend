@@ -46,6 +46,9 @@ class Settings(BaseSettings):
     harness_runtime_url: str = "http://harness-runtime-service:8000"
     # an out-of-request harness run can be long (an LLM loop) — generous default.
     harness_request_timeout: float = 600.0
+    # the reaper times out a job stuck RUNNING longer than this (worker/DB blip after RUNNING). Must
+    # exceed the longest real run; default 1h matches the Celery hard limit. Scheduled in S5.
+    running_lease_seconds: int = 3600
 
     @property
     def celery_broker(self) -> str:

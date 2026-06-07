@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Callable
+from datetime import datetime
 from typing import Any
 
 from oraclous_governance import Principal
@@ -24,6 +25,7 @@ from oraclous_execution_engine_service.repositories.job_repository import JobRep
 from oraclous_execution_engine_service.services.harness_client import (
     HarnessClient,
     HarnessClientError,
+    HarnessTimeout,
 )
 
 # A queue hand-off: (job_id, organisation_id, user_id) → fire the worker task. Injected for tests.
@@ -73,7 +75,7 @@ class JobService:
         # The QUEUED row is durable before the (fallible) enqueue — so if provenance or the broker
         # hand-off fails, fail the row instead of orphaning it as a phantom QUEUED job.
         try:
-            await self._emit(org_id, principal, job.id, "engine.job.submit", "QUEUED")
+            await self._emit(org_id, principal.principal_id, job.id, "engine.job.submit", "QUEUED")
             self._enqueue(job.id, org_id, principal.principal_id)
         except Exception:
             await self._jobs.transition(
@@ -87,7 +89,7 @@ class JobService:
         return job
 
     async def execute(self, job_id: uuid.UUID, principal: Principal) -> EngineJob:
-        """Run the harness for a QUEUED job + checkpoint terminal state. Called by the worker."""
+        """Run the harness for a QUEUED job + settle the outcome (retry/terminal). Worker entry."""
         org_id = self._require_org(principal)
         if self._harness is None:  # worker path must have a harness client
             raise JobError("no harness client configured")
@@ -104,19 +106,25 @@ class JobService:
                 input_text=job.input_text,
                 manifest_inline=job.manifest_inline,
                 manifest_ref=job.manifest_ref,
+                timeout=float(job.timeout_seconds) if job.timeout_seconds else None,
+            )
+        except HarnessTimeout as exc:
+            return await self._settle(
+                running,
+                EngineJobState.TIMED_OUT,
+                error_type="timeout",
+                error_message=str(exc)[:2000],
             )
         except HarnessClientError as exc:
-            failed, _ = await self._transition(
+            return await self._settle(
                 running,
                 EngineJobState.FAILED,
                 error_type="harness_unreachable",
                 error_message=str(exc)[:2000],
             )
-            await self._emit(org_id, principal, job_id, "engine.job.run", failed.state)
-            return failed
 
         state = map_harness_status(result.get("status", ""))
-        updated, _ = await self._transition(
+        return await self._settle(
             running,
             state,
             harness_execution_id=_as_uuid(result.get("id")),
@@ -126,8 +134,6 @@ class JobService:
             error_message=_bounded(result.get("error_message"), 2000),
             progress=100 if state is not EngineJobState.ESCALATED else running.progress,
         )
-        await self._emit(org_id, principal, job_id, "engine.job.run", updated.state)
-        return updated
 
     async def cancel(self, job_id: uuid.UUID, principal: Principal) -> EngineJob:
         """Cancel a QUEUED/RUNNING/ESCALATED job. A terminal job is a no-op (returns as-is)."""
@@ -137,11 +143,57 @@ class JobService:
             raise JobError("job not found")
         cancelled, applied = await self._transition(job, EngineJobState.CANCELLED)
         if applied:
-            await self._emit(org_id, principal, job_id, "engine.job.cancel", "CANCELLED")
+            await self._emit(
+                job.organisation_id, job.user_id, job_id, "engine.job.cancel", "CANCELLED"
+            )
         return cancelled
+
+    async def reap_stale(self, *, older_than: datetime) -> int:
+        """System sweep: a job stuck RUNNING past its lease (worker/DB blip after RUNNING) is timed
+        out + retried if eligible. Cross-org maintenance — each row settles under its OWN org.
+        Scheduled by Celery Beat in S5."""
+        reaped = 0
+        for job in await self._jobs.list_stale_running(older_than):
+            await self._settle(
+                job,
+                EngineJobState.TIMED_OUT,
+                error_type="lease_expired",
+                error_message="worker lease expired with no terminal checkpoint",
+            )
+            reaped += 1
+        return reaped
 
     async def get(self, job_id: uuid.UUID, principal: Principal) -> EngineJob | None:
         return await self._jobs.get(job_id, self._require_org(principal))
+
+    async def _settle(self, job: EngineJob, outcome: EngineJobState, **fields: Any) -> EngineJob:
+        """Apply the run outcome, then re-queue a FAILED/TIMED_OUT job if retries remain."""
+        updated, applied = await self._transition(job, outcome, **fields)
+        if (
+            applied
+            and outcome in (EngineJobState.FAILED, EngineJobState.TIMED_OUT)
+            and updated.retry_count < updated.max_retries
+            and self._enqueue is not None
+        ):
+            requeued, ok = await self._transition(
+                updated,
+                EngineJobState.QUEUED,
+                retry_count=updated.retry_count + 1,
+                error_type=None,
+                error_message=None,
+            )
+            if ok:
+                self._enqueue(requeued.id, requeued.organisation_id, requeued.user_id)
+                await self._emit(
+                    requeued.organisation_id,
+                    requeued.user_id,
+                    requeued.id,
+                    "engine.job.retry",
+                    f"attempt {requeued.retry_count}/{requeued.max_retries}",
+                )
+                return requeued
+        await self._emit(job.organisation_id, job.user_id, job.id, "engine.job.run", updated.state)
+        return updated
 
     async def _transition(
         self, job: EngineJob, target: EngineJobState, **fields: Any
@@ -160,12 +212,17 @@ class JobService:
         return principal.organisation_id
 
     async def _emit(
-        self, org_id: uuid.UUID, principal: Principal, job_id: uuid.UUID, action: str, outcome: str
+        self,
+        org_id: uuid.UUID,
+        principal_id: uuid.UUID,
+        job_id: uuid.UUID,
+        action: str,
+        outcome: str,
     ) -> None:
         await self._provenance.emit(
             ProvenanceRecord(
                 organisation_id=str(org_id),
-                principal=str(principal.principal_id),
+                principal=str(principal_id),
                 action=action,
                 resource=f"engine_job:{job_id}",
                 outcome=outcome,
