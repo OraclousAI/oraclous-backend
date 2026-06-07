@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -76,6 +76,14 @@ class CompleteTaskRequest(BaseModel):
     """The human's output, forwarded to the harness; flips the parked run + the engine job."""
 
     output: str = Field(min_length=1)
+
+
+class ApproveTaskRequest(BaseModel):
+    """A human's decision on a mid-loop HITL approval task. APPROVED resumes the harness loop (the
+    gated tool runs); DENIED terminates the run FAILED. ``decision_reason`` is an optional note."""
+
+    decision: Literal["APPROVED", "DENIED"]
+    decision_reason: str | None = None
 
 
 class RegisterScheduleRequest(BaseModel):

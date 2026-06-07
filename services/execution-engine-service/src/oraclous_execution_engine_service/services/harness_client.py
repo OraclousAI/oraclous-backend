@@ -54,6 +54,23 @@ class HarnessClient:
             raise HarnessClientError(f"complete assignment → {resp.status_code}: {resp.text[:300]}")
         return resp.json()
 
+    async def resume(
+        self, execution_id: uuid.UUID, decision: str, decision_reason: str | None = None
+    ) -> dict[str, Any]:
+        """Resolve a mid-loop HITL pause — APPROVED resumes the loop (the gated tool runs), DENIED
+        terminates the run FAILED. Returns the updated ``HarnessExecutionOut``. Used by the engine
+        task board (S6)."""
+        body: dict[str, Any] = {"decision": decision}
+        if decision_reason is not None:
+            body["decision_reason"] = decision_reason
+        try:
+            resp = await self._client.post(f"/v1/harnesses/{execution_id}/resume", json=body)
+        except httpx.HTTPError as exc:  # harness unreachable — clean failure, not a 500
+            raise HarnessClientError(f"harness unreachable: {type(exc).__name__}") from exc
+        if resp.status_code // 100 != 2:
+            raise HarnessClientError(f"resume → {resp.status_code}: {resp.text[:300]}")
+        return resp.json()
+
     async def execute(
         self,
         *,

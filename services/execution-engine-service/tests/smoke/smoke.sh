@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# R5 service — execution-engine acceptance smoke (slice 5 — schedules + beat).
+# R5 service — execution-engine acceptance smoke (slice 6 — HITL approve).
 # Proves the engine boots, migrates its own schema (own version_table — no shared-DB collision),
 # serves /health, and runs durable harness jobs ASYNC THROUGH THE GATEWAY: submit returns 202 +
 # QUEUED, a Celery worker calls the harness /execute over HTTP → the engine checkpoints the terminal
@@ -117,6 +117,19 @@ done
 curl -fsS -o /dev/null -w '%{http_code}' "${AUTH[@]}" -X DELETE "${GW}/v1/engine/schedules/${SID}" \
   | grep -q 204 && pass "DELETE /schedules/{id} -> 204" || fail "delete failed"
 
+step "6d. S6: a mid-loop HITL job -> ESCALATED on the board -> APPROVE resumes the loop -> SUCCEEDED"
+# config.hitl=true on the pg capability: the agent calls it, the gate halts the loop mid-run.
+HOHM=$(python3 -c "import json,sys;print(json.dumps({'manifest':{'ohm_version':'1.0','metadata':{'id':'01976e3a-7c9b-7b00-9c45-aaa000000006','name':'Eng HITL','owner_organization_id':sys.argv[1]},'capabilities':[{'ref':'core/postgresql-reader@1.0.0','binding':'pg','config':{'hitl':True,'credential_mappings':{'connection_string':sys.argv[2]}}}],'models':[{'role':'primary','binding':'openrouter/x','protocol_shape':'openai-compatible'}],'prompts':[{'role':'primary','source':'inline','body':'List the tables using the tool.'}],'runtime':{'entrypoint':'pg'}},'input':'tables?'}))" "$ORG" "$CRED")
+HJID2=$(curl -fsS "${GW}/v1/engine/jobs" "${AUTH[@]}" -d "$HOHM" | python3 -c 'import sys,json;print(json.load(sys.stdin)["id"])')
+poll_job "$HJID2" ESCALATED && pass "HITL job -> ESCALATED" || fail "HITL job did not reach ESCALATED"
+# a mid-loop HITL job carries a harness_execution_id but NO assignment_id (the approve discriminator).
+curl -fsS "${GW}/v1/engine/jobs/${HJID2}" "${AUTH[@]}" \
+  | python3 -c "import sys,json;d=json.load(sys.stdin);assert d['harness_execution_id'] and not d['assignment_id'],d" \
+  && pass "HITL job has harness_execution_id, no assignment_id" || fail "wrong HITL discriminator"
+curl -fsS "${AUTH[@]}" -X POST "${GW}/v1/engine/tasks/${HJID2}/approve" -d '{"decision":"APPROVED"}' \
+  | python3 -c "import sys,json;d=json.load(sys.stdin);assert d['state']=='SUCCEEDED',d" \
+  && pass "approve -> harness resumed the loop, the engine job is SUCCEEDED" || fail "HITL approve failed"
+
 step "7. S3: a failing job with max_retries=2 retries then ends FAILED with retry_count=2"
 # an OHM whose runtime.entrypoint matches no capability binding -> the harness rejects it (422) ->
 # the engine marks the attempt FAILED and re-queues until the retry budget is spent.
@@ -144,4 +157,4 @@ c=$(${COMPOSE} exec -T postgres psql -U oraclous -d oraclous -tAc \
   "select count(*) from engine_provenance where resource='engine_job:${JID}' and action in ('engine.job.submit','engine.job.run')")
 [[ "${c//[[:space:]]/}" -ge 2 ]] && pass "engine.job.submit + run provenance recorded" || fail "no provenance"
 
-printf '\n\033[32mAll execution-engine slice-5 smoke checks passed.\033[0m\n'
+printf '\n\033[32mAll execution-engine slice-6 smoke checks passed.\033[0m\n'
