@@ -34,9 +34,12 @@ WORKDIR /app
 COPY --from=builder /app/.venv /app/.venv
 COPY services/application-gateway-service/src/ \
      ./services/application-gateway-service/src/
+# the published public contract (ADR-015), served at /v1/openapi.json + /docs
+COPY openapi/ ./openapi/
 
 ENV PATH="/app/.venv/bin:$PATH" \
-    PYTHONPATH="/app/services/application-gateway-service/src"
+    PYTHONPATH="/app/services/application-gateway-service/src" \
+    OPENAPI_SPEC_PATH="/app/openapi/v1.yaml"
 
 EXPOSE 8000
 

@@ -1,0 +1,509 @@
+openapi: 3.1.0
+info:
+  title: Oraclous Platform API
+  version: 1.0.0
+  description: >-
+    The public REST contract served by the application-gateway-service — the platform's single
+    external edge (ADR-015, ADR-018). Every request is authenticated once at the edge (a bearer JWT
+    issued by the identity service); the gateway forwards a verified identity downstream and streams the
+    upstream response back. Every 4xx/5xx the caller sees is the canonical **ORA-37 error envelope**
+    (`components/schemas/ErrorEnvelope`) — gateway-own errors and normalised upstream errors alike;
+    an upstream body is never relayed, so no stack/SQL/internal-host detail can leak (Interface
+    Contracts §3).
+
+
+    **Stability (ADR-015 §2):** each operation carries `x-stability: stable | provisional`. A `stable`
+    operation's shape is locked; breaking changes require a new major version. The `openapi-diff-gate`
+    CI job blocks breaking changes to `stable` operations.
+
+
+    **Evolving contract (R6):** this is the R6-in-progress public surface and grows per release slice
+    (integration keys + published agents, chat, webhooks, MCP land in later R6 slices and are added
+    here as they ship). The published `openapi/v1.yaml` — not any planning table — is the source of
+    truth for what the gateway actually exposes.
+
+
+    **As-built path note:** the proxied paths are currently heterogeneous (`/v1/...`, `/api/v1/...`,
+    `/credentials`, `/oauth`) — a consequence of the R3.5 per-service surfaces. Normalising every path
+    to a uniform `/v1/` (ADR-015 §1) is a tracked R6 follow-up; this document records the paths that
+    actually route today.
+
+
+    **Response bodies:** success (2xx) bodies are produced and owned by the upstream service and
+    streamed through unchanged; this contract documents the operation, its auth, and its error
+    envelope, and references the owning service for the success shape (per-operation success schemas
+    are a planned enrichment). Error (4xx/5xx) bodies are always the ErrorEnvelope.
+servers:
+  - url: /
+    description: The application-gateway edge (e.g. http://localhost:8006 self-hosted).
+security:
+  - bearerAuth: []
+tags:
+  - name: gateway
+    description: The gateway's own endpoints (health). No authentication.
+  - name: auth
+    description: Identity, organisations, invitations, and OAuth login.
+  - name: credentials
+    description: Credential storage and runtime token resolution.
+  - name: knowledge-graph
+    description: Graph CRUD and recipe-driven ingestion.
+  - name: knowledge-retriever
+    description: Semantic / full-text / hybrid / graph / temporal retrieval.
+  - name: capabilities
+    description: The capability registry, tools, instances, and synchronous tool execution.
+  - name: harness
+    description: Synchronous OHM execution, human assignment, and mid-loop HITL resume.
+  - name: engine
+    description: Durable jobs, the human task board, schedules, and round-tables.
+paths:
+  /health:
+    get:
+      tags: [gateway]
+      summary: Gateway liveness.
+      operationId: gatewayHealth
+      security: []
+      x-stability: stable
+      responses:
+        "200":
+          description: The gateway is up.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: ok }
+                  service: { type: string, example: application-gateway }
+  /health/upstreams:
+    get:
+      tags: [gateway]
+      summary: Aggregated upstream health (per-service + an overall rollup).
+      operationId: gatewayUpstreamsHealth
+      security: []
+      x-stability: stable
+      responses:
+        "200":
+          description: Per-upstream status plus an overall rollup (ok iff every upstream is ok).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  overall: { type: string, enum: [ok, degraded] }
+                  upstreams:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        name: { type: string }
+                        status: { type: string, enum: [ok, degraded] }
+
+  /v1/auth/register:
+    post:
+      tags: [auth]
+      summary: Register a user (mints a personal organisation + an access/refresh token pair).
+      operationId: authRegister
+      security: []
+      x-stability: stable
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/JsonObject" }
+      responses:
+        "201": { $ref: "#/components/responses/UpstreamJson" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "5XX": { $ref: "#/components/responses/Upstream5xx" }
+  /v1/auth/login:
+    post:
+      tags: [auth]
+      summary: Authenticate a user; returns an access/refresh token pair.
+      operationId: authLogin
+      security: []
+      x-stability: stable
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/JsonObject" }
+      responses:
+        "200": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "5XX": { $ref: "#/components/responses/Upstream5xx" }
+  /v1/auth/refresh:
+    post:
+      tags: [auth]
+      summary: Exchange a refresh token for a new access token.
+      operationId: authRefresh
+      security: []
+      x-stability: stable
+      responses:
+        "200": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "5XX": { $ref: "#/components/responses/Upstream5xx" }
+  /v1/auth/me:
+    get:
+      tags: [auth]
+      summary: The authenticated user + active organisation.
+      operationId: authMe
+      x-stability: stable
+      responses:
+        "200": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+  /v1/auth/switch-org:
+    post:
+      tags: [auth]
+      summary: Switch the active organisation; re-mints the access token with the new org claim.
+      operationId: authSwitchOrg
+      x-stability: stable
+      responses:
+        "200": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Unauthorized" }
+  /oauth/providers:
+    get:
+      tags: [auth]
+      summary: The configured social-login providers (Google / GitHub / Notion).
+      operationId: oauthProviders
+      security: []
+      x-stability: stable
+      responses:
+        "200": { $ref: "#/components/responses/UpstreamJson" }
+
+  /credentials/providers:
+    get:
+      tags: [credentials]
+      summary: The credential providers available to the caller's organisation.
+      operationId: credentialProviders
+      x-stability: stable
+      responses:
+        "200": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+
+  /api/v1/graphs:
+    get:
+      tags: [knowledge-graph]
+      summary: List the organisation's knowledge graphs.
+      operationId: listGraphs
+      x-stability: stable
+      responses:
+        "200": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+  /api/v1/recipes:
+    get:
+      tags: [knowledge-graph]
+      summary: List ingestion recipes.
+      operationId: listRecipes
+      x-stability: stable
+      responses:
+        "200": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+
+  /v1/search:
+    post:
+      tags: [knowledge-retriever]
+      summary: Semantic / full-text / hybrid retrieval; returns a uniform NodeResult envelope.
+      operationId: search
+      x-stability: stable
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/JsonObject" }
+      responses:
+        "200": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+  /v1/graph/{graphId}/temporal:
+    get:
+      tags: [knowledge-retriever]
+      summary: Point-in-time entities whose validity window covers `as_of`.
+      operationId: temporalRead
+      x-stability: stable
+      parameters:
+        - { name: graphId, in: path, required: true, schema: { type: string } }
+        - { name: as_of, in: query, required: true, schema: { type: string } }
+      responses:
+        "200": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+
+  /api/v1/tools:
+    get:
+      tags: [capabilities]
+      summary: The capability catalogue (tools) visible to the caller's organisation.
+      operationId: listTools
+      x-stability: stable
+      responses:
+        "200": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+  /api/v1/capabilities:
+    get:
+      tags: [capabilities]
+      summary: The unified capability registry.
+      operationId: listCapabilities
+      x-stability: stable
+      responses:
+        "200": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+  /api/v1/executions:
+    post:
+      tags: [capabilities]
+      summary: Execute a tool synchronously (sync only; durable/async is the engine).
+      operationId: executeTool
+      x-stability: stable
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/JsonObject" }
+      responses:
+        "200": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+
+  /v1/harnesses/execute:
+    post:
+      tags: [harness]
+      summary: Run an OHM to completion or escalation, synchronously; returns the execution row.
+      operationId: harnessExecute
+      x-stability: stable
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/JsonObject" }
+      responses:
+        "201": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+        "5XX": { $ref: "#/components/responses/Upstream5xx" }
+  /v1/harnesses/executions:
+    get:
+      tags: [harness]
+      summary: List the organisation's harness executions.
+      operationId: listExecutions
+      x-stability: stable
+      responses:
+        "200": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+  /v1/harnesses/{executionId}/resume:
+    post:
+      tags: [harness]
+      summary: Resolve a mid-loop HITL pause — APPROVED resumes the loop, DENIED fails it.
+      operationId: harnessResume
+      x-stability: stable
+      parameters:
+        - { name: executionId, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /v1/engine/jobs:
+    post:
+      tags: [engine]
+      summary: Submit a durable async job (returns 202 + a QUEUED job).
+      operationId: submitJob
+      x-stability: stable
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/JsonObject" }
+      responses:
+        "202": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+    get:
+      tags: [engine]
+      summary: List the organisation's durable jobs.
+      operationId: listJobs
+      x-stability: stable
+      responses:
+        "200": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+  /v1/engine/jobs/{jobId}:
+    get:
+      tags: [engine]
+      summary: Read a durable job (status + progress).
+      operationId: getJob
+      x-stability: stable
+      parameters:
+        - { name: jobId, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /v1/engine/jobs/{jobId}/cancel:
+    post:
+      tags: [engine]
+      summary: Request cancellation of a durable job (best-effort, CAS-safe).
+      operationId: cancelJob
+      x-stability: stable
+      parameters:
+        - { name: jobId, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+  /v1/engine/tasks:
+    get:
+      tags: [engine]
+      summary: The human task board — the organisation's ESCALATED jobs.
+      operationId: listTasks
+      x-stability: stable
+      responses:
+        "200": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+  /v1/engine/schedules:
+    post:
+      tags: [engine]
+      summary: Register a durable cron schedule.
+      operationId: createSchedule
+      x-stability: stable
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/JsonObject" }
+      responses:
+        "201": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+  /v1/engine/roundtables:
+    post:
+      tags: [engine]
+      summary: Start a round-table (multi-actor coordination over a shared transcript).
+      operationId: createRoundtable
+      x-stability: stable
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/JsonObject" }
+      responses:
+        "202": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: >-
+        A short-lived access token minted by the identity service (member credentials). The gateway verifies
+        it once at the edge and forwards a verified identity downstream (ADR-018). Integration-key and
+        agent-credential auth modes are added in later R6 slices.
+  schemas:
+    JsonObject:
+      type: object
+      description: A free-form JSON object; the precise request shape is owned by the upstream service.
+      additionalProperties: true
+    ErrorDetail:
+      type: object
+      additionalProperties: false
+      required: [field, issue]
+      properties:
+        field:
+          type: string
+          minLength: 1
+          description: The offending field name or path. Never the value.
+        issue:
+          type: string
+          pattern: "^[A-Z][A-Z0-9_]*$"
+          description: Machine-readable issue token (e.g. INVALID_FORMAT). Describes the problem, not the value.
+    ErrorEnvelope:
+      type: object
+      additionalProperties: false
+      required: [error]
+      description: >-
+        Canonical ORA-37 envelope for every 4xx/5xx the gateway produces (own + normalised upstream).
+        `additionalProperties` is false at every level so no stack/cause/exception/trace field can ever
+        exist. Mirrors packages/errors/contract/error-envelope.schema.json (the cross-repo source).
+      properties:
+        error:
+          type: object
+          additionalProperties: false
+          required: [code, message, requestId, retryable]
+          properties:
+            code:
+              type: string
+              description: Closed machine-readable taxonomy; the only branch key. Never branch on message.
+              enum:
+                - VALIDATION_FAILED
+                - MALFORMED_REQUEST
+                - UNAUTHENTICATED
+                - UNAUTHORIZED
+                - NOT_FOUND
+                - METHOD_NOT_ALLOWED
+                - CONFLICT
+                - PAYLOAD_TOO_LARGE
+                - UNSUPPORTED_MEDIA_TYPE
+                - RATE_LIMITED
+                - INTERNAL_ERROR
+                - SERVICE_UNAVAILABLE
+                - GATEWAY_TIMEOUT
+            message:
+              type: string
+              minLength: 1
+              description: Curated, generic, human-readable. Never an exception message; never reflects request content.
+            requestId:
+              type: string
+              pattern: "^req_[0-9A-Za-z]+$"
+              description: Opaque correlation handle; the only trace exposed. Maps server-side to the full trace.
+            retryable:
+              type: boolean
+              description: Server-authoritative — may a retry succeed? The FE reads this boolean; it never hardcodes which codes are retryable.
+            details:
+              type: array
+              minItems: 1
+              description: Present only for VALIDATION_FAILED. Closed sub-vocabulary; never the raw offending value.
+              items: { $ref: "#/components/schemas/ErrorDetail" }
+  responses:
+    UpstreamJson:
+      description: Success — a JSON body produced and owned by the upstream service, streamed through unchanged.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/JsonObject" }
+    Unauthenticated:
+      description: No or invalid credentials (UNAUTHENTICATED).
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+    Unauthorized:
+      description: Authenticated but not permitted (UNAUTHORIZED).
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+    NotFound:
+      description: No such resource, or an unrouted path (NOT_FOUND).
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+    Conflict:
+      description: The request conflicts with current state (CONFLICT).
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+    ValidationFailed:
+      description: The request failed validation (VALIDATION_FAILED; carries details[]).
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+    RateLimited:
+      description: Too many requests (RATE_LIMITED).
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+    Upstream5xx:
+      description: An upstream failure normalised to the envelope (SERVICE_UNAVAILABLE / GATEWAY_TIMEOUT / INTERNAL_ERROR).
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorEnvelope" }

@@ -1,0 +1,32 @@
+name: openapi-diff-gate
+
+# ADR-015 §3 — the published gateway contract (openapi/v1.yaml) is validated on every change, and a
+# breaking change to a `x-stability: stable` operation (removal or demotion) fails the PR. Additive
+# changes and provisional-operation changes pass. Runs only when the contract or the gate changes.
+
+on:
+  pull_request:
+    paths:
+      - "openapi/**"
+      - "tools/openapi/**"
+      - ".github/workflows/openapi-diff-gate.yml"
+
+jobs:
+  openapi-diff-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: install
+        run: pip install pyyaml openapi-spec-validator
+      - name: extract the base contract (if present)
+        run: |
+          git show "origin/${{ github.base_ref }}:openapi/v1.yaml" > /tmp/base-v1.yaml 2>/dev/null \
+            && echo "base contract extracted" \
+            || { echo "no base contract (first publication)"; : > /tmp/base-v1.yaml; }
+      - name: diff gate
+        run: python -m tools.openapi.diff_gate openapi/v1.yaml /tmp/base-v1.yaml
