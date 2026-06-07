@@ -46,6 +46,20 @@ To hit a service **directly** (bypass the gateway), point `{{base_url}}` at a se
 mode*, so a direct call needs the `X-Principal-*`/`X-Internal-Key` headers the gateway would have
 injected — direct access is for debugging, not the happy path.
 
+## Gateway edge behavior (R6)
+
+The gateway publishes its own contract and enforces two edge controls (no new requests to import —
+they apply to every call):
+
+- **Published OpenAPI contract** (R6 Slice 1) — `GET {{gateway_url}}/v1/openapi.json` (or
+  `/v1/openapi.yaml`) is the canonical API contract; `GET {{gateway_url}}/docs` is a live Swagger UI.
+- **Rate limit** (R6 Slice 2) — any request may return **429 `RATE_LIMITED`** with a `Retry-After`
+  header (seconds). It's a per-client-IP window; back off and retry after `Retry-After`. (Liveness +
+  the OpenAPI/`/docs` probes are exempt.)
+- **Request-size cap** (R6 Slice 2) — a body over the gateway's cap returns **413 `PAYLOAD_TOO_LARGE`**.
+
+Both are the standard ORA-37 error envelope (`{error:{code,message,requestId,retryable}}`).
+
 ## Service ports (direct)
 
 | Service | Var | Port |
