@@ -33,6 +33,12 @@ info:
     streamed through unchanged; this contract documents the operation, its auth, and its error
     envelope, and references the owning service for the success shape (per-operation success schemas
     are a planned enrichment). Error (4xx/5xx) bodies are always the ErrorEnvelope.
+
+
+    **Edge protection (applies to every operation):** the gateway enforces a per-client rate limit
+    and a request-body-size cap at the edge. Any operation may therefore return **429 RATE_LIMITED**
+    (with a `Retry-After` header) or **413 PAYLOAD_TOO_LARGE** — both as the ErrorEnvelope. Liveness
+    and this contract's own probes (`/health*`, `/v1/openapi.*`, `/docs`) are exempt from the limit.
 servers:
   - url: /
     description: The application-gateway edge (e.g. http://localhost:8006 self-hosted).

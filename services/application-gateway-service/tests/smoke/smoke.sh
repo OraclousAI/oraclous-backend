@@ -21,7 +21,10 @@ if [[ "${GW_SMOKE_NO_COMPOSE:-0}" != "1" ]]; then
   ${COMPOSE} up -d --build postgres
   ${COMPOSE} build capability-registry-service credential-broker-service application-gateway-service
   ${COMPOSE} up capreg-migrate credbroker-migrate
-  ${COMPOSE} up -d capability-registry-service credential-broker-service application-gateway-service
+  # bring the gateway up with a small body cap (1 KiB) so the GW-7 size-guard checks are cheap; the
+  # gateway's depends_on pulls Redis up for the edge rate limiter.
+  MAX_REQUEST_BODY_BYTES=1024 ${COMPOSE} up -d \
+    capability-registry-service credential-broker-service application-gateway-service
 fi
 
 step "2. wait for healthy"
@@ -150,6 +153,64 @@ assert err['code'] in enum, (err['code'], enum)
 assert set(err) == {'code','message','requestId','retryable'}, err
 " && pass "the gateway's emitted error body conforms to its own published ORA-37 contract" \
   || fail "emitted error does not match the published contract"
+
+if [[ "${GW_SMOKE_NO_COMPOSE:-0}" != "1" ]]; then
+  AUTH=(-H "Authorization: Bearer dev-token")
+  BIG="$(head -c 2000 </dev/zero | tr '\0' 'x')"  # 2000 bytes > the 1 KiB smoke cap
+
+  step "13. GW-7a/b: request-size guard (FAIL-CLOSED) -> 413 PAYLOAD_TOO_LARGE, conforms to the contract"
+  curl -s -D /tmp/gw_413h.txt -o /tmp/gw_413.json "${AUTH[@]}" --data-binary "$BIG" "${GW}/v1/search" >/dev/null
+  python3 -c "
+import json
+enum = json.load(open('/tmp/gw_openapi.json'))['components']['schemas']['ErrorEnvelope']['properties']['error']['properties']['code']['enum']
+e = json.load(open('/tmp/gw_413.json'))['error']
+assert e['code'] == 'PAYLOAD_TOO_LARGE' and e['retryable'] is False, e
+assert e['code'] in enum and set(e) == {'code','message','requestId','retryable'}, e
+" && grep -qi '^x-request-id:' /tmp/gw_413h.txt \
+    && pass "oversize POST -> 413 PAYLOAD_TOO_LARGE ORA-37 envelope + X-Request-Id (in the published enum)" \
+    || fail "size guard 413 failed: $(cat /tmp/gw_413.json)"
+  # chunked / omitted-length: the byte counter (not the header) must catch it
+  cc=$(printf '%s' "$BIG" | curl -s -o /tmp/gw_413c.json -w '%{http_code}' "${AUTH[@]}" \
+        -H "Transfer-Encoding: chunked" --data-binary @- "${GW}/v1/search")
+  { [[ "$cc" == "413" ]] && grep -q '"code":"PAYLOAD_TOO_LARGE"' /tmp/gw_413c.json; } \
+    && pass "chunked oversize -> 413 (byte counter caught it; the gateway did not buffer past the cap)" \
+    || fail "chunked size-guard failed: $cc $(cat /tmp/gw_413c.json)"
+
+  step "14. GW-7d: edge rate limit LIVE -> 429 RATE_LIMITED + Retry-After (recreate gateway, limit=5)"
+  EDGE_RATE_LIMIT=5 MAX_REQUEST_BODY_BYTES=1024 ${COMPOSE} up -d --force-recreate \
+    application-gateway-service >/dev/null 2>&1
+  for i in $(seq 1 30); do curl -fsS "${GW}/health" >/dev/null 2>&1 && break; \
+    [[ $i -eq 30 ]] && fail "gateway not healthy after recreate"; sleep 1; done
+  saw429=0; retry=""
+  for i in $(seq 1 10); do
+    rc=$(curl -s -D /tmp/gw_rlh.txt -o /tmp/gw_rl.json -w '%{http_code}' "${AUTH[@]}" "${GW}/api/v1/tools")
+    if [[ "$rc" == "429" ]]; then
+      saw429=1; retry=$(grep -i '^retry-after:' /tmp/gw_rlh.txt | tr -d '\r' | awk '{print $2}'); break
+    fi
+  done
+  { [[ "$saw429" == "1" && -n "$retry" ]] && grep -q '"code":"RATE_LIMITED"' /tmp/gw_rl.json; } \
+    && pass "burst over EDGE_RATE_LIMIT -> 429 RATE_LIMITED + Retry-After=${retry}s (limiter live vs real Redis)" \
+    || fail "rate limit did not trip: saw429=$saw429 retry=$retry $(cat /tmp/gw_rl.json)"
+  hc=$(curl -s -o /dev/null -w '%{http_code}' "${GW}/health")
+  [[ "$hc" == "200" ]] && pass "/health stays exempt from the limiter (200 while the bucket is tripped)" \
+    || fail "/health was throttled: $hc"
+
+  step "15. GW-7e/g: limiter FAILS OPEN when Redis is down; the size guard stays FAIL-CLOSED"
+  ${COMPOSE} stop redis >/dev/null 2>&1; sleep 1
+  oc=$(curl -s -o /dev/null -w '%{http_code}' "${AUTH[@]}" "${GW}/api/v1/tools")
+  [[ "$oc" != "429" ]] && pass "Redis down -> rate limit FAILS OPEN (status $oc, not 429 — sole ingress not self-DoSed)" \
+    || fail "limiter did not fail open with redis down: $oc"
+  sc=$(curl -s -o /dev/null -w '%{http_code}' "${AUTH[@]}" --data-binary "$BIG" "${GW}/v1/search")
+  [[ "$sc" == "413" ]] && pass "Redis down -> size guard STILL 413 (fail-closed, independent of Redis)" \
+    || fail "size guard broke with redis down: $sc"
+  ${COMPOSE} start redis >/dev/null 2>&1
+  # restore the gateway to default limits so the stack is left clean
+  ${COMPOSE} up -d --force-recreate application-gateway-service >/dev/null 2>&1
+  for i in $(seq 1 30); do curl -fsS "${GW}/health" >/dev/null 2>&1 && break; sleep 1; done
+  pass "restored the gateway to default limits"
+else
+  step "13. GW-7: edge-protection LIVE checks SKIPPED in NO_COMPOSE mode (size + rate-limit unit-covered)"
+fi
 
 printf '\n\033[32mapplication-gateway GW-1..GW-5 smoke passed.\033[0m  edge JWT termination, '
 printf 'reverse-proxy to TWO real upstreams (capability-registry + credential-broker), CORS '

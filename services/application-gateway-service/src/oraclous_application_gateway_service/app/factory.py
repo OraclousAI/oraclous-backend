@@ -18,6 +18,10 @@ from oraclous_errors import ErrorCode, status_to_code
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from oraclous_application_gateway_service.core.config import get_settings
+from oraclous_application_gateway_service.core.edge_middleware import (
+    RateLimitMiddleware,
+    SizeGuardMiddleware,
+)
 from oraclous_application_gateway_service.core.middleware import RequestIdMiddleware
 from oraclous_application_gateway_service.domain.errors import (
     RouteNotFoundError,
@@ -43,6 +47,23 @@ def create_app(*, lifespan=None) -> FastAPI:
         openapi_url=None,
         docs_url=None,
         redoc_url=None,
+    )
+    # Default so unit tests that build the app without the lifespan see the limiter's fail-open path
+    # (redis is None) not an AttributeError; the lifespan sets the live client.
+    app.state.redis = None
+    # Starlette runs the LAST-added middleware OUTERMOST, so the runtime order below is
+    #   RequestId (outer) -> CORS -> RateLimit -> SizeGuard -> app.
+    # - RequestId outermost: every response (incl. a 413/429 from a guard) carries X-Request-Id.
+    # - CORS OUTSIDE the guards so (a) a guard's 413/429 still gets Access-Control-Allow-Origin (a
+    #   browser can read the RATE_LIMITED/PAYLOAD_TOO_LARGE body), and (b) a preflight OPTIONS is
+    #   answered by CORS before the limiter, so preflights don't consume the rate budget.
+    # - the guards reject early, before the proxy buffers the body.
+    app.add_middleware(SizeGuardMiddleware, max_bytes=settings.MAX_REQUEST_BODY_BYTES)
+    app.add_middleware(
+        RateLimitMiddleware,
+        limit=settings.EDGE_RATE_LIMIT,
+        window_seconds=settings.EDGE_RATE_WINDOW_SECONDS,
+        trusted_proxy_count=settings.TRUSTED_PROXY_COUNT,
     )
     app.add_middleware(
         CORSMiddleware,

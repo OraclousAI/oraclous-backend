@@ -461,6 +461,16 @@ services:
       # gateway-mode can prove the request came through the gateway. Shared with the data services.
       INTERNAL_SERVICE_KEY: "${INTERNAL_SERVICE_KEY:-dev-internal-key}"
       GATEWAY_CORS_ORIGINS: "${GATEWAY_CORS_ORIGINS:-*}"
+      # edge protection (R6 Slice 2): Redis-backed rate limit (DB 2) + request-size guard. The limiter
+      # fails OPEN if Redis is down; these knobs are ops-tunable.
+      REDIS_URL: "redis://redis:6379/2"
+      EDGE_RATE_LIMIT: "${EDGE_RATE_LIMIT:-600}"
+      EDGE_RATE_WINDOW_SECONDS: "${EDGE_RATE_WINDOW_SECONDS:-60}"
+      MAX_REQUEST_BODY_BYTES: "${MAX_REQUEST_BODY_BYTES:-10485760}"
+      TRUSTED_PROXY_COUNT: "${TRUSTED_PROXY_COUNT:-0}"
+    depends_on:
+      redis:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "python", "-c",
              "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
