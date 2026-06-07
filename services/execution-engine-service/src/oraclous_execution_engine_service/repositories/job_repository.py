@@ -107,7 +107,9 @@ class JobRepository:
         self, older_than: datetime, *, limit: int = 100
     ) -> list[EngineJob]:
         """RUNNING jobs whose last update predates the lease — the reaper's system cross-org sweep.
-        NOT org-scoped by design; each row is settled under its own org afterwards."""
+        ADR-006 carve-out (precedent: auth-service's credential store / ADR-012): a no-principal
+        maintenance op reads across orgs, but each reaped row is then settled + audited under its
+        own organisation_id — no row crosses a tenant boundary."""
         async with self._session() as session:
             result = await session.execute(
                 select(EngineJob)

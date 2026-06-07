@@ -154,13 +154,16 @@ class JobService:
         Scheduled by Celery Beat in S5."""
         reaped = 0
         for job in await self._jobs.list_stale_running(older_than):
-            await self._settle(
-                job,
-                EngineJobState.TIMED_OUT,
-                error_type="lease_expired",
-                error_message="worker lease expired with no terminal checkpoint",
-            )
-            reaped += 1
+            try:  # one bad row (e.g. a broker hiccup on its retry) must not stop the whole sweep
+                await self._settle(
+                    job,
+                    EngineJobState.TIMED_OUT,
+                    error_type="lease_expired",
+                    error_message="worker lease expired with no terminal checkpoint",
+                )
+                reaped += 1
+            except Exception:  # noqa: BLE001, S112 — best-effort maintenance; skip the row, continue
+                continue
         return reaped
 
     async def get(self, job_id: uuid.UUID, principal: Principal) -> EngineJob | None:
@@ -183,7 +186,15 @@ class JobService:
                 error_message=None,
             )
             if ok:
-                self._enqueue(requeued.id, requeued.organisation_id, requeued.user_id)
+                # Same compensation as submit: if the broker hand-off fails, FAIL the row instead of
+                # orphaning it as a phantom QUEUED (the reaper only sweeps RUNNING, not QUEUED).
+                try:
+                    self._enqueue(requeued.id, requeued.organisation_id, requeued.user_id)
+                except Exception:
+                    await self._transition(
+                        requeued, EngineJobState.FAILED, error_type="requeue_failed"
+                    )
+                    raise
                 await self._emit(
                     requeued.organisation_id,
                     requeued.user_id,

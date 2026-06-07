@@ -224,6 +224,24 @@ async def test_retry_exhausted_is_terminal() -> None:
     assert calls == []
 
 
+async def test_retry_enqueue_failure_fails_not_orphan_queued() -> None:
+    # if the broker hand-off fails during a retry, FAIL the row (requeue_failed) — never leave it
+    # QUEUED with no worker message (the reaper only sweeps RUNNING).
+    repo = _FakeRepo()
+    job = await repo.create(
+        organisation_id=_ORG, user_id=_USER, input_text="go", manifest_inline={}, max_retries=2
+    )
+
+    def boom(*_a: object) -> None:
+        raise RuntimeError("broker down")
+
+    svc, _ = _worker_svc(repo, _FakeHarness(raises=True), enqueue=boom)
+    with pytest.raises(RuntimeError):
+        await svc.execute(job.id, _principal())
+    assert repo.rows[job.id].state == S.FAILED.value
+    assert repo.rows[job.id].error_type == "requeue_failed"
+
+
 # ── S3: the RUNNING-stale reaper ─────────────────────────────────────────────────────────────────
 async def test_reap_times_out_a_stale_running_job() -> None:
     import datetime as _dt

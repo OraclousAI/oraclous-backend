@@ -65,9 +65,11 @@ class HarnessClient:
             kwargs["timeout"] = timeout
         try:
             resp = await self._client.post("/v1/harnesses/execute", **kwargs)
-        except httpx.TimeoutException as exc:  # the declared wall-clock budget was exceeded
+        except httpx.ReadTimeout as exc:  # the run exceeded the declared wall-clock → TIMED_OUT
             raise HarnessTimeout(f"harness call timed out: {type(exc).__name__}") from exc
-        except httpx.HTTPError as exc:  # transport — surface as a clean failure, not a 500
+        except (
+            httpx.HTTPError
+        ) as exc:  # transport (incl. connect/pool timeouts) → unreachable, FAILED
             raise HarnessClientError(f"harness unreachable: {type(exc).__name__}") from exc
         if resp.status_code // 100 != 2:
             raise HarnessClientError(f"harness execute → {resp.status_code}: {resp.text[:300]}")
