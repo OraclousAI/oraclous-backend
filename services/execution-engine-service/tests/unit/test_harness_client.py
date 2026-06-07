@@ -67,3 +67,26 @@ async def test_transport_error_becomes_client_error() -> None:
 
     with pytest.raises(HarnessClientError):
         await _client(handler).execute(input_text="go", manifest_inline={})
+
+
+async def test_complete_assignment_marshals_and_wraps_transport() -> None:
+    import uuid
+
+    captured: dict = {}
+
+    def ok(request: httpx.Request) -> httpx.Response:
+        captured["path"] = request.url.path
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"status": "COMPLETED"})
+
+    aid = uuid.uuid4()
+    out = await _client(ok).complete_assignment(aid, "approved")
+    assert captured["path"] == f"/v1/harnesses/assignments/{aid}/complete"
+    assert captured["body"] == {"output": "approved"}
+    assert out["status"] == "COMPLETED"
+
+    def down(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("refused")
+
+    with pytest.raises(HarnessClientError):  # harness down → clean error, not a 500
+        await _client(down).complete_assignment(aid, "x")

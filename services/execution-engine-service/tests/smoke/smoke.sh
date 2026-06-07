@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# R5 service — execution-engine acceptance smoke (slice 3 — retry + timeout).
+# R5 service — execution-engine acceptance smoke (slice 4 — task board + resume).
 # Proves the engine boots, migrates its own schema (own version_table — no shared-DB collision),
 # serves /health, and runs durable harness jobs ASYNC THROUGH THE GATEWAY: submit returns 202 +
 # QUEUED, a Celery worker calls the harness /execute over HTTP → the engine checkpoints the terminal
@@ -87,6 +87,17 @@ poll_job "$JID" SUCCEEDED && pass "worker ran it -> SUCCEEDED" || fail "PG job d
 [[ "$(curl -fsS "${GW}/v1/engine/jobs/${JID}" "${AUTH[@]}" | python3 -c 'import sys,json;print(json.load(sys.stdin)["harness_execution_id"] or "")')" != "" ]] \
   && pass "harness_execution_id set" || fail "no harness_execution_id"
 
+step "6b. S4: the task board lists the ESCALATED human job; completing it flips it SUCCEEDED"
+TB=$(python3 -c "import json,sys;print(json.dumps({'manifest':{'ohm_version':'1.0','metadata':{'id':'01976e3a-7c9b-7b00-9c45-aaa000000004','name':'Eng Task','owner_organization_id':sys.argv[1]},'capabilities':[],'models':[{'role':'primary','binding':'openrouter/x','protocol_shape':'openai-compatible'}],'prompts':[{'role':'primary','source':'inline','body':'r'}],'actors':[{'role':'reviewer','kind':'human','human_role':'admin'}],'runtime':{'entrypoint':'reviewer'}},'input':'review'}))" "$ORG")
+TJID=$(curl -fsS "${GW}/v1/engine/jobs" "${AUTH[@]}" -d "$TB" | python3 -c 'import sys,json;print(json.load(sys.stdin)["id"])')
+poll_job "$TJID" ESCALATED && pass "task job -> ESCALATED" || fail "task job did not reach ESCALATED"
+curl -fsS "${AUTH[@]}" "${GW}/v1/engine/tasks" \
+  | python3 -c "import sys,json;d=json.load(sys.stdin);assert any(t['id']=='${TJID}' for t in d['tasks']),d" \
+  && pass "GET /tasks lists the ESCALATED job" || fail "task not on the board"
+curl -fsS "${AUTH[@]}" -X POST "${GW}/v1/engine/tasks/${TJID}/complete" -d '{"output":"approved by human"}' \
+  | python3 -c "import sys,json;d=json.load(sys.stdin);assert d['state']=='SUCCEEDED' and d['output']=='approved by human',d" \
+  && pass "complete -> the engine job is SUCCEEDED with the human output" || fail "task complete failed"
+
 step "7. S3: a failing job with max_retries=2 retries then ends FAILED with retry_count=2"
 # an OHM whose runtime.entrypoint matches no capability binding -> the harness rejects it (422) ->
 # the engine marks the attempt FAILED and re-queues until the retry budget is spent.
@@ -114,4 +125,4 @@ c=$(${COMPOSE} exec -T postgres psql -U oraclous -d oraclous -tAc \
   "select count(*) from engine_provenance where resource='engine_job:${JID}' and action in ('engine.job.submit','engine.job.run')")
 [[ "${c//[[:space:]]/}" -ge 2 ]] && pass "engine.job.submit + run provenance recorded" || fail "no provenance"
 
-printf '\n\033[32mAll execution-engine slice-3 smoke checks passed.\033[0m\n'
+printf '\n\033[32mAll execution-engine slice-4 smoke checks passed.\033[0m\n'
