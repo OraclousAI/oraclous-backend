@@ -180,6 +180,22 @@ step "14. S3: HITL gate halts before dispatch (prose can't bypass) -> ESCALATED"
 hbody=$(curl -s "${AUTH[@]}" -X POST "${GW}/v1/harnesses/execute" -d "$(gov_ohm true '[]' null)")
 echo "$hbody" | grep -q '"status":"ESCALATED"' && echo "$hbody" | grep -q '"error_type":"hitl_required"' \
   && pass "HITL-gated capability escalated, not executed" || fail "HITL not enforced: $hbody"
+HXID=$(echo "$hbody" | jget "['id']")
+
+step "14b. S6: APPROVE the mid-loop HITL pause -> the loop resumes and runs to SUCCEEDED"
+abody=$(curl -s "${AUTH[@]}" -X POST "${GW}/v1/harnesses/${HXID}/resume" -d '{"decision":"APPROVED"}')
+echo "$abody" | grep -q '"status":"SUCCEEDED"' \
+  && pass "resume APPROVED -> the gated tool ran, the run SUCCEEDED in place" \
+  || fail "HITL resume did not converge: $abody"
+# resuming an already-resolved run is fail-closed (409).
+c=$(curl -s -o /dev/null -w '%{http_code}' "${AUTH[@]}" -X POST "${GW}/v1/harnesses/${HXID}/resume" -d '{"decision":"APPROVED"}')
+[[ "$c" == "409" ]] && pass "re-resume of a settled run -> 409 (fail-closed)" || fail "expected 409, got $c"
+
+step "14c. S6: DENY a fresh mid-loop HITL pause -> terminal FAILED (human_rejected)"
+dxid=$(curl -s "${AUTH[@]}" -X POST "${GW}/v1/harnesses/execute" -d "$(gov_ohm true '[]' null)" | jget "['id']")
+dbody=$(curl -s "${AUTH[@]}" -X POST "${GW}/v1/harnesses/${dxid}/resume" -d '{"decision":"DENIED","decision_reason":"not allowed"}')
+echo "$dbody" | grep -q '"status":"FAILED"' && echo "$dbody" | grep -q '"error_type":"human_rejected"' \
+  && pass "resume DENIED -> FAILED (human_rejected)" || fail "HITL deny failed: $dbody"
 
 step "15. S3: output redaction strips the configured pattern from the answer"
 rdbody=$(curl -s "${AUTH[@]}" -X POST "${GW}/v1/harnesses/execute" -d "$(gov_ohm false '["capability_descriptors"]' null)")

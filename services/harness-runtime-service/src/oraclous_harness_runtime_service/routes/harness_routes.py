@@ -27,10 +27,12 @@ from oraclous_harness_runtime_service.schema.harness_schemas import (
     ExecuteHarnessRequest,
     ExecutionListResponse,
     HarnessExecutionOut,
+    ResumeHarnessRequest,
 )
 from oraclous_harness_runtime_service.services.assignment_service import AssignmentError
 from oraclous_harness_runtime_service.services.harness_execution_service import (
     HarnessExecutionError,
+    ResumeError,
 )
 
 router = APIRouter(prefix="/v1/harnesses", tags=["harnesses"])
@@ -56,6 +58,33 @@ async def execute_harness(
             user_input=body.input,
             principal=principal,
         )
+    except OHMError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        ) from exc
+    except HarnessExecutionError as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+    return HarnessExecutionOut.model_validate(row)
+
+
+@router.post("/{execution_id}/resume", response_model=HarnessExecutionOut)
+async def resume_harness(
+    execution_id: uuid.UUID,
+    body: ResumeHarnessRequest,
+    principal: PrincipalDep,
+    service: HarnessServiceDep,
+) -> HarnessExecutionOut:
+    """Resolve a mid-loop HITL pause: APPROVED resumes the loop (the gated tool runs), DENIED
+    terminates the run FAILED. Driven by the execution-engine task board (R5)."""
+    try:
+        row = await service.resume(
+            execution_id=execution_id,
+            principal=principal,
+            decision=body.decision,
+            decision_reason=body.decision_reason,
+        )
+    except ResumeError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
     except OHMError as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
