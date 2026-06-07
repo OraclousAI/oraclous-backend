@@ -11,6 +11,7 @@ from datetime import datetime
 from typing import Any
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
@@ -62,6 +63,32 @@ class JobRepository:
                 session.add(row)
             await session.refresh(row)
             return row
+
+    async def create_scheduled(
+        self,
+        *,
+        organisation_id: uuid.UUID,
+        user_id: uuid.UUID,
+        input_text: str,
+        schedule_id: uuid.UUID,
+        idempotency_key: str,
+        manifest_inline: dict | None = None,
+        manifest_ref: str | None = None,
+    ) -> EngineJob | None:
+        """Create a QUEUED job for a schedule fire — idempotent on ``(org, idempotency_key)``.
+        Returns the row, or None if the window already fired (a duplicate tick); at-least-once."""
+        try:
+            return await self.create(
+                organisation_id=organisation_id,
+                user_id=user_id,
+                input_text=input_text,
+                manifest_inline=manifest_inline,
+                manifest_ref=manifest_ref,
+                schedule_id=schedule_id,
+                idempotency_key=idempotency_key,
+            )
+        except IntegrityError:
+            return None
 
     async def transition(
         self,

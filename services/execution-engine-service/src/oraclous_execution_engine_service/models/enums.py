@@ -5,6 +5,14 @@ from __future__ import annotations
 import enum
 
 
+class ScheduleType(enum.StrEnum):
+    """How a schedule fires a harness job."""
+
+    MANUAL = "manual"  # fired only via the API (no automatic firing)
+    CRON = "cron"  # a cron expression, fired by Celery Beat
+    EVENT = "event"  # an external event (wiring is a later capability)
+
+
 class EngineJobState(enum.StrEnum):
     """The durable state of an engine job (the checkpoint state machine around a harness run)."""
 

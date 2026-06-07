@@ -37,6 +37,18 @@ The worker (`tasks/run_tasks.py`) reconstructs the principal from the durable jo
 `user_id`/`organisation_id`, binds the org context, forwards the same downstream identity to the
 harness (ADR-018), and uses a NullPool engine disposed per task (ADR-012).
 
+## Schedules (S5 — Celery Beat cron)
+
+`POST /v1/engine/schedules` registers a durable schedule that fires a harness job (the OHM inline via
+`manifest` or by registry id via `manifest_ref`); `GET` lists the org's schedules, `DELETE` removes
+one. A **single Celery Beat process** (`execution-engine-beat`) ticks every minute and calls
+`fire_due`: for each enabled `cron` schedule whose most-recent window hasn't fired, it creates a
+QUEUED job — **idempotent** on the `engine_jobs (organisation_id, idempotency_key=schedule:window)`
+unique constraint, so a duplicate tick never double-fires — enqueues it, advances `last_fired_at`,
+and writes an `engine.schedule.fire` provenance event. The beat also drives the **S3 reaper**
+(`engine.reap_stale`) every `reaper_tick_seconds`. Firing is at-least-once: a missed tick is a missed
+fire, never a duplicate. (HA/leader-lock is deferred — exactly one beat must run.)
+
 **Retry + timeout (S3):** a submit may declare `max_retries` and `timeout_seconds`. A `FAILED` or
 `TIMED_OUT` attempt under its retry cap is automatically re-queued (`retry_count` increments, an
 `engine.job.retry` provenance event is written) until the budget is spent. `timeout_seconds` is the

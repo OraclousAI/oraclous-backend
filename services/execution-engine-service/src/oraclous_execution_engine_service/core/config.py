@@ -49,6 +49,9 @@ class Settings(BaseSettings):
     # the reaper times out a job stuck RUNNING longer than this (worker/DB blip after RUNNING). Set
     # ABOVE the Celery hard limit (3600s) so a healthy long run is never falsely reaped.
     running_lease_seconds: int = 3900
+    # Celery Beat cadences (S5): fire due cron schedules every minute; sweep stranded RUNNING jobs.
+    schedule_tick_seconds: float = 60.0
+    reaper_tick_seconds: float = 300.0
 
     @property
     def celery_broker(self) -> str:
