@@ -36,6 +36,21 @@ class Settings(BaseSettings):
     UPSTREAM_CONNECT_TIMEOUT: float = 5.0
     UPSTREAM_READ_TIMEOUT: float = 30.0
 
+    # --- edge protection (R6 Slice 2): Redis-backed rate limit + request-size guard ---
+    # DB 2 isolates the edge-limiter keyspace (DB 0 = auth, DB 1 = execution-engine).
+    REDIS_URL: str = "redis://redis:6379/2"
+    # Short socket timeouts so a Redis PARTITION fails the limiter OPEN almost instantly instead of
+    # blocking the sole ingress on the OS connect timeout (the limiter is on every request).
+    REDIS_SOCKET_TIMEOUT_SECONDS: float = 0.5
+    # edge-wide per-client-IP fixed window (ops-tunable; not the auth limiter's hard 10/60).
+    EDGE_RATE_LIMIT: int = 600
+    EDGE_RATE_WINDOW_SECONDS: int = 60
+    # request-body cap (fail-closed); conservative default, per-route override is a later slice.
+    MAX_REQUEST_BODY_BYTES: int = 10 * 1024 * 1024
+    # X-Forwarded-For trust boundary: 0 = ignore XFF, key on the socket peer (no LB).
+    # Raise ONLY in lockstep with adding that many of our own proxies; each extra hop is spoofable.
+    TRUSTED_PROXY_COUNT: int = 0
+
     # --- identity seam (mirrors substrate: dev binds a fixed principal; jwt verifies HS256) ---
     GATEWAY_AUTH_MODE: str = "dev"  # "dev" | "jwt"
     DEV_BEARER: str = "dev-token"
