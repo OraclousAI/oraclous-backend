@@ -9,7 +9,6 @@ and exposes the job service. The Postgres repository + provenance collector are 
 from __future__ import annotations
 
 import secrets
-from collections.abc import AsyncIterator
 from typing import Annotated
 
 from fastapi import Depends, Header, HTTPException, Request, status
@@ -22,10 +21,10 @@ from oraclous_execution_engine_service.core.auth import (
     principal_from_gateway_headers,
     verify_token,
 )
-from oraclous_execution_engine_service.core.config import Settings, get_settings
+from oraclous_execution_engine_service.core.config import get_settings
 from oraclous_execution_engine_service.repositories.job_repository import JobRepository
-from oraclous_execution_engine_service.services.harness_client import HarnessClient
 from oraclous_execution_engine_service.services.job_service import JobService
+from oraclous_execution_engine_service.tasks.run_tasks import enqueue_job
 
 _bearer = HTTPBearer(auto_error=False)
 
@@ -70,37 +69,6 @@ async def get_principal(
         raise _unauthorized(str(exc)) from exc
 
 
-def build_downstream_headers(principal: Principal, settings: Settings) -> dict[str, str]:
-    """Identity to forward to the harness (ADR-018). dev → a bearer; gateway/jwt → the verified
-    principal headers + the shared internal key."""
-    if settings.auth_mode == "dev":
-        return {"Authorization": f"Bearer {settings.dev_bearer}"}
-    headers = {
-        "X-Principal-Id": str(principal.principal_id),
-        "X-Principal-Type": principal.principal_type.value,
-    }
-    if principal.organisation_id:
-        headers["X-Organisation-Id"] = str(principal.organisation_id)
-    if settings.internal_service_key:
-        headers["X-Internal-Key"] = settings.internal_service_key
-    return headers
-
-
-async def get_harness_client(
-    principal: Annotated[Principal, Depends(get_principal)],
-) -> AsyncIterator[HarnessClient]:
-    settings = get_settings()
-    client = HarnessClient(
-        settings.harness_runtime_url,
-        headers=build_downstream_headers(principal, settings),
-        timeout=settings.harness_request_timeout,
-    )
-    try:
-        yield client
-    finally:
-        await client.aclose()
-
-
 def get_job_repository(request: Request) -> JobRepository:
     repo = getattr(request.app.state, "job_repository", None)
     if repo is None:
@@ -123,10 +91,11 @@ def get_provenance(request: Request) -> ProvenanceCollector:
 
 def get_job_service(
     jobs: Annotated[JobRepository, Depends(get_job_repository)],
-    harness: Annotated[HarnessClient, Depends(get_harness_client)],
     provenance: Annotated[ProvenanceCollector, Depends(get_provenance)],
 ) -> JobService:
-    return JobService(jobs=jobs, harness=harness, provenance=provenance)
+    # The request path submits + cancels (enqueue to the worker); it never runs the harness itself,
+    # so no harness client here — the worker builds its own (run_tasks.py).
+    return JobService(jobs=jobs, provenance=provenance, enqueue=enqueue_job)
 
 
 PrincipalDep = Annotated[Principal, Depends(get_principal)]

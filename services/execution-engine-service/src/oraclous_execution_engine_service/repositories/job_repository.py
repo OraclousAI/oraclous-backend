@@ -11,14 +11,18 @@ from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlalchemy.pool import NullPool
 
 from oraclous_execution_engine_service.models.enums import EngineJobState
 from oraclous_execution_engine_service.models.job import EngineJob
 
 
 class JobRepository:
-    def __init__(self, db_url: str) -> None:
-        self._engine = create_async_engine(db_url, echo=False)
+    def __init__(self, db_url: str, *, worker_pool: bool = False) -> None:
+        # NullPool in the Celery worker: a task owns its connection and disposes it (ADR-012); never
+        # share a pool across tasks. The request path uses the default pool.
+        kwargs = {"poolclass": NullPool} if worker_pool else {}
+        self._engine = create_async_engine(db_url, echo=False, **kwargs)
         self._session = async_sessionmaker(self._engine, expire_on_commit=False)
 
     async def close(self) -> None:
@@ -58,6 +62,37 @@ class JobRepository:
             await session.refresh(row)
             return row
 
+    async def transition(
+        self,
+        job_id: uuid.UUID,
+        organisation_id: uuid.UUID,
+        *,
+        new_state: str,
+        allowed_from: frozenset[str],
+        **fields: Any,
+    ) -> tuple[EngineJob | None, bool]:
+        """Atomic state transition under a row lock (so a concurrent cancel can't race the worker).
+
+        Returns ``(row, applied)``: ``applied`` is False if the row is missing or its current state
+        is not in ``allowed_from`` (the transition is a no-op — e.g. a terminal/cancelled job)."""
+        async with self._session() as session:
+            async with session.begin():
+                result = await session.execute(
+                    select(EngineJob)
+                    .where(EngineJob.id == job_id, EngineJob.organisation_id == organisation_id)
+                    .with_for_update()
+                )
+                row = result.scalar_one_or_none()
+                if row is None:
+                    return None, False
+                if row.state not in allowed_from:
+                    return row, False
+                row.state = new_state
+                for key, value in fields.items():
+                    setattr(row, key, value)
+            await session.refresh(row)
+            return row, True
+
     async def get(self, job_id: uuid.UUID, organisation_id: uuid.UUID) -> EngineJob | None:
         async with self._session() as session:
             result = await session.execute(
@@ -66,25 +101,6 @@ class JobRepository:
                 )
             )
             return result.scalar_one_or_none()
-
-    async def update(
-        self, job_id: uuid.UUID, organisation_id: uuid.UUID, **fields: Any
-    ) -> EngineJob | None:
-        """Patch the given columns on an org-scoped job row, returning the updated row."""
-        async with self._session() as session:
-            async with session.begin():
-                result = await session.execute(
-                    select(EngineJob).where(
-                        EngineJob.id == job_id, EngineJob.organisation_id == organisation_id
-                    )
-                )
-                row = result.scalar_one_or_none()
-                if row is None:
-                    return None
-                for key, value in fields.items():
-                    setattr(row, key, value)
-            await session.refresh(row)
-            return row
 
     async def list_for_org(
         self, organisation_id: uuid.UUID, *, state: str | None = None, limit: int = 50

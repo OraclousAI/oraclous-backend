@@ -15,11 +15,28 @@ import uuid
 from jose import JWTError, jwt
 from oraclous_governance import Principal, PrincipalType
 
-from oraclous_execution_engine_service.core.config import get_settings
+from oraclous_execution_engine_service.core.config import Settings, get_settings
 
 
 class AuthError(Exception):
     """Authentication failed. Maps to HTTP 401."""
+
+
+def build_downstream_headers(principal: Principal, settings: Settings) -> dict[str, str]:
+    """Identity to forward to the harness (ADR-018). dev → a bearer; gateway/jwt → the verified
+    principal headers + the shared internal key. Used by both the request path (DI) and the worker
+    (which reconstructs the principal from the durable job's stored user_id + organisation_id)."""
+    if settings.auth_mode == "dev":
+        return {"Authorization": f"Bearer {settings.dev_bearer}"}
+    headers = {
+        "X-Principal-Id": str(principal.principal_id),
+        "X-Principal-Type": principal.principal_type.value,
+    }
+    if principal.organisation_id:
+        headers["X-Organisation-Id"] = str(principal.organisation_id)
+    if settings.internal_service_key:
+        headers["X-Internal-Key"] = settings.internal_service_key
+    return headers
 
 
 def principal_from_gateway_headers(

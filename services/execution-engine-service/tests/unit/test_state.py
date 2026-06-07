@@ -3,10 +3,21 @@
 from __future__ import annotations
 
 import pytest
-from oraclous_execution_engine_service.domain.state import can_transition, is_terminal
+from oraclous_execution_engine_service.domain.state import (
+    can_transition,
+    is_terminal,
+    sources_for,
+)
 from oraclous_execution_engine_service.models.enums import EngineJobState as S
 
 pytestmark = pytest.mark.unit
+
+
+def test_sources_for_is_the_inverse_allowed_set() -> None:
+    assert sources_for(S.RUNNING) == frozenset({S.QUEUED})
+    assert S.RUNNING in sources_for(S.SUCCEEDED)
+    assert sources_for(S.CANCELLED) == frozenset({S.QUEUED, S.RUNNING, S.ESCALATED})
+    assert sources_for(S.QUEUED) == frozenset({S.FAILED, S.TIMED_OUT, S.ESCALATED})  # retry/resume
 
 
 def test_terminal_states() -> None:

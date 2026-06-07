@@ -35,10 +35,11 @@ def _require_org(principal: Principal) -> uuid.UUID:
     return principal.organisation_id
 
 
-@router.post("/jobs", response_model=JobOut, status_code=status.HTTP_201_CREATED)
+@router.post("/jobs", response_model=JobOut, status_code=status.HTTP_202_ACCEPTED)
 async def submit_job(
     body: SubmitJobRequest, principal: PrincipalDep, service: JobServiceDep
 ) -> JobOut:
+    """Accept a durable job (202) — it runs on the worker. Poll GET /jobs/{id} for the outcome."""
     try:
         job = await service.submit(
             principal=principal,
@@ -50,6 +51,16 @@ async def submit_job(
         )
     except JobError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    return JobOut.model_validate(job)
+
+
+@router.post("/jobs/{job_id}/cancel", response_model=JobOut)
+async def cancel_job(job_id: uuid.UUID, principal: PrincipalDep, service: JobServiceDep) -> JobOut:
+    """Cancel a QUEUED/RUNNING/ESCALATED job (a terminal job is returned unchanged)."""
+    try:
+        job = await service.cancel(job_id, principal)
+    except JobError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     return JobOut.model_validate(job)
 
 

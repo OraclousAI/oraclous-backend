@@ -52,3 +52,8 @@ def is_terminal(state: EngineJobState) -> bool:
 
 def can_transition(current: EngineJobState, target: EngineJobState) -> bool:
     return target in _ALLOWED.get(current, frozenset())
+
+
+def sources_for(target: EngineJobState) -> frozenset[EngineJobState]:
+    """States that may transition INTO ``target`` — the allowed-from set for a CAS guard."""
+    return frozenset(s for s in EngineJobState if can_transition(s, target))

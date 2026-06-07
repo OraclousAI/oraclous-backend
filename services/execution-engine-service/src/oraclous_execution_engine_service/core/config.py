@@ -34,13 +34,26 @@ class Settings(BaseSettings):
     # --- own store (Postgres): job rows + the provenance sink. No hardcoded prod secret. ---
     database_url: str = "postgresql+asyncpg://oraclous:oraclous@postgres:5432/oraclous"
 
-    # --- the durable queue (Celery worker + beat land in S2/S5; the URL is read now). ---
-    redis_url: str = "redis://redis:6379/0"
+    # --- the durable queue (Celery over Redis; the worker runs jobs out-of-request). Redis DB **1**
+    # isolates the engine's broker + result backend from the knowledge-graph worker on db 0 — they
+    # share the redis instance, and the default `celery` queue would otherwise cross-deliver tasks
+    # (the KGS worker would reject `engine.run_job` as unregistered, silently dropping the job). ---
+    redis_url: str = "redis://redis:6379/1"
+    celery_broker_url: str | None = None
+    celery_result_backend: str | None = None
 
     # --- upstream the engine calls (over HTTP; never imported) ---
     harness_runtime_url: str = "http://harness-runtime-service:8000"
     # an out-of-request harness run can be long (an LLM loop) — generous default.
     harness_request_timeout: float = 600.0
+
+    @property
+    def celery_broker(self) -> str:
+        return self.celery_broker_url or self.redis_url
+
+    @property
+    def celery_backend(self) -> str:
+        return self.celery_result_backend or self.redis_url
 
     @property
     def sync_database_url(self) -> str:
