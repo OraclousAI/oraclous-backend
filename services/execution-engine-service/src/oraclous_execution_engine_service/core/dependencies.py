@@ -25,8 +25,10 @@ from oraclous_execution_engine_service.core.auth import (
 )
 from oraclous_execution_engine_service.core.config import get_settings
 from oraclous_execution_engine_service.repositories.job_repository import JobRepository
+from oraclous_execution_engine_service.repositories.schedule_repository import ScheduleRepository
 from oraclous_execution_engine_service.services.harness_client import HarnessClient
 from oraclous_execution_engine_service.services.job_service import JobService
+from oraclous_execution_engine_service.services.schedule_service import ScheduleService
 from oraclous_execution_engine_service.services.task_service import TaskService
 from oraclous_execution_engine_service.tasks.run_tasks import enqueue_job
 
@@ -83,6 +85,16 @@ def get_job_repository(request: Request) -> JobRepository:
     return repo
 
 
+def get_schedule_repository(request: Request) -> ScheduleRepository:
+    repo = getattr(request.app.state, "schedule_repository", None)
+    if repo is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="engine store unavailable (DATABASE_URL not reachable)",
+        )
+    return repo
+
+
 def get_provenance(request: Request) -> ProvenanceCollector:
     collector = getattr(request.app.state, "provenance", None)
     if collector is None:
@@ -100,6 +112,15 @@ def get_job_service(
     # The request path submits + cancels (enqueue to the worker); it never runs the harness itself,
     # so no harness client here — the worker builds its own (run_tasks.py).
     return JobService(jobs=jobs, provenance=provenance, enqueue=enqueue_job)
+
+
+def get_schedule_service(
+    schedules: Annotated[ScheduleRepository, Depends(get_schedule_repository)],
+    jobs: Annotated[JobRepository, Depends(get_job_repository)],
+    provenance: Annotated[ProvenanceCollector, Depends(get_provenance)],
+) -> ScheduleService:
+    # the request path only registers/lists/deletes — beat fires (run_tasks builds its own).
+    return ScheduleService(schedules=schedules, jobs=jobs, provenance=provenance)
 
 
 async def get_harness_client(
@@ -130,3 +151,4 @@ PrincipalDep = Annotated[Principal, Depends(get_principal)]
 JobRepositoryDep = Annotated[JobRepository, Depends(get_job_repository)]
 JobServiceDep = Annotated[JobService, Depends(get_job_service)]
 TaskServiceDep = Annotated[TaskService, Depends(get_task_service)]
+ScheduleServiceDep = Annotated[ScheduleService, Depends(get_schedule_service)]

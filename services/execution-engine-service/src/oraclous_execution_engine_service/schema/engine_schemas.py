@@ -12,7 +12,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from oraclous_execution_engine_service.models.enums import EngineJobState
+from oraclous_execution_engine_service.models.enums import EngineJobState, ScheduleType
 
 
 class HealthResponse(BaseModel):
@@ -76,3 +76,39 @@ class CompleteTaskRequest(BaseModel):
     """The human's output, forwarded to the harness; flips the parked run + the engine job."""
 
     output: str = Field(min_length=1)
+
+
+class RegisterScheduleRequest(BaseModel):
+    """Register a schedule that fires a harness job. A cron schedule needs a cron expression; the
+    OHM is supplied inline (``manifest``) or by registry id (``manifest_ref``) — exactly one."""
+
+    type: ScheduleType = ScheduleType.CRON
+    cron: str | None = None
+    manifest: dict[str, Any] | None = None
+    manifest_ref: str | None = Field(default=None, max_length=512)
+    input: str = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def _exactly_one_manifest(self) -> RegisterScheduleRequest:
+        if (self.manifest is None) == (self.manifest_ref is None):
+            raise ValueError("supply exactly one of 'manifest' (inline) or 'manifest_ref'")
+        return self
+
+
+class ScheduleOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    organisation_id: uuid.UUID
+    type: str
+    cron: str | None
+    manifest_ref: str | None
+    input_text: str
+    enabled: bool
+    last_fired_at: datetime | None
+    created_at: datetime | None
+
+
+class ScheduleListResponse(BaseModel):
+    schedules: list[ScheduleOut]
+    total: int

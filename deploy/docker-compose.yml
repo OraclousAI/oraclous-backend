@@ -609,6 +609,25 @@ services:
     profiles: [services]
     networks: [substrate]
 
+  # R5-S5 — Celery Beat: the SINGLE process that fires due cron schedules + sweeps stranded jobs.
+  # Exactly one beat must run; firing is idempotent (the engine_jobs (org, idempotency_key) unique
+  # constraint), so a missed tick = a missed fire, never a duplicate.
+  execution-engine-beat:
+    image: oraclous-execution-engine-service:${IMAGE_TAG:-dev}
+    restart: unless-stopped
+    command: ["celery", "-A", "oraclous_execution_engine_service.tasks.celery_app:celery_app",
+              "beat", "--loglevel=info"]
+    environment:
+      ENGINE_DATABASE_URL: "postgresql+asyncpg://oraclous:oraclous@postgres:5432/oraclous"
+      ENGINE_REDIS_URL: "redis://redis:6379/1"
+    depends_on:
+      redis:
+        condition: service_healthy
+      engine-migrate:
+        condition: service_completed_successfully
+    profiles: [services]
+    networks: [substrate]
+
 networks:
   substrate:
     driver: bridge

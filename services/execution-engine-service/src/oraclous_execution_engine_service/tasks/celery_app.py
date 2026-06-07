@@ -40,6 +40,19 @@ celery_app.conf.update(
     # QUEUED). A worker dying AFTER RUNNING leaves the job RUNNING (reaped by the S3 lease sweep).
     task_acks_late=True,
     task_reject_on_worker_lost=True,
+    # Celery Beat (S5): fire due cron schedules each tick + sweep stranded RUNNING jobs. A SINGLE
+    # beat process must run (compose `execution-engine-beat`); firing is idempotent (the engine_jobs
+    # (org, idempotency_key) unique constraint), so a double-tick never double-fires.
+    beat_schedule={
+        "fire-due-schedules": {
+            "task": "engine.fire_schedules",
+            "schedule": _settings.schedule_tick_seconds,
+        },
+        "reap-stale-running": {
+            "task": "engine.reap_stale",
+            "schedule": _settings.reaper_tick_seconds,
+        },
+    },
 )
 
 

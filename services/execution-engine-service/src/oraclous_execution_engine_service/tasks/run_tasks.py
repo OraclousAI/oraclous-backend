@@ -27,8 +27,10 @@ from oraclous_execution_engine_service.core.auth import build_downstream_headers
 from oraclous_execution_engine_service.core.config import get_settings
 from oraclous_execution_engine_service.repositories.job_repository import JobRepository
 from oraclous_execution_engine_service.repositories.provenance_sink import PostgresProvenanceSink
+from oraclous_execution_engine_service.repositories.schedule_repository import ScheduleRepository
 from oraclous_execution_engine_service.services.harness_client import HarnessClient
 from oraclous_execution_engine_service.services.job_service import JobService
+from oraclous_execution_engine_service.services.schedule_service import ScheduleService
 from oraclous_execution_engine_service.tasks.celery_app import AsyncTaskExecutor, celery_app
 
 
@@ -89,6 +91,32 @@ async def _reap_async() -> dict[str, int]:
         reaped = await service.reap_stale(older_than=older_than)
         return {"reaped": reaped}
     finally:
+        await jobs.close()
+        await sink.close()
+
+
+@celery_app.task(name="engine.fire_schedules")
+def fire_schedules_task() -> dict[str, int]:  # noqa: ANN201
+    """Celery Beat tick: fire every enabled cron schedule whose latest window hasn't fired yet."""
+    return AsyncTaskExecutor.run_async_task(_fire_schedules_async)
+
+
+async def _fire_schedules_async() -> dict[str, int]:
+    settings = get_settings()
+    schedules = ScheduleRepository(settings.database_url, worker_pool=True)
+    jobs = JobRepository(settings.database_url, worker_pool=True)
+    sink = PostgresProvenanceSink(settings.database_url, worker_pool=True)
+    try:
+        service = ScheduleService(
+            schedules=schedules,
+            jobs=jobs,
+            provenance=ProvenanceCollector(sink),
+            enqueue=enqueue_job,
+        )
+        fired = await service.fire_due(datetime.now(UTC))
+        return {"fired": fired}
+    finally:
+        await schedules.close()
         await jobs.close()
         await sink.close()
 

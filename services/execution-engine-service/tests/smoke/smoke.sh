@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# R5 service — execution-engine acceptance smoke (slice 4 — task board + resume).
+# R5 service — execution-engine acceptance smoke (slice 5 — schedules + beat).
 # Proves the engine boots, migrates its own schema (own version_table — no shared-DB collision),
 # serves /health, and runs durable harness jobs ASYNC THROUGH THE GATEWAY: submit returns 202 +
 # QUEUED, a Celery worker calls the harness /execute over HTTP → the engine checkpoints the terminal
@@ -31,7 +31,7 @@ if [[ "${ENGINE_SMOKE_NO_COMPOSE:-0}" != "1" ]]; then
   ${COMPOSE} --profile services up -d --build
   ${COMPOSE} up harness-migrate engine-migrate
   ${COMPOSE} up -d harness-runtime-service execution-engine-service execution-engine-worker \
-    application-gateway-service
+    execution-engine-beat application-gateway-service
 fi
 
 # Submit a job (202 + QUEUED) and poll until it reaches the wanted state; fail fast on a wrong terminal.
@@ -98,6 +98,25 @@ curl -fsS "${AUTH[@]}" -X POST "${GW}/v1/engine/tasks/${TJID}/complete" -d '{"ou
   | python3 -c "import sys,json;d=json.load(sys.stdin);assert d['state']=='SUCCEEDED' and d['output']=='approved by human',d" \
   && pass "complete -> the engine job is SUCCEEDED with the human output" || fail "task complete failed"
 
+step "6c. S5: register a per-minute cron schedule -> Celery Beat auto-fires a job within ~80s"
+SCHED=$(python3 -c "import json,sys;print(json.dumps({'type':'cron','cron':'* * * * *','input':'scheduled run','manifest':{'ohm_version':'1.0','metadata':{'id':'01976e3a-7c9b-7b00-9c45-aaa000000005','name':'Eng Cron','owner_organization_id':sys.argv[1]},'capabilities':[],'models':[{'role':'primary','binding':'openrouter/x','protocol_shape':'openai-compatible'}],'prompts':[{'role':'primary','source':'inline','body':'r'}],'actors':[{'role':'reviewer','kind':'human','human_role':'admin'}],'runtime':{'entrypoint':'reviewer'}}}))" "$ORG")
+SID=$(curl -fsS "${GW}/v1/engine/schedules" "${AUTH[@]}" -d "$SCHED" | python3 -c 'import sys,json;print(json.load(sys.stdin)["id"])')
+pass "registered cron schedule ${SID}"
+curl -fsS "${AUTH[@]}" "${GW}/v1/engine/schedules" \
+  | python3 -c "import sys,json;d=json.load(sys.stdin);assert any(s['id']=='${SID}' for s in d['schedules']),d" \
+  && pass "GET /schedules lists it" || fail "schedule not listed"
+fired=""
+for _ in $(seq 1 45); do
+  n=$(${COMPOSE} exec -T postgres psql -U oraclous -d oraclous -tAc \
+    "select count(*) from engine_jobs where schedule_id='${SID}'")
+  [[ "${n//[[:space:]]/}" -ge 1 ]] && { fired=1; break; }
+  sleep 3
+done
+[[ -n "$fired" ]] && pass "Beat auto-fired a job for the schedule (engine_jobs.schedule_id set)" \
+  || fail "no job fired within ~135s"
+curl -fsS -o /dev/null -w '%{http_code}' "${AUTH[@]}" -X DELETE "${GW}/v1/engine/schedules/${SID}" \
+  | grep -q 204 && pass "DELETE /schedules/{id} -> 204" || fail "delete failed"
+
 step "7. S3: a failing job with max_retries=2 retries then ends FAILED with retry_count=2"
 # an OHM whose runtime.entrypoint matches no capability binding -> the harness rejects it (422) ->
 # the engine marks the attempt FAILED and re-queues until the retry budget is spent.
@@ -125,4 +144,4 @@ c=$(${COMPOSE} exec -T postgres psql -U oraclous -d oraclous -tAc \
   "select count(*) from engine_provenance where resource='engine_job:${JID}' and action in ('engine.job.submit','engine.job.run')")
 [[ "${c//[[:space:]]/}" -ge 2 ]] && pass "engine.job.submit + run provenance recorded" || fail "no provenance"
 
-printf '\n\033[32mAll execution-engine slice-4 smoke checks passed.\033[0m\n'
+printf '\n\033[32mAll execution-engine slice-5 smoke checks passed.\033[0m\n'
