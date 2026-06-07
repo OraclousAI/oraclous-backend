@@ -24,6 +24,7 @@ def _principal(org: uuid.UUID | None = _ORG) -> Principal:
 class _FakeRepo:
     def __init__(self) -> None:
         self.rows: dict[uuid.UUID, EngineJob] = {}
+        self.transition_applies = True  # set False to simulate a concurrent move (CAS no-op)
 
     def add(self, *, state: str, assignment_id: uuid.UUID | None) -> EngineJob:
         row = EngineJob(
@@ -53,7 +54,7 @@ class _FakeRepo:
 
     async def transition(self, job_id, organisation_id, *, new_state, allowed_from, **fields):  # noqa: ANN001, ANN002, ANN003, ANN202
         row = self.rows[job_id]
-        if row.state not in allowed_from:
+        if not self.transition_applies or row.state not in allowed_from:
             return row, False
         row.state = new_state
         for k, v in fields.items():
@@ -125,3 +126,16 @@ async def test_complete_harness_rejection_raises() -> None:
     with pytest.raises(TaskError):
         await svc.complete(job.id, _principal(), output="x")
     assert repo.rows[job.id].state == S.ESCALATED.value  # not flipped if the harness rejected
+
+
+async def test_complete_cas_noop_raises_without_false_success() -> None:
+    # the harness completed, but our engine job moved under us (concurrent cancel) → the CAS no-ops.
+    # We must surface the split, not emit a fake SUCCEEDED.
+    harness = _FakeHarness()
+    svc, repo, prov = _svc(harness)
+    repo.transition_applies = False
+    job = repo.add(state=S.ESCALATED.value, assignment_id=uuid.uuid4())
+    with pytest.raises(TaskError):
+        await svc.complete(job.id, _principal(), output="x")
+    assert harness.calls  # the harness WAS driven (the genuine split)
+    assert ("engine.task.complete", "SUCCEEDED") not in prov.events  # no false success provenance

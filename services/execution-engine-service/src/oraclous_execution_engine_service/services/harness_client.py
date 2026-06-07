@@ -44,9 +44,12 @@ class HarnessClient:
     async def complete_assignment(self, assignment_id: uuid.UUID, output: str) -> dict[str, Any]:
         """Complete a human task-board assignment — the harness marks it COMPLETED and flips the
         parked run ESCALATED → SUCCEEDED with ``output``. Used by the engine task board (S4)."""
-        resp = await self._client.post(
-            f"/v1/harnesses/assignments/{assignment_id}/complete", json={"output": output}
-        )
+        try:
+            resp = await self._client.post(
+                f"/v1/harnesses/assignments/{assignment_id}/complete", json={"output": output}
+            )
+        except httpx.HTTPError as exc:  # harness unreachable — clean failure, not a 500
+            raise HarnessClientError(f"harness unreachable: {type(exc).__name__}") from exc
         if resp.status_code // 100 != 2:
             raise HarnessClientError(f"complete assignment → {resp.status_code}: {resp.text[:300]}")
         return resp.json()

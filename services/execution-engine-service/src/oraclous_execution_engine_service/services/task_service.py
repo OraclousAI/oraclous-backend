@@ -54,7 +54,7 @@ class TaskService:
         except HarnessClientError as exc:
             raise TaskError(f"harness rejected the completion: {exc}") from exc
         allowed = frozenset(s.value for s in sources_for(EngineJobState.SUCCEEDED))
-        updated, _ = await self._jobs.transition(
+        updated, applied = await self._jobs.transition(
             job.id,
             org_id,
             new_state=EngineJobState.SUCCEEDED.value,
@@ -62,10 +62,16 @@ class TaskService:
             output=output,
             progress=100,
         )
+        if not applied:
+            # the harness run is committed SUCCEEDED, but our job moved under us (a concurrent
+            # cancel / terminal). Surface the split honestly instead of a fake SUCCEEDED + 200.
+            # (A reconciliation sweep to re-drive such rows is a follow-up; harness-first is the
+            # least-bad ordering since the common failure — harness down — raises before this.)
+            raise TaskError("job state changed during completion; the harness run already settled")
         await self._emit(
             org_id, principal.principal_id, job.id, "engine.task.complete", "SUCCEEDED"
         )
-        return updated or job
+        return updated
 
     @staticmethod
     def _require_org(principal: Principal) -> uuid.UUID:
