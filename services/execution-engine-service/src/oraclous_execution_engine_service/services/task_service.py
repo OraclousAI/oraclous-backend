@@ -15,6 +15,7 @@ from oraclous_governance import Principal
 from oraclous_substrate import ProvenanceCollector, ProvenanceRecord
 
 from oraclous_execution_engine_service.domain.state import sources_for
+from oraclous_execution_engine_service.domain.status_map import map_harness_status
 from oraclous_execution_engine_service.models.enums import EngineJobState
 from oraclous_execution_engine_service.models.job import EngineJob
 from oraclous_execution_engine_service.repositories.job_repository import JobRepository
@@ -26,6 +27,10 @@ from oraclous_execution_engine_service.services.harness_client import (
 
 class TaskError(Exception):
     """A task could not be listed/completed (missing, not open, or harness-rejected). HTTP 4xx."""
+
+
+def _bounded(value: object, limit: int) -> str | None:
+    return str(value)[:limit] if value else None
 
 
 class TaskService:
@@ -71,6 +76,56 @@ class TaskService:
         await self._emit(
             org_id, principal.principal_id, job.id, "engine.task.complete", "SUCCEEDED"
         )
+        return updated
+
+    async def approve(
+        self,
+        job_id: uuid.UUID,
+        principal: Principal,
+        decision: str,
+        decision_reason: str | None = None,
+    ) -> EngineJob:
+        """Resolve a mid-loop HITL approval task. The job carries a harness execution but NO
+        assignment (entrypoint human tasks carry an assignment → use complete()). APPROVED resumes
+        the harness loop (the gated tool runs); DENIED terminates it FAILED. Harness-first, then a
+        CAS flip — a chained HITL re-pause leaves the job ESCALATED for the next approval."""
+        org_id = self._require_org(principal)
+        job = await self._jobs.get(job_id, org_id)
+        if job is None:
+            raise TaskError("task not found")
+        if (
+            job.state != EngineJobState.ESCALATED.value
+            or job.harness_execution_id is None
+            or job.assignment_id is not None
+        ):
+            raise TaskError("job is not a mid-loop HITL approval task")
+        try:
+            result = await self._harness.resume(job.harness_execution_id, decision, decision_reason)
+        except HarnessClientError as exc:
+            raise TaskError(f"harness rejected the resume: {exc}") from exc
+
+        target = map_harness_status(result.get("status", ""))
+        if target is EngineJobState.ESCALATED:
+            # a chained HITL pause re-escalated the run; the job stays ESCALATED (next approval).
+            await self._emit(
+                org_id, principal.principal_id, job.id, "engine.task.approve", "re-escalated"
+            )
+            return job
+        allowed = frozenset(s.value for s in sources_for(target))
+        updated, applied = await self._jobs.transition(
+            job.id,
+            org_id,
+            new_state=target.value,
+            allowed_from=allowed,
+            output=result.get("output"),
+            error_type=_bounded(result.get("error_type"), 128),
+            error_message=_bounded(result.get("error_message"), 2000),
+            progress=100,
+        )
+        if not applied:
+            # the harness already settled, but our job moved (concurrent cancel) — surface honestly.
+            raise TaskError("job state changed during approval; the harness run already settled")
+        await self._emit(org_id, principal.principal_id, job.id, "engine.task.approve", decision)
         return updated
 
     @staticmethod

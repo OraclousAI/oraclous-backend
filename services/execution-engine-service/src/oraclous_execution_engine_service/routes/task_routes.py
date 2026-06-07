@@ -13,6 +13,7 @@ from fastapi import APIRouter, HTTPException, status
 
 from oraclous_execution_engine_service.core.dependencies import PrincipalDep, TaskServiceDep
 from oraclous_execution_engine_service.schema.engine_schemas import (
+    ApproveTaskRequest,
     CompleteTaskRequest,
     JobOut,
     TaskListResponse,
@@ -41,6 +42,22 @@ async def complete_task(
 ) -> JobOut:
     try:
         job = await service.complete(job_id, principal, body.output)
+    except TaskError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    return JobOut.model_validate(job)
+
+
+@router.post("/tasks/{job_id}/approve", response_model=JobOut)
+async def approve_task(
+    job_id: uuid.UUID,
+    body: ApproveTaskRequest,
+    principal: PrincipalDep,
+    service: TaskServiceDep,
+) -> JobOut:
+    """Resolve a mid-loop HITL approval task: APPROVED resumes the harness loop (the gated tool
+    runs), DENIED terminates it FAILED. (Entrypoint human tasks use /complete instead.)"""
+    try:
+        job = await service.approve(job_id, principal, body.decision, body.decision_reason)
     except TaskError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     return JobOut.model_validate(job)

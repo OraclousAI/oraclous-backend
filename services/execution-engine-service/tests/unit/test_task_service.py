@@ -26,13 +26,20 @@ class _FakeRepo:
         self.rows: dict[uuid.UUID, EngineJob] = {}
         self.transition_applies = True  # set False to simulate a concurrent move (CAS no-op)
 
-    def add(self, *, state: str, assignment_id: uuid.UUID | None) -> EngineJob:
+    def add(
+        self,
+        *,
+        state: str,
+        assignment_id: uuid.UUID | None,
+        harness_execution_id: uuid.UUID | None = None,
+    ) -> EngineJob:
         row = EngineJob(
             id=uuid.uuid4(),
             organisation_id=_ORG,
             user_id=_USER,
             state=state,
             assignment_id=assignment_id,
+            harness_execution_id=harness_execution_id,
             input_text="go",
             progress=0,
             retry_count=0,
@@ -63,15 +70,23 @@ class _FakeRepo:
 
 
 class _FakeHarness:
-    def __init__(self, *, raises: bool = False) -> None:
+    def __init__(self, *, raises: bool = False, resume_result: dict | None = None) -> None:
         self.calls: list[tuple[uuid.UUID, str]] = []
+        self.resume_calls: list[tuple[uuid.UUID, str, str | None]] = []
         self._raises = raises
+        self._resume_result = resume_result or {"status": "SUCCEEDED", "output": "done"}
 
     async def complete_assignment(self, assignment_id: uuid.UUID, output: str) -> dict:
         if self._raises:
             raise HarnessClientError("assignment already completed")
         self.calls.append((assignment_id, output))
         return {"status": "COMPLETED"}
+
+    async def resume(self, execution_id: uuid.UUID, decision: str, decision_reason=None) -> dict:  # noqa: ANN001
+        if self._raises:
+            raise HarnessClientError("execution not resumable")
+        self.resume_calls.append((execution_id, decision, decision_reason))
+        return self._resume_result
 
 
 class _FakeProv:
@@ -139,3 +154,52 @@ async def test_complete_cas_noop_raises_without_false_success() -> None:
         await svc.complete(job.id, _principal(), output="x")
     assert harness.calls  # the harness WAS driven (the genuine split)
     assert ("engine.task.complete", "SUCCEEDED") not in prov.events  # no false success provenance
+
+
+# ── S6: mid-loop HITL approve ─────────────────────────────────────────────────────────────────────
+async def test_approve_resumes_harness_and_flips_job_succeeded() -> None:
+    harness = _FakeHarness(resume_result={"status": "SUCCEEDED", "output": "resumed ok"})
+    svc, repo, prov = _svc(harness)
+    hx = uuid.uuid4()
+    job = repo.add(state=S.ESCALATED.value, assignment_id=None, harness_execution_id=hx)
+    out = await svc.approve(job.id, _principal(), "APPROVED", None)
+    assert harness.resume_calls == [(hx, "APPROVED", None)]
+    assert out.state == S.SUCCEEDED.value and out.output == "resumed ok"
+    assert ("engine.task.approve", "APPROVED") in prov.events
+
+
+async def test_approve_denied_flips_job_failed() -> None:
+    harness = _FakeHarness(
+        resume_result={"status": "FAILED", "error_type": "human_rejected", "error_message": "no"}
+    )
+    svc, repo, _ = _svc(harness)
+    job = repo.add(state=S.ESCALATED.value, assignment_id=None, harness_execution_id=uuid.uuid4())
+    out = await svc.approve(job.id, _principal(), "DENIED", "no")
+    assert out.state == S.FAILED.value and out.error_type == "human_rejected"
+
+
+async def test_approve_chained_reescalation_keeps_job_escalated() -> None:
+    harness = _FakeHarness(resume_result={"status": "ESCALATED", "error_type": "hitl_required"})
+    svc, repo, prov = _svc(harness)
+    job = repo.add(state=S.ESCALATED.value, assignment_id=None, harness_execution_id=uuid.uuid4())
+    out = await svc.approve(job.id, _principal(), "APPROVED", None)
+    assert out.state == S.ESCALATED.value  # a chained pause — stays open for the next approval
+    assert ("engine.task.approve", "re-escalated") in prov.events
+
+
+async def test_approve_entrypoint_task_raises() -> None:
+    # an entrypoint human task carries an assignment_id → must use complete(), not approve().
+    svc, repo, _ = _svc(_FakeHarness())
+    job = repo.add(
+        state=S.ESCALATED.value, assignment_id=uuid.uuid4(), harness_execution_id=uuid.uuid4()
+    )
+    with pytest.raises(TaskError):
+        await svc.approve(job.id, _principal(), "APPROVED", None)
+
+
+async def test_approve_harness_rejection_raises() -> None:
+    svc, repo, _ = _svc(_FakeHarness(raises=True))
+    job = repo.add(state=S.ESCALATED.value, assignment_id=None, harness_execution_id=uuid.uuid4())
+    with pytest.raises(TaskError):
+        await svc.approve(job.id, _principal(), "APPROVED", None)
+    assert repo.rows[job.id].state == S.ESCALATED.value  # not flipped if the harness rejected
