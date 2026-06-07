@@ -201,9 +201,19 @@ echo "$hb" | grep -q '"status":"ESCALATED"' && echo "$hb" | grep -q '"error_type
 HEXID=$(echo "$hb" | python3 -c "import json,sys;print(json.load(sys.stdin)['id'])")
 
 step "18. S5: the task board lists the pending assignment (org-scoped)"
-curl -fsS "${AUTH[@]}" "${GW}/v1/harnesses/assignments" \
-  | python3 -c "import json,sys;d=json.load(sys.stdin);assert d['total']>=1 and any(a['human_role']=='admin' and a['status']=='PENDING' for a in d['assignments']),d" \
-  && pass "GET /assignments shows the PENDING admin assignment" || fail "assignments not listed"
+AID=$(curl -fsS "${AUTH[@]}" "${GW}/v1/harnesses/assignments" \
+  | python3 -c "import json,sys;d=json.load(sys.stdin);a=[x for x in d['assignments'] if x['human_role']=='admin' and x['status']=='PENDING'];assert a,d;print(a[0]['id'])")
+pass "GET /assignments shows the PENDING admin assignment ($AID)"
+
+step "18b. claim → complete the assignment; the parked run flips ESCALATED → SUCCEEDED"
+curl -fsS "${AUTH[@]}" -X POST "${GW}/v1/harnesses/assignments/${AID}/claim" \
+  | grep -q '"status":"CLAIMED"' && pass "claim → CLAIMED" || fail "claim failed"
+curl -fsS "${AUTH[@]}" -X POST "${GW}/v1/harnesses/assignments/${AID}/complete" \
+  -d '{"output":"reviewed: approved"}' \
+  | grep -q '"status":"COMPLETED"' && pass "complete → COMPLETED" || fail "complete failed"
+curl -fsS "${AUTH[@]}" "${GW}/v1/harnesses/executions/${HEXID}" \
+  | python3 -c "import json,sys;d=json.load(sys.stdin);assert d['status']=='SUCCEEDED' and d['output']=='reviewed: approved',d" \
+  && pass "the parked run is now SUCCEEDED with the human's output" || fail "run not flipped"
 
 step "19. S5: execution listing returns the org's runs"
 curl -fsS "${AUTH[@]}" "${GW}/v1/harnesses/executions" \
