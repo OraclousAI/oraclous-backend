@@ -75,6 +75,37 @@ class ExecutionRepository:
             )
             return result.scalar_one_or_none()
 
+    async def update_status(
+        self,
+        execution_id: uuid.UUID,
+        organisation_id: uuid.UUID,
+        *,
+        status: str,
+        output: str | None = None,
+    ) -> HarnessExecution | None:
+        """Patch an org-scoped run's status (+ output) — when a human completes an assignment, flip
+        the parked ESCALATED run to SUCCEEDED with the human's output. Org-scoped (ADR-006)."""
+        async with self._session() as session:
+            async with session.begin():
+                result = await session.execute(
+                    select(HarnessExecution)
+                    .where(
+                        HarnessExecution.id == execution_id,
+                        HarnessExecution.organisation_id == organisation_id,
+                    )
+                    .with_for_update()
+                )
+                row = result.scalar_one_or_none()
+                if row is None:
+                    return None
+                row.status = status
+                if output is not None:
+                    row.output = output
+                row.error_type = None
+                row.error_message = None
+            await session.refresh(row)
+            return row
+
     async def list_for_org(
         self, organisation_id: uuid.UUID, *, limit: int = 50
     ) -> list[HarnessExecution]:

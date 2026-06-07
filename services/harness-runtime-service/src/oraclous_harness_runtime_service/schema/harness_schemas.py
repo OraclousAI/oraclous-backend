@@ -92,3 +92,9 @@ class AssignmentOut(BaseModel):
 class AssignmentListResponse(BaseModel):
     assignments: list[AssignmentOut]
     total: int
+
+
+class CompleteAssignmentRequest(BaseModel):
+    """The human's output for a completed task — becomes the parked run's output on SUCCEEDED."""
+
+    output: str = Field(min_length=1)

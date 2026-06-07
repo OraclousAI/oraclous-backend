@@ -26,6 +26,7 @@ from oraclous_harness_runtime_service.core.config import Settings, get_settings
 from oraclous_harness_runtime_service.domain.ohm.signatures import TrustStore
 from oraclous_harness_runtime_service.repositories.assignment_repository import AssignmentRepository
 from oraclous_harness_runtime_service.repositories.execution_repository import ExecutionRepository
+from oraclous_harness_runtime_service.services.assignment_service import AssignmentService
 from oraclous_harness_runtime_service.services.broker_client import BrokerClient
 from oraclous_harness_runtime_service.services.harness_execution_service import (
     HarnessExecutionService,
@@ -176,7 +177,16 @@ def get_harness_service(
     )
 
 
+def get_assignment_service(
+    assignments: Annotated[AssignmentRepository, Depends(get_assignment_repository)],
+    executions: Annotated[ExecutionRepository, Depends(get_execution_repository)],
+    provenance: Annotated[ProvenanceCollector, Depends(get_provenance)],
+) -> AssignmentService:
+    return AssignmentService(assignments=assignments, executions=executions, provenance=provenance)
+
+
 PrincipalDep = Annotated[Principal, Depends(get_principal)]
 ExecutionRepositoryDep = Annotated[ExecutionRepository, Depends(get_execution_repository)]
 AssignmentRepositoryDep = Annotated[AssignmentRepository, Depends(get_assignment_repository)]
 HarnessServiceDep = Annotated[HarnessExecutionService, Depends(get_harness_service)]
+AssignmentServiceDep = Annotated[AssignmentService, Depends(get_assignment_service)]

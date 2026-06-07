@@ -14,6 +14,7 @@ from oraclous_governance import Principal
 
 from oraclous_harness_runtime_service.core.dependencies import (
     AssignmentRepositoryDep,
+    AssignmentServiceDep,
     ExecutionRepositoryDep,
     HarnessServiceDep,
     PrincipalDep,
@@ -22,10 +23,12 @@ from oraclous_harness_runtime_service.domain.ohm.errors import OHMError
 from oraclous_harness_runtime_service.schema.harness_schemas import (
     AssignmentListResponse,
     AssignmentOut,
+    CompleteAssignmentRequest,
     ExecuteHarnessRequest,
     ExecutionListResponse,
     HarnessExecutionOut,
 )
+from oraclous_harness_runtime_service.services.assignment_service import AssignmentError
 from oraclous_harness_runtime_service.services.harness_execution_service import (
     HarnessExecutionError,
 )
@@ -89,3 +92,30 @@ async def list_assignments(
     rows = await assignments.list_for_org(_require_org(principal), status="PENDING")
     out = [AssignmentOut.model_validate(r) for r in rows]
     return AssignmentListResponse(assignments=out, total=len(out))
+
+
+@router.post("/assignments/{assignment_id}/claim", response_model=AssignmentOut)
+async def claim_assignment(
+    assignment_id: uuid.UUID, principal: PrincipalDep, service: AssignmentServiceDep
+) -> AssignmentOut:
+    """A human takes a PENDING task (→ CLAIMED). Driven by the execution-engine task board (R5)."""
+    try:
+        row = await service.claim(assignment_id, principal)
+    except AssignmentError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    return AssignmentOut.model_validate(row)
+
+
+@router.post("/assignments/{assignment_id}/complete", response_model=AssignmentOut)
+async def complete_assignment(
+    assignment_id: uuid.UUID,
+    body: CompleteAssignmentRequest,
+    principal: PrincipalDep,
+    service: AssignmentServiceDep,
+) -> AssignmentOut:
+    """The human submits their output (→ COMPLETED); the parked run flips ESCALATED → SUCCEEDED."""
+    try:
+        row = await service.complete(assignment_id, principal, body.output)
+    except AssignmentError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    return AssignmentOut.model_validate(row)
