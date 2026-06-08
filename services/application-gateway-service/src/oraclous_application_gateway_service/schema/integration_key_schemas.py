@@ -5,12 +5,14 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+from oraclous_application_gateway_service.schema.published_agent_schemas import SLUG_PATTERN
 
 
 class MintKeyRequest(BaseModel):
     # exactly one binding (store CHECK): a published-agent slug XOR a capability allow-list
-    bound_agent_slug: str | None = None
+    bound_agent_slug: str | None = Field(default=None, pattern=SLUG_PATTERN)
     capability_allow_list: list[str] | None = None
     cors_origins: list[str] | None = None
     rate_limit: int | None = None

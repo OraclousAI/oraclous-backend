@@ -26,6 +26,8 @@ def _row(minted, *, status="active", expires_at=None):
         key_hash=minted.key_hash,
         status=status,
         expires_at=expires_at,
+        bound_agent_slug=None,
+        capability_allow_list=None,
     )
 
 
