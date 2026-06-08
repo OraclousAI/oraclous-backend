@@ -23,6 +23,9 @@ from oraclous_application_gateway_service.domain.route_table import build_route_
 from oraclous_application_gateway_service.repositories.integration_key_repository import (
     IntegrationKeyRepository,
 )
+from oraclous_application_gateway_service.repositories.published_agent_repository import (
+    PublishedAgentRepository,
+)
 from oraclous_application_gateway_service.repositories.upstream_client import UpstreamClient
 from oraclous_application_gateway_service.services.proxy_service import ProxyService
 
@@ -58,11 +61,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         logger.warning("gateway: Redis unavailable (%s); the edge rate limiter will fail open", exc)
         app.state.redis = None
     try:
-        # graceful-degrade: a DB problem leaves /health up + the integration-key path returns 503.
+        # graceful-degrade: a DB problem leaves /health up + the DB-backed routes return 503.
         app.state.integration_key_repo = IntegrationKeyRepository(settings.DATABASE_URL)
+        app.state.published_agent_repo = PublishedAgentRepository(settings.DATABASE_URL)
     except Exception as exc:  # noqa: BLE001 — never crash the edge on a DB issue
-        logger.warning("gateway: integration-key DB unavailable (%s); key auth returns 503", exc)
+        logger.warning("gateway: datastore unavailable (%s); the DB-backed routes return 503", exc)
         app.state.integration_key_repo = None
+        app.state.published_agent_repo = None
     try:
         yield
     finally:
@@ -71,3 +76,5 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             await app.state.redis.aclose()
         if app.state.integration_key_repo is not None:
             await app.state.integration_key_repo.close()
+        if app.state.published_agent_repo is not None:
+            await app.state.published_agent_repo.close()
