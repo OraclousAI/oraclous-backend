@@ -10,7 +10,7 @@ from typing import Annotated
 
 import httpx
 from fastapi import Depends, HTTPException, Request, status
-from oraclous_governance import Principal
+from oraclous_governance import Principal, PrincipalType
 from sqlalchemy.exc import SQLAlchemyError
 
 from oraclous_application_gateway_service.core.auth import AuthError, verify_token
@@ -18,12 +18,24 @@ from oraclous_application_gateway_service.core.config import get_settings
 from oraclous_application_gateway_service.domain.auth_policy import is_public
 from oraclous_application_gateway_service.domain.integration_key import is_integration_key
 from oraclous_application_gateway_service.domain.upstreams import upstream_health_targets
+from oraclous_application_gateway_service.repositories.integration_key_repository import (
+    IntegrationKeyRepository,
+)
+from oraclous_application_gateway_service.repositories.published_agent_repository import (
+    PublishedAgentRepository,
+)
 from oraclous_application_gateway_service.repositories.upstream_client import UpstreamClient
 from oraclous_application_gateway_service.services.health_service import HealthService
 from oraclous_application_gateway_service.services.integration_key_auth_service import (
     IntegrationKeyAuthService,
 )
+from oraclous_application_gateway_service.services.integration_key_management_service import (
+    IntegrationKeyManagementService,
+)
 from oraclous_application_gateway_service.services.proxy_service import ProxyService
+from oraclous_application_gateway_service.services.published_agent_service import (
+    PublishedAgentService,
+)
 
 
 def get_http_client(request: Request) -> httpx.AsyncClient:
@@ -120,7 +132,53 @@ def get_health_service(request: Request) -> HealthService:
     )
 
 
+def _require_repo(request: Request, attr: str):  # noqa: ANN202 — returns the repo or 503s
+    repo = getattr(request.app.state, attr, None)
+    if repo is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="gateway datastore unavailable",
+        )
+    return repo
+
+
+def get_integration_key_repository(request: Request) -> IntegrationKeyRepository:
+    return _require_repo(request, "integration_key_repo")
+
+
+def get_published_agent_repository(request: Request) -> PublishedAgentRepository:
+    return _require_repo(request, "published_agent_repo")
+
+
+async def require_member(principal: EdgePrincipalDep) -> Principal:
+    """A management route requires an authenticated MEMBER (a user JWT) — never an integration key
+    (a key cannot manage keys). Org-scoping (a member manages only their own org) is applied by the
+    caller via ``principal.organisation_id``. (Org-admin role gating is deferred to a platform
+    roles pass; today any org member manages that org's keys/agents — org-scoped.)"""
+    if principal is None or principal.principal_type != PrincipalType.USER:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="this operation requires a member credential",
+        )
+    return principal
+
+
+def get_key_management_service(
+    keys: IntegrationKeyRepoDep, agents: PublishedAgentRepoDep
+) -> IntegrationKeyManagementService:
+    return IntegrationKeyManagementService(keys=keys, agents=agents)
+
+
+def get_published_agent_service(agents: PublishedAgentRepoDep) -> PublishedAgentService:
+    return PublishedAgentService(agents)
+
+
 HttpClientDep = Annotated[httpx.AsyncClient, Depends(get_http_client)]
 ProxyServiceDep = Annotated[ProxyService, Depends(get_proxy_service)]
 EdgePrincipalDep = Annotated[Principal | None, Depends(get_edge_principal)]
 HealthServiceDep = Annotated[HealthService, Depends(get_health_service)]
+IntegrationKeyRepoDep = Annotated[IntegrationKeyRepository, Depends(get_integration_key_repository)]
+PublishedAgentRepoDep = Annotated[PublishedAgentRepository, Depends(get_published_agent_repository)]
+MemberDep = Annotated[Principal, Depends(require_member)]
+KeyManagementDep = Annotated[IntegrationKeyManagementService, Depends(get_key_management_service)]
+PublishedAgentServiceDep = Annotated[PublishedAgentService, Depends(get_published_agent_service)]

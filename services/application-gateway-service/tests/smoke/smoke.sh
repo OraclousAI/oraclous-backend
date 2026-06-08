@@ -249,6 +249,44 @@ print(uuid.uuid4(), tok, prefix, hashlib.sha256(tok.encode()).hexdigest(), secre
   # clean up the seeded keys
   "${PSQL[@]}" "DELETE FROM integration_keys WHERE bound_agent_slug='smoke-agent';" >/dev/null
   pass "cleaned up the seeded smoke keys"
+
+  step "17. GW-9: the management plane (publish agents + integration-key CRUD), member-org-scoped (Slice 4)"
+  JSON=(-H "Content-Type: application/json")
+  MEMBER=(-H "Authorization: Bearer dev-token")  # a member (USER) JWT in the dev org
+  # publish an agent (member)
+  pub=$(curl -s "${MEMBER[@]}" "${JSON[@]}" -d '{"slug":"smoke-pub","bound_capability_ref":"cap-smoke"}' "${GW}/v1/agents")
+  echo "$pub" | grep -q '"slug":"smoke-pub"' \
+    && pass "publish agent -> 201 (member)" || fail "publish failed: $pub"
+  # mint a key bound to it -> plaintext ONCE
+  mint=$(curl -s "${MEMBER[@]}" "${JSON[@]}" -d '{"bound_agent_slug":"smoke-pub"}' "${GW}/v1/integration-keys")
+  oak=$(echo "$mint" | python3 -c "import sys,json;print(json.load(sys.stdin).get('key',''))")
+  kid=$(echo "$mint" | python3 -c "import sys,json;print(json.load(sys.stdin).get('id',''))")
+  [[ "$oak" == oak-* ]] && pass "mint a key bound to the agent -> plaintext once" || fail "mint failed: $mint"
+  # list -> redacted (never the hash or the plaintext)
+  lst=$(curl -s "${MEMBER[@]}" "${GW}/v1/integration-keys")
+  { echo "$lst" | grep -q '"last4"' && ! echo "$lst" | grep -q 'key_hash' && ! echo "$lst" | grep -q '"key"'; } \
+    && pass "list -> redacted (no hash, no plaintext)" || fail "list not redacted: $lst"
+  # the minted key authenticates at the edge (the S3 validator, live against the just-minted row)
+  code=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer ${oak}" "${PROBE}")
+  [[ "$code" != "401" ]] && pass "the minted key authenticates at the edge (HTTP ${code})" || fail "minted key edge-rejected: $code"
+  # a key bearer cannot manage keys -> 403 (member-only)
+  code=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer ${oak}" "${GW}/v1/integration-keys")
+  [[ "$code" == "403" ]] && pass "a key bearer cannot manage keys -> 403" || fail "expected 403, got $code"
+  # rotate -> a NEW plaintext; the OLD key dies (401 at the edge)
+  rot=$(curl -s "${MEMBER[@]}" -X POST "${GW}/v1/integration-keys/${kid}/rotate")
+  newoak=$(echo "$rot" | python3 -c "import sys,json;print(json.load(sys.stdin).get('key',''))")
+  { [[ "$newoak" == oak-* && "$newoak" != "$oak" ]]; } && pass "rotate -> a new plaintext" || fail "rotate failed: $rot"
+  code=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer ${oak}" "${PROBE}")
+  [[ "$code" == "401" ]] && pass "the OLD key 401s after rotate" || fail "old key still works after rotate: $code"
+  # revoke -> 204; the rotated key now 401s
+  code=$(curl -s -o /dev/null -w '%{http_code}' "${MEMBER[@]}" -X DELETE "${GW}/v1/integration-keys/${kid}")
+  [[ "$code" == "204" ]] && pass "revoke -> 204" || fail "revoke failed: $code"
+  code=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer ${newoak}" "${PROBE}")
+  [[ "$code" == "401" ]] && pass "the rotated key 401s after revoke (fail-closed)" || fail "revoked key still works: $code"
+  # cleanup
+  "${PSQL[@]}" "DELETE FROM integration_keys WHERE bound_agent_slug='smoke-pub';" >/dev/null
+  "${PSQL[@]}" "DELETE FROM published_agents WHERE slug='smoke-pub';" >/dev/null
+  pass "cleaned up the smoke published agent + keys"
 else
   step "13. GW-7/GW-8: edge-protection + key-validator LIVE checks SKIPPED in NO_COMPOSE mode (unit-covered)"
 fi

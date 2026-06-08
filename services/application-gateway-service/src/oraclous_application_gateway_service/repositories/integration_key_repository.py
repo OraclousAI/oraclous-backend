@@ -67,3 +67,62 @@ class IntegrationKeyRepository:
             await session.commit()
             await session.refresh(row)
             return row
+
+    # --- org-scoped CRUD (the member-managed surface, Slice 4) ---
+
+    async def list_for_org(self, organisation_id: uuid.UUID) -> list[IntegrationKey]:
+        async with self._session() as session:
+            result = await session.execute(
+                select(IntegrationKey)
+                .where(IntegrationKey.organisation_id == organisation_id)
+                .order_by(IntegrationKey.created_at.desc())
+            )
+            return list(result.scalars().all())
+
+    async def get_for_org(
+        self, *, key_id: uuid.UUID, organisation_id: uuid.UUID
+    ) -> IntegrationKey | None:
+        async with self._session() as session:
+            result = await session.execute(
+                select(IntegrationKey).where(
+                    IntegrationKey.id == key_id,
+                    IntegrationKey.organisation_id == organisation_id,
+                )
+            )
+            return result.scalar_one_or_none()
+
+    async def rotate(
+        self,
+        *,
+        key_id: uuid.UUID,
+        organisation_id: uuid.UUID,
+        key_prefix: str,
+        key_hash: str,
+        last4: str,
+    ) -> IntegrationKey | None:
+        """Replace the secret material in place — instantly invalidates the old key. Org-scoped.
+
+        Rotate is for live keys only: a revoked key is a terminal tombstone, NOT resurrected by a
+        rotate (the active-status guard returns None -> the route 404s), so revoke stays final.
+        """
+        async with self._session() as session, session.begin():
+            row = await session.get(IntegrationKey, key_id)
+            if row is None or row.organisation_id != organisation_id or row.status != "active":
+                return None
+            row.key_prefix = key_prefix
+            row.key_hash = key_hash
+            row.last4 = last4
+            session.add(row)
+        return row
+
+    async def revoke(
+        self, *, key_id: uuid.UUID, organisation_id: uuid.UUID
+    ) -> IntegrationKey | None:
+        """Soft tombstone — status -> revoked. Org-scoped."""
+        async with self._session() as session, session.begin():
+            row = await session.get(IntegrationKey, key_id)
+            if row is None or row.organisation_id != organisation_id:
+                return None
+            row.status = "revoked"
+            session.add(row)
+        return row
