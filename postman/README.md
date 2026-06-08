@@ -57,8 +57,9 @@ they apply to every call):
   header (seconds). It's a per-client-IP window; back off and retry after `Retry-After`. (Liveness +
   the OpenAPI/`/docs` probes are exempt.)
 - **Request-size cap** (R6 Slice 2) — a body over the gateway's cap returns **413 `PAYLOAD_TOO_LARGE`**.
+- **Integration-key auth** (R6 Slice 3) — the gateway now also accepts an **`oak-`/`oag-` integration-key bearer** (in addition to a member JWT): `Authorization: Bearer oak-…`. It resolves to an org-scoped service-account; an unknown/revoked/expired/wrong key is rejected `401` at the edge. The public way to **mint/list/rotate/revoke** keys (and the published-agent invoke surface) arrives in **Slice 4** — so there are no new requests to import yet.
 
-Both are the standard ORA-37 error envelope (`{error:{code,message,requestId,retryable}}`).
+Both 429 and 413 are the standard ORA-37 error envelope (`{error:{code,message,requestId,retryable}}`).
 
 ## Service ports (direct)
 
