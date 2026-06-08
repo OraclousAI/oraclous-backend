@@ -1,9 +1,11 @@
-"""App lifecycle (ORAA-4 §21 core layer) — open/close the shared upstream HTTP client + Redis.
+"""App lifecycle (ORAA-4 §21 core layer) — open/close the upstream HTTP client, Redis, and the
+integration-key DB.
 
-The gateway holds no application database; its substrate is the upstream services (one shared
-``httpx.AsyncClient``) plus a Redis connection used only by the edge rate limiter (Slice 2). Redis
-is opened FAIL-OPEN: if it cannot be created, ``app.state.redis`` is ``None`` and the limiter allows
-traffic — a Redis outage must never lock the sole ingress.
+The gateway's substrate is the upstream services (one shared ``httpx.AsyncClient``), a Redis
+connection used only by the edge rate limiter (Slice 2), and — since Slice 3 (ADR-019) — its own
+Postgres holding the integration-key store. Both Redis and the DB are opened **graceful-degrade**:
+if either cannot be created, its ``app.state`` slot is ``None`` so ``/health`` stays up; the rate
+limiter then fails open, and the integration-key auth path returns 503 (never a crash).
 """
 
 from __future__ import annotations
@@ -18,6 +20,9 @@ from fastapi import FastAPI
 
 from oraclous_application_gateway_service.core.config import get_settings
 from oraclous_application_gateway_service.domain.route_table import build_route_table
+from oraclous_application_gateway_service.repositories.integration_key_repository import (
+    IntegrationKeyRepository,
+)
 from oraclous_application_gateway_service.repositories.upstream_client import UpstreamClient
 from oraclous_application_gateway_service.services.proxy_service import ProxyService
 
@@ -53,8 +58,16 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         logger.warning("gateway: Redis unavailable (%s); the edge rate limiter will fail open", exc)
         app.state.redis = None
     try:
+        # graceful-degrade: a DB problem leaves /health up + the integration-key path returns 503.
+        app.state.integration_key_repo = IntegrationKeyRepository(settings.DATABASE_URL)
+    except Exception as exc:  # noqa: BLE001 — never crash the edge on a DB issue
+        logger.warning("gateway: integration-key DB unavailable (%s); key auth returns 503", exc)
+        app.state.integration_key_repo = None
+    try:
         yield
     finally:
         await client.aclose()
         if app.state.redis is not None:
             await app.state.redis.aclose()
+        if app.state.integration_key_repo is not None:
+            await app.state.integration_key_repo.close()

@@ -11,13 +11,18 @@ from typing import Annotated
 import httpx
 from fastapi import Depends, HTTPException, Request, status
 from oraclous_governance import Principal
+from sqlalchemy.exc import SQLAlchemyError
 
 from oraclous_application_gateway_service.core.auth import AuthError, verify_token
 from oraclous_application_gateway_service.core.config import get_settings
 from oraclous_application_gateway_service.domain.auth_policy import is_public
+from oraclous_application_gateway_service.domain.integration_key import is_integration_key
 from oraclous_application_gateway_service.domain.upstreams import upstream_health_targets
 from oraclous_application_gateway_service.repositories.upstream_client import UpstreamClient
 from oraclous_application_gateway_service.services.health_service import HealthService
+from oraclous_application_gateway_service.services.integration_key_auth_service import (
+    IntegrationKeyAuthService,
+)
 from oraclous_application_gateway_service.services.proxy_service import ProxyService
 
 
@@ -48,9 +53,11 @@ def _bearer_token(request: Request) -> str | None:
     return None
 
 
-def get_edge_principal(request: Request) -> Principal | None:
+async def get_edge_principal(request: Request) -> Principal | None:
     """Terminate identity at the edge: ``None`` for public allow-list paths, else a verified
-    Principal (401 on missing/invalid/expired token — fail-closed before any upstream call)."""
+    Principal (401 on missing/invalid/expired token — fail-closed before any upstream call). An
+    ``oak-``/``oag-`` bearer is an integration key validated against the gateway store (Slice 3);
+    any other bearer is a JWT (dev/jwt mode)."""
     if is_public(request.url.path):
         return None
     token = _bearer_token(request)
@@ -60,6 +67,41 @@ def get_edge_principal(request: Request) -> Principal | None:
             detail="missing bearer token",
             headers={"WWW-Authenticate": "Bearer"},
         )
+    principal = await _authenticate(request, token)
+    # belt-and-braces: an authenticated principal MUST carry an org, else the proxy's
+    # strip-then-assert omits X-Organisation-Id (the client copy is already stripped), forwarding
+    # a tenant-unscoped authenticated request. Fail closed, don't rely solely on the DB constraint.
+    if principal.organisation_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="token is missing organisation_id",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return principal
+
+
+async def _authenticate(request: Request, token: str) -> Principal:
+    if is_integration_key(token):
+        key_repo = getattr(request.app.state, "integration_key_repo", None)
+        if key_repo is None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="integration-key store unavailable",
+            )
+        try:
+            return await IntegrationKeyAuthService(key_repo).resolve_principal(token)
+        except AuthError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail=str(exc),
+                headers={"WWW-Authenticate": "Bearer"},
+            ) from exc
+        except (SQLAlchemyError, OSError) as exc:
+            # the DB dropped mid-flight -> the key path degrades to 503 (not a 500/crash)
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="integration-key store unavailable",
+            ) from exc
     try:
         return verify_token(token)
     except AuthError as exc:

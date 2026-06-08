@@ -1,6 +1,7 @@
 """application-gateway settings (ORAA-4 §21 core layer).
 
-The gateway is a stateless reverse-proxy edge — no database. Settings carry the upstream base URLs
+The gateway is a reverse-proxy edge that, since R6 Slice 3 (ADR-019), also owns a small Postgres for
+the integration-key store. Settings carry the upstream base URLs
 (the route table is built from these), the identity seam (mirroring the substrate services:
 ``dev`` binds a fixed principal/org from a fixed bearer, ``jwt`` verifies the real HS256 token with
 the shared ``AUTH_JWT_SECRET``), and the CORS allow-list. Constructed lazily via ``get_settings``.
@@ -66,9 +67,17 @@ class Settings(BaseSettings):
     # --- CORS (terminated once at the edge); comma-separated origins ---
     GATEWAY_CORS_ORIGINS: str = "*"
 
+    # --- gateway-owned datastore (R6 Slice 3, ADR-019): the integration-key store ---
+    DATABASE_URL: str = "postgresql+asyncpg://oraclous:oraclous@postgres:5432/oraclous"
+
     @property
     def cors_origins(self) -> list[str]:
         return [o.strip() for o in self.GATEWAY_CORS_ORIGINS.split(",") if o.strip()]
+
+    @property
+    def sync_database_url(self) -> str:
+        """The synchronous psycopg DSN Alembic uses (swaps the asyncpg driver for psycopg)."""
+        return self.DATABASE_URL.replace("+asyncpg", "+psycopg")
 
 
 @lru_cache
