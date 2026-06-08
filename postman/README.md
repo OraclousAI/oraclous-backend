@@ -57,7 +57,8 @@ they apply to every call):
   header (seconds). It's a per-client-IP window; back off and retry after `Retry-After`. (Liveness +
   the OpenAPI/`/docs` probes are exempt.)
 - **Request-size cap** (R6 Slice 2) — a body over the gateway's cap returns **413 `PAYLOAD_TOO_LARGE`**.
-- **Integration-key auth** (R6 Slice 3) — the gateway now also accepts an **`oak-`/`oag-` integration-key bearer** (in addition to a member JWT): `Authorization: Bearer oak-…`. It resolves to an org-scoped service-account; an unknown/revoked/expired/wrong key is rejected `401` at the edge. The public way to **mint/list/rotate/revoke** keys (and the published-agent invoke surface) arrives in **Slice 4** — so there are no new requests to import yet.
+- **Integration-key auth** (R6 Slice 3) — the gateway also accepts an **`oak-`/`oag-` integration-key bearer** (in addition to a member JWT): `Authorization: Bearer oak-…`. It resolves to an org-scoped service-account; an unknown/revoked/expired/wrong key is rejected `401` at the edge.
+- **Published agents + integration keys** (R6 Slice 4) — the **`Published Agents & Integration Keys (R6 S4)`** folder. A member publishes an agent (`POST /v1/agents`) and mints a key bound to it (`POST /v1/integration-keys` — the plaintext is returned **once**, captured into `{{integration_key}}`); the public **`GET /v1/agents/{slug}`** + **`POST /v1/agents/{slug}/invoke`** then use that key (a key may only reach the agent it is bound to — otherwise `403`). Run the folder top-to-bottom: publish → mint → GET/invoke → rotate → revoke.
 
 Both 429 and 413 are the standard ORA-37 error envelope (`{error:{code,message,requestId,retryable}}`).
 

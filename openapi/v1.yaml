@@ -61,6 +61,10 @@ tags:
     description: Synchronous OHM execution, human assignment, and mid-loop HITL resume.
   - name: engine
     description: Durable jobs, the human task board, schedules, and round-tables.
+  - name: agents
+    description: Publish agents (member) + the public published-agent surface (integration key).
+  - name: keys
+    description: Integration-key management (member) — mint, list, rotate, revoke.
 paths:
   /health:
     get:
@@ -396,6 +400,131 @@ paths:
         "202": { $ref: "#/components/responses/UpstreamJson" }
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "422": { $ref: "#/components/responses/ValidationFailed" }
+
+  # --- Published agents + integration keys (R6 Slice 4) — gateway-owned, not proxied ---
+  /v1/agents:
+    post:
+      tags: [agents]
+      summary: Publish an agent under an org-unique slug (member, org-scoped).
+      operationId: publishAgent
+      x-stability: provisional
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/JsonObject" }
+      responses:
+        "201": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Unauthorized" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+    get:
+      tags: [agents]
+      summary: List the organisation's published agents (member, org-scoped).
+      operationId: listPublishedAgents
+      x-stability: provisional
+      responses:
+        "200": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Unauthorized" }
+  /v1/agents/{slug}:
+    get:
+      tags: [agents]
+      summary: Public metadata for a published agent (integration key bound to the agent).
+      operationId: getPublishedAgent
+      x-stability: provisional
+      parameters:
+        - { name: slug, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /v1/agents/{slug}/invoke:
+    post:
+      tags: [agents]
+      summary: Run a published agent's bound capability (integration key bound to the agent).
+      operationId: invokePublishedAgent
+      x-stability: provisional
+      parameters:
+        - { name: slug, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/JsonObject" }
+      responses:
+        "200": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+        "5XX": { $ref: "#/components/responses/Upstream5xx" }
+  /v1/integration-keys:
+    post:
+      tags: [keys]
+      summary: Mint an integration key bound to a slug XOR a capability list; the secret is shown once.
+      operationId: mintIntegrationKey
+      x-stability: provisional
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/JsonObject" }
+      responses:
+        "201": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+    get:
+      tags: [keys]
+      summary: List the organisation's integration keys (redacted — never the hash or secret).
+      operationId: listIntegrationKeys
+      x-stability: provisional
+      responses:
+        "200": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Unauthorized" }
+  /v1/integration-keys/{keyId}:
+    get:
+      tags: [keys]
+      summary: Read one integration key (redacted), org-scoped.
+      operationId: getIntegrationKey
+      x-stability: provisional
+      parameters:
+        - { name: keyId, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      tags: [keys]
+      summary: Revoke an integration key (soft tombstone — terminal), org-scoped.
+      operationId: revokeIntegrationKey
+      x-stability: provisional
+      parameters:
+        - { name: keyId, in: path, required: true, schema: { type: string } }
+      responses:
+        "204": { description: Revoked. }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /v1/integration-keys/{keyId}/rotate:
+    post:
+      tags: [keys]
+      summary: Rotate a LIVE key's secret in place (the old dies; a revoked key 404s — revoke is final).
+      operationId: rotateIntegrationKey
+      x-stability: provisional
+      parameters:
+        - { name: keyId, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
 
 components:
   securitySchemes:
