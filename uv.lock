@@ -786,29 +786,37 @@ name = "oraclous-application-gateway-service"
 version = "0.0.0"
 source = { editable = "services/application-gateway-service" }
 dependencies = [
+    { name = "alembic" },
+    { name = "asyncpg" },
     { name = "fastapi" },
     { name = "httpx" },
     { name = "oraclous-errors" },
     { name = "oraclous-governance" },
+    { name = "psycopg", extra = ["binary"] },
     { name = "pydantic" },
     { name = "pydantic-settings" },
     { name = "python-jose", extra = ["cryptography"] },
     { name = "pyyaml" },
     { name = "redis" },
+    { name = "sqlalchemy", extra = ["asyncio"] },
     { name = "uvicorn", extra = ["standard"] },
 ]
 
 [package.metadata]
 requires-dist = [
+    { name = "alembic", specifier = ">=1.13,<2.0" },
+    { name = "asyncpg", specifier = ">=0.29,<1.0" },
     { name = "fastapi", specifier = ">=0.115,<1.0" },
     { name = "httpx", specifier = ">=0.27,<1.0" },
     { name = "oraclous-errors", editable = "packages/errors" },
     { name = "oraclous-governance", editable = "packages/governance" },
+    { name = "psycopg", extras = ["binary"], specifier = ">=3.2,<4.0" },
     { name = "pydantic", specifier = ">=2.0,<3.0" },
     { name = "pydantic-settings", specifier = ">=2.0,<3.0" },
     { name = "python-jose", extras = ["cryptography"], specifier = ">=3.3,<4.0" },
     { name = "pyyaml", specifier = ">=6.0,<7.0" },
     { name = "redis", specifier = ">=5.0,<7.0" },
+    { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.0,<3.0" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.32,<1.0" },
 ]
 

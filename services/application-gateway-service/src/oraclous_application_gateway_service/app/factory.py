@@ -48,9 +48,11 @@ def create_app(*, lifespan=None) -> FastAPI:
         docs_url=None,
         redoc_url=None,
     )
-    # Default so unit tests that build the app without the lifespan see the limiter's fail-open path
-    # (redis is None) not an AttributeError; the lifespan sets the live client.
+    # Defaults so unit tests that build the app without the lifespan see the degrade paths (redis ->
+    # limiter fails open; integration_key_repo -> key auth returns 503) not an AttributeError; the
+    # lifespan sets the live clients.
     app.state.redis = None
+    app.state.integration_key_repo = None
     # Starlette runs the LAST-added middleware OUTERMOST, so the runtime order below is
     #   RequestId (outer) -> CORS -> RateLimit -> SizeGuard -> app.
     # - RequestId outermost: every response (incl. a 413/429 from a guard) carries X-Request-Id.

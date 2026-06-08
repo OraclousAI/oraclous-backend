@@ -208,8 +208,49 @@ assert e['code'] in enum and set(e) == {'code','message','requestId','retryable'
   ${COMPOSE} up -d --force-recreate application-gateway-service >/dev/null 2>&1
   for i in $(seq 1 30); do curl -fsS "${GW}/health" >/dev/null 2>&1 && break; sleep 1; done
   pass "restored the gateway to default limits"
+
+  step "16. GW-8: integration-key validator (seed a real key in the gateway DB, validate live, ADR-019)"
+  DEV_ORG="00000000-0000-0000-0000-00000000050a"
+  PSQL=(${COMPOSE} exec -T postgres psql -U oraclous -d oraclous -tAc)
+  # A valid key is authenticated AT THE GATEWAY then forwarded; we probe /v1/engine (a routed prefix
+  # whose upstream the smoke does NOT start), so a RESOLVED key gets a non-401 (forwarded past auth →
+  # 5xx upstream-down, or 2xx if the full stack is up), while every BAD key is rejected at the edge
+  # with 401 BEFORE any forward. That difference is the live proof of the validator. (The integration
+  # key's authorised business routes — published-agent invoke — arrive in Slice 4.)
+  PROBE="${GW}/v1/engine/jobs"
+  mint_key() { python3 -c "
+import secrets, hashlib, uuid
+prefix = secrets.token_hex(8); secret = secrets.token_urlsafe(32)
+tok = f'oak-{prefix}-{secret}'
+print(uuid.uuid4(), tok, prefix, hashlib.sha256(tok.encode()).hexdigest(), secret[-4:])"; }
+  read -r OAK_ID OAK_TOKEN OAK_PREFIX OAK_HASH OAK_LAST4 < <(mint_key)
+  "${PSQL[@]}" "INSERT INTO integration_keys (id, organisation_id, key_prefix, key_hash, last4, bound_agent_slug, status) VALUES ('${OAK_ID}', '${DEV_ORG}', '${OAK_PREFIX}', '${OAK_HASH}', '${OAK_LAST4}', 'smoke-agent', 'active');" >/dev/null
+  # valid key -> resolved + forwarded past edge auth (NOT a 401/403 edge rejection)
+  code=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer ${OAK_TOKEN}" "${PROBE}")
+  { [[ "$code" != "401" && "$code" != "403" ]]; } \
+    && pass "valid integration key -> authenticated + forwarded past the edge (HTTP ${code}, not 401)" \
+    || fail "valid key was edge-rejected: HTTP ${code}"
+  # unknown prefix -> 401 fail-closed (rejected at the edge, never forwarded)
+  rnd=$(python3 -c "import secrets;print(secrets.token_hex(8))")
+  code=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer oak-${rnd}-nope" "${PROBE}")
+  [[ "$code" == "401" ]] && pass "unknown integration key -> 401 fail-closed" || fail "expected 401, got $code"
+  # right prefix + wrong secret -> 401 via constant-time compare (never a 500 / timing oracle)
+  code=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer oak-${OAK_PREFIX}-wrongsecretpadded000" "${PROBE}")
+  [[ "$code" == "401" ]] && pass "right prefix + wrong secret -> 401 (constant-time, no 500)" || fail "expected 401, got $code"
+  # revoke -> 401
+  "${PSQL[@]}" "UPDATE integration_keys SET status='revoked' WHERE key_prefix='${OAK_PREFIX}';" >/dev/null
+  code=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer ${OAK_TOKEN}" "${PROBE}")
+  [[ "$code" == "401" ]] && pass "revoked key -> 401 fail-closed" || fail "expected 401 after revoke, got $code"
+  # expired key -> 401
+  read -r EXP_ID EXP_TOKEN EXP_PREFIX EXP_HASH EXP_LAST4 < <(mint_key)
+  "${PSQL[@]}" "INSERT INTO integration_keys (id, organisation_id, key_prefix, key_hash, last4, bound_agent_slug, status, expires_at) VALUES ('${EXP_ID}', '${DEV_ORG}', '${EXP_PREFIX}', '${EXP_HASH}', '${EXP_LAST4}', 'smoke-agent', 'active', now() - interval '1 day');" >/dev/null
+  code=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer ${EXP_TOKEN}" "${PROBE}")
+  [[ "$code" == "401" ]] && pass "expired key (TTL in the past) -> 401 fail-closed" || fail "expected 401 for expired, got $code"
+  # clean up the seeded keys
+  "${PSQL[@]}" "DELETE FROM integration_keys WHERE bound_agent_slug='smoke-agent';" >/dev/null
+  pass "cleaned up the seeded smoke keys"
 else
-  step "13. GW-7: edge-protection LIVE checks SKIPPED in NO_COMPOSE mode (size + rate-limit unit-covered)"
+  step "13. GW-7/GW-8: edge-protection + key-validator LIVE checks SKIPPED in NO_COMPOSE mode (unit-covered)"
 fi
 
 printf '\n\033[32mapplication-gateway GW-1..GW-5 smoke passed.\033[0m  edge JWT termination, '

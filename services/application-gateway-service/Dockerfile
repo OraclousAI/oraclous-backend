@@ -4,7 +4,8 @@
 #   docker build -f services/application-gateway-service/Dockerfile \
 #                -t oraclous-application-gateway-service:dev .
 #
-# The gateway is stateless (no database / no migrations) — it proxies to the upstream services.
+# The gateway proxies to the upstream services and, since R6 Slice 3 (ADR-019), owns a small
+# Postgres for the integration-key store (alembic migrations run via the gateway-migrate one-shot).
 
 FROM python:3.12.10-slim AS builder
 
@@ -36,10 +37,17 @@ COPY services/application-gateway-service/src/ \
      ./services/application-gateway-service/src/
 # the published public contract (ADR-015), served at /v1/openapi.json + /docs
 COPY openapi/ ./openapi/
+# the integration-key store migrations (R6 Slice 3, ADR-019) — `alembic upgrade head` runs from the
+# service WORKDIR via the gateway-migrate one-shot
+COPY services/application-gateway-service/alembic.ini \
+     ./services/application-gateway-service/alembic.ini
+COPY services/application-gateway-service/migrations/ \
+     ./services/application-gateway-service/migrations/
 
 ENV PATH="/app/.venv/bin:$PATH" \
     PYTHONPATH="/app/services/application-gateway-service/src" \
     OPENAPI_SPEC_PATH="/app/openapi/v1.yaml"
+WORKDIR /app/services/application-gateway-service
 
 EXPOSE 8000
 
