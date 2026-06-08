@@ -22,6 +22,7 @@ def _request(path: str, *, auth: str | None = None, repo=None):  # noqa: ANN001
     return SimpleNamespace(
         url=SimpleNamespace(path=path),
         headers=headers,
+        state=SimpleNamespace(),  # request.state — where the resolved key is stashed (S4)
         app=SimpleNamespace(state=SimpleNamespace(integration_key_repo=repo)),
     )
 
@@ -41,6 +42,8 @@ def _row(minted):
         key_hash=minted.key_hash,
         status="active",
         expires_at=None,
+        bound_agent_slug=None,
+        capability_allow_list=None,
     )
 
 
@@ -94,6 +97,8 @@ async def test_org_none_principal_is_refused() -> None:
         key_hash=minted.key_hash,
         status="active",
         expires_at=None,
+        bound_agent_slug=None,
+        capability_allow_list=None,
     )
     req = _request("/api/v1/tools", auth=f"Bearer {minted.plaintext}", repo=_FakeRepo(row))
     with pytest.raises(HTTPException) as exc:

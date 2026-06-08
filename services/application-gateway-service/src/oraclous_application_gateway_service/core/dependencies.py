@@ -28,10 +28,12 @@ from oraclous_application_gateway_service.repositories.upstream_client import Up
 from oraclous_application_gateway_service.services.health_service import HealthService
 from oraclous_application_gateway_service.services.integration_key_auth_service import (
     IntegrationKeyAuthService,
+    ResolvedKey,
 )
 from oraclous_application_gateway_service.services.integration_key_management_service import (
     IntegrationKeyManagementService,
 )
+from oraclous_application_gateway_service.services.invoke_service import InvokeService
 from oraclous_application_gateway_service.services.proxy_service import ProxyService
 from oraclous_application_gateway_service.services.published_agent_service import (
     PublishedAgentService,
@@ -101,7 +103,10 @@ async def _authenticate(request: Request, token: str) -> Principal:
                 detail="integration-key store unavailable",
             )
         try:
-            return await IntegrationKeyAuthService(key_repo).resolve_principal(token)
+            resolved = await IntegrationKeyAuthService(key_repo).resolve(token)
+            # carry the binding so the invoke route can enforce it pre-forward (S4 PR2)
+            request.state.resolved_key = resolved
+            return resolved.principal
         except AuthError as exc:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
@@ -163,6 +168,32 @@ async def require_member(principal: EdgePrincipalDep) -> Principal:
     return principal
 
 
+async def require_bound_key(request: Request, principal: EdgePrincipalDep) -> ResolvedKey:
+    """The public published-agent surface requires an INTEGRATION KEY (never a member JWT) whose
+    binding matches the invoked agent. ``get_edge_principal`` already resolved + stashed the key on
+    request.state; here we assert it is a key (SERVICE_ACCOUNT) and that its ``bound_agent_slug``
+    equals the path ``slug`` — fail-closed 403 otherwise, before any upstream call. A cap-only
+    key (no bound slug) never matches a published-agent slug, so it is rejected too."""
+    resolved = getattr(request.state, "resolved_key", None)
+    if (
+        resolved is None
+        or principal is None
+        or principal.principal_type != PrincipalType.SERVICE_ACCOUNT
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="this endpoint requires an integration key",
+        )
+    if resolved.bound_agent_slug is None or resolved.bound_agent_slug != request.path_params.get(
+        "slug"
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="this integration key is not bound to that agent",
+        )
+    return resolved
+
+
 def get_key_management_service(
     keys: IntegrationKeyRepoDep, agents: PublishedAgentRepoDep
 ) -> IntegrationKeyManagementService:
@@ -173,6 +204,16 @@ def get_published_agent_service(agents: PublishedAgentRepoDep) -> PublishedAgent
     return PublishedAgentService(agents)
 
 
+def get_invoke_service(request: Request, agents: PublishedAgentRepoDep) -> InvokeService:
+    settings = get_settings()
+    return InvokeService(
+        agents=agents,
+        upstream_client=UpstreamClient(get_http_client(request)),
+        harness_base_url=settings.HARNESS_RUNTIME_URL,
+        internal_key=settings.INTERNAL_SERVICE_KEY,
+    )
+
+
 HttpClientDep = Annotated[httpx.AsyncClient, Depends(get_http_client)]
 ProxyServiceDep = Annotated[ProxyService, Depends(get_proxy_service)]
 EdgePrincipalDep = Annotated[Principal | None, Depends(get_edge_principal)]
@@ -180,5 +221,7 @@ HealthServiceDep = Annotated[HealthService, Depends(get_health_service)]
 IntegrationKeyRepoDep = Annotated[IntegrationKeyRepository, Depends(get_integration_key_repository)]
 PublishedAgentRepoDep = Annotated[PublishedAgentRepository, Depends(get_published_agent_repository)]
 MemberDep = Annotated[Principal, Depends(require_member)]
+BoundKeyDep = Annotated[ResolvedKey, Depends(require_bound_key)]
 KeyManagementDep = Annotated[IntegrationKeyManagementService, Depends(get_key_management_service)]
 PublishedAgentServiceDep = Annotated[PublishedAgentService, Depends(get_published_agent_service)]
+InvokeServiceDep = Annotated[InvokeService, Depends(get_invoke_service)]

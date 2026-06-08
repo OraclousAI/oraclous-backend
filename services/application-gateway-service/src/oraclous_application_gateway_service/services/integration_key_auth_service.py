@@ -6,13 +6,16 @@ bound organisation. Fail-closed: any miss / revoked / expired / bad-secret raise
 401) before any upstream call. The minted ``organisation_id`` is guaranteed non-None (the store
 column is NOT NULL), which the proxy's strip-then-assert anti-spoof relies on to scope the request.
 
-(The per-key BINDING — bound agent slug XOR capability allow-list — is stored here but ENFORCED in
-Slice 4, alongside the published-agent / capability routes those bindings reference; until that
-adds a public way to mint keys, the only keys that exist are §22 seeds.)
+The per-key BINDING (a bound agent slug XOR a capability allow-list) is carried out of ``resolve``
+on a ``ResolvedKey`` so the Slice-4 published-agent invoke route can enforce it pre-forward (403
+unless the key's bound slug matches the invoked agent). The live edge auth (Slice 3) now calls
+``resolve`` too; ``resolve_principal`` is a retained identity-only back-compat wrapper.
 """
 
 from __future__ import annotations
 
+import uuid
+from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from oraclous_governance import Principal, PrincipalType
@@ -26,11 +29,25 @@ from oraclous_application_gateway_service.repositories.integration_key_repositor
 _DUMMY_HASH = "0" * 64  # a sha256-width value to compare against on a prefix miss (constant-time)
 
 
+@dataclass(frozen=True)
+class ResolvedKey:
+    """An authenticated integration key: principal + the binding the invoke route enforces."""
+
+    principal: Principal
+    key_id: uuid.UUID
+    bound_agent_slug: str | None
+    capability_allow_list: list[str] | None
+
+
 class IntegrationKeyAuthService:
     def __init__(self, repository: IntegrationKeyRepository) -> None:
         self._repo = repository
 
     async def resolve_principal(self, token: str) -> Principal:
+        """Identity only — a retained back-compat wrapper; the live edge auth calls ``resolve``."""
+        return (await self.resolve(token)).principal
+
+    async def resolve(self, token: str) -> ResolvedKey:
         prefix = prefix_of(token)
         if prefix is None:
             raise AuthError("malformed integration key")
@@ -44,10 +61,16 @@ class IntegrationKeyAuthService:
         if row.expires_at is not None and _utcnow() >= _as_aware(row.expires_at):
             raise AuthError("integration key has expired")
         # org is guaranteed non-None by the NOT NULL store column (anti-spoof depends on this)
-        return Principal(
+        principal = Principal(
             principal_id=row.id,
             principal_type=PrincipalType.SERVICE_ACCOUNT,
             organisation_id=row.organisation_id,
+        )
+        return ResolvedKey(
+            principal=principal,
+            key_id=row.id,
+            bound_agent_slug=row.bound_agent_slug,
+            capability_allow_list=row.capability_allow_list,
         )
 
 

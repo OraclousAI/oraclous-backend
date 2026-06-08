@@ -287,6 +287,41 @@ print(uuid.uuid4(), tok, prefix, hashlib.sha256(tok.encode()).hexdigest(), secre
   "${PSQL[@]}" "DELETE FROM integration_keys WHERE bound_agent_slug='smoke-pub';" >/dev/null
   "${PSQL[@]}" "DELETE FROM published_agents WHERE slug='smoke-pub';" >/dev/null
   pass "cleaned up the smoke published agent + keys"
+
+  step "18. GW-10: published-agent invoke surface — key-auth + binding enforcement (Slice 4 PR2)"
+  # Publish two agents; a key is bound to the first. The agent's bound ref is one the harness can't
+  # run, so a VALID invoke still reaches the harness (-> 502) — which proves the gateway authenticated,
+  # binding-checked, and FORWARDED; a binding violation is 403 BEFORE any forward. (The agent actually
+  # executing -> SUCCEEDED is the harness's own R4 smoke + the gateway unit tests with a fake harness.)
+  curl -s "${MEMBER[@]}" "${JSON[@]}" -d '{"slug":"smoke-inv","bound_capability_ref":"cap-unrunnable"}' "${GW}/v1/agents" >/dev/null
+  curl -s "${MEMBER[@]}" "${JSON[@]}" -d '{"slug":"smoke-inv2","bound_capability_ref":"cap-unrunnable"}' "${GW}/v1/agents" >/dev/null
+  im=$(curl -s "${MEMBER[@]}" "${JSON[@]}" -d '{"bound_agent_slug":"smoke-inv"}' "${GW}/v1/integration-keys")
+  ik=$(echo "$im" | python3 -c "import sys,json;print(json.load(sys.stdin).get('key',''))")
+  ikid=$(echo "$im" | python3 -c "import sys,json;print(json.load(sys.stdin).get('id',''))")
+  cm=$(curl -s "${MEMBER[@]}" "${JSON[@]}" -d '{"capability_allow_list":["cap:read"]}' "${GW}/v1/integration-keys")
+  ck=$(echo "$cm" | python3 -c "import sys,json;print(json.load(sys.stdin).get('key',''))")
+  ckid=$(echo "$cm" | python3 -c "import sys,json;print(json.load(sys.stdin).get('id',''))")
+  # bound key -> GET metadata = the narrow public projection (slug/display/description, no internal ids)
+  meta=$(curl -s -H "Authorization: Bearer ${ik}" "${GW}/v1/agents/smoke-inv")
+  { echo "$meta" | grep -q '"slug":"smoke-inv"' && ! echo "$meta" | grep -q bound_capability_ref; } \
+    && pass "GET /v1/agents/{slug} -> public metadata only (no internal ids)" || fail "metadata leaked/wrong: $meta"
+  # bound key -> invoke -> forwarded PAST auth+binding to the harness (not a 401/403 edge rejection)
+  code=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer ${ik}" "${JSON[@]}" -d '{"input":"hi"}' "${GW}/v1/agents/smoke-inv/invoke")
+  { [[ "$code" != "401" && "$code" != "403" ]]; } \
+    && pass "bound key invoke -> authenticated + forwarded past binding (HTTP ${code})" || fail "invoke edge-rejected: $code"
+  # the SAME key on a DIFFERENT agent -> 403, fail-closed BEFORE any forward (the binding is enforced)
+  code=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer ${ik}" "${JSON[@]}" -d '{"input":"hi"}' "${GW}/v1/agents/smoke-inv2/invoke")
+  [[ "$code" == "403" ]] && pass "key bound to A cannot invoke B -> 403 (binding enforced)" || fail "expected 403, got $code"
+  # a member JWT cannot invoke (the public surface requires a key) -> 403
+  code=$(curl -s -o /dev/null -w '%{http_code}' "${MEMBER[@]}" "${JSON[@]}" -d '{"input":"hi"}' "${GW}/v1/agents/smoke-inv/invoke")
+  [[ "$code" == "403" ]] && pass "a member JWT cannot invoke (needs a key) -> 403" || fail "expected 403, got $code"
+  # a capability-only key (bound to no agent) cannot invoke a published agent -> 403
+  code=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer ${ck}" "${JSON[@]}" -d '{"input":"hi"}' "${GW}/v1/agents/smoke-inv/invoke")
+  [[ "$code" == "403" ]] && pass "a capability-only key cannot invoke a published agent -> 403" || fail "expected 403, got $code"
+  # cleanup
+  "${PSQL[@]}" "DELETE FROM integration_keys WHERE id IN ('${ikid}','${ckid}');" >/dev/null
+  "${PSQL[@]}" "DELETE FROM published_agents WHERE slug IN ('smoke-inv','smoke-inv2');" >/dev/null
+  pass "cleaned up the invoke smoke agents + keys"
 else
   step "13. GW-7/GW-8: edge-protection + key-validator LIVE checks SKIPPED in NO_COMPOSE mode (unit-covered)"
 fi

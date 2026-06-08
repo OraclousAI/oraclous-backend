@@ -217,6 +217,8 @@ async def test_a_key_bearer_cannot_manage_keys() -> None:
             key_hash=minted.key_hash,
             status="active",
             expires_at=None,
+            bound_agent_slug=None,
+            capability_allow_list=None,
         )
     )
     async with _client(app) as c:
