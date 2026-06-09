@@ -168,8 +168,8 @@ services:
       dockerfile: services/capability-registry-service/Dockerfile
     image: oraclous-capability-registry-service:${IMAGE_TAG:-dev}
     restart: unless-stopped
-    ports:
-      - "8001:8000"
+    expose:
+      - "8000"
     environment:
       DATABASE_URL: "postgresql+asyncpg://oraclous:oraclous@postgres:5432/oraclous"
       INTERNAL_SERVICE_KEY: "${INTERNAL_SERVICE_KEY:-dev-internal-key}"
@@ -237,8 +237,8 @@ services:
       dockerfile: services/knowledge-graph-service/Dockerfile
     image: oraclous-knowledge-graph-service:${IMAGE_TAG:-dev}
     restart: unless-stopped
-    ports:
-      - "8003:8000"
+    expose:
+      - "8000"
     environment:
       <<: *kgs-env
     depends_on:
@@ -295,8 +295,8 @@ services:
       dockerfile: services/knowledge-retriever-service/Dockerfile
     image: oraclous-knowledge-retriever-service:${IMAGE_TAG:-dev}
     restart: unless-stopped
-    ports:
-      - "8004:8000"
+    expose:
+      - "8000"
     environment:
       # Auth: dev by default for the standalone smoke. Full stack runs KRS_AUTH_MODE=gateway
       # (ADR-018): trust the gateway's X-Principal-*/X-Organisation-Id, gated on the shared X-Internal-Key.
@@ -345,8 +345,8 @@ services:
       dockerfile: services/auth-service/Dockerfile
     image: oraclous-auth-service:${IMAGE_TAG:-dev}
     restart: unless-stopped
-    ports:
-      - "8005:8000"
+    expose:
+      - "8000"
     environment:
       DATABASE_URL: "postgresql+asyncpg://oraclous:oraclous@postgres:5432/oraclous"
       REDIS_URL: "redis://redis:6379/0"
@@ -404,8 +404,8 @@ services:
       dockerfile: services/credential-broker-service/Dockerfile
     image: oraclous-credential-broker-service:${IMAGE_TAG:-dev}
     restart: unless-stopped
-    ports:
-      - "8002:8000"
+    expose:
+      - "8000"
     environment:
       DATABASE_URL: "postgresql+asyncpg://oraclous:oraclous@postgres:5432/oraclous"
       # Dev-only AES-256-GCM key (32 bytes b64) + internal key → key-free smokes; prod injects secrets.
@@ -525,8 +525,8 @@ services:
       dockerfile: services/harness-runtime-service/Dockerfile
     image: oraclous-harness-runtime-service:${IMAGE_TAG:-dev}
     restart: unless-stopped
-    ports:
-      - "8007:8000"
+    expose:
+      - "8000"
     environment:
       HARNESS_DATABASE_URL: "postgresql+asyncpg://oraclous:oraclous@postgres:5432/oraclous"
       # Identity seam: dev-auth by default; AUTH_MODE=gateway (ADR-018) trusts the gateway's
@@ -585,8 +585,8 @@ services:
       dockerfile: services/execution-engine-service/Dockerfile
     image: oraclous-execution-engine-service:${IMAGE_TAG:-dev}
     restart: unless-stopped
-    ports:
-      - "8008:8000"
+    expose:
+      - "8000"
     environment:
       ENGINE_DATABASE_URL: "postgresql+asyncpg://oraclous:oraclous@postgres:5432/oraclous"
       ENGINE_REDIS_URL: "redis://redis:6379/1"

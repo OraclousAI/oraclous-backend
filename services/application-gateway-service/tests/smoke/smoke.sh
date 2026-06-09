@@ -36,9 +36,16 @@ echo "$body" | grep -q '"service":"application-gateway"' && pass "identifies as 
   || fail "wrong service id: $body"
 
 step "2b. wait for the upstream (capability-registry) to be ready"
-for i in $(seq 1 30); do curl -fsS "http://localhost:8001/health" >/dev/null 2>&1 && break; \
-  [[ $i -eq 30 ]] && fail "upstream capability-registry not healthy"; sleep 2; done
-pass "capability-registry upstream is healthy"
+# sole-ingress (S9): the upstream port is internal-only, so probe it THROUGH the gateway (which
+# reaches it on the internal network) rather than a direct host-port curl. Wait for the DATA path
+# (/api/v1/tools -> 200, the seeded catalogue is queryable), not just /health — capreg's /health
+# goes green before startup seeding finishes, which would race GW-2 to a transient 500.
+for i in $(seq 1 45); do
+  code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 -H "Authorization: Bearer dev-token" "${GW}/api/v1/tools" 2>/dev/null) || true
+  [[ "$code" == "200" ]] && break
+  [[ $i -eq 45 ]] && fail "upstream capability-registry not ready via the gateway (last ${code})"; sleep 2
+done
+pass "capability-registry upstream is healthy (reached internally by the gateway)"
 
 step "3. GW-2: forward a routed request to the real upstream (capability-registry)"
 # /api/v1/tools routes to capability-registry; with the dev bearer it returns the seeded catalogue.
@@ -59,8 +66,13 @@ echo "$nope" | grep -q '"code":"NOT_FOUND"' && echo "$nope" | tail -1 | grep -q 
   && pass "unknown prefix -> gateway 404 NOT_FOUND envelope" || fail "expected gateway 404: $nope"
 
 step "6. GW-4: route to a SECOND real upstream (credential-broker) — multi-upstream live"
-for i in $(seq 1 30); do curl -fsS "http://localhost:8002/health" >/dev/null 2>&1 && break; \
-  [[ $i -eq 30 ]] && fail "credential-broker upstream not healthy"; sleep 2; done
+# sole-ingress (S9): probe through the gateway (the broker port is internal-only)
+for i in $(seq 1 30); do
+  st=$(curl -fsS --max-time 5 "${GW}/health/upstreams" 2>/dev/null \
+    | python3 -c "import sys,json;print(next((x['status'] for x in json.load(sys.stdin)['upstreams'] if x['name']=='credential-broker'),''))" 2>/dev/null) || true
+  [[ "$st" == "ok" ]] && break
+  [[ $i -eq 30 ]] && fail "credential-broker upstream not healthy (via the gateway)"; sleep 2
+done
 provs=$(curl -fsS -H "Authorization: Bearer dev-token" "${GW}/credentials/providers?user_id=00000000-0000-0000-0000-0000000000c5")
 echo "$provs" | grep -q '"providers"' \
   && pass "gateway routed /credentials/* -> credential-broker (2nd live upstream)" \
@@ -472,6 +484,26 @@ print(uuid.uuid4(), tok, prefix, hashlib.sha256(tok.encode()).hexdigest(), secre
   "${PSQL[@]}" "DELETE FROM integration_keys WHERE id='${MKID}';" >/dev/null
   "${PSQL[@]}" "DELETE FROM published_agents WHERE slug='smoke-mcp';" >/dev/null
   pass "cleaned up the MCP smoke agent + key"
+
+  step "23. GW-15: sole-ingress — only the gateway is reachable from the host (Slice 9)"
+  # the base compose keeps the upstreams internal-only; a DIRECT connection to an upstream host port
+  # is refused (curl -> http_code 000), while the gateway still reaches them on the internal network.
+  leaked=0
+  for hp in 8001 8002 8004 8005 8007 8008; do
+    code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 "http://localhost:${hp}/health" 2>/dev/null) || true
+    [[ "$code" == "000" ]] || { echo "  upstream :${hp} answered ${code}"; leaked=$((leaked+1)); }
+  done
+  [[ "$leaked" == "0" ]] && pass "the 6 upstream app ports are NOT reachable from the host (sole-ingress)" \
+    || fail "${leaked} upstream port(s) still published — sole-ingress breached"
+  # the gateway IS the reachable surface AND still proxies to the (now-internal) upstreams: the
+  # aggregated health rolls up the real upstreams it can only reach on the internal network.
+  gw_h=$(curl -fsS --max-time 5 "${GW}/health" | python3 -c "import sys,json;print(json.load(sys.stdin).get('status',''))" 2>/dev/null) || true
+  [[ "$gw_h" == "ok" ]] && pass "the gateway (:8006) is the sole reachable app surface + healthy" \
+    || fail "gateway not healthy on :8006: ${gw_h}"
+  up_h=$(curl -fsS --max-time 5 "${GW}/health/upstreams" 2>/dev/null) || true
+  echo "$up_h" | grep -q '"credential-broker"' \
+    && pass "the gateway still reaches the internal-only upstreams (health aggregation over the network)" \
+    || fail "gateway lost its internal upstream reachability: $up_h"
 else
   step "13. GW-7/GW-8: edge-protection + key-validator LIVE checks SKIPPED in NO_COMPOSE mode (unit-covered)"
 fi
