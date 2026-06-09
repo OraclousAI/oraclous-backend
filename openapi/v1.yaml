@@ -71,6 +71,10 @@ tags:
     description: >
       Inbound signed webhooks (public, HMAC-gated) that fire a published agent on the engine, plus the
       member-only subscription management that mints them.
+  - name: mcp
+    description: >
+      A Model Context Protocol server (JSON-RPC) exposing the org's published agents as tools to
+      external MCP clients, authenticated by an integration key.
 paths:
   /health:
     get:
@@ -673,6 +677,31 @@ paths:
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "403": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/NotFound" }
+
+  # --- MCP server (R6 Slice 8) — published agents as MCP tools, integration-key auth ---
+  /v1/mcp:
+    post:
+      tags: [mcp]
+      summary: MCP JSON-RPC endpoint — initialize / tools/list / tools/call (an integration key only).
+      description: >
+        A Model Context Protocol server over JSON-RPC 2.0 (Streamable HTTP). An external MCP client
+        (Claude Desktop / Cursor) authenticates with its `oak-`/`oag-` integration key as a Bearer
+        token (a member JWT is 403). `tools/list` returns the org's published agents (scoped by the
+        key's binding) as MCP tools; `tools/call` runs the agent through the invoke path and returns
+        an MCP result (the harness internals never leak). A JSON-RPC notification (no `id`) returns
+        202. Methods beyond initialize/tools/list/tools/call return `-32601`.
+      operationId: mcpEndpoint
+      x-stability: provisional
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/JsonObject" }
+      responses:
+        "200": { $ref: "#/components/responses/UpstreamJson" }
+        "202": { description: Accepted — a JSON-RPC notification (no response body). }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Unauthorized" }
 
 components:
   securitySchemes:
