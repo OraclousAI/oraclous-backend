@@ -431,6 +431,47 @@ print(uuid.uuid4(), tok, prefix, hashlib.sha256(tok.encode()).hexdigest(), secre
   "${PSQL[@]}" "DELETE FROM integration_keys WHERE id='${kkid}';" >/dev/null
   "${PSQL[@]}" "DELETE FROM published_agents WHERE slug='smoke-wh';" >/dev/null
   pass "cleaned up the webhook smoke subscription + secret + agent + key"
+
+  step "22. GW-14: MCP server — integration-key auth + tools/list (published agents) + tools/call (Slice 8)"
+  # publish an agent + mint a key BOUND to it (the MCP client uses the same oak- bearer)
+  curl -s "${MEMBER[@]}" "${JSON[@]}" -d '{"slug":"smoke-mcp","bound_capability_ref":"cap-unrunnable"}' "${GW}/v1/agents" >/dev/null
+  mk=$(curl -s "${MEMBER[@]}" "${JSON[@]}" -d '{"bound_agent_slug":"smoke-mcp"}' "${GW}/v1/integration-keys")
+  MKEY=$(echo "$mk" | python3 -c "import sys,json;print(json.load(sys.stdin).get('key',''))")
+  MKID=$(echo "$mk" | python3 -c "import sys,json;print(json.load(sys.stdin).get('id',''))")
+  MAUTH=(-H "Authorization: Bearer ${MKEY}")
+  # initialize -> 200 + protocolVersion
+  init=$(curl -s "${MAUTH[@]}" "${JSON[@]}" -d '{"jsonrpc":"2.0","id":1,"method":"initialize"}' "${GW}/v1/mcp")
+  echo "$init" | grep -q '"protocolVersion"' && pass "initialize (integration key) -> protocolVersion" || fail "initialize failed: $init"
+  # a member JWT -> 403 (MCP is a programmatic-client door); no bearer -> 401
+  code=$(curl -s -o /dev/null -w '%{http_code}' "${MEMBER[@]}" "${JSON[@]}" -d '{"jsonrpc":"2.0","id":1,"method":"initialize"}' "${GW}/v1/mcp")
+  [[ "$code" == "403" ]] && pass "a member JWT on /v1/mcp -> 403" || fail "expected 403, got $code"
+  code=$(curl -s -o /dev/null -w '%{http_code}' "${JSON[@]}" -d '{"jsonrpc":"2.0","id":1,"method":"initialize"}' "${GW}/v1/mcp")
+  [[ "$code" == "401" ]] && pass "no bearer on /v1/mcp -> 401 (edge-authed, not public)" || fail "expected 401, got $code"
+  # tools/list -> the bound published agent as ONE typed MCP tool
+  tl=$(curl -s "${MAUTH[@]}" "${JSON[@]}" -d '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' "${GW}/v1/mcp")
+  echo "$tl" | python3 -c "import sys,json;t=json.load(sys.stdin)['result']['tools'];assert [x['name'] for x in t]==['smoke-mcp'] and t[0]['inputSchema']['required']==['input'],t" \
+    && pass "tools/list -> the bound agent as a typed tool (name=slug, input schema)" || fail "tools/list wrong: $tl"
+  # a tool outside the binding -> a JSON-RPC 'unknown tool' error (NOT forwarded)
+  oob=$(curl -s "${MAUTH[@]}" "${JSON[@]}" -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"other","arguments":{"input":"x"}}}' "${GW}/v1/mcp")
+  echo "$oob" | grep -q '"unknown tool' && pass "tools/call outside the binding -> unknown-tool error (fail-closed)" || fail "expected unknown-tool: $oob"
+  # tools/call the bound tool -> routes through invoke -> the harness. The bound ref is unrunnable, so
+  # this proves the route: either a 200 JSON-RPC result with isError:true (harness reachable, the ref
+  # fails — no raw leak) or a 502 (harness unreachable). NOT a success, NOT an unknown-tool error.
+  cbody=$(curl -s "${MAUTH[@]}" "${JSON[@]}" -d '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"smoke-mcp","arguments":{"input":"hi"}}}' "${GW}/v1/mcp")
+  ccode=$(curl -s -o /dev/null -w '%{http_code}' "${MAUTH[@]}" "${JSON[@]}" -d '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"smoke-mcp","arguments":{"input":"hi"}}}' "${GW}/v1/mcp")
+  if [[ "$ccode" == "502" ]]; then
+    pass "tools/call -> routed to invoke -> the harness (502, harness unreachable)"
+  elif [[ "$ccode" == "200" ]] && echo "$cbody" | grep -q '"isError":true' && ! echo "$cbody" | grep -qi 'sk-\|secret\|traceback'; then
+    pass "tools/call -> routed to invoke -> a tool error for the unrunnable ref (no raw leak)"
+  else
+    fail "tools/call wrong: ${ccode} ${cbody}"
+  fi
+  # a notification -> 202 (no JSON-RPC response)
+  code=$(curl -s -o /dev/null -w '%{http_code}' "${MAUTH[@]}" "${JSON[@]}" -d '{"jsonrpc":"2.0","method":"notifications/initialized"}' "${GW}/v1/mcp")
+  [[ "$code" == "202" ]] && pass "a notification -> 202 (no response body)" || fail "expected 202, got $code"
+  "${PSQL[@]}" "DELETE FROM integration_keys WHERE id='${MKID}';" >/dev/null
+  "${PSQL[@]}" "DELETE FROM published_agents WHERE slug='smoke-mcp';" >/dev/null
+  pass "cleaned up the MCP smoke agent + key"
 else
   step "13. GW-7/GW-8: edge-protection + key-validator LIVE checks SKIPPED in NO_COMPOSE mode (unit-covered)"
 fi
