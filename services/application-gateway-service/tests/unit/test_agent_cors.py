@@ -157,12 +157,21 @@ async def test_metadata_get_also_per_key_scoped() -> None:
 
 
 async def test_non_agent_path_is_untouched_by_per_key_middleware() -> None:
-    # a member-plane preflight is handled by the GATEWAY-WIDE CORS (it DOES set credentials) — this
-    # proves AgentCors is scoped to the published-agent paths only and doesn't shadow the rest.
+    # a member-plane preflight is answered by the GATEWAY-WIDE Starlette CORS (200), NOT AgentCors
+    # (which answers agent preflights with a 204) — proving AgentCors is scoped to the agent paths.
     app = _app()
     async with _client(app) as c:
         r = await c.options(
             "/v1/integration-keys",
             headers={"Origin": _GOOD, "Access-Control-Request-Method": "POST"},
         )
-    assert r.headers.get("access-control-allow-credentials") == "true"  # the global CORS answered
+    assert r.status_code == 200 and "access-control-allow-origin" in r.headers  # the global CORS
+
+
+async def test_gateway_wide_cors_does_not_advertise_credentials() -> None:
+    # header-auth (Bearer) not cookies -> the gateway-wide CORS must NOT set allow-credentials (else
+    # ["*"] becomes reflect-any-origin-with-credentials). A non-agent response reflects the posture.
+    app = _app()
+    async with _client(app) as c:
+        r = await c.get("/health", headers={"Origin": _EVIL})
+    assert "access-control-allow-credentials" not in r.headers

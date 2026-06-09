@@ -78,10 +78,16 @@ def create_app(*, lifespan=None) -> FastAPI:
         window_seconds=settings.EDGE_RATE_WINDOW_SECONDS,
         trusted_proxy_count=settings.TRUSTED_PROXY_COUNT,
     )
+    # allow_credentials=False: the platform authenticates with an `Authorization: Bearer` (the
+    # FE never relies on cookies to the gateway), so CORS credentials are not needed — and dropping
+    # them makes a permissive origin list SAFE (Starlette emits a literal `ACAO: *`, not the
+    # reflect-any-origin-WITH-credentials footgun that `["*"] + credentials` produces). The
+    # Bearer token (never auto-sent by the browser) is the gate, not CORS. For defense-in-depth,
+    # production SHOULD still pin GATEWAY_CORS_ORIGINS to the real console origin(s).
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origins,
-        allow_credentials=True,
+        allow_credentials=False,
         allow_methods=["*"],
         allow_headers=["*"],
     )
