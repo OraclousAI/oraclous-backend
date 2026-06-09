@@ -8,5 +8,13 @@ from oraclous_credential_broker_service.models.base_model import Base, BaseModel
 from oraclous_credential_broker_service.models.credential_model import UserCredential
 from oraclous_credential_broker_service.models.delegated_token import DelegatedToken
 from oraclous_credential_broker_service.models.enums import CredentialType
+from oraclous_credential_broker_service.models.webhook_secret import WebhookSecret
 
-__all__ = ["Base", "BaseModel", "CredentialType", "DelegatedToken", "UserCredential"]
+__all__ = [
+    "Base",
+    "BaseModel",
+    "CredentialType",
+    "DelegatedToken",
+    "UserCredential",
+    "WebhookSecret",
+]

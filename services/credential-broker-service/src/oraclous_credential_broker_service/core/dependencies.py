@@ -23,12 +23,16 @@ from oraclous_credential_broker_service.core.config import get_settings
 from oraclous_credential_broker_service.repositories.credential_repository import (
     CredentialRepository,
 )
+from oraclous_credential_broker_service.repositories.webhook_secret_repository import (
+    WebhookSecretRepository,
+)
 from oraclous_credential_broker_service.services.credential_broker_service import (
     CredentialBrokerService,
 )
 from oraclous_credential_broker_service.services.credential_service import CredentialService
 from oraclous_credential_broker_service.services.delegation_service import DelegationService
 from oraclous_credential_broker_service.services.refresh_client import HttpxRefreshClient
+from oraclous_credential_broker_service.services.webhook_secret_service import WebhookSecretService
 
 _bearer = HTTPBearer(auto_error=False)
 
@@ -142,6 +146,22 @@ async def get_principal_user_id(
     return principal.principal_id
 
 
+def get_webhook_secret_repository(request: Request) -> WebhookSecretRepository:
+    repo = getattr(request.app.state, "webhook_secret_repository", None)
+    if repo is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="webhook-secret store unavailable (DATABASE_URL not configured)",
+        )
+    return repo
+
+
+def get_webhook_secret_service(
+    repo: Annotated[WebhookSecretRepository, Depends(get_webhook_secret_repository)],
+) -> WebhookSecretService:
+    return WebhookSecretService(repository=repo)
+
+
 def get_credential_service(
     repo: Annotated[CredentialRepository, Depends(get_credential_repository)],
 ) -> CredentialService:
@@ -163,5 +183,6 @@ CredentialBrokerServiceDep = Annotated[
     CredentialBrokerService, Depends(get_credential_broker_service)
 ]
 DelegationServiceDep = Annotated[DelegationService, Depends(get_delegation_service)]
+WebhookSecretServiceDep = Annotated[WebhookSecretService, Depends(get_webhook_secret_service)]
 OrganisationIdDep = Annotated[uuid.UUID, Depends(get_organisation_id)]
 PrincipalUserIdDep = Annotated[uuid.UUID, Depends(get_principal_user_id)]
