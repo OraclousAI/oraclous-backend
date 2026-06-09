@@ -14,6 +14,7 @@ import uuid
 from fastapi import APIRouter, HTTPException, Request, Response, status
 
 from oraclous_application_gateway_service.core.dependencies import (
+    AdminDep,
     MemberDep,
     WebhookIngressServiceDep,
     WebhookSubscriptionServiceDep,
@@ -62,12 +63,12 @@ async def receive_webhook(
     status_code=status.HTTP_201_CREATED,
 )
 async def create_subscription(
-    body: CreateSubscriptionRequest, member: MemberDep, service: WebhookSubscriptionServiceDep
+    body: CreateSubscriptionRequest, admin: AdminDep, service: WebhookSubscriptionServiceDep
 ) -> CreateSubscriptionResponse:
     """Register a webhook for an org published agent. The signing secret is shown ONCE."""
     try:
         sub, secret = await service.create(
-            organisation_id=member.organisation_id, agent_slug=body.agent_slug
+            organisation_id=admin.organisation_id, agent_slug=body.agent_slug
         )
     except UnknownAgent as exc:
         raise HTTPException(
@@ -94,10 +95,10 @@ async def list_subscriptions(
     "/v1/webhook-subscriptions/{subscription_id}", status_code=status.HTTP_204_NO_CONTENT
 )
 async def delete_subscription(
-    subscription_id: uuid.UUID, member: MemberDep, service: WebhookSubscriptionServiceDep
+    subscription_id: uuid.UUID, admin: AdminDep, service: WebhookSubscriptionServiceDep
 ) -> Response:
     ok = await service.delete(
-        organisation_id=member.organisation_id, subscription_id=subscription_id
+        organisation_id=admin.organisation_id, subscription_id=subscription_id
     )
     if not ok:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="not found")

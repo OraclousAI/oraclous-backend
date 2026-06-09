@@ -11,7 +11,11 @@ import uuid
 
 from fastapi import APIRouter, HTTPException, status
 
-from oraclous_application_gateway_service.core.dependencies import KeyManagementDep, MemberDep
+from oraclous_application_gateway_service.core.dependencies import (
+    AdminDep,
+    KeyManagementDep,
+    MemberDep,
+)
 from oraclous_application_gateway_service.schema.integration_key_schemas import (
     KeyOut,
     MintedKeyResponse,
@@ -38,11 +42,11 @@ def _minted(minted, row) -> MintedKeyResponse:  # noqa: ANN001 — MintedKey + O
 
 @router.post("", response_model=MintedKeyResponse, status_code=status.HTTP_201_CREATED)
 async def mint_key(
-    body: MintKeyRequest, member: MemberDep, svc: KeyManagementDep
+    body: MintKeyRequest, admin: AdminDep, svc: KeyManagementDep
 ) -> MintedKeyResponse:
     try:
         minted, row = await svc.mint(
-            organisation_id=member.organisation_id,
+            organisation_id=admin.organisation_id,
             bound_agent_slug=body.bound_agent_slug,
             capability_allow_list=body.capability_allow_list,
             cors_origins=body.cors_origins,
@@ -73,16 +77,16 @@ async def get_key(key_id: uuid.UUID, member: MemberDep, svc: KeyManagementDep) -
 
 @router.post("/{key_id}/rotate", response_model=MintedKeyResponse)
 async def rotate_key(
-    key_id: uuid.UUID, member: MemberDep, svc: KeyManagementDep
+    key_id: uuid.UUID, admin: AdminDep, svc: KeyManagementDep
 ) -> MintedKeyResponse:
-    minted, row = await svc.rotate(key_id=key_id, organisation_id=member.organisation_id)
+    minted, row = await svc.rotate(key_id=key_id, organisation_id=admin.organisation_id)
     if row is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="no such integration key")
     return _minted(minted, row)
 
 
 @router.delete("/{key_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def revoke_key(key_id: uuid.UUID, member: MemberDep, svc: KeyManagementDep) -> None:
-    row = await svc.revoke(key_id=key_id, organisation_id=member.organisation_id)
+async def revoke_key(key_id: uuid.UUID, admin: AdminDep, svc: KeyManagementDep) -> None:
+    row = await svc.revoke(key_id=key_id, organisation_id=admin.organisation_id)
     if row is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="no such integration key")

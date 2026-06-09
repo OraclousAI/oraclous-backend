@@ -8,6 +8,7 @@ from oraclous_governance.context import (
     OrganisationResolutionError,
     Principal,
     PrincipalType,
+    org_role_at_least,
     resolve_organisation_context,
 )
 from oraclous_governance.propagation import (
@@ -24,6 +25,7 @@ __all__ = [
     "Principal",
     "PrincipalType",
     "current_organisation_context",
+    "org_role_at_least",
     "resolve_organisation_context",
     "use_organisation_context",
 ]

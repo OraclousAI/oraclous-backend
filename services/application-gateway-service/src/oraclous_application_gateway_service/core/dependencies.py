@@ -10,7 +10,7 @@ from typing import Annotated
 
 import httpx
 from fastapi import Depends, HTTPException, Request, status
-from oraclous_governance import Principal, PrincipalType
+from oraclous_governance import Principal, PrincipalType, org_role_at_least
 from sqlalchemy.exc import SQLAlchemyError
 
 from oraclous_application_gateway_service.core.auth import AuthError, verify_token
@@ -172,14 +172,27 @@ def get_published_agent_repository(request: Request) -> PublishedAgentRepository
 async def require_member(principal: EdgePrincipalDep) -> Principal:
     """A management route requires an authenticated MEMBER (a user JWT) — never an integration key
     (a key cannot manage keys). Org-scoping (a member manages only their own org) is applied by the
-    caller via ``principal.organisation_id``. (Org-admin role gating is deferred to a platform
-    roles pass; today any org member manages that org's keys/agents — org-scoped.)"""
+    caller via ``principal.organisation_id``. READ-level management (list/get) is member; the
+    DESTRUCTIVE ops require ``require_admin`` (R7-SEC S2, the org-roles floor)."""
     if principal is None or principal.principal_type != PrincipalType.USER:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="this operation requires a member credential",
         )
     return principal
+
+
+async def require_admin(member: MemberDep) -> Principal:
+    """A DESTRUCTIVE op (mint/rotate/revoke a key, publish an agent, create/delete a webhook
+    subscription) requires an org ADMIN (owner ≥ admin). Builds on ``require_member`` (a user,
+    key), then asserts the verified ``org_role`` ranks at least admin — fail-closed: a None / member
+    role is 403. The role is auth-issued (the JWT ``org_role`` claim), never client-set."""
+    if not org_role_at_least(member.org_role, minimum="admin"):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="this operation requires an organisation admin",
+        )
+    return member
 
 
 async def require_bound_key(request: Request, principal: EdgePrincipalDep) -> ResolvedKey:
@@ -314,6 +327,7 @@ HealthServiceDep = Annotated[HealthService, Depends(get_health_service)]
 IntegrationKeyRepoDep = Annotated[IntegrationKeyRepository, Depends(get_integration_key_repository)]
 PublishedAgentRepoDep = Annotated[PublishedAgentRepository, Depends(get_published_agent_repository)]
 MemberDep = Annotated[Principal, Depends(require_member)]
+AdminDep = Annotated[Principal, Depends(require_admin)]
 BoundKeyDep = Annotated[ResolvedKey, Depends(require_bound_key)]
 KeyManagementDep = Annotated[IntegrationKeyManagementService, Depends(get_key_management_service)]
 PublishedAgentServiceDep = Annotated[PublishedAgentService, Depends(get_published_agent_service)]

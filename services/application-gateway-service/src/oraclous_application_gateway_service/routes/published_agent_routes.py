@@ -12,6 +12,7 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException, status
 
 from oraclous_application_gateway_service.core.dependencies import (
+    AdminDep,
     BoundKeyDep,
     InvokeServiceDep,
     MemberDep,
@@ -40,11 +41,11 @@ router = APIRouter(prefix="/v1/agents", tags=["gateway"])
 
 @router.post("", response_model=PublishedAgentOut, status_code=status.HTTP_201_CREATED)
 async def publish_agent(
-    body: PublishAgentRequest, member: MemberDep, svc: PublishedAgentServiceDep
+    body: PublishAgentRequest, admin: AdminDep, svc: PublishedAgentServiceDep
 ) -> PublishedAgentOut:
     try:
         return await svc.publish(
-            organisation_id=member.organisation_id,
+            organisation_id=admin.organisation_id,
             slug=body.slug,
             bound_capability_ref=body.bound_capability_ref,
             display_name=body.display_name,
