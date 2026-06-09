@@ -40,6 +40,7 @@ from oraclous_application_gateway_service.services.integration_key_management_se
     IntegrationKeyManagementService,
 )
 from oraclous_application_gateway_service.services.invoke_service import InvokeService
+from oraclous_application_gateway_service.services.mcp_service import McpService
 from oraclous_application_gateway_service.services.proxy_service import ProxyService
 from oraclous_application_gateway_service.services.published_agent_service import (
     PublishedAgentService,
@@ -207,6 +208,29 @@ async def require_bound_key(request: Request, principal: EdgePrincipalDep) -> Re
     return resolved
 
 
+async def require_mcp_key(request: Request, principal: EdgePrincipalDep) -> ResolvedKey:
+    """The MCP server plane requires an INTEGRATION KEY (a programmatic client), never a member JWT.
+    ``get_edge_principal`` already resolved + stashed the key; assert it is a key (SERVICE_ACCOUNT —
+    a member JWT is 403) and return the ``ResolvedKey``. Unlike ``require_bound_key`` there is no
+    single path slug to match — the per-tool binding scopes ``tools/list`` + ``tools/call`` in the
+    service (a key with no binding sees + calls nothing, fail-closed)."""
+    resolved = getattr(request.state, "resolved_key", None)
+    if (
+        resolved is None
+        or principal is None
+        or principal.principal_type != PrincipalType.SERVICE_ACCOUNT
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="the MCP endpoint requires an integration key",
+        )
+    return resolved
+
+
+def get_mcp_service(request: Request, agents: PublishedAgentRepoDep) -> McpService:
+    return McpService(agents=agents, invoke=get_invoke_service(request, agents))
+
+
 def get_key_management_service(
     keys: IntegrationKeyRepoDep, agents: PublishedAgentRepoDep
 ) -> IntegrationKeyManagementService:
@@ -304,3 +328,5 @@ WebhookSubscriptionServiceDep = Annotated[
     WebhookSubscriptionService, Depends(get_webhook_subscription_service)
 ]
 WebhookIngressServiceDep = Annotated[WebhookIngressService, Depends(get_webhook_ingress_service)]
+McpKeyDep = Annotated[ResolvedKey, Depends(require_mcp_key)]
+McpServiceDep = Annotated[McpService, Depends(get_mcp_service)]

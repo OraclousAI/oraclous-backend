@@ -34,6 +34,7 @@ from oraclous_application_gateway_service.routes.health_routes import router as 
 from oraclous_application_gateway_service.routes.integration_key_routes import (
     router as integration_key_router,
 )
+from oraclous_application_gateway_service.routes.mcp_routes import router as mcp_router
 from oraclous_application_gateway_service.routes.openapi_routes import router as openapi_router
 from oraclous_application_gateway_service.routes.proxy_routes import router as proxy_router
 from oraclous_application_gateway_service.routes.published_agent_routes import (
@@ -146,6 +147,7 @@ def create_app(*, lifespan=None) -> FastAPI:
     app.include_router(integration_key_router)
     app.include_router(chat_router)  # /v1/chat (member console chat, Slice 6)
     app.include_router(webhook_router)  # /v1/webhooks + /v1/webhook-subscriptions (Slice 7)
+    app.include_router(mcp_router)  # /v1/mcp (MCP server — published agents as tools, Slice 8)
     # the proxy catch-all must be LAST so specific routes (e.g. /health, /v1/openapi.json) win
     app.include_router(proxy_router)
     return app
