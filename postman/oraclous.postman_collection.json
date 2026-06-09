@@ -2664,10 +2664,10 @@
                 "integration-keys"
               ]
             },
-            "description": "Mint an integration key bound to a slug XOR a capability allow-list. The plaintext 'key' is returned ONCE.",
+            "description": "Mint an integration key bound to a slug XOR a capability allow-list. The plaintext 'key' is returned ONCE. Optional cors_origins (scheme://host[:port], exact-match) scopes the published-agent widget CORS for THIS key (Slice 5).",
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"bound_agent_slug\": \"{{pub_slug}}\"\n}"
+              "raw": "{\n  \"bound_agent_slug\": \"{{pub_slug}}\",\n  \"cors_origins\": [\n    \"https://your-widget.example\"\n  ]\n}"
             }
           },
           "event": [
