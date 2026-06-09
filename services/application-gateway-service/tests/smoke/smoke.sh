@@ -516,6 +516,27 @@ print(uuid.uuid4(), tok, prefix, hashlib.sha256(tok.encode()).hexdigest(), secre
   # the gateway never reflects a trusted-identity header back to the client
   refl=$(curl -s -D - -o /dev/null --max-time 5 "${GW}/health" | grep -ciE '^x-(internal-key|principal-id|organisation-id):') || true
   [[ "$refl" == "0" ]] && pass "no trusted-identity header is reflected downstream" || fail "a trust header leaked downstream"
+
+  step "25. GW-17: org-admin roles floor — destructive ops are admin-only, reads stay member (R7-SEC S2)"
+  # the dev stack exposes two USER tokens in the same org: dev-token (admin) + dev-member-token (member)
+  MEMBER_T=(-H "Authorization: Bearer dev-member-token")
+  # a MEMBER cannot mint an integration key (admin-gated) -> 403
+  code=$(curl -s -o /dev/null -w '%{http_code}' "${MEMBER_T[@]}" "${JSON[@]}" -d '{"capability_allow_list":["x"]}' "${GW}/v1/integration-keys")
+  [[ "$code" == "403" ]] && pass "member -> mint key -> 403 (admin-gated)" || fail "expected 403 for member mint, got $code"
+  # the ADMIN (dev-token) CAN mint -> 201
+  rkm=$(curl -s "${MEMBER[@]}" "${JSON[@]}" -d '{"capability_allow_list":["x"]}' "${GW}/v1/integration-keys")
+  rkid=$(echo "$rkm" | python3 -c "import sys,json;print(json.load(sys.stdin).get('id',''))")
+  [[ -n "$rkid" ]] && pass "admin -> mint key -> 201" || fail "admin mint failed: $rkm"
+  # a member CAN still do READ-level management (list) -> 200
+  code=$(curl -s -o /dev/null -w '%{http_code}' "${MEMBER_T[@]}" "${GW}/v1/integration-keys")
+  [[ "$code" == "200" ]] && pass "member -> list keys -> 200 (reads stay member-level)" || fail "expected 200 for member list, got $code"
+  # a member cannot publish an agent or create a webhook subscription -> 403
+  code=$(curl -s -o /dev/null -w '%{http_code}' "${MEMBER_T[@]}" "${JSON[@]}" -d '{"slug":"m-deny","bound_capability_ref":"cap-x"}' "${GW}/v1/agents")
+  [[ "$code" == "403" ]] && pass "member -> publish agent -> 403 (admin-gated)" || fail "expected 403 for member publish, got $code"
+  code=$(curl -s -o /dev/null -w '%{http_code}' "${MEMBER_T[@]}" "${JSON[@]}" -d '{"agent_slug":"whatever"}' "${GW}/v1/webhook-subscriptions")
+  [[ "$code" == "403" ]] && pass "member -> create webhook subscription -> 403 (admin-gated)" || fail "expected 403 for member webhook-create, got $code"
+  "${PSQL[@]}" "DELETE FROM integration_keys WHERE id='${rkid}';" >/dev/null
+  pass "cleaned up the roles-floor smoke key"
 else
   step "13. GW-7/GW-8: edge-protection + key-validator LIVE checks SKIPPED in NO_COMPOSE mode (unit-covered)"
 fi

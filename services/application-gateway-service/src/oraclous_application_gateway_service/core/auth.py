@@ -35,6 +35,9 @@ def _principal_from_claims(claims: dict) -> Principal:
             principal_id=uuid.UUID(sub),
             principal_type=PrincipalType(claims.get("principal_type", "user")),
             organisation_id=uuid.UUID(organisation_id),
+            # the member's role in this org (R7-SEC S2); absent on agent/service tokens + on a
+            # token minted before the claim existed — None never satisfies an admin gate.
+            org_role=claims.get("org_role"),
         )
     except ValueError as exc:
         raise AuthError("malformed principal claims") from exc
@@ -44,13 +47,23 @@ def verify_token(token: str) -> Principal:
     """Resolve a bearer token to an authenticated Principal (dev or jwt mode)."""
     settings = get_settings()
     if settings.GATEWAY_AUTH_MODE == "dev":
-        if token != settings.DEV_BEARER:
-            raise AuthError("invalid dev bearer token")
-        return Principal(
-            principal_id=uuid.UUID(settings.DEV_USER_ID),
-            principal_type=PrincipalType.USER,
-            organisation_id=uuid.UUID(settings.DEV_ORG_ID),
-        )
+        if token == settings.DEV_BEARER:  # the dev admin
+            return Principal(
+                principal_id=uuid.UUID(settings.DEV_USER_ID),
+                principal_type=PrincipalType.USER,
+                organisation_id=uuid.UUID(settings.DEV_ORG_ID),
+                org_role="admin",
+            )
+        if (
+            token == settings.DEV_MEMBER_BEARER
+        ):  # a plain member in the same dev org (S2 roles floor)
+            return Principal(
+                principal_id=uuid.UUID(settings.DEV_MEMBER_USER_ID),
+                principal_type=PrincipalType.USER,
+                organisation_id=uuid.UUID(settings.DEV_ORG_ID),
+                org_role="member",
+            )
+        raise AuthError("invalid dev bearer token")
     if not settings.JWT_SECRET:
         raise AuthError("GATEWAY_AUTH_MODE=jwt requires JWT_SECRET")
     try:

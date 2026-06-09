@@ -80,8 +80,11 @@ class AuthService:
             )
 
     async def _issue_pair(self, user: User, *, organisation_id: str, family_id: str) -> TokenBundle:
+        # stamp the member's role in this org into the access token (R7-SEC S2); the org was already
+        # validated against membership before issuance, so a non-None role is the normal case.
+        org_role = await self._orgs.role_for(org_id=organisation_id, user_id=user.id)
         access_token, expires_in = create_user_token(
-            user_id=user.id, organisation_id=organisation_id, email=user.email
+            user_id=user.id, organisation_id=organisation_id, email=user.email, org_role=org_role
         )
         jti = str(uuid.uuid4())
         refresh_token, refresh_ttl = create_user_refresh_token(

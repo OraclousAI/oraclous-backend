@@ -44,6 +44,11 @@ class OrgService:
         self._members = members
         self._users = users
 
+    async def role_for(self, *, org_id: str, user_id: str) -> str | None:
+        """The member's role in an org (owner/admin/member), or None if not a member. Used at token
+        issuance to stamp the ``org_role`` claim (R7-SEC S2)."""
+        return await self._members.role_for(organisation_id=org_id, user_id=user_id)
+
     async def _resolve_slug(self, name: str) -> str:
         base = slugify(name)
         if not await self._orgs.slug_exists(base):

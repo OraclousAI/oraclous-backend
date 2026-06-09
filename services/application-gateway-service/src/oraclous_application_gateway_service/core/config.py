@@ -54,9 +54,13 @@ class Settings(BaseSettings):
 
     # --- identity seam (mirrors substrate: dev binds a fixed principal; jwt verifies HS256) ---
     GATEWAY_AUTH_MODE: str = "dev"  # "dev" | "jwt"
-    DEV_BEARER: str = "dev-token"
+    DEV_BEARER: str = "dev-token"  # the dev admin (org_role=admin) — existing dev management flows
     DEV_USER_ID: str = "00000000-0000-0000-0000-0000000000e6"
     DEV_ORG_ID: str = "00000000-0000-0000-0000-00000000050a"
+    # a second dev bearer for a plain MEMBER in the same org (R7-SEC S2) — lets the roles floor be
+    # exercised live (member -> 403 on the admin-gated management ops).
+    DEV_MEMBER_BEARER: str = "dev-member-token"
+    DEV_MEMBER_USER_ID: str = "00000000-0000-0000-0000-0000000000e7"
     JWT_SECRET: str | None = None
     JWT_ALGORITHM: str = "HS256"
 

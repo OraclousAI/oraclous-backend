@@ -39,6 +39,7 @@ _RESPONSE_DENYLIST = frozenset(
         "x-powered-by",
         "x-principal-id",
         "x-principal-type",
+        "x-principal-org-role",
         "x-organisation-id",
         "x-internal-key",
     }
@@ -60,6 +61,9 @@ def forward_request_headers(
     # X-Principal-* + X-Internal-Key are pure trust assertions — never accept them from the client.
     strip.add("x-principal-id")
     strip.add("x-principal-type")
+    strip.add(
+        "x-principal-org-role"
+    )  # the role is trust-asserted too (R7-SEC S2), never client-set
     strip.add("x-internal-key")
     if principal is not None:
         strip.add("x-organisation-id")  # gateway asserts the verified org on authenticated paths
@@ -69,6 +73,8 @@ def forward_request_headers(
         out.append((b"x-principal-type", str(principal.principal_type.value).encode()))
         if principal.organisation_id is not None:
             out.append((b"x-organisation-id", str(principal.organisation_id).encode()))
+        if principal.org_role is not None:  # propagate the verified role (upstreams may role-gate)
+            out.append((b"x-principal-org-role", principal.org_role.encode()))
     out.append((b"x-internal-key", internal_key.encode()))
     return out
 

@@ -70,6 +70,23 @@ def test_public_strips_principal_but_passes_org_hint() -> None:
     assert out["x-internal-key"] == "ik-test"  # attestation injected even on public paths
 
 
+def test_forward_injects_verified_org_role_and_strips_a_forged_one() -> None:
+    # R7-SEC S2: the role is trust-asserted — a client forging a higher role is overwritten with the
+    # verified principal's role (the gateway propagates it so an upstream may role-gate later).
+    admin = Principal(
+        principal_id=uuid.UUID("00000000-0000-0000-0000-0000000000e6"),
+        principal_type=PrincipalType.USER,
+        organisation_id=uuid.UUID("00000000-0000-0000-0000-00000000050a"),
+        org_role="admin",
+    )
+    raw = [(b"x-principal-org-role", b"owner")]  # the client forges 'owner'
+    out = _names(forward_request_headers(raw, admin, internal_key="ik"))
+    assert out["x-principal-org-role"] == "admin"  # the verified role, never the forged 'owner'
+    # a roleless principal injects no role header (None never reaches an upstream gate)
+    out2 = _names(forward_request_headers([], _principal(), internal_key="ik"))
+    assert "x-principal-org-role" not in out2
+
+
 def test_a_forged_cross_org_assertion_can_never_set_the_upstream_tenant() -> None:
     # the cross-org leak (T1): a client forging another org's id must NOT reach the upstream — the
     # gateway always overwrites X-Organisation-Id with the VERIFIED principal's org.

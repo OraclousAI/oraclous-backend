@@ -60,11 +60,18 @@ def _encode(
     return token, ttl_seconds, token_jti
 
 
-def create_user_token(*, user_id: str, organisation_id: str, email: str) -> tuple[str, int]:
-    """Issue a short-lived user ACCESS JWT. Returns ``(access_token, expires_in_seconds)``."""
+def create_user_token(
+    *, user_id: str, organisation_id: str, email: str, org_role: str | None = None
+) -> tuple[str, int]:
+    """Issue a short-lived user ACCESS JWT. Returns ``(access_token, expires_in_seconds)``. Carries
+    the member's ``org_role`` in ``organisation_id`` (R7-SEC S2) when known (the gateway reads it
+    the admin-vs-member floor); omitted when None so a non-member token never satisfies admin."""
     ttl = get_settings().user_access_token_ttl_minutes * 60
+    payload = {"email": email}
+    if org_role is not None:
+        payload["org_role"] = org_role
     token, expires_in, _ = _encode(
-        {"email": email},
+        payload,
         ttl_seconds=ttl,
         principal_type="user",
         kind="access",

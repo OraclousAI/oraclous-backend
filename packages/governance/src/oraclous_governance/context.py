@@ -41,12 +41,28 @@ class Principal:
 
     ``organisation_id`` is the optional auth-issued organisation claim (R1 agent
     tokens, ORA-31); ``None`` models the R0.5 identity-only principal whose
-    organisation must be resolved against membership.
+    organisation must be resolved against membership. ``org_role`` is the member's
+    role in ``organisation_id`` (owner/admin/member), auth-issued as the ``org_role``
+    JWT claim (R7-SEC S2); ``None`` for non-member principals (agent/service-account
+    / a token minted before the claim existed) — those never satisfy an admin gate.
     """
 
     principal_id: uuid.UUID
     principal_type: PrincipalType
     organisation_id: uuid.UUID | None = None
+    org_role: str | None = None
+
+
+# --- Org-role rank for the application authz floor (R7-SEC S2) ---
+# The wire value is a string (owner/admin/member). Canonical rank lives HERE so every service checks
+# admin-vs-member the same way (owner ≥ admin ≥ member). Fail-closed: an unknown/missing role ranks
+# below member, and an unknown minimum is unreachable.
+_ORG_ROLE_RANK = {"owner": 3, "admin": 2, "member": 1}
+
+
+def org_role_at_least(role: str | None, *, minimum: str) -> bool:
+    """True iff ``role`` ranks at least ``minimum`` (owner ≥ admin ≥ member), fail-closed."""
+    return _ORG_ROLE_RANK.get(role or "", 0) >= _ORG_ROLE_RANK.get(minimum, 99)
 
 
 @dataclass(frozen=True, slots=True)
