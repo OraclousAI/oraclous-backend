@@ -18,6 +18,7 @@ from oraclous_application_gateway_service.core.config import get_settings
 from oraclous_application_gateway_service.domain.auth_policy import is_public
 from oraclous_application_gateway_service.domain.integration_key import is_integration_key
 from oraclous_application_gateway_service.domain.upstreams import upstream_health_targets
+from oraclous_application_gateway_service.repositories.chat_repository import ChatRepository
 from oraclous_application_gateway_service.repositories.integration_key_repository import (
     IntegrationKeyRepository,
 )
@@ -25,6 +26,8 @@ from oraclous_application_gateway_service.repositories.published_agent_repositor
     PublishedAgentRepository,
 )
 from oraclous_application_gateway_service.repositories.upstream_client import UpstreamClient
+from oraclous_application_gateway_service.services.chat_service import ChatService
+from oraclous_application_gateway_service.services.chat_turn_service import ChatTurnService
 from oraclous_application_gateway_service.services.health_service import HealthService
 from oraclous_application_gateway_service.services.integration_key_auth_service import (
     IntegrationKeyAuthService,
@@ -214,6 +217,27 @@ def get_invoke_service(request: Request, agents: PublishedAgentRepoDep) -> Invok
     )
 
 
+def get_chat_repository(request: Request) -> ChatRepository:
+    return _require_repo(request, "chat_repo")
+
+
+def get_chat_service(chats: ChatRepoDep, agents: PublishedAgentRepoDep) -> ChatService:
+    return ChatService(threads=chats, agents=agents)
+
+
+def get_chat_turn_service(
+    request: Request, chats: ChatRepoDep, agents: PublishedAgentRepoDep
+) -> ChatTurnService:
+    settings = get_settings()
+    return ChatTurnService(
+        threads=chats,
+        agents=agents,
+        upstream_client=UpstreamClient(get_http_client(request)),
+        harness_base_url=settings.HARNESS_RUNTIME_URL,
+        internal_key=settings.INTERNAL_SERVICE_KEY,
+    )
+
+
 HttpClientDep = Annotated[httpx.AsyncClient, Depends(get_http_client)]
 ProxyServiceDep = Annotated[ProxyService, Depends(get_proxy_service)]
 EdgePrincipalDep = Annotated[Principal | None, Depends(get_edge_principal)]
@@ -225,3 +249,6 @@ BoundKeyDep = Annotated[ResolvedKey, Depends(require_bound_key)]
 KeyManagementDep = Annotated[IntegrationKeyManagementService, Depends(get_key_management_service)]
 PublishedAgentServiceDep = Annotated[PublishedAgentService, Depends(get_published_agent_service)]
 InvokeServiceDep = Annotated[InvokeService, Depends(get_invoke_service)]
+ChatRepoDep = Annotated[ChatRepository, Depends(get_chat_repository)]
+ChatServiceDep = Annotated[ChatService, Depends(get_chat_service)]
+ChatTurnServiceDep = Annotated[ChatTurnService, Depends(get_chat_turn_service)]

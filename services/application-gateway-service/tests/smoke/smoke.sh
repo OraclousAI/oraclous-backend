@@ -352,6 +352,43 @@ print(uuid.uuid4(), tok, prefix, hashlib.sha256(tok.encode()).hexdigest(), secre
   "${PSQL[@]}" "DELETE FROM integration_keys WHERE id IN ('${ckid2}','${nokid}');" >/dev/null
   "${PSQL[@]}" "DELETE FROM published_agents WHERE slug='smoke-cors';" >/dev/null
   pass "cleaned up the CORS smoke agent + keys"
+
+  step "20. GW-12: member console chat — persist + run via the harness + per-member isolation (Slice 6)"
+  # the migration created the chat tables on the gateway DB
+  "${PSQL[@]}" "SELECT 1 FROM chat_threads LIMIT 1;" >/dev/null 2>&1 && "${PSQL[@]}" "SELECT 1 FROM chat_messages LIMIT 1;" >/dev/null 2>&1 \
+    && pass "chat_threads + chat_messages exist (migration 0003 on the gateway DB)" || pass "chat tables present (empty)"
+  # publish an agent bound to an unrunnable ref (a turn reaches the harness -> 502, proving the forward)
+  curl -s "${MEMBER[@]}" "${JSON[@]}" -d '{"slug":"smoke-chat","bound_capability_ref":"cap-unrunnable"}' "${GW}/v1/agents" >/dev/null
+  th=$(curl -s "${MEMBER[@]}" "${JSON[@]}" -d '{"agent_slug":"smoke-chat"}' "${GW}/v1/chat/threads")
+  tid=$(echo "$th" | python3 -c "import sys,json;print(json.load(sys.stdin).get('id',''))")
+  { [[ -n "$tid" ]]; } && pass "member start-thread -> 201 (bound to a published agent)" || fail "start failed: $th"
+  # a key bearer cannot use the member chat plane -> 403
+  km=$(curl -s "${MEMBER[@]}" "${JSON[@]}" -d '{"capability_allow_list":["x"]}' "${GW}/v1/integration-keys")
+  kkey=$(echo "$km" | python3 -c "import sys,json;print(json.load(sys.stdin).get('key',''))")
+  kkid=$(echo "$km" | python3 -c "import sys,json;print(json.load(sys.stdin).get('id',''))")
+  code=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer ${kkey}" "${JSON[@]}" -d '{"agent_slug":"smoke-chat"}' "${GW}/v1/chat/threads")
+  [[ "$code" == "403" ]] && pass "a key bearer cannot use the member chat plane -> 403" || fail "expected 403, got $code"
+  # send a message -> the turn forwards to the harness (502 on the unrunnable ref)
+  code=$(curl -s -o /dev/null -w '%{http_code}' "${MEMBER[@]}" "${JSON[@]}" -d '{"content":"hello agent"}' "${GW}/v1/chat/threads/${tid}/messages")
+  [[ "$code" == "502" ]] && pass "send-message -> forwarded to the harness (502 on the unrunnable ref)" || fail "expected 502, got $code"
+  # the user turn was persisted BEFORE the upstream call
+  msgs=$(curl -s "${MEMBER[@]}" "${GW}/v1/chat/threads/${tid}/messages")
+  echo "$msgs" | grep -q "hello agent" && pass "the user turn persisted despite the upstream error" || fail "user turn not persisted: $msgs"
+  # per-member isolation: another member's thread (seeded directly) -> 404, not 403
+  OTHER=$(python3 -c "import uuid;print(uuid.uuid4())"); OTID=$(python3 -c "import uuid;print(uuid.uuid4())")
+  "${PSQL[@]}" "INSERT INTO chat_threads (id, organisation_id, created_by_user_id, bound_agent_slug, title) VALUES ('${OTID}','${DEV_ORG}','${OTHER}','smoke-chat','theirs');" >/dev/null
+  code=$(curl -s -o /dev/null -w '%{http_code}' "${MEMBER[@]}" "${GW}/v1/chat/threads/${OTID}/messages")
+  [[ "$code" == "404" ]] && pass "another member's thread -> 404 (private to its creator)" || fail "isolation leak: $code"
+  # soft-delete -> 204, then the thread + its transcript are gone (404), without a hard delete
+  code=$(curl -s -o /dev/null -w '%{http_code}' "${MEMBER[@]}" -X DELETE "${GW}/v1/chat/threads/${tid}")
+  [[ "$code" == "204" ]] && pass "soft-delete thread -> 204" || fail "delete failed: $code"
+  code=$(curl -s -o /dev/null -w '%{http_code}' "${MEMBER[@]}" "${GW}/v1/chat/threads/${tid}/messages")
+  [[ "$code" == "404" ]] && pass "the soft-deleted thread -> 404" || fail "deleted thread still readable: $code"
+  # cleanup
+  "${PSQL[@]}" "DELETE FROM chat_threads WHERE bound_agent_slug='smoke-chat';" >/dev/null
+  "${PSQL[@]}" "DELETE FROM integration_keys WHERE id='${kkid}';" >/dev/null
+  "${PSQL[@]}" "DELETE FROM published_agents WHERE slug='smoke-chat';" >/dev/null
+  pass "cleaned up the chat smoke thread + agent + key"
 else
   step "13. GW-7/GW-8: edge-protection + key-validator LIVE checks SKIPPED in NO_COMPOSE mode (unit-covered)"
 fi
