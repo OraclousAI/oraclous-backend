@@ -67,6 +67,10 @@ tags:
     description: Integration-key management (member) — mint, list, rotate, revoke.
   - name: chat
     description: Member console chat — persisted multi-turn conversations with a published agent.
+  - name: webhooks
+    description: >
+      Inbound signed webhooks (public, HMAC-gated) that fire a published agent on the engine, plus the
+      member-only subscription management that mints them.
 paths:
   /health:
     get:
@@ -597,6 +601,75 @@ paths:
         - { name: threadId, in: path, required: true, schema: { type: string } }
       responses:
         "200": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  # --- Inbound webhook ingress (R6 Slice 7) — PUBLIC, signature-gated (no bearer) ---
+  /v1/webhooks/{subscriptionId}:
+    post:
+      tags: [webhooks]
+      summary: Inbound signed webhook — verify the HMAC, fire the bound agent on the engine.
+      description: >
+        PUBLIC (no bearer). Authenticated by an HMAC-SHA256 signature over the raw body in
+        `X-Hub-Signature-256: sha256=<hex>`, keyed by the subscription's signing secret. An optional
+        `X-Webhook-Delivery` header dedupes redeliveries (else the body hash). The whole auth-failure
+        family (unknown/disabled subscription, bad/absent signature, unpublished target) returns a
+        uniform 404 (anti-enumeration); a verified event is dispatched and returns 202.
+      operationId: receiveWebhook
+      x-stability: provisional
+      security: []
+      parameters:
+        - { name: subscriptionId, in: path, required: true, schema: { type: string } }
+        - { name: X-Hub-Signature-256, in: header, required: true, schema: { type: string } }
+        - { name: X-Webhook-Delivery, in: header, required: false, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: true }
+      responses:
+        "202": { description: Accepted — a verified event was dispatched. }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "5XX": { $ref: "#/components/responses/Upstream5xx" }
+
+  # --- Webhook subscription management (R6 Slice 7) — member, org-scoped ---
+  /v1/webhook-subscriptions:
+    post:
+      tags: [webhooks]
+      summary: Register a webhook for a published agent (member) — the signing secret is shown ONCE.
+      operationId: createWebhookSubscription
+      x-stability: provisional
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/JsonObject" }
+      responses:
+        "201": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+    get:
+      tags: [webhooks]
+      summary: List the member's own webhook subscriptions.
+      operationId: listWebhookSubscriptions
+      x-stability: provisional
+      responses:
+        "200": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Unauthorized" }
+  /v1/webhook-subscriptions/{subscriptionId}:
+    delete:
+      tags: [webhooks]
+      summary: Delete a webhook subscription (member, the creator's org only).
+      operationId: deleteWebhookSubscription
+      x-stability: provisional
+      parameters:
+        - { name: subscriptionId, in: path, required: true, schema: { type: string } }
+      responses:
+        "204": { description: Deleted. }
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "403": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/NotFound" }

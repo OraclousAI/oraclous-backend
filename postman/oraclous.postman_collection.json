@@ -2982,6 +2982,140 @@
       ]
     },
     {
+      "name": "Webhooks (R6 S7)",
+      "description": "Inbound signed webhooks + member subscription management. Publish an agent (sets {{pub_slug}}), register a webhook (captures the id + signing secret), then POST the signed inbound event. The inbound door is public \u2014 authenticated by the HMAC signature, not a bearer.",
+      "item": [
+        {
+          "name": "POST /v1/webhook-subscriptions (register)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/webhook-subscriptions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "webhook-subscriptions"
+              ]
+            },
+            "description": "Register a webhook for a published agent (member). Returns {id, webhook_path, signing_secret} \u2014 the secret is shown ONCE. Run after publishing an agent (sets {{pub_slug}}).",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"agent_slug\": \"{{pub_slug}}\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const j=pm.response.json();",
+                  "if(j.id){pm.collectionVariables.set('webhook_sub_id',j.id);pm.collectionVariables.set('webhook_signing_secret',j.signing_secret);}",
+                  "pm.test('subscription created + secret returned once',()=>{pm.expect(j.id).to.exist;pm.expect(j.signing_secret).to.exist;});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /v1/webhook-subscriptions (mine)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/v1/webhook-subscriptions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "webhook-subscriptions"
+              ]
+            },
+            "description": "List your org's webhook subscriptions (the signing secret is never returned here)."
+          }
+        },
+        {
+          "name": "POST {{webhook_sub_id}} (inbound, signed)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-Webhook-Delivery",
+                "value": "{{$guid}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/webhooks/{{webhook_sub_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "webhooks",
+                "{{webhook_sub_id}}"
+              ]
+            },
+            "description": "PUBLIC inbound webhook (no bearer). The pre-request script signs the raw body with {{webhook_signing_secret}} into X-Hub-Signature-256. A verified event -> 202; a bad/absent signature or unknown id -> 404.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"event\": \"push\",\n  \"ref\": \"refs/heads/main\"\n}"
+            },
+            "auth": {
+              "type": "noauth"
+            },
+            "event": [
+              {
+                "listen": "prerequest",
+                "script": {
+                  "type": "text/javascript",
+                  "exec": [
+                    "const secret = pm.collectionVariables.get('webhook_signing_secret');",
+                    "const body = pm.request.body && pm.request.body.raw ? pm.request.body.raw : '';",
+                    "if (secret) {",
+                    "  const hex = CryptoJS.HmacSHA256(body, secret).toString(CryptoJS.enc.Hex);",
+                    "  pm.request.headers.upsert({ key: 'X-Hub-Signature-256', value: 'sha256=' + hex });",
+                    "}"
+                  ]
+                }
+              }
+            ]
+          }
+        },
+        {
+          "name": "DELETE /v1/webhook-subscriptions/:id",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/v1/webhook-subscriptions/{{webhook_sub_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "webhook-subscriptions",
+                "{{webhook_sub_id}}"
+              ]
+            },
+            "description": "Delete the subscription (204). The inbound id then 404s."
+          }
+        }
+      ]
+    },
+    {
       "name": "Health checks (direct to each service)",
       "item": [
         {
@@ -3722,6 +3856,14 @@
     },
     {
       "key": "thread_id",
+      "value": ""
+    },
+    {
+      "key": "webhook_sub_id",
+      "value": ""
+    },
+    {
+      "key": "webhook_signing_secret",
       "value": ""
     }
   ]
