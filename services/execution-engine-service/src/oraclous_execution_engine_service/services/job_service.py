@@ -88,6 +88,46 @@ class JobService:
             raise
         return job
 
+    async def submit_event(
+        self,
+        *,
+        principal: Principal,
+        input_text: str,
+        idempotency_key: str,
+        manifest_inline: dict[str, Any] | None = None,
+        manifest_ref: str | None = None,
+    ) -> EngineJob | None:
+        """Fire a webhook EVENT -> a durable job, idempotent on the gateway-supplied delivery id.
+        Returns the QUEUED job, or None if this delivery already fired (a re-delivery — a no-op; the
+        caller still 202s). The org is from the gateway principal (ADR-006), never the body."""
+        org_id = self._require_org(principal)
+        if self._enqueue is None:  # request path must have a queue
+            raise JobError("no job queue configured")
+        job = await self._jobs.create_event(
+            organisation_id=org_id,
+            user_id=principal.principal_id,
+            input_text=input_text,
+            manifest_inline=manifest_inline,
+            manifest_ref=manifest_ref,
+            idempotency_key=idempotency_key,
+        )
+        if job is None:  # a re-delivered event — already fired; idempotent no-op
+            return None
+        # durable QUEUED row before the fallible enqueue (mirror submit) — never an orphan
+        try:
+            await self._emit(org_id, principal.principal_id, job.id, "engine.event.fire", "QUEUED")
+            self._enqueue(job.id, org_id, principal.principal_id)
+        except Exception:
+            await self._jobs.transition(
+                job.id,
+                org_id,
+                new_state=EngineJobState.FAILED.value,
+                allowed_from=frozenset({EngineJobState.QUEUED.value}),
+                error_type="enqueue_failed",
+            )
+            raise
+        return job
+
     async def execute(self, job_id: uuid.UUID, principal: Principal) -> EngineJob:
         """Run the harness for a QUEUED job + settle the outcome (retry/terminal). Worker entry."""
         org_id = self._require_org(principal)

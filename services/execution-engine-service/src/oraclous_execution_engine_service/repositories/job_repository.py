@@ -90,6 +90,31 @@ class JobRepository:
         except IntegrityError:
             return None
 
+    async def create_event(
+        self,
+        *,
+        organisation_id: uuid.UUID,
+        user_id: uuid.UUID,
+        input_text: str,
+        idempotency_key: str,
+        manifest_inline: dict | None = None,
+        manifest_ref: str | None = None,
+    ) -> EngineJob | None:
+        """Create a QUEUED job for a webhook EVENT — idempotent on ``(org, idempotency_key)``, no
+        ``schedule_id``. Returns the row, or None on a re-delivered event (the same key); the
+        gateway delivery id is the dedupe key, so a webhook redelivery is a no-op."""
+        try:
+            return await self.create(
+                organisation_id=organisation_id,
+                user_id=user_id,
+                input_text=input_text,
+                manifest_inline=manifest_inline,
+                manifest_ref=manifest_ref,
+                idempotency_key=idempotency_key,
+            )
+        except IntegrityError:
+            return None
+
     async def transition(
         self,
         job_id: uuid.UUID,
