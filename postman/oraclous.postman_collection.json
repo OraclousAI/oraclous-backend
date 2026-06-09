@@ -3116,6 +3116,147 @@
       ]
     },
     {
+      "name": "MCP Server (R6 S8)",
+      "description": "An MCP (Model Context Protocol) server exposing the org's published agents as tools. Auth is your INTEGRATION KEY (not the member JWT). Mint a key bound to a published agent first, then: initialize -> tools/list -> tools/call.",
+      "item": [
+        {
+          "name": "POST /v1/mcp \u2014 initialize",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{integration_key}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{base_url}}/v1/mcp",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "mcp"
+              ]
+            },
+            "description": "MCP handshake. Auth = your integration key (oak-/oag-) as a Bearer (a member JWT is 403). Mint one in the 'Published Agents & Integration Keys' folder (sets {{integration_key}}).",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"jsonrpc\": \"2.0\",\n  \"id\": 1,\n  \"method\": \"initialize\",\n  \"params\": {\n    \"protocolVersion\": \"2025-06-18\",\n    \"capabilities\": {},\n    \"clientInfo\": {\n      \"name\": \"postman\",\n      \"version\": \"1\"\n    }\n  }\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const j=pm.response.json();",
+                  "pm.test('protocolVersion',()=>pm.expect(j.result.protocolVersion).to.exist);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST /v1/mcp \u2014 tools/list",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{integration_key}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{base_url}}/v1/mcp",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "mcp"
+              ]
+            },
+            "description": "List the org's published agents as MCP tools, scoped by the key's binding (a bound-agent key -> its one agent; a cap-allow-list key -> the allow-listed agents).",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"jsonrpc\": \"2.0\",\n  \"id\": 2,\n  \"method\": \"tools/list\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const j=pm.response.json();",
+                  "pm.test('tools array',()=>pm.expect(j.result.tools).to.be.an('array'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST /v1/mcp \u2014 tools/call",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{integration_key}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{base_url}}/v1/mcp",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "mcp"
+              ]
+            },
+            "description": "Run a published agent as an MCP tool (name = the agent slug). Routes through the invoke path -> the harness. The result is {content, isError}; the harness internals never leak. A tool outside your key's binding -> a JSON-RPC 'unknown tool' error.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"jsonrpc\": \"2.0\",\n  \"id\": 3,\n  \"method\": \"tools/call\",\n  \"params\": {\n    \"name\": \"{{pub_slug}}\",\n    \"arguments\": {\n      \"input\": \"Hello, what can you do?\"\n    }\n  }\n}"
+            }
+          }
+        }
+      ]
+    },
+    {
       "name": "Health checks (direct to each service)",
       "item": [
         {
