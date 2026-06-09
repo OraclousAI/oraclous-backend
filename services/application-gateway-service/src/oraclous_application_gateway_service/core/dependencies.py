@@ -26,6 +26,9 @@ from oraclous_application_gateway_service.repositories.published_agent_repositor
     PublishedAgentRepository,
 )
 from oraclous_application_gateway_service.repositories.upstream_client import UpstreamClient
+from oraclous_application_gateway_service.repositories.webhook_subscription_repository import (
+    WebhookSubscriptionRepository,
+)
 from oraclous_application_gateway_service.services.chat_service import ChatService
 from oraclous_application_gateway_service.services.chat_turn_service import ChatTurnService
 from oraclous_application_gateway_service.services.health_service import HealthService
@@ -40,6 +43,13 @@ from oraclous_application_gateway_service.services.invoke_service import InvokeS
 from oraclous_application_gateway_service.services.proxy_service import ProxyService
 from oraclous_application_gateway_service.services.published_agent_service import (
     PublishedAgentService,
+)
+from oraclous_application_gateway_service.services.webhook_ingress_service import (
+    WebhookIngressService,
+)
+from oraclous_application_gateway_service.services.webhook_secret_client import WebhookSecretClient
+from oraclous_application_gateway_service.services.webhook_subscription_service import (
+    WebhookSubscriptionService,
 )
 
 
@@ -238,6 +248,41 @@ def get_chat_turn_service(
     )
 
 
+def get_webhook_subscription_repository(request: Request) -> WebhookSubscriptionRepository:
+    return _require_repo(request, "webhook_subscription_repo")
+
+
+def _webhook_secret_client(request: Request) -> WebhookSecretClient:
+    settings = get_settings()
+    return WebhookSecretClient(
+        upstream_client=UpstreamClient(get_http_client(request)),
+        broker_base_url=settings.CREDENTIAL_BROKER_URL,
+        internal_key=settings.INTERNAL_SERVICE_KEY,
+    )
+
+
+def get_webhook_subscription_service(
+    request: Request, subs: WebhookSubscriptionRepoDep, agents: PublishedAgentRepoDep
+) -> WebhookSubscriptionService:
+    return WebhookSubscriptionService(
+        subscriptions=subs, agents=agents, secret_client=_webhook_secret_client(request)
+    )
+
+
+def get_webhook_ingress_service(
+    request: Request, subs: WebhookSubscriptionRepoDep, agents: PublishedAgentRepoDep
+) -> WebhookIngressService:
+    settings = get_settings()
+    return WebhookIngressService(
+        subscriptions=subs,
+        agents=agents,
+        secret_client=_webhook_secret_client(request),
+        upstream_client=UpstreamClient(get_http_client(request)),
+        engine_base_url=settings.EXECUTION_ENGINE_URL,
+        internal_key=settings.INTERNAL_SERVICE_KEY,
+    )
+
+
 HttpClientDep = Annotated[httpx.AsyncClient, Depends(get_http_client)]
 ProxyServiceDep = Annotated[ProxyService, Depends(get_proxy_service)]
 EdgePrincipalDep = Annotated[Principal | None, Depends(get_edge_principal)]
@@ -252,3 +297,10 @@ InvokeServiceDep = Annotated[InvokeService, Depends(get_invoke_service)]
 ChatRepoDep = Annotated[ChatRepository, Depends(get_chat_repository)]
 ChatServiceDep = Annotated[ChatService, Depends(get_chat_service)]
 ChatTurnServiceDep = Annotated[ChatTurnService, Depends(get_chat_turn_service)]
+WebhookSubscriptionRepoDep = Annotated[
+    WebhookSubscriptionRepository, Depends(get_webhook_subscription_repository)
+]
+WebhookSubscriptionServiceDep = Annotated[
+    WebhookSubscriptionService, Depends(get_webhook_subscription_service)
+]
+WebhookIngressServiceDep = Annotated[WebhookIngressService, Depends(get_webhook_ingress_service)]

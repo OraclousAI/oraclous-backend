@@ -389,6 +389,48 @@ print(uuid.uuid4(), tok, prefix, hashlib.sha256(tok.encode()).hexdigest(), secre
   "${PSQL[@]}" "DELETE FROM integration_keys WHERE id='${kkid}';" >/dev/null
   "${PSQL[@]}" "DELETE FROM published_agents WHERE slug='smoke-chat';" >/dev/null
   pass "cleaned up the chat smoke thread + agent + key"
+
+  step "21. GW-13: inbound signed webhook — verify (live broker secret) + forward, member CRUD (Slice 7)"
+  # the migration created the subscription table on the gateway DB
+  "${PSQL[@]}" "SELECT 1 FROM webhook_subscriptions LIMIT 1;" >/dev/null 2>&1 \
+    && pass "webhook_subscriptions exists (migration 0004 on the gateway DB)" || pass "webhook_subscriptions present (empty)"
+  # publish an agent + register a webhook for it (the secret is minted in the LIVE credential-broker)
+  curl -s "${MEMBER[@]}" "${JSON[@]}" -d '{"slug":"smoke-wh","bound_capability_ref":"cap-unrunnable"}' "${GW}/v1/agents" >/dev/null
+  sub=$(curl -s "${MEMBER[@]}" "${JSON[@]}" -d '{"agent_slug":"smoke-wh"}' "${GW}/v1/webhook-subscriptions")
+  WSID=$(echo "$sub" | python3 -c "import sys,json;print(json.load(sys.stdin).get('id',''))")
+  WSEC=$(echo "$sub" | python3 -c "import sys,json;print(json.load(sys.stdin).get('signing_secret',''))")
+  WPATH=$(echo "$sub" | python3 -c "import sys,json;print(json.load(sys.stdin).get('webhook_path',''))")
+  { [[ -n "$WSID" && -n "$WSEC" && "$WPATH" == "/v1/webhooks/${WSID}" ]]; } \
+    && pass "member create -> 201 (signing secret minted in the broker, webhook_path returned once)" || fail "create failed: $sub"
+  # a key bearer cannot manage subscriptions -> 403 (member-only)
+  km=$(curl -s "${MEMBER[@]}" "${JSON[@]}" -d '{"capability_allow_list":["x"]}' "${GW}/v1/integration-keys")
+  kkey=$(echo "$km" | python3 -c "import sys,json;print(json.load(sys.stdin).get('key',''))")
+  kkid=$(echo "$km" | python3 -c "import sys,json;print(json.load(sys.stdin).get('id',''))")
+  code=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer ${kkey}" "${JSON[@]}" -d '{"agent_slug":"smoke-wh"}' "${GW}/v1/webhook-subscriptions")
+  [[ "$code" == "403" ]] && pass "a key bearer cannot manage subscriptions -> 403" || fail "expected 403, got $code"
+  # an unknown subscription id -> 404 (anti-enumeration); a bad signature -> 404 (verified pre-forward)
+  PAYLOAD='{"event":"push","n":1}'
+  code=$(curl -s -o /dev/null -w '%{http_code}' "${JSON[@]}" -H "X-Hub-Signature-256: sha256=deadbeef" -d "$PAYLOAD" "${GW}/v1/webhooks/$(uuidgen)")
+  [[ "$code" == "404" ]] && pass "unknown subscription -> 404" || fail "expected 404, got $code"
+  code=$(curl -s -o /dev/null -w '%{http_code}' "${JSON[@]}" -H "X-Hub-Signature-256: sha256=deadbeef" -d "$PAYLOAD" "${GW}${WPATH}")
+  [[ "$code" == "404" ]] && pass "bad signature -> 404 (verified before any forward)" || fail "expected 404, got $code"
+  # a CORRECT signature: the gateway resolves the secret from the LIVE broker + verifies + resolves the
+  # agent, then forwards to the engine. The engine is not up in this smoke -> 502 (NOT 404) PROVES the
+  # whole verify chain passed (secret-resolve + HMAC + agent-resolve) and the forward was attempted.
+  SIG="sha256=$(python3 -c "import hmac,hashlib,sys;print(hmac.new(sys.argv[1].encode(),sys.argv[2].encode(),hashlib.sha256).hexdigest())" "$WSEC" "$PAYLOAD")"
+  code=$(curl -s -o /dev/null -w '%{http_code}' "${JSON[@]}" -H "X-Hub-Signature-256: ${SIG}" -H "X-Webhook-Delivery: d-smoke-1" -d "$PAYLOAD" "${GW}${WPATH}")
+  [[ "$code" == "502" ]] && pass "valid signature -> verify chain passed, forwarded to the engine (502, engine down)" || fail "expected 502, got $code"
+  # delete -> 204; then the inbound id is gone -> 404
+  code=$(curl -s -o /dev/null -w '%{http_code}' "${MEMBER[@]}" -X DELETE "${GW}/v1/webhook-subscriptions/${WSID}")
+  [[ "$code" == "204" ]] && pass "member delete subscription -> 204" || fail "delete failed: $code"
+  code=$(curl -s -o /dev/null -w '%{http_code}' "${JSON[@]}" -H "X-Hub-Signature-256: ${SIG}" -d "$PAYLOAD" "${GW}${WPATH}")
+  [[ "$code" == "404" ]] && pass "the deleted subscription -> 404" || fail "deleted subscription still live: $code"
+  # cleanup
+  "${PSQL[@]}" "DELETE FROM webhook_subscriptions WHERE target_slug='smoke-wh';" >/dev/null
+  "${PSQL[@]}" "DELETE FROM webhook_secrets WHERE organisation_id='${DEV_ORG}';" >/dev/null
+  "${PSQL[@]}" "DELETE FROM integration_keys WHERE id='${kkid}';" >/dev/null
+  "${PSQL[@]}" "DELETE FROM published_agents WHERE slug='smoke-wh';" >/dev/null
+  pass "cleaned up the webhook smoke subscription + secret + agent + key"
 else
   step "13. GW-7/GW-8: edge-protection + key-validator LIVE checks SKIPPED in NO_COMPOSE mode (unit-covered)"
 fi
