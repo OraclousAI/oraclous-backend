@@ -6,10 +6,37 @@ import pytest
 from oraclous_application_gateway_service.domain.edge_protection import (
     client_ip,
     content_length_exceeds,
+    is_malformed_path,
     is_rate_limit_exempt,
 )
 
 pytestmark = pytest.mark.unit
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/v1/tools/../../etc/passwd",  # a traversal segment
+        "/v1/../admin",
+        "/v1/tools\x00.json",  # NUL byte
+        "/v1\\tools",  # backslash
+    ],
+)
+def test_malformed_paths_are_rejected(path: str) -> None:
+    assert is_malformed_path(path) is True
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/v1/agents/my-agent/invoke",
+        "/health",
+        "/v1/tools",
+        "/v1/a..b/x",  # `..` only INSIDE a segment is not traversal — must not false-positive
+    ],
+)
+def test_legitimate_paths_pass(path: str) -> None:
+    assert is_malformed_path(path) is False
 
 
 def test_xff_ignored_at_default_trust_zero() -> None:

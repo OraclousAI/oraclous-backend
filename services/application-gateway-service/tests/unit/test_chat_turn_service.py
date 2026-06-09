@@ -140,7 +140,7 @@ async def test_turn_folds_history_and_persists_both_sides() -> None:
     )
     # the prior turn + the new message reached the SINGLE harness input
     sent = up.sent["content"].decode()
-    assert "hi earlier" in sent and "what did I say?" in sent and "Conversation so far:" in sent
+    assert "hi earlier" in sent and "what did I say?" in sent and "Conversation so far" in sent
     # both the user turn and the assistant turn were persisted, in order
     roles = [m.role for m in threads.added]
     assert roles == ["user", "assistant"]

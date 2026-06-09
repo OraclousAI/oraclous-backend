@@ -24,6 +24,16 @@ def is_rate_limit_exempt(path: str) -> bool:
     return any(path == p or path.startswith(p + "/") for p in _RATE_LIMIT_EXEMPT)
 
 
+def is_malformed_path(path: str) -> bool:
+    """Reject obviously-hostile request paths at the door (R7-SEC S4): a NUL byte, a backslash, or a
+    ``..`` traversal segment. The route table is already fail-closed (an unmatched path 404s), but
+    rejecting these at the edge with a 400 is defense-in-depth — a ``..`` must never be forwarded
+    into an upstream's path, where path semantics could differ."""
+    if "\x00" in path or "\\" in path:
+        return True
+    return any(segment == ".." for segment in path.split("/"))
+
+
 def client_ip(peer: str | None, xff_header: str | None, *, trusted_proxy_count: int) -> str:
     """The client IP for the rate-limit key, under an explicit XFF trust boundary.
 

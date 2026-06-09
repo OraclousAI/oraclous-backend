@@ -27,3 +27,8 @@ class WebhookSecretResolveInput(BaseModel):
 
 class WebhookSecretResolveResponse(BaseModel):
     secret: str  # the decrypted signing secret, for the trusted gateway to recompute the HMAC
+
+
+class WebhookSecretDeleteInput(BaseModel):
+    organisation_id: uuid.UUID
+    secret_id: uuid.UUID  # the gateway GCs this secret when its subscription is deleted (S4)

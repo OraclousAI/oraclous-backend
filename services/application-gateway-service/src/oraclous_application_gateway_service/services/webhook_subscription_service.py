@@ -48,15 +48,34 @@ class WebhookSubscriptionService:
         secret_ref = await self._secrets.mint(
             organisation_id=organisation_id, secret=signing_secret
         )
-        sub = await self._subs.create(
-            organisation_id=organisation_id, target_slug=agent_slug, broker_secret_ref=secret_ref
-        )
+        try:
+            sub = await self._subs.create(
+                organisation_id=organisation_id,
+                target_slug=agent_slug,
+                broker_secret_ref=secret_ref,
+            )
+        except Exception:
+            # the sub-row insert failed AFTER the broker minted the secret -> compensate so it
+            # isn't orphaned (R7-SEC S4). Best-effort: delete never raises; re-raise the real error.
+            await self._secrets.delete(organisation_id=organisation_id, secret_id=secret_ref)
+            raise
         return sub, signing_secret  # the plaintext returned ONCE
 
     async def list_subscriptions(self, *, organisation_id: uuid.UUID) -> list[WebhookSubscription]:
         return await self._subs.list_for_org(organisation_id)
 
     async def delete(self, *, organisation_id: uuid.UUID, subscription_id: uuid.UUID) -> bool:
-        return await self._subs.delete_for_org(
+        # read the sub first (org-scoped) so we can GC its broker secret; deleting the row alone
+        # would orphan the secret in the broker (R7-SEC S4).
+        sub = await self._subs.get_by_id(subscription_id)
+        if sub is None or sub.organisation_id != organisation_id:
+            return False
+        deleted = await self._subs.delete_for_org(
             subscription_id=subscription_id, organisation_id=organisation_id
         )
+        if deleted:
+            # best-effort GC of the now-unreferenced secret (a failure leaves a harmless orphan)
+            await self._secrets.delete(
+                organisation_id=organisation_id, secret_id=sub.broker_secret_ref
+            )
+        return deleted

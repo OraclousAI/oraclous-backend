@@ -560,6 +560,24 @@ print(uuid.uuid4(), tok, prefix, hashlib.sha256(tok.encode()).hexdigest(), secre
   "${PSQL[@]}" "DELETE FROM integration_keys WHERE id IN ('${CKID}','${UKID}');" >/dev/null
   "${PSQL[@]}" "DELETE FROM published_agents WHERE slug='smoke-rl';" >/dev/null
   pass "cleaned up the rate-limit smoke keys + agent"
+
+  step "27. GW-19: path hygiene + webhook orphan-secret GC (R7-SEC S4)"
+  # a `..`-traversal path is rejected at the door with 400 (--path-as-is so curl doesn't pre-normalise)
+  pc=$(curl -s -o /dev/null -w '%{http_code}' --path-as-is "${GW}/v1/tools/../../etc/passwd")
+  [[ "$pc" == "400" ]] && pass "a ../ traversal path -> 400 (malformed, rejected at the edge)" || fail "expected 400 for traversal, got $pc"
+  # the orphan-secret GC: a deleted webhook subscription's broker secret is removed too (no leak)
+  curl -s "${MEMBER[@]}" "${JSON[@]}" -d '{"slug":"smoke-gc","bound_capability_ref":"cap-x"}' "${GW}/v1/agents" >/dev/null
+  whsub=$(curl -s "${MEMBER[@]}" "${JSON[@]}" -d '{"agent_slug":"smoke-gc"}' "${GW}/v1/webhook-subscriptions")
+  WSID=$(echo "$whsub" | python3 -c "import sys,json;print(json.load(sys.stdin).get('id',''))")
+  SECREF=$("${PSQL[@]}" "SELECT broker_secret_ref FROM webhook_subscriptions WHERE id='${WSID}';" | tr -d '[:space:]')
+  before=$("${PSQL[@]}" "SELECT count(*) FROM webhook_secrets WHERE id='${SECREF}';" | tr -d '[:space:]')
+  [[ "$before" == "1" ]] && pass "the subscription's broker secret exists while the sub lives" || fail "expected the secret to exist, count=$before"
+  dc=$(curl -s -o /dev/null -w '%{http_code}' -X DELETE "${MEMBER[@]}" "${GW}/v1/webhook-subscriptions/${WSID}")
+  [[ "$dc" == "204" ]] && pass "DELETE the subscription -> 204" || fail "expected 204 deleting the sub, got $dc"
+  after=$("${PSQL[@]}" "SELECT count(*) FROM webhook_secrets WHERE id='${SECREF}';" | tr -d '[:space:]')
+  [[ "$after" == "0" ]] && pass "the broker secret was GC'd with the subscription (no orphan)" || fail "the secret leaked: count=$after"
+  "${PSQL[@]}" "DELETE FROM published_agents WHERE slug='smoke-gc';" >/dev/null
+  pass "cleaned up the GC smoke agent"
 else
   step "13. GW-7/GW-8: edge-protection + key-validator LIVE checks SKIPPED in NO_COMPOSE mode (unit-covered)"
 fi
