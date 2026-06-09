@@ -13,7 +13,9 @@ set -euo pipefail
 GW="${ENGINE_SMOKE_GW:-http://localhost:8006}"
 EE="${ENGINE_SMOKE_URL:-http://localhost:8008}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)"
-COMPOSE="docker compose -f ${ROOT}/deploy/docker-compose.yml"
+# sole-ingress (S9): the upstream host ports are internal-only by default; this smoke probes its
+# service DIRECTLY (and goes through the gateway for the rest), so re-publish the ports.
+COMPOSE="docker compose -f ${ROOT}/deploy/docker-compose.yml -f ${ROOT}/deploy/docker-compose.dev-ports.yml"
 
 pass() { printf '  \033[32mok\033[0m   %s\n' "$1"; }
 fail() { printf '  \033[31mFAIL\033[0m %s\n' "$1"; exit 1; }
