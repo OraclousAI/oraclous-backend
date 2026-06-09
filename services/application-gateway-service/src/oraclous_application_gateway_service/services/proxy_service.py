@@ -29,6 +29,21 @@ _HOP_BY_HOP = frozenset(
     }
 )
 
+# Response headers the gateway NEVER returns downstream (R7-SEC S1): anti-fingerprinting — never
+# leak the upstream server software (the upstreams run uvicorn; the gateway drops its own `server`
+# via `--no-server-header`) — plus a reflect-guard so a misbehaving upstream can never echo a
+# trusted-identity header back to the client.
+_RESPONSE_DENYLIST = frozenset(
+    {
+        "server",
+        "x-powered-by",
+        "x-principal-id",
+        "x-principal-type",
+        "x-organisation-id",
+        "x-internal-key",
+    }
+)
+
 
 def forward_request_headers(
     raw_headers: list[tuple[bytes, bytes]], principal: Principal | None, *, internal_key: str
@@ -59,12 +74,13 @@ def forward_request_headers(
 
 
 def response_headers(raw_headers: list[tuple[bytes, bytes]]) -> list[tuple[str, str]]:
-    """Headers to return downstream: drop hop-by-hop + framing headers (the StreamingResponse
-    sets its own transfer framing); keep content-type and the rest verbatim."""
+    """Headers to return downstream: drop hop-by-hop + framing headers (the StreamingResponse sets
+    its own transfer framing) + the security denylist (anti-fingerprinting + trust-header reflect
+    guard, R7-SEC S1); keep content-type and the rest verbatim."""
     out: list[tuple[str, str]] = []
     for key, value in raw_headers:
         name = key.decode("latin-1").lower()
-        if name in _HOP_BY_HOP or name == "content-length":
+        if name in _HOP_BY_HOP or name == "content-length" or name in _RESPONSE_DENYLIST:
             continue
         out.append((name, value.decode("latin-1")))
     return out

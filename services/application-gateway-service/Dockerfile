@@ -58,5 +58,7 @@ USER svc
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"
 
+# --no-server-header (R7-SEC S1): the gateway never advertises its own server software downstream;
+# proxied upstream `server`/`x-powered-by` are stripped by `response_headers`.
 CMD ["uvicorn", "oraclous_application_gateway_service.main:app", \
-     "--host", "0.0.0.0", "--port", "8000"]
+     "--host", "0.0.0.0", "--port", "8000", "--no-server-header"]
