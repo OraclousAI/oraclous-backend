@@ -2845,6 +2845,143 @@
       ]
     },
     {
+      "name": "Member Chat (R6 S6)",
+      "description": "A persisted, multi-turn member chat with a published agent (private to you). Run after publishing an agent (sets {{pub_slug}}): start -> send -> transcript -> delete.",
+      "item": [
+        {
+          "name": "POST /v1/chat/threads (start)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/chat/threads",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "threads"
+              ]
+            },
+            "description": "Start a chat thread bound to a published agent (member, private to you). agent_slug must be one of your org's published agents.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"agent_slug\": \"{{pub_slug}}\",\n  \"title\": \"My chat\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const j=pm.response.json();",
+                  "if(j.id)pm.collectionVariables.set('thread_id',j.id);",
+                  "pm.test('thread started',()=>pm.expect(j.id).to.exist);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /v1/chat/threads (my threads)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/v1/chat/threads",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "threads"
+              ]
+            },
+            "description": "List your own chat threads (most-recent first)."
+          }
+        },
+        {
+          "name": "POST /v1/chat/threads/:id/messages (send)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/chat/threads/{{thread_id}}/messages",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "threads",
+                "{{thread_id}}",
+                "messages"
+              ]
+            },
+            "description": "Send a message: runs the bound agent on the harness + persists both turns. Returns {status, message, execution_id}. status is succeeded|pending(HITL)|failed.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"content\": \"Hello, what can you do?\"\n}"
+            }
+          }
+        },
+        {
+          "name": "GET /v1/chat/threads/:id/messages (transcript)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/v1/chat/threads/{{thread_id}}/messages",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "threads",
+                "{{thread_id}}",
+                "messages"
+              ]
+            },
+            "description": "Read the thread transcript (user + assistant turns, oldest first)."
+          }
+        },
+        {
+          "name": "DELETE /v1/chat/threads/:id (soft-delete)",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/v1/chat/threads/{{thread_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "threads",
+                "{{thread_id}}"
+              ]
+            },
+            "description": "Soft-delete the thread (204). It then disappears from your list + reads 404."
+          }
+        }
+      ]
+    },
+    {
       "name": "Health checks (direct to each service)",
       "item": [
         {
@@ -3581,6 +3718,10 @@
     },
     {
       "key": "key_id",
+      "value": ""
+    },
+    {
+      "key": "thread_id",
       "value": ""
     }
   ]

@@ -65,6 +65,8 @@ tags:
     description: Publish agents (member) + the public published-agent surface (integration key).
   - name: keys
     description: Integration-key management (member) — mint, list, rotate, revoke.
+  - name: chat
+    description: Member console chat — persisted multi-turn conversations with a published agent.
 paths:
   /health:
     get:
@@ -520,6 +522,79 @@ paths:
       x-stability: provisional
       parameters:
         - { name: keyId, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  # --- Member console chat (R6 Slice 6) — gateway-owned, org + creating-member scoped ---
+  /v1/chat/threads:
+    post:
+      tags: [chat]
+      summary: Start a chat thread bound to a published agent (member, private to the creator).
+      operationId: startChatThread
+      x-stability: provisional
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/JsonObject" }
+      responses:
+        "201": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+    get:
+      tags: [chat]
+      summary: List the member's own chat threads (most-recent first).
+      operationId: listChatThreads
+      x-stability: provisional
+      responses:
+        "200": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Unauthorized" }
+  /v1/chat/threads/{threadId}:
+    delete:
+      tags: [chat]
+      summary: Soft-delete a chat thread (member, the creator only).
+      operationId: deleteChatThread
+      x-stability: provisional
+      parameters:
+        - { name: threadId, in: path, required: true, schema: { type: string } }
+      responses:
+        "204": { description: Deleted. }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /v1/chat/threads/{threadId}/messages:
+    post:
+      tags: [chat]
+      summary: Send a message — runs the bound agent on the harness + persists the turn.
+      operationId: sendChatMessage
+      x-stability: provisional
+      parameters:
+        - { name: threadId, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/JsonObject" }
+      responses:
+        "200": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+        "5XX": { $ref: "#/components/responses/Upstream5xx" }
+    get:
+      tags: [chat]
+      summary: Read a chat thread's transcript (member, the creator only).
+      operationId: listChatMessages
+      x-stability: provisional
+      parameters:
+        - { name: threadId, in: path, required: true, schema: { type: string } }
       responses:
         "200": { $ref: "#/components/responses/UpstreamJson" }
         "401": { $ref: "#/components/responses/Unauthenticated" }
