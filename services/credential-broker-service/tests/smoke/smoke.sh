@@ -51,10 +51,12 @@ stored=$(${COMPOSE} exec -T postgres psql -U oraclous -d oraclous -tAc \
   "SELECT encrypted_cred FROM user_credentials WHERE id='${cid}'")
 echo "$stored" | grep -q "smoke-secret-123" && fail "PLAINTEXT AT REST: secret found in DB" \
   || pass "credential is AES-256-GCM encrypted at rest (no plaintext in DB)"
-# GET decrypts back to the original secret
-sec=$(curl -fsS "${AUTH[@]}" -X GET "${CB}/credentials/${cid}" | jget "['credential']['access_token']")
-[[ "$sec" == "smoke-secret-123" ]] && pass "GET decrypts the credential back to plaintext" \
-  || fail "decrypt mismatch: $sec"
+# the metadata GET returns the credential's metadata but NOT the secret (hardened — the plaintext is
+# only recoverable via the internal /resolve-credential path, never on the member-facing metadata GET)
+getbody=$(curl -fsS "${AUTH[@]}" -X GET "${CB}/credentials/${cid}")
+{ echo "$getbody" | grep -q '"provider":"google"' && ! echo "$getbody" | grep -q "smoke-secret-123"; } \
+  && pass "metadata GET returns metadata, never the secret (decrypt is /internal/resolve-credential)" \
+  || fail "metadata GET wrong / leaked the secret: $getbody"
 # no token -> 401; unknown id -> 404 (org-scoped)
 c=$(curl -s -o /dev/null -w '%{http_code}' -X GET "${CB}/credentials/${cid}")
 [[ "$c" == "401" ]] && pass "no bearer -> 401" || fail "expected 401, got $c"
@@ -116,6 +118,27 @@ curl -fsS -H "X-Internal-Key: ${INTKEY}" -H "Content-Type: application/json" -X 
 v2=$(curl -fsS -H "X-Internal-Key: ${INTKEY}" -H "Content-Type: application/json" -X POST "${CB}/internal/delegated-tokens/validate" \
   -d "{\"organisation_id\":\"${ORGD}\",\"raw_token\":\"${DRAW}\",\"requesting_agent_id\":\"${AGD}\",\"requested_scopes\":[\"read\"]}")
 echo "$v2" | grep -q '"revoked"' && pass "after revoke, validate -> revoked" || fail "revoke didn't take: $v2"
+
+step "9. R6-S7: webhook signing-secret mint -> resolve (internal-key gated, org-scoped, AES-GCM at rest)"
+ORGW="00000000-0000-0000-0000-0000000007e7"
+wmint=$(curl -fsS -H "X-Internal-Key: ${INTKEY}" -H "Content-Type: application/json" -X POST "${CB}/internal/webhook-secrets" \
+  -d "{\"organisation_id\":\"${ORGW}\",\"secret\":\"whsec_smoke_hmac_key\"}")
+WSID=$(echo "$wmint" | python3 -c "import sys,json;print(json.load(sys.stdin).get('secret_id',''))")
+[[ -n "$WSID" ]] && pass "mint webhook secret -> id" || fail "mint failed: $wmint"
+# the plaintext is NOT at rest (AES-GCM ciphertext only)
+inrow=$($COMPOSE exec -T postgres psql -U oraclous -d oraclous -tAc "SELECT encrypted_secret FROM webhook_secrets WHERE id='${WSID}';" 2>/dev/null)
+echo "$inrow" | grep -q "whsec_smoke_hmac_key" && fail "PLAINTEXT SECRET AT REST" || pass "DB stores only AES-GCM ciphertext (plaintext absent)"
+# resolve in the same org returns the plaintext for the trusted gateway
+wres=$(curl -fsS -H "X-Internal-Key: ${INTKEY}" -H "Content-Type: application/json" -X POST "${CB}/internal/webhook-secrets/resolve" \
+  -d "{\"organisation_id\":\"${ORGW}\",\"secret_id\":\"${WSID}\"}")
+echo "$wres" | grep -q '"secret":"whsec_smoke_hmac_key"' && pass "resolve (same org) -> the plaintext" || fail "resolve failed: $wres"
+# cross-org resolve -> 404 (mask); no internal key -> 401
+code=$(curl -s -o /dev/null -w '%{http_code}' -H "X-Internal-Key: ${INTKEY}" -H "Content-Type: application/json" -X POST "${CB}/internal/webhook-secrets/resolve" \
+  -d "{\"organisation_id\":\"$(uuidgen)\",\"secret_id\":\"${WSID}\"}")
+[[ "$code" == "404" ]] && pass "cross-org resolve -> 404 (mask)" || fail "expected 404, got $code"
+code=$(curl -s -o /dev/null -w '%{http_code}' -H "Content-Type: application/json" -X POST "${CB}/internal/webhook-secrets" -d '{}')
+[[ "$code" == "401" ]] && pass "no internal key -> 401 (the gate)" || fail "expected 401, got $code"
+$COMPOSE exec -T postgres psql -U oraclous -d oraclous -tAc "DELETE FROM webhook_secrets WHERE organisation_id='${ORGW}';" >/dev/null 2>&1
 
 printf '\n\033[32mcredential-broker COMPLETE smoke passed.\033[0m  encrypted CRUD + catalogue + runtime '
 printf 'OAuth resolution + discovery + delegated-token lifecycle, all over the running stack.\n'

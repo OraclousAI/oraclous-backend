@@ -8,12 +8,13 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, status
 
 from oraclous_credential_broker_service.core.dependencies import (
     CredentialBrokerServiceDep,
     CredentialServiceDep,
     DelegationServiceDep,
+    WebhookSecretServiceDep,
     verify_internal_key,
 )
 from oraclous_credential_broker_service.domain.providers import (
@@ -32,7 +33,14 @@ from oraclous_credential_broker_service.schema.credential_schema import (
     RuntimeTokenResponse,
     ValidateDelegatedTokenInput,
 )
+from oraclous_credential_broker_service.schema.webhook_secret_schema import (
+    WebhookSecretMintInput,
+    WebhookSecretMintResponse,
+    WebhookSecretResolveInput,
+    WebhookSecretResolveResponse,
+)
 from oraclous_credential_broker_service.services.credential_broker_service import TokenResult
+from oraclous_credential_broker_service.services.webhook_secret_service import WebhookSecretNotFound
 
 router = APIRouter(
     prefix="/internal", tags=["internal"], dependencies=[Depends(verify_internal_key)]
@@ -158,3 +166,30 @@ async def resolve_credential(
         cred_type=out.cred_type,
         credential=out.credential,
     )
+
+
+@router.post("/webhook-secrets", response_model=WebhookSecretMintResponse)
+async def mint_webhook_secret(
+    mint_input: WebhookSecretMintInput, svc: WebhookSecretServiceDep
+) -> WebhookSecretMintResponse:
+    """Mint a per-webhook HMAC signing secret for an org (encrypted at rest). The gateway keeps only
+    the returned id (the reference); the plaintext never leaves the broker (R6 Slice 7, ADR-008)."""
+    secret_id = await svc.mint(organisation_id=mint_input.organisation_id, secret=mint_input.secret)
+    return WebhookSecretMintResponse(secret_id=secret_id)
+
+
+@router.post("/webhook-secrets/resolve", response_model=WebhookSecretResolveResponse)
+async def resolve_webhook_secret(
+    resolve_input: WebhookSecretResolveInput, svc: WebhookSecretServiceDep
+) -> WebhookSecretResolveResponse:
+    """Return a webhook secret's DECRYPTED value by id (org-scoped) for the gateway to
+    recompute the inbound HMAC. WebhookSecretNotFound → 404 (cross-org mask)."""
+    try:
+        secret = await svc.resolve(
+            secret_id=resolve_input.secret_id, organisation_id=resolve_input.organisation_id
+        )
+    except WebhookSecretNotFound as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="no such webhook secret"
+        ) from exc
+    return WebhookSecretResolveResponse(secret=secret)
