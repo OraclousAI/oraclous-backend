@@ -37,6 +37,35 @@ class SubmitJobRequest(BaseModel):
         return self
 
 
+class EngineEventRequest(BaseModel):
+    """Fire a webhook EVENT (gateway-attested) -> a durable job. The gateway supplies the resolved
+    OHM (exactly one of inline ``manifest`` or ``manifest_ref``), the ``input`` from the event, and
+    a dedupe ``idempotency_key`` (the provider delivery id). ``event_type``/``source`` are audit
+    only. The org is taken from the gateway-asserted principal, NEVER this body (ADR-006)."""
+
+    manifest: dict[str, Any] | None = None
+    manifest_ref: str | None = None
+    input: str = Field(min_length=1)
+    idempotency_key: str = Field(min_length=1, max_length=255)
+    event_type: str | None = None
+    source: str | None = None
+
+    @model_validator(mode="after")
+    def _exactly_one_manifest(self) -> EngineEventRequest:
+        if sum(x is not None for x in (self.manifest, self.manifest_ref)) != 1:
+            raise ValueError("supply exactly one of 'manifest' or 'manifest_ref'")
+        return self
+
+
+class EngineEventResponse(BaseModel):
+    """A webhook event-fire outcome — always 202. ``deduped`` marks a re-delivered event (no new
+    job created); ``job_id`` is the durable job for a fresh delivery."""
+
+    accepted: bool = True
+    deduped: bool
+    job_id: uuid.UUID | None = None
+
+
 class JobOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

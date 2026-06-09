@@ -174,4 +174,19 @@ c=$(${COMPOSE} exec -T postgres psql -U oraclous -d oraclous -tAc \
   "select count(*) from engine_provenance where resource='engine_job:${JID}' and action in ('engine.job.submit','engine.job.run')")
 [[ "${c//[[:space:]]/}" -ge 2 ]] && pass "engine.job.submit + run provenance recorded" || fail "no provenance"
 
+step "11. R6-S7: POST /v1/engine/events fires a durable job + is idempotent on the delivery id"
+DELIV="smoke-delivery-$(date +%s)-$$"
+EVT=$(python3 -c "import json,sys;print(json.dumps({'manifest':{'ohm_version':'1.0','metadata':{'id':'01976e3a-7c9b-7b00-9c45-aaa000000009','name':'Eng Event','owner_organization_id':sys.argv[1]},'capabilities':[],'models':[{'role':'primary','binding':'openrouter/x','protocol_shape':'openai-compatible'}],'prompts':[{'role':'primary','source':'inline','body':'r'}],'actors':[{'role':'reviewer','kind':'human','human_role':'admin'}],'runtime':{'entrypoint':'reviewer'}},'input':'webhook event','idempotency_key':sys.argv[2],'event_type':'push','source':'smoke'}))" "$ORG" "$DELIV")
+r1=$(curl -fsS "${GW}/v1/engine/events" "${AUTH[@]}" -d "$EVT")
+echo "$r1" | python3 -c 'import sys,json;j=json.load(sys.stdin);assert j["accepted"] and not j["deduped"] and j["job_id"],j' \
+  && pass "event fire -> 202 accepted, a durable job_id, deduped:false" || fail "event fire wrong: $r1"
+# re-deliver the SAME delivery id -> idempotent no-op (no second job)
+r2=$(curl -fsS "${GW}/v1/engine/events" "${AUTH[@]}" -d "$EVT")
+echo "$r2" | python3 -c 'import sys,json;j=json.load(sys.stdin);assert j["accepted"] and j["deduped"] and not j["job_id"],j' \
+  && pass "re-delivery (same idempotency_key) -> deduped:true, no new job" || fail "dedupe wrong: $r2"
+EJID=$(echo "$r1" | python3 -c 'import sys,json;print(json.load(sys.stdin)["job_id"])')
+c=$(${COMPOSE} exec -T postgres psql -U oraclous -d oraclous -tAc \
+  "select count(*) from engine_provenance where resource='engine_job:${EJID}' and action='engine.event.fire'")
+[[ "${c//[[:space:]]/}" -ge 1 ]] && pass "engine.event.fire provenance recorded" || fail "no event-fire provenance"
+
 printf '\n\033[32mAll execution-engine slice-7 smoke checks passed.\033[0m\n'

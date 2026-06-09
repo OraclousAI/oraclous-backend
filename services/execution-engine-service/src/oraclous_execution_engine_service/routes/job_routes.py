@@ -18,6 +18,8 @@ from oraclous_execution_engine_service.core.dependencies import (
     PrincipalDep,
 )
 from oraclous_execution_engine_service.schema.engine_schemas import (
+    EngineEventRequest,
+    EngineEventResponse,
     JobListResponse,
     JobOut,
     SubmitJobRequest,
@@ -52,6 +54,27 @@ async def submit_job(
     except JobError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     return JobOut.model_validate(job)
+
+
+@router.post("/events", response_model=EngineEventResponse, status_code=status.HTTP_202_ACCEPTED)
+async def fire_event(
+    body: EngineEventRequest, principal: PrincipalDep, service: JobServiceDep
+) -> EngineEventResponse:
+    """Fire a webhook EVENT -> a durable job (202). The trusted gateway (X-Internal-Key + the
+    X-Principal-*/X-Organisation-Id, the same gate as /jobs) calls this AFTER it has verified the
+    inbound signature; the org is the gateway-asserted principal's, never this body. Idempotent on
+    the delivery key — a re-delivered event is a no-op (``deduped: true``), still 202."""
+    try:
+        job = await service.submit_event(
+            principal=principal,
+            input_text=body.input,
+            idempotency_key=body.idempotency_key,
+            manifest_inline=body.manifest,
+            manifest_ref=body.manifest_ref,
+        )
+    except JobError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    return EngineEventResponse(deduped=job is None, job_id=job.id if job is not None else None)
 
 
 @router.post("/jobs/{job_id}/cancel", response_model=JobOut)

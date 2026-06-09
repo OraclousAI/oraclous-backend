@@ -34,6 +34,15 @@ class _FakeRepo:
         self.rows[row.id] = row
         return row
 
+    async def create_event(self, *, idempotency_key: str, **kw: object) -> EngineJob | None:
+        # idempotent on (org, idempotency_key) like the real repo's UNIQUE constraint
+        if any(
+            r.organisation_id == kw["organisation_id"] and r.idempotency_key == idempotency_key
+            for r in self.rows.values()
+        ):
+            return None
+        return await self.create(idempotency_key=idempotency_key, **kw)
+
     async def get(self, job_id: uuid.UUID, organisation_id: uuid.UUID) -> EngineJob | None:
         row = self.rows.get(job_id)
         return row if row and row.organisation_id == organisation_id else None
@@ -120,6 +129,37 @@ async def test_submit_without_queue_raises() -> None:
     svc = JobService(jobs=_FakeRepo(), provenance=_FakeProvenance())  # type: ignore[arg-type]
     with pytest.raises(JobError):
         await svc.submit(principal=_principal(), input_text="go", manifest_inline={})
+
+
+# ── submit_event (webhook fire) ──────────────────────────────────────────────────────────────
+async def test_submit_event_fires_a_durable_job() -> None:
+    svc, _, calls, prov = _request_svc()
+    job = await svc.submit_event(
+        principal=_principal(), input_text="event", idempotency_key="delivery-1", manifest_ref="cap"
+    )
+    assert job is not None and job.state == S.QUEUED.value
+    assert calls == [(job.id, _ORG, _USER)]  # enqueued
+    assert ("engine.event.fire", "QUEUED") in prov.events  # the event-fire provenance
+
+
+async def test_submit_event_dedupes_a_redelivery() -> None:
+    svc, _, calls, _ = _request_svc()
+    first = await svc.submit_event(
+        principal=_principal(), input_text="e", idempotency_key="dup", manifest_ref="cap"
+    )
+    second = await svc.submit_event(
+        principal=_principal(), input_text="e", idempotency_key="dup", manifest_ref="cap"
+    )
+    assert first is not None and second is None  # the redelivery is a no-op
+    assert calls == [(first.id, _ORG, _USER)]  # enqueued exactly once
+
+
+async def test_submit_event_org_from_principal_only() -> None:
+    svc, _, _, _ = _request_svc()
+    with pytest.raises(JobError):  # no org scope -> fail-closed
+        await svc.submit_event(
+            principal=_principal(org=None), input_text="e", idempotency_key="k", manifest_ref="c"
+        )
 
 
 async def test_no_org_scope_raises() -> None:
