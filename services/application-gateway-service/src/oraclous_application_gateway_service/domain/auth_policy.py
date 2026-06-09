@@ -2,12 +2,15 @@
 
 The closed allow-list of UNAUTHENTICATED public prefixes. Token issuance is unauthenticated by
 definition (login/register/refresh, the OAuth dance), so these proxy through without an edge JWT;
-every other routed path requires a verified principal.
+``/v1/webhooks`` is the inbound webhook door — it carries no bearer and authenticates by HMAC
+signature instead (verified in the ingress service). Note ``/v1/webhook-subscriptions`` (the member
+CRUD) is NOT matched by the ``/v1/webhooks`` prefix, so it stays edge-authenticated. Every other
+routed path requires a verified principal.
 """
 
 from __future__ import annotations
 
-_PUBLIC_PREFIXES: tuple[str, ...] = ("/v1/auth", "/oauth")
+_PUBLIC_PREFIXES: tuple[str, ...] = ("/v1/auth", "/oauth", "/v1/webhooks")
 
 
 def is_public(path: str) -> bool:

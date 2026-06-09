@@ -7,5 +7,13 @@ from oraclous_application_gateway_service.models.base_model import Base
 from oraclous_application_gateway_service.models.chat import ChatMessage, ChatThread
 from oraclous_application_gateway_service.models.integration_key import IntegrationKey
 from oraclous_application_gateway_service.models.published_agent import PublishedAgent
+from oraclous_application_gateway_service.models.webhook_subscription import WebhookSubscription
 
-__all__ = ["Base", "ChatMessage", "ChatThread", "IntegrationKey", "PublishedAgent"]
+__all__ = [
+    "Base",
+    "ChatMessage",
+    "ChatThread",
+    "IntegrationKey",
+    "PublishedAgent",
+    "WebhookSubscription",
+]

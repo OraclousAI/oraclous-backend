@@ -28,6 +28,9 @@ from oraclous_application_gateway_service.repositories.published_agent_repositor
     PublishedAgentRepository,
 )
 from oraclous_application_gateway_service.repositories.upstream_client import UpstreamClient
+from oraclous_application_gateway_service.repositories.webhook_subscription_repository import (
+    WebhookSubscriptionRepository,
+)
 from oraclous_application_gateway_service.services.proxy_service import ProxyService
 
 logger = logging.getLogger(__name__)
@@ -66,11 +69,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         app.state.integration_key_repo = IntegrationKeyRepository(settings.DATABASE_URL)
         app.state.published_agent_repo = PublishedAgentRepository(settings.DATABASE_URL)
         app.state.chat_repo = ChatRepository(settings.DATABASE_URL)
+        app.state.webhook_subscription_repo = WebhookSubscriptionRepository(settings.DATABASE_URL)
     except Exception as exc:  # noqa: BLE001 — never crash the edge on a DB issue
         logger.warning("gateway: datastore unavailable (%s); the DB-backed routes return 503", exc)
         app.state.integration_key_repo = None
         app.state.published_agent_repo = None
         app.state.chat_repo = None
+        app.state.webhook_subscription_repo = None
     try:
         yield
     finally:
@@ -83,3 +88,5 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             await app.state.published_agent_repo.close()
         if app.state.chat_repo is not None:
             await app.state.chat_repo.close()
+        if app.state.webhook_subscription_repo is not None:
+            await app.state.webhook_subscription_repo.close()

@@ -39,6 +39,7 @@ from oraclous_application_gateway_service.routes.proxy_routes import router as p
 from oraclous_application_gateway_service.routes.published_agent_routes import (
     router as published_agent_router,
 )
+from oraclous_application_gateway_service.routes.webhook_routes import router as webhook_router
 from oraclous_application_gateway_service.schema.error import gateway_error, request_id_of
 
 logger = logging.getLogger(__name__)
@@ -63,6 +64,7 @@ def create_app(*, lifespan=None) -> FastAPI:
     app.state.integration_key_repo = None
     app.state.published_agent_repo = None
     app.state.chat_repo = None
+    app.state.webhook_subscription_repo = None
     # Starlette runs the LAST-added middleware OUTERMOST, so the runtime order below is
     #   RequestId (outer) -> AgentCors -> CORS -> RateLimit -> SizeGuard -> app.
     # - RequestId outermost: every response (incl. a 413/429 from a guard) carries X-Request-Id.
@@ -143,6 +145,7 @@ def create_app(*, lifespan=None) -> FastAPI:
     app.include_router(published_agent_router)
     app.include_router(integration_key_router)
     app.include_router(chat_router)  # /v1/chat (member console chat, Slice 6)
+    app.include_router(webhook_router)  # /v1/webhooks + /v1/webhook-subscriptions (Slice 7)
     # the proxy catch-all must be LAST so specific routes (e.g. /health, /v1/openapi.json) win
     app.include_router(proxy_router)
     return app
