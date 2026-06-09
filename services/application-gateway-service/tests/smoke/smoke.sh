@@ -342,9 +342,12 @@ print(uuid.uuid4(), tok, prefix, hashlib.sha256(tok.encode()).hexdigest(), secre
   # actual invoke from an UNLISTED origin -> NO ACAO (the browser can't read it)
   has=$(curl -s -i -H "Authorization: Bearer ${ckey}" -H "Origin: ${EVIL}" "${JSON[@]}" -d '{"input":"hi"}' "${GW}/v1/agents/smoke-cors/invoke" | grep -ci "access-control-allow-origin" || true)
   [[ "$has" == "0" ]] && pass "unlisted origin -> no Access-Control-Allow-Origin" || fail "unlisted origin leaked ACAO"
-  # the management plane (member JWT) still uses the gateway-wide CORS (credentials) — AgentCors scoped
-  hascred=$(curl -s -i -X OPTIONS -H "Origin: ${GOOD}" -H "Access-Control-Request-Method: GET" "${GW}/v1/integration-keys" | grep -ci "access-control-allow-credentials: true" || true)
-  [[ "$hascred" == "1" ]] && pass "non-agent path -> still the gateway-wide CORS (scoped)" || fail "AgentCors leaked onto a non-agent path"
+  # a non-agent preflight is answered by the gateway-wide Starlette CORS (a 200), NOT AgentCors (204)
+  nacode=$(curl -s -o /dev/null -w '%{http_code}' -X OPTIONS -H "Origin: ${GOOD}" -H "Access-Control-Request-Method: GET" "${GW}/v1/integration-keys")
+  [[ "$nacode" == "200" ]] && pass "non-agent path -> still the gateway-wide CORS (200, scoped)" || fail "non-agent preflight not 200: $nacode"
+  # the gateway-wide CORS must NOT advertise credentials (header-auth not cookies — no *+creds footgun)
+  hascred=$(curl -s -i -H "Origin: ${EVIL}" "${GW}/health" | grep -ci "access-control-allow-credentials" || true)
+  [[ "$hascred" == "0" ]] && pass "gateway-wide CORS does not advertise credentials" || fail "gateway-wide CORS still sets credentials"
   # cleanup
   "${PSQL[@]}" "DELETE FROM integration_keys WHERE id IN ('${ckid2}','${nokid}');" >/dev/null
   "${PSQL[@]}" "DELETE FROM published_agents WHERE slug='smoke-cors';" >/dev/null
