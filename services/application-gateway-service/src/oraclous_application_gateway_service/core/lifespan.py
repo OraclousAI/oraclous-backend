@@ -20,6 +20,7 @@ from fastapi import FastAPI
 
 from oraclous_application_gateway_service.core.config import get_settings
 from oraclous_application_gateway_service.domain.route_table import build_route_table
+from oraclous_application_gateway_service.repositories.chat_repository import ChatRepository
 from oraclous_application_gateway_service.repositories.integration_key_repository import (
     IntegrationKeyRepository,
 )
@@ -64,10 +65,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         # graceful-degrade: a DB problem leaves /health up + the DB-backed routes return 503.
         app.state.integration_key_repo = IntegrationKeyRepository(settings.DATABASE_URL)
         app.state.published_agent_repo = PublishedAgentRepository(settings.DATABASE_URL)
+        app.state.chat_repo = ChatRepository(settings.DATABASE_URL)
     except Exception as exc:  # noqa: BLE001 — never crash the edge on a DB issue
         logger.warning("gateway: datastore unavailable (%s); the DB-backed routes return 503", exc)
         app.state.integration_key_repo = None
         app.state.published_agent_repo = None
+        app.state.chat_repo = None
     try:
         yield
     finally:
@@ -78,3 +81,5 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             await app.state.integration_key_repo.close()
         if app.state.published_agent_repo is not None:
             await app.state.published_agent_repo.close()
+        if app.state.chat_repo is not None:
+            await app.state.chat_repo.close()

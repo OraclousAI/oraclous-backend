@@ -29,6 +29,7 @@ from oraclous_application_gateway_service.domain.errors import (
     UpstreamTimeoutError,
     UpstreamUnavailableError,
 )
+from oraclous_application_gateway_service.routes.chat_routes import router as chat_router
 from oraclous_application_gateway_service.routes.health_routes import router as health_router
 from oraclous_application_gateway_service.routes.integration_key_routes import (
     router as integration_key_router,
@@ -61,6 +62,7 @@ def create_app(*, lifespan=None) -> FastAPI:
     app.state.redis = None
     app.state.integration_key_repo = None
     app.state.published_agent_repo = None
+    app.state.chat_repo = None
     # Starlette runs the LAST-added middleware OUTERMOST, so the runtime order below is
     #   RequestId (outer) -> AgentCors -> CORS -> RateLimit -> SizeGuard -> app.
     # - RequestId outermost: every response (incl. a 413/429 from a guard) carries X-Request-Id.
@@ -140,6 +142,7 @@ def create_app(*, lifespan=None) -> FastAPI:
     # the catch-all so /v1/agents + /v1/integration-keys are served at the edge, not proxied.
     app.include_router(published_agent_router)
     app.include_router(integration_key_router)
+    app.include_router(chat_router)  # /v1/chat (member console chat, Slice 6)
     # the proxy catch-all must be LAST so specific routes (e.g. /health, /v1/openapi.json) win
     app.include_router(proxy_router)
     return app
