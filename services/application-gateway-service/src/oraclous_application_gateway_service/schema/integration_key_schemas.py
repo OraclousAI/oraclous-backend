@@ -2,12 +2,19 @@
 
 from __future__ import annotations
 
+import re
 import uuid
 from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from oraclous_application_gateway_service.schema.published_agent_schemas import SLUG_PATTERN
+
+# a CORS Origin is scheme://host[:port], NO trailing slash/path — it is matched EXACTLY against the
+# browser Origin header, so a stored "https://x.com/" would silently never match. Reject it early.
+_ORIGIN_RE = re.compile(
+    r"^https?://[a-zA-Z0-9.-]+(:\d+)?\Z"
+)  # \Z not $ — reject a trailing newline
 
 
 class MintKeyRequest(BaseModel):
@@ -20,9 +27,14 @@ class MintKeyRequest(BaseModel):
     expires_at: datetime | None = None
 
     @model_validator(mode="after")
-    def _exactly_one_binding(self) -> MintKeyRequest:
+    def _validate(self) -> MintKeyRequest:
         if (self.bound_agent_slug is None) == (self.capability_allow_list is None):
             raise ValueError("supply exactly one of 'bound_agent_slug' or 'capability_allow_list'")
+        for origin in self.cors_origins or []:
+            if not _ORIGIN_RE.match(origin):
+                raise ValueError(
+                    f"invalid CORS origin {origin!r}: want scheme://host[:port], no trailing slash"
+                )
         return self
 
 

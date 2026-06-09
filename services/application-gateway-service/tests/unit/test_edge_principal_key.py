@@ -44,6 +44,7 @@ def _row(minted):
         expires_at=None,
         bound_agent_slug=None,
         capability_allow_list=None,
+        cors_origins=None,
     )
 
 
@@ -99,6 +100,7 @@ async def test_org_none_principal_is_refused() -> None:
         expires_at=None,
         bound_agent_slug=None,
         capability_allow_list=None,
+        cors_origins=None,
     )
     req = _request("/api/v1/tools", auth=f"Bearer {minted.plaintext}", repo=_FakeRepo(row))
     with pytest.raises(HTTPException) as exc:

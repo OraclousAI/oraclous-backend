@@ -17,6 +17,7 @@ from fastapi.responses import JSONResponse
 from oraclous_errors import ErrorCode, status_to_code
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from oraclous_application_gateway_service.core.agent_cors_middleware import AgentCorsMiddleware
 from oraclous_application_gateway_service.core.config import get_settings
 from oraclous_application_gateway_service.core.edge_middleware import (
     RateLimitMiddleware,
@@ -61,8 +62,11 @@ def create_app(*, lifespan=None) -> FastAPI:
     app.state.integration_key_repo = None
     app.state.published_agent_repo = None
     # Starlette runs the LAST-added middleware OUTERMOST, so the runtime order below is
-    #   RequestId (outer) -> CORS -> RateLimit -> SizeGuard -> app.
+    #   RequestId (outer) -> AgentCors -> CORS -> RateLimit -> SizeGuard -> app.
     # - RequestId outermost: every response (incl. a 413/429 from a guard) carries X-Request-Id.
+    # - AgentCors OUTSIDE the gateway-wide CORS (Slice 5): for the published-agent plane only,
+    #   it pre-empts the key-less preflight and REPLACES the inner CORS's ACAO with the per-key
+    #   decision — so it must wrap CORS (outer) to win on both. A no-op for every other path.
     # - CORS OUTSIDE the guards so (a) a guard's 413/429 still gets Access-Control-Allow-Origin (a
     #   browser can read the RATE_LIMITED/PAYLOAD_TOO_LARGE body), and (b) a preflight OPTIONS is
     #   answered by CORS before the limiter, so preflights don't consume the rate budget.
@@ -81,6 +85,7 @@ def create_app(*, lifespan=None) -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+    app.add_middleware(AgentCorsMiddleware)
     # Outermost: mint the req_ id + set X-Request-Id on every response (success and error).
     app.add_middleware(RequestIdMiddleware)
 

@@ -31,12 +31,14 @@ _DUMMY_HASH = "0" * 64  # a sha256-width value to compare against on a prefix mi
 
 @dataclass(frozen=True)
 class ResolvedKey:
-    """An authenticated integration key: principal + the binding the invoke route enforces."""
+    """An authenticated integration key: principal + the binding the invoke route enforces + the
+    per-key CORS allow-list the published-agent middleware applies (Slice 5)."""
 
     principal: Principal
     key_id: uuid.UUID
     bound_agent_slug: str | None
     capability_allow_list: list[str] | None
+    cors_origins: list[str] | None
 
 
 class IntegrationKeyAuthService:
@@ -71,6 +73,7 @@ class IntegrationKeyAuthService:
             key_id=row.id,
             bound_agent_slug=row.bound_agent_slug,
             capability_allow_list=row.capability_allow_list,
+            cors_origins=row.cors_origins,
         )
 
 
