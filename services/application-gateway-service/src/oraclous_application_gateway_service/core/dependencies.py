@@ -25,6 +25,7 @@ from oraclous_application_gateway_service.repositories.integration_key_repositor
 from oraclous_application_gateway_service.repositories.published_agent_repository import (
     PublishedAgentRepository,
 )
+from oraclous_application_gateway_service.repositories.rate_limit_store import enforce_bucket
 from oraclous_application_gateway_service.repositories.upstream_client import UpstreamClient
 from oraclous_application_gateway_service.repositories.webhook_subscription_repository import (
     WebhookSubscriptionRepository,
@@ -52,6 +53,8 @@ from oraclous_application_gateway_service.services.webhook_secret_client import 
 from oraclous_application_gateway_service.services.webhook_subscription_service import (
     WebhookSubscriptionService,
 )
+
+_IK_RL_NS = "rl:ik:key:"  # the per-key rate-limit bucket namespace (R7-SEC S3)
 
 
 def get_http_client(request: Request) -> httpx.AsyncClient:
@@ -118,9 +121,6 @@ async def _authenticate(request: Request, token: str) -> Principal:
             )
         try:
             resolved = await IntegrationKeyAuthService(key_repo).resolve(token)
-            # carry the binding so the invoke route can enforce it pre-forward (S4 PR2)
-            request.state.resolved_key = resolved
-            return resolved.principal
         except AuthError as exc:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
@@ -133,6 +133,25 @@ async def _authenticate(request: Request, token: str) -> Principal:
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail="integration-key store unavailable",
             ) from exc
+        # carry the binding so the invoke route can enforce it pre-forward (S4 PR2)
+        request.state.resolved_key = resolved
+        # per-key rate limit (R7-SEC S3): a key with a configured cap is throttled independently of
+        # the edge per-IP window; fail-open (a missing/erroring Redis allows the request).
+        if resolved.rate_limit is not None:
+            decision = await enforce_bucket(
+                getattr(request.app.state, "redis", None),
+                identity=str(resolved.key_id),
+                limit=resolved.rate_limit,
+                window_seconds=resolved.rate_window_seconds or 60,
+                namespace=_IK_RL_NS,
+            )
+            if not decision.allowed:
+                raise HTTPException(
+                    status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                    detail="integration key rate limit exceeded",
+                    headers={"Retry-After": str(decision.retry_after)},
+                )
+        return resolved.principal
     try:
         return verify_token(token)
     except AuthError as exc:
@@ -317,6 +336,9 @@ def get_webhook_ingress_service(
         upstream_client=UpstreamClient(get_http_client(request)),
         engine_base_url=settings.EXECUTION_ENGINE_URL,
         internal_key=settings.INTERNAL_SERVICE_KEY,
+        redis=getattr(request.app.state, "redis", None),
+        rate_limit=settings.WEBHOOK_RATE_LIMIT,
+        rate_window_seconds=settings.WEBHOOK_RATE_WINDOW_SECONDS,
     )
 
 

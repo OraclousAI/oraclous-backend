@@ -39,6 +39,8 @@ class ResolvedKey:
     bound_agent_slug: str | None
     capability_allow_list: list[str] | None
     cors_origins: list[str] | None
+    rate_limit: int | None = None  # per-key request cap (R7-SEC S3); None = no per-key limit
+    rate_window_seconds: int | None = None
 
 
 class IntegrationKeyAuthService:
@@ -74,6 +76,10 @@ class IntegrationKeyAuthService:
             bound_agent_slug=row.bound_agent_slug,
             capability_allow_list=row.capability_allow_list,
             cors_origins=row.cors_origins,
+            # getattr: the real model always has these columns; a partial projection/fake without
+            # them resolves to None = no per-key limit (the safe default).
+            rate_limit=getattr(row, "rate_limit", None),
+            rate_window_seconds=getattr(row, "rate_window_seconds", None),
         )
 
 

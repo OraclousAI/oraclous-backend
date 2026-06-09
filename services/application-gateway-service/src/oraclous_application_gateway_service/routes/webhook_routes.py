@@ -27,6 +27,7 @@ from oraclous_application_gateway_service.schema.webhook_schemas import (
 from oraclous_application_gateway_service.services.webhook_ingress_service import (
     SubscriptionNotFound,
     UpstreamEngineError,
+    WebhookRateLimited,
 )
 from oraclous_application_gateway_service.services.webhook_subscription_service import UnknownAgent
 
@@ -50,6 +51,12 @@ async def receive_webhook(
         )
     except SubscriptionNotFound as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="not found") from exc
+    except WebhookRateLimited as exc:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="rate limit exceeded",
+            headers={"Retry-After": str(exc.retry_after)},
+        ) from exc
     except UpstreamEngineError as exc:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY, detail="event dispatch failed"

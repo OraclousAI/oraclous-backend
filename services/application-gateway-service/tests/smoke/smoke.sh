@@ -537,6 +537,29 @@ print(uuid.uuid4(), tok, prefix, hashlib.sha256(tok.encode()).hexdigest(), secre
   [[ "$code" == "403" ]] && pass "member -> create webhook subscription -> 403 (admin-gated)" || fail "expected 403 for member webhook-create, got $code"
   "${PSQL[@]}" "DELETE FROM integration_keys WHERE id='${rkid}';" >/dev/null
   pass "cleaned up the roles-floor smoke key"
+
+  step "26. GW-18: per-key rate limit — a capped key is throttled, an uncapped key is not (R7-SEC S3)"
+  curl -s "${MEMBER[@]}" "${JSON[@]}" -d '{"slug":"smoke-rl","bound_capability_ref":"cap-x"}' "${GW}/v1/agents" >/dev/null
+  # a key BOUND to the agent with a per-key cap of 2 / 60s
+  capk=$(curl -s "${MEMBER[@]}" "${JSON[@]}" -d '{"bound_agent_slug":"smoke-rl","rate_limit":2,"rate_window_seconds":60}' "${GW}/v1/integration-keys")
+  CKEY=$(echo "$capk" | python3 -c "import sys,json;print(json.load(sys.stdin).get('key',''))")
+  CKID=$(echo "$capk" | python3 -c "import sys,json;print(json.load(sys.stdin).get('id',''))")
+  CAUTH=(-H "Authorization: Bearer ${CKEY}")
+  # the public metadata route is key-authed; the first two hits pass, the third trips the per-key cap
+  c1=$(curl -s -o /dev/null -w '%{http_code}' "${CAUTH[@]}" "${GW}/v1/agents/smoke-rl")
+  c2=$(curl -s -o /dev/null -w '%{http_code}' "${CAUTH[@]}" "${GW}/v1/agents/smoke-rl")
+  c3=$(curl -s -o /dev/null -w '%{http_code}' "${CAUTH[@]}" "${GW}/v1/agents/smoke-rl")
+  { [[ "$c1" == "200" && "$c2" == "200" && "$c3" == "429" ]]; } \
+    && pass "capped key: 2 hits OK, the 3rd -> 429 (per-key limit)" || fail "expected 200,200,429 got ${c1},${c2},${c3}"
+  # an UNCAPPED key (no rate_limit) on the same agent is unaffected by that bucket
+  uncapk=$(curl -s "${MEMBER[@]}" "${JSON[@]}" -d '{"bound_agent_slug":"smoke-rl"}' "${GW}/v1/integration-keys")
+  UKEY=$(echo "$uncapk" | python3 -c "import sys,json;print(json.load(sys.stdin).get('key',''))")
+  UKID=$(echo "$uncapk" | python3 -c "import sys,json;print(json.load(sys.stdin).get('id',''))")
+  u3=$(for _ in 1 2 3; do curl -s -o /dev/null -w '%{http_code} ' -H "Authorization: Bearer ${UKEY}" "${GW}/v1/agents/smoke-rl"; done)
+  echo "$u3" | grep -q '429' && fail "uncapped key was throttled: $u3" || pass "uncapped key: 3 hits all OK (its own / no bucket): $u3"
+  "${PSQL[@]}" "DELETE FROM integration_keys WHERE id IN ('${CKID}','${UKID}');" >/dev/null
+  "${PSQL[@]}" "DELETE FROM published_agents WHERE slug='smoke-rl';" >/dev/null
+  pass "cleaned up the rate-limit smoke keys + agent"
 else
   step "13. GW-7/GW-8: edge-protection + key-validator LIVE checks SKIPPED in NO_COMPOSE mode (unit-covered)"
 fi

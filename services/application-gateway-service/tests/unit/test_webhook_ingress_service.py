@@ -13,6 +13,7 @@ from oraclous_application_gateway_service.services.webhook_ingress_service impor
     SubscriptionNotFound,
     UpstreamEngineError,
     WebhookIngressService,
+    WebhookRateLimited,
 )
 
 pytestmark = pytest.mark.unit
@@ -171,3 +172,60 @@ async def test_engine_non_2xx_is_502() -> None:
         await _service(sub=sub, upstream=_Upstream(500)).ingest(
             subscription_id=sub.id, raw_body=_BODY, signature_header=_sign(_BODY), delivery_id=None
         )
+
+
+class _OverLimitPipe:
+    async def __aenter__(self):  # noqa: ANN204
+        return self
+
+    async def __aexit__(self, *_a) -> bool:  # noqa: ANN002
+        return False
+
+    async def incr(self, _k: str) -> None:
+        return None
+
+    async def expire(self, _k: str, _w: int) -> None:
+        return None
+
+    async def execute(self) -> list[int]:
+        return [999]  # always over any limit
+
+
+class _OverLimitRedis:
+    def pipeline(self, transaction: bool = True):  # noqa: ANN201, ARG002, FBT001, FBT002
+        return _OverLimitPipe()
+
+    async def ttl(self, _k: str) -> int:
+        return 30
+
+
+async def test_per_subscription_rate_limit_429s_before_the_broker_and_verify() -> None:
+    sub = _sub()
+    up = _Upstream()
+    svc = WebhookIngressService(
+        subscriptions=_Subs(sub),
+        agents=_Agents(),
+        secret_client=_Secrets(),
+        upstream_client=up,
+        engine_base_url="http://engine",
+        internal_key="k",
+        redis=_OverLimitRedis(),
+        rate_limit=5,
+        rate_window_seconds=60,
+    )
+    with pytest.raises(WebhookRateLimited) as exc:
+        await svc.ingest(
+            subscription_id=sub.id, raw_body=_BODY, signature_header=_sign(_BODY), delivery_id=None
+        )
+    assert exc.value.retry_after >= 1
+    assert up.calls == []  # throttled BEFORE the broker secret-resolve + HMAC + forward
+
+
+async def test_no_redis_fails_open_and_proceeds() -> None:
+    # the default (redis=None) imposes no per-sub limit — a valid webhook still fires
+    sub = _sub()
+    up = _Upstream(202)
+    await _service(sub=sub, upstream=up).ingest(
+        subscription_id=sub.id, raw_body=_BODY, signature_header=_sign(_BODY), delivery_id="d1"
+    )
+    assert len(up.calls) == 1  # not throttled
