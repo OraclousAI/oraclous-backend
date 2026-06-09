@@ -20,6 +20,7 @@ from oraclous_application_gateway_service.domain.webhook_signature import verify
 from oraclous_application_gateway_service.repositories.published_agent_repository import (
     PublishedAgentRepository,
 )
+from oraclous_application_gateway_service.repositories.rate_limit_store import enforce_bucket
 from oraclous_application_gateway_service.repositories.upstream_client import UpstreamClient
 from oraclous_application_gateway_service.repositories.webhook_subscription_repository import (
     WebhookSubscriptionRepository,
@@ -41,6 +42,17 @@ class UpstreamEngineError(Exception):
     """The engine event-fire could not be reached / returned non-2xx (-> 502)."""
 
 
+class WebhookRateLimited(Exception):
+    """The subscription exceeded its per-subscription rate limit (-> 429 + Retry-After, S3)."""
+
+    def __init__(self, retry_after: int) -> None:
+        super().__init__("webhook subscription rate limit exceeded")
+        self.retry_after = retry_after
+
+
+_WH_RL_NS = "rl:websub:"  # the per-subscription rate-limit bucket namespace
+
+
 def _build_input(raw_body: bytes) -> str:
     payload = raw_body.decode("utf-8", errors="replace")[:_MAX_INPUT_CHARS]
     return f"A webhook event was received. Payload:\n{payload}"
@@ -56,6 +68,9 @@ class WebhookIngressService:
         upstream_client: UpstreamClient,
         engine_base_url: str,
         internal_key: str,
+        redis=None,  # noqa: ANN001 — redis.asyncio client | None (per-subscription limit, S3)
+        rate_limit: int = 600,
+        rate_window_seconds: int = 60,
     ) -> None:
         self._subs = subscriptions
         self._agents = agents
@@ -63,6 +78,9 @@ class WebhookIngressService:
         self._upstream = upstream_client
         self._base_url = engine_base_url.rstrip("/")
         self._internal_key = internal_key
+        self._redis = redis
+        self._rate_limit = rate_limit
+        self._rate_window = rate_window_seconds
 
     async def ingest(
         self,
@@ -75,6 +93,18 @@ class WebhookIngressService:
         sub = await self._subs.get_by_id(subscription_id)
         if sub is None or not sub.enabled:
             raise SubscriptionNotFound()
+        # per-subscription rate limit (R7-SEC S3): one abused subscription is throttled
+        # independently of the per-IP edge floor, BEFORE the (more expensive) broker resolve +
+        # HMAC verify. Fail-open (a missing/erroring Redis allows it, like the edge limiter).
+        decision = await enforce_bucket(
+            self._redis,
+            identity=str(sub.id),
+            limit=self._rate_limit,
+            window_seconds=self._rate_window,
+            namespace=_WH_RL_NS,
+        )
+        if not decision.allowed:
+            raise WebhookRateLimited(decision.retry_after)
         # resolve the signing secret from the broker (never stored here); unresolvable -> reject
         try:
             secret = await self._secrets.resolve(

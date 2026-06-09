@@ -46,6 +46,10 @@ class Settings(BaseSettings):
     # edge-wide per-client-IP fixed window (ops-tunable; not the auth limiter's hard 10/60).
     EDGE_RATE_LIMIT: int = 600
     EDGE_RATE_WINDOW_SECONDS: int = 60
+    # per-subscription webhook-ingress limit (R7-SEC S3) — above the per-IP edge floor; one abused
+    # subscription is throttled independently. Fail-open, like the edge limiter.
+    WEBHOOK_RATE_LIMIT: int = 600
+    WEBHOOK_RATE_WINDOW_SECONDS: int = 60
     # request-body cap (fail-closed); conservative default, per-route override is a later slice.
     MAX_REQUEST_BODY_BYTES: int = 10 * 1024 * 1024
     # X-Forwarded-For trust boundary: 0 = ignore XFF, key on the socket peer (no LB).
