@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import uuid
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from oraclous_credential_broker_service.models.webhook_secret import WebhookSecret
@@ -41,3 +41,16 @@ class WebhookSecretRepository:
                 )
             )
             return result.scalar_one_or_none()
+
+    async def delete_for_org(self, *, secret_id: uuid.UUID, organisation_id: uuid.UUID) -> bool:
+        """Hard-delete a secret (org-scoped). Returns True if a row was removed. Used by the GW's
+        webhook orphan-secret GC (R7-SEC S4) — a cross-org id matches nothing (ADR-006)."""
+        async with self._session() as session:
+            async with session.begin():
+                result = await session.execute(
+                    delete(WebhookSecret).where(
+                        WebhookSecret.id == secret_id,
+                        WebhookSecret.organisation_id == organisation_id,
+                    )
+                )
+            return (result.rowcount or 0) > 0

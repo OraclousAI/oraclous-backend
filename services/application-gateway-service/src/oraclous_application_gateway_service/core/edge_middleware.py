@@ -28,6 +28,7 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 from oraclous_application_gateway_service.domain.edge_protection import (
     client_ip,
     content_length_exceeds,
+    is_malformed_path,
     is_rate_limit_exempt,
 )
 from oraclous_application_gateway_service.repositories.rate_limit_store import RateLimitStore
@@ -86,6 +87,19 @@ class SizeGuardMiddleware:
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http":
             await self._app(scope, receive, send)
+            return
+
+        # path hygiene (R7-SEC S4): reject a NUL/backslash/`..`-traversal path BEFORE the app/route
+        # table (so a `..` is never forwarded to an upstream), 400. uvicorn single-decodes the path,
+        # so a `%2e%2e` is already visible here; a double-encoded `%252e%252e` is contained by the
+        # upstream's fail-closed routing (it 404s rather than normalising `..`).
+        if is_malformed_path(scope.get("path", "")):
+            await _send_envelope(
+                send,
+                status_code=400,
+                code=ErrorCode.MALFORMED_REQUEST,
+                request_id=_request_id(scope),
+            )
             return
 
         # cheap fast-path: a declared length already over the cap — reject before reading a chunk

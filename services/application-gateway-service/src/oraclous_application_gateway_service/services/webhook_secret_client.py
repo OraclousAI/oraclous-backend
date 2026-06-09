@@ -76,3 +76,28 @@ class WebhookSecretClient:
             return str(json.loads(raw)["secret"])
         except (ValueError, TypeError, KeyError) as exc:
             raise BrokerSecretError("broker resolve returned a malformed body") from exc
+
+    async def delete(self, *, organisation_id: uuid.UUID, secret_id: uuid.UUID) -> bool:
+        """Best-effort GC of a webhook secret (R7-SEC S4) — when its subscription is deleted, or to
+        compensate a failed create. NEVER raises: a GC failure leaves a harmless orphan, it must not
+        fail the user's delete/create. Returns True only on a clean 204/200."""
+        body = json.dumps(
+            {"organisation_id": str(organisation_id), "secret_id": str(secret_id)}
+        ).encode()
+        # the ENTIRE round-trip — open, status read, AND aclose — is inside the swallow: a transport
+        # fault on close must not raise either, else it would mask the real insert error during the
+        # create-compensation path (the reviewer's catch).
+        try:
+            resp = await self._upstream.open(
+                method="POST",
+                url=f"{self._base_url}/internal/webhook-secrets/delete",
+                headers=self._headers(),
+                params=None,
+                content=body,
+            )
+            try:
+                return resp.status_code in (200, 204)
+            finally:
+                await resp.aclose()
+        except Exception:  # noqa: BLE001 — best-effort; an unreachable/erroring broker = tolerated orphan
+            return False

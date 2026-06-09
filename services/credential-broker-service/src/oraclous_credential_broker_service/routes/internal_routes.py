@@ -34,6 +34,7 @@ from oraclous_credential_broker_service.schema.credential_schema import (
     ValidateDelegatedTokenInput,
 )
 from oraclous_credential_broker_service.schema.webhook_secret_schema import (
+    WebhookSecretDeleteInput,
     WebhookSecretMintInput,
     WebhookSecretMintResponse,
     WebhookSecretResolveInput,
@@ -193,3 +194,13 @@ async def resolve_webhook_secret(
             status_code=status.HTTP_404_NOT_FOUND, detail="no such webhook secret"
         ) from exc
     return WebhookSecretResolveResponse(secret=secret)
+
+
+@router.post("/webhook-secrets/delete", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_webhook_secret(
+    delete_input: WebhookSecretDeleteInput, svc: WebhookSecretServiceDep
+) -> None:
+    """GC a webhook secret by id (org-scoped) when the gateway deletes its subscription / compensate
+    a failed create (R7-SEC S4). Idempotent: a gone/cross-org/unknown id is a no-op 204 (anti-enum +
+    safe-to-retry sweep) — the gateway never needs to distinguish."""
+    await svc.delete(secret_id=delete_input.secret_id, organisation_id=delete_input.organisation_id)

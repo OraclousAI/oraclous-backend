@@ -34,3 +34,9 @@ class WebhookSecretService:
         if row is None or row.status != "active":
             raise WebhookSecretNotFound(secret_id)
         return decrypt_secret(row.encrypted_secret)
+
+    async def delete(self, *, secret_id: uuid.UUID, organisation_id: uuid.UUID) -> bool:
+        """Hard-delete a secret (org-scoped, idempotent). Returns True if a row was removed. The
+        gateway calls this to GC a webhook secret when its subscription is deleted / a create failed
+        (R7-SEC S4) — gone-or-never-existed is a no-op (the caller treats both as success)."""
+        return await self._repo.delete_for_org(secret_id=secret_id, organisation_id=organisation_id)

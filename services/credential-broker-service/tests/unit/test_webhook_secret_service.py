@@ -45,6 +45,13 @@ class _FakeRepo:
             None,
         )
 
+    async def delete_for_org(self, *, secret_id, organisation_id):  # noqa: ANN001, ANN201
+        before = len(self.rows)
+        self.rows = [
+            r for r in self.rows if not (r.id == secret_id and r.organisation_id == organisation_id)
+        ]
+        return len(self.rows) < before
+
 
 async def test_mint_then_resolve_round_trips_the_secret() -> None:
     from oraclous_credential_broker_service.services.webhook_secret_service import (
@@ -82,3 +89,29 @@ async def test_unknown_id_is_not_found() -> None:
         await WebhookSecretService(_FakeRepo()).resolve(
             secret_id=uuid.uuid4(), organisation_id=_ORG
         )
+
+
+async def test_delete_removes_the_secret_and_is_idempotent() -> None:
+    from oraclous_credential_broker_service.services.webhook_secret_service import (
+        WebhookSecretService,
+    )
+
+    repo = _FakeRepo()
+    svc = WebhookSecretService(repo)
+    sid = await svc.mint(organisation_id=_ORG, secret="s")  # noqa: S106
+    assert await svc.delete(secret_id=sid, organisation_id=_ORG) is True  # removed
+    assert repo.rows == []
+    # idempotent: deleting the now-gone secret is a no-op False (the GC sweep is safe to retry)
+    assert await svc.delete(secret_id=sid, organisation_id=_ORG) is False
+
+
+async def test_cross_org_delete_does_not_remove() -> None:
+    from oraclous_credential_broker_service.services.webhook_secret_service import (
+        WebhookSecretService,
+    )
+
+    repo = _FakeRepo()
+    svc = WebhookSecretService(repo)
+    sid = await svc.mint(organisation_id=_ORG, secret="s")  # noqa: S106
+    assert await svc.delete(secret_id=sid, organisation_id=uuid.uuid4()) is False  # another org
+    assert len(repo.rows) == 1  # untouched
