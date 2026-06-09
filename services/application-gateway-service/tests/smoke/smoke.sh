@@ -504,6 +504,18 @@ print(uuid.uuid4(), tok, prefix, hashlib.sha256(tok.encode()).hexdigest(), secre
   echo "$up_h" | grep -q '"credential-broker"' \
     && pass "the gateway still reaches the internal-only upstreams (health aggregation over the network)" \
     || fail "gateway lost its internal upstream reachability: $up_h"
+
+  step "24. GW-16: response-header hardening — no Server / X-Powered-By leak (R7-SEC S1)"
+  # the gateway's OWN response advertises no server software (--no-server-header)
+  own=$(curl -s -D - -o /dev/null --max-time 5 "${GW}/health" | grep -ciE '^(server|x-powered-by):') || true
+  [[ "$own" == "0" ]] && pass "the gateway's own response leaks no Server/X-Powered-By" || fail "gateway own response leaked a fingerprint header"
+  # a PROXIED upstream response has its Server/X-Powered-By stripped (the response_headers denylist —
+  # the upstream runs uvicorn, so without the strip its 'server: uvicorn' would pass through)
+  prox=$(curl -s -D - -o /dev/null --max-time 5 -H "Authorization: Bearer dev-token" "${GW}/api/v1/tools" | grep -ciE '^(server|x-powered-by):') || true
+  [[ "$prox" == "0" ]] && pass "a proxied response strips the upstream Server/X-Powered-By (no passthrough)" || fail "proxied response leaked the upstream Server header"
+  # the gateway never reflects a trusted-identity header back to the client
+  refl=$(curl -s -D - -o /dev/null --max-time 5 "${GW}/health" | grep -ciE '^x-(internal-key|principal-id|organisation-id):') || true
+  [[ "$refl" == "0" ]] && pass "no trusted-identity header is reflected downstream" || fail "a trust header leaked downstream"
 else
   step "13. GW-7/GW-8: edge-protection + key-validator LIVE checks SKIPPED in NO_COMPOSE mode (unit-covered)"
 fi
