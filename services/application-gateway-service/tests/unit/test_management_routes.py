@@ -219,6 +219,7 @@ async def test_a_key_bearer_cannot_manage_keys() -> None:
             expires_at=None,
             bound_agent_slug=None,
             capability_allow_list=None,
+            cors_origins=None,
         )
     )
     async with _client(app) as c:

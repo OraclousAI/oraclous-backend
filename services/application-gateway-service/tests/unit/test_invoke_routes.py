@@ -60,6 +60,7 @@ def _seed_key(keys, *, bound_slug):  # noqa: ANN001 -> the plaintext
             last4=m.last4,
             bound_agent_slug=bound_slug,
             capability_allow_list=None,
+            cors_origins=None,
             status="active",
             expires_at=None,
         )

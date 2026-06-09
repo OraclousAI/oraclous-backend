@@ -28,6 +28,7 @@ def _row(minted, *, status="active", expires_at=None):
         expires_at=expires_at,
         bound_agent_slug=None,
         capability_allow_list=None,
+        cors_origins=None,
     )
 
 

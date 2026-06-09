@@ -322,6 +322,33 @@ print(uuid.uuid4(), tok, prefix, hashlib.sha256(tok.encode()).hexdigest(), secre
   "${PSQL[@]}" "DELETE FROM integration_keys WHERE id IN ('${ikid}','${ckid}');" >/dev/null
   "${PSQL[@]}" "DELETE FROM published_agents WHERE slug IN ('smoke-inv','smoke-inv2');" >/dev/null
   pass "cleaned up the invoke smoke agents + keys"
+
+  step "19. GW-11: per-key / per-origin CORS on the published-agent plane (Slice 5)"
+  GOOD="https://widget.good.example"; EVIL="https://evil.example"
+  curl -s "${MEMBER[@]}" "${JSON[@]}" -d '{"slug":"smoke-cors","bound_capability_ref":"cap-unrunnable"}' "${GW}/v1/agents" >/dev/null
+  cors_m=$(curl -s "${MEMBER[@]}" "${JSON[@]}" -d "{\"bound_agent_slug\":\"smoke-cors\",\"cors_origins\":[\"${GOOD}\"]}" "${GW}/v1/integration-keys")
+  ckey=$(echo "$cors_m" | python3 -c "import sys,json;print(json.load(sys.stdin).get('key',''))")
+  ckid2=$(echo "$cors_m" | python3 -c "import sys,json;print(json.load(sys.stdin).get('id',''))")
+  # a key with no cors policy (capability-bound, cors_origins unset)
+  nocors_m=$(curl -s "${MEMBER[@]}" "${JSON[@]}" -d '{"capability_allow_list":["cap:x"]}' "${GW}/v1/integration-keys")
+  nokid=$(echo "$nocors_m" | python3 -c "import sys,json;print(json.load(sys.stdin).get('id',''))")
+  # preflight (no Authorization) -> answered by AgentCors, reflects the origin, NO credentials
+  pf=$(curl -s -i -X OPTIONS -H "Origin: ${GOOD}" -H "Access-Control-Request-Method: POST" "${GW}/v1/agents/smoke-cors/invoke")
+  { echo "$pf" | grep -qi "access-control-allow-origin: ${GOOD}" && ! echo "$pf" | grep -qi "access-control-allow-credentials"; } \
+    && pass "preflight -> reflects the origin, no credentials" || fail "preflight wrong: $(echo "$pf" | grep -i access-control | tr '\n' ' ')"
+  # actual invoke from the LISTED origin -> ACAO echoes it (exactly once)
+  n=$(curl -s -i -H "Authorization: Bearer ${ckey}" -H "Origin: ${GOOD}" "${JSON[@]}" -d '{"input":"hi"}' "${GW}/v1/agents/smoke-cors/invoke" | grep -ci "^access-control-allow-origin: ${GOOD}" || true)
+  [[ "$n" == "1" ]] && pass "listed origin -> exactly one Access-Control-Allow-Origin" || fail "expected 1 ACAO, got $n"
+  # actual invoke from an UNLISTED origin -> NO ACAO (the browser can't read it)
+  has=$(curl -s -i -H "Authorization: Bearer ${ckey}" -H "Origin: ${EVIL}" "${JSON[@]}" -d '{"input":"hi"}' "${GW}/v1/agents/smoke-cors/invoke" | grep -ci "access-control-allow-origin" || true)
+  [[ "$has" == "0" ]] && pass "unlisted origin -> no Access-Control-Allow-Origin" || fail "unlisted origin leaked ACAO"
+  # the management plane (member JWT) still uses the gateway-wide CORS (credentials) — AgentCors scoped
+  hascred=$(curl -s -i -X OPTIONS -H "Origin: ${GOOD}" -H "Access-Control-Request-Method: GET" "${GW}/v1/integration-keys" | grep -ci "access-control-allow-credentials: true" || true)
+  [[ "$hascred" == "1" ]] && pass "non-agent path -> still the gateway-wide CORS (scoped)" || fail "AgentCors leaked onto a non-agent path"
+  # cleanup
+  "${PSQL[@]}" "DELETE FROM integration_keys WHERE id IN ('${ckid2}','${nokid}');" >/dev/null
+  "${PSQL[@]}" "DELETE FROM published_agents WHERE slug='smoke-cors';" >/dev/null
+  pass "cleaned up the CORS smoke agent + keys"
 else
   step "13. GW-7/GW-8: edge-protection + key-validator LIVE checks SKIPPED in NO_COMPOSE mode (unit-covered)"
 fi
