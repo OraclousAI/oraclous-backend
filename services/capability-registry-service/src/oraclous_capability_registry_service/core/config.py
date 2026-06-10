@@ -31,6 +31,11 @@ class Settings(BaseSettings):
     # reads), so a freshly-provisioned org sees the platform tools without per-org re-seeding.
     PLATFORM_ORG_ID: str = "00000000-0000-0000-0000-0000000000a0"
 
+    # --- knowledge-retriever seam (the first-party retriever tool POSTs to its /v1/search/*) ---
+    # No credential: the retriever is reached over the internal/gateway-trust path (ADR-018), the
+    # caller's org identity forwarded as X-Principal-*/X-Organisation-Id gated by X-Internal-Key.
+    KNOWLEDGE_RETRIEVER_URL: str = "http://knowledge-retriever-service:8000"
+
     # --- credential-broker seam (tool execution resolves credentials here; never decrypts) ---
     CREDENTIAL_BROKER_URL: str = "http://credential-broker-service:8000"
     CREDENTIAL_BROKER_MODE: str = "fake"  # "fake" (dev/CI, key-free) | "real"

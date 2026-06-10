@@ -32,10 +32,11 @@ class _ConnectorToolPlugin(CapabilityKindPlugin):
     INPUT_SCHEMA: dict
     OUTPUT_SCHEMA: dict
     CONFIGURATION_SCHEMA: dict | None = None
+    CATEGORY: str = _CATEGORY  # the connector readers are INGESTION; the retriever overrides it
 
     @classmethod
     def plugin_id(cls) -> str:
-        return str(generate_tool_id(cls.NAME, _VERSION, _CATEGORY))
+        return str(generate_tool_id(cls.NAME, _VERSION, cls.CATEGORY))
 
     @classmethod
     def kind(cls) -> DescriptorKind:
@@ -50,7 +51,7 @@ class _ConnectorToolPlugin(CapabilityKindPlugin):
             "metadata": {
                 "name": cls.NAME,
                 "description": cls.DESCRIPTION,
-                "category": _CATEGORY,
+                "category": cls.CATEGORY,
                 "icon": None,
                 "documentation_url": None,
             },
@@ -191,3 +192,62 @@ class GoogleDriveReaderPlugin(_ConnectorToolPlugin):
     ]
     INPUT_SCHEMA = {"type": "object", "properties": {"file_id": {"type": "string"}}}
     OUTPUT_SCHEMA = _DOCS_OUTPUT
+
+
+_HITS_OUTPUT = {
+    "type": "object",
+    "properties": {
+        "hits": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string"},
+                    "type": {"type": "string"},
+                    "properties": {"type": "object"},
+                },
+            },
+        }
+    },
+}
+
+
+@plugin_registry.register
+class KnowledgeRetrieverPlugin(_ConnectorToolPlugin):
+    """First-party retrieval over the org's knowledge graph — the in-loop tool a Wave-1 "QA over
+    your graph" agent binds as ``core/knowledge-retriever@1.0.0``. No credential: it is reached over
+    the internal/gateway-trust path, the caller's org identity forwarded by the executor (never a
+    BYOM key). The ``search`` operation wraps the retriever's ``/v1/search/{mode}``."""
+
+    NAME = "Knowledge Retriever"  # slug ``knowledge-retriever`` MUST match the ref's name slug
+    CATEGORY = "RETRIEVAL"
+    DESCRIPTION = (
+        "Search the organisation's knowledge graph (semantic, fulltext, or hybrid) and return the "
+        "matching nodes. First-party and org-scoped; no credential required."
+    )
+    TYPE = "INTERNAL"
+    TAGS = ["knowledge-graph", "retrieval", "search", "rag"]
+    CAPABILITIES = [
+        {
+            "name": "search",
+            "description": "Search a knowledge graph and return the matching nodes (hits).",
+            "parameters": {
+                "graph_id": "str",
+                "query": "str",
+                "top_k": "int",
+                "mode": "str",  # semantic (default) | fulltext | hybrid
+            },
+        },
+    ]
+    CREDENTIAL_REQUIREMENTS: list[dict] = []  # first-party: reached over the internal trust path
+    INPUT_SCHEMA = {
+        "type": "object",
+        "required": ["graph_id", "query"],
+        "properties": {
+            "graph_id": {"type": "string", "format": "uuid"},
+            "query": {"type": "string", "minLength": 1},
+            "top_k": {"type": "integer", "minimum": 1, "maximum": 100, "default": 10},
+            "mode": {"type": "string", "enum": ["semantic", "fulltext", "hybrid"]},
+        },
+    }
+    OUTPUT_SCHEMA = _HITS_OUTPUT
