@@ -42,6 +42,7 @@ class InvitationPeekResponse(BaseModel):
     email: str
     role: str
     status: str
+    subgraph_grants: dict | None = None  # what the invitee will be granted (login receipt rows)
 
 
 class AcceptInvitationRequest(BaseModel):

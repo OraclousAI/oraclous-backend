@@ -113,6 +113,7 @@ class InvitationService:
             "email": inv.email,
             "role": inv.org_role,
             "status": inv.status,
+            "subgraph_grants": inv.subgraph_grants,
         }
 
     async def accept(self, *, raw_token: str, accepter_user_id: str) -> dict:
