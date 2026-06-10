@@ -55,12 +55,40 @@ async def _big(request):  # noqa: ANN001 — a large (~250 KB) proxied success b
     return JSONResponse(_BIG)
 
 
+async def _struct422(request):  # noqa: ANN001 — Pydantic-shaped 422; msg AND dict-key loc reflect values
+    return JSONResponse(
+        {
+            "detail": [
+                {
+                    "loc": ["body", "email"],
+                    "type": "value_error",
+                    "msg": "value is not a valid email: alice@corp.internal",
+                },
+                # a user-controlled dict KEY reflected into loc — the #225 review's leak vector
+                {
+                    "loc": ["body", "meta", "secret@corp.internal"],
+                    "type": "int_parsing",
+                    "msg": "x",
+                },
+                {"loc": ["body", "host", "db-1.svc.cluster.local"], "type": "missing", "msg": "x"},
+            ]
+        },
+        status_code=422,
+    )
+
+
+async def _string422(request):  # noqa: ANN001 — a free-string 422 (cannot be proven value-free)
+    return JSONResponse({"detail": "boom on db-1.internal 10.0.0.5"}, status_code=422)
+
+
 _UPSTREAM_APP = Starlette(
     routes=[
         Route("/v1/search", _search, methods=["GET"]),
         Route("/api/v1/capabilities", _caps, methods=["GET"]),
         Route("/api/v1/tools/boom", _leaky, methods=["GET"]),
         Route("/v1/graph/big/subgraph", _big, methods=["GET"]),
+        Route("/api/v1/tools/weak", _struct422, methods=["POST"]),
+        Route("/api/v1/tools/stringerr", _string422, methods=["POST"]),
     ]
 )
 
@@ -115,6 +143,29 @@ async def test_large_proxied_body_is_relayed_intact(client: AsyncClient) -> None
     # buffered → a correct Content-Length, not a terminator-less chunked transfer
     assert "content-length" in r.headers
     assert int(r.headers["content-length"]) == len(r.content)
+
+
+async def test_422_structured_surfaces_leak_safe_details(client: AsyncClient) -> None:
+    # #225: a Pydantic 422 → VALIDATION_FAILED with field + a machine-token issue, NEVER the
+    # value-reflecting msg NOR a value reflected into a dict-key loc part.
+    r = await client.post("/api/v1/tools/weak", headers=_auth())
+    assert r.status_code == 422
+    env = r.json()["error"]
+    assert env["code"] == "VALIDATION_FAILED"
+    assert any(d["field"] == "email" and d["issue"] == "VALUE_ERROR" for d in env["details"])
+    # the reflected msg AND the dict-key values are neutralised — verbatim never appears
+    assert "alice@corp.internal" not in r.text and "secret@corp.internal" not in r.text
+    assert "not a valid email" not in r.text and "db-1.svc.cluster.local" not in r.text
+    # the §3 forbidden-substring scanner finds nothing in the surfaced body (no email/DNS/IP leak)
+    assert scan_forbidden(r.text) == []
+
+
+async def test_422_string_detail_falls_back_to_canonical(client: AsyncClient) -> None:
+    # a free-string 422 cannot be proven value-free → canonical detail-free envelope, no leak.
+    r = await client.post("/api/v1/tools/stringerr", headers=_auth())
+    assert r.status_code == 422
+    assert r.json()["error"]["code"] == "MALFORMED_REQUEST"
+    assert "10.0.0.5" not in r.text and "db-1.internal" not in r.text
 
 
 async def test_upstream_error_is_normalised(client: AsyncClient) -> None:

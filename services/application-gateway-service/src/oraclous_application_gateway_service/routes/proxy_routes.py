@@ -16,10 +16,13 @@ factory's exception handlers (404 / 502 / 504).
 from __future__ import annotations
 
 from fastapi import APIRouter, Request
-from oraclous_errors import status_to_code
+from oraclous_errors import ErrorCode, status_to_code
 from starlette.responses import Response
 
 from oraclous_application_gateway_service.core.dependencies import EdgePrincipalDep, ProxyServiceDep
+from oraclous_application_gateway_service.domain.validation_passthrough import (
+    extract_validation_details,
+)
 from oraclous_application_gateway_service.schema.error import gateway_error
 from oraclous_application_gateway_service.services.proxy_service import response_headers
 
@@ -43,11 +46,22 @@ async def proxy(
         principal=principal,
     )
     if upstream.status_code >= 400:
-        # Drain + close the upstream error body and re-emit the canonical envelope under the same
-        # status; the upstream's body is never relayed (it may carry internals — §3 rule 8).
-        # aread() already closes on exhaustion; the explicit aclose() is the idempotent safety net.
-        await upstream.aread()
+        # Drain + close the upstream error body; it is never relayed (it may carry internals — §3
+        # rule 8). aread() already closes on exhaustion; the explicit aclose() is the safety net.
+        raw = await upstream.aread()
         await upstream.aclose()
+        # 422 is the one case worth surfacing user-correctable signal: extract ONLY the field path +
+        # the error-type machine token (never the value-reflecting msg) into VALIDATION_FAILED.
+        if upstream.status_code == 422:
+            details = extract_validation_details(raw)
+            if details is not None:
+                return gateway_error(
+                    request,
+                    code=ErrorCode.VALIDATION_FAILED,
+                    status_code=422,
+                    message="One or more fields failed validation.",
+                    details=details,
+                )
         return gateway_error(
             request, code=status_to_code(upstream.status_code), status_code=upstream.status_code
         )

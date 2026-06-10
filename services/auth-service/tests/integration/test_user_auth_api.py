@@ -78,5 +78,13 @@ async def test_me_rejects_missing_and_refresh_tokens(client: AsyncClient) -> Non
 
 
 async def test_weak_password_rejected_at_register(client: AsyncClient) -> None:
-    r = await client.post("/v1/auth/register", json={"email": "weak@ex.com", "password": "weak"})
+    # all-lowercase-with-digit passes the length floor but fails the domain mixed-case policy,
+    # exercising the structured PasswordPolicyError handler (not Pydantic's own length check).
+    r = await client.post(
+        "/v1/auth/register", json={"email": "weak@ex.com", "password": "lowercase123"}
+    )
     assert r.status_code == 422
+    # structured (FastAPI/Pydantic-shaped) so the gateway surfaces field + a machine-token issue
+    detail = r.json()["detail"]
+    assert isinstance(detail, list) and detail[0]["loc"] == ["body", "password"]
+    assert detail[0]["type"] == "missing_mixed_case"

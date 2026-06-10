@@ -15,26 +15,38 @@ _MIN_LEN = 8
 
 
 class PasswordPolicyError(ValueError):
-    """The proposed password fails the strength policy."""
+    """The proposed password fails the strength policy.
+
+    ``code`` is a stable machine token (e.g. ``too_short``) the gateway surfaces as the
+    VALIDATION_FAILED ``issue`` so the console renders its own copy — never the raw message.
+    """
+
+    def __init__(self, message: str, *, code: str) -> None:
+        super().__init__(message)
+        self.code = code
 
 
 def validate_password_strength(password: str) -> None:
     """Raise :class:`PasswordPolicyError` if ``password`` is too weak. Returns None on success."""
     if len(password) < _MIN_LEN:
-        raise PasswordPolicyError(f"password must be at least {_MIN_LEN} characters")
+        raise PasswordPolicyError(
+            f"password must be at least {_MIN_LEN} characters", code="too_short"
+        )
     if len(password.encode("utf-8")) > _MAX_BYTES:
-        raise PasswordPolicyError("password must be at most 72 bytes")
+        raise PasswordPolicyError("password must be at most 72 bytes", code="too_long")
     if password.lower() == password or password.upper() == password:
         # require mixed case as a minimal complexity floor
-        raise PasswordPolicyError("password must contain both upper and lower case letters")
+        raise PasswordPolicyError(
+            "password must contain both upper and lower case letters", code="missing_mixed_case"
+        )
     if not any(c.isdigit() for c in password):
-        raise PasswordPolicyError("password must contain at least one digit")
+        raise PasswordPolicyError("password must contain at least one digit", code="missing_digit")
 
 
 def hash_password(password: str) -> str:
     """Return the bcrypt hash of ``password`` (cost=12). Caller validates strength first."""
     if len(password.encode("utf-8")) > _MAX_BYTES:
-        raise PasswordPolicyError("password must be at most 72 bytes")
+        raise PasswordPolicyError("password must be at most 72 bytes", code="too_long")
     return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt(rounds=_BCRYPT_ROUNDS)).decode(
         "utf-8"
     )

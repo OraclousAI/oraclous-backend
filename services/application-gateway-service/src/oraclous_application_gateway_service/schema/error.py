@@ -10,9 +10,17 @@ curated, generic policy messages — never the exception detail or the request p
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 from fastapi import Request
 from fastapi.responses import JSONResponse
-from oraclous_errors import ErrorCode, build_envelope, http_status_for, new_request_id
+from oraclous_errors import (
+    ErrorCode,
+    FieldError,
+    build_envelope,
+    http_status_for,
+    new_request_id,
+)
 
 
 def request_id_of(request: Request) -> str:
@@ -32,6 +40,7 @@ def gateway_error(
     status_code: int | None = None,
     message: str | None = None,
     retryable: bool | None = None,
+    details: Sequence[FieldError] | None = None,
     headers: dict[str, str] | None = None,
 ) -> JSONResponse:
     """Build a contract-conformant error response for one of the gateway's own errors.
@@ -42,7 +51,11 @@ def gateway_error(
     verbatim; ``X-Request-Id`` is added by the middleware.
     """
     body = build_envelope(
-        code, request_id=request_id_of(request), message=message, retryable=retryable
+        code,
+        request_id=request_id_of(request),
+        message=message,
+        retryable=retryable,
+        details=details,
     )
     return JSONResponse(
         status_code=status_code if status_code is not None else http_status_for(code),

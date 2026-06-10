@@ -9,11 +9,15 @@ JSON Schema and the forbidden-substring scanner.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
 from oraclous_errors.codes import CODE_POLICY, ErrorCode
+
+_ISSUE_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
+_FIELD_RE = re.compile(r"^[A-Za-z0-9_.\[\]-]+$")  # field name/path charset — never @/:/space
 
 
 @dataclass(frozen=True)
@@ -53,6 +57,13 @@ def build_envelope(
     if code is ErrorCode.VALIDATION_FAILED:
         if not details:
             raise ValueError("VALIDATION_FAILED requires a non-empty 'details' list")
+        # Fail-closed at the seam: a non-conformant field/issue (e.g. a reflected value that slipped
+        # past an extractor) raises here rather than being relayed in the error body (§3 rule 8).
+        for d in details:
+            if not d.field or not _FIELD_RE.match(d.field):
+                raise ValueError("detail.field must be a field name/path, never a value")
+            if not _ISSUE_RE.match(d.issue):
+                raise ValueError("detail.issue must be a machine token (^[A-Z][A-Z0-9_]*$)")
         inner["details"] = [{"field": d.field, "issue": d.issue} for d in details]
     elif details:
         raise ValueError(f"'details' is only valid for VALIDATION_FAILED, not {code.value}")
