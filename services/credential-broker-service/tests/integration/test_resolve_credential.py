@@ -22,7 +22,9 @@ _OTHER_ORG = "00000000-0000-0000-0000-0000000006ff"
 
 
 @pytest.fixture
-async def client(postgres_dsn: str, monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[AsyncClient]:
+async def client(
+    postgres_dsn: str, test_envelope, monkeypatch: pytest.MonkeyPatch
+) -> AsyncIterator[AsyncClient]:
     async_dsn = postgres_dsn.replace("postgresql://", "postgresql+asyncpg://", 1)
     monkeypatch.setenv("DATABASE_URL", async_dsn)
     monkeypatch.setenv("ENCRYPTION_KEY", _DEV_KEY)
@@ -49,8 +51,9 @@ async def client(postgres_dsn: str, monkeypatch: pytest.MonkeyPatch) -> AsyncIte
     )
 
     app = create_app(lifespan=None)
-    repo = CredentialRepository(async_dsn)
+    repo = CredentialRepository(async_dsn, encrypt=test_envelope.encrypt)
     app.state.credential_repository = repo
+    app.state.envelope_service = test_envelope
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://cb.test") as c:
         yield c
     await repo.close()

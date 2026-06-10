@@ -39,7 +39,7 @@ class _FakeRefreshClient:
 
 @pytest.fixture
 async def ctx(
-    postgres_dsn: str, monkeypatch: pytest.MonkeyPatch
+    postgres_dsn: str, test_envelope, monkeypatch: pytest.MonkeyPatch
 ) -> AsyncIterator[tuple[AsyncClient, object]]:
     async_dsn = postgres_dsn.replace("postgresql://", "postgresql+asyncpg://", 1)
     for k, v in {
@@ -62,10 +62,11 @@ async def ctx(
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.drop_all)
         await conn.run_sync(Base.metadata.create_all)
-    repo = CredentialRepository(async_dsn)
+    repo = CredentialRepository(async_dsn, encrypt=test_envelope.encrypt)
     fake = _FakeRefreshClient()
     app = create_app(lifespan=None)
     app.state.credential_repository = repo
+    app.state.envelope_service = test_envelope
     app.state.refresh_client = fake
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://cb.test") as c:
         yield c, fake, repo

@@ -578,6 +578,21 @@ print(uuid.uuid4(), tok, prefix, hashlib.sha256(tok.encode()).hexdigest(), secre
   [[ "$after" == "0" ]] && pass "the broker secret was GC'd with the subscription (no orphan)" || fail "the secret leaked: count=$after"
   "${PSQL[@]}" "DELETE FROM published_agents WHERE slug='smoke-gc';" >/dev/null
   pass "cleaned up the GC smoke agent"
+
+  step "28. GW-20: per-org envelope encryption — new secrets are v2, the org has a wrapped DEK (R7-SEC S5)"
+  # minting a webhook secret goes through the broker, which now envelopes it (v2) under the org's DEK
+  curl -s "${MEMBER[@]}" "${JSON[@]}" -d '{"slug":"smoke-kms","bound_capability_ref":"cap-x"}' "${GW}/v1/agents" >/dev/null
+  kmssub=$(curl -s "${MEMBER[@]}" "${JSON[@]}" -d '{"agent_slug":"smoke-kms"}' "${GW}/v1/webhook-subscriptions")
+  KSID=$(echo "$kmssub" | python3 -c "import sys,json;print(json.load(sys.stdin).get('id',''))")
+  KSECREF=$("${PSQL[@]}" "SELECT broker_secret_ref FROM webhook_subscriptions WHERE id='${KSID}';" | tr -d '[:space:]')
+  fmt=$("${PSQL[@]}" "SELECT left(encrypted_secret,3) FROM webhook_secrets WHERE id='${KSECREF}';" | tr -d '[:space:]')
+  [[ "$fmt" == "v2:" ]] && pass "the minted webhook secret is stored as a v2 envelope (not the legacy single key)" || fail "expected a v2: envelope, got '${fmt}'"
+  deks=$("${PSQL[@]}" "SELECT count(*) FROM org_data_keys WHERE organisation_id='${DEV_ORG}';" | tr -d '[:space:]')
+  [[ "$deks" == "1" ]] && pass "the org has exactly one wrapped DEK in org_data_keys (per-tenant key)" || fail "expected 1 DEK row for the org, got ${deks}"
+  # the secret still resolves+verifies end-to-end (GW-13 already proves the broker round-trip); clean up (S4 GC drops the secret)
+  curl -s -o /dev/null -X DELETE "${MEMBER[@]}" "${GW}/v1/webhook-subscriptions/${KSID}"
+  "${PSQL[@]}" "DELETE FROM published_agents WHERE slug='smoke-kms';" >/dev/null
+  pass "cleaned up the KMS smoke agent + sub"
 else
   step "13. GW-7/GW-8: edge-protection + key-validator LIVE checks SKIPPED in NO_COMPOSE mode (unit-covered)"
 fi

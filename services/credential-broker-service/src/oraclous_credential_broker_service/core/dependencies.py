@@ -31,6 +31,7 @@ from oraclous_credential_broker_service.services.credential_broker_service impor
 )
 from oraclous_credential_broker_service.services.credential_service import CredentialService
 from oraclous_credential_broker_service.services.delegation_service import DelegationService
+from oraclous_credential_broker_service.services.envelope_service import EnvelopeService
 from oraclous_credential_broker_service.services.refresh_client import HttpxRefreshClient
 from oraclous_credential_broker_service.services.webhook_secret_service import WebhookSecretService
 
@@ -156,25 +157,38 @@ def get_webhook_secret_repository(request: Request) -> WebhookSecretRepository:
     return repo
 
 
+def get_envelope_service(request: Request) -> EnvelopeService:
+    envelope = getattr(request.app.state, "envelope_service", None)
+    if envelope is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="envelope-encryption seam unavailable (DATABASE_URL not configured)",
+        )
+    return envelope
+
+
 def get_webhook_secret_service(
     repo: Annotated[WebhookSecretRepository, Depends(get_webhook_secret_repository)],
+    envelope: Annotated[EnvelopeService, Depends(get_envelope_service)],
 ) -> WebhookSecretService:
-    return WebhookSecretService(repository=repo)
+    return WebhookSecretService(repository=repo, envelope=envelope)
 
 
 def get_credential_service(
     repo: Annotated[CredentialRepository, Depends(get_credential_repository)],
+    envelope: Annotated[EnvelopeService, Depends(get_envelope_service)],
 ) -> CredentialService:
-    return CredentialService(repository=repo)
+    return CredentialService(repository=repo, envelope=envelope)
 
 
 def get_credential_broker_service(
     request: Request,
     repo: Annotated[CredentialRepository, Depends(get_credential_repository)],
+    envelope: Annotated[EnvelopeService, Depends(get_envelope_service)],
 ) -> CredentialBrokerService:
     # The provider refresh client is injectable via app.state (tests set a fake; prod uses httpx).
     client = getattr(request.app.state, "refresh_client", None) or HttpxRefreshClient()
-    return CredentialBrokerService(credentials=repo, refresh_client=client)
+    return CredentialBrokerService(credentials=repo, refresh_client=client, envelope=envelope)
 
 
 CredentialRepositoryDep = Annotated[CredentialRepository, Depends(get_credential_repository)]

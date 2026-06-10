@@ -20,9 +20,21 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
     DATABASE_URL: str
+    # the legacy single key — still the v1-decrypt fallback during the ADR-020 migration
     ENCRYPTION_KEY: str
     AUTH_SERVICE_URL: str = "http://auth-service:8000"
     INTERNAL_SERVICE_KEY: str
+
+    # --- per-org envelope encryption (ADR-020, R7-SEC S5) ---
+    # KMS_PROVIDER selects the KEK home: "local" (env KEK — dev/self-host/pre-cutover) or "aws"
+    # (a CMK in AWS KMS — the cloud cutover). KMS_LOCAL_KEK is the base64 32-byte local KEK; empty
+    # reuses ENCRYPTION_KEY (so existing deploys envelope without a new env var). The DEK cache TTL
+    # bounds how long a plaintext DEK is held in-process (one AWS-KMS unwrap per org per window).
+    KMS_PROVIDER: Literal["local", "aws"] = "local"
+    KMS_LOCAL_KEK: str = ""
+    KMS_AWS_KEY_ID: str = ""
+    KMS_AWS_REGION: str = ""
+    KMS_DEK_CACHE_TTL_SECONDS: int = 300
 
     # --- identity seam (dev-auth by default). `gateway` (production, ADR-018): trust the gateway's
     # verified X-Principal-*/X-Organisation-Id headers, gated by the existing X-Internal-Key — no
