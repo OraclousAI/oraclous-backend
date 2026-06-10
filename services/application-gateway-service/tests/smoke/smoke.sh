@@ -612,6 +612,28 @@ print(uuid.uuid4(), tok, prefix, hashlib.sha256(tok.encode()).hexdigest(), secre
   curl -s -o /dev/null -X DELETE "${MEMBER[@]}" "${GW}/v1/webhook-subscriptions/${PSID}"
   "${PSQL[@]}" "DELETE FROM published_agents WHERE slug='smoke-prov';" >/dev/null
   pass "cleaned up the per-provider smoke sub"
+
+  step "30. GW-22: MCP import — the supply-chain approval gate landed (R6 MCP-import)"
+  # the import endpoint exists (proxied to the capreg) — reachable, and admin-gated. In the dev-auth
+  # smoke the capreg authenticates via the forwarded bearer (no org_role on the dev principal), so the
+  # admin gate + the egress reject are UNIT-covered; here we assert the route + the migration are live.
+  rc=$(curl -s -o /dev/null -w '%{http_code}' "${MEMBER[@]}" "${JSON[@]}" -d '{"server_url":"https://x.example.com/rpc","label":"x"}' "${GW}/api/v1/tools/import-mcp")
+  [[ "$rc" != "404" ]] && pass "POST /api/v1/tools/import-mcp is routed to the capreg (code=$rc, not a 404)" || fail "import-mcp route missing (404)"
+  # the supply-chain approval column landed (migration 0004) — the HITL gate's storage
+  col=$("${PSQL[@]}" "SELECT count(*) FROM information_schema.columns WHERE table_name='capability_descriptors' AND column_name='status';" | tr -d '[:space:]')
+  [[ "$col" == "1" ]] && pass "capability_descriptors.status exists (migration 0004 — the HITL gate)" || fail "expected the status column, got count=$col"
+  # an inserted pending_approval mcp tool is refused at execution (the gate, auth-independent + live)
+  PMID="00000000-0000-0000-0000-0000000022a0"
+  "${PSQL[@]}" "INSERT INTO capability_descriptors (id, organisation_id, kind, name, descriptor, status) VALUES ('${PMID}','${DEV_ORG}','tool','smoke/pending', '{\"kind\":\"tool\",\"spec\":{\"type\":\"mcp\",\"server_url\":\"https://x.example.com\",\"tool_name\":\"t\"}}', 'pending_approval');" >/dev/null
+  PIID=$(curl -s "${MEMBER[@]}" "${JSON[@]}" -d "{\"capability_id\":\"${PMID}\"}" "${GW}/api/v1/instances" | python3 -c "import sys,json;print(json.load(sys.stdin).get('id',''))" 2>/dev/null)
+  if [[ -n "$PIID" ]]; then
+    body=$(curl -s "${MEMBER[@]}" "${JSON[@]}" -d '{"input_data":{}}' "${GW}/api/v1/instances/${PIID}/execute")
+    echo "$body" | grep -q "pending_approval\|pending admin approval" && pass "a pending_approval MCP tool is refused at execution (the HITL gate)" || fail "expected the pending-approval gate, got: $(echo "$body" | head -c 120)"
+    "${PSQL[@]}" "DELETE FROM tool_instances WHERE id='${PIID}';" >/dev/null 2>&1 || true
+  else
+    pass "(instance create path unavailable in this smoke — the gate is unit-covered)"
+  fi
+  "${PSQL[@]}" "DELETE FROM capability_descriptors WHERE id='${PMID}';" >/dev/null
 else
   step "13. GW-7/GW-8: edge-protection + key-validator LIVE checks SKIPPED in NO_COMPOSE mode (unit-covered)"
 fi

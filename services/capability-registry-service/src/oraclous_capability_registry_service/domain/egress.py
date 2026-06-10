@@ -12,7 +12,9 @@ NOT octal-decoding it (glibc/macOS do not — it lands on a public IP, not local
 
 from __future__ import annotations
 
+import asyncio
 import ipaddress
+import socket
 from urllib.parse import urlparse
 
 _BLOCKED_HOSTNAMES = frozenset({"localhost", "metadata", "metadata.google.internal"})
@@ -59,3 +61,23 @@ def is_public_url(url: str) -> bool:
     if host in _BLOCKED_HOSTNAMES or "." not in host:
         return False
     return not any(host.endswith(suffix) for suffix in _BLOCKED_SUFFIXES)
+
+
+async def egress_allowed(url: str) -> bool:
+    """The full egress gate (the shared SSRF check for every outbound MCP call — invoke AND import):
+    ``is_public_url`` (pure) PLUS, for a hostname, an async DNS resolve re-checking EVERY resolved
+    IP, so a public name pointing inward is blocked. Fail-closed on an unresolvable host."""
+    if not is_public_url(url):
+        return False
+    host = urlparse(url).hostname or ""
+    try:
+        ipaddress.ip_address(host)  # a literal-IP host was already cleared by is_public_url
+    except ValueError:
+        pass
+    else:
+        return True
+    try:
+        infos = await asyncio.get_running_loop().getaddrinfo(host, None, type=socket.SOCK_STREAM)
+    except (socket.gaierror, OSError):
+        return False
+    return bool(infos) and all(not is_private_ip(info[4][0]) for info in infos)

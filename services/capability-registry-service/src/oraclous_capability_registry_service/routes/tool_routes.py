@@ -10,16 +10,24 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from fastapi import APIRouter, status
+from fastapi import APIRouter, HTTPException, status
 
 from oraclous_capability_registry_service.core.dependencies import (
+    AdminDep,
     CapabilityRegistryServiceDep,
+    McpImportServiceDep,
     OrganisationIdDep,
 )
 from oraclous_capability_registry_service.schema.capability_schema import (
     CapabilityListResponse,
     CapabilityOut,
+    ImportMcpRequest,
+    ImportMcpResponse,
     RegisterTool,
+)
+from oraclous_capability_registry_service.services.mcp_import_service import (
+    McpEgressBlocked,
+    McpImportError,
 )
 
 router = APIRouter(prefix="/api/v1/tools", tags=["tools"])
@@ -50,3 +58,39 @@ async def get_tool(
     svc: CapabilityRegistryServiceDep,
 ) -> CapabilityOut:
     return await svc.get(capability_id=tool_id, organisation_id=organisation_id)
+
+
+@router.post("/import-mcp", response_model=ImportMcpResponse, status_code=status.HTTP_201_CREATED)
+async def import_mcp_server(
+    body: ImportMcpRequest,
+    admin: AdminDep,  # importing an external tool source is an org-admin (supply-chain) action
+    svc: McpImportServiceDep,
+) -> ImportMcpResponse:
+    """Discover an external MCP server's tools and register each as a PENDING_APPROVAL mcp tool. The
+    URL is SSRF-egress-checked; the tools are not executable until approved."""
+    try:
+        created = await svc.import_server(
+            organisation_id=admin.organisation_id, server_url=body.server_url, label=body.label
+        )
+    except McpEgressBlocked as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="the MCP server URL is not an allowed external target",
+        ) from exc
+    except McpImportError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY, detail="could not import from the MCP server"
+        ) from exc
+    return ImportMcpResponse(imported=[CapabilityOut.model_validate(r) for r in created])
+
+
+@router.post("/{tool_id}/approve", status_code=status.HTTP_204_NO_CONTENT)
+async def approve_tool(
+    tool_id: UUID,
+    admin: AdminDep,  # the supply-chain HITL decision — an org admin only
+    svc: McpImportServiceDep,
+) -> None:
+    """Approve an imported MCP tool (pending_approval → active, making it executable). Admin-only;
+    org-scoped — an unknown / cross-org id is a 404 (mask)."""
+    if not await svc.approve(descriptor_id=tool_id, organisation_id=admin.organisation_id):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="no such tool")

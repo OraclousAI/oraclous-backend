@@ -34,3 +34,7 @@ class CapabilityDescriptor(BaseModel):
     name = Column(String(255), nullable=True, index=True)
     content_hash = Column(String(64), nullable=True)
     descriptor = Column(JSONB, nullable=False)
+    # supply-chain approval gate (R6 MCP-import): "active" (executable — the default for every
+    # built-in / first-party registration) | "pending_approval" (an imported external MCP tool an
+    # admin has not yet approved). A non-active MCP tool is refused at execution (fail-closed).
+    status = Column(String(32), nullable=False, server_default="active")
