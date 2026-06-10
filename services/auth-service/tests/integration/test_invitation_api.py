@@ -31,15 +31,18 @@ async def test_invite_accept_creates_membership(client: AsyncClient) -> None:
     org_id = await _personal_org(client, owner)
 
     inv = await client.post(
-        f"/v1/orgs/{org_id}/invitations", headers=_auth(owner), json={"email": "bob@ex.com"}
+        f"/v1/orgs/{org_id}/invitations",
+        headers=_auth(owner),
+        json={"email": "bob@ex.com", "subgraph_grants": {"read": ["graph-1"]}},
     )
     assert inv.status_code == 201, inv.text
     token = inv.json()["token"]
 
-    # public peek shows the org + role without auth
+    # public peek shows the org + role + the grants (login receipt) without auth
     peek = await client.post("/v1/invitations/peek", json={"token": token})
     assert peek.status_code == 200
     assert peek.json()["organisation_id"] == org_id and peek.json()["role"] == "member"
+    assert peek.json()["subgraph_grants"] == {"read": ["graph-1"]}
 
     # bob registers and accepts -> becomes a member of owner's org
     bob = await _register(client, "bob@ex.com")
