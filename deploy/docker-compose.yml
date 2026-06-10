@@ -69,31 +69,31 @@ services:
       - neo4j_plugins:/plugins
     networks: [substrate]
 
-  # Idempotent one-shot container that provisions the write-capable `kgs_writer`
-  # user (publisher role) and the read-only `krs_reader` user (reader role) after
-  # Neo4j is healthy.  Runs `CREATE USER … IF NOT EXISTS` so re-starts are safe.
-  # Dev-only credentials below; production injects KGS_NEO4J_PASSWORD via K8s secret.
-  # ORAA-53 — Neo4j write-role configuration for knowledge-graph-service.
+  # Idempotent one-shot: provisions the write-capable `kgs_writer` (publisher) and read-only
+  # `krs_reader` (reader) Neo4j users/roles for production (Enterprise), after Neo4j is healthy.
+  # `CREATE USER … IF NOT EXISTS` makes restarts safe. On the dev image (`neo4j:5.23-community`),
+  # role management (`GRANT ROLE`) is an Enterprise-only command — it is skipped NON-FATALLY here,
+  # because in dev KGS/KRS connect as the `neo4j` admin user (see the x-anchor) and nothing
+  # `depends_on` this one-shot. So a fresh `docker compose down -v` start no longer leaves this
+  # container Exited(1). Production (Enterprise) runs all four statements and the grants apply.
+  # Dev-only credentials below; production injects KGS_NEO4J_PASSWORD via K8s secret. (ORAA-53.)
   neo4j-role-setup:
     image: neo4j:5.23-community
     depends_on:
       neo4j:
         condition: service_healthy
     entrypoint:
-      - cypher-shell
-      - -a
-      - bolt://neo4j:7687
-      - -u
-      - neo4j
-      - -p
-      - password
-      - >-
-        CREATE USER kgs_writer IF NOT EXISTS
-          SET PASSWORD 'kgs-writer-pass' CHANGE NOT REQUIRED;
-        GRANT ROLE publisher TO kgs_writer;
-        CREATE USER krs_reader IF NOT EXISTS
-          SET PASSWORD 'krs-reader-pass' CHANGE NOT REQUIRED;
-        GRANT ROLE reader TO krs_reader;
+      - sh
+      - -c
+      - |
+        cypher-shell -a bolt://neo4j:7687 -u neo4j -p password \
+          "CREATE USER kgs_writer IF NOT EXISTS SET PASSWORD 'kgs-writer-pass' CHANGE NOT REQUIRED;
+           CREATE USER krs_reader IF NOT EXISTS SET PASSWORD 'krs-reader-pass' CHANGE NOT REQUIRED;" \
+          || echo "[neo4j-role-setup] CREATE USER step non-fatal in dev"
+        cypher-shell -a bolt://neo4j:7687 -u neo4j -p password \
+          "GRANT ROLE publisher TO kgs_writer; GRANT ROLE reader TO krs_reader;" \
+          || echo "[neo4j-role-setup] GRANT ROLE is Neo4j Enterprise-only; on Community KGS/KRS use the neo4j admin user in dev — skipped (non-fatal)"
+        exit 0
     networks: [substrate]
     restart: "no"
 
