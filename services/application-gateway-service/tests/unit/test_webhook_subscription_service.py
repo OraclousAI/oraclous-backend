@@ -41,7 +41,9 @@ class _Subs:
         self._sub = sub
         self.deleted: list[uuid.UUID] = []
 
-    async def create(self, *, organisation_id, target_slug, broker_secret_ref):  # noqa: ANN001, ANN201
+    async def create(
+        self, *, organisation_id, target_slug, broker_secret_ref, signature_scheme="generic"
+    ):  # noqa: ANN001, ANN201
         if self._fail:
             raise RuntimeError("insert failed")
         return SimpleNamespace(

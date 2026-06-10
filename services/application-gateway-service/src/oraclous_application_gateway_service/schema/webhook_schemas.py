@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -12,6 +13,9 @@ from oraclous_application_gateway_service.schema.published_agent_schemas import 
 
 class CreateSubscriptionRequest(BaseModel):
     agent_slug: str = Field(pattern=SLUG_PATTERN)  # a published agent in the member's org
+    # the PINNED signature scheme the external source signs with (default the generic HMAC-SHA256);
+    # an unknown value is a 422 here, never a silent downgrade at verify time.
+    signature_scheme: Literal["generic", "github", "stripe", "slack"] = "generic"
 
 
 class SubscriptionOut(BaseModel):

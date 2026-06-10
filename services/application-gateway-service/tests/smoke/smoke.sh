@@ -593,6 +593,25 @@ print(uuid.uuid4(), tok, prefix, hashlib.sha256(tok.encode()).hexdigest(), secre
   curl -s -o /dev/null -X DELETE "${MEMBER[@]}" "${GW}/v1/webhook-subscriptions/${KSID}"
   "${PSQL[@]}" "DELETE FROM published_agents WHERE slug='smoke-kms';" >/dev/null
   pass "cleaned up the KMS smoke agent + sub"
+
+  step "29. GW-21: per-provider webhook signature schemes — a Stripe-scheme sub verifies live (R6 follow-on)"
+  curl -s "${MEMBER[@]}" "${JSON[@]}" -d '{"slug":"smoke-prov","bound_capability_ref":"cap-x"}' "${GW}/v1/agents" >/dev/null
+  prov=$(curl -s "${MEMBER[@]}" "${JSON[@]}" -d '{"agent_slug":"smoke-prov","signature_scheme":"stripe"}' "${GW}/v1/webhook-subscriptions")
+  PSID=$(echo "$prov" | python3 -c "import sys,json;print(json.load(sys.stdin).get('id',''))")
+  PSECRET=$(echo "$prov" | python3 -c "import sys,json;print(json.load(sys.stdin).get('signing_secret',''))")
+  PSCHEME=$(echo "$prov" | python3 -c "import sys,json;print(json.load(sys.stdin).get('signature_scheme',''))")
+  [[ "$PSCHEME" == "stripe" ]] && pass "create accepted signature_scheme=stripe (echoed in the response)" || fail "expected scheme stripe, got '$PSCHEME'"
+  PBODY='{"id":"evt_smoke"}'
+  # a CORRECTLY Stripe-signed webhook passes verification (engine down -> 502, the point is it's NOT 404)
+  PSIG=$(python3 -c "import hmac,hashlib,time,sys; t=str(int(time.time())); b=sys.argv[2].encode(); print('t='+t+',v1='+hmac.new(sys.argv[1].encode(), t.encode()+b'.'+b, hashlib.sha256).hexdigest())" "$PSECRET" "$PBODY")
+  code=$(curl -s -o /dev/null -w '%{http_code}' -X POST "${GW}/v1/webhooks/${PSID}" -H "content-type: application/json" -H "stripe-signature: ${PSIG}" -d "$PBODY")
+  [[ "$code" != "404" ]] && pass "a correctly Stripe-signed webhook passes verification (code=$code, not the uniform-404)" || fail "expected verify to pass (non-404), got 404"
+  # a BAD Stripe signature -> the uniform 404 (fail-closed), proving the scheme is actually enforced
+  code=$(curl -s -o /dev/null -w '%{http_code}' -X POST "${GW}/v1/webhooks/${PSID}" -H "content-type: application/json" -H "stripe-signature: t=1,v1=deadbeef" -d "$PBODY")
+  [[ "$code" == "404" ]] && pass "a bad Stripe signature -> 404 (fail-closed)" || fail "expected 404 for a bad Stripe sig, got $code"
+  curl -s -o /dev/null -X DELETE "${MEMBER[@]}" "${GW}/v1/webhook-subscriptions/${PSID}"
+  "${PSQL[@]}" "DELETE FROM published_agents WHERE slug='smoke-prov';" >/dev/null
+  pass "cleaned up the per-provider smoke sub"
 else
   step "13. GW-7/GW-8: edge-protection + key-validator LIVE checks SKIPPED in NO_COMPOSE mode (unit-covered)"
 fi
