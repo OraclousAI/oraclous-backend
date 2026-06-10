@@ -46,11 +46,21 @@ async def _leaky(request):  # noqa: ANN001 — a 500 whose body would leak inter
     )
 
 
+# A large body that spans many read flushes — the #235 truncation case (a detached stream over the
+# pooled connection lost the terminator past ~one flush). ~250 KB, subgraph-shaped.
+_BIG = {"nodes": [{"id": i, "blob": "x" * 240} for i in range(1000)], "edges": []}
+
+
+async def _big(request):  # noqa: ANN001 — a large (~250 KB) proxied success body
+    return JSONResponse(_BIG)
+
+
 _UPSTREAM_APP = Starlette(
     routes=[
         Route("/v1/search", _search, methods=["GET"]),
         Route("/api/v1/capabilities", _caps, methods=["GET"]),
         Route("/api/v1/tools/boom", _leaky, methods=["GET"]),
+        Route("/v1/graph/big/subgraph", _big, methods=["GET"]),
     ]
 )
 
@@ -94,6 +104,17 @@ async def test_authed_request_is_forwarded_with_injected_identity(client: AsyncC
     assert body["echo_q"] == "q=hello"  # query forwarded verbatim
     assert body["x_org"] == _DEV_ORG  # gateway injected the verified org downstream
     assert body["x_principal"]  # gateway injected the verified principal id
+
+
+async def test_large_proxied_body_is_relayed_intact(client: AsyncClient) -> None:
+    # #235: a large (multi-flush) success body must come back WHOLE, not a truncated chunked stream.
+    r = await client.get("/v1/graph/big/subgraph", headers=_auth())
+    assert r.status_code == 200
+    body = r.json()  # parses fully — a truncated body would raise here
+    assert len(body["nodes"]) == 1000
+    # buffered → a correct Content-Length, not a terminator-less chunked transfer
+    assert "content-length" in r.headers
+    assert int(r.headers["content-length"]) == len(r.content)
 
 
 async def test_upstream_error_is_normalised(client: AsyncClient) -> None:

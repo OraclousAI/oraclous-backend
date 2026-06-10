@@ -80,13 +80,14 @@ def forward_request_headers(
 
 
 def response_headers(raw_headers: list[tuple[bytes, bytes]]) -> list[tuple[str, str]]:
-    """Headers to return downstream: drop hop-by-hop + framing headers (the StreamingResponse sets
-    its own transfer framing) + the security denylist (anti-fingerprinting + trust-header reflect
-    guard, R7-SEC S1); keep content-type and the rest verbatim."""
+    """Headers to return downstream: drop hop-by-hop + framing (Starlette's ``Response`` sets its
+    own content-length from the buffered body) + the upstream ``date`` (uvicorn emits its own) +
+    the security denylist (anti-fingerprint + trust-header reflect guard, R7-SEC S1); keep
+    content-type and the rest verbatim."""
     out: list[tuple[str, str]] = []
     for key, value in raw_headers:
         name = key.decode("latin-1").lower()
-        if name in _HOP_BY_HOP or name == "content-length" or name in _RESPONSE_DENYLIST:
+        if name in _HOP_BY_HOP or name in ("content-length", "date") or name in _RESPONSE_DENYLIST:
             continue
         out.append((name, value.decode("latin-1")))
     return out
