@@ -34,6 +34,7 @@ async def test_register_login_refresh_me_flow(client: AsyncClient) -> None:
     me = await client.get("/v1/auth/me", headers={"Authorization": f"Bearer {access}"})
     assert me.status_code == 200
     assert me.json()["principal_type"] == "user" and me.json()["organisation_id"]
+    assert me.json()["org_role"] == "owner"  # the registrant owns their default org (R7-SEC S2)
 
     # login works; bad password and unknown email are the SAME generic 401 (no enumeration)
     assert (
