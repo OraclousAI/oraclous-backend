@@ -65,6 +65,8 @@ def _auth() -> dict:
         ("/v1/search", "knowledge-retriever-service:8000", True),
         ("/api/v1/tools", "capability-registry-service:8000", True),
         ("/api/v1/instances", "capability-registry-service:8000", True),
+        ("/v1/harnesses", "harness-runtime-service:8000", True),
+        ("/v1/engine", "execution-engine-service:8000", True),
     ],
 )
 async def test_every_prefix_routes_to_the_right_upstream(

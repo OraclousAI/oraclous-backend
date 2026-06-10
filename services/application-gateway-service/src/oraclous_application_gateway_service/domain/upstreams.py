@@ -14,4 +14,6 @@ def upstream_health_targets(settings) -> dict[str, str]:  # noqa: ANN001 — Set
         "knowledge-graph": settings.KNOWLEDGE_GRAPH_URL.rstrip("/"),
         "knowledge-retriever": settings.KNOWLEDGE_RETRIEVER_URL.rstrip("/"),
         "capability-registry": settings.CAPABILITY_REGISTRY_URL.rstrip("/"),
+        "harness-runtime": settings.HARNESS_RUNTIME_URL.rstrip("/"),
+        "execution-engine": settings.EXECUTION_ENGINE_URL.rstrip("/"),
     }

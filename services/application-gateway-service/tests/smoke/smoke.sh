@@ -95,7 +95,7 @@ agg=$(curl -fsS "${GW}/health/upstreams")
 echo "$agg" | python3 -c "
 import sys,json
 d=json.load(sys.stdin); ups={u['name']:u['status'] for u in d['upstreams']}
-assert len(d['upstreams'])==5, d
+assert len(d['upstreams'])==7, d
 # the two upstreams this smoke launched must be ok
 assert ups['capability-registry']=='ok', ups
 assert ups['credential-broker']=='ok', ups
