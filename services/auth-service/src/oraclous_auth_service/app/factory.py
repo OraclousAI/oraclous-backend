@@ -97,8 +97,11 @@ def _register_user_identity(app: FastAPI) -> None:
 
     @app.exception_handler(PasswordPolicyError)
     async def _on_weak_password(_: Request, exc: PasswordPolicyError) -> JSONResponse:
+        # Structured (FastAPI/Pydantic-shaped) so the gateway surfaces field + a machine-token
+        # issue (exc.code) into VALIDATION_FAILED without relaying the raw message.
         return JSONResponse(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, content={"detail": str(exc)}
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            content={"detail": [{"loc": ["body", "password"], "type": exc.code, "msg": str(exc)}]},
         )
 
     @app.exception_handler(OrgNotFoundError)
