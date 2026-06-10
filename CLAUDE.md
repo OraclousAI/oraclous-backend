@@ -2,7 +2,9 @@
 
 This file is the working contract for any AI agent (Claude Code, an agent in the harness runtime, or otherwise) operating in this repository. Read it in full at the start of every session.
 
-This repo is **`OraclousAI/oraclous-backend`** — the Python codebase for the Oraclous Platform: substrate, capability registry, harness runtime, execution engine, application gateway, and the supporting services that back them. The repo is currently empty by design; the scaffolding work in R0.5 produces its initial shape.
+This repo is **`OraclousAI/oraclous-backend`** — the Python codebase for the Oraclous Platform. It is a working **8-service platform** built end-to-end through R7-SEC, each service under `services/<service>/` and layered per ORAA-4 §21 (`routes → services → domain → repositories → core`): `auth-service` (identity, orgs, roles), `credential-broker-service` (encrypted connections + per-org KMS envelope), `knowledge-graph-service` (ingest → graph), `knowledge-retriever-service` (search + subgraph), `capability-registry-service` (tools/connectors + MCP import), `harness-runtime-service` (R4 OHM agent runtime), `execution-engine-service` (R5 durable orchestration), and `application-gateway-service` (R6 edge — the sole external surface).
+
+**Operating model (current):** work is tracked as **GitHub Issues + PRs in this repo**. The ORAA-4 gates, the `.githooks` (pre-push + commit-msg), and the `main` branch ruleset below are enforced and current. Where this file mentions a "PaperClip board", "issue assignment via heartbeats", or "agent identity = issue assignment", that describes the prior multi-agent operating model — the governance **rules** (gates, no-attribution, one-commit-per-concern, non-author review, up-to-date base) still apply; the **board** is now GitHub Issues.
 
 ---
 
@@ -286,7 +288,7 @@ This discipline is enforced by skill rules through R6. From R7 onward it is addi
 
 ## 6. Repository layout
 
-The repo is currently empty. The R0.5 scaffolding work establishes this shape. New work conforms to it; deviations require an ADR.
+The repo holds the 8 services above under `services/<service>/`, each layered `routes → services → domain → repositories → core` (ORAA-4 §21); shared packages live under `packages/`. New work conforms to this shape; deviations require an ADR.
 
 ```
 oraclous-backend/
