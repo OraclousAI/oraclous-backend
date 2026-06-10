@@ -11,6 +11,7 @@ from __future__ import annotations
 from typing import Any
 
 from oraclous_capability_registry_service.domain.connectors.github import GitHubReader
+from oraclous_capability_registry_service.domain.connectors.mcp import McpToolExecutor
 from oraclous_capability_registry_service.domain.connectors.mysql import MySQLReader
 from oraclous_capability_registry_service.domain.connectors.notion import NotionReader
 from oraclous_capability_registry_service.domain.connectors.postgresql import PostgreSQLReader
@@ -37,15 +38,24 @@ _EXECUTORS: dict[str, type[BaseToolExecutor]] = {
 }
 
 
+def _is_mcp(descriptor: dict[str, Any]) -> bool:
+    """A dynamically-imported external MCP tool dispatches by ``spec.type`` (no fixed plugin id,
+    since
+    each imported tool is a distinct per-org descriptor pointing at its own server)."""
+    return (descriptor.get("spec") or {}).get("type") == "mcp"
+
+
 def has_executor(descriptor: dict[str, Any]) -> bool:
-    return descriptor.get("id") in _EXECUTORS
+    return descriptor.get("id") in _EXECUTORS or _is_mcp(descriptor)
 
 
 def create_executor(descriptor: dict[str, Any]) -> BaseToolExecutor:
     executor_cls = _EXECUTORS.get(descriptor.get("id"))
-    if executor_cls is None:
-        raise NoExecutorError(
-            f"no executor registered for tool '{descriptor.get('id')}'"
-            f" ({(descriptor.get('metadata') or {}).get('name')})"
-        )
-    return executor_cls(descriptor)
+    if executor_cls is not None:
+        return executor_cls(descriptor)
+    if _is_mcp(descriptor):
+        return McpToolExecutor(descriptor)
+    raise NoExecutorError(
+        f"no executor registered for tool '{descriptor.get('id')}'"
+        f" ({(descriptor.get('metadata') or {}).get('name')})"
+    )
