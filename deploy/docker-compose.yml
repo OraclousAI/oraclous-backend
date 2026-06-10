@@ -187,6 +187,10 @@ services:
       # the running credential-broker over /internal/* (S5 real-broker integration).
       CREDENTIAL_BROKER_URL: "http://credential-broker-service:8000"
       CREDENTIAL_BROKER_MODE: "${CAPABILITY_REGISTRY_BROKER_MODE:-fake}"
+      # First-party knowledge-retriever tool (core/knowledge-retriever@1.0.0): the executor POSTs to
+      # the retriever's /v1/search/* over the internal/gateway-trust path (no broker credential), the
+      # caller's org identity forwarded as X-Principal-*/X-Organisation-Id gated by X-Internal-Key.
+      KNOWLEDGE_RETRIEVER_URL: "http://knowledge-retriever-service:8000"
     depends_on:
       postgres:
         condition: service_healthy
