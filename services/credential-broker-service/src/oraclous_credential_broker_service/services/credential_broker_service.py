@@ -15,13 +15,13 @@ from typing import Protocol
 from uuid import UUID
 
 from oraclous_credential_broker_service.core.config import get_settings
-from oraclous_credential_broker_service.core.security import decrypt_secret
 from oraclous_credential_broker_service.domain.errors import OAuthErrorCode
 from oraclous_credential_broker_service.domain.scopes import missing_scopes
 from oraclous_credential_broker_service.repositories.credential_repository import (
     CredentialRepository,
 )
 from oraclous_credential_broker_service.schema.credential_schema import RequestCredentials
+from oraclous_credential_broker_service.services.envelope_service import EnvelopeService
 
 _REFRESH_SKEW_SECONDS = 120
 
@@ -58,9 +58,16 @@ def _is_near_expiry(expires_at: object) -> bool:
 
 
 class CredentialBrokerService:
-    def __init__(self, *, credentials: CredentialRepository, refresh_client: RefreshClient) -> None:
+    def __init__(
+        self,
+        *,
+        credentials: CredentialRepository,
+        refresh_client: RefreshClient,
+        envelope: EnvelopeService,
+    ) -> None:
         self._creds = credentials
         self._refresh = refresh_client
+        self._envelope = envelope
 
     def _login_url(self, provider: str) -> str:
         return f"{get_settings().AUTH_SERVICE_URL}/oauth/{provider}/login"
@@ -92,7 +99,9 @@ class CredentialBrokerService:
                 login_url=self._login_url(provider),
             )
 
-        cred = decrypt_secret(row.encrypted_cred)
+        cred = await self._envelope.decrypt(
+            organisation_id=row.organisation_id, stored=row.encrypted_cred
+        )
         granted = list(cred.get("scopes") or [])
 
         if _is_near_expiry(cred.get("expires_at")):

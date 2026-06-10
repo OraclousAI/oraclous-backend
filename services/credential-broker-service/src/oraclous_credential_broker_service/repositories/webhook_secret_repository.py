@@ -54,3 +54,22 @@ class WebhookSecretRepository:
                     )
                 )
             return (result.rowcount or 0) > 0
+
+    async def iter_all_ciphertexts(self) -> list[tuple[uuid.UUID, uuid.UUID, str]]:
+        """Every secret as ``(id, organisation_id, encrypted_secret)`` — the backfill sweep."""
+        async with self._session() as session:
+            result = await session.execute(
+                select(
+                    WebhookSecret.id,
+                    WebhookSecret.organisation_id,
+                    WebhookSecret.encrypted_secret,
+                )
+            )
+            return [(r[0], r[1], r[2]) for r in result.all()]
+
+    async def set_encrypted_secret(self, *, secret_id: uuid.UUID, encrypted_secret: str) -> None:
+        """Overwrite a row's ciphertext in place (the backfill, after a v1→v2 re-encrypt)."""
+        async with self._session() as session, session.begin():
+            obj = await session.get(WebhookSecret, secret_id)
+            if obj is not None:
+                obj.encrypted_secret = encrypted_secret

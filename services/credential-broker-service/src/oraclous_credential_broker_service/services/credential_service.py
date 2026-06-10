@@ -12,7 +12,6 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from oraclous_credential_broker_service.core.security import decrypt_secret
 from oraclous_credential_broker_service.domain.providers import data_sources_for
 from oraclous_credential_broker_service.models.credential_model import UserCredential
 from oraclous_credential_broker_service.repositories.credential_repository import (
@@ -25,6 +24,7 @@ from oraclous_credential_broker_service.schema.credential_schema import (
     RequestCredentials,
     RequestCredentialsResponse,
 )
+from oraclous_credential_broker_service.services.envelope_service import EnvelopeService
 
 
 class CredentialNotFoundError(Exception):
@@ -42,23 +42,25 @@ def _metadata(row: UserCredential) -> CredentialOut:
     )
 
 
-def _with_secret(row: UserCredential) -> RequestCredentialsResponse:
-    """Decrypt the stored secret. ONLY for the trusted X-Internal-Key runtime resolver — never the
-    user-facing surface."""
-    return RequestCredentialsResponse(
-        id=row.id,
-        name=row.name,
-        provider=row.provider,
-        user_id=row.user_id,
-        tool_id=row.tool_id,
-        cred_type=str(row.cred_type.value if row.cred_type else ""),
-        credential=decrypt_secret(row.encrypted_cred),
-    )
-
-
 class CredentialService:
-    def __init__(self, *, repository: CredentialRepository) -> None:
+    def __init__(self, *, repository: CredentialRepository, envelope: EnvelopeService) -> None:
         self._repo = repository
+        self._envelope = envelope
+
+    async def _with_secret(self, row: UserCredential) -> RequestCredentialsResponse:
+        """Decrypt the stored secret (envelope-polymorphic, org-scoped). ONLY for the trusted
+        X-Internal-Key runtime resolver — never the user-facing surface."""
+        return RequestCredentialsResponse(
+            id=row.id,
+            name=row.name,
+            provider=row.provider,
+            user_id=row.user_id,
+            tool_id=row.tool_id,
+            cred_type=str(row.cred_type.value if row.cred_type else ""),
+            credential=await self._envelope.decrypt(
+                organisation_id=row.organisation_id, stored=row.encrypted_cred
+            ),
+        )
 
     async def create(
         self, *, cred: CreateCredential, organisation_id: UUID, user_id: UUID
@@ -81,7 +83,7 @@ class CredentialService:
         row = await self._repo.get_credential_by_id(credential_id, organisation_id)
         if row is None:
             raise CredentialNotFoundError("credential not found")
-        return _with_secret(row)
+        return await self._with_secret(row)
 
     async def list(
         self, *, organisation_id: UUID, user_id: UUID, tool_id: UUID | None = None

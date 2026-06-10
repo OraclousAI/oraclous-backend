@@ -9,10 +9,10 @@ from __future__ import annotations
 
 import uuid
 
-from oraclous_credential_broker_service.core.security import decrypt_secret, encrypt_secret
 from oraclous_credential_broker_service.repositories.webhook_secret_repository import (
     WebhookSecretRepository,
 )
+from oraclous_credential_broker_service.services.envelope_service import EnvelopeService
 
 
 class WebhookSecretNotFound(Exception):
@@ -20,20 +20,22 @@ class WebhookSecretNotFound(Exception):
 
 
 class WebhookSecretService:
-    def __init__(self, repository: WebhookSecretRepository) -> None:
+    def __init__(self, repository: WebhookSecretRepository, *, envelope: EnvelopeService) -> None:
         self._repo = repository
+        self._envelope = envelope
 
     async def mint(self, *, organisation_id: uuid.UUID, secret: str) -> uuid.UUID:
-        row = await self._repo.create(
-            organisation_id=organisation_id, encrypted_secret=encrypt_secret(secret)
-        )
+        encrypted = await self._envelope.encrypt(organisation_id=organisation_id, plaintext=secret)
+        row = await self._repo.create(organisation_id=organisation_id, encrypted_secret=encrypted)
         return row.id
 
     async def resolve(self, *, secret_id: uuid.UUID, organisation_id: uuid.UUID) -> str:
         row = await self._repo.get_for_org(secret_id=secret_id, organisation_id=organisation_id)
         if row is None or row.status != "active":
             raise WebhookSecretNotFound(secret_id)
-        return decrypt_secret(row.encrypted_secret)
+        return await self._envelope.decrypt(
+            organisation_id=organisation_id, stored=row.encrypted_secret
+        )
 
     async def delete(self, *, secret_id: uuid.UUID, organisation_id: uuid.UUID) -> bool:
         """Hard-delete a secret (org-scoped, idempotent). Returns True if a row was removed. The

@@ -9,6 +9,8 @@ authenticated context, never from a request body.
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
+from typing import Any
 from uuid import UUID
 
 from sqlalchemy import select
@@ -24,11 +26,22 @@ from oraclous_credential_broker_service.schema.credential_schema import (
     RequestCredentials,
 )
 
+# the org-aware encrypt seam, dependency-INVERTED so the repository never imports the
+# services-layer EnvelopeService (ADR-020 / §21 layering): production injects
+# ``EnvelopeService.encrypt`` (writes the v2 envelope); the default writes the legacy single-key
+# v1 (back-compat for direct/test construction).
+EncryptFn = Callable[..., Awaitable[str]]
+
+
+async def _legacy_encrypt(*, organisation_id: UUID, plaintext: Any) -> str:  # noqa: ARG001
+    return encrypt_secret(plaintext)
+
 
 class CredentialRepository:
-    def __init__(self, db_url: str) -> None:
+    def __init__(self, db_url: str, *, encrypt: EncryptFn | None = None) -> None:
         self._engine = create_async_engine(db_url, echo=False)
         self._session = async_sessionmaker(self._engine, expire_on_commit=False)
+        self._encrypt: EncryptFn = encrypt or _legacy_encrypt
 
     async def create_tables(self) -> None:
         async with self._engine.begin() as conn:
@@ -41,13 +54,14 @@ class CredentialRepository:
         self, cred: CreateCredential, organisation_id: UUID, user_id: UUID
     ) -> UserCredential:
         # user_id is bound from the authenticated principal, never the request body.
+        encrypted = await self._encrypt(organisation_id=organisation_id, plaintext=cred.credential)
         obj = UserCredential(
             organisation_id=organisation_id,
             name=cred.name,
             provider=cred.provider,
             user_id=user_id,
             tool_id=cred.tool_id,
-            encrypted_cred=encrypt_secret(cred.credential),
+            encrypted_cred=encrypted,
             cred_type=CredentialType(cred.cred_type),
         )
         async with self._session() as session:
@@ -106,7 +120,9 @@ class CredentialRepository:
                 obj.user_id = user_id
                 obj.tool_id = update.tool_id
                 obj.cred_type = CredentialType(update.cred_type)
-                obj.encrypted_cred = encrypt_secret(update.credential)
+                obj.encrypted_cred = await self._encrypt(
+                    organisation_id=organisation_id, plaintext=update.credential
+                )
             return obj
 
     async def update_encrypted_credential(
@@ -124,7 +140,9 @@ class CredentialRepository:
                 obj = result.scalars().first()
                 if obj is None:
                     return False
-                obj.encrypted_cred = encrypt_secret(credential)
+                obj.encrypted_cred = await self._encrypt(
+                    organisation_id=organisation_id, plaintext=credential
+                )
             return True
 
     async def delete_credential(self, cred_id: UUID, organisation_id: UUID, user_id: UUID) -> bool:
@@ -142,3 +160,23 @@ class CredentialRepository:
                     return False
                 await session.delete(obj)
             return True
+
+    async def iter_all_ciphertexts(self) -> list[tuple[UUID, UUID, str]]:
+        """Every credential as ``(id, organisation_id, encrypted_cred)`` — the ADR-020 backfill
+        re-encrypts v1 → v2 (an operator-only sweep, not an org-scoped read path)."""
+        async with self._session() as session:
+            result = await session.execute(
+                select(
+                    UserCredential.id,
+                    UserCredential.organisation_id,
+                    UserCredential.encrypted_cred,
+                )
+            )
+            return [(r[0], r[1], r[2]) for r in result.all()]
+
+    async def set_encrypted_cred(self, *, cred_id: UUID, encrypted_cred: str) -> None:
+        """Overwrite a row's ciphertext in place (the backfill, after a v1→v2 re-encrypt)."""
+        async with self._session() as session, session.begin():
+            obj = await session.get(UserCredential, cred_id)
+            if obj is not None:
+                obj.encrypted_cred = encrypted_cred
