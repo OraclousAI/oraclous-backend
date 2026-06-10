@@ -25,10 +25,14 @@ from oraclous_execution_engine_service.core.auth import (
 )
 from oraclous_execution_engine_service.core.config import get_settings
 from oraclous_execution_engine_service.repositories.job_repository import JobRepository
+from oraclous_execution_engine_service.repositories.provenance_repository import (
+    ProvenanceRepository,
+)
 from oraclous_execution_engine_service.repositories.roundtable_repository import (
     RoundtableRepository,
 )
 from oraclous_execution_engine_service.repositories.schedule_repository import ScheduleRepository
+from oraclous_execution_engine_service.services.activity_service import ActivityService
 from oraclous_execution_engine_service.services.harness_client import HarnessClient
 from oraclous_execution_engine_service.services.job_service import JobService
 from oraclous_execution_engine_service.services.roundtable_service import RoundtableService
@@ -109,6 +113,22 @@ def get_provenance(request: Request) -> ProvenanceCollector:
     return collector
 
 
+def get_provenance_repository(request: Request) -> ProvenanceRepository:
+    repo = getattr(request.app.state, "provenance_repository", None)
+    if repo is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="engine store unavailable (DATABASE_URL not reachable)",
+        )
+    return repo
+
+
+def get_activity_service(
+    provenance: Annotated[ProvenanceRepository, Depends(get_provenance_repository)],
+) -> ActivityService:
+    return ActivityService(provenance=provenance)
+
+
 def get_job_service(
     jobs: Annotated[JobRepository, Depends(get_job_repository)],
     provenance: Annotated[ProvenanceCollector, Depends(get_provenance)],
@@ -174,6 +194,7 @@ def get_task_service(
 PrincipalDep = Annotated[Principal, Depends(get_principal)]
 JobRepositoryDep = Annotated[JobRepository, Depends(get_job_repository)]
 JobServiceDep = Annotated[JobService, Depends(get_job_service)]
+ActivityServiceDep = Annotated[ActivityService, Depends(get_activity_service)]
 TaskServiceDep = Annotated[TaskService, Depends(get_task_service)]
 ScheduleServiceDep = Annotated[ScheduleService, Depends(get_schedule_service)]
 RoundtableServiceDep = Annotated[RoundtableService, Depends(get_roundtable_service)]
