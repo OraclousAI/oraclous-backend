@@ -30,7 +30,9 @@ class _FakeWriteRepo:
     def __init__(self) -> None:
         self.calls: list[dict] = []
 
-    async def write_document(self, *, graph_id, document, chunks, embeddings, title=None):
+    async def write_document(
+        self, *, graph_id, document, chunks, embeddings, title=None, entity_graph=None
+    ):
         self.calls.append({"graph_id": graph_id, "document": document, "chunks": chunks})
         return WriteResult(nodes=1 + len(chunks), relationships=len(chunks), chunks=len(chunks))
 

@@ -1,0 +1,258 @@
+"""Unit tests for the LLM entity/relation extractor seam (KGS_EXTRACTOR=openai).
+
+No real LLM, no network: a fake `LLMInterface` returns a fixed entity/relation JSON, so the wiring,
+the chunk linkage, the honest counts, and the org-stamping are all exercised deterministically. The
+`null` path (no extractor) is asserted to stay lexical-only.
+"""
+
+from __future__ import annotations
+
+import json
+import uuid
+
+import pytest
+from neo4j_graphrag.experimental.components.types import (
+    Neo4jGraph,
+    Neo4jNode,
+    Neo4jRelationship,
+)
+from neo4j_graphrag.llm import LLMInterface
+from neo4j_graphrag.llm.types import LLMResponse
+from oraclous_governance import OrganisationContext, PrincipalType, use_organisation_context
+from oraclous_knowledge_graph_service.core.config import Settings
+from oraclous_knowledge_graph_service.repositories.graph_write_repository import (
+    WriteResult,
+    build_document_graph,
+    chunk_node_ids,
+)
+from oraclous_knowledge_graph_service.services.embedder import HashingEmbedder
+from oraclous_knowledge_graph_service.services.entity_extractor import (
+    EntityExtractor,
+    make_extractor,
+)
+from oraclous_knowledge_graph_service.services.ingestion_service import IngestionService
+
+pytestmark = pytest.mark.unit
+
+_ORG = uuid.UUID("00000000-0000-0000-0000-00000000050a")
+
+
+def _ctx():
+    return use_organisation_context(
+        OrganisationContext(
+            organisation_id=_ORG, principal_id=_ORG, principal_type=PrincipalType.SERVICE_ACCOUNT
+        )
+    )
+
+
+class _FakeLLM(LLMInterface):
+    """An LLMInterface whose every call returns the same fixed extraction JSON."""
+
+    def __init__(self, *, nodes: list[dict], relationships: list[dict]) -> None:
+        super().__init__(model_name="fake")
+        self._payload = json.dumps({"nodes": nodes, "relationships": relationships})
+        self.calls = 0
+
+    def invoke(self, *args, **kwargs) -> LLMResponse:  # pragma: no cover - async path is used
+        return LLMResponse(content=self._payload)
+
+    async def ainvoke(self, *args, **kwargs) -> LLMResponse:
+        self.calls += 1
+        return LLMResponse(content=self._payload)
+
+
+def _fixed_llm() -> _FakeLLM:
+    return _FakeLLM(
+        nodes=[
+            {"id": "0", "label": "Person", "properties": {"name": "Ada"}},
+            {"id": "1", "label": "Company", "properties": {"name": "Analytical Engines"}},
+        ],
+        relationships=[
+            {"start_node_id": "0", "end_node_id": "1", "type": "WORKS_AT", "properties": {}},
+        ],
+    )
+
+
+# --- the extractor in isolation ----------------------------------------------
+async def test_extract_returns_entities_relationships_and_chunk_links() -> None:
+    llm = _fixed_llm()
+    extractor = EntityExtractor(llm=llm)
+    chunk_ids = ["chunk-a", "chunk-b"]
+    graph = await extractor.extract(chunks=["t one", "t two"], chunk_ids=chunk_ids)
+
+    assert llm.calls == 2  # one LLM call per chunk
+    # two entities per chunk -> four entity nodes
+    labels = sorted(n.label for n in graph.nodes)
+    assert labels == ["Company", "Company", "Person", "Person"]
+
+    from_chunk = [r for r in graph.relationships if r.type == "FROM_CHUNK"]
+    work_at = [r for r in graph.relationships if r.type == "WORKS_AT"]
+    assert len(work_at) == 2  # one entity↔entity rel per chunk
+    assert len(from_chunk) == 4  # every entity linked to its source chunk
+    # every FROM_CHUNK edge points at one of the real (deterministic) chunk ids
+    assert {r.end_node_id for r in from_chunk} == set(chunk_ids)
+
+
+async def test_extract_node_ids_namespaced_by_chunk() -> None:
+    """Same entity id from two chunks yields two distinct nodes (resolver merges later)."""
+    extractor = EntityExtractor(llm=_fixed_llm())
+    graph = await extractor.extract(chunks=["x", "y"], chunk_ids=["c0", "c1"])
+    ids = [n.id for n in graph.nodes]
+    assert len(ids) == len(set(ids))  # no collisions across chunks
+    assert all(nid.startswith(("c0:", "c1:")) for nid in ids)
+
+
+async def test_extract_is_deterministic_for_same_chunk_ids() -> None:
+    a = await EntityExtractor(llm=_fixed_llm()).extract(chunks=["x"], chunk_ids=["c0"])
+    b = await EntityExtractor(llm=_fixed_llm()).extract(chunks=["x"], chunk_ids=["c0"])
+    assert [n.id for n in a.nodes] == [n.id for n in b.nodes]  # idempotent re-ingest
+
+
+async def test_extract_length_mismatch_raises() -> None:
+    with pytest.raises(ValueError, match="same length"):
+        await EntityExtractor(llm=_fixed_llm()).extract(chunks=["x"], chunk_ids=["c0", "c1"])
+
+
+# --- build_document_graph merges the entity sub-graph ------------------------
+def test_build_document_graph_merges_entity_graph() -> None:
+    chunks = ["a", "b"]
+    cids = chunk_node_ids(graph_id="g1", document="d", count=len(chunks))
+    entity_graph = Neo4jGraph(
+        nodes=[Neo4jNode(id="e0", label="Person", properties={"name": "Ada"})],
+        relationships=[
+            Neo4jRelationship(start_node_id="e0", end_node_id=cids[0], type="FROM_CHUNK")
+        ],
+    )
+    merged = build_document_graph(
+        graph_id="g1",
+        document="d",
+        chunks=chunks,
+        embeddings=[[0.0], [0.0]],
+        entity_graph=entity_graph,
+    )
+    labels = [n.label for n in merged.nodes]
+    assert labels.count("Document") == 1
+    assert labels.count("Chunk") == 2
+    assert labels.count("Person") == 1  # entity merged in
+    assert any(r.type == "FROM_CHUNK" for r in merged.relationships)
+
+
+# --- IngestionService end-to-end against a capturing write repo --------------
+class _CapturingWriteRepo:
+    """Captures the graph the writer would persist, applying the real org-stamp via the writer."""
+
+    def __init__(self) -> None:
+        self.last_graph = None
+        self.last_entity_graph = None
+
+    async def write_document(
+        self, *, graph_id, document, chunks, embeddings, title=None, entity_graph=None
+    ):
+        self.last_entity_graph = entity_graph
+        self.last_graph = build_document_graph(
+            graph_id=graph_id,
+            document=document,
+            chunks=chunks,
+            embeddings=embeddings,
+            entity_graph=entity_graph,
+        )
+        entities = len(entity_graph.nodes) if entity_graph else 0
+        entity_rels = (
+            sum(1 for r in entity_graph.relationships if r.type != "FROM_CHUNK")
+            if entity_graph
+            else 0
+        )
+        return WriteResult(
+            nodes=len(self.last_graph.nodes),
+            relationships=len(self.last_graph.relationships),
+            chunks=len(chunks),
+            entities=entities,
+            entity_relationships=entity_rels,
+        )
+
+
+async def test_ingest_with_extractor_writes_entities_linked_to_chunks() -> None:
+    repo = _CapturingWriteRepo()
+    svc = IngestionService(repo, HashingEmbedder(dim=8), EntityExtractor(llm=_fixed_llm()))
+    result = await svc.ingest(
+        graph_id="g1", document="d.txt", data=b"para one\n\npara two", source_type="text"
+    )
+    # two chunks, two entities per chunk = 4 extracted entities; one WORKS_AT per chunk = 2
+    assert result.entities == 4
+    assert result.entity_relationships == 2
+    # entities linked to the actual lexical chunk nodes
+    chunk_ids = {n.id for n in repo.last_graph.nodes if n.label == "Chunk"}
+    from_chunk_targets = {
+        r.end_node_id for r in repo.last_entity_graph.relationships if r.type == "FROM_CHUNK"
+    }
+    assert from_chunk_targets <= chunk_ids
+    assert from_chunk_targets  # non-empty
+
+
+async def test_ingest_null_mode_is_lexical_only() -> None:
+    repo = _CapturingWriteRepo()
+    svc = IngestionService(repo, HashingEmbedder(dim=8), extractor=None)  # null mode
+    result = await svc.ingest(
+        graph_id="g1", document="d.txt", data=b"para one\n\npara two", source_type="text"
+    )
+    assert result.entities == 0
+    assert result.entity_relationships == 0
+    assert repo.last_entity_graph is None
+    labels = {n.label for n in repo.last_graph.nodes}
+    assert labels == {"Document", "Chunk"}  # no entity labels
+
+
+# --- org-stamping: entities go through the org-scoped writer (T1) ------------
+async def test_extracted_entities_are_org_stamped_by_the_writer() -> None:
+    """The OrganisationScopedKGWriter stamps organisation_id on extracted entities too, and an
+    LLM-supplied organisation_id is overwritten (cross-tenant leakage defence)."""
+    captured = {}
+
+    class _Base:
+        driver = object()
+        neo4j_database = "neo4j"
+
+        async def run(self, graph):
+            captured["graph"] = graph
+
+    # an extractor whose entity tries to pin a foreign org id
+    llm = _FakeLLM(
+        nodes=[
+            {
+                "id": "0",
+                "label": "Person",
+                "properties": {"name": "Ada", "organisation_id": "FOREIGN-ORG"},
+            }
+        ],
+        relationships=[],
+    )
+    entity_graph = await EntityExtractor(llm=llm).extract(chunks=["t"], chunk_ids=["chunk-a"])
+    graph = build_document_graph(
+        graph_id="g1", document="d", chunks=["t"], embeddings=[[0.0]], entity_graph=entity_graph
+    )
+    from oraclous_knowledge_graph_service.multi_tenant import OrganisationScopedKGWriter
+
+    writer = OrganisationScopedKGWriter(base_writer=_Base(), graph_id="g1", ingestion_source="d")
+    with _ctx():
+        await writer.run(graph)
+
+    person = next(n for n in captured["graph"].nodes if n.label == "Person")
+    assert person.properties["organisation_id"] == str(_ORG)  # stamped to the bound org
+    assert person.properties["organisation_id"] != "FOREIGN-ORG"  # foreign id overwritten
+
+
+# --- make_extractor factory ---------------------------------------------------
+def test_make_extractor_null_returns_none() -> None:
+    assert make_extractor(Settings(extractor="null")) is None
+
+
+def test_make_extractor_openai_requires_key() -> None:
+    with pytest.raises(RuntimeError, match="KGS_OPENAI_API_KEY"):
+        make_extractor(Settings(extractor="openai", openai_api_key=None))
+
+
+def test_make_extractor_openai_builds_with_key() -> None:
+    extractor = make_extractor(
+        Settings(extractor="openai", openai_api_key="sk-test", extractor_model="openai/gpt-4o-mini")
+    )
+    assert isinstance(extractor, EntityExtractor)

@@ -41,7 +41,13 @@ x-kgs-env: &kgs-env
   KGS_NEO4J_PASSWORD: "password"
   KGS_REDIS_URL: "redis://redis:6379/0"
   KGS_EMBEDDER: "hashing"
-  KGS_EXTRACTOR: "null"
+  # Free-text entity/relation extraction. "null" (default) = lexical only (:Document/:Chunk),
+  # key-free CI. "openai" = LLM extraction over an OpenAI-compatible endpoint (OpenRouter) using the
+  # platform key — also materialises real :Entity nodes + their relationships, linked to chunks.
+  KGS_EXTRACTOR: "${KGS_EXTRACTOR:-null}"
+  KGS_OPENAI_API_KEY: "${OPENROUTER_API_KEY:-}"
+  KGS_OPENAI_BASE_URL: "${KGS_OPENAI_BASE_URL:-https://openrouter.ai/api/v1}"
+  KGS_EXTRACTOR_MODEL: "${KGS_EXTRACTOR_MODEL:-openai/gpt-4o-mini}"
 
 services:
   neo4j:

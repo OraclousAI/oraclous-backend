@@ -17,6 +17,7 @@ import hashlib
 from neo4j import Driver
 from neo4j_graphrag.experimental.components.kg_writer import Neo4jWriter
 from neo4j_graphrag.experimental.components.types import (
+    LexicalGraphConfig,
     Neo4jGraph,
     Neo4jNode,
     Neo4jRelationship,
@@ -26,12 +27,24 @@ from oraclous_substrate.access import enforced_organisation_id
 from oraclous_knowledge_graph_service.multi_tenant import OrganisationScopedKGWriter
 
 _INTERNAL_LABEL_PREFIX = "__"
+# entity → chunk edge type (matches the extractor's link type), excluded from the entity-relation
+# count so `extracted_relationships` reports only entity↔entity edges, not the chunk attachments.
+_FROM_CHUNK = LexicalGraphConfig().node_to_chunk_relationship_type
 
 
 def _node_id(graph_id: str, document: str, index: int | None) -> str:
     suffix = "document" if index is None else f"chunk:{index}"
     payload = f"{graph_id}|{document}|{suffix}"
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:32]
+
+
+def chunk_node_ids(*, graph_id: str, document: str, count: int) -> list[str]:
+    """Deterministic ids for the `count` chunk nodes of a document.
+
+    The single source of truth for chunk ids — the LLM extractor links its entities to these exact
+    ids so the entity graph attaches to the lexical chunk nodes the writer creates.
+    """
+    return [_node_id(graph_id, document, idx) for idx in range(count)]
 
 
 def build_document_graph(
@@ -41,11 +54,17 @@ def build_document_graph(
     chunks: list[str],
     embeddings: list[list[float]],
     title: str | None = None,
+    entity_graph: Neo4jGraph | None = None,
 ) -> Neo4jGraph:
     """Build a lexical :Document + N :Chunk graph (FROM_DOCUMENT + NEXT_CHUNK).
 
     Pure (no I/O) so it is unit-testable; node ids are deterministic + globally unique
     (graph_id is a per-org UUID), so re-ingest is an idempotent MERGE.
+
+    When `entity_graph` is given (LLM extraction on, `KGS_EXTRACTOR=openai`), its extracted entity
+    nodes + entity↔entity relationships + entity→chunk (`FROM_CHUNK`) edges are merged in. The
+    extractor links entities to the same deterministic chunk ids built here, so the entity graph
+    attaches to these chunk nodes.
     """
     doc_id = _node_id(graph_id, document, None)
     doc_node = Neo4jNode(
@@ -76,16 +95,36 @@ def build_document_graph(
                 type="NEXT_CHUNK",
             )
         )
-    return Neo4jGraph(nodes=[doc_node, *chunk_nodes], relationships=relationships)
+    nodes = [doc_node, *chunk_nodes]
+    if entity_graph is not None:
+        nodes.extend(entity_graph.nodes)
+        relationships.extend(entity_graph.relationships)
+    return Neo4jGraph(nodes=nodes, relationships=relationships)
 
 
 class WriteResult:
-    """Counts returned from a document write."""
+    """Counts returned from a document write.
 
-    def __init__(self, *, nodes: int, relationships: int, chunks: int) -> None:
+    `nodes`/`relationships` are the lexical+entity graph totals (Document + Chunks + entities; all
+    edges). `entities`/`entity_relationships` are the LLM-extracted counts ONLY — the honest figures
+    the ingest job reports as `extracted_entities`/`extracted_relationships` (0 in `null` mode,
+    where the only nodes are the lexical Document + Chunks).
+    """
+
+    def __init__(
+        self,
+        *,
+        nodes: int,
+        relationships: int,
+        chunks: int,
+        entities: int = 0,
+        entity_relationships: int = 0,
+    ) -> None:
         self.nodes = nodes
         self.relationships = relationships
         self.chunks = chunks
+        self.entities = entities
+        self.entity_relationships = entity_relationships
 
 
 class GraphWriteRepository:
@@ -103,6 +142,7 @@ class GraphWriteRepository:
         chunks: list[str],
         embeddings: list[list[float]],
         title: str | None = None,
+        entity_graph: Neo4jGraph | None = None,
     ) -> WriteResult:
         # Replace-document semantics -> idempotent re-ingest. The neo4j_graphrag lexical writer does
         # not MERGE across runs (its __tmp_internal_id is transient), so we delete this document's
@@ -114,6 +154,7 @@ class GraphWriteRepository:
             chunks=chunks,
             embeddings=embeddings,
             title=title,
+            entity_graph=entity_graph,
         )
         base = Neo4jWriter(driver=self._driver, neo4j_database=self._database, clean_db=False)
         writer = OrganisationScopedKGWriter(
@@ -121,11 +162,22 @@ class GraphWriteRepository:
         )
         # Org id is read live from the bound context inside run() (fail-closed).
         await writer.run(graph)
-        n_chunks = len(graph.nodes) - 1
+        # Honest extracted counts: the entity nodes (FROM_CHUNK edges link them to chunks) and the
+        # entity↔entity relationships the LLM produced — independent of the lexical Document/Chunk
+        # scaffold. 0 in null mode (entity_graph is None).
+        entity_count = len(entity_graph.nodes) if entity_graph else 0
+        entity_rel_count = (
+            sum(1 for r in entity_graph.relationships if r.type != _FROM_CHUNK)
+            if entity_graph
+            else 0
+        )
+        n_chunks = len(chunks)
         return WriteResult(
             nodes=len(graph.nodes),
             relationships=len(graph.relationships),
             chunks=n_chunks,
+            entities=entity_count,
+            entity_relationships=entity_rel_count,
         )
 
     def _delete_document(self, *, graph_id: str, document: str) -> None:

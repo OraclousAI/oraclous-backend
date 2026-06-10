@@ -51,7 +51,19 @@ class Settings(BaseSettings):
     embedder: Literal["hashing", "openai"] = "hashing"
     embedding_dim: int = 512
     extractor: Literal["null", "openai"] = "null"
+    # Shared OpenAI-compatible API key (embedder + extractor). The platform's single LLM key is
+    # OpenRouter's; compose injects KGS_OPENAI_API_KEY=${OPENROUTER_API_KEY}.
     openai_api_key: str | None = None
+    # OpenAI-compatible base URL the embedder + extractor clients point at. Default = OpenRouter, so
+    # the one platform key reaches Claude/OpenAI/etc. behind one endpoint. The stock OpenAI embedder
+    # model `text-embedding-3-small` is only served by api.openai.com, so an OpenAI embedder caller
+    # must override this to https://api.openai.com/v1 (or set KGS_OPENAI_BASE_URL accordingly).
+    openai_base_url: str = "https://openrouter.ai/api/v1"
+    # Chat model used for LLM entity/relation extraction (only read when extractor == "openai").
+    # An OpenRouter-style `<provider>/<model>` id; a strong instruction-follower is preferred.
+    extractor_model: str = "openai/gpt-4o-mini"
+    # Max concurrent LLM calls across chunks in one document extraction (the library fans out).
+    extractor_max_concurrency: int = 5
 
     @property
     def sync_database_url(self) -> str:
