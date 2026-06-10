@@ -64,8 +64,12 @@ for i in $(seq 1 30); do
   sleep 2
 done
 [[ "$status" == "completed" ]] && pass "job completed: $body" || fail "job $status: $body"
-nodes=$(echo "$body" | jget "['extracted_entities']")
-[[ "$nodes" -ge 3 ]] && pass "nodes written=${nodes}" || fail "expected >=3 nodes, got $nodes"
+# Honest counts (the `null` extractor seam): free text yields lexical :Document/:Chunk only, so
+# `extracted_entities` is 0 — real entity extraction needs KGS_EXTRACTOR=openai + an API key (see
+# step 7 for the proof the lexical nodes WERE written). Previously this conflated the lexical node
+# count with extracted entities; the lexical graph is proven directly in Neo4j below.
+ents=$(echo "$body" | jget "['extracted_entities']")
+[[ "$ents" == "0" ]] && pass "extracted_entities=0 (null extractor, key-free)" || fail "expected 0 extracted entities in null mode, got $ents"
 
 step "7. Neo4j: real :Document/:Chunk nodes, org + graph stamped, key-free"
 doc=$(cypher "MATCH (d:Document {graph_id:'${IGID}'}) RETURN count(d)" | tail -1 | tr -d ' ')

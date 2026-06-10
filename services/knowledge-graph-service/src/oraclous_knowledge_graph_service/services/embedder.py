@@ -49,17 +49,29 @@ class HashingEmbedder:
 
 
 class OpenAIEmbedder:
-    """Real OpenAI embeddings (optional; constructed only when an API key is present)."""
+    """Real OpenAI embeddings (optional; constructed only when an API key is present).
 
-    def __init__(self, *, api_key: str, model: str = "text-embedding-3-small", dim: int = 512):
+    `base_url` is optional so the same client can reach an OpenAI-compatible endpoint (e.g.
+    OpenRouter) — when None the openai client uses its own default (api.openai.com).
+    """
+
+    def __init__(
+        self,
+        *,
+        api_key: str,
+        model: str = "text-embedding-3-small",
+        dim: int = 512,
+        base_url: str | None = None,
+    ):
         self.dim = dim
         self._model = model
         self._api_key = api_key
+        self._base_url = base_url
 
     def embed(self, texts: list[str]) -> list[list[float]]:
         from openai import OpenAI
 
-        client = OpenAI(api_key=self._api_key)
+        client = OpenAI(api_key=self._api_key, base_url=self._base_url)
         out: list[list[float]] = []
         for start in range(0, len(texts), 256):
             batch = texts[start : start + 256]
@@ -74,5 +86,9 @@ def make_embedder(settings: Settings) -> Embedder:
     if settings.embedder == "openai":
         if not settings.openai_api_key:
             raise RuntimeError("KGS_EMBEDDER=openai requires KGS_OPENAI_API_KEY")
-        return OpenAIEmbedder(api_key=settings.openai_api_key, dim=settings.embedding_dim)
+        return OpenAIEmbedder(
+            api_key=settings.openai_api_key,
+            dim=settings.embedding_dim,
+            base_url=settings.openai_base_url,
+        )
     return HashingEmbedder(dim=settings.embedding_dim)

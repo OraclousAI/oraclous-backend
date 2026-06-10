@@ -34,6 +34,7 @@ from oraclous_knowledge_graph_service.services.code_ingestion_service import (
     is_code,
 )
 from oraclous_knowledge_graph_service.services.embedder import make_embedder
+from oraclous_knowledge_graph_service.services.entity_extractor import make_extractor
 from oraclous_knowledge_graph_service.services.ingestion_service import IngestionService
 from oraclous_knowledge_graph_service.services.structured_ingestion_service import (
     StructuredIngestionService,
@@ -82,17 +83,27 @@ async def _ingest_async(job_id_s: str, organisation_id_s: str) -> dict[str, Any]
                     )
                 else:
                     write_repo = GraphWriteRepository(driver, database=settings.neo4j_database)
-                    ingestion = IngestionService(write_repo, make_embedder(settings))
+                    ingestion = IngestionService(
+                        write_repo, make_embedder(settings), make_extractor(settings)
+                    )
                     result = await ingestion.ingest(
                         graph_id=str(payload.graph_id),
                         document=payload.filename or "inline",
                         data=data,
                         source_type=payload.source_type,
                     )
+                    # Honest extracted counts: the LLM-extracted entities + their entity↔entity
+                    # relationships (0 in null mode), NOT the lexical Document/Chunk node total.
                     summary = {
-                        "entities": result.nodes,
-                        "relationships": result.relationships,
-                        "detail": {"nodes": result.nodes, "chunks": result.chunks},
+                        "entities": result.entities,
+                        "relationships": result.entity_relationships,
+                        "detail": {
+                            "nodes": result.nodes,
+                            "relationships": result.relationships,
+                            "chunks": result.chunks,
+                            "extracted_entities": result.entities,
+                            "extracted_relationships": result.entity_relationships,
+                        },
                     }
             except Exception as exc:
                 async with maker() as session:
