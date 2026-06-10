@@ -33,7 +33,6 @@ from oraclous_application_gateway_service.services.webhook_subscription_service 
 
 router = APIRouter(tags=["webhooks"])
 
-_SIG_HEADER = "x-hub-signature-256"  # generic scheme: sha256=<hmac-hex>
 _DELIVERY_HEADER = "x-webhook-delivery"  # optional provider delivery id (else sha256(body) dedupes)
 
 
@@ -46,7 +45,7 @@ async def receive_webhook(
         await service.ingest(
             subscription_id=subscription_id,
             raw_body=raw,
-            signature_header=request.headers.get(_SIG_HEADER),
+            headers=request.headers,  # case-insensitive; the verifier reads its scheme's headers
             delivery_id=request.headers.get(_DELIVERY_HEADER),
         )
     except SubscriptionNotFound as exc:
@@ -75,7 +74,9 @@ async def create_subscription(
     """Register a webhook for an org published agent. The signing secret is shown ONCE."""
     try:
         sub, secret = await service.create(
-            organisation_id=admin.organisation_id, agent_slug=body.agent_slug
+            organisation_id=admin.organisation_id,
+            agent_slug=body.agent_slug,
+            signature_scheme=body.signature_scheme,
         )
     except UnknownAgent as exc:
         raise HTTPException(

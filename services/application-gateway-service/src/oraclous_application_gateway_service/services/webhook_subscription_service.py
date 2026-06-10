@@ -39,7 +39,7 @@ class WebhookSubscriptionService:
         self._secrets = secret_client
 
     async def create(
-        self, *, organisation_id: uuid.UUID, agent_slug: str
+        self, *, organisation_id: uuid.UUID, agent_slug: str, signature_scheme: str = "generic"
     ) -> tuple[WebhookSubscription, str]:
         agent = await self._agents.get_by_slug(organisation_id=organisation_id, slug=agent_slug)
         if agent is None or agent.status != "active":
@@ -53,6 +53,7 @@ class WebhookSubscriptionService:
                 organisation_id=organisation_id,
                 target_slug=agent_slug,
                 broker_secret_ref=secret_ref,
+                signature_scheme=signature_scheme,
             )
         except Exception:
             # the sub-row insert failed AFTER the broker minted the secret -> compensate so it

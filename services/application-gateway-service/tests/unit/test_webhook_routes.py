@@ -54,7 +54,7 @@ class _FakeSubs:
             )
         ]
 
-    async def create(self, *, organisation_id, agent_slug):  # noqa: ANN001
+    async def create(self, *, organisation_id, agent_slug, signature_scheme="generic"):  # noqa: ANN001
         if self._unknown:
             raise UnknownAgent(agent_slug)
         sub = SimpleNamespace(id=uuid.uuid4(), target_slug=agent_slug, signature_scheme="generic")

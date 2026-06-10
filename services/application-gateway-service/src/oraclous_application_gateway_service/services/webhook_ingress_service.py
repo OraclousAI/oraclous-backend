@@ -12,11 +12,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+import time
 import uuid
+from collections.abc import Mapping
 
 from oraclous_governance import Principal, PrincipalType
 
-from oraclous_application_gateway_service.domain.webhook_signature import verify_generic_hmac
+from oraclous_application_gateway_service.domain.webhook_signature import verify_signature
 from oraclous_application_gateway_service.repositories.published_agent_repository import (
     PublishedAgentRepository,
 )
@@ -87,7 +89,7 @@ class WebhookIngressService:
         *,
         subscription_id: uuid.UUID,
         raw_body: bytes,
-        signature_header: str | None,
+        headers: Mapping[str, str],
         delivery_id: str | None,
     ) -> None:
         sub = await self._subs.get_by_id(subscription_id)
@@ -114,9 +116,14 @@ class WebhookIngressService:
             raise SubscriptionNotFound() from exc
         if secret is None:
             raise SubscriptionNotFound()
-        # verify the HMAC over the EXACT raw bytes (the pinned scheme); bad/absent -> 404 (uniform)
-        if not verify_generic_hmac(
-            secret=secret, raw_body=raw_body, signature_header=signature_header
+        # verify the signature over the EXACT raw bytes under the sub's PINNED scheme; timestamped
+        # schemes also enforce a replay window. Bad/absent -> 404 (uniform anti-enumeration).
+        if not verify_signature(
+            sub.signature_scheme,
+            secret=secret,
+            raw_body=raw_body,
+            headers=headers,
+            now_unix=int(time.time()),
         ):
             raise SubscriptionNotFound()
         # the bound published agent must still exist + be active (fail-closed if unpublished)

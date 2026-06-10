@@ -102,7 +102,10 @@ async def test_valid_webhook_fires_an_engine_event() -> None:
     up = _Upstream(202)
     svc = _service(sub=sub, upstream=up)
     await svc.ingest(
-        subscription_id=sub.id, raw_body=_BODY, signature_header=_sign(_BODY), delivery_id="d-1"
+        subscription_id=sub.id,
+        raw_body=_BODY,
+        headers={"x-hub-signature-256": _sign(_BODY)},
+        delivery_id="d-1",
     )
     assert len(up.calls) == 1
     call = up.calls[0]
@@ -117,7 +120,10 @@ async def test_no_delivery_id_dedupes_on_the_body_hash() -> None:
     sub = _sub()
     up = _Upstream(202)
     await _service(sub=sub, upstream=up).ingest(
-        subscription_id=sub.id, raw_body=_BODY, signature_header=_sign(_BODY), delivery_id=None
+        subscription_id=sub.id,
+        raw_body=_BODY,
+        headers={"x-hub-signature-256": _sign(_BODY)},
+        delivery_id=None,
     )
     body = json.loads(up.calls[0]["content"])
     assert body["idempotency_key"] == hashlib.sha256(_BODY).hexdigest()
@@ -136,7 +142,10 @@ async def test_unknown_or_disabled_subscription_is_404(mutate) -> None:  # noqa:
     mutate(sub)
     with pytest.raises(SubscriptionNotFound):
         await _service(sub=sub).ingest(
-            subscription_id=target, raw_body=_BODY, signature_header=_sign(_BODY), delivery_id=None
+            subscription_id=target,
+            raw_body=_BODY,
+            headers={"x-hub-signature-256": _sign(_BODY)},
+            delivery_id=None,
         )
 
 
@@ -145,7 +154,10 @@ async def test_bad_signature_is_404_and_does_not_fire() -> None:
     up = _Upstream()
     with pytest.raises(SubscriptionNotFound):
         await _service(sub=sub, upstream=up).ingest(
-            subscription_id=sub.id, raw_body=_BODY, signature_header="sha256=bad", delivery_id=None
+            subscription_id=sub.id,
+            raw_body=_BODY,
+            headers={"x-hub-signature-256": "sha256=bad"},
+            delivery_id=None,
         )
     assert up.calls == []  # never forwarded
 
@@ -154,7 +166,10 @@ async def test_unresolvable_secret_is_404() -> None:
     sub = _sub()
     with pytest.raises(SubscriptionNotFound):
         await _service(sub=sub, secrets=_Secrets(secret=None)).ingest(
-            subscription_id=sub.id, raw_body=_BODY, signature_header=_sign(_BODY), delivery_id=None
+            subscription_id=sub.id,
+            raw_body=_BODY,
+            headers={"x-hub-signature-256": _sign(_BODY)},
+            delivery_id=None,
         )
 
 
@@ -162,7 +177,10 @@ async def test_unpublished_agent_is_404() -> None:
     sub = _sub()
     with pytest.raises(SubscriptionNotFound):
         await _service(sub=sub, agents=_Agents(active=False)).ingest(
-            subscription_id=sub.id, raw_body=_BODY, signature_header=_sign(_BODY), delivery_id=None
+            subscription_id=sub.id,
+            raw_body=_BODY,
+            headers={"x-hub-signature-256": _sign(_BODY)},
+            delivery_id=None,
         )
 
 
@@ -170,7 +188,10 @@ async def test_engine_non_2xx_is_502() -> None:
     sub = _sub()
     with pytest.raises(UpstreamEngineError):
         await _service(sub=sub, upstream=_Upstream(500)).ingest(
-            subscription_id=sub.id, raw_body=_BODY, signature_header=_sign(_BODY), delivery_id=None
+            subscription_id=sub.id,
+            raw_body=_BODY,
+            headers={"x-hub-signature-256": _sign(_BODY)},
+            delivery_id=None,
         )
 
 
@@ -215,7 +236,10 @@ async def test_per_subscription_rate_limit_429s_before_the_broker_and_verify() -
     )
     with pytest.raises(WebhookRateLimited) as exc:
         await svc.ingest(
-            subscription_id=sub.id, raw_body=_BODY, signature_header=_sign(_BODY), delivery_id=None
+            subscription_id=sub.id,
+            raw_body=_BODY,
+            headers={"x-hub-signature-256": _sign(_BODY)},
+            delivery_id=None,
         )
     assert exc.value.retry_after >= 1
     assert up.calls == []  # throttled BEFORE the broker secret-resolve + HMAC + forward
@@ -226,6 +250,9 @@ async def test_no_redis_fails_open_and_proceeds() -> None:
     sub = _sub()
     up = _Upstream(202)
     await _service(sub=sub, upstream=up).ingest(
-        subscription_id=sub.id, raw_body=_BODY, signature_header=_sign(_BODY), delivery_id="d1"
+        subscription_id=sub.id,
+        raw_body=_BODY,
+        headers={"x-hub-signature-256": _sign(_BODY)},
+        delivery_id="d1",
     )
     assert len(up.calls) == 1  # not throttled
