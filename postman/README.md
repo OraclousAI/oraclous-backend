@@ -1,6 +1,6 @@
 # Oraclous API — Postman collection
 
-A complete Postman collection for the Oraclous backend: **108 endpoints across all 8 services**,
+A complete Postman collection for the Oraclous backend: **110 endpoints across all 8 services**,
 callable through the **application-gateway** (the real entrypoint) or directly per service.
 
 | File | What |

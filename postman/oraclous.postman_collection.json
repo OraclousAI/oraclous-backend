@@ -1214,6 +1214,70 @@
           "id": "16fb70da-348f-8363-c7ee-f262591b9c3e"
         },
         {
+          "name": "POST /api/v1/tools/import-mcp",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/tools/import-mcp",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "tools",
+                "import-mcp"
+              ]
+            },
+            "description": "Import an external MCP server's tools (ADMIN only). Egress-checks the URL, calls the server's tools/list, and registers each discovered tool as a kind=tool / spec.type=mcp descriptor in 'pending_approval' (the supply-chain HITL gate \u2014 an imported tool is NOT executable until an admin approves it).",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"server_url\": \"https://mcp.example.com/rpc\",\n  \"label\": \"acme\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "id": "5a5ae720-232e-471f-ac4b-747bc84b6e74"
+        },
+        {
+          "name": "POST /api/v1/tools/{tool_id}/approve",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/tools/{tool_id}/approve",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "tools",
+                "{tool_id}",
+                "approve"
+              ]
+            },
+            "description": "Approve an imported MCP tool (ADMIN only): flips status pending_approval \u2192 active (executable). 404 on an unknown / cross-org id."
+          },
+          "response": [],
+          "id": "510cc710-2cf2-4c4d-929e-cbc9433dcd52"
+        },
+        {
           "name": "GET /api/v1/instances",
           "request": {
             "method": "GET",
@@ -3005,10 +3069,10 @@
                 "webhook-subscriptions"
               ]
             },
-            "description": "Register a webhook for a published agent (member). Returns {id, webhook_path, signing_secret} \u2014 the secret is shown ONCE. Run after publishing an agent (sets {{pub_slug}}).",
+            "description": "Register a webhook for a published agent (member). Returns {id, webhook_path, signing_secret} \u2014 the secret is shown ONCE. Run after publishing an agent (sets {{pub_slug}}). The optional signature_scheme pins HMAC verification (no downgrade): generic | github (X-Hub-Signature-256: sha256=\u2026) | stripe (Stripe-Signature t=,v1=\u2026, \u00b15-min replay window) | slack (X-Slack-Signature v0=\u2026, replay window). Default generic.",
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"agent_slug\": \"{{pub_slug}}\"\n}"
+              "raw": "{\n  \"agent_slug\": \"{{pub_slug}}\",\n  \"signature_scheme\": \"generic\"\n}"
             }
           },
           "event": [
