@@ -86,6 +86,15 @@ class ToolExecutionService:
             raise CapabilityNotFoundError("capability not found")
         descriptor = descriptor_row.descriptor
 
+        # supply-chain HITL gate (R6 MCP-import): an imported external MCP tool is not executable
+        # until an org admin has approved it (status pending_approval -> active). Fail-closed.
+        spec = descriptor.get("spec") or {}
+        if spec.get("type") == "mcp" and descriptor_row.status != "active":
+            raise ExecutionNotReadyError(
+                "this imported MCP tool is pending admin approval",
+                error_code="pending_approval",
+            )
+
         if not has_executor(descriptor):
             raise ExecutionNotReadyError(
                 "no executor is available for this tool",

@@ -35,6 +35,16 @@ from oraclous_capability_registry_service.models.enums import DescriptorKind
 _AUTO: Any = object()
 
 
+def status_for(descriptor: dict[str, Any], requested: str) -> str:
+    """An MCP tool (``spec.type=="mcp"``) is ALWAYS created ``pending_approval`` — the supply-chain
+    HITL gate, enforced HERE so it holds no matter the registration path (the admin ``import-mcp``
+    flow OR the public member-level register/create routes) or a caller-passed status; only an
+    admin's ``approve`` (set_status) makes it executable. Everything else uses ``requested``."""
+    if (descriptor.get("spec") or {}).get("type") == "mcp":
+        return "pending_approval"
+    return requested
+
+
 class CapabilityConflictError(Exception):
     """A descriptor id is already taken table-wide (e.g. a tenant tried to register a tool whose
     deterministic id collides with a platform built-in). Maps to HTTP 409."""
@@ -92,6 +102,7 @@ class CapabilityRepository:
         descriptor: dict[str, Any],
         descriptor_id: uuid.UUID | None = None,
         content_hash: str | None = _AUTO,
+        status: str = "active",
     ) -> CapabilityDescriptor:
         row = CapabilityDescriptor(
             id=descriptor_id or uuid.uuid4(),
@@ -102,6 +113,7 @@ class CapabilityRepository:
             content_hash=(
                 compute_content_hash(descriptor) if content_hash is _AUTO else content_hash
             ),
+            status=status_for(descriptor, status),
         )
         async with self._session() as session:
             try:
@@ -113,6 +125,17 @@ class CapabilityRepository:
                 ) from exc
             await session.refresh(row)
             return row
+
+    async def set_status(
+        self, *, descriptor_id: uuid.UUID, organisation_id: uuid.UUID, status: str
+    ) -> bool:
+        """Org-scoped status flip (R6 MCP-import approval). Returns True if a row was updated."""
+        async with self._session() as session, session.begin():
+            row = await session.get(CapabilityDescriptor, descriptor_id)
+            if row is None or row.organisation_id != organisation_id:
+                return False
+            row.status = status
+            return True
 
     async def upsert_by_id(
         self,

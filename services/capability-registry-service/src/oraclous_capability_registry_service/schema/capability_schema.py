@@ -48,6 +48,7 @@ class CapabilityOut(BaseModel):
     name: str | None
     content_hash: str | None
     descriptor: dict[str, Any]
+    status: str = "active"  # "active" | "pending_approval" (R6 MCP-import supply-chain gate)
     created_at: datetime | None
     updated_at: datetime | None
 
@@ -55,3 +56,15 @@ class CapabilityOut(BaseModel):
 class CapabilityListResponse(BaseModel):
     capabilities: list[CapabilityOut]
     total: int
+
+
+class ImportMcpRequest(BaseModel):
+    """Import the tools of an external MCP server. The discovered tools are registered
+    ``pending_approval`` — an admin must approve each before it is executable."""
+
+    server_url: str = Field(min_length=1)
+    label: str = Field(min_length=1, max_length=64)  # a prefix for the imported tool names
+
+
+class ImportMcpResponse(BaseModel):
+    imported: list[CapabilityOut]  # the pending_approval descriptors created from tools/list

@@ -15,15 +15,11 @@ matching the platform's no-leak rule for upstream errors.
 
 from __future__ import annotations
 
-import asyncio
-import ipaddress
-import socket
 from typing import Any
-from urllib.parse import urlparse
 
 import httpx
 
-from oraclous_capability_registry_service.domain.egress import is_private_ip, is_public_url
+from oraclous_capability_registry_service.domain.egress import egress_allowed
 from oraclous_capability_registry_service.domain.executors.base import (
     ExecutionContext,
     ExecutionResult,
@@ -49,7 +45,7 @@ class McpToolExecutor(InternalTool):
                 error_message="an mcp tool descriptor needs spec.server_url + spec.tool_name",
                 error_type="INVALID_SPEC",
             )
-        if not await self._egress_allowed(server_url):
+        if not await egress_allowed(server_url):
             return ExecutionResult(
                 success=False,
                 error_message="the MCP server URL is not an allowed external target",
@@ -136,24 +132,3 @@ class McpToolExecutor(InternalTool):
                 error_type="MCP_TOOL_ERROR",
             )
         return ExecutionResult(success=True, data={"content": result.get("content")})
-
-    @staticmethod
-    async def _egress_allowed(url: str) -> bool:
-        if not is_public_url(url):
-            return False
-        host = urlparse(url).hostname or ""
-        try:
-            ipaddress.ip_address(host)  # a literal-IP host was already cleared by is_public_url
-        except ValueError:
-            pass
-        else:
-            return True
-        # a hostname: resolve + re-check every resolved IP (a public name pointing inward is
-        # blocked)
-        try:
-            infos = await asyncio.get_running_loop().getaddrinfo(
-                host, None, type=socket.SOCK_STREAM
-            )
-        except (socket.gaierror, OSError):
-            return False  # unresolvable → fail closed
-        return bool(infos) and all(not is_private_ip(info[4][0]) for info in infos)

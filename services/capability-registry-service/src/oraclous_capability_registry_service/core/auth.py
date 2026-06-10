@@ -22,14 +22,19 @@ class AuthError(Exception):
 
 
 def principal_from_gateway_headers(
-    principal_id: str | None, principal_type: str | None, organisation_id: str | None
+    principal_id: str | None,
+    principal_type: str | None,
+    organisation_id: str | None,
+    org_role: str | None = None,
 ) -> Principal:
     """Build a Principal from the gateway's verified identity headers (ADR-018 edge-auth).
 
     The gateway terminates auth and injects ``X-Principal-Id``/``X-Principal-Type``/
-    ``X-Organisation-Id`` (stripping any client-supplied copies); this service trusts them and does
-    NOT re-validate a token. Fail-closed if the identity is absent or malformed; the org header is
-    REQUIRED (these are org-scoped services — never silently fall back to a default org)."""
+    ``X-Organisation-Id`` (+ ``X-Principal-Org-Role`` since R7-SEC S2), stripping client copies;
+    this service trusts them and does NOT re-validate a token. Fail-closed if the identity is absent
+    or malformed; the org header is REQUIRED (org-scoped services never fall back to a default org).
+    ``org_role`` is optional (absent on agent/service tokens; ``None`` never satisfies an admin
+    gate)."""
     if not principal_id or not principal_type or not organisation_id:
         raise AuthError("gateway identity headers missing")
     try:
@@ -37,6 +42,7 @@ def principal_from_gateway_headers(
             principal_id=uuid.UUID(principal_id),
             principal_type=PrincipalType(principal_type),
             organisation_id=uuid.UUID(organisation_id),
+            org_role=org_role,
         )
     except ValueError as exc:
         raise AuthError("malformed gateway identity headers") from exc
