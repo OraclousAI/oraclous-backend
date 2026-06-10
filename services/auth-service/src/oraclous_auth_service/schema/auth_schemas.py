@@ -53,3 +53,4 @@ class MeResponse(BaseModel):
     principal_type: str
     organisation_id: str
     email: str | None = None
+    org_role: str | None = None  # the member's role in organisation_id (R7-SEC S2); None pre-S2

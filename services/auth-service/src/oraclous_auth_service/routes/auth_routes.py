@@ -85,6 +85,7 @@ async def me(claims: UserClaimsDep, auth: AuthServiceDep) -> MeResponse:
         principal_type="user",
         organisation_id=user.default_organisation_id,
         email=user.email,
+        org_role=claims.get("org_role"),
     )
 
 
