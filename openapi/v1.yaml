@@ -171,7 +171,11 @@ paths:
       operationId: authMe
       x-stability: stable
       responses:
-        "200": { $ref: "#/components/responses/UpstreamJson" }
+        "200":
+          description: The authenticated user + active organisation.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MeResponse" }
         "401": { $ref: "#/components/responses/Unauthenticated" }
   /v1/auth/switch-org:
     post:
@@ -259,6 +263,76 @@ paths:
       responses:
         "200": { $ref: "#/components/responses/UpstreamJson" }
         "401": { $ref: "#/components/responses/Unauthenticated" }
+    post:
+      tags: [capabilities]
+      summary: Register a tool descriptor (idempotent — the id is derived from the descriptor identity).
+      operationId: registerTool
+      x-stability: stable
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/JsonObject" }
+      responses:
+        "201":
+          description: The registered tool descriptor.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DescriptorResponse" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+  /api/v1/tools/{toolId}:
+    get:
+      tags: [capabilities]
+      summary: Read one tool descriptor (org-scoped; an unknown / cross-org id is a 404 — mask).
+      operationId: getTool
+      x-stability: stable
+      parameters:
+        - { name: toolId, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: The tool descriptor.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DescriptorResponse" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /api/v1/tools/import-mcp:
+    post:
+      tags: [capabilities]
+      summary: >-
+        Import an external MCP server's tools (ADMIN) — each is registered `pending_approval` and is
+        not executable until approved. The server URL is SSRF-egress-checked.
+      operationId: importMcpTools
+      x-stability: stable
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/JsonObject" }
+      responses:
+        "201":
+          description: The imported `pending_approval` descriptors.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JsonObject" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+        "5XX": { $ref: "#/components/responses/Upstream5xx" }
+  /api/v1/tools/{toolId}/approve:
+    post:
+      tags: [capabilities]
+      summary: Approve an imported MCP tool (ADMIN) — pending_approval → active, making it executable.
+      operationId: approveTool
+      x-stability: stable
+      parameters:
+        - { name: toolId, in: path, required: true, schema: { type: string } }
+      responses:
+        "204": { description: Approved — the tool is now active. }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
   /api/v1/capabilities:
     get:
       tags: [capabilities]
@@ -268,6 +342,178 @@ paths:
       responses:
         "200": { $ref: "#/components/responses/UpstreamJson" }
         "401": { $ref: "#/components/responses/Unauthenticated" }
+  /api/v1/capabilities/match:
+    post:
+      tags: [capabilities]
+      summary: Match capabilities by name — returns the registry entries whose names match.
+      operationId: matchCapabilities
+      x-stability: stable
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/JsonObject" }
+      responses:
+        "200": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+  /api/v1/capabilities/{capabilityId}:
+    get:
+      tags: [capabilities]
+      summary: Read one capability descriptor (org-scoped; an unknown / cross-org id is a 404 — mask).
+      operationId: getCapability
+      x-stability: stable
+      parameters:
+        - { name: capabilityId, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: The capability descriptor.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DescriptorResponse" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    put:
+      tags: [capabilities]
+      summary: Replace a capability's descriptor (org-scoped).
+      operationId: updateCapability
+      x-stability: stable
+      parameters:
+        - { name: capabilityId, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/JsonObject" }
+      responses:
+        "200":
+          description: The updated capability descriptor.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DescriptorResponse" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+    delete:
+      tags: [capabilities]
+      summary: Delete a capability descriptor (org-scoped).
+      operationId: deleteCapability
+      x-stability: stable
+      parameters:
+        - { name: capabilityId, in: path, required: true, schema: { type: string } }
+      responses:
+        "204": { description: Deleted. }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /api/v1/instances:
+    get:
+      tags: [capabilities]
+      summary: List the organisation's tool instances (a configured, credential-bound capability).
+      operationId: listInstances
+      x-stability: stable
+      responses:
+        "200": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+    post:
+      tags: [capabilities]
+      summary: Create a tool instance from a capability (org + owning user from the principal).
+      operationId: createInstance
+      x-stability: stable
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/JsonObject" }
+      responses:
+        "201": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+  /api/v1/instances/{instanceId}:
+    get:
+      tags: [capabilities]
+      summary: Read one tool instance (org-scoped; an unknown / cross-org id is a 404 — mask).
+      operationId: getInstance
+      x-stability: stable
+      parameters:
+        - { name: instanceId, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /api/v1/instances/{instanceId}/configure-credentials:
+    post:
+      tags: [capabilities]
+      summary: Bind credential ids to the instance's required credential types (org-scoped).
+      operationId: configureInstanceCredentials
+      x-stability: stable
+      parameters:
+        - { name: instanceId, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/JsonObject" }
+      responses:
+        "200": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+  /api/v1/instances/{instanceId}/validate-execution:
+    get:
+      tags: [capabilities]
+      summary: The instance's execution-readiness report (checks + any blocking action items).
+      operationId: validateInstanceExecution
+      x-stability: stable
+      parameters:
+        - { name: instanceId, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /api/v1/instances/{instanceId}/health:
+    get:
+      tags: [capabilities]
+      summary: The instance's health view — an alias of validate-execution (the readiness report).
+      operationId: instanceHealth
+      x-stability: stable
+      parameters:
+        - { name: instanceId, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /api/v1/instances/{instanceId}/execute:
+    post:
+      tags: [capabilities]
+      summary: Execute a configured instance synchronously (sync only; durable/async is the engine).
+      operationId: executeInstance
+      x-stability: stable
+      parameters:
+        - { name: instanceId, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/JsonObject" }
+      responses:
+        "201": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+  /api/v1/executions/{executionId}:
+    get:
+      tags: [capabilities]
+      summary: Read an execution row (status + result + provenance), org-scoped.
+      operationId: getExecution
+      x-stability: stable
+      parameters:
+        - { name: executionId, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/NotFound" }
   /api/v1/executions:
     post:
       tags: [capabilities]
@@ -648,7 +894,7 @@ paths:
         required: true
         content:
           application/json:
-            schema: { $ref: "#/components/schemas/JsonObject" }
+            schema: { $ref: "#/components/schemas/CreateWebhookSubscription" }
       responses:
         "201": { $ref: "#/components/responses/UpstreamJson" }
         "401": { $ref: "#/components/responses/Unauthenticated" }
@@ -718,6 +964,62 @@ components:
       type: object
       description: A free-form JSON object; the precise request shape is owned by the upstream service.
       additionalProperties: true
+    DescriptorResponse:
+      type: object
+      description: >-
+        A capability/tool descriptor as returned by the registry. The full body is owned by the
+        capability-registry-service; only the load-bearing fields are named here. `status`
+        distinguishes an executable descriptor from one awaiting the MCP-import supply-chain gate.
+      additionalProperties: true
+      properties:
+        id: { type: string, format: uuid }
+        organisation_id: { type: string, format: uuid }
+        kind: { type: string, description: The descriptor kind (e.g. tool). }
+        name: { type: [string, "null"] }
+        descriptor:
+          type: object
+          additionalProperties: true
+          description: The OHM manifest JSONB.
+        status:
+          type: string
+          enum: [active, pending_approval]
+          default: active
+          description: >-
+            `active` is executable; `pending_approval` is an imported MCP tool awaiting an admin's
+            approval (it is not executable until approved).
+    MeResponse:
+      type: object
+      description: The signed-in principal + active organisation, with the member's role (R7-SEC S2).
+      additionalProperties: true
+      properties:
+        id: { type: string, format: uuid }
+        principal_type: { type: string, enum: [user] }
+        organisation_id: { type: string, format: uuid }
+        email: { type: string, nullable: true }
+        org_role:
+          type: string
+          enum: [owner, admin, member]
+          nullable: true
+          description: The member's role in organisation_id; null on pre-S2 tokens.
+      required: [id, principal_type, organisation_id]
+    CreateWebhookSubscription:
+      type: object
+      description: >-
+        Register a webhook subscription for a published agent. The full shape is owned by the
+        application-gateway-service; the load-bearing fields are named here.
+      additionalProperties: true
+      required: [agent_slug]
+      properties:
+        agent_slug:
+          type: string
+          description: A published agent in the member's organisation.
+        signature_scheme:
+          type: string
+          enum: [generic, github, stripe, slack]
+          default: generic
+          description: >-
+            The PINNED signature scheme the external source signs with (default the generic
+            HMAC-SHA256). An unknown value is a 422 here — never a silent downgrade at verify time.
     ErrorDetail:
       type: object
       additionalProperties: false
