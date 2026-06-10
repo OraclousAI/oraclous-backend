@@ -1,10 +1,14 @@
 """Reverse-proxy catch-all route (ORAA-4 §21 routes layer).
 
 A single catch-all that forwards any non-``/health`` request to its upstream. A successful (or
-redirect) response is streamed straight back; an upstream 4xx/5xx is NORMALISED into the canonical
-ORA-37 error envelope under the same HTTP status — its body is drained and discarded, never relayed,
-so an upstream stack trace / internal host / SQL error cannot leak through the edge (Interface
-Contracts §3 rule 8). Registered AFTER the health router so ``/health`` is served, never proxied.
+redirect) response is BUFFERED then returned whole; an upstream 4xx/5xx is NORMALISED into the
+canonical ORA-37 error envelope under the same HTTP status — its body is drained and discarded,
+never relayed, so an upstream stack trace / internal host / SQL error cannot leak through the edge
+(Interface Contracts §3 rule 8). Buffering (not a detached stream) is deliberate: the generic proxy
+relays bounded JSON API responses, and a ``StreamingResponse`` whose source connection was reclaimed
+from the shared client's pool mid-iteration truncated large bodies into a terminator-less chunked
+response (#235). Streaming/SSE surfaces (member chat) have their own router. Registered AFTER the
+health router so ``/health`` is served, never proxied.
 Gateway domain errors (RouteNotFound / UpstreamUnavailable / UpstreamTimeout) propagate to the
 factory's exception handlers (404 / 502 / 504).
 """
@@ -13,8 +17,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Request
 from oraclous_errors import status_to_code
-from starlette.background import BackgroundTask
-from starlette.responses import Response, StreamingResponse
+from starlette.responses import Response
 
 from oraclous_application_gateway_service.core.dependencies import EdgePrincipalDep, ProxyServiceDep
 from oraclous_application_gateway_service.schema.error import gateway_error
@@ -48,15 +51,15 @@ async def proxy(
         return gateway_error(
             request, code=status_to_code(upstream.status_code), status_code=upstream.status_code
         )
-    # Close-ownership transfers to the StreamingResponse only once BackgroundTask is attached; guard
-    # the open-but-unowned window so any failure here cannot leak the upstream connection.
+    # Success: buffer the whole body, then close — in ONE scope, so the source connection is never
+    # reclaimed from the pool mid-iteration (the #235 truncation). ``response_headers`` strips the
+    # upstream content-length; Starlette sets a correct one from the buffered body.
     try:
-        return StreamingResponse(
-            upstream.aiter_raw(),
-            status_code=upstream.status_code,
-            headers=dict(response_headers(upstream.headers.raw)),
-            background=BackgroundTask(upstream.aclose),
-        )
-    except BaseException:
+        upstream_body = await upstream.aread()
+    finally:
         await upstream.aclose()
-        raise
+    return Response(
+        content=upstream_body,
+        status_code=upstream.status_code,
+        headers=dict(response_headers(upstream.headers.raw)),
+    )
