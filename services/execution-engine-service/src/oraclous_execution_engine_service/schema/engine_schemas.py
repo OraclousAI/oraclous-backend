@@ -151,6 +151,43 @@ class ScheduleListResponse(BaseModel):
     total: int
 
 
+class ActivityEvent(BaseModel):
+    """One provenance/audit event in the org's activity feed (read-only projection of
+    ``engine_provenance``). Org-scoped to the caller — never another tenant's row."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    action: str
+    resource: str
+    outcome: str
+    created_at: datetime | None
+
+
+class ActivityResponse(BaseModel):
+    """The org's most-recent provenance events, newest-first (capped by ``limit``)."""
+
+    events: list[ActivityEvent]
+    total: int
+
+
+class UsageCount(BaseModel):
+    """A RAW usage signal: how many provenance events the org recorded for one ``action``. Per
+    ADR-009 this is a COUNT only — never a price, USD, or credits (those are downstream rates)."""
+
+    action: str
+    count: int
+
+
+class UsageResponse(BaseModel):
+    """The org's RAW per-action usage counts (ADR-009 — counts, not money). ``since`` echoes the
+    requested window lower-bound (null = all-time); ``total_events`` is the sum across actions."""
+
+    usage: list[UsageCount]
+    total_events: int
+    since: datetime | None = None
+
+
 class RoundtableActorIn(BaseModel):
     """One participant. An ``agent`` actor runs an OHM (inline ``manifest`` or ``manifest_ref``); a
     ``human`` actor pauses the round-table to respond. ``role`` labels its turns in the script."""
