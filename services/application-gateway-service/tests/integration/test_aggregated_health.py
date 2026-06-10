@@ -64,7 +64,7 @@ async def test_all_upstreams_up_rolls_up_to_ok(all_up: AsyncClient) -> None:
     assert r.status_code == 200
     body = r.json()
     assert body["overall"] == "ok"
-    assert len(body["upstreams"]) == 5
+    assert len(body["upstreams"]) == 7
     assert all(u["status"] == "ok" for u in body["upstreams"])
 
 
