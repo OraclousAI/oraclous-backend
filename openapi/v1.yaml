@@ -555,6 +555,33 @@ paths:
       responses:
         "200": { $ref: "#/components/responses/UpstreamJson" }
         "401": { $ref: "#/components/responses/Unauthenticated" }
+  /v1/harnesses/spend:
+    get:
+      tags: [harness]
+      summary: An ESTIMATE of the org's BYOM provider LLM spend — NOT a platform charge.
+      description: >-
+        An **estimate** of the caller organisation's own provider (BYOM) LLM spend, priced at read
+        time from a static rate table — this is **not** platform billing or a charge Oraclous levies
+        (ADR-009: the substrate meters raw tokens; pricing is a downstream read-time concern). Raw
+        per-model token sums are priced when the table knows the model; a model **absent** from the
+        table reports its tokens only (`estimated_usd: null`, `priced: false`) and is listed in
+        `unpriced_models`. `total_estimated_usd` sums only the priced rows. Org-scoped.
+      operationId: harnessSpend
+      x-stability: provisional
+      parameters:
+        - name: since
+          in: query
+          required: false
+          description: ISO8601 timestamp; bounds the spend window to executions at or after it. Omit for all-time.
+          schema: { type: string, format: date-time }
+      responses:
+        "200":
+          description: The org's estimated BYOM spend, per model and in total.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SpendResponse" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
   /v1/harnesses/{executionId}/resume:
     post:
       tags: [harness]
@@ -1002,6 +1029,64 @@ components:
           nullable: true
           description: The member's role in organisation_id; null on pre-S2 tokens.
       required: [id, principal_type, organisation_id]
+    ModelSpendOut:
+      type: object
+      additionalProperties: false
+      description: >-
+        Per-model spend estimate. `estimated_usd` is null and `priced` is false for a model absent
+        from the static rate table — it reports its raw tokens only, never a fabricated price.
+      required: [model, input_tokens, output_tokens, executions, estimated_usd, priced]
+      properties:
+        model:
+          type: [string, "null"]
+          description: The provider model id these tokens were billed against (null when unattributed).
+        input_tokens: { type: integer, description: Summed prompt tokens for this model over the window. }
+        output_tokens: { type: integer, description: Summed completion tokens for this model over the window. }
+        executions: { type: integer, description: Number of harness executions that used this model. }
+        estimated_usd:
+          type: [number, "null"]
+          description: Estimated cost of this model's tokens; null when the model is not in the rate table.
+        priced:
+          type: boolean
+          description: True when the rate table priced this model; false when only raw tokens are reported.
+    SpendResponse:
+      type: object
+      additionalProperties: false
+      description: >-
+        An ESTIMATE of the org's provider (BYOM) LLM spend, priced from a static rate table — NOT
+        platform billing. Org-scoped. Unpriced models (absent from the table) contribute raw tokens
+        only and are named in `unpriced_models`; `total_estimated_usd` sums only the priced rows.
+        Mirrors harness-runtime-service `SpendResponse`/`ModelSpendOut`.
+      required:
+        - since
+        - currency
+        - by_model
+        - total_estimated_usd
+        - total_input_tokens
+        - total_output_tokens
+        - unpriced_models
+      properties:
+        since:
+          type: [string, "null"]
+          format: date-time
+          description: The window lower bound echoed from the `since` query param; null for all-time.
+        currency:
+          type: string
+          default: USD
+          description: The currency the estimate is denominated in (always USD today).
+        by_model:
+          type: array
+          description: One row per model that recorded tokens over the window.
+          items: { $ref: "#/components/schemas/ModelSpendOut" }
+        total_estimated_usd:
+          type: number
+          description: Sum of `estimated_usd` over the PRICED rows only (unpriced models contribute zero).
+        total_input_tokens: { type: integer, description: Summed prompt tokens across all models. }
+        total_output_tokens: { type: integer, description: Summed completion tokens across all models. }
+        unpriced_models:
+          type: array
+          description: Model ids that recorded tokens but were absent from the rate table (tokens-only).
+          items: { type: string }
     CreateWebhookSubscription:
       type: object
       description: >-
