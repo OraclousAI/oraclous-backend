@@ -22,6 +22,10 @@ from oraclous_governance import Principal
 from oraclous_substrate import ProvenanceCollector, ProvenanceRecord
 
 from oraclous_harness_runtime_service.domain.llm.base import LLMClient, ToolSpec
+from oraclous_harness_runtime_service.domain.llm.egress import (
+    EgressBlockedError,
+    validate_outbound_url,
+)
 from oraclous_harness_runtime_service.domain.llm.factory import (
     LLMConfigError,
     build_fake_client,
@@ -113,6 +117,7 @@ class HarnessExecutionService:
         llm_mode: str,
         llm_base_urls: dict[str, str],
         llm_timeout: float,
+        llm_allow_private: bool,
         max_iterations: int,
     ) -> None:
         self._registry = registry
@@ -127,6 +132,7 @@ class HarnessExecutionService:
         self._llm_mode = llm_mode
         self._llm_base_urls = llm_base_urls
         self._llm_timeout = llm_timeout
+        self._llm_allow_private = llm_allow_private
         self._max_iterations = max_iterations
 
     async def execute(
@@ -538,9 +544,6 @@ class HarnessExecutionService:
             raise HarnessExecutionError(
                 f"model binding {model.binding!r} must be '<provider>/<model-id>'"
             )
-        base_url = self._llm_base_urls.get(provider)
-        if not base_url:
-            raise HarnessExecutionError(f"no base URL configured for LLM provider {provider!r}")
         credential_id = model.config.get("credential_id")
         if not credential_id:
             raise HarnessExecutionError("live LLM requires a BYOM key (model.config.credential_id)")
@@ -553,6 +556,26 @@ class HarnessExecutionService:
         api_key = payload.get("api_key") or payload.get("key")
         if not api_key:
             raise HarnessExecutionError("the resolved model credential has no api_key")
+
+        # Resolve the base URL: the CONNECTION's own `base_url` (a custom OpenAI-compatible
+        # endpoint, e.g. a local or self-hosted LLM) wins; otherwise fall back to the operator's
+        # server map keyed by provider (openrouter/openai). A USER-supplied URL is attacker-
+        # controllable → run it through the egress guard (SSRF). The operator's server-map URLs are
+        # TRUSTED and are NOT guarded.
+        connection_base_url = payload.get("base_url")
+        base_url = connection_base_url or self._llm_base_urls.get(provider)
+        if not base_url:
+            raise HarnessExecutionError(
+                f"no base URL for provider {provider!r} — set base_url on the connection or "
+                "configure the provider"
+            )
+        if connection_base_url:
+            try:
+                validate_outbound_url(
+                    str(connection_base_url), allow_private=self._llm_allow_private
+                )
+            except EgressBlockedError as exc:
+                raise HarnessExecutionError(f"connection base_url rejected: {exc}") from exc
         try:
             return build_live_client(
                 protocol_shape=model.protocol_shape,

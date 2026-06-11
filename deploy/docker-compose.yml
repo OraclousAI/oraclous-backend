@@ -552,6 +552,13 @@ services:
       # The LLM seam. `fake` (default) is key-free for CI/smoke; `live` builds the real client from
       # the OHM model's protocol_shape + a BYOM key resolved via the broker (ADR-008, no platform key).
       HARNESS_LLM_MODE: "${HARNESS_LLM_MODE:-fake}"
+      # Operator's provider→base-URL map (JSON; e.g. openrouter/openai). A custom BYOM connection may
+      # instead carry its own `base_url` to reach ANY OpenAI-compatible endpoint.
+      HARNESS_LLM_BASE_URLS: "${HARNESS_LLM_BASE_URLS:-}"
+      # SSRF egress guard for connection-supplied base URLs. True (single-tenant default) lets a
+      # user's local LLM work (host.docker.internal / 127.0.0.1 / 192.168.x); link-local/cloud-
+      # metadata stays blocked regardless. A MULTI-TENANT deployment MUST set this false.
+      HARNESS_ALLOW_PRIVATE_LLM_TARGETS: "${HARNESS_ALLOW_PRIVATE_LLM_TARGETS:-true}"
       # OHM signature trust store (signer-id → public-key PEM, JSON). Empty by default; set to verify
       # signed OHMs. Unsigned OHMs load regardless unless a policy/flag requires a signature.
       HARNESS_OHM_TRUST_KEYS: "${HARNESS_OHM_TRUST_KEYS:-}"

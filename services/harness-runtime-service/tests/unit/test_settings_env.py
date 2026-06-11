@@ -32,3 +32,13 @@ def test_blank_base_urls_falls_back_to_defaults(monkeypatch: pytest.MonkeyPatch)
     base = Settings().llm_base_urls
     assert base["openrouter"].startswith("https://openrouter.ai")
     assert "openai" in base
+
+
+def test_allow_private_llm_targets_defaults_true(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("HARNESS_ALLOW_PRIVATE_LLM_TARGETS", raising=False)
+    assert Settings().allow_private_llm_targets is True
+
+
+def test_allow_private_llm_targets_env_overrides_to_false(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("HARNESS_ALLOW_PRIVATE_LLM_TARGETS", "false")
+    assert Settings().allow_private_llm_targets is False
