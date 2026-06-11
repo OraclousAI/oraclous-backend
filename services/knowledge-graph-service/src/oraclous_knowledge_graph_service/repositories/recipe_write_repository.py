@@ -151,7 +151,11 @@ class RecipeGraphWriter:
             "{graph_id: $graph_id, organisation_id: $organisation_id, id: row.id})\n"
             "ON CREATE SET e.ingestion_source = $source_id, e.provenance = $provenance,\n"
             "              e.recipe_id = $recipe_id, e.recipe_version = $recipe_version,\n"
-            "              e.ingestion_time = $ingestion_time, e.identity_key = row.identity_key\n"
+            "              e.ingestion_time = $ingestion_time\n"
+            # A node first MERGEd as a foreign_key stub (merge_edge_to_stub) carries `stub = true`
+            # and no identity_key; the real target-record ingest reaches the SAME id and enriches
+            # it — stamp the identity_key + clear the stub flag so the node is no longer a stub.
+            "SET e.identity_key = row.identity_key, e.stub = false\n"
             "SET e += row.properties"
         )
         self._run(
@@ -206,6 +210,57 @@ class RecipeGraphWriter:
             "{graph_id: $graph_id, organisation_id: $organisation_id, id: row.from})\n"
             "MATCH (b:__Entity__ "
             "{graph_id: $graph_id, organisation_id: $organisation_id, id: row.to})\n"
+            f"MERGE (a)-[r:{rel_type} "
+            "{graph_id: $graph_id, organisation_id: $organisation_id}]->(b)\n"
+            "ON CREATE SET r.ingestion_source = $source_id, r.provenance = $provenance,\n"
+            "              r.recipe_id = $recipe_id, r.recipe_version = $recipe_version,\n"
+            "              r.ingestion_time = $ingestion_time"
+        )
+        written = 0
+        for batch in _chunks(edges):
+            self._run(
+                cypher,
+                {
+                    "batch": batch,
+                    "source_id": source_id,
+                    "provenance": provenance,
+                    "recipe_id": meta["recipe_id"],
+                    "recipe_version": meta["recipe_version"],
+                    "ingestion_time": meta["ingestion_time"],
+                },
+            )
+            written += len(batch)
+        return written
+
+    def merge_edge_to_stub(
+        self,
+        *,
+        rel_type: str,
+        target_label: str,
+        edges: list[dict],
+        source_id: str,
+        provenance: str,
+        meta: dict,
+    ) -> int:
+        """Recipe `foreign_key` edges (G1): the source node exists, but the target is addressed
+        only by its deterministic id (the FK value resolved through the target rule's identity). The
+        target may not be ingested yet — possibly in a separate run/file — so MERGE the target node
+        by id as a stub on first sight (the later target-record ingest enriches the SAME id via
+        :merge_node), then MERGE the edge. Each edge row carries the resolved target_identity_key so
+        a stub records what value it stands for.
+        """
+        rel_type = _safe(rel_type)
+        target_label = _safe(target_label)
+        cypher = (
+            "UNWIND $batch AS row\n"
+            "MATCH (a:__Entity__ "
+            "{graph_id: $graph_id, organisation_id: $organisation_id, id: row.from})\n"
+            f"MERGE (b:{target_label}:__Entity__ "
+            "{graph_id: $graph_id, organisation_id: $organisation_id, id: row.to})\n"
+            "ON CREATE SET b.ingestion_source = $source_id, b.provenance = $provenance,\n"
+            "              b.recipe_id = $recipe_id, b.recipe_version = $recipe_version,\n"
+            "              b.ingestion_time = $ingestion_time,\n"
+            "              b.identity_key = row.target_identity_key, b.stub = true\n"
             f"MERGE (a)-[r:{rel_type} "
             "{graph_id: $graph_id, organisation_id: $organisation_id}]->(b)\n"
             "ON CREATE SET r.ingestion_source = $source_id, r.provenance = $provenance,\n"
