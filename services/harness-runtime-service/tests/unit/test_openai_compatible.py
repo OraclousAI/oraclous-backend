@@ -120,3 +120,65 @@ async def test_non_2xx_raises() -> None:
         await _client(handler).complete(
             messages=[{"role": "user", "content": "x"}], system="", tools=[]
         )
+
+
+# ── #252 — capture the prompt/completion (input/output) usage split ───────────────────────────────
+
+
+async def test_parses_input_output_token_split() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"message": {"content": "ok"}}],
+                "usage": {
+                    "prompt_tokens": 120,
+                    "completion_tokens": 30,
+                    "total_tokens": 150,
+                },
+            },
+        )
+
+    resp = await _client(handler).complete(
+        messages=[{"role": "user", "content": "go"}], system="", tools=[]
+    )
+    assert resp.total_tokens == 150
+    assert resp.input_tokens == 120
+    assert resp.output_tokens == 30
+
+
+async def test_missing_split_keeps_total_and_zeroes_io() -> None:
+    # a provider that reports only total_tokens (no prompt/completion) → split stays 0, total kept.
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"message": {"content": "ok"}}],
+                "usage": {"total_tokens": 77},
+            },
+        )
+
+    resp = await _client(handler).complete(
+        messages=[{"role": "user", "content": "go"}], system="", tools=[]
+    )
+    assert resp.total_tokens == 77
+    assert resp.input_tokens == 0
+    assert resp.output_tokens == 0
+
+
+async def test_non_numeric_usage_does_not_fail_the_run() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"message": {"content": "ok"}}],
+                "usage": {"prompt_tokens": "x", "completion_tokens": None, "total_tokens": 10},
+            },
+        )
+
+    resp = await _client(handler).complete(
+        messages=[{"role": "user", "content": "go"}], system="", tools=[]
+    )
+    assert resp.total_tokens == 10
+    assert resp.input_tokens == 0
+    assert resp.output_tokens == 0

@@ -33,6 +33,7 @@ from oraclous_harness_runtime_service.services.harness_execution_service import 
     HarnessExecutionService,
 )
 from oraclous_harness_runtime_service.services.registry_client import RegistryClient
+from oraclous_harness_runtime_service.services.spend_service import SpendService
 
 _bearer = HTTPBearer(auto_error=False)
 
@@ -199,8 +200,15 @@ def get_assignment_service(
     return AssignmentService(assignments=assignments, executions=executions, provenance=provenance)
 
 
+def get_spend_service(
+    executions: Annotated[ExecutionRepository, Depends(get_execution_repository)],
+) -> SpendService:
+    return SpendService(executions=executions)
+
+
 PrincipalDep = Annotated[Principal, Depends(get_principal)]
 ExecutionRepositoryDep = Annotated[ExecutionRepository, Depends(get_execution_repository)]
 AssignmentRepositoryDep = Annotated[AssignmentRepository, Depends(get_assignment_repository)]
 HarnessServiceDep = Annotated[HarnessExecutionService, Depends(get_harness_service)]
 AssignmentServiceDep = Annotated[AssignmentService, Depends(get_assignment_service)]
+SpendServiceDep = Annotated[SpendService, Depends(get_spend_service)]

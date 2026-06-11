@@ -31,4 +31,11 @@ class HarnessExecution(BaseModel):
     error_message = Column(Text, nullable=True)
     iterations = Column(Integer, nullable=False, default=0)
     total_tokens = Column(Integer, nullable=False, default=0)
+    # Per-execution LLM spend breakdown (#252). ``model`` is the OHM primary model binding (e.g.
+    # ``openrouter/openai/gpt-4o-mini``; NULL in fake mode); input/output split the metered tokens
+    # so spend can be priced honestly at read time (output costs ~3-4× input). ADR-009 stays
+    # intact — these are RAW token counts, never a price.
+    model = Column(String(255), nullable=True)
+    input_tokens = Column(Integer, nullable=False, default=0)
+    output_tokens = Column(Integer, nullable=False, default=0)
     steps = Column(JSONB, nullable=False, default=list)

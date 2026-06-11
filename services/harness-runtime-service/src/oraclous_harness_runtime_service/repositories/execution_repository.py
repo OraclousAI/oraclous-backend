@@ -7,12 +7,25 @@ the resolved ``organisation_id`` and reads filter on it, so a tenant never reads
 from __future__ import annotations
 
 import uuid
+from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from oraclous_harness_runtime_service.models.execution import HarnessExecution
+
+
+@dataclass(frozen=True, slots=True)
+class ModelSpendRow:
+    """One aggregated per-model usage row for an org's executions (raw tokens — no price). ``model``
+    is the OHM model binding (``None`` for fake-mode runs that recorded no model)."""
+
+    model: str | None
+    input_tokens: int
+    output_tokens: int
+    executions: int
 
 
 class ExecutionRepository:
@@ -40,6 +53,9 @@ class ExecutionRepository:
         iterations: int,
         total_tokens: int,
         steps: list[dict[str, Any]],
+        model: str | None = None,
+        input_tokens: int = 0,
+        output_tokens: int = 0,
     ) -> HarnessExecution:
         row = HarnessExecution(
             id=execution_id,
@@ -55,6 +71,9 @@ class ExecutionRepository:
             error_message=error_message,
             iterations=iterations,
             total_tokens=total_tokens,
+            model=model,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
             steps=steps,
         )
         async with self._session() as session:
@@ -118,10 +137,13 @@ class ExecutionRepository:
         iterations: int,
         total_tokens: int,
         steps: list[dict[str, Any]],
+        input_tokens: int | None = None,
+        output_tokens: int | None = None,
     ) -> HarnessExecution | None:
         """Full in-place update of an org-scoped run — the S6 resume path overwrites status/output/
         error/iterations/tokens and REPLACES the step trace (caller appends the new tail). Unlike
-        update_status this sets error fields verbatim (a DENIED resume preserves human_rejected)."""
+        update_status this sets error fields verbatim (a DENIED resume preserves human_rejected).
+        ``input_tokens``/``output_tokens`` are updated only when supplied (the spend breakdown)."""
         async with self._session() as session:
             async with session.begin():
                 result = await session.execute(
@@ -141,9 +163,44 @@ class ExecutionRepository:
                 row.error_message = error_message
                 row.iterations = iterations
                 row.total_tokens = total_tokens
+                if input_tokens is not None:
+                    row.input_tokens = input_tokens
+                if output_tokens is not None:
+                    row.output_tokens = output_tokens
                 row.steps = steps
             await session.refresh(row)
             return row
+
+    async def spend_by_model(
+        self, organisation_id: uuid.UUID, *, since: datetime | None = None
+    ) -> list[ModelSpendRow]:
+        """Aggregate the org's executions into per-model sums of input/output tokens + an execution
+        count, over an optional ``since`` window (created_at >= since). Org-scoped (ADR-006) — the
+        ``organisation_id`` filter is mandatory, so a tenant NEVER sees another org's spend. Returns
+        raw token counts only; pricing is a separate read-time layer (``domain.billing.rates``)."""
+        async with self._session() as session:
+            stmt = (
+                select(
+                    HarnessExecution.model,
+                    func.coalesce(func.sum(HarnessExecution.input_tokens), 0),
+                    func.coalesce(func.sum(HarnessExecution.output_tokens), 0),
+                    func.count(HarnessExecution.id),
+                )
+                .where(HarnessExecution.organisation_id == organisation_id)
+                .group_by(HarnessExecution.model)
+            )
+            if since is not None:
+                stmt = stmt.where(HarnessExecution.created_at >= since)
+            result = await session.execute(stmt)
+            return [
+                ModelSpendRow(
+                    model=model,
+                    input_tokens=int(input_sum),
+                    output_tokens=int(output_sum),
+                    executions=int(count),
+                )
+                for model, input_sum, output_sum, count in result.all()
+            ]
 
     async def list_for_org(
         self, organisation_id: uuid.UUID, *, limit: int = 50

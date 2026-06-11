@@ -100,6 +100,32 @@ class CompleteAssignmentRequest(BaseModel):
     output: str = Field(min_length=1)
 
 
+class ModelSpendOut(BaseModel):
+    """Per-model spend estimate. ``estimated_usd`` is null + ``priced`` false for a model absent
+    from the static rate table — it reports its raw tokens only, never a fabricated price."""
+
+    model: str | None
+    input_tokens: int
+    output_tokens: int
+    executions: int
+    estimated_usd: float | None
+    priced: bool
+
+
+class SpendResponse(BaseModel):
+    """An ESTIMATE of the user's provider LLM spend (BYOM), priced from a static rate table — NOT
+    platform billing. Org-scoped. Unpriced models (absent from the table) report tokens only and are
+    listed in ``unpriced_models``; ``total_estimated_usd`` sums only the priced rows."""
+
+    since: datetime | None
+    currency: str = "USD"
+    by_model: list[ModelSpendOut]
+    total_estimated_usd: float
+    total_input_tokens: int
+    total_output_tokens: int
+    unpriced_models: list[str]
+
+
 class ResumeHarnessRequest(BaseModel):
     """A human's decision on a mid-loop HITL pause. APPROVED resumes the loop (the gated tool runs);
     DENIED terminates the run FAILED. ``decision_reason`` is an optional audit note."""
