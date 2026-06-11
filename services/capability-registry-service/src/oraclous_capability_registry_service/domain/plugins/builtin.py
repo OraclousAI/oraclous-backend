@@ -212,6 +212,57 @@ _HITS_OUTPUT = {
 }
 
 
+_JOB_OUTPUT = {
+    "type": "object",
+    "properties": {
+        "job_id": {"type": "string"},
+        "status": {"type": "string"},
+    },
+}
+
+
+@plugin_registry.register
+class GraphIngestPlugin(_ConnectorToolPlugin):
+    """First-party ingestion INTO the org's knowledge graph — the write twin of the retriever. An
+    agent's OHM binds it as ``core/graph-ingest@1.0.0`` to enqueue ingestion of content into a graph
+    it owns. No credential: reached over the internal/gateway-trust path, the caller's org identity
+    forwarded by the executor (never a BYOM key). The ``ingest`` operation wraps the KGS's
+    ``/internal/v1/ingest`` and returns the enqueued job."""
+
+    NAME = "Graph Ingest"  # slug ``graph-ingest`` MUST match the ref's name slug
+    CATEGORY = "INGESTION"
+    DESCRIPTION = (
+        "Ingest content into the organisation's knowledge graph and return the enqueued job. "
+        "First-party and org-scoped; no credential required."
+    )
+    TYPE = "INTERNAL"
+    TAGS = ["knowledge-graph", "ingestion", "ingest"]
+    CAPABILITIES = [
+        {
+            "name": "ingest",
+            "description": "Enqueue ingestion of content into a knowledge graph (returns a job).",
+            "parameters": {
+                "graph_id": "str",
+                "content": "str",
+                "source_type": "str",  # text (default) | md | csv | json | ...
+                "recipe_id": "str",  # structured only: a stored recipe id (optional)
+            },
+        },
+    ]
+    CREDENTIAL_REQUIREMENTS: list[dict] = []  # first-party: reached over the internal trust path
+    INPUT_SCHEMA = {
+        "type": "object",
+        "required": ["graph_id", "content"],
+        "properties": {
+            "graph_id": {"type": "string", "format": "uuid"},
+            "content": {"type": "string", "minLength": 1},
+            "source_type": {"type": "string"},
+            "recipe_id": {"type": "string"},
+        },
+    }
+    OUTPUT_SCHEMA = _JOB_OUTPUT
+
+
 @plugin_registry.register
 class KnowledgeRetrieverPlugin(_ConnectorToolPlugin):
     """First-party retrieval over the org's knowledge graph — the in-loop tool a Wave-1 "QA over

@@ -11,6 +11,9 @@ from __future__ import annotations
 from typing import Any
 
 from oraclous_capability_registry_service.domain.connectors.github import GitHubReader
+from oraclous_capability_registry_service.domain.connectors.graph_ingest import (
+    GraphIngestConnector,
+)
 from oraclous_capability_registry_service.domain.connectors.knowledge_retriever import (
     KnowledgeRetrieverConnector,
 )
@@ -21,6 +24,7 @@ from oraclous_capability_registry_service.domain.connectors.postgresql import Po
 from oraclous_capability_registry_service.domain.executors.base import BaseToolExecutor
 from oraclous_capability_registry_service.domain.plugins.builtin import (
     GitHubReaderPlugin,
+    GraphIngestPlugin,
     KnowledgeRetrieverPlugin,
     MySQLReaderPlugin,
     NotionReaderPlugin,
@@ -40,6 +44,7 @@ _EXECUTORS: dict[str, type[BaseToolExecutor]] = {
     NotionReaderPlugin.plugin_id(): NotionReader,
     GitHubReaderPlugin.plugin_id(): GitHubReader,
     KnowledgeRetrieverPlugin.plugin_id(): KnowledgeRetrieverConnector,
+    GraphIngestPlugin.plugin_id(): GraphIngestConnector,
 }
 
 

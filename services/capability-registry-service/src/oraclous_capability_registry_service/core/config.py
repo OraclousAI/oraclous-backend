@@ -36,6 +36,12 @@ class Settings(BaseSettings):
     # caller's org identity forwarded as X-Principal-*/X-Organisation-Id gated by X-Internal-Key.
     KNOWLEDGE_RETRIEVER_URL: str = "http://knowledge-retriever-service:8000"
 
+    # --- knowledge-graph seam (the graph-ingest tool POSTs to its /internal/v1/ingest) ---
+    # The WRITE twin of the retriever seam: same internal/gateway-trust path (ADR-018), credential-
+    # less, the caller's org identity forwarded. Distinct from KNOWLEDGE_RETRIEVER_URL — ingestion
+    # targets the knowledge-graph-service (write path), not the retriever (read path).
+    KNOWLEDGE_GRAPH_URL: str = "http://knowledge-graph-service:8000"
+
     # --- credential-broker seam (tool execution resolves credentials here; never decrypts) ---
     CREDENTIAL_BROKER_URL: str = "http://credential-broker-service:8000"
     CREDENTIAL_BROKER_MODE: str = "fake"  # "fake" (dev/CI, key-free) | "real"

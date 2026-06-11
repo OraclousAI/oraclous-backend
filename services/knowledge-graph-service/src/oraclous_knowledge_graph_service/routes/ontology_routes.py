@@ -1,4 +1,9 @@
-"""Ontology routes (ORAA-4 §21 routes layer) — get/set a graph's label ontology (owner scoped)."""
+"""Ontology routes (ORAA-4 §21 routes layer) — get/set a graph's label ontology (owner scoped).
+
+Slice C adds a graph-independent authoring aid: ``POST /api/v1/ontology/suggest`` infers a typed
+ontology from a text sample (schema synthesis) and returns it in the SAME shape the per-graph
+ontology PUT accepts, so a client can review and then save it onto a graph.
+"""
 
 from __future__ import annotations
 
@@ -6,17 +11,46 @@ import uuid
 
 from fastapi import APIRouter, HTTPException, status
 
+from oraclous_knowledge_graph_service.core.config import get_settings
 from oraclous_knowledge_graph_service.core.dependencies import OntologyServiceDep, UserIdDep
 from oraclous_knowledge_graph_service.schema.ontology_schemas import (
     OntologyRequest,
     OntologyResponse,
+    SuggestedOntologyResponse,
+    SuggestOntologyRequest,
 )
 from oraclous_knowledge_graph_service.services.graph_service import GraphNotFound
 from oraclous_knowledge_graph_service.services.ontology_service import OntologyError
+from oraclous_knowledge_graph_service.services.schema_synthesis_service import (
+    SchemaSynthesisUnavailable,
+    make_synthesizer,
+)
 
 router = APIRouter(prefix="/api/v1/graphs/{graph_id}/ontology", tags=["ontology"])
 
+# A second router for the graph-independent authoring aid (not nested under a graph id).
+suggest_router = APIRouter(prefix="/api/v1/ontology", tags=["ontology"])
+
 _NOT_FOUND = HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="graph not found")
+
+
+@suggest_router.post("/suggest", response_model=SuggestedOntologyResponse)
+async def suggest_ontology(
+    body: SuggestOntologyRequest, _user_id: UserIdDep
+) -> SuggestedOntologyResponse:
+    """Infer a typed ontology from a text sample (schema synthesis). 503 when no LLM is configured.
+
+    The synthesizer is built inside the handler (not as a dependency) so its fail-closed
+    ``SchemaSynthesisUnavailable`` maps cleanly to 503 instead of escaping dependency resolution.
+    """
+    try:
+        synthesizer = make_synthesizer(get_settings())
+    except SchemaSynthesisUnavailable as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)
+        ) from exc
+    suggestion = await synthesizer.suggest(sample=body.sample, mode=body.mode)
+    return SuggestedOntologyResponse(**suggestion)
 
 
 @router.get("", response_model=OntologyResponse)
