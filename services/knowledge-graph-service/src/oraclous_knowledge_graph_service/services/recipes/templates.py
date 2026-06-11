@@ -46,6 +46,15 @@ def build_evidence_recipe(shape_signature: str = EVIDENCE_SHAPE_SIGNATURE) -> di
         Publisher` (same-record identity).
       * `Tag` nodes fanned out of the list-valued `field:dimensions` (one node per dimension,
         MERGE-shared across records), each linked `Evidence-[:HAS_DIMENSION]->Tag`.
+
+    Enriched again (Slice 2, #269) with a HYBRID free-text-on-a-field extraction: the LLM entity
+    extractor runs over each record's prose `field:claim` under an inline ontology (Person /
+    Organization / Product / Place), so a claim's named entities are mined into the graph and a
+    `Evidence-[:MENTIONS]->`entity edge is MERGEd from the record's Evidence node to each. Entities
+    MERGE-dedup across records (the same org named in two claims → one node + two MENTIONS), so the
+    evidence records interconnect by the entities they share. Fail-soft: with no LLM extractor
+    (`KGS_EXTRACTOR=null`, the CI default) the extraction is skipped and only the deterministic
+    structured projection above runs.
     """
     return {
         "recipe_format_version": "0.2",
@@ -140,6 +149,30 @@ def build_evidence_recipe(shape_signature: str = EVIDENCE_SHAPE_SIGNATURE) -> di
                 },
                 "edge_to_each": {"type": "HAS_DIMENSION", "from_node_rule": "evidence"},
             },
+        ],
+        # Slice 2 — hybrid free-text-on-a-field: mine named entities from each record's prose
+        # `field:claim` and MERGE Evidence-[:MENTIONS]->entity. Entities dedup across records, so
+        # two claims naming the same org share one node (interconnecting their Evidence records).
+        "extractions": [
+            {
+                "id": "claim_entities",
+                "from": "field:claim",
+                "ontology": {
+                    "mode": "strict",
+                    "domain": "rail travel and tourism",
+                    "entity_types": [
+                        {"name": "Person", "description": "A named individual."},
+                        {"name": "Organization", "description": "A company, agency, or operator."},
+                        {"name": "Product", "description": "A named product, pass, or service."},
+                        {"name": "Place", "description": "A named city, country, or location."},
+                    ],
+                    "relationship_types": [
+                        {"name": "OPERATES", "source": "Organization", "target": "Product"},
+                        {"name": "LOCATED_IN", "source": "Organization", "target": "Place"},
+                    ],
+                },
+                "link": {"type": "MENTIONS", "from_node_rule": "evidence"},
+            }
         ],
     }
 

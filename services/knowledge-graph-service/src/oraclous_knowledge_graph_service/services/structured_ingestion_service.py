@@ -8,10 +8,14 @@ caller (the worker, from the bound context) and passed in explicitly — no cont
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
+from oraclous_knowledge_graph_service.core.config import Settings, get_settings
 from oraclous_knowledge_graph_service.domain.ontology import Ontology
 from oraclous_knowledge_graph_service.domain.structural import ExtractionMode
 from oraclous_knowledge_graph_service.repositories.recipe_write_repository import RecipeGraphWriter
 from oraclous_knowledge_graph_service.services.recipes.engine import get_recipe_engine
+from oraclous_knowledge_graph_service.services.recipes.extraction_pass import run_extraction_pass
 from oraclous_knowledge_graph_service.services.structured.default_recipe import build_default_recipe
 from oraclous_knowledge_graph_service.services.structured.extractors import StructuredParseError
 from oraclous_knowledge_graph_service.services.structured.primitives import (
@@ -31,10 +35,18 @@ class StructuredIngestionError(Exception):
 
 
 class StructuredIngestionService:
-    def __init__(self, *, driver, organisation_id: str, database: str | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        driver,
+        organisation_id: str,
+        database: str | None = None,
+        settings: Settings | None = None,
+    ) -> None:
         self._driver = driver
         self._org = organisation_id
         self._db = database
+        self._settings = settings or get_settings()
         self._engine = get_recipe_engine()
         self._primitives = {"csv": CsvPrimitive(), "json": JsonPrimitive()}
 
@@ -67,4 +79,27 @@ class StructuredIngestionService:
         result = self._engine.execute(
             active_recipe, representation, writer, ontology=ontology, temporal=temporal
         )
+        # Hybrid free-text-on-a-field (Slice 2): AFTER the deterministic projection, mine entities
+        # from each record's prose field and MERGE MENTIONS edges from the record's primary node.
+        # Reuses the SAME org-scoped writer (so the entities are stamped + deterministic-id MERGEd
+        # exactly like the projected nodes). Fail-soft: no-extractor / per-record error is skipped.
+        if active_recipe.get("extractions"):
+            meta = {
+                "recipe_id": active_recipe["id"],
+                "recipe_version": active_recipe["version"],
+                "ingestion_time": datetime.now(UTC).isoformat(),
+            }
+            stats = run_extraction_pass(
+                recipe=active_recipe,
+                representation=representation,
+                writer=writer,
+                node_index_by_rule=result.node_index_by_rule,
+                settings=self._settings,
+                engine=self._engine,
+                meta=meta,
+                source_id=result.source_id,
+            )
+            result.entities_extracted = stats.entities_extracted
+            result.mentions = stats.mentions
+            result.warnings.extend(stats.warnings)
         return result.as_dict()

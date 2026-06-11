@@ -109,7 +109,13 @@ class ExecutionResult:
     units_skipped: int = 0
     ontology_violations: int = 0
     ontology_coercions: int = 0
+    entities_extracted: int = 0
+    mentions: int = 0
     warnings: list[str] = field(default_factory=list)
+    # Per-node-rule {unit_id: deterministic_entity_id} produced by the deterministic projection.
+    # NOT serialized — it is the hand-off the hybrid extraction pass (Slice 2) uses to resolve each
+    # record's primary node id (the link source for the MENTIONS edge). Keyed by node-rule id.
+    node_index_by_rule: dict[str, dict[str, str]] = field(default_factory=dict)
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -124,6 +130,8 @@ class ExecutionResult:
             "units_skipped": self.units_skipped,
             "ontology_violations": self.ontology_violations,
             "ontology_coercions": self.ontology_coercions,
+            "entities_extracted": self.entities_extracted,
+            "mentions": self.mentions,
             "warnings": self.warnings,
         }
 
@@ -156,6 +164,38 @@ class RecipeExecutionEngine:
         for rule in recipe["mappings"]:
             self._check_rule_identifiers(rule)
         self._check_foreign_key_edges(recipe["mappings"])
+        self._check_extractions(recipe.get("extractions", []), recipe["mappings"])
+
+    def _check_extractions(
+        self, extractions: list[dict[str, Any]], mappings: list[dict[str, Any]]
+    ) -> None:
+        """A hybrid extraction rule (Slice 2) must link FROM an existing node rule, and its link
+        type + ontology type names must be Cypher-safe identifiers. The link target is the record's
+        primary node, so `link.from_node_rule` must reference a `project_to: node` rule in mappings
+        (rejected at validate time so a malformed recipe fails at store/POST, not mid-ingest)."""
+        node_rule_ids = {r["id"] for r in mappings if r.get("project_to") == "node"}
+        for rule in extractions:
+            link = rule["link"]
+            if not _is_safe_identifier(link["type"]):
+                raise RecipeValidationError(
+                    f"extraction rule {rule['id']!r}: unsafe link type {link['type']!r}"
+                )
+            if link["from_node_rule"] not in node_rule_ids:
+                raise RecipeValidationError(
+                    f"extraction rule {rule['id']!r}: link.from_node_rule "
+                    f"{link['from_node_rule']!r} is not a node rule in mappings"
+                )
+            ontology = rule["ontology"]
+            for et in ontology["entity_types"]:
+                if not _is_safe_identifier(et["name"]):
+                    raise RecipeValidationError(
+                        f"extraction rule {rule['id']!r}: unsafe entity type {et['name']!r}"
+                    )
+            for rt in ontology.get("relationship_types", []):
+                if not _is_safe_identifier(rt["name"]):
+                    raise RecipeValidationError(
+                        f"extraction rule {rule['id']!r}: unsafe relationship type {rt['name']!r}"
+                    )
 
     def _check_foreign_key_edges(self, mappings: list[dict[str, Any]]) -> None:
         """A `foreign_key` edge needs a `to.from_field`, and its target node_rule must exist and
@@ -246,6 +286,15 @@ class RecipeExecutionEngine:
                 raise RecipeValidationError(
                     f"text_extraction rule {rule['id']!r}: unsafe edge_type"
                 )
+
+    def read_record_field(self, unit: StructuralUnit, ref: str) -> Any:
+        """Public: read a `field:`/`column:` ref off a record unit (dotted-path aware).
+
+        The hybrid extraction pass (Slice 2) uses this to pull a record's prose field text with the
+        exact same payload-resolution + dotted-path semantics the deterministic projection uses, so
+        the field a recipe declares for `extractions[].from` reads identically on both paths.
+        """
+        return self._read_field(self._resolve_unit_payload(unit), unit, ref)
 
     # --- matching + field reads --------------------------------------------
     @staticmethod
@@ -422,6 +471,12 @@ class RecipeExecutionEngine:
                     )
                 elif kind == "text_extraction":
                     self._apply_text_extraction(rule, unit, result)
+
+        # Hand off the per-node-rule {unit_id: entity_id} map so the hybrid extraction pass (Slice
+        # 2, run by the structured service AFTER this deterministic projection) can resolve each
+        # record's primary node id — the source of the MENTIONS edge to every mined entity.
+        for (rule_id, unit_id), entity_id in node_index.items():
+            result.node_index_by_rule.setdefault(rule_id, {})[unit_id] = entity_id
         return result
 
     def _write_containers(
