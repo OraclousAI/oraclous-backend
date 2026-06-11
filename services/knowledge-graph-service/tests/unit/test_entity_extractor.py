@@ -271,6 +271,25 @@ def test_make_extractor_openai_builds_with_key() -> None:
     assert isinstance(extractor, EntityExtractor)
 
 
+def test_make_extractor_forwards_max_concurrency(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`KGS_EXTRACTOR_MAX_CONCURRENCY` -> settings.extractor_max_concurrency -> the extractor's
+    library `max_concurrency` (env-tunable per-chunk LLM fan-out)."""
+    monkeypatch.setenv("KGS_EXTRACTOR_MAX_CONCURRENCY", "17")
+    settings = Settings(extractor="openai", openai_api_key="sk-test")
+    assert settings.extractor_max_concurrency == 17  # env var maps via the KGS_ prefix
+
+    extractor = make_extractor(settings)
+    assert isinstance(extractor, EntityExtractor)
+    assert extractor._extractor.max_concurrency == 17
+
+
+def test_make_extractor_default_max_concurrency() -> None:
+    """The default per-chunk concurrency is 10 (raised from 5 for throughput)."""
+    extractor = make_extractor(Settings(extractor="openai", openai_api_key="sk-test"))
+    assert isinstance(extractor, EntityExtractor)
+    assert extractor._extractor.max_concurrency == 10
+
+
 def test_make_extractor_forwards_schema_and_prompt_prefix() -> None:
     """make_extractor(schema=…, prompt_prefix=…) builds an extractor that carries both."""
     from neo4j_graphrag.experimental.components.schema import GraphSchema, NodeType
