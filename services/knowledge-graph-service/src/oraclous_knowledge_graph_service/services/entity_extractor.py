@@ -21,6 +21,7 @@ node + relationship (so an LLM-extracted `organisation_id` can never redirect a 
 
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from neo4j_graphrag.experimental.components.entity_relation_extractor import (
@@ -74,6 +75,10 @@ class EntityExtractor:
         )
         self._schema = schema or GraphSchema(node_types=())
         self._prompt_prefix = prompt_prefix
+        # Cap how many chunks extract CONCURRENTLY (each chunk = one OpenRouter round-trip). The
+        # library `max_concurrency` above governs fan-out WITHIN a single chunk; this bounds the
+        # across-chunk gather below so a 600-chunk document is not 600 serial round-trips.
+        self._max_concurrency = max_concurrency
 
     async def extract(self, *, chunks: list[str], chunk_ids: list[str]) -> Neo4jGraph:
         """Run extraction over the chunk texts and return their entity sub-graph.
@@ -86,21 +91,45 @@ class EntityExtractor:
         if len(chunks) != len(chunk_ids):
             raise ValueError("chunks and chunk_ids must be the same length")
 
+        # Run the per-chunk LLM extraction CONCURRENTLY, capped at `self._max_concurrency`, instead
+        # of one serial `await` per chunk. A 600-chunk document is then ~ceil(600/N) waves of
+        # round-trips, not 600 in series. The semaphore bounds in-flight calls so we never blow past
+        # the provider's rate limits.
+        semaphore = asyncio.Semaphore(self._max_concurrency)
+
+        async def _one(index: int, text: str, chunk_id: str) -> Neo4jGraph:
+            async with semaphore:
+                # The library namespaces extracted node ids by chunk.chunk_id (its `update_ids`).
+                # Using the deterministic lexical chunk id as chunk_id makes the entity ids
+                # deterministic too (idempotent re-ingest) AND lets us link entities to the real
+                # chunk node below.
+                chunk = TextChunk(text=text, index=index, uid=chunk_id)
+                # schema = hard ontology (enforced); prompt_prefix = soft steering (formatted into
+                # the extractor's `{examples}` prompt slot). Both empty/open by default.
+                chunk_graph = await self._extractor.extract_for_chunk(
+                    self._schema, self._prompt_prefix, chunk
+                )
+                self._extractor.update_ids(chunk_graph, chunk)
+                self._link_entities_to_chunk(chunk_graph, chunk_id)
+                return chunk_graph
+
+        results = await asyncio.gather(
+            *(
+                _one(index, text, chunk_id)
+                for index, (text, chunk_id) in enumerate(zip(chunks, chunk_ids, strict=True))
+            ),
+            return_exceptions=True,
+        )
+
         combined = Neo4jGraph()
-        for index, (text, chunk_id) in enumerate(zip(chunks, chunk_ids, strict=True)):
-            # The library namespaces extracted node ids by chunk.chunk_id (its `update_ids`). Using
-            # the deterministic lexical chunk id as chunk_id makes the entity ids deterministic too
-            # (idempotent re-ingest) AND lets us link entities to the real chunk node below.
-            chunk = TextChunk(text=text, index=index, uid=chunk_id)
-            # schema = hard ontology (enforced); prompt_prefix = soft steering (formatted into the
-            # extractor's `{examples}` prompt slot). Both empty/open by default.
-            chunk_graph = await self._extractor.extract_for_chunk(
-                self._schema, self._prompt_prefix, chunk
-            )
-            self._extractor.update_ids(chunk_graph, chunk)
-            self._link_entities_to_chunk(chunk_graph, chunk_id)
-            combined.nodes.extend(chunk_graph.nodes)
-            combined.relationships.extend(chunk_graph.relationships)
+        for chunk_id, result in zip(chunk_ids, results, strict=True):
+            # One bad chunk must not sink the whole document — mirror the library's
+            # `on_error=IGNORE`: log and skip the failed chunk, keep the rest.
+            if isinstance(result, BaseException):
+                logger.warning("EntityExtractor: chunk %s failed: %r", chunk_id, result)
+                continue
+            combined.nodes.extend(result.nodes)
+            combined.relationships.extend(result.relationships)
 
         logger.info(
             "EntityExtractor: %d entities, %d relationships from %d chunks",
