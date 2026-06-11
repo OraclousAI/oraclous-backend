@@ -15,8 +15,44 @@ then `host` is the deterministic, dependency-free hostname.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 from urllib.parse import urlsplit
+
+# Trailing legal-suffix tokens stripped by `canonical` so a company's surface variants collapse to
+# ONE canonical key. Compared casefolded with interior `.` removed (so `B.V.`→`bv`, `b.v`→`bv`); the
+# strip is applied REPEATEDLY from the tail so stacked suffixes (`Eurail Group Holding`) all fall
+# away. Generic corporate-form + grouping words only — never a distinguishing brand token.
+_LEGAL_SUFFIXES = frozenset(
+    {
+        "bv",
+        "inc",
+        "incorporated",
+        "llc",
+        "ltd",
+        "limited",
+        "gmbh",
+        "ag",
+        "sa",
+        "co",
+        "corp",
+        "corporation",
+        "plc",
+        "nv",
+        "oy",
+        "ab",
+        "as",
+        "group",
+        "holding",
+        "holdings",
+    }
+)
+# A bare domain has no whitespace and at least one interior dot before the first `/` — `eurail.com`,
+# `www.eurail.com` reduce to their hostname stem (`eurail`), but a multi-word phrase like
+# `Eurail Group` (has a space) or `Mr. Smith` (dot followed by a space) is NOT a bare domain.
+_BARE_DOMAIN = re.compile(r"^[^\s/]+\.[^\s/]+$")
+# Surrounding punctuation stripped from the final canonical token (keeps interior word characters).
+_STRIP_PUNCT = " \t\r\n.,;:!?\"'`()[]{}<>-_/\\|"
 
 
 class RecipeTransformError(ValueError):
@@ -61,12 +97,53 @@ def _strip_www(value: str) -> str:
     return text[len("www.") :] if text.lower().startswith("www.") else text
 
 
+def _strip_legal_suffix(token: str) -> str:
+    """Casefolded, interior-`.`-removed comparison key for a legal-suffix match (`B.V.`→`bv`)."""
+    return token.casefold().replace(".", "")
+
+
+def _canonical(value: str) -> str:
+    """Collapse an entity NAME's surface variants to one canonical key (recipe enrichment Slice 4).
+
+    PURE `str -> str` (no I/O). The single deterministic rule the resolve-on-write path keys entity
+    nodes by, so `Eurail B.V.`, `eurail.com`, `Eurail Group` all canonicalise to `eurail` and MERGE
+    onto ONE node — while distinct names stay distinct (`Interrail`↛`eurail`, `SNCF`↛`SBB`):
+
+      1. trim + casefold the whole value;
+      2. if it is a BARE DOMAIN (`eurail.com`, `www.eurail.com` — no whitespace, an interior dot),
+         reduce to its hostname STEM (`_host` strips `www.`/port → `eurail.com`, then drop the TLD
+         labels → `eurail`); a multi-word phrase is never treated as a domain;
+      3. otherwise tokenise on whitespace and repeatedly drop a trailing legal-suffix token
+         (`bv`/`inc`/`ltd`/`group`/`holding`/...; compared casefolded with interior `.` removed, so
+         `B.V.`→`bv`), so stacked suffixes (`Eurail Group Holding`) all fall away;
+      4. strip surrounding punctuation off the result and collapse internal whitespace.
+
+    An all-suffix or empty value canonicalises to `""` (an empty identity — skipped + warned by the
+    caller, like any empty field), so a bare `Ltd` never collapses distinct companies onto nothing.
+    """
+    text = " ".join(value.strip().casefold().split())
+    if not text:
+        return ""
+    if _BARE_DOMAIN.match(text):
+        host = _host(text)  # `www.eurail.com` → `eurail.com`, port stripped, lowercased
+        if host:
+            # The hostname stem: drop the TLD label(s) so `eurail.com`/`eurail.co.uk` → `eurail`.
+            stem = host.split(".")[0]
+            return stem.strip(_STRIP_PUNCT)
+    tokens = text.split()
+    while tokens and _strip_legal_suffix(tokens[-1]) in _LEGAL_SUFFIXES:
+        tokens.pop()
+    canonical = " ".join(tokens).strip(_STRIP_PUNCT)
+    return " ".join(canonical.split())
+
+
 # The named transform registry: a recipe references a transform by key; the engine applies it to a
 # read value via `apply_transform`. Keep these pure `str -> str` — no I/O, no driver, no LLM.
 TRANSFORMS: dict[str, Callable[[str], str]] = {
     "host": _host,
     "lower": _lower,
     "strip_www": _strip_www,
+    "canonical": _canonical,
 }
 
 
@@ -87,9 +164,16 @@ def apply_transform(name: str, value: str) -> str:
     return fn(text)
 
 
+def canonical(value: str) -> str:
+    """Public alias for the `canonical` transform — the resolution path (Slice 4) calls it directly
+    to derive an entity's canonical key (`Eurail B.V.`/`eurail.com`/`Eurail Group` → `eurail`)."""
+    return _canonical("" if value is None else str(value))
+
+
 __all__ = [
     "TRANSFORMS",
     "RecipeTransformError",
     "apply_transform",
+    "canonical",
     "is_known_transform",
 ]

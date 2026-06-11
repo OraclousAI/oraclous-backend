@@ -61,6 +61,13 @@ def build_evidence_recipe(shape_signature: str = EVIDENCE_SHAPE_SIGNATURE) -> di
     edge between records whose claims are close (top_k=5, min_score=0.5; one edge per unordered
     pair). So evidence that says similar things connects even when it shares no source/entity.
     Fail-soft: an embedder failure skips the similarity pass, leaving the projection intact.
+
+    Enriched finally (Slice 4, #269) with ENTITY RESOLUTION (resolve-on-write): the extraction
+    rule's `resolution` block canonicalizes the mined entities during ingestion, so `Eurail` /
+    `eurail.com` / `Eurail B.V.` collapse to ONE Organization with an `aliases` audit trail (rather
+    than three separate nodes), and a conservative semantic pass folds near-duplicate canonical
+    names + flags an ambiguous band as `SAME_AS_CANDIDATE` edges. Fail-soft: an embedder failure
+    skips the semantic merge, leaving the deterministic canonical keying in place.
     """
     return {
         "recipe_format_version": "0.2",
@@ -159,6 +166,15 @@ def build_evidence_recipe(shape_signature: str = EVIDENCE_SHAPE_SIGNATURE) -> di
         # Slice 2 — hybrid free-text-on-a-field: mine named entities from each record's prose
         # `field:claim` and MERGE Evidence-[:MENTIONS]->entity. Entities dedup across records, so
         # two claims naming the same org share one node (interconnecting their Evidence records).
+        #
+        # Slice 4 — entity resolution (resolve-on-write): the `resolution` block canonicalizes each
+        # extracted entity DURING ingestion, so an organisation's surface variants (`Eurail`,
+        # `eurail.com`, `Eurail B.V.`, `Eurail Group`) collapse to ONE Organization node keyed by
+        # the canonical key (`eurail`), with the original forms kept in its `aliases` set + a
+        # `canonical_name` display form. A conservative semantic pass then folds near-duplicate
+        # canonical names (cosine >= 0.92) and flags the ambiguous band (0.85–0.92) with
+        # SAME_AS_CANDIDATE edges. Relation-type canonicalization needs no separate step: the closed
+        # `relationship_types` ontology below yields canonical relation roots by construction.
         "extractions": [
             {
                 "id": "claim_entities",
@@ -176,6 +192,11 @@ def build_evidence_recipe(shape_signature: str = EVIDENCE_SHAPE_SIGNATURE) -> di
                         {"name": "OPERATES", "source": "Organization", "target": "Product"},
                         {"name": "LOCATED_IN", "source": "Organization", "target": "Place"},
                     ],
+                },
+                "resolution": {
+                    "canonical": True,
+                    "merge_threshold": 0.92,
+                    "candidate_threshold": 0.85,
                 },
                 "link": {"type": "MENTIONS", "from_node_rule": "evidence"},
             }

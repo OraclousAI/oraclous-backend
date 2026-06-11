@@ -65,15 +65,26 @@ class _StatefulWriter:
         meta,
         confidence,
         container_id,
+        aliases=None,
     ) -> None:
         node = self.nodes.setdefault(
             entity_id,
-            {"label": label, "props": {}, "identity_key": identity_key, "provenance": provenance},
+            {
+                "label": label,
+                "props": {},
+                "identity_key": identity_key,
+                "provenance": provenance,
+                "aliases": [],
+            },
         )
         node["label"] = label
         node["identity_key"] = identity_key
         node["provenance"] = provenance
         node["props"].update(properties)
+        # Model the writer's set-union of the alias audit trail (Slice 4 resolve-on-write).
+        for a in aliases or []:
+            if a not in node["aliases"]:
+                node["aliases"].append(a)
 
     def set_property(self, *, prop_name, targets) -> int:
         for t in targets:
@@ -411,5 +422,11 @@ def test_eurail_enriched_template_mentions_and_dedup(monkeypatch: pytest.MonkeyP
     assert len(mentions) == 3
     assert {f for f, _ in mentions} == evidence_ids
     assert all(t == eurail_id for _, t in mentions)
-    assert stats.entities_extracted == 3
+    # Slice 4 resolve-on-write: the template now carries `resolution`, so `entities_extracted` is
+    # the count of CANONICAL entity NODES written (one `eurail` Organization), not per-record
+    # occurrences — the dedup happens at the canonical-key level. The node carries `name`=eurail +
+    # the surface form in its `aliases` audit trail. MENTIONS still runs one per source record.
+    assert stats.entities_extracted == 1
     assert stats.mentions == 3
+    assert writer.nodes[eurail_id]["props"]["name"] == "eurail"
+    assert writer.nodes[eurail_id]["aliases"] == ["Eurail"]

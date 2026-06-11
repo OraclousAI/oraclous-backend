@@ -248,11 +248,45 @@
         }
       }
     },
+    "resolution": {
+      "type": "object",
+      "additionalProperties": false,
+      "$comment": "Entity resolution / canonicalization (Slice 4, #269), RESOLVE-ON-WRITE: canonicalize each extracted entity DURING ingestion so surface variants (Eurail / eurail.com / Eurail B.V.) MERGE onto ONE node keyed by the canonical key, never created as separate nodes. The node accumulates the original surface forms in an `aliases` set; a conservative semantic pass (resolution_pass.py) then clusters the canonical names per label, folding near-duplicates (>= merge_threshold) and flagging an ambiguous band ([candidate_threshold, merge_threshold)) with a SAME_AS_CANDIDATE edge.",
+      "properties": {
+        "canonical": {
+          "type": "boolean",
+          "default": false,
+          "$comment": "When true, derive each entity's identity_key with the `canonical` transform (casefold + bare-domain stem + legal-suffix strip) instead of the plain casefold/whitespace normalize — so Eurail B.V. / eurail.com / Eurail Group collapse to one node."
+        },
+        "aliases": {
+          "type": "object",
+          "$comment": "Optional explicit alias map {<canonical_key>: [<surface_variant>, ...]}. A surface form matching a listed variant (after casefold) uses that canonical key, applied BEFORE the `canonical` transform — so domain-specific synonyms the transform cannot derive (e.g. a brand rename) still collapse.",
+          "additionalProperties": {
+            "type": "array",
+            "items": { "type": "string", "minLength": 1 }
+          }
+        },
+        "merge_threshold": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 1,
+          "default": 0.92,
+          "$comment": "Cosine >= this (HIGH/conservative) folds two canonical nodes into one in the semantic pass. Must be >= candidate_threshold."
+        },
+        "candidate_threshold": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 1,
+          "default": 0.85,
+          "$comment": "Cosine in [candidate_threshold, merge_threshold) is the AMBIGUOUS band: NOT merged — a SAME_AS_CANDIDATE {score} edge is MERGEd between the two canonical nodes for review."
+        }
+      }
+    },
     "extraction": {
       "type": "object",
       "required": ["id", "from", "ontology", "link"],
       "additionalProperties": false,
-      "$comment": "One hybrid extraction rule: mine entities from a record's `from` prose field (per the inline `ontology`) and MERGE a `link` edge from the record's primary node to each extracted entity.",
+      "$comment": "One hybrid extraction rule: mine entities from a record's `from` prose field (per the inline `ontology`) and MERGE a `link` edge from the record's primary node to each extracted entity. An optional `resolution` block canonicalizes the entities on write (Slice 4).",
       "properties": {
         "id": { "type": "string", "minLength": 1 },
         "from": {
@@ -261,6 +295,7 @@
           "$comment": "A field:/column: ref to the PROSE field on each record whose text the extractor runs over (e.g. `field:claim`). Empty/missing text on a record is skipped."
         },
         "ontology": { "$ref": "#/$defs/extraction_ontology" },
+        "resolution": { "$ref": "#/$defs/resolution" },
         "link": {
           "type": "object",
           "required": ["type", "from_node_rule"],
