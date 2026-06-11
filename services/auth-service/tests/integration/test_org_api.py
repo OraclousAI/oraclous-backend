@@ -59,6 +59,10 @@ async def test_multi_org_active_selection_via_header(client: AsyncClient) -> Non
     assert login.status_code == 200
     assert _org_claim(login.json()["access_token"]) == second["id"]
 
+    # /me follows the active org (the token claim), not the user's default personal org (#253)
+    me = (await client.get("/v1/auth/me", headers=_auth(login.json()["access_token"]))).json()
+    assert me["organisation_id"] == second["id"]
+
     # selecting an org the user does NOT belong to -> 404 (mask)
     bad = await client.post(
         "/v1/auth/login",

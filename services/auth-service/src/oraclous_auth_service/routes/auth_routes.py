@@ -83,7 +83,9 @@ async def me(claims: UserClaimsDep, auth: AuthServiceDep) -> MeResponse:
     return MeResponse(
         id=user.id,
         principal_type="user",
-        organisation_id=user.default_organisation_id,
+        # The SESSION's active org (the token claim, like /validate + org_role) — NOT the user's
+        # default org, which made /me the lone outlier reverting a switched session (#253).
+        organisation_id=claims["organisation_id"],
         email=user.email,
         org_role=claims.get("org_role"),
     )
