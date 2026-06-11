@@ -46,6 +46,12 @@ from oraclous_knowledge_graph_service.domain.ontology import Ontology, resolve_l
 from oraclous_knowledge_graph_service.domain.structural import StructuralRepresentation
 from oraclous_knowledge_graph_service.repositories.recipe_write_repository import RecipeGraphWriter
 from oraclous_knowledge_graph_service.services.entity_extractor import make_extractor
+from oraclous_knowledge_graph_service.services.recipes.resolution_pass import (
+    SAME_AS_CANDIDATE,
+    ClusterResult,
+    ResolutionPlan,
+    cluster_canonical_keys,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +70,10 @@ class _ExtractionStats:
     def __init__(self) -> None:
         self.entities_extracted = 0
         self.mentions = 0
+        # Slice 4 resolution: canonical names folded onto a representative by the semantic pass, and
+        # ambiguous-band SAME_AS_CANDIDATE edges MERGEd for review.
+        self.entities_merged = 0
+        self.resolution_candidates = 0
         self.warnings: list[str] = []
 
 
@@ -142,6 +152,26 @@ def run_extraction_pass(
             continue
 
         by_record = _group_by_record(extracted, chunk_ids)
+        resolution = rule.get("resolution")
+        if resolution:
+            # RESOLVE-ON-WRITE (Slice 4): canonicalize the extracted entities, cluster their
+            # distinct canonical names per label, then write entities keyed to representatives (one
+            # node per cluster, aliases unioned, MENTIONS from all source records) + the
+            # ambiguous-band SAME_AS_CANDIDATE edges. Resolving BEFORE write avoids node surgery.
+            _resolve_and_write_rule(
+                rule=rule,
+                by_record=by_record,
+                ontology=ontology,
+                link_type=link_type,
+                graph_id=graph_id,
+                writer=writer,
+                settings=settings,
+                deterministic_id=_deterministic_id,
+                meta=meta,
+                source_id=source_id,
+                stats=stats,
+            )
+            continue
         for primary_id, entity_graph in by_record.items():
             try:
                 ents, links = _write_record_entities(
@@ -273,6 +303,209 @@ def _write_record_entities(
             meta=meta,
         )
     return entities, mentions
+
+
+class _ParsedEntity:
+    """An extracted entity after label-resolution + canonical keying (one per accepted LLM node)."""
+
+    __slots__ = ("primary_id", "lib_id", "label", "surface_form", "canonical_key", "properties")
+
+    def __init__(
+        self,
+        *,
+        primary_id: str,
+        lib_id: str,
+        label: str,
+        surface_form: str,
+        canonical_key: str,
+        properties: dict[str, Any],
+    ) -> None:
+        self.primary_id = primary_id
+        self.lib_id = lib_id
+        self.label = label
+        self.surface_form = surface_form
+        self.canonical_key = canonical_key
+        self.properties = properties
+
+
+def _resolve_and_write_rule(
+    *,
+    rule: dict[str, Any],
+    by_record: dict[str, Neo4jGraph],
+    ontology: Ontology,
+    link_type: str,
+    graph_id: str,
+    writer: RecipeGraphWriter,
+    settings: Settings,
+    deterministic_id: Any,
+    meta: dict[str, Any],
+    source_id: str,
+    stats: _ExtractionStats,
+) -> None:
+    """Resolve-on-write for one extraction rule (Slice 4): canonicalize → cluster → write keyed to
+    representatives. One node per cluster (aliases unioned, MENTIONS from every source record), the
+    ambiguous band MERGEd as SAME_AS_CANDIDATE edges. Folds stats onto `stats`.
+    """
+    plan = ResolutionPlan.from_rule(rule["resolution"])
+    # 1. Parse every record's entities, resolving the label + deriving the canonical key. A bad
+    #    label / empty name is dropped exactly as the non-resolution path drops it.
+    parsed: list[_ParsedEntity] = []
+    for primary_id, entity_graph in by_record.items():
+        for node in entity_graph.nodes:
+            name = (node.properties or {}).get("name")
+            if not (isinstance(name, str) and name.strip()):
+                continue
+            resolved_label, _coerced = resolve_label(ontology, node.label)
+            if resolved_label is None:
+                continue
+            canonical_key = plan.canonical_key(name)
+            if not canonical_key.strip():
+                continue
+            properties = {k: v for k, v in (node.properties or {}).items() if v is not None}
+            parsed.append(
+                _ParsedEntity(
+                    primary_id=primary_id,
+                    lib_id=node.id,
+                    label=resolved_label,
+                    surface_form=name.strip(),
+                    canonical_key=canonical_key,
+                    properties=properties,
+                )
+            )
+    if not parsed:
+        return
+
+    # 2. Distinct canonical keys per label (+ occurrence counts for the representative tie-break).
+    keys_by_label: dict[str, dict[str, int]] = {}
+    for ent in parsed:
+        counts = keys_by_label.setdefault(ent.label, {})
+        counts[ent.canonical_key] = counts.get(ent.canonical_key, 0) + 1
+
+    # 3. Semantic clustering (conservative; fail-soft). Each (label, canonical_key) maps to a
+    #    representative canonical key; ambiguous-band pairs come back as candidates.
+    cluster: ClusterResult = cluster_canonical_keys(
+        keys_by_label=keys_by_label, plan=plan, settings=settings
+    )
+    stats.warnings.extend(cluster.warnings)
+    stats.entities_merged += cluster.merged
+
+    # 4. Resolve each entity to its representative id + gather the cluster's aliases / display form.
+    #    aliases = the union of ORIGINAL surface forms across the cluster; canonical_name = the
+    #    longest surface form seen (a chosen display form); name = the representative canonical key.
+    rep_key_of: dict[tuple[str, str], str] = cluster.representative
+    aliases_by_rep: dict[tuple[str, str], list[str]] = {}
+    display_by_rep: dict[tuple[str, str], str] = {}
+    props_by_rep: dict[tuple[str, str], dict[str, Any]] = {}
+    lib_to_rep_id: dict[str, str] = {}
+    for ent in parsed:
+        rep_key = rep_key_of.get((ent.label, ent.canonical_key), ent.canonical_key)
+        rep = (ent.label, rep_key)
+        rep_id = deterministic_id(graph_id, ent.label, rep_key)
+        lib_to_rep_id[ent.lib_id] = rep_id
+        alias_list = aliases_by_rep.setdefault(rep, [])
+        if ent.surface_form not in alias_list:
+            alias_list.append(ent.surface_form)
+        current_display = display_by_rep.get(rep)
+        if current_display is None or len(ent.surface_form) > len(current_display):
+            display_by_rep[rep] = ent.surface_form
+        # Last-writer-wins for non-name properties (the LLM rarely emits extra ones); name/aliases/
+        # canonical_name are managed explicitly below.
+        merged_props = props_by_rep.setdefault(rep, {})
+        for k, v in ent.properties.items():
+            if k != "name":
+                merged_props[k] = v
+
+    # 5. Write ONE node per representative (keyed to the canonical key) with the alias audit trail,
+    #    then MERGE the MENTIONS from every source record's primary node to the representative id.
+    written_reps: set[tuple[str, str]] = set()
+    mentions_seen: set[tuple[str, str]] = set()
+    for ent in parsed:
+        rep_key = rep_key_of.get((ent.label, ent.canonical_key), ent.canonical_key)
+        rep = (ent.label, rep_key)
+        rep_id = deterministic_id(graph_id, ent.label, rep_key)
+        if rep not in written_reps:
+            properties = dict(props_by_rep.get(rep, {}))
+            properties["name"] = rep_key
+            properties["canonical_name"] = display_by_rep.get(rep, rep_key)
+            try:
+                writer.merge_node(
+                    label=ent.label,
+                    entity_id=rep_id,
+                    identity_key=rep_key,
+                    properties=properties,
+                    provenance="INFERRED",
+                    source_id=source_id,
+                    meta=meta,
+                    confidence=None,
+                    container_id=None,
+                    aliases=aliases_by_rep.get(rep, []),
+                )
+                written_reps.add(rep)
+                stats.entities_extracted += 1
+            except Exception:  # noqa: BLE001 — per-entity isolation (like on_error=IGNORE).
+                logger.exception(
+                    "extraction rule %r: writing canonical entity %r failed; skipping",
+                    rule["id"],
+                    rep_key,
+                )
+                stats.warnings.append(
+                    f"extraction rule {rule['id']!r}: a canonical entity failed; skipped."
+                )
+                continue
+        mention_key = (ent.primary_id, rep_id)
+        if mention_key in mentions_seen:
+            continue  # same record naming two variants of one canonical → one MENTIONS, not two.
+        mentions_seen.add(mention_key)
+        try:
+            stats.mentions += writer.merge_edge(
+                rel_type=link_type,
+                edges=[{"from": ent.primary_id, "to": rep_id}],
+                source_id=source_id,
+                provenance="INFERRED",
+                meta=meta,
+            )
+        except Exception:  # noqa: BLE001 — per-record isolation.
+            logger.exception(
+                "extraction rule %r: writing MENTIONS for record %r failed; skipping",
+                rule["id"],
+                ent.primary_id,
+            )
+            stats.warnings.append(
+                f"extraction rule {rule['id']!r}: a record's MENTIONS failed; skipped."
+            )
+
+    # 6. Inter-entity relationships, re-pointed onto the representative ids (per record sub-graph).
+    inter_edges_by_type: dict[str, list[dict[str, str]]] = {}
+    for entity_graph in by_record.values():
+        for rel in entity_graph.relationships:
+            start = lib_to_rep_id.get(rel.start_node_id)
+            end = lib_to_rep_id.get(rel.end_node_id)
+            if start is None or end is None or start == end:
+                continue  # endpoint dropped, or a within-cluster self-rel after folding.
+            inter_edges_by_type.setdefault(rel.type, []).append({"from": start, "to": end})
+    for rel_type, edges in inter_edges_by_type.items():
+        writer.merge_edge(
+            rel_type=rel_type, edges=edges, source_id=source_id, provenance="INFERRED", meta=meta
+        )
+
+    # 7. Ambiguous-band SAME_AS_CANDIDATE edges: MERGE one between the two canonical nodes (NOT a
+    #    merge) carrying the cosine `score`, for human review. Both endpoints were written above (a
+    #    candidate key is its own representative — it was not folded).
+    candidate_edges: list[dict[str, Any]] = []
+    for label, key_a, key_b, score in cluster.candidates:
+        id_a = deterministic_id(graph_id, label, key_a)
+        id_b = deterministic_id(graph_id, label, key_b)
+        if id_a == id_b:
+            continue
+        candidate_edges.append({"from": id_a, "to": id_b, "properties": {"score": score}})
+    if candidate_edges:
+        stats.resolution_candidates += writer.merge_edge(
+            rel_type=SAME_AS_CANDIDATE,
+            edges=candidate_edges,
+            source_id=source_id,
+            provenance="INFERRED",
+            meta=meta,
+        )
 
 
 def _normalize(value: str) -> str:

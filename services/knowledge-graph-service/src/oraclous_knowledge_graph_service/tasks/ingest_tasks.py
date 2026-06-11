@@ -203,16 +203,20 @@ async def _ingest_structured(*, driver, maker, settings, payload, data: bytes) -
         ontology=Ontology.of(ontology_data),
         temporal=temporal,
     )
-    # `entities_extracted` (hybrid free-text-on-a-field, Slice 2) is folded into the headline
-    # entity count; `mentions` (the MENTIONS edge per entity) + `similarity_edges` (the SIMILAR_TO
-    # edges per similar pair, Slice 3) are folded into relationships.
+    # `entities_extracted` (hybrid free-text-on-a-field, Slice 2; already the post-resolution count
+    # of canonical entity nodes when Slice 4 resolution is on) is folded into the headline entity
+    # count; `mentions` (the MENTIONS edge per entity) + `similarity_edges` (SIMILAR_TO edges per
+    # similar pair, Slice 3) + `resolution_candidates` (the SAME_AS_CANDIDATE review edges, Slice 4)
+    # are folded into relationships. `entities_merged` (Slice 4) counts surface variants folded onto
+    # a representative — nodes NOT created — so it is surfaced in `detail`, not added to the totals.
     return {
         "entities": result["nodes_written"]
         + result["containers_written"]
         + result.get("entities_extracted", 0),
         "relationships": result["edges_written"]
         + result.get("mentions", 0)
-        + result.get("similarity_edges", 0),
+        + result.get("similarity_edges", 0)
+        + result.get("resolution_candidates", 0),
         "detail": result,
     }
 

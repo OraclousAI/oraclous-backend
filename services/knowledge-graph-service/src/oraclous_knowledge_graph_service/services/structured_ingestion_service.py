@@ -103,6 +103,9 @@ class StructuredIngestionService:
                 )
                 result.entities_extracted = ex_stats.entities_extracted
                 result.mentions = ex_stats.mentions
+                # Slice 4 entity resolution stats (0 unless an extraction rule has `resolution`).
+                result.entities_merged = ex_stats.entities_merged
+                result.resolution_candidates = ex_stats.resolution_candidates
                 result.warnings.extend(ex_stats.warnings)
             # Slice 3 — content similarity: AFTER the extraction pass, embed each record's `from`
             # field + cosine kNN, MERGE-ing SIMILAR_TO edges between similar records. Reuses the

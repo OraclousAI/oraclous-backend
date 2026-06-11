@@ -112,6 +112,10 @@ class ExecutionResult:
     entities_extracted: int = 0
     mentions: int = 0
     similarity_edges: int = 0
+    # Slice 4 entity resolution: canonical names folded onto a representative (entities_merged) and
+    # ambiguous-band SAME_AS_CANDIDATE edges MERGEd for review (resolution_candidates).
+    entities_merged: int = 0
+    resolution_candidates: int = 0
     warnings: list[str] = field(default_factory=list)
     # Per-node-rule {unit_id: deterministic_entity_id} produced by the deterministic projection.
     # NOT serialized — it is the hand-off the hybrid extraction pass (Slice 2) uses to resolve each
@@ -134,6 +138,8 @@ class ExecutionResult:
             "entities_extracted": self.entities_extracted,
             "mentions": self.mentions,
             "similarity_edges": self.similarity_edges,
+            "entities_merged": self.entities_merged,
+            "resolution_candidates": self.resolution_candidates,
             "warnings": self.warnings,
         }
 
@@ -219,6 +225,23 @@ class RecipeExecutionEngine:
                     raise RecipeValidationError(
                         f"extraction rule {rule['id']!r}: unsafe relationship type {rt['name']!r}"
                     )
+            self._check_resolution(rule["id"], rule.get("resolution"))
+
+    @staticmethod
+    def _check_resolution(rule_id: str, resolution: dict[str, Any] | None) -> None:
+        """An optional `resolution` block (Slice 4): the per-threshold (0,1] bounds are enforced by
+        the JSON schema; the cross-field invariant merge_threshold >= candidate_threshold is checked
+        here so a malformed band (merge below candidate — an empty/inverted ambiguous range) fails
+        at store/POST, not mid-ingest. The defaults (0.92, 0.85) already satisfy it."""
+        if not resolution:
+            return
+        merge = float(resolution.get("merge_threshold", 0.92))
+        candidate = float(resolution.get("candidate_threshold", 0.85))
+        if merge < candidate:
+            raise RecipeValidationError(
+                f"extraction rule {rule_id!r}: resolution merge_threshold ({merge}) must be >= "
+                f"candidate_threshold ({candidate})"
+            )
 
     def _check_foreign_key_edges(self, mappings: list[dict[str, Any]]) -> None:
         """A `foreign_key` edge needs a `to.from_field`, and its target node_rule must exist and

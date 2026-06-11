@@ -143,8 +143,21 @@ class RecipeGraphWriter:
         meta: dict,
         confidence: float | None,
         container_id: str | None,
+        aliases: list[str] | None = None,
     ) -> None:
         label = _safe(label)
+        # Resolve-on-write audit trail (Slice 4): when `aliases` is given (the original surface
+        # forms this canonical entity was seen as), MERGE the node then UNION the new forms into
+        # the existing `aliases` set — so the node accumulates every variant across records/runs
+        # (write path: MERGE then SET n.aliases = <union>), never overwriting a prior run's set.
+        # Pure-Cypher set union (no APOC dependency): keep the existing list, append only the new
+        # forms not already present (a stored `aliases` is itself already de-duplicated this way).
+        alias_clause = (
+            "\nSET e.aliases = coalesce(e.aliases, []) + "
+            "[a IN row.aliases WHERE NOT a IN coalesce(e.aliases, [])]"
+            if aliases
+            else ""
+        )
         node_cypher = (
             "UNWIND $batch AS row\n"
             f"MERGE (e:{label}:__Entity__ "
@@ -156,13 +169,18 @@ class RecipeGraphWriter:
             # and no identity_key; the real target-record ingest reaches the SAME id and enriches
             # it — stamp the identity_key + clear the stub flag so the node is no longer a stub.
             "SET e.identity_key = row.identity_key, e.stub = false\n"
-            "SET e += row.properties"
+            "SET e += row.properties" + alias_clause
         )
         self._run(
             node_cypher,
             {
                 "batch": [
-                    {"id": entity_id, "identity_key": identity_key, "properties": properties}
+                    {
+                        "id": entity_id,
+                        "identity_key": identity_key,
+                        "properties": properties,
+                        "aliases": list(aliases or []),
+                    }
                 ],
                 "source_id": source_id,
                 "provenance": provenance,

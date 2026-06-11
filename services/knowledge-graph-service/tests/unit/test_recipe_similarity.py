@@ -64,13 +64,17 @@ class _StatefulWriter:
         meta,
         confidence,
         container_id,
+        aliases=None,
     ) -> None:
         node = self.nodes.setdefault(
-            entity_id, {"label": label, "props": {}, "identity_key": identity_key}
+            entity_id, {"label": label, "props": {}, "identity_key": identity_key, "aliases": []}
         )
         node["label"] = label
         node["identity_key"] = identity_key
         node["props"].update(properties)
+        for a in aliases or []:
+            if a not in node["aliases"]:
+                node["aliases"].append(a)
 
     def set_property(self, *, prop_name, targets) -> int:
         for t in targets:
