@@ -9,6 +9,7 @@ import pytest
 from oraclous_execution_engine_service.services.harness_client import (
     HarnessClient,
     HarnessClientError,
+    HarnessRejected,
 )
 
 pytestmark = pytest.mark.unit
@@ -52,12 +53,28 @@ async def test_no_manifest_raises() -> None:
         await _client(lambda r: httpx.Response(200)).execute(input_text="go")
 
 
-async def test_non_2xx_raises() -> None:
+async def test_non_2xx_raises_harness_rejected_with_status_and_detail() -> None:
+    # A reachable-but-rejecting harness surfaces as HarnessRejected (a HarnessClientError subclass)
+    # carrying the upstream status + bounded detail — distinct from a transport failure (#251).
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(502, text="bad gateway")
 
-    with pytest.raises(HarnessClientError):
+    with pytest.raises(HarnessRejected) as exc_info:
         await _client(handler).execute(input_text="go", manifest_inline={})
+    assert exc_info.value.status_code == 502
+    assert exc_info.value.detail == "bad gateway"
+    assert isinstance(exc_info.value, HarnessClientError)  # still a HarnessClientError
+
+
+async def test_rejected_prefers_structured_ohm_detail() -> None:
+    # A 422 with a structured OHM/FastAPI body renders the `detail`, not the raw envelope.
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(422, json={"detail": "manifest.ohm_version is required"})
+
+    with pytest.raises(HarnessRejected) as exc_info:
+        await _client(handler).execute(input_text="go", manifest_inline={})
+    assert exc_info.value.status_code == 422
+    assert exc_info.value.detail == "manifest.ohm_version is required"
 
 
 async def test_transport_error_becomes_client_error() -> None:

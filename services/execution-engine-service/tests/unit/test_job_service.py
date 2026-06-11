@@ -9,6 +9,7 @@ from oraclous_execution_engine_service.models.enums import EngineJobState as S
 from oraclous_execution_engine_service.models.job import EngineJob
 from oraclous_execution_engine_service.services.harness_client import (
     HarnessClientError,
+    HarnessRejected,
     HarnessTimeout,
 )
 from oraclous_execution_engine_service.services.job_service import JobError, JobService
@@ -72,15 +73,23 @@ class _FakeRepo:
 
 class _FakeHarness:
     def __init__(
-        self, *, result: dict | None = None, raises: bool = False, timeout: bool = False
+        self,
+        *,
+        result: dict | None = None,
+        raises: bool = False,
+        timeout: bool = False,
+        rejected: HarnessRejected | None = None,
     ) -> None:
         self._result = result or {}
         self._raises = raises
         self._timeout = timeout
+        self._rejected = rejected
 
     async def execute(self, **_kw: object) -> dict:
         if self._timeout:
             raise HarnessTimeout("timed out")
+        if self._rejected is not None:
+            raise self._rejected
         if self._raises:
             raise HarnessClientError("unreachable")
         return self._result
@@ -202,6 +211,37 @@ async def test_execute_harness_unreachable_marks_failed() -> None:
     svc, _ = _worker_svc(repo, _FakeHarness(raises=True))
     out = await svc.execute(job.id, _principal())
     assert out.state == S.FAILED.value and out.error_type == "harness_unreachable"
+
+
+# ── #251: a reachable-but-rejecting harness must NOT be reported as 'unreachable' ─────────────────
+async def test_execute_harness_422_marks_invalid_manifest_with_detail() -> None:
+    # The harness answered 422 (OHM rejection) — reachable, so NOT harness_unreachable; the real
+    # upstream detail must reach error_message so the console shows a truthful cause.
+    repo = _FakeRepo()
+    job = await _queued_job(repo)
+    detail = "manifest.ohm_version is required"
+    svc, _ = _worker_svc(repo, _FakeHarness(rejected=HarnessRejected(422, detail)))
+    out = await svc.execute(job.id, _principal())
+    assert out.state == S.FAILED.value
+    assert out.error_type == "invalid_manifest"  # not harness_unreachable
+    assert out.error_message == detail
+
+
+async def test_execute_harness_5xx_marks_harness_error() -> None:
+    repo = _FakeRepo()
+    job = await _queued_job(repo)
+    svc, _ = _worker_svc(repo, _FakeHarness(rejected=HarnessRejected(503, "service unavailable")))
+    out = await svc.execute(job.id, _principal())
+    assert out.state == S.FAILED.value and out.error_type == "harness_error"
+    assert out.error_message == "service unavailable"
+
+
+async def test_execute_harness_other_4xx_marks_harness_rejected() -> None:
+    repo = _FakeRepo()
+    job = await _queued_job(repo)
+    svc, _ = _worker_svc(repo, _FakeHarness(rejected=HarnessRejected(409, "conflict")))
+    out = await svc.execute(job.id, _principal())
+    assert out.state == S.FAILED.value and out.error_type == "harness_rejected"
 
 
 async def test_execute_human_escalation_captures_assignment() -> None:

@@ -8,6 +8,7 @@ per the trusted-gateway model (ADR-018): the caller passes the already-built dow
 
 from __future__ import annotations
 
+import json
 import uuid
 from typing import Any
 
@@ -15,11 +16,38 @@ import httpx
 
 
 class HarnessClientError(Exception):
-    """A harness-runtime call failed (non-2xx or transport error)."""
+    """A harness-runtime call failed — the BASE/transport case: the harness was unreachable (a
+    connect/pool error). A reachable-but-rejecting harness raises ``HarnessRejected`` instead, so
+    the engine can tell a transport failure apart from an OHM rejection (ORAA #251)."""
+
+
+class HarnessRejected(HarnessClientError):
+    """The harness WAS reachable and answered with a non-2xx response (e.g. a 422 OHM-validation
+    rejection, or a 5xx). Carries the upstream ``status_code`` and a bounded ``detail`` so the
+    engine can map it into a truthful taxonomy rather than reporting it as 'unreachable'."""
+
+    def __init__(self, status_code: int, detail: str) -> None:
+        self.status_code = status_code
+        self.detail = detail
+        super().__init__(f"harness → {status_code}: {detail}")
 
 
 class HarnessTimeout(HarnessClientError):
     """The harness call exceeded its (per-job) wall-clock budget → the engine marks it TIMED_OUT."""
+
+
+def _render_detail(body: str) -> str:
+    """Compact a non-2xx upstream body. Prefer a structured OHM error (FastAPI/Pydantic ``detail``)
+    over the raw text; fall back to the bounded raw body. Always bounded to 300 chars."""
+    try:
+        parsed = json.loads(body)
+    except (json.JSONDecodeError, ValueError):
+        return body[:300]
+    if isinstance(parsed, dict) and "detail" in parsed:
+        detail = parsed["detail"]
+        rendered = detail if isinstance(detail, str) else json.dumps(detail, separators=(",", ":"))
+        return rendered[:300]
+    return json.dumps(parsed, separators=(",", ":"))[:300]
 
 
 class HarnessClient:
@@ -50,8 +78,8 @@ class HarnessClient:
             )
         except httpx.HTTPError as exc:  # harness unreachable — clean failure, not a 500
             raise HarnessClientError(f"harness unreachable: {type(exc).__name__}") from exc
-        if resp.status_code // 100 != 2:
-            raise HarnessClientError(f"complete assignment → {resp.status_code}: {resp.text[:300]}")
+        if resp.status_code // 100 != 2:  # reachable but rejected — not unreachable (#251)
+            raise HarnessRejected(resp.status_code, _render_detail(resp.text))
         return resp.json()
 
     async def resume(
@@ -67,8 +95,8 @@ class HarnessClient:
             resp = await self._client.post(f"/v1/harnesses/{execution_id}/resume", json=body)
         except httpx.HTTPError as exc:  # harness unreachable — clean failure, not a 500
             raise HarnessClientError(f"harness unreachable: {type(exc).__name__}") from exc
-        if resp.status_code // 100 != 2:
-            raise HarnessClientError(f"resume → {resp.status_code}: {resp.text[:300]}")
+        if resp.status_code // 100 != 2:  # reachable but rejected — not unreachable (#251)
+            raise HarnessRejected(resp.status_code, _render_detail(resp.text))
         return resp.json()
 
     async def execute(
@@ -102,6 +130,6 @@ class HarnessClient:
             httpx.HTTPError
         ) as exc:  # transport (incl. connect/pool timeouts) → unreachable, FAILED
             raise HarnessClientError(f"harness unreachable: {type(exc).__name__}") from exc
-        if resp.status_code // 100 != 2:
-            raise HarnessClientError(f"harness execute → {resp.status_code}: {resp.text[:300]}")
+        if resp.status_code // 100 != 2:  # reachable but rejected — not unreachable (#251)
+            raise HarnessRejected(resp.status_code, _render_detail(resp.text))
         return resp.json()

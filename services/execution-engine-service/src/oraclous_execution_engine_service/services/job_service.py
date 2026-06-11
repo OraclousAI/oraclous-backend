@@ -25,8 +25,14 @@ from oraclous_execution_engine_service.repositories.job_repository import JobRep
 from oraclous_execution_engine_service.services.harness_client import (
     HarnessClient,
     HarnessClientError,
+    HarnessRejected,
     HarnessTimeout,
 )
+
+# A reachable-but-rejecting harness (#251): map the upstream status into a truthful taxonomy.
+# 422 is a manifest/OHM rejection; other 4xx a generic rejection; 5xx a harness-side error. A
+# genuinely unreachable harness (transport) stays ``harness_unreachable`` (the generic branch).
+_REJECTION_ERROR_TYPE = {422: "invalid_manifest"}
 
 # A queue hand-off: (job_id, organisation_id, user_id) → fire the worker task. Injected for tests.
 EnqueueFn = Callable[[uuid.UUID, uuid.UUID, uuid.UUID], None]
@@ -154,6 +160,19 @@ class JobService:
                 EngineJobState.TIMED_OUT,
                 error_type="timeout",
                 error_message=str(exc)[:2000],
+            )
+        except HarnessRejected as exc:
+            # The harness WAS reachable and rejected the run — never report it as 'unreachable'.
+            # 422 → invalid_manifest; other 4xx → harness_rejected; 5xx → harness_error (#251).
+            error_type = _REJECTION_ERROR_TYPE.get(
+                exc.status_code,
+                "harness_error" if exc.status_code // 100 == 5 else "harness_rejected",
+            )
+            return await self._settle(
+                running,
+                EngineJobState.FAILED,
+                error_type=error_type,
+                error_message=exc.detail[:2000],
             )
         except HarnessClientError as exc:
             return await self._settle(
