@@ -37,6 +37,15 @@ def build_evidence_recipe(shape_signature: str = EVIDENCE_SHAPE_SIGNATURE) -> di
     """Evidence records → `Evidence` nodes + a `ClaimSource` node read from the nested `source{}`
     object (G2), linked `Evidence-[:FROM_SOURCE]->ClaimSource` (same-record identity). NB: the label
     is `ClaimSource`, NOT `Source` — `Source` is a reserved platform container label.
+
+    Enriched (Slice 1, #269) to ALSO project two derived/finer entities:
+
+      * a `Publisher` node whose identity is `field:source.url` with `transform: host` — the URL's
+        hostname — so different article URLs from the SAME publisher (e.g. `www.eurail.com/a` and
+        `eurail.com/b`) collapse to one `eurail.com` Publisher; `ClaimSource-[:PUBLISHED_BY]->
+        Publisher` (same-record identity).
+      * `Tag` nodes fanned out of the list-valued `field:dimensions` (one node per dimension,
+        MERGE-shared across records), each linked `Evidence-[:HAS_DIMENSION]->Tag`.
     """
     return {
         "recipe_format_version": "0.2",
@@ -91,6 +100,45 @@ def build_evidence_recipe(shape_signature: str = EVIDENCE_SHAPE_SIGNATURE) -> di
                 "match": {"unit_kind": "record"},
                 "from": {"node_rule": "evidence"},
                 "to": {"node_rule": "claim_source", "resolve_by": "identity"},
+            },
+            # Slice 1 — a Publisher derived from the source URL's HOST (transform: host), so claims
+            # from the same domain dedup onto one Publisher node regardless of the article path.
+            {
+                "id": "publisher",
+                "project_to": "node",
+                "label": "Publisher",
+                "match": {"unit_kind": "record"},
+                "identity": {
+                    "scheme": "deterministic",
+                    "from": ["field:source.url"],
+                    "normalize": ["trim"],
+                    "transform": "host",
+                },
+            },
+            {
+                "id": "published_by",
+                "project_to": "edge",
+                "type": "PUBLISHED_BY",
+                "match": {"unit_kind": "record"},
+                "from": {"node_rule": "claim_source"},
+                "to": {"node_rule": "publisher", "resolve_by": "identity"},
+            },
+            # Slice 1 — fan the list-valued `dimensions` field into one Tag node per dimension,
+            # MERGE-shared across records, with an Evidence-[:HAS_DIMENSION]->Tag edge per element.
+            {
+                "id": "tag",
+                "project_to": "node",
+                "label": "Tag",
+                "match": {"unit_kind": "record"},
+                "from_each": "field:dimensions",
+                # With from_each the element value IS the identity; identity.from is ignored (it
+                # echoes the fan-out field for readability), only normalize/transform apply.
+                "identity": {
+                    "scheme": "deterministic",
+                    "from": ["field:dimensions"],
+                    "normalize": ["trim", "casefold"],
+                },
+                "edge_to_each": {"type": "HAS_DIMENSION", "from_node_rule": "evidence"},
             },
         ],
     }
