@@ -13,6 +13,7 @@ from oraclous_knowledge_graph_service.domain.structural import ExtractionMode
 from oraclous_knowledge_graph_service.repositories.recipe_write_repository import RecipeGraphWriter
 from oraclous_knowledge_graph_service.services.recipes.engine import get_recipe_engine
 from oraclous_knowledge_graph_service.services.structured.default_recipe import build_default_recipe
+from oraclous_knowledge_graph_service.services.structured.extractors import StructuredParseError
 from oraclous_knowledge_graph_service.services.structured.primitives import (
     CsvPrimitive,
     JsonPrimitive,
@@ -50,7 +51,12 @@ class StructuredIngestionService:
     ) -> dict:
         family = "csv" if (source_type or "").lower() in {"csv", "tsv"} else "json"
         primitive = self._primitives[family]
-        representation = primitive.decompose(text, ExtractionMode.FULL, name=document)
+        try:
+            representation = primitive.decompose(text, ExtractionMode.FULL, name=document)
+        except StructuredParseError as exc:
+            # A JSONL source with an un-parseable tail must fail loudly (records would be dropped),
+            # not silently ingest a partial graph (ORAA-263).
+            raise StructuredIngestionError(str(exc)) from exc
         record_units = [u for u in representation.units if u.kind.value == "record"]
         if not record_units:
             raise StructuredIngestionError("no records found in the structured source")
