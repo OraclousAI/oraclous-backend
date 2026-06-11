@@ -100,6 +100,7 @@ def _service(executions, checkpoints, prov):  # noqa: ANN001, ANN202
         llm_mode="fake",
         llm_base_urls={},
         llm_timeout=1.0,
+        llm_allow_private=True,
         max_iterations=6,
     )
 

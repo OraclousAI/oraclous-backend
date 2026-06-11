@@ -186,6 +186,7 @@ def get_harness_service(
         llm_mode=settings.llm_mode,
         llm_base_urls=settings.llm_base_urls,
         llm_timeout=settings.llm_request_timeout,
+        llm_allow_private=settings.allow_private_llm_targets,
         max_iterations=settings.max_iterations,
     )
 

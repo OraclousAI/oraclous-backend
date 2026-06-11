@@ -55,6 +55,12 @@ class Settings(BaseSettings):
     # provider (the first segment of an OHM model binding) → OpenAI-compatible base URL. OpenRouter
     # serves Claude/OpenAI/Gemini/etc. behind one OpenAI-compatible endpoint + one key.
     llm_base_urls: Annotated[dict[str, str], NoDecode] = dict(_DEFAULT_LLM_BASE_URLS)
+    # A custom BYOM connection may carry its own `base_url` (any OpenAI-compatible endpoint). That
+    # URL is user-controllable, so it is run through the egress guard (domain/llm/egress.py). True
+    # (single-tenant default) lets a user's local LLM work (host.docker.internal / 127.0.0.1 /
+    # 192.168.x); the link-local/cloud-metadata range stays blocked regardless. A MULTI-TENANT
+    # deployment MUST set this False so one tenant can't reach loopback/RFC-1918 internal services.
+    allow_private_llm_targets: bool = True
     llm_request_timeout: float = 120.0
     # Safety backstop on tool-use iterations (one LLM turn + its dispatches). The per-tier tool-call
     # budget (policy set) is the real governance limit and binds within this cap.
