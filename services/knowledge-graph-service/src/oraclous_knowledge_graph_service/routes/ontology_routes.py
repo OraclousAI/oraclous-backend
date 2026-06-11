@@ -36,7 +36,16 @@ async def set_ontology(
 ) -> OntologyResponse:
     try:
         data = await service.set(
-            user_id=user_id, graph_id=graph_id, allowed_labels=body.allowed_labels, mode=body.mode
+            user_id=user_id,
+            graph_id=graph_id,
+            allowed_labels=body.allowed_labels,
+            mode=body.mode,
+            entity_types=[e.model_dump() for e in body.entity_types],
+            relationship_types=[r.model_dump() for r in body.relationship_types],
+            domain=body.domain,
+            density=body.density,
+            focus=body.focus,
+            ignore=body.ignore,
         )
     except GraphNotFound:
         raise _NOT_FOUND from None

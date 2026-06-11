@@ -73,7 +73,10 @@ async def test_ontology_requires_auth(client) -> None:
 async def test_default_ontology_is_open(client) -> None:
     resp = await client.get(f"/api/v1/graphs/{uuid.uuid4()}/ontology", headers=_AUTH)
     assert resp.status_code == 200
-    assert resp.json() == {"allowed_labels": [], "mode": "open"}
+    body = resp.json()
+    # core labels-only contract preserved (the typed/hint keys default to empty/None)
+    assert body["allowed_labels"] == [] and body["mode"] == "open"
+    assert body["entity_types"] == [] and body["relationship_types"] == []
 
 
 async def test_set_then_get_ontology(client) -> None:
@@ -85,7 +88,10 @@ async def test_set_then_get_ontology(client) -> None:
     )
     assert put.status_code == 200, put.text
     got = await client.get(f"/api/v1/graphs/{gid}/ontology", headers=_AUTH)
-    assert got.json() == {"allowed_labels": ["Person", "Org"], "mode": "strict"}
+    body = got.json()
+    # a labels-only set round-trips its core fields; no typed defs are invented
+    assert body["allowed_labels"] == ["Person", "Org"] and body["mode"] == "strict"
+    assert body["entity_types"] == [] and body["relationship_types"] == []
 
 
 async def test_set_unsafe_label_is_422(client) -> None:
@@ -110,3 +116,53 @@ async def test_unowned_graph_is_404(client, graph_service) -> None:
     graph_service.owned = False
     resp = await client.get(f"/api/v1/graphs/{uuid.uuid4()}/ontology", headers=_AUTH)
     assert resp.status_code == 404
+
+
+# --- Slice B: the typed ontology shape over the HTTP layer --------------------
+async def test_set_then_get_typed_ontology(client) -> None:
+    gid = uuid.uuid4()
+    body = {
+        "mode": "strict",
+        "entity_types": [
+            {"name": "Person", "description": "a human", "properties": ["name"]},
+            {"name": "Company"},
+        ],
+        "relationship_types": [{"name": "WORKS_AT", "source": "Person", "target": "Company"}],
+        "domain": "HR",
+        "density": "dense",
+        "focus": ["org charts"],
+        "ignore": ["footers"],
+    }
+    put = await client.put(f"/api/v1/graphs/{gid}/ontology", json=body, headers=_AUTH)
+    assert put.status_code == 200, put.text
+    data = put.json()
+    # allowed_labels DERIVED from entity_types
+    assert data["allowed_labels"] == ["Person", "Company"]
+    assert data["entity_types"][0]["name"] == "Person"
+    assert data["relationship_types"][0]["source"] == "Person"
+    assert data["domain"] == "HR" and data["density"] == "dense"
+
+    got = await client.get(f"/api/v1/graphs/{gid}/ontology", headers=_AUTH)
+    assert got.json() == data  # round-trips
+
+
+async def test_typed_ontology_rejects_unsafe_entity_type_name(client) -> None:
+    resp = await client.put(
+        f"/api/v1/graphs/{uuid.uuid4()}/ontology",
+        json={"mode": "strict", "entity_types": [{"name": "__Evil__"}]},
+        headers=_AUTH,
+    )
+    assert resp.status_code == 422
+
+
+async def test_typed_ontology_rejects_relationship_to_undefined_type(client) -> None:
+    resp = await client.put(
+        f"/api/v1/graphs/{uuid.uuid4()}/ontology",
+        json={
+            "mode": "strict",
+            "entity_types": [{"name": "Person"}],
+            "relationship_types": [{"name": "WORKS_AT", "source": "Person", "target": "Ghost"}],
+        },
+        headers=_AUTH,
+    )
+    assert resp.status_code == 422
