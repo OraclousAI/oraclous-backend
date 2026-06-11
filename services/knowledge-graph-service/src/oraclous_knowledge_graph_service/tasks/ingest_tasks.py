@@ -22,6 +22,10 @@ from oraclous_substrate.access import enforced_organisation_id
 from oraclous_knowledge_graph_service.core.config import get_settings
 from oraclous_knowledge_graph_service.core.database import make_sessionmaker, make_worker_engine
 from oraclous_knowledge_graph_service.core.neo4j import make_neo4j_driver
+from oraclous_knowledge_graph_service.domain.extraction_schema import (
+    to_graph_schema,
+    to_prompt_prefix,
+)
 from oraclous_knowledge_graph_service.domain.ontology import Ontology
 from oraclous_knowledge_graph_service.repositories.graph_repository import GraphRepository
 from oraclous_knowledge_graph_service.repositories.graph_write_repository import (
@@ -82,9 +86,22 @@ async def _ingest_async(job_id_s: str, organisation_id_s: str) -> dict[str, Any]
                         driver=driver, settings=settings, payload=payload, data=data
                     )
                 else:
+                    # Slice B: a graph's TYPED ontology drives free-text extraction — compile it to
+                    # a hard GraphSchema (the extractor enforces it) + a prompt prefix (soft
+                    # steering), and pass the ontology through for the strict/coerce post-pass.
+                    async with maker() as session:
+                        ontology_data = await GraphRepository(session).get_ontology(
+                            payload.graph_id
+                        )
+                    ontology = Ontology.of(ontology_data)
+                    extractor = make_extractor(
+                        settings,
+                        schema=to_graph_schema(ontology),
+                        prompt_prefix=to_prompt_prefix(ontology),
+                    )
                     write_repo = GraphWriteRepository(driver, database=settings.neo4j_database)
                     ingestion = IngestionService(
-                        write_repo, make_embedder(settings), make_extractor(settings)
+                        write_repo, make_embedder(settings), extractor, ontology=ontology
                     )
                     result = await ingestion.ingest(
                         graph_id=str(payload.graph_id),
@@ -103,6 +120,8 @@ async def _ingest_async(job_id_s: str, organisation_id_s: str) -> dict[str, Any]
                             "chunks": result.chunks,
                             "extracted_entities": result.entities,
                             "extracted_relationships": result.entity_relationships,
+                            "ontology_violations": result.ontology_violations,
+                            "ontology_coercions": result.ontology_coercions,
                         },
                     }
             except Exception as exc:

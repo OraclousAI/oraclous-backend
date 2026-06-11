@@ -49,8 +49,11 @@ class EntityExtractor:
 
     `llm` is any `neo4j_graphrag` `LLMInterface` (the real one points at OpenRouter; tests inject a
     fake). `schema` is open by default — no predefined ontology, so the LLM discovers entity +
-    relation types from the text. `on_error=IGNORE` keeps one malformed-JSON chunk from sinking the
-    whole document (that chunk simply yields no entities).
+    relation types from the text. When a graph carries a TYPED ontology, the caller compiles it (see
+    `domain.extraction_schema`) to a hard `GraphSchema` (the extractor enforces it) plus a
+    `prompt_prefix` of soft steering (domain/density/focus/ignore) — BOTH flow into every
+    `extract_for_chunk`. `on_error=IGNORE` keeps one malformed-JSON chunk from sinking the whole
+    document (that chunk simply yields no entities).
     """
 
     def __init__(
@@ -59,6 +62,7 @@ class EntityExtractor:
         llm: LLMInterface,
         max_concurrency: int = 5,
         schema: GraphSchema | None = None,
+        prompt_prefix: str = "",
     ) -> None:
         # create_lexical_graph=False: we own the lexical (:Document/:Chunk) graph on the write side
         # with deterministic ids + embeddings; the extractor returns ONLY the entity sub-graph.
@@ -69,6 +73,7 @@ class EntityExtractor:
             max_concurrency=max_concurrency,
         )
         self._schema = schema or GraphSchema(node_types=())
+        self._prompt_prefix = prompt_prefix
 
     async def extract(self, *, chunks: list[str], chunk_ids: list[str]) -> Neo4jGraph:
         """Run extraction over the chunk texts and return their entity sub-graph.
@@ -87,7 +92,11 @@ class EntityExtractor:
             # the deterministic lexical chunk id as chunk_id makes the entity ids deterministic too
             # (idempotent re-ingest) AND lets us link entities to the real chunk node below.
             chunk = TextChunk(text=text, index=index, uid=chunk_id)
-            chunk_graph = await self._extractor.extract_for_chunk(self._schema, "", chunk)
+            # schema = hard ontology (enforced); prompt_prefix = soft steering (formatted into the
+            # extractor's `{examples}` prompt slot). Both empty/open by default.
+            chunk_graph = await self._extractor.extract_for_chunk(
+                self._schema, self._prompt_prefix, chunk
+            )
             self._extractor.update_ids(chunk_graph, chunk)
             self._link_entities_to_chunk(chunk_graph, chunk_id)
             combined.nodes.extend(chunk_graph.nodes)
@@ -110,8 +119,17 @@ class EntityExtractor:
             )
 
 
-def make_extractor(settings: Settings) -> EntityExtractor | None:
+def make_extractor(
+    settings: Settings,
+    *,
+    schema: GraphSchema | None = None,
+    prompt_prefix: str = "",
+) -> EntityExtractor | None:
     """Build the entity extractor from config, or None when LLM extraction is off (`null`).
+
+    `schema`/`prompt_prefix` carry a graph's compiled TYPED ontology (from
+    `domain.extraction_schema`): `schema` is the hard `GraphSchema` the extractor enforces;
+    `prompt_prefix` is the soft steering. Both default to open/empty (free-form extraction).
 
     Fail-closed: `KGS_EXTRACTOR=openai` with no API key configured raises — it never silently falls
     back to lexical-only and reports entities it did not extract.
@@ -131,4 +149,9 @@ def make_extractor(settings: Settings) -> EntityExtractor | None:
         api_key=settings.openai_api_key,
         base_url=settings.openai_base_url,
     )
-    return EntityExtractor(llm=llm, max_concurrency=settings.extractor_max_concurrency)
+    return EntityExtractor(
+        llm=llm,
+        max_concurrency=settings.extractor_max_concurrency,
+        schema=schema,
+        prompt_prefix=prompt_prefix,
+    )

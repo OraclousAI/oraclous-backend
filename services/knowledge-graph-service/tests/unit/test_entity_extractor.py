@@ -146,9 +146,20 @@ class _CapturingWriteRepo:
         self.last_entity_graph = None
 
     async def write_document(
-        self, *, graph_id, document, chunks, embeddings, title=None, entity_graph=None
+        self,
+        *,
+        graph_id,
+        document,
+        chunks,
+        embeddings,
+        title=None,
+        entity_graph=None,
+        ontology_violations=0,
+        ontology_coercions=0,
     ):
         self.last_entity_graph = entity_graph
+        self.last_violations = ontology_violations
+        self.last_coercions = ontology_coercions
         self.last_graph = build_document_graph(
             graph_id=graph_id,
             document=document,
@@ -168,6 +179,8 @@ class _CapturingWriteRepo:
             chunks=len(chunks),
             entities=entities,
             entity_relationships=entity_rels,
+            ontology_violations=ontology_violations,
+            ontology_coercions=ontology_coercions,
         )
 
 
@@ -256,3 +269,105 @@ def test_make_extractor_openai_builds_with_key() -> None:
         Settings(extractor="openai", openai_api_key="sk-test", extractor_model="openai/gpt-4o-mini")
     )
     assert isinstance(extractor, EntityExtractor)
+
+
+def test_make_extractor_forwards_schema_and_prompt_prefix() -> None:
+    """make_extractor(schema=…, prompt_prefix=…) builds an extractor that carries both."""
+    from neo4j_graphrag.experimental.components.schema import GraphSchema, NodeType
+
+    schema = GraphSchema(node_types=(NodeType(label="Person"),))
+    extractor = make_extractor(
+        Settings(extractor="openai", openai_api_key="sk-test"),
+        schema=schema,
+        prompt_prefix="## hint",
+    )
+    assert isinstance(extractor, EntityExtractor)
+    assert extractor._schema is schema
+    assert extractor._prompt_prefix == "## hint"
+
+
+# --- Slice B: the extractor passes BOTH schema + prompt_prefix into extract_for_chunk -----------
+async def test_extract_passes_schema_and_prompt_prefix_to_extract_for_chunk() -> None:
+    """A recording fake captures the (schema, examples) the EntityExtractor hands the library."""
+    from neo4j_graphrag.experimental.components.schema import GraphSchema, NodeType
+
+    schema = GraphSchema(node_types=(NodeType(label="Person"),))
+    extractor = EntityExtractor(llm=_fixed_llm(), schema=schema, prompt_prefix="## steer")
+
+    seen: dict = {}
+
+    async def _recording_extract_for_chunk(passed_schema, examples, chunk):
+        seen["schema"] = passed_schema
+        seen["examples"] = examples
+        return Neo4jGraph()
+
+    extractor._extractor.extract_for_chunk = _recording_extract_for_chunk
+    await extractor.extract(chunks=["t"], chunk_ids=["c0"])
+
+    assert seen["schema"] is schema  # hard schema forwarded
+    assert seen["examples"] == "## steer"  # prompt prefix forwarded (the {examples} slot)
+
+
+# --- Slice B: free-text ontology enforcement (strict drops, coerce remaps) ----------------------
+def _entity_graph(*labels: str) -> Neo4jGraph:
+    nodes = [Neo4jNode(id=f"n{i}", label=lab) for i, lab in enumerate(labels)]
+    rels = []
+    if len(nodes) >= 2:
+        rels.append(Neo4jRelationship(start_node_id="n0", end_node_id="n1", type="REL"))
+    return Neo4jGraph(nodes=nodes, relationships=rels)
+
+
+def test_enforce_ontology_open_is_passthrough() -> None:
+    from oraclous_knowledge_graph_service.domain.ontology import Ontology
+    from oraclous_knowledge_graph_service.services.ingestion_service import enforce_ontology
+
+    g = _entity_graph("Person", "Company")
+    out = enforce_ontology(g, Ontology(("Person",), "open"))
+    assert out.graph is g  # untouched
+    assert out.violations == 0 and out.coercions == 0
+
+
+def test_enforce_ontology_strict_drops_off_type_entity_and_its_edges() -> None:
+    from oraclous_knowledge_graph_service.domain.ontology import Ontology
+    from oraclous_knowledge_graph_service.services.ingestion_service import enforce_ontology
+
+    g = _entity_graph("Person", "Gadget")  # Gadget is off-ontology; the REL is incident to it
+    out = enforce_ontology(g, Ontology(("Person",), "strict"))
+    assert [n.label for n in out.graph.nodes] == ["Person"]  # Gadget dropped
+    assert out.graph.relationships == []  # dangling edge to Gadget removed
+    assert out.violations == 1
+    assert out.coercions == 0
+
+
+def test_enforce_ontology_coerce_remaps_near_match() -> None:
+    from oraclous_knowledge_graph_service.domain.ontology import Ontology
+    from oraclous_knowledge_graph_service.services.ingestion_service import enforce_ontology
+
+    g = _entity_graph("Persons")  # near-match of allowed "Person"
+    out = enforce_ontology(g, Ontology(("Person",), "coerce"))
+    assert [n.label for n in out.graph.nodes] == ["Person"]  # remapped
+    assert out.coercions == 1
+    assert out.violations == 0
+
+
+async def test_ingest_strict_ontology_drops_off_type_entity_before_write() -> None:
+    """End-to-end through IngestionService: a strict graph never gains an off-ontology node."""
+    from oraclous_knowledge_graph_service.domain.ontology import Ontology
+
+    repo = _CapturingWriteRepo()
+    # The LLM tries to extract Person + Company; the ontology only allows Person (strict).
+    svc = IngestionService(
+        repo,
+        HashingEmbedder(dim=8),
+        EntityExtractor(llm=_fixed_llm()),
+        ontology=Ontology(("Person",), "strict"),
+    )
+    result = await svc.ingest(
+        graph_id="g1", document="d.txt", data=b"para one\n\npara two", source_type="text"
+    )
+    # two chunks * (Person kept, Company dropped) -> 2 entities written, 2 violations
+    written_labels = {n.label for n in repo.last_entity_graph.nodes}
+    assert written_labels == {"Person"}
+    assert result.entities == 2
+    assert result.ontology_violations == 2  # one Company dropped per chunk
+    assert result.entity_relationships == 0  # WORKS_AT edge dropped with Company

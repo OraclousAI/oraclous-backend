@@ -119,12 +119,18 @@ class WriteResult:
         chunks: int,
         entities: int = 0,
         entity_relationships: int = 0,
+        ontology_violations: int = 0,
+        ontology_coercions: int = 0,
     ) -> None:
         self.nodes = nodes
         self.relationships = relationships
         self.chunks = chunks
         self.entities = entities
         self.entity_relationships = entity_relationships
+        # Free-text ontology enforcement (Slice B): off-type entities dropped (strict) / remapped
+        # (coerce) before write — mirrors the structured path's ExecutionResult counts.
+        self.ontology_violations = ontology_violations
+        self.ontology_coercions = ontology_coercions
 
 
 class GraphWriteRepository:
@@ -143,6 +149,8 @@ class GraphWriteRepository:
         embeddings: list[list[float]],
         title: str | None = None,
         entity_graph: Neo4jGraph | None = None,
+        ontology_violations: int = 0,
+        ontology_coercions: int = 0,
     ) -> WriteResult:
         # Replace-document semantics -> idempotent re-ingest. The neo4j_graphrag lexical writer does
         # not MERGE across runs (its __tmp_internal_id is transient), so we delete this document's
@@ -178,6 +186,8 @@ class GraphWriteRepository:
             chunks=n_chunks,
             entities=entity_count,
             entity_relationships=entity_rel_count,
+            ontology_violations=ontology_violations,
+            ontology_coercions=ontology_coercions,
         )
 
     def _delete_document(self, *, graph_id: str, document: str) -> None:
