@@ -94,14 +94,16 @@ def test_dry_run_writes_nothing_to_neo4j() -> None:
 
 
 def test_dry_run_preview_reports_relationship_types_for_a_recipe() -> None:
-    # the evidence recipe projects Evidence + ClaimSource nodes and a FROM_SOURCE edge
+    # The enriched evidence recipe (#269) projects Evidence + ClaimSource + Publisher (host of the
+    # source URL) + Tag (fan-out of dimensions), with FROM_SOURCE / PUBLISHED_BY / HAS_DIMENSION.
     sample = (
-        '[{"id": "e1", "claim": "x", "confidence": 0.9, "label": "L", "dimensions": [],'
-        ' "source": {"url": "http://a", "name": "A", "publication_date": "2020"}}]'
+        '[{"id": "e1", "claim": "x", "confidence": 0.9, "label": "L", "dimensions": ["ops"],'
+        ' "source": {"url": "http://eurail.com/a", "name": "A", "publication_date": "2020"}}]'
     )
     out = DryRunService().preview(sample=sample, source_type="json", recipe=build_evidence_recipe())
-    assert set(out["node_labels"]) == {"Evidence", "ClaimSource"}
-    assert "FROM_SOURCE" in out["relationship_types"]
+    assert set(out["node_labels"]) == {"Evidence", "ClaimSource", "Publisher", "Tag"}
+    for rel in ("FROM_SOURCE", "PUBLISHED_BY", "HAS_DIMENSION"):
+        assert rel in out["relationship_types"]
 
 
 def test_dry_run_reports_ontology_violations() -> None:

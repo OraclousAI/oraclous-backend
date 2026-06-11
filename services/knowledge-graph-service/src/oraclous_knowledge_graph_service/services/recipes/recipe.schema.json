@@ -53,6 +53,11 @@
       "pattern": "^(?!__)[A-Za-z_][A-Za-z0-9_]*$",
       "$comment": "Cypher-safe identifier; the (?!__) guard rejects the ADR-015 reserved __wrapped__ namespace."
     },
+    "transform": {
+      "type": "string",
+      "minLength": 1,
+      "$comment": "Name of a deterministic value transform (domain/recipes/transforms.py: host|lower|strip_www) applied to the read value BEFORE it is used. The transform name is validated against the registry at recipe-validation time (unknown → RecipeValidationError)."
+    },
     "match": {
       "type": "object",
       "required": ["unit_kind"],
@@ -73,6 +78,10 @@
         "normalize": {
           "type": "array",
           "items": { "enum": ["casefold", "trim", "collapse_whitespace"] }
+        },
+        "transform": {
+          "$ref": "#/$defs/transform",
+          "$comment": "One transform applied to EACH read identity field value (after normalize)."
         }
       }
     },
@@ -82,7 +91,8 @@
       "additionalProperties": false,
       "properties": {
         "name": { "$ref": "#/$defs/safe_identifier" },
-        "value_from": { "type": "string", "minLength": 1 }
+        "value_from": { "type": "string", "minLength": 1 },
+        "transform": { "$ref": "#/$defs/transform" }
       }
     },
     "mapping": {
@@ -99,6 +109,7 @@
       "type": "object",
       "additionalProperties": false,
       "required": ["id", "match", "project_to", "label", "identity"],
+      "$comment": "A node rule projects ONE node per matched unit. When `from_each` is present it instead FANS OUT a list-valued field into one node per element (identity = the element value); a scalar value is treated as a 1-element list, an empty/missing field projects 0 nodes (skip + warn). `edge_to_each` pairs a fan-out node with an edge from the record's primary node to each element node.",
       "properties": {
         "id": { "type": "string", "minLength": 1 },
         "match": { "$ref": "#/$defs/match" },
@@ -107,7 +118,22 @@
         "identity": { "$ref": "#/$defs/identity" },
         "materialize": { "type": "boolean" },
         "properties": { "type": "array", "items": { "$ref": "#/$defs/property_projection" } },
-        "provenance": { "enum": ["EXTRACTED", "INFERRED"] }
+        "provenance": { "enum": ["EXTRACTED", "INFERRED"] },
+        "from_each": {
+          "type": "string",
+          "minLength": 1,
+          "$comment": "A field:/column: ref to a LIST field on the matched record. Each element becomes one node whose identity is the element value (passed through the rule's identity.normalize + identity.transform); MERGE collapses equal elements across records to one shared node. With from_each, identity.from is ignored — the element value is the identity."
+        },
+        "edge_to_each": {
+          "type": "object",
+          "required": ["type", "from_node_rule"],
+          "additionalProperties": false,
+          "$comment": "Only valid alongside `from_each`. Projects an edge (record's primary node)-[type]->(each element node).",
+          "properties": {
+            "type": { "$ref": "#/$defs/safe_identifier" },
+            "from_node_rule": { "type": "string", "minLength": 1 }
+          }
+        }
       }
     },
     "rule_edge": {
@@ -153,7 +179,8 @@
         "project_to": { "const": "property" },
         "on": { "type": "string", "minLength": 1 },
         "name": { "$ref": "#/$defs/safe_identifier" },
-        "value_from": { "type": "string", "minLength": 1 }
+        "value_from": { "type": "string", "minLength": 1 },
+        "transform": { "$ref": "#/$defs/transform" }
       }
     },
     "rule_skip": {

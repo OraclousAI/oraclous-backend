@@ -22,6 +22,10 @@ from typing import Any
 from jsonschema import Draft202012Validator
 
 from oraclous_knowledge_graph_service.domain.ontology import Ontology, resolve_label
+from oraclous_knowledge_graph_service.domain.recipes.transforms import (
+    apply_transform,
+    is_known_transform,
+)
 from oraclous_knowledge_graph_service.domain.structural import (
     StructuralRepresentation,
     StructuralUnit,
@@ -182,6 +186,17 @@ class RecipeExecutionEngine:
                     f"single FK value to stand in for it"
                 )
 
+    @staticmethod
+    def _check_transform(rule_id: str, where: str, transform: Any) -> None:
+        """A `transform` key must name a registered transform — unknown names fail at validate
+        time so a malformed recipe is rejected at store/POST, not mid-ingest."""
+        if transform is None:
+            return
+        if not is_known_transform(transform):
+            raise RecipeValidationError(
+                f"rule {rule_id!r}: {where} references unknown transform {transform!r}"
+            )
+
     def _check_rule_identifiers(self, rule: dict[str, Any]) -> None:
         kind = rule["project_to"]
         if kind == "node":
@@ -192,10 +207,27 @@ class RecipeExecutionEngine:
                 raise RecipeValidationError(
                     f"node rule {rule['id']!r}: label {label!r} collides with a container label"
                 )
+            self._check_transform(
+                rule["id"], "identity.transform", rule["identity"].get("transform")
+            )
             for prop in rule.get("properties", []):
                 if not _is_safe_identifier(prop["name"]):
                     raise RecipeValidationError(
                         f"node rule {rule['id']!r}: unsafe property key {prop['name']!r}"
+                    )
+                self._check_transform(
+                    rule["id"], f"property {prop['name']!r}", prop.get("transform")
+                )
+            edge_to_each = rule.get("edge_to_each")
+            if edge_to_each is not None:
+                if "from_each" not in rule:
+                    raise RecipeValidationError(
+                        f"node rule {rule['id']!r}: edge_to_each requires from_each (fan-out)"
+                    )
+                if not _is_safe_identifier(edge_to_each["type"]):
+                    raise RecipeValidationError(
+                        f"node rule {rule['id']!r}: unsafe edge_to_each type "
+                        f"{edge_to_each['type']!r}"
                     )
         elif kind == "edge":
             if not _is_safe_identifier(rule["type"]):
@@ -208,6 +240,7 @@ class RecipeExecutionEngine:
         elif kind == "property":
             if not _is_safe_identifier(rule["name"]):
                 raise RecipeValidationError(f"property rule {rule['id']!r}: unsafe key")
+            self._check_transform(rule["id"], "value transform", rule.get("transform"))
         elif kind == "text_extraction":
             if not _is_safe_identifier(rule["link_to"]["edge_type"]):
                 raise RecipeValidationError(
@@ -256,6 +289,15 @@ class RecipeExecutionEngine:
             if current is None:
                 return None
         return current
+
+    @staticmethod
+    def _apply_optional_transform(value: Any, transform: str | None) -> Any:
+        """Apply a named transform to a read value, or pass it through when no transform / a None
+        value. Pure: a None value is never transformed (it stays None so the empty-identity /
+        skip-property paths see it unchanged). The transform always yields a str."""
+        if transform is None or value is None:
+            return value
+        return apply_transform(transform, value)
 
     @staticmethod
     def _resolve_unit_payload(unit: StructuralUnit) -> dict[str, Any]:
@@ -312,6 +354,22 @@ class RecipeExecutionEngine:
                 continue
             for rule in matched:
                 if rule["project_to"] == "node":
+                    if "from_each" in rule:
+                        # Fan-out: a list field → one node per element (+ optional edge to each).
+                        self._project_fan_out(
+                            writer,
+                            rule,
+                            unit,
+                            graph_id,
+                            meta,
+                            defaults,
+                            unit_to_container,
+                            source_id,
+                            payload_cache,
+                            node_index,
+                            result,
+                        )
+                        continue
                     eid = self._project_node(
                         writer,
                         rule,
@@ -419,8 +477,14 @@ class RecipeExecutionEngine:
         payload = payload_cache.get(unit.unit_id, {})
         identity = rule["identity"]
         normalize_ops = identity.get("normalize", [])
+        identity_transform = identity.get("transform")
         parts = [
-            _normalize_identity(self._read_field(payload, unit, ref), normalize_ops)
+            _normalize_identity(
+                self._apply_optional_transform(
+                    self._read_field(payload, unit, ref), identity_transform
+                ),
+                normalize_ops,
+            )
             for ref in identity["from"]
         ]
         identity_key = "|".join(parts)
@@ -435,7 +499,9 @@ class RecipeExecutionEngine:
             getattr(self, "_temporal", {})
         )  # valid_from/valid_to/event_time
         for prop in rule.get("properties", []):
-            value = self._read_field(payload, unit, prop["value_from"])
+            value = self._apply_optional_transform(
+                self._read_field(payload, unit, prop["value_from"]), prop.get("transform")
+            )
             if value is not None:
                 props[prop["name"]] = _coerce_value(value)
         provenance = rule.get("provenance") or defaults.get("provenance", "EXTRACTED")
@@ -455,14 +521,116 @@ class RecipeExecutionEngine:
         result.nodes_written += 1
         return entity_id
 
+    def _project_fan_out(
+        self,
+        writer,
+        rule,
+        unit,
+        graph_id,
+        meta,
+        defaults,
+        unit_to_container,
+        source_id,
+        payload_cache,
+        node_index,
+        result,
+    ) -> None:
+        """Fan a LIST-valued field into one node per element (recipe enrichment Slice 1).
+
+        Each element value IS the node's identity (passed through the rule's identity.normalize +
+        identity.transform); MERGE on that identity collapses equal elements — within a record AND
+        across records — to one shared node. A scalar value is a 1-element list; an empty/missing
+        field projects nothing (skip + a warning, matching the empty-identity path). Identical
+        elements are deduped within the record so a repeated tag does not double-write its node or
+        its edge. When `edge_to_each` is set, an edge (record's primary node)-[type]->(each element)
+        is MERGEd alongside; the primary node rule runs earlier in recipe order so its eid is in the
+        node_index by now.
+        """
+        label = rule["label"]
+        resolved_label, coerced = resolve_label(getattr(self, "_ontology", None), label)
+        if resolved_label is None:
+            result.ontology_violations += 1
+            result.units_skipped += 1
+            return
+        if coerced:
+            result.ontology_coercions += 1
+        label = resolved_label
+        payload = payload_cache.get(unit.unit_id, {})
+        raw = self._read_field(payload, unit, rule["from_each"])
+        elements = raw if isinstance(raw, list) else [raw]
+        identity = rule["identity"]
+        normalize_ops = identity.get("normalize", [])
+        identity_transform = identity.get("transform")
+        provenance = rule.get("provenance") or defaults.get("provenance", "EXTRACTED")
+        confidence = rule.get("confidence", 0.5) if provenance == "INFERRED" else None
+        container_id = unit_to_container.get(unit.parent_id or "")
+        temporal = dict(getattr(self, "_temporal", {}))
+
+        # Resolve the optional per-element edge's source (the record's primary node) once.
+        edge_to_each = rule.get("edge_to_each")
+        primary_eid: str | None = None
+        if edge_to_each is not None:
+            primary_eid = node_index.get((edge_to_each["from_node_rule"], unit.unit_id))
+
+        seen: set[str] = set()
+        element_eids: list[str] = []
+        empty = 0
+        for element in elements:
+            if element is None:
+                empty += 1
+                continue
+            identity_key = _normalize_identity(
+                self._apply_optional_transform(element, identity_transform), normalize_ops
+            )
+            if not identity_key.strip():
+                empty += 1
+                continue
+            if identity_key in seen:  # dedupe identical elements within the record
+                continue
+            seen.add(identity_key)
+            entity_id = _deterministic_id(graph_id, label, identity_key)
+            writer.merge_node(
+                label=label,
+                entity_id=entity_id,
+                identity_key=identity_key,
+                properties=dict(temporal),
+                provenance=provenance,
+                source_id=source_id,
+                meta=meta,
+                confidence=confidence,
+                container_id=container_id,
+            )
+            result.nodes_written += 1
+            element_eids.append(entity_id)
+
+        if not seen:
+            result.warnings.append(
+                f"node rule {rule['id']!r}: empty from_each {rule['from_each']!r} for unit "
+                f"{unit.unit_id!r}"
+            )
+            result.units_skipped += 1
+
+        if edge_to_each is not None and primary_eid is not None and element_eids:
+            edges = [{"from": primary_eid, "to": eid} for eid in element_eids]
+            result.edges_written += writer.merge_edge(
+                rel_type=edge_to_each["type"],
+                edges=edges,
+                source_id=source_id,
+                provenance=provenance,
+                meta=meta,
+            )
+
     def _apply_property(self, writer, rule, unit, node_index, payload_cache, result) -> None:
         on_rule_id = rule["on"]
         value_ref = rule.get("value_from") or f"column:{rule['name']}"
+        transform = rule.get("transform")
         targets = []
         for (rid, unit_id), entity_id in node_index.items():
             if rid != on_rule_id:
                 continue
-            value = self._read_field(payload_cache.get(unit_id, {}), unit, value_ref)
+            value = self._apply_optional_transform(
+                self._read_field(payload_cache.get(unit_id, {}), unit, value_ref), transform
+            )
             if value is not None:
                 targets.append({"id": entity_id, "value": _coerce_value(value)})
         result.properties_written += writer.set_property(prop_name=rule["name"], targets=targets)
