@@ -63,7 +63,9 @@ class Settings(BaseSettings):
     # An OpenRouter-style `<provider>/<model>` id; a strong instruction-follower is preferred.
     extractor_model: str = "openai/gpt-4o-mini"
     # Max concurrent LLM calls across chunks in one document extraction (the library fans out).
-    extractor_max_concurrency: int = 5
+    # Env-tunable via KGS_EXTRACTOR_MAX_CONCURRENCY (OpenRouter handles the concurrency); raise it
+    # to speed up free-text entity extraction on multi-chunk documents.
+    extractor_max_concurrency: int = 10
 
     @property
     def sync_database_url(self) -> str:

@@ -2,9 +2,10 @@
 
 Owner-gated (a job is only visible/creatable on a graph the caller owns — reuses GraphService's
 gate, so cross-user/cross-org → 404) and org-scoped (the repository enforces the org). `submit`
-creates the job row then enqueues the Celery task, passing organisation_id explicitly so the worker
-can re-bind the org context across the process boundary. `enqueue` is injected so the service stays
-testable without a broker.
+creates the job row, COMMITS it (so the worker's separate session can see it — see #267), then
+enqueues the Celery task, passing organisation_id explicitly so the worker can re-bind the org
+context across the process boundary. `enqueue` is injected so the service stays testable without a
+broker.
 """
 
 from __future__ import annotations
@@ -64,6 +65,11 @@ class JobService:
             valid_to=valid_to,
             event_time=event_time,
         )
+        # Durably COMMIT the job row before enqueueing: the request-scoped unit of work otherwise
+        # commits only after the route returns, so the worker (a SEPARATE session) could pick up
+        # the task before the row is visible and silently drop it as 'missing' (#267). Commit first,
+        # so a fresh worker session is guaranteed to see the row before the task runs.
+        await self._jobs.commit()
         self._enqueue(str(job.id), enforced_organisation_id())
         return job
 

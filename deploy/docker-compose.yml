@@ -48,6 +48,9 @@ x-kgs-env: &kgs-env
   KGS_OPENAI_API_KEY: "${OPENROUTER_API_KEY:-}"
   KGS_OPENAI_BASE_URL: "${KGS_OPENAI_BASE_URL:-https://openrouter.ai/api/v1}"
   KGS_EXTRACTOR_MODEL: "${KGS_EXTRACTOR_MODEL:-openai/gpt-4o-mini}"
+  # Max concurrent per-chunk LLM extraction calls within one document (the extractor fans out across
+  # chunks). Tune up for faster free-text ingestion; OpenRouter handles the concurrency.
+  KGS_EXTRACTOR_MAX_CONCURRENCY: "${KGS_EXTRACTOR_MAX_CONCURRENCY:-10}"
 
 services:
   neo4j:

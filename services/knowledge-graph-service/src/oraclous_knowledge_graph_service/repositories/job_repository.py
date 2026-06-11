@@ -73,6 +73,16 @@ class IngestionJobRepository:
         await self._session.refresh(row)
         return _to_record(row)
 
+    async def commit(self) -> None:
+        """Durably commit the current unit of work.
+
+        The request-scoped `session_scope` only commits AFTER the route returns, so a row created
+        in `create` is still uncommitted when the service enqueues the Celery task — a separate
+        worker session would not see it (read-after-write race → silent 'missing' drop, #267).
+        `JobService.submit` calls this before enqueueing so the row is visible cross-session first.
+        """
+        await self._session.commit()
+
     async def get(self, job_id: uuid.UUID) -> IngestionJobRecord | None:
         row = await self._fetch(job_id)
         return _to_record(row) if row else None
