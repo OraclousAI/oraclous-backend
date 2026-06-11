@@ -29,12 +29,15 @@ class EdgeResult(TypedDict):
     """A directed relationship between two nodes in a returned subgraph.
 
     ``source``/``target`` are the ``id`` of the corresponding :class:`NodeResult`
-    (Neo4j elementId), and ``type`` is the relationship type.
+    (Neo4j elementId), and ``type`` is the relationship type.  Edge-level data
+    (e.g. the ``score`` written onto SIMILAR_TO/SAME_AS_CANDIDATE by the
+    resolver) lives inside ``properties`` — mirroring :class:`NodeResult`.
     """
 
     source: str
     target: str
     type: str
+    properties: dict[str, Any]
 
 
 class SubgraphResult(TypedDict):

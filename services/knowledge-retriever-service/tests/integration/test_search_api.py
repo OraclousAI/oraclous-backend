@@ -39,7 +39,15 @@ class _FakeRetrievalService:
                 NodeResult(id="4:x:1", type="Document", properties={"name": "A"}),
                 NodeResult(id="4:y:2", type="Chunk", properties={"text": "b"}),
             ],
-            edges=[EdgeResult(source="4:x:1", target="4:y:2", type="HAS_CHUNK")],
+            edges=[
+                EdgeResult(source="4:x:1", target="4:y:2", type="HAS_CHUNK", properties={}),
+                EdgeResult(
+                    source="4:x:1",
+                    target="4:y:2",
+                    type="SIMILAR_TO",
+                    properties={"score": 0.87},
+                ),
+            ],
         )
 
 
@@ -101,7 +109,17 @@ async def test_subgraph_returns_nodes_and_edges(client) -> None:
     body = resp.json()
     assert set(body.keys()) == {"nodes", "edges"}  # strict {nodes, edges} envelope
     assert {n["id"] for n in body["nodes"]} == {"4:x:1", "4:y:2"}
-    assert body["edges"] == [{"source": "4:x:1", "target": "4:y:2", "type": "HAS_CHUNK"}]
+    # Edges carry a `properties` bag (mirrors nodes); an edge `score` (e.g. on SIMILAR_TO)
+    # surfaces through it for the FE explorer (ORAA-277).
+    assert all(set(e.keys()) == {"source", "target", "type", "properties"} for e in body["edges"])
+    assert body["edges"][0] == {
+        "source": "4:x:1",
+        "target": "4:y:2",
+        "type": "HAS_CHUNK",
+        "properties": {},
+    }
+    scored = next(e for e in body["edges"] if e["type"] == "SIMILAR_TO")
+    assert scored["properties"]["score"] == 0.87
 
 
 async def test_subgraph_requires_auth(client) -> None:
