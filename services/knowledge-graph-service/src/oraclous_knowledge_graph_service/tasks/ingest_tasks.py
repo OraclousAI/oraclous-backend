@@ -47,7 +47,25 @@ from oraclous_knowledge_graph_service.services.structured_ingestion_service impo
 from oraclous_knowledge_graph_service.tasks.celery_app import AsyncTaskExecutor, celery_app
 
 
-@celery_app.task(bind=True, name="kgs.ingest_document")
+class JobNotVisibleYet(Exception):
+    """The job row is not yet visible to the worker's session — a read-after-write race (#267).
+
+    Raised (rather than silently returning 'missing') so Celery RETRIES the task with bounded
+    backoff: any residual race between the submit commit and the worker pickup self-heals instead
+    of silently dropping the submission. After the bounded retries are exhausted the task fails
+    loudly (the row genuinely does not exist), never reporting a false success.
+    """
+
+
+@celery_app.task(
+    bind=True,
+    name="kgs.ingest_document",
+    autoretry_for=(JobNotVisibleYet,),
+    retry_backoff=True,
+    retry_backoff_max=30,
+    retry_jitter=True,
+    max_retries=5,
+)
 def ingest_document_task(self, job_id: str, organisation_id: str) -> dict[str, Any]:  # noqa: ARG001
     return AsyncTaskExecutor.run_async_task(_ingest_async, job_id, organisation_id)
 
@@ -69,7 +87,11 @@ async def _ingest_async(job_id_s: str, organisation_id_s: str) -> dict[str, Any]
             async with maker() as session:
                 payload = await IngestionJobRepository(session).load_payload(job_id)
                 if payload is None:
-                    return {"status": "missing", "job_id": job_id_s}
+                    # The row isn't visible to this fresh worker session yet — most likely a
+                    # read-after-write race against the submit commit (#267). Raise so Celery
+                    # retries with backoff instead of returning a silent 'success'; the submission
+                    # self-heals rather than being dropped.
+                    raise JobNotVisibleYet(job_id_s)
                 await IngestionJobRepository(session).update_status(
                     job_id, status="running", progress=10
                 )

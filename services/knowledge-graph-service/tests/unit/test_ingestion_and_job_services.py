@@ -83,13 +83,22 @@ def _record(graph_id: uuid.UUID, status: str = "pending") -> IngestionJobRecord:
 
 
 class _FakeJobRepo:
-    def __init__(self) -> None:
+    def __init__(self, *, log: list[str] | None = None) -> None:
         self.rows: dict[uuid.UUID, IngestionJobRecord] = {}
+        # `committed` rows are the only ones a SEPARATE worker session would see (mirrors #267):
+        # `create` stages the row, `commit` publishes it.
+        self.committed: dict[uuid.UUID, IngestionJobRecord] = {}
+        self._log = log if log is not None else []
 
     async def create(self, *, graph_id, source_type, filename, source_content, recipe_id=None, **_):
         rec = _record(graph_id)
         self.rows[rec.id] = rec
+        self._log.append("create")
         return rec
+
+    async def commit(self):
+        self.committed.update(self.rows)
+        self._log.append("commit")
 
     async def get(self, job_id):
         return self.rows.get(job_id)
@@ -120,11 +129,21 @@ class _FakeGraphService:
         )
 
 
-def _service(owned: set[uuid.UUID], enqueued: list[tuple[str, str]]) -> JobService:
+def _service(
+    owned: set[uuid.UUID],
+    enqueued: list[tuple[str, str]],
+    *,
+    log: list[str] | None = None,
+) -> JobService:
+    def _enqueue(j, o):
+        if log is not None:
+            log.append("enqueue")
+        enqueued.append((j, o))
+
     return JobService(
-        job_repo=_FakeJobRepo(),
+        job_repo=_FakeJobRepo(log=log),
         graph_service=_FakeGraphService(owned),
-        enqueue=lambda j, o: enqueued.append((j, o)),
+        enqueue=_enqueue,
     )
 
 
@@ -145,6 +164,33 @@ async def test_submit_creates_and_enqueues_with_org() -> None:
         )
     assert enqueued and enqueued[0][0] == str(job.id)
     assert enqueued[0][1] == str(_ORG)  # org passed across the broker boundary
+
+
+async def test_submit_commits_before_enqueue() -> None:
+    """#267: the job row must be durably committed BEFORE the Celery task is enqueued, so a
+    separate worker session can see it (no read-after-write race / silent drop)."""
+    enqueued: list[tuple[str, str]] = []
+    log: list[str] = []
+    svc = _service({_GRAPH}, enqueued, log=log)
+    captured: dict[uuid.UUID, IngestionJobRecord] = {}
+
+    # Spy enqueue: at enqueue time, a fresh worker session (the repo's `committed` view) MUST
+    # already contain the row — assert the commit happened first.
+    repo = svc._jobs
+
+    def _spy(j, o):
+        log.append("enqueue")
+        captured.update(repo.committed)
+        enqueued.append((j, o))
+
+    svc._enqueue = _spy
+    with _ctx():
+        job = await svc.submit(
+            user_id=_USER, graph_id=_GRAPH, data=b"hi", filename="a.txt", source_type="text"
+        )
+
+    assert log == ["create", "commit", "enqueue"]  # commit strictly precedes enqueue
+    assert job.id in captured  # the worker's committed view sees the row at enqueue time
 
 
 async def test_submit_unowned_graph_raises_not_found() -> None:
