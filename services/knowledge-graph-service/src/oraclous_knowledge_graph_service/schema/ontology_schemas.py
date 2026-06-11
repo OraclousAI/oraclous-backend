@@ -47,3 +47,18 @@ class OntologyResponse(BaseModel):
     density: str | None = None
     focus: list[str] = Field(default_factory=list)
     ignore: list[str] = Field(default_factory=list)
+
+
+class SuggestOntologyRequest(BaseModel):
+    """Schema synthesis (authoring aid, Slice C): infer a typed ontology from a text sample."""
+
+    sample: str = Field(..., min_length=1, description="A text sample to infer an ontology from.")
+    mode: Literal["open", "strict", "coerce"] = "strict"
+
+
+class SuggestedOntologyResponse(BaseModel):
+    """The inferred ontology in the Slice-B shape — saveable verbatim via the ontology PUT."""
+
+    mode: str
+    entity_types: list[EntityTypeDef] = Field(default_factory=list)
+    relationship_types: list[RelationshipTypeDef] = Field(default_factory=list)

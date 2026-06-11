@@ -23,6 +23,24 @@ class IngestTextRequest(BaseModel):
     event_time: str | None = None
 
 
+class InternalIngestRequest(BaseModel):
+    """The agent-addressable internal ingest body (Slice C).
+
+    Carries the target ``graph_id`` in the body (the internal route is not nested under a path
+    graph id, mirroring the internal SEARCH/SCHEMA endpoints). ``content`` (alias
+    ``source_content``) is the inline source text; ``source_type`` defaults to plain text.
+    ``organisation_id`` is NEVER a client field (ORG001) — the org is bound from the forwarded
+    principal, not the body.
+    """
+
+    graph_id: uuid.UUID
+    content: str = Field(min_length=1, validation_alias="source_content")
+    source_type: str = "text"
+    recipe_id: str | None = None
+
+    model_config = {"populate_by_name": True}
+
+
 class JobResponse(BaseModel):
     id: uuid.UUID
     graph_id: uuid.UUID

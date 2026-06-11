@@ -81,6 +81,43 @@ def to_graph_schema(ontology: Ontology | None) -> GraphSchema | None:
     )
 
 
+def from_graph_schema(schema: GraphSchema, *, mode: str = "strict") -> dict:
+    """Inverse of ``to_graph_schema``: a neo4j-graphrag ``GraphSchema`` → the Slice-B Ontology dict.
+
+    Used by schema synthesis (``POST /ontology/suggest``): an LLM infers a ``GraphSchema`` from a
+    text sample and this projects it into the SAME ``{mode, entity_types, relationship_types}``
+    shape the ontology PUT accepts, so a suggestion round-trips straight into a saved ontology. Node
+    property names are surfaced as ``entity_types[].properties``; ``patterns`` triples fill each
+    relationship's ``source``/``target`` (the first pattern that names the relationship), so the
+    suggestion carries the directed shape, not just bare labels.
+    """
+    pattern_by_rel: dict[str, tuple[str, str]] = {}
+    for pattern_source, pattern_rel, pattern_target in schema.patterns:
+        pattern_by_rel.setdefault(pattern_rel, (pattern_source, pattern_target))
+
+    entity_types: list[dict] = [
+        {
+            "name": node.label,
+            **({"description": node.description} if node.description else {}),
+            **({"properties": [p.name for p in node.properties]} if node.properties else {}),
+        }
+        for node in schema.node_types
+    ]
+    relationship_types: list[dict] = []
+    for rel in schema.relationship_types:
+        entry: dict = {"name": rel.label}
+        endpoints = pattern_by_rel.get(rel.label)
+        if endpoints is not None:
+            entry["source"], entry["target"] = endpoints
+        relationship_types.append(entry)
+
+    return {
+        "mode": mode,
+        "entity_types": entity_types,
+        "relationship_types": relationship_types,
+    }
+
+
 def to_prompt_prefix(ontology: Ontology | None) -> str:
     """Build the soft-steering prompt prefix from the ontology's hints. Empty string when none."""
     if ontology is None or not ontology.has_hints:

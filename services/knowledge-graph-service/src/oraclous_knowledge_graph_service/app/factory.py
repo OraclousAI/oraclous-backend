@@ -31,4 +31,5 @@ def create_app() -> FastAPI:
     app.include_router(internal_routes.router)
     app.include_router(recipe_routes.router)
     app.include_router(ontology_routes.router)
+    app.include_router(ontology_routes.suggest_router)
     return app

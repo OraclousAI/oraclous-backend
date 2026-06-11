@@ -43,6 +43,7 @@ from oraclous_knowledge_graph_service.repositories.graph_write_repository import
 )
 from oraclous_knowledge_graph_service.repositories.job_repository import IngestionJobRepository
 from oraclous_knowledge_graph_service.repositories.recipe_repository import RecipeRepository
+from oraclous_knowledge_graph_service.services.dry_run_service import DryRunService
 from oraclous_knowledge_graph_service.services.graph_service import GraphService
 from oraclous_knowledge_graph_service.services.job_service import JobService
 from oraclous_knowledge_graph_service.services.ontology_service import OntologyService
@@ -195,6 +196,12 @@ def get_ontology_service(
     return OntologyService(GraphRepository(session), graph_service)
 
 
+def get_dry_run_service() -> DryRunService:
+    """The recipe dry-run authoring aid (Slice C). Pure: it writes NOTHING to Neo4j, so it needs no
+    org binding or DB session — only an authenticated caller (the route depends on UserIdDep)."""
+    return DryRunService()
+
+
 # Public dependency aliases for route signatures.
 GraphServiceDep = Annotated[GraphService, Depends(get_graph_service)]
 UserIdDep = Annotated[uuid.UUID, Depends(get_current_user_id)]
@@ -202,3 +209,4 @@ JobServiceDep = Annotated[JobService, Depends(get_job_service)]
 GraphWriteRepoDep = Annotated[GraphWriteRepository, Depends(get_graph_write_repo)]
 RecipeServiceDep = Annotated[RecipeService, Depends(get_recipe_service)]
 OntologyServiceDep = Annotated[OntologyService, Depends(get_ontology_service)]
+DryRunServiceDep = Annotated[DryRunService, Depends(get_dry_run_service)]
