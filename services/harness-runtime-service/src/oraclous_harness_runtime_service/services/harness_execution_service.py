@@ -85,6 +85,14 @@ def _serialize_steps(steps: list[LoopStep], base: int = 0) -> list[dict[str, Any
     ]
 
 
+def _primary_model_binding(manifest) -> str | None:  # noqa: ANN001
+    """The OHM primary model's binding (the full ``<provider>/<model-id>`` string, e.g.
+    ``openrouter/openai/gpt-4o-mini``) — recorded per execution so spend can be priced by model.
+    ``None`` when the manifest declares no model (fake mode)."""
+    model = manifest.primary_model()
+    return model.binding if model is not None else None
+
+
 def _is_hitl_pause(result: LoopResult) -> bool:
     return (
         result.status is HarnessStatus.ESCALATED
@@ -217,6 +225,9 @@ class HarnessExecutionService:
             error_message=result.error_message,
             iterations=result.iterations,
             total_tokens=result.total_tokens,
+            model=_primary_model_binding(manifest),
+            input_tokens=result.input_tokens,
+            output_tokens=result.output_tokens,
             steps=steps,
         )
         await self._emit_provenance(
@@ -405,6 +416,11 @@ class HarnessExecutionService:
             error_message=result.error_message,
             iterations=result.iterations,  # cumulative — the cursor carried the prior iteration
             total_tokens=result.total_tokens,  # cumulative — the cursor seeded prior tokens
+            # The cursor carries only the cumulative total, so the loop's input/output reflect this
+            # segment only; fold them into the prior persisted split to keep the breakdown
+            # cumulative.
+            input_tokens=(execution.input_tokens or 0) + result.input_tokens,
+            output_tokens=(execution.output_tokens or 0) + result.output_tokens,
             steps=[*prior, *new_steps],
         )
         await self._emit_provenance(

@@ -8,6 +8,7 @@ setup is a bad gateway (502).
 from __future__ import annotations
 
 import uuid
+from datetime import datetime
 
 from fastapi import APIRouter, HTTPException, status
 from oraclous_governance import Principal
@@ -18,6 +19,7 @@ from oraclous_harness_runtime_service.core.dependencies import (
     ExecutionRepositoryDep,
     HarnessServiceDep,
     PrincipalDep,
+    SpendServiceDep,
 )
 from oraclous_harness_runtime_service.domain.ohm.errors import OHMError
 from oraclous_harness_runtime_service.schema.harness_schemas import (
@@ -28,6 +30,7 @@ from oraclous_harness_runtime_service.schema.harness_schemas import (
     ExecutionListResponse,
     HarnessExecutionOut,
     ResumeHarnessRequest,
+    SpendResponse,
 )
 from oraclous_harness_runtime_service.services.assignment_service import AssignmentError
 from oraclous_harness_runtime_service.services.harness_execution_service import (
@@ -101,6 +104,19 @@ async def list_executions(
     rows = await executions.list_for_org(_require_org(principal))
     out = [HarnessExecutionOut.model_validate(r) for r in rows]
     return ExecutionListResponse(executions=out, total=len(out))
+
+
+@router.get("/spend", response_model=SpendResponse)
+async def get_spend(
+    principal: PrincipalDep,
+    service: SpendServiceDep,
+    since: datetime | None = None,
+) -> SpendResponse:
+    """An ESTIMATE of the caller org's provider LLM spend (BYOM), priced from a static rate table —
+    NOT platform billing. Per-model raw token sums are priced at read time (ADR-009); unpriced
+    models (absent from the table) report tokens only. ``since`` (ISO8601) bounds the window.
+    Org-scoped."""
+    return await service.estimate(_require_org(principal), since=since)
 
 
 @router.get("/executions/{execution_id}", response_model=HarnessExecutionOut)

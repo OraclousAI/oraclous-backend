@@ -263,6 +263,78 @@ async def test_total_tokens_recorded_on_success() -> None:
     assert result.total_tokens == 42
 
 
+# ── #252 — accumulate the input/output token split across turns ──────────────────────────────────
+
+
+class _SplitLLM:
+    """Calls the first tool once (reporting a usage split), then answers (another split). Used to
+    prove the loop ACCUMULATES input/output across multiple turns."""
+
+    protocol_shape = "fake"
+
+    async def complete(self, *, messages, system, tools):  # noqa: ANN001, ANN202
+        observed = [m for m in messages if m.get("role") == "tool"]
+        if not observed and tools:
+            return LLMResponse(
+                text="",
+                tool_calls=[ToolCall("c1", tools[0].name, {})],
+                total_tokens=100,
+                input_tokens=80,
+                output_tokens=20,
+            )
+        return LLMResponse(text="done", total_tokens=60, input_tokens=50, output_tokens=10)
+
+
+async def test_input_output_accumulated_on_success() -> None:
+    result = await run_tool_use_loop(
+        llm=_SplitLLM(),
+        system="",
+        user_input="go",
+        tool_specs=[_SPEC],
+        dispatch=_ok_dispatch,
+        policy=_env(),
+    )
+    assert result.status is HarnessStatus.SUCCEEDED
+    # two turns: (100/80/20) + (60/50/10).
+    assert result.total_tokens == 160
+    assert result.input_tokens == 130
+    assert result.output_tokens == 30
+
+
+async def test_input_output_carried_on_error_path() -> None:
+    class _SplitThenBreakLLM:
+        """First turn reports a split + a tool call; the second turn (after the tool) raises →
+        the loop's FAILED return must still carry the accumulated split."""
+
+        protocol_shape = "fake"
+        _calls = 0
+
+        async def complete(self, *, messages, system, tools):  # noqa: ANN001, ANN202
+            type(self)._calls += 1
+            if type(self)._calls == 1:
+                return LLMResponse(
+                    text="",
+                    tool_calls=[ToolCall("c1", tools[0].name, {})],
+                    total_tokens=100,
+                    input_tokens=70,
+                    output_tokens=30,
+                )
+            raise RuntimeError("provider 503")
+
+    result = await run_tool_use_loop(
+        llm=_SplitThenBreakLLM(),
+        system="",
+        user_input="go",
+        tool_specs=[_SPEC],
+        dispatch=_ok_dispatch,
+        policy=_env(),
+    )
+    assert result.status is HarnessStatus.FAILED
+    assert result.total_tokens == 100
+    assert result.input_tokens == 70
+    assert result.output_tokens == 30
+
+
 async def test_output_is_redacted() -> None:
     async def _secret(spec: ToolSpec, args: dict) -> dict:
         return {"token": "SECRET123"}

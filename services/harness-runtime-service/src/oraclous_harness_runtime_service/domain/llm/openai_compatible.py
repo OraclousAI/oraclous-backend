@@ -119,13 +119,23 @@ class OpenAICompatibleClient:
             except (json.JSONDecodeError, TypeError):
                 args = {}
             calls.append(ToolCall(id=raw.get("id") or "call", name=fn.get("name") or "", args=args))
-        try:
-            total_tokens = int((data.get("usage") or {}).get("total_tokens") or 0)
-        except (
-            TypeError,
-            ValueError,
-        ):  # a provider sending a non-numeric usage → don't fail the run
-            total_tokens = 0
+        usage = data.get("usage") or {}
+
+        def _usage(key: str) -> int:
+            try:  # a provider sending a non-numeric usage field → don't fail the run, count 0
+                return int(usage.get(key) or 0)
+            except (TypeError, ValueError):
+                return 0
+
+        # The provider's usage block carries prompt_tokens + completion_tokens (the input/output
+        # split); keep total_tokens. A provider that omits the split leaves input/output 0.
+        total_tokens = _usage("total_tokens")
+        input_tokens = _usage("prompt_tokens")
+        output_tokens = _usage("completion_tokens")
         return LLMResponse(
-            text=msg.get("content") or "", tool_calls=calls, total_tokens=total_tokens
+            text=msg.get("content") or "",
+            tool_calls=calls,
+            total_tokens=total_tokens,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
         )

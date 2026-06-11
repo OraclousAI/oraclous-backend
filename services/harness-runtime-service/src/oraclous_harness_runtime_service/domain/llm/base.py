@@ -43,6 +43,11 @@ class LLMResponse:
     text: str
     tool_calls: list[ToolCall] = field(default_factory=list)
     total_tokens: int = 0  # metered token usage for this call (0 when the provider omits it / fake)
+    # The input/output split of that usage (prompt vs completion). Output tokens cost ~3-4× input,
+    # so the split is what lets spend be priced honestly (ADR-009 stays raw; pricing is a read-time
+    # layer). 0 when the provider omits the split / fake mode — total_tokens is still kept.
+    input_tokens: int = 0
+    output_tokens: int = 0
 
 
 @runtime_checkable

@@ -70,6 +70,10 @@ class LoopResult:
     steps: list[LoopStep] = field(default_factory=list)
     iterations: int = 0
     total_tokens: int = 0
+    # The input/output split of total_tokens (prompt vs completion). Carried so spend can be priced
+    # honestly downstream (output costs ~3-4× input). 0 when the provider omits the split / fake.
+    input_tokens: int = 0
+    output_tokens: int = 0
     error_type: str | None = None
     error_message: str | None = None
     checkpoint: LoopCheckpoint | None = None  # set only on a mid-loop HITL pause (resumable)
@@ -108,6 +112,10 @@ async def run_tool_use_loop(
         tool_calls_made = 0
         tokens_used = 0
         resume_iteration = 0
+    # The input/output split accumulates over THIS segment (the checkpoint cursor carries only the
+    # cumulative total, so a resumed run's split reflects its post-resume turns).
+    input_used = 0
+    output_used = 0
     steps: list[LoopStep] = []
     last_text = ""
     started = time.monotonic()
@@ -131,6 +139,8 @@ async def run_tool_use_loop(
             steps=steps,
             iterations=iterations,
             total_tokens=tokens_used,
+            input_tokens=input_used,
+            output_tokens=output_used,
             error_type=reason,
             error_message=message,
             checkpoint=checkpoint,
@@ -218,10 +228,14 @@ async def run_tool_use_loop(
                 steps=steps,
                 iterations=iteration,
                 total_tokens=tokens_used,
+                input_tokens=input_used,
+                output_tokens=output_used,
                 error_type=type(exc).__name__,
                 error_message=str(exc),
             )
         tokens_used += resp.total_tokens
+        input_used += resp.input_tokens
+        output_used += resp.output_tokens
         last_text = _redact(resp.text, redactors)
         # token budget (S3 PolicyEnvelope.max_tokens, now enforceable with real usage from S4).
         if policy.max_tokens is not None and tokens_used > policy.max_tokens:
@@ -232,7 +246,13 @@ async def run_tool_use_loop(
                 LoopStep(len(steps), StepKind.LLM, "primary", "answer", _truncate(last_text))
             )
             return LoopResult(
-                HarnessStatus.SUCCEEDED, last_text, steps, iteration, total_tokens=tokens_used
+                HarnessStatus.SUCCEEDED,
+                last_text,
+                steps,
+                iteration,
+                total_tokens=tokens_used,
+                input_tokens=input_used,
+                output_tokens=output_used,
             )
 
         steps.append(
