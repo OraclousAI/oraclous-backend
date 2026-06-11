@@ -87,6 +87,6 @@ sg=$(curl -fsS "${AUTH[@]}" "${KRS}/v1/graph/${GID}/subgraph?limit=200")
 sgcounts=$(echo "$sg" | python3 -c "import sys,json; d=json.load(sys.stdin); print(len(d['nodes']), len(d['edges']))")
 read -r nodes edges <<< "$sgcounts"
 [[ "$nodes" -gt 0 ]] && pass "subgraph returns ${nodes} nodes, ${edges} edges (capped, org+graph scoped)" || fail "subgraph returned no nodes"
-echo "$sg" | python3 -c "import sys,json; d=json.load(sys.stdin); assert all(set(n)=={'id','type','properties'} for n in d['nodes']); assert all(set(e)=={'source','target','type'} for e in d['edges'])" && pass "subgraph node/edge envelopes are strict" || fail "subgraph envelope drift"
+echo "$sg" | python3 -c "import sys,json; d=json.load(sys.stdin); assert all(set(n)=={'id','type','properties'} for n in d['nodes']); assert all(set(e)=={'source','target','type','properties'} for e in d['edges'])" && pass "subgraph node/edge envelopes are strict (edges carry a properties bag)" || fail "subgraph envelope drift"
 
 printf '\n\033[32mKRS smoke passed (cross-service).\033[0m  KGS ingest -> KRS semantic/fulltext/hybrid/traverse/subgraph over the same org-scoped graph, key-free.\n'

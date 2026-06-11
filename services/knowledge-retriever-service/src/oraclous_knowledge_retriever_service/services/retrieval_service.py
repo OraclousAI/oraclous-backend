@@ -52,7 +52,12 @@ def _to_node_result(row: dict) -> NodeResult:
 
 
 def _to_edge_result(row: dict) -> EdgeResult:
-    return EdgeResult(source=row["source"], target=row["target"], type=row["type"])
+    # Mirror the node side: carry the edge property bag through (JSON-coerced) so edge-level
+    # data — e.g. `score` on SIMILAR_TO/SAME_AS_CANDIDATE — reaches the FE explorer.
+    properties = {k: _jsonable(v) for k, v in row.get("properties", {}).items()}
+    return EdgeResult(
+        source=row["source"], target=row["target"], type=row["type"], properties=properties
+    )
 
 
 class RetrievalService:

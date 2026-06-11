@@ -144,7 +144,14 @@ async def test_subgraph_maps_nodes_and_flattens_edges() -> None:
                         {"id": "n2", "labels": ["Chunk", "__KGBuilder__"], "props": {"text": "b"}},
                     ],
                     "edge_groups": [
-                        [{"source": "n1", "target": "n2", "type": "HAS_CHUNK"}],
+                        [
+                            {
+                                "source": "n1",
+                                "target": "n2",
+                                "type": "HAS_CHUNK",
+                                "properties": {},
+                            }
+                        ],
                         [],
                     ],
                 }
@@ -158,7 +165,43 @@ async def test_subgraph_maps_nodes_and_flattens_edges() -> None:
     assert result["nodes"][0]["type"] == "Document"
     assert result["nodes"][1]["type"] == "Chunk"  # internal label dropped
     assert "embedding" not in result["nodes"][0]["properties"]  # vector never echoed
-    assert result["edges"] == [{"source": "n1", "target": "n2", "type": "HAS_CHUNK"}]
+    assert result["edges"] == [
+        {"source": "n1", "target": "n2", "type": "HAS_CHUNK", "properties": {}}
+    ]
+
+
+async def test_subgraph_edge_carries_score_property() -> None:
+    # ORAA-277: edge property bag (e.g. `score` on SIMILAR_TO/SAME_AS_CANDIDATE) must reach the
+    # response, mirroring the node `props` projection — not be dropped at the edge boundary.
+    driver = _FakeDriver(
+        [
+            [
+                {
+                    "nodes": [
+                        {"id": "n1", "labels": ["Entity"], "props": {"name": "A"}},
+                        {"id": "n2", "labels": ["Entity"], "props": {"name": "A."}},
+                    ],
+                    "edge_groups": [
+                        [
+                            {
+                                "source": "n1",
+                                "target": "n2",
+                                "type": "SAME_AS_CANDIDATE",
+                                "properties": {"score": 0.93},
+                            }
+                        ],
+                        [],
+                    ],
+                }
+            ]
+        ]
+    )
+    svc = RetrievalService(driver, HashingEmbedder(8))
+    with _ctx():
+        result = await svc.subgraph(graph_id="g1", limit=100)
+    edge = result["edges"][0]
+    assert edge["type"] == "SAME_AS_CANDIDATE"
+    assert edge["properties"]["score"] == 0.93
 
 
 async def test_subgraph_empty_graph_returns_empty() -> None:

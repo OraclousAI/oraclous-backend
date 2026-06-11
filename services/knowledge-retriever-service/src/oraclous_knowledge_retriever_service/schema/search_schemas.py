@@ -23,11 +23,16 @@ class NodeResultModel(BaseModel):
 
 
 class EdgeResultModel(BaseModel):
-    """A directed relationship between two nodes in a subgraph; endpoints are node ids."""
+    """A directed relationship between two nodes in a subgraph; endpoints are node ids.
+
+    Edge-level data (e.g. a `score` on SIMILAR_TO/SAME_AS_CANDIDATE) lives inside
+    `properties` — mirroring `NodeResultModel`, so the FE explorer can read it.
+    """
 
     source: str
     target: str
     type: str
+    properties: dict[str, Any] = Field(default_factory=dict)
 
 
 class SubgraphResultModel(BaseModel):
