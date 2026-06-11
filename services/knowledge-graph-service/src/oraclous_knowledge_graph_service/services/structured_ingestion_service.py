@@ -16,6 +16,7 @@ from oraclous_knowledge_graph_service.domain.structural import ExtractionMode
 from oraclous_knowledge_graph_service.repositories.recipe_write_repository import RecipeGraphWriter
 from oraclous_knowledge_graph_service.services.recipes.engine import get_recipe_engine
 from oraclous_knowledge_graph_service.services.recipes.extraction_pass import run_extraction_pass
+from oraclous_knowledge_graph_service.services.recipes.similarity_pass import run_similarity_pass
 from oraclous_knowledge_graph_service.services.structured.default_recipe import build_default_recipe
 from oraclous_knowledge_graph_service.services.structured.extractors import StructuredParseError
 from oraclous_knowledge_graph_service.services.structured.primitives import (
@@ -83,23 +84,40 @@ class StructuredIngestionService:
         # from each record's prose field and MERGE MENTIONS edges from the record's primary node.
         # Reuses the SAME org-scoped writer (so the entities are stamped + deterministic-id MERGEd
         # exactly like the projected nodes). Fail-soft: no-extractor / per-record error is skipped.
-        if active_recipe.get("extractions"):
+        if active_recipe.get("extractions") or active_recipe.get("similarities"):
             meta = {
                 "recipe_id": active_recipe["id"],
                 "recipe_version": active_recipe["version"],
                 "ingestion_time": datetime.now(UTC).isoformat(),
             }
-            stats = run_extraction_pass(
-                recipe=active_recipe,
-                representation=representation,
-                writer=writer,
-                node_index_by_rule=result.node_index_by_rule,
-                settings=self._settings,
-                engine=self._engine,
-                meta=meta,
-                source_id=result.source_id,
-            )
-            result.entities_extracted = stats.entities_extracted
-            result.mentions = stats.mentions
-            result.warnings.extend(stats.warnings)
+            if active_recipe.get("extractions"):
+                ex_stats = run_extraction_pass(
+                    recipe=active_recipe,
+                    representation=representation,
+                    writer=writer,
+                    node_index_by_rule=result.node_index_by_rule,
+                    settings=self._settings,
+                    engine=self._engine,
+                    meta=meta,
+                    source_id=result.source_id,
+                )
+                result.entities_extracted = ex_stats.entities_extracted
+                result.mentions = ex_stats.mentions
+                result.warnings.extend(ex_stats.warnings)
+            # Slice 3 — content similarity: AFTER the extraction pass, embed each record's `from`
+            # field + cosine kNN, MERGE-ing SIMILAR_TO edges between similar records. Reuses the
+            # SAME writer + settings; fail-soft on an embed() error (the pass is skipped).
+            if active_recipe.get("similarities"):
+                sim_stats = run_similarity_pass(
+                    recipe=active_recipe,
+                    representation=representation,
+                    writer=writer,
+                    node_index_by_rule=result.node_index_by_rule,
+                    settings=self._settings,
+                    engine=self._engine,
+                    meta=meta,
+                    source_id=result.source_id,
+                )
+                result.similarity_edges = sim_stats.similarity_edges
+                result.warnings.extend(sim_stats.warnings)
         return result.as_dict()

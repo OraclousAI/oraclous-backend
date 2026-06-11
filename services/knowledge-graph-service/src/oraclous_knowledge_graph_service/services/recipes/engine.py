@@ -111,6 +111,7 @@ class ExecutionResult:
     ontology_coercions: int = 0
     entities_extracted: int = 0
     mentions: int = 0
+    similarity_edges: int = 0
     warnings: list[str] = field(default_factory=list)
     # Per-node-rule {unit_id: deterministic_entity_id} produced by the deterministic projection.
     # NOT serialized — it is the hand-off the hybrid extraction pass (Slice 2) uses to resolve each
@@ -132,6 +133,7 @@ class ExecutionResult:
             "ontology_coercions": self.ontology_coercions,
             "entities_extracted": self.entities_extracted,
             "mentions": self.mentions,
+            "similarity_edges": self.similarity_edges,
             "warnings": self.warnings,
         }
 
@@ -165,6 +167,27 @@ class RecipeExecutionEngine:
             self._check_rule_identifiers(rule)
         self._check_foreign_key_edges(recipe["mappings"])
         self._check_extractions(recipe.get("extractions", []), recipe["mappings"])
+        self._check_similarities(recipe.get("similarities", []), recipe["mappings"])
+
+    def _check_similarities(
+        self, similarities: list[dict[str, Any]], mappings: list[dict[str, Any]]
+    ) -> None:
+        """A similarity rule (Slice 3) connects the per-record nodes of an existing node rule, so
+        its `node_rule` must reference a `project_to: node` rule in mappings, and its `edge_type`
+        (when present; it defaults to SIMILAR_TO at run time) must be a Cypher-safe identifier.
+        Rejected at validate time so a malformed recipe fails at store/POST, not mid-ingest."""
+        node_rule_ids = {r["id"] for r in mappings if r.get("project_to") == "node"}
+        for rule in similarities:
+            if rule["node_rule"] not in node_rule_ids:
+                raise RecipeValidationError(
+                    f"similarity rule {rule['id']!r}: node_rule {rule['node_rule']!r} is not a "
+                    f"node rule in mappings"
+                )
+            edge_type = rule.get("edge_type", "SIMILAR_TO")
+            if not _is_safe_identifier(edge_type):
+                raise RecipeValidationError(
+                    f"similarity rule {rule['id']!r}: unsafe edge_type {edge_type!r}"
+                )
 
     def _check_extractions(
         self, extractions: list[dict[str, Any]], mappings: list[dict[str, Any]]

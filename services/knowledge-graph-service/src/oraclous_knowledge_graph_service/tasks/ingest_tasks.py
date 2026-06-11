@@ -204,12 +204,15 @@ async def _ingest_structured(*, driver, maker, settings, payload, data: bytes) -
         temporal=temporal,
     )
     # `entities_extracted` (hybrid free-text-on-a-field, Slice 2) is folded into the headline
-    # entity count; `mentions` is folded into relationships (it is the MENTIONS edge per entity).
+    # entity count; `mentions` (the MENTIONS edge per entity) + `similarity_edges` (the SIMILAR_TO
+    # edges per similar pair, Slice 3) are folded into relationships.
     return {
         "entities": result["nodes_written"]
         + result["containers_written"]
         + result.get("entities_extracted", 0),
-        "relationships": result["edges_written"] + result.get("mentions", 0),
+        "relationships": result["edges_written"]
+        + result.get("mentions", 0)
+        + result.get("similarity_edges", 0),
         "detail": result,
     }
 

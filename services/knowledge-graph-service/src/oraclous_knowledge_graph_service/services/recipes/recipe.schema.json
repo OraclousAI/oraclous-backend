@@ -50,6 +50,11 @@
       "type": "array",
       "$comment": "Hybrid free-text-on-a-field (Slice 2, #269): run the LLM entity extractor over a PROSE field within each structured record AFTER the deterministic projection, so records gain entities mined from their text and interconnect by shared entities. Each rule names a `from` field, an inline ontology (entity/relationship types, the Slice-B Ontology shape compiled to a hard GraphSchema), and a `link` edge MERGEd from the record's primary node to each extracted entity. Fail-soft: extractor unavailable (KGS_EXTRACTOR=null) → the pass is skipped, the deterministic projection is unaffected.",
       "items": { "$ref": "#/$defs/extraction" }
+    },
+    "similarities": {
+      "type": "array",
+      "$comment": "Content-similarity edges (Slice 3, #269): AFTER the deterministic projection, embed a designated `from` field per record and run a cosine kNN over those embeddings, MERGE-ing an `edge_type` (default SIMILAR_TO) edge between records whose text is similar (carrying a `score` float). One edge per UNORDERED pair (canonical min->max direction so a pair is written once). Fail-soft: an embed() failure → the whole pass is skipped, the projection + prior passes are unaffected.",
+      "items": { "$ref": "#/$defs/similarity" }
     }
   },
   "$defs": {
@@ -265,6 +270,43 @@
             "type": { "$ref": "#/$defs/safe_identifier" },
             "from_node_rule": { "type": "string", "minLength": 1 }
           }
+        }
+      }
+    },
+    "similarity": {
+      "type": "object",
+      "required": ["id", "from", "node_rule"],
+      "additionalProperties": false,
+      "$comment": "One content-similarity rule (Slice 3, #269): embed each record's `from` prose field, run cosine kNN over the embeddings, and MERGE an `edge_type` edge between the per-record `node_rule` nodes of similar records (one edge per unordered pair, canonical min->max id direction; a `score` float property is stamped). `node_rule` must reference a `project_to: node` rule in `mappings`.",
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "from": {
+          "type": "string",
+          "minLength": 1,
+          "$comment": "A field:/column: ref to the field on each record whose text is embedded (e.g. `field:claim`). A record with empty/missing text is skipped (it gets no similarity edges)."
+        },
+        "node_rule": {
+          "type": "string",
+          "minLength": 1,
+          "$comment": "The primary node rule whose per-record node the SIMILAR_TO edges connect — must reference a `project_to: node` rule in `mappings`."
+        },
+        "edge_type": {
+          "$ref": "#/$defs/safe_identifier",
+          "default": "SIMILAR_TO",
+          "$comment": "The Cypher-safe relationship type MERGEd between similar records (default SIMILAR_TO)."
+        },
+        "top_k": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 5,
+          "$comment": "Keep at most this many nearest neighbours per record (after the min_score filter)."
+        },
+        "min_score": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 1,
+          "default": 0.5,
+          "$comment": "Minimum cosine similarity (0<min_score<=1) for an edge to be written."
         }
       }
     },
