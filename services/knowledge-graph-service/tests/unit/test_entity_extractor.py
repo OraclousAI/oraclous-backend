@@ -7,6 +7,7 @@ the chunk linkage, the honest counts, and the org-stamping are all exercised det
 
 from __future__ import annotations
 
+import asyncio
 import json
 import uuid
 
@@ -390,3 +391,93 @@ async def test_ingest_strict_ontology_drops_off_type_entity_before_write() -> No
     assert result.entities == 2
     assert result.ontology_violations == 2  # one Company dropped per chunk
     assert result.entity_relationships == 0  # WORKS_AT edge dropped with Company
+
+
+# --- ORAA-272: chunks extract CONCURRENTLY (capped), not one-await-at-a-time --------------------
+class _ConcurrencyProbeLLM(LLMInterface):
+    """Records the observed max number of in-flight `extract_for_chunk` calls.
+
+    Each call increments a shared in-flight counter on entry, captures the running max, sleeps
+    briefly so overlapping calls actually overlap, then decrements on exit. Chunk texts listed in
+    `fail_on` raise instead of returning, to exercise the fail-soft (one bad chunk is skipped).
+    """
+
+    def __init__(self, *, fail_on: set[str] | None = None) -> None:
+        super().__init__(model_name="probe")
+        self._payload = json.dumps(
+            {
+                "nodes": [{"id": "0", "label": "Person", "properties": {"name": "Ada"}}],
+                "relationships": [],
+            }
+        )
+        self._fail_on = fail_on or set()
+        self.in_flight = 0
+        self.max_in_flight = 0
+
+    def invoke(self, *args, **kwargs) -> LLMResponse:  # pragma: no cover - async path is used
+        return LLMResponse(content=self._payload)
+
+    async def ainvoke(self, input: str, *args, **kwargs) -> LLMResponse:
+        self.in_flight += 1
+        self.max_in_flight = max(self.max_in_flight, self.in_flight)
+        try:
+            await asyncio.sleep(0.02)
+            if any(token in input for token in self._fail_on):
+                raise RuntimeError("boom: this chunk's LLM call fails")
+            return LLMResponse(content=self._payload)
+        finally:
+            self.in_flight -= 1
+
+
+async def test_extract_runs_chunks_concurrently_capped_at_max_concurrency() -> None:
+    """With max_concurrency=3 over 6 chunks, real overlap occurs but never exceeds the cap, and
+    every chunk's entity lands in the combined graph."""
+    llm = _ConcurrencyProbeLLM()
+    extractor = EntityExtractor(llm=llm, max_concurrency=3)
+    n = 6
+    chunks = [f"chunk text {i}" for i in range(n)]
+    chunk_ids = [f"c{i}" for i in range(n)]
+
+    graph = await extractor.extract(chunks=chunks, chunk_ids=chunk_ids)
+
+    # real, capped concurrency: more than one in flight, never more than the cap
+    assert llm.max_in_flight > 1
+    assert llm.max_in_flight <= 3
+    # one Person per chunk -> all six entities present (identical result to the serial version)
+    assert len(graph.nodes) == n
+    assert all(n.label == "Person" for n in graph.nodes)
+    # every chunk linked to its own deterministic chunk id
+    from_chunk_targets = {r.end_node_id for r in graph.relationships if r.type == "FROM_CHUNK"}
+    assert from_chunk_targets == set(chunk_ids)
+
+
+async def test_extract_one_failing_chunk_is_logged_and_skipped(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A chunk whose LLM call raises is logged + skipped; the other chunks' entities still land
+    (fail-soft, mirroring the library's on_error=IGNORE)."""
+    import logging as _logging
+
+    llm = _ConcurrencyProbeLLM(fail_on={"chunk text 2"})
+    extractor = EntityExtractor(llm=llm, max_concurrency=3)
+    n = 4
+    chunks = [f"chunk text {i}" for i in range(n)]
+    chunk_ids = [f"c{i}" for i in range(n)]
+
+    with caplog.at_level(_logging.WARNING):
+        graph = await extractor.extract(chunks=chunks, chunk_ids=chunk_ids)
+
+    # the bad chunk (c2) contributed nothing; the other three each contributed one entity
+    assert len(graph.nodes) == n - 1
+    from_chunk_targets = {r.end_node_id for r in graph.relationships if r.type == "FROM_CHUNK"}
+    assert from_chunk_targets == {"c0", "c1", "c3"}
+    # the failure was logged (named the failing chunk id), not raised
+    assert any(
+        "c2" in rec.getMessage() and rec.levelno == _logging.WARNING for rec in caplog.records
+    )
+
+
+async def test_extract_stores_max_concurrency() -> None:
+    """The constructor records max_concurrency for the across-chunk gather (not just library)."""
+    extractor = EntityExtractor(llm=_fixed_llm(), max_concurrency=7)
+    assert extractor._max_concurrency == 7
