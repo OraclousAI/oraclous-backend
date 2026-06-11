@@ -62,6 +62,22 @@ class _FakeRepo:
         return self.rows.pop(graph_id, None) is not None
 
 
+class _FakeWriteRepo:
+    """Records the graph_id-scoped Neo4j cascade the delete flow must trigger (ORAA-261)."""
+
+    def __init__(self) -> None:
+        self.deleted: list[str] = []
+
+    def delete_graph_nodes(self, *, graph_id: str) -> int:
+        self.deleted.append(graph_id)
+        return 3  # pretend 3 nodes were detached
+
+
+class _RaisingWriteRepo:
+    def delete_graph_nodes(self, *, graph_id: str) -> int:
+        raise RuntimeError("neo4j unreachable")
+
+
 async def test_create_and_get_own() -> None:
     svc = GraphService(_FakeRepo())
     g = await svc.create_graph(user_id=_OWNER, name="g", description=None)
@@ -92,6 +108,50 @@ async def test_delete_other_owner_raises() -> None:
     with pytest.raises(GraphNotFound):
         await svc.delete_graph(graph_id=g.id, user_id=_INTRUDER)
     assert g.id in repo.rows
+
+
+async def test_delete_cascades_neo4j_nodes_for_owned_graph() -> None:
+    # ORAA-261: deleting a graph must cascade its Neo4j nodes (graph_id-scoped DETACH DELETE),
+    # not just remove the Postgres metadata row.
+    repo = _FakeRepo()
+    write_repo = _FakeWriteRepo()
+    svc = GraphService(repo, write_repo=write_repo)
+    g = await svc.create_graph(user_id=_OWNER, name="g", description=None)
+    await svc.delete_graph(graph_id=g.id, user_id=_OWNER)
+    assert write_repo.deleted == [str(g.id)]  # graph_id-scoped cascade fired exactly once
+    assert g.id not in repo.rows  # and the Postgres row was removed
+
+
+async def test_delete_without_write_repo_only_removes_postgres_row() -> None:
+    # Substrate unwired (unit/unconfigured) -> no Neo4j cascade, Postgres delete still happens.
+    repo = _FakeRepo()
+    svc = GraphService(repo)  # write_repo defaults to None
+    g = await svc.create_graph(user_id=_OWNER, name="g", description=None)
+    await svc.delete_graph(graph_id=g.id, user_id=_OWNER)
+    assert g.id not in repo.rows
+
+
+async def test_delete_intruder_does_not_cascade_neo4j() -> None:
+    # The owner gate runs before the cascade: a non-owner delete never touches Neo4j.
+    repo = _FakeRepo()
+    write_repo = _FakeWriteRepo()
+    svc = GraphService(repo, write_repo=write_repo)
+    g = await svc.create_graph(user_id=_OWNER, name="g", description=None)
+    with pytest.raises(GraphNotFound):
+        await svc.delete_graph(graph_id=g.id, user_id=_INTRUDER)
+    assert write_repo.deleted == []  # cascade NOT fired for an unowned graph
+    assert g.id in repo.rows
+
+
+async def test_delete_surfaces_neo4j_failure_and_keeps_postgres_row() -> None:
+    # A Neo4j cascade failure is surfaced (not swallowed) and aborts before the Postgres delete,
+    # so the graph never ends up orphaned — it survives to be retried.
+    repo = _FakeRepo()
+    svc = GraphService(repo, write_repo=_RaisingWriteRepo())
+    g = await svc.create_graph(user_id=_OWNER, name="g", description=None)
+    with pytest.raises(RuntimeError):
+        await svc.delete_graph(graph_id=g.id, user_id=_OWNER)
+    assert g.id in repo.rows  # Postgres row NOT removed when Neo4j cleanup failed
 
 
 async def test_get_missing_raises_not_found() -> None:
