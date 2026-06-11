@@ -151,6 +151,36 @@ class RecipeExecutionEngine:
             raise RecipeValidationError(f"unsupported recipe_format_version {fmt!r}")
         for rule in recipe["mappings"]:
             self._check_rule_identifiers(rule)
+        self._check_foreign_key_edges(recipe["mappings"])
+
+    def _check_foreign_key_edges(self, mappings: list[dict[str, Any]]) -> None:
+        """A `foreign_key` edge needs a `to.from_field`, and its target node_rule must exist and
+        have a single-field identity (the FK value stands in for that one identity field). Rejected
+        at validate time so a malformed recipe fails at store/POST, not mid-ingest.
+        """
+        by_id = {r["id"]: r for r in mappings}
+        for rule in mappings:
+            if rule.get("project_to") != "edge":
+                continue
+            if rule.get("to", {}).get("resolve_by") != "foreign_key":
+                continue
+            if not rule["to"].get("from_field"):
+                raise RecipeValidationError(
+                    f"foreign_key edge rule {rule['id']!r}: missing required to.from_field"
+                )
+            target = by_id.get(rule["to"]["node_rule"])
+            if target is None or target.get("project_to") != "node":
+                raise RecipeValidationError(
+                    f"foreign_key edge rule {rule['id']!r}: target node_rule "
+                    f"{rule['to']['node_rule']!r} is not a node rule"
+                )
+            if len(target["identity"]["from"]) != 1:
+                raise RecipeValidationError(
+                    f"foreign_key edge rule {rule['id']!r}: target node_rule "
+                    f"{target['id']!r} must have a single-field identity "
+                    f"(got {len(target['identity']['from'])} fields); a composite identity has no "
+                    f"single FK value to stand in for it"
+                )
 
     def _check_rule_identifiers(self, rule: dict[str, Any]) -> None:
         kind = rule["project_to"]
@@ -201,12 +231,31 @@ class RecipeExecutionEngine:
                 return rule
         return None
 
+    def _all_matches(self, mappings: list[dict], unit: StructuralUnit) -> list[dict]:
+        """Every rule whose match selects this unit, in recipe order. A single record can drive
+        several rules — e.g. an Evidence node + a ClaimSource node + the FROM_SOURCE edge between
+        them all match `unit_kind: record`. (The default recipe still has one rule per unit; this
+        is a superset of _first_match.)"""
+        return [rule for rule in mappings if self._matches(rule["match"], unit)]
+
     @staticmethod
     def _read_field(payload: dict, unit: StructuralUnit, ref: str) -> Any:
         if ref in ("name", "unit:name"):
             return unit.name
         key = ref.partition(":")[2] if ":" in ref else ref
-        return payload.get(key)
+        # G2: a dotted key (e.g. `source.url`) is a path into a nested object — walk it segment
+        # by segment. A top-level key (no dot) keeps the original `payload.get(key)` behaviour.
+        # Any missing or non-dict segment short-circuits to None (a value never resolved).
+        if "." not in key:
+            return payload.get(key)
+        current: Any = payload
+        for segment in key.split("."):
+            if not isinstance(current, dict):
+                return None
+            current = current.get(segment)
+            if current is None:
+                return None
+        return current
 
     @staticmethod
     def _resolve_unit_payload(unit: StructuralUnit) -> dict[str, Any]:
@@ -240,6 +289,10 @@ class RecipeExecutionEngine:
         }
         self._ontology = ontology
         self._temporal = {k: v for k, v in (temporal or {}).items() if v is not None}
+        # Stashed for the foreign_key resolver: it computes a target node's deterministic id from
+        # the FK value, which needs the target node_rule (its label + identity) and the graph_id.
+        self._mappings_by_id = {r["id"]: r for r in recipe["mappings"]}
+        self._graph_id = graph_id
         payload_cache = {u.unit_id: self._resolve_unit_payload(u) for u in representation.units}
         defaults = recipe.get("defaults", {})
 
@@ -253,50 +306,64 @@ class RecipeExecutionEngine:
 
         node_index: dict[tuple[str, str], str] = {}
         for unit in representation.units:
-            rule = self._first_match(recipe["mappings"], unit)
-            if rule is None:
+            matched = self._all_matches(recipe["mappings"], unit)
+            if not matched:
                 result.units_skipped += 1
                 continue
-            if rule["project_to"] == "node":
-                eid = self._project_node(
-                    writer,
-                    rule,
-                    unit,
-                    graph_id,
-                    meta,
-                    defaults,
-                    unit_to_container,
-                    source_id,
-                    payload_cache,
-                    result,
-                )
-                if eid is not None:
-                    node_index[(rule["id"], unit.unit_id)] = eid
-            elif rule["project_to"] == "skip":
-                result.units_skipped += 1
+            for rule in matched:
+                if rule["project_to"] == "node":
+                    eid = self._project_node(
+                        writer,
+                        rule,
+                        unit,
+                        graph_id,
+                        meta,
+                        defaults,
+                        unit_to_container,
+                        source_id,
+                        payload_cache,
+                        result,
+                    )
+                    if eid is not None:
+                        node_index[(rule["id"], unit.unit_id)] = eid
+                elif rule["project_to"] == "skip":
+                    result.units_skipped += 1
 
+        # The identity/self/foreign_key edge resolvers and the property rule fan out over the whole
+        # node_index (unit-independent), so they must run exactly ONCE per rule — applying a
+        # same-record edge per matching record would re-emit the identical edge batch N times. The
+        # legacy fk_target resolver and text_extraction are still per-unit (they read the matched
+        # unit), so they keep firing per matching unit. Dedupe the once-per-rule kinds by rule id.
+        applied_once: set[str] = set()
         for unit in representation.units:
-            rule = self._first_match(recipe["mappings"], unit)
-            if rule is None:
-                continue
-            kind = rule["project_to"]
-            if kind == "property":
-                self._apply_property(writer, rule, unit, node_index, payload_cache, result)
-            elif kind == "edge":
-                self._apply_edge(
-                    writer,
-                    rule,
-                    unit,
-                    meta,
-                    defaults,
-                    node_index,
-                    representation,
-                    payload_cache,
-                    source_id,
-                    result,
+            for rule in self._all_matches(recipe["mappings"], unit):
+                kind = rule["project_to"]
+                if kind in ("node", "skip"):
+                    continue
+                once_per_rule = kind == "property" or (
+                    kind == "edge" and rule["to"].get("resolve_by", "identity") != "fk_target"
                 )
-            elif kind == "text_extraction":
-                self._apply_text_extraction(rule, unit, result)
+                if once_per_rule:
+                    if rule["id"] in applied_once:
+                        continue
+                    applied_once.add(rule["id"])
+                if kind == "property":
+                    self._apply_property(writer, rule, unit, node_index, payload_cache, result)
+                elif kind == "edge":
+                    self._apply_edge(
+                        writer,
+                        rule,
+                        unit,
+                        meta,
+                        defaults,
+                        node_index,
+                        representation,
+                        payload_cache,
+                        source_id,
+                        result,
+                    )
+                elif kind == "text_extraction":
+                    self._apply_text_extraction(rule, unit, result)
         return result
 
     def _write_containers(
@@ -415,6 +482,21 @@ class RecipeExecutionEngine:
     ) -> None:
         from_rule_id, to_rule_id = rule["from"]["node_rule"], rule["to"]["node_rule"]
         resolve_by = rule["to"].get("resolve_by", "identity")
+        provenance = rule.get("provenance") or defaults.get("provenance", "EXTRACTED")
+        if resolve_by == "foreign_key":
+            self._apply_foreign_key_edge(
+                writer,
+                rule,
+                from_rule_id,
+                to_rule_id,
+                node_index,
+                payload_cache,
+                source_id,
+                provenance,
+                meta,
+                result,
+            )
+            return
         edges: list[dict] = []
         if resolve_by == "self":
             edges = [
@@ -441,7 +523,6 @@ class RecipeExecutionEngine:
                 payload_cache,
                 result,
             )
-        provenance = rule.get("provenance") or defaults.get("provenance", "EXTRACTED")
         result.edges_written += writer.merge_edge(
             rel_type=rule["type"],
             edges=edges,
@@ -498,6 +579,91 @@ class RecipeExecutionEngine:
         if unmatched:
             result.warnings.append(f"edge rule {rule['id']!r}: {unmatched} unmatched fk value(s)")
         return edges
+
+    def _target_node_identity(self, to_rule_id: str) -> tuple[str, list[str]]:
+        """Resolve the target node_rule's write-time (label, normalize-ops) for FK id computation.
+
+        The deterministic id MUST be computed exactly as the target record's own ingest would
+        compute it (same id function, same resolved label, same normalize chain) so a value linked
+        here matches the node materialised by a later/separate target ingest. The target identity
+        must be a SINGLE field for foreign_key — a composite has no single FK value to stand in.
+        """
+        to_rule = self._mappings_by_id.get(to_rule_id)
+        if to_rule is None or to_rule.get("project_to") != "node":
+            raise RecipeValidationError(
+                f"foreign_key edge target node_rule {to_rule_id!r} is not a node rule"
+            )
+        identity = to_rule["identity"]
+        if len(identity["from"]) != 1:
+            raise RecipeValidationError(
+                f"foreign_key edge target node_rule {to_rule_id!r} must have a single-field "
+                f"identity (got {len(identity['from'])} fields); a composite has no single FK value"
+            )
+        resolved_label, _coerced = resolve_label(getattr(self, "_ontology", None), to_rule["label"])
+        if resolved_label is None:
+            raise RecipeValidationError(
+                f"foreign_key edge target node_rule {to_rule_id!r}: label "
+                f"{to_rule['label']!r} is not permitted by the ontology"
+            )
+        return resolved_label, identity.get("normalize", [])
+
+    def _apply_foreign_key_edge(
+        self,
+        writer,
+        rule,
+        from_rule_id,
+        to_rule_id,
+        node_index,
+        payload_cache,
+        source_id,
+        provenance,
+        meta,
+        result,
+    ) -> None:
+        """G1: a recipe-declared, list-capable, cross-record/cross-file foreign-key edge.
+
+        For each matched SOURCE node, read its `to.from_field` (dotted-aware via _read_field) — a
+        scalar or a list of FK values. Each value IS the target's identity: normalise it with the
+        target rule's chain and hash it with the engine's own deterministic id
+        (sha256(graph_id|target_label|value)) — the SAME id the target's record ingest will produce.
+        MERGE (source)-[type]->(target_id), creating the target as a stub if it is not present yet.
+        No graph query, so a target ingested in a separate run/file still links (cross-job/
+        cross-file). Edges are stamped with the recipe provenance default.
+        """
+        from_field = rule["to"].get("from_field")
+        if not from_field:
+            raise RecipeValidationError(
+                f"foreign_key edge rule {rule['id']!r}: missing required to.from_field"
+            )
+        target_label, normalize_ops = self._target_node_identity(to_rule_id)
+        graph_id = self._graph_id
+        edges: list[dict] = []
+        for (rid, source_unit_id), source_eid in node_index.items():
+            if rid != from_rule_id:
+                continue
+            payload = payload_cache.get(source_unit_id, {})
+            raw = self._read_field(payload, None, from_field)
+            if raw is None:
+                continue
+            fk_values = raw if isinstance(raw, list) else [raw]
+            for value in fk_values:
+                if value is None:
+                    continue
+                identity_key = _normalize_identity(value, normalize_ops)
+                if not identity_key.strip():
+                    continue
+                target_id = _deterministic_id(graph_id, target_label, identity_key)
+                edges.append(
+                    {"from": source_eid, "to": target_id, "target_identity_key": identity_key}
+                )
+        result.edges_written += writer.merge_edge_to_stub(
+            rel_type=rule["type"],
+            target_label=target_label,
+            edges=edges,
+            source_id=source_id,
+            provenance=provenance,
+            meta=meta,
+        )
 
     def _apply_text_extraction(self, rule, unit, result) -> None:
         result.units_skipped += 1

@@ -131,7 +131,12 @@
           "additionalProperties": false,
           "properties": {
             "node_rule": { "type": "string", "minLength": 1 },
-            "resolve_by": { "enum": ["fk_target", "identity", "self"] }
+            "resolve_by": { "enum": ["foreign_key", "fk_target", "identity", "self"] },
+            "from_field": {
+              "type": "string",
+              "minLength": 1,
+              "$comment": "Required for resolve_by:foreign_key — a field:/column: ref on the SOURCE record holding the FK value(s) (scalar OR list). Each value becomes the target node_rule's identity, hashed with the engine's deterministic id; the edge MERGEs to that id, MERGE-ing a stub target if absent (cross-job/cross-file)."
+            }
           }
         },
         "properties": { "type": "array", "items": { "$ref": "#/$defs/property_projection" } },
