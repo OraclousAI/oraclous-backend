@@ -91,7 +91,15 @@ class GraphService:
         return updated
 
     async def delete_graph(self, *, graph_id: uuid.UUID, user_id: uuid.UUID) -> None:
+        # Owner gate first (a graph in another org/owner -> 404, no leak). Org-scoping is enforced
+        # by `_owned_or_404`; the Neo4j cascade below is graph_id-scoped to the owned graph.
         await self._owned_or_404(graph_id=graph_id, user_id=user_id)
+        # Cascade the graph's Neo4j nodes/edges before the Postgres row, so a Neo4j failure aborts
+        # the delete (surfaced, not swallowed) and the metadata row survives to retry — never an
+        # orphaned graph (the leak ORAA-261 fixes). When the substrate is unwired (unit tests /
+        # Neo4j unconfigured) `write_repo` is None and only the Postgres row is removed.
+        if self._write_repo is not None:
+            await asyncio.to_thread(self._write_repo.delete_graph_nodes, graph_id=str(graph_id))
         await self._repo.delete(graph_id)
 
 

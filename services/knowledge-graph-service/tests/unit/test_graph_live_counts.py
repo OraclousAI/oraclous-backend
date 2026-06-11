@@ -10,6 +10,9 @@ from datetime import UTC, datetime
 
 import pytest
 from oraclous_knowledge_graph_service.domain.graph import Graph
+from oraclous_knowledge_graph_service.repositories.graph_write_repository import (
+    GraphWriteRepository,
+)
 from oraclous_knowledge_graph_service.services.graph_service import GraphService
 
 pytestmark = pytest.mark.unit
@@ -90,3 +93,37 @@ async def test_list_graphs_isolates_a_failing_count() -> None:
     out = await service.list_graphs(user_id=_OWNER)
     assert len(out) == 1
     assert out[0].node_count == 0  # degraded to stored, did not crash the whole list
+
+
+# --- ORAA-261: graph delete cascades the Neo4j nodes ------------------------------------------
+class _RecordingDriver:
+    """Captures the Cypher + bound params of the last execute_query (no real Neo4j)."""
+
+    def __init__(self, records: list[dict] | None = None) -> None:
+        self.query: str | None = None
+        self.params: dict | None = None
+        self._records = records if records is not None else [{"deleted": 3}]
+
+    def execute_query(self, query, **params):
+        self.query = query
+        self.params = params
+        return self._records, None, None
+
+
+def test_delete_graph_nodes_issues_graph_id_scoped_detach_delete() -> None:
+    driver = _RecordingDriver([{"deleted": 7}])
+    repo = GraphWriteRepository(driver, database="neo4j")  # type: ignore[arg-type]
+    gid = "11111111-1111-1111-1111-111111111111"
+    deleted = repo.delete_graph_nodes(graph_id=gid)
+    assert deleted == 7
+    assert "DETACH DELETE" in driver.query
+    assert "{graph_id: $graph_id}" in driver.query  # graph_id-scoped MATCH
+    # graph_id is a BOUND parameter (never interpolated) -> injection-safe
+    assert driver.params["graph_id"] == gid
+    assert driver.params["database_"] == "neo4j"
+
+
+def test_delete_graph_nodes_returns_zero_when_no_rows() -> None:
+    driver = _RecordingDriver([])  # empty graph -> nothing matched
+    repo = GraphWriteRepository(driver, database=None)  # type: ignore[arg-type]
+    assert repo.delete_graph_nodes(graph_id="g") == 0

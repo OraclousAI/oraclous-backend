@@ -16,6 +16,7 @@ from oraclous_knowledge_graph_service.services.recipes.engine import (
 )
 from oraclous_knowledge_graph_service.services.structured.default_recipe import build_default_recipe
 from oraclous_knowledge_graph_service.services.structured.extractors import (
+    StructuredParseError,
     extract_csv,
     extract_json,
 )
@@ -42,6 +43,49 @@ def test_extract_json_schema() -> None:
     out = extract_json(_JSON)
     assert out["record_count"] == 2
     assert out["field_schema"] == {"name": "string", "age": "integer"}
+
+
+# --- JSONL robustness (ORAA-263) ----------------------------------------------
+def test_jsonl_newline_delimited_yields_all_records() -> None:
+    # (a) cleanly newline-split JSONL — every line a self-contained object.
+    text = (
+        '{"name": "Ada", "age": 36}\n{"name": "Charles", "age": 49}\n{"name": "Grace", "age": 85}'
+    )
+    out = extract_json(text)
+    assert out["record_count"] == 3
+    assert [r["name"] for r in out["records"]] == ["Ada", "Charles", "Grace"]
+
+
+def test_jsonl_pretty_printed_concatenated_yields_all_records() -> None:
+    # (b) records NOT 1-per-line: pretty-printed objects concatenated with no delimiter — the
+    # legacy splitlines() path lost these (a brace-only line is not valid JSON). raw_decode reads
+    # each object whole regardless of internal newlines.
+    text = (
+        '{\n  "name": "Ada",\n  "age": 36\n}\n'
+        '{\n  "name": "Charles",\n  "age": 49\n}'
+        '{"name": "Grace", "age": 85}'  # also concatenated with no separating whitespace
+    )
+    out = extract_json(text)
+    assert out["record_count"] == 3
+    assert [r["name"] for r in out["records"]] == ["Ada", "Charles", "Grace"]
+
+
+def test_jsonl_trailing_unparseable_bytes_raise_not_drop() -> None:
+    # (c) a good record followed by un-decodable trailing bytes -> surfaced, never silently dropped.
+    text = '{"name": "Ada", "age": 36}\n{"name": "Charles", this is broken'
+    with pytest.raises(StructuredParseError):
+        extract_json(text)
+
+
+def test_jsonl_eurail_shape_parses_one_to_one() -> None:
+    # Regression mirroring the EURail file shape: 601 records, NOT one-per-line (each pretty-printed
+    # over multiple lines, no inter-record delimiter). The legacy parser lost 2 of 601; this must
+    # parse 1:1.
+    n = 601
+    text = "".join(f'{{\n  "id": {i},\n  "station": "S{i}"\n}}\n' for i in range(n))
+    out = extract_json(text)
+    assert out["record_count"] == n
+    assert [r["id"] for r in out["records"]] == list(range(n))
 
 
 # --- primitives ---------------------------------------------------------------

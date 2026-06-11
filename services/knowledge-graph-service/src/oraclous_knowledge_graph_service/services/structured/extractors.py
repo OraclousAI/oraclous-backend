@@ -17,6 +17,15 @@ from typing import Any
 _TYPE_SAMPLE_CAP = 100
 
 
+class StructuredParseError(ValueError):
+    """A structured source could not be fully parsed (e.g. trailing un-decodable JSONL bytes).
+
+    Raised — never swallowed — so a partially-readable JSONL source surfaces the dropped tail
+    rather than silently losing records (ORAA-263). The service layer wraps it into a
+    `StructuredIngestionError` at the ingestion boundary.
+    """
+
+
 # --- CSV ---------------------------------------------------------------------
 def _infer_type(values: list[str]) -> str:
     non_empty = [v.strip() for v in values if v and v.strip()]
@@ -143,19 +152,49 @@ def type_label(ftype: Any) -> str:
     return "unknown"
 
 
+def _stream_decode(text: str) -> list[Any]:
+    """Decode a concatenation of JSON values (JSONL) with a `raw_decode` cursor.
+
+    Tolerant of pretty-printed / concatenated / non-newline-delimited records: it skips
+    inter-record whitespace, decodes one value, and advances the index — so a record spanning
+    several lines (a pretty-printed object) is read whole, unlike the legacy splitlines() path
+    that lost any line that wasn't a self-contained JSON value (ORAA-263, the EURail 2-of-601 loss).
+
+    If, after consuming every decodable value, non-whitespace trailing bytes remain that cannot be
+    decoded, raises `StructuredParseError` rather than silently dropping the tail.
+    """
+    decoder = json.JSONDecoder()
+    records: list[Any] = []
+    idx = 0
+    n = len(text)
+    while idx < n:
+        # skip whitespace (incl. newlines) between records
+        while idx < n and text[idx].isspace():
+            idx += 1
+        if idx >= n:
+            break
+        try:
+            obj, end = decoder.raw_decode(text, idx)
+        except json.JSONDecodeError as exc:
+            # Un-decodable trailing bytes after at least one good record, or a wholly malformed
+            # source — surface it (do not silently drop), with a snippet of the offending tail.
+            snippet = text[idx : idx + 80].strip()
+            raise StructuredParseError(
+                f"un-parseable JSON content at offset {idx} after {len(records)} record(s): "
+                f"{snippet!r}"
+            ) from exc
+        records.append(obj)
+        idx = end
+    return records
+
+
 def _parse_records(text: str) -> list[Any]:
     try:
         data = json.loads(text)
     except json.JSONDecodeError:
-        records: list[Any] = []
-        for line in text.splitlines():
-            stripped = line.strip()
-            if stripped:
-                try:
-                    records.append(json.loads(stripped))
-                except json.JSONDecodeError:
-                    pass
-        return records
+        # Not a single JSON document -> JSONL (newline-delimited OR concatenated/pretty-printed):
+        # decode it with a robust streaming cursor that never silently drops a record.
+        return _stream_decode(text)
     return data if isinstance(data, list) else [data]
 
 
