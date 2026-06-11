@@ -1,6 +1,6 @@
 # Oraclous API — Postman collection
 
-A complete Postman collection for the Oraclous backend: **110 endpoints across all 8 services**,
+A complete Postman collection for the Oraclous backend: **113 endpoints across all 8 services**,
 callable through the **application-gateway** (the real entrypoint) or directly per service.
 
 | File | What |
@@ -85,3 +85,15 @@ This collection was generated from the services' FastAPI route definitions. When
 regenerate or hand-edit and keep the folder/variable conventions above. The **Harness Runtime →
 `POST /v1/harnesses/execute`** request carries a ready-to-run inline OHM (a human-actor review
 harness that escalates to a task-board assignment — needs no credentials).
+
+Recently added:
+
+- **Harness Runtime → `GET /v1/harnesses/spend`** — an ESTIMATE of the org's own BYOM provider LLM
+  spend (NOT a platform charge), priced at read time from a static rate table (ADR-009). Optional
+  `since` (ISO8601) bounds the window; unpriced models report tokens only. Returns the
+  `SpendResponse` shape (`by_model[] {model,input_tokens,output_tokens,executions,estimated_usd,priced}`,
+  `total_estimated_usd`, `total_input_tokens`, `total_output_tokens`, `unpriced_models`).
+- **Knowledge Graph → enriched evidence recipe (#269)** — a `POST /api/v1/recipes` example carrying
+  the new recipe rule shapes (`transform`, `from_each`+`edge_to_each`, `extractions`, `similarities`,
+  `resolution`), paired with a `POST .../ingest` example that drives them over sample JSON records.
+  See ADR-022 and the recipe-format reference for the field semantics.

@@ -1833,6 +1833,76 @@
           "id": "2742d8c7-1d95-28cc-224d-81cee9482343"
         },
         {
+          "name": "POST /api/v1/recipes (enriched evidence \u2014 #269)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/recipes",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "recipes"
+              ]
+            },
+            "description": "Store the #269 ENRICHED evidence recipe, then ingest with recipe_id=rcp_evidence-enriched (next request). Beyond the Slice-A deterministic projection (Evidence/ClaimSource + FROM_SOURCE/CONTRADICTS) this recipe exercises the new rule shapes:\n\n- transform (mappings[].identity.transform): the `publisher` node keys identity off field:source.url with transform `host` \u2014 collapsing every article URL on a domain to one Publisher (ClaimSource-[:PUBLISHED_BY]->Publisher). Registry: host|lower|strip_www|canonical.\n- from_each + edge_to_each: the `tag` node fans the list-valued field:dimensions into one Tag per element (MERGE-shared across records), each Evidence-[:HAS_DIMENSION]->Tag.\n- extractions[]: hybrid free-text-on-a-field \u2014 the LLM extractor mines named entities (Person/Organization/Product/Place) from the prose field:claim under an inline strict ontology and MERGEs Evidence-[:MENTIONS]->entity (+ OPERATES/LOCATED_IN between entities). Fail-soft when KGS_EXTRACTOR=null.\n- extractions[].resolution: resolve-on-write canonicalization \u2014 `canonical: true` keys each entity by its canonical key (Eurail / eurail.com / Eurail B.V. -> one Organization, name=key, canonical_name=display form, aliases=surface forms); the [candidate_threshold, merge_threshold) band (0.85-0.92) is flagged SAME_AS_CANDIDATE {score} (not merged).\n- similarities[]: embed field:claim, cosine kNN (top_k=5, min_score=0.5), MERGE Evidence-[:SIMILAR_TO {score}]->Evidence (one edge per unordered pair).\n\n201 returns the stored recipe summary; 422 on an invalid recipe.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"recipe\": {\n    \"recipe_format_version\": \"0.2\",\n    \"id\": \"rcp_evidence-enriched\",\n    \"version\": 1,\n    \"status\": \"promoted\",\n    \"concern\": \"evidence-and-conflicts\",\n    \"applies_to\": {\n      \"source_type\": \"json\",\n      \"shape_signature\": \"json(claim:string,confidence:number,dimensions:array,id:string,label:string,source:object)\"\n    },\n    \"defaults\": {\n      \"provenance\": \"EXTRACTED\"\n    },\n    \"authoring\": {\n      \"authored_by\": \"data-specialist\",\n      \"sample_basis\": \"EURail evidence ledger records (nested source{} object).\"\n    },\n    \"mappings\": [\n      {\n        \"id\": \"evidence\",\n        \"project_to\": \"node\",\n        \"label\": \"Evidence\",\n        \"match\": {\n          \"unit_kind\": \"record\"\n        },\n        \"identity\": {\n          \"scheme\": \"deterministic\",\n          \"from\": [\n            \"field:id\"\n          ],\n          \"normalize\": [\n            \"trim\"\n          ]\n        },\n        \"properties\": [\n          {\n            \"name\": \"claim\",\n            \"value_from\": \"field:claim\"\n          },\n          {\n            \"name\": \"confidence\",\n            \"value_from\": \"field:confidence\"\n          },\n          {\n            \"name\": \"label\",\n            \"value_from\": \"field:label\"\n          },\n          {\n            \"name\": \"dimensions\",\n            \"value_from\": \"field:dimensions\"\n          }\n        ]\n      },\n      {\n        \"id\": \"claim_source\",\n        \"project_to\": \"node\",\n        \"label\": \"ClaimSource\",\n        \"match\": {\n          \"unit_kind\": \"record\"\n        },\n        \"identity\": {\n          \"scheme\": \"deterministic\",\n          \"from\": [\n            \"field:source.url\"\n          ],\n          \"normalize\": [\n            \"trim\"\n          ]\n        },\n        \"properties\": [\n          {\n            \"name\": \"name\",\n            \"value_from\": \"field:source.name\"\n          },\n          {\n            \"name\": \"publication_date\",\n            \"value_from\": \"field:source.publication_date\"\n          }\n        ]\n      },\n      {\n        \"id\": \"from_source\",\n        \"project_to\": \"edge\",\n        \"type\": \"FROM_SOURCE\",\n        \"match\": {\n          \"unit_kind\": \"record\"\n        },\n        \"from\": {\n          \"node_rule\": \"evidence\"\n        },\n        \"to\": {\n          \"node_rule\": \"claim_source\",\n          \"resolve_by\": \"identity\"\n        }\n      },\n      {\n        \"id\": \"publisher\",\n        \"project_to\": \"node\",\n        \"label\": \"Publisher\",\n        \"match\": {\n          \"unit_kind\": \"record\"\n        },\n        \"identity\": {\n          \"scheme\": \"deterministic\",\n          \"from\": [\n            \"field:source.url\"\n          ],\n          \"normalize\": [\n            \"trim\"\n          ],\n          \"transform\": \"host\"\n        }\n      },\n      {\n        \"id\": \"published_by\",\n        \"project_to\": \"edge\",\n        \"type\": \"PUBLISHED_BY\",\n        \"match\": {\n          \"unit_kind\": \"record\"\n        },\n        \"from\": {\n          \"node_rule\": \"claim_source\"\n        },\n        \"to\": {\n          \"node_rule\": \"publisher\",\n          \"resolve_by\": \"identity\"\n        }\n      },\n      {\n        \"id\": \"tag\",\n        \"project_to\": \"node\",\n        \"label\": \"Tag\",\n        \"match\": {\n          \"unit_kind\": \"record\"\n        },\n        \"from_each\": \"field:dimensions\",\n        \"identity\": {\n          \"scheme\": \"deterministic\",\n          \"from\": [\n            \"field:dimensions\"\n          ],\n          \"normalize\": [\n            \"trim\",\n            \"casefold\"\n          ]\n        },\n        \"edge_to_each\": {\n          \"type\": \"HAS_DIMENSION\",\n          \"from_node_rule\": \"evidence\"\n        }\n      }\n    ],\n    \"extractions\": [\n      {\n        \"id\": \"claim_entities\",\n        \"from\": \"field:claim\",\n        \"ontology\": {\n          \"mode\": \"strict\",\n          \"domain\": \"rail travel and tourism\",\n          \"entity_types\": [\n            {\n              \"name\": \"Person\",\n              \"description\": \"A named individual.\"\n            },\n            {\n              \"name\": \"Organization\",\n              \"description\": \"A company, agency, or operator.\"\n            },\n            {\n              \"name\": \"Product\",\n              \"description\": \"A named product, pass, or service.\"\n            },\n            {\n              \"name\": \"Place\",\n              \"description\": \"A named city, country, or location.\"\n            }\n          ],\n          \"relationship_types\": [\n            {\n              \"name\": \"OPERATES\",\n              \"source\": \"Organization\",\n              \"target\": \"Product\"\n            },\n            {\n              \"name\": \"LOCATED_IN\",\n              \"source\": \"Organization\",\n              \"target\": \"Place\"\n            }\n          ]\n        },\n        \"resolution\": {\n          \"canonical\": true,\n          \"merge_threshold\": 0.92,\n          \"candidate_threshold\": 0.85\n        },\n        \"link\": {\n          \"type\": \"MENTIONS\",\n          \"from_node_rule\": \"evidence\"\n        }\n      }\n    ],\n    \"similarities\": [\n      {\n        \"id\": \"claim_similarity\",\n        \"from\": \"field:claim\",\n        \"node_rule\": \"evidence\",\n        \"edge_type\": \"SIMILAR_TO\",\n        \"top_k\": 5,\n        \"min_score\": 0.5\n      }\n    ]\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "POST /api/v1/graphs/{{graph_id}}/ingest (enriched recipe \u2014 #269)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/graphs/{{graph_id}}/ingest",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "graphs",
+                "{{graph_id}}",
+                "ingest"
+              ]
+            },
+            "description": "Ingest structured JSON evidence records through the #269 enriched recipe (recipe_id must be the rcp_evidence-enriched stored above). source_type=json routes to the recipe engine; the records' nested source{} + list-valued dimensions + prose claim drive the deterministic projection, the host-keyed Publisher, the Tag fan-out, the MENTIONS extraction (+ resolution), and the SIMILAR_TO similarity pass. Returns 202 + a job; poll the job endpoint for status.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"content\": \"[{\\\"id\\\": \\\"ev-1\\\", \\\"claim\\\": \\\"Eurail B.V. operates the Eurail Global Pass across Europe.\\\", \\\"confidence\\\": 0.9, \\\"label\\\": \\\"product-coverage\\\", \\\"dimensions\\\": [\\\"coverage\\\", \\\"passes\\\"], \\\"source\\\": {\\\"url\\\": \\\"https://www.eurail.com/en/passes/global-pass\\\", \\\"name\\\": \\\"Eurail \\\\u2014 Global Pass\\\", \\\"publication_date\\\": \\\"2026-01-10\\\"}}, {\\\"id\\\": \\\"ev-2\\\", \\\"claim\\\": \\\"eurail.com lists the Global Pass as valid in 33 countries.\\\", \\\"confidence\\\": 0.8, \\\"label\\\": \\\"product-coverage\\\", \\\"dimensions\\\": [\\\"coverage\\\"], \\\"source\\\": {\\\"url\\\": \\\"https://eurail.com/en/about\\\", \\\"name\\\": \\\"Eurail \\\\u2014 About\\\", \\\"publication_date\\\": \\\"2026-02-02\\\"}}]\",\n  \"source_type\": \"json\",\n  \"recipe_id\": \"rcp_evidence-enriched\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
           "name": "GET /api/v1/recipes",
           "request": {
             "method": "GET",
@@ -2114,6 +2184,33 @@
           },
           "response": [],
           "id": "8fa40687-f821-8191-3962-17f6edc013ac"
+        },
+        {
+          "name": "GET /v1/harnesses/spend",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/v1/harnesses/spend?since=",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "harnesses",
+                "spend"
+              ],
+              "query": [
+                {
+                  "key": "since",
+                  "value": "",
+                  "description": "ISO8601 timestamp (e.g. 2026-06-01T00:00:00Z); bounds the window. Omit/blank = all-time."
+                }
+              ]
+            },
+            "description": "An ESTIMATE of the caller org's own BYOM provider LLM spend (NOT a platform charge). Per-model raw token sums are priced at read time from a static rate table (ADR-009: the substrate meters raw tokens; pricing is downstream). A model absent from the table reports tokens only (estimated_usd: null, priced: false) and is listed in unpriced_models; total_estimated_usd sums only the priced rows. Org-scoped from the principal.\n\n200 shape (SpendResponse): { since, currency, by_model: [{ model, input_tokens, output_tokens, executions, estimated_usd, priced }], total_estimated_usd, total_input_tokens, total_output_tokens, unpriced_models }."
+          },
+          "response": []
         },
         {
           "name": "GET /v1/harnesses/executions/{{execution_id}}",
