@@ -191,6 +191,7 @@ async def _ingest_structured(*, driver, maker, settings, payload, data: bytes) -
         driver=driver,
         organisation_id=enforced_organisation_id(),
         database=settings.neo4j_database,
+        settings=settings,
     )
     result = await asyncio.to_thread(
         service.ingest,
@@ -202,9 +203,13 @@ async def _ingest_structured(*, driver, maker, settings, payload, data: bytes) -
         ontology=Ontology.of(ontology_data),
         temporal=temporal,
     )
+    # `entities_extracted` (hybrid free-text-on-a-field, Slice 2) is folded into the headline
+    # entity count; `mentions` is folded into relationships (it is the MENTIONS edge per entity).
     return {
-        "entities": result["nodes_written"] + result["containers_written"],
-        "relationships": result["edges_written"],
+        "entities": result["nodes_written"]
+        + result["containers_written"]
+        + result.get("entities_extracted", 0),
+        "relationships": result["edges_written"] + result.get("mentions", 0),
         "detail": result,
     }
 
