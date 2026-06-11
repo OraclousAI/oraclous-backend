@@ -203,6 +203,11 @@ class RecipeGraphWriter:
     def merge_edge(
         self, *, rel_type: str, edges: list[dict], source_id: str, provenance: str, meta: dict
     ) -> int:
+        """MERGE one edge per `{from, to}` row, idempotently. An edge row may carry an optional
+        `properties` dict (e.g. the similarity pass's `{"score": 0.87}`); it is SET on the edge
+        unconditionally so a later run with a refreshed score updates it. Rows without `properties`
+        leave the edge's properties untouched (the existing recipe edges behave exactly as before).
+        """
         rel_type = _safe(rel_type)
         cypher = (
             "UNWIND $batch AS row\n"
@@ -214,7 +219,8 @@ class RecipeGraphWriter:
             "{graph_id: $graph_id, organisation_id: $organisation_id}]->(b)\n"
             "ON CREATE SET r.ingestion_source = $source_id, r.provenance = $provenance,\n"
             "              r.recipe_id = $recipe_id, r.recipe_version = $recipe_version,\n"
-            "              r.ingestion_time = $ingestion_time"
+            "              r.ingestion_time = $ingestion_time\n"
+            "SET r += coalesce(row.properties, {})"
         )
         written = 0
         for batch in _chunks(edges):

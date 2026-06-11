@@ -55,6 +55,12 @@ def build_evidence_recipe(shape_signature: str = EVIDENCE_SHAPE_SIGNATURE) -> di
     evidence records interconnect by the entities they share. Fail-soft: with no LLM extractor
     (`KGS_EXTRACTOR=null`, the CI default) the extraction is skipped and only the deterministic
     structured projection above runs.
+
+    Enriched once more (Slice 3, #269) with a CONTENT-SIMILARITY pass: each record's prose
+    `field:claim` is embedded and a cosine kNN MERGEs an `Evidence-[:SIMILAR_TO {score}]->Evidence`
+    edge between records whose claims are close (top_k=5, min_score=0.5; one edge per unordered
+    pair). So evidence that says similar things connects even when it shares no source/entity.
+    Fail-soft: an embedder failure skips the similarity pass, leaving the projection intact.
     """
     return {
         "recipe_format_version": "0.2",
@@ -172,6 +178,20 @@ def build_evidence_recipe(shape_signature: str = EVIDENCE_SHAPE_SIGNATURE) -> di
                     ],
                 },
                 "link": {"type": "MENTIONS", "from_node_rule": "evidence"},
+            }
+        ],
+        # Slice 3 — content similarity: embed each record's prose `field:claim`, run a cosine kNN,
+        # and MERGE an Evidence-[:SIMILAR_TO {score}]->Evidence edge between records whose claims
+        # are close (one edge per unordered pair). So evidence that says similar things connects
+        # even when it shares no source/publisher/entity. Fail-soft: an embedder failure skips it.
+        "similarities": [
+            {
+                "id": "claim_similarity",
+                "from": "field:claim",
+                "node_rule": "evidence",
+                "edge_type": "SIMILAR_TO",
+                "top_k": 5,
+                "min_score": 0.5,
             }
         ],
     }
