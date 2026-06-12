@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 from oraclous_application_gateway_service.domain.cors_policy import (
     is_public_agent_path,
+    is_public_plane_preflight,
     origin_allowed,
     preflight_headers,
     rewrite_response_headers,
@@ -20,6 +21,18 @@ def test_path_scoping_is_only_the_slug_routes() -> None:
     assert not is_public_agent_path("/v1/agents")
     assert not is_public_agent_path("/v1/integration-keys")
     assert not is_public_agent_path("/health")
+
+
+def test_public_plane_preflight_owns_get_post_and_bare_defers_delete() -> None:
+    # GET (metadata) + POST (invoke) are the public plane -> AgentCors owns them
+    assert is_public_plane_preflight(b"GET")
+    assert is_public_plane_preflight(b"POST")
+    assert is_public_plane_preflight(b"post")  # case-insensitive / defensive
+    assert is_public_plane_preflight(None)  # a bare metadata-read preflight keeps today's behaviour
+    # the member plane (DELETE unpublish, #289) + any other method are NOT public plane -> defer
+    assert not is_public_plane_preflight(b"DELETE")
+    assert not is_public_plane_preflight(b"PUT")
+    assert not is_public_plane_preflight(b"PATCH")
 
 
 def test_origin_allowed_is_fail_closed_on_none() -> None:

@@ -2,11 +2,16 @@
 
 A path-scoped pure-ASGI middleware (never ``BaseHTTPMiddleware`` — the streaming proxy must not be
 buffered) that sits OUTSIDE the gateway-wide ``CORSMiddleware`` (added after it → wraps it). For
-``/v1/agents/{slug}[/invoke]`` ONLY it (1) answers the key-less preflight directly (short-circuiting
-before the inner CORS, so the wildcard/static CORS never also answers it) and (2) on the keyed
-response REPLACES whatever ACAO the inner CORS set with the per-key decision (the resolved key's
-``cors_origins`` on ``scope["state"]``). It is a no-op on every other path — the gateway-wide CORS
-stays fully authoritative for the proxied + management routes.
+``/v1/agents/{slug}[/invoke]`` ONLY it (1) answers the key-less **public-plane** preflight directly
+(short-circuiting before the inner CORS, so the wildcard/static CORS never also answers it) and (2)
+on the keyed response REPLACES whatever ACAO the inner CORS set with the per-key decision (the
+resolved key's ``cors_origins`` on ``scope["state"]``). It is a no-op on every other path — the
+gateway-wide CORS stays fully authoritative for the proxied + management routes.
+
+The path is SHARED with the member plane (``DELETE /v1/agents/{slug}`` = admin unpublish): a
+preflight whose ``Access-Control-Request-Method`` is not a public-plane method (GET/POST) is NOT
+owned here — it passes through to the inner gateway-wide CORS, which advertises DELETE + the console
+origin (#289).
 """
 
 from __future__ import annotations
@@ -15,6 +20,7 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from oraclous_application_gateway_service.domain.cors_policy import (
     is_public_agent_path,
+    is_public_plane_preflight,
     preflight_headers,
     rewrite_response_headers,
 )
@@ -34,7 +40,14 @@ class AgentCorsMiddleware:
             await self._app(scope, receive, send)
             return
         if scope.get("method") == "OPTIONS":
-            # preflight: the key is unknown (no Authorization) — answer permissively + short-circuit
+            # Preflight. AgentCors only OWNS the PUBLIC plane (GET metadata, POST invoke) on this
+            # shared path. A member-plane preflight (DELETE = admin unpublish, #289) must NOT get
+            # the public-plane policy (it omits DELETE + the console origin) — defer it to the inner
+            # gateway-wide CORS (allow_methods=["*"] + the console origins), which answers it.
+            if not is_public_plane_preflight(headers.get(b"access-control-request-method")):
+                await self._app(scope, receive, send)
+                return
+            # public-plane preflight: the key is unknown (no Authorization) — answer permissively
             await self._send_preflight(send, origin, headers.get(b"access-control-request-headers"))
             return
 
