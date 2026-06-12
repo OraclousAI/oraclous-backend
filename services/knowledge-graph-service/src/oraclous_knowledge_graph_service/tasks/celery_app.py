@@ -25,6 +25,7 @@ celery_app = Celery(
     include=[
         "oraclous_knowledge_graph_service.tasks.ingest_tasks",
         "oraclous_knowledge_graph_service.tasks.community_tasks",
+        "oraclous_knowledge_graph_service.tasks.code_stale_tasks",
     ],
 )
 celery_app.conf.update(
@@ -39,6 +40,17 @@ celery_app.conf.update(
     worker_prefetch_multiplier=1,
     worker_max_tasks_per_child=1000,
 )
+
+# Stage-6 code stale-symbol sweep (#305): a periodic dispatcher that fans out one per-graph cleanup
+# for every code graph. Only runs when an operator deploys a `celery beat` process; a worker-only
+# deploy (the current default) ignores this — the sweep is then driven by the post-re-ingest enqueue
+# in `ingest_tasks`. Cadence is env-tunable (KGS_CODE_STALE_SWEEP_INTERVAL_SECONDS, default daily).
+celery_app.conf.beat_schedule = {
+    "code-stale-sweep": {
+        "task": "kgs.sweep_all_code_graphs",
+        "schedule": float(_settings.code_stale_sweep_interval_seconds),
+    },
+}
 
 
 class AsyncTaskExecutor:
