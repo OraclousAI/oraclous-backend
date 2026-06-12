@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import logging
 import uuid
 from typing import Any
 
@@ -22,6 +23,7 @@ from oraclous_substrate.access import enforced_organisation_id
 from oraclous_knowledge_graph_service.core.config import get_settings
 from oraclous_knowledge_graph_service.core.database import make_sessionmaker, make_worker_engine
 from oraclous_knowledge_graph_service.core.neo4j import make_neo4j_driver
+from oraclous_knowledge_graph_service.core.redis import make_redis_lock_client
 from oraclous_knowledge_graph_service.domain.extraction_schema import (
     to_graph_schema,
     to_prompt_prefix,
@@ -48,6 +50,7 @@ from oraclous_knowledge_graph_service.services.structured_ingestion_service impo
     is_structured,
 )
 from oraclous_knowledge_graph_service.tasks.celery_app import AsyncTaskExecutor, celery_app
+from oraclous_knowledge_graph_service.tasks.code_stale_tasks import cleanup_stale_code_task
 
 
 class JobNotVisibleYet(Exception):
@@ -237,16 +240,41 @@ async def _ingest_structured(*, driver, maker, settings, payload, data: bytes) -
 
 
 async def _ingest_code(*, driver, settings, payload, data: bytes) -> dict[str, Any]:
-    """Code (zip / single file): tree-sitter parse -> :File/:Function/:Class via the code writer."""
-    service = CodeIngestionService(
-        driver=driver, organisation_id=enforced_organisation_id(), database=settings.neo4j_database
-    )
-    counts = await asyncio.to_thread(
-        service.ingest,
-        graph_id=str(payload.graph_id),
-        document=payload.filename or "code.zip",
-        data=data,
-    )
+    """Code (zip / single file): the full 6-stage pipeline via the org-scoped code writer.
+
+    bootstrap (deps) -> delta (SHA, stale-mark changed + deleted) -> AST parse -> cross-file resolve
+    -> embeddings (fail-soft) -> write, all under the per-(org,graph) advisory lock (#305) so two
+    re-ingests of the same graph serialise (no mark→revive strand) and a concurrent Stage-6 sweep
+    can't reap a node this ingest is reviving. After a re-ingest that marked anything stale (changed
+    OR deleted files), enqueue the Stage-6 sweep (TTL-gated, so just-marked symbols survive the
+    grace window)."""
+    # make_redis_lock_client does a blocking ping(); run it off the event loop (mirrors the
+    # community path) so a slow/unreachable Redis can't block the worker's event loop. Advisory:
+    # None (Redis down) degrades to lock-off — the ingest still runs.
+    lock_client = await asyncio.to_thread(make_redis_lock_client, settings)
+    try:
+        service = CodeIngestionService(
+            driver=driver,
+            organisation_id=enforced_organisation_id(),
+            database=settings.neo4j_database,
+            settings=settings,
+            lock_client=lock_client,
+        )
+        counts = await asyncio.to_thread(
+            service.ingest,
+            graph_id=str(payload.graph_id),
+            document=payload.filename or "code.zip",
+            data=data,
+        )
+    finally:
+        if lock_client is not None:
+            try:
+                await asyncio.to_thread(lock_client.close)
+            except Exception as exc:  # noqa: BLE001 — best-effort close of the advisory lock client
+                logging.getLogger(__name__).debug("code-ingest lock client close skipped: %s", exc)
+    if counts.get("files_changed") or counts.get("files_deleted"):
+        # Decouple the sweep from the request: enqueue (never block the ingest on cleanup).
+        cleanup_stale_code_task.delay(str(payload.graph_id), enforced_organisation_id())
     entities = counts["files"] + counts["functions"] + counts["classes"] + counts["variables"]
     relationships = counts["calls"] + counts["imports"] + counts["inherits"]
     return {"entities": entities, "relationships": relationships, "detail": counts}
