@@ -1,1 +1,1 @@
-"""oraclous-harness-runtime-service — placeholder shell (ORA-13)."""
+"""oraclous-harness-runtime-service — OHM agent runtime (harness layer)."""
