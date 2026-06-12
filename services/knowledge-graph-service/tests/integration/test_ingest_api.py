@@ -11,10 +11,16 @@ import uuid
 from datetime import UTC, datetime
 
 import pytest
-from oraclous_knowledge_graph_service.core.dependencies import get_job_service
+from oraclous_knowledge_graph_service.core.dependencies import (
+    get_graph_service,
+    get_job_service,
+    get_recipe_service,
+    get_sql_ingestion_service,
+)
 from oraclous_knowledge_graph_service.domain.job import IngestionJobRecord
 from oraclous_knowledge_graph_service.services.graph_service import GraphNotFound
 from oraclous_knowledge_graph_service.services.job_service import JobNotFound
+from oraclous_knowledge_graph_service.services.sql_ingestion_service import SqlIngestionError
 
 pytestmark = pytest.mark.integration
 
@@ -134,4 +140,114 @@ async def test_upload_text_returns_202(client) -> None:
 async def test_upload_unsupported_type_is_422(client) -> None:
     files = {"file": ("a.exe", b"x", "application/octet-stream")}
     resp = await client.post(f"/api/v1/graphs/{uuid.uuid4()}/upload", files=files, headers=_AUTH)
+    assert resp.status_code == 422
+
+
+# --- SQL relational ingest route (#307) --------------------------------------
+class _FakeGraphService:
+    """Owner gate only: returns/raises so the route's ownership check is exercised."""
+
+    def __init__(self) -> None:
+        self.owned = True
+
+    async def get_graph(self, *, graph_id, user_id):
+        if not self.owned:
+            raise GraphNotFound(str(graph_id))
+        return {"id": str(graph_id)}
+
+
+class _FakeRecipeService:
+    def __init__(self, recipe=None) -> None:
+        self._recipe = recipe
+
+    async def get(self, recipe_id):  # noqa: ARG002
+        return self._recipe
+
+
+class _FakeSqlIngestionService:
+    def __init__(self) -> None:
+        self.error: Exception | None = None
+        self.result = {
+            "dialect": "postgresql",
+            "database": "appdb",
+            "schema": "public",
+            "sync_mode": "full_snapshot",
+            "tables_introspected": 2,
+            "nodes_written": 5,
+            "edges_written": 3,
+            "containers_written": 2,
+            "properties_written": 4,
+            "units_skipped": 0,
+            "warnings": [],
+        }
+
+    async def ingest(self, **_):
+        if self.error is not None:
+            raise self.error
+        return self.result
+
+
+@pytest.fixture
+def sql_client(app, async_client):
+    graphs = _FakeGraphService()
+    sql = _FakeSqlIngestionService()
+    app.dependency_overrides[get_graph_service] = lambda: graphs
+    app.dependency_overrides[get_sql_ingestion_service] = lambda: sql
+    app.dependency_overrides[get_recipe_service] = lambda: _FakeRecipeService()
+    yield async_client, graphs, sql
+    app.dependency_overrides.clear()
+
+
+async def test_ingest_sql_requires_auth(sql_client) -> None:
+    client, _g, _s = sql_client
+    resp = await client.post(
+        f"/api/v1/graphs/{uuid.uuid4()}/ingest-sql", json={"credential_id": "c"}
+    )
+    assert resp.status_code == 401
+
+
+async def test_ingest_sql_happy_path(sql_client) -> None:
+    client, _g, _s = sql_client
+    gid = uuid.uuid4()
+    resp = await client.post(
+        f"/api/v1/graphs/{gid}/ingest-sql", json={"credential_id": "cred-1"}, headers=_AUTH
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["dialect"] == "postgresql"
+    assert body["nodes_written"] == 5
+    assert body["edges_written"] == 3
+    assert "organisation_id" not in body
+
+
+async def test_ingest_sql_unowned_graph_is_404(sql_client) -> None:
+    client, graphs, _s = sql_client
+    graphs.owned = False
+    resp = await client.post(
+        f"/api/v1/graphs/{uuid.uuid4()}/ingest-sql",
+        json={"credential_id": "c"},
+        headers=_AUTH,
+    )
+    assert resp.status_code == 404
+
+
+async def test_ingest_sql_egress_or_credential_error_is_422(sql_client) -> None:
+    client, _g, sql = sql_client
+    sql.error = SqlIngestionError("DB host blocked by egress guard: ...")
+    resp = await client.post(
+        f"/api/v1/graphs/{uuid.uuid4()}/ingest-sql",
+        json={"credential_id": "c"},
+        headers=_AUTH,
+    )
+    assert resp.status_code == 422
+    assert "egress" in resp.json()["detail"]
+
+
+async def test_ingest_sql_bad_sync_mode_is_422(sql_client) -> None:
+    client, _g, _s = sql_client
+    resp = await client.post(
+        f"/api/v1/graphs/{uuid.uuid4()}/ingest-sql",
+        json={"credential_id": "c", "sync_mode": "cdc"},
+        headers=_AUTH,
+    )
     assert resp.status_code == 422
