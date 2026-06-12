@@ -102,6 +102,22 @@ def make_community_id(*, graph_id: str, level: int, member_ids: list[str]) -> st
     return f"community_{digest}"
 
 
+def _normalise_dendrogram(intermediate: list[int], *, depth: int) -> list[int]:
+    """Pad a SHORT dendrogram row on the COARSE end to the global ``depth``.
+
+    GDS normally emits one entry per node for every iteration, so every row has the same length; but
+    a ragged dendrogram (rows of differing length) must not crash detection or strand a short row's
+    members below the coarsest level. Since the array runs ``[finest, ..., coarsest]``, a short row
+    is normalised by repeating its COARSEST id (the last element) up the missing coarser slots —
+    i.e. a node that stopped subdividing early is treated as belonging to that same community at
+    every coarser level. This keeps the partition complete (every entity reaches level 0) and the
+    parent chain monotone (no IndexError reading ``intermediate[idx + 1]``)."""
+    if len(intermediate) >= depth:
+        return intermediate
+    coarsest = intermediate[-1]
+    return intermediate + [coarsest] * (depth - len(intermediate))
+
+
 def dendrogram_to_levels(
     rows: list[tuple[str, list[int]]],
 ) -> dict[int, dict[str, list[str]]]:
@@ -110,8 +126,10 @@ def dendrogram_to_levels(
     ``rows`` is one ``(entity_id, intermediate_community_ids)`` per node, exactly as streamed by
     ``gds.louvain.stream(..., {includeIntermediateCommunities: true})``. Per the live-verified
     ordering, ``intermediate_community_ids[0]`` is the FINEST partition and the last element is the
-    COARSEST. The dendrogram depth is the common array length (Louvain emits one entry per node for
-    every iteration it ran).
+    COARSEST. The dendrogram depth is the MAX array length (Louvain normally emits one entry per
+    node for every iteration it ran; a ragged dendrogram — rows of differing length — is normalised
+    by padding short rows on the coarse end, see :func:`_normalise_dendrogram`, so every entity
+    still reaches the coarsest level and nothing is stranded).
 
     Levels are numbered so 0 is the COARSEST (legacy ``DEFAULT_LEVELS`` ordering, where level 0 is
     parent-less): ``level = (depth - 1) - dendrogram_index``. The gds community KEY at a level is
@@ -131,7 +149,7 @@ def dendrogram_to_levels(
     for entity_id, intermediate in rows:
         if not intermediate:
             continue
-        for idx, gds_id in enumerate(intermediate):
+        for idx, gds_id in enumerate(_normalise_dendrogram(intermediate, depth=depth)):
             level = (depth - 1) - idx
             key = f"L{level}:{gds_id}"
             levels.setdefault(level, {}).setdefault(key, []).append(entity_id)
@@ -146,8 +164,9 @@ def dendrogram_parent_links(
     For each node, its community at dendrogram index ``i`` (finer) is by construction contained in
     its community at index ``i+1`` (coarser). Translating to levels: a level-``k`` community's
     parent is the level-``(k-1)`` community the same members belong to. The coarsest level (level 0)
-    has no parent. Keys match :func:`dendrogram_to_levels` (``"L<level>:<gds_id>"``). Returns
-    ``level → {child_key: parent_key|None}``.
+    has no parent. Keys match :func:`dendrogram_to_levels` (``"L<level>:<gds_id>"``). Short (ragged)
+    rows are padded on the coarse end first (see :func:`_normalise_dendrogram`), so ``idx + 1`` is
+    always in range and no parent link is dropped. Returns ``level → {child_key: parent_key|None}``.
     """
     if not rows:
         return {}
@@ -156,14 +175,15 @@ def dendrogram_parent_links(
     for _entity_id, intermediate in rows:
         if not intermediate:
             continue
-        for idx, gds_id in enumerate(intermediate):
+        normalised = _normalise_dendrogram(intermediate, depth=depth)
+        for idx, gds_id in enumerate(normalised):
             level = (depth - 1) - idx
             child_key = f"L{level}:{gds_id}"
             if level == 0:
                 parents.setdefault(level, {}).setdefault(child_key, None)
                 continue
             # The coarser community is the NEXT element in the array (idx + 1 → level - 1).
-            parent_gds = intermediate[idx + 1]
+            parent_gds = normalised[idx + 1]
             parent_key = f"L{level - 1}:{parent_gds}"
             parents.setdefault(level, {})[child_key] = parent_key
     return parents

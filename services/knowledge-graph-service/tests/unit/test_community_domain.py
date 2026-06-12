@@ -92,3 +92,36 @@ def test_flat_convergence_emits_one_honest_level() -> None:
 def test_dendrogram_empty_rows() -> None:
     assert dendrogram_to_levels([]) == {}
     assert dendrogram_parent_links([]) == {}
+
+
+# A RAGGED dendrogram: e2 stopped subdividing after one iteration (len 1) while e0/e1 ran two
+# (len 2). It must not crash (no IndexError reading intermediate[idx+1]) and e2 must still appear at
+# the coarsest level (a complete partition), not be stranded below it.
+_RAGGED_ROWS = [
+    ("e0", [1, 3]),
+    ("e1", [1, 3]),
+    ("e2", [9]),  # short row — only the (coarsest) final community
+]
+
+
+def test_dendrogram_ragged_rows_do_not_crash_and_keep_complete_partition() -> None:
+    levels = dendrogram_to_levels(_RAGGED_ROWS)
+    # Depth is the MAX length (2) → two levels, no crash.
+    assert set(levels) == {0, 1}
+    # Every entity — including the short row's e2 — appears at the coarsest level 0 (complete
+    # partition); e2's coarsest id (9) was padded up so it lands at level 0.
+    level_0_members = {eid for members in levels[0].values() for eid in members}
+    assert level_0_members == {"e0", "e1", "e2"}
+    # e2 also appears at the finer level 1 (padded), keyed by its own (repeated) coarsest id.
+    level_1_members = {eid for members in levels[1].values() for eid in members}
+    assert "e2" in level_1_members
+
+
+def test_dendrogram_ragged_parent_links_do_not_raise() -> None:
+    # The short row must not raise IndexError, and every finer community still points at an existing
+    # coarser parent (the chain stays monotone after padding).
+    parents = dendrogram_parent_links(_RAGGED_ROWS)
+    assert all(p is None for p in parents[0].values())
+    coarse_keys = set(dendrogram_to_levels(_RAGGED_ROWS)[0])
+    for parent in parents[1].values():
+        assert parent in coarse_keys
