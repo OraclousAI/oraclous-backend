@@ -11,11 +11,24 @@ import uuid
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile, status
 
-from oraclous_knowledge_graph_service.core.dependencies import JobServiceDep, UserIdDep
-from oraclous_knowledge_graph_service.schema.ingest_schemas import IngestTextRequest, JobResponse
+from oraclous_knowledge_graph_service.core.dependencies import (
+    GraphServiceDep,
+    JobServiceDep,
+    RecipeServiceDep,
+    SqlIngestionServiceDep,
+    UserIdDep,
+)
+from oraclous_knowledge_graph_service.domain.connectors.sql_connector import DbSyncMode
+from oraclous_knowledge_graph_service.schema.ingest_schemas import (
+    IngestTextRequest,
+    JobResponse,
+    SqlIngestRequest,
+    SqlIngestResponse,
+)
 from oraclous_knowledge_graph_service.services.extractors import ExtractionError, source_type_for
 from oraclous_knowledge_graph_service.services.graph_service import GraphNotFound
 from oraclous_knowledge_graph_service.services.job_service import JobNotFound
+from oraclous_knowledge_graph_service.services.sql_ingestion_service import SqlIngestionError
 
 router = APIRouter(prefix="/api/v1/graphs/{graph_id}", tags=["ingestion"])
 
@@ -71,6 +84,73 @@ async def upload_document(
     except GraphNotFound:
         raise _GRAPH_NOT_FOUND from None
     return JobResponse.of(job)
+
+
+@router.post("/ingest-sql", response_model=SqlIngestResponse)
+async def ingest_sql(
+    graph_id: uuid.UUID,
+    body: SqlIngestRequest,
+    sql_service: SqlIngestionServiceDep,
+    graphs: GraphServiceDep,
+    recipes: RecipeServiceDep,
+    user_id: UserIdDep,
+) -> SqlIngestResponse:
+    """Relational (SQL) ingest (#307): resolve the connection_string by `credential_id`,
+    egress-check the DB host, introspect, then project rows→entities + FK→relationships via the
+    recipe engine.
+
+    Synchronous (the recipe engine runs inline, like a `dry_run`): a SQL ingest is bounded by the
+    introspected schema + the per-table row cap. The org+graph scope is server-injected (the owner
+    gate below + the bound org); the caller never supplies the org.
+    """
+    # Owner gate: only the graph's owner (in the bound org) may ingest into it (404 otherwise).
+    try:
+        await graphs.get_graph(graph_id=graph_id, user_id=user_id)
+    except GraphNotFound:
+        raise _GRAPH_NOT_FOUND from None
+    try:
+        sync_mode = DbSyncMode(body.sync_mode)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"unsupported sync_mode {body.sync_mode!r} (full_snapshot|schema_only)",
+        ) from exc
+    # A stored recipe (by id) wins over the synthesised default-relational recipe.
+    recipe = None
+    if body.recipe_id:
+        recipe = await recipes.get(body.recipe_id)
+        if recipe is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"recipe {body.recipe_id!r} not found",
+            )
+    try:
+        result = await sql_service.ingest(
+            graph_id=str(graph_id),
+            credential_id=body.credential_id,
+            sync_mode=sync_mode,
+            schema=body.schema_name,
+            recipe=recipe,
+        )
+    except SqlIngestionError as exc:
+        # Credential / egress / connect / empty-schema failures are client-correctable inputs.
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        ) from exc
+    return SqlIngestResponse(
+        graph_id=graph_id,
+        dialect=result["dialect"],
+        database=result["database"],
+        schema_name=result["schema"],
+        sync_mode=result["sync_mode"],
+        tables_introspected=result["tables_introspected"],
+        nodes_written=result["nodes_written"],
+        edges_written=result["edges_written"],
+        containers_written=result["containers_written"],
+        properties_written=result["properties_written"],
+        units_skipped=result["units_skipped"],
+        warnings=result["warnings"],
+    )
 
 
 @router.get("/jobs/{job_id}", response_model=JobResponse)

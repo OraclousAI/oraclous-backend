@@ -41,6 +41,37 @@ class InternalIngestRequest(BaseModel):
     model_config = {"populate_by_name": True}
 
 
+class SqlIngestRequest(BaseModel):
+    """A relational (SQL) ingest request (#307).
+
+    The connection secret is NEVER in the body — only the broker ``credential_id`` (a stored
+    ``connection_string`` the broker resolves). ``organisation_id`` is NEVER a client field (ORG001)
+    — the org is server-injected from the principal. ``graph_id`` is the path scope.
+    """
+
+    credential_id: str = Field(min_length=1)
+    sync_mode: str = "full_snapshot"  # full_snapshot | schema_only
+    schema_name: str | None = None  # the DB schema to introspect (Postgres default: public)
+    recipe_id: str | None = None  # a stored recipe; else a default relational recipe is synthesised
+
+
+class SqlIngestResponse(BaseModel):
+    """Synchronous SQL-ingest result: the introspection summary + the projected graph counts."""
+
+    graph_id: uuid.UUID
+    dialect: str
+    database: str
+    schema_name: str
+    sync_mode: str
+    tables_introspected: int
+    nodes_written: int
+    edges_written: int
+    containers_written: int
+    properties_written: int
+    units_skipped: int
+    warnings: list[str]
+
+
 class JobResponse(BaseModel):
     id: uuid.UUID
     graph_id: uuid.UUID

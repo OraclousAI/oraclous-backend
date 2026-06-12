@@ -80,6 +80,25 @@ class Settings(BaseSettings):
     # returns 0 (the caller routes large summarise to the async path). 0 disables the cap.
     community_summarize_max_inline: int = 200
 
+    # --- SQL relational ingest (#307) ---
+    # The credential broker the SQL ingest resolves a stored `connection_string` from by id.
+    # `fake` (dev/CI default): a deterministic, key-free broker that returns
+    # `credential_broker_fake_dsn` for any id — so the SQL-ingest path reaches a real end-to-end
+    # test without the broker. `real`: POST /internal/resolve-credential with X-Internal-Key.
+    credential_broker_mode: Literal["fake", "real"] = "fake"
+    credential_broker_base_url: str | None = None
+    # The DSN the FAKE broker returns (only read in fake mode). Defaults to this service's own
+    # Postgres so a dev SQL ingest has a live DB to read; override per test/deployment.
+    credential_broker_fake_dsn: str = "postgresql://oraclous:oraclous@postgres:5432/oraclous"
+    # TCP egress guard (#307, Option B). When True (single-tenant / dev — mirrors the HRS egress
+    # `allow_private`), a SQL ingest may target a private/loopback/internal DB host (so a user can
+    # ingest from a local or internal DB); the link-local / cloud-metadata range stays blocked in
+    # EITHER mode. When False (multi-tenant), private/loopback/internal hosts are blocked. Dev
+    # default True so the docker-compose Postgres (a private `postgres` host) is reachable.
+    sql_ingest_allow_private_egress: bool = True
+    # Hard ceiling on rows fetched per table in a full_snapshot SQL ingest (cost / heap guard).
+    sql_ingest_max_rows_per_table: int = 50_000
+
     # --- similarity auto-trigger (#310, legacy SIMILARITY_AUTO_TRIGGER_ON_INGEST) ---
     # When True, a structured ingest with NO authored `similarities[]` rule still runs the content-
     # similarity pass: one default SIMILAR_TO rule is synthesised per node rule over the node's best

@@ -47,6 +47,7 @@ from oraclous_knowledge_graph_service.repositories.recipe_repository import Reci
 from oraclous_knowledge_graph_service.repositories.resolution_repository import ResolutionRepository
 from oraclous_knowledge_graph_service.services.analytics_service import AnalyticsService
 from oraclous_knowledge_graph_service.services.community_summarizer import make_summarizer
+from oraclous_knowledge_graph_service.services.credential_client import make_credential_broker
 from oraclous_knowledge_graph_service.services.dry_run_service import DryRunService
 from oraclous_knowledge_graph_service.services.graph_service import GraphService
 from oraclous_knowledge_graph_service.services.job_service import JobService
@@ -54,6 +55,7 @@ from oraclous_knowledge_graph_service.services.ontology_service import OntologyS
 from oraclous_knowledge_graph_service.services.recipe_service import RecipeService
 from oraclous_knowledge_graph_service.services.recipes.engine import get_recipe_engine
 from oraclous_knowledge_graph_service.services.resolution_service import ResolutionService
+from oraclous_knowledge_graph_service.services.sql_ingestion_service import SqlIngestionService
 
 _bearer = HTTPBearer(auto_error=False)
 
@@ -253,6 +255,28 @@ def get_ontology_service(
     return OntologyService(GraphRepository(session), graph_service)
 
 
+async def get_sql_ingestion_service(
+    driver: Annotated[Driver, Depends(get_neo4j_driver)],
+    org: Annotated[OrganisationContext, Depends(bind_org_context)],
+) -> AsyncIterator[SqlIngestionService]:
+    """Build the SQL relational-ingest service (#307). Depends on `get_neo4j_driver` (so the
+    endpoint 503s when the substrate is down — a graph write needs it) and `bind_org_context` (so
+    the org scope is bound before any write). The credential broker is built from config (fake in
+    dev/CI, real otherwise) and closed when the request ends — its lifetime is the request's."""
+    settings = get_settings()
+    broker = make_credential_broker(settings)
+    try:
+        yield SqlIngestionService(
+            driver=driver,
+            broker=broker,
+            organisation_id=str(org.organisation_id),
+            database=settings.neo4j_database,
+            settings=settings,
+        )
+    finally:
+        await broker.aclose()
+
+
 def get_dry_run_service() -> DryRunService:
     """The recipe dry-run authoring aid (Slice C). Pure: it writes NOTHING to Neo4j, so it needs no
     org binding or DB session — only an authenticated caller (the route depends on UserIdDep)."""
@@ -269,3 +293,4 @@ ResolutionServiceDep = Annotated[ResolutionService, Depends(get_resolution_servi
 AnalyticsServiceDep = Annotated[AnalyticsService, Depends(get_analytics_service)]
 OntologyServiceDep = Annotated[OntologyService, Depends(get_ontology_service)]
 DryRunServiceDep = Annotated[DryRunService, Depends(get_dry_run_service)]
+SqlIngestionServiceDep = Annotated[SqlIngestionService, Depends(get_sql_ingestion_service)]
