@@ -42,23 +42,41 @@ def make_optional_embedder(settings: Settings) -> Embedder | None:
         return None
 
 
-def generate_embeddings(node_symbols: list[dict], embedder: Embedder | None) -> list[dict]:
+def generate_embeddings(
+    node_symbols: list[dict], embedder: Embedder | None, *, max_symbols: int = 0
+) -> list[dict]:
     """Return ``[{"label", "qualified_name", "embedding"}]`` for Function/Class symbols.
 
-    Empty (skip) when there is no embedder. Batched through the embedder's own batching; any embed
-    error is swallowed (fail-soft) and yields no rows for that batch."""
+    Empty (skip) when there is no embedder. ``max_symbols`` (0 = unbounded) caps how many symbols
+    are embedded per ingest: beyond it the overflow is SKIPPED (a structured warning is logged)
+    rather than building an unbounded in-memory text list + unbounded embedding calls — a cost/
+    memory guard (embeddings are fail-soft, so dropping the overflow only loses vectors, not graph).
+    Batched through the embedder's own batching; any embed error is swallowed (fail-soft) and yields
+    no rows."""
     if embedder is None:
         return []
     embeddable = [s for s in node_symbols if s["label"] in _EMBEDDABLE]
     if not embeddable:
         return []
+    if max_symbols and len(embeddable) > max_symbols:
+        logger.warning(
+            "code embedding capped: %d embeddable symbols > KGS_CODE_MAX_EMBED_SYMBOLS=%d; "
+            "skipping the %d overflow (vectors only, graph is unaffected)",
+            len(embeddable),
+            max_symbols,
+            len(embeddable) - max_symbols,
+        )
+        embeddable = embeddable[:max_symbols]
     texts = [_embed_text(s) for s in embeddable]
     try:
         vectors = embedder.embed(texts)
-    except Exception as exc:  # noqa: BLE001 — a failed embed call skips Stage 4, never the ingest
+        # zip(strict=True) INSIDE the try so an embedder returning a mismatched vector count fails
+        # soft (skip embeddings) instead of crashing the whole ingest.
+        rows = [
+            {"label": s["label"], "qualified_name": s["qualified_name"], "embedding": vec}
+            for s, vec in zip(embeddable, vectors, strict=True)
+        ]
+    except Exception as exc:  # noqa: BLE001 — a failed/mismatched embed skips Stage 4, never ingest
         logger.warning("code embedding failed, skipping: %s", exc)
         return []
-    return [
-        {"label": s["label"], "qualified_name": s["qualified_name"], "embedding": vec}
-        for s, vec in zip(embeddable, vectors, strict=True)
-    ]
+    return rows
