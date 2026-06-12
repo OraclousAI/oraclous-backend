@@ -48,7 +48,7 @@ class CapabilityOut(BaseModel):
     name: str | None
     content_hash: str | None
     descriptor: dict[str, Any]
-    status: str = "active"  # "active" | "pending_approval" (R6 MCP-import supply-chain gate)
+    status: str = "active"  # "active" | "pending_approval" | "rejected" (MCP supply-chain gate)
     created_at: datetime | None
     updated_at: datetime | None
 

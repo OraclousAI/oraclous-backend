@@ -10,6 +10,7 @@ import pytest
 from oraclous_capability_registry_service.services.mcp_import_service import (
     ACTIVE,
     PENDING,
+    REJECTED,
     McpEgressBlocked,
     McpImportError,
     McpImportService,
@@ -37,6 +38,20 @@ class _FakeCaps:
         return row
 
     async def set_status(self, *, descriptor_id, organisation_id, status):  # noqa: ANN001, ANN202
+        self.statuses[descriptor_id] = status
+        return True
+
+    async def set_status_if(  # noqa: ANN202
+        self,
+        *,
+        descriptor_id,
+        organisation_id,
+        expected,
+        status,  # noqa: ANN001
+    ):
+        # Conditional flip: only transition when the recorded status matches ``expected``.
+        if self.statuses.get(descriptor_id, PENDING) != expected:
+            return False
         self.statuses[descriptor_id] = status
         return True
 
@@ -98,6 +113,23 @@ async def test_approve_flips_status_to_active() -> None:
     tid, org = uuid.uuid4(), uuid.uuid4()
     ok = await McpImportService(capabilities=caps).approve(descriptor_id=tid, organisation_id=org)
     assert ok and caps.statuses[tid] == ACTIVE
+
+
+async def test_reject_flips_a_pending_tool_to_rejected() -> None:
+    caps = _FakeCaps()
+    tid, org = uuid.uuid4(), uuid.uuid4()
+    caps.statuses[tid] = PENDING
+    ok = await McpImportService(capabilities=caps).reject(descriptor_id=tid, organisation_id=org)
+    assert ok and caps.statuses[tid] == REJECTED
+
+
+async def test_reject_does_not_revert_an_already_active_tool() -> None:
+    # the conditional flip protects against declining a tool that was already approved (active).
+    caps = _FakeCaps()
+    tid, org = uuid.uuid4(), uuid.uuid4()
+    caps.statuses[tid] = ACTIVE
+    ok = await McpImportService(capabilities=caps).reject(descriptor_id=tid, organisation_id=org)
+    assert ok is False and caps.statuses[tid] == ACTIVE
 
 
 def test_status_for_forces_pending_for_any_mcp_descriptor() -> None:
