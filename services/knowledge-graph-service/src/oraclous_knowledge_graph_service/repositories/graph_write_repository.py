@@ -13,6 +13,7 @@ Reads (`schema`) are org+graph scoped with bound parameters (never interpolated)
 from __future__ import annotations
 
 import hashlib
+import re
 
 from neo4j import Driver
 from neo4j_graphrag.experimental.components.kg_writer import Neo4jWriter
@@ -27,6 +28,18 @@ from oraclous_substrate.access import enforced_organisation_id
 from oraclous_knowledge_graph_service.multi_tenant import OrganisationScopedKGWriter
 
 _INTERNAL_LABEL_PREFIX = "__"
+# Relationship types re-pointed during a HITL merge are read back from the graph (a closed
+# ontology), but re-validated against this allowlist before Cypher interpolation — defense in depth
+# at the write boundary (mirrors recipe_write_repository._safe).
+_SAFE_REL_TYPE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _safe_rel_type(rel_type: str) -> str:
+    if not isinstance(rel_type, str) or not _SAFE_REL_TYPE.match(rel_type):
+        raise ValueError(f"unsafe relationship type at write boundary: {rel_type!r}")
+    return rel_type
+
+
 # entity → chunk edge type (matches the extractor's link type), excluded from the entity-relation
 # count so `extracted_relationships` reports only entity↔entity edges, not the chunk attachments.
 _FROM_CHUNK = LexicalGraphConfig().node_to_chunk_relationship_type
@@ -250,6 +263,185 @@ class GraphWriteRepository:
             database_=self._database,
         )
         return int(node_records[0]["c"]), int(rel_records[0]["c"])
+
+    # --- HITL entity-resolution mutations (#279) ----------------------------------------------
+    # The resolution pass (#269) MERGEs a SAME_AS_CANDIDATE edge between two canonical :__Entity__
+    # nodes in the ambiguous similarity band (flagged, not auto-merged). These methods action a
+    # human verdict on such a pair. All are org+graph scoped with bound parameters (injection-safe);
+    # sync driver calls (the async service wraps each in asyncio.to_thread). SAME_AS_CANDIDATE is
+    # interpolated as a constant (a fixed identifier from the resolver, never user input).
+
+    def candidate_endpoints(
+        self, *, graph_id: str, organisation_id: str, node_id_a: str, node_id_b: str
+    ) -> dict | None:
+        """Resolve a live SAME_AS_CANDIDATE pair to its endpoints' ids + aliases, regardless of edge
+        direction (the edge is undirected for review). None if no such pending candidate exists
+        (already resolved, never flagged, wrong org/graph) — the service maps that to 404.
+        """
+        records, _, _ = self._driver.execute_query(
+            "MATCH (a:__Entity__ {graph_id: $graph_id, organisation_id: $organisation_id, "
+            "id: $node_id_a}) "
+            "MATCH (b:__Entity__ {graph_id: $graph_id, organisation_id: $organisation_id, "
+            "id: $node_id_b}) "
+            "MATCH (a)-[:SAME_AS_CANDIDATE]-(b) "
+            "RETURN a.id AS id_a, b.id AS id_b, labels(a) AS labels_a, labels(b) AS labels_b, "
+            "coalesce(a.aliases, []) AS aliases_a, coalesce(b.aliases, []) AS aliases_b, "
+            "coalesce(a.canonical_name, a.name) AS name_a, "
+            "coalesce(b.canonical_name, b.name) AS name_b",
+            graph_id=graph_id,
+            organisation_id=organisation_id,
+            node_id_a=node_id_a,
+            node_id_b=node_id_b,
+            database_=self._database,
+        )
+        if not records:
+            return None
+        r = records[0]
+        return {
+            "id_a": r["id_a"],
+            "id_b": r["id_b"],
+            "labels_a": list(r["labels_a"]),
+            "labels_b": list(r["labels_b"]),
+            "aliases_a": list(r["aliases_a"]),
+            "aliases_b": list(r["aliases_b"]),
+            "name_a": r["name_a"],
+            "name_b": r["name_b"],
+        }
+
+    def merge_candidate(
+        self, *, graph_id: str, organisation_id: str, survivor_id: str, merged_id: str
+    ) -> dict:
+        """Approve a candidate: fold `merged_id` onto `survivor_id`, then delete the merged node.
+
+        Re-points every relationship of the merged node onto the survivor (pure Cypher, no APOC):
+        each incoming/outgoing edge is recreated on the survivor with its type + properties,
+        skipping a self-loop the merge would create and the SAME_AS_CANDIDATE edge itself (it is
+        being resolved away). The survivor's `aliases` absorb the merged node's surface forms +
+        name, then the merged node is DETACH DELETEd (removing the candidate edge). Returns the
+        survivor id, the count of edges re-pointed, and the survivor's post-merge alias set.
+
+        Idempotent at the graph level: once the merged node is gone, a replay finds no candidate
+        edge (the service short-circuits on the audit row first; this is the substrate backstop).
+        """
+        # 1. Re-point the merged node's relationships onto the survivor (pure Cypher, no APOC).
+        repointed = self._repoint_edges(
+            graph_id=graph_id,
+            organisation_id=organisation_id,
+            survivor_id=survivor_id,
+            merged_id=merged_id,
+        )
+        # 2. Union the merged node's aliases + names into the survivor, then DETACH DELETE the
+        #    merged node (which removes the SAME_AS_CANDIDATE edge and any residual self-loops).
+        records, _, _ = self._driver.execute_query(
+            "MATCH (m:__Entity__ {graph_id: $graph_id, organisation_id: $organisation_id, "
+            "id: $merged_id}) "
+            "MATCH (s:__Entity__ {graph_id: $graph_id, organisation_id: $organisation_id, "
+            "id: $survivor_id}) "
+            "WITH s, m, coalesce(m.aliases, []) + "
+            "[n IN [m.canonical_name, m.name] WHERE n IS NOT NULL] AS incoming "
+            "SET s.aliases = coalesce(s.aliases, []) + "
+            "[a IN incoming WHERE NOT a IN coalesce(s.aliases, [])] "
+            "DETACH DELETE m "
+            "RETURN s.id AS survivor_id, coalesce(s.aliases, []) AS aliases",
+            graph_id=graph_id,
+            organisation_id=organisation_id,
+            merged_id=merged_id,
+            survivor_id=survivor_id,
+            database_=self._database,
+        )
+        row = records[0] if records else {}
+        return {
+            "survivor_id": row.get("survivor_id", survivor_id),
+            "repointed_edges": repointed,
+            "aliases": list(row.get("aliases", [])),
+        }
+
+    def _repoint_edges(
+        self, *, graph_id: str, organisation_id: str, survivor_id: str, merged_id: str
+    ) -> int:
+        """Recreate the merged node's edges on the survivor (no APOC): one MERGE per edge carrying
+        the original properties, preserving direction. Excludes the SAME_AS_CANDIDATE edge being
+        resolved and any edge whose other endpoint is the survivor (would become a self-loop).
+        Returns the number of edges re-pointed. The relationship type comes from the graph (a closed
+        ontology); it is re-validated against the safe-identifier allowlist before interpolation.
+        """
+        # Collect the merged node's edges (type, direction, the other endpoint id, properties).
+        records, _, _ = self._driver.execute_query(
+            "MATCH (m:__Entity__ {graph_id: $graph_id, organisation_id: $organisation_id, "
+            "id: $merged_id})-[r]-(o) "
+            "WHERE type(r) <> 'SAME_AS_CANDIDATE' AND o.id <> $survivor_id "
+            "RETURN type(r) AS rel_type, "
+            "startNode(r).id = $merged_id AS outgoing, o.id AS other_id, properties(r) AS props",
+            graph_id=graph_id,
+            organisation_id=organisation_id,
+            merged_id=merged_id,
+            survivor_id=survivor_id,
+            database_=self._database,
+        )
+        repointed = 0
+        for rec in records:
+            rel_type = _safe_rel_type(rec["rel_type"])
+            props = dict(rec["props"] or {})
+            props["organisation_id"] = organisation_id
+            props["graph_id"] = graph_id
+            if rec["outgoing"]:
+                cypher = (
+                    "MATCH (s:__Entity__ {graph_id: $graph_id, organisation_id: $organisation_id, "
+                    "id: $survivor_id}) "
+                    "MATCH (o:__Entity__ {graph_id: $graph_id, organisation_id: $organisation_id, "
+                    "id: $other_id}) "
+                    f"MERGE (s)-[r:{rel_type} "
+                    "{graph_id: $graph_id, organisation_id: $organisation_id}]->(o) "
+                    "SET r += $props"
+                )
+            else:
+                cypher = (
+                    "MATCH (s:__Entity__ {graph_id: $graph_id, organisation_id: $organisation_id, "
+                    "id: $survivor_id}) "
+                    "MATCH (o:__Entity__ {graph_id: $graph_id, organisation_id: $organisation_id, "
+                    "id: $other_id}) "
+                    f"MERGE (o)-[r:{rel_type} "
+                    "{graph_id: $graph_id, organisation_id: $organisation_id}]->(s) "
+                    "SET r += $props"
+                )
+            self._driver.execute_query(
+                cypher,
+                graph_id=graph_id,
+                organisation_id=organisation_id,
+                survivor_id=survivor_id,
+                other_id=rec["other_id"],
+                props=props,
+                database_=self._database,
+            )
+            repointed += 1
+        return repointed
+
+    def suppress_candidate(
+        self, *, graph_id: str, organisation_id: str, node_id_a: str, node_id_b: str
+    ) -> bool:
+        """Reject a candidate: record a NOT_SAME_AS negative judgement between the two nodes and
+        drop the SAME_AS_CANDIDATE edge so the pair leaves the review queue and the resolution pass
+        does not re-flag it (the candidate-write step skips NOT_SAME_AS-marked pairs). Idempotent —
+        a replay re-MERGEs the same NOT_SAME_AS and finds no candidate edge to delete. Returns True
+        when a NOT_SAME_AS suppression edge is in place afterwards."""
+        records, _, _ = self._driver.execute_query(
+            "MATCH (a:__Entity__ {graph_id: $graph_id, organisation_id: $organisation_id, "
+            "id: $node_id_a}) "
+            "MATCH (b:__Entity__ {graph_id: $graph_id, organisation_id: $organisation_id, "
+            "id: $node_id_b}) "
+            "MERGE (a)-[s:NOT_SAME_AS "
+            "{graph_id: $graph_id, organisation_id: $organisation_id}]-(b) "
+            "WITH a, b "
+            "OPTIONAL MATCH (a)-[c:SAME_AS_CANDIDATE]-(b) "
+            "DELETE c "
+            "RETURN true AS suppressed",
+            graph_id=graph_id,
+            organisation_id=organisation_id,
+            node_id_a=node_id_a,
+            node_id_b=node_id_b,
+            database_=self._database,
+        )
+        return bool(records and records[0]["suppressed"])
 
     def schema(self, *, graph_id: str, organisation_id: str) -> dict[str, list[dict[str, object]]]:
         """Org+graph-scoped label/relationship counts (bound params; sync driver call)."""

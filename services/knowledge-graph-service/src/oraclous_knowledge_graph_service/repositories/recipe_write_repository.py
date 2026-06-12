@@ -256,6 +256,48 @@ class RecipeGraphWriter:
             written += len(batch)
         return written
 
+    def merge_candidate_edges(
+        self, *, edges: list[dict], source_id: str, provenance: str, meta: dict
+    ) -> int:
+        """MERGE SAME_AS_CANDIDATE review edges, SKIPPING any pair a human already rejected (#279).
+
+        Identical to `merge_edge` for SAME_AS_CANDIDATE, except it will NOT (re-)flag a pair that
+        carries a `NOT_SAME_AS` suppression edge (the negative judgement a reject records). So once
+        a reviewer rejects a candidate, a later re-ingestion's resolution pass no longer resurfaces
+        it. Idempotent MERGE; org+graph scoped; returns the count of candidate edges written.
+        """
+        cypher = (
+            "UNWIND $batch AS row\n"
+            "MATCH (a:__Entity__ "
+            "{graph_id: $graph_id, organisation_id: $organisation_id, id: row.from})\n"
+            "MATCH (b:__Entity__ "
+            "{graph_id: $graph_id, organisation_id: $organisation_id, id: row.to})\n"
+            "WHERE NOT (a)-[:NOT_SAME_AS]-(b)\n"
+            "MERGE (a)-[r:SAME_AS_CANDIDATE "
+            "{graph_id: $graph_id, organisation_id: $organisation_id}]->(b)\n"
+            "ON CREATE SET r.ingestion_source = $source_id, r.provenance = $provenance,\n"
+            "              r.recipe_id = $recipe_id, r.recipe_version = $recipe_version,\n"
+            "              r.ingestion_time = $ingestion_time\n"
+            "SET r += coalesce(row.properties, {})\n"
+            "RETURN count(r) AS written"
+        )
+        written = 0
+        for batch in _chunks(edges):
+            records, _, _ = self._driver.execute_query(
+                cypher,
+                organisation_id=self._org,
+                graph_id=self.graph_id,
+                database_=self._db,
+                batch=batch,
+                source_id=source_id,
+                provenance=provenance,
+                recipe_id=meta["recipe_id"],
+                recipe_version=meta["recipe_version"],
+                ingestion_time=meta["ingestion_time"],
+            )
+            written += int(records[0]["written"]) if records else 0
+        return written
+
     def merge_edge_to_stub(
         self,
         *,

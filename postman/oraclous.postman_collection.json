@@ -1617,6 +1617,82 @@
           "id": "55e45b80-6533-8d2b-eac1-ab0bed59af7c"
         },
         {
+          "name": "POST /api/v1/graphs/{{graph_id}}/resolution/{{candidate_id}}/approve (#279)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/graphs/{{graph_id}}/resolution/{{candidate_id}}/approve",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "graphs",
+                "{{graph_id}}",
+                "resolution",
+                "{{candidate_id}}",
+                "approve"
+              ]
+            },
+            "description": "HITL: approve a SAME_AS_CANDIDATE pair \u2014 merge the two entities into the canonical node (canonical_node_id survives; other_node_id is folded in, aliases + relationships re-pointed, the candidate edge deleted). candidate_id is the sha256 of the sorted endpoint node-id pair (order-independent). Returns the surviving node + the count of re-pointed edges. Idempotent; a conflicting prior verdict -> 409.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"canonical_node_id\": \"<survivor node id>\", \"other_node_id\": \"<node folded in>\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "POST /api/v1/graphs/{{graph_id}}/resolution/{{candidate_id}}/reject (#279)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/graphs/{{graph_id}}/resolution/{{candidate_id}}/reject",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "graphs",
+                "{{graph_id}}",
+                "resolution",
+                "{{candidate_id}}",
+                "reject"
+              ]
+            },
+            "description": "HITL: reject a SAME_AS_CANDIDATE pair \u2014 record a NOT_SAME_AS negative judgement (suppresses the pair from future candidate lists so re-ingestion does not re-flag it) and drop the candidate edge. candidate_id is the sha256 of the sorted endpoint node-id pair.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"canonical_node_id\": \"<node a>\", \"other_node_id\": \"<node b>\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
           "name": "POST /api/v1/graphs/{{graph_id}}/ingest",
           "request": {
             "method": "POST",

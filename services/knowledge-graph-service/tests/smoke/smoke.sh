@@ -228,4 +228,44 @@ poll_done "$TG" "$tj" >/dev/null
 vf=$(cypher "MATCH (r:Record {graph_id:'${TG}'}) RETURN r.valid_from LIMIT 1" | tail -1 | tr -d ' "')
 [[ "$vf" == "2020-01-01T00:00:00Z" ]] && pass "valid_from stamped on :Record" || fail "valid_from=$vf"
 
-printf '\n\033[32mFULL KGS smoke passed (S1-S5).\033[0m  text/doc + CSV/JSON + code + ontology + temporal -> real org-scoped graph, key-free.\n'
+step "20. HITL entity-resolution: approve a SAME_AS_CANDIDATE pair -> merge (#279)"
+# Seed two canonical :__Entity__ nodes + a SAME_AS_CANDIDATE review edge directly in Neo4j (org +
+# graph stamped, exactly as the resolution pass writes them), plus an outgoing edge on the node we
+# will fold — to prove the relationship is re-pointed onto the survivor, not lost.
+RG=$(curl -fsS "${AUTH[@]}" -X POST "${BASE}/api/v1/graphs" -d '{"name":"resolution"}' | jget "['id']")
+ORG="00000000-0000-0000-0000-00000000050a"
+cypher "CREATE (a:Organization:__Entity__ {graph_id:'${RG}', organisation_id:'${ORG}', id:'res-a', name:'eurail', canonical_name:'Eurail', aliases:['Eurail']}) CREATE (b:Organization:__Entity__ {graph_id:'${RG}', organisation_id:'${ORG}', id:'res-b', name:'eurail bv', canonical_name:'Eurail B.V.', aliases:['Eurail B.V.']}) CREATE (p:Product:__Entity__ {graph_id:'${RG}', organisation_id:'${ORG}', id:'res-p', name:'pass'}) CREATE (a)-[:SAME_AS_CANDIDATE {graph_id:'${RG}', organisation_id:'${ORG}', score:0.88}]->(b) CREATE (b)-[:OFFERS {graph_id:'${RG}', organisation_id:'${ORG}'}]->(p)" >/dev/null
+pass "seeded SAME_AS_CANDIDATE(res-a, res-b) + res-b-[:OFFERS]->res-p"
+# candidate_id = sha256(min(id)|max(id)) — the backend-issued, order-independent pair id.
+CID=$(python3 -c "import hashlib;ids=sorted(['res-a','res-b']);print(hashlib.sha256(f'{ids[0]}|{ids[1]}'.encode()).hexdigest())")
+ap=$(curl -fsS "${AUTH[@]}" -X POST "${BASE}/api/v1/graphs/${RG}/resolution/${CID}/approve" -d '{"canonical_node_id":"res-a","other_node_id":"res-b"}')
+surv=$(echo "$ap" | jget "['survivor_id']")
+rep=$(echo "$ap" | jget "['repointed_edges']")
+[[ "$surv" == "res-a" ]] && pass "approve -> survivor res-a" || fail "approve survivor=$surv ($ap)"
+[[ "$rep" == "1" ]] && pass "1 edge re-pointed (OFFERS)" || fail "repointed=$rep ($ap)"
+gone=$(cypher "MATCH (m:__Entity__ {graph_id:'${RG}', id:'res-b'}) RETURN count(m)" | tail -1 | tr -d ' ')
+[[ "$gone" == "0" ]] && pass "merged node res-b deleted" || fail "res-b still present ($gone)"
+offers=$(cypher "MATCH (:__Entity__ {graph_id:'${RG}', id:'res-a'})-[:OFFERS]->(:__Entity__ {graph_id:'${RG}', id:'res-p'}) RETURN count(*)" | tail -1 | tr -d ' ')
+[[ "$offers" == "1" ]] && pass "OFFERS re-pointed onto survivor res-a" || fail "OFFERS not re-pointed ($offers)"
+fold=$(cypher "MATCH (s:__Entity__ {graph_id:'${RG}', id:'res-a'}) RETURN 'Eurail B.V.' IN s.aliases" | tail -1 | tr -d ' ')
+[[ "$fold" == "true" ]] && pass "survivor absorbed the merged alias" || fail "alias not folded ($fold)"
+cand=$(cypher "MATCH ()-[r:SAME_AS_CANDIDATE {graph_id:'${RG}'}]-() RETURN count(r)" | tail -1 | tr -d ' ')
+[[ "$cand" == "0" ]] && pass "candidate edge cleared from the review queue" || fail "candidate edge survived ($cand)"
+# idempotent replay: the same approve returns 200 and does not double-mutate.
+code=$(curl -s -o /dev/null -w '%{http_code}' "${AUTH[@]}" -X POST "${BASE}/api/v1/graphs/${RG}/resolution/${CID}/approve" -d '{"canonical_node_id":"res-a","other_node_id":"res-b"}')
+[[ "$code" == "200" ]] && pass "approve replay -> 200 (idempotent)" || fail "replay code=$code"
+
+step "21. HITL entity-resolution: reject suppresses a pair so it stops resurfacing (#279)"
+cypher "CREATE (c:Organization:__Entity__ {graph_id:'${RG}', organisation_id:'${ORG}', id:'res-c', name:'rail x'}) CREATE (d:Organization:__Entity__ {graph_id:'${RG}', organisation_id:'${ORG}', id:'res-d', name:'rail y'}) CREATE (c)-[:SAME_AS_CANDIDATE {graph_id:'${RG}', organisation_id:'${ORG}', score:0.87}]->(d)" >/dev/null
+CID2=$(python3 -c "import hashlib;ids=sorted(['res-c','res-d']);print(hashlib.sha256(f'{ids[0]}|{ids[1]}'.encode()).hexdigest())")
+rj=$(curl -fsS "${AUTH[@]}" -X POST "${BASE}/api/v1/graphs/${RG}/resolution/${CID2}/reject" -d '{"canonical_node_id":"res-c","other_node_id":"res-d"}')
+[[ "$(echo "$rj" | jget "['suppressed']")" == "True" ]] && pass "reject -> suppressed" || fail "reject: $rj"
+nsa=$(cypher "MATCH (:__Entity__ {graph_id:'${RG}', id:'res-c'})-[r:NOT_SAME_AS]-(:__Entity__ {graph_id:'${RG}', id:'res-d'}) RETURN count(r)" | tail -1 | tr -d ' ')
+[[ "$nsa" == "1" ]] && pass "NOT_SAME_AS suppression edge recorded" || fail "NOT_SAME_AS missing ($nsa)"
+cand2=$(cypher "MATCH (:__Entity__ {graph_id:'${RG}', id:'res-c'})-[r:SAME_AS_CANDIDATE]-(:__Entity__ {graph_id:'${RG}', id:'res-d'}) RETURN count(r)" | tail -1 | tr -d ' ')
+[[ "$cand2" == "0" ]] && pass "rejected candidate edge dropped" || fail "candidate edge survived reject ($cand2)"
+# a bogus candidate id (not the hash of the body pair) is a 404, never an action on another pair.
+bog=$(curl -s -o /dev/null -w '%{http_code}' "${AUTH[@]}" -X POST "${BASE}/api/v1/graphs/${RG}/resolution/deadbeef/reject" -d '{"canonical_node_id":"res-c","other_node_id":"res-d"}')
+[[ "$bog" == "404" ]] && pass "mismatched candidate id -> 404" || fail "mismatch code=$bog"
+
+printf '\n\033[32mFULL KGS smoke passed (S1-S5 + #279 HITL resolution).\033[0m  text/doc + CSV/JSON + code + ontology + temporal + entity-resolution approve/reject -> real org-scoped graph, key-free.\n'

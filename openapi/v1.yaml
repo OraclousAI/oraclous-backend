@@ -216,6 +216,55 @@ paths:
       responses:
         "200": { $ref: "#/components/responses/UpstreamJson" }
         "401": { $ref: "#/components/responses/Unauthenticated" }
+  /api/v1/graphs/{graphId}/resolution/{candidateId}/approve:
+    post:
+      tags: [knowledge-graph]
+      summary: Approve a SAME_AS_CANDIDATE pair — merge the two entities into the canonical node.
+      description: >-
+        HITL entity-resolution (#279). Folds `other_node_id` onto `canonical_node_id` (survivor):
+        re-points its relationships, unions its aliases, deletes the candidate edge. `candidateId`
+        is the sha256 of the sorted endpoint node-id pair (order-independent). Idempotent; a
+        conflicting prior verdict by another reviewer returns 409.
+      operationId: approveResolutionCandidate
+      x-stability: stable
+      parameters:
+        - { name: graphId, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: candidateId, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ResolveCandidateRequest" }
+      responses:
+        "200": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+  /api/v1/graphs/{graphId}/resolution/{candidateId}/reject:
+    post:
+      tags: [knowledge-graph]
+      summary: Reject a SAME_AS_CANDIDATE pair — record a not-duplicate judgement, drop the edge.
+      description: >-
+        HITL entity-resolution (#279). Records a NOT_SAME_AS suppression so the pair is not
+        re-flagged on re-ingestion, and drops the candidate edge. `candidateId` is the sha256 of
+        the sorted endpoint node-id pair.
+      operationId: rejectResolutionCandidate
+      x-stability: stable
+      parameters:
+        - { name: graphId, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: candidateId, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ResolveCandidateRequest" }
+      responses:
+        "200": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
   /api/v1/recipes:
     get:
       tags: [knowledge-graph]
@@ -991,6 +1040,18 @@ components:
       type: object
       description: A free-form JSON object; the precise request shape is owned by the upstream service.
       additionalProperties: true
+    ResolveCandidateRequest:
+      type: object
+      description: >-
+        The SAME_AS_CANDIDATE pair to action (#279). Both ids are the nodes' deterministic `id`
+        property as surfaced by the subgraph endpoint. On approve, `canonical_node_id` is the
+        survivor (the other node is folded in); on reject the order is immaterial. The path
+        `candidateId` must be the sha256 of the sorted pair, so the URL and the operands agree.
+      required: [canonical_node_id, other_node_id]
+      additionalProperties: false
+      properties:
+        canonical_node_id: { type: string, minLength: 1, maxLength: 128 }
+        other_node_id: { type: string, minLength: 1, maxLength: 128 }
     DescriptorResponse:
       type: object
       description: >-
