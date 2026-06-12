@@ -18,6 +18,10 @@ from oraclous_application_gateway_service.app.factory import create_app
 from oraclous_application_gateway_service.core.dependencies import get_invoke_service
 from oraclous_application_gateway_service.domain.integration_key import mint_key
 from oraclous_application_gateway_service.schema.invoke_schemas import InvokeResponse
+from oraclous_application_gateway_service.services.invoke_service import (
+    AgentNotRunnable,
+    UpstreamInvokeError,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -47,6 +51,16 @@ class _FakeInvoke:
         return InvokeResponse(
             execution_id=uuid.uuid4(), status="SUCCEEDED", output="ok", error=None
         )
+
+
+class _RaisingInvoke:
+    """An invoke service that always raises ``exc`` — to assert the route's HTTP/envelope map."""
+
+    def __init__(self, exc: Exception) -> None:
+        self._exc = exc
+
+    async def invoke(self, *, slug, agent_input, principal):  # noqa: ANN001
+        raise self._exc
 
 
 def _seed_key(keys, *, bound_slug):  # noqa: ANN001 -> the plaintext
@@ -156,3 +170,36 @@ async def test_get_metadata_wrong_binding_is_403() -> None:
     async with _client(app) as c:
         r = await c.get("/v1/agents/weather", headers=_bearer(tok))
     assert r.status_code == 403
+
+
+async def test_unrunnable_capability_is_non_retryable_4xx_not_a_retryable_502() -> None:
+    # the core #283 fix: a permanently-bad binding (the bound capability is not runnable) must reach
+    # the external caller as a non-retryable 4xx envelope, NOT a retryable 502 they back off and
+    # re-send forever.
+    app = _app()
+    app.dependency_overrides[get_invoke_service] = lambda: _RaisingInvoke(
+        AgentNotRunnable("harness rejected the bound capability (422)")
+    )
+    tok = _seed_key(app.state.integration_key_repo, bound_slug="weather")
+    async with _client(app) as c:
+        r = await c.post("/v1/agents/weather/invoke", json={"input": "hi"}, headers=_bearer(tok))
+    assert r.status_code == 422, r.text
+    err = r.json()["error"]
+    assert err["retryable"] is False  # terminal — the caller must not retry
+    assert err["code"] != "SERVICE_UNAVAILABLE"
+
+
+async def test_transient_harness_failure_stays_a_retryable_502() -> None:
+    # a genuinely transient harness/dependency outage stays a retryable 502, so back-off + retry is
+    # still the correct caller behaviour for that case.
+    app = _app()
+    app.dependency_overrides[get_invoke_service] = lambda: _RaisingInvoke(
+        UpstreamInvokeError("harness returned 503")
+    )
+    tok = _seed_key(app.state.integration_key_repo, bound_slug="weather")
+    async with _client(app) as c:
+        r = await c.post("/v1/agents/weather/invoke", json={"input": "hi"}, headers=_bearer(tok))
+    assert r.status_code == 502, r.text
+    err = r.json()["error"]
+    assert err["code"] == "SERVICE_UNAVAILABLE"
+    assert err["retryable"] is True

@@ -14,6 +14,7 @@ from types import SimpleNamespace
 import pytest
 from oraclous_application_gateway_service.services.invoke_service import (
     AgentNotFound,
+    AgentNotRunnable,
     InvokeService,
     UpstreamInvokeError,
 )
@@ -155,9 +156,23 @@ async def test_inactive_agent_raises_not_found() -> None:
         ).invoke(slug="weather", agent_input="hi", principal=_PRINCIPAL)
 
 
-async def test_harness_non_2xx_is_upstream_error() -> None:
+@pytest.mark.parametrize("code", [400, 404, 422])
+async def test_harness_4xx_is_not_runnable_not_a_retryable_upstream_error(code: int) -> None:
+    # a 4xx from the harness means the bound capability is unrunnable (e.g. an unresolvable
+    # manifest_ref -> OHMReferenceError -> 422) — a PERMANENT binding error the caller must NOT
+    # retry; it must be AgentNotRunnable (-> a non-retryable 422 at the edge), never a 502 (#283).
+    with pytest.raises(AgentNotRunnable):
+        await _svc(_FakeAgents(_agent()), _FakeUpstream(_FakeResp(code, b'{"x":1}'))).invoke(
+            slug="weather", agent_input="hi", principal=_PRINCIPAL
+        )
+
+
+@pytest.mark.parametrize("code", [500, 502, 503])
+async def test_harness_5xx_stays_a_retryable_upstream_error(code: int) -> None:
+    # a 5xx is a transient harness/dependency failure — it stays UpstreamInvokeError (-> a retryable
+    # 502 at the edge), so a genuinely transient outage is still safe to retry.
     with pytest.raises(UpstreamInvokeError):
-        await _svc(_FakeAgents(_agent()), _FakeUpstream(_FakeResp(404, b'{"x":1}'))).invoke(
+        await _svc(_FakeAgents(_agent()), _FakeUpstream(_FakeResp(code, b'{"x":1}'))).invoke(
             slug="weather", agent_input="hi", principal=_PRINCIPAL
         )
 
