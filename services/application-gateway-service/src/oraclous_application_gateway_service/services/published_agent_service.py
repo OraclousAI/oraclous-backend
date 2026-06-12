@@ -44,3 +44,7 @@ class PublishedAgentService:
         """Take a published agent down (status -> unpublished). Org-scoped, idempotent: returns the
         row (the existing read/invoke paths then 404 it), or None if no such slug in the org."""
         return await self._repo.unpublish(organisation_id=organisation_id, slug=slug)
+
+    async def get_agent(self, *, organisation_id: uuid.UUID, slug: str) -> PublishedAgent | None:
+        """Resolve a single published agent within the member's org (None -> 404 at the route)."""
+        return await self._repo.get_by_slug(organisation_id=organisation_id, slug=slug)

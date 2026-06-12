@@ -760,6 +760,19 @@ paths:
         "200": { $ref: "#/components/responses/UpstreamJson" }
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "403": { $ref: "#/components/responses/Unauthorized" }
+  /v1/agents/{slug}/details:
+    get:
+      tags: [agents]
+      summary: Full management view for one published agent (member, org-scoped) — hydrate a detail page by slug.
+      operationId: getPublishedAgentDetails
+      x-stability: provisional
+      parameters:
+        - { name: slug, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
   /v1/agents/{slug}:
     get:
       tags: [agents]

@@ -1,10 +1,14 @@
 """Published-agent routes (ORAA-4 §21 routes layer) — a member-managed plane + a key-public plane.
 
 Member (user JWT, org-scoped): ``POST /v1/agents`` publishes; ``GET /v1/agents`` lists the org's
-agents. Public (integration key bound to the agent): ``GET /v1/agents/{slug}`` returns narrow public
-metadata; ``POST /v1/agents/{slug}/invoke`` runs the bound capability on the harness. The binding
-(the key's bound slug must equal the path slug) is enforced in ``require_bound_key`` before any
-upstream call. All routes register before the proxy catch-all.
+agents; ``GET /v1/agents/{slug}/details`` hydrates a single agent's full management view (so a
+console detail page need not fetch the whole list and filter client-side). Public (integration key
+bound to the agent): ``GET /v1/agents/{slug}`` returns narrow public metadata; ``POST
+/v1/agents/{slug}/invoke`` runs the bound capability on the harness. The binding (the key's bound
+slug must equal the path slug) is enforced in ``require_bound_key`` before any upstream call. The
+member detail read lives at ``/{slug}/details`` because ``GET /{slug}`` is already the key-public
+projection (same path+method can carry only one auth plane). All routes register before the proxy
+catch-all.
 """
 
 from __future__ import annotations
@@ -72,6 +76,18 @@ async def unpublish_agent(slug: str, admin: AdminDep, svc: PublishedAgentService
     row = await svc.unpublish(organisation_id=admin.organisation_id, slug=slug)
     if row is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="no such published agent")
+
+
+@router.get("/{slug}/details", response_model=PublishedAgentOut)
+async def get_agent_details(
+    slug: str, member: MemberDep, svc: PublishedAgentServiceDep
+) -> PublishedAgentOut:
+    # member-plane single-agent read (org-scoped) — the full management view, not the key-public
+    # projection. Lets a console detail page hydrate by slug without a list + client-side filter.
+    row = await svc.get_agent(organisation_id=member.organisation_id, slug=slug)
+    if row is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="no such published agent")
+    return row
 
 
 @router.get("/{slug}", response_model=PublicAgentOut)

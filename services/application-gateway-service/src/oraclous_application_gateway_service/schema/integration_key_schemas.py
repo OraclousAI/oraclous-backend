@@ -62,6 +62,7 @@ class KeyOut(BaseModel):
     capability_allow_list: list[str] | None = None
     cors_origins: list[str] | None = None
     rate_limit: int | None = None
+    rate_window_seconds: int | None = None  # the window rate_limit applies over (e.g. 100 per 60s)
     status: str
     expires_at: datetime | None = None
     created_at: datetime | None = None
