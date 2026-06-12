@@ -279,6 +279,13 @@
           "maximum": 1,
           "default": 0.85,
           "$comment": "Cosine in [candidate_threshold, merge_threshold) is the AMBIGUOUS band: NOT merged — a SAME_AS_CANDIDATE {score} edge is MERGEd between the two canonical nodes for review."
+        },
+        "fuzzy_threshold": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "default": 0,
+          "$comment": "Enrichment toward the legacy 4-pass dedup (#309). When > 0, an embedding-free, BLOCKED fuzzy stage folds canonical-name pairs (per label) whose difflib SequenceMatcher ratio >= this (HIGH/conservative, e.g. 0.92) BEFORE the semantic pass — catching typo/near-duplicate keys the `canonical` transform cannot collapse, even when the embedder is off/failing. 0 (default) disables it; the prior semantic-only behaviour is unchanged."
         }
       }
     },
@@ -286,7 +293,7 @@
       "type": "object",
       "required": ["id", "from", "ontology", "link"],
       "additionalProperties": false,
-      "$comment": "One hybrid extraction rule: mine entities from a record's `from` prose field (per the inline `ontology`) and MERGE a `link` edge from the record's primary node to each extracted entity. An optional `resolution` block canonicalizes the entities on write (Slice 4).",
+      "$comment": "One hybrid extraction rule: mine entities from a record's `from` prose field (per the inline `ontology`) and MERGE a `link` edge from the record's primary node to each extracted entity. An optional `resolution` block canonicalizes the entities on write (Slice 4). An optional `temporal` flag adds LLM temporal extraction (Slice 1, #311).",
       "properties": {
         "id": { "type": "string", "minLength": 1 },
         "from": {
@@ -296,6 +303,11 @@
         },
         "ontology": { "$ref": "#/$defs/extraction_ontology" },
         "resolution": { "$ref": "#/$defs/resolution" },
+        "temporal": {
+          "type": "boolean",
+          "default": false,
+          "$comment": "When true (#311), append the relationship-temporal extraction steering to the prompt so the LLM mines valid_from/valid_to/event_time/event_time_end onto the relationships it emits; those keys are normalised (year-only -> full ISO date, blanks dropped) and written on the inter-entity edges. Off by default — a rule without it behaves exactly as before."
+        },
         "link": {
           "type": "object",
           "required": ["type", "from_node_rule"],
