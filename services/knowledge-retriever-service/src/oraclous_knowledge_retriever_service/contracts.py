@@ -46,3 +46,36 @@ class SubgraphResult(TypedDict):
 
     nodes: list[NodeResult]
     edges: list[EdgeResult]
+
+
+class FederatedNodeResult(TypedDict):
+    """A :class:`NodeResult` labeled with the graph it came from (#330 / ADR-026).
+
+    Every federated hit carries ``source_graph_id`` + ``source_graph_name`` at the top level so a
+    caller aggregating many graphs can always attribute a result to its origin."""
+
+    id: str
+    type: str
+    properties: dict[str, Any]
+    source_graph_id: str
+    source_graph_name: str
+
+
+class FederatedEdgeResult(TypedDict):
+    """An :class:`EdgeResult` labeled with its source graph (#330). Edges in a federated
+    neighborhood always have both endpoints inside ONE graph — federation never fabricates
+    cross-graph edges on the read path (cross-graph SAME_AS is the KGS HITL pipeline's job)."""
+
+    source: str
+    target: str
+    type: str
+    properties: dict[str, Any]
+    source_graph_id: str
+    source_graph_name: str
+
+
+class FederatedSubgraphResult(TypedDict):
+    """The merged neighborhood slice around the entities a federated query matched."""
+
+    nodes: list[FederatedNodeResult]
+    edges: list[FederatedEdgeResult]

@@ -342,6 +342,10 @@ services:
       KRS_REDIS_URL: "redis://redis:6379/0"
       KRS_QUERY_CACHE: "${KRS_QUERY_CACHE:-false}"
       KRS_QUERY_CACHE_TTL: "${KRS_QUERY_CACHE_TTL:-300}"
+      # Federation (#330 / ADR-026): KRS enumerates the caller's accessible set from the KGS
+      # internal plane (GET /internal/v1/graphs, X-Internal-Key). Unset ⇒ federated routes 503.
+      KRS_KNOWLEDGE_GRAPH_URL: "http://knowledge-graph-service:8000"
+      KRS_FEDERATED_MAX_GRAPHS: "${KRS_FEDERATED_MAX_GRAPHS:-20}"
     depends_on:
       neo4j:
         condition: service_healthy
