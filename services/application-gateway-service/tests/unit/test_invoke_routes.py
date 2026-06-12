@@ -203,3 +203,13 @@ async def test_transient_harness_failure_stays_a_retryable_502() -> None:
     err = r.json()["error"]
     assert err["code"] == "SERVICE_UNAVAILABLE"
     assert err["retryable"] is True
+
+
+async def test_unpublished_agent_get_is_404() -> None:
+    # once status is flipped to 'unpublished' (the #280 unpublish surface), the public read 404s
+    app = _app()
+    tok = _seed_key(app.state.integration_key_repo, bound_slug="weather")
+    app.state.published_agent_repo.rows[0].status = "unpublished"
+    async with _client(app) as c:
+        r = await c.get("/v1/agents/weather", headers=_bearer(tok))
+    assert r.status_code == 404

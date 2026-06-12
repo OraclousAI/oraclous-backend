@@ -64,6 +64,16 @@ async def list_agents(member: MemberDep, svc: PublishedAgentServiceDep) -> list[
     return await svc.list_agents(member.organisation_id)
 
 
+@router.delete("/{slug}", status_code=status.HTTP_204_NO_CONTENT)
+async def unpublish_agent(slug: str, admin: AdminDep, svc: PublishedAgentServiceDep) -> None:
+    """Take a published agent down (soft tombstone -> status='unpublished'), so the existing
+    read/invoke 404 paths take effect. Admin-gated, org-scoped, idempotent; 204 on success, 404 if
+    no such slug in the caller's org."""
+    row = await svc.unpublish(organisation_id=admin.organisation_id, slug=slug)
+    if row is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="no such published agent")
+
+
 @router.get("/{slug}", response_model=PublicAgentOut)
 async def get_published_agent(
     slug: str, key: BoundKeyDep, agents: PublishedAgentRepoDep

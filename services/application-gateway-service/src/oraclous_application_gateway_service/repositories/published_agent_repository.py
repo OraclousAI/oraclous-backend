@@ -63,3 +63,20 @@ class PublishedAgentRepository:
                 )
             )
             return result.scalar_one_or_none()
+
+    async def unpublish(self, *, organisation_id: uuid.UUID, slug: str) -> PublishedAgent | None:
+        """Soft tombstone — status -> unpublished (mirrors the integration-key revoke). Org-scoped.
+        Idempotent: an already-unpublished row is returned unchanged; absent slug returns None."""
+        async with self._session() as session, session.begin():
+            result = await session.execute(
+                select(PublishedAgent).where(
+                    PublishedAgent.organisation_id == organisation_id,
+                    PublishedAgent.slug == slug,
+                )
+            )
+            row = result.scalar_one_or_none()
+            if row is None:
+                return None
+            row.status = "unpublished"
+            session.add(row)
+        return row
