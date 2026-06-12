@@ -41,6 +41,16 @@ class Settings(BaseSettings):
     embedding_dim: int = 512
     default_top_k: int = 10
 
+    # --- Redis query cache (#308, lift-and-reshape of legacy query_cache_service). Advisory: a
+    # Redis outage degrades to a live query, never an error. OFF by default — opt-in via
+    # KRS_QUERY_CACHE=true so the standalone/no-Redis run is unaffected. The cache key folds in a
+    # per-graph generation counter the KGS ingest bumps (a neutral "graph version" signal, NOT the
+    # retriever's private key layout), so a fresh ingest is a natural cache-miss with no cross-
+    # service key-format coupling. Same redis_url as the KGS ingestion spine. ---
+    query_cache: bool = False
+    query_cache_ttl: int = 300  # seconds a cached read survives absent a generation bump (5 min)
+    redis_url: str = "redis://redis:6379/0"
+
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:

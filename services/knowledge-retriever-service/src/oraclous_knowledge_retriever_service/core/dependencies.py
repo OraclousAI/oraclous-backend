@@ -102,7 +102,13 @@ def get_neo4j_driver(request: Request) -> Driver:
     return driver
 
 
+def get_redis_client(request: Request):
+    """The advisory query-cache Redis client (None when the cache is disabled/unbound, #308)."""
+    return getattr(request.app.state, "redis_client", None)
+
+
 def get_retrieval_service(
+    request: Request,
     driver: Annotated[Driver, Depends(get_neo4j_driver)],
     _org: Annotated[OrganisationContext, Depends(bind_org_context)],
 ) -> RetrievalService:
@@ -111,6 +117,8 @@ def get_retrieval_service(
         driver,
         HashingEmbedder(dim=settings.embedding_dim),
         database=settings.neo4j_database,
+        redis_client=get_redis_client(request),
+        cache_ttl=settings.query_cache_ttl,
     )
 
 

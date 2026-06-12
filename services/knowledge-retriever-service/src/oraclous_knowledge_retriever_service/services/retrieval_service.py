@@ -15,6 +15,9 @@ import asyncio
 from oraclous_substrate.access import enforced_organisation_id
 
 from oraclous_knowledge_retriever_service.contracts import EdgeResult, NodeResult, SubgraphResult
+from oraclous_knowledge_retriever_service.repositories.query_cache_repository import (
+    QueryCacheRepository,
+)
 from oraclous_knowledge_retriever_service.repositories.retrieval_repository import (
     RetrievalRepository,
 )
@@ -67,23 +70,65 @@ class RetrievalService:
         embedder: HashingEmbedder,
         *,
         database: str | None = None,
+        redis_client=None,
+        cache_ttl: int = 300,
     ) -> None:
         self._driver = driver
         self._embedder = embedder
         self._db = database
+        # Advisory query cache (#308): a None client (cache disabled / no Redis) makes the cache a
+        # no-op, so the read path is identical with the flag off. Built per-request like _repo() so
+        # the org scope comes from the same fail-closed governance seam.
+        self._redis = redis_client
+        self._cache_ttl = cache_ttl
 
     def _repo(self) -> RetrievalRepository:
         return RetrievalRepository(
             self._driver, organisation_id=enforced_organisation_id(), database=self._db
         )
 
+    def _cache(self) -> QueryCacheRepository:
+        return QueryCacheRepository(
+            self._redis, organisation_id=enforced_organisation_id(), ttl=self._cache_ttl
+        )
+
+    @staticmethod
+    def _cache_query(query: str, top_k: int) -> str:
+        """Compose the cache-query string: the lower/stripped query (so case/whitespace variants
+        collide, the legacy normalisation) plus top_k as a differentiator (a wider top_k is a
+        distinct result set). The substrate key builder re-normalises, but normalising the query
+        *before* appending top_k keeps the query's own trailing whitespace from leaking in."""
+        return f"{query.lower().strip()}|top_k={top_k}"
+
+    async def _cache_get(self, *, graph_id: str, query: str, modality: str):
+        """Read a cached payload for (graph, modality, query), or None on miss/disabled."""
+        return await self._cache().get(graph_id=graph_id, query_text=query, retriever_type=modality)
+
+    async def _cache_set(self, *, graph_id: str, query: str, modality: str, payload: dict) -> None:
+        """Cache `payload` for (graph, modality, query) under the current generation + TTL."""
+        await self._cache().set(
+            graph_id=graph_id, query_text=query, retriever_type=modality, result=payload
+        )
+
     async def semantic(self, *, graph_id: str, query: str, top_k: int) -> list[NodeResult]:
+        cache_query = self._cache_query(query, top_k)
+        cached = await self._cache_get(graph_id=graph_id, query=cache_query, modality="semantic")
+        if cached is not None:
+            return cached["results"]
         qvec = self._embedder.embed(query)
         repo = self._repo()
         rows = await asyncio.to_thread(repo.semantic, graph_id=graph_id, qvec=qvec, top_k=top_k)
-        return [_to_node_result(r) for r in rows]
+        results = [_to_node_result(r) for r in rows]
+        await self._cache_set(
+            graph_id=graph_id, query=cache_query, modality="semantic", payload={"results": results}
+        )
+        return results
 
     async def fulltext(self, *, graph_id: str, query: str, top_k: int) -> list[NodeResult]:
+        cache_query = self._cache_query(query, top_k)
+        cached = await self._cache_get(graph_id=graph_id, query=cache_query, modality="fulltext")
+        if cached is not None:
+            return cached["results"]
         repo = self._repo()
         rows = await asyncio.to_thread(
             repo.fulltext,
@@ -91,9 +136,17 @@ class RetrievalService:
             query=query,
             top_k=top_k,
         )
-        return [_to_node_result(r) for r in rows]
+        results = [_to_node_result(r) for r in rows]
+        await self._cache_set(
+            graph_id=graph_id, query=cache_query, modality="fulltext", payload={"results": results}
+        )
+        return results
 
     async def hybrid(self, *, graph_id: str, query: str, top_k: int) -> list[NodeResult]:
+        cache_query = self._cache_query(query, top_k)
+        cached = await self._cache_get(graph_id=graph_id, query=cache_query, modality="hybrid")
+        if cached is not None:
+            return cached["results"]
         sem = await self.semantic(graph_id=graph_id, query=query, top_k=top_k * 2)
         ful = await self.fulltext(graph_id=graph_id, query=query, top_k=top_k * 2)
         fused: dict[str, dict] = {}
@@ -112,6 +165,9 @@ class RetrievalService:
                     properties={**node["properties"], "rrf_score": entry["rrf"]},
                 )
             )
+        await self._cache_set(
+            graph_id=graph_id, query=cache_query, modality="hybrid", payload={"results": results}
+        )
         return results
 
     async def neighbors(self, *, graph_id: str, node_id: str, top_k: int) -> list[NodeResult]:
@@ -139,9 +195,17 @@ class RetrievalService:
         return [_to_node_result(r) for r in rows]
 
     async def subgraph(self, *, graph_id: str, limit: int) -> SubgraphResult:
+        cache_query = f"subgraph|limit={limit}"
+        cached = await self._cache_get(graph_id=graph_id, query=cache_query, modality="subgraph")
+        if cached is not None:
+            return cached["result"]
         repo = self._repo()
         data = await asyncio.to_thread(repo.subgraph, graph_id=graph_id, limit=limit)
-        return SubgraphResult(
+        result = SubgraphResult(
             nodes=[_to_node_result(n) for n in data["nodes"]],
             edges=[_to_edge_result(e) for e in data["edges"]],
         )
+        await self._cache_set(
+            graph_id=graph_id, query=cache_query, modality="subgraph", payload={"result": result}
+        )
+        return result
