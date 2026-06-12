@@ -33,6 +33,12 @@ def test_subpath_resolves_to_the_prefix_upstream() -> None:
     assert _table().resolve("/api/v1/capabilities/xyz").upstream_url == "http://capreg:8000"
 
 
+def test_krs_evaluate_rides_the_graph_prefix() -> None:
+    # POST /v1/graph/{id}/evaluate (#331) must reach the knowledge-retriever via /v1/graph
+    table = RouteTable([RouteEntry("/v1/graph", "http://krs:8000")])
+    assert table.resolve("/v1/graph/abc/evaluate").upstream_url == "http://krs:8000"
+
+
 def test_shared_stem_does_not_cross_route() -> None:
     # both live under /api/v1 — longest-match keeps them distinct
     assert _table().resolve("/api/v1/capabilities").upstream_url == "http://capreg:8000"
