@@ -44,6 +44,11 @@ from oraclous_knowledge_graph_service.domain.extraction_schema import (
 )
 from oraclous_knowledge_graph_service.domain.ontology import Ontology, resolve_label
 from oraclous_knowledge_graph_service.domain.structural import StructuralRepresentation
+from oraclous_knowledge_graph_service.domain.temporal import (
+    TEMPORAL_KEYS,
+    normalize_temporal_properties,
+    temporal_prompt_steering,
+)
 from oraclous_knowledge_graph_service.repositories.recipe_write_repository import RecipeGraphWriter
 from oraclous_knowledge_graph_service.services.entity_extractor import make_extractor
 from oraclous_knowledge_graph_service.services.recipes.resolution_pass import (
@@ -105,10 +110,18 @@ def run_extraction_pass(
 
     for rule in rules:
         ontology = Ontology.of(rule["ontology"])
+        # #311: a rule may opt into LLM temporal extraction (`temporal: true`) — append the
+        # relationship-temporal steering to the ontology prompt prefix so the LLM is asked to mine
+        # valid_from/valid_to/event_time/event_time_end onto the relationships it emits.
+        extract_temporal = bool(rule.get("temporal", False))
+        prompt_prefix = to_prompt_prefix(ontology)
+        if extract_temporal:
+            steering = temporal_prompt_steering()
+            prompt_prefix = f"{prompt_prefix}\n\n{steering}" if prompt_prefix else steering
         extractor = make_extractor(
             settings,
             schema=to_graph_schema(ontology),
-            prompt_prefix=to_prompt_prefix(ontology),
+            prompt_prefix=prompt_prefix,
         )
         # Fail-soft: extractor off (KGS_EXTRACTOR=null) → skip this rule; the deterministic
         # projection already completed, so the structured graph is unaffected.
@@ -170,6 +183,7 @@ def run_extraction_pass(
                 meta=meta,
                 source_id=source_id,
                 stats=stats,
+                extract_temporal=extract_temporal,
             )
             continue
         for primary_id, entity_graph in by_record.items():
@@ -184,6 +198,7 @@ def run_extraction_pass(
                     deterministic_id=_deterministic_id,
                     meta=meta,
                     source_id=source_id,
+                    extract_temporal=extract_temporal,
                 )
                 stats.entities_extracted += ents
                 stats.mentions += links
@@ -240,6 +255,7 @@ def _write_record_entities(
     deterministic_id: Any,
     meta: dict[str, Any],
     source_id: str,
+    extract_temporal: bool = False,
 ) -> tuple[int, int]:
     """Write one record's extracted entities + their inter-rels + the MENTIONS link from its primary
     node. Returns (entities_written, mentions_written). Reuses the deterministic-projection write
@@ -287,13 +303,14 @@ def _write_record_entities(
         )
 
     # Entity↔entity inter-relationships the extractor found, translated onto the deterministic ids.
-    inter_edges_by_type: dict[str, list[dict[str, str]]] = {}
+    inter_edges_by_type: dict[str, list[dict[str, Any]]] = {}
     for rel in entity_graph.relationships:
         start = lib_id_to_det.get(rel.start_node_id)
         end = lib_id_to_det.get(rel.end_node_id)
         if start is None or end is None:
             continue  # an endpoint was dropped (empty name / off-ontology) — skip dangling edge.
-        inter_edges_by_type.setdefault(rel.type, []).append({"from": start, "to": end})
+        edge = _edge_with_temporal(start, end, rel, extract_temporal)
+        inter_edges_by_type.setdefault(rel.type, []).append(edge)
     for rel_type, edges in inter_edges_by_type.items():
         writer.merge_edge(
             rel_type=rel_type,
@@ -303,6 +320,24 @@ def _write_record_entities(
             meta=meta,
         )
     return entities, mentions
+
+
+def _edge_with_temporal(start: str, end: str, rel: Any, extract_temporal: bool) -> dict[str, Any]:
+    """Build a `merge_edge` row for one inter-entity relationship, carrying the normalised temporal
+    properties (#311) when the rule opts in. Returns the bare `{from, to}` row when temporal
+    extraction is off OR the relationship has no temporal field — so a non-temporal rule's edges are
+    written exactly as before (no `properties` key). The temporal values are mined by the LLM onto
+    the relationship; `normalize_temporal_properties` keeps only the four temporal keys, coerces
+    year-only -> full date, and drops blanks (so the edge stores no empty/None temporal property).
+    """
+    edge: dict[str, Any] = {"from": start, "to": end}
+    if not extract_temporal:
+        return edge
+    raw = rel.properties or {}
+    temporal = normalize_temporal_properties({k: raw[k] for k in TEMPORAL_KEYS if k in raw})
+    if temporal:
+        edge["properties"] = temporal
+    return edge
 
 
 class _ParsedEntity:
@@ -341,6 +376,7 @@ def _resolve_and_write_rule(
     meta: dict[str, Any],
     source_id: str,
     stats: _ExtractionStats,
+    extract_temporal: bool = False,
 ) -> None:
     """Resolve-on-write for one extraction rule (Slice 4): canonicalize → cluster → write keyed to
     representatives. One node per cluster (aliases unioned, MENTIONS from every source record), the
@@ -475,14 +511,16 @@ def _resolve_and_write_rule(
             )
 
     # 6. Inter-entity relationships, re-pointed onto the representative ids (per record sub-graph).
-    inter_edges_by_type: dict[str, list[dict[str, str]]] = {}
+    inter_edges_by_type: dict[str, list[dict[str, Any]]] = {}
     for entity_graph in by_record.values():
         for rel in entity_graph.relationships:
             start = lib_to_rep_id.get(rel.start_node_id)
             end = lib_to_rep_id.get(rel.end_node_id)
             if start is None or end is None or start == end:
                 continue  # endpoint dropped, or a within-cluster self-rel after folding.
-            inter_edges_by_type.setdefault(rel.type, []).append({"from": start, "to": end})
+            inter_edges_by_type.setdefault(rel.type, []).append(
+                _edge_with_temporal(start, end, rel, extract_temporal)
+            )
     for rel_type, edges in inter_edges_by_type.items():
         writer.merge_edge(
             rel_type=rel_type, edges=edges, source_id=source_id, provenance="INFERRED", meta=meta
