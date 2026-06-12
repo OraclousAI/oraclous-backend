@@ -161,3 +161,63 @@ async def test_approve_unknown_id_is_404(client: AsyncClient) -> None:
     unknown = "00000000-0000-0000-0000-0000deadbeef"
     resp = await client.post(f"/api/v1/tools/{unknown}/approve", headers=_auth(role="admin"))
     assert resp.status_code == 404, resp.text
+
+
+async def test_admin_reject_flips_to_rejected(client: AsyncClient) -> None:
+    imported = (
+        await client.post(
+            "/api/v1/tools/import-mcp",
+            json={"server_url": _PUB_MCP, "label": "acme"},
+            headers=_auth(role="admin"),
+        )
+    ).json()["imported"]
+    tid = imported[0]["id"]
+    assert imported[0]["status"] == "pending_approval"
+
+    rejected = await client.post(f"/api/v1/tools/{tid}/reject", headers=_auth(role="admin"))
+    assert rejected.status_code == 204, rejected.text
+
+    got = (await client.get(f"/api/v1/tools/{tid}", headers=_auth(role="admin"))).json()
+    assert got["status"] == "rejected"
+
+
+async def test_member_cannot_reject(client: AsyncClient) -> None:
+    tid = (
+        await client.post(
+            "/api/v1/tools/import-mcp",
+            json={"server_url": _PUB_MCP, "label": "acme"},
+            headers=_auth(role="admin"),
+        )
+    ).json()["imported"][0]["id"]
+
+    resp = await client.post(f"/api/v1/tools/{tid}/reject", headers=_auth(role="member"))
+    assert resp.status_code == 403, resp.text
+    # still pending after the forbidden attempt
+    got = (await client.get(f"/api/v1/tools/{tid}", headers=_auth(role="admin"))).json()
+    assert got["status"] == "pending_approval"
+
+
+async def test_reject_unknown_id_is_404(client: AsyncClient) -> None:
+    unknown = "00000000-0000-0000-0000-0000deadbeef"
+    resp = await client.post(f"/api/v1/tools/{unknown}/reject", headers=_auth(role="admin"))
+    assert resp.status_code == 404, resp.text
+
+
+async def test_reject_an_already_approved_tool_is_404(client: AsyncClient) -> None:
+    # an active (approved) tool is past the gate — the reject route only declines pending tools.
+    tid = (
+        await client.post(
+            "/api/v1/tools/import-mcp",
+            json={"server_url": _PUB_MCP, "label": "acme"},
+            headers=_auth(role="admin"),
+        )
+    ).json()["imported"][0]["id"]
+    assert (
+        await client.post(f"/api/v1/tools/{tid}/approve", headers=_auth(role="admin"))
+    ).status_code == 204
+
+    resp = await client.post(f"/api/v1/tools/{tid}/reject", headers=_auth(role="admin"))
+    assert resp.status_code == 404, resp.text
+    # unchanged — still active
+    got = (await client.get(f"/api/v1/tools/{tid}", headers=_auth(role="admin"))).json()
+    assert got["status"] == "active"

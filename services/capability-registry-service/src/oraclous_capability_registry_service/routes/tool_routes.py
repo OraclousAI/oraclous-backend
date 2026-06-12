@@ -94,3 +94,17 @@ async def approve_tool(
     org-scoped — an unknown / cross-org id is a 404 (mask)."""
     if not await svc.approve(descriptor_id=tool_id, organisation_id=admin.organisation_id):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="no such tool")
+
+
+@router.post("/{tool_id}/reject", status_code=status.HTTP_204_NO_CONTENT)
+async def reject_tool(
+    tool_id: UUID,
+    admin: AdminDep,  # the other half of the supply-chain HITL decision — an org admin only
+    svc: McpImportServiceDep,
+) -> None:
+    """Decline an imported MCP tool (pending_approval → rejected, a terminal non-executable status).
+    Admin-only; org-scoped. Only a still-pending tool can be rejected — an unknown / cross-org id,
+    or a tool already approved (active), is a 404 (mask). The descriptor is retained as an audit
+    record, not deleted."""
+    if not await svc.reject(descriptor_id=tool_id, organisation_id=admin.organisation_id):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="no such pending tool")
