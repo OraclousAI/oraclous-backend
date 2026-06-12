@@ -137,6 +137,26 @@ class CapabilityRepository:
             row.status = status
             return True
 
+    async def set_status_if(
+        self,
+        *,
+        descriptor_id: uuid.UUID,
+        organisation_id: uuid.UUID,
+        expected: str,
+        status: str,
+    ) -> bool:
+        """Org-scoped *conditional* status flip: set ``status`` only when the row is currently
+        ``expected`` (R6 MCP-import reject). Returns True only if a row was actually transitioned —
+        an unknown id, a cross-org row, or a row already past ``expected`` all return False (so the
+        caller masks them identically as a 404; an already-``active`` tool can't be silently
+        reverted via the reject gate)."""
+        async with self._session() as session, session.begin():
+            row = await session.get(CapabilityDescriptor, descriptor_id)
+            if row is None or row.organisation_id != organisation_id or row.status != expected:
+                return False
+            row.status = status
+            return True
+
     async def upsert_by_id(
         self,
         *,

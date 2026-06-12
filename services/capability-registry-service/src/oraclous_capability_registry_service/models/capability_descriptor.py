@@ -36,5 +36,7 @@ class CapabilityDescriptor(BaseModel):
     descriptor = Column(JSONB, nullable=False)
     # supply-chain approval gate (R6 MCP-import): "active" (executable — the default for every
     # built-in / first-party registration) | "pending_approval" (an imported external MCP tool an
-    # admin has not yet approved). A non-active MCP tool is refused at execution (fail-closed).
+    # admin has not yet approved) | "rejected" (an admin declined the imported tool — terminal). A
+    # non-active MCP tool is refused at execution (fail-closed). Free-form String (no DB enum), so
+    # adding the "rejected" value needs no migration.
     status = Column(String(32), nullable=False, server_default="active")

@@ -3,7 +3,8 @@
 Register an EXTERNAL MCP server: egress-check the URL, call its ``tools/list`` over the hand-built
 JSON-RPC subset the executor uses, and store each discovered tool as a ``kind=tool, spec.type=mcp``
 descriptor in ``pending_approval`` — a supply-chain HITL gate, so an imported tool is NOT
-executable until an org admin approves it (see ``approve``). The raw MCP/transport error is never
+executable until an org admin approves it (see ``approve``) and an admin can decline an untrusted
+tool (see ``reject`` → terminal ``rejected``). The raw MCP/transport error is never
 surfaced (a generic ``McpImportError``). Auth'd external servers (import under a broker credential)
 are a recorded follow-on; this imports no-auth servers.
 """
@@ -27,6 +28,7 @@ _MAX_TOOLS = 100  # bound a hostile server's tools/list (no runaway descriptor c
 
 PENDING = "pending_approval"
 ACTIVE = "active"
+REJECTED = "rejected"  # terminal: an admin declined an imported tool — never executable
 
 
 class McpImportError(Exception):
@@ -81,6 +83,19 @@ class McpImportService:
         """The supply-chain HITL decision: flip an imported tool to ``active`` (executable)."""
         return await self._caps.set_status(
             descriptor_id=descriptor_id, organisation_id=organisation_id, status=ACTIVE
+        )
+
+    async def reject(self, *, descriptor_id: uuid.UUID, organisation_id: uuid.UUID) -> bool:
+        """The other half of the supply-chain HITL gate: decline an imported tool the admin deems
+        untrustworthy (``pending_approval`` → ``rejected``, a terminal non-executable status). The
+        descriptor is retained (rejected, not deleted) so the decline is an auditable record. Only
+        a still-pending tool can be rejected — an unknown / cross-org id, or an already-``active``
+        tool, returns False (the route masks it as a 404)."""
+        return await self._caps.set_status_if(
+            descriptor_id=descriptor_id,
+            organisation_id=organisation_id,
+            expected=PENDING,
+            status=REJECTED,
         )
 
     async def _list_tools(self, server_url: str) -> list[dict[str, Any]]:
