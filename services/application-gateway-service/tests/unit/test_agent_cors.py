@@ -124,6 +124,18 @@ async def test_member_plane_delete_preflight_defers_to_gateway_cors() -> None:
     assert r.headers.get("access-control-allow-origin") in (_GOOD, "*")
 
 
+async def test_member_plane_delete_response_keeps_gateway_acao() -> None:
+    # #289 (actual response, not just the preflight): a member-plane DELETE shares the path
+    # with the public plane but carries a member JWT, not a bound key. AgentCors must NOT
+    # rewrite its response — that strips the gateway-wide ACAO (no resolved key -> cors=None,
+    # fail-closed) so the browser blocks the 204 read. AgentCors must DEFER. (Status is
+    # irrelevant — auth may 401; what matters is the ACAO survives on the response.)
+    app = _app()
+    async with _client(app) as c:
+        r = await c.delete("/v1/agents/weather", headers={"Origin": _GOOD})
+    assert r.headers.get("access-control-allow-origin") in (_GOOD, "*")  # NOT stripped by AgentCors
+
+
 async def test_public_plane_get_preflight_still_owned_by_agent_cors() -> None:
     # No regression: a GET (public-plane) preflight is still answered by AgentCors (204) with the
     # per-key public-plane policy (reflected origin, GET/POST/OPTIONS, no credentials).

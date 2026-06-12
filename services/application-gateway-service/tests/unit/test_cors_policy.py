@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 from oraclous_application_gateway_service.domain.cors_policy import (
     is_public_agent_path,
+    is_public_plane_method,
     is_public_plane_preflight,
     origin_allowed,
     preflight_headers,
@@ -33,6 +34,20 @@ def test_public_plane_preflight_owns_get_post_and_bare_defers_delete() -> None:
     assert not is_public_plane_preflight(b"DELETE")
     assert not is_public_plane_preflight(b"PUT")
     assert not is_public_plane_preflight(b"PATCH")
+
+
+def test_public_plane_method_owns_get_post_defers_delete() -> None:
+    # the ACTUAL-request gate (#289): GET (metadata) / POST (invoke) are public-plane, so AgentCors
+    # rewrites the response ACAO to the per-key decision; DELETE (member unpublish) + any other
+    # method defer, so the gateway-wide CORS's ACAO survives on the response. `scope["method"]` is a
+    # str (not bytes), and an actual request always has a method, so None -> defer (fail-safe).
+    assert is_public_plane_method("GET")
+    assert is_public_plane_method("POST")
+    assert is_public_plane_method("get")  # case-insensitive / defensive
+    assert not is_public_plane_method(None)
+    assert not is_public_plane_method("DELETE")
+    assert not is_public_plane_method("PUT")
+    assert not is_public_plane_method("PATCH")
 
 
 def test_origin_allowed_is_fail_closed_on_none() -> None:
