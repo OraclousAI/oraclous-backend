@@ -84,3 +84,32 @@ async def test_backfill_is_a_noop_when_all_v2(test_envelope) -> None:  # noqa: A
     ).run()
     assert result == {"credentials": 0, "webhook_secrets": 0}
     assert whs.updated == {}  # nothing rewrapped — safe to re-run
+
+
+async def test_backfill_bad_row_is_swallowed_but_visible(test_envelope) -> None:  # noqa: ANN001
+    """ADR-021 §1 / #296: a single un-rewrappable row no longer aborts the resumable sweep silently
+    — it emits a structured ``envelope_backfill_row_failed`` alert and the loop CONTINUES, so a
+    stalled backfill surfaces to ops while the good rows still rewrap."""
+    from oraclous_credential_broker_service.core.security import encrypt_secret
+    from oraclous_credential_broker_service.services.backfill_service import BackfillService
+    from oraclous_telemetry import DegradationEvent, register_sink, reset_sinks
+
+    events: list[DegradationEvent] = []
+    reset_sinks()
+    register_sink(events.append)
+    try:
+        org = uuid.uuid4()
+        good_id, bad_id = uuid.uuid4(), uuid.uuid4()
+        good = encrypt_secret({"t": "good"})
+        creds = _FakeCredRepo([(bad_id, org, "not-a-ciphertext"), (good_id, org, good)])
+        result = await BackfillService(
+            envelope=test_envelope, credentials=creds, webhook_secrets=_FakeWhRepo([])
+        ).run()
+        assert result["credentials"] == 1  # the good row rewrapped; the bad one was skipped
+        assert good_id in creds.updated and bad_id not in creds.updated
+        fired = [e for e in events if e.code == "envelope_backfill_row_failed"]
+        assert len(fired) == 1
+        assert fired[0].context["table"] == "credentials"
+        assert fired[0].context["row_id"] == str(bad_id)
+    finally:
+        reset_sinks()

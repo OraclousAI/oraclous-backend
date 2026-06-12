@@ -34,13 +34,26 @@ logger = logging.getLogger(__name__)
 
 
 def build_credential_broker(settings: Settings) -> CredentialBrokerPort:
-    """Select the credential-broker implementation by ``CREDENTIAL_BROKER_MODE`` (fake default)."""
-    if settings.CREDENTIAL_BROKER_MODE == "real":
-        return RealCredentialBroker(
-            base_url=settings.CREDENTIAL_BROKER_URL, internal_key=settings.INTERNAL_SERVICE_KEY
+    """Select the credential-broker implementation by ``CREDENTIAL_BROKER_MODE``.
+
+    Fail-closed default is ``real`` (ADR-021 §1): credential resolution hits the real broker unless
+    the operator EXPLICITLY opts into the fake. Selecting ``fake`` fires a loud one-time startup
+    alert here (never a buried log) so a deploy that runs the fake broker is impossible to miss.
+    """
+    if settings.CREDENTIAL_BROKER_MODE == "fake":
+        alert(
+            Severity.WARNING,
+            "fake_runtime_active",
+            "capability-registry-service",
+            "CREDENTIAL_BROKER_MODE=fake: credential resolution is the deterministic FAKE broker — "
+            "valid for dev/CI/smoke only; a real deploy must unset this (ADR-021 §1)",
+            surface="credential_broker",
         )
-    return FakeCredentialBroker(
-        fake_db_dsn=settings.FAKE_DB_DSN or _libpq_dsn(settings.DATABASE_URL)
+        return FakeCredentialBroker(
+            fake_db_dsn=settings.FAKE_DB_DSN or _libpq_dsn(settings.DATABASE_URL)
+        )
+    return RealCredentialBroker(
+        base_url=settings.CREDENTIAL_BROKER_URL, internal_key=settings.INTERNAL_SERVICE_KEY
     )
 
 

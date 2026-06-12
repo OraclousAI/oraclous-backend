@@ -25,7 +25,10 @@ from oraclous_application_gateway_service.repositories.integration_key_repositor
 from oraclous_application_gateway_service.repositories.published_agent_repository import (
     PublishedAgentRepository,
 )
-from oraclous_application_gateway_service.repositories.rate_limit_store import enforce_bucket
+from oraclous_application_gateway_service.repositories.rate_limit_store import (
+    RateLimiterUnavailable,
+    enforce_bucket,
+)
 from oraclous_application_gateway_service.repositories.upstream_client import UpstreamClient
 from oraclous_application_gateway_service.repositories.webhook_subscription_repository import (
     WebhookSubscriptionRepository,
@@ -136,15 +139,23 @@ async def _authenticate(request: Request, token: str) -> Principal:
         # carry the binding so the invoke route can enforce it pre-forward (S4 PR2)
         request.state.resolved_key = resolved
         # per-key rate limit (R7-SEC S3): a key with a configured cap is throttled independently of
-        # the edge per-IP window; fail-open (a missing/erroring Redis allows the request).
+        # the edge per-IP window. On a Redis outage the configured policy applies (ADR-021 §1):
+        # default fail-open (allow + alert); opt-in fail-closed -> 503.
         if resolved.rate_limit is not None:
-            decision = await enforce_bucket(
-                getattr(request.app.state, "redis", None),
-                identity=str(resolved.key_id),
-                limit=resolved.rate_limit,
-                window_seconds=resolved.rate_window_seconds or 60,
-                namespace=_IK_RL_NS,
-            )
+            try:
+                decision = await enforce_bucket(
+                    getattr(request.app.state, "redis", None),
+                    identity=str(resolved.key_id),
+                    limit=resolved.rate_limit,
+                    window_seconds=resolved.rate_window_seconds or 60,
+                    namespace=_IK_RL_NS,
+                    allow_during_outage=get_settings().RATE_LIMIT_ALLOW_DURING_OUTAGE,
+                )
+            except RateLimiterUnavailable as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail="rate limiter unavailable (fail-closed)",
+                ) from exc
             if not decision.allowed:
                 raise HTTPException(
                     status_code=status.HTTP_429_TOO_MANY_REQUESTS,
@@ -339,6 +350,7 @@ def get_webhook_ingress_service(
         redis=getattr(request.app.state, "redis", None),
         rate_limit=settings.WEBHOOK_RATE_LIMIT,
         rate_window_seconds=settings.WEBHOOK_RATE_WINDOW_SECONDS,
+        allow_during_outage=settings.RATE_LIMIT_ALLOW_DURING_OUTAGE,
     )
 
 

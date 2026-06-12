@@ -50,6 +50,13 @@ class Settings(BaseSettings):
     # subscription is throttled independently. Fail-open, like the edge limiter.
     WEBHOOK_RATE_LIMIT: int = 600
     WEBHOOK_RATE_WINDOW_SECONDS: int = 60
+    # rate-limiter behaviour on a Redis OUTAGE (ADR-021 §1). Default TRUE = fail-OPEN: a transient
+    # Redis blip must not self-DoS the sole external ingress (availability of the edge outweighs
+    # strict limiting during a blip). Every fail-open still emits a structured alert (never silent).
+    # Set FALSE for a hardened, Redis-HA-backed deploy: an outage then 503s (fail-CLOSED) rather
+    # than silently dropping the limit. The default MUST stay the safe (open) value — a wrong False
+    # + no HA story 503s all traffic.
+    RATE_LIMIT_ALLOW_DURING_OUTAGE: bool = True
     # request-body cap (fail-closed); conservative default, per-route override is a later slice.
     MAX_REQUEST_BODY_BYTES: int = 10 * 1024 * 1024
     # X-Forwarded-For trust boundary: 0 = ignore XFF, key on the socket peer (no LB).

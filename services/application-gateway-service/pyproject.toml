@@ -18,11 +18,13 @@ dependencies = [
     "alembic>=1.13,<2.0",
     "oraclous-governance",
     "oraclous-errors",
+    "oraclous-telemetry",
 ]
 
 [tool.uv.sources]
 oraclous-governance = { workspace = true }
 oraclous-errors = { workspace = true }
+oraclous-telemetry = { workspace = true }
 
 [build-system]
 requires = ["hatchling"]

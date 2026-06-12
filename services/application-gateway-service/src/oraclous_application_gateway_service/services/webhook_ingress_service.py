@@ -73,6 +73,7 @@ class WebhookIngressService:
         redis=None,  # noqa: ANN001 — redis.asyncio client | None (per-subscription limit, S3)
         rate_limit: int = 600,
         rate_window_seconds: int = 60,
+        allow_during_outage: bool = True,
     ) -> None:
         self._subs = subscriptions
         self._agents = agents
@@ -83,6 +84,9 @@ class WebhookIngressService:
         self._redis = redis
         self._rate_limit = rate_limit
         self._rate_window = rate_window_seconds
+        # Redis-outage policy for the per-subscription limit (ADR-021 §1): True = fail-open (allow +
+        # alert), False = fail-closed (enforce_bucket raises RateLimiterUnavailable -> route 503s).
+        self._allow_during_outage = allow_during_outage
 
     async def ingest(
         self,
@@ -104,6 +108,7 @@ class WebhookIngressService:
             limit=self._rate_limit,
             window_seconds=self._rate_window,
             namespace=_WH_RL_NS,
+            allow_during_outage=self._allow_during_outage,
         )
         if not decision.allowed:
             raise WebhookRateLimited(decision.retry_after)

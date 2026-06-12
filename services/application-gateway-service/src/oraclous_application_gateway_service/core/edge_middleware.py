@@ -23,6 +23,7 @@ import json
 import logging
 
 from oraclous_errors import ErrorCode, build_envelope, new_request_id
+from oraclous_telemetry import Severity, alert
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from oraclous_application_gateway_service.domain.edge_protection import (
@@ -34,6 +35,8 @@ from oraclous_application_gateway_service.domain.edge_protection import (
 from oraclous_application_gateway_service.repositories.rate_limit_store import RateLimitStore
 
 logger = logging.getLogger(__name__)
+_SERVICE = "application-gateway-service"
+_EDGE_RL_NS = "rl:edge:ip:"
 
 
 def _request_id(scope: Scope) -> str:
@@ -165,9 +168,19 @@ class RateLimitMiddleware:
         app = scope.get("app")
         redis = getattr(getattr(app, "state", None), "redis", None)
         if redis is None:
-            # FAIL-OPEN — never lock the sole ingress on a Redis outage. Not silent: WARN + alert.
+            # FAIL-OPEN — never lock the sole ingress on a Redis outage. Not silent: WARN + a
+            # structured alert through the shared seam (ADR-021 §1) so the bypass is visible to ops.
             logger.warning(
                 "edge rate-limit: redis unavailable, failing open (request_id=%s)", request_id
+            )
+            alert(
+                Severity.WARNING,
+                "rate_limiter_fail_open",
+                _SERVICE,
+                "edge rate limiter has no Redis; allowing the request (fail-open)",
+                namespace=_EDGE_RL_NS,
+                reason="redis_unconfigured",
+                request_id=request_id,
             )
             await self._app(scope, receive, send)
             return
@@ -184,6 +197,15 @@ class RateLimitMiddleware:
         except Exception as exc:  # noqa: BLE001 — fail-open on any redis error (incl. connect)
             logger.error(
                 "edge rate-limit: redis error, failing open (request_id=%s): %s", request_id, exc
+            )
+            alert(
+                Severity.WARNING,
+                "rate_limiter_fail_open",
+                _SERVICE,
+                "edge rate limiter hit a Redis error; allowing the request (fail-open)",
+                namespace=_EDGE_RL_NS,
+                reason=f"redis_error: {exc}",
+                request_id=request_id,
             )
             await self._app(scope, receive, send)
             return
