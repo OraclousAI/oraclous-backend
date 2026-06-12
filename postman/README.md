@@ -1,6 +1,6 @@
 # Oraclous API — Postman collection
 
-A complete Postman collection for the Oraclous backend: **113 endpoints across all 8 services**,
+A complete Postman collection for the Oraclous backend: **114 endpoints across all 8 services**,
 callable through the **application-gateway** (the real entrypoint) or directly per service.
 
 | File | What |
@@ -97,3 +97,8 @@ Recently added:
   the new recipe rule shapes (`transform`, `from_each`+`edge_to_each`, `extractions`, `similarities`,
   `resolution`), paired with a `POST .../ingest` example that drives them over sample JSON records.
   See ADR-022 and the recipe-format reference for the field semantics.
+- **Knowledge Retriever → find_similar (#310)** — `GET /v1/graph/{{graph_id}}/similar/{{node_id}}`
+  returns a node's `SIMILAR_TO` neighbours (the edges the KGS similarity pass wrote) ranked by the
+  stamped cosine; `min_score=0` returns every link. Backs the registry `core/find-similar` in-loop
+  tool. The similarity rule now also takes `per_type_min_score` (per-node-label thresholds), and a
+  recipe-less ingest runs similarity automatically when `KGS_SIMILARITY_AUTO_TRIGGER` is set.

@@ -67,6 +67,18 @@ class Settings(BaseSettings):
     # to speed up free-text entity extraction on multi-chunk documents.
     extractor_max_concurrency: int = 10
 
+    # --- similarity auto-trigger (#310, legacy SIMILARITY_AUTO_TRIGGER_ON_INGEST) ---
+    # When True, a structured ingest with NO authored `similarities[]` rule still runs the content-
+    # similarity pass: one default SIMILAR_TO rule is synthesised per node rule over the node's best
+    # text field, so records connect by content without the author writing a rule. OFF by default —
+    # opt-in via KGS_SIMILARITY_AUTO_TRIGGER (an explicit `similarities[]` block always wins and is
+    # never overridden). The synthesised rule uses the floor below; per-type tuning needs an
+    # authored rule.
+    similarity_auto_trigger: bool = False
+    # The min cosine the auto-synthesised default similarity rule applies (only read when
+    # similarity_auto_trigger is on). A conservative floor; author a rule for finer control.
+    similarity_auto_min_score: float = 0.85
+
     @property
     def sync_database_url(self) -> str:
         """psycopg3 (sync) DSN derived from the async one — used by Alembic + seed_dev."""

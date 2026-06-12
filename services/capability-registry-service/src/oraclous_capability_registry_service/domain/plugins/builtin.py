@@ -302,3 +302,47 @@ class KnowledgeRetrieverPlugin(_ConnectorToolPlugin):
         },
     }
     OUTPUT_SCHEMA = _HITS_OUTPUT
+
+
+@plugin_registry.register
+class FindSimilarPlugin(_ConnectorToolPlugin):
+    """First-party "entities similar to X" over the org's knowledge graph (#310) — the read twin of
+    the knowledge-retriever that, given a node, returns the ``SIMILAR_TO`` neighbours the KGS
+    similarity pass wrote, ranked by the stamped cosine. No credential: reached over the
+    internal/gateway-trust path, the caller's org identity forwarded by the executor (never a BYOM
+    key). The ``find_similar`` operation wraps the retriever's
+    ``/v1/graph/{graph_id}/similar/{node_id}``."""
+
+    NAME = "Find Similar"  # slug ``find-similar`` MUST match the ref's name slug
+    CATEGORY = "RETRIEVAL"
+    DESCRIPTION = (
+        "Find the entities most similar to a given node in the organisation's knowledge graph "
+        "(the SIMILAR_TO neighbours, ranked by similarity). First-party and org-scoped; no "
+        "credential required."
+    )
+    TYPE = "INTERNAL"
+    TAGS = ["knowledge-graph", "retrieval", "similarity", "similar"]
+    CAPABILITIES = [
+        {
+            "name": "find_similar",
+            "description": "Return the nodes most similar to a given node (SIMILAR_TO neighbours).",
+            "parameters": {
+                "graph_id": "str",
+                "node_id": "str",
+                "top_k": "int",
+                "min_score": "float",  # 0.0 returns every SIMILAR_TO link; raise to keep close ones
+            },
+        },
+    ]
+    CREDENTIAL_REQUIREMENTS: list[dict] = []  # first-party: reached over the internal trust path
+    INPUT_SCHEMA = {
+        "type": "object",
+        "required": ["graph_id", "node_id"],
+        "properties": {
+            "graph_id": {"type": "string", "format": "uuid"},
+            "node_id": {"type": "string", "minLength": 1},
+            "top_k": {"type": "integer", "minimum": 1, "maximum": 100, "default": 10},
+            "min_score": {"type": "number", "minimum": 0, "maximum": 1, "default": 0.0},
+        },
+    }
+    OUTPUT_SCHEMA = _HITS_OUTPUT

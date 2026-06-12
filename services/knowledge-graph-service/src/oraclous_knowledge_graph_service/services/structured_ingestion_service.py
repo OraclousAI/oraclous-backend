@@ -14,6 +14,9 @@ from oraclous_knowledge_graph_service.core.config import Settings, get_settings
 from oraclous_knowledge_graph_service.domain.ontology import Ontology
 from oraclous_knowledge_graph_service.domain.structural import ExtractionMode
 from oraclous_knowledge_graph_service.repositories.recipe_write_repository import RecipeGraphWriter
+from oraclous_knowledge_graph_service.services.recipes.auto_similarity import (
+    synthesize_similarity_rules,
+)
 from oraclous_knowledge_graph_service.services.recipes.engine import get_recipe_engine
 from oraclous_knowledge_graph_service.services.recipes.extraction_pass import run_extraction_pass
 from oraclous_knowledge_graph_service.services.recipes.similarity_pass import run_similarity_pass
@@ -74,6 +77,21 @@ class StructuredIngestionService:
         if not record_units:
             raise StructuredIngestionError("no records found in the structured source")
         active_recipe = recipe or build_default_recipe(representation)
+        # #310 auto-trigger: when the operator opted in (KGS_SIMILARITY_AUTO_TRIGGER) AND the recipe
+        # declared NO `similarities[]`, synthesise default SIMILAR_TO rules from the node mappings
+        # so records connect by content with no authoring. An explicit `similarities[]` block always
+        # wins (never overridden). The synthesised rules ride the SAME validated engine + similarity
+        # pass below — no parallel path. Mutate a shallow copy so a caller-supplied recipe dict and
+        # any cached default are not aliased.
+        if self._settings.similarity_auto_trigger and not active_recipe.get("similarities"):
+            auto_rules = synthesize_similarity_rules(
+                recipe=active_recipe,
+                representation=representation,
+                engine=self._engine,
+                min_score=self._settings.similarity_auto_min_score,
+            )
+            if auto_rules:
+                active_recipe = {**active_recipe, "similarities": auto_rules}
         writer = RecipeGraphWriter(
             self._driver, graph_id=graph_id, organisation_id=self._org, database=self._db
         )

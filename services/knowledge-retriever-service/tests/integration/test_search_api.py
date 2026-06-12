@@ -30,6 +30,15 @@ class _FakeRetrievalService:
     async def neighbors(self, *, graph_id, node_id, top_k):
         return [NodeResult(id="4:y:2", type="Record", properties={"relationship": "PART_OF"})]
 
+    async def similar(self, *, graph_id, node_id, top_k, min_score):
+        return [
+            NodeResult(
+                id="4:y:2",
+                type="Item",
+                properties={"relationship": "SIMILAR_TO", "score": 0.91},
+            )
+        ]
+
     async def temporal(self, *, graph_id, as_of, top_k):
         return [NodeResult(id="4:z:3", type="Record", properties={"valid_from": as_of})]
 
@@ -120,6 +129,24 @@ async def test_subgraph_returns_nodes_and_edges(client) -> None:
     }
     scored = next(e for e in body["edges"] if e["type"] == "SIMILAR_TO")
     assert scored["properties"]["score"] == 0.87
+
+
+async def test_similar_returns_node_results(client) -> None:
+    # find_similar (#310): the SIMILAR_TO neighbours surface through the NodeResult envelope with
+    # the edge cosine + relationship in `properties`. top_k/min_score are accepted query params.
+    gid = str(uuid.uuid4())
+    resp = await client.get(f"/v1/graph/{gid}/similar/4:x:1?top_k=5&min_score=0.5", headers=_AUTH)
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert len(body) == 1
+    assert set(body[0].keys()) == {"id", "type", "properties"}  # strict envelope
+    assert body[0]["properties"]["relationship"] == "SIMILAR_TO"
+    assert body[0]["properties"]["score"] == 0.91
+
+
+async def test_similar_requires_auth(client) -> None:
+    resp = await client.get(f"/v1/graph/{uuid.uuid4()}/similar/4:x:1")
+    assert resp.status_code == 401
 
 
 async def test_subgraph_requires_auth(client) -> None:

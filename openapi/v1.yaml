@@ -302,6 +302,25 @@ paths:
       responses:
         "200": { $ref: "#/components/responses/UpstreamJson" }
         "401": { $ref: "#/components/responses/Unauthenticated" }
+  /v1/graph/{graphId}/similar/{nodeId}:
+    get:
+      tags: [knowledge-retriever]
+      summary: Entities similar to a node — its SIMILAR_TO neighbours ranked by cosine (#310).
+      description: >-
+        Traverses the SIMILAR_TO edges the KGS similarity pass wrote and returns the neighbours of
+        `nodeId`, ranked by the stamped cosine, as the uniform NodeResult envelope (the cosine +
+        relationship live in `properties`). `min_score` 0 returns every link; raise it to keep only
+        close ones. Backs the registry `core/find-similar` in-loop tool.
+      operationId: findSimilar
+      x-stability: stable
+      parameters:
+        - { name: graphId, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: nodeId, in: path, required: true, schema: { type: string } }
+        - { name: top_k, in: query, required: false, schema: { type: integer, minimum: 1, maximum: 100, default: 10 } }
+        - { name: min_score, in: query, required: false, schema: { type: number, minimum: 0, maximum: 1, default: 0 } }
+      responses:
+        "200": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
 
   /api/v1/tools:
     get:
