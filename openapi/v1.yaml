@@ -265,6 +265,31 @@ paths:
         "404": { $ref: "#/components/responses/NotFound" }
         "409": { $ref: "#/components/responses/Conflict" }
         "422": { $ref: "#/components/responses/ValidationFailed" }
+  /api/v1/graphs/{graphId}/resolution/cross-graph:
+    post:
+      tags: [knowledge-graph]
+      summary: Generate cross-graph SAME_AS candidates between two of the caller's graphs (#330).
+      description: >-
+        Flags pairs that look like the same real-world entity across the path graph and
+        `target_graph_id` (canonical-key match + embedding similarity) and writes them into the
+        EXISTING HITL review queue (#279) as SAME_AS_CANDIDATE edges carrying BOTH graph ids. The
+        same approve/reject verdict endpoints action them; a cross-graph approve LINKS (SAME_AS)
+        instead of folding. Both graphs are owner-gated — a graph in another org/owner is a 404,
+        so a cross-org pair is impossible.
+      operationId: generateCrossGraphCandidates
+      x-stability: stable
+      parameters:
+        - { name: graphId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CrossGraphGenerateRequest" }
+      responses:
+        "200": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
   /api/v1/recipes:
     get:
       tags: [knowledge-graph]
@@ -321,6 +346,50 @@ paths:
       responses:
         "200": { $ref: "#/components/responses/UpstreamJson" }
         "401": { $ref: "#/components/responses/Unauthenticated" }
+  /v1/federated/search:
+    post:
+      tags: [knowledge-retriever]
+      summary: Federated cross-graph search over ALL the caller's accessible graphs (#330).
+      description: >-
+        One query over every graph the caller can already read individually (ADR-026 — federation
+        grants NO new access; the retriever enumerates the org-scoped accessible set itself).
+        Modes: entity (name/alias match), semantic (one query embedding, per-graph cosine),
+        fulltext, hybrid (RRF). Every hit carries `source_graph_id`/`source_graph_name`. An
+        explicit `graph_ids` subset is fail-closed (any inaccessible id → 403, no partial
+        results); cap breaches → 422; an un-enumerable accessible set → 503. Backs the registry
+        `core/federated-search` in-loop tool.
+      operationId: federatedSearch
+      x-stability: stable
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/FederatedSearchRequest" }
+      responses:
+        "200": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+  /v1/federated/subgraph:
+    post:
+      tags: [knowledge-retriever]
+      summary: Federated neighborhood fetch around matched entities, per accessible graph (#330).
+      description: >-
+        Matches entities per accessible graph and returns the 1-hop slice around them — every
+        node and edge labeled with its source graph; edges never cross graphs. Same fail-closed
+        subset/caps/registry semantics as /v1/federated/search.
+      operationId: federatedSubgraph
+      x-stability: stable
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/FederatedSubgraphRequest" }
+      responses:
+        "200": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
 
   /api/v1/tools:
     get:
@@ -1111,11 +1180,63 @@ components:
         property as surfaced by the subgraph endpoint. On approve, `canonical_node_id` is the
         survivor (the other node is folded in); on reject the order is immaterial. The path
         `candidateId` must be the sha256 of the sorted pair, so the URL and the operands agree.
+        Cross-graph (#330): set `other_graph_id` to the graph `other_node_id` lives in when it
+        differs from the path graph — the approve then LINKS (SAME_AS) instead of folding.
       required: [canonical_node_id, other_node_id]
       additionalProperties: false
       properties:
         canonical_node_id: { type: string, minLength: 1, maxLength: 128 }
         other_node_id: { type: string, minLength: 1, maxLength: 128 }
+        other_graph_id: { type: string, format: uuid, nullable: true }
+    CrossGraphGenerateRequest:
+      type: object
+      description: >-
+        Generate cross-graph SAME_AS candidates between the path graph and `target_graph_id`
+        (#330 / ADR-026). Both graphs must be the caller's (cross-org → 404, fail-closed). Pairs
+        are flagged by canonical-key match and embedding similarity (at/above
+        `candidate_threshold`) and written into the existing HITL review queue with BOTH graph
+        ids carried on the candidate edge.
+      required: [target_graph_id]
+      additionalProperties: false
+      properties:
+        target_graph_id: { type: string, format: uuid }
+        candidate_threshold: { type: number, minimum: 0.5, maximum: 1, default: 0.85 }
+        limit: { type: integer, minimum: 1, maximum: 500, default: 100 }
+    FederatedSearchRequest:
+      type: object
+      description: >-
+        A federated cross-graph query (#330 / ADR-026). `graph_ids` omitted/null = ALL the
+        caller's accessible graphs (the org-scoped set — federation grants NO new access); an
+        explicit subset is validated against the accessible set and FAIL-CLOSED (any
+        unknown/inaccessible id → 403, no partial results). `per_graph_k`/`total_k` above the
+        configured caps → 422. Every hit is labeled `source_graph_id`/`source_graph_name`.
+      required: [query]
+      additionalProperties: false
+      properties:
+        query: { type: string, minLength: 1 }
+        mode: { type: string, enum: [entity, semantic, fulltext, hybrid], default: hybrid }
+        graph_ids:
+          type: array
+          nullable: true
+          items: { type: string, format: uuid }
+        per_graph_k: { type: integer, minimum: 1, default: 10 }
+        total_k: { type: integer, minimum: 1, default: 50 }
+    FederatedSubgraphRequest:
+      type: object
+      description: >-
+        A federated neighborhood fetch (#330): match entities per accessible graph, return the
+        1-hop slice around them — every node/edge labeled with its source graph. Edges never
+        cross graphs.
+      required: [query]
+      additionalProperties: false
+      properties:
+        query: { type: string, minLength: 1 }
+        graph_ids:
+          type: array
+          nullable: true
+          items: { type: string, format: uuid }
+        entities_per_graph: { type: integer, minimum: 1, default: 5 }
+        limit_per_graph: { type: integer, minimum: 1, default: 50 }
     DescriptorResponse:
       type: object
       description: >-

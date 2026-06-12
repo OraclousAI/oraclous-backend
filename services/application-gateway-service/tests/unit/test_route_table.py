@@ -57,6 +57,7 @@ def test_build_from_settings_maps_all_upstreams() -> None:
         "/credentials",
         "/api/v1/graphs",
         "/v1/search",
+        "/v1/federated",
         "/api/v1/capabilities",
     } <= prefixes
     # base urls come from settings and carry no trailing slash
