@@ -1,1 +1,1 @@
-"""oraclous-auth-service — placeholder shell (ORA-13)."""
+"""oraclous-auth-service — identity, organisations, and roles (substrate)."""

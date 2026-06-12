@@ -1,1 +1,1 @@
-"""oraclous-knowledge-graph-service — placeholder shell (ORA-13)."""
+"""oraclous-knowledge-graph-service — concern-driven ingestion → graph (substrate)."""

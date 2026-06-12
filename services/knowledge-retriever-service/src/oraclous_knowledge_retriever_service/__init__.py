@@ -1,1 +1,1 @@
-"""oraclous-knowledge-retriever-service — placeholder shell (ORA-13)."""
+"""oraclous-knowledge-retriever-service — semantic search + subgraph retrieval (substrate)."""

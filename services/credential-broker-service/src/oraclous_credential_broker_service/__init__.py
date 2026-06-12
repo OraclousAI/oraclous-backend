@@ -1,1 +1,1 @@
-"""oraclous-credential-broker-service — placeholder shell (ORA-13)."""
+"""oraclous-credential-broker-service — encrypted BYOM connections + envelope crypto (substrate)."""
