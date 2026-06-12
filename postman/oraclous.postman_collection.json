@@ -2178,6 +2178,38 @@
           "id": "63f859c4-f2d3-b2f8-d4f2-e9d6324ccce2"
         },
         {
+          "name": "GET /v1/graph/{{graph_id}}/similar/{{node_id}} (#310)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/v1/graph/{{graph_id}}/similar/{{node_id}}?top_k=10&min_score=0",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "graph",
+                "{{graph_id}}",
+                "similar",
+                "{{node_id}}"
+              ],
+              "query": [
+                {
+                  "key": "top_k",
+                  "value": "10"
+                },
+                {
+                  "key": "min_score",
+                  "value": "0"
+                }
+              ]
+            },
+            "description": "find_similar (#310): the SIMILAR_TO neighbours of a node, ranked by the stamped cosine. min_score 0 returns every link; raise it to keep only close ones. Backs the registry core/find-similar in-loop tool."
+          },
+          "response": []
+        },
+        {
           "name": "GET /v1/graph/{{graph_id}}/temporal",
           "request": {
             "method": "GET",

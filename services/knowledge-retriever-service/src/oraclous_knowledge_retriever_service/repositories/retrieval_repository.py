@@ -69,6 +69,28 @@ class RetrievalRepository:
             top_k=top_k,
         )
 
+    def similar(self, *, graph_id: str, node_id: str, top_k: int, min_score: float) -> list[dict]:
+        # find_similar (#310): the SIMILAR_TO neighbours of a node, ranked by the edge's `score`
+        # (the cosine the KGS similarity pass stamped). Undirected match — SIMILAR_TO is stored once
+        # per pair in a canonical direction, so a node can be on either end. Org+graph scoped on the
+        # anchor, the neighbour, AND (defence-in-depth) the score gate is applied in-query. An edge
+        # with no score sorts last (coalesced to 0) but still returns above min_score=0 — callers
+        # default min_score to 0 to see every SIMILAR_TO link.
+        return self._query(
+            "MATCH (n) WHERE elementId(n) = $node_id AND n.graph_id = $graph_id "
+            "AND n.organisation_id = $organisation_id "
+            "MATCH (n)-[r:SIMILAR_TO]-(m) "
+            "WHERE m.graph_id = $graph_id AND m.organisation_id = $organisation_id "
+            "AND coalesce(r.score, 0.0) >= $min_score "
+            "WITH m, r, coalesce(r.score, 0.0) AS sim ORDER BY sim DESC LIMIT $top_k "
+            "RETURN elementId(m) AS id, labels(m) AS labels, properties(m) AS props, "
+            "type(r) AS relationship, sim AS score",
+            graph_id=graph_id,
+            node_id=node_id,
+            top_k=top_k,
+            min_score=min_score,
+        )
+
     def subgraph(self, *, graph_id: str, limit: int) -> dict:
         # A bounded slice for visualisation: take up to `limit` nodes (org+graph scoped), then the
         # edges whose BOTH endpoints fall inside that set. Edges come from a directed pattern

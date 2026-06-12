@@ -121,6 +121,18 @@ class RetrievalService:
         )
         return [_to_node_result(r) for r in rows]
 
+    async def similar(
+        self, *, graph_id: str, node_id: str, top_k: int, min_score: float
+    ) -> list[NodeResult]:
+        # find_similar (#310): the SIMILAR_TO neighbours of a node, ranked by the stamped cosine.
+        # Each result carries `score` (the edge cosine) and `relationship` ("SIMILAR_TO") inside
+        # `properties`, mirroring the other modalities; the embedding vector is never echoed.
+        repo = self._repo()
+        rows = await asyncio.to_thread(
+            repo.similar, graph_id=graph_id, node_id=node_id, top_k=top_k, min_score=min_score
+        )
+        return [_to_node_result(r) for r in rows]
+
     async def temporal(self, *, graph_id: str, as_of: str, top_k: int) -> list[NodeResult]:
         repo = self._repo()
         rows = await asyncio.to_thread(repo.temporal, graph_id=graph_id, as_of=as_of, top_k=top_k)

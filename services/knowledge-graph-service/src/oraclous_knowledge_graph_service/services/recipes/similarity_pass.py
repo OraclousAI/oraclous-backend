@@ -1,11 +1,11 @@
 """Content-similarity post-projection pass (ORAA-4 §21 services layer — planning, no driver).
 
-Recipe enrichment Slice 3 (#269). The deterministic recipe engine projects each structured record
-into its node/edge graph; THIS pass runs AFTER that projection (alongside the Slice-2 extraction
-pass) and links records by the SIMILARITY of a designated field's content: it embeds the `from`
-field per record, runs a cosine kNN over the embeddings, and MERGEs an `edge_type` (default
-`SIMILAR_TO`) edge between records whose text is close — so records that say similar things connect
-even when they share no explicit identity/entity.
+Recipe enrichment Slice 3 (#269), enriched with per-type thresholds (#310). The deterministic recipe
+engine projects each structured record into its node/edge graph; THIS pass runs AFTER that
+projection (alongside the Slice-2 extraction pass) and links records by the SIMILARITY of a field's
+content: it embeds the `from` field per record, runs a cosine kNN over the embeddings, and MERGEs an
+`edge_type` (default `SIMILAR_TO`) edge between records whose text is close — so records that say
+similar things connect even when they share no explicit identity/entity.
 
 For each `similarities[]` rule in a validated recipe:
   - collect `(primary_node_deterministic_id, text)` per record for the rule's `from` field (the
@@ -15,7 +15,11 @@ For each `similarities[]` rule in a validated recipe:
   - if fewer than 2 records have text → no pair exists → no edges (return);
   - `make_embedder(settings).embed(texts)` → one vector per record; L2-normalise each so a dot
     product IS the cosine similarity;
-  - for each record keep up to `top_k` neighbours with `score >= min_score`, self excluded;
+  - resolve the effective minimum cosine: `per_type_min_score[<the node_rule's label>]` when the
+    rule provides a per-type override for that label, else the rule's `min_score` floor (#310 —
+    lifts the legacy similarity_service's per-type thresholds, e.g. 0.85 for long-form text nodes,
+    0.92 for short-name entity nodes that embed more noisily, without authoring magic numbers);
+  - for each record keep up to `top_k` neighbours with `score >= effective_min_score` (no self);
   - MERGE ONE `edge_type` edge per UNORDERED pair — canonical direction `min(id) -> max(id)` so a
     pair is written exactly once regardless of which side surfaced it — carrying a rounded `score`
     float property (the cosine of the two embeddings).
@@ -74,12 +78,18 @@ def run_similarity_pass(
         return stats
 
     record_units = [u for u in representation.units if u.kind.value == "record"]
+    # node-rule id -> the projected node LABEL (so a per-type threshold can be looked up by label).
+    label_by_node_rule = {
+        r["id"]: r["label"]
+        for r in recipe.get("mappings", [])
+        if r.get("project_to") == "node" and "label" in r
+    }
 
     for rule in rules:
         node_rule = rule["node_rule"]
         edge_type = rule.get("edge_type", "SIMILAR_TO")
         top_k = int(rule.get("top_k", 5))
-        min_score = float(rule.get("min_score", 0.5))
+        min_score = _effective_min_score(rule, label_by_node_rule.get(node_rule))
         from_ref = rule["from"]
         primary_by_unit = node_index_by_rule.get(node_rule, {})
 
@@ -133,6 +143,21 @@ def run_similarity_pass(
             meta=meta,
         )
     return stats
+
+
+def _effective_min_score(rule: dict[str, Any], label: str | None) -> float:
+    """The minimum cosine this rule applies (#310): the `per_type_min_score` override for the rule's
+    target node `label` when present, else the rule's `min_score` floor (default 0.5).
+
+    Lets one recipe set a looser floor for long-form text and a stricter floor for short-name
+    entity nodes (the legacy similarity_service's 0.85/0.92), keyed by the node label. When
+    the label is unknown (a misconfigured node_rule that validation already rejects, or no override
+    is mapped for it) the rule's plain `min_score` floor applies — never a silent 0."""
+    floor = float(rule.get("min_score", 0.5))
+    per_type = rule.get("per_type_min_score") or {}
+    if label is not None and label in per_type:
+        return float(per_type[label])
+    return floor
 
 
 def _l2_normalize(vector: list[float]) -> list[float]:

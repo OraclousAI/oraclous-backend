@@ -128,6 +128,46 @@ async def test_neighbors_carries_relationship() -> None:
     assert results[0]["properties"]["relationship"] == "PART_OF"
 
 
+async def test_similar_ranks_by_score_and_carries_relationship() -> None:
+    # find_similar (#310): SIMILAR_TO neighbours come back with the edge cosine as `score` and
+    # `relationship` = SIMILAR_TO inside properties (the repo orders by score; the service maps).
+    driver = _FakeDriver(
+        [
+            [
+                {
+                    "id": "n2",
+                    "labels": ["Item"],
+                    "props": {"name": "y", "embedding": [0.1] * 4},
+                    "relationship": "SIMILAR_TO",
+                    "score": 0.91,
+                },
+                {
+                    "id": "n3",
+                    "labels": ["Item"],
+                    "props": {"name": "z"},
+                    "relationship": "SIMILAR_TO",
+                    "score": 0.86,
+                },
+            ]
+        ]
+    )
+    svc = RetrievalService(driver, HashingEmbedder(8))
+    with _ctx():
+        results = await svc.similar(graph_id="g1", node_id="n1", top_k=10, min_score=0.5)
+    assert [r["id"] for r in results] == ["n2", "n3"]
+    assert results[0]["properties"]["relationship"] == "SIMILAR_TO"
+    assert results[0]["properties"]["score"] == 0.91
+    assert "embedding" not in results[0]["properties"]  # vector never echoed
+
+
+async def test_similar_empty_when_no_similar_edges() -> None:
+    driver = _FakeDriver([[]])
+    svc = RetrievalService(driver, HashingEmbedder(8))
+    with _ctx():
+        results = await svc.similar(graph_id="g1", node_id="n1", top_k=10, min_score=0.9)
+    assert results == []
+
+
 async def test_subgraph_maps_nodes_and_flattens_edges() -> None:
     # one Cypher row: nodes + edge_groups (a per-node list of edges); the repo flattens the groups
     # and the service maps each node through the NodeResult projection (labels/embedding stripped).

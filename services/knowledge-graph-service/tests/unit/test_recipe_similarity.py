@@ -414,3 +414,51 @@ def test_similarity_defaults_validate_without_optional_fields() -> None:
     recipe = _recipe(rep.shape_signature)
     recipe["similarities"][0] = {"id": "sim", "from": "field:text", "node_rule": "item"}
     get_recipe_engine().validate(recipe)  # must not raise
+
+
+# --- 7. per-type thresholds (#310): a per-label override beats the rule's min_score floor ---------
+def test_per_type_min_score_overrides_for_the_node_label(monkeypatch: pytest.MonkeyPatch) -> None:
+    # a–b cosine ~0.6. The rule's floor is 0.5 (would link), but per_type_min_score puts the `Item`
+    # label at 0.8 — the label-specific threshold wins, so the pair is filtered. Proves the per-type
+    # threshold is resolved from the node_rule's LABEL, not the bare min_score.
+    records = [{"id": "a", "text": "alpha"}, {"id": "b", "text": "beta"}]
+    rep = _json_rep(records, "items.json")
+    embedder = _FakeEmbedder({"alpha": [1.0, 0.0, 0.0], "beta": [0.6, 0.8, 0.0]})  # cosine 0.6
+    recipe = _recipe(rep.shape_signature, min_score=0.5)
+    recipe["similarities"][0]["per_type_min_score"] = {"Item": 0.8}
+    writer = _StatefulWriter()
+    _result, stats = _project_and_similarity(recipe, rep, writer, monkeypatch, embedder)
+    assert stats.similarity_edges == 0  # 0.6 < the Item-specific 0.8 → filtered
+    assert writer.rels("SIMILAR_TO") == []
+
+
+def test_per_type_min_score_falls_back_to_floor_for_an_unmapped_label(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The per-type map names a DIFFERENT label (`Chunk`), so the `Item` rule keeps its 0.5 floor and
+    # the 0.6 pair links — an unmapped label must never silently become a 0 (link-everything) floor.
+    records = [{"id": "a", "text": "alpha"}, {"id": "b", "text": "beta"}]
+    rep = _json_rep(records, "items.json")
+    embedder = _FakeEmbedder({"alpha": [1.0, 0.0, 0.0], "beta": [0.6, 0.8, 0.0]})  # cosine 0.6
+    recipe = _recipe(rep.shape_signature, min_score=0.5)
+    recipe["similarities"][0]["per_type_min_score"] = {"Chunk": 0.92}  # not this rule's label
+    writer = _StatefulWriter()
+    _result, stats = _project_and_similarity(recipe, rep, writer, monkeypatch, embedder)
+    assert stats.similarity_edges == 1  # 0.6 >= the floor 0.5 → linked
+
+
+def test_per_type_min_score_validates() -> None:
+    # the optional per-type map is accepted by the schema (values 0<x<=1).
+    rep = _json_rep([{"id": "a", "text": "x"}], "items.json")
+    recipe = _recipe(rep.shape_signature)
+    recipe["similarities"][0]["per_type_min_score"] = {"Item": 0.92}
+    get_recipe_engine().validate(recipe)  # must not raise
+
+
+def test_per_type_min_score_rejects_out_of_range_value() -> None:
+    # a per-type value > 1 is rejected by the schema (cosine is bounded by 1).
+    rep = _json_rep([{"id": "a", "text": "x"}], "items.json")
+    recipe = _recipe(rep.shape_signature)
+    recipe["similarities"][0]["per_type_min_score"] = {"Item": 1.5}
+    with pytest.raises(RecipeValidationError):
+        get_recipe_engine().validate(recipe)

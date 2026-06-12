@@ -341,7 +341,17 @@
           "exclusiveMinimum": 0,
           "maximum": 1,
           "default": 0.5,
-          "$comment": "Minimum cosine similarity (0<min_score<=1) for an edge to be written."
+          "$comment": "Minimum cosine similarity (0<min_score<=1) for an edge to be written. The DEFAULT floor; `per_type_min_score` overrides it for a specific target node LABEL (#310)."
+        },
+        "per_type_min_score": {
+          "type": "object",
+          "$comment": "Per-node-type minimum-cosine overrides (#310, legacy similarity_service per-type thresholds: 0.85 chunks / 0.92 entities). A map of {<node label>: <min_score>}; the threshold for THIS rule is `per_type_min_score[<the node_rule's label>]` when present, else `min_score`. Lets one recipe set a looser floor for long-form text nodes and a stricter floor for short-name entity nodes (which embed more noisily) without authoring separate rules with magic numbers — the label makes the intent self-documenting. Keys are node labels; the looked-up label is resolved from the rule's `node_rule` mapping at run time.",
+          "minProperties": 1,
+          "additionalProperties": {
+            "type": "number",
+            "exclusiveMinimum": 0,
+            "maximum": 1
+          }
         }
       }
     },
