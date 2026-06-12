@@ -11,7 +11,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import JSON, DateTime, Integer, String, Text, func
+from sqlalchemy import JSON, DateTime, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -58,6 +58,42 @@ class Recipe(Base):
     recipe_json: Mapped[dict] = mapped_column(JSON, nullable=False)
     authored_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class EntityResolution(Base):
+    """Audit row for a HITL resolution verdict on a `SAME_AS_CANDIDATE` pair (#279).
+
+    Governance-relevant: WHO approved/rejected WHICH pair, WHEN. Org-scoped (ADR-006). The
+    `(organisation_id, graph_id, candidate_id)` unique key makes the decision idempotent — a
+    re-submit of the SAME verdict is a no-op replay; a DIFFERENT verdict by a second reviewer is a
+    conflict the service rejects (409) rather than silently overriding.
+    """
+
+    __tablename__ = "entity_resolutions"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    organisation_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), nullable=False, index=True
+    )
+    graph_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False, index=True)
+    # The stable, unordered candidate-pair id (sha256 of the sorted endpoint node-id pair).
+    candidate_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    node_id_a: Mapped[str] = mapped_column(String(128), nullable=False)
+    node_id_b: Mapped[str] = mapped_column(String(128), nullable=False)
+    action: Mapped[str] = mapped_column(String(16), nullable=False)  # approve | reject
+    # On approve: the surviving canonical node id. Null on reject.
+    canonical_node_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    decided_by: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    decided_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    __table_args__ = (
+        UniqueConstraint(
+            "organisation_id",
+            "graph_id",
+            "candidate_id",
+            name="uq_entity_resolution_candidate",
+        ),
+    )
 
 
 class IngestionJob(Base):

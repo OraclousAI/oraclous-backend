@@ -43,12 +43,14 @@ from oraclous_knowledge_graph_service.repositories.graph_write_repository import
 )
 from oraclous_knowledge_graph_service.repositories.job_repository import IngestionJobRepository
 from oraclous_knowledge_graph_service.repositories.recipe_repository import RecipeRepository
+from oraclous_knowledge_graph_service.repositories.resolution_repository import ResolutionRepository
 from oraclous_knowledge_graph_service.services.dry_run_service import DryRunService
 from oraclous_knowledge_graph_service.services.graph_service import GraphService
 from oraclous_knowledge_graph_service.services.job_service import JobService
 from oraclous_knowledge_graph_service.services.ontology_service import OntologyService
 from oraclous_knowledge_graph_service.services.recipe_service import RecipeService
 from oraclous_knowledge_graph_service.services.recipes.engine import get_recipe_engine
+from oraclous_knowledge_graph_service.services.resolution_service import ResolutionService
 
 _bearer = HTTPBearer(auto_error=False)
 
@@ -182,6 +184,22 @@ def get_graph_write_repo(
     return GraphWriteRepository(driver, database=get_settings().neo4j_database)
 
 
+def get_resolution_service(
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+    graph_service: Annotated[GraphService, Depends(get_graph_service)],
+    write_repo: Annotated[GraphWriteRepository, Depends(get_graph_write_repo)],
+) -> ResolutionService:
+    """Build the HITL resolution service. `graph_service` carries the owner gate + the bound org
+    scope; `write_repo` (via `get_neo4j_driver`) is the Neo4j mutation surface — so the endpoint
+    503s when the substrate is down (a mutation cannot proceed without it). The audit log is the
+    Postgres `entity_resolutions` table."""
+    return ResolutionService(
+        graph_service=graph_service,
+        write_repo=write_repo,
+        audit_repo=ResolutionRepository(session),
+    )
+
+
 def get_recipe_service(
     session: Annotated[AsyncSession, Depends(get_db_session)],
     _org: Annotated[OrganisationContext, Depends(bind_org_context)],
@@ -208,5 +226,6 @@ UserIdDep = Annotated[uuid.UUID, Depends(get_current_user_id)]
 JobServiceDep = Annotated[JobService, Depends(get_job_service)]
 GraphWriteRepoDep = Annotated[GraphWriteRepository, Depends(get_graph_write_repo)]
 RecipeServiceDep = Annotated[RecipeService, Depends(get_recipe_service)]
+ResolutionServiceDep = Annotated[ResolutionService, Depends(get_resolution_service)]
 OntologyServiceDep = Annotated[OntologyService, Depends(get_ontology_service)]
 DryRunServiceDep = Annotated[DryRunService, Depends(get_dry_run_service)]
