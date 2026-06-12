@@ -96,8 +96,8 @@ class Settings(BaseSettings):
     # SINGLE-TENANT / self-hosted / dev OPT-IN: when True it RELAXES those private/internal blocks
     # so a user can ingest from a local or internal DB. The link-local / cloud-metadata range stays
     # blocked in EITHER mode (the guard's always-on floor). The committed deploy compose defaults
-    # this FALSE (fail-closed); a single-tenant / self-hosted deploy that must reach a local/internal
-    # DB opts in by setting `KGS_SQL_INGEST_ALLOW_PRIVATE_EGRESS=true` in `deploy/.env`.
+    # this FALSE (fail-closed); a single-tenant / self-hosted deploy that must reach a local or
+    # internal DB opts in by setting `KGS_SQL_INGEST_ALLOW_PRIVATE_EGRESS=true` in `deploy/.env`.
     sql_ingest_allow_private_egress: bool = False
     # Hard ceiling on rows fetched per table in a full_snapshot SQL ingest (cost / heap guard).
     sql_ingest_max_rows_per_table: int = 50_000
