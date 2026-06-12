@@ -49,6 +49,12 @@ class _FakeAgents:
     async def list_for_org(self, organisation_id):  # noqa: ANN001
         return [r for r in self.rows if r.organisation_id == organisation_id]
 
+    async def unpublish(self, *, organisation_id, slug):  # noqa: ANN001
+        row = await self.get_by_slug(organisation_id=organisation_id, slug=slug)
+        if row is not None:
+            row.status = "unpublished"
+        return row
+
 
 class _FakeKeys:
     def __init__(self) -> None:
@@ -158,6 +164,80 @@ async def test_publish_then_mint_then_list_rotate_revoke() -> None:
         assert r.status_code == 204
         r = await c.get(f"/v1/integration-keys/{key_id}", headers=_DEV)
         assert r.json()["status"] == "revoked"
+
+
+async def test_unpublish_flips_status_and_is_idempotent() -> None:
+    # DELETE /v1/agents/{slug} -> 204; the row is soft-tombstoned to 'unpublished'; a second call is
+    # idempotent (still 204, still unpublished) since the slug still resolves in the org.
+    app = _app()
+    async with _client(app) as c:
+        r = await c.post(
+            "/v1/agents", json={"slug": "weather", "bound_capability_ref": "cap-1"}, headers=_DEV
+        )
+        assert r.status_code == 201, r.text
+        # list shows it active
+        assert (await c.get("/v1/agents", headers=_DEV)).json()[0]["status"] == "active"
+        # unpublish -> 204
+        r = await c.delete("/v1/agents/weather", headers=_DEV)
+        assert r.status_code == 204
+        assert (await c.get("/v1/agents", headers=_DEV)).json()[0]["status"] == "unpublished"
+        # idempotent: the slug still resolves, so a re-unpublish is 204, not 404
+        r = await c.delete("/v1/agents/weather", headers=_DEV)
+        assert r.status_code == 204
+        assert (await c.get("/v1/agents", headers=_DEV)).json()[0]["status"] == "unpublished"
+
+
+async def test_unpublish_unknown_slug_is_404() -> None:
+    app = _app()
+    async with _client(app) as c:
+        r = await c.delete("/v1/agents/nope", headers=_DEV)
+    assert r.status_code == 404
+
+
+async def test_unpublish_requires_a_member_credential() -> None:
+    # an integration-key (SERVICE_ACCOUNT) bearer must be 403 on the admin-only unpublish
+    app = _app()
+    minted = mint_key("oak")
+    app.state.integration_key_repo.rows.append(
+        SimpleNamespace(
+            id=uuid.uuid4(),
+            organisation_id=_DEV_ORG,
+            key_prefix=minted.key_prefix,
+            key_hash=minted.key_hash,
+            status="active",
+            expires_at=None,
+            bound_agent_slug=None,
+            capability_allow_list=None,
+            cors_origins=None,
+        )
+    )
+    async with _client(app) as c:
+        r = await c.delete(
+            "/v1/agents/weather", headers={"authorization": f"Bearer {minted.plaintext}"}
+        )
+    assert r.status_code == 403
+
+
+async def test_unpublish_org_scoped_other_org_slug_is_404() -> None:
+    # an agent published in another org must not be unpublishable from the dev org
+    app = _app()
+    app.state.published_agent_repo.rows.append(
+        SimpleNamespace(
+            id=uuid.uuid4(),
+            organisation_id=uuid.uuid4(),  # not the dev org
+            slug="weather",
+            bound_capability_ref="cap-1",
+            display_name=None,
+            description=None,
+            status="active",
+            created_at=datetime.now(UTC),
+        )
+    )
+    async with _client(app) as c:
+        r = await c.delete("/v1/agents/weather", headers=_DEV)
+    assert r.status_code == 404
+    # the other-org row is untouched
+    assert app.state.published_agent_repo.rows[0].status == "active"
 
 
 async def test_rotate_does_not_resurrect_a_revoked_key() -> None:

@@ -773,6 +773,18 @@ paths:
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "403": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      tags: [agents]
+      summary: Unpublish an agent (soft tombstone -> unpublished — admin, org-scoped, idempotent).
+      operationId: unpublishAgent
+      x-stability: provisional
+      parameters:
+        - { name: slug, in: path, required: true, schema: { type: string } }
+      responses:
+        "204": { description: Unpublished. }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
   /v1/agents/{slug}/invoke:
     post:
       tags: [agents]
