@@ -51,6 +51,7 @@ class ChatMessage(BaseModel):
     __tablename__ = "chat_messages"
     __table_args__ = (
         CheckConstraint("role IN ('user', 'assistant', 'system')", name="ck_chat_messages_role"),
+        CheckConstraint("rating IN ('up', 'down')", name="ck_chat_messages_rating"),
         Index("ix_chat_messages_thread", "thread_id", "created_at"),
     )
 
@@ -65,3 +66,5 @@ class ChatMessage(BaseModel):
     execution_id = Column(UUID(as_uuid=True), nullable=True)
     total_tokens = Column(Integer, nullable=True)
     sources = Column(JSONB(none_as_null=True), nullable=True)
+    # member feedback on an assistant turn (thumbs up/down); NULL = no rating yet (#313)
+    rating = Column(String, nullable=True)

@@ -80,6 +80,26 @@ class _FakeChatRepo:
     async def list_messages(self, *, thread_id):  # noqa: ANN001
         return self.messages.get(thread_id, [])
 
+    def add_assistant_message(self, *, thread_id):  # noqa: ANN001 — test helper
+        msg = SimpleNamespace(
+            id=uuid.uuid4(),
+            role="assistant",
+            content="ok",
+            execution_id=uuid.uuid4(),
+            total_tokens=3,
+            rating=None,
+            created_at=datetime.now(UTC),
+        )
+        self.messages.setdefault(thread_id, []).append(msg)
+        return msg
+
+    async def set_message_rating(self, *, thread_id, message_id, rating):  # noqa: ANN001
+        for msg in self.messages.get(thread_id, []):
+            if msg.id == message_id and msg.role == "assistant":
+                msg.rating = rating
+                return msg
+        return None
+
 
 class _FakeAgents:
     async def get_by_slug(self, *, organisation_id, slug):  # noqa: ANN001
@@ -195,3 +215,69 @@ async def test_no_auth_is_401() -> None:
     app = _app()
     async with _client(app) as c:
         assert (await c.get("/v1/chat/threads")).status_code == 401
+
+
+async def test_message_feedback_up_then_down_idempotent() -> None:
+    app = _app()
+    async with _client(app) as c:
+        tid = (
+            await c.post("/v1/chat/threads", json={"agent_slug": "weather"}, headers=_DEV)
+        ).json()["id"]
+        msg = app.state.chat_repo.add_assistant_message(thread_id=uuid.UUID(tid))
+        up = await c.post(
+            f"/v1/chat/threads/{tid}/messages/{msg.id}/feedback",
+            json={"rating": "up"},
+            headers=_DEV,
+        )
+        assert up.status_code == 200 and up.json()["rating"] == "up"
+        # re-rating overwrites (idempotent surface)
+        down = await c.post(
+            f"/v1/chat/threads/{tid}/messages/{msg.id}/feedback",
+            json={"rating": "down"},
+            headers=_DEV,
+        )
+        assert down.status_code == 200 and down.json()["rating"] == "down"
+
+
+async def test_message_feedback_rejects_bad_rating() -> None:
+    app = _app()
+    async with _client(app) as c:
+        tid = (
+            await c.post("/v1/chat/threads", json={"agent_slug": "weather"}, headers=_DEV)
+        ).json()["id"]
+        msg = app.state.chat_repo.add_assistant_message(thread_id=uuid.UUID(tid))
+        bad = await c.post(
+            f"/v1/chat/threads/{tid}/messages/{msg.id}/feedback",
+            json={"rating": "meh"},
+            headers=_DEV,
+        )
+        assert bad.status_code == 422
+
+
+async def test_message_feedback_unknown_message_is_404() -> None:
+    app = _app()
+    async with _client(app) as c:
+        tid = (
+            await c.post("/v1/chat/threads", json={"agent_slug": "weather"}, headers=_DEV)
+        ).json()["id"]
+        missing = await c.post(
+            f"/v1/chat/threads/{tid}/messages/{uuid.uuid4()}/feedback",
+            json={"rating": "up"},
+            headers=_DEV,
+        )
+        assert missing.status_code == 404
+
+
+async def test_message_feedback_on_other_members_thread_is_404() -> None:
+    app = _app()
+    other = await app.state.chat_repo.create_thread(
+        organisation_id=_DEV_ORG, user_id=_OTHER_USER, bound_agent_slug="weather", title="theirs"
+    )
+    msg = app.state.chat_repo.add_assistant_message(thread_id=other.id)
+    async with _client(app) as c:
+        denied = await c.post(
+            f"/v1/chat/threads/{other.id}/messages/{msg.id}/feedback",
+            json={"rating": "up"},
+            headers=_DEV,
+        )
+        assert denied.status_code == 404
