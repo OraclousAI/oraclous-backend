@@ -33,6 +33,7 @@ dev = [
     "jsonschema>=4.21,<5.0",
     "alembic>=1.16,<2.0",
     "asyncpg>=0.30.0,<1.0",
+    "aiomysql>=0.2,<0.3",
 ]
 
 [tool.mypy]
