@@ -12,10 +12,11 @@ Faithful lift-and-reshape of legacy `develop@84152635 code_parser_service.bootst
     egress; until it lands, clone is gated behind the flag in a trusted operator context, never
     reachable from an arbitrary uploaded payload.
 
-The walk skips hidden dirs / ``node_modules`` / ``__pycache__`` / ``venv``, caps file count + per-
-file bytes, and yields ``(rel_path, raw_bytes)`` for every supported source file. Manifests
-(``requirements.txt`` / ``package.json`` / ``go.mod`` / ``pom.xml``) are parsed into ``Dependency``
-nodes regardless of source channel.
+The walk skips hidden dirs / ``node_modules`` / ``__pycache__`` / ``venv`` (the legacy skip set —
+deliberately NOT ``dist``/``build``, which legitimately ship source in some projects), caps file
+count + per-file bytes, and yields ``(rel_path, raw_bytes)`` for every supported source file.
+Manifests (``requirements.txt`` / ``package.json`` / ``go.mod`` / ``pom.xml``) are parsed into
+``Dependency`` nodes regardless of source channel.
 """
 
 from __future__ import annotations
@@ -40,7 +41,9 @@ logger = logging.getLogger(__name__)
 
 _MAX_FILES = 5000
 _MAX_FILE_BYTES = 2_000_000
-_SKIP_DIR_PARTS = {".git", "node_modules", "__pycache__", "venv", ".venv", "dist", "build"}
+# The legacy skip set (code_parser_service): vendored/build-cache dirs only. NOT dist/build —
+# projects legitimately ship source under those, so skipping them under-ingests (review NIT #8).
+_SKIP_DIR_PARTS = {".git", "node_modules", "__pycache__", "venv", ".venv"}
 
 # Dependency manifests parsed into :Dependency nodes (legacy MANIFEST_FILES, code-graph subset).
 _MANIFEST_FILES = {"requirements.txt", "package.json", "go.mod", "pom.xml"}
