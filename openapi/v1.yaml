@@ -321,6 +321,33 @@ paths:
       responses:
         "200": { $ref: "#/components/responses/UpstreamJson" }
         "401": { $ref: "#/components/responses/Unauthenticated" }
+  /v1/graph/{graphId}/evaluate:
+    post:
+      tags: [knowledge-retriever]
+      summary: RAGAS-style retrieval-quality evaluation — native LLM-judge metrics (#331).
+      description: >-
+        Scores a question (and optionally an answer / ground truth) against the graph using the
+        retriever's own hybrid search path: faithfulness (answer claims supported by context),
+        answer_relevance, context_precision, and context_recall (requires ground_truth). The
+        answer is generated from the retrieved context when omitted. Metrics are judged natively
+        by the configured OpenAI-compatible LLM (no ragas lib); a per-metric judge failure nulls
+        that metric with a warning (never a 500). Requires the retriever's judge key
+        (KRS_OPENAI_API_KEY) — unconfigured, the endpoint returns a typed 422 rather than
+        fabricated scores. Explicit endpoint only — never part of a chat path.
+      operationId: evaluateGraph
+      x-stability: experimental
+      parameters:
+        - { name: graphId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/JsonObject" }
+      responses:
+        "200": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
 
   /api/v1/tools:
     get:

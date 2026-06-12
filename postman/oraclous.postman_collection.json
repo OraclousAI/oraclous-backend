@@ -2458,6 +2458,42 @@
 					},
 					"response": [],
 					"id": "3374fd6e-6875-aa3d-3361-f1b7d4f570ff"
+				},
+				{
+					"name": "POST /v1/graph/{{graph_id}}/evaluate (#331)",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"url": {
+							"raw": "{{base_url}}/v1/graph/{{graph_id}}/evaluate",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"v1",
+								"graph",
+								"{{graph_id}}",
+								"evaluate"
+							]
+						},
+						"description": "RAGAS-style retrieval-quality evaluation (native LLM-judge, no ragas lib): faithfulness, answer_relevance, context_precision, context_recall (needs ground_truth) judged against the retriever's own hybrid search contexts. Omit answer to have one generated from the retrieved context (evaluates retrieval+generation end-to-end). metrics selects a subset; a judge failure nulls that metric with a warning (never a 500). Requires KRS_OPENAI_API_KEY on the retriever - unconfigured returns a typed 422 (eval_judge_not_configured).",
+						"body": {
+							"mode": "raw",
+							"raw": "{\"question\": \"Who wrote the first computer program?\", \"ground_truth\": \"Ada Lovelace wrote the first computer program.\", \"metrics\": [\"faithfulness\", \"answer_relevance\", \"context_precision\", \"context_recall\"]}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						}
+					},
+					"response": [],
+					"id": "a682cfed-1bf3-4db8-bc72-22e7b7d8960f"
 				}
 			],
 			"description": "Routes for knowledge-retriever-service (host :8004). Business routes go through the gateway ({{base_url}})."
