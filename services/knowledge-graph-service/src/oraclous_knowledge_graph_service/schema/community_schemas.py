@@ -51,7 +51,6 @@ class CommunityResponse(BaseModel):
     community_id: str
     kind: str
     level: int
-    resolution: float
     label: str
     size: int
     summary: str | None = None
@@ -59,6 +58,8 @@ class CommunityResponse(BaseModel):
     summary_excerpt: str | None = None
     summary_model: str | None = None
     summary_at: datetime | None = None
+    # "llm" for a real model summary, "fallback" for the member-derived degrade (provenance).
+    summary_source: str | None = None
     weight: float | None = None
     parent_id: str | None = None
     members: list[CommunityMemberResponse] = Field(default_factory=list)
@@ -69,7 +70,6 @@ class CommunityResponse(BaseModel):
             community_id=c.community_id,
             kind=c.kind,
             level=c.level,
-            resolution=c.resolution,
             label=_derive_label(c.community_id, c.summary),
             size=c.entity_count,
             summary=c.summary,
@@ -77,6 +77,7 @@ class CommunityResponse(BaseModel):
             summary_excerpt=c.summary_excerpt,
             summary_model=c.summary_model,
             summary_at=c.summary_at,
+            summary_source=c.summary_source,
             weight=c.weight,
             parent_id=c.parent_id,
             members=[

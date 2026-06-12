@@ -1737,7 +1737,7 @@
                 "detect"
               ]
             },
-            "description": "Detect communities via in-DB Neo4j GDS Louvain across 5 resolutions (multi-level hierarchy). Small graphs run inline (200 with the result); larger graphs enqueue a job (202 {job_id,status}).",
+            "description": "Detect communities via in-DB Neo4j GDS Louvain's NATIVE dendrogram (one level per dendrogram depth — honest, not a fixed 5; level 0 = coarsest). Tiny graphs run inline (200 with the result); larger graphs enqueue a job (202 {job_id,status}). Body: optional min_entities + force_rebuild (re-detect over existing communities). Skips when below the entity floor, above the entity cap, already detected without force_rebuild, or another detect is in progress.",
             "body": {
               "mode": "raw",
               "raw": "{\"min_entities\": null, \"force_rebuild\": false}",
@@ -1834,7 +1834,7 @@
             "method": "POST",
             "header": [],
             "url": {
-              "raw": "{{base_url}}/api/v1/graphs/{{graph_id}}/communities/summarize?level=0",
+              "raw": "{{base_url}}/api/v1/graphs/{{graph_id}}/communities/summarize?level=0&force=false",
               "host": [
                 "{{base_url}}"
               ],
@@ -1850,10 +1850,14 @@
                 {
                   "key": "level",
                   "value": "0"
+                },
+                {
+                  "key": "force",
+                  "value": "false"
                 }
               ]
             },
-            "description": "LLM-summarise the graph's communities (summary + keywords + excerpt + provenance). Requires KGS_EXTRACTOR=openai (else 503). Optional ?level= to summarise one level."
+            "description": "LLM-summarise the graph's communities (summary + keywords + excerpt + provenance: summary_source 'llm' vs 'fallback'). Requires KGS_EXTRACTOR=openai (else 503). By default summarises only un-summarised communities (resumable, no re-billing); force=true re-summarises all. Optional ?level= to summarise one level."
           },
           "response": []
         },

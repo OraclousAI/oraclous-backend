@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import uuid
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, Response, status
 
 from oraclous_knowledge_graph_service.core.dependencies import AnalyticsServiceDep, UserIdDep
 from oraclous_knowledge_graph_service.domain.community import GdsUnavailableError
@@ -81,25 +81,32 @@ async def list_communities(
     return [CommunityResponse.of(c) for c in communities]
 
 
-@router.post("/communities/detect", status_code=status.HTTP_202_ACCEPTED)
+@router.post("/communities/detect")
 async def detect_communities(
     graph_id: uuid.UUID,
     body: DetectRequest,
     service: AnalyticsServiceDep,
     user_id: UserIdDep,
+    response: Response,
 ) -> DetectAcceptedResponse | DetectionResultResponse:
-    """Detect communities. Small graphs run inline and return the result (200); larger graphs
-    enqueue a job and return ``{job_id,status}`` (202)."""
+    """Detect communities. The status code carries the sync/async signal: a tiny graph runs INLINE
+    and returns the result with **200 OK**; a larger graph enqueues a job and returns
+    ``{job_id,status}`` with **202 Accepted**."""
     try:
         job, result = await service.submit_detect(
-            graph_id=graph_id, user_id=user_id, min_entities=body.min_entities
+            graph_id=graph_id,
+            user_id=user_id,
+            min_entities=body.min_entities,
+            force_rebuild=body.force_rebuild,
         )
     except GraphNotFound:
         raise _GRAPH_NOT_FOUND from None
     except GdsUnavailableError as exc:
         raise _gds_unavailable(str(exc)) from None
     if job is not None:
+        response.status_code = status.HTTP_202_ACCEPTED
         return DetectAcceptedResponse(job_id=str(job.id), status=job.status)
+    response.status_code = status.HTTP_200_OK
     return DetectionResultResponse.of(result)  # type: ignore[arg-type]
 
 
@@ -138,9 +145,14 @@ async def summarize_communities(
     service: AnalyticsServiceDep,
     user_id: UserIdDep,
     level: int | None = None,
+    force: bool = False,
 ) -> SummarizeResponse:
+    """LLM-summarise communities. By default only un-summarised ones (so a re-run resumes without
+    re-billing); ``force=true`` re-summarises all."""
     try:
-        summarized = await service.summarize(graph_id=graph_id, user_id=user_id, level=level)
+        summarized = await service.summarize(
+            graph_id=graph_id, user_id=user_id, level=level, force=force
+        )
     except GraphNotFound:
         raise _GRAPH_NOT_FOUND from None
     except SummarizationUnavailable as exc:

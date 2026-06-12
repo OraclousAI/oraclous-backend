@@ -8,25 +8,32 @@ as Cypher ``CALL gds.louvain.*`` inside Neo4j (the repositories layer). Leiden i
 so it is deliberately NOT used; Louvain is the Community-Edition algorithm.
 
 This module holds only the pure pieces: the deterministic community-id scheme (matched to the legacy
-16-char SHA-256 contract), the resolution sweep that synthesises the 5-level hierarchy, value
-objects, and the typed errors. No driver, no Cypher, no LLM — those live in
-``repositories.community_repository`` / ``services.analytics_service`` /
-``services.community_summarizer``.
+16-char SHA-256 contract), the native-dendrogram → level mapping, value objects, and the typed
+errors. No driver, no Cypher, no LLM — those live in ``repositories.community_repository`` /
+``services.analytics_service`` / ``services.community_summarizer``.
 
-The 5-level multi-resolution hierarchy on Community GDS Louvain
-==============================================================
+The hierarchy = GDS Louvain's NATIVE dendrogram (no resolution sweep)
+====================================================================
 GDS Louvain on Community Edition has NO ``resolution``/``gamma`` parameter (that knob is
-Leiden/Enterprise). The multi-level hierarchy is instead synthesised by running Louvain at five
-weight-contrast exponents over the SAME projected subgraph: each edge weight ``w`` is projected as
-``w ** resolution``. Raising the exponent sharpens the contrast between strong and weak edges, so
-Louvain's modularity objective favours finer/smaller communities; lowering it flattens the contrast
-and yields coarser/larger communities. A live probe on ``neo4j:5.23-community`` (GDS 2.11) confirmed
-the sweep is monotonic — a planted 4-super × 3-sub hierarchy resolves to 4 communities at the lowest
-exponent up to 12 at the highest — so the exponent reproduces the legacy gamma-sweep semantics
-(higher resolution → more, smaller communities) using only the Community-tier algorithm.
+Leiden/Enterprise). The earlier port faked a hierarchy by re-running Louvain at five
+weight-contrast exponents (``w ** resolution``) — but with uniform edge weights (the dominant case:
+the only system weight is ``len(rels)``, almost always 1, and ``1.0 ** r == 1.0``) every exponent
+yields the IDENTICAL partition, so that produced five duplicate levels chained by meaningless parent
+edges. That sweep is gone.
 
-``level`` indexes the sweep (0 = coarsest resolution, 4 = finest), matching the legacy
-``DEFAULT_LEVELS`` ordering; ``resolution`` is the exponent applied at that level.
+Instead detection runs ONE ``gds.louvain.stream`` with ``includeIntermediateCommunities: true`` and
+maps the per-iteration dendrogram each node carries (``intermediateCommunityIds``) onto the
+``:__Community__`` levels — one level per dendrogram depth, exactly as deep as Louvain actually
+converged. A live probe on ``neo4j:5.23-community`` (GDS 2.11) established the array ordering:
+``intermediateCommunityIds[0]`` is the FINEST partition (most communities) and the LAST element is
+the COARSEST (== the row's ``communityId``); a planted weight-decay hierarchy gave ``[1,3]`` for the
+fine pair and ``[3,3]`` for its sibling, i.e. index 0 = 8 communities, index 1 = 4 communities.
+
+``level`` is assigned so 0 is the COARSEST (matching the legacy ``DEFAULT_LEVELS`` ordering, where
+level 0 is parent-less): ``level = (depth - 1) - dendrogram_index``. Parent links are the ACTUAL
+dendrogram containment read straight off the array (a node's level-k community ⊂ its level-(k-1)
+community) — NOT a majority vote, so the hierarchy is monotone by construction. When Louvain
+converges flat (depth 1) exactly ONE honest level is emitted, with no fabricated parents.
 """
 
 from __future__ import annotations
@@ -34,11 +41,6 @@ from __future__ import annotations
 import hashlib
 from dataclasses import dataclass, field
 from datetime import datetime
-
-# The 5-level multi-resolution sweep (ORAA #303). Ascending resolution → finer communities. Index in
-# this tuple is the community `level`; the value is the weight-contrast exponent passed to Louvain.
-DEFAULT_RESOLUTIONS: tuple[float, ...] = (0.5, 1.0, 2.0, 3.0, 4.0)
-DEFAULT_LEVELS: tuple[int, ...] = tuple(range(len(DEFAULT_RESOLUTIONS)))
 
 # A graph smaller than this many entities is not worth detecting communities over (mirrors the
 # legacy COMMUNITY_DETECTION_MIN_ENTITIES default). The detect use-case treats it as a skip, not an
@@ -52,6 +54,11 @@ ENTITY_LABEL = "__Entity__"
 IN_COMMUNITY_REL = "IN_COMMUNITY"
 PARENT_COMMUNITY_REL = "PARENT_COMMUNITY"
 
+# The synthetic ``ingestion_jobs.source_type`` for an async community-detection job. Reuses the
+# existing job table + worker pattern (no new migration) — the row tracks detect progress/status,
+# and is filtered out of the /documents list (it is not an ingested document).
+COMMUNITY_DETECT_SOURCE_TYPE = "community_detect"
+
 # The only community kind this service detects (entity-level Louvain). The legacy registry also
 # carried a read-only chunk kind; that is out of scope for the restoration and is reported as a
 # non-detectable kind by the discovery endpoint if ever added.
@@ -60,6 +67,15 @@ ENTITY_KIND = "entity"
 
 class CommunityDetectionError(Exception):
     """Base for detection failures that map to a clean HTTP error (not a swallowed 500)."""
+
+
+class DetectionInProgress(CommunityDetectionError):
+    """Another detection run already holds the per-(org,graph) lock.
+
+    Raised by the repository when the Redis detect lock is held for this (org, graph): a concurrent
+    detect is mid clear+rebuild, so a second run is refused rather than allowed to race the
+    destructive rebuild. The service maps it to an "already in progress" result (HTTP 202/skip).
+    """
 
 
 class GdsUnavailableError(CommunityDetectionError):
@@ -72,20 +88,85 @@ class GdsUnavailableError(CommunityDetectionError):
     """
 
 
-def make_community_id(
-    *, graph_id: str, level: int, resolution: float, member_ids: list[str]
-) -> str:
-    """Deterministic ``community_<16-hex>`` id (legacy 16-char SHA-256 scheme, verbatim).
+def make_community_id(*, graph_id: str, level: int, member_ids: list[str]) -> str:
+    """Deterministic ``community_<16-hex>`` id (legacy 16-char SHA-256 scheme).
 
-    The id is a hash over the graph, level, resolution and the SORTED member ids, so the same set of
-    members at the same level/resolution always yields the same id (idempotent re-detection MERGEs
-    onto the existing node) and a different membership yields a different id. Sorting makes the id
-    order-independent.
+    The id is a SHA-256 over ``graph | level | sorted-members`` (the native dendrogram has no
+    resolution knob, so resolution is no longer part of the identity). The same set of members at
+    the same level always yields the same id (idempotent re-detection MERGEs onto the existing node)
+    and a different membership yields a different id. Sorting makes the id order-independent.
     """
     sorted_ids = sorted(member_ids)
-    content = f"{graph_id}|L{level}|R{resolution}|" + "|".join(sorted_ids)
+    content = f"{graph_id}|L{level}|" + "|".join(sorted_ids)
     digest = hashlib.sha256(content.encode("utf-8")).hexdigest()[:16]
     return f"community_{digest}"
+
+
+def dendrogram_to_levels(
+    rows: list[tuple[str, list[int]]],
+) -> dict[int, dict[str, list[str]]]:
+    """Map GDS Louvain's native dendrogram → ``level → {gds_community_key: [entity_id, ...]}``.
+
+    ``rows`` is one ``(entity_id, intermediate_community_ids)`` per node, exactly as streamed by
+    ``gds.louvain.stream(..., {includeIntermediateCommunities: true})``. Per the live-verified
+    ordering, ``intermediate_community_ids[0]`` is the FINEST partition and the last element is the
+    COARSEST. The dendrogram depth is the common array length (Louvain emits one entry per node for
+    every iteration it ran).
+
+    Levels are numbered so 0 is the COARSEST (legacy ``DEFAULT_LEVELS`` ordering, where level 0 is
+    parent-less): ``level = (depth - 1) - dendrogram_index``. The gds community KEY at a level is
+    made unique per level (``"L<level>:<gds_id>"``) because GDS reuses the same integer id across
+    iterations — without the level prefix, a node unchanged between iterations would collide its
+    finer and coarser communities into one key.
+
+    Returns ``{}`` when ``rows`` is empty. When the dendrogram is depth 1 (Louvain converged flat)
+    exactly one level (level 0) is emitted — one honest level, no fabricated hierarchy.
+    """
+    if not rows:
+        return {}
+    depth = max(len(ids) for _eid, ids in rows)
+    if depth == 0:
+        return {}
+    levels: dict[int, dict[str, list[str]]] = {}
+    for entity_id, intermediate in rows:
+        if not intermediate:
+            continue
+        for idx, gds_id in enumerate(intermediate):
+            level = (depth - 1) - idx
+            key = f"L{level}:{gds_id}"
+            levels.setdefault(level, {}).setdefault(key, []).append(entity_id)
+    return levels
+
+
+def dendrogram_parent_links(
+    rows: list[tuple[str, list[int]]],
+) -> dict[int, dict[str, str | None]]:
+    """Parent links read DIRECTLY off the dendrogram (true containment, not majority vote).
+
+    For each node, its community at dendrogram index ``i`` (finer) is by construction contained in
+    its community at index ``i+1`` (coarser). Translating to levels: a level-``k`` community's
+    parent is the level-``(k-1)`` community the same members belong to. The coarsest level (level 0)
+    has no parent. Keys match :func:`dendrogram_to_levels` (``"L<level>:<gds_id>"``). Returns
+    ``level → {child_key: parent_key|None}``.
+    """
+    if not rows:
+        return {}
+    depth = max(len(ids) for _eid, ids in rows)
+    parents: dict[int, dict[str, str | None]] = {}
+    for _entity_id, intermediate in rows:
+        if not intermediate:
+            continue
+        for idx, gds_id in enumerate(intermediate):
+            level = (depth - 1) - idx
+            child_key = f"L{level}:{gds_id}"
+            if level == 0:
+                parents.setdefault(level, {}).setdefault(child_key, None)
+                continue
+            # The coarser community is the NEXT element in the array (idx + 1 → level - 1).
+            parent_gds = intermediate[idx + 1]
+            parent_key = f"L{level - 1}:{parent_gds}"
+            parents.setdefault(level, {})[child_key] = parent_key
+    return parents
 
 
 @dataclass(frozen=True)
@@ -102,14 +183,16 @@ class Community:
     """A detected community node, as read back from Neo4j (the list/detail view shape).
 
     ``summary``/``summary_keywords``/``summary_excerpt`` are populated by the summarizer pass (None
-    until summarised). ``parent_id`` links a finer-level community to its coarser-level parent
-    (majority-vote of shared members), reproducing the legacy PARENT_COMMUNITY hierarchy.
+    until summarised). ``parent_id`` links a finer-level community to its coarser-level parent — the
+    ACTUAL dendrogram containment (the coarser community the same members collapse into), not a
+    majority vote — reproducing the PARENT_COMMUNITY hierarchy monotonically by construction.
+    ``summary_source`` distinguishes a real LLM summary (``"llm"``) from a member-derived fallback
+    (``"fallback"``) so a reader never mistakes a degraded summary for a real one.
     """
 
     community_id: str
     kind: str
     level: int
-    resolution: float
     entity_count: int
     status: str
     weight: float | None = None
@@ -119,6 +202,7 @@ class Community:
     summary_excerpt: str | None = None
     summary_model: str | None = None
     summary_at: datetime | None = None
+    summary_source: str | None = None
     members: list[CommunityMember] = field(default_factory=list)
 
 
@@ -138,14 +222,15 @@ class DetectionResult:
 class CommunitiesStatus:
     """Detection status for a graph (mirrors the legacy ``/communities/status`` shape).
 
-    Derived live from the graph's ``:__Community__`` nodes + current entity count — the new build
-    no Postgres ``communities_status`` column, so status is read from the substrate (Source of truth
-    is the graph itself): ``not_detected`` when no community nodes exist, else ``active``, plus a
-    staleness signal from the entity delta since detection.
+    Derived from the graph's ``:__Community__`` nodes + current entity count, FOLDED WITH the latest
+    ``community_detect`` job row so an in-flight or failed async run is visible (the substrate alone
+    shows ``not_detected`` mid-run, right after the clear): ``running`` when the latest detect job
+    is pending/running, ``failed`` when it errored and no communities exist, ``not_detected`` when
+    no community nodes and no job, else ``active`` — plus a staleness signal from the entity delta.
     """
 
     graph_id: str
-    status: str  # "not_detected" | "active"
+    status: str  # "not_detected" | "running" | "failed" | "active"
     communities_count: int
     levels: list[int]
     entity_count: int
@@ -200,42 +285,3 @@ def entity_kinds() -> list[CommunityKind]:
             detection_supported=True,
         )
     ]
-
-
-def build_parent_links(
-    levels_membership: dict[int, dict[str, list[str]]],
-) -> dict[int, dict[str, str | None]]:
-    """Assign each community a parent in the next-coarser level by majority vote of shared members.
-
-    ``levels_membership`` maps level → {community_id: [entity_id, ...]}. For every level except the
-    coarsest (level 0), each community's parent is the coarser-level community that owns the most of
-    its members (the legacy ``_build_hierarchy`` majority vote). Pure — no I/O. Returns level →
-    {community_id: parent_id|None}.
-    """
-    ordered_levels = sorted(levels_membership)
-    # entity -> community at each level
-    entity_to_comm: dict[int, dict[str, str]] = {}
-    for level in ordered_levels:
-        lookup: dict[str, str] = {}
-        for cid, members in levels_membership[level].items():
-            for eid in members:
-                lookup[eid] = cid
-        entity_to_comm[level] = lookup
-
-    parents: dict[int, dict[str, str | None]] = {}
-    for i, level in enumerate(ordered_levels):
-        parents[level] = {}
-        if i == 0:
-            for cid in levels_membership[level]:
-                parents[level][cid] = None
-            continue
-        coarser = ordered_levels[i - 1]
-        coarser_lookup = entity_to_comm[coarser]
-        for cid, members in levels_membership[level].items():
-            votes: dict[str, int] = {}
-            for eid in members:
-                parent_cid = coarser_lookup.get(eid)
-                if parent_cid:
-                    votes[parent_cid] = votes.get(parent_cid, 0) + 1
-            parents[level][cid] = max(votes, key=votes.__getitem__) if votes else None
-    return parents

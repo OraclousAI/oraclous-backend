@@ -20,6 +20,7 @@ from oraclous_telemetry import Severity, alert, evaluate_readiness, exit_on_degr
 from oraclous_knowledge_graph_service.core.config import get_settings
 from oraclous_knowledge_graph_service.core.database import make_engine, make_sessionmaker
 from oraclous_knowledge_graph_service.core.neo4j import ensure_schema, make_neo4j_driver
+from oraclous_knowledge_graph_service.core.redis import make_redis_lock_client
 
 
 def _open_neo4j() -> Driver | None:
@@ -56,6 +57,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.neo4j_driver = driver
     app.state.neo4j_bind_failed = neo4j_bind_failed
 
+    # Advisory sync Redis client for the per-(org,graph) community-detect lock (#303). A Redis
+    # outage degrades to lock-off (detection still runs) — it never gates readiness.
+    app.state.detect_lock_client = await asyncio.to_thread(make_redis_lock_client, get_settings())
+
     # Readiness reflects the critical store (Neo4j). A configured-but-failed bind is degraded; an
     # unset URI is not. Flag-gated crash-on-degrade (default OFF) lets a managed deploy restart.
     verdict = evaluate_readiness({"neo4j": None if neo4j_bind_failed else object()})
@@ -67,4 +72,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     finally:
         if driver is not None:
             await asyncio.to_thread(driver.close)
+        lock_client = getattr(app.state, "detect_lock_client", None)
+        if lock_client is not None:
+            await asyncio.to_thread(lock_client.close)
         await engine.dispose()

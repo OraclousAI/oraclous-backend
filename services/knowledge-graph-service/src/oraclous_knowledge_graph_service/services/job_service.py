@@ -16,6 +16,7 @@ from collections.abc import Callable
 
 from oraclous_substrate.access import enforced_organisation_id
 
+from oraclous_knowledge_graph_service.domain.community import COMMUNITY_DETECT_SOURCE_TYPE
 from oraclous_knowledge_graph_service.domain.job import IngestionJobRecord
 from oraclous_knowledge_graph_service.repositories.job_repository import IngestionJobRepository
 from oraclous_knowledge_graph_service.services.graph_service import GraphService
@@ -85,5 +86,10 @@ class JobService:
     async def list_documents(
         self, *, user_id: uuid.UUID, graph_id: uuid.UUID
     ) -> list[IngestionJobRecord]:
+        # /documents lists INGESTED documents. A community-detect job reuses the ingestion_jobs
+        # table (no separate table) but is not a document, so it is excluded here — otherwise detect
+        # jobs would surface as phantom documents in the list.
         await self._graphs.get_graph(graph_id=graph_id, user_id=user_id)
-        return await self._jobs.list_for_graph(graph_id)
+        return await self._jobs.list_for_graph(
+            graph_id, exclude_source_types=(COMMUNITY_DETECT_SOURCE_TYPE,)
+        )

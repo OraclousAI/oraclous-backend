@@ -47,7 +47,7 @@ class _FakeAnalyticsService:
     def kinds():
         return entity_kinds()
 
-    async def submit_detect(self, *, graph_id, user_id, min_entities):  # noqa: ARG002
+    async def submit_detect(self, *, graph_id, user_id, min_entities, force_rebuild=False):  # noqa: ARG002
         if self.raise_with is not None:
             raise self.raise_with
         return self.detect_returns
@@ -75,7 +75,7 @@ class _FakeAnalyticsService:
             is_stale=False,
         )
 
-    async def summarize(self, *, graph_id, user_id, level=None):  # noqa: ARG002
+    async def summarize(self, *, graph_id, user_id, level=None, force=False):  # noqa: ARG002
         if self.raise_with is not None:
             raise self.raise_with
         return self.summarized
@@ -115,11 +115,12 @@ def _community(cid: str = "community_abc", level: int = 0) -> Community:
         community_id=cid,
         kind="entity",
         level=level,
-        resolution=1.0,
         entity_count=3,
         status="active",
         summary="A friendship cluster of people.",
         summary_keywords=["Alice", "Bob"],
+        summary_model="test-model",
+        summary_source="llm",
         members=[CommunityMember(entity_id="e1", entity_name="Alice", entity_type="Person")],
     )
 
@@ -147,7 +148,7 @@ async def test_detect_sync_returns_200_result(client, svc) -> None:
         ),
     )
     resp = await client.post(f"/api/v1/graphs/{_GRAPH}/communities/detect", headers=_AUTH, json={})
-    assert resp.status_code == 202  # route declares 202; body carries the sync result
+    assert resp.status_code == 200  # inline detect → 200 (the status code carries sync vs async)
     body = resp.json()
     assert body["status"] == "completed"
     assert body["total_communities"] == 5
@@ -197,6 +198,7 @@ async def test_list_communities_shape(client, svc) -> None:
     assert item["size"] == 3
     assert item["label"]  # derived from the summary
     assert item["summary_keywords"] == ["Alice", "Bob"]
+    assert item["summary_source"] == "llm"  # provenance surfaced on the wire
 
 
 async def test_list_unknown_kind_400(client, svc) -> None:

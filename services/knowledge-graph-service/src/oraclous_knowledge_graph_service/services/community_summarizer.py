@@ -68,15 +68,26 @@ class CommunityLLM(Protocol):
 
 
 class SummaryResult:
-    """One community's summary fields (plain value object set after persistence)."""
+    """One community's summary fields (plain value object set after persistence).
+
+    ``source`` is ``"llm"`` for a real model answer or ``"fallback"`` for the member-derived
+    degrade — the provenance a reader uses to tell a real summary from a placeholder.
+    """
 
     def __init__(
-        self, *, community_id: str, summary: str, keywords: list[str], excerpt: str
+        self,
+        *,
+        community_id: str,
+        summary: str,
+        keywords: list[str],
+        excerpt: str,
+        source: str,
     ) -> None:
         self.community_id = community_id
         self.summary = summary
         self.keywords = keywords
         self.excerpt = excerpt
+        self.source = source
 
 
 class CommunitySummarizer:
@@ -96,15 +107,37 @@ class CommunitySummarizer:
         self._max_concurrency = max(1, max_concurrency)
 
     async def summarize_graph(
-        self, *, graph_id: str, level: int | None = None
+        self,
+        *,
+        graph_id: str,
+        level: int | None = None,
+        force: bool = False,
+        max_communities: int | None = None,
     ) -> list[SummaryResult]:
-        """Summarise every (optionally level-filtered) community in the graph. Returns the results
-        that were produced + persisted. Bounded concurrency; one bad community never sinks the rest.
+        """Summarise the graph's communities. Returns the results produced + persisted.
+
+        By default (``force`` False) only communities with NO summary yet are summarised — so a
+        re-run resumes after a partial failure and never re-bills a community already done. When
+        ``max_communities`` is set and there are MORE candidates than that, the batch is too large
+        to run inline and an empty list is returned (the caller routes large summarise to the async
+        path). Bounded concurrency; one bad community never sinks the rest.
         """
         communities = await asyncio.to_thread(
-            self._repo.list_communities, graph_id=graph_id, level=level, min_entities=1
+            self._repo.list_communities,
+            graph_id=graph_id,
+            level=level,
+            min_entities=1,
+            only_unsummarized=not force,
         )
         if not communities:
+            return []
+        if max_communities is not None and len(communities) > max_communities:
+            logger.info(
+                "community summarize for %s deferred: %d candidates exceed the inline cap %d",
+                graph_id,
+                len(communities),
+                max_communities,
+            )
             return []
         semaphore = asyncio.Semaphore(self._max_concurrency)
 
@@ -142,7 +175,7 @@ class CommunitySummarizer:
             relationship_list=_format_relationships(rels),
         )
         raw = await self._llm.complete_json(system=_SYSTEM_PROMPT, user=prompt)
-        summary, keywords, excerpt = _parse_summary(raw, fallback_members=members)
+        summary, keywords, excerpt, source = _parse_summary(raw, fallback_members=members)
         await asyncio.to_thread(
             self._repo.set_summary,
             graph_id=graph_id,
@@ -150,10 +183,17 @@ class CommunitySummarizer:
             summary=summary,
             summary_keywords=keywords,
             summary_excerpt=excerpt,
-            summary_model=self._model,
+            # Provenance honesty: a member-derived fallback NEVER reached the model, so it carries
+            # no model name (None) and source='fallback' — readers can tell it from a real summary.
+            summary_model=self._model if source == "llm" else None,
+            summary_source=source,
         )
         return SummaryResult(
-            community_id=community_id, summary=summary, keywords=keywords, excerpt=excerpt
+            community_id=community_id,
+            summary=summary,
+            keywords=keywords,
+            excerpt=excerpt,
+            source=source,
         )
 
 
@@ -169,10 +209,12 @@ def _format_relationships(rels: list[dict[str, str]]) -> str:
 
 def _parse_summary(
     raw: str, *, fallback_members: list[CommunityMember]
-) -> tuple[str, list[str], str]:
-    """Parse the model's JSON into (summary, keywords, excerpt). A malformed response degrades to a
-    deterministic fallback derived from the members — never raises (one bad community must not sink
-    the batch, and the community still gets a usable summary)."""
+) -> tuple[str, list[str], str, str]:
+    """Parse the model's JSON into (summary, keywords, excerpt, source). A malformed/empty response
+    degrades to a deterministic member-derived fallback — never raises (one bad community must not
+    sink the batch, and the community still gets a usable summary). The fourth element is the
+    provenance: ``"llm"`` when the model produced a non-empty summary, ``"fallback"`` otherwise — so
+    the persisted summary can be honestly stamped (a fallback carries no model name)."""
     try:
         data = json.loads(raw)
         summary = str(data.get("summary") or "").strip()
@@ -181,6 +223,8 @@ def _parse_summary(
         excerpt = str(data.get("excerpt") or "").strip()[:_EXCERPT_MAX]
     except (json.JSONDecodeError, TypeError, AttributeError):
         summary, keywords, excerpt = "", [], ""
+    # The summary is the load-bearing field: a usable one from the model means a real summary.
+    source = "llm" if summary else "fallback"
     if not summary:
         names = [m.entity_name or m.entity_id for m in fallback_members[:5]]
         summary = f"Community of {len(fallback_members)} entities including: {', '.join(names)}"
@@ -188,7 +232,7 @@ def _parse_summary(
         keywords = [m.entity_name or m.entity_id for m in fallback_members[:5]]
     if not excerpt:
         excerpt = summary[:_EXCERPT_MAX]
-    return summary, keywords, excerpt
+    return summary, keywords, excerpt, source
 
 
 class OpenAICommunityLLM:

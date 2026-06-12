@@ -211,18 +211,25 @@ def _enqueue_detect(job_id: str, organisation_id: str) -> None:
 
 
 def get_analytics_service(
+    request: Request,
     session: Annotated[AsyncSession, Depends(get_db_session)],
     graph_service: Annotated[GraphService, Depends(get_graph_service)],
     driver: Annotated[Driver, Depends(get_neo4j_driver)],
 ) -> AnalyticsService:
     """Build the community-detection + analytics service (#303). `graph_service` carries the owner
     gate + bound org scope; the Neo4j-backed `CommunityRepository` is the GDS access surface (so the
-    endpoint 503s when the substrate is down — detection needs it). The async detect
-    path reuses the `ingestion_jobs` table + Celery worker; the summarizer is built from config
-    (None when `KGS_EXTRACTOR` is not `openai`, so the summarize endpoint 503s with a clear reason).
+    endpoint 503s when the substrate is down — detection needs it). The repo gets the app-scoped
+    advisory Redis lock client so the inline detect shares the per-(org,graph) mutex with workers.
+    The async detect path reuses the `ingestion_jobs` table + Celery worker; the summarizer is built
+    from config (None when `KGS_EXTRACTOR` is not `openai`, so the summarize endpoint 503s with a
+    clear reason).
     """
     settings = get_settings()
-    repo = CommunityRepository(driver, database=settings.neo4j_database)
+    repo = CommunityRepository(
+        driver,
+        database=settings.neo4j_database,
+        lock_client=getattr(request.app.state, "detect_lock_client", None),
+    )
     return AnalyticsService(
         graph_service=graph_service,
         repo=repo,

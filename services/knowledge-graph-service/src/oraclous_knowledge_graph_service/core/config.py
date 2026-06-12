@@ -67,6 +67,23 @@ class Settings(BaseSettings):
     # to speed up free-text entity extraction on multi-chunk documents.
     extractor_max_concurrency: int = 10
 
+    # --- community detection (#303) ---
+    # At or below this entity count a detect runs INLINE (the request blocks for an immediate
+    # result); above it, it enqueues a Celery job. A few hundred is a true tiny-graph floor — a
+    # single Louvain pass on that many nodes is sub-second.
+    community_sync_entity_threshold: int = 300
+    # Hard ceiling: a graph with MORE entities than this SKIPS detection with a clear reason rather
+    # than risk heap exhaustion projecting a huge graph on the 512m Neo4j (legacy
+    # COMMUNITY_DETECTION_MAX_ENTITIES). 0 disables the ceiling.
+    community_max_entities: int = 500_000
+    # The inline detect path is wrapped in a bounded timeout; a tiny graph that nonetheless overruns
+    # (a slow projection on a cold DB) falls back to the async Celery path instead of blocking the
+    # request indefinitely.
+    community_sync_timeout_seconds: float = 20.0
+    # Max communities summarised in one inline summarize call (cost guard). Above it the call
+    # returns 0 (the caller routes large summarise to the async path). 0 disables the cap.
+    community_summarize_max_inline: int = 200
+
     # --- similarity auto-trigger (#310, legacy SIMILARITY_AUTO_TRIGGER_ON_INGEST) ---
     # When True, a structured ingest with NO authored `similarities[]` rule still runs the content-
     # similarity pass: one default SIMILAR_TO rule is synthesised per node rule over the node's best
