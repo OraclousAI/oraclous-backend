@@ -925,6 +925,7 @@ source = { virtual = "." }
 
 [package.dev-dependencies]
 dev = [
+    { name = "aiomysql" },
     { name = "alembic" },
     { name = "asyncpg" },
     { name = "httpx" },
@@ -946,6 +947,7 @@ dev = [
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "aiomysql", specifier = ">=0.2,<0.3" },
     { name = "alembic", specifier = ">=1.16,<2.0" },
     { name = "asyncpg", specifier = ">=0.30.0,<1.0" },
     { name = "httpx", specifier = ">=0.27,<1.0" },
@@ -1138,6 +1140,7 @@ name = "oraclous-knowledge-graph-service"
 version = "0.0.0"
 source = { editable = "services/knowledge-graph-service" }
 dependencies = [
+    { name = "aiomysql" },
     { name = "alembic" },
     { name = "asyncpg" },
     { name = "celery" },
@@ -1168,6 +1171,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "aiomysql", specifier = ">=0.2,<0.3" },
     { name = "alembic", specifier = ">=1.16,<2.0" },
     { name = "asyncpg", specifier = ">=0.29,<1.0" },
     { name = "celery", specifier = ">=5.3,<6.0" },

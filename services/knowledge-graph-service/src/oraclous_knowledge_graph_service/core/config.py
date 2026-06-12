@@ -80,6 +80,27 @@ class Settings(BaseSettings):
     # returns 0 (the caller routes large summarise to the async path). 0 disables the cap.
     community_summarize_max_inline: int = 200
 
+    # --- SQL relational ingest (#307) ---
+    # The credential broker the SQL ingest resolves a stored `connection_string` from by id.
+    # `fake` (dev/CI default): a deterministic, key-free broker that returns
+    # `credential_broker_fake_dsn` for any id — so the SQL-ingest path reaches a real end-to-end
+    # test without the broker. `real`: POST /internal/resolve-credential with X-Internal-Key.
+    credential_broker_mode: Literal["fake", "real"] = "fake"
+    credential_broker_base_url: str | None = None
+    # The DSN the FAKE broker returns (only read in fake mode). Defaults to this service's own
+    # Postgres so a dev SQL ingest has a live DB to read; override per test/deployment.
+    credential_broker_fake_dsn: str = "postgresql://oraclous:oraclous@postgres:5432/oraclous"
+    # TCP egress guard (#307, Option B; ADR-025 §1). Defaults FALSE — the SECURE multi-tenant
+    # posture: a SQL ingest is BLOCKED from a private/loopback/RFC-1918/ULA/internal/single-label DB
+    # host, so a tenant cannot pivot the ingest into the internal network. `allow_private` is the
+    # SINGLE-TENANT / self-hosted / dev OPT-IN: when True it RELAXES those private/internal blocks
+    # so a user can ingest from a local or internal DB. The link-local / cloud-metadata range stays
+    # blocked in EITHER mode (the guard's always-on floor). The committed deploy compose defaults
+    # this FALSE (fail-closed); a single-tenant / self-hosted deploy that must reach a local or
+    # internal DB opts in by setting `KGS_SQL_INGEST_ALLOW_PRIVATE_EGRESS=true` in `deploy/.env`.
+    sql_ingest_allow_private_egress: bool = False
+    # Hard ceiling on rows fetched per table in a full_snapshot SQL ingest (cost / heap guard).
+    sql_ingest_max_rows_per_table: int = 50_000
     # --- code ingestion (#305, the restored 6-stage pipeline) ---
     # Stage 0 git-clone is an egress/SSRF surface. It is OFF by default; a `git_url` payload is
     # rejected unless the operator opts in via KGS_CODE_CLONE_ENABLED. The egress host validation

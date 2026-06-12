@@ -53,6 +53,13 @@ x-kgs-env: &kgs-env
   # Max concurrent per-chunk LLM extraction calls within one document (the extractor fans out across
   # chunks). Tune up for faster free-text ingestion; OpenRouter handles the concurrency.
   KGS_EXTRACTOR_MAX_CONCURRENCY: "${KGS_EXTRACTOR_MAX_CONCURRENCY:-10}"
+  # SQL-ingest TCP egress (#307, ADR-025 §1). Defaults FALSE — the secure multi-tenant posture
+  # (block private/loopback/internal DB hosts), so the committed compose ships FAIL-CLOSED and a
+  # multi-tenant deploy is secure by default (unset == blocked). A single-tenant / self-hosted / dev
+  # stack that must reach a LOCAL/internal DB (e.g. this stack's local `postgres` for the SQL-ingest
+  # fake-broker path) OPTS IN by setting KGS_SQL_INGEST_ALLOW_PRIVATE_EGRESS=true in deploy/.env. The
+  # link-local / cloud-metadata range stays blocked in EITHER mode.
+  KGS_SQL_INGEST_ALLOW_PRIVATE_EGRESS: "${KGS_SQL_INGEST_ALLOW_PRIVATE_EGRESS:-false}"
 
 services:
   neo4j:
