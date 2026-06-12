@@ -80,6 +80,18 @@ class Settings(BaseSettings):
     # returns 0 (the caller routes large summarise to the async path). 0 disables the cap.
     community_summarize_max_inline: int = 200
 
+    # --- code ingestion (#305, the restored 6-stage pipeline) ---
+    # Stage 0 git-clone is an egress/SSRF surface. It is OFF by default; a `git_url` payload is
+    # rejected unless the operator opts in via KGS_CODE_CLONE_ENABLED. The egress host validation
+    # (the HRS/CRS `domain/egress.py` pattern) is a tracked follow-up (#307 owns egress) — until it
+    # is wired in, clone runs only behind this flag in a trusted operator context.
+    code_clone_enabled: bool = False
+    # Stage 6 stale-cleanup TTL: a code symbol marked `stale_at` (a changed file's old symbols) is
+    # deleted by the background sweep once it is older than this many days (legacy 7-day default).
+    code_stale_ttl_days: int = 7
+    # Stage 6 sweep cadence (seconds) for the Celery-beat stale-cleanup job. Daily by default.
+    code_stale_sweep_interval_seconds: int = 86_400
+
     # --- similarity auto-trigger (#310, legacy SIMILARITY_AUTO_TRIGGER_ON_INGEST) ---
     # When True, a structured ingest with NO authored `similarities[]` rule still runs the content-
     # similarity pass: one default SIMILAR_TO rule is synthesised per node rule over the node's best
