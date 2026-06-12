@@ -90,12 +90,15 @@ class Settings(BaseSettings):
     # The DSN the FAKE broker returns (only read in fake mode). Defaults to this service's own
     # Postgres so a dev SQL ingest has a live DB to read; override per test/deployment.
     credential_broker_fake_dsn: str = "postgresql://oraclous:oraclous@postgres:5432/oraclous"
-    # TCP egress guard (#307, Option B). When True (single-tenant / dev — mirrors the HRS egress
-    # `allow_private`), a SQL ingest may target a private/loopback/internal DB host (so a user can
-    # ingest from a local or internal DB); the link-local / cloud-metadata range stays blocked in
-    # EITHER mode. When False (multi-tenant), private/loopback/internal hosts are blocked. Dev
-    # default True so the docker-compose Postgres (a private `postgres` host) is reachable.
-    sql_ingest_allow_private_egress: bool = True
+    # TCP egress guard (#307, Option B; ADR-025 §1). Defaults FALSE — the SECURE multi-tenant
+    # posture: a SQL ingest is BLOCKED from a private/loopback/RFC-1918/ULA/internal/single-label DB
+    # host, so a tenant cannot pivot the ingest into the internal network. `allow_private` is the
+    # SINGLE-TENANT / self-hosted / dev OPT-IN: when True it RELAXES those private/internal blocks
+    # so a user can ingest from a local or internal DB. The link-local / cloud-metadata range stays
+    # blocked in EITHER mode (the guard's always-on floor). A single-tenant / self-hosted deploy
+    # that must reach a local/internal DB sets `KGS_SQL_INGEST_ALLOW_PRIVATE_EGRESS=true` (the
+    # deploy docker-compose sets it true for the dev-local `postgres` host — see deploy compose).
+    sql_ingest_allow_private_egress: bool = False
     # Hard ceiling on rows fetched per table in a full_snapshot SQL ingest (cost / heap guard).
     sql_ingest_max_rows_per_table: int = 50_000
 
