@@ -955,6 +955,26 @@ paths:
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "403": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/NotFound" }
+  /v1/chat/threads/{threadId}/messages/{messageId}/feedback:
+    post:
+      tags: [chat]
+      summary: Rate an assistant message thumbs up/down (member, the creator only; idempotent).
+      operationId: setChatMessageFeedback
+      x-stability: provisional
+      parameters:
+        - { name: threadId, in: path, required: true, schema: { type: string } }
+        - { name: messageId, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/JsonObject" }
+      responses:
+        "200": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
 
   # --- Inbound webhook ingress (R6 Slice 7) — PUBLIC, signature-gated (no bearer) ---
   /v1/webhooks/{subscriptionId}:

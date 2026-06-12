@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -17,6 +18,12 @@ class StartThreadRequest(BaseModel):
 
 class SendMessageRequest(BaseModel):
     content: str = Field(min_length=1)
+
+
+class MessageFeedbackRequest(BaseModel):
+    """A member's thumbs up/down on an assistant message (idempotent — re-rating replaces)."""
+
+    rating: Literal["up", "down"]
 
 
 class ThreadOut(BaseModel):
@@ -37,6 +44,7 @@ class MessageOut(BaseModel):
     content: str
     execution_id: uuid.UUID | None = None
     total_tokens: int | None = None
+    rating: Literal["up", "down"] | None = None  # member feedback; None until rated (#313)
     created_at: datetime | None = None
 
 

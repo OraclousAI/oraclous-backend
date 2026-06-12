@@ -98,6 +98,25 @@ class ChatRepository:
             )
             return list(result.scalars().all())
 
+    async def set_message_rating(
+        self, *, thread_id: uuid.UUID, message_id: uuid.UUID, rating: str
+    ) -> ChatMessage | None:
+        """Idempotently set a message's ``rating`` (a re-rate overwrites). Scoped to the
+        already-resolved thread; only an ``assistant`` turn is ratable. Returns the updated row,
+        or None if the message is absent / not on this thread / not an assistant turn (-> 404)."""
+        async with self._session() as session, session.begin():
+            result = await session.execute(
+                update(ChatMessage)
+                .where(
+                    ChatMessage.id == message_id,
+                    ChatMessage.thread_id == thread_id,
+                    ChatMessage.role == "assistant",
+                )
+                .values(rating=rating)
+                .returning(ChatMessage)
+            )
+            return result.scalar_one_or_none()
+
     async def add_message(
         self,
         *,

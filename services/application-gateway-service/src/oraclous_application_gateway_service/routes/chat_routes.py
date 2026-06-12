@@ -19,6 +19,7 @@ from oraclous_application_gateway_service.core.dependencies import (
 )
 from oraclous_application_gateway_service.schema.chat_schemas import (
     ChatTurnOut,
+    MessageFeedbackRequest,
     MessageOut,
     SendMessageRequest,
     StartThreadRequest,
@@ -86,6 +87,31 @@ async def list_messages(
     if messages is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="no such chat thread")
     return messages
+
+
+@router.post(
+    "/threads/{thread_id}/messages/{message_id}/feedback",
+    response_model=MessageOut,
+)
+async def set_message_feedback(
+    thread_id: uuid.UUID,
+    message_id: uuid.UUID,
+    body: MessageFeedbackRequest,
+    member: MemberDep,
+    svc: ChatServiceDep,
+) -> MessageOut:
+    """Thumbs up/down an assistant message (member-scoped, idempotent). 404 when the thread isn't
+    the member's or the message isn't a ratable assistant turn on it."""
+    message = await svc.set_feedback(
+        thread_id=thread_id,
+        message_id=message_id,
+        organisation_id=member.organisation_id,
+        user_id=member.principal_id,
+        rating=body.rating,
+    )
+    if message is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="no such chat message")
+    return MessageOut.model_validate(message)
 
 
 @router.delete("/threads/{thread_id}", status_code=status.HTTP_204_NO_CONTENT)
