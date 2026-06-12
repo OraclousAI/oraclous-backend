@@ -91,6 +91,18 @@ class Settings(BaseSettings):
     code_stale_ttl_days: int = 7
     # Stage 6 sweep cadence (seconds) for the Celery-beat stale-cleanup job. Daily by default.
     code_stale_sweep_interval_seconds: int = 86_400
+    # Per-(org,graph) advisory Redis lock TTL (seconds) held across a code re-ingest's critical
+    # section (mark-stale -> write) AND the per-graph stale sweep, so a re-ingest and a sweep on the
+    # same graph never race (mark->revive strand, sweep-vs-revive TOCTOU, double sweeps). A safety
+    # net TTL so a crashed run self-heals; 15 min mirrors the community-detect lock (#303).
+    code_ingest_lock_ttl_seconds: int = 15 * 60
+    # Cap on the number of code symbols embedded in one ingest (Stage 4 cost/memory guard). Beyond
+    # it the overflow symbols are skipped (a structured warning is logged) rather than building an
+    # unbounded in-memory text list + unbounded embedding calls. 0 disables the cap.
+    code_max_embed_symbols: int = 5_000
+    # Max distinct (org, graph) code graphs the Celery-beat sweep dispatcher fans out per cadence
+    # (bounded enumeration, so it never label-scans + fans out over an unbounded set). 0 disables.
+    code_sweep_max_graphs: int = 1_000
 
     # --- similarity auto-trigger (#310, legacy SIMILARITY_AUTO_TRIGGER_ON_INGEST) ---
     # When True, a structured ingest with NO authored `similarities[]` rule still runs the content-

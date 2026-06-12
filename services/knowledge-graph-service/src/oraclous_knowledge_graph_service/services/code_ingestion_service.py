@@ -20,7 +20,11 @@ Key-free and synchronous (the parser + sync Neo4j driver), so the worker calls i
 
 from __future__ import annotations
 
+import logging
+import time
+
 from oraclous_knowledge_graph_service.core.config import Settings, get_settings
+from oraclous_knowledge_graph_service.core.redis import RedisLock
 from oraclous_knowledge_graph_service.repositories.code_write_repository import (
     CodeGraphWriteRepository,
 )
@@ -34,7 +38,18 @@ from oraclous_knowledge_graph_service.services.code.embeddings import (
 )
 from oraclous_knowledge_graph_service.services.code.parser import parse_source, resolve_edges
 
+logger = logging.getLogger(__name__)
+
 _NODE_SYMBOL_TYPES = {"Function", "Class", "Variable"}
+# Poll interval when another ingest of the same graph holds the lock (advisory; the TTL bounds it).
+_LOCK_WAIT_SECONDS = 1.0
+
+
+def code_ingest_lock_key(*, organisation_id: str, graph_id: str) -> str:
+    """The per-(org,graph) advisory lock key the code-ingest critical section AND the Stage-6 sweep
+    share (#305) — a re-ingest and a sweep on the same graph serialise on it, and the sweep skips a
+    graph that holds it (mid-ingest)."""
+    return f"kgs:code_ingest:{organisation_id}:{graph_id}"
 
 
 def is_code(source_type: str) -> bool:
@@ -53,11 +68,16 @@ class CodeIngestionService:
         organisation_id: str,
         database: str | None = None,
         settings: Settings | None = None,
+        lock_client: object | None = None,
     ) -> None:
         self._driver = driver
         self._org = organisation_id
         self._db = database
         self._settings = settings or get_settings()
+        # Advisory per-(org,graph) Redis lock client (#305). ``None`` -> lock-off (degrades like the
+        # community-detect lock #303): re-ingests of the same graph no longer serialise, but the
+        # ingest still runs. The driver import lives in core/redis (STR004) — we only hold a client.
+        self._lock_client = lock_client
 
     def ingest(
         self,
@@ -90,8 +110,35 @@ class CodeIngestionService:
             if parsed is not None:
                 parsed_files.append(parsed)
 
+        # The delta-read → write window is the critical section: serialise concurrent re-ingests of
+        # the SAME (org, graph) under the advisory lock (#305) so the mark-stale → revive race can't
+        # strand a symbol, and so a concurrent Stage-6 sweep can't DETACH-DELETE a node this ingest
+        # is reviving. Advisory: no lock client (or a Redis fault) degrades to lock-off (logged).
+        lock = RedisLock(
+            self._lock_client,
+            key=code_ingest_lock_key(organisation_id=self._org, graph_id=graph_id),
+            ttl_seconds=self._settings.code_ingest_lock_ttl_seconds,
+        )
+        token = lock.acquire()
+        while token is None:
+            # Another ingest of this graph holds the lock; the SET-NX-EX is short — wait it out
+            # rather than racing (a worker task, so a brief block is fine; the TTL bounds a crash).
+            logger.info(
+                "code ingest waiting on in-flight ingest of graph=%s (org=%s)", graph_id, self._org
+            )
+            time.sleep(_LOCK_WAIT_SECONDS)
+            token = lock.acquire()
+        try:
+            return self._ingest_locked(
+                writer=writer, graph_id=graph_id, parsed_files=parsed_files, deps=deps
+            )
+        finally:
+            lock.release(token)
+
+    def _ingest_locked(self, *, writer, graph_id: str, parsed_files: list, deps: list) -> dict:
         # Stage 1 — delta: compare each file's hash to the existing :File node.
         all_paths = [meta.path for meta, _ in parsed_files]
+        upload_paths = set(all_paths)
         existing = writer.existing_file_hashes(all_paths)
         new_files, changed_files, unchanged_files = [], [], []
         for meta, syms in parsed_files:
@@ -103,6 +150,14 @@ class CodeIngestionService:
                 unchanged_files.append((meta, syms))
         if changed_files:
             writer.mark_symbols_stale([meta.path for meta, _ in changed_files])
+
+        # Deleted files: prior :File paths for this (org, graph) MINUS the current-upload paths.
+        # A file that existed but is ABSENT now (a deletion, or the old half of a rename) is never
+        # re-written, so we stale-mark its symbols + :File node (Stage 6 reaps them at TTL). The
+        # per-upload path scan alone can never see these (they're not in the upload).
+        deleted_paths = sorted(writer.all_file_paths() - upload_paths)
+        if deleted_paths:
+            writer.mark_files_deleted(deleted_paths)
 
         # Only new + changed files are (re)written; unchanged files are skipped (delta idempotency).
         to_write = new_files + changed_files
@@ -156,7 +211,9 @@ class CodeIngestionService:
         # label-wide Neo4j vector index cannot be org-scoped, so the org-filtered kNN belongs where
         # the read happens (#294); see CodeGraphWriteRepository for the rationale.
         embedder = make_optional_embedder(self._settings)
-        embeddings = generate_embeddings(node_symbols, embedder)
+        embeddings = generate_embeddings(
+            node_symbols, embedder, max_symbols=self._settings.code_max_embed_symbols
+        )
 
         # Stage 5 — write (idempotent, ordered: dependencies, files, symbols, edges, embeddings).
         dep_rows = [
@@ -164,7 +221,7 @@ class CodeIngestionService:
             for d in deps
         ]
         writer.write_dependencies(dep_rows)
-        writer.replace_files(files)
+        writer.upsert_files(files)
         writer.write_symbols(node_symbols)
         writer.write_edges(calls=calls, inherits=inherits, imports=imports)
         if embeddings:
@@ -175,6 +232,7 @@ class CodeIngestionService:
             "files_new": len(new_files),
             "files_changed": len(changed_files),
             "files_unchanged": len(unchanged_files),
+            "files_deleted": len(deleted_paths),
             "dependencies": len(dep_rows),
             "functions": sum(1 for s in node_symbols if s["label"] == "Function"),
             "classes": sum(1 for s in node_symbols if s["label"] == "Class"),
