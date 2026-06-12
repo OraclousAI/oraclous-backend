@@ -51,6 +51,18 @@ class Settings(BaseSettings):
     query_cache_ttl: int = 300  # seconds a cached read survives absent a generation bump (5 min)
     redis_url: str = "redis://redis:6379/0"
 
+    # --- retrieval-quality evaluation (#331): the LLM judge. ONE OpenAI-compatible client
+    # (mirrors KGS_OPENAI_* — OpenRouter by default). No key → the /evaluate endpoint returns a
+    # typed 422; it NEVER fabricates scores. The caps bound judge spend per request. ---
+    openai_api_key: str | None = None
+    openai_base_url: str = "https://openrouter.ai/api/v1"
+    eval_judge_model: str = "openai/gpt-4o-mini"
+    eval_top_k: int = 5  # retrieved contexts (existing hybrid path) the metrics judge against
+    eval_max_concurrency: int = 5  # in-flight judge calls (asyncio.Semaphore, the #272 pattern)
+    eval_max_claims: int = 25  # cap on answer claims / ground-truth statements judged per call
+    eval_max_contexts: int = 5  # cap on retrieved chunks judged for context_precision
+    eval_grounded_threshold: float = 0.7  # faithfulness >= this -> is_grounded
+
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
