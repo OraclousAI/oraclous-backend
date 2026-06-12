@@ -48,6 +48,7 @@ from oraclous_knowledge_graph_service.services.structured_ingestion_service impo
     is_structured,
 )
 from oraclous_knowledge_graph_service.tasks.celery_app import AsyncTaskExecutor, celery_app
+from oraclous_knowledge_graph_service.tasks.code_stale_tasks import cleanup_stale_code_task
 
 
 class JobNotVisibleYet(Exception):
@@ -237,9 +238,16 @@ async def _ingest_structured(*, driver, maker, settings, payload, data: bytes) -
 
 
 async def _ingest_code(*, driver, settings, payload, data: bytes) -> dict[str, Any]:
-    """Code (zip / single file): tree-sitter parse -> :File/:Function/:Class via the code writer."""
+    """Code (zip / single file): the full 6-stage pipeline via the org-scoped code writer.
+
+    bootstrap (deps) -> delta (SHA, stale-mark) -> AST parse -> cross-file resolve -> embeddings
+    (fail-soft) -> write. After a re-ingest that marked symbols stale, enqueue the Stage-6 sweep
+    (TTL-gated, so just-marked symbols survive the grace window)."""
     service = CodeIngestionService(
-        driver=driver, organisation_id=enforced_organisation_id(), database=settings.neo4j_database
+        driver=driver,
+        organisation_id=enforced_organisation_id(),
+        database=settings.neo4j_database,
+        settings=settings,
     )
     counts = await asyncio.to_thread(
         service.ingest,
@@ -247,6 +255,9 @@ async def _ingest_code(*, driver, settings, payload, data: bytes) -> dict[str, A
         document=payload.filename or "code.zip",
         data=data,
     )
+    if counts.get("files_changed"):
+        # Decouple the sweep from the request: enqueue (never block the ingest on cleanup).
+        cleanup_stale_code_task.delay(str(payload.graph_id), enforced_organisation_id())
     entities = counts["files"] + counts["functions"] + counts["classes"] + counts["variables"]
     relationships = counts["calls"] + counts["imports"] + counts["inherits"]
     return {"entities": entities, "relationships": relationships, "detail": counts}
