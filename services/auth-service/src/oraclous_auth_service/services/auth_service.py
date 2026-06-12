@@ -23,6 +23,7 @@ from oraclous_auth_service.core.jwt_handler import (
     create_user_token,
     decode_token,
 )
+from oraclous_auth_service.domain.organisations import default_org_name
 from oraclous_auth_service.domain.passwords import (
     hash_password,
     validate_password_strength,
@@ -120,14 +121,19 @@ class AuthService:
             user, organisation_id=organisation_id, family_id=str(uuid.uuid4())
         )
 
-    async def register(self, *, email: str, password: str) -> TokenBundle:
+    async def register(
+        self, *, email: str, password: str, full_name: str | None = None
+    ) -> TokenBundle:
         validate_password_strength(password)
         if await self._users.get_by_email(email) is not None:
             raise EmailAlreadyRegisteredError("email already registered")
         # Create a real personal organisation (the user is its owner), then the user pointing at it.
+        # The default org is named "{First}'s Second Mind" from full_name, else the email local-part
+        # (#317); only its name/slug derive from this — ownership/status are unchanged.
         user_id = str(uuid.uuid4())
-        local = email.split("@", 1)[0]
-        org = await self._orgs.create_org(name=f"{local}'s workspace", owner_user_id=user_id)
+        org = await self._orgs.create_org(
+            name=default_org_name(full_name=full_name, email=email), owner_user_id=user_id
+        )
         user = await self._users.create_user(
             id=user_id,
             email=email,

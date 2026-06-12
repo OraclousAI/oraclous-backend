@@ -20,6 +20,7 @@ from urllib.parse import urlencode
 from oraclous_auth_service.core.encryption import decrypt, encrypt
 from oraclous_auth_service.core.oauth_providers import SUPPORTED, ProviderConfig, get_provider
 from oraclous_auth_service.domain.oauth import generate_pkce, generate_state, merge_scopes
+from oraclous_auth_service.domain.organisations import default_org_name
 from oraclous_auth_service.repositories.audit_repository import AuditRepository
 from oraclous_auth_service.repositories.oauth_repository import (
     OAuthAccountRepository,
@@ -151,8 +152,12 @@ class OAuthService:
         import uuid
 
         user_id = str(uuid.uuid4())
-        local = normalize_email(profile.email).split("@", 1)[0]
-        org = await self._orgs.create_org(name=f"{local}'s workspace", owner_user_id=user_id)
+        # Same default-org naming as password registration (#317): "{First}'s Second Mind" from the
+        # provider-supplied name, else the email local-part.
+        org = await self._orgs.create_org(
+            name=default_org_name(full_name=profile.name, email=normalize_email(profile.email)),
+            owner_user_id=user_id,
+        )
         return await self._users.create_user(
             id=user_id,
             email=profile.email,

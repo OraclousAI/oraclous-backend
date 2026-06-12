@@ -35,7 +35,9 @@ async def test_register_creates_a_real_personal_org(client: AsyncClient) -> None
     orgs = (await client.get("/v1/orgs", headers=_auth(body["access_token"]))).json()
     assert len(orgs) == 1
     personal = orgs[0]
-    assert personal["slug"] == "alice-s-workspace"
+    # no full_name at register -> the default org falls back to the email local-part (#317)
+    assert personal["name"] == "alice's Second Mind"
+    assert personal["slug"] == "alice-s-second-mind"
     # the token's organisation_id is the real personal org's id
     assert _org_claim(body["access_token"]) == personal["id"]
 
@@ -48,7 +50,7 @@ async def test_multi_org_active_selection_via_header(client: AsyncClient) -> Non
         await client.post("/v1/orgs", headers=_auth(token), json={"name": "Side Project"})
     ).json()
     orgs = (await client.get("/v1/orgs", headers=_auth(token))).json()
-    assert {o["slug"] for o in orgs} == {"bob-s-workspace", "side-project"}
+    assert {o["slug"] for o in orgs} == {"bob-s-second-mind", "side-project"}
 
     # login selecting the second org -> token carries that org
     login = await client.post(

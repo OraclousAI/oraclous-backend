@@ -37,7 +37,9 @@ def _token_response(bundle: TokenBundle) -> TokenResponse:
 
 @router.post("/register", response_model=TokenResponse, status_code=status.HTTP_201_CREATED)
 async def register(body: RegisterRequest, auth: AuthServiceDep) -> TokenResponse:
-    return _token_response(await auth.register(email=body.email, password=body.password))
+    return _token_response(
+        await auth.register(email=body.email, password=body.password, full_name=body.full_name)
+    )
 
 
 @router.post("/login", response_model=TokenResponse)
