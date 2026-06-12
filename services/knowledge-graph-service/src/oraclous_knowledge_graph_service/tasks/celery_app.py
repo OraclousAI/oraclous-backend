@@ -26,6 +26,7 @@ celery_app = Celery(
         "oraclous_knowledge_graph_service.tasks.ingest_tasks",
         "oraclous_knowledge_graph_service.tasks.community_tasks",
         "oraclous_knowledge_graph_service.tasks.code_stale_tasks",
+        "oraclous_knowledge_graph_service.tasks.memory_tasks",
     ],
 )
 celery_app.conf.update(

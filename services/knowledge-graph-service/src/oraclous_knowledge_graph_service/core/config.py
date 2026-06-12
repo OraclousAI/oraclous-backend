@@ -125,6 +125,18 @@ class Settings(BaseSettings):
     # (bounded enumeration, so it never label-scans + fans out over an unbounded set). 0 disables.
     code_sweep_max_graphs: int = 1_000
 
+    # --- agent memory (#332 / ADR-027) ---
+    # Cosine threshold above which two memories' embeddings count as near-duplicates and merge in
+    # the consolidation pass (the legacy comment's 0.92 — high, so only true near-duplicates fold).
+    memory_consolidation_similarity_threshold: float = 0.92
+    # Bounded candidate fetch per consolidation pass (cost/heap guard, mirrors the legacy 5000 cap).
+    memory_consolidation_max_memories: int = 5_000
+    # Per-(org,graph) advisory Redis lock TTL across one consolidation pass (#303/#305 pattern).
+    memory_consolidation_lock_ttl_seconds: int = 15 * 60
+    # Max distinct (org, graph) memory graphs the optional beat dispatcher fans out per cadence
+    # (bounded enumeration, #305 pattern). 0 disables the bound.
+    memory_sweep_max_graphs: int = 1_000
+
     # --- similarity auto-trigger (#310, legacy SIMILARITY_AUTO_TRIGGER_ON_INGEST) ---
     # When True, a structured ingest with NO authored `similarities[]` rule still runs the content-
     # similarity pass: one default SIMILAR_TO rule is synthesised per node rule over the node's best

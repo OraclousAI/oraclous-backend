@@ -72,6 +72,21 @@ class GraphRepository:
         row = (await self._session.execute(stmt)).scalar_one_or_none()
         return _to_domain(row) if row else None
 
+    async def find_by_name(self, name: str) -> Graph | None:
+        """Org-scoped lookup by exact name (oldest first — the lazy org-default memory graph,
+        #332/ADR-027 §5, resolves deterministically even if a race ever created a duplicate)."""
+        stmt = (
+            select(KnowledgeGraph)
+            .where(
+                KnowledgeGraph.organisation_id == self._org(),
+                KnowledgeGraph.name == name,
+            )
+            .order_by(KnowledgeGraph.created_at.asc())
+            .limit(1)
+        )
+        row = (await self._session.execute(stmt)).scalar_one_or_none()
+        return _to_domain(row) if row else None
+
     async def update(
         self, graph_id: uuid.UUID, *, name: str | None, description: str | None
     ) -> Graph | None:

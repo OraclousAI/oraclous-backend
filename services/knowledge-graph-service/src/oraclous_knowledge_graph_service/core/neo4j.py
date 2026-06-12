@@ -31,6 +31,26 @@ _SCOPE_INDEXES: tuple[tuple[str, str], ...] = (
     ("kgs_file_scope", "File"),
     ("kgs_dependency_scope", "Dependency"),
     ("kgs_codemodule_scope", "CodeModule"),
+    ("kgs_memory_scope", "Memory"),
+)
+
+# Agent-memory indexes (#332 / ADR-027 §1, following the #305 composite-key pattern): the scoped
+# lookup index covers the recall filter shape (scope/type/validity inside one org+graph), the
+# content-hash index backs the store-time dedup seek, and the fulltext index backs keyword recall
+# (the legacy `memory_content_idx`, renamed into the kgs_* namespace — referenced by name in
+# MemoryRepository.fulltext_candidates). Deliberately NO vector index on :Memory — a label-wide
+# vector index cannot be org-scoped on Community (the #305 finding); semantic recall is an
+# org+graph-scoped brute-force cosine in the repository instead.
+_MEMORY_INDEXES: tuple[str, ...] = (
+    "CREATE INDEX kgs_memory_lookup IF NOT EXISTS FOR (n:Memory) "
+    "ON (n.organisation_id, n.graph_id, n.scope, n.memory_type, n.valid_to)",
+    "CREATE INDEX kgs_memory_content_hash IF NOT EXISTS FOR (n:Memory) "
+    "ON (n.organisation_id, n.graph_id, n.content_hash)",
+    # organisation_id is in the indexed fields (ORG005) so the index itself can express org-scoped
+    # Lucene queries; the repository's bound `m.organisation_id = $organisation_id` WHERE filter
+    # remains the enforcement either way (no result ever leaves the caller's org).
+    "CREATE FULLTEXT INDEX kgs_memory_content IF NOT EXISTS FOR (m:Memory) "
+    "ON EACH [m.content, m.organisation_id]",
 )
 
 # Composite indexes on the delta/MERGE keys the code pipeline seeks on, so a re-ingest seeks the
@@ -81,3 +101,6 @@ def ensure_schema(driver: Driver, *, database: str | None = None) -> None:
         "FOR (n:__Entity__) ON (n.organisation_id, n.graph_id, n.valid_from, n.valid_to)",
         database_=database,
     )
+    # Agent-memory recall/dedup indexes (#332 / ADR-027 §1).
+    for stmt in _MEMORY_INDEXES:
+        driver.execute_query(stmt, database_=database)

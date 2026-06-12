@@ -15,6 +15,7 @@ from oraclous_knowledge_graph_service.routes import (
     health_routes,
     ingest_routes,
     internal_routes,
+    memory_routes,
     ontology_routes,
     recipe_routes,
     resolution_routes,
@@ -37,4 +38,5 @@ def create_app() -> FastAPI:
     app.include_router(ontology_routes.suggest_router)
     app.include_router(community_routes.kinds_router)
     app.include_router(community_routes.router)
+    app.include_router(memory_routes.router)
     return app
