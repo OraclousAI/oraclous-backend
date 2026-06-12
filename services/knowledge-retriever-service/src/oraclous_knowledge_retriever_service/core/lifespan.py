@@ -3,6 +3,10 @@
 Also opens an advisory async Redis client for the query cache (#308) when KRS_QUERY_CACHE is on;
 a Redis that fails to bind degrades to cache-off (the read path still serves), never a hard stop —
 the cache is advisory, only Neo4j gates readiness.
+
+The evaluation seam (#331/#333) is built here too: ONE judge client for the process
+(``app.state.eval_judge`` — None when no key is configured, the DI maps that to a typed 422) and
+the process-level evaluation slots (``app.state.eval_slots``) that cap concurrent judge spend.
 """
 
 from __future__ import annotations
@@ -17,6 +21,7 @@ from oraclous_telemetry import Severity, alert, evaluate_readiness, exit_on_degr
 
 from oraclous_knowledge_retriever_service.core.config import get_settings
 from oraclous_knowledge_retriever_service.core.neo4j import make_neo4j_driver
+from oraclous_knowledge_retriever_service.services.eval_judge import make_judge
 
 
 def _open_neo4j() -> Driver | None:
@@ -74,6 +79,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         )
     app.state.redis_client = redis_client
 
+    # Evaluation seam (#331/#333): ONE judge client per process (explicit short timeout + bounded
+    # retries — never the SDK's 600s × 3) and the process-level evaluation slots. None when no
+    # key is configured; the DI provider maps that to the typed eval_judge_not_configured 422.
+    settings = get_settings()
+    app.state.eval_judge = make_judge(settings)
+    app.state.eval_slots = asyncio.Semaphore(max(1, settings.eval_max_concurrent_requests))
+
     verdict = evaluate_readiness({"neo4j": None if neo4j_bind_failed else object()})
     if verdict.is_degraded and exit_on_degrade_enabled():
         raise SystemExit(1)
@@ -85,3 +97,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             await asyncio.to_thread(driver.close)
         if redis_client is not None:
             await redis_client.aclose()
+        judge = getattr(app.state, "eval_judge", None)
+        if judge is not None:
+            await judge.aclose()

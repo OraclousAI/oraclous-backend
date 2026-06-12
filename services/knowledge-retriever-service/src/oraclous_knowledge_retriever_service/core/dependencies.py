@@ -31,7 +31,7 @@ from oraclous_knowledge_retriever_service.core.auth import (
 )
 from oraclous_knowledge_retriever_service.core.config import get_settings
 from oraclous_knowledge_retriever_service.services.embedder import HashingEmbedder
-from oraclous_knowledge_retriever_service.services.eval_judge import EvalJudge, make_judge
+from oraclous_knowledge_retriever_service.services.eval_judge import EvalJudge
 from oraclous_knowledge_retriever_service.services.evaluation_service import EvaluationService
 from oraclous_knowledge_retriever_service.services.retrieval_service import RetrievalService
 
@@ -124,28 +124,36 @@ def get_retrieval_service(
     )
 
 
-def get_eval_judge() -> EvalJudge:
-    """The LLM judge behind /evaluate (#331), or a typed 422 when no key is configured.
+def get_eval_judge(request: Request) -> EvalJudge:
+    """The lifespan-built judge singleton behind /evaluate (#331), or a typed 422 when absent.
 
     An explicit evaluation endpoint must refuse rather than silently fabricate scores, so a
     missing KRS_OPENAI_API_KEY is a caller-visible, machine-readable 422 — never fake numbers.
+    The detail uses the Pydantic LIST shape (``[{"loc": [...], "type": "...", "msg": "..."}]``)
+    because the gateway's leak-safe #225 extractor relays ONLY that shape: the typed error
+    survives the edge as VALIDATION_FAILED with field ``eval`` / issue
+    ``EVAL_JUDGE_NOT_CONFIGURED`` instead of collapsing to the detail-free envelope (#333).
     """
-    judge = make_judge(get_settings())
+    judge = getattr(request.app.state, "eval_judge", None)
     if judge is None:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail={
-                "error": "eval_judge_not_configured",
-                "message": (
-                    "evaluation requires an LLM judge: set KRS_OPENAI_API_KEY (and optionally "
-                    "KRS_OPENAI_BASE_URL / KRS_EVAL_JUDGE_MODEL)."
-                ),
-            },
+            detail=[
+                {
+                    "loc": ["eval"],
+                    "type": "eval_judge_not_configured",
+                    "msg": (
+                        "evaluation requires an LLM judge: set KRS_OPENAI_API_KEY (and optionally"
+                        " KRS_OPENAI_BASE_URL / KRS_EVAL_JUDGE_MODEL)."
+                    ),
+                }
+            ],
         )
     return judge
 
 
 def get_evaluation_service(
+    request: Request,
     retrieval: Annotated[RetrievalService, Depends(get_retrieval_service)],
     judge: Annotated[EvalJudge, Depends(get_eval_judge)],
 ) -> EvaluationService:
@@ -158,6 +166,9 @@ def get_evaluation_service(
         max_claims=settings.eval_max_claims,
         max_contexts=settings.eval_max_contexts,
         grounded_threshold=settings.eval_grounded_threshold,
+        deadline_seconds=settings.eval_deadline_seconds,
+        # process-level evaluation slots (lifespan-built); absent (e.g. bare test app) → uncapped
+        request_slots=getattr(request.app.state, "eval_slots", None),
     )
 
 

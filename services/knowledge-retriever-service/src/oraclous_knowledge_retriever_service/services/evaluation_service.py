@@ -5,23 +5,45 @@ OpenAI-compatible judge client, NOT the ragas/langchain/pandas stack the legacy
 ``evaluation_service.py`` pulled in. The metric SEMANTICS are lifted from the legacy service:
 
   faithfulness       — decompose the answer into atomic claims (one judge call), then judge each
-                       claim supported-by-context (concurrent) → supported / total.
-  answer_relevance   — judge how directly the answer addresses the question → 0–1.
+                       claim supported-by-context (concurrent) → supported / total. Matches RAGAS
+                       semantics.
+  answer_relevance   — judge how directly the answer addresses the question → 0–1. This is a
+                       DIRECT judge score, NOT RAGAS's generated-questions + cosine-similarity
+                       procedure — simpler, but a different estimator of the same intent.
   context_precision  — judge each retrieved chunk's relevance to the question → relevant / total.
+                       This is an order-INSENSITIVE fraction; RAGAS's original context_precision
+                       is rank-weighted (mean precision@k over the relevant positions).
   context_recall     — (only with ground_truth) decompose the ground truth into statements, judge
-                       each attributable to the retrieved context → found / total.
+                       each attributable to the retrieved context → found / total. Matches RAGAS
+                       semantics.
 
-Retrieval goes through the EXISTING KRS read path (hybrid, top_k≈5) so the metrics judge the
-platform's own retrieval; when ``answer`` is absent and an answer-dependent metric is requested,
-one is GENERATED from the retrieved context (retrieve → grounded-answer prompt → the judge LLM) so
-the endpoint evaluates retrieval+generation end-to-end.
+Retrieval goes through the EXISTING KRS read path (hybrid, top_k≈5); the judged context set is
+capped ONCE up front (``eval_max_contexts``, warned when it drops chunks) so precision,
+faithfulness, recall AND answer generation all judge the SAME contexts. When ``answer`` is absent
+and an answer-dependent metric is requested, one is GENERATED from the retrieved context
+(retrieve → grounded-answer prompt → the judge LLM) so the endpoint evaluates retrieval+generation
+end-to-end. NOTE the self-judging bias on that path: the same model writes AND grades the answer,
+so faithfulness/answer_relevance skew optimistic there.
 
 Fail-soft per metric: a judge failure or malformed judge response nulls THAT metric and appends a
-warning — never a 500. Judge calls are concurrency-limited by one ``asyncio.Semaphore`` per
-request (the KGS #272 pattern) and bounded by config caps (claims/statements judged, chunks
-judged, per-chunk prompt characters). Scores are 0–1 rounded to 4 dp; ``overall`` is the mean of
-the computed scores; ``is_grounded`` is faithfulness ≥ a config threshold. Evaluation writes
-nothing — KRS stays read-only.
+warning — never a 500. Within a verdict batch, one failed call no longer sinks the metric: the
+batch gathers with ``return_exceptions=True``, the fraction is computed over the verdicts that
+SUCCEEDED (warned "N of M verdict calls failed"), and the metric nulls only when a STRICT MAJORITY
+of its verdict calls fail (threshold: failures × 2 > total).
+
+Spend bounds: judge calls are concurrency-limited by one ``asyncio.Semaphore`` per request (the
+KGS #272 pattern); evaluations themselves are capped process-wide (``eval_max_concurrent_requests``
+slots, built at lifespan — excess queues briefly then gets a typed 429); claims/statements are
+capped both IN the decomposition prompt and by a post-parse slice; and the WHOLE evaluation runs
+under ``eval_deadline_seconds`` (default 25s — under the gateway's 30s read timeout). On deadline
+expiry the response carries every metric that completed, with nulls + warnings for the rest —
+partial results, never a 504-then-burn. The judge calls are pure async (AsyncOpenAI), so the
+deadline genuinely CANCELS them in flight (the #327 ``to_thread`` caveat applies only to the
+local, fast Neo4j reads).
+
+Scores are 0–1 rounded to 4 dp; ``overall`` is the mean of the computed scores; ``is_grounded`` is
+faithfulness ≥ a config threshold. Evaluation issues no Neo4j writes; the inherited retrieval path
+may write advisory Redis query-cache entries when ``KRS_QUERY_CACHE=true``.
 """
 
 from __future__ import annotations
@@ -29,6 +51,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
+from collections.abc import Coroutine, Iterable
 
 from oraclous_knowledge_retriever_service.services.eval_judge import EvalJudge
 from oraclous_knowledge_retriever_service.services.retrieval_service import RetrievalService
@@ -104,6 +128,10 @@ class NoValidMetrics(ValueError):
     """The request left no computable metric (e.g. only unknown names) — a caller error (422)."""
 
 
+class EvaluationCapacityExceeded(Exception):
+    """Too many evaluations in flight process-wide — a typed 429 (judge-spend protection, #333)."""
+
+
 class JudgeResponseError(Exception):
     """The judge returned output a metric step could not parse (→ that metric nulls, fail-soft)."""
 
@@ -139,11 +167,30 @@ def _parse_score(raw: str) -> float:
     value = _parse_json_object(raw).get("score")
     if isinstance(value, bool) or not isinstance(value, int | float):
         raise JudgeResponseError("judge response missing a numeric 'score'")
+    if not math.isfinite(value):
+        # never clamp-fabricate from NaN/Infinity — that metric nulls with a warning
+        raise JudgeResponseError("judge returned a non-finite 'score'")
     return min(1.0, max(0.0, float(value)))
 
 
 def _context_block(contexts: list[str]) -> str:
     return "\n\n".join(f"[{i + 1}] {text}" for i, text in enumerate(contexts))
+
+
+class _EvalState:
+    """Mutable per-evaluation state the deadline handler reads after cancellation (#333).
+
+    Judge calls are pure async, so deadline cancellation is clean: everything recorded here
+    before expiry is complete and correct, and the partial-result response is built from it.
+    """
+
+    def __init__(self, *, requested: set[str], answer: str | None) -> None:
+        self.requested = requested
+        self.answer = answer
+        self.context_items: list[dict] = []
+        self.scores: dict[str, float | None] = dict.fromkeys(_METRIC_ORDER)
+        self.completed: set[str] = set()  # metrics that finished (incl. fail-soft nulls)
+        self.buckets: dict[str, list[str]] = {}  # per-metric warning buffers
 
 
 class EvaluationService:
@@ -159,6 +206,9 @@ class EvaluationService:
         max_claims: int = 25,
         max_contexts: int = 5,
         grounded_threshold: float = 0.7,
+        deadline_seconds: float = 25.0,
+        request_slots: asyncio.Semaphore | None = None,
+        slot_wait_seconds: float = 1.0,
     ) -> None:
         self._retrieval = retrieval
         self._judge = judge
@@ -167,6 +217,10 @@ class EvaluationService:
         self._max_claims = max(1, max_claims)
         self._max_contexts = max(1, max_contexts)
         self._grounded_threshold = grounded_threshold
+        self._deadline_seconds = deadline_seconds
+        # Process-level evaluation slots (lifespan-built, shared across requests); None → uncapped.
+        self._request_slots = request_slots
+        self._slot_wait_seconds = slot_wait_seconds
 
     # ------------------------------------------------------------------ public
 
@@ -181,71 +235,62 @@ class EvaluationService:
     ) -> dict:
         """Run the requested metrics and return the evaluation result dict.
 
-        Raises :class:`GraphNotFound` (→ 404) and :class:`NoValidMetrics` (→ 422); every judge
-        failure inside a metric is fail-soft (that metric → None + a warning), never an error.
+        Raises :class:`GraphNotFound` (→ 404), :class:`NoValidMetrics` (→ 422) and
+        :class:`EvaluationCapacityExceeded` (→ 429); every judge failure inside a metric is
+        fail-soft (that metric → None + a warning). The whole flow runs under the configured
+        deadline: on expiry, in-flight judge calls are cancelled and the metrics that completed
+        are returned with nulls + warnings for the rest — partial results, never an error.
         """
         warnings: list[str] = []
         requested = self._resolve_metrics(metrics, ground_truth, warnings)
 
-        if not await self._retrieval.graph_exists(graph_id=graph_id):
-            raise GraphNotFound(graph_id)
-
-        context_items, context_strings = await self._retrieve(graph_id=graph_id, query=question)
-        if not context_strings:
-            warnings.append(
-                "No context retrieved from the graph; scores judge against an empty context."
-            )
-            context_strings = [_NO_CONTEXT_PLACEHOLDER]
-
-        semaphore = asyncio.Semaphore(self._max_concurrency)
-
-        # Answer: caller-supplied, or generated from the retrieved context when an
-        # answer-dependent metric needs one (retrieve → grounded-answer prompt → the judge LLM).
-        evaluated_answer = answer
-        if evaluated_answer is None and requested & _ANSWER_METRICS:
-            evaluated_answer = await self._generate_answer(
-                question=question, contexts=context_strings, semaphore=semaphore
-            )
-            if evaluated_answer is None:
-                for name in sorted(requested & _ANSWER_METRICS):
-                    warnings.append(f"{name} skipped: answer generation failed.")
-                requested -= _ANSWER_METRICS
-
-        scores = await self._run_metrics(
-            requested=requested,
-            question=question,
-            answer=evaluated_answer,
-            ground_truth=ground_truth,
-            contexts=context_strings,
-            semaphore=semaphore,
-            warnings=warnings,
-        )
-
-        computed = [name for name in _METRIC_ORDER if scores[name] is not None]
-        values = [scores[name] for name in computed]
-        overall = round(sum(values) / len(values), 4) if values else None
-        faithfulness = scores["faithfulness"]
-        is_grounded = faithfulness is not None and faithfulness >= self._grounded_threshold
-
-        return {
-            "answer": evaluated_answer,
-            "retrieved_contexts": context_items,
-            "scores": scores,
-            "overall": overall,
-            "metrics_computed": computed,
-            "is_grounded": is_grounded,
-            "warnings": warnings,
-        }
+        await self._acquire_slot()
+        try:
+            state = _EvalState(requested=requested, answer=answer)
+            try:
+                async with asyncio.timeout(self._deadline_seconds):
+                    await self._evaluate_bounded(
+                        state=state,
+                        graph_id=graph_id,
+                        question=question,
+                        ground_truth=ground_truth,
+                        warnings=warnings,
+                    )
+            except TimeoutError:
+                for name in (n for n in _METRIC_ORDER if n in state.requested - state.completed):
+                    warnings.append(
+                        f"{name} skipped: evaluation deadline ({self._deadline_seconds:g}s) "
+                        "exceeded; partial results returned."
+                    )
+            return self._build_result(state, warnings)
+        finally:
+            self._release_slot()
 
     # ------------------------------------------------------------------ internal
+
+    async def _acquire_slot(self) -> None:
+        """Take a process-level evaluation slot: queue briefly, then a typed 429 (#333)."""
+        if self._request_slots is None:
+            return
+        try:
+            await asyncio.wait_for(self._request_slots.acquire(), timeout=self._slot_wait_seconds)
+        except TimeoutError:
+            raise EvaluationCapacityExceeded(
+                "too many evaluations in flight; retry shortly"
+            ) from None
+
+    def _release_slot(self) -> None:
+        if self._request_slots is not None:
+            self._request_slots.release()
 
     @staticmethod
     def _resolve_metrics(
         metrics: list[str] | None, ground_truth: str | None, warnings: list[str]
     ) -> set[str]:
         """Resolve the metric subset (legacy semantics): unknown names warn + drop;
-        context_recall is gated on ground_truth; nothing left → NoValidMetrics (422)."""
-        requested = set(metrics) if metrics else set(SUPPORTED_METRICS)
+        context_recall is gated on ground_truth; nothing left → NoValidMetrics (422).
+        An EXPLICIT empty list is a caller error too (is-None check, not truthiness)."""
+        requested = set(metrics) if metrics is not None else set(SUPPORTED_METRICS)
         unknown = requested - SUPPORTED_METRICS
         if unknown:
             warnings.append(f"Unknown metrics ignored: {sorted(unknown)}")
@@ -257,9 +302,77 @@ class EvaluationService:
             raise NoValidMetrics("No valid metrics to compute.")
         return requested
 
-    async def _retrieve(self, *, graph_id: str, query: str) -> tuple[list[dict], list[str]]:
-        """Fetch the contexts the metrics judge against via the EXISTING KRS hybrid read path."""
+    async def _evaluate_bounded(
+        self,
+        *,
+        state: _EvalState,
+        graph_id: str,
+        question: str,
+        ground_truth: str | None,
+        warnings: list[str],
+    ) -> None:
+        """The deadline-scoped flow: probe → retrieve → (generate answer) → run metrics."""
+        if not await self._retrieval.graph_exists(graph_id=graph_id):
+            raise GraphNotFound(graph_id)
+
+        context_strings = await self._retrieve(
+            state, graph_id=graph_id, query=question, warnings=warnings
+        )
+
+        semaphore = asyncio.Semaphore(self._max_concurrency)
+
+        # Answer: caller-supplied, or generated from the retrieved context when an
+        # answer-dependent metric needs one (retrieve → grounded-answer prompt → the judge LLM).
+        if state.answer is None and state.requested & _ANSWER_METRICS:
+            state.answer = await self._generate_answer(
+                question=question, contexts=context_strings, semaphore=semaphore
+            )
+            if state.answer is None:
+                for name in sorted(state.requested & _ANSWER_METRICS):
+                    warnings.append(f"{name} skipped: answer generation failed.")
+                state.requested -= _ANSWER_METRICS
+
+        await self._run_metrics(
+            state=state,
+            question=question,
+            ground_truth=ground_truth,
+            contexts=context_strings,
+            semaphore=semaphore,
+        )
+
+    def _build_result(self, state: _EvalState, warnings: list[str]) -> dict:
+        """Assemble the response dict — shared by the complete and deadline-partial paths."""
+        for name in _METRIC_ORDER:
+            warnings.extend(state.buckets.get(name, []))
+        computed = [name for name in _METRIC_ORDER if state.scores[name] is not None]
+        values = [state.scores[name] for name in computed]
+        overall = round(sum(values) / len(values), 4) if values else None
+        faithfulness = state.scores["faithfulness"]
+        is_grounded = faithfulness is not None and faithfulness >= self._grounded_threshold
+        return {
+            "answer": state.answer,
+            "retrieved_contexts": state.context_items,
+            "scores": state.scores,
+            "overall": overall,
+            "metrics_computed": computed,
+            "is_grounded": is_grounded,
+            "warnings": warnings,
+        }
+
+    async def _retrieve(
+        self, state: _EvalState, *, graph_id: str, query: str, warnings: list[str]
+    ) -> list[str]:
+        """Fetch the judged context set via the EXISTING KRS hybrid read path.
+
+        The ``max_contexts`` cap is applied ONCE here (warned when it drops chunks) so precision,
+        faithfulness, recall and answer generation all judge the SAME context set (#333).
+        """
         nodes = await self._retrieval.hybrid(graph_id=graph_id, query=query, top_k=self._top_k)
+        if len(nodes) > self._max_contexts:
+            warnings.append(
+                f"Judging the first {self._max_contexts} of {len(nodes)} retrieved contexts (cap)."
+            )
+            nodes = nodes[: self._max_contexts]
         items: list[dict] = []
         strings: list[str] = []
         for node in nodes:
@@ -280,7 +393,13 @@ class EvaluationService:
             )
             if text:
                 strings.append(text[:_CONTEXT_CHAR_CAP])
-        return items, strings
+        state.context_items = items
+        if not strings:
+            warnings.append(
+                "No context retrieved from the graph; scores judge against an empty context."
+            )
+            strings = [_NO_CONTEXT_PLACEHOLDER]
+        return strings
 
     async def _judge_json(self, semaphore: asyncio.Semaphore, *, system: str, user: str) -> str:
         async with semaphore:
@@ -304,62 +423,87 @@ class EvaluationService:
     async def _run_metrics(
         self,
         *,
-        requested: set[str],
+        state: _EvalState,
         question: str,
-        answer: str | None,
         ground_truth: str | None,
         contexts: list[str],
         semaphore: asyncio.Semaphore,
-        warnings: list[str],
-    ) -> dict[str, float | None]:
+    ) -> None:
         """Run the requested metrics concurrently; each is individually fail-soft.
 
-        Warnings are buffered per metric and merged in canonical order so the response is
+        Each metric writes its score into ``state`` the moment it finishes, so a deadline
+        cancellation mid-flight still leaves every completed metric in the response. Warnings are
+        buffered per metric and merged in canonical order (``_build_result``) so the response is
         deterministic regardless of completion order.
         """
-        ordered = [name for name in _METRIC_ORDER if name in requested]
-        buckets: dict[str, list[str]] = {name: [] for name in ordered}
+        ordered = [name for name in _METRIC_ORDER if name in state.requested]
+        for name in ordered:
+            state.buckets[name] = []
 
-        async def _run(name: str) -> float | None:
-            bucket = buckets[name]
+        async def _run(name: str) -> None:
+            bucket = state.buckets[name]
+            value: float | None = None
             try:
                 if name == "faithfulness":
-                    return await self._faithfulness(
+                    value = await self._faithfulness(
                         question=question,
-                        answer=answer or "",
+                        answer=state.answer or "",
                         contexts=contexts,
                         semaphore=semaphore,
                         warnings=bucket,
                     )
-                if name == "answer_relevance":
-                    return await self._answer_relevance(
-                        question=question, answer=answer or "", semaphore=semaphore
+                elif name == "answer_relevance":
+                    value = await self._answer_relevance(
+                        question=question, answer=state.answer or "", semaphore=semaphore
                     )
-                if name == "context_precision":
-                    return await self._context_precision(
-                        question=question, contexts=contexts, semaphore=semaphore
+                elif name == "context_precision":
+                    value = await self._context_precision(
+                        question=question, contexts=contexts, semaphore=semaphore, warnings=bucket
                     )
-                return await self._context_recall(
-                    ground_truth=ground_truth or "",
-                    contexts=contexts,
-                    semaphore=semaphore,
-                    warnings=bucket,
-                )
+                else:
+                    value = await self._context_recall(
+                        ground_truth=ground_truth or "",
+                        contexts=contexts,
+                        semaphore=semaphore,
+                        warnings=bucket,
+                    )
             except JudgeResponseError as exc:
                 bucket.append(f"{name} skipped: the judge returned a malformed response.")
                 logger.warning("evaluation: %s got a malformed judge response: %s", name, exc)
             except Exception as exc:  # noqa: BLE001 — fail-soft per metric, never a 500
                 bucket.append(f"{name} skipped: the judge call failed.")
                 logger.warning("evaluation: %s judge call failed: %r", name, exc)
-            return None
+            state.scores[name] = round(value, 4) if value is not None else None
+            state.completed.add(name)
 
-        results = await asyncio.gather(*(_run(name) for name in ordered))
-        scores: dict[str, float | None] = dict.fromkeys(_METRIC_ORDER)
-        for name, value in zip(ordered, results, strict=True):
-            scores[name] = round(value, 4) if value is not None else None
-        for name in ordered:
-            warnings.extend(buckets[name])
-        return scores
+        await asyncio.gather(*(_run(name) for name in ordered))
+
+    async def _verdict_fraction(
+        self,
+        *,
+        metric: str,
+        calls: Iterable[Coroutine[object, object, bool]],
+        warnings: list[str],
+    ) -> float | None:
+        """Fraction of true verdicts over the calls that SUCCEEDED (#333).
+
+        ``return_exceptions=True`` keeps one failed verdict from sinking the batch — and from
+        propagating early while sibling calls keep spending unobserved. The metric nulls only
+        when a STRICT MAJORITY of its verdict calls fail (failures × 2 > total); below that the
+        fraction over the successful verdicts is still meaningful signal, surfaced with a warning.
+        """
+        results = await asyncio.gather(*calls, return_exceptions=True)
+        successes = [r for r in results if isinstance(r, bool)]
+        failed = len(results) - len(successes)
+        if failed:
+            warnings.append(f"{metric}: {failed} of {len(results)} verdict calls failed.")
+            logger.warning(
+                "evaluation: %s lost %d of %d verdict calls", metric, failed, len(results)
+            )
+        if failed * 2 > len(results):
+            warnings.append(f"{metric} skipped: a majority of verdict calls failed.")
+            return None
+        return sum(successes) / len(successes)
 
     async def _faithfulness(
         self,
@@ -374,7 +518,10 @@ class EvaluationService:
         raw = await self._judge_json(
             semaphore,
             system=CLAIMS_SYSTEM,
-            user=f"Question: {question}\n\nAnswer: {answer}",
+            user=(
+                f"Question: {question}\n\nAnswer: {answer}\n\n"
+                f"Return at most {self._max_claims} claims."
+            ),
         )
         claims = _parse_string_list(raw, "claims")
         if not claims:
@@ -382,7 +529,7 @@ class EvaluationService:
                 "faithfulness skipped: no factual claims could be extracted from the answer."
             )
             return None
-        if len(claims) > self._max_claims:
+        if len(claims) > self._max_claims:  # post-parse backstop behind the in-prompt cap
             warnings.append(
                 f"faithfulness judged the first {self._max_claims} of {len(claims)} claims (cap)."
             )
@@ -397,8 +544,9 @@ class EvaluationService:
             )
             return _parse_bool(raw_verdict, "supported")
 
-        verdicts = await asyncio.gather(*(_one(claim) for claim in claims))
-        return sum(verdicts) / len(verdicts)
+        return await self._verdict_fraction(
+            metric="faithfulness", calls=(_one(claim) for claim in claims), warnings=warnings
+        )
 
     async def _answer_relevance(
         self, *, question: str, answer: str, semaphore: asyncio.Semaphore
@@ -412,10 +560,17 @@ class EvaluationService:
         return _parse_score(raw)
 
     async def _context_precision(
-        self, *, question: str, contexts: list[str], semaphore: asyncio.Semaphore
-    ) -> float:
-        """Per-chunk relevance verdicts against the question → relevant/total."""
-        chunks = contexts[: self._max_contexts]
+        self,
+        *,
+        question: str,
+        contexts: list[str],
+        semaphore: asyncio.Semaphore,
+        warnings: list[str],
+    ) -> float | None:
+        """Per-chunk relevance verdicts against the question → relevant/total (order-insensitive).
+
+        ``contexts`` is already the once-capped judged set — the same set every metric sees.
+        """
 
         async def _one(chunk: str) -> bool:
             raw = await self._judge_json(
@@ -425,8 +580,11 @@ class EvaluationService:
             )
             return _parse_bool(raw, "relevant")
 
-        verdicts = await asyncio.gather(*(_one(chunk) for chunk in chunks))
-        return sum(verdicts) / len(verdicts)
+        return await self._verdict_fraction(
+            metric="context_precision",
+            calls=(_one(chunk) for chunk in contexts),
+            warnings=warnings,
+        )
 
     async def _context_recall(
         self,
@@ -440,7 +598,9 @@ class EvaluationService:
         raw = await self._judge_json(
             semaphore,
             system=STATEMENTS_SYSTEM,
-            user=f"Reference answer: {ground_truth}",
+            user=(
+                f"Reference answer: {ground_truth}\n\nReturn at most {self._max_claims} statements."
+            ),
         )
         statements = _parse_string_list(raw, "statements")
         if not statements:
@@ -448,7 +608,7 @@ class EvaluationService:
                 "context_recall skipped: no statements could be extracted from ground_truth."
             )
             return None
-        if len(statements) > self._max_claims:
+        if len(statements) > self._max_claims:  # post-parse backstop behind the in-prompt cap
             warnings.append(
                 f"context_recall judged the first {self._max_claims} of "
                 f"{len(statements)} statements (cap)."
@@ -464,5 +624,8 @@ class EvaluationService:
             )
             return _parse_bool(raw_verdict, "attributable")
 
-        verdicts = await asyncio.gather(*(_one(statement) for statement in statements))
-        return sum(verdicts) / len(verdicts)
+        return await self._verdict_fraction(
+            metric="context_recall",
+            calls=(_one(statement) for statement in statements),
+            warnings=warnings,
+        )
