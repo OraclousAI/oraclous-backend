@@ -443,6 +443,165 @@ class GraphWriteRepository:
         )
         return bool(records and records[0]["suppressed"])
 
+    # --- cross-graph SAME_AS candidates (#330 / ADR-026) --------------------------------------
+    # Cross-graph candidate generation folds into the SAME HITL pipeline (#279): a
+    # SAME_AS_CANDIDATE edge between two canonical :__Entity__ nodes in two DIFFERENT graphs of
+    # ONE org, BOTH graph ids carried on the edge. The verdicts reuse the same audit + endpoints;
+    # an approve LINKS (MERGE SAME_AS) instead of folding — a merge would move nodes/edges across
+    # graph boundaries, which a read-side federation must never cause. All queries bind org +
+    # BOTH graph ids (a cross-ORG pair is unmatchable by construction).
+
+    def cross_graph_entities(
+        self, *, graph_id: str, organisation_id: str, limit: int
+    ) -> list[dict]:
+        """The canonical entities of ONE org-owned graph, shaped for cross-graph candidate
+        generation: deterministic id, canonical key (`name`), display name, primary label."""
+        records, _, _ = self._driver.execute_query(
+            "MATCH (e:__Entity__ {graph_id: $graph_id, organisation_id: $organisation_id}) "
+            "WHERE e.name IS NOT NULL "
+            "RETURN e.id AS id, e.name AS name, "
+            "coalesce(e.canonical_name, e.name) AS canonical_name, "
+            "head([l IN labels(e) WHERE NOT l STARTS WITH '__']) AS label "
+            "LIMIT $limit",
+            graph_id=graph_id,
+            organisation_id=organisation_id,
+            limit=limit,
+            database_=self._database,
+        )
+        return [
+            {
+                "id": r["id"],
+                "name": r["name"],
+                "canonical_name": r["canonical_name"],
+                "label": r["label"] or "Entity",
+            }
+            for r in records
+        ]
+
+    def write_cross_graph_candidates(self, *, organisation_id: str, pairs: list[dict]) -> int:
+        """MERGE a SAME_AS_CANDIDATE edge per pair, BOTH endpoints org-scoped and each bound to
+        its OWN graph id (a pair naming another org's node simply does not match — fail-closed).
+        Pairs already human-resolved are skipped: a NOT_SAME_AS (reject) or SAME_AS (approve)
+        edge suppresses re-flagging, mirroring the in-graph resolution pass. Returns the number
+        of candidate edges present after the write. Each pair dict carries
+        ``id_a/graph_id_a/id_b/graph_id_b/score/method``."""
+        records, _, _ = self._driver.execute_query(
+            "UNWIND $pairs AS pair "
+            "MATCH (a:__Entity__ {organisation_id: $organisation_id, "
+            "graph_id: pair.graph_id_a, id: pair.id_a}) "
+            "MATCH (b:__Entity__ {organisation_id: $organisation_id, "
+            "graph_id: pair.graph_id_b, id: pair.id_b}) "
+            "WHERE NOT (a)-[:NOT_SAME_AS]-(b) AND NOT (a)-[:SAME_AS]-(b) "
+            "MERGE (a)-[c:SAME_AS_CANDIDATE]->(b) "
+            "SET c.organisation_id = $organisation_id, "
+            "c.graph_id_a = pair.graph_id_a, c.graph_id_b = pair.graph_id_b, "
+            "c.score = pair.score, c.method = pair.method, c.cross_graph = true "
+            "RETURN count(c) AS written",
+            organisation_id=organisation_id,
+            pairs=pairs,
+            database_=self._database,
+        )
+        return int(records[0]["written"]) if records else 0
+
+    def candidate_endpoints_pair(
+        self,
+        *,
+        organisation_id: str,
+        graph_id_a: str,
+        node_id_a: str,
+        graph_id_b: str,
+        node_id_b: str,
+    ) -> dict | None:
+        """The cross-graph twin of `candidate_endpoints`: resolve a live SAME_AS_CANDIDATE pair
+        whose endpoints live in two different org-owned graphs. None if no pending candidate."""
+        records, _, _ = self._driver.execute_query(
+            "MATCH (a:__Entity__ {graph_id: $graph_id_a, organisation_id: $organisation_id, "
+            "id: $node_id_a}) "
+            "MATCH (b:__Entity__ {graph_id: $graph_id_b, organisation_id: $organisation_id, "
+            "id: $node_id_b}) "
+            "MATCH (a)-[:SAME_AS_CANDIDATE]-(b) "
+            "RETURN a.id AS id_a, b.id AS id_b, "
+            "coalesce(a.canonical_name, a.name) AS name_a, "
+            "coalesce(b.canonical_name, b.name) AS name_b",
+            graph_id_a=graph_id_a,
+            graph_id_b=graph_id_b,
+            organisation_id=organisation_id,
+            node_id_a=node_id_a,
+            node_id_b=node_id_b,
+            database_=self._database,
+        )
+        if not records:
+            return None
+        r = records[0]
+        return {"id_a": r["id_a"], "id_b": r["id_b"], "name_a": r["name_a"], "name_b": r["name_b"]}
+
+    def link_candidate(
+        self,
+        *,
+        organisation_id: str,
+        graph_id_a: str,
+        node_id_a: str,
+        graph_id_b: str,
+        node_id_b: str,
+    ) -> bool:
+        """Approve a CROSS-GRAPH candidate: MERGE a SAME_AS link (both graph ids stamped) and
+        delete the candidate edge. A link, never a fold — nodes stay in their own graphs.
+        Idempotent: a replay re-MERGEs the same SAME_AS and finds no candidate edge."""
+        records, _, _ = self._driver.execute_query(
+            "MATCH (a:__Entity__ {graph_id: $graph_id_a, organisation_id: $organisation_id, "
+            "id: $node_id_a}) "
+            "MATCH (b:__Entity__ {graph_id: $graph_id_b, organisation_id: $organisation_id, "
+            "id: $node_id_b}) "
+            "OPTIONAL MATCH (a)-[c:SAME_AS_CANDIDATE]-(b) "
+            "WITH a, b, c, coalesce(c.score, 1.0) AS confidence "
+            "MERGE (a)-[s:SAME_AS]->(b) "
+            "SET s.organisation_id = $organisation_id, "
+            "s.graph_id_a = $graph_id_a, s.graph_id_b = $graph_id_b, "
+            "s.confidence = confidence, s.cross_graph = true, "
+            "s.detected_by = 'cross_graph_resolution' "
+            "DELETE c "
+            "RETURN true AS linked",
+            graph_id_a=graph_id_a,
+            graph_id_b=graph_id_b,
+            organisation_id=organisation_id,
+            node_id_a=node_id_a,
+            node_id_b=node_id_b,
+            database_=self._database,
+        )
+        return bool(records and records[0]["linked"])
+
+    def suppress_candidate_pair(
+        self,
+        *,
+        organisation_id: str,
+        graph_id_a: str,
+        node_id_a: str,
+        graph_id_b: str,
+        node_id_b: str,
+    ) -> bool:
+        """Reject a CROSS-GRAPH candidate: MERGE a NOT_SAME_AS suppression (both graph ids
+        stamped, so re-generation skips the pair) and drop the candidate edge. Idempotent."""
+        records, _, _ = self._driver.execute_query(
+            "MATCH (a:__Entity__ {graph_id: $graph_id_a, organisation_id: $organisation_id, "
+            "id: $node_id_a}) "
+            "MATCH (b:__Entity__ {graph_id: $graph_id_b, organisation_id: $organisation_id, "
+            "id: $node_id_b}) "
+            "MERGE (a)-[s:NOT_SAME_AS]-(b) "
+            "SET s.organisation_id = $organisation_id, "
+            "s.graph_id_a = $graph_id_a, s.graph_id_b = $graph_id_b, s.cross_graph = true "
+            "WITH a, b "
+            "OPTIONAL MATCH (a)-[c:SAME_AS_CANDIDATE]-(b) "
+            "DELETE c "
+            "RETURN true AS suppressed",
+            graph_id_a=graph_id_a,
+            graph_id_b=graph_id_b,
+            organisation_id=organisation_id,
+            node_id_a=node_id_a,
+            node_id_b=node_id_b,
+            database_=self._database,
+        )
+        return bool(records and records[0]["suppressed"])
+
     def schema(self, *, graph_id: str, organisation_id: str) -> dict[str, list[dict[str, object]]]:
         """Org+graph-scoped label/relationship counts (bound params; sync driver call)."""
         label_records, _, _ = self._driver.execute_query(

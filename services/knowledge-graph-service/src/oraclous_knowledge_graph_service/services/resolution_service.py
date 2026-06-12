@@ -5,6 +5,14 @@ entities into one (folding aliases + re-pointing relationships, deleting the can
 REJECT records a negative judgement (a `NOT_SAME_AS` suppression so the pair stops resurfacing) and
 drops the edge. Both write a governance audit row (who/when/what).
 
+Cross-graph extension (#330 / ADR-026): `generate_cross_graph` flags candidate pairs ACROSS an
+org-owned graph PAIR (canonical-key match + embedding similarity — `cross_graph_resolution`),
+writing the same `SAME_AS_CANDIDATE` edges with BOTH graph ids carried. The SAME verdict
+endpoints action them: a cross-graph APPROVE LINKS (`SAME_AS`) instead of folding — nodes stay
+in their own graphs — and a cross-graph REJECT suppresses with a both-ids `NOT_SAME_AS`. Both
+graphs are owner-gated; a graph in another org is invisible (404), so a cross-ORG pair is
+impossible by construction. Same audit table, same idempotency/conflict rules.
+
 Authz: gated on graph OWNERSHIP (the same owner gate graph CRUD uses) on top of the fail-closed
 org-scope — a graph in another org/owner is invisible (404, no leak). Idempotency +
 concurrent-reviewer handling: the audit table's `(org, graph, candidate)` unique key is the
@@ -17,9 +25,12 @@ from __future__ import annotations
 import asyncio
 import uuid
 
+from oraclous_knowledge_graph_service.core.config import Settings, get_settings
 from oraclous_knowledge_graph_service.domain.resolution import (
     CandidateNotFound,
     CandidatePair,
+    CrossGraphCandidate,
+    LinkOutcome,
     MergeOutcome,
     RejectOutcome,
     ResolutionAction,
@@ -29,7 +40,14 @@ from oraclous_knowledge_graph_service.repositories.graph_write_repository import
     GraphWriteRepository,
 )
 from oraclous_knowledge_graph_service.repositories.resolution_repository import ResolutionRepository
+from oraclous_knowledge_graph_service.services.cross_graph_resolution import (
+    generate_cross_graph_pairs,
+)
+from oraclous_knowledge_graph_service.services.embedder import make_embedder
 from oraclous_knowledge_graph_service.services.graph_service import GraphNotFound, GraphService
+
+# The most entities fetched per graph for cross-graph candidate generation (a bounded scan).
+_CROSS_GRAPH_ENTITY_SCAN_LIMIT = 5000
 
 
 class ResolutionService:
@@ -41,10 +59,12 @@ class ResolutionService:
         graph_service: GraphService,
         write_repo: GraphWriteRepository,
         audit_repo: ResolutionRepository,
+        settings: Settings | None = None,
     ) -> None:
         self._graphs = graph_service
         self._write = write_repo
         self._audit = audit_repo
+        self._settings = settings or get_settings()
 
     async def _owned_org(self, *, graph_id: uuid.UUID, user_id: uuid.UUID) -> str:
         """Owner gate → the graph's organisation id as a string (for the Neo4j org-scoped calls).
@@ -59,10 +79,23 @@ class ResolutionService:
         user_id: uuid.UUID,
         pair: CandidatePair,
         candidate_id_path: str,
-    ) -> MergeOutcome:
+        other_graph_id: uuid.UUID | None = None,
+    ) -> MergeOutcome | LinkOutcome:
         """Merge the pair: fold the non-canonical node onto the canonical survivor, delete the
         candidate edge. `pair.node_id_a` is treated as the canonical survivor (the client confirms
-        which node survives by ordering the body); `node_id_b` is folded in."""
+        which node survives by ordering the body); `node_id_b` is folded in.
+
+        Cross-graph (#330): when `other_graph_id` names a DIFFERENT graph (the graph `node_id_b`
+        lives in), the approve LINKS instead of folding — a `SAME_AS` edge carrying both graph
+        ids — because a fold would move a node out of its graph. Both graphs are owner-gated."""
+        if other_graph_id is not None and other_graph_id != graph_id:
+            return await self._approve_cross_graph(
+                graph_id=graph_id,
+                other_graph_id=other_graph_id,
+                user_id=user_id,
+                pair=pair,
+                candidate_id_path=candidate_id_path,
+            )
         org = await self._owned_org(graph_id=graph_id, user_id=user_id)
         self._assert_candidate_id(pair, candidate_id_path)
 
@@ -120,9 +153,20 @@ class ResolutionService:
         user_id: uuid.UUID,
         pair: CandidatePair,
         candidate_id_path: str,
+        other_graph_id: uuid.UUID | None = None,
     ) -> RejectOutcome:
         """Reject the pair: record a NOT_SAME_AS negative judgement (suppress from future candidate
-        lists) and drop the candidate edge."""
+        lists) and drop the candidate edge. Cross-graph (#330): when `other_graph_id` names a
+        different graph, the suppression edge carries BOTH graph ids and both graphs are
+        owner-gated; re-generation then skips the pair."""
+        if other_graph_id is not None and other_graph_id != graph_id:
+            return await self._reject_cross_graph(
+                graph_id=graph_id,
+                other_graph_id=other_graph_id,
+                user_id=user_id,
+                pair=pair,
+                candidate_id_path=candidate_id_path,
+            )
         org = await self._owned_org(graph_id=graph_id, user_id=user_id)
         self._assert_candidate_id(pair, candidate_id_path)
 
@@ -149,6 +193,183 @@ class ResolutionService:
             graph_id=str(graph_id),
             organisation_id=org,
             node_id_a=pair.node_id_a,
+            node_id_b=pair.node_id_b,
+        )
+        await self._audit.record(
+            graph_id=graph_id,
+            candidate_id=pair.candidate_id,
+            node_id_a=pair.node_id_a,
+            node_id_b=pair.node_id_b,
+            action=ResolutionAction.REJECT,
+            canonical_node_id=None,
+            decided_by=user_id,
+        )
+        return RejectOutcome(
+            node_id_a=pair.node_id_a, node_id_b=pair.node_id_b, suppressed=suppressed
+        )
+
+    # ── cross-graph SAME_AS (#330 / ADR-026) ───────────────────────────────────────────────────
+
+    async def generate_cross_graph(
+        self,
+        *,
+        graph_id: uuid.UUID,
+        target_graph_id: uuid.UUID,
+        user_id: uuid.UUID,
+        candidate_threshold: float,
+        limit: int,
+    ) -> tuple[list[CrossGraphCandidate], list[str]]:
+        """Flag SAME_AS candidates between TWO org-owned graphs and write them into the existing
+        review queue (`SAME_AS_CANDIDATE` edges, BOTH graph ids carried). Returns
+        ``(candidates, warnings)``. Both graphs are owner-gated (cross-org → 404 by construction);
+        pairs a human already resolved (NOT_SAME_AS / SAME_AS) are skipped at the write."""
+        if target_graph_id == graph_id:
+            raise ValueError("cross-graph generation needs two distinct graphs")
+        org = await self._owned_org(graph_id=graph_id, user_id=user_id)
+        await self._owned_org(graph_id=target_graph_id, user_id=user_id)
+
+        entities_a = await asyncio.to_thread(
+            self._write.cross_graph_entities,
+            graph_id=str(graph_id),
+            organisation_id=org,
+            limit=_CROSS_GRAPH_ENTITY_SCAN_LIMIT,
+        )
+        entities_b = await asyncio.to_thread(
+            self._write.cross_graph_entities,
+            graph_id=str(target_graph_id),
+            organisation_id=org,
+            limit=_CROSS_GRAPH_ENTITY_SCAN_LIMIT,
+        )
+        candidates, warnings = generate_cross_graph_pairs(
+            graph_id_a=str(graph_id),
+            entities_a=entities_a,
+            graph_id_b=str(target_graph_id),
+            entities_b=entities_b,
+            candidate_threshold=candidate_threshold,
+            embedder=make_embedder(self._settings),
+            limit=limit,
+        )
+        if candidates:
+            await asyncio.to_thread(
+                self._write.write_cross_graph_candidates,
+                organisation_id=org,
+                pairs=[
+                    {
+                        "id_a": c.node_id_a,
+                        "graph_id_a": c.graph_id_a,
+                        "id_b": c.node_id_b,
+                        "graph_id_b": c.graph_id_b,
+                        "score": c.score,
+                        "method": c.method,
+                    }
+                    for c in candidates
+                ],
+            )
+        return candidates, warnings
+
+    async def _approve_cross_graph(
+        self,
+        *,
+        graph_id: uuid.UUID,
+        other_graph_id: uuid.UUID,
+        user_id: uuid.UUID,
+        pair: CandidatePair,
+        candidate_id_path: str,
+    ) -> LinkOutcome:
+        """Approve a cross-graph candidate: LINK with `SAME_AS` (both graph ids stamped), drop the
+        candidate edge, audit under the path graph. Idempotent on replay; 409 on conflict."""
+        org = await self._owned_org(graph_id=graph_id, user_id=user_id)
+        await self._owned_org(graph_id=other_graph_id, user_id=user_id)
+        self._assert_candidate_id(pair, candidate_id_path)
+
+        prior = await self._audit.find(graph_id=graph_id, candidate_id=pair.candidate_id)
+        if prior is not None:
+            if prior.action != ResolutionAction.APPROVE.value:
+                raise ResolutionConflict(pair.candidate_id)
+            return LinkOutcome(
+                node_id_a=pair.node_id_a,
+                node_id_b=pair.node_id_b,
+                graph_id_a=str(graph_id),
+                graph_id_b=str(other_graph_id),
+                linked=True,
+            )
+
+        endpoints = await asyncio.to_thread(
+            self._write.candidate_endpoints_pair,
+            organisation_id=org,
+            graph_id_a=str(graph_id),
+            node_id_a=pair.node_id_a,
+            graph_id_b=str(other_graph_id),
+            node_id_b=pair.node_id_b,
+        )
+        if endpoints is None:
+            raise CandidateNotFound(pair.candidate_id)
+
+        linked = await asyncio.to_thread(
+            self._write.link_candidate,
+            organisation_id=org,
+            graph_id_a=str(graph_id),
+            node_id_a=pair.node_id_a,
+            graph_id_b=str(other_graph_id),
+            node_id_b=pair.node_id_b,
+        )
+        await self._audit.record(
+            graph_id=graph_id,
+            candidate_id=pair.candidate_id,
+            node_id_a=pair.node_id_a,
+            node_id_b=pair.node_id_b,
+            action=ResolutionAction.APPROVE,
+            canonical_node_id=pair.node_id_a,
+            decided_by=user_id,
+        )
+        return LinkOutcome(
+            node_id_a=pair.node_id_a,
+            node_id_b=pair.node_id_b,
+            graph_id_a=str(graph_id),
+            graph_id_b=str(other_graph_id),
+            linked=linked,
+        )
+
+    async def _reject_cross_graph(
+        self,
+        *,
+        graph_id: uuid.UUID,
+        other_graph_id: uuid.UUID,
+        user_id: uuid.UUID,
+        pair: CandidatePair,
+        candidate_id_path: str,
+    ) -> RejectOutcome:
+        """Reject a cross-graph candidate: a both-ids `NOT_SAME_AS` suppression + drop the edge,
+        audited under the path graph. Idempotent on replay; 409 on conflict."""
+        org = await self._owned_org(graph_id=graph_id, user_id=user_id)
+        await self._owned_org(graph_id=other_graph_id, user_id=user_id)
+        self._assert_candidate_id(pair, candidate_id_path)
+
+        prior = await self._audit.find(graph_id=graph_id, candidate_id=pair.candidate_id)
+        if prior is not None:
+            if prior.action != ResolutionAction.REJECT.value:
+                raise ResolutionConflict(pair.candidate_id)
+            return RejectOutcome(
+                node_id_a=pair.node_id_a, node_id_b=pair.node_id_b, suppressed=True
+            )
+
+        endpoints = await asyncio.to_thread(
+            self._write.candidate_endpoints_pair,
+            organisation_id=org,
+            graph_id_a=str(graph_id),
+            node_id_a=pair.node_id_a,
+            graph_id_b=str(other_graph_id),
+            node_id_b=pair.node_id_b,
+        )
+        if endpoints is None:
+            raise CandidateNotFound(pair.candidate_id)
+
+        suppressed = await asyncio.to_thread(
+            self._write.suppress_candidate_pair,
+            organisation_id=org,
+            graph_id_a=str(graph_id),
+            node_id_a=pair.node_id_a,
+            graph_id_b=str(other_graph_id),
             node_id_b=pair.node_id_b,
         )
         await self._audit.record(
