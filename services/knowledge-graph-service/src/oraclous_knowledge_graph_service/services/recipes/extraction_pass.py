@@ -499,13 +499,25 @@ def _resolve_and_write_rule(
             continue
         candidate_edges.append({"from": id_a, "to": id_b, "properties": {"score": score}})
     if candidate_edges:
-        stats.resolution_candidates += writer.merge_edge(
-            rel_type=SAME_AS_CANDIDATE,
-            edges=candidate_edges,
-            source_id=source_id,
-            provenance="INFERRED",
-            meta=meta,
-        )
+        # Suppression-aware MERGE: a pair a human already REJECTED (#279) carries a NOT_SAME_AS
+        # edge and is not re-flagged. `merge_candidate_edges` honours that; fall back to the generic
+        # `merge_edge` for any writer that predates it (e.g. a narrow test double).
+        merge_candidates = getattr(writer, "merge_candidate_edges", None)
+        if merge_candidates is not None:
+            stats.resolution_candidates += merge_candidates(
+                edges=candidate_edges,
+                source_id=source_id,
+                provenance="INFERRED",
+                meta=meta,
+            )
+        else:
+            stats.resolution_candidates += writer.merge_edge(
+                rel_type=SAME_AS_CANDIDATE,
+                edges=candidate_edges,
+                source_id=source_id,
+                provenance="INFERRED",
+                meta=meta,
+            )
 
 
 def _normalize(value: str) -> str:

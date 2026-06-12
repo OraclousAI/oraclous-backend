@@ -455,6 +455,51 @@ def test_ambiguous_band_flags_candidate_edge_not_merged(monkeypatch: pytest.Monk
     assert stats.resolution_candidates == 1
 
 
+# === C. candidate-write routes through the suppression-aware merge when available (#279) ==========
+def test_candidate_edges_use_suppression_aware_writer_when_present(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A writer that exposes `merge_candidate_edges` (the real RecipeGraphWriter, which skips
+    # NOT_SAME_AS-rejected pairs) must receive the candidate edges through THAT method, not the
+    # generic `merge_edge` — so a previously-rejected pair stops resurfacing on re-ingest.
+    class _SuppressionAwareWriter(_StatefulWriter):
+        def __init__(self) -> None:
+            super().__init__()
+            self.candidate_calls = 0
+
+        def merge_candidate_edges(self, *, edges, source_id, provenance, meta) -> int:
+            self.candidate_calls += 1
+            for e in edges:
+                score = (e.get("properties") or {}).get("score")
+                self.edges.append(("SAME_AS_CANDIDATE", e["from"], e["to"], score))
+            return len(edges)
+
+    records = [{"id": "r1", "text": "Eurail"}, {"id": "r2", "text": "Interrail"}]
+    rep = _json_rep(records, "items.json")
+    extractor = _PerRecordLLM(
+        {
+            "Eurail": [{"id": "0", "label": "Organization", "properties": {"name": "Eurail"}}],
+            "Interrail": [
+                {"id": "0", "label": "Organization", "properties": {"name": "Interrail"}}
+            ],
+        }
+    )
+    embedder = _FakeEmbedder({"eurail": [1.0, 0.0, 0.0], "interrail": [0.88, 0.4750, 0.0]})
+    writer = _SuppressionAwareWriter()
+    resolution = {"canonical": True, "merge_threshold": 0.92, "candidate_threshold": 0.85}
+    _result, stats = _project_and_extract(
+        _recipe(rep.shape_signature, resolution=resolution),
+        rep,
+        writer,
+        monkeypatch,
+        extractor=EntityExtractor(llm=extractor),
+        embedder=embedder,
+    )
+    assert writer.candidate_calls == 1  # routed through the suppression-aware path
+    assert len(writer.scored_rels("SAME_AS_CANDIDATE")) == 1
+    assert stats.resolution_candidates == 1
+
+
 # === C. over-merge guard: different labels never merge ============================================
 def test_different_labels_never_merge(monkeypatch: pytest.MonkeyPatch) -> None:
     # An Organization and a Product with IDENTICAL embeddings (cosine 1) must NOT merge — clustering
