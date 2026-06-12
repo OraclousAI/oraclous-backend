@@ -15,6 +15,12 @@ from __future__ import annotations
 
 _PUBLIC_AGENT_PREFIX = "/v1/agents/"
 
+# the methods the PUBLIC plane owns on /v1/agents/{slug}[/invoke]: GET (metadata) + POST (invoke).
+# A preflight requesting any OTHER method (e.g. DELETE = the member-plane admin unpublish, #289) is
+# NOT public-plane — AgentCorsMiddleware must defer it to the gateway-wide CORS rather than answer
+# with the per-key public-plane policy (which never advertises DELETE nor the console origin).
+_PUBLIC_PLANE_METHODS = frozenset({b"GET", b"POST"})
+
 # the CORS response headers we own on the agent plane: stripped from whatever the inner gateway-wide
 # CORS emitted, then re-set from the per-key decision (replace, never append → exactly one ACAO).
 _MANAGED = frozenset(
@@ -31,6 +37,19 @@ def is_public_agent_path(path: str) -> bool:
     """The two browser-embeddable routes: ``/v1/agents/{slug}`` and ``/v1/agents/{slug}/invoke``.
     Excludes the bare member routes (``/v1/agents`` exact — publish/list, member JWT)."""
     return path.startswith(_PUBLIC_AGENT_PREFIX) and path != _PUBLIC_AGENT_PREFIX.rstrip("/")
+
+
+def is_public_plane_preflight(request_method: bytes | None) -> bool:
+    """Does this OPTIONS preflight belong to the public plane (so AgentCors owns it)?
+
+    True for the public-plane methods (GET metadata, POST invoke) AND for an absent
+    ``Access-Control-Request-Method`` (a bare metadata-read preflight — keep today's behaviour).
+    False for the member plane (e.g. DELETE unpublish, #289) — those defer to the gateway-wide CORS,
+    which advertises DELETE + the console origin. Compared case-insensitively (browsers send the
+    method verbatim, but be defensive)."""
+    if request_method is None:
+        return True
+    return request_method.strip().upper() in _PUBLIC_PLANE_METHODS
 
 
 def origin_allowed(origin: str, cors_origins: list[str] | None) -> bool:

@@ -107,6 +107,38 @@ async def test_preflight_is_answered_without_credentials() -> None:
     assert "access-control-allow-credentials" not in r.headers  # never on this plane
 
 
+async def test_member_plane_delete_preflight_defers_to_gateway_cors() -> None:
+    # The member-plane unpublish (DELETE /v1/agents/{slug}, #289) shares the path with the public
+    # plane. Its preflight (ACRM: DELETE) must NOT get the per-key public-plane policy — AgentCors
+    # defers it to the gateway-wide Starlette CORS, which advertises DELETE + the console origin.
+    app = _app()
+    async with _client(app) as c:
+        r = await c.options(
+            "/v1/agents/weather",
+            headers={"Origin": _GOOD, "Access-Control-Request-Method": "DELETE"},
+        )
+    assert r.status_code == 200  # the gateway-wide CORS answers (200), not AgentCors (204)
+    methods = r.headers.get("access-control-allow-methods", "")
+    assert "DELETE" in methods  # member-plane method now advertised
+    # the console origin is reflected via the gateway CORS (default GATEWAY_CORS_ORIGINS="*" -> "*")
+    assert r.headers.get("access-control-allow-origin") in (_GOOD, "*")
+
+
+async def test_public_plane_get_preflight_still_owned_by_agent_cors() -> None:
+    # No regression: a GET (public-plane) preflight is still answered by AgentCors (204) with the
+    # per-key public-plane policy (reflected origin, GET/POST/OPTIONS, no credentials).
+    app = _app()
+    async with _client(app) as c:
+        r = await c.options(
+            "/v1/agents/weather",
+            headers={"Origin": _GOOD, "Access-Control-Request-Method": "GET"},
+        )
+    assert r.status_code == 204  # AgentCors short-circuit, not the gateway CORS (200)
+    assert r.headers.get("access-control-allow-origin") == _GOOD
+    assert r.headers.get("access-control-allow-methods") == "GET, POST, OPTIONS"  # per-key policy
+    assert "access-control-allow-credentials" not in r.headers
+
+
 async def test_listed_origin_gets_exactly_one_acao_no_credentials() -> None:
     app = _app()
     tok = _seed_key(app.state.integration_key_repo, cors_origins=[_GOOD])
