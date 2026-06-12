@@ -20,7 +20,8 @@ _ROUTES: tuple[tuple[str, str], ...] = (
     ("/oauth", "AUTH_SERVICE_URL"),
     # credential-broker
     ("/credentials", "CREDENTIAL_BROKER_URL"),
-    # knowledge-graph (graphs/recipes; /api/v1/graphs/{id}/ontology lives under /api/v1/graphs)
+    # knowledge-graph (graphs/recipes; /api/v1/graphs/{id}/ontology and /{id}/resolution/{cid}/...
+    # — the HITL SAME_AS_CANDIDATE approve/reject mutation, #279 — both live under /api/v1/graphs)
     ("/api/v1/graphs", "KNOWLEDGE_GRAPH_URL"),
     ("/api/v1/recipes", "KNOWLEDGE_GRAPH_URL"),
     # knowledge-retriever

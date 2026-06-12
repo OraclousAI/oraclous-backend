@@ -12,9 +12,10 @@ from __future__ import annotations
 import logging
 
 from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from oraclous_errors import ErrorCode, status_to_code
+from oraclous_errors import ErrorCode, FieldError, status_to_code
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from oraclous_application_gateway_service.core.agent_cors_middleware import AgentCorsMiddleware
@@ -29,6 +30,7 @@ from oraclous_application_gateway_service.domain.errors import (
     UpstreamTimeoutError,
     UpstreamUnavailableError,
 )
+from oraclous_application_gateway_service.domain.validation_passthrough import details_from_errors
 from oraclous_application_gateway_service.routes.chat_routes import router as chat_router
 from oraclous_application_gateway_service.routes.health_routes import router as health_router
 from oraclous_application_gateway_service.routes.integration_key_routes import (
@@ -112,6 +114,24 @@ def create_app(*, lifespan=None) -> FastAPI:
     @app.exception_handler(UpstreamTimeoutError)
     async def _on_timeout(request: Request, exc: UpstreamTimeoutError) -> JSONResponse:
         return gateway_error(request, code=ErrorCode.GATEWAY_TIMEOUT, status_code=504)
+
+    @app.exception_handler(RequestValidationError)
+    async def _on_request_validation(request: Request, exc: RequestValidationError) -> JSONResponse:
+        # The gateway's OWN request-body validation (integration-key mint, published-agent publish,
+        # …) — without this handler FastAPI would emit its default ``{"detail": [...]}``, which a
+        # typed client that only knows the ORA-37 ``{"error": {...}}`` envelope swallows as a
+        # generic INTERNAL_ERROR (#281). Map it onto VALIDATION_FAILED, surfacing ONLY the field
+        # path + an error-type machine token (never the value-reflecting ``msg``/``ctx`` — §3 rule
+        # 8). If no safe field-level detail is extractable, fall back to one generic detail so the
+        # envelope is still the (details-requiring) VALIDATION_FAILED shape, not a detail-free body.
+        details = details_from_errors(exc.errors()) or [FieldError(field="body", issue="INVALID")]
+        return gateway_error(
+            request,
+            code=ErrorCode.VALIDATION_FAILED,
+            status_code=422,
+            message="One or more fields failed validation.",
+            details=details,
+        )
 
     @app.exception_handler(StarletteHTTPException)
     async def _on_http_exc(request: Request, exc: StarletteHTTPException) -> JSONResponse:
