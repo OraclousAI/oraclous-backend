@@ -20,6 +20,7 @@ from oraclous_knowledge_retriever_service.schema.evaluation_schemas import (
     EvaluationResponse,
 )
 from oraclous_knowledge_retriever_service.services.evaluation_service import (
+    EvaluationCapacityExceeded,
     GraphNotFound,
     NoValidMetrics,
 )
@@ -34,6 +35,7 @@ router = APIRouter(prefix="/v1/graph", tags=["evaluation"])
     responses={
         404: {"description": "Graph not found in the caller's organisation"},
         422: {"description": "Invalid request, no computable metrics, or judge not configured"},
+        429: {"description": "Too many evaluations in flight (process-level judge-spend cap)"},
     },
 )
 async def evaluate_graph(
@@ -42,6 +44,8 @@ async def evaluate_graph(
     service: EvaluationServiceDep,
     _user_id: UserIdDep,
 ) -> EvaluationResponse:
+    # Typed 422s use the Pydantic LIST detail shape — the only shape the gateway's leak-safe
+    # #225 extractor relays (loc + type survive the edge as VALIDATION_FAILED details, #333).
     try:
         result = await service.evaluate(
             graph_id=str(graph_id),
@@ -56,6 +60,12 @@ async def evaluate_graph(
         ) from None
     except NoValidMetrics as exc:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=[{"loc": ["body", "metrics"], "type": "no_valid_metrics", "msg": str(exc)}],
+        ) from None
+    except EvaluationCapacityExceeded as exc:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=[{"loc": ["eval"], "type": "eval_capacity_exceeded", "msg": str(exc)}],
         ) from None
     return EvaluationResponse(graph_id=str(graph_id), question=body.question, **result)
