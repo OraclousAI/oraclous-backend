@@ -22,7 +22,10 @@ celery_app = Celery(
     "oraclous_kgs",
     broker=_settings.celery_broker,
     backend=_settings.celery_backend,
-    include=["oraclous_knowledge_graph_service.tasks.ingest_tasks"],
+    include=[
+        "oraclous_knowledge_graph_service.tasks.ingest_tasks",
+        "oraclous_knowledge_graph_service.tasks.community_tasks",
+    ],
 )
 celery_app.conf.update(
     task_serializer="json",

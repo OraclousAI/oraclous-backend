@@ -37,6 +37,7 @@ from oraclous_knowledge_graph_service.core.auth import (
 )
 from oraclous_knowledge_graph_service.core.config import get_settings
 from oraclous_knowledge_graph_service.core.database import session_scope
+from oraclous_knowledge_graph_service.repositories.community_repository import CommunityRepository
 from oraclous_knowledge_graph_service.repositories.graph_repository import GraphRepository
 from oraclous_knowledge_graph_service.repositories.graph_write_repository import (
     GraphWriteRepository,
@@ -44,6 +45,8 @@ from oraclous_knowledge_graph_service.repositories.graph_write_repository import
 from oraclous_knowledge_graph_service.repositories.job_repository import IngestionJobRepository
 from oraclous_knowledge_graph_service.repositories.recipe_repository import RecipeRepository
 from oraclous_knowledge_graph_service.repositories.resolution_repository import ResolutionRepository
+from oraclous_knowledge_graph_service.services.analytics_service import AnalyticsService
+from oraclous_knowledge_graph_service.services.community_summarizer import make_summarizer
 from oraclous_knowledge_graph_service.services.dry_run_service import DryRunService
 from oraclous_knowledge_graph_service.services.graph_service import GraphService
 from oraclous_knowledge_graph_service.services.job_service import JobService
@@ -200,6 +203,35 @@ def get_resolution_service(
     )
 
 
+def _enqueue_detect(job_id: str, organisation_id: str) -> None:
+    # Lazy import: keep the Celery app out of the request module's import graph.
+    from oraclous_knowledge_graph_service.tasks.community_tasks import detect_communities_task
+
+    detect_communities_task.delay(job_id, organisation_id)
+
+
+def get_analytics_service(
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+    graph_service: Annotated[GraphService, Depends(get_graph_service)],
+    driver: Annotated[Driver, Depends(get_neo4j_driver)],
+) -> AnalyticsService:
+    """Build the community-detection + analytics service (#303). `graph_service` carries the owner
+    gate + bound org scope; the Neo4j-backed `CommunityRepository` is the GDS access surface (so the
+    endpoint 503s when the substrate is down — detection needs it). The async detect
+    path reuses the `ingestion_jobs` table + Celery worker; the summarizer is built from config
+    (None when `KGS_EXTRACTOR` is not `openai`, so the summarize endpoint 503s with a clear reason).
+    """
+    settings = get_settings()
+    repo = CommunityRepository(driver, database=settings.neo4j_database)
+    return AnalyticsService(
+        graph_service=graph_service,
+        repo=repo,
+        job_repo=IngestionJobRepository(session),
+        enqueue=_enqueue_detect,
+        summarizer=make_summarizer(settings, repo=repo),
+    )
+
+
 def get_recipe_service(
     session: Annotated[AsyncSession, Depends(get_db_session)],
     _org: Annotated[OrganisationContext, Depends(bind_org_context)],
@@ -227,5 +259,6 @@ JobServiceDep = Annotated[JobService, Depends(get_job_service)]
 GraphWriteRepoDep = Annotated[GraphWriteRepository, Depends(get_graph_write_repo)]
 RecipeServiceDep = Annotated[RecipeService, Depends(get_recipe_service)]
 ResolutionServiceDep = Annotated[ResolutionService, Depends(get_resolution_service)]
+AnalyticsServiceDep = Annotated[AnalyticsService, Depends(get_analytics_service)]
 OntologyServiceDep = Annotated[OntologyService, Depends(get_ontology_service)]
 DryRunServiceDep = Annotated[DryRunService, Depends(get_dry_run_service)]
