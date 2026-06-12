@@ -1,1 +1,1 @@
-"""oraclous-execution-engine-service — placeholder shell (ORA-13)."""
+"""oraclous-execution-engine-service — durable orchestration over the harness (harness layer)."""
