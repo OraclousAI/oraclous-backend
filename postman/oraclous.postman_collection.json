@@ -1693,6 +1693,197 @@
           "response": []
         },
         {
+          "name": "GET /api/v1/communities/kinds (#303)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/v1/communities/kinds",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "communities",
+                "kinds"
+              ]
+            },
+            "description": "Community kind registry: the kinds the platform detects (entity-level Louvain, hierarchical)."
+          },
+          "response": []
+        },
+        {
+          "name": "POST /api/v1/graphs/{{graph_id}}/communities/detect (#303)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/graphs/{{graph_id}}/communities/detect",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "graphs",
+                "{{graph_id}}",
+                "communities",
+                "detect"
+              ]
+            },
+            "description": "Detect communities via in-DB Neo4j GDS Louvain's NATIVE dendrogram (one level per dendrogram depth — honest, not a fixed 5; level 0 = coarsest). Tiny graphs run inline (200 with the result); larger graphs enqueue a job (202 {job_id,status}). Body: optional min_entities + force_rebuild (re-detect over existing communities). Skips when below the entity floor, above the entity cap, already detected without force_rebuild, or another detect is in progress.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"min_entities\": null, \"force_rebuild\": false}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "GET /api/v1/graphs/{{graph_id}}/communities (#303)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/v1/graphs/{{graph_id}}/communities?level=0&kind=entity",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "graphs",
+                "{{graph_id}}",
+                "communities"
+              ],
+              "query": [
+                {
+                  "key": "level",
+                  "value": "0"
+                },
+                {
+                  "key": "kind",
+                  "value": "entity"
+                }
+              ]
+            },
+            "description": "List communities for a graph, optionally filtered by level + kind. Ordered level then size."
+          },
+          "response": []
+        },
+        {
+          "name": "GET /api/v1/graphs/{{graph_id}}/communities/status (#303)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/v1/graphs/{{graph_id}}/communities/status",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "graphs",
+                "{{graph_id}}",
+                "communities",
+                "status"
+              ]
+            },
+            "description": "Detection status for a graph (not_detected | active), derived live from the substrate, with a staleness signal from the entity delta since detection."
+          },
+          "response": []
+        },
+        {
+          "name": "GET /api/v1/graphs/{{graph_id}}/communities/{{community_id}} (#303)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/v1/graphs/{{graph_id}}/communities/{{community_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "graphs",
+                "{{graph_id}}",
+                "communities",
+                "{{community_id}}"
+              ]
+            },
+            "description": "One community + its member entities (org+graph scoped; 404 for a cross-org id)."
+          },
+          "response": []
+        },
+        {
+          "name": "POST /api/v1/graphs/{{graph_id}}/communities/summarize (#303)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/v1/graphs/{{graph_id}}/communities/summarize?level=0&force=false",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "graphs",
+                "{{graph_id}}",
+                "communities",
+                "summarize"
+              ],
+              "query": [
+                {
+                  "key": "level",
+                  "value": "0"
+                },
+                {
+                  "key": "force",
+                  "value": "false"
+                }
+              ]
+            },
+            "description": "LLM-summarise the graph's communities (summary + keywords + excerpt + provenance: summary_source 'llm' vs 'fallback'). Requires KGS_EXTRACTOR=openai (else 503). By default summarises only communities with no REAL summary yet — both never-summarised AND fallback-degraded placeholders (resumable, no re-billing of good summaries); force=true re-summarises all. Optional ?level= to summarise one level. Response: {graph_id, summarized, status, deferred} — status='deferred' (with deferred=candidate count) when the batch exceeds the inline cap and none ran (use the async detect path), distinguishable from a 'completed' run with summarized=0."
+          },
+          "response": []
+        },
+        {
+          "name": "GET /api/v1/graphs/{{graph_id}}/analytics (#303)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/v1/graphs/{{graph_id}}/analytics",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "graphs",
+                "{{graph_id}}",
+                "analytics"
+              ]
+            },
+            "description": "Graph statistics: node/relationship/entity counts, label + relationship-type breakdowns, density, average degree, top entities by degree, and the community count."
+          },
+          "response": []
+        },
+        {
           "name": "POST /api/v1/graphs/{{graph_id}}/ingest",
           "request": {
             "method": "POST",

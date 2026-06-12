@@ -10,6 +10,7 @@ from fastapi import FastAPI
 
 from oraclous_knowledge_graph_service.core.lifespan import lifespan
 from oraclous_knowledge_graph_service.routes import (
+    community_routes,
     graph_routes,
     health_routes,
     ingest_routes,
@@ -34,4 +35,6 @@ def create_app() -> FastAPI:
     app.include_router(recipe_routes.router)
     app.include_router(ontology_routes.router)
     app.include_router(ontology_routes.suggest_router)
+    app.include_router(community_routes.kinds_router)
+    app.include_router(community_routes.router)
     return app

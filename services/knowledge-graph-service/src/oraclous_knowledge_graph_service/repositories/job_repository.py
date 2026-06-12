@@ -87,7 +87,9 @@ class IngestionJobRepository:
         row = await self._fetch(job_id)
         return _to_record(row) if row else None
 
-    async def list_for_graph(self, graph_id: uuid.UUID) -> list[IngestionJobRecord]:
+    async def list_for_graph(
+        self, graph_id: uuid.UUID, *, exclude_source_types: tuple[str, ...] = ()
+    ) -> list[IngestionJobRecord]:
         stmt = (
             select(IngestionJob)
             .where(
@@ -96,8 +98,28 @@ class IngestionJobRepository:
             )
             .order_by(IngestionJob.created_at.desc())
         )
+        if exclude_source_types:
+            stmt = stmt.where(IngestionJob.source_type.notin_(exclude_source_types))
         rows = (await self._session.execute(stmt)).scalars().all()
         return [_to_record(r) for r in rows]
+
+    async def latest_by_source_type(
+        self, graph_id: uuid.UUID, *, source_type: str
+    ) -> IngestionJobRecord | None:
+        """The most-recent job of ``source_type`` for this org+graph (None if none). Used by the
+        community-status read to surface a running/failed async detect that has no substrate yet."""
+        stmt = (
+            select(IngestionJob)
+            .where(
+                IngestionJob.organisation_id == self._org(),
+                IngestionJob.graph_id == graph_id,
+                IngestionJob.source_type == source_type,
+            )
+            .order_by(IngestionJob.created_at.desc())
+            .limit(1)
+        )
+        row = (await self._session.execute(stmt)).scalar_one_or_none()
+        return _to_record(row) if row else None
 
     async def load_payload(self, job_id: uuid.UUID) -> IngestionPayload | None:
         row = await self._fetch(job_id)
