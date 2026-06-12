@@ -265,6 +265,122 @@ paths:
         "404": { $ref: "#/components/responses/NotFound" }
         "409": { $ref: "#/components/responses/Conflict" }
         "422": { $ref: "#/components/responses/ValidationFailed" }
+  /api/v1/graphs/{graphId}/memories:
+    post:
+      tags: [knowledge-graph]
+      summary: Store a typed agent memory (episodic / semantic / procedural).
+      description: >-
+        Agent memory (#332 / ADR-027). Dedups on a normalised content hash; embeds the content for
+        hybrid recall (fail-soft — no embedder degrades to fulltext-only); semantic memories run
+        contradiction detection (same subject+predicate, different object → CONTRADICTS edge, new
+        wins, old invalidated — reported as `contradictions_detected`) and entity linking. 201.
+      operationId: storeMemory
+      x-stability: provisional
+      parameters:
+        - { name: graphId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object }
+      responses:
+        "201": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+  /api/v1/graphs/{graphId}/memories/search:
+    get:
+      tags: [knowledge-graph]
+      summary: Hybrid memory recall (fulltext + vector + Ebbinghaus importance + recency).
+      description: >-
+        Agent memory (#332 / ADR-027). Filters: `type` (episodic|semantic|procedural), `scope`,
+        `temporal` (current|all), `min_confidence`, `limit`. Every returned hit is access-bumped —
+        the lazy decay recompute (no cron).
+      operationId: searchMemories
+      x-stability: provisional
+      parameters:
+        - { name: graphId, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: query, in: query, required: true, schema: { type: string } }
+        - { name: type, in: query, required: false, schema: { type: string } }
+        - { name: scope, in: query, required: false, schema: { type: string } }
+        - { name: temporal, in: query, required: false, schema: { type: string } }
+        - { name: min_confidence, in: query, required: false, schema: { type: number } }
+        - { name: limit, in: query, required: false, schema: { type: integer } }
+      responses:
+        "200": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /api/v1/graphs/{graphId}/memories/context:
+    get:
+      tags: [knowledge-graph]
+      summary: Token-budgeted "Relevant Memory" markdown block for agent prompt injection.
+      description: >-
+        Agent memory (#332 / ADR-027). Assembles a `## Relevant Memory` block grouped Facts /
+        Preferences / Recent activity, bounded by `max_tokens`; the memories used are
+        access-bumped.
+      operationId: memoryContext
+      x-stability: provisional
+      parameters:
+        - { name: graphId, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: query, in: query, required: true, schema: { type: string } }
+        - { name: scope, in: query, required: false, schema: { type: string } }
+        - { name: max_tokens, in: query, required: false, schema: { type: integer } }
+        - { name: include_types, in: query, required: false, schema: { type: string } }
+      responses:
+        "200": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /api/v1/graphs/{graphId}/memories/{memoryId}:
+    patch:
+      tags: [knowledge-graph]
+      summary: Supersede a memory (temporal versioning).
+      description: >-
+        Agent memory (#332 / ADR-027). Closes the current node (`valid_to`) and creates a
+        successor linked by a SUPERSEDES edge; returns old/new ids.
+      operationId: supersedeMemory
+      x-stability: provisional
+      parameters:
+        - { name: graphId, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: memoryId, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object }
+      responses:
+        "200": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+    delete:
+      tags: [knowledge-graph]
+      summary: Forget a memory (soft by default; ?hard=true detach-deletes).
+      operationId: deleteMemory
+      x-stability: provisional
+      parameters:
+        - { name: graphId, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: memoryId, in: path, required: true, schema: { type: string } }
+        - { name: hard, in: query, required: false, schema: { type: boolean } }
+      responses:
+        "204": { description: Forgotten. }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /api/v1/graphs/{graphId}/memories/consolidate:
+    post:
+      tags: [knowledge-graph]
+      summary: Enqueue similarity-based memory consolidation for this graph.
+      description: >-
+        Agent memory (#332 / ADR-027). Embedding clusters above the cosine threshold merge — the
+        highest-importance memory wins and absorbs the losers' importance (capped 1.0); runs as a
+        background job under the per-(org,graph) advisory lock. 202 + job id.
+      operationId: consolidateMemories
+      x-stability: provisional
+      parameters:
+        - { name: graphId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "202": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/NotFound" }
   /api/v1/recipes:
     get:
       tags: [knowledge-graph]
