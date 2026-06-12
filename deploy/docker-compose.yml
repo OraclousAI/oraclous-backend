@@ -329,6 +329,12 @@ services:
       KRS_NEO4J_USER: "neo4j"
       KRS_NEO4J_PASSWORD: "password"
       KRS_EMBEDDING_DIM: "512"
+      # Redis query cache (#308): OFF by default for the standalone smoke; the full stack flips
+      # KRS_QUERY_CACHE=true in deploy/.env. KRS_REDIS_URL points at db/0 — the SAME Redis DB the
+      # KGS writes the per-graph generation counter (graphgen:) to, so ingest invalidation is wired.
+      KRS_REDIS_URL: "redis://redis:6379/0"
+      KRS_QUERY_CACHE: "${KRS_QUERY_CACHE:-false}"
+      KRS_QUERY_CACHE_TTL: "${KRS_QUERY_CACHE_TTL:-300}"
     depends_on:
       neo4j:
         condition: service_healthy
