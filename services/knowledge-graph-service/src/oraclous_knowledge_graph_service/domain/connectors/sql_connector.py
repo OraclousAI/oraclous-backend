@@ -146,6 +146,28 @@ def map_fk_relationship_type(fk_table: str) -> str:
     return rel
 
 
+def _quote_ident(ident: str, dialect: SqlDialect) -> str:
+    """Safely quote a SQL identifier (schema/table/column) for interpolation into a query string.
+
+    A bound parameter ($1 / %s) can only carry a VALUE, never an identifier, so the table/schema
+    MUST be interpolated — which makes correct identifier quoting the security boundary. We double
+    the closing-quote character so an embedded quote cannot break OUT of the identifier:
+
+      * PostgreSQL identifiers are double-quoted; an embedded ``"`` is escaped by doubling → ``""``.
+      * MySQL/MariaDB identifiers are backtick-quoted; an embedded backtick is doubled → ``````.
+
+    This is applied to EVERY interpolated identifier (schema AND table), in addition to the snapshot
+    allowlist (defense in depth): even if a name reaches here that the allowlist missed, it cannot
+    escape its quotes into arbitrary SQL. A NUL byte (which no engine accepts inside an identifier
+    and which can truncate the C string) is rejected outright.
+    """
+    if "\x00" in ident:
+        raise SqlConnectorError(f"identifier {ident!r} contains a NUL byte")
+    if dialect is SqlDialect.MYSQL:
+        return "`" + ident.replace("`", "``") + "`"
+    return '"' + ident.replace('"', '""') + '"'
+
+
 # --- introspection SQL --------------------------------------------------------
 _PG_INTROSPECT = """
 SELECT
@@ -204,6 +226,12 @@ WHERE c.TABLE_SCHEMA = %s
 ORDER BY c.TABLE_NAME, c.ORDINAL_POSITION
 """
 
+# Schema (namespace) discovery — used to ALLOWLIST the user-supplied `schema_name` against the DB's
+# real schemas before it is interpolated into any query (mirrors the table allowlist; defense in
+# depth alongside `_quote_ident`). Bound parameter, no interpolation.
+_PG_LIST_SCHEMAS = "SELECT schema_name FROM information_schema.schemata"
+_MYSQL_LIST_SCHEMAS = "SELECT SCHEMA_NAME FROM INFORMATION_SCHEMA.SCHEMATA"
+
 
 class SqlConnector:
     """Async PostgreSQL/MySQL connector. One instance per ingest; ``connect()`` then ``close()``.
@@ -247,9 +275,35 @@ class SqlConnector:
                 connect_timeout=10,
             )
 
+    async def _list_schemas(self) -> set[str]:
+        """The DB's real schema (namespace) names — the allowlist the user `schema_name` is checked
+        against. Bound/parameter-free query; no interpolation."""
+        if self._p.dialect is SqlDialect.POSTGRESQL:
+            rows = await self._conn.fetch(_PG_LIST_SCHEMAS)
+            return {str(r["schema_name"]) for r in rows}
+        import aiomysql
+
+        async with self._conn.cursor(aiomysql.DictCursor) as cur:
+            await cur.execute(_MYSQL_LIST_SCHEMAS)
+            return {str(r["SCHEMA_NAME"]) for r in await cur.fetchall()}
+
+    async def _validate_schema_allowlist(self) -> None:
+        """Reject a ``schema_name`` that is NOT one of the DB's real schemas BEFORE it is used in
+        any query (mirrors the table allowlist). ``self._schema`` originates from the request-body
+        ``schema_name`` (user-controlled), so this is the authorisation/allowlist boundary; the
+        ``_quote_ident`` escaping in ``fetch_rows`` is the second, defense-in-depth layer."""
+        available = await self._list_schemas()
+        if self._schema not in available:
+            raise SqlConnectorError(
+                f"schema {self._schema!r} is not present in the database "
+                "(schema_name must name an existing schema)"
+            )
+
     async def introspect_schema(self) -> SchemaSnapshot:
         if self._conn is None:
             raise SqlConnectorError("not connected; call connect() first")
+        # Allowlist the user-supplied schema against the DB's real schemas before it is used.
+        await self._validate_schema_allowlist()
         if self._p.dialect is SqlDialect.POSTGRESQL:
             rows = [dict(r) for r in await self._conn.fetch(_PG_INTROSPECT, self._schema)]
         else:
@@ -295,22 +349,29 @@ class SqlConnector:
                 f"table {table!r} is not in the introspected schema allowlist "
                 "(table names must come from introspection, never user input)"
             )
+        # Identifiers must be INTERPOLATED (a bound param can only carry a value, not an
+        # identifier), so quoting is the injection boundary. Defense in depth: `table` is
+        # allowlist-checked above AND `self._schema` is allowlist-checked at introspect time
+        # (_validate_schema_allowlist); BOTH are then quote-escaped here (_quote_ident doubles an
+        # embedded `"`/backtick) so no name — even one that slipped the allowlists — can break out
+        # of its quotes. The LIMIT is the only bound value ($1 / %s) and is never interpolated.
         if self._p.dialect is SqlDialect.POSTGRESQL:
-            # S608 false positive: `table`/`self._schema` are NOT user input — they are introspected
-            # identifiers, allowlist-checked above; double-quoting protects special chars; the limit
-            # is a bound parameterized value ($1), never interpolated.
+            q_schema = _quote_ident(self._schema, SqlDialect.POSTGRESQL)
+            q_table = _quote_ident(table, SqlDialect.POSTGRESQL)
             rows = await self._conn.fetch(
-                f'SELECT * FROM "{self._schema}"."{table}" LIMIT $1',  # noqa: S608
+                f"SELECT * FROM {q_schema}.{q_table} LIMIT $1",  # noqa: S608
                 limit,
             )
             return [dict(r) for r in rows]
         import aiomysql
 
         async with self._conn.cursor(aiomysql.DictCursor) as cur:
-            # S608 false positive: same allowlist+quoting contract; backtick-quoting protects the
-            # introspected name; the limit is a bound %s value.
+            # MySQL's "schema" IS the database (from the DSN, not the request `schema_name`); quote
+            # it the same way for consistency + safety.
+            q_db = _quote_ident(self._p.database, SqlDialect.MYSQL)
+            q_table = _quote_ident(table, SqlDialect.MYSQL)
             await cur.execute(
-                f"SELECT * FROM `{self._p.database}`.`{table}` LIMIT %s",  # noqa: S608
+                f"SELECT * FROM {q_db}.{q_table} LIMIT %s",  # noqa: S608
                 (limit,),
             )
             return [dict(r) for r in await cur.fetchall()]

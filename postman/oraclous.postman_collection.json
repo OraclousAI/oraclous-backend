@@ -1980,7 +1980,7 @@
 								"ingest-sql"
 							]
 						},
-						"description": "Relational (SQL) ingest (#307): resolve a stored connection_string by `credential_id`, egress-check the DB host (TCP SSRF guard), introspect the schema (tables/columns/PK/FK), and project rows->entities + FK->REFERENCES_{TARGET} relationships through the recipe engine. Synchronous (200). `sync_mode`: full_snapshot (rows) | schema_only (metadata). The org is server-injected; only the graph owner may ingest.",
+						"description": "Relational (SQL) ingest (#307): resolve a stored connection_string by `credential_id`, egress-check the DB host (TCP SSRF guard), introspect the schema (tables/columns/PK/FK), and project rows->entities + FK->REFERENCES_{TARGET} relationships through the recipe engine. Synchronous (200). `sync_mode`: full_snapshot (rows) | schema_only (metadata). `schema_name` must be a strict SQL identifier (`^[A-Za-z_][A-Za-z0-9_$]*$`, max 128) AND name an existing DB schema, else 422 (identifier-injection defense, #329). The org is server-injected; only the graph owner may ingest.",
 						"body": {
 							"mode": "raw",
 							"raw": "{\n  \"credential_id\": \"{{credential_id}}\",\n  \"sync_mode\": \"full_snapshot\",\n  \"schema_name\": \"public\",\n  \"recipe_id\": null\n}",

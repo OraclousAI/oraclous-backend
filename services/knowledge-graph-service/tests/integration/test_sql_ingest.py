@@ -119,6 +119,26 @@ async def test_introspection_maps_schema_and_fk(source_pg_dsn: str) -> None:
     assert emp_cols["dept_id"].fk_column == "id"
 
 
+@pytest.mark.asyncio
+async def test_unknown_schema_name_is_rejected_by_allowlist(source_pg_dsn: str) -> None:
+    # A schema_name that is not one of the DB's real schemas is rejected at introspect time (the
+    # schema allowlist), against the live Postgres — never interpolated into a query.
+    from oraclous_knowledge_graph_service.domain.connectors.sql_connector import (
+        SqlConnector,
+        SqlConnectorError,
+        parse_and_validate_dsn,
+    )
+
+    params = parse_and_validate_dsn(source_pg_dsn, allow_private=True)
+    connector = SqlConnector(params, schema="no_such_schema")
+    await connector.connect()
+    try:
+        with pytest.raises(SqlConnectorError, match="not present in the database"):
+            await connector.introspect_schema()
+    finally:
+        await connector.close()
+
+
 def _count_nodes(driver, org: str, graph_id: str, label: str) -> int:
     records, _, _ = driver.execute_query(
         f"MATCH (n:{label}:__Entity__ "

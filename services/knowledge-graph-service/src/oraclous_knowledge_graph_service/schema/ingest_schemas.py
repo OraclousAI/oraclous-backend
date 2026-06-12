@@ -51,7 +51,14 @@ class SqlIngestRequest(BaseModel):
 
     credential_id: str = Field(min_length=1)
     sync_mode: str = "full_snapshot"  # full_snapshot | schema_only
-    schema_name: str | None = None  # the DB schema to introspect (Postgres default: public)
+    # The DB schema to introspect (Postgres default: public). It is interpolated into a query as a
+    # quoted identifier downstream, so the boundary rejects anything that is NOT a strict SQL
+    # identifier (defense in depth alongside the connector's schema allowlist + quote-escaping): a
+    # leading letter/underscore then word chars / `$`, bounded length — no quotes, dots, or spaces
+    # that could attempt to break out of the identifier.
+    schema_name: str | None = Field(
+        default=None, max_length=128, pattern=r"^[A-Za-z_][A-Za-z0-9_$]*$"
+    )
     recipe_id: str | None = None  # a stored recipe; else a default relational recipe is synthesised
 
 

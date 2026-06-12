@@ -18,10 +18,13 @@ import httpx
 import pytest
 from oraclous_knowledge_graph_service.domain.connectors.sql_connector import (
     ColumnMeta,
+    DbConnParams,
     SchemaSnapshot,
+    SqlConnector,
     SqlConnectorError,
     SqlDialect,
     TableMeta,
+    _quote_ident,
     map_fk_relationship_type,
     parse_and_validate_dsn,
 )
@@ -282,3 +285,117 @@ async def test_real_broker_404_raises_not_found() -> None:
     with pytest.raises(CredentialResolutionError, match="not found"):
         await broker.resolve_connection_string(organisation_id="o", credential_id="c")
     await broker.aclose()
+
+
+# --- Round-2 SQL-identifier-injection regression guards (#329) ----------------
+def _params(dialect: SqlDialect = SqlDialect.POSTGRESQL) -> DbConnParams:
+    return DbConnParams(
+        dialect=dialect,
+        host="db.example.com",
+        pinned_ip="93.184.216.34",
+        port=5432,
+        user="u",
+        password="pw",  # noqa: S106 — test literal
+        database="appdb",
+    )
+
+
+class _CapturingPgConn:
+    """A minimal asyncpg-like connection that captures the SQL string passed to fetch()."""
+
+    def __init__(self) -> None:
+        self.queries: list[str] = []
+
+    async def fetch(self, query: str, *args):
+        self.queries.append(query)
+        return []
+
+
+def test_quote_ident_escapes_postgres_double_quote() -> None:
+    # An embedded `"` is doubled so it cannot break OUT of the identifier (`a"b` → `"a""b"`).
+    assert _quote_ident('a"b', SqlDialect.POSTGRESQL) == '"a""b"'
+    # An injection attempt is neutralised: the closing quote is doubled, never closed early.
+    evil = 'public"; DROP TABLE users; --'
+    quoted = _quote_ident(evil, SqlDialect.POSTGRESQL)
+    assert quoted.startswith('"') and quoted.endswith('"')
+    assert '""' in quoted  # the embedded quote was doubled
+    # The only un-doubled quotes are the wrapping pair.
+    assert quoted.count('"') == evil.count('"') * 2 + 2
+
+
+def test_quote_ident_escapes_mysql_backtick() -> None:
+    assert _quote_ident("a`b", SqlDialect.MYSQL) == "`a``b`"
+
+
+def test_quote_ident_rejects_nul_byte() -> None:
+    with pytest.raises(SqlConnectorError, match="NUL byte"):
+        _quote_ident("a\x00b", SqlDialect.POSTGRESQL)
+
+
+@pytest.mark.asyncio
+async def test_fetch_rows_non_allowlisted_table_raises() -> None:
+    snap = _employee_dept_snapshot()
+    connector = SqlConnector(_params())
+    connector._conn = _CapturingPgConn()  # type: ignore[attr-defined]
+    with pytest.raises(SqlConnectorError, match="allowlist"):
+        await connector.fetch_rows("pg_shadow", snap)
+
+
+@pytest.mark.asyncio
+async def test_fetch_rows_adversarial_schema_is_escaped_not_injected() -> None:
+    # Even if an adversarial schema reaches the connector (the DTO + allowlist are upstream layers),
+    # `fetch_rows` quote-escapes it so it cannot break out of the identifier into arbitrary SQL.
+    snap = _employee_dept_snapshot()
+    evil_schema = 'public"; DROP TABLE users; --'
+    connector = SqlConnector(_params(), schema=evil_schema)
+    conn = _CapturingPgConn()
+    connector._conn = conn  # type: ignore[attr-defined]
+    await connector.fetch_rows("departments", snap)  # an allowlisted table
+    (query,) = conn.queries
+    # The schema is wrapped + its embedded quote doubled — the DROP stays INSIDE the quoted ident.
+    assert '"public""; DROP TABLE users; --"."departments"' in query
+    assert 'DROP TABLE users; --"' in query  # never an un-quoted, executable tail
+
+
+@pytest.mark.asyncio
+async def test_validate_schema_allowlist_rejects_unknown_schema() -> None:
+    connector = SqlConnector(_params(), schema="evil_schema")
+
+    async def _fake_list() -> set[str]:
+        return {"public", "pg_catalog", "information_schema"}
+
+    connector._list_schemas = _fake_list  # type: ignore[assignment]
+    with pytest.raises(SqlConnectorError, match="not present in the database"):
+        await connector._validate_schema_allowlist()
+
+
+@pytest.mark.asyncio
+async def test_validate_schema_allowlist_accepts_known_schema() -> None:
+    connector = SqlConnector(_params(), schema="public")
+
+    async def _fake_list() -> set[str]:
+        return {"public", "pg_catalog"}
+
+    connector._list_schemas = _fake_list  # type: ignore[assignment]
+    await connector._validate_schema_allowlist()  # does not raise
+
+
+# --- DTO boundary validation for schema_name (#329) --------------------------
+def test_sql_ingest_request_rejects_malformed_schema_name() -> None:
+    import pydantic
+    from oraclous_knowledge_graph_service.schema.ingest_schemas import SqlIngestRequest
+
+    # An identifier-breaking value (embedded quote/semicolon) is rejected at the API boundary.
+    for bad in ('public"; DROP TABLE t; --', "has space", "a.b", "a-b", "x" * 200):
+        with pytest.raises(pydantic.ValidationError):
+            SqlIngestRequest(credential_id="c", schema_name=bad)
+
+
+def test_sql_ingest_request_accepts_valid_schema_name_and_none() -> None:
+    from oraclous_knowledge_graph_service.schema.ingest_schemas import SqlIngestRequest
+
+    assert SqlIngestRequest(credential_id="c", schema_name="public").schema_name == "public"
+    assert (
+        SqlIngestRequest(credential_id="c", schema_name="my_schema$1").schema_name == "my_schema$1"
+    )
+    assert SqlIngestRequest(credential_id="c").schema_name is None  # optional, default None

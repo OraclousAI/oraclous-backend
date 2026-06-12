@@ -73,6 +73,11 @@ class SqlIngestionService:
         ontology: Ontology | None = None,
     ) -> dict:
         # 1) Resolve the connection_string from the broker (server-injected org; caller's cred id).
+        # KNOWN LIMITATION (tracked, not introduced by #307): the resolve is ORG-scoped, not
+        # USER-scoped — a same-org member can ingest using a co-member's `credential_id`. This is
+        # the PRE-EXISTING platform pattern (matches the capability-registry tool-execution
+        # contract) and is within-org (never cross-org), so it is in scope of the broader authz
+        # hardening (R7-SEC/R8), not this connector. The broker contract is unchanged here.
         try:
             dsn = await self._broker.resolve_connection_string(
                 organisation_id=self._org, credential_id=credential_id
