@@ -2882,6 +2882,26 @@
           }
         },
         {
+          "name": "GET /v1/agents/:slug/details (member, org-scoped)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/v1/agents/{{pub_slug}}/details",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "agents",
+                "{{pub_slug}}",
+                "details"
+              ]
+            },
+            "description": "Full management view for one published agent (member, org-scoped) \u2014 hydrate a detail page by slug without listing + client-side filtering."
+          }
+        },
+        {
           "name": "POST /v1/integration-keys (mint \u2014 member)",
           "request": {
             "method": "POST",

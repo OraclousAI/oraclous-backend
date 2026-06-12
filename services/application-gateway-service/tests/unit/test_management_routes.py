@@ -194,6 +194,37 @@ async def test_unpublish_unknown_slug_is_404() -> None:
     assert r.status_code == 404
 
 
+async def test_member_can_read_a_single_agent_details() -> None:
+    # G3 (#282): the member-plane single-agent read hydrates the full management view by slug,
+    # so a console detail page need not fetch the whole list and filter client-side.
+    app = _app()
+    async with _client(app) as c:
+        await c.post(
+            "/v1/agents",
+            json={
+                "slug": "weather",
+                "bound_capability_ref": "cap-123",
+                "display_name": "Weather",
+                "description": "forecasts",
+            },
+            headers=_DEV,
+        )
+        r = await c.get("/v1/agents/weather/details", headers=_DEV)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["slug"] == "weather"
+    assert body["display_name"] == "Weather" and body["description"] == "forecasts"
+    # the full management view carries the binding + status (not the narrow key-public projection)
+    assert body["bound_capability_ref"] == "cap-123" and body["status"] == "active"
+
+
+async def test_agent_details_unknown_slug_is_404() -> None:
+    app = _app()
+    async with _client(app) as c:
+        r = await c.get("/v1/agents/nope/details", headers=_DEV)
+    assert r.status_code == 404
+
+
 async def test_unpublish_requires_a_member_credential() -> None:
     # an integration-key (SERVICE_ACCOUNT) bearer must be 403 on the admin-only unpublish
     app = _app()
@@ -218,6 +249,31 @@ async def test_unpublish_requires_a_member_credential() -> None:
     assert r.status_code == 403
 
 
+async def test_agent_details_requires_a_member() -> None:
+    # an integration-key (SERVICE_ACCOUNT) bearer must be 403 on the member-only detail read
+    app = _app()
+    minted = mint_key("oak")
+    app.state.integration_key_repo.rows.append(
+        SimpleNamespace(
+            id=uuid.uuid4(),
+            organisation_id=_DEV_ORG,
+            key_prefix=minted.key_prefix,
+            key_hash=minted.key_hash,
+            status="active",
+            expires_at=None,
+            bound_agent_slug=None,
+            capability_allow_list=None,
+            cors_origins=None,
+        )
+    )
+    async with _client(app) as c:
+        r = await c.get(
+            "/v1/agents/weather/details",
+            headers={"authorization": f"Bearer {minted.plaintext}"},
+        )
+    assert r.status_code == 403
+
+
 async def test_unpublish_org_scoped_other_org_slug_is_404() -> None:
     # an agent published in another org must not be unpublishable from the dev org
     app = _app()
@@ -238,6 +294,48 @@ async def test_unpublish_org_scoped_other_org_slug_is_404() -> None:
     assert r.status_code == 404
     # the other-org row is untouched
     assert app.state.published_agent_repo.rows[0].status == "active"
+
+
+async def test_agent_details_is_org_scoped() -> None:
+    # an agent published in another org is invisible to the dev member -> 404
+    app = _app()
+    app.state.published_agent_repo.rows.append(
+        SimpleNamespace(
+            id=uuid.uuid4(),
+            organisation_id=uuid.uuid4(),  # a different org
+            slug="weather",
+            bound_capability_ref="cap-123",
+            display_name="Weather",
+            description="forecasts",
+            status="active",
+            created_at=datetime.now(UTC),
+        )
+    )
+    async with _client(app) as c:
+        r = await c.get("/v1/agents/weather/details", headers=_DEV)
+    assert r.status_code == 404
+
+
+async def test_key_out_surfaces_rate_window_seconds() -> None:
+    # G4 (#282): rate_window_seconds is write-accepted + enforced; surface it on the read view so
+    # the console can show "N requests per Ws", not just the bare count.
+    app = _app()
+    async with _client(app) as c:
+        r = await c.post(
+            "/v1/integration-keys",
+            json={
+                "capability_allow_list": ["cap:read"],
+                "rate_limit": 100,
+                "rate_window_seconds": 60,
+            },
+            headers=_DEV,
+        )
+        assert r.status_code == 201, r.text
+        key_id = r.json()["id"]
+        got = await c.get(f"/v1/integration-keys/{key_id}", headers=_DEV)
+    assert got.status_code == 200
+    body = got.json()
+    assert body["rate_limit"] == 100 and body["rate_window_seconds"] == 60
 
 
 async def test_rotate_does_not_resurrect_a_revoked_key() -> None:
