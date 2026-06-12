@@ -52,6 +52,20 @@ def is_public_plane_preflight(request_method: bytes | None) -> bool:
     return request_method.strip().upper() in _PUBLIC_PLANE_METHODS
 
 
+def is_public_plane_method(method: str | None) -> bool:
+    """Is this ACTUAL (non-preflight) request a public-plane method, so AgentCors rewrites its
+    response ACAO to the per-key decision?
+
+    True for GET (metadata) / POST (invoke), case-insensitive. False for the member plane (e.g.
+    DELETE unpublish, #289) — that response must defer to the gateway-wide CORS (console origin /
+    ``*``); AgentCors must NOT wrap it, because a member-plane request has no resolved key and the
+    rewrite would strip the inner ACAO and void the browser read. ``scope['method']`` is a ``str``
+    (not bytes), so this compares against a string set rather than ``_PUBLIC_PLANE_METHODS``."""
+    if method is None:
+        return False
+    return method.strip().upper() in {"GET", "POST"}
+
+
 def origin_allowed(origin: str, cors_origins: list[str] | None) -> bool:
     """Fail-closed: a key with no ``cors_origins`` (None) allows NO browser origin."""
     return cors_origins is not None and origin in cors_origins

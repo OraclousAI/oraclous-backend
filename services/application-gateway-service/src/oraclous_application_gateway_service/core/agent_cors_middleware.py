@@ -8,10 +8,14 @@ on the keyed response REPLACES whatever ACAO the inner CORS set with the per-key
 resolved key's ``cors_origins`` on ``scope["state"]``). It is a no-op on every other path — the
 gateway-wide CORS stays fully authoritative for the proxied + management routes.
 
-The path is SHARED with the member plane (``DELETE /v1/agents/{slug}`` = admin unpublish): a
-preflight whose ``Access-Control-Request-Method`` is not a public-plane method (GET/POST) is NOT
-owned here — it passes through to the inner gateway-wide CORS, which advertises DELETE + the console
-origin (#289).
+The path is SHARED with the member plane (``DELETE /v1/agents/{slug}`` = admin unpublish): BOTH its
+preflight AND its actual response defer to the gateway-wide CORS. A preflight whose
+``Access-Control-Request-Method`` is not a public-plane method (GET/POST) is not owned here; an
+actual request whose method is not public-plane (DELETE) is likewise passed through WITHOUT the
+per-key rewrite. So the inner gateway-wide CORS (``allow_methods=["*"]`` + console origins) sets the
+ACAO on both. Without the actual-response deferral the rewrite strips the inner ACAO off the DELETE
+response (no resolved key → ``cors=None`` → fail-closed) and the browser blocks the read even though
+the server returned 204 (#289).
 """
 
 from __future__ import annotations
@@ -20,6 +24,7 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from oraclous_application_gateway_service.domain.cors_policy import (
     is_public_agent_path,
+    is_public_plane_method,
     is_public_plane_preflight,
     preflight_headers,
     rewrite_response_headers,
@@ -49,6 +54,15 @@ class AgentCorsMiddleware:
                 return
             # public-plane preflight: the key is unknown (no Authorization) — answer permissively
             await self._send_preflight(send, origin, headers.get(b"access-control-request-headers"))
+            return
+
+        # Actual (non-preflight) request. AgentCors only OWNS the PUBLIC-plane (GET/POST) response —
+        # it rewrites the inner CORS's ACAO to the per-key decision. A member-plane actual request
+        # (DELETE = admin unpublish, #289) carries a member JWT, not a bound key → no resolved_key →
+        # the rewrite would STRIP the gateway-wide ACAO (cors=None is fail-closed) and void the
+        # browser read. Defer to the gateway CORS, which already set the console-origin ACAO.
+        if not is_public_plane_method(scope.get("method")):
+            await self._app(scope, receive, send)
             return
 
         async def send_wrapper(message: Message) -> None:
