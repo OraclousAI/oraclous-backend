@@ -10,8 +10,11 @@ The structural rules mirror the CRS MCP guard (blocked hostnames + suffixes + si
 block + literal-IP classification) and add the HRS ``allow_private`` single-tenant mode, applied to
 a ``host`` (no scheme) rather than a URL. BLOCK by default:
 
-  * link-local 169.254.0.0/16 (incl. the cloud-metadata 169.254.169.254) and IPv6 link-local —
-    ALWAYS blocked, in either mode: no legitimate DB here, only SSRF into instance metadata;
+  * link-local 169.254.0.0/16 (incl. the cloud-metadata 169.254.169.254), IPv6 link-local
+    (fe80::/10), AND the enumerated out-of-range cloud-metadata (IMDS) endpoints — notably the AWS
+    IMDS-over-IPv6 ``fd00:ec2::254`` (a ULA, so NOT caught by the link-local block) — ALWAYS
+    blocked, in either mode (``allow_private`` never relaxes them): no legitimate DB here, only
+    SSRF into instance metadata;
   * loopback (127.0.0.0/8, ::1), RFC-1918 (10/8, 172.16/12, 192.168/16), IPv6 ULA (fc00::/7);
   * the literal blocked hostnames (``localhost``, ``metadata``, ``metadata.google.internal``);
   * the internal suffixes ``.internal`` / ``.local`` / ``.localhost`` / ``.cluster.local``;
@@ -46,6 +49,18 @@ import socket
 _LINK_LOCAL_V4 = ipaddress.ip_network("169.254.0.0/16")
 _LINK_LOCAL_V6 = ipaddress.ip_network("fe80::/10")
 
+# Known cloud-metadata (IMDS) endpoints that live OUTSIDE the link-local range and so are not caught
+# by the link-local block alone. The AWS IMDS-over-IPv6 address ``fd00:ec2::254`` is a Unique-Local
+# (ULA, fc00::/7) address — it is only caught by the private-range block, which ``allow_private``
+# relaxes. It is enumerated here so it is blocked in EITHER mode (matching the module docstring's
+# promise that the metadata range stays blocked regardless of `allow_private`). The IPv4 IMDS
+# 169.254.169.254 + IPv6 link-local IMDS already fall inside `_LINK_LOCAL_V4`/`_LINK_LOCAL_V6`.
+_METADATA_ADDRS = frozenset(
+    {
+        ipaddress.ip_address("fd00:ec2::254"),  # AWS IMDS over IPv6 (ULA — not link-local)
+    }
+)
+
 _BLOCKED_HOSTNAMES = frozenset({"localhost", "metadata", "metadata.google.internal"})
 _BLOCKED_SUFFIXES = (".internal", ".local", ".localhost", ".cluster.local")
 
@@ -62,7 +77,12 @@ def _normalize(ip: ipaddress._BaseAddress) -> ipaddress._BaseAddress:
     return ip
 
 
-def _is_link_local(ip: ipaddress._BaseAddress) -> bool:
+def _is_always_blocked(ip: ipaddress._BaseAddress) -> bool:
+    """Link-local (IPv4 169.254/16, IPv6 fe80::/10) AND the enumerated cloud-metadata (IMDS)
+    endpoints — ALWAYS blocked, in EITHER mode. ``allow_private`` never relaxes these: no legitimate
+    DB lives at an instance-metadata endpoint, only SSRF into instance credentials/metadata."""
+    if ip in _METADATA_ADDRS:
+        return True
     if isinstance(ip, ipaddress.IPv4Address):
         return ip in _LINK_LOCAL_V4
     return ip in _LINK_LOCAL_V6 or ip.is_link_local
@@ -115,6 +135,12 @@ def validate_db_host(host: str, *, allow_private: bool) -> str:
     # Strip an IPv6 literal's brackets (``[::1]`` → ``::1``).
     if host.startswith("[") and host.endswith("]"):
         host = host[1:-1]
+    # Strip a single trailing dot — a fully-qualified ``metadata.google.internal.`` / ``localhost.``
+    # / ``postgres.`` resolves to the SAME target but would otherwise bypass the blocked-name /
+    # internal-suffix / single-label name checks below (which compare the bare name). One dot only,
+    # so a degenerate ``host..`` is left intact to fail resolution rather than be rewritten.
+    if host.endswith(".") and not host.endswith(".."):
+        host = host[:-1]
 
     # A literal IP host — classify it directly (no DNS, no name rules).
     try:
@@ -123,7 +149,7 @@ def validate_db_host(host: str, *, allow_private: bool) -> str:
         literal = None
     if literal is not None:
         literal = _normalize(literal)
-        if _is_link_local(literal):
+        if _is_always_blocked(literal):
             raise EgressBlockedError(
                 f"DB host {host!r} is a link-local/metadata address ({literal}) (always blocked)"
             )
@@ -155,7 +181,7 @@ def validate_db_host(host: str, *, allow_private: bool) -> str:
     pinned: str | None = None
     for ip in resolved:
         ip = _normalize(ip)
-        if _is_link_local(ip):
+        if _is_always_blocked(ip):
             raise EgressBlockedError(
                 f"DB host {host!r} resolves to a link-local/metadata address ({ip}) (blocked)"
             )

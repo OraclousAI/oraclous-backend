@@ -124,3 +124,86 @@ def test_unresolvable_host_fails_closed() -> None:
 def test_empty_host_rejected() -> None:
     with pytest.raises(EgressBlockedError, match="empty"):
         validate_db_host("", allow_private=True)
+
+
+# --- Round-2 adversarial SSRF regression guards (#329) ------------------------
+def test_default_posture_blocks_rfc1918() -> None:
+    # The NEW secure default (allow_private=False) must block RFC-1918 — proves the floor is ON when
+    # the flag is unset (the config default was flipped from True → False, ADR-025 §1).
+    with pytest.raises(EgressBlockedError, match="private/loopback"):
+        validate_db_host("10.0.0.5", allow_private=False)
+
+
+@pytest.mark.parametrize("encoded", ["2130706433", "0x7f000001"])
+def test_decimal_hex_ip_encodings_blocked_default_posture(encoded) -> None:
+    # Alternate integer/hex encodings of 127.0.0.1 are NOT valid ipaddress literals, so they are not
+    # classified as a (public) literal IP. In the default multi-tenant posture they are rejected as
+    # a single-label/bare name before any connect — never silently treated as a public host.
+    with pytest.raises(EgressBlockedError):
+        validate_db_host(encoded, allow_private=False)
+
+
+def test_encoded_loopback_blocked_when_it_reaches_resolution(monkeypatch) -> None:
+    # If an encoded/odd form DOES reach the resolver (e.g. single-label relaxed) and the resolver
+    # expands it to loopback, the resolved-IP re-check still blocks it in multi-tenant mode — the
+    # guard never trusts the name, only the resolved address.
+    import ipaddress
+
+    monkeypatch.setattr(
+        tcp_egress, "_resolve_ips", lambda host: [ipaddress.ip_address("127.0.0.1")]
+    )
+    with pytest.raises(EgressBlockedError, match="resolves to a private/loopback"):
+        validate_db_host("weird.example.com", allow_private=False)
+
+
+def test_mixed_public_private_a_records_are_blocked(monkeypatch) -> None:
+    # A hostname whose A-record SET mixes a public and a private IP must be blocked (the guard
+    # re-checks EVERY resolved IP, not just the first) — a DNS-rebinding / multi-A SSRF attempt.
+    import ipaddress
+
+    monkeypatch.setattr(
+        tcp_egress,
+        "_resolve_ips",
+        lambda host: [ipaddress.ip_address("93.184.216.34"), ipaddress.ip_address("10.0.0.7")],
+    )
+    with pytest.raises(EgressBlockedError, match="resolves to a private/loopback"):
+        validate_db_host("rebind.example.com", allow_private=False)
+
+
+def test_ipv6_link_local_literal_blocked_both_modes() -> None:
+    for allow in (False, True):
+        with pytest.raises(EgressBlockedError, match="link-local/metadata"):
+            validate_db_host("fe80::1", allow_private=allow)
+
+
+def test_ipv4_mapped_private_is_normalized_and_blocked() -> None:
+    # ::ffff:10.0.0.1 must route to the IPv4 private address and be blocked in the default posture.
+    with pytest.raises(EgressBlockedError, match="private/loopback"):
+        validate_db_host("::ffff:10.0.0.1", allow_private=False)
+
+
+def test_unspecified_addresses_blocked() -> None:
+    # 0.0.0.0 / :: are unspecified (route to "all interfaces") — never a valid external DB target;
+    # blocked in the default posture (allow_private only relaxes private/loopback, which they are).
+    for addr in ("0.0.0.0", "::"):  # noqa: S104 — adversarial test inputs, not a bind address
+        with pytest.raises(EgressBlockedError, match="private/loopback"):
+            validate_db_host(addr, allow_private=False)
+
+
+def test_ipv6_imds_fd00_ec2_blocked_in_both_modes() -> None:
+    # The AWS IMDS-over-IPv6 endpoint fd00:ec2::254 is a ULA — only the private block catches it,
+    # which allow_private relaxes. The dedicated metadata floor blocks it in EITHER mode.
+    for allow in (False, True):
+        with pytest.raises(EgressBlockedError, match="link-local/metadata"):
+            validate_db_host("fd00:ec2::254", allow_private=allow)
+
+
+def test_trailing_dot_fqdn_blocked_name_not_bypassed() -> None:
+    # A fully-qualified trailing-dot name must still hit the blocked-name / suffix / single-label
+    # rules (it resolves to the same target). Each form is blocked in multi-tenant mode.
+    with pytest.raises(EgressBlockedError, match="not allowed"):
+        validate_db_host("localhost.", allow_private=False)
+    with pytest.raises(EgressBlockedError):
+        validate_db_host("metadata.google.internal.", allow_private=False)
+    with pytest.raises(EgressBlockedError, match="single-label"):
+        validate_db_host("postgres.", allow_private=False)
