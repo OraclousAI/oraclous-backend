@@ -41,6 +41,20 @@ def slugify(name: str) -> str:
     return slug or "org"
 
 
+def default_org_name(*, full_name: str | None, email: str) -> str:
+    """Name the auto-created default org ``"{First}'s Second Mind"`` (#317).
+
+    ``{First}`` is the first whitespace-delimited token of ``full_name`` (so ``"Reza Test"`` →
+    ``"Reza"``; leading/trailing whitespace is ignored). When ``full_name`` is missing or has no
+    non-whitespace token, fall back to the email local-part (the pre-#317 behaviour) so the name is
+    never blank. The slug is derived from the returned name by the caller (``slugify`` +
+    uniqueness suffixing), unchanged.
+    """
+    first = (full_name or "").split()  # str.split() with no arg splits on any run of whitespace
+    chosen = first[0] if first else email.split("@", 1)[0]
+    return f"{chosen}'s Second Mind"
+
+
 def role_rank(role: str) -> int:
     """Numeric rank of a role; unknown roles rank below member (fail-closed)."""
     try:

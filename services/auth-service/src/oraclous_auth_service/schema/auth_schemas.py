@@ -25,6 +25,9 @@ class _EmailMixin(BaseModel):
 
 class RegisterRequest(_EmailMixin):
     password: str = Field(min_length=8, max_length=72)
+    # Optional human name; its first token names the default org "{First}'s Second Mind" (#317).
+    # Absent/blank falls back to the email local-part, so the org name is never blank.
+    full_name: str | None = Field(default=None, max_length=320)
 
 
 class LoginRequest(_EmailMixin):

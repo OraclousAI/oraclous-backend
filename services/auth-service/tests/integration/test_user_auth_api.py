@@ -67,6 +67,42 @@ async def test_register_login_refresh_me_flow(client: AsyncClient) -> None:
     ).status_code == 401
 
 
+async def test_register_names_default_org_from_full_name(client: AsyncClient) -> None:
+    # #317: the auto-created default org reads "{First}'s Second Mind" (first token of full_name),
+    # with a slug derived from that name.
+    r = await client.post(
+        "/v1/auth/register",
+        json={"email": "reza@ex.com", "password": "GoodPass1", "full_name": "Reza Test"},
+    )
+    assert r.status_code == 201, r.text
+    access = r.json()["access_token"]
+    orgs = await client.get("/v1/orgs", headers={"Authorization": f"Bearer {access}"})
+    assert orgs.status_code == 200
+    bootstrap = orgs.json()
+    assert len(bootstrap) == 1
+    assert bootstrap[0]["name"] == "Reza's Second Mind"
+    assert bootstrap[0]["slug"] == "reza-s-second-mind"
+    assert bootstrap[0]["status"] == "active"  # status is untouched by the rename
+
+
+async def test_register_without_full_name_falls_back_to_email_local_part(
+    client: AsyncClient,
+) -> None:
+    # #317 fallback: no full_name → the email local-part keeps the org name non-blank. The local
+    # part is taken from the request email verbatim (the pre-#317 behaviour — only the user row is
+    # lowercased by the repository), so the displayed name preserves the registrant's casing.
+    r = await client.post(
+        "/v1/auth/register", json={"email": "Carol@Ex.com", "password": "GoodPass1"}
+    )
+    assert r.status_code == 201, r.text
+    access = r.json()["access_token"]
+    orgs = await client.get("/v1/orgs", headers={"Authorization": f"Bearer {access}"})
+    assert orgs.status_code == 200
+    bootstrap = orgs.json()
+    assert bootstrap[0]["name"] == "Carol's Second Mind"
+    assert bootstrap[0]["slug"] == "carol-s-second-mind"  # slug is lowercased by slugify
+
+
 async def test_me_rejects_missing_and_refresh_tokens(client: AsyncClient) -> None:
     assert (await client.get("/v1/auth/me")).status_code == 401
     reg = {"email": "bob@ex.com", "password": "GoodPass1"}
