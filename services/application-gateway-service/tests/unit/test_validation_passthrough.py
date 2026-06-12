@@ -44,6 +44,21 @@ def test_string_detail_returns_none() -> None:
     assert extract_validation_details(_raw("free text on 10.0.0.5")) is None
 
 
+def test_krs_typed_eval_422s_survive_the_extractor() -> None:
+    # #333: KRS emits its typed eval errors in the Pydantic LIST shape precisely so this
+    # extractor relays them (loc + type → field + token); pin both bodies it sends.
+    out = extract_validation_details(
+        _raw([{"loc": ["eval"], "type": "eval_judge_not_configured", "msg": "set the key"}])
+    )
+    assert out is not None
+    assert out[0].field == "eval" and out[0].issue == "EVAL_JUDGE_NOT_CONFIGURED"
+    out = extract_validation_details(
+        _raw([{"loc": ["body", "metrics"], "type": "no_valid_metrics", "msg": "nothing left"}])
+    )
+    assert out is not None
+    assert out[0].field == "metrics" and out[0].issue == "NO_VALID_METRICS"
+
+
 def test_oversized_body_returns_none() -> None:
     assert extract_validation_details(b"x" * (64 * 1024 + 1)) is None
 
