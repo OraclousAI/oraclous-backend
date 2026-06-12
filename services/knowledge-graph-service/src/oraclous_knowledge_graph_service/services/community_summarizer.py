@@ -90,6 +90,24 @@ class SummaryResult:
         self.source = source
 
 
+class SummarizeOutcome:
+    """The result of a graph summarise pass — DISTINGUISHABLE so the caller can tell a completed run
+    from one that was capped/deferred.
+
+    ``status`` is ``"completed"`` when the candidates were summarised inline, or ``"deferred"`` when
+    the candidate count exceeded the inline cap and none ran (the caller should use the async detect
+    path, which summarises on the worker). ``deferred_count`` is the candidate count that was
+    skipped on a deferral (0 on a completed run).
+    """
+
+    def __init__(
+        self, *, results: list[SummaryResult], status: str, deferred_count: int = 0
+    ) -> None:
+        self.results = results
+        self.status = status
+        self.deferred_count = deferred_count
+
+
 class CommunitySummarizer:
     """Summarise a graph's communities with a bounded-concurrency LLM fan-out."""
 
@@ -113,14 +131,15 @@ class CommunitySummarizer:
         level: int | None = None,
         force: bool = False,
         max_communities: int | None = None,
-    ) -> list[SummaryResult]:
-        """Summarise the graph's communities. Returns the results produced + persisted.
+    ) -> SummarizeOutcome:
+        """Summarise the graph's communities. Returns a DISTINGUISHABLE :class:`SummarizeOutcome`.
 
-        By default (``force`` False) only communities with NO summary yet are summarised — so a
-        re-run resumes after a partial failure and never re-bills a community already done. When
+        By default (``force`` False) only communities with no real summary yet are summarised — so
+        a re-run resumes after a partial failure and never re-bills a community already done. When
         ``max_communities`` is set and there are MORE candidates than that, the batch is too large
-        to run inline and an empty list is returned (the caller routes large summarise to the async
-        path). Bounded concurrency; one bad community never sinks the rest.
+        to run inline: the outcome is ``status="deferred"`` with the candidate count (none ran), so
+        the caller can tell a deferral from "nothing to do" and route large summarise to the async
+        path. Bounded concurrency; one bad community never sinks the rest.
         """
         communities = await asyncio.to_thread(
             self._repo.list_communities,
@@ -130,7 +149,7 @@ class CommunitySummarizer:
             only_unsummarized=not force,
         )
         if not communities:
-            return []
+            return SummarizeOutcome(results=[], status="completed")
         if max_communities is not None and len(communities) > max_communities:
             logger.info(
                 "community summarize for %s deferred: %d candidates exceed the inline cap %d",
@@ -138,7 +157,7 @@ class CommunitySummarizer:
                 len(communities),
                 max_communities,
             )
-            return []
+            return SummarizeOutcome(results=[], status="deferred", deferred_count=len(communities))
         semaphore = asyncio.Semaphore(self._max_concurrency)
 
         async def _one(community_id: str) -> SummaryResult | None:
@@ -157,7 +176,7 @@ class CommunitySummarizer:
                 continue
             if outcome is not None:
                 results.append(outcome)
-        return results
+        return SummarizeOutcome(results=results, status="completed")
 
     async def _summarize_one(self, *, graph_id: str, community_id: str) -> SummaryResult | None:
         members, rels = await asyncio.to_thread(

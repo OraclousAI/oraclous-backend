@@ -27,6 +27,10 @@ from oraclous_knowledge_graph_service.services.analytics_service import (
     SummarizationUnavailable,
     UnknownCommunityKind,
 )
+from oraclous_knowledge_graph_service.services.community_summarizer import (
+    SummarizeOutcome,
+    SummaryResult,
+)
 from oraclous_knowledge_graph_service.services.graph_service import GraphNotFound
 
 pytestmark = pytest.mark.integration
@@ -41,7 +45,7 @@ class _FakeAnalyticsService:
         self.detect_returns: tuple = (None, None)
         self.communities: list[Community] = []
         self.community: Community | None = None
-        self.summarized = 0
+        self.summarize_outcome = SummarizeOutcome(results=[], status="completed")
 
     @staticmethod
     def kinds():
@@ -78,7 +82,7 @@ class _FakeAnalyticsService:
     async def summarize(self, *, graph_id, user_id, level=None, force=False):  # noqa: ARG002
         if self.raise_with is not None:
             raise self.raise_with
-        return self.summarized
+        return self.summarize_outcome
 
     async def analytics(self, *, graph_id, user_id):  # noqa: ARG002
         if self.raise_with is not None:
@@ -235,10 +239,36 @@ async def test_summarize_unavailable_503(client, svc) -> None:
 
 
 async def test_summarize_ok(client, svc) -> None:
-    svc.summarized = 4
+    svc.summarize_outcome = SummarizeOutcome(
+        results=[
+            SummaryResult(
+                community_id=f"community_{i}",
+                summary="s",
+                keywords=["k"],
+                excerpt="e",
+                source="llm",
+            )
+            for i in range(4)
+        ],
+        status="completed",
+    )
     resp = await client.post(f"/api/v1/graphs/{_GRAPH}/communities/summarize", headers=_AUTH)
     assert resp.status_code == 200
-    assert resp.json()["summarized"] == 4
+    body = resp.json()
+    assert body["summarized"] == 4
+    assert body["status"] == "completed"
+    assert body["deferred"] == 0
+
+
+async def test_summarize_deferred_is_distinguishable(client, svc) -> None:
+    # A capped run returns status='deferred' + the candidate count, NOT a silent summarized=0.
+    svc.summarize_outcome = SummarizeOutcome(results=[], status="deferred", deferred_count=250)
+    resp = await client.post(f"/api/v1/graphs/{_GRAPH}/communities/summarize", headers=_AUTH)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["summarized"] == 0
+    assert body["status"] == "deferred"
+    assert body["deferred"] == 250
 
 
 async def test_analytics_endpoint(client) -> None:

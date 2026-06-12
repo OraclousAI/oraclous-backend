@@ -29,6 +29,7 @@ from oraclous_knowledge_graph_service.services.analytics_service import (
     UnknownCommunityKind,
     decode_detect_params,
 )
+from oraclous_knowledge_graph_service.services.community_summarizer import SummarizeOutcome
 from oraclous_knowledge_graph_service.services.graph_service import GraphNotFound
 
 pytestmark = [pytest.mark.unit, pytest.mark.organization_isolation]
@@ -176,6 +177,16 @@ async def test_detect_skips_below_floor() -> None:
     result = await svc.detect(graph_id=_GRAPH, user_id=_USER, min_entities=3)
     assert result.status == "skipped"
     assert result.total_communities == 0
+
+
+async def test_detect_empty_graph_clean_skip_even_with_min_entities_zero() -> None:
+    # min_entities=0 on a 0-entity graph must SKIP cleanly (floor at 1), never project an empty GDS
+    # graph and 500 — the normal skipped-result shape, no detect call.
+    repo = _FakeRepo(entity_count=0)
+    result = await _svc(repo).detect(graph_id=_GRAPH, user_id=_USER, min_entities=0)
+    assert result.status == "skipped"
+    assert result.total_communities == 0
+    assert repo.detect_called is False
 
 
 async def test_detect_emits_honest_dendrogram_levels() -> None:
@@ -363,3 +374,27 @@ async def test_summarize_unavailable_without_summarizer() -> None:
     svc = _svc(_FakeRepo(communities=[_community()]), summarizer=None)
     with pytest.raises(SummarizationUnavailable):
         await svc.summarize(graph_id=_GRAPH, user_id=_USER)
+
+
+class _FakeSummarizer:
+    """Returns a fixed SummarizeOutcome; records the cap the service passed in."""
+
+    def __init__(self, outcome: SummarizeOutcome) -> None:
+        self._outcome = outcome
+        self.max_communities: int | None = "unset"  # type: ignore[assignment]
+
+    async def summarize_graph(self, *, graph_id, level=None, force=False, max_communities=None):  # noqa: ANN001, ARG002
+        self.max_communities = max_communities
+        return self._outcome
+
+
+async def test_summarize_passes_outcome_through() -> None:
+    # The service returns the summarizer's DISTINGUISHABLE outcome unchanged (completed/deferred).
+    deferred = SummarizeOutcome(results=[], status="deferred", deferred_count=250)
+    summarizer = _FakeSummarizer(deferred)
+    svc = _svc(_FakeRepo(communities=[_community()]), summarizer=summarizer)
+    outcome = await svc.summarize(graph_id=_GRAPH, user_id=_USER)
+    assert outcome.status == "deferred"
+    assert outcome.deferred_count == 250
+    # The inline cap (config default 200) is passed to the summarizer, not None.
+    assert summarizer.max_communities == 200

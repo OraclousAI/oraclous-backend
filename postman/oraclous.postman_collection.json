@@ -1857,7 +1857,7 @@
                 }
               ]
             },
-            "description": "LLM-summarise the graph's communities (summary + keywords + excerpt + provenance: summary_source 'llm' vs 'fallback'). Requires KGS_EXTRACTOR=openai (else 503). By default summarises only un-summarised communities (resumable, no re-billing); force=true re-summarises all. Optional ?level= to summarise one level."
+            "description": "LLM-summarise the graph's communities (summary + keywords + excerpt + provenance: summary_source 'llm' vs 'fallback'). Requires KGS_EXTRACTOR=openai (else 503). By default summarises only communities with no REAL summary yet — both never-summarised AND fallback-degraded placeholders (resumable, no re-billing of good summaries); force=true re-summarises all. Optional ?level= to summarise one level. Response: {graph_id, summarized, status, deferred} — status='deferred' (with deferred=candidate count) when the batch exceeds the inline cap and none ran (use the async detect path), distinguishable from a 'completed' run with summarized=0."
           },
           "response": []
         },

@@ -1,10 +1,10 @@
 """Graph-analytics + community use-cases (ORAA-4 §21 services layer — all business logic) (#303).
 
-Domain orchestration over the in-DB GDS Louvain :class:`CommunityRepository`: detect (the 5-level
-multi-resolution hierarchy), list (filter by level + kind), get one (with members), status, and the
-graph ``/analytics`` summary. RE-ARCHITECTS the legacy ``GraphAnalyticsService`` — the
-``leidenalg``/``igraph`` in-memory pipeline is gone; this layer only orchestrates the repository's
-in-DB Louvain.
+Domain orchestration over the in-DB GDS Louvain :class:`CommunityRepository`: detect (Louvain's
+native dendrogram — an honest, variable level count, not a fixed 5), list (filter by level + kind),
+get one (with members), status, and the graph ``/analytics`` summary. RE-ARCHITECTS the legacy
+``GraphAnalyticsService`` — the ``leidenalg``/``igraph`` in-memory pipeline is gone; this layer only
+orchestrates the repository's in-DB Louvain.
 
 Authz: owner-gated (a graph in another org/owner is invisible — 404, no leak) on top of the
 fail-closed org scope the repository enforces. Neo4j access is the repository's alone; this layer
@@ -35,7 +35,10 @@ from oraclous_knowledge_graph_service.domain.community import (
 from oraclous_knowledge_graph_service.domain.job import IngestionJobRecord
 from oraclous_knowledge_graph_service.repositories.community_repository import CommunityRepository
 from oraclous_knowledge_graph_service.repositories.job_repository import IngestionJobRepository
-from oraclous_knowledge_graph_service.services.community_summarizer import CommunitySummarizer
+from oraclous_knowledge_graph_service.services.community_summarizer import (
+    CommunitySummarizer,
+    SummarizeOutcome,
+)
 from oraclous_knowledge_graph_service.services.graph_service import GraphService
 
 
@@ -128,7 +131,10 @@ class AnalyticsService:
         await self._own(graph_id=graph_id, user_id=user_id)
         gid = str(graph_id)
         settings = get_settings()
-        floor = DEFAULT_MIN_ENTITIES if min_entities is None else min_entities
+        # Floor the effective minimum at 1: a caller may pass min_entities=0 (ge=0 is allowed), but
+        # an empty/0-entity graph must always cleanly SKIP — projecting an empty GDS graph and
+        # running gds.louvain on a NULL projection is a 500, not a result.
+        floor = max(1, DEFAULT_MIN_ENTITIES if min_entities is None else min_entities)
         entity_count = await asyncio.to_thread(self._repo.count_entities, graph_id=gid)
         if entity_count < floor:
             return self._skipped(
@@ -181,11 +187,17 @@ class AnalyticsService:
     ) -> tuple[IngestionJobRecord | None, DetectionResult | None]:
         """Decide sync vs. async, and dispatch.
 
-        Tiny graphs (≤ ``community_sync_entity_threshold`` entities) detect INLINE under a bounded
-        timeout and return a ``DetectionResult`` (the route 200s). If the inline run overruns the
-        timeout, or the graph is larger, or no broker is wired, it enqueues a ``community_detect``
-        job carrying ``min_entities``/``force_rebuild`` and returns the ``IngestionJobRecord`` (the
-        route 202s with ``{job_id,status}``). Owner-gated.
+        Tiny graphs (≤ ``community_sync_entity_threshold`` entities) detect INLINE and return a
+        ``DetectionResult`` (the route 200s); in-DB GDS Louvain on a few-hundred-node graph is
+        sub-second, so the inline path needs no timeout. A larger graph (or no broker wired)
+        enqueues a ``community_detect`` job carrying ``min_entities``/``force_rebuild`` and returns
+        the ``IngestionJobRecord`` (the route 202s with ``{job_id,status}``). Owner-gated.
+
+        No inline timeout fallback: ``asyncio.wait_for`` could not cancel ``detect`` (it runs in
+        ``asyncio.to_thread`` — the thread, holding the Redis lock and mid destructive
+        clear+rebuild, keeps running after the await is abandoned), so a timeout-then-enqueue would
+        double-run the rebuild (or hit the lock and confusingly skip) under a misleading job status.
+        The small-graph threshold is the only gate the inline path needs.
 
         Returns ``(job, None)`` for async or ``(None, result)`` for sync.
         """
@@ -195,21 +207,13 @@ class AnalyticsService:
         entity_count = await asyncio.to_thread(self._repo.count_entities, graph_id=gid)
         can_async = self._jobs is not None and self._enqueue is not None
         if entity_count <= settings.community_sync_entity_threshold or not can_async:
-            try:
-                result = await asyncio.wait_for(
-                    self.detect(
-                        graph_id=graph_id,
-                        user_id=user_id,
-                        min_entities=min_entities,
-                        force_rebuild=force_rebuild,
-                    ),
-                    timeout=settings.community_sync_timeout_seconds,
-                )
-                return None, result
-            except TimeoutError:
-                if not can_async:
-                    raise
-                # A tiny graph that nonetheless overran the inline budget: fall back to the worker.
+            result = await self.detect(
+                graph_id=graph_id,
+                user_id=user_id,
+                min_entities=min_entities,
+                force_rebuild=force_rebuild,
+            )
+            return None, result
         return await self._enqueue_detect(
             graph_id=graph_id, min_entities=min_entities, force_rebuild=force_rebuild
         )
@@ -349,23 +353,23 @@ class AnalyticsService:
         user_id: uuid.UUID,
         level: int | None = None,
         force: bool = False,
-    ) -> int:
-        """LLM-summarise the graph's communities (optionally one level). Returns the count done.
+    ) -> SummarizeOutcome:
+        """LLM-summarise the graph's communities (optionally one level). Returns the outcome.
 
         Cost-aware (a real LLM call per community bills): by default it summarises only communities
-        that have NO summary yet (``force`` re-summarises all), so a re-run resumes after a partial
-        failure and doesn't re-bill. Above ``community_summarize_max_inline`` candidate communities
-        the work is too large to block the request — it returns 0 (the caller should use the async
-        detect path, which summarises inline on the worker). Owner-gated. Raises
-        ``SummarizationUnavailable`` (→503) when no LLM summarizer is configured (``KGS_EXTRACTOR``
-        is not ``openai``) — never silently no-ops."""
+        that have no real summary yet (``force`` re-summarises all), so a re-run resumes after a
+        partial failure and doesn't re-bill. Above ``community_summarize_max_inline`` candidate
+        communities the work is too large to block the request — the outcome is
+        ``status="deferred"`` (DISTINGUISHABLE from a completed run that did nothing) with the
+        deferred candidate count, so the caller knows to use the async detect path (which summarises
+        on the worker). Owner-gated. Raises ``SummarizationUnavailable`` (→503) when no LLM
+        summarizer is configured (``KGS_EXTRACTOR`` is not ``openai``) — never silently no-ops."""
         await self._own(graph_id=graph_id, user_id=user_id)
         if self._summarizer is None:
             raise SummarizationUnavailable(
                 "community summarisation is not configured (set KGS_EXTRACTOR=openai)"
             )
         cap = get_settings().community_summarize_max_inline
-        results = await self._summarizer.summarize_graph(
+        return await self._summarizer.summarize_graph(
             graph_id=str(graph_id), level=level, force=force, max_communities=cap or None
         )
-        return len(results)

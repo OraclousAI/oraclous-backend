@@ -108,6 +108,20 @@ def test_detect_drops_projection_once() -> None:
     assert "includeIntermediateCommunities" in louvain[0]
 
 
+def test_only_unsummarized_retries_fallback_degraded() -> None:
+    """The default summarizer resume must re-summarise the fallback-degraded placeholders (a
+    non-null summary that never reached a model) as well as the never-summarised, but never the
+    real (llm) summaries — so a degraded community gets a real summary on retry without re-billing
+    the good ones."""
+    driver = _FakeDriver()
+    repo = CommunityRepository(driver)
+    with use_organisation_context(_ctx()):
+        repo.list_communities(graph_id="g1", level=None, min_entities=1, only_unsummarized=True)
+    list_query = next(q for q, _ in driver.calls if "c.entity_count >= $min_entities" in q)
+    # Filter retries BOTH null and fallback-degraded summaries, leaving llm summaries untouched.
+    assert "c.summary IS NULL OR c.summary_source = 'fallback'" in list_query
+
+
 class _FakeLock:
     """A minimal in-memory stand-in for a sync ``redis.Redis`` lock (SET NX EX / GET / DELETE)."""
 

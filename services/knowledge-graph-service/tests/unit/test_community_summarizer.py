@@ -121,7 +121,9 @@ async def test_fallback_persists_distinguishably(monkeypatch) -> None:
         model_name="test-model",
         max_concurrency=1,
     )
-    results = await summarizer.summarize_graph(graph_id="g1")
+    outcome = await summarizer.summarize_graph(graph_id="g1")
+    assert outcome.status == "completed"
+    results = outcome.results
     assert len(results) == 1
     assert results[0].source == "fallback"
     persisted = repo.persisted[0]
@@ -143,8 +145,9 @@ async def test_summarize_graph_persists_each() -> None:
         model_name="test-model",
         max_concurrency=2,
     )
-    results = await summarizer.summarize_graph(graph_id="g1")
-    assert len(results) == 2
+    outcome = await summarizer.summarize_graph(graph_id="g1")
+    assert outcome.status == "completed"
+    assert len(outcome.results) == 2
     assert len(repo.persisted) == 2
     # Provenance: the model name + source='llm' flow into every real persisted summary.
     assert all(p["summary_model"] == "test-model" for p in repo.persisted)
@@ -178,11 +181,31 @@ async def test_inline_cap_defers_large_batches() -> None:
         model_name="m",
         max_concurrency=2,
     )
-    # 5 candidates exceed the inline cap of 2 → deferred (no LLM calls, nothing persisted).
-    results = await summarizer.summarize_graph(graph_id="g1", max_communities=2)
-    assert results == []
+    # 5 candidates exceed the inline cap of 2 → deferred (no LLM calls, nothing persisted), and the
+    # outcome is DISTINGUISHABLE from a completed empty run (status='deferred' + candidate count).
+    outcome = await summarizer.summarize_graph(graph_id="g1", max_communities=2)
+    assert outcome.results == []
+    assert outcome.status == "deferred"
+    assert outcome.deferred_count == 5
     assert repo.persisted == []
     assert llm.calls == []
+
+
+async def test_completed_empty_run_is_distinguishable_from_deferred() -> None:
+    # Nothing to summarise (no candidates) → a COMPLETED run with no results — distinct from the
+    # capped/deferred case above (both would otherwise just show summarized=0).
+    repo = _FakeRepo([])
+    llm = _FakeLLM([])
+    summarizer = CommunitySummarizer(
+        repo=repo,  # type: ignore[arg-type]
+        llm=llm,
+        model_name="m",
+        max_concurrency=1,
+    )
+    outcome = await summarizer.summarize_graph(graph_id="g1", max_communities=2)
+    assert outcome.results == []
+    assert outcome.status == "completed"
+    assert outcome.deferred_count == 0
 
 
 async def test_one_failing_community_does_not_sink_batch() -> None:
@@ -195,9 +218,9 @@ async def test_one_failing_community_does_not_sink_batch() -> None:
         model_name="test-model",
         max_concurrency=1,
     )
-    results = await summarizer.summarize_graph(graph_id="g1")
+    outcome = await summarizer.summarize_graph(graph_id="g1")
     # One failed, one succeeded — the batch survives.
-    assert len(results) == 1
+    assert len(outcome.results) == 1
     assert len(repo.persisted) == 1
 
 

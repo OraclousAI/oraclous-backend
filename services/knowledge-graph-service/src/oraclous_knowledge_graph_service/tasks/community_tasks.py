@@ -6,10 +6,11 @@ NullPool-engine + task-scoped Neo4j driver disposed per task (ADR-012 worker inv
 organisation_id is carried as an explicit JSON arg and re-bound via ``use_organisation_context``
 BEFORE any substrate call.
 
-Work: run in-DB GDS Louvain detection across the 5 resolutions (``CommunityRepository.detect``),
-then — when LLM summarisation is enabled (``KGS_EXTRACTOR=openai``) — summarise the detected
-communities. Both read the org from the contextvar exactly as a request would. The job row is the
-existing ``ingestion_jobs`` row created with ``source_type='community_detect'``.
+Work: run in-DB GDS Louvain detection over the native dendrogram (``CommunityRepository.detect`` —
+an honest, variable level count, not a fixed 5/resolution sweep), then — when LLM summarisation is
+enabled (``KGS_EXTRACTOR=openai``) — summarise the detected communities. Both read the org from the
+contextvar exactly as a request would. The job row is the existing ``ingestion_jobs`` row created
+with ``source_type='community_detect'``.
 """
 
 from __future__ import annotations
@@ -63,7 +64,9 @@ async def _detect_async(job_id_s: str, organisation_id_s: str) -> dict[str, Any]
         engine = make_worker_engine()
         maker = make_sessionmaker(engine)
         driver = make_neo4j_driver(settings)
-        lock_client = make_redis_lock_client(settings)
+        # make_redis_lock_client does a blocking ping(); run it off the event loop (mirrors the
+        # lifespan path) so a slow/unreachable Redis can't block the worker's event loop.
+        lock_client = await asyncio.to_thread(make_redis_lock_client, settings)
         try:
             async with maker() as session:
                 jobs = IngestionJobRepository(session)
@@ -83,7 +86,9 @@ async def _detect_async(job_id_s: str, organisation_id_s: str) -> dict[str, Any]
                 repo = CommunityRepository(
                     driver, database=settings.neo4j_database, lock_client=lock_client
                 )
-                floor = DEFAULT_MIN_ENTITIES if min_entities is None else min_entities
+                # Floor at 1 so an empty/0-entity graph (or min_entities=0) cleanly skips rather
+                # than projecting an empty GDS graph — mirrors the inline path.
+                floor = max(1, DEFAULT_MIN_ENTITIES if min_entities is None else min_entities)
                 entity_count = await asyncio.to_thread(repo.count_entities, graph_id=graph_id)
                 cap = settings.community_max_entities
                 skipped_reason: str | None = None
@@ -107,8 +112,8 @@ async def _detect_async(job_id_s: str, organisation_id_s: str) -> dict[str, Any]
                     total = sum(len(groups) for groups in levels.values())
                     summarizer = make_summarizer(settings, repo=repo)
                     if summarizer is not None and total:
-                        results = await summarizer.summarize_graph(graph_id=graph_id)
-                        summarized = len(results)
+                        outcome = await summarizer.summarize_graph(graph_id=graph_id)
+                        summarized = len(outcome.results)
             except Exception as exc:
                 async with maker() as session:
                     await IngestionJobRepository(session).update_status(

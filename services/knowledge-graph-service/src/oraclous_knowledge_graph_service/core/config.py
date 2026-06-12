@@ -76,10 +76,6 @@ class Settings(BaseSettings):
     # than risk heap exhaustion projecting a huge graph on the 512m Neo4j (legacy
     # COMMUNITY_DETECTION_MAX_ENTITIES). 0 disables the ceiling.
     community_max_entities: int = 500_000
-    # The inline detect path is wrapped in a bounded timeout; a tiny graph that nonetheless overruns
-    # (a slow projection on a cold DB) falls back to the async Celery path instead of blocking the
-    # request indefinitely.
-    community_sync_timeout_seconds: float = 20.0
     # Max communities summarised in one inline summarize call (cost guard). Above it the call
     # returns 0 (the caller routes large summarise to the async path). 0 disables the cap.
     community_summarize_max_inline: int = 200

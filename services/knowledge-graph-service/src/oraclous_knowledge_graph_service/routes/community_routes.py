@@ -148,16 +148,23 @@ async def summarize_communities(
     force: bool = False,
 ) -> SummarizeResponse:
     """LLM-summarise communities. By default only un-summarised ones (so a re-run resumes without
-    re-billing); ``force=true`` re-summarises all."""
+    re-billing); ``force=true`` re-summarises all. A run whose candidate count exceeds the inline
+    cap returns ``status="deferred"`` (not a silent ``summarized=0``) so the caller can route async.
+    """
     try:
-        summarized = await service.summarize(
+        outcome = await service.summarize(
             graph_id=graph_id, user_id=user_id, level=level, force=force
         )
     except GraphNotFound:
         raise _GRAPH_NOT_FOUND from None
     except SummarizationUnavailable as exc:
         raise _gds_unavailable(str(exc)) from None
-    return SummarizeResponse(graph_id=str(graph_id), summarized=summarized)
+    return SummarizeResponse(
+        graph_id=str(graph_id),
+        summarized=len(outcome.results),
+        status=outcome.status,
+        deferred=outcome.deferred_count,
+    )
 
 
 @router.get("/analytics", response_model=AnalyticsResponse)

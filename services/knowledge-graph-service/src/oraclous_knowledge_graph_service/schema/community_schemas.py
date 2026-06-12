@@ -148,10 +148,19 @@ class CommunitiesStatusResponse(BaseModel):
 
 
 class SummarizeResponse(BaseModel):
-    """Outcome of a summarise run: how many communities were summarised."""
+    """Outcome of a summarise run.
+
+    ``status`` is ``"completed"`` when the run finished inline, or ``"deferred"`` when the candidate
+    count exceeded the inline cap and NONE ran (the caller should use the async detect path, which
+    summarises on the worker) — so a capped run is DISTINGUISHABLE from a completed one that had
+    nothing to do (both could otherwise show ``summarized=0``). ``deferred`` carries the candidate
+    count skipped on a deferral.
+    """
 
     graph_id: str
     summarized: int
+    status: str = "completed"
+    deferred: int = 0
 
 
 class AnalyticsResponse(BaseModel):

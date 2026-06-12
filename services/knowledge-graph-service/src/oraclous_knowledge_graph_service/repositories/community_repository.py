@@ -449,8 +449,11 @@ class CommunityRepository:
     ) -> list[Community]:
         """Org+graph-scoped community list, optionally filtered by level; ordered level, size.
 
-        ``only_unsummarized`` adds a ``summary IS NULL`` filter so the summarizer can resume after a
-        partial failure and not re-bill communities that already have a summary.
+        ``only_unsummarized`` adds a ``summary IS NULL OR summary_source = 'fallback'`` filter so
+        the summarizer can resume after a partial failure WITHOUT re-billing the communities that
+        already have a REAL (llm) summary — but a fallback-degraded placeholder (non-null summary,
+        but ``summary_source='fallback'``, so it never reached a model) is retried on the default
+        resume so it gets a real summary, rather than being stuck as a degraded placeholder forever.
         """
         cypher = (
             f"MATCH (c:{COMMUNITY_LABEL} {{graph_id: $graph_id}}) "
@@ -465,7 +468,9 @@ class CommunityRepository:
             cypher += "AND c.level = $level "
             params["level"] = level
         if only_unsummarized:
-            cypher += "AND c.summary IS NULL "
+            # Re-summarise both the never-summarised AND the fallback-degraded (a non-null
+            # placeholder that never reached a model), but never the real (llm) summaries.
+            cypher += "AND (c.summary IS NULL OR c.summary_source = 'fallback') "
         cypher += (
             "RETURN c.community_id AS community_id, c.kind AS kind, c.level AS level, "
             "c.entity_count AS entity_count, c.status AS status, "
