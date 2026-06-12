@@ -6,11 +6,11 @@ unreachable at startup the app still serves ``/health`` and the data routes repo
 
 from __future__ import annotations
 
-import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from oraclous_telemetry import Severity, alert, evaluate_readiness, exit_on_degrade_enabled
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from oraclous_credential_broker_service.core.config import Settings, get_settings
@@ -32,8 +32,6 @@ from oraclous_credential_broker_service.repositories.webhook_secret_repository i
 )
 from oraclous_credential_broker_service.services.delegation_service import DelegationService
 from oraclous_credential_broker_service.services.envelope_service import EnvelopeService
-
-logger = logging.getLogger(__name__)
 
 
 def build_kms(settings: Settings) -> KmsProvider:
@@ -76,13 +74,25 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         app.state.delegation_service = DelegationService(
             store=PostgresDelegatedTokenStore(engine=engine)
         )
-    except Exception as exc:  # noqa: BLE001 — degrade: data routes 503, /health still serves
-        logger.warning("Postgres unavailable at startup; data routes disabled: %s", exc)
+    except Exception as exc:  # noqa: BLE001 — degrade: data routes 503, /health reflects it
         app.state.envelope_service = None
         app.state.org_data_key_repository = None
         app.state.credential_repository = None
         app.state.webhook_secret_repository = None
         app.state.delegation_service = None
+        alert(
+            Severity.ERROR,
+            "store_bind_failed",
+            "credential-broker-service",
+            "Postgres unavailable at startup; data routes disabled",
+            store="postgres",
+            error=str(exc),
+        )
+
+    verdict = evaluate_readiness({"postgres": app.state.credential_repository})
+    if verdict.is_degraded and exit_on_degrade_enabled():
+        raise SystemExit(1)
+
     try:
         yield
     finally:

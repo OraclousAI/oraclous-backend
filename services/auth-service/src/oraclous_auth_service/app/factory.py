@@ -28,6 +28,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError
+from oraclous_telemetry import evaluate_readiness
 from pydantic import BaseModel
 
 from oraclous_auth_service.core.jwt_handler import (
@@ -135,8 +136,21 @@ def _register_user_identity(app: FastAPI) -> None:
         )
 
     @app.get("/health")
-    async def health() -> dict:
-        return {"status": "ok"}
+    async def health(request: Request) -> dict:
+        # Liveness — always HTTP 200; the body reflects ok/degraded so an operator sees a startup
+        # store-bind failure (ADR-021). The critical store is Postgres (sessionmaker); the
+        # rate-limiter's Redis is fail-open and does not flip readiness.
+        verdict = evaluate_readiness({"postgres": getattr(request.app.state, "sessionmaker", None)})
+        return {"status": verdict.status, "service": "auth-service"}
+
+    @app.get("/readyz")
+    async def readyz(request: Request) -> JSONResponse:
+        # Readiness — 503 when a critical store didn't bind, so an orchestrator stops routing.
+        verdict = evaluate_readiness({"postgres": getattr(request.app.state, "sessionmaker", None)})
+        return JSONResponse(
+            status_code=verdict.readyz_status_code,
+            content={"status": verdict.status, "service": "auth-service"},
+        )
 
 
 # --- Protocol ---------------------------------------------------------------

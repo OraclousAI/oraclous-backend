@@ -12,6 +12,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from oraclous_substrate import ProvenanceCollector
+from oraclous_telemetry import Severity, alert, evaluate_readiness, exit_on_degrade_enabled
 
 from oraclous_harness_runtime_service.core.config import get_settings
 from oraclous_harness_runtime_service.domain.ohm.signatures import TrustStore
@@ -39,12 +40,23 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         app.state.assignment_repository = assignment_repo
         app.state.checkpoint_repository = checkpoint_repo
         app.state.provenance = ProvenanceCollector(sink)
-    except Exception as exc:  # noqa: BLE001 — degrade: data routes 503, /health still serves
-        logger.warning("Postgres unavailable at startup; execute/read disabled: %s", exc)
+    except Exception as exc:  # noqa: BLE001 — degrade: data routes 503, /health reflects it
         app.state.execution_repository = None
         app.state.assignment_repository = None
         app.state.checkpoint_repository = None
         app.state.provenance = None
+        alert(
+            Severity.ERROR,
+            "store_bind_failed",
+            "harness-runtime-service",
+            "Postgres unavailable at startup; execute/read disabled",
+            store="postgres",
+            error=str(exc),
+        )
+
+    verdict = evaluate_readiness({"postgres": app.state.execution_repository})
+    if verdict.is_degraded and exit_on_degrade_enabled():
+        raise SystemExit(1)
 
     # OHM signature trust store (config-driven). A malformed key degrades to an empty store so
     # /health still serves; verification then fail-closes on any signed OHM (unknown signer).

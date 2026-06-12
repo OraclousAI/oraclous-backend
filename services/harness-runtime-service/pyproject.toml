@@ -16,6 +16,7 @@ dependencies = [
     "alembic>=1.13,<2.0",
     "oraclous-governance",
     "oraclous-substrate",
+    "oraclous-telemetry",
     "python-jose[cryptography]>=3.3,<4.0",
     "cryptography>=42,<46",
 ]
@@ -23,6 +24,7 @@ dependencies = [
 [tool.uv.sources]
 oraclous-governance = { workspace = true }
 oraclous-substrate = { workspace = true }
+oraclous-telemetry = { workspace = true }
 
 [build-system]
 requires = ["hatchling"]
