@@ -6,12 +6,12 @@ startup the app still serves ``/health`` and the job routes report 503.
 
 from __future__ import annotations
 
-import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from oraclous_substrate import ProvenanceCollector
+from oraclous_telemetry import Severity, alert, evaluate_readiness, exit_on_degrade_enabled
 
 from oraclous_execution_engine_service.core.config import get_settings
 from oraclous_execution_engine_service.repositories.job_repository import JobRepository
@@ -23,8 +23,6 @@ from oraclous_execution_engine_service.repositories.roundtable_repository import
     RoundtableRepository,
 )
 from oraclous_execution_engine_service.repositories.schedule_repository import ScheduleRepository
-
-logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
@@ -46,13 +44,24 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         app.state.roundtable_repository = roundtable_repo
         app.state.provenance_repository = provenance_repo
         app.state.provenance = ProvenanceCollector(sink)
-    except Exception as exc:  # noqa: BLE001 — degrade: data routes 503, /health still serves
-        logger.warning("Postgres unavailable at startup; job routes disabled: %s", exc)
+    except Exception as exc:  # noqa: BLE001 — degrade: data routes 503, /health reflects it
         app.state.job_repository = None
         app.state.schedule_repository = None
         app.state.roundtable_repository = None
         app.state.provenance_repository = None
         app.state.provenance = None
+        alert(
+            Severity.ERROR,
+            "store_bind_failed",
+            "execution-engine-service",
+            "Postgres unavailable at startup; job routes disabled",
+            store="postgres",
+            error=str(exc),
+        )
+
+    verdict = evaluate_readiness({"postgres": app.state.job_repository})
+    if verdict.is_degraded and exit_on_degrade_enabled():
+        raise SystemExit(1)
 
     try:
         yield

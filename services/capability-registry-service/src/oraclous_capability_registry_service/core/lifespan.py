@@ -12,6 +12,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from oraclous_telemetry import Severity, alert, evaluate_readiness, exit_on_degrade_enabled
 
 from oraclous_capability_registry_service.core.config import Settings, get_settings
 from oraclous_capability_registry_service.repositories.capability_repository import (
@@ -61,12 +62,23 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         app.state.instance_repository = instance_repo
         app.state.execution_repository = execution_repo
         app.state.credential_broker = broker
-    except Exception as exc:  # noqa: BLE001 — degrade: data routes 503, /health still serves
-        logger.warning("Postgres unavailable at startup; data routes disabled: %s", exc)
+    except Exception as exc:  # noqa: BLE001 — degrade: data routes 503, /health reflects it
         app.state.capability_repository = None
         app.state.instance_repository = None
         app.state.execution_repository = None
         app.state.credential_broker = None
+        alert(
+            Severity.ERROR,
+            "store_bind_failed",
+            "capability-registry-service",
+            "Postgres unavailable at startup; data routes disabled",
+            store="postgres",
+            error=str(exc),
+        )
+
+    verdict = evaluate_readiness({"postgres": app.state.capability_repository})
+    if verdict.is_degraded and exit_on_degrade_enabled():
+        raise SystemExit(1)
 
     # Seed the built-in tool catalogue into the platform org (idempotent plugin discovery). Every
     # tenant org reads it via the repository's widened reads, so a freshly-provisioned org sees the

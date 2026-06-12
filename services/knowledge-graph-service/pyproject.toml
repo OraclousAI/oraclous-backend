@@ -28,11 +28,13 @@ dependencies = [
     "tree-sitter-typescript>=0.23,<0.24",
     "oraclous-governance",
     "oraclous-substrate",
+    "oraclous-telemetry",
 ]
 
 [tool.uv.sources]
 oraclous-governance = { workspace = true }
 oraclous-substrate = { workspace = true }
+oraclous-telemetry = { workspace = true }
 
 [build-system]
 requires = ["hatchling"]

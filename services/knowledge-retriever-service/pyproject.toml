@@ -13,11 +13,13 @@ dependencies = [
     "oraclous-governance",
     "oraclous-substrate",
     "python-jose[cryptography]>=3.3,<4.0",
+    "oraclous-telemetry",
 ]
 
 [tool.uv.sources]
 oraclous-governance = { workspace = true }
 oraclous-substrate = { workspace = true }
+oraclous-telemetry = { workspace = true }
 
 [build-system]
 requires = ["hatchling"]

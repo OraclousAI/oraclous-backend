@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from fastapi import FastAPI, Request, status
 from fastapi.responses import JSONResponse
+from oraclous_telemetry import evaluate_readiness
 
 from oraclous_capability_registry_service.core.config import get_settings
 from oraclous_capability_registry_service.domain.errors import (
@@ -63,12 +64,34 @@ def create_app(*, lifespan=None) -> FastAPI:
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, content={"detail": str(exc)}
         )
 
+    def _health_body(request: Request) -> dict:
+        # Liveness body — reflects ok/degraded so a startup store-bind failure is visible
+        # (ADR-021). The critical store is Postgres (the capability repository).
+        verdict = evaluate_readiness(
+            {"postgres": getattr(request.app.state, "capability_repository", None)}
+        )
+        status_label = "healthy" if not verdict.is_degraded else verdict.status
+        return {
+            "status": status_label,
+            "service": "capability-registry",
+            "version": settings.VERSION,
+        }
+
     @app.get("/health")
-    async def health() -> dict:
-        return {"status": "healthy", "service": "capability-registry", "version": settings.VERSION}
+    async def health(request: Request) -> dict:
+        return _health_body(request)
 
     @app.get("/api/v1/health")
-    async def api_v1_health() -> dict:
-        return {"status": "healthy", "service": "capability-registry", "version": settings.VERSION}
+    async def api_v1_health(request: Request) -> dict:
+        return _health_body(request)
+
+    @app.get("/readyz")
+    async def readyz(request: Request) -> JSONResponse:
+        # Readiness — 503 when the critical store didn't bind so an orchestrator stops routing.
+        verdict = evaluate_readiness(
+            {"postgres": getattr(request.app.state, "capability_repository", None)}
+        )
+        body = _health_body(request)
+        return JSONResponse(status_code=verdict.readyz_status_code, content=body)
 
     return app

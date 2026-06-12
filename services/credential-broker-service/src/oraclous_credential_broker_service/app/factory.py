@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from fastapi import FastAPI, Request, status
 from fastapi.responses import JSONResponse
+from oraclous_telemetry import evaluate_readiness
 
 from oraclous_credential_broker_service.routes.credential_routes import router as credential_router
 from oraclous_credential_broker_service.routes.internal_routes import router as internal_router
@@ -20,7 +21,25 @@ def create_app(*, lifespan=None) -> FastAPI:
         return JSONResponse(status_code=status.HTTP_404_NOT_FOUND, content={"detail": str(exc)})
 
     @app.get("/health")
-    async def health() -> dict:
-        return {"status": "healthy", "service": "credential-broker"}
+    async def health(request: Request) -> dict:
+        # Liveness — always 200; body reflects ok/degraded so a startup store-bind failure is
+        # visible (ADR-021). The critical store is Postgres (the credential repository).
+        verdict = evaluate_readiness(
+            {"postgres": getattr(request.app.state, "credential_repository", None)}
+        )
+        status_label = "healthy" if not verdict.is_degraded else verdict.status
+        return {"status": status_label, "service": "credential-broker"}
+
+    @app.get("/readyz")
+    async def readyz(request: Request) -> JSONResponse:
+        # Readiness — 503 when the critical store didn't bind so an orchestrator stops routing.
+        verdict = evaluate_readiness(
+            {"postgres": getattr(request.app.state, "credential_repository", None)}
+        )
+        status_label = "healthy" if not verdict.is_degraded else verdict.status
+        return JSONResponse(
+            status_code=verdict.readyz_status_code,
+            content={"status": status_label, "service": "credential-broker"},
+        )
 
     return app
