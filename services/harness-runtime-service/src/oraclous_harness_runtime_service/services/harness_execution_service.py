@@ -14,6 +14,7 @@ OHM errors (parse/schema/version/reference/signature) propagate to the route (42
 
 from __future__ import annotations
 
+import logging
 import uuid
 from typing import Any
 
@@ -54,9 +55,16 @@ from oraclous_harness_runtime_service.repositories.assignment_repository import 
 from oraclous_harness_runtime_service.repositories.checkpoint_repository import CheckpointRepository
 from oraclous_harness_runtime_service.repositories.execution_repository import ExecutionRepository
 from oraclous_harness_runtime_service.services.broker_client import BrokerClient, BrokerError
+from oraclous_harness_runtime_service.services.memory_client import MemoryWriter
 from oraclous_harness_runtime_service.services.registry_client import RegistryClient, RegistryError
 
+logger = logging.getLogger(__name__)
+
 _RESERVED_CONFIG_KEYS = ("credential_mappings", "capability_id")
+
+# Run states that count as a COMPLETED run for the post-run memory hook (#332 / ADR-027 §5) — an
+# ESCALATED pause (HITL / human assignment) is not a completed run, so no memory is written for it.
+_MEMORY_TERMINAL_STATUSES = (HarnessStatus.SUCCEEDED.value, HarnessStatus.FAILED.value)
 
 
 class HarnessExecutionError(Exception):
@@ -109,6 +117,25 @@ def _cursor(checkpoint: LoopCheckpoint) -> dict[str, int]:
     }
 
 
+def _manifest_graph_context(manifest) -> str | None:  # noqa: ANN001
+    """The run's graph context (#332 / ADR-027 §5): when the manifest binds EXACTLY ONE distinct
+    ``config.graph_id`` across its capabilities, that graph is where the run's memories land;
+    zero or several → None (the KGS falls back to the org-default memory graph)."""
+    try:
+        graph_ids = {
+            str(cap.config["graph_id"])
+            for cap in manifest.capabilities
+            if isinstance(cap.config, dict) and cap.config.get("graph_id")
+        }
+    except Exception:  # noqa: BLE001 — fail-soft: the hook never hurts a run
+        return None
+    return graph_ids.pop() if len(graph_ids) == 1 else None
+
+
+def _tool_step_names(steps: list[LoopStep]) -> list[str]:
+    return [s.name for s in steps if s.kind is StepKind.TOOL and s.name]
+
+
 class HarnessExecutionService:
     def __init__(
         self,
@@ -127,6 +154,7 @@ class HarnessExecutionService:
         llm_timeout: float,
         llm_allow_private: bool,
         max_iterations: int,
+        memory: MemoryWriter | None = None,
     ) -> None:
         self._registry = registry
         self._broker = broker
@@ -142,6 +170,9 @@ class HarnessExecutionService:
         self._llm_timeout = llm_timeout
         self._llm_allow_private = llm_allow_private
         self._max_iterations = max_iterations
+        # The post-run memory hook (#332 / ADR-027 §5). None when HARNESS_MEMORY_WRITES is off
+        # (the code default) — flag off means ZERO memory calls, not a no-op writer.
+        self._memory = memory
 
     async def execute(
         self,
@@ -245,6 +276,19 @@ class HarnessExecutionService:
             status=result.status.value,
             summary=result.output,
         )
+        # Post-run memory hook (#332 / ADR-027 §5): fire-and-forget AFTER the run is fully
+        # persisted + audited — it can never fail, block, or slow the run (the writer swallows
+        # everything; this guard is belt-and-braces).
+        self._write_run_memories(
+            harness_id=str(manifest.metadata.id),
+            harness_name=manifest.metadata.name,
+            status=result.status.value,
+            user_input=user_input,
+            output=result.output,
+            tool_names=_tool_step_names(result.steps),
+            execution_id=execution_id,
+            graph_id=_manifest_graph_context(manifest),
+        )
         return row
 
     async def resume(
@@ -289,7 +333,9 @@ class HarnessExecutionService:
         try:
             if decision == "DENIED":
                 return await self._resume_denied(execution, org_id, prov, resource, decision_reason)
-            return await self._resume_approved(execution, checkpoint, org_id, prov, resource)
+            return await self._resume_approved(
+                execution, checkpoint, org_id, prov, resource, decision_reason
+            )
         except Exception:
             await self._checkpoints.revert_to_pending(checkpoint.id, org_id)
             raise
@@ -343,6 +389,20 @@ class HarnessExecutionService:
                 outcome=HarnessStatus.FAILED.value,
             )
         )
+        # Post-run memory hook: the run COMPLETED (FAILED, human_rejected) and the denial reason is
+        # explicit human feedback. No manifest is loaded on this path → no graph context (the KGS
+        # org-default memory graph applies).
+        self._write_run_memories(
+            harness_id=str(getattr(execution, "harness_id", "") or ""),
+            harness_name=execution.harness_name,
+            status=HarnessStatus.FAILED.value,
+            user_input=execution.input,
+            output=message,
+            tool_names=[],
+            execution_id=execution.id,
+            graph_id=None,
+            human_feedback=reason,
+        )
         return row or execution
 
     async def _resume_approved(
@@ -352,6 +412,7 @@ class HarnessExecutionService:
         org_id: uuid.UUID,
         prov: str,
         resource: str,
+        decision_reason: str | None = None,
     ) -> HarnessExecution:
         # Replay the EXACT paused manifest (stored on the checkpoint → no drift, hash stable).
         document = checkpoint.manifest_doc
@@ -439,7 +500,64 @@ class HarnessExecutionService:
             status=result.status.value,
             summary=result.output,
         )
+        # Post-run memory hook: only a COMPLETED run writes (a chained re-pause does not); an
+        # approval carrying an explicit reason is human feedback worth a procedural memory.
+        self._write_run_memories(
+            harness_id=str(manifest.metadata.id),
+            harness_name=execution.harness_name,
+            status=result.status.value,
+            user_input=execution.input,
+            output=result.output,
+            tool_names=_tool_step_names(result.steps),
+            execution_id=execution.id,
+            graph_id=_manifest_graph_context(manifest),
+            human_feedback=decision_reason,
+        )
         return row or execution
+
+    def _write_run_memories(
+        self,
+        *,
+        harness_id: str,
+        harness_name: str,
+        status: str,
+        user_input: str,
+        output: str | None,
+        tool_names: list[str],
+        execution_id: uuid.UUID,
+        graph_id: str | None,
+        human_feedback: str | None = None,
+    ) -> None:
+        """The flag-gated, fail-soft post-run memory hook (#332 / ADR-027 §5).
+
+        No writer (flag off) → ZERO calls. A completed run (SUCCEEDED/FAILED) schedules one
+        episodic outcome memory; explicit human feedback additionally schedules a procedural one.
+        Scheduling is fire-and-forget (≈2s-timeout detached tasks) and everything is swallowed —
+        this method can never raise into the run path.
+        """
+        if self._memory is None or status not in _MEMORY_TERMINAL_STATUSES:
+            return
+        try:
+            self._memory.schedule_run_outcome(
+                harness_id=harness_id,
+                harness_name=harness_name,
+                status=status,
+                user_input=user_input,
+                output=output,
+                tool_names=tool_names,
+                execution_id=execution_id,
+                graph_id=graph_id,
+            )
+            if human_feedback and human_feedback.strip():
+                self._memory.schedule_human_feedback(
+                    harness_id=harness_id,
+                    harness_name=harness_name,
+                    feedback=human_feedback,
+                    execution_id=execution_id,
+                    graph_id=graph_id,
+                )
+        except Exception:  # noqa: BLE001 — belt-and-braces; the writer already swallows everything
+            logger.warning("post-run memory hook failed to schedule; run unaffected")
 
     async def _build_runnable(
         self,

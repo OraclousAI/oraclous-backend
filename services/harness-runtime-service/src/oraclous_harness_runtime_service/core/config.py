@@ -47,6 +47,15 @@ class Settings(BaseSettings):
     capability_registry_url: str = "http://capability-registry-service:8000"
     credential_broker_url: str = "http://credential-broker-service:8000"
     knowledge_retriever_url: str = "http://knowledge-retriever-service:8000"
+    knowledge_graph_url: str = "http://knowledge-graph-service:8000"
+
+    # --- post-run agent-memory hook (#332 / ADR-027 §5). DEFAULT FALSE IN CODE (the zero-risk
+    # constraint): with the flag off the memory writer is never constructed and zero memory calls
+    # happen — existing runs carry zero new risk. The deploy env opts in (HARNESS_MEMORY_WRITES=
+    # true in deploy/.env). Writes are fire-and-forget with this short timeout; every failure is
+    # swallowed + logged — a memory write can NEVER fail, block, or slow a run. ---
+    memory_writes: bool = False
+    memory_write_timeout: float = 2.0
 
     # --- the LLM seam. `live` (fail-closed default, ADR-021 §1): a real client from the OHM model's
     # protocol_shape + a per-execution BYOM key via the broker (ADR-008; the harness never holds a

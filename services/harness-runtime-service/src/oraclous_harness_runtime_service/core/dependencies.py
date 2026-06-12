@@ -32,6 +32,7 @@ from oraclous_harness_runtime_service.services.broker_client import BrokerClient
 from oraclous_harness_runtime_service.services.harness_execution_service import (
     HarnessExecutionService,
 )
+from oraclous_harness_runtime_service.services.memory_client import MemoryWriter
 from oraclous_harness_runtime_service.services.registry_client import RegistryClient
 from oraclous_harness_runtime_service.services.spend_service import SpendService
 
@@ -164,6 +165,23 @@ def get_trust_store(request: Request) -> TrustStore:
     return store if store is not None else TrustStore({})
 
 
+def get_memory_writer(
+    principal: Annotated[Principal, Depends(get_principal)],
+) -> MemoryWriter | None:
+    """The post-run memory hook's writer (#332 / ADR-027 §5) — STRICTLY flag-gated: with
+    ``HARNESS_MEMORY_WRITES`` off (the code default) this returns None and the execution service
+    makes ZERO memory calls. The writer carries the caller's verified identity over the
+    internal-key path (ADR-018) so the KGS scopes the write to the same tenant."""
+    settings = get_settings()
+    if not settings.memory_writes:
+        return None
+    return MemoryWriter(
+        base_url=settings.knowledge_graph_url,
+        headers=build_downstream_headers(principal, settings),
+        timeout=settings.memory_write_timeout,
+    )
+
+
 def get_harness_service(
     registry: Annotated[RegistryClient, Depends(get_registry_client)],
     broker: Annotated[BrokerClient, Depends(get_broker_client)],
@@ -172,6 +190,7 @@ def get_harness_service(
     checkpoints: Annotated[CheckpointRepository, Depends(get_checkpoint_repository)],
     provenance: Annotated[ProvenanceCollector, Depends(get_provenance)],
     trust: Annotated[TrustStore, Depends(get_trust_store)],
+    memory: Annotated[MemoryWriter | None, Depends(get_memory_writer)],
 ) -> HarnessExecutionService:
     settings = get_settings()
     return HarnessExecutionService(
@@ -189,6 +208,7 @@ def get_harness_service(
         llm_timeout=settings.llm_request_timeout,
         llm_allow_private=settings.allow_private_llm_targets,
         max_iterations=settings.max_iterations,
+        memory=memory,
     )
 
 
