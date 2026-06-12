@@ -30,6 +30,7 @@ from oraclous_application_gateway_service.schema.published_agent_schemas import 
 )
 from oraclous_application_gateway_service.services.invoke_service import (
     AgentNotFound,
+    AgentNotRunnable,
     UpstreamInvokeError,
 )
 from oraclous_application_gateway_service.services.published_agent_service import (
@@ -83,6 +84,15 @@ async def invoke_published_agent(
     except AgentNotFound as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="no such published agent"
+        ) from exc
+    except AgentNotRunnable as exc:
+        # a PERMANENT binding fault (the bound capability is not runnable) -> a non-retryable 422,
+        # never a retryable 502 the external caller backs off and re-sends forever (#283). The edge
+        # envelope maps an unmapped 4xx to a non-retryable code (MALFORMED_REQUEST), so the caller
+        # gets a terminal, actionable result.
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="the published agent's bound capability is not runnable",
         ) from exc
     except UpstreamInvokeError as exc:
         raise HTTPException(

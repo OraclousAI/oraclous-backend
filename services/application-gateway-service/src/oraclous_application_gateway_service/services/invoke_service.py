@@ -5,7 +5,14 @@ The per-key binding (the key's bound slug must match the invoked agent) is enfor
 its bound capability on the harness (POST /v1/harnesses/execute with the ADR-018 trusted-identity
 headers — the verified SERVICE_ACCOUNT principal + the internal-key attestation; the org is asserted
 by the gateway, never the caller), and project the result to the narrow public ``InvokeResponse``
-(never the harness internals). A broken binding (stale capability ref -> harness non-2xx) is a 502.
+(never the harness internals).
+
+A harness non-2xx is split by permanence (ORAA #283): a 4xx (the bound ``manifest_ref`` names no
+runnable harness — the harness raises ``OHMReferenceError`` → 422 — or any other caller-permanent
+fault) is a PERMANENT binding error (``AgentNotRunnable`` → a non-retryable 422 at the edge), so an
+external integration-key holder gets an actionable, terminal result instead of retrying a 502
+forever; a 5xx (a transient harness/dependency failure) stays a retryable 502
+(``UpstreamInvokeError``).
 """
 
 from __future__ import annotations
@@ -28,7 +35,13 @@ class AgentNotFound(Exception):
 
 
 class UpstreamInvokeError(Exception):
-    """The harness could not run the bound capability (e.g. a stale ref) (-> 502)."""
+    """A TRANSIENT harness failure (5xx / a malformed 2xx body) — retryable (-> 502)."""
+
+
+class AgentNotRunnable(Exception):
+    """The bound capability is not runnable (the harness rejected the ref with a 4xx) — a PERMANENT
+    binding error, so the caller must NOT retry. Surfaced as a non-retryable 422 at the edge (#283).
+    """
 
 
 # Collapse the internal HarnessStatus to a COARSE public vocabulary: internal orchestration states
@@ -78,6 +91,12 @@ class InvokeService:
         finally:
             await resp.aclose()
         if code not in (200, 201):
+            # split by permanence: a 4xx is the caller's bound ref being unrunnable (the harness
+            # raises OHMReferenceError → 422 for an unresolvable manifest_ref) — PERMANENT, so it
+            # must NOT be a retryable 502 the caller backs off and re-sends forever (#283). A 5xx is
+            # a transient harness/dependency failure and stays retryable.
+            if 400 <= code < 500:
+                raise AgentNotRunnable(f"harness rejected the bound capability ({code})")
             raise UpstreamInvokeError(f"harness returned {code}")
         # a malformed/contract-drifted 2xx body is a 502, never a 500 — keep the whole parse + the
         # id projection inside the guard (a missing/non-UUID id must not crash to INTERNAL_ERROR).
