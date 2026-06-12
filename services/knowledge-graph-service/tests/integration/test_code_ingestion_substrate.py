@@ -28,6 +28,7 @@ from oraclous_governance import OrganisationContext, PrincipalType, use_organisa
 from oraclous_knowledge_graph_service.core.config import Settings
 from oraclous_knowledge_graph_service.repositories.code_write_repository import (
     CodeGraphWriteRepository,
+    enumerate_code_graphs,
 )
 from oraclous_knowledge_graph_service.services.code_ingestion_service import CodeIngestionService
 
@@ -233,6 +234,109 @@ def test_delta_detection_marks_stale_and_skips_unchanged(neo4j_driver, settings)
     assert len(util) == 1 and util[0]["s"] is None
 
 
+def test_deleted_file_symbols_go_stale_and_are_swept(neo4j_driver, settings) -> None:
+    """A :File present in v1 but ABSENT from v2 (a deletion) -> its symbols (and the :File) are
+    stale-marked by the delta, then reaped by the Stage-6 sweep at TTL (MEDIUM #1)."""
+    graph = str(uuid.uuid4())
+    with use_organisation_context(_ctx(_ORG_A)):
+        svc = CodeIngestionService(driver=neo4j_driver, organisation_id=_ORG_A, settings=settings)
+        # v1: greeter.py + util.py
+        svc.ingest(
+            graph_id=graph,
+            document="repo.zip",
+            data=_zip({"pkg/greeter.py": _GREETER_V1, "pkg/util.py": _UTIL}),
+        )
+        # v2: util.py is GONE (only greeter.py uploaded) -> util.py is a deleted file.
+        counts = svc.ingest(
+            graph_id=graph,
+            document="repo.zip",
+            data=_zip({"pkg/greeter.py": _GREETER_V1}),
+        )
+
+    assert counts["files_deleted"] == 1  # pkg/util.py vanished from the upload
+
+    # The deleted file's symbol is stale-marked (not yet swept — still in grace).
+    util = neo4j_driver.execute_query(
+        "MATCH (f:Function {graph_id:$g, qualified_name:'pkg.util.util'}) RETURN f.stale_at AS s",
+        g=graph,
+    ).records
+    assert len(util) == 1 and util[0]["s"] is not None  # marked stale, durably
+    # The :File node is stale-marked too (the whole deleted subtree ages out).
+    file_node = neo4j_driver.execute_query(
+        "MATCH (f:File {graph_id:$g, path:'pkg/util.py'}) RETURN f.stale_at AS s",
+        g=graph,
+    ).records
+    assert len(file_node) == 1 and file_node[0]["s"] is not None
+
+    # Backdate the pipeline-set stale_at past the TTL, then sweep -> deleted file + symbol reaped.
+    neo4j_driver.execute_query(
+        "MATCH (n {graph_id:$g}) "
+        "WHERE n.stale_at IS NOT NULL "
+        "AND (n.path = 'pkg/util.py' OR n.qualified_name = 'pkg.util.util') "
+        "SET n.stale_at = n.stale_at - duration({days: 30})",
+        g=graph,
+    )
+    with use_organisation_context(_ctx(_ORG_A)):
+        writer = CodeGraphWriteRepository(neo4j_driver, graph_id=graph, organisation_id=_ORG_A)
+        deleted = writer.delete_stale_symbols(ttl_days=settings.code_stale_ttl_days)
+
+    assert deleted >= 2  # the util symbol + the util.py :File node
+    survivors = neo4j_driver.execute_query(
+        "MATCH (f:Function {graph_id:$g}) RETURN collect(f.qualified_name) AS n",
+        g=graph,
+    ).records[0]["n"]
+    assert "pkg.util.util" not in survivors
+    assert _count(neo4j_driver, _ORG_A, graph, "File") == 1  # only greeter.py remains
+
+
+def test_prune_path_end_to_end_through_pipeline(neo4j_driver, settings) -> None:
+    """The full prune lifecycle through the REAL pipeline (MEDIUM #4): v2 REMOVES a symbol that v1
+    defined (same file, symbol gone) -> Stage 1 leaves it `stale_at`-marked after the re-write (NOT
+    revived, since the upload no longer defines it) -> backdate its pipeline-set stale_at past the
+    TTL -> Stage 6 sweep DETACH-DELETEs it. Exercises a durable stale symbol produced by Stage 1 and
+    reaped by Stage 6, not a hand-CREATEd one."""
+    graph = str(uuid.uuid4())
+    with use_organisation_context(_ctx(_ORG_A)):
+        svc = CodeIngestionService(driver=neo4j_driver, organisation_id=_ORG_A, settings=settings)
+        # v1 defines `added` (via _GREETER_V2). v2 (_GREETER_V1) REMOVES `added` from the file.
+        svc.ingest(graph_id=graph, document="repo.zip", data=_zip({"pkg/greeter.py": _GREETER_V2}))
+        svc.ingest(graph_id=graph, document="repo.zip", data=_zip({"pkg/greeter.py": _GREETER_V1}))
+
+    # `added` is gone from the v2 upload, so the re-write never revived it -> it stays stale-marked.
+    added = neo4j_driver.execute_query(
+        "MATCH (f:Function {graph_id:$g, qualified_name:'pkg.greeter.added'}) "
+        "RETURN f.stale_at AS s",
+        g=graph,
+    ).records
+    assert len(added) == 1 and added[0]["s"] is not None  # durably stale (Stage 1 produced it)
+
+    # A symbol the file STILL defines was revived (stale_at cleared) by the re-write.
+    helper = neo4j_driver.execute_query(
+        "MATCH (f:Function {graph_id:$g, qualified_name:'pkg.greeter.helper'}) "
+        "RETURN f.stale_at AS s",
+        g=graph,
+    ).records
+    assert len(helper) == 1 and helper[0]["s"] is None  # revived, survives the sweep
+
+    # Backdate the PIPELINE-set stale_at past the TTL (not a direct CREATE), then run Stage 6.
+    neo4j_driver.execute_query(
+        "MATCH (f:Function {graph_id:$g, qualified_name:'pkg.greeter.added'}) "
+        "SET f.stale_at = f.stale_at - duration({days: 30})",
+        g=graph,
+    )
+    with use_organisation_context(_ctx(_ORG_A)):
+        writer = CodeGraphWriteRepository(neo4j_driver, graph_id=graph, organisation_id=_ORG_A)
+        deleted = writer.delete_stale_symbols(ttl_days=settings.code_stale_ttl_days)
+
+    assert deleted >= 1
+    survivors = neo4j_driver.execute_query(
+        "MATCH (f:Function {graph_id:$g}) RETURN collect(f.qualified_name) AS n",
+        g=graph,
+    ).records[0]["n"]
+    assert "pkg.greeter.added" not in survivors  # the removed symbol was reaped
+    assert "pkg.greeter.helper" in survivors  # the revived symbol survives
+
+
 def test_stale_cleanup_deletes_expired_and_keeps_recent(neo4j_driver, settings) -> None:
     graph = str(uuid.uuid4())
     with use_organisation_context(_ctx(_ORG_A)):
@@ -282,3 +386,28 @@ def test_cross_org_isolation(neo4j_driver, settings) -> None:
     with use_organisation_context(_ctx(_ORG_B)):
         writer_b = CodeGraphWriteRepository(neo4j_driver, graph_id=graph, organisation_id=_ORG_B)
         assert writer_b.existing_file_hashes(["pkg/greeter.py"]) == {}
+
+
+def test_enumerate_code_graphs_lists_pairs_and_bounds(neo4j_driver, settings) -> None:
+    """The beat dispatcher's enumeration (§21 repository read, item 6): every (org, graph) owning
+    code :File nodes, bounded by `limit`. Two orgs ingest two distinct graphs -> all are listed;
+    `limit=1` caps the fan-out."""
+    g1, g2, g3 = str(uuid.uuid4()), str(uuid.uuid4()), str(uuid.uuid4())
+    payload = _zip({"pkg/greeter.py": _GREETER_V1})
+    with use_organisation_context(_ctx(_ORG_A)):
+        svc_a = CodeIngestionService(driver=neo4j_driver, organisation_id=_ORG_A, settings=settings)
+        svc_a.ingest(graph_id=g1, document="repo.zip", data=payload)
+        svc_a.ingest(graph_id=g2, document="repo.zip", data=payload)
+    with use_organisation_context(_ctx(_ORG_B)):
+        CodeIngestionService(driver=neo4j_driver, organisation_id=_ORG_B, settings=settings).ingest(
+            graph_id=g3, document="repo.zip", data=payload
+        )
+
+    pairs = enumerate_code_graphs(neo4j_driver)
+    assert (_ORG_A, g1) in pairs
+    assert (_ORG_A, g2) in pairs
+    assert (_ORG_B, g3) in pairs
+    assert len(pairs) == 3  # DISTINCT (org, graph) pairs
+
+    # The bound caps the fan-out (so a cadence never enumerates an unbounded set).
+    assert len(enumerate_code_graphs(neo4j_driver, limit=1)) == 1

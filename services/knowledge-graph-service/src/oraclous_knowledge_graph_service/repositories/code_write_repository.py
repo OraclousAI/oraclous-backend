@@ -4,9 +4,13 @@ Reshaped from legacy `develop@84152635 code_parser_service.write_code_graph_sync
 the delta/embedding/stale-sweep stages (1/4/6, #305): ordered idempotent MERGEs, with
 `organisation_id` threaded into every key map (next to `graph_id`). Identity: :File on
 (org, graph, path); symbols on (org, graph, qualified_name); :Dependency on (org, graph, name).
-Replace-per-file (delete the file's existing symbols before re-writing) makes re-ingest idempotent
-AND prunes symbols removed from a changed file. Labels are FIXED (no user input) so there is no
-injection surface here.
+
+The delta lifecycle (no hard delete): a changed/deleted file's existing symbols are MARKED
+`stale_at` (Stage 1) and either REVIVED by the re-write (`stale_at` cleared) or REAPED by the
+Stage-6 TTL sweep. `upsert_files` MERGE-upserts the surviving :File nodes; `mark_files_deleted`
+stale-marks the symbols (and :File nodes) of files that vanished from a new upload, so deletions +
+the old half of a rename are reaped too. Labels are FIXED (no user input) so there is no injection
+surface here.
 
 The org+graph scope is server-injected at construction — the caller can never override it, and
 every Cypher carries `organisation_id` so no read/write ever crosses a tenant boundary.
@@ -65,6 +69,28 @@ class CodeGraphWriteRepository:
                 out[rec["path"]] = rec["hash"]
         return out
 
+    def all_file_paths(self) -> set[str]:
+        """Stage 1 read: return every code :File path already in this (org, graph).
+
+        Org+graph scoped — the delta uses this to detect files that EXISTED before but are ABSENT
+        from the current upload (deletions + the old half of a rename), which the per-upload path
+        scan alone can never see."""
+        out: set[str] = set()
+        result = self._driver.execute_query(
+            """
+            MATCH (f:File {graph_id: $graph_id, organisation_id: $organisation_id,
+                           ingestion_source: 'code'})
+            RETURN f.path AS path
+            """,
+            organisation_id=self._org,
+            graph_id=self._graph,
+            database_=self._db,
+        )
+        for rec in result.records:
+            if rec["path"] is not None:
+                out.add(rec["path"])
+        return out
+
     def mark_symbols_stale(self, paths: list[str]) -> None:
         """Stage 1: stamp ``stale_at = datetime()`` on the existing symbols of changed files.
 
@@ -82,10 +108,35 @@ class CodeGraphWriteRepository:
                 paths=batch,
             )
 
-    def replace_files(self, files: list[dict]) -> None:
-        """MERGE each :File (upsert). Symbol pruning is handled by the Stage 1 stale-mark + Stage 6
-        sweep (a changed file's symbols are marked stale, then revived by the re-write or swept), so
-        this no longer hard-deletes — that would defeat the delta lifecycle."""
+    def mark_files_deleted(self, paths: list[str]) -> None:
+        """Stage 1: stale-mark the symbols AND :File nodes of files that vanished from the upload.
+
+        A :File present in a prior ingest but ABSENT from the current upload (a deletion, or the old
+        half of a rename) is never re-written, so its symbols would otherwise linger forever. We
+        stamp ``stale_at`` on both the file's symbols (so Stage 6 reaps them at TTL) and the :File
+        node itself, so a deleted file's whole subtree ages out of the graph. The symbols are not
+        revived (the file is not in `to_write`), so they stay stale through the grace window."""
+        for batch in _chunks(paths):
+            self._run(
+                """
+                UNWIND $paths AS p
+                MATCH (f:File {graph_id: $graph_id, organisation_id: $organisation_id, path: p})
+                SET f.stale_at = datetime()
+                WITH f
+                OPTIONAL MATCH (f)<-[:DEFINED_IN]-(sym)
+                WHERE sym:Function OR sym:Class OR sym:Variable
+                SET sym.stale_at = datetime()
+                """,
+                paths=batch,
+            )
+
+    def upsert_files(self, files: list[dict]) -> None:
+        """MERGE each :File (upsert), reviving a previously delete-marked file (clear ``stale_at``).
+
+        No hard delete: symbol pruning is the Stage 1 stale-mark + Stage 6 sweep (a changed/deleted
+        file's symbols are marked stale, then revived by the re-write or reaped), so deleting here
+        would defeat the delta lifecycle. A file that re-appears (was stale-marked deleted, now back
+        in the upload) has its :File ``stale_at`` cleared so it is not swept."""
         for batch in _chunks(files):
             self._run(
                 """
@@ -93,7 +144,8 @@ class CodeGraphWriteRepository:
                 MERGE (file:File:__KGBuilder__
                        {graph_id: $graph_id, organisation_id: $organisation_id, path: f.path})
                 SET file.language = f.language, file.content_hash = f.content_hash,
-                    file.size_bytes = f.size_bytes, file.ingestion_source = 'code'
+                    file.size_bytes = f.size_bytes, file.ingestion_source = 'code',
+                    file.stale_at = null
                 """,
                 batch=batch,
             )
@@ -223,20 +275,30 @@ class CodeGraphWriteRepository:
     # built here. See the PR/issue report for this deferral.
 
     def delete_stale_symbols(self, *, ttl_days: int) -> int:
-        """Stage 6 sweep: detach-delete code symbols marked `stale_at` older than the TTL.
+        """Stage 6 sweep: detach-delete code symbols AND deleted :File nodes marked `stale_at`
+        older than the TTL.
 
         Org+graph scoped; returns the count deleted. Runs in batches of `_BATCH` (a bounded MATCH +
         DETACH DELETE per call) so one sweep never holds a single huge lock — looping until a batch
-        deletes nothing."""
+        deletes nothing. Symbols are swept first, then the deleted :File nodes (a deleted file's
+        whole subtree ages out). Reuse the per-(org,graph) ingest lock around the call (the task
+        layer does) so a DETACH DELETE never races a concurrent ingest reviving the same node."""
+        total = self._delete_stale_by_predicate(
+            label_filter="n:Function OR n:Class OR n:Variable", ttl_days=ttl_days
+        )
+        total += self._delete_stale_by_predicate(label_filter="n:File", ttl_days=ttl_days)
+        return total
+
+    def _delete_stale_by_predicate(self, *, label_filter: str, ttl_days: int) -> int:
         total = 0
         while True:
             result = self._driver.execute_query(
-                """
+                f"""
                 MATCH (n)
-                WHERE (n:Function OR n:Class OR n:Variable)
+                WHERE ({label_filter})
                   AND n.graph_id = $graph_id AND n.organisation_id = $organisation_id
                   AND n.stale_at IS NOT NULL
-                  AND n.stale_at < datetime() - duration({days: $ttl_days})
+                  AND n.stale_at < datetime() - duration({{days: $ttl_days}})
                 WITH n LIMIT $batch
                 DETACH DELETE n
                 RETURN count(n) AS deleted
@@ -253,3 +315,29 @@ class CodeGraphWriteRepository:
             if deleted < _BATCH:
                 break
         return total
+
+
+def enumerate_code_graphs(
+    driver: Driver, *, database: str | None = None, limit: int | None = None
+) -> list[tuple[str, str]]:
+    """Repository read for the Stage-6 beat dispatcher: every distinct (org, graph) owning code
+    ``:File`` nodes (§21 — the only Neo4j access stays in this layer, not the tasks layer).
+
+    Cross-org by design (a beat process has no single org context; it fans out one org-scoped sweep
+    per pair), so this is a module-level read, not an org-bound instance method. ``limit`` bounds
+    the fan-out so the dispatcher never enumerates an unbounded set per cadence; ``None`` is
+    unbounded (cap disabled). Returns ``[(organisation_id, graph_id), ...]``."""
+    cypher = """
+        MATCH (f:File {ingestion_source: 'code'})
+        WHERE f.organisation_id IS NOT NULL AND f.graph_id IS NOT NULL
+        RETURN DISTINCT f.organisation_id AS org, f.graph_id AS graph
+        ORDER BY org, graph
+    """
+    if limit is not None:
+        cypher += "\n        LIMIT $limit"
+    result = driver.execute_query(
+        cypher,
+        limit=limit,
+        database_=database,
+    )
+    return [(rec["org"], rec["graph"]) for rec in result.records]
