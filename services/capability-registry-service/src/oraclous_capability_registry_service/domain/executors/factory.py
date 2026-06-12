@@ -10,6 +10,9 @@ from __future__ import annotations
 
 from typing import Any
 
+from oraclous_capability_registry_service.domain.connectors.federated_search import (
+    FederatedSearchConnector,
+)
 from oraclous_capability_registry_service.domain.connectors.find_similar import (
     FindSimilarConnector,
 )
@@ -26,6 +29,7 @@ from oraclous_capability_registry_service.domain.connectors.notion import Notion
 from oraclous_capability_registry_service.domain.connectors.postgresql import PostgreSQLReader
 from oraclous_capability_registry_service.domain.executors.base import BaseToolExecutor
 from oraclous_capability_registry_service.domain.plugins.builtin import (
+    FederatedSearchPlugin,
     FindSimilarPlugin,
     GitHubReaderPlugin,
     GraphIngestPlugin,
@@ -50,6 +54,7 @@ _EXECUTORS: dict[str, type[BaseToolExecutor]] = {
     KnowledgeRetrieverPlugin.plugin_id(): KnowledgeRetrieverConnector,
     FindSimilarPlugin.plugin_id(): FindSimilarConnector,
     GraphIngestPlugin.plugin_id(): GraphIngestConnector,
+    FederatedSearchPlugin.plugin_id(): FederatedSearchConnector,
 }
 
 
