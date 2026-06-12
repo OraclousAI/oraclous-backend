@@ -22,14 +22,31 @@ import logging
 from typing import Any
 
 from fastapi import HTTPException, Request, status
+from oraclous_telemetry import Severity, alert
 
 logger = logging.getLogger(__name__)
+
+_SERVICE = "auth-service"
 
 # Mirrors the legacy 12-character key_prefix window and per-prefix rate.
 _PREFIX_WINDOW_LEN = 12
 _PREFIX_LIMIT = 10
 _PREFIX_WINDOW_SECONDS = 60
 _REDIS_KEY_NS = "rl:agent:pfx:"
+
+
+def _alert_fail_open(*, namespace: str, reason: str) -> None:
+    """Route an auth-limiter Redis fail-open through the shared seam (ADR-021 §1) so the bypass is
+    visible as a structured ``rate_limiter_fail_open`` signal, not just an unstructured log. The
+    auth limiter is fail-open by legacy precedent (a Redis outage must not lock every agent out)."""
+    alert(
+        Severity.WARNING,
+        "rate_limiter_fail_open",
+        _SERVICE,
+        "auth rate limiter could not reach Redis; allowing the request (fail-open)",
+        namespace=namespace,
+        reason=reason,
+    )
 
 
 def _extract_credential(body_bytes: bytes) -> str:
@@ -69,6 +86,7 @@ async def enforce_agent_credential_prefix_rate_limit(request: Request) -> None:
     redis_client = getattr(request.app.state, "redis", None)
     if redis_client is None:
         logger.warning("rate_limiter: Redis not available, skipping prefix check")
+        _alert_fail_open(namespace=_REDIS_KEY_NS, reason="redis_unconfigured")
         return
 
     redis_key = f"{_REDIS_KEY_NS}{prefix}"
@@ -84,6 +102,7 @@ async def enforce_agent_credential_prefix_rate_limit(request: Request) -> None:
         raise
     except Exception as exc:  # noqa: BLE001 — fail-open per legacy precedent
         logger.error("rate_limiter: Redis error during prefix check: %s", exc)
+        _alert_fail_open(namespace=_REDIS_KEY_NS, reason=f"redis_error: {exc}")
         return
 
     if count > _PREFIX_LIMIT:
@@ -127,6 +146,7 @@ async def enforce_invitation_token_prefix_rate_limit(request: Request) -> None:
     redis_client = getattr(request.app.state, "redis", None)
     if redis_client is None:
         logger.warning("rate_limiter: Redis not available, skipping invitation prefix check")
+        _alert_fail_open(namespace=_INVITE_KEY_NS, reason="redis_unconfigured")
         return
     redis_key = f"{_INVITE_KEY_NS}{prefix}"
     try:
@@ -139,6 +159,7 @@ async def enforce_invitation_token_prefix_rate_limit(request: Request) -> None:
         raise
     except Exception as exc:  # noqa: BLE001 — fail-open per legacy precedent
         logger.error("rate_limiter: Redis error during invitation prefix check: %s", exc)
+        _alert_fail_open(namespace=_INVITE_KEY_NS, reason=f"redis_error: {exc}")
         return
     if count > _PREFIX_LIMIT:
         try:

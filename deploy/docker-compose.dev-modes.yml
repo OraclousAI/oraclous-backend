@@ -1,0 +1,23 @@
+# docker-compose.dev-modes.yml — the explicit dev/CI/smoke FAKE-runtime profile (ADR-021 §1).
+#
+# The base docker-compose.yml now FAIL-CLOSED defaults the runtime modes to the SAFE values: the
+# capability-registry uses the REAL credential-broker (CREDENTIAL_BROKER_MODE=real) and the harness
+# uses the LIVE LLM (HARNESS_LLM_MODE=live). A deploy that forgets an override therefore runs the
+# real substrate, never the fake/scripted runtime by accident — and selecting fake fires a loud
+# one-time startup alert (fake_runtime_active).
+#
+# This override re-selects the key-free FAKE runtime EXPLICITLY for dev/CI/smoke, so the suites and
+# smoke.sh keep running without external provider keys. Apply it on top of the base file:
+#
+#   docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.dev-modes.yml up -d
+#
+# The capability-registry smoke layers this (its end-to-end PostgreSQL-connector execution needs the
+# fake broker). The harness/engine smokes instead `export CAPABILITY_REGISTRY_BROKER_MODE=real
+# HARNESS_LLM_MODE=fake` directly (they run the real broker + the fake LLM), so they do not need it.
+services:
+  capability-registry-service:
+    environment:
+      CREDENTIAL_BROKER_MODE: "fake"
+  harness-runtime-service:
+    environment:
+      HARNESS_LLM_MODE: "fake"

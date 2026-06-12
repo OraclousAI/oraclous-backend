@@ -44,7 +44,11 @@ class Settings(BaseSettings):
 
     # --- credential-broker seam (tool execution resolves credentials here; never decrypts) ---
     CREDENTIAL_BROKER_URL: str = "http://credential-broker-service:8000"
-    CREDENTIAL_BROKER_MODE: str = "fake"  # "fake" (dev/CI, key-free) | "real"
+    # Fail-CLOSED default (ADR-021 §1): "real" — a deploy that forgets the override talks to the
+    # real broker, never silently fakes credential resolution. "fake" (key-free, deterministic)
+    # remains valid for dev/CI/smoke but must be selected EXPLICITLY (compose dev profile + CI);
+    # selecting it fires a loud one-time startup alert at the build site (core/lifespan.py).
+    CREDENTIAL_BROKER_MODE: str = "real"  # "real" (fail-closed default) | "fake" (explicit dev/CI)
     # Fake-broker connection string for relational connectors; defaults to this service's own DB so
     # the PostgreSQL connector runs a real query in the key-free smoke. Override to point elsewhere.
     FAKE_DB_DSN: str | None = None

@@ -58,6 +58,19 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     if verdict.is_degraded and exit_on_degrade_enabled():
         raise SystemExit(1)
 
+    # Fail-closed LLM-mode default is `live` (ADR-021 §1). Selecting the scripted fake responder is
+    # valid for CI/smoke but must be EXPLICIT — fire a loud one-time startup alert here so a deploy
+    # running the scripted LLM by accident is impossible to miss (never a buried WARNING).
+    if settings.llm_mode == "fake":
+        alert(
+            Severity.WARNING,
+            "fake_runtime_active",
+            "harness-runtime-service",
+            "HARNESS_LLM_MODE=fake: the agent loop uses the SCRIPTED key-free LLM responder — "
+            "valid for dev/CI/smoke only; a real deploy must unset this (ADR-021 §1)",
+            surface="llm",
+        )
+
     # OHM signature trust store (config-driven). A malformed key degrades to an empty store so
     # /health still serves; verification then fail-closes on any signed OHM (unknown signer).
     try:

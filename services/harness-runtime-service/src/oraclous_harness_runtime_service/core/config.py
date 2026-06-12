@@ -5,8 +5,8 @@ dispatches each capability invocation to the capability-registry over HTTP. It o
 store for its own execution rows + provenance sink. Identity follows the same seam as the other
 services (gateway / dev / jwt). The dev organisation matches the capability-registry's dev org so a
 standalone smoke's instances + credentials are visible across both. The upstream
-URLs have container-network defaults; ``LLM_MODE`` is ``fake`` for key-free CI (a real BYOM provider
-lands in slice 4).
+URLs have container-network defaults; ``llm_mode`` defaults to ``live`` (fail-closed, ADR-021 §1) —
+a real BYOM client per execution; ``fake`` (key-free) is the EXPLICIT dev/CI/smoke selection.
 """
 
 from __future__ import annotations
@@ -48,10 +48,13 @@ class Settings(BaseSettings):
     credential_broker_url: str = "http://credential-broker-service:8000"
     knowledge_retriever_url: str = "http://knowledge-retriever-service:8000"
 
-    # --- the LLM seam. `fake`: key-free deterministic responder (CI/smoke). `live`: a real client
-    # from the OHM model's protocol_shape + a per-execution BYOM key via the broker (ADR-008; the
-    # harness never holds a model key in its own env). ---
-    llm_mode: Literal["fake", "live"] = "fake"
+    # --- the LLM seam. `live` (fail-closed default, ADR-021 §1): a real client from the OHM model's
+    # protocol_shape + a per-execution BYOM key via the broker (ADR-008; the harness never holds a
+    # model key in its own env) — a deploy that forgets the override runs the real LLM, never a
+    # scripted one by accident. `fake`: key-free deterministic responder, valid for CI/smoke but
+    # selected EXPLICITLY (compose dev profile + CI); selecting it fires a loud one-time startup
+    # alert at the selection site (core/lifespan.py). ---
+    llm_mode: Literal["fake", "live"] = "live"
     # provider (the first segment of an OHM model binding) → OpenAI-compatible base URL. OpenRouter
     # serves Claude/OpenAI/Gemini/etc. behind one OpenAI-compatible endpoint + one key.
     llm_base_urls: Annotated[dict[str, str], NoDecode] = dict(_DEFAULT_LLM_BASE_URLS)

@@ -10,6 +10,8 @@ from __future__ import annotations
 import json
 import uuid
 
+from oraclous_telemetry import Severity, alert
+
 from oraclous_application_gateway_service.repositories.upstream_client import UpstreamClient
 
 
@@ -99,5 +101,16 @@ class WebhookSecretClient:
                 return resp.status_code in (200, 204)
             finally:
                 await resp.aclose()
-        except Exception:  # noqa: BLE001 — best-effort; an unreachable/erroring broker = tolerated orphan
+        except Exception as exc:  # noqa: BLE001 — best-effort; unreachable/erroring broker = orphan
+            # Keep the swallow (a GC failure must NOT fail the user's delete/create), but make the
+            # now-orphaned secret VISIBLE via the shared seam (ADR-021 §1 / #296) instead of silent.
+            alert(
+                Severity.WARNING,
+                "webhook_secret_orphaned",
+                "application-gateway-service",
+                "best-effort webhook-secret delete failed; the broker secret is now orphaned",
+                organisation_id=str(organisation_id),
+                secret_id=str(secret_id),
+                reason=str(exc),
+            )
             return False

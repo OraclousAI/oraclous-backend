@@ -52,6 +52,14 @@ jobs:
   # (a `[tests]` PR lands failing tests for an unbuilt seam), so it is NOT a required gate.
   unit:
     runs-on: ubuntu-latest
+    # ADR-021 §1: the fake credential-broker / scripted LLM are now FAIL-CLOSED behind these explicit
+    # opt-ins (the literal defaults flipped to real/live). CI is a key-free environment, so it selects
+    # the fake runtime EXPLICITLY here — without this, any suite that boots a service through its real
+    # lifespan would reach for the real broker / live LLM. The failure-mode tests that assert the
+    # real-mode DEFAULT delenv these per-test, so this job env never masks that check.
+    env:
+      CREDENTIAL_BROKER_MODE: fake
+      HARNESS_LLM_MODE: fake
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
@@ -69,6 +77,10 @@ jobs:
 
   integration:
     runs-on: ubuntu-latest
+    # ADR-021 §1: select the key-free fake runtime explicitly (the defaults are now real/live).
+    env:
+      CREDENTIAL_BROKER_MODE: fake
+      HARNESS_LLM_MODE: fake
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
@@ -126,6 +138,10 @@ jobs:
   r3_5_gate:
     name: "R3.5 acceptance gate — service architecture + no-hollow + audit (ORAA-4 §21/§22)"
     runs-on: ubuntu-latest
+    # ADR-021 §1: select the key-free fake runtime explicitly (the defaults are now real/live).
+    env:
+      CREDENTIAL_BROKER_MODE: fake
+      HARNESS_LLM_MODE: fake
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5

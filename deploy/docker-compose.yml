@@ -193,11 +193,13 @@ services:
       JWT_SECRET: "${AUTH_JWT_SECRET:-dev-jwt-secret}"
       # Platform org that owns the built-in connector catalogue; read-unioned into every org's view.
       PLATFORM_ORG_ID: "${CAPABILITY_REGISTRY_PLATFORM_ORG_ID:-00000000-0000-0000-0000-0000000000a0}"
-      # Tool execution resolves credentials via the credential-broker seam. Default "fake" (key-free,
-      # deterministic) so the connector smoke runs without external provider keys; set "real" to use
-      # the running credential-broker over /internal/* (S5 real-broker integration).
+      # Tool execution resolves credentials via the credential-broker seam. Fail-CLOSED default is
+      # "real" (ADR-021 §1): the default `services` profile talks to the running credential-broker
+      # over /internal/*, never the fake by accident. The key-free "fake" (deterministic) is opt-in
+      # for dev/CI/smoke — set CAPABILITY_REGISTRY_BROKER_MODE=fake (the dev/CI/smoke profile + the CI
+      # workflow do); selecting it fires a loud one-time startup alert (fake_runtime_active).
       CREDENTIAL_BROKER_URL: "http://credential-broker-service:8000"
-      CREDENTIAL_BROKER_MODE: "${CAPABILITY_REGISTRY_BROKER_MODE:-fake}"
+      CREDENTIAL_BROKER_MODE: "${CAPABILITY_REGISTRY_BROKER_MODE:-real}"
       # First-party knowledge-retriever tool (core/knowledge-retriever@1.0.0): the executor POSTs to
       # the retriever's /v1/search/* over the internal/gateway-trust path (no broker credential), the
       # caller's org identity forwarded as X-Principal-*/X-Organisation-Id gated by X-Internal-Key.
@@ -558,9 +560,12 @@ services:
       HARNESS_CAPABILITY_REGISTRY_URL: "http://capability-registry-service:8000"
       HARNESS_CREDENTIAL_BROKER_URL: "http://credential-broker-service:8000"
       HARNESS_KNOWLEDGE_RETRIEVER_URL: "http://knowledge-retriever-service:8000"
-      # The LLM seam. `fake` (default) is key-free for CI/smoke; `live` builds the real client from
-      # the OHM model's protocol_shape + a BYOM key resolved via the broker (ADR-008, no platform key).
-      HARNESS_LLM_MODE: "${HARNESS_LLM_MODE:-fake}"
+      # The LLM seam. Fail-CLOSED default is `live` (ADR-021 §1): the default `services` profile
+      # builds the real client from the OHM model's protocol_shape + a BYOM key resolved via the
+      # broker (ADR-008, no platform key) — never the scripted fake by accident. The key-free `fake`
+      # is opt-in for dev/CI/smoke — set HARNESS_LLM_MODE=fake (the dev/CI/smoke profile + the CI
+      # workflow + the harness/engine smokes do); selecting it fires a loud startup alert.
+      HARNESS_LLM_MODE: "${HARNESS_LLM_MODE:-live}"
       # Operator's provider→base-URL map (JSON; e.g. openrouter/openai). A custom BYOM connection may
       # instead carry its own `base_url` to reach ANY OpenAI-compatible endpoint.
       HARNESS_LLM_BASE_URLS: "${HARNESS_LLM_BASE_URLS:-}"

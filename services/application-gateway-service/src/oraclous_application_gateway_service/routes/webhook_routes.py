@@ -19,6 +19,9 @@ from oraclous_application_gateway_service.core.dependencies import (
     WebhookIngressServiceDep,
     WebhookSubscriptionServiceDep,
 )
+from oraclous_application_gateway_service.repositories.rate_limit_store import (
+    RateLimiterUnavailable,
+)
 from oraclous_application_gateway_service.schema.webhook_schemas import (
     CreateSubscriptionRequest,
     CreateSubscriptionResponse,
@@ -50,6 +53,12 @@ async def receive_webhook(
         )
     except SubscriptionNotFound as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="not found") from exc
+    except RateLimiterUnavailable as exc:
+        # per-subscription limiter is fail-CLOSED and Redis is down (ADR-021 §1 opt-in) -> refuse
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="rate limiter unavailable (fail-closed)",
+        ) from exc
     except WebhookRateLimited as exc:
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
