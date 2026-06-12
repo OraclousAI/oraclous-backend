@@ -27,6 +27,9 @@ from oraclous_knowledge_graph_service.domain.extraction_schema import (
     to_prompt_prefix,
 )
 from oraclous_knowledge_graph_service.domain.ontology import Ontology
+from oraclous_knowledge_graph_service.repositories.graph_generation_repository import (
+    GraphGenerationRepository,
+)
 from oraclous_knowledge_graph_service.repositories.graph_repository import GraphRepository
 from oraclous_knowledge_graph_service.repositories.graph_write_repository import (
     GraphWriteRepository,
@@ -163,6 +166,18 @@ async def _ingest_async(job_id_s: str, organisation_id_s: str) -> dict[str, Any]
                     extracted_relationships=summary["relationships"],
                 )
                 await session.commit()
+            # Bump the per-graph generation (#308): the graph just changed, so the retriever's
+            # cached reads for prior generations become a natural cache-miss. A neutral version
+            # signal — the KGS never touches the retriever's private cache keys. The Redis driver is
+            # built inside the repository (the §21 driver layer), not here. Advisory: a Redis outage
+            # is swallowed (the cache then TTL-expires), never failing a completed ingest. Off the
+            # event loop, as the bump opens a sync client.
+            await asyncio.to_thread(
+                GraphGenerationRepository.bump_for,
+                redis_url=settings.redis_url,
+                organisation_id=organisation_id_s,
+                graph_id=str(payload.graph_id),
+            )
             return {"status": "completed", "job_id": job_id_s, **summary}
         finally:
             driver.close()

@@ -98,3 +98,32 @@ def test_graph_pattern_does_not_leak_across_organisations() -> None:
 
     pattern_a = query_cache_pattern(ORG_A, GRAPH)
     assert not fnmatch.fnmatch(_key(org=ORG_B, graph=GRAPH), pattern_a)
+
+
+# --- generation segment (#308) ------------------------------------------------
+
+
+def test_generation_changes_the_key() -> None:
+    """A new generation produces a fresh key space — the basis for ingest-time invalidation."""
+    assert _key() == _key()  # generation defaults to 0 — identical inputs collide
+    from oraclous_substrate.cache_keys import query_cache_key
+
+    g0 = query_cache_key(ORG_A, GRAPH, QUERY, RETRIEVER, generation=0)
+    g1 = query_cache_key(ORG_A, GRAPH, QUERY, RETRIEVER, generation=1)
+    assert g0 != g1
+
+
+def test_generation_key_is_organisation_then_graph_scoped() -> None:
+    from oraclous_substrate.cache_keys import graph_generation_key
+
+    assert graph_generation_key(ORG_A, GRAPH) == f"graphgen:{ORG_A}:{GRAPH}"
+    assert graph_generation_key(ORG_A, GRAPH) != graph_generation_key(ORG_B, GRAPH)
+
+
+def test_generation_key_is_fail_closed_on_blank_scope() -> None:
+    from oraclous_substrate.cache_keys import graph_generation_key
+
+    with pytest.raises(ValueError):
+        graph_generation_key("", GRAPH)
+    with pytest.raises(ValueError):
+        graph_generation_key(ORG_A, "  ")
