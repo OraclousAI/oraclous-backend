@@ -1731,6 +1731,36 @@
 					"id": "c04dae44-7598-4ed8-bc4b-ee1067ab9037"
 				},
 				{
+					"name": "GET /api/v1/graphs/{{graph_id}}/resolution/cross-graph (#330)",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/api/v1/graphs/{{graph_id}}/resolution/cross-graph?limit=100",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"graphs",
+								"{{graph_id}}",
+								"resolution",
+								"cross-graph"
+							],
+							"query": [
+								{
+									"key": "limit",
+									"value": "100"
+								}
+							]
+						},
+						"description": "List the pending cross-graph SAME_AS review queue touching this graph (#330) — the HITL read surface for the candidates a prior generation run wrote (the generation response is otherwise the only place they surface). Each pending pair carries BOTH graph ids and keys the same approve/reject verdict endpoints. Owner-gated (a graph in another org/owner — 404). limit (1–500, default 100) bounds the read."
+					},
+					"response": [],
+					"id": "b7f2a1c9-3d4e-4a6b-9c8d-2e5f7a0b1c34"
+				},
+				{
 					"name": "GET /api/v1/communities/kinds (#303)",
 					"request": {
 						"method": "GET",

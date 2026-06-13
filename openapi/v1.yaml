@@ -272,10 +272,14 @@ paths:
       description: >-
         Flags pairs that look like the same real-world entity across the path graph and
         `target_graph_id` (canonical-key match + embedding similarity) and writes them into the
-        EXISTING HITL review queue (#279) as SAME_AS_CANDIDATE edges carrying BOTH graph ids. The
-        same approve/reject verdict endpoints action them; a cross-graph approve LINKS (SAME_AS)
-        instead of folding. Both graphs are owner-gated — a graph in another org/owner is a 404,
-        so a cross-org pair is impossible.
+        EXISTING HITL review queue (#279) as SAME_AS_CANDIDATE edges carrying BOTH graph ids
+        (canonicalised by node id, so re-generating from the reverse direction never duplicates).
+        Pairs a human already resolved (approved SAME_AS / rejected NOT_SAME_AS) are filtered from
+        the response before the limit budget is spent (they don't over-count `generated`). The same
+        approve/reject verdict endpoints action them; a cross-graph approve LINKS (SAME_AS) instead
+        of folding, and the verdict is keyed SYMMETRICALLY on the pair (a conflicting verdict from
+        either direction is a 409). Both graphs are owner-gated — a graph in another org/owner is a
+        404, so a cross-org pair is impossible.
       operationId: generateCrossGraphCandidates
       x-stability: stable
       parameters:
@@ -290,6 +294,27 @@ paths:
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "404": { $ref: "#/components/responses/NotFound" }
         "422": { $ref: "#/components/responses/ValidationFailed" }
+    get:
+      tags: [knowledge-graph]
+      summary: List the pending cross-graph SAME_AS review queue touching a graph (#330).
+      description: >-
+        The HITL read surface for the cross-graph review queue: the pending SAME_AS_CANDIDATE pairs
+        with one endpoint in the path graph (both graph ids carried), so a reviewer can see what a
+        prior generation run wrote (the generation response is otherwise the only place they
+        surface). Each pending pair keys the same approve/reject verdict endpoints. Owner-gated (a
+        graph in another org/owner → 404). `limit` (1–500, default 100) bounds the read.
+      operationId: listPendingCrossGraphCandidates
+      x-stability: stable
+      parameters:
+        - { name: graphId, in: path, required: true, schema: { type: string, format: uuid } }
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 500, default: 100 }
+      responses:
+        "200": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/NotFound" }
   /api/v1/recipes:
     get:
       tags: [knowledge-graph]
