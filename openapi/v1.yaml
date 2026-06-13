@@ -346,6 +346,46 @@ paths:
       responses:
         "200": { $ref: "#/components/responses/UpstreamJson" }
         "401": { $ref: "#/components/responses/Unauthenticated" }
+  /v1/graph/{graphId}/evaluate:
+    post:
+      tags: [knowledge-retriever]
+      summary: RAGAS-style retrieval-quality evaluation — native LLM-judge metrics (#331).
+      description: >-
+        Scores a question (and optionally an answer / ground truth) against the graph using the
+        retriever's own hybrid search path: faithfulness (answer claims supported by context —
+        matches RAGAS semantics), answer_relevance (a DIRECT judge score, not RAGAS's
+        generated-questions + cosine estimator), context_precision (an order-INSENSITIVE
+        relevant/judged fraction — RAGAS's original is rank-weighted), and context_recall
+        (requires ground_truth — matches RAGAS semantics). The answer is generated from the
+        retrieved context when omitted (note the self-judging bias: the same model writes and
+        grades it). Metrics are judged natively by the configured OpenAI-compatible LLM (no
+        ragas lib); a per-metric judge failure nulls that metric with a warning (never a 500),
+        and a partially failed verdict batch scores over the verdicts that succeeded (nulled
+        only when a strict majority fail). The whole evaluation runs under a ~25s deadline
+        (under the gateway's 30s): on expiry the completed metrics are returned with
+        nulls + warnings for the rest (partial results, never a 504). Requires the retriever's
+        judge key (KRS_OPENAI_API_KEY) — unconfigured, the endpoint returns a typed 422 rather
+        than fabricated scores; through the gateway that surfaces as VALIDATION_FAILED with
+        details [{field "eval", issue EVAL_JUDGE_NOT_CONFIGURED}] (the leak-safe 422
+        passthrough relays loc+type). No computable metrics → the same 422 shape with
+        {field "metrics", issue NO_VALID_METRICS}. A process-level concurrency cap protects
+        judge spend: excess evaluations get a 429 (RATE_LIMITED envelope at the edge). Explicit
+        endpoint only — never part of a chat path.
+      operationId: evaluateGraph
+      x-stability: experimental
+      parameters:
+        - { name: graphId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/JsonObject" }
+      responses:
+        "200": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+        "429": { $ref: "#/components/responses/RateLimited" }
   /v1/federated/search:
     post:
       tags: [knowledge-retriever]

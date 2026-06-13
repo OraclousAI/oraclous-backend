@@ -2498,6 +2498,42 @@
 					"id": "3374fd6e-6875-aa3d-3361-f1b7d4f570ff"
 				},
 				{
+					"name": "POST /v1/graph/{{graph_id}}/evaluate (#331)",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"url": {
+							"raw": "{{base_url}}/v1/graph/{{graph_id}}/evaluate",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"v1",
+								"graph",
+								"{{graph_id}}",
+								"evaluate"
+							]
+						},
+						"description": "RAGAS-style retrieval-quality evaluation (native LLM-judge, no ragas lib): faithfulness (RAGAS semantics), answer_relevance (a DIRECT judge score, not RAGAS's generated-questions+cosine estimator), context_precision (order-INsensitive relevant/judged fraction - RAGAS's original is rank-weighted), context_recall (needs ground_truth; RAGAS semantics) judged against the retriever's own hybrid search contexts (capped once so every metric judges the same set). Omit answer to have one generated from the retrieved context (evaluates retrieval+generation end-to-end - note the self-judging bias: the same model writes and grades it). metrics selects a subset (an explicit empty list is a 422). A judge failure nulls that metric with a warning (never a 500); a partially failed verdict batch scores over the successes (nulled only when a strict majority fail); the whole evaluation runs under a ~25s deadline (under the gateway's 30s) and returns partial results with warnings on expiry. Requires KRS_OPENAI_API_KEY on the retriever - unconfigured returns a typed 422 that survives the gateway as VALIDATION_FAILED with details [{field: eval, issue: EVAL_JUDGE_NOT_CONFIGURED}] (no computable metrics: {field: metrics, issue: NO_VALID_METRICS}). Too many concurrent evaluations returns 429 (RATE_LIMITED at the edge).",
+						"body": {
+							"mode": "raw",
+							"raw": "{\"question\": \"Who wrote the first computer program?\", \"ground_truth\": \"Ada Lovelace wrote the first computer program.\", \"metrics\": [\"faithfulness\", \"answer_relevance\", \"context_precision\", \"context_recall\"]}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						}
+					},
+					"response": [],
+					"id": "a682cfed-1bf3-4db8-bc72-22e7b7d8960f"
+				},
+				{
 					"name": "POST /v1/federated/search (#330)",
 					"request": {
 						"method": "POST",
