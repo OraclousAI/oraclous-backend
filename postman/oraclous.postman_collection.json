@@ -2316,6 +2316,225 @@
 					},
 					"response": [],
 					"id": "02896712-c9c1-ef6b-53dc-9920c824b396"
+				},
+				{
+					"name": "POST /api/v1/graphs/{{graph_id}}/memories (#332)",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"url": {
+							"raw": "{{base_url}}/api/v1/graphs/{{graph_id}}/memories",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"graphs",
+								"{{graph_id}}",
+								"memories"
+							]
+						},
+						"description": "Store a typed agent memory (episodic/semantic/procedural). 201; dedups on a normalised content hash; semantic memories run contradiction detection (contradictions_detected in the response; new wins, old invalidated) and entity linking. Embedded on store for hybrid recall (ADR-027).",
+						"body": {
+							"mode": "raw",
+							"raw": "{\"type\": \"semantic\", \"content\": \"User prefers dark mode in the dashboard\", \"confidence\": 0.9, \"scope\": \"user\", \"subject\": \"user\", \"predicate\": \"prefers\", \"object\": \"dark mode\"}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						}
+					},
+					"response": [],
+					"id": "bad75d28-5894-418e-a52b-2087707c26c0"
+				},
+				{
+					"name": "GET /api/v1/graphs/{{graph_id}}/memories/search (#332)",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/api/v1/graphs/{{graph_id}}/memories/search?query=dark mode&type=semantic&temporal=current&limit=10",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"graphs",
+								"{{graph_id}}",
+								"memories",
+								"search"
+							],
+							"query": [
+								{
+									"key": "query",
+									"value": "dark mode"
+								},
+								{
+									"key": "type",
+									"value": "semantic"
+								},
+								{
+									"key": "temporal",
+									"value": "current"
+								},
+								{
+									"key": "limit",
+									"value": "10"
+								}
+							]
+						},
+						"description": "Hybrid memory recall: fulltext + vector cosine + Ebbinghaus importance + recency. Filters: type, scope, temporal=current|all, min_confidence, limit. Every hit is access-bumped (lazy decay recompute \u2014 no cron)."
+					},
+					"response": [],
+					"id": "f34cfca9-8640-4980-80b9-1c932366299c"
+				},
+				{
+					"name": "GET /api/v1/graphs/{{graph_id}}/memories/context (#332)",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/api/v1/graphs/{{graph_id}}/memories/context?query=dashboard preferences&max_tokens=2000",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"graphs",
+								"{{graph_id}}",
+								"memories",
+								"context"
+							],
+							"query": [
+								{
+									"key": "query",
+									"value": "dashboard preferences"
+								},
+								{
+									"key": "max_tokens",
+									"value": "2000"
+								}
+							]
+						},
+						"description": "Token-budgeted '## Relevant Memory' markdown block (Facts / Preferences / Recent activity) for agent prompt injection; max_tokens bounded."
+					},
+					"response": [],
+					"id": "5cc7e20e-4892-4e2f-a6fb-e2d2af2934bd"
+				},
+				{
+					"name": "PATCH /api/v1/graphs/{{graph_id}}/memories/{{memory_id}} (#332)",
+					"request": {
+						"method": "PATCH",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"url": {
+							"raw": "{{base_url}}/api/v1/graphs/{{graph_id}}/memories/{{memory_id}}",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"graphs",
+								"{{graph_id}}",
+								"memories",
+								"{{memory_id}}"
+							]
+						},
+						"description": "Supersede a memory (temporal versioning): the old node gets valid_to, a successor node is created with a SUPERSEDES edge.",
+						"body": {
+							"mode": "raw",
+							"raw": "{\"content\": \"User prefers light mode now\", \"reason\": \"preference changed\"}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						}
+					},
+					"response": [],
+					"id": "6a84f8ec-d2dc-4569-84a2-ad29fd38b04a"
+				},
+				{
+					"name": "DELETE /api/v1/graphs/{{graph_id}}/memories/{{memory_id}} (#332)",
+					"request": {
+						"method": "DELETE",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/api/v1/graphs/{{graph_id}}/memories/{{memory_id}}?hard=false",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"graphs",
+								"{{graph_id}}",
+								"memories",
+								"{{memory_id}}"
+							],
+							"query": [
+								{
+									"key": "hard",
+									"value": "false"
+								}
+							]
+						},
+						"description": "Forget a memory: soft delete by default (valid_to); ?hard=true detach-deletes the node entirely."
+					},
+					"response": [],
+					"id": "5da6cc0e-066d-4308-bc5c-f7e78ac14435"
+				},
+				{
+					"name": "POST /api/v1/graphs/{{graph_id}}/memories/consolidate (#332)",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"url": {
+							"raw": "{{base_url}}/api/v1/graphs/{{graph_id}}/memories/consolidate",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"graphs",
+								"{{graph_id}}",
+								"memories",
+								"consolidate"
+							]
+						},
+						"description": "Enqueue the similarity-based consolidation job for this graph (embedding clusters above the cosine threshold merge; winner absorbs importance, capped 1.0). Runs under the per-(org,graph) advisory lock. 202 + job_id.",
+						"body": {
+							"mode": "raw",
+							"raw": "{}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						}
+					},
+					"response": [],
+					"id": "686a8df5-8146-49e9-a14f-4e2ff24d5eb4"
 				}
 			],
 			"description": "Routes for knowledge-graph-service (host :8003). Business routes go through the gateway ({{base_url}})."
@@ -4559,6 +4778,57 @@
 					},
 					"response": [],
 					"id": "2d9f24a8-9ca0-4b33-b879-1d830ac87c9e"
+				},
+				{
+					"name": "POST /internal/v1/memories (#332 \u2014 harness post-run hook)",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "X-Internal-Key",
+								"value": "{{internal_service_key}}"
+							},
+							{
+								"key": "X-Principal-Id",
+								"value": "{{user_id}}"
+							},
+							{
+								"key": "X-Principal-Type",
+								"value": "agent"
+							},
+							{
+								"key": "X-Organisation-Id",
+								"value": "{{org_id}}"
+							}
+						],
+						"url": {
+							"raw": "{{kg_url}}/internal/v1/memories",
+							"host": [
+								"{{kg_url}}"
+							],
+							"path": [
+								"internal",
+								"v1",
+								"memories"
+							]
+						},
+						"description": "The harness post-run memory write (ADR-018 internal-key path; fire-and-forget on the harness side). Optional graph_id = the run's graph context; absent \u2192 the lazily-created org-default 'Agent Memory' graph. Org is bound from the forwarded principal, never the body.",
+						"body": {
+							"mode": "raw",
+							"raw": "{\"type\": \"episodic\", \"content\": \"Agent 'Demo' run SUCCEEDED. Task: summarise. Outcome: done. Tools used: echo.run.\", \"source\": \"agent\", \"scope\": \"agent\", \"agent_id\": \"01976e3a-7c9b-7b00-9c45-1234567890ab\", \"session_id\": \"{{execution_id}}\", \"event_type\": \"harness_run\"}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						}
+					},
+					"response": [],
+					"id": "a461022a-dadf-4f80-9bdd-842cdfd00274"
 				}
 			],
 			"description": "Internal /internal/* routes \u2014 NOT exposed through the gateway. Call the service directly with X-Internal-Key. For debugging only."
