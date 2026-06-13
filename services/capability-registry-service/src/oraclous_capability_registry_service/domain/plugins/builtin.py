@@ -304,6 +304,79 @@ class KnowledgeRetrieverPlugin(_ConnectorToolPlugin):
     OUTPUT_SCHEMA = _HITS_OUTPUT
 
 
+_MEMORIES_OUTPUT = {
+    "type": "object",
+    "properties": {
+        "memories": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "memory_id": {"type": "string"},
+                    "type": {"type": "string"},
+                    "content": {"type": "string"},
+                    "importance_score": {"type": "number"},
+                    "relevance_score": {"type": "number"},
+                    "confidence": {"type": "number"},
+                    "scope": {"type": "string"},
+                },
+            },
+        },
+        "total": {"type": "integer"},
+    },
+}
+
+
+@plugin_registry.register
+class RecallMemoryPlugin(_ConnectorToolPlugin):
+    """First-party agent-memory recall (#332 / ADR-027 §6) — the tool an agent OPTS INTO via its
+    OHM toolset as ``core/recall-memory@1.0.0`` to remember past runs, facts and preferences. No
+    change to the harness's default prompt assembly, so existing runs carry zero risk. No
+    credential: reached over the internal/gateway-trust path, the caller's org identity forwarded
+    by the executor (never a BYOM key). The ``recall_memory`` operation wraps the KGS's
+    ``/api/v1/graphs/{graph_id}/memories/search`` (hybrid fulltext + vector + Ebbinghaus
+    importance + recency)."""
+
+    NAME = "Recall Memory"  # slug ``recall-memory`` MUST match the ref's name slug
+    CATEGORY = "RETRIEVAL"
+    DESCRIPTION = (
+        "Recall the organisation's agent memories (episodic runs, semantic facts, procedural "
+        "preferences) ranked by relevance, importance and recency. First-party and org-scoped; "
+        "no credential required."
+    )
+    TYPE = "INTERNAL"
+    TAGS = ["knowledge-graph", "memory", "recall", "retrieval"]
+    CAPABILITIES = [
+        {
+            "name": "recall_memory",
+            "description": "Search the agent memory store and return the matching memories.",
+            "parameters": {
+                "graph_id": "str",
+                "query": "str",
+                "type": "str",  # episodic | semantic | procedural (optional)
+                "scope": "str",  # session | user | agent | team | organization (optional)
+                "limit": "int",
+            },
+        },
+    ]
+    CREDENTIAL_REQUIREMENTS: list[dict] = []  # first-party: reached over the internal trust path
+    INPUT_SCHEMA = {
+        "type": "object",
+        "required": ["graph_id", "query"],
+        "properties": {
+            "graph_id": {"type": "string", "format": "uuid"},
+            "query": {"type": "string", "minLength": 1},
+            "type": {"type": "string", "enum": ["episodic", "semantic", "procedural"]},
+            "scope": {
+                "type": "string",
+                "enum": ["session", "user", "agent", "team", "organization"],
+            },
+            "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 10},
+        },
+    }
+    OUTPUT_SCHEMA = _MEMORIES_OUTPUT
+
+
 @plugin_registry.register
 class FindSimilarPlugin(_ConnectorToolPlugin):
     """First-party "entities similar to X" over the org's knowledge graph (#310) — the read twin of

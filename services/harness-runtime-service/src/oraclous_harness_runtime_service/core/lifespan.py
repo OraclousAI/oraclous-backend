@@ -20,6 +20,7 @@ from oraclous_harness_runtime_service.repositories.assignment_repository import 
 from oraclous_harness_runtime_service.repositories.checkpoint_repository import CheckpointRepository
 from oraclous_harness_runtime_service.repositories.execution_repository import ExecutionRepository
 from oraclous_harness_runtime_service.repositories.provenance_sink import PostgresProvenanceSink
+from oraclous_harness_runtime_service.services.memory_client import drain_pending_writes
 
 logger = logging.getLogger(__name__)
 
@@ -82,6 +83,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     try:
         yield
     finally:
+        # Post-run memory hook (#332 / ADR-027 §5): give any in-flight fire-and-forget writes a
+        # SHORT bounded grace to land before teardown cancels them. Fail-soft + bounded — it never
+        # raises and never delays shutdown beyond memory_drain_timeout (a no-op when nothing is in
+        # flight or the flag is off).
+        if settings.memory_writes:
+            await drain_pending_writes(timeout=settings.memory_drain_timeout)
         if execution_repo is not None:
             await execution_repo.close()
         if assignment_repo is not None:

@@ -577,6 +577,11 @@ services:
       HARNESS_CAPABILITY_REGISTRY_URL: "http://capability-registry-service:8000"
       HARNESS_CREDENTIAL_BROKER_URL: "http://credential-broker-service:8000"
       HARNESS_KNOWLEDGE_RETRIEVER_URL: "http://knowledge-retriever-service:8000"
+      HARNESS_KNOWLEDGE_GRAPH_URL: "http://knowledge-graph-service:8000"
+      # Post-run agent-memory hook (#332 / ADR-027 §5): default OFF in code; the deploy env opts in
+      # (HARNESS_MEMORY_WRITES=true in deploy/.env). Fire-and-forget + fail-soft — a memory write
+      # can never fail, block, or slow a run.
+      HARNESS_MEMORY_WRITES: "${HARNESS_MEMORY_WRITES:-false}"
       # The LLM seam. Fail-CLOSED default is `live` (ADR-021 §1): the default `services` profile
       # builds the real client from the OHM model's protocol_shape + a BYOM key resolved via the
       # broker (ADR-008, no platform key) — never the scripted fake by accident. The key-free `fake`

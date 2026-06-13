@@ -27,6 +27,9 @@ from oraclous_capability_registry_service.domain.connectors.mcp import McpToolEx
 from oraclous_capability_registry_service.domain.connectors.mysql import MySQLReader
 from oraclous_capability_registry_service.domain.connectors.notion import NotionReader
 from oraclous_capability_registry_service.domain.connectors.postgresql import PostgreSQLReader
+from oraclous_capability_registry_service.domain.connectors.recall_memory import (
+    RecallMemoryConnector,
+)
 from oraclous_capability_registry_service.domain.executors.base import BaseToolExecutor
 from oraclous_capability_registry_service.domain.plugins.builtin import (
     FederatedSearchPlugin,
@@ -37,6 +40,7 @@ from oraclous_capability_registry_service.domain.plugins.builtin import (
     MySQLReaderPlugin,
     NotionReaderPlugin,
     PostgreSQLReaderPlugin,
+    RecallMemoryPlugin,
 )
 
 
@@ -54,6 +58,7 @@ _EXECUTORS: dict[str, type[BaseToolExecutor]] = {
     KnowledgeRetrieverPlugin.plugin_id(): KnowledgeRetrieverConnector,
     FindSimilarPlugin.plugin_id(): FindSimilarConnector,
     GraphIngestPlugin.plugin_id(): GraphIngestConnector,
+    RecallMemoryPlugin.plugin_id(): RecallMemoryConnector,
     FederatedSearchPlugin.plugin_id(): FederatedSearchConnector,
 }
 
