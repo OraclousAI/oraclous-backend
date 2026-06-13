@@ -15,6 +15,7 @@ from oraclous_knowledge_graph_service.services.graph_service import (
     GraphNodeService,
     GraphNotFound,
     GraphService,
+    ReservedGraphName,
 )
 
 pytestmark = pytest.mark.unit
@@ -28,7 +29,7 @@ class _FakeRepo:
     def __init__(self) -> None:
         self.rows: dict[uuid.UUID, Graph] = {}
 
-    def make(self, user_id: uuid.UUID, name: str = "g") -> Graph:
+    def make(self, user_id: uuid.UUID, name: str = "g", system_kind: str | None = None) -> Graph:
         now = datetime(2026, 6, 4, tzinfo=UTC)
         return Graph(
             id=uuid.uuid4(),
@@ -41,10 +42,11 @@ class _FakeRepo:
             relationship_count=0,
             created_at=now,
             updated_at=now,
+            system_kind=system_kind,
         )
 
-    async def create(self, *, user_id, name, description) -> Graph:
-        g = self.make(user_id, name)
+    async def create(self, *, user_id, name, description, system_kind=None) -> Graph:
+        g = self.make(user_id, name, system_kind=system_kind)
         self.rows[g.id] = g
         return g
 
@@ -158,6 +160,20 @@ async def test_get_missing_raises_not_found() -> None:
     svc = GraphService(_FakeRepo())
     with pytest.raises(GraphNotFound):
         await svc.get_graph(graph_id=uuid.uuid4(), user_id=_OWNER)
+
+
+async def test_create_rejects_reserved_system_name() -> None:
+    # A user cannot create a graph that would shadow the system agent-memory graph (#332 §5).
+    svc = GraphService(_FakeRepo())
+    for reserved in ("Agent Memory", "agent memory", "  AGENT MEMORY  "):
+        with pytest.raises(ReservedGraphName):
+            await svc.create_graph(user_id=_OWNER, name=reserved, description=None)
+
+
+async def test_create_allows_non_reserved_name() -> None:
+    svc = GraphService(_FakeRepo())
+    g = await svc.create_graph(user_id=_OWNER, name="My Agent Memories", description=None)
+    assert g.system_kind is None  # a user graph is never minted as a system graph
 
 
 def test_graphnodeservice_alias_is_graphservice() -> None:

@@ -1693,6 +1693,74 @@
 					"response": []
 				},
 				{
+					"name": "POST /api/v1/graphs/{{graph_id}}/resolution/cross-graph (#330)",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"url": {
+							"raw": "{{base_url}}/api/v1/graphs/{{graph_id}}/resolution/cross-graph",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"graphs",
+								"{{graph_id}}",
+								"resolution",
+								"cross-graph"
+							]
+						},
+						"description": "Generate cross-graph SAME_AS candidates between the path graph and target_graph_id (both must be the caller's graphs \u2014 cross-org is a 404, fail-closed). Pairs are flagged by canonical-key match + embedding similarity and written into the EXISTING HITL review queue as SAME_AS_CANDIDATE edges carrying BOTH graph ids; action them with the same approve/reject endpoints (body other_graph_id marks the cross-graph case \u2014 an approve LINKS via SAME_AS instead of folding).",
+						"body": {
+							"mode": "raw",
+							"raw": "{\"target_graph_id\": \"{{target_graph_id}}\", \"candidate_threshold\": 0.85, \"limit\": 100}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						}
+					},
+					"response": [],
+					"id": "c04dae44-7598-4ed8-bc4b-ee1067ab9037"
+				},
+				{
+					"name": "GET /api/v1/graphs/{{graph_id}}/resolution/cross-graph (#330)",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/api/v1/graphs/{{graph_id}}/resolution/cross-graph?limit=100",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"graphs",
+								"{{graph_id}}",
+								"resolution",
+								"cross-graph"
+							],
+							"query": [
+								{
+									"key": "limit",
+									"value": "100"
+								}
+							]
+						},
+						"description": "List the pending cross-graph SAME_AS review queue touching this graph (#330) — the HITL read surface for the candidates a prior generation run wrote (the generation response is otherwise the only place they surface). Each pending pair carries BOTH graph ids and keys the same approve/reject verdict endpoints. Owner-gated (a graph in another org/owner — 404). limit (1–500, default 100) bounds the read."
+					},
+					"response": [],
+					"id": "b7f2a1c9-3d4e-4a6b-9c8d-2e5f7a0b1c34"
+				},
+				{
 					"name": "GET /api/v1/communities/kinds (#303)",
 					"request": {
 						"method": "GET",
@@ -2248,6 +2316,225 @@
 					},
 					"response": [],
 					"id": "02896712-c9c1-ef6b-53dc-9920c824b396"
+				},
+				{
+					"name": "POST /api/v1/graphs/{{graph_id}}/memories (#332)",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"url": {
+							"raw": "{{base_url}}/api/v1/graphs/{{graph_id}}/memories",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"graphs",
+								"{{graph_id}}",
+								"memories"
+							]
+						},
+						"description": "Store a typed agent memory (episodic/semantic/procedural). 201; dedups on a normalised content hash; semantic memories run contradiction detection (contradictions_detected in the response; new wins, old invalidated) and entity linking. Embedded on store for hybrid recall (ADR-027).",
+						"body": {
+							"mode": "raw",
+							"raw": "{\"type\": \"semantic\", \"content\": \"User prefers dark mode in the dashboard\", \"confidence\": 0.9, \"scope\": \"user\", \"subject\": \"user\", \"predicate\": \"prefers\", \"object\": \"dark mode\"}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						}
+					},
+					"response": [],
+					"id": "bad75d28-5894-418e-a52b-2087707c26c0"
+				},
+				{
+					"name": "GET /api/v1/graphs/{{graph_id}}/memories/search (#332)",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/api/v1/graphs/{{graph_id}}/memories/search?query=dark mode&type=semantic&temporal=current&limit=10",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"graphs",
+								"{{graph_id}}",
+								"memories",
+								"search"
+							],
+							"query": [
+								{
+									"key": "query",
+									"value": "dark mode"
+								},
+								{
+									"key": "type",
+									"value": "semantic"
+								},
+								{
+									"key": "temporal",
+									"value": "current"
+								},
+								{
+									"key": "limit",
+									"value": "10"
+								}
+							]
+						},
+						"description": "Hybrid memory recall: fulltext + vector cosine + Ebbinghaus importance + recency. Filters: type, scope, temporal=current|all, min_confidence, limit. Every hit is access-bumped (lazy decay recompute \u2014 no cron)."
+					},
+					"response": [],
+					"id": "f34cfca9-8640-4980-80b9-1c932366299c"
+				},
+				{
+					"name": "GET /api/v1/graphs/{{graph_id}}/memories/context (#332)",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/api/v1/graphs/{{graph_id}}/memories/context?query=dashboard preferences&max_tokens=2000",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"graphs",
+								"{{graph_id}}",
+								"memories",
+								"context"
+							],
+							"query": [
+								{
+									"key": "query",
+									"value": "dashboard preferences"
+								},
+								{
+									"key": "max_tokens",
+									"value": "2000"
+								}
+							]
+						},
+						"description": "Token-budgeted '## Relevant Memory' markdown block (Facts / Preferences / Recent activity) for agent prompt injection; max_tokens bounded."
+					},
+					"response": [],
+					"id": "5cc7e20e-4892-4e2f-a6fb-e2d2af2934bd"
+				},
+				{
+					"name": "PATCH /api/v1/graphs/{{graph_id}}/memories/{{memory_id}} (#332)",
+					"request": {
+						"method": "PATCH",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"url": {
+							"raw": "{{base_url}}/api/v1/graphs/{{graph_id}}/memories/{{memory_id}}",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"graphs",
+								"{{graph_id}}",
+								"memories",
+								"{{memory_id}}"
+							]
+						},
+						"description": "Supersede a memory (temporal versioning): the old node gets valid_to, a successor node is created with a SUPERSEDES edge.",
+						"body": {
+							"mode": "raw",
+							"raw": "{\"content\": \"User prefers light mode now\", \"reason\": \"preference changed\"}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						}
+					},
+					"response": [],
+					"id": "6a84f8ec-d2dc-4569-84a2-ad29fd38b04a"
+				},
+				{
+					"name": "DELETE /api/v1/graphs/{{graph_id}}/memories/{{memory_id}} (#332)",
+					"request": {
+						"method": "DELETE",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/api/v1/graphs/{{graph_id}}/memories/{{memory_id}}?hard=false",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"graphs",
+								"{{graph_id}}",
+								"memories",
+								"{{memory_id}}"
+							],
+							"query": [
+								{
+									"key": "hard",
+									"value": "false"
+								}
+							]
+						},
+						"description": "Forget a memory: soft delete by default (valid_to); ?hard=true detach-deletes the node entirely."
+					},
+					"response": [],
+					"id": "5da6cc0e-066d-4308-bc5c-f7e78ac14435"
+				},
+				{
+					"name": "POST /api/v1/graphs/{{graph_id}}/memories/consolidate (#332)",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"url": {
+							"raw": "{{base_url}}/api/v1/graphs/{{graph_id}}/memories/consolidate",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"graphs",
+								"{{graph_id}}",
+								"memories",
+								"consolidate"
+							]
+						},
+						"description": "Enqueue the similarity-based consolidation job for this graph (embedding clusters above the cosine threshold merge; winner absorbs importance, capped 1.0). Runs under the per-(org,graph) advisory lock. 202 + job_id.",
+						"body": {
+							"mode": "raw",
+							"raw": "{}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						}
+					},
+					"response": [],
+					"id": "686a8df5-8146-49e9-a14f-4e2ff24d5eb4"
 				}
 			],
 			"description": "Routes for knowledge-graph-service (host :8003). Business routes go through the gateway ({{base_url}})."
@@ -2458,6 +2745,112 @@
 					},
 					"response": [],
 					"id": "3374fd6e-6875-aa3d-3361-f1b7d4f570ff"
+				},
+				{
+					"name": "POST /v1/graph/{{graph_id}}/evaluate (#331)",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"url": {
+							"raw": "{{base_url}}/v1/graph/{{graph_id}}/evaluate",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"v1",
+								"graph",
+								"{{graph_id}}",
+								"evaluate"
+							]
+						},
+						"description": "RAGAS-style retrieval-quality evaluation (native LLM-judge, no ragas lib): faithfulness (RAGAS semantics), answer_relevance (a DIRECT judge score, not RAGAS's generated-questions+cosine estimator), context_precision (order-INsensitive relevant/judged fraction - RAGAS's original is rank-weighted), context_recall (needs ground_truth; RAGAS semantics) judged against the retriever's own hybrid search contexts (capped once so every metric judges the same set). Omit answer to have one generated from the retrieved context (evaluates retrieval+generation end-to-end - note the self-judging bias: the same model writes and grades it). metrics selects a subset (an explicit empty list is a 422). A judge failure nulls that metric with a warning (never a 500); a partially failed verdict batch scores over the successes (nulled only when a strict majority fail); the whole evaluation runs under a ~25s deadline (under the gateway's 30s) and returns partial results with warnings on expiry. Requires KRS_OPENAI_API_KEY on the retriever - unconfigured returns a typed 422 that survives the gateway as VALIDATION_FAILED with details [{field: eval, issue: EVAL_JUDGE_NOT_CONFIGURED}] (no computable metrics: {field: metrics, issue: NO_VALID_METRICS}). Too many concurrent evaluations returns 429 (RATE_LIMITED at the edge).",
+						"body": {
+							"mode": "raw",
+							"raw": "{\"question\": \"Who wrote the first computer program?\", \"ground_truth\": \"Ada Lovelace wrote the first computer program.\", \"metrics\": [\"faithfulness\", \"answer_relevance\", \"context_precision\", \"context_recall\"]}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						}
+					},
+					"response": [],
+					"id": "a682cfed-1bf3-4db8-bc72-22e7b7d8960f"
+				},
+				{
+					"name": "POST /v1/federated/search (#330)",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"url": {
+							"raw": "{{base_url}}/v1/federated/search",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"v1",
+								"federated",
+								"search"
+							]
+						},
+						"description": "Federated cross-graph search over ALL the caller's accessible graphs (ADR-026 \u2014 federation grants NO new access; the accessible set is the org-scoped graph registry). Modes: entity | semantic | fulltext | hybrid (default). Omit graph_ids for all accessible graphs; an explicit subset is fail-closed (any inaccessible id -> 403, no partial results). Every hit is labeled source_graph_id/source_graph_name. Backs the registry core/federated-search in-loop tool.",
+						"body": {
+							"mode": "raw",
+							"raw": "{\"query\": \"customer churn drivers\", \"mode\": \"hybrid\", \"per_graph_k\": 10, \"total_k\": 50}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						}
+					},
+					"response": [],
+					"id": "715a4672-2b80-4110-978c-f7ca2180bb70"
+				},
+				{
+					"name": "POST /v1/federated/subgraph (#330)",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"url": {
+							"raw": "{{base_url}}/v1/federated/subgraph",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"v1",
+								"federated",
+								"subgraph"
+							]
+						},
+						"description": "Federated neighborhood fetch: match entities per accessible graph and return the 1-hop slice around them \u2014 every node/edge labeled with its source graph; edges never cross graphs. Same fail-closed subset/caps semantics as /v1/federated/search.",
+						"body": {
+							"mode": "raw",
+							"raw": "{\"query\": \"acme\", \"entities_per_graph\": 5, \"limit_per_graph\": 50}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						}
+					},
+					"response": [],
+					"id": "e47f7af6-8551-4210-ab42-ea997a90c243"
 				}
 			],
 			"description": "Routes for knowledge-retriever-service (host :8004). Business routes go through the gateway ({{base_url}})."
@@ -4359,6 +4752,83 @@
 					},
 					"response": [],
 					"id": "285de963-b917-5b77-ae71-7d1a7ecbeb20"
+				},
+				{
+					"name": "GET /internal/v1/graphs (#330)",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "X-Internal-Key",
+								"value": "{{internal_service_key}}"
+							}
+						],
+						"url": {
+							"raw": "{{kg_url}}/internal/v1/graphs",
+							"host": [
+								"{{kg_url}}"
+							],
+							"path": [
+								"internal",
+								"v1",
+								"graphs"
+							]
+						},
+						"description": "Service-to-service: the caller's org's graphs (id + name) \u2014 the federation accessible-set (ADR-026) the knowledge-retriever enumerates before a federated fan-out. Org-scoped (NOT owner-gated), mirroring exactly the retriever's single-graph read gate."
+					},
+					"response": [],
+					"id": "2d9f24a8-9ca0-4b33-b879-1d830ac87c9e"
+				},
+				{
+					"name": "POST /internal/v1/memories (#332 \u2014 harness post-run hook)",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "X-Internal-Key",
+								"value": "{{internal_service_key}}"
+							},
+							{
+								"key": "X-Principal-Id",
+								"value": "{{user_id}}"
+							},
+							{
+								"key": "X-Principal-Type",
+								"value": "agent"
+							},
+							{
+								"key": "X-Organisation-Id",
+								"value": "{{org_id}}"
+							}
+						],
+						"url": {
+							"raw": "{{kg_url}}/internal/v1/memories",
+							"host": [
+								"{{kg_url}}"
+							],
+							"path": [
+								"internal",
+								"v1",
+								"memories"
+							]
+						},
+						"description": "The harness post-run memory write (ADR-018 internal-key path; fire-and-forget on the harness side). Optional graph_id = the run's graph context; absent \u2192 the lazily-created org-default 'Agent Memory' graph. Org is bound from the forwarded principal, never the body.",
+						"body": {
+							"mode": "raw",
+							"raw": "{\"type\": \"episodic\", \"content\": \"Agent 'Demo' run SUCCEEDED. Task: summarise. Outcome: done. Tools used: echo.run.\", \"source\": \"agent\", \"scope\": \"agent\", \"agent_id\": \"01976e3a-7c9b-7b00-9c45-1234567890ab\", \"session_id\": \"{{execution_id}}\", \"event_type\": \"harness_run\"}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						}
+					},
+					"response": [],
+					"id": "a461022a-dadf-4f80-9bdd-842cdfd00274"
 				}
 			],
 			"description": "Internal /internal/* routes \u2014 NOT exposed through the gateway. Call the service directly with X-Internal-Key. For debugging only."

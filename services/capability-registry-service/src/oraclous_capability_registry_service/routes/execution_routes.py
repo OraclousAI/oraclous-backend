@@ -41,6 +41,7 @@ async def execute_instance(
         body=body,
         organisation_id=principal.organisation_id,
         user_id=principal.principal_id,
+        principal_type=principal.principal_type.value,
     )
 
 

@@ -21,3 +21,6 @@ class Graph:
     relationship_count: int
     created_at: datetime
     updated_at: datetime
+    # Reserved-graph marker (#332 / ADR-027 §5): NULL for a user graph, a reserved value (e.g.
+    # `agent_memory`) for a system-owned graph. Defaulted so existing constructors are unaffected.
+    system_kind: str | None = None

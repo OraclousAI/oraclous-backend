@@ -31,6 +31,12 @@ from oraclous_knowledge_retriever_service.core.auth import (
 )
 from oraclous_knowledge_retriever_service.core.config import get_settings
 from oraclous_knowledge_retriever_service.services.embedder import HashingEmbedder
+from oraclous_knowledge_retriever_service.services.eval_judge import EvalJudge
+from oraclous_knowledge_retriever_service.services.evaluation_service import EvaluationService
+from oraclous_knowledge_retriever_service.services.federated_service import (
+    FederatedRetrievalService,
+)
+from oraclous_knowledge_retriever_service.services.graph_registry_client import GraphRegistryClient
 from oraclous_knowledge_retriever_service.services.retrieval_service import RetrievalService
 
 _bearer = HTTPBearer(auto_error=False)
@@ -122,5 +128,89 @@ def get_retrieval_service(
     )
 
 
+def get_federated_service(
+    request: Request,
+    driver: Annotated[Driver, Depends(get_neo4j_driver)],
+    _org: Annotated[OrganisationContext, Depends(bind_org_context)],
+) -> FederatedRetrievalService:
+    """Build the federated cross-graph service (#330 / ADR-026). Fail-closed: with no
+    KRS_KNOWLEDGE_GRAPH_URL (so no pooled registry client) the accessible set cannot be
+    enumerated, so the federated surface 503s — it never falls back to "all graphs"."""
+    settings = get_settings()
+    fed_client = getattr(request.app.state, "federation_http_client", None)
+    if not settings.knowledge_graph_url or fed_client is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="federation unavailable (KRS_KNOWLEDGE_GRAPH_URL not configured)",
+        )
+    registry = GraphRegistryClient(
+        client=fed_client,
+        auth_mode=settings.auth_mode,
+        dev_bearer=settings.dev_bearer,
+        internal_service_key=settings.internal_service_key,
+    )
+    return FederatedRetrievalService(
+        driver,
+        HashingEmbedder(dim=settings.embedding_dim),
+        registry,
+        database=settings.neo4j_database,
+        max_graphs=settings.federated_max_graphs,
+        max_per_graph_k=settings.federated_max_per_graph_k,
+        max_total=settings.federated_max_total,
+        max_subgraph_nodes=settings.federated_max_subgraph_nodes,
+    )
+
+
+def get_eval_judge(request: Request) -> EvalJudge:
+    """The lifespan-built judge singleton behind /evaluate (#331), or a typed 422 when absent.
+
+    An explicit evaluation endpoint must refuse rather than silently fabricate scores, so a
+    missing KRS_OPENAI_API_KEY is a caller-visible, machine-readable 422 — never fake numbers.
+    The detail uses the Pydantic LIST shape (``[{"loc": [...], "type": "...", "msg": "..."}]``)
+    because the gateway's leak-safe #225 extractor relays ONLY that shape: the typed error
+    survives the edge as VALIDATION_FAILED with field ``eval`` / issue
+    ``EVAL_JUDGE_NOT_CONFIGURED`` instead of collapsing to the detail-free envelope (#333).
+    """
+    judge = getattr(request.app.state, "eval_judge", None)
+    if judge is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=[
+                {
+                    "loc": ["eval"],
+                    "type": "eval_judge_not_configured",
+                    "msg": (
+                        "evaluation requires an LLM judge: set KRS_OPENAI_API_KEY (and optionally"
+                        " KRS_OPENAI_BASE_URL / KRS_EVAL_JUDGE_MODEL)."
+                    ),
+                }
+            ],
+        )
+    return judge
+
+
+def get_evaluation_service(
+    request: Request,
+    retrieval: Annotated[RetrievalService, Depends(get_retrieval_service)],
+    judge: Annotated[EvalJudge, Depends(get_eval_judge)],
+) -> EvaluationService:
+    settings = get_settings()
+    return EvaluationService(
+        retrieval=retrieval,
+        judge=judge,
+        top_k=settings.eval_top_k,
+        max_concurrency=settings.eval_max_concurrency,
+        max_claims=settings.eval_max_claims,
+        max_contexts=settings.eval_max_contexts,
+        grounded_threshold=settings.eval_grounded_threshold,
+        deadline_seconds=settings.eval_deadline_seconds,
+        # process-level evaluation slots (lifespan-built); absent (e.g. bare test app) → uncapped
+        request_slots=getattr(request.app.state, "eval_slots", None),
+    )
+
+
 UserIdDep = Annotated[uuid.UUID, Depends(get_current_user_id)]
+PrincipalDep = Annotated[Principal, Depends(get_principal)]
 RetrievalServiceDep = Annotated[RetrievalService, Depends(get_retrieval_service)]
+FederatedServiceDep = Annotated[FederatedRetrievalService, Depends(get_federated_service)]
+EvaluationServiceDep = Annotated[EvaluationService, Depends(get_evaluation_service)]

@@ -10,6 +10,9 @@ from __future__ import annotations
 
 from typing import Any
 
+from oraclous_capability_registry_service.domain.connectors.federated_search import (
+    FederatedSearchConnector,
+)
 from oraclous_capability_registry_service.domain.connectors.find_similar import (
     FindSimilarConnector,
 )
@@ -29,6 +32,7 @@ from oraclous_capability_registry_service.domain.connectors.recall_memory import
 )
 from oraclous_capability_registry_service.domain.executors.base import BaseToolExecutor
 from oraclous_capability_registry_service.domain.plugins.builtin import (
+    FederatedSearchPlugin,
     FindSimilarPlugin,
     GitHubReaderPlugin,
     GraphIngestPlugin,
@@ -55,6 +59,7 @@ _EXECUTORS: dict[str, type[BaseToolExecutor]] = {
     FindSimilarPlugin.plugin_id(): FindSimilarConnector,
     GraphIngestPlugin.plugin_id(): GraphIngestConnector,
     RecallMemoryPlugin.plugin_id(): RecallMemoryConnector,
+    FederatedSearchPlugin.plugin_id(): FederatedSearchConnector,
 }
 
 

@@ -20,9 +20,20 @@ from oraclous_knowledge_graph_service.repositories.graph_write_repository import
 
 logger = logging.getLogger(__name__)
 
+# Display names reserved for system-owned graphs (#332/ADR-027 §5): a user cannot create a graph
+# named like the agent-memory default graph, so the two surfaces never collide on name. The
+# definitive marker is the `system_kind` column (the name guard is the friendly front door).
+_RESERVED_GRAPH_NAMES: frozenset[str] = frozenset({"agent memory"})
+
 
 class GraphNotFound(Exception):
     """Raised when a graph is not visible to the caller (wrong org or not owned). Maps to 404."""
+
+
+class ReservedGraphName(Exception):
+    """The requested graph name is reserved for a system-owned graph (#332/ADR-027 §5). Maps to
+    409 — a user-created graph may never take a reserved name (so it can never shadow the lazily
+    created agent-memory default graph)."""
 
 
 class GraphService:
@@ -63,11 +74,24 @@ class GraphService:
     async def create_graph(
         self, *, user_id: uuid.UUID, name: str, description: str | None
     ) -> Graph:
+        if name.strip().lower() in _RESERVED_GRAPH_NAMES:
+            raise ReservedGraphName(name)
+        # system_kind is left NULL — a user route can never mint a system-owned graph.
         return await self._repo.create(user_id=user_id, name=name, description=description)
 
     async def list_graphs(self, *, user_id: uuid.UUID) -> list[Graph]:
         graphs = await self._repo.list_for_user(user_id=user_id)
         return [await self._with_live_counts(g) for g in graphs]
+
+    async def list_org_graphs(self) -> list[Graph]:
+        """The federation accessible-set (#330 / ADR-026): ALL graphs in the caller's bound org.
+
+        Deliberately org-scoped, NOT owner-gated — it mirrors exactly the gate the retriever's
+        single-graph reads apply (org-scope only), so federation aggregates precisely the graphs
+        the caller can already read individually and never one more. No live-count overlay: the
+        consumer (KRS) needs only ids + names for fan-out and labeling.
+        """
+        return await self._repo.list_for_org()
 
     async def _owned_or_404(self, *, graph_id: uuid.UUID, user_id: uuid.UUID) -> Graph:
         """Owner gate (no live-count overlay) — the raw stored graph or a 404-mapped error."""

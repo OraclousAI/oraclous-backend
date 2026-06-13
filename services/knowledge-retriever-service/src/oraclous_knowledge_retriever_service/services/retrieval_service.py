@@ -189,6 +189,11 @@ class RetrievalService:
         )
         return [_to_node_result(r) for r in rows]
 
+    async def graph_exists(self, *, graph_id: str) -> bool:
+        """Org-scoped existence probe (#331): True iff the bound org has any node in `graph_id`."""
+        repo = self._repo()
+        return await asyncio.to_thread(repo.graph_exists, graph_id=graph_id)
+
     async def temporal(self, *, graph_id: str, as_of: str, top_k: int) -> list[NodeResult]:
         repo = self._repo()
         rows = await asyncio.to_thread(repo.temporal, graph_id=graph_id, as_of=as_of, top_k=top_k)

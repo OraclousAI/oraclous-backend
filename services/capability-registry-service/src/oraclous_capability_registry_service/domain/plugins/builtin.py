@@ -419,3 +419,66 @@ class FindSimilarPlugin(_ConnectorToolPlugin):
         },
     }
     OUTPUT_SCHEMA = _HITS_OUTPUT
+
+
+@plugin_registry.register
+class FederatedSearchPlugin(_ConnectorToolPlugin):
+    """First-party federated cross-graph search (#330 / ADR-026) — search ALL the workspaces the
+    caller can read from one place, bound as ``core/federated-search@1.0.0``. No credential:
+    reached over the internal/gateway-trust path with the caller's org identity forwarded by the
+    executor; the retriever enumerates the accessible set itself, so federation grants NO new
+    access in-loop. The ``federated_search`` operation wraps the retriever's
+    ``POST /v1/federated/search``; every hit is labeled ``source_graph_id``/``source_graph_name``.
+    """
+
+    NAME = "Federated Search"  # slug ``federated-search`` MUST match the ref's name slug
+    CATEGORY = "RETRIEVAL"
+    DESCRIPTION = (
+        "Search ALL the knowledge graphs the caller can access from one place (entity, semantic, "
+        "fulltext, or hybrid) — every result labeled with its source graph. First-party and "
+        "org-scoped; federation grants no new access; no credential required."
+    )
+    TYPE = "INTERNAL"
+    TAGS = ["knowledge-graph", "retrieval", "search", "federation", "cross-graph"]
+    CAPABILITIES = [
+        {
+            "name": "federated_search",
+            "description": (
+                "Search across all accessible graphs (or an explicit accessible subset) and "
+                "return labeled hits."
+            ),
+            "parameters": {
+                "query": "str",
+                "mode": "str",  # hybrid (default) | entity | semantic | fulltext
+                "graph_ids": "list[str]",  # optional subset; fail-closed if any is inaccessible
+                "per_graph_k": "int",
+                "total_k": "int",
+            },
+        },
+    ]
+    CREDENTIAL_REQUIREMENTS: list[dict] = []  # first-party: reached over the internal trust path
+    INPUT_SCHEMA = {
+        "type": "object",
+        "required": ["query"],
+        "properties": {
+            "query": {"type": "string", "minLength": 1},
+            "mode": {
+                "type": "string",
+                "enum": ["entity", "semantic", "fulltext", "hybrid"],
+                "default": "hybrid",
+            },
+            "graph_ids": {
+                "type": "array",
+                "items": {"type": "string", "format": "uuid"},
+            },
+            "per_graph_k": {"type": "integer", "minimum": 1, "maximum": 25, "default": 10},
+            "total_k": {"type": "integer", "minimum": 1, "maximum": 200, "default": 50},
+        },
+    }
+    OUTPUT_SCHEMA = {
+        "type": "object",
+        "properties": {
+            "results": {"type": "array", "items": {"type": "object"}},
+            "meta": {"type": "object"},
+        },
+    }

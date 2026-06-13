@@ -17,7 +17,10 @@ from oraclous_knowledge_graph_service.schema.graph_schemas import (
     GraphResponse,
     UpdateGraphRequest,
 )
-from oraclous_knowledge_graph_service.services.graph_service import GraphNotFound
+from oraclous_knowledge_graph_service.services.graph_service import (
+    GraphNotFound,
+    ReservedGraphName,
+)
 
 router = APIRouter(prefix="/api/v1/graphs", tags=["graphs"])
 
@@ -28,9 +31,15 @@ _NOT_FOUND = HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="graph 
 async def create_graph(
     body: CreateGraphRequest, service: GraphServiceDep, user_id: UserIdDep
 ) -> GraphResponse:
-    graph = await service.create_graph(
-        user_id=user_id, name=body.name, description=body.description
-    )
+    try:
+        graph = await service.create_graph(
+            user_id=user_id, name=body.name, description=body.description
+        )
+    except ReservedGraphName:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="graph name is reserved for system use",
+        ) from None
     return GraphResponse.of(graph)
 
 
