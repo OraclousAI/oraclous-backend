@@ -26,6 +26,17 @@ services:
     release: R3.5            # service #2 — rebuilt to §21 (read-only retrieval); structure ENFORCED
     structure_enforced: true
     claimed_done: true       # §22 8-gate sign-off accepted — no-stubs ENFORCED
+    # DOCUMENTED §21 deviation (#301): this is a THIN READ-ONLY service. It has no `domain/`
+    # (no business-logic aggregates — it parses a query and reads Neo4j/the query-cache) and no
+    # `models/` (it owns no relational schema — its only persistence is a Redis query cache, which
+    # is repository-layer access, not ORM declarations). §21 already makes `domain/` optional ("only
+    # if the service has domain rules"); this records the absence as INTENTIONAL, not an unfinished
+    # gap, so the read-only shape is an accepted, reviewed exception rather than implicit.
+    structure_exceptions:
+      - layer: domain
+        reason: read-only service; no business-logic domain aggregates (parse query -> read substrate)
+      - layer: models
+        reason: owns no relational schema; only persistence is a Redis query cache (repository access)
   auth-service:
     release: R3.5            # service #3 — full identity: users/orgs/members/invites/SA/OAuth; ENFORCED
     structure_enforced: true
