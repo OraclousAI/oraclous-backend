@@ -47,10 +47,8 @@ warn_unused_configs = true
 # downward only, and shared packages never import services. Run: uv run lint-imports
 [tool.importlinter]
 root_packages = [
-    "oraclous_ohm",
     "oraclous_substrate",
     "oraclous_governance",
-    "oraclous_provenance",
     "oraclous_rebac",
     "oraclous_telemetry",
     "oraclous_errors",
@@ -78,10 +76,8 @@ layers = [
 name = "Shared packages must not import services"
 type = "forbidden"
 source_modules = [
-    "oraclous_ohm",
     "oraclous_substrate",
     "oraclous_governance",
-    "oraclous_provenance",
     "oraclous_rebac",
     "oraclous_telemetry",
     "oraclous_errors",

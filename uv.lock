@@ -15,8 +15,6 @@ members = [
     "oraclous-harness-runtime-service",
     "oraclous-knowledge-graph-service",
     "oraclous-knowledge-retriever-service",
-    "oraclous-ohm",
-    "oraclous-provenance",
     "oraclous-rebac",
     "oraclous-substrate",
     "oraclous-telemetry",
@@ -1234,22 +1232,6 @@ requires-dist = [
     { name = "redis", specifier = ">=5.0,<7.0" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.30,<1.0" },
 ]
-
-[[package]]
-name = "oraclous-ohm"
-version = "0.0.0"
-source = { editable = "packages/ohm" }
-dependencies = [
-    { name = "pydantic" },
-]
-
-[package.metadata]
-requires-dist = [{ name = "pydantic", specifier = ">=2.0" }]
-
-[[package]]
-name = "oraclous-provenance"
-version = "0.0.0"
-source = { editable = "packages/provenance" }
 
 [[package]]
 name = "oraclous-rebac"
