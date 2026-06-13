@@ -51,6 +51,12 @@ class Settings(BaseSettings):
     federated_max_graphs: int = 20
     federated_max_per_graph_k: int = 25
     federated_max_total: int = 200
+    # A single CROSS-GRAPH ceiling on the merged subgraph node count (NOT max_graphs × per-graph) —
+    # so a default-all neighborhood fetch cannot return ~thousands of nodes. The aggregate the FE
+    # explorer is sized for; the per-graph slice is still bounded by limit_per_graph.
+    federated_max_subgraph_nodes: int = 500
+    # HTTP timeout (s) for the KGS internal-plane registry enumeration (GET /internal/v1/graphs).
+    federated_registry_timeout_seconds: float = 15.0
 
     # --- Redis query cache (#308, lift-and-reshape of legacy query_cache_service). Advisory: a
     # Redis outage degrades to a live query, never an error. OFF by default — opt-in via

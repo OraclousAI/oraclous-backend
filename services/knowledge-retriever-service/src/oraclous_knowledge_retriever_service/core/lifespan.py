@@ -15,6 +15,7 @@ import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
+import httpx
 from fastapi import FastAPI
 from neo4j import Driver
 from oraclous_telemetry import Severity, alert, evaluate_readiness, exit_on_degrade_enabled
@@ -86,6 +87,19 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.eval_judge = make_judge(settings)
     app.state.eval_slots = asyncio.Semaphore(max(1, settings.eval_max_concurrent_requests))
 
+    # Federation registry client (#330 / ADR-026): ONE pooled httpx.AsyncClient for the KGS
+    # internal-plane enumeration (GET /internal/v1/graphs), reused across requests rather than a
+    # fresh client per fan-out. Built only when federation is configured (KRS_KNOWLEDGE_GRAPH_URL);
+    # None otherwise (the DI 503s). Connection reuse keeps the per-request enumeration cheap.
+    federation_http_client = None
+    if settings.knowledge_graph_url:
+        federation_http_client = httpx.AsyncClient(
+            base_url=settings.knowledge_graph_url.rstrip("/"),
+            timeout=settings.federated_registry_timeout_seconds,
+            follow_redirects=False,
+        )
+    app.state.federation_http_client = federation_http_client
+
     verdict = evaluate_readiness({"neo4j": None if neo4j_bind_failed else object()})
     if verdict.is_degraded and exit_on_degrade_enabled():
         raise SystemExit(1)
@@ -100,3 +114,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         judge = getattr(app.state, "eval_judge", None)
         if judge is not None:
             await judge.aclose()
+        fed_client = getattr(app.state, "federation_http_client", None)
+        if fed_client is not None:
+            await fed_client.aclose()

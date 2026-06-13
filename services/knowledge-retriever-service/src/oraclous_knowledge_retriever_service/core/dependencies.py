@@ -129,20 +129,22 @@ def get_retrieval_service(
 
 
 def get_federated_service(
+    request: Request,
     driver: Annotated[Driver, Depends(get_neo4j_driver)],
     _org: Annotated[OrganisationContext, Depends(bind_org_context)],
 ) -> FederatedRetrievalService:
     """Build the federated cross-graph service (#330 / ADR-026). Fail-closed: with no
-    KRS_KNOWLEDGE_GRAPH_URL the accessible set cannot be enumerated, so the federated surface
-    503s — it never falls back to "all graphs"."""
+    KRS_KNOWLEDGE_GRAPH_URL (so no pooled registry client) the accessible set cannot be
+    enumerated, so the federated surface 503s — it never falls back to "all graphs"."""
     settings = get_settings()
-    if not settings.knowledge_graph_url:
+    fed_client = getattr(request.app.state, "federation_http_client", None)
+    if not settings.knowledge_graph_url or fed_client is None:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="federation unavailable (KRS_KNOWLEDGE_GRAPH_URL not configured)",
         )
     registry = GraphRegistryClient(
-        base_url=settings.knowledge_graph_url,
+        client=fed_client,
         auth_mode=settings.auth_mode,
         dev_bearer=settings.dev_bearer,
         internal_service_key=settings.internal_service_key,
@@ -155,6 +157,7 @@ def get_federated_service(
         max_graphs=settings.federated_max_graphs,
         max_per_graph_k=settings.federated_max_per_graph_k,
         max_total=settings.federated_max_total,
+        max_subgraph_nodes=settings.federated_max_subgraph_nodes,
     )
 
 

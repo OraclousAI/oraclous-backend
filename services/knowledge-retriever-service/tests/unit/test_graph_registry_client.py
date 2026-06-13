@@ -30,12 +30,17 @@ def _principal() -> Principal:
 
 
 def _client(handler, *, auth_mode: str = "gateway") -> GraphRegistryClient:
-    return GraphRegistryClient(
+    # The pooled client the lifespan builds, with the registry base url + a MockTransport.
+    pooled = httpx.AsyncClient(
         base_url="http://knowledge-graph-service:8000",
+        transport=httpx.MockTransport(handler),
+        follow_redirects=False,
+    )
+    return GraphRegistryClient(
+        client=pooled,
         auth_mode=auth_mode,
         dev_bearer="dev-token",
         internal_service_key="dev-internal-key",
-        transport=httpx.MockTransport(handler),
     )
 
 
@@ -54,6 +59,23 @@ async def test_gateway_mode_forwards_principal_org_and_internal_key() -> None:
     graphs = await _client(handler).accessible_graphs(_principal())
     assert graphs == [GraphInfo(id=str(uuid.UUID(int=1)), name="research")]
     assert seen["path"] == "/internal/v1/graphs"
+    assert seen["org"] == str(_ORG)
+    assert seen["principal"] == str(_USER)
+    assert seen["key"] == "dev-internal-key"
+
+
+async def test_jwt_mode_forwards_principal_org_and_internal_key_not_a_503() -> None:
+    # An all-jwt deployment must still reach the KGS internal plane (the principal/internal-key
+    # shape), NOT structurally fail to enumerate. jwt mode forwards the same headers as gateway.
+    seen: dict = {}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        seen["org"] = req.headers.get("X-Organisation-Id")
+        seen["principal"] = req.headers.get("X-Principal-Id")
+        seen["key"] = req.headers.get("X-Internal-Key")
+        return httpx.Response(200, json={"graphs": []})
+
+    await _client(handler, auth_mode="jwt").accessible_graphs(_principal())
     assert seen["org"] == str(_ORG)
     assert seen["principal"] == str(_USER)
     assert seen["key"] == "dev-internal-key"
