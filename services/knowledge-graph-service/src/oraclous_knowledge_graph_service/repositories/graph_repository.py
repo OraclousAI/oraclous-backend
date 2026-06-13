@@ -12,6 +12,7 @@ import uuid
 
 from oraclous_substrate.access import enforced_organisation_id
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oraclous_knowledge_graph_service.domain.graph import Graph
@@ -30,6 +31,7 @@ def _to_domain(row: KnowledgeGraph) -> Graph:
         relationship_count=row.relationship_count,
         created_at=row.created_at,
         updated_at=row.updated_at,
+        system_kind=row.system_kind,
     )
 
 
@@ -42,14 +44,61 @@ class GraphRepository:
     def _org(self) -> uuid.UUID:
         return uuid.UUID(enforced_organisation_id())
 
-    async def create(self, *, user_id: uuid.UUID, name: str, description: str | None) -> Graph:
+    async def create(
+        self,
+        *,
+        user_id: uuid.UUID,
+        name: str,
+        description: str | None,
+        system_kind: str | None = None,
+    ) -> Graph:
         row = KnowledgeGraph(
-            organisation_id=self._org(), user_id=user_id, name=name, description=description
+            organisation_id=self._org(),
+            user_id=user_id,
+            name=name,
+            description=description,
+            system_kind=system_kind,
         )
         self._session.add(row)
         await self._session.flush()
         await self._session.refresh(row)
         return _to_domain(row)
+
+    async def find_by_system_kind(self, system_kind: str) -> Graph | None:
+        """Org-scoped lookup of the reserved system graph of a kind (#332/ADR-027 §5). The partial
+        unique index makes this at-most-one per (org, kind), so no ordering tie-break is needed."""
+        stmt = select(KnowledgeGraph).where(
+            KnowledgeGraph.organisation_id == self._org(),
+            KnowledgeGraph.system_kind == system_kind,
+        )
+        row = (await self._session.execute(stmt)).scalar_one_or_none()
+        return _to_domain(row) if row else None
+
+    async def find_or_create_system_graph(
+        self, *, user_id: uuid.UUID, system_kind: str, name: str, description: str | None
+    ) -> Graph:
+        """Race-safe find-or-create of the org's reserved system graph of ``system_kind``.
+
+        The (org, system_kind) partial unique index is the arbiter: concurrent first runs that both
+        miss the read race to INSERT; the loser hits an ``IntegrityError`` and re-reads the winner,
+        so an org never ends up with two default memory graphs (#332/ADR-027 §5)."""
+        existing = await self.find_by_system_kind(system_kind)
+        if existing is not None:
+            return existing
+        try:
+            async with self._session.begin_nested():
+                return await self.create(
+                    user_id=user_id,
+                    name=name,
+                    description=description,
+                    system_kind=system_kind,
+                )
+        except IntegrityError:
+            # Lost the insert race — the unique index rejected the duplicate; re-read the winner.
+            won = await self.find_by_system_kind(system_kind)
+            if won is None:  # pragma: no cover — the violation implies a row now exists
+                raise
+            return won
 
     async def list_for_user(self, *, user_id: uuid.UUID) -> list[Graph]:
         stmt = (
@@ -84,21 +133,6 @@ class GraphRepository:
         stmt = select(KnowledgeGraph).where(
             KnowledgeGraph.id == graph_id,
             KnowledgeGraph.organisation_id == self._org(),
-        )
-        row = (await self._session.execute(stmt)).scalar_one_or_none()
-        return _to_domain(row) if row else None
-
-    async def find_by_name(self, name: str) -> Graph | None:
-        """Org-scoped lookup by exact name (oldest first — the lazy org-default memory graph,
-        #332/ADR-027 §5, resolves deterministically even if a race ever created a duplicate)."""
-        stmt = (
-            select(KnowledgeGraph)
-            .where(
-                KnowledgeGraph.organisation_id == self._org(),
-                KnowledgeGraph.name == name,
-            )
-            .order_by(KnowledgeGraph.created_at.asc())
-            .limit(1)
         )
         row = (await self._session.execute(stmt)).scalar_one_or_none()
         return _to_domain(row) if row else None

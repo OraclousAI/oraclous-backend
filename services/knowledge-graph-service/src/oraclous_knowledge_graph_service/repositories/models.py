@@ -11,7 +11,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import JSON, DateTime, Integer, String, Text, UniqueConstraint, func
+from sqlalchemy import JSON, DateTime, Index, Integer, String, Text, UniqueConstraint, func, text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -32,11 +32,28 @@ class KnowledgeGraph(Base):
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     schema_config: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     status: Mapped[str] = mapped_column(String(50), default="active", nullable=False)
+    # Reserved-graph marker (#332 / ADR-027 §5). NULL for a user-created graph; a reserved value
+    # (e.g. `agent_memory`) marks a system-owned graph that a user can never create or address by
+    # name. The org-scoped partial unique index below makes "at most ONE per (org, system_kind)" a
+    # DB invariant, so the lazy find-or-create is race-safe (a concurrent first run that loses the
+    # insert race re-reads the winner rather than creating a duplicate).
+    system_kind: Mapped[str | None] = mapped_column(String(50), nullable=True)
     node_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     relationship_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    __table_args__ = (
+        # At most one system graph of each kind per org (the agent-memory default-graph race guard).
+        Index(
+            "uq_knowledge_graph_system_kind",
+            "organisation_id",
+            "system_kind",
+            unique=True,
+            postgresql_where=text("system_kind IS NOT NULL"),
+        ),
     )
 
 
