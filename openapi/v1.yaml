@@ -393,10 +393,15 @@ paths:
       description: >-
         One query over every graph the caller can already read individually (ADR-026 — federation
         grants NO new access; the retriever enumerates the org-scoped accessible set itself).
-        Modes: entity (name/alias match), semantic (one query embedding, per-graph cosine),
-        fulltext, hybrid (RRF). Every hit carries `source_graph_id`/`source_graph_name`. An
-        explicit `graph_ids` subset is fail-closed (any inaccessible id → 403, no partial
-        results); cap breaches → 422; an un-enumerable accessible set → 503. Backs the registry
+        Modes: entity/fulltext (constant-score, merged by a fair round-robin interleave across
+        graphs so the total cap never starves trailing graphs), semantic (one query embedding,
+        per-graph cosine, merged score-desc), hybrid (RRF over each constituent's per-graph local
+        rankings — graph-order-independent). Every hit carries `source_graph_id`/`source_graph_name`.
+        An explicit `graph_ids` subset is fail-closed (any inaccessible id → 403, no partial
+        results); an explicit empty `graph_ids`, or a cap breach → 422; an un-enumerable accessible
+        set → 503. Partial success: a single graph's branch erroring is dropped and reported in
+        `meta.graphs_failed` (a 200 may cover a subset of the queried graphs) — only the
+        un-enumerable accessible set is a whole-query 503. Backs the registry
         `core/federated-search` in-loop tool.
       operationId: federatedSearch
       x-stability: stable
@@ -410,14 +415,18 @@ paths:
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "403": { $ref: "#/components/responses/Unauthorized" }
         "422": { $ref: "#/components/responses/ValidationFailed" }
+        "503": { $ref: "#/components/responses/RegistryUnavailable" }
   /v1/federated/subgraph:
     post:
       tags: [knowledge-retriever]
       summary: Federated neighborhood fetch around matched entities, per accessible graph (#330).
       description: >-
         Matches entities per accessible graph and returns the 1-hop slice around them — every
-        node and edge labeled with its source graph; edges never cross graphs. Same fail-closed
-        subset/caps/registry semantics as /v1/federated/search.
+        node and edge labeled with its source graph; edges never cross graphs. A single CROSS-GRAPH
+        aggregate node cap bounds the merged result across all graphs (not per-graph × graphs), so a
+        default-all fetch can't return thousands of nodes. Same fail-closed subset/caps/registry
+        semantics and the same partial-success `meta.graphs_failed` as /v1/federated/search;
+        cap-breach messages name the actual `entities_per_graph` / `limit_per_graph` fields.
       operationId: federatedSubgraph
       x-stability: stable
       requestBody:
@@ -430,6 +439,7 @@ paths:
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "403": { $ref: "#/components/responses/Unauthorized" }
         "422": { $ref: "#/components/responses/ValidationFailed" }
+        "503": { $ref: "#/components/responses/RegistryUnavailable" }
 
   /api/v1/tools:
     get:
@@ -1248,8 +1258,9 @@ components:
         A federated cross-graph query (#330 / ADR-026). `graph_ids` omitted/null = ALL the
         caller's accessible graphs (the org-scoped set — federation grants NO new access); an
         explicit subset is validated against the accessible set and FAIL-CLOSED (any
-        unknown/inaccessible id → 403, no partial results). `per_graph_k`/`total_k` above the
-        configured caps → 422. Every hit is labeled `source_graph_id`/`source_graph_name`.
+        unknown/inaccessible id → 403, no partial results); an explicit EMPTY list is a caller
+        error → 422 (never silently "all"). `per_graph_k`/`total_k` above the configured caps →
+        422. Every hit is labeled `source_graph_id`/`source_graph_name`.
       required: [query]
       additionalProperties: false
       properties:
@@ -1258,6 +1269,7 @@ components:
         graph_ids:
           type: array
           nullable: true
+          minItems: 1
           items: { type: string, format: uuid }
         per_graph_k: { type: integer, minimum: 1, default: 10 }
         total_k: { type: integer, minimum: 1, default: 50 }
@@ -1266,7 +1278,9 @@ components:
       description: >-
         A federated neighborhood fetch (#330): match entities per accessible graph, return the
         1-hop slice around them — every node/edge labeled with its source graph. Edges never
-        cross graphs.
+        cross graphs. A cross-graph aggregate node cap bounds the merged result across all graphs.
+        `graph_ids` follows the same omitted=all / explicit-subset / explicit-empty=422 rule as
+        the search request.
       required: [query]
       additionalProperties: false
       properties:
@@ -1274,6 +1288,7 @@ components:
         graph_ids:
           type: array
           nullable: true
+          minItems: 1
           items: { type: string, format: uuid }
         entities_per_graph: { type: integer, minimum: 1, default: 5 }
         limit_per_graph: { type: integer, minimum: 1, default: 50 }
@@ -1489,6 +1504,14 @@ components:
           schema: { $ref: "#/components/schemas/ErrorEnvelope" }
     Upstream5xx:
       description: An upstream failure normalised to the envelope (SERVICE_UNAVAILABLE / GATEWAY_TIMEOUT / INTERNAL_ERROR).
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+    RegistryUnavailable:
+      description: >-
+        The federation accessible-set could not be enumerated (the graph registry is down or
+        unconfigured) — fail-closed, never "assume all" (SERVICE_UNAVAILABLE). Distinct from a
+        single graph's branch failing, which is a partial 200 (see meta.graphs_failed).
       content:
         application/json:
           schema: { $ref: "#/components/schemas/ErrorEnvelope" }
