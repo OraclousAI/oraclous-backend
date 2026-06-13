@@ -77,6 +77,7 @@ class ToolExecutionService:
         body: ExecuteRequest,
         organisation_id: uuid.UUID,
         user_id: uuid.UUID,
+        principal_type: str = "agent",
     ) -> ExecutionOut:
         instance = await self._instances.get_by_id(instance_id, organisation_id)
         if instance is None:
@@ -143,6 +144,7 @@ class ToolExecutionService:
             organisation_id=organisation_id,
             user_id=user_id,
             execution_id=execution.id,
+            principal_type=principal_type,
             credentials=credentials,
             configuration=dict(instance.configuration or {}),
             settings=dict(instance.settings or {}),

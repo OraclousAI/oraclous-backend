@@ -28,7 +28,11 @@ from oraclous_capability_registry_service.domain.executors.base import (
     InternalTool,
 )
 
-_TIMEOUT_S = 60.0  # a fan-out over many graphs is slower than a single-graph read
+# The HTTP timeout must sit UNDER the InternalTool hard timeout (timeout_s, default 30s) — at 60s
+# it was dead (the wrapper's asyncio.wait_for fired first, masking the real bound). A small margin
+# below the hard timeout lets a slow retriever surface as RETRIEVER_UNREACHABLE rather than the
+# generic TIMEOUT. A fan-out over many graphs is the slow case this budget is sized for.
+_HTTP_TIMEOUT_MARGIN_S = 2.0
 _MODES = ("entity", "semantic", "fulltext", "hybrid")
 
 
@@ -50,7 +54,10 @@ class FederatedSearchConnector(InternalTool):
             headers["Authorization"] = f"Bearer {settings.DEV_BEARER}"
             return headers
         headers["X-Principal-Id"] = str(context.user_id)
-        headers["X-Principal-Type"] = "agent"  # the harness loop calls as an agent principal
+        # Forward the REAL principal type the gateway verified (ADR-018), so the retriever scopes
+        # the fan-out to the same principal kind — not a hardcoded "agent". Defaults to agent (the
+        # harness loop) on paths that don't set it.
+        headers["X-Principal-Type"] = context.principal_type
         headers["X-Organisation-Id"] = str(context.organisation_id)
         if settings.INTERNAL_SERVICE_KEY:
             headers["X-Internal-Key"] = settings.INTERNAL_SERVICE_KEY
@@ -95,7 +102,7 @@ class FederatedSearchConnector(InternalTool):
             async with httpx.AsyncClient(
                 base_url=settings.KNOWLEDGE_RETRIEVER_URL.rstrip("/"),
                 headers=self._downstream_headers(context),
-                timeout=_TIMEOUT_S,
+                timeout=max(1.0, self.timeout_s - _HTTP_TIMEOUT_MARGIN_S),
                 transport=self.transport,
                 follow_redirects=False,
             ) as client:
