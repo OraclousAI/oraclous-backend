@@ -19,10 +19,19 @@ checker enforces the structural invariants that the hollowness failure violated.
            the service's own persistence, so it is exempt. §21 rule 3, "connection setup excepted").
   STR005 — a ``*_service.py`` file sits directly under the package root (scattered/unwired
            utility drift) instead of under ``services/``.
+  STR006 — a STALE documented exception: ``service_status.yaml`` declares a
+           ``structure_exceptions`` entry for a layer (e.g. ``domain``/``models``) that NOW
+           EXISTS, so the recorded deviation was resolved and the note must be removed.
 
 Enforcement is OPT-IN PER SERVICE: STR violations FAIL CI only for services whose
 ``structure_enforced`` flag is true in ``tools/lint/service_status.yaml``. Others are reported
 as informational so the rebuild can proceed service by service, unless ``--all`` is passed.
+
+DOCUMENTED §21 EXCEPTIONS (#301): ``domain/`` and ``models/`` are optional, so an absent optional
+layer is never an STR violation. A service may RECORD that absence as intentional via a
+``structure_exceptions`` list in ``service_status.yaml`` (``[{layer, reason}]``) — e.g. the thin
+read-only ``knowledge-retriever-service`` has no ``domain/``/``models/``. Recorded exceptions are
+printed (accepted), and a stale one (the layer now exists) is re-flagged as STR006.
 
 Run:  uv run python -m tools.lint.check_service_structure [--all] [<services-dir>]
 Exits non-zero (1) if any ENFORCED violation is found; 0 otherwise.
@@ -226,11 +235,34 @@ def main(argv: list[str] | None = None) -> int:
 
     enforced_failures: list[Violation] = []
     info_count = 0
+    recorded_exceptions: list[str] = []
     for root in discover_package_roots(services_dir):
+        svc = service_of(root)
+        # DOCUMENTED §21 deviations (e.g. a thin read-only service with no `domain/`/`models/`,
+        # #301). `domain/` and `models/` are already OPTIONAL above, so an absent optional layer
+        # is never an STR violation — but recording it in `structure_exceptions` makes the absence
+        # an INTENTIONAL, reviewed decision rather than an implicit gap. We surface each recorded
+        # exception, and (fail-closed) re-flag one that is now STALE: declared for a layer that
+        # actually EXISTS, which means the deviation was resolved and the note should be removed.
+        for exc in status.get(svc or "", {}).get("structure_exceptions", []) or []:
+            layer = exc.get("layer", "?")
+            reason = exc.get("reason", "")
+            if (root / layer).is_dir():
+                enforced_failures.append(
+                    Violation(
+                        root,
+                        0,
+                        "STR006",
+                        f"stale structure_exception: layer '{layer}/' now EXISTS — "
+                        "remove the exception from service_status.yaml",
+                    )
+                )
+            else:
+                recorded_exceptions.append(f"  {svc}: no '{layer}/' — accepted ({reason})")
+
         viols = check_package(root)
         if not viols:
             continue
-        svc = service_of(root)
         enforced = args.all or (
             svc is not None and bool(status.get(svc, {}).get("structure_enforced"))
         )
@@ -247,6 +279,10 @@ def main(argv: list[str] | None = None) -> int:
         for v in enforced_failures:
             print(f"  {v}", file=sys.stderr)
         return 1
+    if recorded_exceptions:
+        print("check_service_structure: documented §21 structure exceptions (accepted):")
+        for line in recorded_exceptions:
+            print(line)
     if info_count:
         print(
             f"check_service_structure: {info_count} STR finding(s) (informational; not enforced)."
