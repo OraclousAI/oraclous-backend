@@ -213,6 +213,73 @@ def test_approve_links_both_nodes_survive_and_nothing_folds(seeded) -> None:
     assert count == 1
 
 
+def test_reversed_direction_regeneration_does_not_duplicate_the_edge(seeded) -> None:
+    # The candidate MERGE canonicalises direction by node id, so generating A×B then B×A writes
+    # ONE SAME_AS_CANDIDATE edge per pair, not two. (Pre-fix: the directed MERGE `(a)->(b)` and
+    # `(b)->(a)` were distinct edges, so the reverse pass duplicated.)
+    repo = _repo(seeded)
+    _generate_and_write(repo, _ORG_A, _G1, _G2)  # A × B
+    _generate_and_write(repo, _ORG_A, _G2, _G1)  # B × A (reversed) — must not duplicate
+    edges = _edges(seeded, "SAME_AS_CANDIDATE")
+    pairs = {tuple(sorted((e["a"], e["b"]))) for e in edges}
+    assert len(edges) == len(pairs)  # no duplicate per pair
+    assert pairs == {("g1-acme", "g2-acme"), ("g1-near", "g2-near")}
+
+
+def test_verdicted_pairs_are_reported_for_response_filtering(seeded) -> None:
+    repo = _repo(seeded)
+    _generate_and_write(repo, _ORG_A, _G1, _G2)
+    # approve the exact pair, reject the near pair — both then count as verdicted
+    repo.link_candidate(
+        organisation_id=str(_ORG_A),
+        graph_id_a=_G1,
+        node_id_a="g1-acme",
+        graph_id_b=_G2,
+        node_id_b="g2-acme",
+    )
+    repo.suppress_candidate_pair(
+        organisation_id=str(_ORG_A),
+        graph_id_a=_G1,
+        node_id_a="g1-near",
+        graph_id_b=_G2,
+        node_id_b="g2-near",
+    )
+    verdicted = set(
+        repo.verdicted_cross_graph_pairs(
+            organisation_id=str(_ORG_A), graph_id_a=_G1, graph_id_b=_G2
+        )
+    )
+    assert verdicted == {
+        tuple(sorted(("g1-acme", "g2-acme"))),
+        tuple(sorted(("g1-near", "g2-near"))),
+    }
+    # a cross-org probe finds nothing (org predicate on both endpoints)
+    assert (
+        repo.verdicted_cross_graph_pairs(
+            organisation_id=str(_ORG_A), graph_id_a=_G1, graph_id_b=_G3
+        )
+        == []
+    )
+
+
+def test_pending_cross_graph_read_surface_lists_the_queue(seeded) -> None:
+    repo = _repo(seeded)
+    _generate_and_write(repo, _ORG_A, _G1, _G2)
+    pending = repo.pending_cross_graph_candidates(
+        organisation_id=str(_ORG_A), graph_id=_G1, limit=100
+    )
+    pairs = {tuple(sorted((p["id_a"], p["id_b"]))) for p in pending}
+    assert pairs == {("g1-acme", "g2-acme"), ("g1-near", "g2-near")}
+    # both graph ids are carried on each pending row (ADR-026)
+    for p in pending:
+        assert {p["graph_id_a"], p["graph_id_b"]} == {_G1, _G2}
+    # org-scoped: org B cannot read org A's pending queue
+    assert (
+        repo.pending_cross_graph_candidates(organisation_id=str(_ORG_B), graph_id=_G1, limit=100)
+        == []
+    )
+
+
 def test_reject_suppresses_and_regeneration_skips_the_pair(seeded) -> None:
     repo = _repo(seeded)
     _generate_and_write(repo, _ORG_A, _G1, _G2)

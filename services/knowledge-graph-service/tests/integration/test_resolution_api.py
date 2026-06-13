@@ -40,6 +40,7 @@ class _FakeResolutionService:
         self.approve_calls: list[tuple] = []
         self.reject_calls: list[tuple] = []
         self.generate_calls: list[tuple] = []
+        self.list_pending_calls: list[tuple] = []
 
     async def approve(self, *, graph_id, user_id, pair, candidate_id_path, other_graph_id=None):
         self.approve_calls.append(
@@ -94,6 +95,24 @@ class _FakeResolutionService:
             ],
             [],
         )
+
+    async def list_pending_cross_graph(self, *, graph_id, user_id, limit):
+        self.list_pending_calls.append((graph_id, user_id, limit))
+        if self.raise_with is not None:
+            raise self.raise_with
+        return [
+            CrossGraphCandidate(
+                node_id_a=_A,
+                node_id_b=_B,
+                graph_id_a=str(graph_id),
+                graph_id_b=str(_OTHER_GRAPH),
+                label="Company",
+                name_a="Eurail",
+                name_b="Eurail B.V.",
+                score=1.0,
+                method="canonical_key",
+            )
+        ]
 
 
 @pytest.fixture
@@ -241,4 +260,26 @@ async def test_generate_unowned_graph_is_404(client, svc) -> None:
         json={"target_graph_id": str(_OTHER_GRAPH)},
         headers=_AUTH,
     )
+    assert resp.status_code == 404
+
+
+async def test_list_pending_cross_graph_requires_auth(client) -> None:
+    resp = await client.get(f"/api/v1/graphs/{_GRAPH}/resolution/cross-graph")
+    assert resp.status_code == 401
+
+
+async def test_list_pending_cross_graph_returns_the_queue(client, svc) -> None:
+    resp = await client.get(f"/api/v1/graphs/{_GRAPH}/resolution/cross-graph", headers=_AUTH)
+    assert resp.status_code == 200, resp.text
+    payload = resp.json()
+    assert payload["total"] == 1
+    cand = payload["candidates"][0]
+    assert cand["graph_id_a"] == str(_GRAPH) and cand["graph_id_b"] == str(_OTHER_GRAPH)
+    assert cand["candidate_id"] == _CID  # keys the same verdict endpoints
+    assert svc.list_pending_calls[0][2] == 100  # default limit flowed through
+
+
+async def test_list_pending_cross_graph_unowned_is_404(client, svc) -> None:
+    svc.raise_with = GraphNotFound(str(_GRAPH))
+    resp = await client.get(f"/api/v1/graphs/{_GRAPH}/resolution/cross-graph", headers=_AUTH)
     assert resp.status_code == 404

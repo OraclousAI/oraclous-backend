@@ -84,6 +84,14 @@ class _FakeWriteRepo:
         assert organisation_id == str(_ORG)
         return list(self.entities.get(graph_id, []))[:limit]
 
+    def verdicted_cross_graph_pairs(self, *, organisation_id, graph_id_a, graph_id_b):
+        assert organisation_id == str(_ORG)
+        return list(getattr(self, "verdicted", []))
+
+    def pending_cross_graph_candidates(self, *, organisation_id, graph_id, limit):
+        assert organisation_id == str(_ORG)
+        return list(getattr(self, "pending", []))[:limit]
+
     def write_cross_graph_candidates(self, *, organisation_id, pairs):
         assert organisation_id == str(_ORG)
         self.written_pairs.extend(pairs)
@@ -111,10 +119,17 @@ class _FakeWriteRepo:
 
 class _FakeAuditRepo:
     class _Row:
-        def __init__(self, action: str, canonical_node_id: str | None, decided_by: uuid.UUID):
+        def __init__(
+            self,
+            action: str,
+            canonical_node_id: str | None,
+            decided_by: uuid.UUID,
+            other_graph_id: uuid.UUID | None,
+        ):
             self.action = action
             self.canonical_node_id = canonical_node_id
             self.decided_by = decided_by
+            self.other_graph_id = other_graph_id
 
     def __init__(self) -> None:
         self.rows: dict[tuple[uuid.UUID, str], _FakeAuditRepo._Row] = {}
@@ -123,9 +138,18 @@ class _FakeAuditRepo:
         return self.rows.get((graph_id, candidate_id))
 
     async def record(
-        self, *, graph_id, candidate_id, node_id_a, node_id_b, action, canonical_node_id, decided_by
+        self,
+        *,
+        graph_id,
+        candidate_id,
+        node_id_a,
+        node_id_b,
+        action,
+        canonical_node_id,
+        decided_by,
+        other_graph_id=None,
     ):
-        row = self._Row(action.value, canonical_node_id, decided_by)
+        row = self._Row(action.value, canonical_node_id, decided_by, other_graph_id)
         self.rows[(graph_id, candidate_id)] = row
         return row
 
@@ -172,6 +196,47 @@ async def test_generate_writes_candidates_carrying_both_graph_ids() -> None:
     ]
 
 
+async def test_generate_filters_already_verdicted_pairs_from_the_response() -> None:
+    # The single canonical-key pair (_A, _B) is already verdicted (approved/rejected) — it must NOT
+    # resurface in `candidates`, and `generated` must not count it.
+    write, audit = _FakeWriteRepo(), _FakeAuditRepo()
+    write.verdicted = [tuple(sorted((_A, _B)))]
+    svc = _service(write, audit)
+    candidates, warnings = await svc.generate_cross_graph(
+        graph_id=_GRAPH_A,
+        target_graph_id=_GRAPH_B,
+        user_id=_OWNER,
+        candidate_threshold=0.85,
+        limit=100,
+    )
+    assert candidates == []  # the verdicted pair was filtered before the budget
+    assert write.written_pairs == []  # nothing left to write
+
+
+async def test_list_pending_cross_graph_is_owner_gated_and_returns_the_queue() -> None:
+    write, audit = _FakeWriteRepo(), _FakeAuditRepo()
+    write.pending = [
+        {
+            "id_a": _A,
+            "graph_id_a": str(_GRAPH_A),
+            "id_b": _B,
+            "graph_id_b": str(_GRAPH_B),
+            "name_a": "Acme Corp",
+            "name_b": "Acme Corp",
+            "label": "Company",
+            "score": 1.0,
+            "method": "canonical_key",
+        }
+    ]
+    svc = _service(write, audit)
+    out = await svc.list_pending_cross_graph(graph_id=_GRAPH_A, user_id=_OWNER, limit=100)
+    assert len(out) == 1
+    assert out[0].node_id_a == _A and out[0].graph_id_b == str(_GRAPH_B)
+    # owner gate: a non-owner (or another org's graph) is a 404
+    with pytest.raises(GraphNotFound):
+        await svc.list_pending_cross_graph(graph_id=_GRAPH_A, user_id=_INTRUDER, limit=100)
+
+
 async def test_generate_refuses_a_self_pair() -> None:
     svc = _service(_FakeWriteRepo(), _FakeAuditRepo())
     with pytest.raises(ValueError, match="distinct graphs"):
@@ -215,6 +280,12 @@ async def test_generate_by_a_non_owner_is_404() -> None:
 # ── verdicts ─────────────────────────────────────────────────────────────────────────────────
 
 
+# The canonicalised audit graph (the smaller of the two ids) — the row is keyed here regardless of
+# which direction the caller submitted (symmetric arbiter).
+_AUDIT_GRAPH = min(_GRAPH_A, _GRAPH_B, key=str)
+_AUDIT_OTHER = max(_GRAPH_A, _GRAPH_B, key=str)
+
+
 async def test_cross_graph_approve_links_and_audits() -> None:
     write, audit = _FakeWriteRepo(), _FakeAuditRepo()
     svc = _service(write, audit)
@@ -228,8 +299,63 @@ async def test_cross_graph_approve_links_and_audits() -> None:
     )
     assert isinstance(outcome, LinkOutcome) and outcome.linked is True
     assert write.linked == [(str(_GRAPH_A), _A, str(_GRAPH_B), _B)]
-    row = audit.rows[(_GRAPH_A, pair.candidate_id)]
-    assert row.action == ResolutionAction.APPROVE.value and row.canonical_node_id == _A
+    # the audit row is keyed under the CANONICAL (smaller) graph, carries BOTH graph ids, and — a
+    # LINK, not a fold — records NO canonical survivor (both nodes survive in their own graphs).
+    row = audit.rows[(_AUDIT_GRAPH, pair.candidate_id)]
+    assert row.action == ResolutionAction.APPROVE.value
+    assert row.canonical_node_id is None
+    assert row.other_graph_id == _AUDIT_OTHER
+
+
+async def test_cross_graph_verdict_arbiter_is_symmetric_over_the_pair() -> None:
+    # An approve from one direction then a REJECT from the OTHER direction (graphs swapped) must
+    # hit the SAME audit row → a 409 conflict, never a second coexisting verdict or a 404.
+    write, audit = _FakeWriteRepo(), _FakeAuditRepo()
+    svc = _service(write, audit)
+    pair = _pair()
+    await svc.approve(
+        graph_id=_GRAPH_A,
+        user_id=_OWNER,
+        pair=pair,
+        candidate_id_path=pair.candidate_id,
+        other_graph_id=_GRAPH_B,
+    )
+    # the reverse direction: graph_id=_GRAPH_B, other_graph_id=_GRAPH_A, pair endpoints swapped
+    reverse_pair = CandidatePair(node_id_a=_B, node_id_b=_A)
+    assert reverse_pair.candidate_id == pair.candidate_id  # the id is already symmetric
+    with pytest.raises(ResolutionConflict):
+        await svc.reject(
+            graph_id=_GRAPH_B,
+            user_id=_OWNER,
+            pair=reverse_pair,
+            candidate_id_path=reverse_pair.candidate_id,
+            other_graph_id=_GRAPH_A,
+        )
+    assert write.suppressed == []  # the conflicting reverse verdict never mutated the graph
+    assert len(audit.rows) == 1  # exactly one verdict row for the pair, from either direction
+
+
+async def test_cross_graph_reject_then_reverse_approve_is_a_conflict() -> None:
+    write, audit = _FakeWriteRepo(), _FakeAuditRepo()
+    svc = _service(write, audit)
+    pair = _pair()
+    await svc.reject(
+        graph_id=_GRAPH_A,
+        user_id=_OWNER,
+        pair=pair,
+        candidate_id_path=pair.candidate_id,
+        other_graph_id=_GRAPH_B,
+    )
+    reverse_pair = CandidatePair(node_id_a=_B, node_id_b=_A)
+    with pytest.raises(ResolutionConflict):
+        await svc.approve(
+            graph_id=_GRAPH_B,
+            user_id=_OWNER,
+            pair=reverse_pair,
+            candidate_id_path=reverse_pair.candidate_id,
+            other_graph_id=_GRAPH_A,
+        )
+    assert write.linked == []
 
 
 async def test_cross_graph_approve_replay_is_idempotent() -> None:
@@ -284,7 +410,9 @@ async def test_cross_graph_reject_suppresses_with_both_ids() -> None:
     )
     assert outcome.suppressed is True
     assert write.suppressed == [(str(_GRAPH_A), _A, str(_GRAPH_B), _B)]
-    assert audit.rows[(_GRAPH_A, pair.candidate_id)].action == ResolutionAction.REJECT.value
+    row = audit.rows[(_AUDIT_GRAPH, pair.candidate_id)]  # keyed under the canonical graph
+    assert row.action == ResolutionAction.REJECT.value
+    assert row.other_graph_id == _AUDIT_OTHER
 
 
 async def test_cross_graph_verdict_on_an_invisible_graph_is_404() -> None:
