@@ -213,6 +213,44 @@ def test_approve_links_both_nodes_survive_and_nothing_folds(seeded) -> None:
     assert count == 1
 
 
+def test_forward_then_reverse_approve_yields_one_same_as_edge(seeded) -> None:
+    # The SAME_AS link MERGE canonicalises direction by node id (lo->hi), so approving the pair from
+    # one direction then re-approving from the reverse direction collapses to ONE SAME_AS edge — not
+    # two. (Pre-fix: `MERGE (a)->(b)` then `MERGE (b)->(a)` were distinct directed edges, so a
+    # concurrent reverse-direction approve wrote a duplicate.)
+    repo = _repo(seeded)
+    _generate_and_write(repo, _ORG_A, _G1, _G2)
+    # forward: a = g1-acme (in _G1), b = g2-acme (in _G2)
+    assert repo.link_candidate(
+        organisation_id=str(_ORG_A),
+        graph_id_a=_G1,
+        node_id_a="g1-acme",
+        graph_id_b=_G2,
+        node_id_b="g2-acme",
+    )
+    # reverse: a = g2-acme (in _G2), b = g1-acme (in _G1) — the same pair, opposite endpoints
+    assert repo.link_candidate(
+        organisation_id=str(_ORG_A),
+        graph_id_a=_G2,
+        node_id_a="g2-acme",
+        graph_id_b=_G1,
+        node_id_b="g1-acme",
+    )
+    same_as = _edges(seeded, "SAME_AS")
+    assert len(same_as) == 1  # the reverse approve re-MERGEd the canonical edge, no duplicate
+    # the canonical (lo=g1-acme, hi=g2-acme) stamping is stable regardless of approve direction
+    props = same_as[0]["props"]
+    assert props["graph_id_a"] == _G1 and props["graph_id_b"] == _G2
+    assert props["cross_graph"] is True
+    # the single directed edge runs g1-acme -> g2-acme (lo -> hi)
+    with seeded.session() as s:
+        directed = s.run(
+            "MATCH (a:__Entity__ {id: 'g1-acme'})-[:SAME_AS]->(b:__Entity__ {id: 'g2-acme'}) "
+            "RETURN count(*) AS c"
+        ).single()["c"]
+    assert directed == 1
+
+
 def test_reversed_direction_regeneration_does_not_duplicate_the_edge(seeded) -> None:
     # The candidate MERGE canonicalises direction by node id, so generating A×B then B×A writes
     # ONE SAME_AS_CANDIDATE edge per pair, not two. (Pre-fix: the directed MERGE `(a)->(b)` and
