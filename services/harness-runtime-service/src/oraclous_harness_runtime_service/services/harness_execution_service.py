@@ -133,7 +133,12 @@ def _manifest_graph_context(manifest) -> str | None:  # noqa: ANN001
 
 
 def _tool_step_names(steps: list[LoopStep]) -> list[str]:
-    return [s.name for s in steps if s.kind is StepKind.TOOL and s.name]
+    """The TOOL-step names for the memory hook. Fail-soft: a future shape change must never let
+    this raise into the run path (the hook is best-effort), so any error yields no names."""
+    try:
+        return [s.name for s in steps if s.kind is StepKind.TOOL and s.name]
+    except Exception:  # noqa: BLE001 — fail-soft: the hook never hurts a run
+        return []
 
 
 class HarnessExecutionService:
@@ -277,18 +282,23 @@ class HarnessExecutionService:
             summary=result.output,
         )
         # Post-run memory hook (#332 / ADR-027 §5): fire-and-forget AFTER the run is fully
-        # persisted + audited — it can never fail, block, or slow the run (the writer swallows
-        # everything; this guard is belt-and-braces).
-        self._write_run_memories(
-            harness_id=str(manifest.metadata.id),
-            harness_name=manifest.metadata.name,
-            status=result.status.value,
-            user_input=user_input,
-            output=result.output,
-            tool_names=_tool_step_names(result.steps),
-            execution_id=execution_id,
-            graph_id=_manifest_graph_context(manifest),
-        )
+        # persisted + audited — it can never fail, block, or slow the run. The ENTIRE block (arg
+        # construction + schedule) is inside the swallow-all guard so that even an arg expression
+        # (_tool_step_names / _manifest_graph_context / metadata access) raising on a future shape
+        # change can never 500 an already-SUCCEEDED, already-persisted run.
+        try:
+            self._write_run_memories(
+                harness_id=str(manifest.metadata.id),
+                harness_name=manifest.metadata.name,
+                status=result.status.value,
+                user_input=user_input,
+                output=result.output,
+                tool_names=_tool_step_names(result.steps),
+                execution_id=execution_id,
+                graph_id=_manifest_graph_context(manifest),
+            )
+        except Exception:  # noqa: BLE001 — the run is done; the memory hook can never undo it
+            logger.warning("post-run memory hook failed; run unaffected")
         return row
 
     async def resume(
@@ -391,18 +401,22 @@ class HarnessExecutionService:
         )
         # Post-run memory hook: the run COMPLETED (FAILED, human_rejected) and the denial reason is
         # explicit human feedback. No manifest is loaded on this path → no graph context (the KGS
-        # org-default memory graph applies).
-        self._write_run_memories(
-            harness_id=str(getattr(execution, "harness_id", "") or ""),
-            harness_name=execution.harness_name,
-            status=HarnessStatus.FAILED.value,
-            user_input=execution.input,
-            output=message,
-            tool_names=[],
-            execution_id=execution.id,
-            graph_id=None,
-            human_feedback=reason,
-        )
+        # org-default memory graph applies). The whole block is guarded so no arg expression can
+        # raise into a run that has already FAILED-and-persisted.
+        try:
+            self._write_run_memories(
+                harness_id=str(getattr(execution, "harness_id", "") or ""),
+                harness_name=execution.harness_name,
+                status=HarnessStatus.FAILED.value,
+                user_input=execution.input,
+                output=message,
+                tool_names=[],
+                execution_id=execution.id,
+                graph_id=None,
+                human_feedback=reason,
+            )
+        except Exception:  # noqa: BLE001 — the run is done; the memory hook can never undo it
+            logger.warning("post-run memory hook failed; run unaffected")
         return row or execution
 
     async def _resume_approved(
@@ -501,18 +515,22 @@ class HarnessExecutionService:
             summary=result.output,
         )
         # Post-run memory hook: only a COMPLETED run writes (a chained re-pause does not); an
-        # approval carrying an explicit reason is human feedback worth a procedural memory.
-        self._write_run_memories(
-            harness_id=str(manifest.metadata.id),
-            harness_name=execution.harness_name,
-            status=result.status.value,
-            user_input=execution.input,
-            output=result.output,
-            tool_names=_tool_step_names(result.steps),
-            execution_id=execution.id,
-            graph_id=_manifest_graph_context(manifest),
-            human_feedback=decision_reason,
-        )
+        # approval carrying an explicit reason is human feedback worth a procedural memory. The
+        # whole block is guarded so no arg expression can raise into an already-persisted run.
+        try:
+            self._write_run_memories(
+                harness_id=str(manifest.metadata.id),
+                harness_name=execution.harness_name,
+                status=result.status.value,
+                user_input=execution.input,
+                output=result.output,
+                tool_names=_tool_step_names(result.steps),
+                execution_id=execution.id,
+                graph_id=_manifest_graph_context(manifest),
+                human_feedback=decision_reason,
+            )
+        except Exception:  # noqa: BLE001 — the run is done; the memory hook can never undo it
+            logger.warning("post-run memory hook failed; run unaffected")
         return row or execution
 
     def _write_run_memories(

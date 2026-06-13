@@ -3,9 +3,20 @@
 FIRE-AND-FORGET + FAIL-SOFT — the zero-risk constraint, MANDATORY: a memory write must NEVER fail,
 block, or slow a run. ``schedule_*`` spawns a detached asyncio task (strong-ref'd so it is not
 GC'd) and returns immediately; the task POSTs ``/internal/v1/memories`` on the knowledge-graph
-service over the internal-key trust path (ADR-018) with a SHORT timeout (~2s) and swallows + logs
-EVERY failure — transport faults, timeouts, non-2xx, serialization, scheduling. Nothing here can
-propagate into the run path.
+service over the internal-key trust path (ADR-018) under an OVERALL per-write deadline and swallows
++ logs EVERY failure — transport faults, timeouts, non-2xx, serialization, scheduling. Nothing here
+can propagate into the run path.
+
+Two bounds keep a detached write from outliving its purpose or leaking resources, both fail-soft:
+
+* **Whole-write deadline** — ``httpx``'s ``timeout`` is PER-PHASE (connect/read/write each get the
+  budget), so a byte-trickling responder could keep a detached task + socket alive far longer than
+  intended. Each ``_post`` is therefore wrapped in ``asyncio.wait_for`` with an OVERALL budget
+  (``timeout`` × a small factor): no single write outlives that bound, after which it is cancelled,
+  swallowed + logged.
+* **Bounded pending set** — ``_pending`` is capped (``_MAX_IN_FLIGHT``). When saturated a new write
+  is SKIPPED (logged), never queued — a slow/stuck KGS can never make the in-flight set grow without
+  limit. The run path is unaffected either way: it awaits nothing.
 
 The writer exists at all only when ``HARNESS_MEMORY_WRITES`` is true (default FALSE in code; the
 deploy env opts in) — flag off means the writer is never constructed and zero calls happen.
@@ -34,15 +45,43 @@ _INPUT_TRUNC = 200
 _OUTPUT_TRUNC = 300
 _FEEDBACK_TRUNC = 500
 
+# Max concurrent in-flight writes. A post-run hook schedules at most 2 writes per run; this cap is
+# comfortably above normal fan-in yet bounds the worst case (a stuck KGS) so the detached set can
+# never grow without limit. When saturated a new write is SKIPPED + logged, never queued.
+_MAX_IN_FLIGHT = 64
+# The per-write OVERALL deadline is the per-phase httpx timeout times this factor — enough headroom
+# for connect+write+read in the normal case, but a hard ceiling no single write can exceed (so a
+# byte-trickling responder cannot keep a task/socket alive indefinitely). Min floor keeps a tiny
+# test timeout (e.g. 0.2s) from being unreasonably short for the whole round-trip.
+_DEADLINE_FACTOR = 3.0
+_DEADLINE_FLOOR_S = 1.0
+
 # Strong references to in-flight fire-and-forget writes: an un-referenced asyncio.Task can be
 # garbage-collected mid-flight. Done tasks remove themselves.
 _pending: set[asyncio.Task[None]] = set()
 
 
-async def drain_pending_writes() -> None:
-    """Await every in-flight write (tests + graceful shutdown; the run path NEVER calls this)."""
-    if _pending:
-        await asyncio.gather(*list(_pending), return_exceptions=True)
+async def drain_pending_writes(timeout: float | None = None) -> None:  # noqa: ASYNC109 — an OPTIONAL bound; None awaits to completion (tests), a float caps the wait (shutdown grace)
+    """Await every in-flight write, optionally under a SHORT overall bound.
+
+    Used by tests (no bound — await to completion) and by lifespan shutdown (a small bounded grace
+    so in-flight memories get a brief chance to land without delaying teardown). The run path NEVER
+    calls this. Always fail-soft: a write that errors or is still running when the bound elapses is
+    swallowed — draining can never raise.
+    """
+    if not _pending:
+        return
+    gather = asyncio.gather(*list(_pending), return_exceptions=True)
+    if timeout is None:
+        await gather
+        return
+    try:
+        await asyncio.wait_for(gather, timeout)
+    except TimeoutError:
+        # Bounded grace elapsed with writes still in flight; let them be cancelled at teardown.
+        logger.info("memory drain: %d write(s) unfinished within the grace bound", len(_pending))
+    except Exception as exc:  # noqa: BLE001 — fail-soft: draining never hurts shutdown
+        logger.warning("memory drain swallowed an error: %s", exc)
 
 
 def _clip(text: str | None, limit: int) -> str:
@@ -129,30 +168,60 @@ class MemoryWriter:
     # ------------------------------------------------------------- mechanics
 
     def _schedule(self, payload: dict[str, Any]) -> None:
-        """Detach the POST onto the running loop. NEVER raises — a scheduling fault is logged."""
+        """Detach the POST onto the running loop. NEVER raises — a scheduling fault is logged.
+
+        Bounded: when ``_MAX_IN_FLIGHT`` writes are already detached the new write is SKIPPED (a
+        slow/stuck KGS can never make the in-flight set grow without limit). The run path awaits
+        nothing either way.
+        """
         try:
+            if len(_pending) >= _MAX_IN_FLIGHT:
+                logger.warning(
+                    "memory write skipped: %d writes already in flight (KGS slow?)", len(_pending)
+                )
+                return
             task = asyncio.get_running_loop().create_task(self._post(payload))
             _pending.add(task)
             task.add_done_callback(_pending.discard)
         except Exception as exc:  # noqa: BLE001 — fail-soft: a memory write can never hurt a run
             logger.warning("memory write skipped (could not schedule): %s", exc)
 
+    @property
+    def _deadline(self) -> float:
+        """The OVERALL per-write budget — a hard ceiling on how long one detached write may live."""
+        return max(self._timeout * _DEADLINE_FACTOR, _DEADLINE_FLOOR_S)
+
     async def _post(self, payload: dict[str, Any]) -> None:
-        """The detached write: short timeout, every failure swallowed + logged."""
+        """The detached write: an OVERALL deadline (not just per-phase), every failure swallowed.
+
+        ``httpx``'s ``timeout`` bounds each phase; ``asyncio.wait_for`` bounds the whole write so a
+        byte-trickling responder cannot keep the task + socket alive past ``_deadline``. On the
+        deadline the inner coroutine is cancelled (the ``AsyncClient`` context closes the socket).
+        """
         try:
-            async with httpx.AsyncClient(
-                base_url=self._base_url,
-                headers=self._headers,
-                timeout=self._timeout,
-                transport=self._transport,
-                follow_redirects=False,
-            ) as client:
-                resp = await client.post(_MEMORIES_PATH, json=payload)
-            if resp.status_code >= 400:
-                logger.warning(
-                    "memory write dropped: KGS returned %s for a %s memory",
-                    resp.status_code,
-                    payload.get("type"),
-                )
+            await asyncio.wait_for(self._post_once(payload), self._deadline)
+        except TimeoutError:
+            logger.warning(
+                "memory write dropped: exceeded the %.1fs whole-write deadline for a %s memory",
+                self._deadline,
+                payload.get("type"),
+            )
         except Exception as exc:  # noqa: BLE001 — fail-soft by contract (ADR-027 §5)
             logger.warning("memory write dropped (%s): %s", type(exc).__name__, exc)
+
+    async def _post_once(self, payload: dict[str, Any]) -> None:
+        """One POST under the per-phase httpx timeout, bounded overall by the caller's wait_for."""
+        async with httpx.AsyncClient(
+            base_url=self._base_url,
+            headers=self._headers,
+            timeout=self._timeout,
+            transport=self._transport,
+            follow_redirects=False,
+        ) as client:
+            resp = await client.post(_MEMORIES_PATH, json=payload)
+        if resp.status_code >= 400:
+            logger.warning(
+                "memory write dropped: KGS returned %s for a %s memory",
+                resp.status_code,
+                payload.get("type"),
+            )

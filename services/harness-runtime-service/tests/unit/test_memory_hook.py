@@ -28,6 +28,7 @@ from oraclous_harness_runtime_service.services.harness_execution_service import 
 )
 from oraclous_harness_runtime_service.services.memory_client import (
     MemoryWriter,
+    _pending,
     drain_pending_writes,
 )
 
@@ -240,6 +241,81 @@ def test_schedule_without_a_running_loop_is_swallowed() -> None:
     )  # no running loop → no raise
 
 
+# ----------------------------------------------------- bounds (whole-write deadline + pending cap)
+
+
+async def test_whole_write_deadline_bounds_a_trickling_responder() -> None:
+    """A responder that never returns (a byte-trickling/hung KGS) must not keep the detached write
+    alive indefinitely — the OVERALL per-write deadline (httpx timeout × factor) cancels it. Proven
+    READABLY: draining is bounded well under the would-be hang and surfaces nothing (swallowed)."""
+    hang = asyncio.Event()  # never set → the handler would await forever without the deadline
+
+    async def hung_handler(req: httpx.Request) -> httpx.Response:
+        await hang.wait()
+        return httpx.Response(201, json={})
+
+    # timeout=0.1 → whole-write deadline floors at 1.0s; the write self-cancels by then.
+    writer = MemoryWriter(
+        base_url="http://kgs",
+        headers={},
+        timeout=0.1,
+        transport=httpx.MockTransport(hung_handler),
+    )
+    writer.schedule_run_outcome(
+        harness_id="h",
+        harness_name="X",
+        status="SUCCEEDED",
+        user_input="i",
+        output="o",
+        tool_names=[],
+        execution_id=uuid.uuid4(),
+        graph_id=None,
+    )
+    # The write must finish (by hitting its own deadline) well within this bound — a regression that
+    # dropped the whole-write deadline would hang past it and raise TimeoutError here (readable).
+    await asyncio.wait_for(drain_pending_writes(), timeout=5.0)
+
+
+async def test_pending_set_is_bounded_when_saturated() -> None:
+    """The in-flight set is capped: once _MAX_IN_FLIGHT writes are parked, a further schedule is
+    SKIPPED (logged), never queued — a stuck KGS can never make _pending grow without limit."""
+    from oraclous_harness_runtime_service.services import memory_client
+
+    release = asyncio.Event()
+
+    async def parked_handler(req: httpx.Request) -> httpx.Response:
+        await release.wait()
+        return httpx.Response(201, json={})
+
+    writer = MemoryWriter(
+        base_url="http://kgs",
+        headers={},
+        timeout=30.0,
+        transport=httpx.MockTransport(parked_handler),
+    )
+
+    def _schedule_one() -> None:
+        writer.schedule_run_outcome(
+            harness_id="h",
+            harness_name="X",
+            status="SUCCEEDED",
+            user_input="i",
+            output="o",
+            tool_names=[],
+            execution_id=uuid.uuid4(),
+            graph_id=None,
+        )
+
+    try:
+        for _ in range(memory_client._MAX_IN_FLIGHT + 25):
+            _schedule_one()
+        await asyncio.sleep(0)  # let the parked tasks register
+        assert len(_pending) <= memory_client._MAX_IN_FLIGHT  # the cap held; extras were skipped
+    finally:
+        release.set()
+        await drain_pending_writes()
+
+
 # ------------------------------------------------------------- payload shape
 
 
@@ -381,8 +457,14 @@ async def test_resume_denied_writes_episodic_and_procedural_feedback() -> None:
 
 
 async def test_run_returns_before_a_slow_write_finishes() -> None:
-    """Fire-and-forget proof: a write that would take far longer than the run must not delay
-    execute() — the run returns while the write is still pending."""
+    """Fire-and-forget proof, READABLY: a write that would take far longer than the run must not
+    delay execute(). Asserted two ways so a regression FAILS rather than HANGS the suite —
+
+      * ``execute()`` is bounded by ``asyncio.wait_for`` and must return well within it (a blocking
+        regression raises TimeoutError → a readable failure, not a hung worker);
+      * at the moment ``execute()`` returns, the write task is still in flight (parked in the
+        handler) — proving the write genuinely OUTLIVED the return rather than completing inside it.
+    """
     started = asyncio.Event()
     release = asyncio.Event()
 
@@ -394,13 +476,29 @@ async def test_run_returns_before_a_slow_write_finishes() -> None:
     writer = MemoryWriter(
         base_url="http://kgs",
         headers={},
-        timeout=30.0,
+        timeout=30.0,  # generous per-phase + whole-write deadline so the parked write does NOT trip
         transport=httpx.MockTransport(slow_handler),
     )
     svc = _service(memory=writer)
-    row = await svc.execute(
-        manifest_inline=_manifest(), manifest_ref=None, user_input="go", principal=_principal()
-    )
-    assert row.status == "SUCCEEDED"  # returned while the write is parked
-    release.set()
-    await drain_pending_writes()
+    try:
+        # A non-blocking run returns near-instantly; 5s is orders of magnitude of headroom. A
+        # regression that AWAITS the write would block on release (never set) → TimeoutError here.
+        row = await asyncio.wait_for(
+            svc.execute(
+                manifest_inline=_manifest(),
+                manifest_ref=None,
+                user_input="go",
+                principal=_principal(),
+            ),
+            timeout=5.0,
+        )
+        assert row.status == "SUCCEEDED"  # returned while the write is parked
+        # Prove the write OUTLIVED the return: it has started (the handler ran) but is still parked
+        # (in flight), not completed inside execute().
+        await asyncio.wait_for(started.wait(), timeout=5.0)
+        assert any(not t.done() for t in _pending), (
+            "the run returned but no memory write is in flight — the write did not outlive the run"
+        )
+    finally:
+        release.set()  # let the parked write complete even if an assertion failed
+        await drain_pending_writes()

@@ -56,6 +56,9 @@ class Settings(BaseSettings):
     # swallowed + logged — a memory write can NEVER fail, block, or slow a run. ---
     memory_writes: bool = False
     memory_write_timeout: float = 2.0
+    # Bounded grace, on shutdown only, for in-flight memory writes to land before teardown cancels
+    # them. SMALL — it must never appreciably delay shutdown; the writes are best-effort regardless.
+    memory_drain_timeout: float = 2.0
 
     # --- the LLM seam. `live` (fail-closed default, ADR-021 §1): a real client from the OHM model's
     # protocol_shape + a per-execution BYOM key via the broker (ADR-008; the harness never holds a
