@@ -18,6 +18,7 @@ echoed back to the caller (no-leak), exactly like the retriever/find-similar con
 from __future__ import annotations
 
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 
@@ -100,6 +101,10 @@ class RecallMemoryConnector(InternalTool):
             params["scope"] = scope
 
         settings = get_settings()
+        # URL-encode the (user-supplied) graph_id before interpolating it into the path: a raw
+        # ``?``/``/``/``#`` would otherwise split the path, leak into the query string, or mis-route
+        # the request. ``safe=""`` encodes path separators too so the id stays one segment.
+        graph_segment = quote(graph_id.strip(), safe="")
         try:
             async with httpx.AsyncClient(
                 base_url=settings.KNOWLEDGE_GRAPH_URL.rstrip("/"),
@@ -108,7 +113,9 @@ class RecallMemoryConnector(InternalTool):
                 transport=self.transport,
                 follow_redirects=False,
             ) as client:
-                resp = await client.get(f"/api/v1/graphs/{graph_id}/memories/search", params=params)
+                resp = await client.get(
+                    f"/api/v1/graphs/{graph_segment}/memories/search", params=params
+                )
         except httpx.HTTPError:
             return ExecutionResult(
                 success=False,

@@ -109,6 +109,28 @@ async def test_recall_forwards_org_path_and_params() -> None:
     assert seen["internal_key"] == "dev-internal-key"
 
 
+async def test_graph_id_is_url_encoded_into_the_path() -> None:
+    """A graph_id carrying a path/query metacharacter must be percent-encoded into one path
+    segment — never splitting the path or leaking into the query string / mis-routing it."""
+    seen: dict = {}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        seen["raw_path"] = req.url.raw_path.decode()
+        seen["path"] = req.url.path  # httpx decodes this back for inspection
+        seen["params"] = dict(req.url.params)
+        return httpx.Response(200, json={"memories": [], "total": 0})
+
+    nasty = "abc?evil=1/../#frag"
+    res = await _connector(handler).execute({"graph_id": nasty, "query": "q"}, _ctx())
+    assert res.success
+    # the metacharacters are percent-encoded — they never appear raw in the path/query.
+    assert "?" not in seen["raw_path"].split("?", 1)[0].replace("memories/search", "")
+    assert "%3F" in seen["raw_path"]  # the '?' was encoded, not a query delimiter
+    assert seen["params"] == {"query": "q", "limit": "10"}  # nothing leaked into the query string
+    # decoded, the id round-trips as a single path segment between graphs/ and /memories.
+    assert seen["path"] == f"/api/v1/graphs/{nasty}/memories/search"
+
+
 async def test_defaults_limit_and_omits_optional_filters() -> None:
     seen: dict = {}
 
