@@ -68,6 +68,7 @@ def test_build_from_settings_maps_all_upstreams() -> None:
         "/credentials",
         "/api/v1/graphs",
         "/v1/search",
+        "/v1/federated",
         "/v1/graph",
         "/api/v1/capabilities",
     } <= prefixes

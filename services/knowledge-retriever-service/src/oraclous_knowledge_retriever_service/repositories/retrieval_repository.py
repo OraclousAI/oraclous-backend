@@ -50,11 +50,60 @@ class RetrievalRepository:
             "WHERE c.graph_id = $graph_id AND c.organisation_id = $organisation_id "
             "AND c.text IS NOT NULL AND toLower(c.text) CONTAINS toLower($query) "
             "RETURN elementId(c) AS id, labels(c) AS labels, properties(c) AS props, 1.0 AS score "
-            "LIMIT $top_k",
+            # Deterministic ORDER BY before LIMIT: the score is a constant 1.0, so without a tie-
+            # break the per-graph subset is run-to-run nondeterministic. elementId is stable within
+            # a store, so it gives the truncation a fixed, reproducible boundary.
+            "ORDER BY elementId(c) LIMIT $top_k",
             graph_id=graph_id,
             query=query,
             top_k=top_k,
         )
+
+    def entity_search(self, *, graph_id: str, term: str, top_k: int) -> list[dict]:
+        # Federated entity search (#330; per-graph branch of the fan-out — the legacy UNION-ALL
+        # branch shape, lifted as a per-graph scoped call). Case-insensitive substring over a
+        # canonical :__Entity__ node's name, display name AND alias audit trail, org+graph scoped
+        # (both predicates bound in EVERY branch — the ADR-026 fan-out invariant).
+        return self._query(
+            "MATCH (e:__Entity__) "
+            "WHERE e.graph_id = $graph_id AND e.organisation_id = $organisation_id "
+            "AND (toLower(coalesce(e.name, '')) CONTAINS toLower($term) "
+            "OR toLower(coalesce(e.canonical_name, '')) CONTAINS toLower($term) "
+            "OR any(a IN coalesce(e.aliases, []) WHERE toLower(a) CONTAINS toLower($term))) "
+            "RETURN elementId(e) AS id, labels(e) AS labels, properties(e) AS props, 1.0 AS score "
+            "ORDER BY e.name LIMIT $top_k",
+            graph_id=graph_id,
+            term=term,
+            top_k=top_k,
+        )
+
+    def entity_neighborhood(self, *, graph_id: str, node_ids: list[str], limit: int) -> dict:
+        # Federated neighborhood fetch (#330): the 1-hop slice around the matched entities of ONE
+        # graph. Anchors + their neighbours (org+graph scoped on BOTH endpoints), capped at `limit`
+        # nodes; edges are those with both endpoints inside the returned set (same
+        # pattern-comprehension shape as `subgraph`, no APOC).
+        rows = self._query(
+            "MATCH (n) WHERE elementId(n) IN $node_ids AND n.graph_id = $graph_id "
+            "AND n.organisation_id = $organisation_id "
+            "WITH collect(n) AS anchors "
+            "UNWIND anchors AS a "
+            "OPTIONAL MATCH (a)-[]-(m) "
+            "WHERE m.graph_id = $graph_id AND m.organisation_id = $organisation_id "
+            "WITH anchors, collect(DISTINCT m) AS neighbours "
+            "WITH [x IN anchors + [m IN neighbours WHERE NOT m IN anchors] | x][..$limit] AS ns "
+            "RETURN [a IN ns | {id: elementId(a), labels: labels(a), props: properties(a)}] "
+            "AS nodes, [a IN ns | [(a)-[r]->(b) WHERE b IN ns | "
+            "{source: elementId(a), target: elementId(b), type: type(r), "
+            "properties: properties(r)}]] AS edge_groups",
+            graph_id=graph_id,
+            node_ids=node_ids,
+            limit=limit,
+        )
+        if not rows:
+            return {"nodes": [], "edges": []}
+        row = rows[0]
+        edges = [edge for group in row.get("edge_groups", []) for edge in group]
+        return {"nodes": row.get("nodes", []), "edges": edges}
 
     def neighbors(self, *, graph_id: str, node_id: str, top_k: int) -> list[dict]:
         return self._query(

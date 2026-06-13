@@ -41,6 +41,23 @@ class Settings(BaseSettings):
     embedding_dim: int = 512
     default_top_k: int = 10
 
+    # --- federated cross-graph reads (#330 / ADR-026). The accessible-set is enumerated from the
+    # KGS Postgres graph registry over the internal plane (GET /internal/v1/graphs, X-Internal-Key)
+    # — KRS has no registry DB access and may not import the sibling service, so the internal
+    # endpoint is the seam. Unset ⇒ federated endpoints fail closed (503): no enumeration, no
+    # fan-out, never "assume all". Caps are config (ADR-026): the most graphs one query fans out
+    # over, the most hits one graph may contribute, and the merged total cap. ---
+    knowledge_graph_url: str | None = None
+    federated_max_graphs: int = 20
+    federated_max_per_graph_k: int = 25
+    federated_max_total: int = 200
+    # A single CROSS-GRAPH ceiling on the merged subgraph node count (NOT max_graphs × per-graph) —
+    # so a default-all neighborhood fetch cannot return ~thousands of nodes. The aggregate the FE
+    # explorer is sized for; the per-graph slice is still bounded by limit_per_graph.
+    federated_max_subgraph_nodes: int = 500
+    # HTTP timeout (s) for the KGS internal-plane registry enumeration (GET /internal/v1/graphs).
+    federated_registry_timeout_seconds: float = 15.0
+
     # --- Redis query cache (#308, lift-and-reshape of legacy query_cache_service). Advisory: a
     # Redis outage degrades to a live query, never an error. OFF by default — opt-in via
     # KRS_QUERY_CACHE=true so the standalone/no-Redis run is unaffected. The cache key folds in a

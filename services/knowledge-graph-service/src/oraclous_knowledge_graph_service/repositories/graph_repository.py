@@ -63,6 +63,22 @@ class GraphRepository:
         rows = (await self._session.execute(stmt)).scalars().all()
         return [_to_domain(r) for r in rows]
 
+    async def list_for_org(self) -> list[Graph]:
+        """ALL graphs in the caller's bound organisation (no per-user owner filter).
+
+        This is the federation accessible-set (#330 / ADR-026): the retriever's single-graph reads
+        are org-scoped only (any org member can read any org graph through KRS), so the set of
+        graphs a caller can federate over is exactly the org's graphs — the SAME gate, enumerated.
+        Fail-closed: the org comes from the bound governance context, never a request field.
+        """
+        stmt = (
+            select(KnowledgeGraph)
+            .where(KnowledgeGraph.organisation_id == self._org())
+            .order_by(KnowledgeGraph.created_at.desc())
+        )
+        rows = (await self._session.execute(stmt)).scalars().all()
+        return [_to_domain(r) for r in rows]
+
     async def get(self, graph_id: uuid.UUID) -> Graph | None:
         """Org-scoped fetch — a graph in another org is invisible (returns None)."""
         stmt = select(KnowledgeGraph).where(

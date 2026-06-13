@@ -8,6 +8,11 @@ The org is bound from the FORWARDED principal (never the body), so every read/wr
 caller's tenant.
 
   GET  /internal/v1/schema/{graph_id} — the org-scoped label/relationship shape of a graph.
+  GET  /internal/v1/graphs            — the caller's org's graphs (id + name): the federation
+                                        accessible-set (#330 / ADR-026). Org-scoped, NOT
+                                        owner-gated — it mirrors exactly the org-scope gate the
+                                        retriever's single-graph reads apply, so federation never
+                                        aggregates one graph more than the caller can already read.
   POST /internal/v1/ingest            — enqueue ingestion into an org-owned graph (Slice C), the
                                         write twin of the internal SEARCH the retriever calls. It
                                         REUSES the user-facing ingestion service/task verbatim;
@@ -23,11 +28,14 @@ import uuid
 from fastapi import APIRouter, HTTPException, status
 
 from oraclous_knowledge_graph_service.core.dependencies import (
+    GraphServiceDep,
     GraphWriteRepoDep,
     JobServiceDep,
     UserIdDep,
 )
 from oraclous_knowledge_graph_service.schema.ingest_schemas import (
+    GraphIdName,
+    InternalGraphListResponse,
     InternalIngestRequest,
     JobResponse,
     LabelCount,
@@ -37,6 +45,20 @@ from oraclous_knowledge_graph_service.schema.ingest_schemas import (
 from oraclous_knowledge_graph_service.services.graph_service import GraphNotFound
 
 router = APIRouter(prefix="/internal/v1", tags=["internal"])
+
+
+@router.get("/graphs", response_model=InternalGraphListResponse)
+async def list_accessible_graphs(
+    service: GraphServiceDep, _user_id: UserIdDep
+) -> InternalGraphListResponse:
+    """The graphs the FORWARDED principal can read — ALL graphs in its bound org (ADR-026).
+
+    This is the accessible-set enumeration the knowledge-retriever calls before a federated
+    fan-out. The org comes from the verified principal (fail-closed dependency chain), never the
+    request, so a caller can never enumerate another tenant's graphs.
+    """
+    graphs = await service.list_org_graphs()
+    return InternalGraphListResponse(graphs=[GraphIdName(id=g.id, name=g.name) for g in graphs])
 
 
 @router.get("/schema/{graph_id}", response_model=SchemaResponse)

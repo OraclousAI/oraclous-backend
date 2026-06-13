@@ -25,9 +25,12 @@ _ROUTES: tuple[tuple[str, str], ...] = (
     ("/api/v1/graphs", "KNOWLEDGE_GRAPH_URL"),
     ("/api/v1/recipes", "KNOWLEDGE_GRAPH_URL"),
     # knowledge-retriever (/v1/graph also carries POST /v1/graph/{id}/evaluate — the RAGAS-style
-    # retrieval-quality evaluation endpoint, #331)
+    # retrieval-quality evaluation endpoint, #331; and /v1/federated/* — the cross-graph federated
+    # reads, #330/ADR-026: the retriever enumerates the caller's accessible set itself; the gateway
+    # only proxies)
     ("/v1/search", "KNOWLEDGE_RETRIEVER_URL"),
     ("/v1/graph", "KNOWLEDGE_RETRIEVER_URL"),
+    ("/v1/federated", "KNOWLEDGE_RETRIEVER_URL"),
     # capability-registry
     ("/api/v1/capabilities", "CAPABILITY_REGISTRY_URL"),
     ("/api/v1/tools", "CAPABILITY_REGISTRY_URL"),
