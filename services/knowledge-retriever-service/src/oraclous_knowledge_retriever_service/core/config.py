@@ -41,6 +41,23 @@ class Settings(BaseSettings):
     embedding_dim: int = 512
     default_top_k: int = 10
 
+    # --- federated cross-graph reads (#330 / ADR-026). The accessible-set is enumerated from the
+    # KGS Postgres graph registry over the internal plane (GET /internal/v1/graphs, X-Internal-Key)
+    # — KRS has no registry DB access and may not import the sibling service, so the internal
+    # endpoint is the seam. Unset ⇒ federated endpoints fail closed (503): no enumeration, no
+    # fan-out, never "assume all". Caps are config (ADR-026): the most graphs one query fans out
+    # over, the most hits one graph may contribute, and the merged total cap. ---
+    knowledge_graph_url: str | None = None
+    federated_max_graphs: int = 20
+    federated_max_per_graph_k: int = 25
+    federated_max_total: int = 200
+    # A single CROSS-GRAPH ceiling on the merged subgraph node count (NOT max_graphs × per-graph) —
+    # so a default-all neighborhood fetch cannot return ~thousands of nodes. The aggregate the FE
+    # explorer is sized for; the per-graph slice is still bounded by limit_per_graph.
+    federated_max_subgraph_nodes: int = 500
+    # HTTP timeout (s) for the KGS internal-plane registry enumeration (GET /internal/v1/graphs).
+    federated_registry_timeout_seconds: float = 15.0
+
     # --- Redis query cache (#308, lift-and-reshape of legacy query_cache_service). Advisory: a
     # Redis outage degrades to a live query, never an error. OFF by default — opt-in via
     # KRS_QUERY_CACHE=true so the standalone/no-Redis run is unaffected. The cache key folds in a
@@ -50,6 +67,25 @@ class Settings(BaseSettings):
     query_cache: bool = False
     query_cache_ttl: int = 300  # seconds a cached read survives absent a generation bump (5 min)
     redis_url: str = "redis://redis:6379/0"
+
+    # --- retrieval-quality evaluation (#331): the LLM judge. ONE OpenAI-compatible client
+    # (mirrors KGS_OPENAI_* — OpenRouter by default), built ONCE at lifespan. No key → the
+    # /evaluate endpoint returns a typed 422; it NEVER fabricates scores. The caps bound judge
+    # spend per request AND per process; the deadline keeps every response under the gateway's
+    # 30s read timeout (#333). ---
+    openai_api_key: str | None = None
+    openai_base_url: str = "https://openrouter.ai/api/v1"
+    eval_judge_model: str = "openai/gpt-4o-mini"
+    eval_judge_timeout_seconds: float = 15.0  # per-call HTTP timeout on the judge client
+    eval_judge_max_retries: int = 1  # SDK retry attempts (default 2 would burn the deadline)
+    eval_judge_max_tokens: int = 2000  # JSON judging output cap (decomposition needs headroom)
+    eval_deadline_seconds: float = 25.0  # whole-evaluation deadline — UNDER the gateway's 30s
+    eval_top_k: int = 5  # retrieved contexts (existing hybrid path) the metrics judge against
+    eval_max_concurrency: int = 5  # in-flight judge calls (asyncio.Semaphore, the #272 pattern)
+    eval_max_concurrent_requests: int = 4  # process-level cap on evaluations in flight (429 over)
+    eval_max_claims: int = 25  # cap on answer claims / ground-truth statements judged per call
+    eval_max_contexts: int = 5  # judged-context cap, applied ONCE so all metrics see one set
+    eval_grounded_threshold: float = 0.7  # faithfulness >= this -> is_grounded
 
 
 @lru_cache(maxsize=1)

@@ -87,3 +87,39 @@ class RejectOutcome:
     node_id_a: str
     node_id_b: str
     suppressed: bool
+
+
+@dataclass(frozen=True)
+class LinkOutcome:
+    """The result of approving a CROSS-GRAPH candidate (#330): the two nodes are LINKED with a
+    `SAME_AS` edge (both graph ids stamped) and the candidate edge dropped. Never a fold — a
+    cross-graph merge would move nodes/edges across graph boundaries, so the nodes survive in
+    their own graphs and the link records the identity."""
+
+    node_id_a: str
+    node_id_b: str
+    graph_id_a: str
+    graph_id_b: str
+    linked: bool
+
+
+@dataclass(frozen=True)
+class CrossGraphCandidate:
+    """One generated cross-graph candidate pair (#330): both node ids AND both graph ids carried,
+    plus the signal that flagged it (`canonical_key` exact-match or `embedding` cosine) and its
+    score. `candidate_id` is the same stable unordered pair id the in-graph queue uses, so the
+    verdict endpoints + audit fold in unchanged."""
+
+    node_id_a: str
+    node_id_b: str
+    graph_id_a: str
+    graph_id_b: str
+    label: str
+    name_a: str
+    name_b: str
+    score: float
+    method: str  # canonical_key | embedding
+
+    @property
+    def candidate_id(self) -> str:
+        return candidate_id(self.node_id_a, self.node_id_b)

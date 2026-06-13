@@ -69,6 +69,16 @@ class GraphService:
         graphs = await self._repo.list_for_user(user_id=user_id)
         return [await self._with_live_counts(g) for g in graphs]
 
+    async def list_org_graphs(self) -> list[Graph]:
+        """The federation accessible-set (#330 / ADR-026): ALL graphs in the caller's bound org.
+
+        Deliberately org-scoped, NOT owner-gated — it mirrors exactly the gate the retriever's
+        single-graph reads apply (org-scope only), so federation aggregates precisely the graphs
+        the caller can already read individually and never one more. No live-count overlay: the
+        consumer (KRS) needs only ids + names for fan-out and labeling.
+        """
+        return await self._repo.list_for_org()
+
     async def _owned_or_404(self, *, graph_id: uuid.UUID, user_id: uuid.UUID) -> Graph:
         """Owner gate (no live-count overlay) — the raw stored graph or a 404-mapped error."""
         graph = await self._repo.get(graph_id)

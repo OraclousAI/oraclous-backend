@@ -27,6 +27,11 @@ class ExecutionContext(BaseModel):
     organisation_id: uuid.UUID
     user_id: uuid.UUID
     execution_id: uuid.UUID
+    # The verified principal type that invoked the tool (the value of the gateway's
+    # X-Principal-Type, e.g. ``user`` / ``agent``). First-party connectors forward it downstream
+    # (ADR-018) so the called service scopes to the SAME principal kind — not a hardcoded type.
+    # Defaults to ``agent`` (the harness loop is the dominant caller) for paths that don't set it.
+    principal_type: str = "agent"
     # credential_type -> resolved payload (e.g. a connection_string or an access_token)
     credentials: dict[str, Any] = Field(default_factory=dict)
     configuration: dict[str, Any] = Field(default_factory=dict)

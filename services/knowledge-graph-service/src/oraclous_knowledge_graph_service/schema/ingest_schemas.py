@@ -109,6 +109,23 @@ class JobResponse(BaseModel):
         )
 
 
+class GraphIdName(BaseModel):
+    """One accessible graph (id + display name) in the federation accessible-set (#330)."""
+
+    id: uuid.UUID
+    name: str
+
+
+class InternalGraphListResponse(BaseModel):
+    """The caller's org's graphs — the exact set a federated query may fan out over (ADR-026).
+
+    Served on the internal plane (X-Internal-Key, ADR-018) for the knowledge-retriever; the org is
+    bound from the FORWARDED principal, never a request field.
+    """
+
+    graphs: list[GraphIdName]
+
+
 class LabelCount(BaseModel):
     label: str
     count: int

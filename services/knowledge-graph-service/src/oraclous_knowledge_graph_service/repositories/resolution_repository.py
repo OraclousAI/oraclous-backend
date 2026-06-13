@@ -48,12 +48,16 @@ class ResolutionRepository:
         action: ResolutionAction,
         canonical_node_id: str | None,
         decided_by: uuid.UUID,
+        other_graph_id: uuid.UUID | None = None,
     ) -> EntityResolution:
         """Insert the verdict row. The caller (service) has already checked there is no conflicting
-        prior verdict; the DB unique key is the backstop against a racing duplicate insert."""
+        prior verdict; the DB unique key is the backstop against a racing duplicate insert. For a
+        cross-graph verdict the caller passes the canonicalised pair (`graph_id` the smaller of the
+        two, `other_graph_id` the larger) so a verdict from either direction keys the same row."""
         row = EntityResolution(
             organisation_id=self._org(),
             graph_id=graph_id,
+            other_graph_id=other_graph_id,
             candidate_id=candidate_id,
             node_id_a=node_id_a,
             node_id_b=node_id_b,
