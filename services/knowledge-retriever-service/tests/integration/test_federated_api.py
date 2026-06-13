@@ -114,6 +114,31 @@ async def test_empty_query_is_422(client) -> None:
     assert resp.status_code == 422
 
 
+async def test_explicit_empty_graph_ids_is_422_at_the_schema(client) -> None:
+    # An explicit empty selection is a caller error (never silently "all") — rejected by the
+    # min_length=1 schema before the service runs.
+    resp = await client.post(
+        "/v1/federated/search", json={"query": "ada", "graph_ids": []}, headers=_AUTH
+    )
+    assert resp.status_code == 422
+
+
+async def test_partial_result_meta_graphs_failed_passes_through(client, svc) -> None:
+    # The route relays meta.graphs_failed (a partial result over the healthy graphs) unchanged.
+    async def _search_with_failure(**_kw):
+        return {
+            "results": [_HIT],
+            "meta": dict(_META, mode="entity", graphs_failed=["dead-graph-id"]),
+        }
+
+    svc.search = _search_with_failure  # type: ignore[method-assign]
+    resp = await client.post(
+        "/v1/federated/search", json={"query": "ada", "mode": "entity"}, headers=_AUTH
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["meta"]["graphs_failed"] == ["dead-graph-id"]
+
+
 async def test_inaccessible_subset_maps_to_403(client, svc) -> None:
     svc.raise_with = FederatedAccessError("one or more requested graphs are not accessible")
     resp = await client.post(

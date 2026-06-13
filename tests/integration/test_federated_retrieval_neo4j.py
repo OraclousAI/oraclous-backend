@@ -71,6 +71,7 @@ def _service(driver, graphs=None, *, embedder=None, **caps) -> FederatedRetrieva
         max_graphs=caps.get("max_graphs", 20),
         max_per_graph_k=caps.get("max_per_graph_k", 25),
         max_total=caps.get("max_total", 200),
+        max_subgraph_nodes=caps.get("max_subgraph_nodes", 500),
     )
 
 
@@ -92,13 +93,18 @@ def _seed(driver: Driver) -> None:
                 suffix=suffix,
                 vec=_EMBEDDER.embed("ada lovelace wrote the first program"),
             )
-        # the CROSS-BAIT: an org-B node deliberately stamped with org-A's g1 graph id — only the
-        # organisation_id predicate separates it from org A's data.
+        # the CROSS-BAIT: an org-B node deliberately stamped with org-A's g1 graph id, matchable by
+        # EVERY mode — it is BOTH a canonical :__Entity__ (entity + neighborhood) AND a :Chunk with
+        # text (fulltext) AND a real embedding (semantic + hybrid). Only the organisation_id
+        # predicate separates it from org A's data, so it proves the org bind on EVERY branch.
         s.run(
-            "CREATE (e:Person:__Entity__ {id: 'ada-bait', name: 'ada lovelace', "
-            "canonical_name: 'Ada Lovelace (bait)', organisation_id: $oid, graph_id: $gid})",
+            "CREATE (e:Person:__Entity__:Chunk {id: 'ada-bait', name: 'ada lovelace', "
+            "canonical_name: 'Ada Lovelace (bait)', aliases: ['Ada'], "
+            "text: 'ada lovelace wrote the first program (bait)', embedding: $vec, "
+            "organisation_id: $oid, graph_id: $gid})",
             oid=str(_ORG_B),
             gid=_G1,
+            vec=_EMBEDDER.embed("ada lovelace wrote the first program"),
         )
         # g3 content that should not match an 'ada' query
         s.run(
@@ -139,6 +145,23 @@ async def test_entity_search_returns_org_a_graphs_and_never_org_b(seeded) -> Non
     assert all(r["properties"].get("organisation_id") != str(_ORG_B) for r in out["results"])
 
 
+@pytest.mark.parametrize("mode", ["entity", "fulltext", "semantic", "hybrid"])
+async def test_cross_org_bait_is_excluded_from_every_mode(seeded, mode) -> None:
+    # THE mandatory isolation proof. The bait is :__Entity__ + :Chunk + embedding + text, stamped
+    # with org-A's _G1 graph_id but owned by org B — so it is matchable by entity, fulltext,
+    # semantic AND hybrid. Only the in-query org predicate (bound on EVERY fan-out branch) keeps it
+    # out. Org A's query must never surface it in ANY mode.
+    out = await _search(seeded, mode=mode, query="ada lovelace first program")
+    # every hit is from an org-A graph, owned by org A
+    assert all(r["source_graph_id"] in {_G1, _G2} for r in out["results"])
+    assert all(r["properties"].get("organisation_id") == str(_ORG_A) for r in out["results"])
+    # the bait specifically — by its property id, its tell-tale name, its org — is absent (the id
+    # property survives in properties even though the result `id` is the Neo4j elementId)
+    assert all(r["properties"].get("id") != "ada-bait" for r in out["results"])
+    assert all("bait" not in str(r["properties"]) for r in out["results"])
+    assert all(r["properties"].get("organisation_id") != str(_ORG_B) for r in out["results"])
+
+
 async def test_semantic_search_is_org_scoped_and_labeled(seeded) -> None:
     out = await _search(seeded, mode="semantic", query="ada lovelace first program")
     assert out["meta"]["semantic_degraded"] is False
@@ -163,11 +186,13 @@ async def test_org_b_caller_sees_only_its_own_graph(seeded) -> None:
     assert all(r["properties"]["organisation_id"] == str(_ORG_B) for r in out["results"])
 
 
-async def test_poisoned_registry_cannot_leak_another_orgs_graph(seeded) -> None:
-    # Defence in depth: even if the enumeration seam handed org A a graph it does not own, every
-    # fan-out branch still binds organisation_id in-query — org B's rows are unreachable.
+@pytest.mark.parametrize("mode", ["entity", "fulltext", "semantic", "hybrid"])
+async def test_poisoned_registry_cannot_leak_another_orgs_graph(seeded, mode) -> None:
+    # Defence in depth across EVERY mode: even if the enumeration seam handed org A a graph it does
+    # not own (_G4, org B's), every fan-out branch still binds organisation_id in-query — org B's
+    # rows are unreachable on the entity, fulltext, semantic AND hybrid paths.
     poisoned = [*_A_GRAPHS, GraphInfo(id=_G4, name="stolen")]
-    out = await _search(seeded, graphs=poisoned)
+    out = await _search(seeded, graphs=poisoned, mode=mode, query="ada lovelace first program")
     assert _G4 not in {r["source_graph_id"] for r in out["results"]}
     assert all(r["properties"]["organisation_id"] == str(_ORG_A) for r in out["results"])
 
@@ -258,3 +283,114 @@ async def test_neighborhood_fetch_is_labeled_and_never_crosses_graphs(seeded) ->
     for e in out["edges"]:
         assert e["source_graph_id"] in {_G1, _G2}
         assert node_graph[e["source"]] == node_graph[e["target"]] == e["source_graph_id"]
+
+
+# ── end-to-end enumeration seam (real KGS GET /internal/v1/graphs → Postgres → fan-out) ────────
+
+
+_DEV_ORG = uuid.UUID("00000000-0000-0000-0000-00000000050a")  # the KGS+KRS dev-auth org
+_DEV_USER = uuid.UUID("00000000-0000-0000-0000-0000000000d5")
+
+
+async def test_enumeration_seam_end_to_end_through_real_kgs_and_postgres(
+    neo4j_driver, postgres_async_dsn, monkeypatch
+) -> None:
+    """The accessible set is NOT mocked here: a real KRS GraphRegistryClient calls the real KGS
+    ``GET /internal/v1/graphs`` (mounted over ASGITransport), which reads the real Postgres
+    `knowledge_graphs` registry; the resolved ids then drive a real Neo4j fan-out. Proves the whole
+    seam — enumeration → org-scoped registry → fan-out — binds to the caller's org with no mock in
+    the loop, and a graph in ANOTHER org is neither enumerated nor reachable."""
+    import httpx
+    from oraclous_knowledge_graph_service.app import create_app
+    from oraclous_knowledge_graph_service.core.config import get_settings as kgs_get_settings
+    from oraclous_knowledge_graph_service.repositories.graph_repository import GraphRepository
+    from oraclous_knowledge_graph_service.repositories.models import Base
+    from oraclous_knowledge_retriever_service.services.graph_registry_client import (
+        GraphRegistryClient,
+    )
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+    # Pin KGS to dev auth for this app instance (the lru_cached settings may hold a neighbouring
+    # test's gateway-mode config); dev mode forwards the fixed bearer the registry client sends.
+    monkeypatch.setenv("KGS_AUTH_MODE", "dev")
+    kgs_get_settings.cache_clear()
+
+    other_org = uuid.UUID("99999999-9999-9999-9999-999999999999")
+    gid_other = uuid.uuid4()
+
+    # 1. Real Postgres registry: the dev-org graph (enumerable) + a foreign-org graph (must not be).
+    engine = create_async_engine(postgres_async_dsn)
+    sessionmaker = async_sessionmaker(engine, expire_on_commit=False)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    try:
+        async with sessionmaker() as session:
+            repo = GraphRepository(session)
+            with _ctx(_DEV_ORG):
+                kept = await repo.create(user_id=_DEV_USER, name="federated-seam", description=None)
+            with _ctx(other_org):
+                await repo.create(user_id=uuid.uuid4(), name="foreign", description=None)
+            await session.commit()
+
+        # 2. Seed Neo4j: an entity in the kept (dev-org) graph + bait in the foreign one.
+        with neo4j_driver.session() as s:
+            s.run("MATCH (n) DETACH DELETE n")
+            s.run(
+                "CREATE (e:Person:__Entity__ {id: 'seam-ada', name: 'ada lovelace', "
+                "canonical_name: 'Ada Lovelace', organisation_id: $oid, graph_id: $gid})",
+                oid=str(_DEV_ORG),
+                gid=str(kept.id),
+            )
+            s.run(
+                "CREATE (e:Person:__Entity__ {id: 'seam-bait', name: 'ada lovelace', "
+                "canonical_name: 'Bait', organisation_id: $oid, graph_id: $gid})",
+                oid=str(other_org),
+                gid=str(gid_other),
+            )
+
+        # 3. Mount the real KGS app and point its app-scoped sessionmaker at the test engine — so
+        #    the REAL get_graph_service → bind_org_context → GraphRepository chain runs unchanged
+        #    over real Postgres (dev auth resolves the org from the forwarded principal; no mock).
+        app = create_app()
+        app.state.sessionmaker = sessionmaker
+        app.state.neo4j_driver = None  # graph CRUD falls back to stored counts; we read ids only
+        transport = httpx.ASGITransport(app=app)
+        kgs_client = httpx.AsyncClient(
+            transport=transport, base_url="http://kgs", follow_redirects=False
+        )
+
+        # 4. The REAL KRS registry client → the real KGS endpoint (dev mode forwards the bearer).
+        registry = GraphRegistryClient(
+            client=kgs_client, auth_mode="dev", dev_bearer="dev-token", internal_service_key=None
+        )
+        accessible = await registry.accessible_graphs(principal=None)
+        accessible_ids = {g.id for g in accessible}
+        assert str(kept.id) in accessible_ids  # the dev-org graph was enumerated…
+        assert str(gid_other) not in accessible_ids  # …the foreign-org graph was NOT
+
+        # 5. Drive the real fan-out over the enumerated set (real Neo4j), bound to the dev org.
+        svc = FederatedRetrievalService(
+            neo4j_driver,
+            _EMBEDDER,
+            registry,
+            max_graphs=20,
+            max_per_graph_k=25,
+            max_total=200,
+            max_subgraph_nodes=500,
+        )
+        with _ctx(_DEV_ORG):
+            out = await svc.search(
+                principal=None,
+                query="ada",
+                mode="entity",
+                graph_ids=None,
+                per_graph_k=10,
+                total_k=50,
+            )
+        sources = {r["source_graph_id"] for r in out["results"]}
+        assert sources == {str(kept.id)}  # only the dev-org graph's hit
+        assert all(r["properties"]["organisation_id"] == str(_DEV_ORG) for r in out["results"])
+        await kgs_client.aclose()
+    finally:
+        await engine.dispose()
+        kgs_get_settings.cache_clear()  # don't leak the pinned dev mode to neighbouring tests

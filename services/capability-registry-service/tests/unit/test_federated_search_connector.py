@@ -108,6 +108,26 @@ async def test_forwards_org_and_posts_the_federated_body() -> None:
     assert seen["internal_key"] == "dev-internal-key"
 
 
+async def test_forwards_the_real_principal_type_not_a_hardcoded_one() -> None:
+    seen: dict = {}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        seen["ptype"] = req.headers.get("X-Principal-Type")
+        return httpx.Response(200, json={"results": [], "total": 0, "meta": {}})
+
+    ex = _connector(handler)
+    ctx = ExecutionContext(
+        instance_id=uuid.uuid4(),
+        organisation_id=_ORG,
+        user_id=_USER,
+        execution_id=uuid.uuid4(),
+        principal_type="user",  # a real user-principal execution, not the harness agent loop
+    )
+    res = await ex.execute({"query": "ada"}, ctx)
+    assert res.success
+    assert seen["ptype"] == "user"
+
+
 async def test_defaults_mode_and_omits_unset_fields() -> None:
     seen: dict = {}
 
