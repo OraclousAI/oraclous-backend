@@ -24,7 +24,8 @@ _ROUTES: tuple[tuple[str, str], ...] = (
     # — the HITL SAME_AS_CANDIDATE approve/reject mutation, #279 — both live under /api/v1/graphs)
     ("/api/v1/graphs", "KNOWLEDGE_GRAPH_URL"),
     ("/api/v1/recipes", "KNOWLEDGE_GRAPH_URL"),
-    # knowledge-retriever
+    # knowledge-retriever (/v1/graph also carries POST /v1/graph/{id}/evaluate — the RAGAS-style
+    # retrieval-quality evaluation endpoint, #331)
     ("/v1/search", "KNOWLEDGE_RETRIEVER_URL"),
     ("/v1/graph", "KNOWLEDGE_RETRIEVER_URL"),
     # capability-registry

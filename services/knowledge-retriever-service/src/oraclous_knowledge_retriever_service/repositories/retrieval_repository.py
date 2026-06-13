@@ -115,6 +115,19 @@ class RetrievalRepository:
         edges = [edge for group in row.get("edge_groups", []) for edge in group]
         return {"nodes": row.get("nodes", []), "edges": edges}
 
+    def graph_exists(self, *, graph_id: str) -> bool:
+        # Org-scoped existence probe for the evaluate endpoint (#331): another org's graph is
+        # indistinguishable from a nonexistent one (the caller 404s), so graph ids never leak
+        # across organisations. Anchored to :Chunk like every other KRS read (#333) — an
+        # unlabelled MATCH on a miss scans the whole node store; the label keeps the probe a
+        # probe. A graph with no chunks has nothing to evaluate anyway. LIMIT 1.
+        rows = self._query(
+            "MATCH (c:Chunk) WHERE c.graph_id = $graph_id AND c.organisation_id = $organisation_id "
+            "RETURN elementId(c) AS id LIMIT 1",
+            graph_id=graph_id,
+        )
+        return bool(rows)
+
     def temporal(self, *, graph_id: str, as_of: str, top_k: int) -> list[dict]:
         return self._query(
             "MATCH (n) WHERE n.graph_id = $graph_id AND n.organisation_id = $organisation_id "
