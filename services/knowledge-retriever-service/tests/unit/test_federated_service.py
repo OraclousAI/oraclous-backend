@@ -252,6 +252,25 @@ def test_interleave_preserves_each_graphs_internal_order() -> None:
     assert [r["id"] for r in merged] == ["a1", "b1", "a2"]  # rank-1s, then a's rank-2
 
 
+def test_interleave_cap_zero_returns_nothing() -> None:
+    # The cap is checked AFTER each append in the loop, so a zero cap must be guarded up front —
+    # otherwise it leaks one element (the off-by-one this guards against).
+    per_graph = [
+        (_G1, [_row(_G1.id, "a1")]),
+        (_G2, [_row(_G2.id, "b1")]),
+    ]
+    assert interleave_round_robin(per_graph, total_cap=0) == []
+
+
+def test_interleave_cap_one_returns_exactly_one() -> None:
+    per_graph = [
+        (_G1, [_row(_G1.id, "a1"), _row(_G1.id, "a2")]),
+        (_G2, [_row(_G2.id, "b1")]),
+    ]
+    merged = interleave_round_robin(per_graph, total_cap=1)
+    assert [r["id"] for r in merged] == ["a1"]  # exactly one, the first graph's rank-1
+
+
 async def test_entity_mode_does_not_starve_trailing_graphs_under_the_total_cap() -> None:
     # All-1.0 entity scores across three graphs, total cap 2 — the merge must reach >1 graph,
     # never just the first-by-UUID graph (the degenerate global-sort behaviour).
@@ -394,6 +413,26 @@ async def test_subgraph_aggregate_cap_bounds_the_merged_node_count_across_graphs
     for n in out["nodes"]:
         per_graph[n["source_graph_id"]] = per_graph.get(n["source_graph_id"], 0) + 1
     assert per_graph == {_G1.id: 4, _G2.id: 4, _G3.id: 4}
+
+
+async def test_subgraph_aggregate_cap_zero_keeps_no_nodes() -> None:
+    # The node cap is checked AFTER each append in _merge_subgraph, so a zero cap must be guarded up
+    # front — otherwise it leaks one node (the off-by-one twin of the interleave guard).
+    repo = _SubgraphRepo(nodes_per_graph=5)
+    svc = _Service(repo, _FakeRegistry([_G1, _G2]), max_subgraph_nodes=0)
+    out = await svc.neighborhood(
+        principal=None, query="x", graph_ids=None, entities_per_graph=5, limit_per_graph=5
+    )
+    assert out["nodes"] == [] and out["edges"] == []
+
+
+async def test_subgraph_aggregate_cap_one_keeps_exactly_one_node() -> None:
+    repo = _SubgraphRepo(nodes_per_graph=5)
+    svc = _Service(repo, _FakeRegistry([_G1, _G2]), max_subgraph_nodes=1)
+    out = await svc.neighborhood(
+        principal=None, query="x", graph_ids=None, entities_per_graph=5, limit_per_graph=5
+    )
+    assert len(out["nodes"]) == 1  # exactly one, the first graph's first node
 
 
 async def test_subgraph_cap_breach_message_names_the_actual_field() -> None:

@@ -117,6 +117,10 @@ def interleave_round_robin(
     graph, then rank-2, … up to the total cap — preserving each graph's own internal order. The
     total cap then draws fairly across graphs rather than filling from the first graphs by UUID
     (which a global score-desc sort degenerates to when every score is 1.0)."""
+    if total_cap <= 0:
+        # The cap is checked AFTER each append below, so a non-positive cap would otherwise emit
+        # one element before tripping. Guard up front: a zero/negative cap selects nothing.
+        return []
     columns = [[_labeled_node(row, graph) for row in rows] for graph, rows in per_graph]
     results: list[FederatedNodeResult] = []
     depth = max((len(col) for col in columns), default=0)
@@ -470,6 +474,10 @@ class FederatedRetrievalService:
         round-robin across graphs (each graph keeps its own slice order) so the ceiling never
         starves the trailing graphs; edges survive only when BOTH endpoints made the node cut (the
         invariant the FE relies on), keeping a stray edge from referencing a dropped node."""
+        if self._max_subgraph_nodes <= 0:
+            # The cap is checked AFTER each append below, so a non-positive cap would otherwise keep
+            # one node (and any edge between two such). Guard up front: a zero cap keeps nothing.
+            return [], []
         labeled_columns = [
             [(graph, _labeled_node(n, graph)) for n in data["nodes"]]
             for graph, data in per_graph_slices
