@@ -1,11 +1,11 @@
-"""Tests for the canonical service-architecture guardrail (STR001-005, ORAA-4 §21, R3.5)."""
+"""Tests for the canonical service-architecture guardrail (STR001-006, ORAA-4 §21, R3.5)."""
 
 from __future__ import annotations
 
 from pathlib import Path
 
 import pytest
-from tools.lint.check_service_structure import check_package
+from tools.lint.check_service_structure import check_package, main
 
 pytestmark = pytest.mark.unit
 
@@ -111,3 +111,43 @@ def test_str005_scattered_service_module_at_package_root(tmp_path: Path) -> None
     pkg = _make_service(tmp_path)
     (pkg / "federation_service.py").write_text("X = 1\n")
     assert "STR005" in _codes(pkg)
+
+
+# --- documented §21 exceptions / STR006 (#301, #302) ----------------------------------------
+
+
+def test_documented_exception_for_absent_optional_layer_is_accepted(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # A read-only service legitimately has no models/; recording it in structure_exceptions
+    # surfaces the absence as ACCEPTED and keeps the gate green (exit 0).
+    _make_service(tmp_path)  # builds services/svc/... with no models/ dir
+    status = tmp_path / "status.yaml"
+    status.write_text(
+        "services:\n"
+        "  svc:\n"
+        "    structure_exceptions:\n"
+        "      - layer: models\n"
+        "        reason: read-only; no relational schema\n"
+    )
+    rc = main([str(tmp_path / "services"), "--status", str(status)])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "no 'models/' — accepted" in out
+
+
+def test_stale_exception_for_present_layer_fails_str006(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # If the exception names a layer that now EXISTS, the deviation was resolved and the note is
+    # stale — re-flag it as STR006 (exit 1) so the recorded exception can't go silently wrong.
+    pkg = _make_service(tmp_path)
+    (pkg / "models").mkdir()
+    status = tmp_path / "status.yaml"
+    status.write_text(
+        "services:\n  svc:\n    structure_exceptions:\n      - layer: models\n        reason: x\n"
+    )
+    rc = main([str(tmp_path / "services"), "--status", str(status)])
+    err = capsys.readouterr().err
+    assert rc == 1
+    assert "STR006" in err

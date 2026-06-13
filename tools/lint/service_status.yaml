@@ -22,6 +22,16 @@ services:
     release: R3.5            # service #1 — rebuilt to §21 across S1-S5; structure now ENFORCED
     structure_enforced: true
     claimed_done: true       # §22 8-gate sign-off accepted — no-stubs ENFORCED
+    # DOCUMENTED §21 decision (#302): ORM declarations live in `repositories/models.py` (the
+    # colocated form), NOT a sibling `models/` package. §21 / STR004 treat the two as equivalent
+    # ("Both `repositories/models.py` (colocated) and a sibling `models/` package are accepted").
+    # All four ORM tables (knowledge_graphs, recipes, entity_resolutions, ingestion_jobs) are
+    # already centralised in that single file — there are NO scattered inline declarations — so a
+    # move to `models/` would be churn with zero canonicality gain. KGS is graph-primary (Neo4j);
+    # these are the only relational tables. Recorded so the absent `models/` dir is intentional.
+    structure_exceptions:
+      - layer: models
+        reason: ORM centralised in repositories/models.py (colocated form §21 accepts as equivalent)
   knowledge-retriever-service:
     release: R3.5            # service #2 — rebuilt to §21 (read-only retrieval); structure ENFORCED
     structure_enforced: true
