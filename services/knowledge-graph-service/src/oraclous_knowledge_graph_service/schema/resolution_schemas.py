@@ -133,3 +133,12 @@ class CrossGraphGenerateResponse(BaseModel):
     candidates: list[CrossGraphCandidateModel]
     generated: int
     warnings: list[str]
+
+
+class PendingCrossGraphResponse(BaseModel):
+    """The pending cross-graph SAME_AS review queue touching a graph (#330) — the read surface a
+    HITL reviewer uses to see the candidates a generation run wrote. Same candidate shape; each
+    pair keys the approve/reject verdict endpoints."""
+
+    candidates: list[CrossGraphCandidateModel]
+    total: int

@@ -20,8 +20,9 @@ pair, so the URL and the operands cannot disagree.
 from __future__ import annotations
 
 import uuid
+from typing import Annotated
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, Query, status
 
 from oraclous_knowledge_graph_service.core.dependencies import ResolutionServiceDep, UserIdDep
 from oraclous_knowledge_graph_service.schema.resolution_schemas import (
@@ -29,6 +30,7 @@ from oraclous_knowledge_graph_service.schema.resolution_schemas import (
     CrossGraphCandidateModel,
     CrossGraphGenerateRequest,
     CrossGraphGenerateResponse,
+    PendingCrossGraphResponse,
     RejectResponse,
     ResolveCandidateRequest,
 )
@@ -144,4 +146,27 @@ async def generate_cross_graph_candidates(
         candidates=[CrossGraphCandidateModel.of(c) for c in candidates],
         generated=len(candidates),
         warnings=warnings,
+    )
+
+
+@router.get("/{graph_id}/resolution/cross-graph", response_model=PendingCrossGraphResponse)
+async def list_pending_cross_graph_candidates(
+    graph_id: uuid.UUID,
+    service: ResolutionServiceDep,
+    user_id: UserIdDep,
+    limit: Annotated[int, Query(ge=1, le=500)] = 100,
+) -> PendingCrossGraphResponse:
+    """The pending cross-graph SAME_AS review queue touching this graph (#330) — what a HITL
+    reviewer reads to see the candidates a prior generation run wrote (the generation response is
+    otherwise the only place they surface). Owner-gated (a graph not in the caller's org/owner →
+    404). Each pending pair keys the same approve/reject verdict endpoints."""
+    try:
+        candidates = await service.list_pending_cross_graph(
+            graph_id=graph_id, user_id=user_id, limit=limit
+        )
+    except GraphNotFound:
+        raise _GRAPH_NOT_FOUND from None
+    return PendingCrossGraphResponse(
+        candidates=[CrossGraphCandidateModel.of(c) for c in candidates],
+        total=len(candidates),
     )
