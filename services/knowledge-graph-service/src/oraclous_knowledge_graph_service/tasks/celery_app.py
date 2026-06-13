@@ -42,14 +42,23 @@ celery_app.conf.update(
     worker_max_tasks_per_child=1000,
 )
 
-# Stage-6 code stale-symbol sweep (#305): a periodic dispatcher that fans out one per-graph cleanup
-# for every code graph. Only runs when an operator deploys a `celery beat` process; a worker-only
-# deploy (the current default) ignores this — the sweep is then driven by the post-re-ingest enqueue
-# in `ingest_tasks`. Cadence is env-tunable (KGS_CODE_STALE_SWEEP_INTERVAL_SECONDS, default daily).
+# Periodic dispatchers. Both only run when an operator deploys a `celery beat` process; a worker-
+# only deploy (the current default) ignores them.
+#   * code-stale-sweep (#305): fans out one per-graph stale-symbol cleanup for every code graph
+#     (otherwise driven by the post-re-ingest enqueue in `ingest_tasks`).
+#   * memory-consolidation-sweep (#332): fans out one BOUNDED per-(org,graph) consolidation for
+#     every graph owning current memories, so the similarity consolidation actually runs on a
+#     cadence rather than only on an explicit POST .../memories/consolidate.
+# Cadences are env-tunable (KGS_CODE_STALE_SWEEP_INTERVAL_SECONDS /
+# KGS_MEMORY_CONSOLIDATION_SWEEP_INTERVAL_SECONDS, both default daily).
 celery_app.conf.beat_schedule = {
     "code-stale-sweep": {
         "task": "kgs.sweep_all_code_graphs",
         "schedule": float(_settings.code_stale_sweep_interval_seconds),
+    },
+    "memory-consolidation-sweep": {
+        "task": "kgs.consolidate_all_memory_graphs",
+        "schedule": float(_settings.memory_consolidation_sweep_interval_seconds),
     },
 }
 

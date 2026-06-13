@@ -63,6 +63,14 @@ def run_consolidation(
             memory_id=str(r["memory_id"]),
             embedding=tuple(float(x) for x in (r["embedding"] or ())),
             importance=float(r["base_importance"] or 0.0),
+            # Partition key: consolidation clusters STRICTLY within one (type, scope, agent) bucket
+            # (#332 HIGH-1) so an episodic never absorbs a semantic, an org-scoped memory is never
+            # invalidated by a session/agent-scoped one, and agent A never absorbs agent B.
+            partition=(
+                str(r.get("memory_type") or ""),
+                str(r.get("scope") or ""),
+                str(r.get("agent_id") or ""),
+            ),
         )
         for r in rows
     ]

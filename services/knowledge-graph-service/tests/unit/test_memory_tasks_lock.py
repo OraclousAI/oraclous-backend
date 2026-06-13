@@ -83,7 +83,7 @@ def test_free_lock_runs_the_pass_and_releases(monkeypatch: pytest.MonkeyPatch) -
 
     out = memory_tasks.consolidate_memories_task(_GRAPH, _ORG)
     assert out["graph_id"] == _GRAPH and out["merged"] == 0
-    assert seen["threshold"] == 0.92 and seen["max_memories"] == 5000  # config defaults
+    assert seen["threshold"] == 0.92 and seen["max_memories"] == 2000  # config defaults
     assert driver.closed is True
     key = memory_consolidation_lock_key(organisation_id=_ORG, graph_id=_GRAPH)
     assert key not in fake.store  # released after the pass
