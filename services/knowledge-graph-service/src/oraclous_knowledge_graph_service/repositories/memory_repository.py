@@ -23,11 +23,17 @@ Sync driver calls throughout (the service wraps them in ``asyncio.to_thread``).
 
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime
 from typing import Any
 
 from neo4j import Driver
+from neo4j.exceptions import Neo4jError
 from oraclous_substrate.access import enforced_organisation_id
+
+from oraclous_knowledge_graph_service.domain.memory_decay import sanitize_lucene_query
+
+logger = logging.getLogger(__name__)
 
 # Closed label map — the ONLY interpolated fragment in this module. Keys are the validated
 # MemoryType enum values; anything else raises before touching Cypher.
@@ -121,12 +127,22 @@ class MemoryRepository:
 
     # ------------------------------------------------------------------ store
 
-    def find_by_content_hash(self, content_hash: str) -> dict[str, Any] | None:
+    def find_by_content_hash(
+        self, content_hash: str, *, memory_type: str, scope: str
+    ) -> dict[str, Any] | None:
+        """A CURRENT memory with the same (content_hash, memory_type, scope) — the dedup match.
+
+        memory_type and scope are part of the dedup key (#332 MED) so storing a semantic with the
+        same text as an existing episodic (or the same text under a different scope) is NOT folded
+        into the wrong node — only a true re-store of the same kind/scope dedups."""
         records = self._run(
             "MATCH (m:Memory {organisation_id: $organisation_id, graph_id: $graph_id, "
-            "content_hash: $content_hash}) WHERE m.valid_to IS NULL "
+            "content_hash: $content_hash, memory_type: $memory_type, scope: $scope}) "
+            "WHERE m.valid_to IS NULL "
             "RETURN m.memory_id AS memory_id, m.importance_score AS importance_score LIMIT 1",
             content_hash=content_hash,
+            memory_type=memory_type,
+            scope=scope,
         )
         return dict(records[0]) if records else None
 
@@ -184,14 +200,27 @@ class MemoryRepository:
     def find_contradictions(
         self, *, memory_id: str, subject: str, predicate: str, object_: str, is_negation: bool
     ) -> list[dict[str, Any]]:
-        """Current semantic memories with the same subject+predicate but a DIFFERENT object — or
-        the same object with a flipped negation (an explicit "X is-NOT-Y" vs "X is-Y") — i.e. the
-        statements the new memory contradicts (ADR-027 §1)."""
+        """Current semantic memories the NEW memory genuinely contradicts (ADR-027 §1, #332 MED).
+
+        Same subject+predicate, and EITHER:
+          * a same-object negation FLIP — ``X is Y`` vs ``X is-not Y`` (one asserts the object, the
+            other denies the SAME object); OR
+          * a different-object clash between TWO NON-negated assertions — ``X is Y`` vs ``X is Z``
+            (X can hold only one value of this predicate).
+
+        Deliberately NOT contradictions: two negations of different objects (``X is-not Y`` vs
+        ``X is-not Z`` are compatible — X is neither), and an assertion-vs-negation of DIFFERENT
+        objects (``X is Z`` vs ``X is-not Y`` are compatible). ``coalesce`` defends against legacy
+        rows that pre-date ``is_negation`` (treated as non-negated assertions)."""
         records = self._run(
             "MATCH (m:Memory:Semantic {organisation_id: $organisation_id, graph_id: $graph_id}) "
             "WHERE m.valid_to IS NULL AND m.memory_id <> $memory_id "
             "  AND m.subject = $subject AND m.predicate = $predicate "
-            "  AND (m.object <> $object OR m.is_negation <> $is_negation) "
+            "  AND ( "
+            "    (m.object = $object AND coalesce(m.is_negation, false) <> $is_negation) "
+            "    OR (m.object <> $object AND coalesce(m.is_negation, false) = false "
+            "        AND $is_negation = false) "
+            "  ) "
             "RETURN m.memory_id AS memory_id, m.content AS content LIMIT 10",
             memory_id=memory_id,
             subject=subject,
@@ -250,28 +279,41 @@ class MemoryRepository:
         limit: int = 50,
     ) -> list[dict[str, Any]]:
         """Fulltext hits over the ``kgs_memory_content`` index, org+graph filtered, with the raw
-        Lucene ``text_score`` (the service normalises it before ranking)."""
-        records = self._run(
-            "CALL db.index.fulltext.queryNodes('kgs_memory_content', $query) "
-            "YIELD node AS m, score AS text_score "
-            "WHERE m.organisation_id = $organisation_id AND m.graph_id = $graph_id "
-            "  AND m.confidence >= $min_confidence "
-            "  AND ($memory_type IS NULL OR m.memory_type = $memory_type) "
-            "  AND ($scope IS NULL OR m.scope = $scope) "
-            "  AND ($scopes IS NULL OR m.scope IN $scopes) "
-            "  AND ($include_types IS NULL OR m.memory_type IN $include_types) "
-            "  AND ($temporal = 'all' OR m.valid_to IS NULL) "
-            f"RETURN {_RETURN_FIELDS}, text_score "
-            "ORDER BY text_score DESC LIMIT $limit",
-            query=query,
-            memory_type=memory_type,
-            scope=scope,
-            scopes=scopes,
-            include_types=include_types,
-            temporal=temporal,
-            min_confidence=min_confidence,
-            limit=limit,
-        )
+        Lucene ``text_score`` (the service normalises it before ranking).
+
+        The raw query is sanitised to a safe literal term query (Lucene metacharacters escaped,
+        bare boolean keywords de-cased) so any user/LLM input is parseable (#332 HIGH-2); an empty
+        query after sanitisation yields zero candidates without touching the index. As a final
+        guard, an unparseable query (a Lucene parse fault that slips through) degrades to zero
+        results with a warning rather than a 500."""
+        safe = sanitize_lucene_query(query)
+        if not safe:
+            return []
+        try:
+            records = self._run(
+                "CALL db.index.fulltext.queryNodes('kgs_memory_content', $query) "
+                "YIELD node AS m, score AS text_score "
+                "WHERE m.organisation_id = $organisation_id AND m.graph_id = $graph_id "
+                "  AND m.confidence >= $min_confidence "
+                "  AND ($memory_type IS NULL OR m.memory_type = $memory_type) "
+                "  AND ($scope IS NULL OR m.scope = $scope) "
+                "  AND ($scopes IS NULL OR m.scope IN $scopes) "
+                "  AND ($include_types IS NULL OR m.memory_type IN $include_types) "
+                "  AND ($temporal = 'all' OR m.valid_to IS NULL) "
+                f"RETURN {_RETURN_FIELDS}, text_score "
+                "ORDER BY text_score DESC LIMIT $limit",
+                query=safe,
+                memory_type=memory_type,
+                scope=scope,
+                scopes=scopes,
+                include_types=include_types,
+                temporal=temporal,
+                min_confidence=min_confidence,
+                limit=limit,
+            )
+        except Neo4jError as exc:  # defence in depth: never let a query parse-error surface as 500
+            logger.warning("memory fulltext query degraded to no results (unparseable): %s", exc)
+            return []
         return [_row(r) for r in records]
 
     def vector_candidates(
@@ -285,9 +327,15 @@ class MemoryRepository:
         scopes: list[str] | None = None,
         include_types: list[str] | None = None,
         limit: int = 50,
+        candidate_cap: int = 1_000,
     ) -> list[dict[str, Any]]:
         """Org+graph-scoped brute-force cosine over stored embeddings (no label-wide vector index —
-        the #305 finding). Embeddings are L2-normalised by the embedder, so dot = cosine."""
+        the #305 finding). Embeddings are L2-normalised by the embedder, so dot = cosine.
+
+        A pre-cosine candidate cap (#332 MED) bounds the brute force: the filtered, current/temporal
+        set is first cut to the ``candidate_cap`` most-recently-accessed memories, and cosine is
+        computed only over THAT bounded set — so per-query cost stays bounded as the graph grows
+        instead of scaling with the whole org+graph memory count."""
         records = self._run(
             "MATCH (m:Memory {organisation_id: $organisation_id, graph_id: $graph_id}) "
             "WHERE m.embedding IS NOT NULL AND size(m.embedding) = size($qvec) "
@@ -297,6 +345,8 @@ class MemoryRepository:
             "  AND ($scopes IS NULL OR m.scope IN $scopes) "
             "  AND ($include_types IS NULL OR m.memory_type IN $include_types) "
             "  AND ($temporal = 'all' OR m.valid_to IS NULL) "
+            # Bound the brute force: take the most-recent `candidate_cap` first, score only those.
+            "WITH m ORDER BY m.last_accessed_at DESC LIMIT $candidate_cap "
             "WITH m, reduce(s = 0.0, i IN range(0, size(m.embedding) - 1) | "
             "s + m.embedding[i] * $qvec[i]) AS vector_score "
             f"RETURN {_RETURN_FIELDS}, vector_score "
@@ -309,6 +359,7 @@ class MemoryRepository:
             temporal=temporal,
             min_confidence=min_confidence,
             limit=limit,
+            candidate_cap=candidate_cap,
         )
         return [_row(r) for r in records]
 
@@ -316,15 +367,24 @@ class MemoryRepository:
         """Lazy decay recompute on access (legacy ``_bump_access`` Cypher pattern, per-type λ):
         one write re-stamps ``last_accessed_at``, increments ``access_count`` and persists the
         Ebbinghaus importance — I(t) decayed from ``base_importance`` over the time since the LAST
-        access, plus the capped log access boost. ``log`` is Neo4j's natural log (= ln)."""
+        access, plus the capped log access boost. ``log`` is Neo4j's natural log (= ln).
+
+        The ``access_count + 1`` is a read-then-write, so two concurrent recalls of the same memory
+        can race and lose one increment (a TOCTOU). This is BEST-EFFORT BY DESIGN (#332 LOW): the
+        count feeds only an approximate decay boost, never correctness/authz, so an occasional
+        undercount is acceptable and not worth a per-node lock on the read path."""
         if not memory_ids:
             return
         self._run(
             "UNWIND $memory_ids AS mid "
             "MATCH (m:Memory {organisation_id: $organisation_id, graph_id: $graph_id, "
             "memory_id: mid}) "
-            "WITH m, CASE m.memory_type WHEN 'episodic' THEN 0.05 WHEN 'procedural' THEN 0.01 "
-            "ELSE 0.005 END AS lam, "
+            # Per-type λ (DECAY_LAMBDA, kept in lockstep with domain/memory_decay): episodic 0.05,
+            # semantic 0.005, procedural 0.01; an UNKNOWN type (only legacy/corrupt data) falls back
+            # to 0.01 — the SAME default as the Python `_DEFAULT_LAMBDA`, so the lazy bump and the
+            # read-time recompute never drift (#332 LOW).
+            "WITH m, CASE m.memory_type WHEN 'episodic' THEN 0.05 WHEN 'semantic' THEN 0.005 "
+            "WHEN 'procedural' THEN 0.01 ELSE 0.01 END AS lam, "
             "duration.inSeconds(m.last_accessed_at, datetime($now)).seconds / 86400.0 AS days "
             "WITH m, m.base_importance * exp(-lam * CASE WHEN days < 0 THEN 0.0 ELSE days END) "
             "AS decayed, m.access_count + 1 AS new_count "
@@ -365,7 +425,15 @@ class MemoryRepository:
         """Temporal versioning (ADR-027 §1): close the old node (valid_to) and create the successor
         carrying the old node's full property set (labels included, via the closed type map) with
         the changed fields overridden, linked ``(new)-[:SUPERSEDES]->(old)``. A stale embedding is
-        never kept: a content change either carries the fresh vector or clears it."""
+        never kept: a content change either carries the fresh vector or clears it.
+
+        The successor (#332 MED supersede):
+          * inherits the predecessor's ABOUT entity links (the entity context survives a content
+            update), and
+          * does NOT carry the predecessor's stale ``subject``/``predicate``/``object``/
+            ``is_negation`` — the ``MemoryUpdate`` body supplies none of them, so a content change
+            that no longer matches the old triple would otherwise leave the successor with a wrong
+            relation. They are cleared; a re-store with the new triple re-establishes them."""
         label = _subtype_label(memory_type)
         set_embedding = (
             "new.embedding = $embedding, " if (embedding is not None or content_changed) else ""
@@ -382,8 +450,18 @@ class MemoryRepository:
             "  new.last_accessed_at = datetime($now), new.valid_from = datetime($now), "
             "  new.valid_to = null, new.ingested_at = datetime($now), "
             "  new.updated_at = datetime($now) "
+            # The MemoryUpdate body supplies no triple — drop the stale subject/predicate/object so
+            # the successor never carries a relation that no longer matches its content.
+            "REMOVE new.subject, new.predicate, new.object, new.is_negation "
             "CREATE (new)-[:SUPERSEDES {reason: $reason, superseded_at: datetime($now)}]->(old) "
-            "RETURN new.memory_id AS memory_id",
+            # Preserve the predecessor's ABOUT entity context onto the successor. Per matched edge
+            # `e` is a bound node, so FOREACH over a present-or-empty guard merges the link (the
+            # working pattern from `merge_memories`); the predecessor's confidence carries across.
+            "WITH old, new "
+            "OPTIONAL MATCH (old)-[ab:ABOUT]->(e) "
+            "FOREACH (_ IN CASE WHEN e IS NOT NULL THEN [1] ELSE [] END | "
+            "  MERGE (new)-[nab:ABOUT]->(e) SET nab.confidence = ab.confidence) "
+            "RETURN DISTINCT new.memory_id AS memory_id",
             old_id=old_id,
             new_id=new_id,
             content=content,
@@ -419,12 +497,18 @@ class MemoryRepository:
     # ------------------------------------------------------------ consolidation
 
     def list_current_with_embeddings(self, *, limit: int) -> list[dict[str, Any]]:
-        """Bounded fetch of current memories carrying embeddings (the consolidation candidates)."""
+        """Bounded fetch of current memories carrying embeddings (the consolidation candidates).
+
+        Returns the partition keys (``memory_type``, ``scope``, ``agent_id``) alongside the vector
+        so consolidation can cluster STRICTLY within a (type, scope, agent) partition — an episodic
+        can never absorb a semantic, a session/agent-scoped memory can never invalidate an
+        organisation-scoped one, and agent A's memory never absorbs agent B's (#332 HIGH-1)."""
         records = self._run(
             "MATCH (m:Memory {organisation_id: $organisation_id, graph_id: $graph_id}) "
             "WHERE m.valid_to IS NULL AND m.embedding IS NOT NULL "
             "RETURN m.memory_id AS memory_id, m.embedding AS embedding, "
-            "m.base_importance AS base_importance "
+            "m.base_importance AS base_importance, m.memory_type AS memory_type, "
+            "m.scope AS scope, m.agent_id AS agent_id "
             "ORDER BY m.importance_score DESC LIMIT $limit",
             limit=limit,
         )
@@ -437,8 +521,12 @@ class MemoryRepository:
         if not loser_ids:
             return 0
         records = self._run(
+            # Winner-currency guard (#332 MED): only fold into a CURRENT winner (valid_to IS NULL —
+            # not superseded/soft-deleted). If the winner raced away between the candidate fetch and
+            # this write, the MATCH yields nothing and the whole merge is a no-op (returns 0), so a
+            # loser is never invalidated under a dead winner; the next pass reselects.
             "MATCH (winner:Memory {organisation_id: $organisation_id, graph_id: $graph_id, "
-            "memory_id: $winner_id}) "
+            "memory_id: $winner_id}) WHERE winner.valid_to IS NULL "
             "UNWIND $loser_ids AS lid "
             "MATCH (loser:Memory {organisation_id: $organisation_id, graph_id: $graph_id, "
             "memory_id: lid}) WHERE loser.valid_to IS NULL "

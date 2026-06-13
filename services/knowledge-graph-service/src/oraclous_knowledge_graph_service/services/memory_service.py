@@ -57,7 +57,10 @@ from oraclous_knowledge_graph_service.services.embedder import Embedder
 logger = logging.getLogger(__name__)
 
 # The lazily-created org-default memory graph (ADR-027 §5): where a harness run's memory lands when
-# the run carries no graph context. One per org, found by name (org-scoped).
+# the run carries no graph context. ONE per org, identified by the reserved `system_kind` marker —
+# never by its display name, so it can neither collide with nor resolve to a user-created graph that
+# happens to share the name (the partial unique index makes find-or-create race-safe).
+AGENT_MEMORY_SYSTEM_KIND = "agent_memory"
 DEFAULT_MEMORY_GRAPH_NAME = "Agent Memory"
 _DEFAULT_MEMORY_GRAPH_DESCRIPTION = (
     "Org-default agent memory graph (auto-created by the harness post-run memory hook)."
@@ -90,13 +93,14 @@ class MemoryService:
         repo_factory: Callable[[str], MemoryRepository],
         embedder: Embedder | None,
         enqueue_consolidation: Callable[[str, str], str],
-        default_graph_user_id: uuid.UUID | None = None,
+        vector_candidate_cap: int = 1_000,
     ) -> None:
         self._graphs = graphs
         self._repo_factory = repo_factory
         self._embedder = embedder
         self._enqueue = enqueue_consolidation
-        self._default_graph_user_id = default_graph_user_id
+        # Pre-cosine candidate cap passed to the repository's brute-force vector recall (#332 MED).
+        self._vector_candidate_cap = vector_candidate_cap
 
     # ------------------------------------------------------------------ gates
 
@@ -108,19 +112,20 @@ class MemoryService:
         return self._repo_factory(str(graph_id))
 
     async def resolve_default_graph(self, *, user_id: uuid.UUID) -> uuid.UUID:
-        """Find-or-create the org-default memory graph (lazy, org-scoped by name).
+        """Find-or-create the org-default memory graph (lazy, org-scoped, race-safe).
 
-        Used by the internal (harness) store path when a run carries no graph context."""
-        existing = await self._graphs.find_by_name(DEFAULT_MEMORY_GRAPH_NAME)
-        if existing is not None:
-            return existing.id
-        created = await self._graphs.create(
+        Used by the internal (harness) store path when a run carries no graph context. The graph is
+        keyed on the reserved ``agent_memory`` system marker — NOT its display name — so it can
+        never resolve to (or be shadowed by) a user-created graph called "Agent Memory", and the
+        (org, system_kind) partial unique index makes concurrent first runs converge on one graph
+        rather than creating duplicates (#332/ADR-027 §5)."""
+        graph = await self._graphs.find_or_create_system_graph(
             user_id=user_id,
+            system_kind=AGENT_MEMORY_SYSTEM_KIND,
             name=DEFAULT_MEMORY_GRAPH_NAME,
             description=_DEFAULT_MEMORY_GRAPH_DESCRIPTION,
         )
-        logger.info("created org-default memory graph %s", created.id)
-        return created.id
+        return graph.id
 
     # ------------------------------------------------------------------ store
 
@@ -157,8 +162,11 @@ class MemoryService:
         now = datetime.now(UTC)
         chash = content_hash(req.content)
 
-        # 1. Content-hash dedup (ADR-027 §1): an identical current memory returns, not re-stores.
-        existing = await asyncio.to_thread(repo.find_by_content_hash, chash)
+        # 1. Content-hash dedup (ADR-027 §1): an identical current memory of the SAME type+scope
+        # returns, not re-stores (the type+scope keying stops a semantic deduping into an episodic).
+        existing = await asyncio.to_thread(
+            repo.find_by_content_hash, chash, memory_type=req.type.value, scope=req.scope.value
+        )
         if existing:
             return MemoryCreateResponse(
                 memory_id=existing["memory_id"],
@@ -241,7 +249,12 @@ class MemoryService:
         ranked = []
         for c in candidates.values():
             text_norm = (c.get("text_score") or 0.0) / max_text if max_text > 0 else 0.0
-            vector_score = c.get("vector_score") if hybrid else None
+            # The no-vector fallback (text carries the full retrieval weight) is a WHOLE-QUERY
+            # property — it fires only when there is no query embedding at all (`hybrid` False).
+            # When a query vector DOES exist, a candidate that simply had no vector hit (fulltext-
+            # only, or below the vector cutoff) scores vector_score=0.0 — text*.25 + 0 — NOT a
+            # promotion to text*.5 (#332 MED hybrid-rank fallback).
+            vector_score = (c.get("vector_score") or 0.0) if hybrid else None
             importance = compute_importance(
                 float(c["base_importance"]),
                 str(c["memory_type"]),
@@ -288,7 +301,10 @@ class MemoryService:
         qvec = await asyncio.to_thread(self._embed, query)
         if qvec is not None:
             for row in await asyncio.to_thread(
-                repo.vector_candidates, query_vector=qvec, **filters
+                repo.vector_candidates,
+                query_vector=qvec,
+                candidate_cap=self._vector_candidate_cap,
+                **filters,
             ):
                 merged = candidates.setdefault(row["memory_id"], row)
                 merged["vector_score"] = row["vector_score"]
@@ -353,7 +369,10 @@ class MemoryService:
         qvec = await asyncio.to_thread(self._embed, query)
         if qvec is not None:
             for row in await asyncio.to_thread(
-                repo.vector_candidates, query_vector=qvec, **filters
+                repo.vector_candidates,
+                query_vector=qvec,
+                candidate_cap=self._vector_candidate_cap,
+                **filters,
             ):
                 merged = candidates.setdefault(row["memory_id"], row)
                 merged["vector_score"] = row["vector_score"]

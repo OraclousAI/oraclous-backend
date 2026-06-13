@@ -129,13 +129,24 @@ class Settings(BaseSettings):
     # Cosine threshold above which two memories' embeddings count as near-duplicates and merge in
     # the consolidation pass (the legacy comment's 0.92 — high, so only true near-duplicates fold).
     memory_consolidation_similarity_threshold: float = 0.92
-    # Bounded candidate fetch per consolidation pass (cost/heap guard, mirrors the legacy 5000 cap).
-    memory_consolidation_max_memories: int = 5_000
+    # Bounded candidate fetch per consolidation pass (cost/heap guard). Lowered from the legacy
+    # 5000: consolidation is O(n²) cosine, so the cap keeps a single pass well under the lock TTL
+    # even on a large memory graph (the beat sweep revisits across cadences). Partitioning by
+    # (type, scope, agent) further splits the O(n²) work into small per-partition buckets.
+    memory_consolidation_max_memories: int = 2_000
     # Per-(org,graph) advisory Redis lock TTL across one consolidation pass (#303/#305 pattern).
     memory_consolidation_lock_ttl_seconds: int = 15 * 60
     # Max distinct (org, graph) memory graphs the optional beat dispatcher fans out per cadence
     # (bounded enumeration, #305 pattern). 0 disables the bound.
     memory_sweep_max_graphs: int = 1_000
+    # Cadence (seconds) for the optional Celery-beat memory-consolidation sweep dispatcher. Only
+    # runs when an operator deploys a `celery beat` process; a worker-only deploy ignores it. Daily.
+    memory_consolidation_sweep_interval_seconds: int = 86_400
+    # Pre-cosine candidate cap (#332 MED unbounded-cosine): the brute-force cosine in
+    # `vector_candidates` first fetches at most this many CURRENT embedded memories by recency, then
+    # scores only those — so per-query recall cost stays bounded as a memory graph grows. The recall
+    # candidate pool the service then re-ranks is far smaller than this; the cap is the safety net.
+    memory_vector_candidate_cap: int = 1_000
 
     # --- similarity auto-trigger (#310, legacy SIMILARITY_AUTO_TRIGGER_ON_INGEST) ---
     # When True, a structured ingest with NO authored `similarities[]` rule still runs the content-

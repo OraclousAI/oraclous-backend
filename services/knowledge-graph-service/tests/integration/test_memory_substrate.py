@@ -85,17 +85,41 @@ class _FakeGraphs:
     async def get(self, graph_id: uuid.UUID) -> Graph | None:
         return self._rows.get((enforced_organisation_id(), str(graph_id)))
 
-    async def find_by_name(self, name: str) -> Graph | None:
-        org = enforced_organisation_id()
-        for (row_org, _), row in sorted(self._rows.items()):
-            if row_org == org and row.name == name:
-                return row
-        return None
-
-    async def create(self, *, user_id: uuid.UUID, name: str, description: str | None) -> Graph:
+    async def create(
+        self,
+        *,
+        user_id: uuid.UUID,
+        name: str,
+        description: str | None,
+        system_kind: str | None = None,
+    ) -> Graph:
         graph_id = uuid.uuid4()
         self.register(enforced_organisation_id(), graph_id, name=name)
         return self._rows[(enforced_organisation_id(), str(graph_id))]
+
+    async def find_or_create_system_graph(
+        self, *, user_id: uuid.UUID, system_kind: str, name: str, description: str | None
+    ) -> Graph:
+        org = enforced_organisation_id()
+        for (row_org, _), row in sorted(self._rows.items()):
+            if row_org == org and row.system_kind == system_kind:
+                return row
+        graph_id = uuid.uuid4()
+        now = datetime.now(UTC)
+        self._rows[(org, str(graph_id))] = Graph(
+            id=graph_id,
+            organisation_id=uuid.UUID(org),
+            user_id=user_id,
+            name=name,
+            description=description,
+            status="active",
+            node_count=0,
+            relationship_count=0,
+            created_at=now,
+            updated_at=now,
+            system_kind=system_kind,
+        )
+        return self._rows[(org, str(graph_id))]
 
 
 class _ControlledEmbedder:
@@ -496,3 +520,287 @@ async def test_context_block_respects_token_budget(memory_driver) -> None:  # no
     assert 0 < len(ctx.memories_used) < 10  # the budget cut the list short
     assert ctx.context_block.startswith("## Relevant Memory")
     assert "**Facts:**" in ctx.context_block
+
+
+# ---------------------------------------------------------------- Lucene safety (#332 HIGH-2)
+
+
+@pytest.mark.parametrize(
+    "adversarial",
+    [
+        'unbalanced "quote',
+        "tier:gold AND status:active",
+        "(group OR other",
+        "wildcard* fuzzy~ ?:",
+        "C:\\path\\to\\thing",
+        "trailing AND",
+        "NOT alone",
+    ],
+)
+async def test_adversarial_query_never_500s_on_search_and_context(
+    memory_driver, adversarial
+) -> None:  # noqa: ANN001
+    """A raw Lucene-metacharacter query must NEVER crash recall (it would parse-error → 500). It is
+    sanitised to a safe literal query; the worst case degrades to zero results, never an error."""
+    graphs = _FakeGraphs()
+    graph_id = uuid.uuid4()
+    graphs.register(_ORG_A, graph_id)
+    svc = _service(memory_driver, graphs, embedder=None)  # fulltext-only → exercises the index path
+
+    with use_organisation_context(_ctx(_ORG_A)):
+        await svc.store(graph_id=graph_id, req=_create("Customer tier is gold and active"))
+        # neither call raises — the sanitiser makes the index query parseable.
+        res = await svc.search(graph_id=graph_id, query=adversarial, limit=10)
+        ctx = await svc.context(graph_id=graph_id, query=adversarial)
+    assert res.total >= 0  # a valid response object, no exception
+    assert ctx.context_block.startswith("## Relevant Memory")
+
+
+async def test_recall_path_with_quoted_query_returns_matches(memory_driver) -> None:  # noqa: ANN001
+    """The sanitiser preserves the literal TERMS — a query carrying special chars around real words
+    still recalls the matching memory rather than silently returning nothing."""
+    graphs = _FakeGraphs()
+    graph_id = uuid.uuid4()
+    graphs.register(_ORG_A, graph_id)
+    svc = _service(memory_driver, graphs, embedder=None)
+    with use_organisation_context(_ctx(_ORG_A)):
+        await svc.store(graph_id=graph_id, req=_create("Deploy window is Friday afternoon"))
+        res = await svc.search(graph_id=graph_id, query='"Friday" AND afternoon', limit=10)
+    assert res.total >= 1
+    assert "Friday" in res.memories[0].content
+
+
+# ---------------------------------------------------------------- contradiction compatibility
+
+
+async def test_two_negations_of_different_objects_are_not_contradictions(memory_driver) -> None:  # noqa: ANN001
+    """`X is-not Y` and `X is-not Z` are COMPATIBLE (X is neither) — storing the second must NOT
+    flag a contradiction nor invalidate the first (#332 MED contradiction over-invalidation)."""
+    graphs = _FakeGraphs()
+    graph_id = uuid.uuid4()
+    graphs.register(_ORG_A, graph_id)
+    svc = _service(memory_driver, graphs, embedder=None)
+    with use_organisation_context(_ctx(_ORG_A)):
+        first = await svc.store(
+            graph_id=graph_id,
+            req=_create(
+                "Customer is not gold tier",
+                subject="cust-1",
+                predicate="has_tier",
+                object="gold",
+                is_negation=True,
+            ),
+        )
+        second = await svc.store(
+            graph_id=graph_id,
+            req=_create(
+                "Customer is not silver tier",
+                subject="cust-1",
+                predicate="has_tier",
+                object="silver",
+                is_negation=True,
+            ),
+        )
+    assert second.contradictions_detected == []  # compatible negations
+    assert _node(memory_driver, _ORG_A, graph_id, first.memory_id).get("valid_to") is None
+
+
+async def test_assertion_vs_negation_of_different_objects_is_not_a_contradiction(
+    memory_driver,
+) -> None:  # noqa: ANN001
+    """`X is Z` and `X is-not Y` (DIFFERENT objects) are compatible — no contradiction flagged."""
+    graphs = _FakeGraphs()
+    graph_id = uuid.uuid4()
+    graphs.register(_ORG_A, graph_id)
+    svc = _service(memory_driver, graphs, embedder=None)
+    with use_organisation_context(_ctx(_ORG_A)):
+        await svc.store(
+            graph_id=graph_id,
+            req=_create(
+                "Customer is not gold",
+                subject="cust-2",
+                predicate="has_tier",
+                object="gold",
+                is_negation=True,
+            ),
+        )
+        clash = await svc.store(
+            graph_id=graph_id,
+            req=_create(
+                "Customer is silver",
+                subject="cust-2",
+                predicate="has_tier",
+                object="silver",
+                is_negation=False,
+            ),
+        )
+    assert clash.contradictions_detected == []
+
+
+async def test_same_object_negation_flip_is_a_contradiction(memory_driver) -> None:  # noqa: ANN001
+    """`X is Y` then `X is-not Y` (SAME object, flipped negation) IS a contradiction — new wins."""
+    graphs = _FakeGraphs()
+    graph_id = uuid.uuid4()
+    graphs.register(_ORG_A, graph_id)
+    svc = _service(memory_driver, graphs, embedder=None)
+    with use_organisation_context(_ctx(_ORG_A)):
+        asserted = await svc.store(
+            graph_id=graph_id,
+            req=_create(
+                "Customer is gold",
+                subject="cust-3",
+                predicate="has_tier",
+                object="gold",
+                is_negation=False,
+            ),
+        )
+        denied = await svc.store(
+            graph_id=graph_id,
+            req=_create(
+                "Customer is not gold after all",
+                subject="cust-3",
+                predicate="has_tier",
+                object="gold",
+                is_negation=True,
+            ),
+        )
+    assert [c.conflict_memory_id for c in denied.contradictions_detected] == [asserted.memory_id]
+    assert _node(memory_driver, _ORG_A, graph_id, asserted.memory_id)["valid_to"] is not None
+
+
+# ---------------------------------------------------------------- supersede preservation/clearing
+
+
+async def test_supersede_preserves_about_links_and_clears_stale_triple(memory_driver) -> None:  # noqa: ANN001
+    """The successor inherits the predecessor's ABOUT entity edge, and does NOT carry the stale
+    subject/predicate/object (the MemoryUpdate body supplies none) (#332 MED supersede)."""
+    graphs = _FakeGraphs()
+    graph_id = uuid.uuid4()
+    graphs.register(_ORG_A, graph_id)
+    svc = _service(memory_driver, graphs, embedder=None)
+    # Seed an entity the semantic memory's subject will link to (ABOUT).
+    memory_driver.execute_query(
+        "CREATE (e:__Entity__ {organisation_id: $org, graph_id: $graph, id: 'ent-billing', "
+        "name: 'billing'})",
+        org=_ORG_A,
+        graph=str(graph_id),
+    )
+    with use_organisation_context(_ctx(_ORG_A)):
+        v1 = await svc.store(
+            graph_id=graph_id,
+            req=_create(
+                "billing runs nightly",
+                subject="billing",
+                predicate="runs",
+                object="nightly",
+            ),
+        )
+        # the store linked ABOUT → entity; now supersede with new content (no triple supplied).
+        up = await svc.supersede(
+            graph_id=graph_id,
+            memory_id=v1.memory_id,
+            req=MemoryUpdate(content="billing runs hourly now", reason="reschedule"),
+        )
+    new_node = _node(memory_driver, _ORG_A, graph_id, up.new_memory_id)
+    assert new_node is not None
+    # stale triple cleared on the successor (the body supplied none).
+    assert "subject" not in new_node and "predicate" not in new_node and "object" not in new_node
+    # ABOUT entity context preserved onto the successor.
+    records, _, _ = memory_driver.execute_query(
+        "MATCH (m:Memory {memory_id: $new})-[:ABOUT]->(e:__Entity__ {id: 'ent-billing'}) "
+        "RETURN count(*) AS links",
+        new=up.new_memory_id,
+    )
+    assert records[0]["links"] == 1
+
+
+# ---------------------------------------------------------------- dedup type+scope keying
+
+
+async def test_same_content_different_type_does_not_dedup(memory_driver) -> None:  # noqa: ANN001
+    """Identical content stored as a SEMANTIC must not fold into an existing EPISODIC — the dedup
+    key includes memory_type+scope (#332 MED content-hash dedup)."""
+    graphs = _FakeGraphs()
+    graph_id = uuid.uuid4()
+    graphs.register(_ORG_A, graph_id)
+    svc = _service(memory_driver, graphs, embedder=None)
+    with use_organisation_context(_ctx(_ORG_A)):
+        epi = await svc.store(
+            graph_id=graph_id,
+            req=_create("System upgraded to v2", type=MemoryType.EPISODIC),
+        )
+        sem = await svc.store(
+            graph_id=graph_id,
+            req=_create("System upgraded to v2", type=MemoryType.SEMANTIC),
+        )
+        # but a true re-store of the SAME type+scope DOES dedup.
+        epi_again = await svc.store(
+            graph_id=graph_id,
+            req=_create("System upgraded to v2", type=MemoryType.EPISODIC),
+        )
+    assert sem.memory_id != epi.memory_id  # distinct nodes — not deduped across types
+    assert epi_again.memory_id == epi.memory_id  # same type+scope → deduped
+
+
+# ---------------------------------------------------------------- consolidation partition (HIGH-1)
+
+
+async def test_consolidation_never_merges_across_partitions(memory_driver) -> None:  # noqa: ANN001
+    """Two memories with near-identical embeddings but in DIFFERENT (type, scope, agent) partitions
+    must NOT consolidate — even at cosine ≈ 1.0 (#332 HIGH-1 consolidation over-merge)."""
+    graphs = _FakeGraphs()
+    graph_id = uuid.uuid4()
+    graphs.register(_ORG_A, graph_id)
+    same_vec = [1.0, 0.0, 0.0]
+    table = {
+        "Episodic note about the deploy": same_vec,
+        "Semantic fact about the deploy": same_vec,  # identical vector, different TYPE
+        "Agent B note about the deploy": same_vec,  # identical vector, different AGENT
+    }
+    svc = _service(memory_driver, graphs, embedder=_ControlledEmbedder(table))
+    with use_organisation_context(_ctx(_ORG_A)):
+        epi = await svc.store(
+            graph_id=graph_id,
+            req=_create(
+                "Episodic note about the deploy", type=MemoryType.EPISODIC, agent_id="agent-A"
+            ),
+        )
+        sem = await svc.store(
+            graph_id=graph_id,
+            req=_create(
+                "Semantic fact about the deploy", type=MemoryType.SEMANTIC, agent_id="agent-A"
+            ),
+        )
+        other_agent = await svc.store(
+            graph_id=graph_id,
+            req=_create(
+                "Agent B note about the deploy", type=MemoryType.EPISODIC, agent_id="agent-B"
+            ),
+        )
+        repo = MemoryRepository(memory_driver, graph_id=str(graph_id))
+        stats = run_consolidation(repo, threshold=0.92, max_memories=100)
+    assert stats["merged"] == 0 and stats["clusters"] == 0  # cross-partition → nothing merges
+    for mid in (epi.memory_id, sem.memory_id, other_agent.memory_id):
+        assert _node(memory_driver, _ORG_A, graph_id, mid).get("valid_to") is None  # all survive
+
+
+async def test_consolidation_winner_currency_skips_dead_winner(memory_driver) -> None:  # noqa: ANN001
+    """merge_memories only folds into a CURRENT winner: if the winner was invalidated between the
+    candidate fetch and the merge, the loser is NOT invalidated under a dead winner (#332 MED)."""
+    graphs = _FakeGraphs()
+    graph_id = uuid.uuid4()
+    graphs.register(_ORG_A, graph_id)
+    svc = _service(memory_driver, graphs, embedder=None)
+    with use_organisation_context(_ctx(_ORG_A)):
+        winner = await svc.store(graph_id=graph_id, req=_create("Primary note", agent_id="a"))
+        loser = await svc.store(graph_id=graph_id, req=_create("Duplicate note", agent_id="a"))
+    repo = MemoryRepository(memory_driver, graph_id=str(graph_id), organisation_id=_ORG_A)
+    # Kill the winner (simulate it racing away), then attempt the merge.
+    from datetime import datetime as _dt
+
+    repo.soft_delete(memory_id=winner.memory_id, now=_dt.now(UTC))
+    merged = repo.merge_memories(
+        winner_id=winner.memory_id, loser_ids=[loser.memory_id], now=_dt.now(UTC)
+    )
+    assert merged == 0  # no fold into a dead winner
+    assert _node(memory_driver, _ORG_A, graph_id, loser.memory_id).get("valid_to") is None

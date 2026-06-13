@@ -25,6 +25,7 @@ from oraclous_knowledge_graph_service.domain.memory_decay import (
     content_hash,
     hybrid_rank,
     recency_factor,
+    sanitize_lucene_query,
 )
 
 pytestmark = pytest.mark.unit
@@ -213,3 +214,85 @@ def test_cluster_below_threshold_merges_nothing() -> None:
     a = MemoryVector("a", (1.0, 0.0), importance=0.5)
     b = MemoryVector("b", (0.0, 1.0), importance=0.5)
     assert cluster_by_similarity([a, b], threshold=0.92) == []
+
+
+# ------------------------------------------------ clustering partition guard (#332 HIGH-1)
+
+
+def test_cluster_never_merges_across_partitions() -> None:
+    """Two near-identical vectors that differ ONLY in their (type, scope, agent) partition must NOT
+    merge — an episodic never absorbs a semantic, a session memory never invalidates an org one,
+    agent A never absorbs agent B — regardless of cosine."""
+    vec = (1.0, 0.0)
+    # same content vector, but each lands in a DIFFERENT partition.
+    semantic = MemoryVector("sem", vec, importance=0.9, partition=("semantic", "agent", "a1"))
+    episodic = MemoryVector("epi", vec, importance=0.8, partition=("episodic", "agent", "a1"))
+    org_scoped = MemoryVector(
+        "org", vec, importance=0.7, partition=("semantic", "organization", "a1")
+    )
+    other_agent = MemoryVector("b", vec, importance=0.6, partition=("semantic", "agent", "a2"))
+    clusters = cluster_by_similarity([semantic, episodic, org_scoped, other_agent], threshold=0.92)
+    assert clusters == []  # every pair is in a distinct partition → nothing merges
+
+
+def test_cluster_merges_only_within_a_partition() -> None:
+    """Within ONE partition near-duplicates merge; an identical vector in a sibling partition is
+    untouched."""
+    part = ("semantic", "agent", "a1")
+    a = MemoryVector("a", (1.0, 0.0), importance=0.9, partition=part)
+    b = MemoryVector("b", (0.999, 0.0447), importance=0.5, partition=part)  # ≈0.999 to a → merges
+    other = MemoryVector("c", (1.0, 0.0), importance=0.4, partition=("episodic", "agent", "a1"))
+    clusters = cluster_by_similarity([a, b, other], threshold=0.92)
+    assert len(clusters) == 1
+    assert clusters[0].winner_id == "a" and clusters[0].loser_ids == ("b",)
+
+
+# ------------------------------------------------ Lucene query sanitisation (#332 HIGH-2)
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        'unbalanced "quote',
+        "title:admin AND role:root",
+        "(group OR other",
+        "wildcard* and fuzzy~",
+        "path/to\\thing",
+        "trailing AND",
+        "NOT alone",
+        "a +b -c !d {e} [f] ^g",
+        ":::",
+    ],
+)
+def test_sanitize_lucene_query_neutralises_every_metachar(raw: str) -> None:
+    """Every Lucene metacharacter is escaped and bare boolean keywords are de-cased, so the result
+    carries no UNescaped special char and no standalone operator (would otherwise be a parse-error
+    → 500). The result is non-empty for non-empty input (the terms survive as literals)."""
+    out = sanitize_lucene_query(raw)
+    assert out  # non-empty input → non-empty safe query
+    # no bare (unescaped) double-quote survives — every quote is backslash-escaped.
+    assert '"' not in out.replace('\\"', "")
+    # the de-cased operators are present as lower-case literal terms, never as operators.
+    for op in ("AND", "OR", "NOT"):
+        assert f" {op} " not in f" {out} "
+
+
+def test_sanitize_lucene_query_empty_is_empty() -> None:
+    assert sanitize_lucene_query("") == ""
+    assert sanitize_lucene_query("   \t  ") == ""
+
+
+def test_sanitize_lucene_query_plain_text_passes_through() -> None:
+    assert sanitize_lucene_query("dark mode preference") == "dark mode preference"
+
+
+# ------------------------------------------------ default-λ alignment (#332 LOW)
+
+
+def test_default_lambda_matches_unknown_type_decay() -> None:
+    """The Python default λ for an unknown memory type must equal the Cypher bump's ELSE branch
+    (0.01) — they are kept in lockstep so the read-time recompute and the lazy bump never drift."""
+    from oraclous_knowledge_graph_service.domain.memory_decay import _DEFAULT_LAMBDA
+
+    assert _DEFAULT_LAMBDA == 0.01
+    assert DECAY_LAMBDA["procedural"] == _DEFAULT_LAMBDA  # the value the Cypher ELSE mirrors

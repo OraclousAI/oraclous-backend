@@ -304,7 +304,6 @@ def _make_memory_embedder() -> Embedder | None:
 def get_memory_service(
     driver: Annotated[Driver, Depends(get_neo4j_driver)],
     session: Annotated[AsyncSession, Depends(get_db_session)],
-    principal: Annotated[Principal, Depends(get_principal)],
     _org: Annotated[OrganisationContext, Depends(bind_org_context)],
 ) -> MemoryService:
     """Build the agent-memory service (#332). Depends on `get_neo4j_driver` (memories live in the
@@ -321,7 +320,7 @@ def get_memory_service(
         repo_factory=repo_factory,
         embedder=_make_memory_embedder(),
         enqueue_consolidation=_enqueue_memory_consolidation,
-        default_graph_user_id=principal.principal_id,
+        vector_candidate_cap=settings.memory_vector_candidate_cap,
     )
 
 

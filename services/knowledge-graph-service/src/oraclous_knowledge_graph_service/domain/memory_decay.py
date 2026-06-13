@@ -98,6 +98,36 @@ def content_hash(content: str) -> str:
     return hashlib.sha256(normalized.encode()).hexdigest()
 
 
+# Lucene query-syntax metacharacters (the Neo4j fulltext index parses Lucene). A raw user/LLM query
+# carrying any of these — a stray quote, `AND`, `(`, `:` — is a parse error that crashes the recall
+# Cypher with a 500. We escape every one so ANY input is a safe literal term query (#332 HIGH-2).
+_LUCENE_SPECIAL = set(r'+-&|!(){}[]^"~*?:\/')
+
+
+def sanitize_lucene_query(query: str) -> str:
+    """Escape Lucene query-syntax metacharacters so an arbitrary user/LLM query is a safe literal
+    term query against ``db.index.fulltext.queryNodes`` (#332 HIGH-2).
+
+    Each special character is backslash-escaped (Lucene's documented escape); the boolean operator
+    keywords ``AND``/``OR``/``NOT`` are de-cased so they are matched as ordinary terms rather than
+    parsed as operators (a trailing/standalone operator is itself a parse error). An empty or
+    all-whitespace query returns ``""`` — the caller treats that as "no fulltext candidates" rather
+    than issuing a query that would error.
+    """
+    stripped = query.strip()
+    if not stripped:
+        return ""
+    out: list[str] = []
+    for ch in stripped:
+        if ch in _LUCENE_SPECIAL:
+            out.append("\\")
+        out.append(ch)
+    escaped = "".join(out)
+    # De-case bare boolean operators so they read as terms, never as Lucene operators.
+    tokens = [tok.lower() if tok in {"AND", "OR", "NOT"} else tok for tok in escaped.split()]
+    return " ".join(tokens)
+
+
 def hybrid_rank(
     *,
     text_score: float,
