@@ -72,10 +72,3 @@ class FederatedEdgeResult(TypedDict):
     properties: dict[str, Any]
     source_graph_id: str
     source_graph_name: str
-
-
-class FederatedSubgraphResult(TypedDict):
-    """The merged neighborhood slice around the entities a federated query matched."""
-
-    nodes: list[FederatedNodeResult]
-    edges: list[FederatedEdgeResult]
