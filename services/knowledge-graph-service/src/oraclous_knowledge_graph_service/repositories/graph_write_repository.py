@@ -462,7 +462,10 @@ class GraphWriteRepository:
             "RETURN e.id AS id, e.name AS name, "
             "coalesce(e.canonical_name, e.name) AS canonical_name, "
             "head([l IN labels(e) WHERE NOT l STARTS WITH '__']) AS label "
-            "LIMIT $limit",
+            # Deterministic ORDER BY before LIMIT: the scan is a bounded slice, so without an order
+            # the `limit` truncation is run-to-run nondeterministic (which entities a re-generation
+            # considers would drift). e.id is the deterministic node id — a stable boundary.
+            "ORDER BY e.id LIMIT $limit",
             graph_id=graph_id,
             organisation_id=organisation_id,
             limit=limit,
@@ -485,6 +488,13 @@ class GraphWriteRepository:
         edge suppresses re-flagging, mirroring the in-graph resolution pass. Returns the number
         of candidate edges present after the write. Each pair dict carries
         ``id_a/graph_id_a/id_b/graph_id_b/score/method``."""
+        # Canonicalise the edge DIRECTION by node id before MERGE: a SAME_AS_CANDIDATE is undirected
+        # for review, but a directed MERGE `(a)->(b)` and `(b)->(a)` are two distinct edges — so a
+        # re-generation from the reversed direction wrote a DUPLICATE. MERGE always from the
+        # lexicographically-smaller endpoint to the larger (`lo`->`hi`), independent of which side
+        # the pair named `a`/`b`, so `(a,b)` and `(b,a)` collapse to ONE edge. The endpoints still
+        # carry their own graph ids (a cross-org pair is unmatchable — fail-closed). The undirected
+        # NOT_SAME_AS / SAME_AS guards are unchanged (already direction-insensitive).
         records, _, _ = self._driver.execute_query(
             "UNWIND $pairs AS pair "
             "MATCH (a:__Entity__ {organisation_id: $organisation_id, "
@@ -492,7 +502,10 @@ class GraphWriteRepository:
             "MATCH (b:__Entity__ {organisation_id: $organisation_id, "
             "graph_id: pair.graph_id_b, id: pair.id_b}) "
             "WHERE NOT (a)-[:NOT_SAME_AS]-(b) AND NOT (a)-[:SAME_AS]-(b) "
-            "MERGE (a)-[c:SAME_AS_CANDIDATE]->(b) "
+            "WITH pair, a, b, "
+            "(CASE WHEN a.id <= b.id THEN a ELSE b END) AS lo, "
+            "(CASE WHEN a.id <= b.id THEN b ELSE a END) AS hi "
+            "MERGE (lo)-[c:SAME_AS_CANDIDATE]->(hi) "
             "SET c.organisation_id = $organisation_id, "
             "c.graph_id_a = pair.graph_id_a, c.graph_id_b = pair.graph_id_b, "
             "c.score = pair.score, c.method = pair.method, c.cross_graph = true "
@@ -502,6 +515,70 @@ class GraphWriteRepository:
             database_=self._database,
         )
         return int(records[0]["written"]) if records else 0
+
+    def verdicted_cross_graph_pairs(
+        self, *, organisation_id: str, graph_id_a: str, graph_id_b: str
+    ) -> list[tuple[str, str]]:
+        """The node-id pairs ACROSS the two org-owned graphs a human has already resolved — i.e.
+        endpoints joined by a `SAME_AS` (approved link) or `NOT_SAME_AS` (rejected) edge. Returned
+        as canonicalised `(lo, hi)` id tuples so the caller can drop already-verdicted pairs from a
+        re-generation BEFORE spending the candidate-limit budget, and not over-count `generated`.
+        Org-scoped + bound to BOTH graph ids on each endpoint (a cross-org pair is unmatchable)."""
+        records, _, _ = self._driver.execute_query(
+            "MATCH (a:__Entity__ {graph_id: $graph_id_a, organisation_id: $organisation_id}) "
+            "-[r:SAME_AS|NOT_SAME_AS]-"
+            "(b:__Entity__ {graph_id: $graph_id_b, organisation_id: $organisation_id}) "
+            "RETURN a.id AS id_a, b.id AS id_b",
+            graph_id_a=graph_id_a,
+            graph_id_b=graph_id_b,
+            organisation_id=organisation_id,
+            database_=self._database,
+        )
+        pairs: list[tuple[str, str]] = []
+        for r in records:
+            lo, hi = sorted((r["id_a"], r["id_b"]))
+            pairs.append((lo, hi))
+        return pairs
+
+    def pending_cross_graph_candidates(
+        self, *, organisation_id: str, graph_id: str, limit: int
+    ) -> list[dict]:
+        """The pending CROSS-GRAPH SAME_AS_CANDIDATE pairs touching this org-owned graph — the HITL
+        review queue a reviewer reads after a generation run (the queue is otherwise only returned
+        in the generation response). Matches the cross-graph candidate edges (`cross_graph = true`)
+        with one endpoint in `graph_id`; org-scoped on both endpoints. Each row carries both node
+        ids + both graph ids + score/method/name — the same shape the response candidates use.
+        Deterministic order (score desc, then the stable pair identity); LIMIT bounds the read."""
+        records, _, _ = self._driver.execute_query(
+            "MATCH (a:__Entity__ {graph_id: $graph_id, organisation_id: $organisation_id}) "
+            "-[c:SAME_AS_CANDIDATE]-(b:__Entity__ {organisation_id: $organisation_id}) "
+            "WHERE c.cross_graph = true "
+            "RETURN a.id AS id_a, a.graph_id AS graph_id_a, b.id AS id_b, "
+            "b.graph_id AS graph_id_b, "
+            "coalesce(a.canonical_name, a.name) AS name_a, "
+            "coalesce(b.canonical_name, b.name) AS name_b, "
+            "head([l IN labels(a) WHERE NOT l STARTS WITH '__']) AS label, "
+            "coalesce(c.score, 0.0) AS score, c.method AS method "
+            "ORDER BY score DESC, id_a, id_b LIMIT $limit",
+            graph_id=graph_id,
+            organisation_id=organisation_id,
+            limit=limit,
+            database_=self._database,
+        )
+        return [
+            {
+                "id_a": r["id_a"],
+                "graph_id_a": r["graph_id_a"],
+                "id_b": r["id_b"],
+                "graph_id_b": r["graph_id_b"],
+                "name_a": r["name_a"],
+                "name_b": r["name_b"],
+                "label": r["label"] or "Entity",
+                "score": r["score"],
+                "method": r["method"] or "unknown",
+            }
+            for r in records
+        ]
 
     def candidate_endpoints_pair(
         self,

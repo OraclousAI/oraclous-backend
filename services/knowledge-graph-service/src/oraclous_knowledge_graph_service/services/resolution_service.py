@@ -221,8 +221,10 @@ class ResolutionService:
     ) -> tuple[list[CrossGraphCandidate], list[str]]:
         """Flag SAME_AS candidates between TWO org-owned graphs and write them into the existing
         review queue (`SAME_AS_CANDIDATE` edges, BOTH graph ids carried). Returns
-        ``(candidates, warnings)``. Both graphs are owner-gated (cross-org → 404 by construction);
-        pairs a human already resolved (NOT_SAME_AS / SAME_AS) are skipped at the write."""
+        ``(candidates, warnings)``. Both graphs are owner-gated (cross-org → 404 by construction).
+        Pairs a human already resolved (NOT_SAME_AS / SAME_AS) are filtered out of the RESPONSE
+        (and so don't over-count `generated`) BEFORE the limit budget is spent — not just skipped
+        at the write. The quadratic-cosine + sync-embed generation runs off the event loop."""
         if target_graph_id == graph_id:
             raise ValueError("cross-graph generation needs two distinct graphs")
         org = await self._owned_org(graph_id=graph_id, user_id=user_id)
@@ -240,14 +242,27 @@ class ResolutionService:
             organisation_id=org,
             limit=_CROSS_GRAPH_ENTITY_SCAN_LIMIT,
         )
-        candidates, warnings = generate_cross_graph_pairs(
+        # The already-verdicted pairs (approved SAME_AS / rejected NOT_SAME_AS) — dropped before the
+        # limit budget so they neither resurface nor over-count `generated`.
+        verdicted = await asyncio.to_thread(
+            self._write.verdicted_cross_graph_pairs,
+            organisation_id=org,
+            graph_id_a=str(graph_id),
+            graph_id_b=str(target_graph_id),
+        )
+        embedder = make_embedder(self._settings)
+        # The whole generation (quadratic cosine + the embedder's SYNC OpenAI HTTP) runs off the
+        # event loop, like the entity fetches above — it must never block the KGS loop.
+        candidates, warnings = await asyncio.to_thread(
+            generate_cross_graph_pairs,
             graph_id_a=str(graph_id),
             entities_a=entities_a,
             graph_id_b=str(target_graph_id),
             entities_b=entities_b,
             candidate_threshold=candidate_threshold,
-            embedder=make_embedder(self._settings),
+            embedder=embedder,
             limit=limit,
+            skip_pairs=set(verdicted),
         )
         if candidates:
             await asyncio.to_thread(
@@ -267,6 +282,52 @@ class ResolutionService:
             )
         return candidates, warnings
 
+    @staticmethod
+    def _canonical_pair(
+        graph_id: uuid.UUID, other_graph_id: uuid.UUID
+    ) -> tuple[uuid.UUID, uuid.UUID]:
+        """Order the two graph ids deterministically so a cross-graph verdict keys the SAME audit
+        row from either direction: the audit `graph_id` is always the smaller id, `other_graph_id`
+        the larger. The candidate_id is already symmetric over the node-id pair, so the
+        (smaller-graph, candidate_id) lookup is direction-independent: SAME_AS and NOT_SAME_AS
+        cannot coexist for one pair, and a conflicting reverse verdict is a 409, not a 404."""
+        if str(graph_id) <= str(other_graph_id):
+            return graph_id, other_graph_id
+        return other_graph_id, graph_id
+
+    async def list_pending_cross_graph(
+        self,
+        *,
+        graph_id: uuid.UUID,
+        user_id: uuid.UUID,
+        limit: int,
+    ) -> list[CrossGraphCandidate]:
+        """The pending cross-graph SAME_AS review queue touching this graph (#330) — what a HITL
+        reviewer reads to see the candidates a prior generation run wrote (the queue is otherwise
+        only returned in the generation response). Owner-gated (a graph not in the caller's
+        org/owner → 404, no leak)."""
+        org = await self._owned_org(graph_id=graph_id, user_id=user_id)
+        rows = await asyncio.to_thread(
+            self._write.pending_cross_graph_candidates,
+            organisation_id=org,
+            graph_id=str(graph_id),
+            limit=limit,
+        )
+        return [
+            CrossGraphCandidate(
+                node_id_a=r["id_a"],
+                node_id_b=r["id_b"],
+                graph_id_a=r["graph_id_a"],
+                graph_id_b=r["graph_id_b"],
+                label=r["label"],
+                name_a=r["name_a"],
+                name_b=r["name_b"],
+                score=r["score"],
+                method=r["method"],
+            )
+            for r in rows
+        ]
+
     async def _approve_cross_graph(
         self,
         *,
@@ -277,12 +338,16 @@ class ResolutionService:
         candidate_id_path: str,
     ) -> LinkOutcome:
         """Approve a cross-graph candidate: LINK with `SAME_AS` (both graph ids stamped), drop the
-        candidate edge, audit under the path graph. Idempotent on replay; 409 on conflict."""
+        candidate edge, audit under the CANONICALISED pair (so a verdict from either direction
+        resolves to one row). Idempotent on replay; 409 on a conflicting prior verdict from EITHER
+        direction. A LINK is not a fold — the audit records both graph ids and no canonical
+        survivor (both nodes survive in their own graphs)."""
         org = await self._owned_org(graph_id=graph_id, user_id=user_id)
         await self._owned_org(graph_id=other_graph_id, user_id=user_id)
         self._assert_candidate_id(pair, candidate_id_path)
 
-        prior = await self._audit.find(graph_id=graph_id, candidate_id=pair.candidate_id)
+        audit_graph, audit_other = self._canonical_pair(graph_id, other_graph_id)
+        prior = await self._audit.find(graph_id=audit_graph, candidate_id=pair.candidate_id)
         if prior is not None:
             if prior.action != ResolutionAction.APPROVE.value:
                 raise ResolutionConflict(pair.candidate_id)
@@ -313,13 +378,16 @@ class ResolutionService:
             graph_id_b=str(other_graph_id),
             node_id_b=pair.node_id_b,
         )
+        # A cross-graph approve LINKS, never folds — record both graph ids and NO canonical survivor
+        # (the in-graph approve sets canonical_node_id; a cross-graph LINK leaves both nodes alive).
         await self._audit.record(
-            graph_id=graph_id,
+            graph_id=audit_graph,
+            other_graph_id=audit_other,
             candidate_id=pair.candidate_id,
             node_id_a=pair.node_id_a,
             node_id_b=pair.node_id_b,
             action=ResolutionAction.APPROVE,
-            canonical_node_id=pair.node_id_a,
+            canonical_node_id=None,
             decided_by=user_id,
         )
         return LinkOutcome(
@@ -340,12 +408,14 @@ class ResolutionService:
         candidate_id_path: str,
     ) -> RejectOutcome:
         """Reject a cross-graph candidate: a both-ids `NOT_SAME_AS` suppression + drop the edge,
-        audited under the path graph. Idempotent on replay; 409 on conflict."""
+        audited under the CANONICALISED pair. Idempotent on replay; 409 on a conflicting prior
+        verdict from EITHER direction."""
         org = await self._owned_org(graph_id=graph_id, user_id=user_id)
         await self._owned_org(graph_id=other_graph_id, user_id=user_id)
         self._assert_candidate_id(pair, candidate_id_path)
 
-        prior = await self._audit.find(graph_id=graph_id, candidate_id=pair.candidate_id)
+        audit_graph, audit_other = self._canonical_pair(graph_id, other_graph_id)
+        prior = await self._audit.find(graph_id=audit_graph, candidate_id=pair.candidate_id)
         if prior is not None:
             if prior.action != ResolutionAction.REJECT.value:
                 raise ResolutionConflict(pair.candidate_id)
@@ -373,7 +443,8 @@ class ResolutionService:
             node_id_b=pair.node_id_b,
         )
         await self._audit.record(
-            graph_id=graph_id,
+            graph_id=audit_graph,
+            other_graph_id=audit_other,
             candidate_id=pair.candidate_id,
             node_id_a=pair.node_id_a,
             node_id_b=pair.node_id_b,

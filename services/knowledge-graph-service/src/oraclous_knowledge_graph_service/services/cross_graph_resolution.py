@@ -58,12 +58,19 @@ def generate_cross_graph_pairs(
     candidate_threshold: float,
     embedder,
     limit: int,
+    skip_pairs: set[tuple[str, str]] | None = None,
 ) -> tuple[list[CrossGraphCandidate], list[str]]:
     """Flag cross-graph candidate pairs between two entity sets. Returns ``(candidates,
     warnings)`` — warnings carry the fail-soft embedder skips. Each entity dict carries
-    ``id/name/canonical_name/label`` (the `cross_graph_entities` repository shape)."""
+    ``id/name/canonical_name/label`` (the `cross_graph_entities` repository shape).
+
+    ``skip_pairs`` is the set of canonicalised ``(lo_id, hi_id)`` node-id pairs a human has already
+    resolved (approved/rejected). They are dropped BEFORE the ``limit`` budget is spent, so an
+    already-verdicted pair neither resurfaces in the response, over-counts ``generated``, nor
+    consumes a slot a still-undecided pair could take. Seeding ``seen`` with them is enough — every
+    candidate keys on the same canonicalised pair tuple."""
     candidates: list[CrossGraphCandidate] = []
-    seen: set[tuple[str, str]] = set()
+    seen: set[tuple[str, str]] = set(skip_pairs or ())
     warnings: list[str] = []
 
     grouped_a = _by_label(entities_a)
