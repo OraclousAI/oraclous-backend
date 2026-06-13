@@ -350,24 +350,40 @@ class FederatedRetrievalService:
         elif mode == "hybrid":
             qvec = self._try_embed(query)
             sem_lists: list[list[FederatedNodeResult]] = []
+            # Per-BRANCH failure tracking: a hybrid graph is only "failed" if it contributed via
+            # NEITHER branch. A graph whose semantic arm errored but whose fulltext arm succeeded
+            # (or vice versa) still contributed to the fused result, so it must NOT be reported as
+            # failed. We collect each branch's own failed list, then report only the intersection
+            # of graphs that failed every branch they were attempted in.
+            sem_failed: list[str] = []
+            ful_failed: list[str] = []
             if qvec is None:
                 semantic_degraded = True
             else:
                 sem_rows = await self._fan_out(
                     scope.graphs,
                     lambda repo, gid: repo.semantic(graph_id=gid, qvec=qvec, top_k=per_graph_k),
-                    failed=failed,
+                    failed=sem_failed,
                 )
                 sem_lists = self._per_graph_lists(sem_rows)
             ful_rows = await self._fan_out(
                 scope.graphs,
                 lambda repo, gid: repo.fulltext(graph_id=gid, query=query, top_k=per_graph_k),
-                failed=failed,
+                failed=ful_failed,
             )
             ful_lists = self._per_graph_lists(ful_rows)
             # RRF over each constituent's PER-GRAPH local rankings — fusion is graph-order
             # independent (a node's rank is its position within its own graph's list).
             results = rrf_fuse([sem_lists, ful_lists], total_cap=total_k)
+            # A graph is hybrid-failed only if it errored on the fulltext branch AND (the semantic
+            # branch was degraded-off OR it also errored on the semantic branch) — i.e. it produced
+            # no contribution at all. (When semantic is off, fulltext is the sole branch, so its
+            # failures stand alone.)
+            if qvec is None:
+                failed = list(ful_failed)
+            else:
+                sem_failed_set = set(sem_failed)
+                failed = [g for g in ful_failed if g in sem_failed_set]
         else:  # pragma: no cover — the schema's Literal already rejects unknown modes.
             raise FederatedCapError(f"unknown mode {mode!r}")
 
@@ -397,8 +413,10 @@ class FederatedRetrievalService:
         return {
             "graphs_queried": [{"id": g.id, "name": g.name} for g in scope.graphs],
             "graphs_skipped": scope.skipped,
-            # Graphs whose branch errored and were dropped (partial result; mirrors the
-            # semantic_degraded clean-degrade pattern). Deduped, deterministic order.
+            # Graphs that contributed NO results because every branch they were attempted on errored
+            # (partial result; mirrors the semantic_degraded clean-degrade pattern). For hybrid this
+            # is the intersection of the per-branch failures — a graph that failed one branch but
+            # served the other is NOT listed. Deduped, deterministic order.
             "graphs_failed": list(dict.fromkeys(failed)),
             "mode": mode,
             "semantic_degraded": semantic_degraded,

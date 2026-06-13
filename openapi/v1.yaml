@@ -424,10 +424,12 @@ paths:
         rankings — graph-order-independent). Every hit carries `source_graph_id`/`source_graph_name`.
         An explicit `graph_ids` subset is fail-closed (any inaccessible id → 403, no partial
         results); an explicit empty `graph_ids`, or a cap breach → 422; an un-enumerable accessible
-        set → 503. Partial success: a single graph's branch erroring is dropped and reported in
-        `meta.graphs_failed` (a 200 may cover a subset of the queried graphs) — only the
-        un-enumerable accessible set is a whole-query 503. Backs the registry
-        `core/federated-search` in-loop tool.
+        set → 503. Partial success: a graph that contributes NO results because every branch it was
+        attempted on errored is dropped and reported in `meta.graphs_failed` (a 200 may cover a
+        subset of the queried graphs). For hybrid this is the intersection of the per-branch
+        failures — a graph that errored on one branch (e.g. semantic) but served the other
+        (fulltext) still contributed, so it is NOT listed. Only the un-enumerable accessible set is a
+        whole-query 503. Backs the registry `core/federated-search` in-loop tool.
       operationId: federatedSearch
       x-stability: stable
       requestBody:

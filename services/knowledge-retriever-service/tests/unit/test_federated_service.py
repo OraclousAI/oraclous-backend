@@ -372,6 +372,61 @@ async def test_one_graphs_branch_failure_yields_partial_result_not_a_500() -> No
     assert out["meta"]["graphs_failed"] == [_G2.id]  # the failed branch is reported, not raised
 
 
+class _SemanticOnlyFailsRepo(_FakeRepo):
+    """The semantic branch raises for one graph; fulltext succeeds for it (a half-branch fault)."""
+
+    def __init__(self, rows_by_graph, failing_graph_id: str) -> None:
+        super().__init__(rows_by_graph)
+        self._failing = failing_graph_id
+
+    def semantic(self, *, graph_id, qvec, top_k):
+        self.calls.append(("semantic", graph_id))
+        if graph_id == self._failing:
+            raise RuntimeError("semantic branch error")
+        return list(self._rows.get(graph_id, []))[:top_k]
+
+
+async def test_hybrid_graph_failing_one_branch_but_serving_the_other_is_not_reported_failed() -> (
+    None
+):
+    # A graph whose semantic arm errored but whose fulltext arm returned rows DID contribute to the
+    # fused result — it must NOT appear in graphs_failed. Only a graph that produced nothing in
+    # EITHER branch is failed.
+    repo = _SemanticOnlyFailsRepo(
+        {_G1.id: [_row(_G1.id, "a")], _G2.id: [_row(_G2.id, "b")]},
+        failing_graph_id=_G1.id,
+    )
+    out = await _svc(repo).search(
+        principal=None, query="x", mode="hybrid", graph_ids=None, per_graph_k=5, total_k=50
+    )
+    # _G1 served fulltext though semantic failed → contributed → NOT failed
+    assert out["meta"]["graphs_failed"] == []
+    assert {r["source_graph_id"] for r in out["results"]} == {_G1.id, _G2.id}
+
+
+async def test_hybrid_graph_failing_both_branches_is_reported_failed() -> None:
+    # When semantic is degraded off (no query vector), fulltext is the sole branch — its failures
+    # then stand alone in graphs_failed.
+    repo = _OneGraphFailsRepo(  # fulltext raises for _G2
+        {_G1.id: [_row(_G1.id, "a")]},
+        failing_graph_id=_G2.id,
+    )
+
+    # Reuse _OneGraphFailsRepo's entity override for fulltext too: make fulltext fail for _G2.
+    def _fulltext(*, graph_id, query, top_k):
+        repo.calls.append(("fulltext", graph_id))
+        if graph_id == _G2.id:
+            raise RuntimeError("fulltext branch error")
+        return list(repo._rows.get(graph_id, []))[:top_k]
+
+    repo.fulltext = _fulltext  # type: ignore[method-assign]
+    out = await _svc(repo, embedder=_FailingEmbedder()).search(
+        principal=None, query="x", mode="hybrid", graph_ids=None, per_graph_k=5, total_k=50
+    )
+    assert out["meta"]["semantic_degraded"] is True
+    assert out["meta"]["graphs_failed"] == [_G2.id]  # sole branch failed → reported
+
+
 async def test_explicit_empty_graph_ids_is_a_caller_error() -> None:
     with pytest.raises(FederatedCapError):
         await _svc().search(
