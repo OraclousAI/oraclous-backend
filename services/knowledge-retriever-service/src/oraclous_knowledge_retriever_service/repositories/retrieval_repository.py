@@ -50,7 +50,10 @@ class RetrievalRepository:
             "WHERE c.graph_id = $graph_id AND c.organisation_id = $organisation_id "
             "AND c.text IS NOT NULL AND toLower(c.text) CONTAINS toLower($query) "
             "RETURN elementId(c) AS id, labels(c) AS labels, properties(c) AS props, 1.0 AS score "
-            "LIMIT $top_k",
+            # Deterministic ORDER BY before LIMIT: the score is a constant 1.0, so without a tie-
+            # break the per-graph subset is run-to-run nondeterministic. elementId is stable within
+            # a store, so it gives the truncation a fixed, reproducible boundary.
+            "ORDER BY elementId(c) LIMIT $top_k",
             graph_id=graph_id,
             query=query,
             top_k=top_k,

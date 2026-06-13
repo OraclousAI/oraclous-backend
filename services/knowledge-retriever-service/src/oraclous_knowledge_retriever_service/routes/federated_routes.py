@@ -5,8 +5,15 @@ POST /v1/federated/search    — entity / semantic / fulltext / hybrid across th
 POST /v1/federated/subgraph  — the neighborhood slice around matched entities, per graph.
 
 Thin: parse → one service call → map domain errors to HTTP. Error map: an inaccessible/unknown id
-in an explicit subset → 403 (fail-closed, no partial results, no existence oracle); a cap breach →
-422; an un-enumerable accessible set (registry down/unconfigured) → 503 (never "assume all").
+in an explicit subset → 403 (fail-closed, no partial results, no existence oracle); a cap breach
+OR an explicit empty graph_ids → 422; an un-enumerable accessible set (registry down/unconfigured)
+→ 503 (never "assume all").
+
+Partial-success semantics: a single graph's fan-out branch erroring (e.g. one graph's Neo4j fault)
+does NOT fail the whole query — that branch is dropped and its id reported in ``meta.graphs_failed``
+(the same clean-degrade shape as ``meta.semantic_degraded``), so a 200 may carry results from a
+SUBSET of the queried graphs. The 503 is reserved for the un-enumerable accessible set (the seam
+itself is down), which is a whole-query failure, not a per-branch one.
 """
 
 from __future__ import annotations

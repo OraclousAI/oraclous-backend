@@ -16,16 +16,21 @@ from pydantic import BaseModel, Field
 class FederatedSearchRequest(BaseModel):
     query: str = Field(min_length=1)
     mode: Literal["entity", "semantic", "fulltext", "hybrid"] = "hybrid"
-    # None/omitted = ALL accessible graphs. An explicit subset is validated against the accessible
-    # set and FAIL-CLOSED (any unknown/inaccessible id rejects the whole query, 403).
-    graph_ids: list[uuid.UUID] | None = None
+    # None/omitted = ALL accessible graphs. An EXPLICIT list is validated ∩ accessible and
+    # FAIL-CLOSED (any unknown/inaccessible id rejects the whole query, 403); an explicit EMPTY
+    # list is a caller error (an empty selection selects nothing, never silently "all"), rejected
+    # at the boundary.
+    graph_ids: list[uuid.UUID] | None = Field(default=None, min_length=1)
     per_graph_k: int = Field(default=10, ge=1)  # config-capped (422 above the cap)
     total_k: int = Field(default=50, ge=1)  # config-capped (422 above the cap)
 
 
 class FederatedSubgraphRequest(BaseModel):
     query: str = Field(min_length=1)
-    graph_ids: list[uuid.UUID] | None = None
+    # None/omitted = ALL accessible graphs. An EXPLICIT list is validated ∩ accessible and
+    # fail-closed; an explicit EMPTY list is a caller error (an empty selection selects nothing,
+    # never silently "all") — rejected at the boundary.
+    graph_ids: list[uuid.UUID] | None = Field(default=None, min_length=1)
     entities_per_graph: int = Field(default=5, ge=1)  # anchors matched per graph (config-capped)
     limit_per_graph: int = Field(default=50, ge=1)  # nodes per graph slice (config-capped)
 
@@ -59,6 +64,10 @@ class FederatedQueryMeta(BaseModel):
     # Ids beyond the max-graphs cap in default-all mode (never silently dropped). An explicit
     # subset never skips — it either fits the cap or the query is rejected.
     graphs_skipped: list[str]
+    # Ids of graphs whose fan-out branch errored (e.g. one graph's Neo4j fault) and were dropped:
+    # a partial result over the SUCCESSFUL graphs, never a whole-query 500 (mirrors the
+    # semantic_degraded clean-degrade). Empty when every branch succeeded.
+    graphs_failed: list[str] = []
     mode: str
     # True when the embedder was unavailable/degenerate: semantic contributed nothing, the other
     # modes still served (the clean-degrade path).
