@@ -395,7 +395,11 @@ services:
       REDIS_URL: "redis://redis:6379/0"
       JWT_SECRET: "${AUTH_JWT_SECRET:-dev-jwt-secret}"
       JWT_ALGORITHM: "HS256"
-      INTERNAL_SERVICE_KEY: "${AUTH_INTERNAL_KEY:-dev-internal-key}"
+      # Shared with credential-broker for the G1 oauth-connect bridge — both default to
+      # dev-internal-key, so the X-Internal-Key check matches in the dev stack. Keep them equal.
+      INTERNAL_SERVICE_KEY: "${INTERNAL_SERVICE_KEY:-dev-internal-key}"
+      # G1: where auth posts a connected provider token to be landed as a broker credential.
+      CREDENTIAL_BROKER_URL: "http://credential-broker-service:8000"
       # OAuth (S5): blank client creds → /oauth/* returns 503 (boot OK); set per-provider in prod.
       # OAUTH_ENC_KEY blank → dev default 32-byte key; prod injects a real key via secret.
       OAUTH_ENC_KEY: "${OAUTH_ENC_KEY:-}"
