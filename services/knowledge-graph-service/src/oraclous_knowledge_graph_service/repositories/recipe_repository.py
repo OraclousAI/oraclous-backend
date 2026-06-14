@@ -80,7 +80,14 @@ class RecipeRepository:
             .order_by(Recipe.version.desc())
             .limit(1)
         )
-        return dict(row.recipe_json) if row is not None else None
+        if row is None:
+            return None
+        # The status COLUMN is authoritative — overlay it onto the returned doc so the value the
+        # ingest guards read (status != "promoted") can never drift from a stale JSONB copy if a
+        # future writer touches the column alone.
+        doc = dict(row.recipe_json)
+        doc["status"] = row.status
+        return doc
 
     async def list_summaries(self) -> list[dict]:
         rows = (

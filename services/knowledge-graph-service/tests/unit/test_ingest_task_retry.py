@@ -57,3 +57,50 @@ def test_task_autoretries_on_job_not_visible() -> None:
     assert JobNotVisibleYet in task.autoretry_for
     assert task.max_retries == 5
     assert task.retry_backoff is True
+
+
+def _structured_maker():
+    @asynccontextmanager
+    async def _session_cm():
+        yield MagicMock(name="session")
+
+    return MagicMock(side_effect=lambda: _session_cm())
+
+
+class _Sentinel(Exception):
+    """Raised from get_ontology to prove execution passed the draft guard."""
+
+
+async def test_structured_ingest_rejects_a_draft_recipe(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The async structured-ingest path halts on a DRAFT recipe BEFORE any graph write (ADR-028)."""
+    repo = MagicMock(get_latest=AsyncMock(return_value={"id": "rcp_x", "status": "draft"}))
+    monkeypatch.setattr(ingest_tasks, "RecipeRepository", lambda _session: repo)
+    payload = MagicMock(recipe_id="rcp_x")
+    with pytest.raises(RuntimeError, match="draft; promote it before ingesting"):
+        await ingest_tasks._ingest_structured(
+            driver=MagicMock(),
+            maker=_structured_maker(),
+            settings=MagicMock(),
+            payload=payload,
+            data=b"name,age\na,1\n",
+        )
+
+
+async def test_structured_ingest_lets_a_promoted_recipe_through(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A PROMOTED recipe passes the guard and reaches ontology load (proven via a sentinel)."""
+    repo = MagicMock(get_latest=AsyncMock(return_value={"id": "rcp_x", "status": "promoted"}))
+    monkeypatch.setattr(ingest_tasks, "RecipeRepository", lambda _session: repo)
+    graph_repo = MagicMock(get_ontology=AsyncMock(side_effect=_Sentinel()))
+    monkeypatch.setattr(ingest_tasks, "GraphRepository", lambda _session: graph_repo)
+    payload = MagicMock(recipe_id="rcp_x")
+    # Reaching get_ontology (the step after the guard) proves the promoted recipe was not blocked.
+    with pytest.raises(_Sentinel):
+        await ingest_tasks._ingest_structured(
+            driver=MagicMock(),
+            maker=_structured_maker(),
+            settings=MagicMock(),
+            payload=payload,
+            data=b"name,age\na,1\n",
+        )

@@ -146,6 +146,10 @@ step "13. custom recipe -> custom :Person label"
 RECIPE='{"recipe":{"recipe_format_version":"0.2","id":"rcp_people","version":1,"status":"draft","concern":"people","applies_to":{"source_type":"csv","shape_signature":"any"},"mappings":[{"id":"p","project_to":"node","label":"Person","match":{"unit_kind":"record"},"identity":{"scheme":"deterministic","from":["column:name"]},"properties":[{"name":"age","value_from":"column:age"}]}]}}'
 stored=$(curl -fsS "${AUTH[@]}" -X POST "${BASE}/api/v1/recipes" -d "$RECIPE")
 [[ "$(echo "$stored" | jget "['id']")" == "rcp_people" ]] && pass "recipe stored" || fail "store: $stored"
+[[ "$(echo "$stored" | jget "['status']")" == "draft" ]] && pass "stored as draft" || fail "not draft: $stored"
+# A stored recipe is a draft — promote it before it can run (ADR-028; ingest rejects drafts).
+prom=$(curl -fsS "${AUTH[@]}" -X POST "${BASE}/api/v1/recipes/rcp_people/promote")
+[[ "$(echo "$prom" | jget "['status']")" == "promoted" ]] && pass "recipe promoted" || fail "promote: $prom"
 pj=$(curl -fsS -H "Authorization: Bearer dev-token" -F "file=@/tmp/kgs_people.csv;type=text/csv" \
   -F "recipe_id=rcp_people" "${BASE}/api/v1/graphs/${SGID}/upload" | jget "['id']")
 [[ "$(poll_done "$SGID" "$pj")" == "completed" ]] && pass "custom-recipe job completed" || fail "custom job failed"
