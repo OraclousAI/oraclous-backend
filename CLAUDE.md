@@ -485,6 +485,8 @@ If a story brief lacks a lift-tag for code that you believe has a legacy precurs
 
 If you need a data shape, API response, or relation that crosses the repo boundary (anything the frontend also consumes, anything that is a contract between two services), **you do not define it locally**. You open a `Contract` issue on the PaperClip board and assign it to `solution-architect`, then stop, per the [Cross-cutting agreement protocol](https://oraclous.atlassian.net/wiki/spaces/OP/pages/1245185) *(read-only mirror)*. The shape is decided by `solution-architect` and recorded canonically in `oraclous-knowledge` before either side implements. Defining a cross-repo shape locally is a process violation of the same class as editing tests to make them pass.
 
+**Where some of these Contracts now originate (the design tier).** A cross-repo Contract assigned to `solution-architect` may originate from the frontend **`experience-architect`** (the Design tier): when a user journey needs a gateway capability that does not exist — e.g. an OAuth-connect bridge so a provider token captured at login by `auth-service` becomes resolvable as a tool credential through the broker — `experience-architect` files the gap as a Contract framing the *user-facing requirement*, `solution-architect` owns the system shape, and the paired backend implementing issue lands in this session. Treat it like any other Contract: the shape is decided and recorded in `oraclous-knowledge` before you implement.
+
 ---
 
 ## 13. Working with the knowledge base
