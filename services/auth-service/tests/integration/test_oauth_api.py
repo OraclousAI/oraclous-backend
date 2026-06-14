@@ -140,3 +140,97 @@ async def test_providers_lists_only_configured(oauth_ctx) -> None:
     resp = await client.get("/oauth/providers")
     assert resp.status_code == 200
     assert resp.json() == {"providers": ["google"]}
+
+
+# --- G1: provider connect (authenticated) — lands a broker credential, mints no session ---
+_DRIVE = "https://www.googleapis.com/auth/drive.readonly"
+
+
+class _FakeConnectSink:
+    """Fake ConnectSink — captures the connect call, returns a deterministic credential id."""
+
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+
+    async def oauth_connect(self, *, organisation_id, user_id, provider, name, token) -> str:
+        self.calls.append(
+            {
+                "organisation_id": organisation_id,
+                "user_id": user_id,
+                "provider": provider,
+                "name": name,
+                "token": token,
+            }
+        )
+        return f"cred-{provider}"
+
+
+@pytest.fixture
+async def connect_ctx(
+    postgres_dsn: str, monkeypatch: pytest.MonkeyPatch
+) -> AsyncIterator[tuple[AsyncClient, _FakeConnectSink]]:
+    monkeypatch.setenv("JWT_SECRET", "oauth-connect-secret")
+    monkeypatch.setenv("OAUTH_GOOGLE_CLIENT_ID", "google-client-id")
+    monkeypatch.setenv("OAUTH_GOOGLE_CLIENT_SECRET", "google-client-secret")
+    engine = create_async_engine(postgres_dsn.replace("postgresql://", "postgresql+asyncpg://", 1))
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.drop_all)
+        await conn.run_sync(Base.metadata.create_all)
+    maker = async_sessionmaker(engine, expire_on_commit=False)
+    sink = _FakeConnectSink()
+    app = create_app(agent_repository=_FakeAgentRepo(), internal_service_key="x")
+    app.state.sessionmaker = maker
+    app.state.oauth_provider_client = _FakeProviderClient()
+    app.state.oauth_connect_sink = sink
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://auth.test") as c:
+        yield c, sink
+    await engine.dispose()
+
+
+async def _login_bearer(client: AsyncClient) -> str:
+    """Run the login flow to get an authenticated user bearer for the connect routes."""
+    login = await client.get("/oauth/google/login", params={"redirect_uri": "https://app/cb"})
+    state = parse_qs(urlparse(login.json()["authorize_url"]).query)["state"][0]
+    cb = await client.get("/oauth/google/callback", params={"code": "c", "state": state})
+    return cb.json()["access_token"]
+
+
+async def test_connect_lands_a_broker_credential_for_the_caller(connect_ctx) -> None:
+    client, sink = connect_ctx
+    hdr = {"Authorization": f"Bearer {await _login_bearer(client)}"}
+    # begin → authorize URL carries the requested tool scopes + a single-use state
+    begin = await client.post(
+        "/oauth/google/connect",
+        json={"redirect_uri": "https://app/connect/cb", "scopes": [_DRIVE]},
+        headers=hdr,
+    )
+    assert begin.status_code == 200, begin.text
+    q = parse_qs(urlparse(begin.json()["authorize_url"]).query)
+    assert q["scope"] == [_DRIVE]  # the requested tool scope, not the default login scopes
+    state = q["state"][0]
+    # complete → lands the token via the sink, returns the credential id
+    done = await client.post(
+        "/oauth/google/connect/complete",
+        json={"code": "auth-code", "state": state},
+        headers=hdr,
+    )
+    assert done.status_code == 200, done.text
+    body = done.json()
+    assert body["provider"] == "google" and body["credential_id"] == "cred-google"
+    # the sink was called with the AUTHENTICATED principal (from the bearer, never the body)
+    assert len(sink.calls) == 1
+    call = sink.calls[0]
+    assert call["user_id"] and call["organisation_id"]
+    assert call["provider"] == "google"
+    assert call["token"]["access_token"] == "fake-access-token"  # noqa: S105 — fake provider token
+
+
+async def test_connect_requires_auth(connect_ctx) -> None:
+    client, _ = connect_ctx
+    # both begin and complete are authenticated — no bearer → 401, no broker call
+    begin = await client.post(
+        "/oauth/google/connect", json={"redirect_uri": "https://app/cb", "scopes": []}
+    )
+    assert begin.status_code == 401
+    complete = await client.post("/oauth/google/connect/complete", json={"code": "c", "state": "s"})
+    assert complete.status_code == 401

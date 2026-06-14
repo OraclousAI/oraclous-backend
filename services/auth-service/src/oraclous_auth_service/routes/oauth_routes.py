@@ -9,9 +9,15 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
-from oraclous_auth_service.core.dependencies import OAuthServiceDep
+from oraclous_auth_service.core.dependencies import OAuthServiceDep, UserClaimsDep
 from oraclous_auth_service.schema.auth_schemas import TokenResponse
-from oraclous_auth_service.schema.oauth_schemas import LoginUrlResponse, ProvidersResponse
+from oraclous_auth_service.schema.oauth_schemas import (
+    ConnectBeginRequest,
+    ConnectCompleteRequest,
+    ConnectCompleteResponse,
+    LoginUrlResponse,
+    ProvidersResponse,
+)
 
 router = APIRouter(prefix="/oauth", tags=["oauth"])
 
@@ -40,3 +46,32 @@ async def oauth_callback(
         email=bundle.email,
         is_superuser=bundle.is_superuser,
     )
+
+
+# --- provider connect (G1): authenticated — binds a provider token to the caller, no session ---
+@router.post("/{provider}/connect", response_model=LoginUrlResponse)
+async def oauth_connect_begin(
+    provider: str, body: ConnectBeginRequest, claims: UserClaimsDep, oauth: OAuthServiceDep
+) -> LoginUrlResponse:
+    """Begin a provider *connect* for the authenticated caller: return the authorize URL requesting
+    the given (tool) scopes. The caller is bound at ``/connect/complete``, never here."""
+    url = await oauth.begin_connect(
+        provider_name=provider, redirect_uri=body.redirect_uri, scopes=body.scopes
+    )
+    return LoginUrlResponse(authorize_url=url)
+
+
+@router.post("/{provider}/connect/complete", response_model=ConnectCompleteResponse)
+async def oauth_connect_complete(
+    provider: str, body: ConnectCompleteRequest, claims: UserClaimsDep, oauth: OAuthServiceDep
+) -> ConnectCompleteResponse:
+    """Complete a provider connect: exchange the code and land the token as a resolvable broker
+    credential for the authenticated caller. org/user come from the bearer, never the body."""
+    credential_id = await oauth.complete_connect(
+        provider_name=provider,
+        code=body.code,
+        state=body.state,
+        organisation_id=claims["organisation_id"],
+        user_id=claims["sub"],
+    )
+    return ConnectCompleteResponse(provider=provider, credential_id=credential_id)
