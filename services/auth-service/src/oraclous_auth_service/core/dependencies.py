@@ -16,6 +16,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from oraclous_auth_service.core.config import get_settings
 from oraclous_auth_service.core.database import session_scope
 from oraclous_auth_service.core.jwt_handler import decode_token
 from oraclous_auth_service.repositories.audit_repository import AuditRepository
@@ -30,6 +31,7 @@ from oraclous_auth_service.repositories.refresh_token_repository import RefreshT
 from oraclous_auth_service.repositories.user_repository import UserRepository
 from oraclous_auth_service.services.auth_service import AuthService
 from oraclous_auth_service.services.invitation_service import InvitationService
+from oraclous_auth_service.services.oauth_connect_sink import HttpxConnectSink
 from oraclous_auth_service.services.oauth_provider_client import HttpxProviderClient
 from oraclous_auth_service.services.oauth_service import OAuthService
 from oraclous_auth_service.services.org_service import OrgService
@@ -72,6 +74,13 @@ def get_oauth_service(
 ) -> OAuthService:
     # The provider HTTP client is injectable via app.state (tests set a fake; prod uses httpx).
     client = getattr(request.app.state, "oauth_provider_client", None) or HttpxProviderClient()
+    # The broker connect-sink (G1) is likewise injectable (tests set a fake; prod uses httpx).
+    connect_sink = getattr(request.app.state, "oauth_connect_sink", None)
+    if connect_sink is None:
+        settings = get_settings()
+        connect_sink = HttpxConnectSink(
+            broker_url=settings.credential_broker_url, internal_key=settings.internal_service_key
+        )
     org_service = OrgService(
         organisations=OrganisationRepository(session),
         members=OrgMemberRepository(session),
@@ -89,6 +98,7 @@ def get_oauth_service(
         accounts=OAuthAccountRepository(session),
         states=OAuthStateRepository(session),
         client=client,
+        connect_sink=connect_sink,
         audit=AuditRepository(session),
     )
 

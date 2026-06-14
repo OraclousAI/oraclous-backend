@@ -29,6 +29,7 @@ class Settings:
     database_url: str
     redis_url: str
     internal_service_key: str
+    credential_broker_url: str
 
     @property
     def sync_database_url(self) -> str:
@@ -51,4 +52,7 @@ def get_settings() -> Settings:
         ),
         redis_url=os.environ.get("REDIS_URL", "redis://redis:6379/0"),
         internal_service_key=os.environ.get("INTERNAL_SERVICE_KEY", "dev-internal-key"),
+        credential_broker_url=os.environ.get(
+            "CREDENTIAL_BROKER_URL", "http://credential-broker-service:8000"
+        ),
     )
