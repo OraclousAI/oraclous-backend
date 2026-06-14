@@ -155,6 +155,46 @@ async def test_update_and_delete(client: AsyncClient) -> None:
     assert (await client.get(f"/credentials/{cred_id}", headers=_auth())).status_code == 404
 
 
+async def test_name_only_update_preserves_secret(client: AsyncClient) -> None:
+    """A rename (no ``credential`` in the body) must NOT touch the stored secret — #341.
+
+    The frontend never re-sends a secret (§1.5), so a name-only update must preserve the stored
+    ciphertext rather than overwrite it with an empty value.
+    """
+    body = _payload()
+    cred_id = (await client.post("/credentials/", json=body, headers=_auth())).json()["id"]
+
+    from oraclous_credential_broker_service.core.config import get_settings
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    async def _ciphertext() -> str:
+        engine = create_async_engine(get_settings().DATABASE_URL)
+        async with engine.connect() as conn:
+            ct = (
+                await conn.execute(
+                    text("SELECT encrypted_cred FROM user_credentials WHERE id = :i"),
+                    {"i": cred_id},
+                )
+            ).scalar_one()
+        await engine.dispose()
+        return ct
+
+    before = await _ciphertext()
+    upd = {
+        "id": cred_id,
+        "name": "renamed-only",
+        "provider": "google",
+        "user_id": body["user_id"],
+        "tool_id": body["tool_id"],
+        "cred_type": "oauth",
+        # no `credential` key — this is the name-only rename path
+    }
+    r = await client.put(f"/credentials/{cred_id}", json=upd, headers=_auth())
+    assert r.status_code == 200 and r.json()["name"] == "renamed-only"
+    # the stored ciphertext is byte-for-byte unchanged → the secret was preserved
+    assert await _ciphertext() == before
+
+
 async def test_auth_required(client: AsyncClient) -> None:
     assert (await client.post("/credentials/", json=_payload())).status_code == 401
     assert (
