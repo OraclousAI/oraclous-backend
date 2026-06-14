@@ -36,7 +36,8 @@ class CredentialsUpdate(BaseModel):
     user_id: UUID
     tool_id: UUID
     cred_type: Literal["oauth", "api_key", "raw"]
-    credential: dict
+    # Optional: omit to preserve the stored secret (name-only rename); when set, rotates it.
+    credential: dict | None = None
 
 
 class CredentialOut(BaseModel):

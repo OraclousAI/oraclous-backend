@@ -120,9 +120,12 @@ class CredentialRepository:
                 obj.user_id = user_id
                 obj.tool_id = update.tool_id
                 obj.cred_type = CredentialType(update.cred_type)
-                obj.encrypted_cred = await self._encrypt(
-                    organisation_id=organisation_id, plaintext=update.credential
-                )
+                # Only rotate the secret when a new one is supplied; otherwise preserve the stored
+                # ciphertext (a name-only rename never re-sends the secret — FE §1.5).
+                if update.credential is not None:
+                    obj.encrypted_cred = await self._encrypt(
+                        organisation_id=organisation_id, plaintext=update.credential
+                    )
             return obj
 
     async def update_encrypted_credential(
