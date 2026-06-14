@@ -171,3 +171,52 @@ async def test_ensure_data_source_access_uses_catalogue_scopes(ctx) -> None:
 async def test_requires_internal_key(ctx) -> None:
     client, _, repo = ctx
     assert (await client.post("/internal/runtime-token", json=_rt())).status_code == 401
+
+
+# --- G1: oauth-connect bridge (a connected provider grant → a resolvable broker credential) ---
+def _connect(provider: str = "google", **token_overrides) -> dict:
+    token = {
+        "access_token": "connected-token",
+        "refresh_token": "connected-refresh",
+        "scopes": ["https://www.googleapis.com/auth/drive.readonly"],
+        "expires_at": (datetime.now(UTC) + timedelta(hours=1)).isoformat(),
+    }
+    token.update(token_overrides)
+    return {
+        "organisation_id": str(_ORG),
+        "user_id": str(_USER),
+        "provider": provider,
+        "name": f"{provider} (connected)",
+        "token": token,
+    }
+
+
+async def test_oauth_connect_lands_a_resolvable_credential(ctx) -> None:
+    """G1 bridge: oauth-connect lands a resolver-findable credential (by org/user/provider)."""
+    client, fake, _ = ctx
+    connected = await client.post("/internal/oauth-connect", json=_connect(), headers=_HDR)
+    assert connected.status_code == 200, connected.text
+    assert "credential_id" in connected.json()
+    resolved = await client.post("/internal/runtime-token", json=_rt(), headers=_HDR)
+    assert resolved.status_code == 200 and resolved.json()["success"]
+    assert resolved.json()["access_token"] == "connected-token"  # noqa: S105 — test assertion
+    assert fake.calls == 0  # far-future expiry → no refresh
+
+
+async def test_oauth_connect_rotates_in_place(ctx) -> None:
+    """Re-connecting a provider upserts (rotates the token), never duplicates the credential."""
+    client, _, _ = ctx
+    first = await client.post("/internal/oauth-connect", json=_connect(), headers=_HDR)
+    second = await client.post(
+        "/internal/oauth-connect",
+        json=_connect(access_token="rotated-token"),  # noqa: S106 — test token
+        headers=_HDR,
+    )
+    assert first.json()["credential_id"] == second.json()["credential_id"]  # same row (upsert)
+    resolved = await client.post("/internal/runtime-token", json=_rt(), headers=_HDR)
+    assert resolved.json()["access_token"] == "rotated-token"  # noqa: S105 — rotated grant
+
+
+async def test_oauth_connect_requires_internal_key(ctx) -> None:
+    client, _, _ = ctx
+    assert (await client.post("/internal/oauth-connect", json=_connect())).status_code == 401

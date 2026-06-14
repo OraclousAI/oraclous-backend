@@ -70,6 +70,53 @@ class CredentialRepository:
             await session.refresh(obj)
             return obj
 
+    async def upsert_oauth_credential(
+        self,
+        *,
+        organisation_id: UUID,
+        user_id: UUID,
+        provider: str,
+        name: str | None,
+        token: Any,
+        tool_id: UUID,
+    ) -> UserCredential:
+        """Create or rotate the user's OAuth credential for ``provider`` (cred_type='oauth').
+
+        OAuth credentials are resolved by (org, user, provider) — never tool_id — so a connected
+        provider is a single provider-scoped row; re-connecting rotates the stored token in place.
+        ``tool_id`` is the provider-scope sentinel supplied by the caller (the repository never owns
+        domain constants — §21 layering).
+        """
+        encrypted = await self._encrypt(organisation_id=organisation_id, plaintext=token)
+        async with self._session() as session:
+            async with session.begin():
+                result = await session.execute(
+                    select(UserCredential).where(
+                        UserCredential.organisation_id == organisation_id,
+                        UserCredential.user_id == user_id,
+                        UserCredential.provider == provider,
+                        UserCredential.cred_type == CredentialType.OAUTH,
+                    )
+                )
+                obj = result.scalars().first()
+                if obj is not None:
+                    obj.encrypted_cred = encrypted
+                    if name is not None:
+                        obj.name = name
+                else:
+                    obj = UserCredential(
+                        organisation_id=organisation_id,
+                        name=name,
+                        provider=provider,
+                        user_id=user_id,
+                        tool_id=tool_id,
+                        encrypted_cred=encrypted,
+                        cred_type=CredentialType.OAUTH,
+                    )
+                    session.add(obj)
+            await session.refresh(obj)
+            return obj
+
     async def get_credential_by_id(
         self, cred_id: UUID, organisation_id: UUID, user_id: UUID | None = None
     ) -> UserCredential | None:
