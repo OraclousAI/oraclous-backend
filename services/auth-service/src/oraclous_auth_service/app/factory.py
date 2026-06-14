@@ -53,6 +53,7 @@ from oraclous_auth_service.services.invitation_service import (
     InvitationInvalidError,
     InvitationRoleError,
 )
+from oraclous_auth_service.services.oauth_connect_sink import ConnectSinkError
 from oraclous_auth_service.services.oauth_service import (
     OAuthError,
     OAuthProviderUnconfiguredError,
@@ -134,6 +135,12 @@ def _register_user_identity(app: FastAPI) -> None:
         return JSONResponse(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE, content={"detail": str(exc)}
         )
+
+    @app.exception_handler(ConnectSinkError)
+    async def _on_connect_sink_error(_: Request, exc: ConnectSinkError) -> JSONResponse:
+        # A downstream broker failure (G1 connect) → deliberate 502, never a leaked 500. The broker
+        # response body is not propagated; only the generic reason in ``exc`` reaches the caller.
+        return JSONResponse(status_code=status.HTTP_502_BAD_GATEWAY, content={"detail": str(exc)})
 
     @app.get("/health")
     async def health(request: Request) -> dict:

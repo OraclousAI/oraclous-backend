@@ -13,8 +13,11 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 from oraclous_auth_service.app.factory import create_app
 from oraclous_auth_service.core.encryption import decrypt
+from oraclous_auth_service.core.jwt_handler import decode_token
 from oraclous_auth_service.models import Base
+from oraclous_auth_service.models.audit_model import AuthAuditLog
 from oraclous_auth_service.models.oauth_model import OAuthAccount
+from oraclous_auth_service.services.oauth_connect_sink import ConnectSinkError
 from oraclous_auth_service.services.oauth_service import ProfileInfo, TokenSet
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
@@ -147,12 +150,16 @@ _DRIVE = "https://www.googleapis.com/auth/drive.readonly"
 
 
 class _FakeConnectSink:
-    """Fake ConnectSink — captures the connect call, returns a deterministic credential id."""
+    """Fake ConnectSink — captures the connect call, returns a deterministic credential id. Set
+    ``raises`` to make the next call raise (to exercise the broker-failure → 502 mapping)."""
 
     def __init__(self) -> None:
         self.calls: list[dict] = []
+        self.raises: Exception | None = None
 
     async def oauth_connect(self, *, organisation_id, user_id, provider, name, token) -> str:
+        if self.raises is not None:
+            raise self.raises
         self.calls.append(
             {
                 "organisation_id": organisation_id,
@@ -168,7 +175,7 @@ class _FakeConnectSink:
 @pytest.fixture
 async def connect_ctx(
     postgres_dsn: str, monkeypatch: pytest.MonkeyPatch
-) -> AsyncIterator[tuple[AsyncClient, _FakeConnectSink]]:
+) -> AsyncIterator[tuple[AsyncClient, _FakeConnectSink, async_sessionmaker]]:
     monkeypatch.setenv("JWT_SECRET", "oauth-connect-secret")
     monkeypatch.setenv("OAUTH_GOOGLE_CLIENT_ID", "google-client-id")
     monkeypatch.setenv("OAUTH_GOOGLE_CLIENT_SECRET", "google-client-secret")
@@ -183,7 +190,7 @@ async def connect_ctx(
     app.state.oauth_provider_client = _FakeProviderClient()
     app.state.oauth_connect_sink = sink
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://auth.test") as c:
-        yield c, sink
+        yield c, sink, maker
     await engine.dispose()
 
 
@@ -196,8 +203,12 @@ async def _login_bearer(client: AsyncClient) -> str:
 
 
 async def test_connect_lands_a_broker_credential_for_the_caller(connect_ctx) -> None:
-    client, sink = connect_ctx
-    hdr = {"Authorization": f"Bearer {await _login_bearer(client)}"}
+    client, sink, maker = connect_ctx
+    bearer = await _login_bearer(client)
+    # the principal the route MUST forward is exactly the bearer's claims, never the request body
+    claims = decode_token(bearer)
+    known_user, known_org = claims["sub"], claims["organisation_id"]
+    hdr = {"Authorization": f"Bearer {bearer}"}
     # begin → authorize URL carries the requested tool scopes + a single-use state
     begin = await client.post(
         "/oauth/google/connect",
@@ -217,16 +228,31 @@ async def test_connect_lands_a_broker_credential_for_the_caller(connect_ctx) -> 
     assert done.status_code == 200, done.text
     body = done.json()
     assert body["provider"] == "google" and body["credential_id"] == "cred-google"
-    # the sink was called with the AUTHENTICATED principal (from the bearer, never the body)
+    # the sink got the AUTHENTICATED principal — pinned to the bearer (not the body or state row)
     assert len(sink.calls) == 1
     call = sink.calls[0]
-    assert call["user_id"] and call["organisation_id"]
-    assert call["provider"] == "google"
-    assert call["token"]["access_token"] == "fake-access-token"  # noqa: S105 — fake provider token
+    assert call["user_id"] == known_user and call["organisation_id"] == known_org
+    assert call["provider"] == "google" and call["name"] == "google (connected)"
+    # the full token dict the broker's resolver depends on is forwarded intact
+    tok = call["token"]
+    assert tok["access_token"] == "fake-access-token"  # noqa: S105 — fake provider token
+    assert tok["refresh_token"] == "fake-refresh-token"  # noqa: S105 — fake provider token
+    assert tok["scopes"] == ["email", "profile"]
+    assert isinstance(tok["expires_at"], str) and tok["expires_at"]  # present ISO-8601 expiry
+    # the connect emits an immutable audit row tied to the bearer's actor + org (§3.7-adjacent)
+    async with maker() as s:
+        rows = (
+            (await s.execute(select(AuthAuditLog).where(AuthAuditLog.event == "oauth.connect")))
+            .scalars()
+            .all()
+        )
+    assert len(rows) == 1
+    assert rows[0].actor_id == known_user and rows[0].organisation_id == known_org
+    assert rows[0].target == "google"
 
 
 async def test_connect_requires_auth(connect_ctx) -> None:
-    client, _ = connect_ctx
+    client, _, _ = connect_ctx
     # both begin and complete are authenticated — no bearer → 401, no broker call
     begin = await client.post(
         "/oauth/google/connect", json={"redirect_uri": "https://app/cb", "scopes": []}
@@ -234,3 +260,18 @@ async def test_connect_requires_auth(connect_ctx) -> None:
     assert begin.status_code == 401
     complete = await client.post("/oauth/google/connect/complete", json={"code": "c", "state": "s"})
     assert complete.status_code == 401
+
+
+async def test_connect_maps_broker_failure_to_502(connect_ctx) -> None:
+    client, sink, _ = connect_ctx
+    sink.raises = ConnectSinkError("credential broker unavailable")  # broker down / rejecting
+    hdr = {"Authorization": f"Bearer {await _login_bearer(client)}"}
+    begin = await client.post(
+        "/oauth/google/connect", json={"redirect_uri": "https://app/cb", "scopes": []}, headers=hdr
+    )
+    state = parse_qs(urlparse(begin.json()["authorize_url"]).query)["state"][0]
+    done = await client.post(
+        "/oauth/google/connect/complete", json={"code": "c", "state": state}, headers=hdr
+    )
+    # a downstream broker failure is a deliberate 502, never a leaked 500 (no broker detail)
+    assert done.status_code == 502, done.text
