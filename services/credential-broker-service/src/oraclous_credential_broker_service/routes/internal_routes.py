@@ -26,6 +26,8 @@ from oraclous_credential_broker_service.schema.credential_schema import (
     DelegationValidationResponse,
     EnsureDataSourceInput,
     MintDelegatedTokenInput,
+    OAuthConnectInput,
+    OAuthConnectResponse,
     ResolveCredentialInput,
     ResolveCredentialResponse,
     RevokeDelegatedTokenInput,
@@ -98,6 +100,23 @@ async def ensure_data_source_access(
         required_scopes=required,
     )
     return _to_response(result)
+
+
+@router.post("/oauth-connect", response_model=OAuthConnectResponse)
+async def oauth_connect(
+    connect_input: OAuthConnectInput, creds: CredentialServiceDep
+) -> OAuthConnectResponse:
+    """Land a connected provider's OAuth grant as a resolvable broker tool credential (the G1
+    bridge). Called by the auth-service connect flow after it exchanges the code; never edge-routed
+    (X-Internal-Key gated). Resolved later by the runtime resolver via (org, user, provider)."""
+    credential_id = await creds.connect_oauth(
+        provider=connect_input.provider,
+        name=connect_input.name,
+        token=connect_input.token,
+        organisation_id=connect_input.organisation_id,
+        user_id=connect_input.user_id,
+    )
+    return OAuthConnectResponse(credential_id=credential_id)
 
 
 # --- delegated-token API (S5b): wires the shipped delegation service + store to HTTP ---

@@ -7,6 +7,13 @@ supports. Drives runtime-token scope validation (S3) and data-source discovery (
 
 from __future__ import annotations
 
+from uuid import UUID
+
+# Sentinel tool_id for provider-scoped OAuth-connect credentials. OAuth credentials are resolved by
+# (org, user, provider) — never by tool_id — so a connected provider is stored as a single
+# provider-scoped row carrying this sentinel instead of a real tool's id ("\x00oauth" in the tail).
+OAUTH_CONNECT_TOOL_ID = UUID("00000000-0000-4000-8000-006f61757468")
+
 DATA_SOURCE_CAPABILITIES: dict[str, dict[str, dict]] = {
     "google": {
         "drive": {

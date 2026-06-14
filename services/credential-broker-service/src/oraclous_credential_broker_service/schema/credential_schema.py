@@ -95,6 +95,24 @@ class RuntimeTokenResponse(BaseModel):
     login_url: str | None = None
 
 
+class OAuthConnectInput(BaseModel):
+    """Internal (X-Internal-Key) request to land a connected provider's OAuth grant as a
+    resolvable broker credential. The trusted caller (the auth-service connect flow) supplies the
+    authenticated ``organisation_id``/``user_id`` and the exchanged ``token`` — ``*Input`` (not a
+    public body). ``token`` is the dict the runtime resolver reads: ``{access_token, refresh_token?,
+    scopes?, expires_at?}``."""
+
+    organisation_id: UUID
+    user_id: UUID
+    provider: str
+    name: str | None = None
+    token: dict
+
+
+class OAuthConnectResponse(BaseModel):
+    credential_id: UUID
+
+
 class MintDelegatedTokenInput(BaseModel):
     """Internal (X-Internal-Key) delegated-token mint. Trusted caller supplies organisation_id."""
 

@@ -12,7 +12,10 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from oraclous_credential_broker_service.domain.providers import data_sources_for
+from oraclous_credential_broker_service.domain.providers import (
+    OAUTH_CONNECT_TOOL_ID,
+    data_sources_for,
+)
 from oraclous_credential_broker_service.models.credential_model import UserCredential
 from oraclous_credential_broker_service.repositories.credential_repository import (
     CredentialRepository,
@@ -66,6 +69,30 @@ class CredentialService:
         self, *, cred: CreateCredential, organisation_id: UUID, user_id: UUID
     ) -> CredentialOut:
         return _metadata(await self._repo.create_credential(cred, organisation_id, user_id))
+
+    async def connect_oauth(
+        self,
+        *,
+        provider: str,
+        name: str | None,
+        token: dict,
+        organisation_id: UUID,
+        user_id: UUID,
+    ) -> UUID:
+        """Land a connected provider's OAuth grant as a resolvable broker credential.
+
+        Provider-scoped (cred_type='oauth'), upserted under the OAuth-connect sentinel tool_id;
+        returns the credential id. Trusted X-Internal-Key caller only (the auth connect flow).
+        """
+        row = await self._repo.upsert_oauth_credential(
+            organisation_id=organisation_id,
+            user_id=user_id,
+            provider=provider,
+            name=name,
+            token=token,
+            tool_id=OAUTH_CONNECT_TOOL_ID,
+        )
+        return row.id
 
     async def get(
         self, *, credential_id: UUID, organisation_id: UUID, user_id: UUID
