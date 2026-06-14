@@ -251,3 +251,34 @@ async def test_ingest_sql_bad_sync_mode_is_422(sql_client) -> None:
         headers=_AUTH,
     )
     assert resp.status_code == 422
+
+
+def _wire_ingest(app, recipe: dict) -> None:
+    app.dependency_overrides[get_graph_service] = lambda: _FakeGraphService()
+    app.dependency_overrides[get_sql_ingestion_service] = lambda: _FakeSqlIngestionService()
+    app.dependency_overrides[get_recipe_service] = lambda: _FakeRecipeService(recipe=recipe)
+
+
+async def test_ingest_sql_draft_recipe_is_409(app, async_client) -> None:
+    # A draft recipe is NOT runnable — ingest rejects it (ADR-028) so a run never pins to a draft.
+    _wire_ingest(app, {"id": "rcp_draft", "status": "draft"})
+    resp = await async_client.post(
+        f"/api/v1/graphs/{uuid.uuid4()}/ingest-sql",
+        json={"credential_id": "c", "recipe_id": "rcp_draft"},
+        headers=_AUTH,
+    )
+    app.dependency_overrides.clear()
+    assert resp.status_code == 409, resp.text
+    assert "promote" in resp.json()["detail"]
+
+
+async def test_ingest_sql_promoted_recipe_runs(app, async_client) -> None:
+    # A promoted recipe is runnable — the guard lets it through to the (faked) ingest.
+    _wire_ingest(app, {"id": "rcp_ok", "status": "promoted"})
+    resp = await async_client.post(
+        f"/api/v1/graphs/{uuid.uuid4()}/ingest-sql",
+        json={"credential_id": "c", "recipe_id": "rcp_ok"},
+        headers=_AUTH,
+    )
+    app.dependency_overrides.clear()
+    assert resp.status_code == 200, resp.text

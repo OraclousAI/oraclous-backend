@@ -42,9 +42,17 @@ class _FakeRecipeRepo:
         version = len(versions) + 1
         doc = dict(recipe_json)
         doc["version"] = version
-        doc["status"] = "promoted"
+        doc["status"] = "draft"  # store saves a DRAFT — promote makes it runnable (ADR-028)
         versions.append(doc)
-        return {"id": rid, "version": version, "status": "promoted"}
+        return {"id": rid, "version": version, "status": "draft"}
+
+    async def promote(self, recipe_id: str) -> dict | None:
+        versions = self.rows.get(recipe_id)
+        if not versions:
+            return None
+        latest = versions[-1]
+        latest["status"] = "promoted"  # in place, no new version
+        return {"id": recipe_id, "version": latest["version"], "status": "promoted"}
 
     async def get_latest(self, recipe_id: str) -> dict | None:
         versions = self.rows.get(recipe_id)
@@ -55,7 +63,7 @@ class _FakeRecipeRepo:
             {
                 "id": rid,
                 "version": len(v),
-                "status": "promoted",
+                "status": v[-1].get("status", "draft"),
                 "source_type": v[-1].get("applies_to", {}).get("source_type", ""),
                 "concern": v[-1].get("concern", ""),
             }
@@ -80,14 +88,32 @@ async def test_recipes_require_auth(client) -> None:
     assert (await client.get("/api/v1/recipes")).status_code == 401
 
 
-async def test_store_get_list_recipe(client) -> None:
+async def test_store_saves_a_draft(client) -> None:
     stored = await client.post("/api/v1/recipes", json={"recipe": _VALID}, headers=_AUTH)
     assert stored.status_code == 201, stored.text
     assert stored.json()["id"] == "rcp_test"
+    # store saves a DRAFT (not auto-promoted) — it is not runnable until promoted (ADR-028)
+    assert stored.json()["status"] == "draft"
     got = await client.get("/api/v1/recipes/rcp_test", headers=_AUTH)
     assert got.status_code == 200 and got.json()["id"] == "rcp_test"
     listed = await client.get("/api/v1/recipes", headers=_AUTH)
     assert listed.status_code == 200 and len(listed.json()) == 1
+    assert listed.json()[0]["status"] == "draft"
+
+
+async def test_promote_flips_draft_to_promoted(client) -> None:
+    await client.post("/api/v1/recipes", json={"recipe": _VALID}, headers=_AUTH)
+    promoted = await client.post("/api/v1/recipes/rcp_test/promote", headers=_AUTH)
+    assert promoted.status_code == 200, promoted.text
+    # promote keeps the same version (in place) and flips the status to the runnable state
+    assert promoted.json() == {"id": "rcp_test", "version": 1, "status": "promoted"}
+    # the change is visible to readers (the list now shows promoted)
+    listed = await client.get("/api/v1/recipes", headers=_AUTH)
+    assert listed.json()[0]["status"] == "promoted"
+
+
+async def test_promote_unknown_recipe_is_404(client) -> None:
+    assert (await client.post("/api/v1/recipes/rcp_nope/promote", headers=_AUTH)).status_code == 404
 
 
 async def test_store_invalid_recipe_is_422(client) -> None:

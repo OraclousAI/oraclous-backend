@@ -124,6 +124,13 @@ async def ingest_sql(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"recipe {body.recipe_id!r} not found",
             )
+        # Only a PROMOTED recipe is runnable — a draft must be promoted before it can ingest, so a
+        # graph run always pins to a reviewed, immutable recipe version (ADR-028).
+        if recipe.get("status") != "promoted":
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"recipe {body.recipe_id!r} is a draft; promote it before ingesting",
+            )
     try:
         result = await sql_service.ingest(
             graph_id=str(graph_id),

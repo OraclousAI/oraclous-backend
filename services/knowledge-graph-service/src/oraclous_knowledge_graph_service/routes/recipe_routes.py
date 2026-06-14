@@ -83,6 +83,18 @@ async def dry_run_recipe(
         ) from exc
 
 
+@router.post("/{recipe_id}/promote", response_model=RecipeStoredResponse)
+async def promote_recipe(
+    recipe_id: str, service: RecipeServiceDep, _user_id: UserIdDep
+) -> RecipeStoredResponse:
+    """Promote a draft recipe to the runnable 'promoted' state (in place; no version bump).
+    Idempotent. 404 if the recipe is unknown."""
+    promoted = await service.promote(recipe_id)
+    if promoted is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="recipe not found")
+    return RecipeStoredResponse(**promoted)
+
+
 @router.get("/{recipe_id}")
 async def get_recipe(recipe_id: str, service: RecipeServiceDep, _user_id: UserIdDep) -> dict:
     recipe = await service.get(recipe_id)
