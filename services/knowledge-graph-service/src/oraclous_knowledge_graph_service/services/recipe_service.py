@@ -27,6 +27,11 @@ class RecipeService:
         self._engine.validate(candidate)  # raises RecipeValidationError on bad input
         return await self._repo.store(recipe_json)
 
+    async def promote(self, recipe_id: str) -> dict | None:
+        """Promote a draft recipe to promoted (the runnable state). Returns ``{id, version,
+        status}`` or ``None`` if the recipe is unknown (the route maps that to 404). Idempotent."""
+        return await self._repo.promote(recipe_id)
+
     async def get(self, recipe_id: str) -> dict | None:
         return await self._repo.get_latest(recipe_id)
 

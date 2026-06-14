@@ -199,6 +199,12 @@ async def _ingest_structured(*, driver, maker, settings, payload, data: bytes) -
             recipe = await RecipeRepository(session).get_latest(payload.recipe_id)
             if recipe is None:
                 raise RuntimeError(f"recipe {payload.recipe_id!r} not found")
+            # Only a promoted recipe is runnable — a draft must be promoted first (ADR-028), so a
+            # run always pins to a reviewed, immutable recipe version.
+            if recipe.get("status") != "promoted":
+                raise RuntimeError(
+                    f"recipe {payload.recipe_id!r} is a draft; promote it before ingesting"
+                )
         ontology_data = await GraphRepository(session).get_ontology(payload.graph_id)
     temporal = {
         "valid_from": payload.valid_from,
