@@ -11,7 +11,14 @@ from __future__ import annotations
 
 from functools import lru_cache
 
+from oraclous_governance import MissingSecretError, is_prod, require_secret
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# Dev-only fallbacks (used IFF RUN_MODE != prod). In prod a missing/empty value raises at
+# get_settings() construction (fail closed, T6 / ADR-008). See oraclous_governance.require_secret.
+_DEV_INTERNAL_SERVICE_KEY = "dev-internal-key"  # noqa: S105 — dev default, gated by RUN_MODE
+_DEV_JWT_SECRET = "dev-jwt-secret"  # noqa: S105 — dev default, gated by RUN_MODE
 
 
 class Settings(BaseSettings):
@@ -72,18 +79,48 @@ class Settings(BaseSettings):
     # exercised live (member -> 403 on the admin-gated management ops).
     DEV_MEMBER_BEARER: str = "dev-member-token"
     DEV_MEMBER_USER_ID: str = "00000000-0000-0000-0000-0000000000e7"
+    # Empty sentinel default; resolved fail-closed in _resolve_failclosed_secrets (require_secret):
+    # in prod a missing/empty JWT_SECRET raises, in dev it falls back to the dev default. JWT_SECRET
+    # is only consumed when GATEWAY_AUTH_MODE="jwt".
     JWT_SECRET: str | None = None
     JWT_ALGORITHM: str = "HS256"
 
     # --- edge-auth attestation: the shared secret injected as X-Internal-Key on every forwarded
-    # request so upstreams can prove a request actually came through the gateway (ADR-018). ---
-    INTERNAL_SERVICE_KEY: str = "dev-internal-key"
+    # request so upstreams can prove a request actually came through the gateway (ADR-018). Empty
+    # sentinel default; resolved fail-closed below (no publicly-known default reaches prod). ---
+    INTERNAL_SERVICE_KEY: str = ""
 
-    # --- CORS (terminated once at the edge); comma-separated origins ---
+    # --- CORS (terminated once at the edge); comma-separated origins. "*" is the dev default but is
+    # ILLEGAL in prod (a wildcard at the sole external edge is fail-open) — see the validator. ---
     GATEWAY_CORS_ORIGINS: str = "*"
 
     # --- gateway-owned datastore (R6 Slice 3, ADR-019): the integration-key store ---
     DATABASE_URL: str = "postgresql+asyncpg://oraclous:oraclous@postgres:5432/oraclous"
+
+    @model_validator(mode="after")
+    def _resolve_failclosed_secrets(self) -> Settings:
+        """Apply fail-closed secret resolution + the prod CORS-wildcard ban (T6 / ADR-008).
+
+        Runs at construction so a misconfigured prod deploy fails fast (like credential-broker's
+        no-default settings) instead of silently serving a publicly-known key. Dev/local-docker
+        (RUN_MODE unset or dev) keep booting with the dev defaults — behaviour identical to before.
+        """
+        self.INTERNAL_SERVICE_KEY = require_secret(
+            "INTERNAL_SERVICE_KEY", dev_default=_DEV_INTERNAL_SERVICE_KEY
+        )
+        # JWT_SECRET: in prod a missing/empty value fails closed here; in dev it stays None (the
+        # GATEWAY_AUTH_MODE=jwt path in core/auth.py already raises on a None secret, so dev
+        # behaviour is unchanged — the dev default exists only so the field is a non-empty literal
+        # under require_secret's prod check, never substituted into dev).
+        if not self.JWT_SECRET:
+            require_secret("JWT_SECRET", dev_default=_DEV_JWT_SECRET)
+        # A "*" wildcard CORS allow-list at the sole external edge is fail-open; banned in prod.
+        if is_prod() and "*" in self.cors_origins:
+            raise MissingSecretError(
+                "GATEWAY_CORS_ORIGINS must be an explicit origin allow-list when RUN_MODE=prod; "
+                'the wildcard "*" is not permitted at the external edge.'
+            )
+        return self
 
     @property
     def cors_origins(self) -> list[str]:

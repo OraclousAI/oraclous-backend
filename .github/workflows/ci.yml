@@ -33,6 +33,8 @@ jobs:
         run: uv run lint-imports
       - name: Organisation-scoping guardrails
         run: uv run python -m tools.lint.check_org_scoping packages services
+      - name: Fail-closed-secrets guardrail (WP-1, T6 / ADR-008)
+        run: uv run python -m tools.lint.check_failclosed_secrets services
       - name: Org-scoped-labels YAML schema validator
         run: uv run python -m tools.lint.check_org_scoped_labels_schema
       - name: Test-import hygiene guardrail (TDD-window collection safety)
