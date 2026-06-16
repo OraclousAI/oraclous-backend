@@ -36,6 +36,9 @@ _ROUTES: tuple[tuple[str, str], ...] = (
     ("/api/v1/tools", "CAPABILITY_REGISTRY_URL"),
     ("/api/v1/instances", "CAPABILITY_REGISTRY_URL"),
     ("/api/v1/executions", "CAPABILITY_REGISTRY_URL"),
+    # workspace<->harness bindings (Contract G2 / ADR-029 §6) — a new registry prefix so the static
+    # leading-prefix router reaches it; /api/v1/graphs/* stays wholly on knowledge-graph-service.
+    ("/api/v1/agent-bindings", "CAPABILITY_REGISTRY_URL"),
     # harness-runtime (authenticated; never on the public allow-list)
     ("/v1/harnesses", "HARNESS_RUNTIME_URL"),
     # execution-engine (authenticated; never on the public allow-list)

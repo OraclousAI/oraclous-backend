@@ -71,6 +71,21 @@ def test_build_from_settings_maps_all_upstreams() -> None:
         "/v1/federated",
         "/v1/graph",
         "/api/v1/capabilities",
+        "/api/v1/agent-bindings",
     } <= prefixes
     # base urls come from settings and carry no trailing slash
     assert all(not e.upstream_url.endswith("/") for e in table.entries)
+
+
+def test_agent_bindings_route_to_registry_not_graphs() -> None:
+    # Contract G2 / ADR-029 §6: /api/v1/agent-bindings must reach the capability-registry, and must
+    # NOT be swallowed by /api/v1/graphs → knowledge-graph-service (the rev2 routing fix).
+    settings = Settings()
+    entry = build_route_table(settings).resolve("/api/v1/agent-bindings")
+    assert entry is not None
+    assert entry.prefix == "/api/v1/agent-bindings"
+    assert entry.upstream_url == settings.CAPABILITY_REGISTRY_URL.rstrip("/")
+    # the graphs prefix is untouched — /api/v1/graphs/* still goes wholly to KGS.
+    assert build_route_table(settings).resolve(
+        "/api/v1/graphs/abc"
+    ).upstream_url == settings.KNOWLEDGE_GRAPH_URL.rstrip("/")
