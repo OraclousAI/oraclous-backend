@@ -15,6 +15,7 @@ from fastapi import FastAPI
 from oraclous_telemetry import Severity, alert, evaluate_readiness, exit_on_degrade_enabled
 
 from oraclous_capability_registry_service.core.config import Settings, get_settings
+from oraclous_capability_registry_service.repositories.binding_repository import BindingRepository
 from oraclous_capability_registry_service.repositories.capability_repository import (
     CapabilityRepository,
 )
@@ -63,6 +64,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     repo: CapabilityRepository | None = None
     instance_repo: InstanceRepository | None = None
     execution_repo: ExecutionRepository | None = None
+    binding_repo: BindingRepository | None = None
     broker: CredentialBrokerPort | None = None
     try:
         repo = CapabilityRepository(
@@ -70,15 +72,18 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         )
         instance_repo = InstanceRepository(settings.DATABASE_URL)
         execution_repo = ExecutionRepository(settings.DATABASE_URL)
+        binding_repo = BindingRepository(settings.DATABASE_URL)
         broker = build_credential_broker(settings)
         app.state.capability_repository = repo
         app.state.instance_repository = instance_repo
         app.state.execution_repository = execution_repo
+        app.state.binding_repository = binding_repo
         app.state.credential_broker = broker
     except Exception as exc:  # noqa: BLE001 — degrade: data routes 503, /health reflects it
         app.state.capability_repository = None
         app.state.instance_repository = None
         app.state.execution_repository = None
+        app.state.binding_repository = None
         app.state.credential_broker = None
         alert(
             Severity.ERROR,
@@ -115,5 +120,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             await instance_repo.close()
         if execution_repo is not None:
             await execution_repo.close()
+        if binding_repo is not None:
+            await binding_repo.close()
         if broker is not None:
             await broker.aclose()

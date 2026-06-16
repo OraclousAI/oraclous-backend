@@ -21,6 +21,7 @@ from oraclous_capability_registry_service.core.auth import (
     verify_token,
 )
 from oraclous_capability_registry_service.core.config import get_settings
+from oraclous_capability_registry_service.repositories.binding_repository import BindingRepository
 from oraclous_capability_registry_service.repositories.capability_repository import (
     CapabilityRepository,
 )
@@ -28,10 +29,14 @@ from oraclous_capability_registry_service.repositories.execution_repository impo
     ExecutionRepository,
 )
 from oraclous_capability_registry_service.repositories.instance_repository import InstanceRepository
+from oraclous_capability_registry_service.services.binding_service import BindingService
 from oraclous_capability_registry_service.services.capability_registry_service import (
     CapabilityRegistryService,
 )
 from oraclous_capability_registry_service.services.credential_client import CredentialBrokerPort
+from oraclous_capability_registry_service.services.graph_membership_client import (
+    GraphMembershipClient,
+)
 from oraclous_capability_registry_service.services.instance_manager import InstanceManager
 from oraclous_capability_registry_service.services.mcp_import_service import McpImportService
 from oraclous_capability_registry_service.services.tool_execution_service import (
@@ -62,10 +67,29 @@ def get_instance_repository(request: Request) -> InstanceRepository:
     return repo
 
 
+def get_binding_repository(request: Request) -> BindingRepository:
+    repo = getattr(request.app.state, "binding_repository", None)
+    if repo is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="binding store unavailable (DATABASE_URL not configured)",
+        )
+    return repo
+
+
 def get_capability_registry_service(
     repo: Annotated[CapabilityRepository, Depends(get_capability_repository)],
 ) -> CapabilityRegistryService:
     return CapabilityRegistryService(repository=repo)
+
+
+def get_binding_service(
+    bindings: Annotated[BindingRepository, Depends(get_binding_repository)],
+    capabilities: Annotated[CapabilityRepository, Depends(get_capability_repository)],
+) -> BindingService:
+    return BindingService(
+        bindings=bindings, capabilities=capabilities, graphs=GraphMembershipClient()
+    )
 
 
 def get_mcp_import_service(
@@ -192,9 +216,11 @@ async def get_organisation_id(
 
 CapabilityRepositoryDep = Annotated[CapabilityRepository, Depends(get_capability_repository)]
 InstanceRepositoryDep = Annotated[InstanceRepository, Depends(get_instance_repository)]
+BindingRepositoryDep = Annotated[BindingRepository, Depends(get_binding_repository)]
 CapabilityRegistryServiceDep = Annotated[
     CapabilityRegistryService, Depends(get_capability_registry_service)
 ]
+BindingServiceDep = Annotated[BindingService, Depends(get_binding_service)]
 McpImportServiceDep = Annotated[McpImportService, Depends(get_mcp_import_service)]
 InstanceManagerDep = Annotated[InstanceManager, Depends(get_instance_manager)]
 ValidationServiceDep = Annotated[ValidationService, Depends(get_validation_service)]
