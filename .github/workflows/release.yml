@@ -1,17 +1,79 @@
 name: Release
 
+# A v* tag must publish the WHOLE platform, safely: build + push every dockerized
+# claimed_done service, then scan (Trivy), SBOM (Syft), and sign + attest (cosign keyless).
+# The build matrix is DERIVED from tools/lint/service_status.yaml (claimed_done: true AND a
+# Dockerfile exists) so the release surface can never drift from the no-hollow flags the team
+# already maintains. tools/lint/check_release_coverage.py is the CI guardrail that proves it.
+
 on:
   push:
     tags: ["v*"]
 
 jobs:
-  images:
+  # Single source of truth for which services ship. Emits the matrix list (and the version) so the
+  # build job below can never hard-code a stale subset — the exact "won't drift again" lever (WP-3).
+  matrix:
     runs-on: ubuntu-latest
+    outputs:
+      services: ${{ steps.derive.outputs.services }}
+      version: ${{ steps.meta.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Extract version tag
+        id: meta
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install PyYAML
+        run: python -m pip install --quiet pyyaml
+
+      - name: Derive build matrix from service_status.yaml
+        id: derive
+        run: |
+          services="$(python3 - <<'PY'
+          import json, pathlib, yaml
+          root = pathlib.Path(".")
+          status = yaml.safe_load((root / "tools/lint/service_status.yaml").read_text()) or {}
+          out = []
+          for name, meta in (status.get("services") or {}).items():
+              if not (meta or {}).get("claimed_done"):
+                  continue
+              if not (root / "services" / name / "Dockerfile").is_file():
+                  continue
+              out.append(name)
+          print(json.dumps(sorted(out)))
+          PY
+          )"
+          echo "services=${services}" >> "$GITHUB_OUTPUT"
+          echo "Release matrix: ${services}"
+
+  images:
+    needs: matrix
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write   # cosign keyless (OIDC)
+      packages: write   # push to ghcr.io
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        service: ${{ fromJSON(needs.matrix.outputs.services) }}
     steps:
       - uses: actions/checkout@v4
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Install Syft
+        uses: anchore/sbom-action/download-syft@v0
 
       - name: Log in to registry
         uses: docker/login-action@v3
@@ -20,18 +82,48 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract version tag
-        id: meta
-        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
-
-      - name: Build and push capability-registry-service
+      - name: Build and push ${{ matrix.service }}
+        id: build
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: services/capability-registry-service/Dockerfile
+          file: services/${{ matrix.service }}/Dockerfile
           push: true
           tags: |
-            ghcr.io/${{ github.repository_owner }}/capability-registry-service:${{ steps.meta.outputs.version }}
-            ghcr.io/${{ github.repository_owner }}/capability-registry-service:latest
+            ghcr.io/${{ github.repository_owner }}/${{ matrix.service }}:${{ needs.matrix.outputs.version }}
+            ghcr.io/${{ github.repository_owner }}/${{ matrix.service }}:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Trivy scan (fail on HIGH,CRITICAL)
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: ghcr.io/${{ github.repository_owner }}/${{ matrix.service }}@${{ steps.build.outputs.digest }}
+          format: table
+          exit-code: "1"
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+
+      - name: Syft SBOM (SPDX JSON artifact)
+        uses: anchore/sbom-action@v0
+        with:
+          image: ghcr.io/${{ github.repository_owner }}/${{ matrix.service }}@${{ steps.build.outputs.digest }}
+          format: spdx-json
+          artifact-name: sbom-${{ matrix.service }}.spdx.json
+          output-file: sbom-${{ matrix.service }}.spdx.json
+
+      - name: Cosign sign the digest (keyless / OIDC)
+        env:
+          COSIGN_EXPERIMENTAL: "1"
+        run: |
+          cosign sign --yes \
+            "ghcr.io/${{ github.repository_owner }}/${{ matrix.service }}@${{ steps.build.outputs.digest }}"
+
+      - name: Cosign attach the SBOM as an attestation
+        env:
+          COSIGN_EXPERIMENTAL: "1"
+        run: |
+          cosign attest --yes \
+            --predicate "sbom-${{ matrix.service }}.spdx.json" \
+            --type spdxjson \
+            "ghcr.io/${{ github.repository_owner }}/${{ matrix.service }}@${{ steps.build.outputs.digest }}"
