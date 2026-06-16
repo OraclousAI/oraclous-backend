@@ -13,13 +13,19 @@ correlation handle.
 from __future__ import annotations
 
 from oraclous_errors import new_request_id
+from oraclous_telemetry import bind_request_id, reset_request_id
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 _HEADER = b"x-request-id"
 
 
 class RequestIdMiddleware:
-    """Mint and propagate the server-authoritative request id."""
+    """Mint and propagate the server-authoritative request id.
+
+    Also binds the minted id to the shared ``oraclous_telemetry`` request-id contextvar so the
+    gateway's own structured logs (WP-6) carry the same correlation id it forwards upstream; the id
+    is reset after the request so a pooled worker never leaks it into the next one.
+    """
 
     def __init__(self, app: ASGIApp) -> None:
         self._app = app
@@ -31,6 +37,7 @@ class RequestIdMiddleware:
 
         request_id = new_request_id()
         scope.setdefault("state", {})["request_id"] = request_id
+        token = bind_request_id(request_id)
 
         async def send_with_request_id(message: Message) -> None:
             if message["type"] == "http.response.start":
@@ -43,4 +50,7 @@ class RequestIdMiddleware:
                 message["headers"] = headers
             await send(message)
 
-        await self._app(scope, receive, send_with_request_id)
+        try:
+            await self._app(scope, receive, send_with_request_id)
+        finally:
+            reset_request_id(token)

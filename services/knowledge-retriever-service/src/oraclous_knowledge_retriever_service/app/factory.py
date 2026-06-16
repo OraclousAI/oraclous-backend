@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from fastapi import FastAPI
+from oraclous_telemetry import install_telemetry
 
 from oraclous_knowledge_retriever_service.core.lifespan import lifespan
 from oraclous_knowledge_retriever_service.routes import (
@@ -16,6 +17,7 @@ from oraclous_knowledge_retriever_service.routes import (
 
 def create_app() -> FastAPI:
     app = FastAPI(title="knowledge-retriever-service", version="0.1.0", lifespan=lifespan)
+    install_telemetry(app)  # WP-6: JSON structured logging + correlation-id middleware
     app.include_router(health_routes.router)
     app.include_router(search_routes.router)
     app.include_router(graph_routes.router)

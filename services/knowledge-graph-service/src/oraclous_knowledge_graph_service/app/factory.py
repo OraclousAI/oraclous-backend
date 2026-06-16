@@ -7,6 +7,7 @@ This module only composes them.
 from __future__ import annotations
 
 from fastapi import FastAPI
+from oraclous_telemetry import install_telemetry
 
 from oraclous_knowledge_graph_service.core.lifespan import lifespan
 from oraclous_knowledge_graph_service.routes import (
@@ -28,6 +29,7 @@ def create_app() -> FastAPI:
         version="0.4.0",
         lifespan=lifespan,
     )
+    install_telemetry(app)  # WP-6: JSON structured logging + correlation-id middleware
     app.include_router(health_routes.router)
     app.include_router(graph_routes.router)
     app.include_router(resolution_routes.router)

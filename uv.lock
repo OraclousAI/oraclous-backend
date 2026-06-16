@@ -1261,6 +1261,12 @@ requires-dist = [{ name = "pyyaml", specifier = ">=6.0,<7.0" }]
 name = "oraclous-telemetry"
 version = "0.0.0"
 source = { editable = "packages/telemetry" }
+dependencies = [
+    { name = "starlette" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "starlette", specifier = ">=0.37" }]
 
 [[package]]
 name = "packaging"

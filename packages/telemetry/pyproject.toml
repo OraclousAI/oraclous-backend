@@ -3,7 +3,12 @@ name = "oraclous-telemetry"
 version = "0.0.0"
 description = "Shared observability primitives — the degradation-alert seam (ADR-021)."
 requires-python = "==3.12.*"
-dependencies = []
+dependencies = [
+    # ASGI type aliases for the shared correlation-id middleware (WP-6). Starlette is already a
+    # transitive dependency of every service via FastAPI; declaring it here keeps the shared
+    # middleware self-contained.
+    "starlette>=0.37",
+]
 
 [build-system]
 requires = ["hatchling"]

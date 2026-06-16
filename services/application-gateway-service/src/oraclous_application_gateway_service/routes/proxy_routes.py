@@ -36,6 +36,10 @@ async def proxy(
     path: str, request: Request, svc: ProxyServiceDep, principal: EdgePrincipalDep
 ) -> Response:
     body = await request.body()
+    # The server-minted correlation id (set on scope.state by RequestIdMiddleware at the edge) is
+    # forwarded upstream so the request id survives end to end (WP-6). None → open_upstream forwards
+    # no x-request-id (and still strips any client copy on the authenticated path via principal).
+    request_id = getattr(request.state, "request_id", None)
     # RouteNotFound/UpstreamUnavailable/UpstreamTimeout propagate to the factory exception handlers.
     upstream = await svc.open_upstream(
         method=request.method,
@@ -44,6 +48,7 @@ async def proxy(
         raw_headers=request.headers.raw,
         body=body,
         principal=principal,
+        request_id=request_id,
     )
     if upstream.status_code >= 400:
         # Drain + close the upstream error body; it is never relayed (it may carry internals — §3
