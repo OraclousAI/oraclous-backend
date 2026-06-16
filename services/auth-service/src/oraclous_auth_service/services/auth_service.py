@@ -8,7 +8,8 @@ Threat posture: login + register return generic failures (no account enumeration
 refresh token revokes its whole family (T-REFRESH); every token carries the user's active
 ``organisation_id`` (ADR-006). S2: registration creates a real personal organisation (the user owns
 it); the active org is a validated ``X-Organisation-Id`` selection at login (else the default),
-and refresh preserves the active org from the presented refresh token.
+and refresh re-validates membership in the token's active org on every rotation (a removed member
+loses org access at the next refresh, not at the refresh TTL), preserving the default-org fallback.
 """
 
 from __future__ import annotations
@@ -180,8 +181,14 @@ class AuthService:
         if user is None or not user.is_active:
             raise AuthenticationError("user no longer active")
         await self._refresh.mark_rotated(jti, rotated_at=datetime.now(UTC))
-        # Preserve the active org the refresh token was issued for.
-        organisation_id = claims.get("organisation_id") or user.default_organisation_id
+        # Re-validate membership on every rotation through the SAME gate login()/switch_org() use:
+        # a member removed from the org since the token was issued must lose org access at the next
+        # refresh, not at the (longer) refresh TTL. resolve_active_org 404-masks a non-member and
+        # preserves the default-org fallback when the claim is absent — so a still-valid member's
+        # active org is preserved, but a removed member is denied before any token is issued.
+        organisation_id = await self._orgs.resolve_active_org(
+            user=user, requested_org_id=claims.get("organisation_id")
+        )
         return await self._issue_pair(
             user, organisation_id=organisation_id, family_id=row.family_id
         )
