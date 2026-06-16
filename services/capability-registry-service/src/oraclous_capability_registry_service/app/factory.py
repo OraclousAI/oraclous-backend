@@ -19,12 +19,16 @@ from oraclous_capability_registry_service.domain.errors import (
 from oraclous_capability_registry_service.repositories.capability_repository import (
     CapabilityConflictError,
 )
+from oraclous_capability_registry_service.routes.binding_routes import router as binding_router
 from oraclous_capability_registry_service.routes.capability_routes import (
     router as capability_router,
 )
 from oraclous_capability_registry_service.routes.execution_routes import router as execution_router
 from oraclous_capability_registry_service.routes.instance_routes import router as instance_router
 from oraclous_capability_registry_service.routes.tool_routes import router as tool_router
+from oraclous_capability_registry_service.services.graph_membership_client import (
+    GraphMembershipError,
+)
 from oraclous_capability_registry_service.services.instance_manager import InstanceNotFoundError
 from oraclous_capability_registry_service.services.tool_execution_service import (
     ExecutionNotReadyError,
@@ -38,10 +42,20 @@ def create_app(*, lifespan=None) -> FastAPI:
     app.include_router(tool_router)
     app.include_router(instance_router)
     app.include_router(execution_router)
+    app.include_router(binding_router)
 
     @app.exception_handler(CapabilityNotFoundError)
     async def _on_not_found(_: Request, exc: CapabilityNotFoundError) -> JSONResponse:
         return JSONResponse(status_code=status.HTTP_404_NOT_FOUND, content={"detail": str(exc)})
+
+    @app.exception_handler(GraphMembershipError)
+    async def _on_graph_membership(_: Request, __: GraphMembershipError) -> JSONResponse:
+        # The KGS membership check (the graph-side visibility verify) could not be reached — a 503
+        # (transient upstream). The upstream body is never echoed (no-leak); the detail is curated.
+        return JSONResponse(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            content={"detail": "workspace verification is temporarily unavailable"},
+        )
 
     @app.exception_handler(CapabilityConflictError)
     async def _on_conflict(_: Request, exc: CapabilityConflictError) -> JSONResponse:

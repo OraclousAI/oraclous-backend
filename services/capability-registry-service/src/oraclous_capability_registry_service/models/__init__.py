@@ -10,6 +10,7 @@ from oraclous_capability_registry_service.models.enums import (
     InstanceStatus,
 )
 from oraclous_capability_registry_service.models.execution import Execution
+from oraclous_capability_registry_service.models.harness_graph_binding import HarnessGraphBinding
 from oraclous_capability_registry_service.models.tool_instance import ToolInstance
 
 __all__ = [
@@ -19,6 +20,7 @@ __all__ = [
     "DescriptorKind",
     "Execution",
     "ExecutionStatus",
+    "HarnessGraphBinding",
     "InstanceStatus",
     "ToolInstance",
 ]

@@ -68,6 +68,16 @@ def descriptor_name(descriptor: dict[str, Any]) -> str | None:
     return None
 
 
+def descriptor_summary(descriptor: dict[str, Any]) -> str | None:
+    """Extract ``metadata.description`` — the human blurb shown beside an agent (best-effort)."""
+    metadata = descriptor.get("metadata")
+    if isinstance(metadata, dict):
+        summary = metadata.get("description")
+        if isinstance(summary, str) and summary:
+            return summary
+    return None
+
+
 def required_credential_types(descriptor: dict[str, Any]) -> list[str]:
     """The distinct *required* credential types a tool descriptor declares (order-stable)."""
     spec = descriptor.get("spec")

@@ -860,6 +860,67 @@ paths:
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "422": { $ref: "#/components/responses/ValidationFailed" }
 
+  /api/v1/agent-bindings:
+    get:
+      tags: [capabilities]
+      summary: >-
+        List workspace<->agent bindings (Contract G2 / ADR-029). Supply EXACTLY one filter:
+        `graph_id` → the agents bound to a workspace; `harness_id` → the workspaces an agent serves
+        (live graphs only — a dangling binding is skipped). Org-scoped; neither/both filters → 422.
+      operationId: listAgentBindings
+      x-stability: provisional
+      parameters:
+        - { name: graph_id, in: query, required: false, schema: { type: string, format: uuid } }
+        - { name: harness_id, in: query, required: false, schema: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: >-
+            The bindings — an array of BoundAgent (when `graph_id` is given) or BoundGraph (when
+            `harness_id` is given).
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - type: array
+                    items: { $ref: "#/components/schemas/BoundAgent" }
+                  - type: array
+                    items: { $ref: "#/components/schemas/BoundGraph" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+        "503": { $ref: "#/components/responses/Upstream5xx" }
+    post:
+      tags: [capabilities]
+      summary: >-
+        Attach an agent to a workspace (Contract G2 / ADR-029) — a curation edge, NOT an authz grant
+        or execution route. Idempotent. Both objects must be visible to the caller's org.
+      operationId: createAgentBinding
+      x-stability: provisional
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateBindingRequest" }
+      responses:
+        "200": { description: Already bound — idempotent re-attach. }
+        "201": { description: Created — the agent is now bound to the workspace. }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+        "503": { $ref: "#/components/responses/Upstream5xx" }
+    delete:
+      tags: [capabilities]
+      summary: Detach an agent from a workspace (Contract G2 / ADR-029). Org-scoped; not bound → 404.
+      operationId: deleteAgentBinding
+      x-stability: provisional
+      parameters:
+        - { name: harness_id, in: query, required: true, schema: { type: string, format: uuid } }
+        - { name: graph_id, in: query, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "204": { description: Detached. }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+
   /v1/harnesses/execute:
     post:
       tags: [harness]
@@ -1458,6 +1519,32 @@ components:
           description: >-
             `active` is executable; `pending_approval` is an imported MCP tool awaiting an admin's
             approval (it is not executable until approved).
+    CreateBindingRequest:
+      type: object
+      description: >-
+        Attach a `kind:harness` agent to a workspace (a knowledge graph). Contract G2 / ADR-029.
+        The organisation is taken from the authenticated principal, never the body (ORG001).
+      required: [harness_id, graph_id]
+      additionalProperties: false
+      properties:
+        harness_id: { type: string, format: uuid, description: The agent (a kind:harness capability). }
+        graph_id: { type: string, format: uuid, description: The workspace (a knowledge graph). }
+    BoundAgent:
+      type: object
+      description: An agent bound to a workspace — the `?graph_id=` projection (Contract G2).
+      additionalProperties: false
+      properties:
+        harness_id: { type: string, format: uuid }
+        name: { type: [string, "null"] }
+        kind: { type: string, description: The descriptor kind (harness). }
+        summary: { type: [string, "null"], description: The agent's human-readable blurb. }
+    BoundGraph:
+      type: object
+      description: A workspace an agent serves — the `?harness_id=` projection (live graphs only).
+      additionalProperties: false
+      properties:
+        graph_id: { type: string, format: uuid }
+        name: { type: string }
     MeResponse:
       type: object
       description: The signed-in principal + active organisation, with the member's role (R7-SEC S2).
