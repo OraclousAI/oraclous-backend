@@ -49,6 +49,8 @@ jobs:
         run: uv run python -m tools.lint.check_service_structure services
       - name: No-hollow guardrail (ORAA-4 §22, R3.5)
         run: uv run python -m tools.lint.check_no_stubs services
+      - name: Release-coverage guardrail (WP-3/4 — all dockerized claimed_done services built + scanned/signed)
+        run: uv run python -m tools.lint.check_release_coverage
 
   # `unit` runs the unit suite. It is intentionally RED during the TDD tests->impl window
   # (a `[tests]` PR lands failing tests for an unbuilt seam), so it is NOT a required gate.

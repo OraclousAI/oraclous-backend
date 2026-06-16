@@ -45,3 +45,9 @@ repos:
         language: system
         pass_filenames: false
         files: \.py$
+      - id: release-coverage
+        name: release-coverage guardrail (WP-3/4 — release builds + scans/signs all claimed_done images)
+        entry: uv run python -m tools.lint.check_release_coverage
+        language: system
+        pass_filenames: false
+        files: (\.github/workflows/release\.yml|tools/lint/(service_status\.yaml|check_release_coverage\.py)|services/.*/Dockerfile)$
