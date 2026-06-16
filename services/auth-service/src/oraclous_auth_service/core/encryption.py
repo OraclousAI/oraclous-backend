@@ -12,6 +12,7 @@ import base64
 import os
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from oraclous_governance import require_secret
 
 # Dev-only default key (decodes to exactly 32 bytes). Production injects OAUTH_ENC_KEY via a secret.
 _DEV_KEY = "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY="  # noqa: S105 — dev default, not a secret
@@ -19,8 +20,10 @@ _NONCE_LEN = 12
 
 
 def _key() -> bytes:
-    # `or` (not a default arg) so an explicitly-empty env var still falls back to the dev key.
-    raw = os.environ.get("OAUTH_ENC_KEY") or _DEV_KEY
+    # Fail closed in prod (RUN_MODE=prod): a missing/empty OAUTH_ENC_KEY raises rather than silently
+    # falling back to the in-source dev key. The empty-string-is-missing rule closes the old
+    # `os.environ.get(...) or _DEV_KEY` bug (an empty prod env var no longer reaches the dev key).
+    raw = require_secret("OAUTH_ENC_KEY", dev_default=_DEV_KEY)
     key = base64.urlsafe_b64decode(raw + "=" * (-len(raw) % 4))
     if len(key) != 32:
         raise ValueError("OAUTH_ENC_KEY must decode to 32 bytes (AES-256)")

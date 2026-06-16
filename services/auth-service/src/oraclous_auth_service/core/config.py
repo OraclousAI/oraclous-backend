@@ -16,6 +16,14 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
+from oraclous_governance import require_secret
+
+# Dev-only fallbacks (used IFF RUN_MODE != prod). In prod (RUN_MODE=prod) a missing/empty value for
+# any of these raises at get_settings() construction (fail closed, T6 / ADR-008) — these strings are
+# publicly-known and must never reach production. See oraclous_governance.require_secret.
+_DEV_JWT_SECRET = "change-me-in-production"  # noqa: S105 — dev default, gated by RUN_MODE
+_DEV_INTERNAL_SERVICE_KEY = "dev-internal-key"  # noqa: S105 — dev default, gated by RUN_MODE
+
 
 @dataclass(frozen=True, slots=True)
 class Settings:
@@ -40,7 +48,7 @@ class Settings:
 def get_settings() -> Settings:
     """Return a freshly resolved :class:`Settings` snapshot."""
     return Settings(
-        jwt_secret=os.environ.get("JWT_SECRET", "change-me-in-production"),
+        jwt_secret=require_secret("JWT_SECRET", dev_default=_DEV_JWT_SECRET),
         jwt_algorithm=os.environ.get("JWT_ALGORITHM", "HS256"),
         # 15-minute cap mirrors the legacy ``_SA_TOKEN_EXPIRE_MINUTES`` and is
         # pinned by ``test_agent_token_is_short_lived_capped_at_fifteen_minutes``.
@@ -51,7 +59,9 @@ def get_settings() -> Settings:
             "DATABASE_URL", "postgresql+asyncpg://oraclous:oraclous@postgres:5432/oraclous"
         ),
         redis_url=os.environ.get("REDIS_URL", "redis://redis:6379/0"),
-        internal_service_key=os.environ.get("INTERNAL_SERVICE_KEY", "dev-internal-key"),
+        internal_service_key=require_secret(
+            "INTERNAL_SERVICE_KEY", dev_default=_DEV_INTERNAL_SERVICE_KEY
+        ),
         credential_broker_url=os.environ.get(
             "CREDENTIAL_BROKER_URL", "http://credential-broker-service:8000"
         ),

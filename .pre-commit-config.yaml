@@ -39,3 +39,9 @@ repos:
         language: system
         pass_filenames: false
         files: \.py$
+      - id: failclosed-secrets
+        name: fail-closed-secrets guardrail (WP-1, T6 / ADR-008)
+        entry: uv run python -m tools.lint.check_failclosed_secrets services
+        language: system
+        pass_filenames: false
+        files: \.py$
