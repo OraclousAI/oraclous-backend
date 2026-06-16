@@ -47,7 +47,11 @@ _RESPONSE_DENYLIST = frozenset(
 
 
 def forward_request_headers(
-    raw_headers: list[tuple[bytes, bytes]], principal: Principal | None, *, internal_key: str
+    raw_headers: list[tuple[bytes, bytes]],
+    principal: Principal | None,
+    *,
+    internal_key: str,
+    request_id: str | None = None,
 ) -> list[tuple[bytes, bytes]]:
     """Headers to send upstream. Drops ``host`` (httpx sets it) + hop-by-hop. When the request is
     authenticated, STRIPS any client-supplied trusted-identity headers (anti-spoof) and injects the
@@ -55,7 +59,10 @@ def forward_request_headers(
     is kept (upstream defense-in-depth). On public paths (no principal) ``X-Principal-*`` are still
     stripped, but a client ``X-Organisation-Id`` passes through (e.g. multi-org login selection).
     Every forwarded request carries ``X-Internal-Key`` (a client-supplied copy is stripped first) so
-    upstreams can prove the request came through the gateway (ADR-018 edge-auth attestation)."""
+    upstreams can prove the request came through the gateway (ADR-018 edge-auth attestation).
+    When ``request_id`` is given, a client-supplied ``X-Request-Id`` is STRIPPED first (anti-forge,
+    as for the trust headers) and the gateway's server-minted id is forwarded so the correlation id
+    survives end to end (WP-6)."""
     strip = set(_HOP_BY_HOP)
     strip.add("host")
     # X-Principal-* + X-Internal-Key are pure trust assertions — never accept them from the client.
@@ -65,6 +72,9 @@ def forward_request_headers(
         "x-principal-org-role"
     )  # the role is trust-asserted too (R7-SEC S2), never client-set
     strip.add("x-internal-key")
+    if request_id is not None:
+        # The request id is gateway-minted; never accept a client-forged copy (anti-forge).
+        strip.add("x-request-id")
     if principal is not None:
         strip.add("x-organisation-id")  # gateway asserts the verified org on authenticated paths
     out = [(key, value) for key, value in raw_headers if key.decode("latin-1").lower() not in strip]
@@ -76,6 +86,8 @@ def forward_request_headers(
         if principal.org_role is not None:  # propagate the verified role (upstreams may role-gate)
             out.append((b"x-principal-org-role", principal.org_role.encode()))
     out.append((b"x-internal-key", internal_key.encode()))
+    if request_id is not None:
+        out.append((b"x-request-id", request_id.encode()))
     return out
 
 
@@ -110,6 +122,7 @@ class ProxyService:
         raw_headers: list[tuple[bytes, bytes]],
         body: bytes,
         principal: Principal | None = None,
+        request_id: str | None = None,
     ) -> httpx.Response:
         entry = self._route_table.resolve(path)
         if entry is None:
@@ -118,7 +131,7 @@ class ProxyService:
             method=method,
             url=entry.upstream_url + path,
             headers=forward_request_headers(
-                raw_headers, principal, internal_key=self._internal_key
+                raw_headers, principal, internal_key=self._internal_key, request_id=request_id
             ),
             params=query or None,
             content=body,

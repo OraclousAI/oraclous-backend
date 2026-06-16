@@ -16,6 +16,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from oraclous_errors import ErrorCode, FieldError, status_to_code
+from oraclous_telemetry import configure_structured_logging
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from oraclous_application_gateway_service.core.agent_cors_middleware import AgentCorsMiddleware
@@ -49,6 +50,9 @@ logger = logging.getLogger(__name__)
 
 
 def create_app(*, lifespan=None) -> FastAPI:
+    # JSON structured logging (WP-6): the gateway's own RequestIdMiddleware binds the minted id to
+    # the shared contextvar, so every gateway log line carries the same correlation id it forwards.
+    configure_structured_logging()
     settings = get_settings()
     # The published contract is served from routes/openapi_routes (ADR-015), NOT FastAPI's auto-spec
     # (which only sees /health + the catch-all and would leak the `/{path:path}` proxy as an op).
