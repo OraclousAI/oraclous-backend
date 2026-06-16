@@ -155,6 +155,40 @@ async def test_update_and_delete(client: AsyncClient) -> None:
     assert (await client.get(f"/credentials/{cred_id}", headers=_auth())).status_code == 404
 
 
+async def test_update_path_body_id_mismatch_is_400_and_leaves_addressed_untouched(
+    client: AsyncClient,
+) -> None:
+    """PUT /credentials/{A} with body.id={B} → 400, and {A} is provably untouched (#343).
+
+    The path param is authoritative; a mismatched body.id is a malformed REST request that must be
+    rejected BEFORE any write, so the addressed (path) credential is left exactly as it was.
+    """
+    body_a = _payload()
+    cred_a = (await client.post("/credentials/", json=body_a, headers=_auth())).json()["id"]
+    body_b = _payload()
+    cred_b = (await client.post("/credentials/", json=body_b, headers=_auth())).json()["id"]
+    assert cred_a != cred_b
+
+    # PUT /credentials/{A} but with body.id = B (a different valid, owned credential).
+    upd = {
+        "id": cred_b,
+        "name": "renamed",
+        "provider": "google",
+        "user_id": body_a["user_id"],
+        "tool_id": body_a["tool_id"],
+        "cred_type": "oauth",
+        "credential": {"access_token": "rotated"},
+    }
+    r = await client.put(f"/credentials/{cred_a}", json=upd, headers=_auth())
+    assert r.status_code == 400, r.text
+
+    # the addressed (path) credential A is untouched — its metadata is unchanged
+    got_a = await client.get(f"/credentials/{cred_a}", headers=_auth())
+    assert got_a.status_code == 200
+    assert got_a.json()["name"] == body_a["name"]
+    assert got_a.json()["provider"] == body_a["provider"]
+
+
 async def test_name_only_update_preserves_secret(client: AsyncClient) -> None:
     """A rename (no ``credential`` in the body) must NOT touch the stored secret — #341.
 

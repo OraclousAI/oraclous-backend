@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from fastapi import APIRouter, status
+from fastapi import APIRouter, HTTPException, status
 
 from oraclous_credential_broker_service.core.dependencies import (
     CredentialServiceDep,
@@ -97,6 +97,11 @@ async def update_credential(
     user_id: PrincipalUserIdDep,
     svc: CredentialServiceDep,
 ) -> CredentialOut:
+    if credential_id != body.id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="credential_id in path does not match id in body",
+        )
     return await svc.update(update=body, organisation_id=organisation_id, user_id=user_id)
 
 
