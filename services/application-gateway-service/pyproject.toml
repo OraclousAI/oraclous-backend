@@ -19,12 +19,14 @@ dependencies = [
     "oraclous-governance",
     "oraclous-errors",
     "oraclous-telemetry",
+    "oraclous-substrate",
 ]
 
 [tool.uv.sources]
 oraclous-governance = { workspace = true }
 oraclous-errors = { workspace = true }
 oraclous-telemetry = { workspace = true }
+oraclous-substrate = { workspace = true }
 
 [build-system]
 requires = ["hatchling"]
