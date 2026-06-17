@@ -35,7 +35,11 @@ from oraclous_governance import OrganisationContext, PrincipalType, use_organisa
 
 from oraclous_knowledge_graph_service.core.config import get_settings
 from oraclous_knowledge_graph_service.core.neo4j import make_neo4j_driver
-from oraclous_knowledge_graph_service.core.redis import RedisLock, make_redis_lock_client
+from oraclous_knowledge_graph_service.core.redis import (
+    RedisLock,
+    RedisLockClient,
+    make_redis_lock_client,
+)
 from oraclous_knowledge_graph_service.repositories.code_write_repository import (
     CodeGraphWriteRepository,
     enumerate_code_graphs,
@@ -109,7 +113,7 @@ def sweep_all_code_graphs_task() -> dict[str, Any]:
     return {"dispatched": len(pairs)}
 
 
-def _close(lock_client: object) -> None:
+def _close(lock_client: RedisLockClient) -> None:
     try:
         lock_client.close()
     except Exception as exc:  # noqa: BLE001 — best-effort close of the advisory lock client

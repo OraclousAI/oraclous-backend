@@ -158,7 +158,7 @@ async def run_tool_use_loop(
             if _over_wall_time():
                 return _escalate("budget", "wall_time", "wall-time budget exhausted", iteration)
             gated = spec is not None and spec.binding in policy.gated_bindings
-            if gated and tc["id"] != approved_id:
+            if spec is not None and gated and tc["id"] != approved_id:
                 # Pause: checkpoint the not-yet-dispatched calls (this one first) for resume.
                 checkpoint = LoopCheckpoint(
                     messages=list(messages),

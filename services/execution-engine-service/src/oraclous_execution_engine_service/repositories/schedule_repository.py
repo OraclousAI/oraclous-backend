@@ -9,9 +9,10 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from typing import cast
 
+from sqlalchemy import CursorResult, select
 from sqlalchemy import delete as sa_delete
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
@@ -97,7 +98,10 @@ class ScheduleRepository:
                         EngineSchedule.organisation_id == organisation_id,
                     )
                 )
-            return result.rowcount > 0
+            # AsyncSession.execute is typed Result; a DML statement returns a CursorResult (the only
+            # variant carrying ``rowcount``). Cast to read the affected-row count (typed-service
+            # convention).
+            return (cast("CursorResult[object]", result).rowcount or 0) > 0
 
     async def list_enabled_cron(self, *, limit: int = 500) -> list[EngineSchedule]:
         """System sweep (Celery Beat): all enabled cron schedules across orgs. Each fired job is

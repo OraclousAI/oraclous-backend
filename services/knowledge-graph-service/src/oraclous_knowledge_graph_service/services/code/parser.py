@@ -73,25 +73,25 @@ def _get_parser(language: str) -> Any | None:
         from tree_sitter import Language, Parser
 
         if language == "python":
-            import tree_sitter_python as mod
+            import tree_sitter_python
 
-            lang = Language(mod.language())
+            lang = Language(tree_sitter_python.language())
         elif language in ("typescript", "tsx"):
-            import tree_sitter_typescript as mod
+            import tree_sitter_typescript
 
-            lang = Language(mod.language_typescript())
+            lang = Language(tree_sitter_typescript.language_typescript())
         elif language == "javascript":
-            import tree_sitter_javascript as mod
+            import tree_sitter_javascript
 
-            lang = Language(mod.language())
+            lang = Language(tree_sitter_javascript.language())
         elif language == "go":
-            import tree_sitter_go as mod
+            import tree_sitter_go
 
-            lang = Language(mod.language())
+            lang = Language(tree_sitter_go.language())
         elif language == "java":
-            import tree_sitter_java as mod
+            import tree_sitter_java
 
-            lang = Language(mod.language())
+            lang = Language(tree_sitter_java.language())
         else:
             _PARSERS[language] = None
             return None

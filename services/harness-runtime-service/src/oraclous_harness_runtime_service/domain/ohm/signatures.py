@@ -96,12 +96,22 @@ def make_signature(
 ) -> dict[str, str]:
     """Produce a valid ``signatures`` entry for a document (test/smoke helper)."""
     data = canonical_bytes(document)
+    # ``PrivateKeyTypes`` is a union whose members' ``.sign()`` signatures diverge (Ed25519 takes
+    # only the data; EC takes a signature algorithm; RSA takes padding + a hash). Narrow to the
+    # concrete key type per algorithm (control flow) so the right overload resolves — and so a
+    # key/algorithm mismatch fails closed, mirroring ``_verify_one``'s key-type guards.
     if algorithm == "EdDSA":
-        sig = private_key.sign(data)  # type: ignore[union-attr]
+        if not isinstance(private_key, ed25519.Ed25519PrivateKey):
+            raise OHMSignatureError("EdDSA signature requires an Ed25519 key")
+        sig = private_key.sign(data)
     elif algorithm == "ES256":
-        sig = private_key.sign(data, ec.ECDSA(hashes.SHA256()))  # type: ignore[union-attr]
+        if not isinstance(private_key, ec.EllipticCurvePrivateKey):
+            raise OHMSignatureError("ES256 signature requires an EC key")
+        sig = private_key.sign(data, ec.ECDSA(hashes.SHA256()))
     elif algorithm == "RS256":
-        sig = private_key.sign(data, padding.PKCS1v15(), hashes.SHA256())  # type: ignore[union-attr]
+        if not isinstance(private_key, rsa.RSAPrivateKey):
+            raise OHMSignatureError("RS256 signature requires an RSA key")
+        sig = private_key.sign(data, padding.PKCS1v15(), hashes.SHA256())
     else:
         raise OHMSignatureError(f"unsupported signature algorithm {algorithm!r}")
     return {"signer": signer, "algorithm": algorithm, "signature": base64.b64encode(sig).decode()}

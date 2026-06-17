@@ -49,28 +49,25 @@ warn_unused_configs = true
 # run before any real checking happens. They are excluded from the type gate.
 exclude = '/(migrations|tests)/'
 
-# --- WP-7 type-check ratchet (grade-A A6) ----------------------------------
-# CI runs `uv run mypy services packages` (lint job). The shared `packages/` and the
-# type-GATED services (errors fail CI) are now: `auth-service` + `knowledge-retriever-service`
-# (WP-7) and `application-gateway-service` + `credential-broker-service` +
-# `capability-registry-service` (WP-7 tail — ORM models migrated to the typed
-# `Mapped[...]` / `mapped_column(...)` style, which clears the `Column[X]` cascade).
-# The three services below are NOT yet typed — their src carries real-but-not-yet-fixed
-# mypy errors that need a non-annotation refactor (knowledge-graph: a recipe-engine writer
-# Protocol; harness-runtime: `cryptography` `.sign()` private-key-union narrowing;
-# execution-engine: pervasive `EngineRoundtable | None` union-attr None-flow) — so they
-# stay lenient via `ignore_errors = true` below. RATCHET: fix one service's errors, then
-# delete its line here so the gate starts enforcing it. Do NOT widen the lenient set.
-# Tighten further (e.g. `disallow_untyped_defs`) only per-package, one at a time,
-# after a service is error-free. No bare `# type: ignore` — always a [error-code].
+# croniter ships no type stubs. ignore_missing_imports (above) covers import-not-found but NOT
+# import-untyped for an installed-but-untyped lib, so mypy flags `import croniter`. The repo's
+# stance is to tolerate untyped 3rd-party (ignore_missing_imports) rather than add per-lib stub
+# deps — follow croniter as untyped (Any) instead of erroring. Scoped to croniter so the gate
+# still flags any OTHER untyped import going forward.
 [[tool.mypy.overrides]]
-module = [
-    "oraclous_execution_engine_service.*",
-    "oraclous_harness_runtime_service.*",
-    "oraclous_knowledge_graph_service.*",
-]
-ignore_errors = true
+module = ["croniter", "croniter.*"]
+follow_untyped_imports = true
 
+# --- type-check ratchet COMPLETE (#366) -------------------------------------
+# CI runs `uv run mypy services packages` (lint job) and it is now error-free across the shared
+# `packages/` AND every service — there is no lenient set. The last three (knowledge-graph,
+# harness-runtime, execution-engine) were real-refactored to clear their errors (knowledge-graph: a
+# recipe-engine writer `Protocol` + a Redis-lock-client `Protocol` + concrete ip-address types;
+# harness-runtime: `.sign()` private-key-union isinstance-narrowing + ORM `Mapped[...]` migration;
+# execution-engine: `EngineRoundtable | None` / `EngineJob | None` None-flow narrowing + ORM
+# `Mapped[...]` migration) and the `ignore_errors` override that exempted them was deleted, so the
+# gate now enforces them. No bare `# type: ignore` — every suppression carries an [error-code].
+# Tighten further (e.g. `disallow_untyped_defs`) only per-package, one at a time.
 # Enforces the four-layer architecture (CLAUDE.md §3.1 / ADR-001): imports flow
 # downward only, and shared packages never import services. Run: uv run lint-imports
 [tool.importlinter]

@@ -26,11 +26,11 @@ from oraclous_knowledge_graph_service.domain.recipes.transforms import (
     apply_transform,
     is_known_transform,
 )
+from oraclous_knowledge_graph_service.domain.recipes.writer import RecipeGraphWriter
 from oraclous_knowledge_graph_service.domain.structural import (
     StructuralRepresentation,
     StructuralUnit,
 )
-from oraclous_knowledge_graph_service.repositories.recipe_write_repository import RecipeGraphWriter
 
 _SAFE_IDENTIFIER = re.compile(r"^(?!__)[A-Za-z_][A-Za-z0-9_]*$")
 _RESERVED_LABELS = frozenset(
@@ -367,9 +367,11 @@ class RecipeExecutionEngine:
         return [rule for rule in mappings if self._matches(rule["match"], unit)]
 
     @staticmethod
-    def _read_field(payload: dict, unit: StructuralUnit, ref: str) -> Any:
+    def _read_field(payload: dict, unit: StructuralUnit | None, ref: str) -> Any:
         if ref in ("name", "unit:name"):
-            return unit.name
+            # The foreign_key resolver passes ``unit=None`` (it reads a field, never the unit name),
+            # so guard the unit-name branch; every other caller passes a real unit with a name.
+            return unit.name if unit is not None else None
         key = ref.partition(":")[2] if ":" in ref else ref
         # G2: a dotted key (e.g. `source.url`) is a path into a nested object — walk it segment
         # by segment. A top-level key (no dot) keeps the original `payload.get(key)` behaviour.

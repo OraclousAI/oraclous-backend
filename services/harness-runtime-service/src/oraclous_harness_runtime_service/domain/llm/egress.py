@@ -24,7 +24,13 @@ from __future__ import annotations
 
 import ipaddress
 import socket
+from ipaddress import IPv4Address, IPv6Address
 from urllib.parse import urlsplit
+
+# ``ipaddress.ip_address()`` returns exactly one of these concrete types; the abstract
+# ``ipaddress._BaseAddress`` base lacks ``is_private`` / ``is_loopback`` / ``is_link_local`` etc.
+# (those live on the concrete classes), so the egress guards type against the concrete union.
+_IPAddress = IPv4Address | IPv6Address
 
 # RFC 3927 / RFC 4291 link-local — also covers the cloud metadata endpoint 169.254.169.254. ALWAYS
 # blocked: there is no legitimate LLM here, only SSRF into instance metadata.
@@ -36,7 +42,7 @@ class EgressBlockedError(Exception):
     """A user-supplied outbound URL is blocked by the egress guard (a clear 4xx upstream)."""
 
 
-def _resolve_ips(host: str) -> list[ipaddress._BaseAddress]:
+def _resolve_ips(host: str) -> list[_IPAddress]:
     """Resolve a host to its IP(s). A bare IP literal short-circuits the DNS lookup."""
     try:
         return [ipaddress.ip_address(host)]
@@ -46,7 +52,7 @@ def _resolve_ips(host: str) -> list[ipaddress._BaseAddress]:
         infos = socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)
     except OSError as exc:
         raise EgressBlockedError(f"cannot resolve host {host!r}: {exc}") from exc
-    addrs: list[ipaddress._BaseAddress] = []
+    addrs: list[_IPAddress] = []
     for info in infos:
         sockaddr = info[4]
         try:
@@ -58,18 +64,18 @@ def _resolve_ips(host: str) -> list[ipaddress._BaseAddress]:
     return addrs
 
 
-def _is_link_local(ip: ipaddress._BaseAddress) -> bool:
+def _is_link_local(ip: _IPAddress) -> bool:
     if isinstance(ip, ipaddress.IPv4Address):
         return ip in _LINK_LOCAL_V4
     return ip in _LINK_LOCAL_V6 or ip.is_link_local
 
 
-def _is_private(ip: ipaddress._BaseAddress) -> bool:
+def _is_private(ip: _IPAddress) -> bool:
     """Loopback (127/8, ::1), RFC-1918 (10/8, 172.16/12, 192.168/16), and IPv6 ULA (fc00::/7)."""
     return ip.is_loopback or ip.is_private
 
 
-def _normalize(ip: ipaddress._BaseAddress) -> ipaddress._BaseAddress:
+def _normalize(ip: _IPAddress) -> _IPAddress:
     """An IPv4-mapped IPv6 (``::ffff:a.b.c.d``) routes to the IPv4 address — return that, so the
     link-local/private rules cannot be bypassed by mapping a blocked IPv4 (e.g. the metadata IP)
     into IPv6 on a Python whose ``is_link_local`` does not delegate the mapping."""

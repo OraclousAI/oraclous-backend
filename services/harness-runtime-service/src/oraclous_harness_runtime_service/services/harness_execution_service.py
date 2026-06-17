@@ -231,16 +231,18 @@ class HarnessExecutionService:
         # (the engine correlates on the execution id, not this — it's for traceability, like a human
         # assignment). The transcript in the checkpoint is already redacted by the loop.
         steps = _serialize_steps(result.steps)
-        if _is_hitl_pause(result):
+        cp = result.checkpoint
+        # cp is not None whenever _is_hitl_pause holds (it just narrows cp for the create below)
+        if _is_hitl_pause(result) and cp is not None:
             checkpoint = await self._checkpoints.create(
                 organisation_id=org_id,
                 execution_id=execution_id,
                 manifest_doc=document,
-                resume_messages=result.checkpoint.messages,
-                pending_tool_calls=result.checkpoint.pending_tool_calls,
-                approved_tool_call_id=result.checkpoint.approved_tool_call_id,
-                resume_cursor=_cursor(result.checkpoint),
-                redact_patterns=result.checkpoint.redact_patterns,
+                resume_messages=cp.messages,
+                pending_tool_calls=cp.pending_tool_calls,
+                approved_tool_call_id=cp.approved_tool_call_id,
+                resume_cursor=_cursor(cp),
+                redact_patterns=cp.redact_patterns,
             )
             if steps and steps[-1]["kind"] == StepKind.GATE.value:
                 steps[-1]["detail"] = str(checkpoint.id)
@@ -468,16 +470,18 @@ class HarnessExecutionService:
         # so result.steps is the new tail only — provenance below emits only that, never the prefix.
         prior = list(execution.steps or [])
         new_steps = _serialize_steps(result.steps, base=len(prior))
-        if _is_hitl_pause(result):  # a chained gate → park a fresh checkpoint
+        new_cp = result.checkpoint
+        # a chained gate → park a fresh checkpoint (new_cp is not None whenever _is_hitl_pause)
+        if _is_hitl_pause(result) and new_cp is not None:
             cp2 = await self._checkpoints.create(
                 organisation_id=org_id,
                 execution_id=execution.id,
                 manifest_doc=checkpoint.manifest_doc,
-                resume_messages=result.checkpoint.messages,
-                pending_tool_calls=result.checkpoint.pending_tool_calls,
-                approved_tool_call_id=result.checkpoint.approved_tool_call_id,
-                resume_cursor=_cursor(result.checkpoint),
-                redact_patterns=result.checkpoint.redact_patterns,
+                resume_messages=new_cp.messages,
+                pending_tool_calls=new_cp.pending_tool_calls,
+                approved_tool_call_id=new_cp.approved_tool_call_id,
+                resume_cursor=_cursor(new_cp),
+                redact_patterns=new_cp.redact_patterns,
             )
             if new_steps and new_steps[-1]["kind"] == StepKind.GATE.value:
                 new_steps[-1]["detail"] = str(cp2.id)

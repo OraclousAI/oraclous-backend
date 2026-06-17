@@ -41,11 +41,14 @@ from __future__ import annotations
 
 import logging
 import uuid
+from collections.abc import Mapping
 from datetime import UTC, datetime
+from typing import Any, TypedDict
 
 from neo4j import Driver
 from oraclous_substrate.access import ORGANISATION_ID_PROPERTY, enforced_organisation_id
 
+from oraclous_knowledge_graph_service.core.redis import RedisLockClient
 from oraclous_knowledge_graph_service.domain.community import (
     COMMUNITY_LABEL,
     ENTITY_KIND,
@@ -68,6 +71,22 @@ logger = logging.getLogger(__name__)
 _GDS_GRAPH_PREFIX = "kgs_comm"
 
 _ALGORITHM = "louvain"
+
+
+class GraphAnalyticsRow(TypedDict):
+    """The ``analytics`` read shape (the legacy ``/analytics`` payload). Typed so the service layer
+    sees each field's real type rather than a uniform ``object`` value."""
+
+    node_count: int
+    relationship_count: int
+    entity_count: int
+    density: float
+    avg_degree: float
+    entity_types: list[dict[str, Any]]
+    relationship_types: list[dict[str, Any]]
+    top_entities: list[dict[str, Any]]
+    community_count: int
+
 
 # Per-(org,graph) detect lock. Held across the destructive clear→detect→write window so two runs on
 # the same graph can't corrupt each other; the TTL is a safety net so a crashed run self-heals.
@@ -98,7 +117,7 @@ class CommunityRepository:
         driver: Driver,
         *,
         database: str | None = None,
-        lock_client: object | None = None,
+        lock_client: RedisLockClient | None = None,
     ) -> None:
         self._driver = driver
         self._database = database
@@ -459,7 +478,10 @@ class CommunityRepository:
             f"MATCH (c:{COMMUNITY_LABEL} {{graph_id: $graph_id}}) "
             "WHERE c.organisation_id = $organisation_id AND c.entity_count >= $min_entities "
         )
-        params: dict[str, object] = {
+        # ``dict[str, Any]`` (not ``object``) so the ``**params`` splat resolves against the neo4j
+        # ``execute_query(**kwargs: Any)`` overload — an ``object``-valued dict does not. Values are
+        # bound query parameters either way; the call shape (top-level kwargs) is unchanged.
+        params: dict[str, Any] = {
             "graph_id": graph_id,
             "organisation_id": self._org(),
             "min_entities": min_entities,
@@ -570,7 +592,7 @@ class CommunityRepository:
         levels = sorted(int(level) for level in (records[0]["levels"] if records else []))
         return cnt, levels, self.count_entities(graph_id=graph_id)
 
-    def analytics(self, *, graph_id: str, top_n: int = 10) -> dict[str, object]:
+    def analytics(self, *, graph_id: str, top_n: int = 10) -> GraphAnalyticsRow:
         """Org+graph-scoped graph statistics (the legacy ``/analytics`` shape): node/rel/entity
         counts, label + relationship-type breakdowns, density, avg degree, top entities by degree,
         and the community count. All bound params; one method, several scoped reads."""
@@ -664,7 +686,7 @@ class CommunityRepository:
         }
 
     @staticmethod
-    def _row_to_community(r: dict) -> Community:
+    def _row_to_community(r: Mapping[str, Any]) -> Community:
         keywords = r.get("summary_keywords")
         summary_at = r.get("summary_at")
         return Community(
@@ -679,7 +701,11 @@ class CommunityRepository:
             summary_keywords=list(keywords) if keywords else None,
             summary_excerpt=r.get("summary_excerpt"),
             summary_model=r.get("summary_model"),
-            summary_at=summary_at.to_native() if hasattr(summary_at, "to_native") else summary_at,
+            summary_at=(
+                summary_at.to_native()
+                if summary_at is not None and hasattr(summary_at, "to_native")
+                else summary_at
+            ),
             summary_source=r.get("summary_source"),
         )
 

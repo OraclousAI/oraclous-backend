@@ -39,8 +39,8 @@ import math
 from typing import Any
 
 from oraclous_knowledge_graph_service.core.config import Settings
+from oraclous_knowledge_graph_service.domain.recipes.writer import RecipeGraphWriter
 from oraclous_knowledge_graph_service.domain.structural import StructuralRepresentation
-from oraclous_knowledge_graph_service.repositories.recipe_write_repository import RecipeGraphWriter
 from oraclous_knowledge_graph_service.services.embedder import make_embedder
 
 logger = logging.getLogger(__name__)

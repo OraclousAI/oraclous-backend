@@ -12,7 +12,7 @@ from datetime import UTC, datetime
 
 from oraclous_knowledge_graph_service.core.config import Settings, get_settings
 from oraclous_knowledge_graph_service.domain.ontology import Ontology
-from oraclous_knowledge_graph_service.domain.structural import ExtractionMode
+from oraclous_knowledge_graph_service.domain.structural import ExtractionMode, Primitive
 from oraclous_knowledge_graph_service.repositories.recipe_write_repository import RecipeGraphWriter
 from oraclous_knowledge_graph_service.services.recipes.auto_similarity import (
     synthesize_similarity_rules,
@@ -52,7 +52,7 @@ class StructuredIngestionService:
         self._db = database
         self._settings = settings or get_settings()
         self._engine = get_recipe_engine()
-        self._primitives = {"csv": CsvPrimitive(), "json": JsonPrimitive()}
+        self._primitives: dict[str, Primitive] = {"csv": CsvPrimitive(), "json": JsonPrimitive()}
 
     def ingest(
         self,

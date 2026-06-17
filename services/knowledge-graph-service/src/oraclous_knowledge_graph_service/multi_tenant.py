@@ -192,7 +192,9 @@ class MultiTenantKGWriter:
             self.graph_id,
         )
 
-        return await self.base_writer.run(graph)  # type: ignore[arg-type]
+        # The wrapper's contract is "write the graph" (-> None); the base writer's return model is
+        # unused by the sole caller (graph_write_repository), so await the write and return None.
+        await self.base_writer.run(graph)  # type: ignore[arg-type]
 
     def __getattr__(self, name: str) -> object:
         """Delegate other attributes to the wrapped base writer."""

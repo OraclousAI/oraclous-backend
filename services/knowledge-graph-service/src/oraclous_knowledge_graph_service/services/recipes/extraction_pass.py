@@ -43,13 +43,13 @@ from oraclous_knowledge_graph_service.domain.extraction_schema import (
     to_prompt_prefix,
 )
 from oraclous_knowledge_graph_service.domain.ontology import Ontology, resolve_label
+from oraclous_knowledge_graph_service.domain.recipes.writer import RecipeGraphWriter
 from oraclous_knowledge_graph_service.domain.structural import StructuralRepresentation
 from oraclous_knowledge_graph_service.domain.temporal import (
     TEMPORAL_KEYS,
     normalize_temporal_properties,
     temporal_prompt_steering,
 )
-from oraclous_knowledge_graph_service.repositories.recipe_write_repository import RecipeGraphWriter
 from oraclous_knowledge_graph_service.services.entity_extractor import make_extractor
 from oraclous_knowledge_graph_service.services.recipes.resolution_pass import (
     SAME_AS_CANDIDATE,
@@ -249,7 +249,7 @@ def _write_record_entities(
     writer: RecipeGraphWriter,
     primary_id: str,
     entity_graph: Neo4jGraph,
-    ontology: Ontology,
+    ontology: Ontology | None,
     link_type: str,
     graph_id: str,
     deterministic_id: Any,
@@ -367,7 +367,7 @@ def _resolve_and_write_rule(
     *,
     rule: dict[str, Any],
     by_record: dict[str, Neo4jGraph],
-    ontology: Ontology,
+    ontology: Ontology | None,
     link_type: str,
     graph_id: str,
     writer: RecipeGraphWriter,
