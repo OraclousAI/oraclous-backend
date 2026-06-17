@@ -15,7 +15,11 @@ import uuid
 
 from oraclous_governance import Principal
 
-from oraclous_application_gateway_service.domain.chat_context import build_turn_input, derive_title
+from oraclous_application_gateway_service.domain.chat_context import (
+    MAX_HISTORY_MESSAGES,
+    build_turn_input,
+    derive_title,
+)
 from oraclous_application_gateway_service.repositories.chat_repository import ChatRepository
 from oraclous_application_gateway_service.repositories.published_agent_repository import (
     PublishedAgentRepository,
@@ -80,8 +84,10 @@ class ChatTurnService:
         agent = await self._agents.get_by_slug(organisation_id=org, slug=thread.bound_agent_slug)
         if agent is None or agent.status != "active":
             raise UnknownAgent(thread.bound_agent_slug)
-        # load the capped history BEFORE writing the new user turn
-        prior = await self._threads.list_messages(thread_id=thread_id)
+        # load the capped history BEFORE writing the new user turn — the MOST-RECENT window only
+        # (build_turn_input keeps the tail), bounded so a long thread never triggers an unbounded
+        # read (WP-10).
+        prior = await self._threads.recent_messages(thread_id=thread_id, limit=MAX_HISTORY_MESSAGES)
         history = [(m.role, m.content) for m in prior if m.role in ("user", "assistant")]
         agent_input = build_turn_input(history, content)
         # persist the user turn (derive the title on the very first message)

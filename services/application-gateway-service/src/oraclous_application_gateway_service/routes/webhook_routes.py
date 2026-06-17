@@ -16,6 +16,7 @@ from fastapi import APIRouter, HTTPException, Request, Response, status
 from oraclous_application_gateway_service.core.dependencies import (
     AdminDep,
     MemberDep,
+    PaginationDep,
     WebhookIngressServiceDep,
     WebhookSubscriptionServiceDep,
 )
@@ -102,9 +103,11 @@ async def create_subscription(
 
 @router.get("/v1/webhook-subscriptions", response_model=list[SubscriptionOut])
 async def list_subscriptions(
-    member: MemberDep, service: WebhookSubscriptionServiceDep
+    member: MemberDep, service: WebhookSubscriptionServiceDep, page: PaginationDep
 ) -> list[SubscriptionOut]:
-    subs = await service.list_subscriptions(organisation_id=member.organisation_id)
+    subs = await service.list_subscriptions(
+        organisation_id=member.organisation_id, limit=page.limit, offset=page.offset
+    )
     return [SubscriptionOut.model_validate(s) for s in subs]
 
 

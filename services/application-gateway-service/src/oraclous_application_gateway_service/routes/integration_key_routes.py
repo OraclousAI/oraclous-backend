@@ -15,6 +15,7 @@ from oraclous_application_gateway_service.core.dependencies import (
     AdminDep,
     KeyManagementDep,
     MemberDep,
+    PaginationDep,
 )
 from oraclous_application_gateway_service.schema.integration_key_schemas import (
     KeyOut,
@@ -63,8 +64,8 @@ async def mint_key(
 
 
 @router.get("", response_model=list[KeyOut])
-async def list_keys(member: MemberDep, svc: KeyManagementDep) -> list[KeyOut]:
-    return await svc.list_keys(member.organisation_id)
+async def list_keys(member: MemberDep, svc: KeyManagementDep, page: PaginationDep) -> list[KeyOut]:
+    return await svc.list_keys(member.organisation_id, limit=page.limit, offset=page.offset)
 
 
 @router.get("/{key_id}", response_model=KeyOut)

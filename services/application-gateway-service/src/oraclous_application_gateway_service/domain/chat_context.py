@@ -11,6 +11,11 @@ from __future__ import annotations
 _MAX_TURNS = 20
 _MAX_CHARS = 24000  # coarse budget (~chars/4 tokens) so the transcript fits one harness input
 
+# The most messages build_turn_input can ever consult (it reads history[-_MAX_TURNS * 2:]). A
+# caller bounds its transcript read to this many most-recent messages (WP-10) — fetching more is
+# wasted work, fetching fewer would silently drop replayable context.
+MAX_HISTORY_MESSAGES = _MAX_TURNS * 2
+
 _REPLAYED_ROLES = {"user", "assistant"}  # system / unknown roles are not replayed into the agent
 
 _PREAMBLE = (

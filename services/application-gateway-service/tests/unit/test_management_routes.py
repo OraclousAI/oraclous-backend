@@ -46,8 +46,9 @@ class _FakeAgents:
         self.rows.append(row)
         return row
 
-    async def list_for_org(self, organisation_id):  # noqa: ANN001
-        return [r for r in self.rows if r.organisation_id == organisation_id]
+    async def list_for_org(self, organisation_id, *, limit=100, offset=0):  # noqa: ANN001
+        rows = [r for r in self.rows if r.organisation_id == organisation_id]
+        return rows[offset : offset + limit]
 
     async def unpublish(self, *, organisation_id, slug):  # noqa: ANN001
         row = await self.get_by_slug(organisation_id=organisation_id, slug=slug)
@@ -95,8 +96,9 @@ class _FakeKeys:
         self.rows.append(row)
         return row
 
-    async def list_for_org(self, organisation_id):  # noqa: ANN001
-        return [r for r in self.rows if r.organisation_id == organisation_id]
+    async def list_for_org(self, organisation_id, *, limit=100, offset=0):  # noqa: ANN001
+        rows = [r for r in self.rows if r.organisation_id == organisation_id]
+        return rows[offset : offset + limit]
 
     async def get_for_org(self, *, key_id, organisation_id):  # noqa: ANN001
         return next(
