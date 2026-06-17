@@ -79,14 +79,16 @@ async def test_list_messages_pages_and_recent_window(repos: dict) -> None:
             thread_id=thread.id, organisation_id=_ORG, role="user", content=f"m{i}"
         )
 
-    full = await chat.list_messages(thread_id=thread.id)  # default, oldest->newest
+    # the message reads carry organisation_id so the org-bound engine's GUC guard scopes
+    # chat_messages too (ADR-030 §3); here the repo runs as the owner, so it is a harmless no-op.
+    full = await chat.list_messages(thread_id=thread.id, organisation_id=_ORG)  # oldest->newest
     assert [m.content for m in full] == ["m0", "m1", "m2", "m3", "m4", "m5"]
 
-    page = await chat.list_messages(thread_id=thread.id, limit=2, offset=2)
+    page = await chat.list_messages(thread_id=thread.id, organisation_id=_ORG, limit=2, offset=2)
     assert [m.content for m in page] == ["m2", "m3"]
 
     # recent_messages: the MOST-RECENT window, oldest->newest (the bounded turn-context read)
-    recent = await chat.recent_messages(thread_id=thread.id, limit=3)
+    recent = await chat.recent_messages(thread_id=thread.id, organisation_id=_ORG, limit=3)
     assert [m.content for m in recent] == ["m3", "m4", "m5"]
 
 

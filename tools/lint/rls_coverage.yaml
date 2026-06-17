@@ -109,4 +109,22 @@ services:
       - harness_checkpoints
       - harness_assignments
       - harness_provenance
-  # Future slices add: application-gateway-service.
+  # Slice (application-gateway) — the sole external edge's gateway-owned store. All FIVE org-scoped
+  # tables carry a uuid organisation_id and RLS is enabled on each (no exclusions — the producer
+  # split is an ENGINE/ROLE split, not an RLS exclusion). Three tables are CLEAN (published_agents /
+  # chat_threads / chat_messages — always reached with a bound org on the org-bound oraclous_app
+  # engine, where RLS bites + every op binds the org via org_scope). integration_keys +
+  # webhook_subscriptions carry TWO pre-auth PRODUCER reads (IntegrationKeyRepository.get_by_prefix +
+  # WebhookSubscriptionRepository.get_by_id) that resolve an org/credential BEFORE any org context;
+  # those run on a SEPARATE OWNER engine that bypasses RLS (else FORCE'd RLS fails integration-key
+  # auth + inbound webhooks closed — the HARD RULE). The tables themselves are fully RLS-enabled and
+  # every ORG-BOUND op (key create/list/rotate/revoke; subscription create/list/delete; the
+  # published-agent + chat CRUD) runs on the org-bound engine under org_scope, so reads filter and a
+  # cross-org write is denied — hence both tables are in `tables`, not `exclusions`.
+  application-gateway-service:
+    tables:
+      - published_agents
+      - chat_threads
+      - chat_messages
+      - integration_keys
+      - webhook_subscriptions

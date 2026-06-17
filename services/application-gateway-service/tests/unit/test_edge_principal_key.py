@@ -19,11 +19,13 @@ _ORG = uuid.uuid4()
 
 def _request(path: str, *, auth: str | None = None, repo=None):  # noqa: ANN001
     headers = {"authorization": auth} if auth else {}
+    # The pre-auth get_by_prefix producer reads from integration_key_owner_repo (the OWNER engine,
+    # ADR-030 §3); a fake has no RLS so the same fake stands in for it.
     return SimpleNamespace(
         url=SimpleNamespace(path=path),
         headers=headers,
         state=SimpleNamespace(),  # request.state — where the resolved key is stashed (S4)
-        app=SimpleNamespace(state=SimpleNamespace(integration_key_repo=repo)),
+        app=SimpleNamespace(state=SimpleNamespace(integration_key_owner_repo=repo)),
     )
 
 

@@ -78,7 +78,7 @@ class _FakeChatRepo:
         t.deleted_at = datetime.now(UTC)
         return True
 
-    async def list_messages(self, *, thread_id, limit=100, offset=0):  # noqa: ANN001
+    async def list_messages(self, *, thread_id, organisation_id, limit=100, offset=0):  # noqa: ANN001
         return self.messages.get(thread_id, [])[offset : offset + limit]
 
     def add_assistant_message(self, *, thread_id):  # noqa: ANN001 — test helper
@@ -94,7 +94,7 @@ class _FakeChatRepo:
         self.messages.setdefault(thread_id, []).append(msg)
         return msg
 
-    async def set_message_rating(self, *, thread_id, message_id, rating):  # noqa: ANN001
+    async def set_message_rating(self, *, thread_id, organisation_id, message_id, rating):  # noqa: ANN001
         for msg in self.messages.get(thread_id, []):
             if msg.id == message_id and msg.role == "assistant":
                 msg.rating = rating
@@ -132,6 +132,9 @@ def _app():
     app.state.chat_repo = _FakeChatRepo()
     app.state.published_agent_repo = _FakeAgents()
     app.state.integration_key_repo = _FakeKeys()
+    # the pre-auth get_by_prefix producer reads the OWNER-engine repo (ADR-030 §3); a fake has no
+    # RLS so the same instance serves both.
+    app.state.integration_key_owner_repo = app.state.integration_key_repo
     app.dependency_overrides[get_chat_turn_service] = _FakeTurn
     return app
 

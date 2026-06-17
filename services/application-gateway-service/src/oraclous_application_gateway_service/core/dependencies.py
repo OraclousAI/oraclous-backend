@@ -132,7 +132,11 @@ async def get_edge_principal(request: Request) -> Principal | None:
 
 async def _authenticate(request: Request, token: str) -> Principal:
     if is_integration_key(token):
-        key_repo = getattr(request.app.state, "integration_key_repo", None)
+        # The OWNER-engine repo: ``get_by_prefix`` is the pre-auth producer read (it resolves the
+        # org BEFORE any org context). On the org-bound oraclous_app engine RLS would fail it
+        # closed to zero rows and break integration-key auth (ADR-030 §3 / the HARD RULE), so it
+        # MUST run on the owner engine that bypasses RLS.
+        key_repo = getattr(request.app.state, "integration_key_owner_repo", None)
         if key_repo is None:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -335,6 +339,13 @@ def get_webhook_subscription_repository(request: Request) -> WebhookSubscription
     return _require_repo(request, "webhook_subscription_repo")
 
 
+def get_webhook_subscription_owner_repository(request: Request) -> WebhookSubscriptionRepository:
+    """The OWNER-engine subscription repo for the pre-auth ``get_by_id`` producer read (ADR-030 §3):
+    the inbound webhook's id is its credential and resolves BEFORE any org context, so it bypasses
+    RLS (the org-bound engine would fail it closed). The org-bound writes use the org-bound repo."""
+    return _require_repo(request, "webhook_subscription_owner_repo")
+
+
 def _webhook_secret_client(request: Request) -> WebhookSecretClient:
     settings = get_settings()
     return WebhookSecretClient(
@@ -345,19 +356,32 @@ def _webhook_secret_client(request: Request) -> WebhookSecretClient:
 
 
 def get_webhook_subscription_service(
-    request: Request, subs: WebhookSubscriptionRepoDep, agents: PublishedAgentRepoDep
+    request: Request,
+    subs: WebhookSubscriptionRepoDep,
+    owner_subs: WebhookSubscriptionOwnerRepoDep,
+    agents: PublishedAgentRepoDep,
 ) -> WebhookSubscriptionService:
+    # org-bound ``subs`` for create/list/delete; OWNER-engine ``owner_subs`` for the delete
+    # precheck's pre-auth ``get_by_id`` read (ADR-030 §3).
     return WebhookSubscriptionService(
-        subscriptions=subs, agents=agents, secret_client=_webhook_secret_client(request)
+        subscriptions=subs,
+        owner_subscriptions=owner_subs,
+        agents=agents,
+        secret_client=_webhook_secret_client(request),
     )
 
 
 def get_webhook_ingress_service(
-    request: Request, subs: WebhookSubscriptionRepoDep, agents: PublishedAgentRepoDep
+    request: Request, owner_subs: WebhookSubscriptionOwnerRepoDep, agents: PublishedAgentRepoDep
 ) -> WebhookIngressService:
     settings = get_settings()
+    # The ingress only reads subscriptions via the pre-auth ``get_by_id`` producer — it MUST resolve
+    # the inbound webhook's anchor cross-org BEFORE any org context, so it uses the OWNER-engine
+    # repo (the org-bound engine would fail it closed under RLS — ADR-030 §3 / the HARD RULE).
+    # ``agents`` stays org-bound: after the org is produced from the sub, ``get_by_slug`` runs under
+    # the row's org (the repo binds it via org_scope), and a cross-org write is denied.
     return WebhookIngressService(
-        subscriptions=subs,
+        subscriptions=owner_subs,
         agents=agents,
         secret_client=_webhook_secret_client(request),
         upstream_client=UpstreamClient(get_http_client(request)),
@@ -387,6 +411,9 @@ ChatServiceDep = Annotated[ChatService, Depends(get_chat_service)]
 ChatTurnServiceDep = Annotated[ChatTurnService, Depends(get_chat_turn_service)]
 WebhookSubscriptionRepoDep = Annotated[
     WebhookSubscriptionRepository, Depends(get_webhook_subscription_repository)
+]
+WebhookSubscriptionOwnerRepoDep = Annotated[
+    WebhookSubscriptionRepository, Depends(get_webhook_subscription_owner_repository)
 ]
 WebhookSubscriptionServiceDep = Annotated[
     WebhookSubscriptionService, Depends(get_webhook_subscription_service)

@@ -94,8 +94,31 @@ class Settings(BaseSettings):
     # ILLEGAL in prod (a wildcard at the sole external edge is fail-open) — see the validator. ---
     GATEWAY_CORS_ORIGINS: str = "*"
 
-    # --- gateway-owned datastore (R6 Slice 3, ADR-019): the integration-key store ---
+    # --- gateway-owned datastore (R6 Slice 3, ADR-019): the integration-key + published-agent +
+    # chat + webhook-subscription store. The ORG-BOUND engine DSN (ADR-030 §3): the request CRUD
+    # path connects here as the NOSUPERUSER ``oraclous_app`` role so the FORCE'd RLS policy bites.
+    # The two pre-auth PRODUCER reads (get_by_prefix / get_by_id), Alembic, and the rls-role
+    # bootstrap use ``owner_database_url`` (the owner) instead — see below. ---
     DATABASE_URL: str = "postgresql+asyncpg://oraclous:oraclous@postgres:5432/oraclous"
+
+    # --- the OWNER engine DSN (ADR-030 §3 carve-out, mirrors auth's owner-engine split). The two
+    # pre-auth producer lookups — integration-key ``get_by_prefix`` and webhook-subscription
+    # ``get_by_id`` — resolve an org/credential BEFORE any org context, so they MUST run on a role
+    # that bypasses RLS (the owner/superuser); else FORCE'd RLS fails them closed to zero rows and
+    # breaks integration-key auth + inbound webhooks (the HARD RULE). Defaults to the OWNER DSN; in
+    # the deployed stack the org-bound ``DATABASE_URL`` flips to oraclous_app while this stays the
+    # owner. Alembic + the bootstrap derive their owner DSN from this too (``sync_database_url``).
+    OWNER_DATABASE_URL: str | None = None
+
+    # --- Postgres RLS backstop (ADR-030 / #353) ---
+    # When true, the service asserts at startup (web lifespan) that the ORG-BOUND runtime DB role is
+    # NOSUPERUSER/NOBYPASSRLS (a bypassing role silently voids the FORCE'd RLS policy — T1-M3) and
+    # FAILS CLOSED otherwise. The deployed api connects as oraclous_app with this on; migrations,
+    # the rls-role bootstrap, and the owner-engine producer reads keep running as the owner and
+    # never set it. Default false so a test/local run that intentionally uses the owner DSN need not
+    # provision the app role. (The gateway runs no Celery worker that touches these tables, so there
+    # is no worker_process_init mirror — the web lifespan is the sole assertion chokepoint.)
+    GATEWAY_RLS_ASSERT_RUNTIME_ROLE: bool = False
 
     @model_validator(mode="after")
     def _resolve_failclosed_secrets(self) -> Settings:
@@ -127,9 +150,22 @@ class Settings(BaseSettings):
         return [o.strip() for o in self.GATEWAY_CORS_ORIGINS.split(",") if o.strip()]
 
     @property
+    def owner_database_url(self) -> str:
+        """The OWNER (superuser / BYPASSRLS) async DSN the two pre-auth producer reads resolve on
+        (ADR-030 §3).
+
+        Defaults to ``DATABASE_URL`` so a single-DSN deploy/test (no RLS split) behaves exactly as
+        before — both engines are the owner and RLS is a no-op. In the deployed RLS stack
+        ``DATABASE_URL`` flips to the org-bound oraclous_app role while ``OWNER_DATABASE_URL`` stays
+        the owner, so only the producer reads bypass RLS. Alembic + the bootstrap derive their owner
+        DSN from this too (``sync_database_url``)."""
+        return self.OWNER_DATABASE_URL or self.DATABASE_URL
+
+    @property
     def sync_database_url(self) -> str:
-        """The synchronous psycopg DSN Alembic uses (swaps the asyncpg driver for psycopg)."""
-        return self.DATABASE_URL.replace("+asyncpg", "+psycopg")
+        """The synchronous psycopg DSN Alembic + the rls-role bootstrap use (swaps the asyncpg
+        driver for psycopg). Always the OWNER DSN — migrations + bootstrap are owner privileges."""
+        return self.owner_database_url.replace("+asyncpg", "+psycopg")
 
 
 @lru_cache

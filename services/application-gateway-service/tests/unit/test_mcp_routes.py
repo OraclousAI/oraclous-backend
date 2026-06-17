@@ -59,6 +59,9 @@ def _app_with_key():  # noqa: ANN202
             cors_origins=None,
         )
     )
+    # the pre-auth get_by_prefix producer reads the OWNER-engine repo (ADR-030 §3); a fake has no
+    # RLS so the same instance serves both.
+    app.state.integration_key_owner_repo = app.state.integration_key_repo
     app.state.published_agent_repo = _FakeAgents()
     app.state.http_client = httpx.AsyncClient()  # the invoke service is built but unused here
     return app, {"authorization": f"Bearer {minted.plaintext}"}
