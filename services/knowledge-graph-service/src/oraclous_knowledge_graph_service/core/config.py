@@ -36,6 +36,14 @@ class Settings(BaseSettings):
     # --- Postgres (graph metadata + ingestion jobs) ---
     database_url: str = "postgresql+asyncpg://oraclous:oraclous@postgres:5432/oraclous"
 
+    # --- Postgres RLS backstop (ADR-030 / #353) ---
+    # When true, the service asserts at startup that its runtime DB role is NOSUPERUSER/NOBYPASSRLS
+    # (a bypassing role silently voids the RLS policy — T1-M3) and FAILS CLOSED otherwise. The
+    # deployed web + worker connect as the oraclous_app role with this on; migrations + the dev-org
+    # seed keep running as the owner (superuser) and never set this. Default false so a test/local
+    # run that intentionally uses the owner DSN is not forced to provision the app role.
+    rls_assert_runtime_role: bool = False
+
     # --- Neo4j (kgs_writer role, ORAA-53). No hardcoded URI default. ---
     neo4j_uri: str | None = None
     neo4j_user: str = "kgs_writer"
