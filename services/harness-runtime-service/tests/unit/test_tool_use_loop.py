@@ -19,7 +19,7 @@ from oraclous_harness_runtime_service.domain.loop.tool_use import run_tool_use_l
 from oraclous_harness_runtime_service.domain.policy import PolicyEnvelope
 from oraclous_harness_runtime_service.models.enums import HarnessStatus, StepKind
 
-pytestmark = pytest.mark.unit
+pytestmark = [pytest.mark.unit, pytest.mark.tool_dispatch]
 
 
 def _env(

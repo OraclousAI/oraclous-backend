@@ -16,7 +16,7 @@ from httpx import ASGITransport, AsyncClient
 from oraclous_application_gateway_service.app.factory import create_app
 from oraclous_application_gateway_service.domain.integration_key import mint_key
 
-pytestmark = pytest.mark.unit
+pytestmark = [pytest.mark.unit, pytest.mark.api_authz]
 
 _DEV_ORG = uuid.UUID("00000000-0000-0000-0000-00000000050a")  # matches DEV_ORG_ID
 

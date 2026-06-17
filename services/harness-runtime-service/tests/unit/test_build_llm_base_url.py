@@ -18,7 +18,7 @@ from oraclous_harness_runtime_service.services.harness_execution_service import 
     HarnessExecutionService,
 )
 
-pytestmark = pytest.mark.unit
+pytestmark = [pytest.mark.unit, pytest.mark.byom]
 
 _ORG = uuid.uuid4()
 

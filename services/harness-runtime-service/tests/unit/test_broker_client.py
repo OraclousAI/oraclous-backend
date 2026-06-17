@@ -9,7 +9,7 @@ import httpx
 import pytest
 from oraclous_harness_runtime_service.services.broker_client import BrokerClient, BrokerError
 
-pytestmark = pytest.mark.unit
+pytestmark = [pytest.mark.unit, pytest.mark.byom]
 
 _ORG = uuid.uuid4()
 

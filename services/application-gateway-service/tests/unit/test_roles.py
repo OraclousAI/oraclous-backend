@@ -9,7 +9,7 @@ from fastapi import HTTPException
 from oraclous_application_gateway_service.core.dependencies import require_admin
 from oraclous_governance import Principal, PrincipalType
 
-pytestmark = pytest.mark.unit
+pytestmark = [pytest.mark.unit, pytest.mark.api_authz]
 
 
 def _p(role: str | None) -> Principal:
