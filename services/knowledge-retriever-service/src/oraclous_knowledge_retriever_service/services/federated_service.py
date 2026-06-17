@@ -341,9 +341,10 @@ class FederatedRetrievalService:
                 semantic_degraded = True
                 results = []
             else:
+                qvec_nn = qvec
                 per_graph = await self._fan_out(
                     scope.graphs,
-                    lambda repo, gid: repo.semantic(graph_id=gid, qvec=qvec, top_k=per_graph_k),
+                    lambda repo, gid: repo.semantic(graph_id=gid, qvec=qvec_nn, top_k=per_graph_k),
                     failed=failed,
                 )
                 results = merge_score_desc(per_graph, total_cap=total_k)

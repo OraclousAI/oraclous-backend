@@ -996,6 +996,8 @@ class ReBACEngine:
                 },
             )
             record = await result.single()
+            if record is None:
+                raise RuntimeError("create_subgraph query returned no record")
             return {
                 "subgraph_id": record["subgraph_id"],
                 "graph_id": graph_id,

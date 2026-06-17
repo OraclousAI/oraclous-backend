@@ -163,6 +163,16 @@ def _register_user_identity(app: FastAPI) -> None:
 # --- Protocol ---------------------------------------------------------------
 
 
+class _CreatedAgent(Protocol):
+    """Minimal shape ``create_agent`` returns alongside the raw credential.
+
+    The real ``Agent`` ORM row and the unit-test fake both expose ``id``; the
+    route only reads that, so the port stays loose elsewhere.
+    """
+
+    id: str
+
+
 class AgentRepositoryPort(Protocol):
     """The shape ``create_app`` expects of its agent repository dependency.
 
@@ -178,7 +188,7 @@ class AgentRepositoryPort(Protocol):
         organisation_id: str,
         created_by_user_id: str,
         principal_type: str = "agent",
-    ) -> tuple[str, object]: ...
+    ) -> tuple[str, _CreatedAgent]: ...
 
     async def validate_credential(self, raw_credential: str) -> str | None: ...
 

@@ -180,7 +180,7 @@ class AuthService:
         user = await self._users.get_by_id(row.user_id)
         if user is None or not user.is_active:
             raise AuthenticationError("user no longer active")
-        await self._refresh.mark_rotated(jti, rotated_at=datetime.now(UTC))
+        await self._refresh.mark_rotated(row.jti, rotated_at=datetime.now(UTC))
         # Re-validate membership on every rotation through the SAME gate login()/switch_org() use:
         # a member removed from the org since the token was issued must lose org access at the next
         # refresh, not at the (longer) refresh TTL. resolve_active_org 404-masks a non-member and
