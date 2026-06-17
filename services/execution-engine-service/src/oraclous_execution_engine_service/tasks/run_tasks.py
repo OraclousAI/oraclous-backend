@@ -26,6 +26,9 @@ from oraclous_substrate import ProvenanceCollector
 from oraclous_execution_engine_service.core.auth import build_downstream_headers
 from oraclous_execution_engine_service.core.config import get_settings
 from oraclous_execution_engine_service.repositories.job_repository import JobRepository
+from oraclous_execution_engine_service.repositories.maintenance_repository import (
+    EngineMaintenanceRepository,
+)
 from oraclous_execution_engine_service.repositories.provenance_sink import PostgresProvenanceSink
 from oraclous_execution_engine_service.repositories.roundtable_repository import (
     RoundtableRepository,
@@ -87,24 +90,34 @@ def reap_stale_running_task() -> dict[str, int]:  # noqa: ANN201
 
 async def _reap_async() -> dict[str, int]:
     settings = get_settings()
+    # ADR-030 §3: the per-row settle runs on the ORG-BOUND engine (settings.database_url →
+    # oraclous_app in the deployed stack), each transition wrapped in org_scope(row.org) by the
+    # service. The cross-org stale-RUNNING ENUMERATION runs on the MAINTENANCE engine
+    # (settings.maintenance_url → the owner, which bypasses RLS) — else FORCE'd RLS fails the
+    # cross-org read closed and no dead worker's job/round-table is ever found.
     jobs = JobRepository(settings.database_url, worker_pool=True)
     roundtables = RoundtableRepository(settings.database_url, worker_pool=True)
     sink = PostgresProvenanceSink(settings.database_url, worker_pool=True)
+    maintenance = EngineMaintenanceRepository(settings.maintenance_url)
     try:
         collector = ProvenanceCollector(sink)
         older_than = datetime.now(UTC) - timedelta(seconds=settings.running_lease_seconds)
-        reaped = await JobService(jobs=jobs, provenance=collector, enqueue=enqueue_job).reap_stale(
-            older_than=older_than
-        )
+        reaped = await JobService(
+            jobs=jobs, provenance=collector, enqueue=enqueue_job, maintenance=maintenance
+        ).reap_stale(older_than=older_than)
         # also re-queue round-tables whose driver died mid-turn (re-claim is CAS-idempotent).
         rt_reaped = await RoundtableService(
-            roundtables=roundtables, provenance=collector, enqueue=enqueue_roundtable
+            roundtables=roundtables,
+            provenance=collector,
+            enqueue=enqueue_roundtable,
+            maintenance=maintenance,
         ).reap_stale(older_than=older_than)
         return {"reaped": reaped, "roundtables_reaped": rt_reaped}
     finally:
         await jobs.close()
         await roundtables.close()
         await sink.close()
+        await maintenance.close()
 
 
 @celery_app.task(name="engine.fire_schedules")
@@ -115,15 +128,21 @@ def fire_schedules_task() -> dict[str, int]:  # noqa: ANN201
 
 async def _fire_schedules_async() -> dict[str, int]:
     settings = get_settings()
+    # ADR-030 §3: the enabled-cron ENUMERATION runs on the MAINTENANCE engine (the owner, bypasses
+    # RLS) — else FORCE'd RLS fails the cross-org read closed and no org's cron ever fires. Each due
+    # schedule's job-create + cursor-advance + provenance run on the ORG-BOUND engine
+    # (settings.database_url → oraclous_app) wrapped in org_scope(sched.org) by the service.
     schedules = ScheduleRepository(settings.database_url, worker_pool=True)
     jobs = JobRepository(settings.database_url, worker_pool=True)
     sink = PostgresProvenanceSink(settings.database_url, worker_pool=True)
+    maintenance = EngineMaintenanceRepository(settings.maintenance_url)
     try:
         service = ScheduleService(
             schedules=schedules,
             jobs=jobs,
             provenance=ProvenanceCollector(sink),
             enqueue=enqueue_job,
+            maintenance=maintenance,
         )
         fired = await service.fire_due(datetime.now(UTC))
         return {"fired": fired}
@@ -131,6 +150,7 @@ async def _fire_schedules_async() -> dict[str, int]:
         await schedules.close()
         await jobs.close()
         await sink.close()
+        await maintenance.close()
 
 
 @celery_app.task(bind=True, name="engine.drive_roundtable")

@@ -16,9 +16,13 @@ from croniter import croniter
 from oraclous_governance import Principal
 from oraclous_substrate import ProvenanceCollector, ProvenanceRecord
 
+from oraclous_execution_engine_service.core.rls import org_scope
 from oraclous_execution_engine_service.models.enums import ScheduleType
 from oraclous_execution_engine_service.models.schedule import EngineSchedule
 from oraclous_execution_engine_service.repositories.job_repository import JobRepository
+from oraclous_execution_engine_service.repositories.maintenance_repository import (
+    EngineMaintenanceRepository,
+)
 from oraclous_execution_engine_service.repositories.schedule_repository import ScheduleRepository
 from oraclous_execution_engine_service.services.job_service import EnqueueFn
 
@@ -35,11 +39,17 @@ class ScheduleService:
         jobs: JobRepository,
         provenance: ProvenanceCollector,
         enqueue: EnqueueFn | None = None,
+        maintenance: EngineMaintenanceRepository | None = None,
     ) -> None:
         self._schedules = schedules
         self._jobs = jobs
         self._provenance = provenance
         self._enqueue = enqueue
+        # ADR-030 §3: the Beat path injects the OWNER-engine cross-org reader. list_enabled_cron
+        # reads ACROSS orgs on it (FORCE'd RLS on the org-bound engine would fail it closed); each
+        # due schedule then fires its job + advances its cursor on the ORG-BOUND repos under
+        # org_scope(sched.org). None on the request path (register/list/delete are org-bound).
+        self._maintenance = maintenance
 
     async def register(
         self,
@@ -80,11 +90,23 @@ class ScheduleService:
         )
 
     async def fire_due(self, now: datetime) -> int:
-        """Beat sweep: fire every enabled cron schedule whose latest window hasn't fired yet."""
+        """Beat sweep: fire every enabled cron schedule whose latest window hasn't fired yet.
+
+        ADR-030 §3 two-engine carve: the enabled-cron ENUMERATION reads across orgs on the OWNER
+        engine (``self._maintenance``) — FORCE'd RLS on the org-bound engine would fail it closed to
+        zero rows, so no org's cron would ever fire. Each due schedule is then fired on the
+        ORG-BOUND ``self._jobs`` / ``self._schedules`` repos INSIDE ``org_scope(sched.org)`` (the
+        job create + the set_last_fired cursor + the provenance write bind that org's GUC; a
+        cross-org write is denied 42501). The schedule's org comes from the trusted maintenance
+        read, never request input (T1-M1)."""
+        reader = self._maintenance
+        if reader is None:  # the Beat path always injects it; fail loud if mis-wired
+            raise ScheduleError("fire_due requires the maintenance (cross-org) reader")
         fired = 0
-        for sched in await self._schedules.list_enabled_cron():
+        for sched in await reader.list_enabled_cron():
             try:  # one bad schedule must NOT abort the whole cross-org tick (cf. the reaper)
-                fired += await self._fire_one(sched, now)
+                with org_scope(sched.organisation_id):
+                    fired += await self._fire_one(sched, now)
             except Exception:  # noqa: BLE001, S112 — best-effort sweep; skip this schedule, continue
                 continue
         return fired

@@ -87,11 +87,29 @@ class _FakeProv:
         self.events.append(record.action)
 
 
+class _FakeMaintenance:
+    """ADR-030 §3 cross-org reader fake: fire_due enumerates enabled cron schedules from the owner
+    engine here, then fires each on the org-bound repos under org_scope. Forwards to the same
+    schedule repo so the test's single store is the source of truth."""
+
+    def __init__(self, srepo: _FakeSchedRepo) -> None:
+        self._srepo = srepo
+
+    async def list_enabled_cron(self, *, limit: int = 500) -> list[EngineSchedule]:
+        return await self._srepo.list_enabled_cron(limit=limit)
+
+
 def _svc(
     srepo: _FakeSchedRepo, jrepo: _FakeJobRepo, enqueue=None
 ) -> tuple[ScheduleService, _FakeProv]:  # noqa: ANN001
     prov = _FakeProv()
-    svc = ScheduleService(schedules=srepo, jobs=jrepo, provenance=prov, enqueue=enqueue)  # type: ignore[arg-type]
+    svc = ScheduleService(
+        schedules=srepo,  # type: ignore[arg-type]
+        jobs=jrepo,  # type: ignore[arg-type]
+        provenance=prov,  # type: ignore[arg-type]
+        enqueue=enqueue,
+        maintenance=_FakeMaintenance(srepo),  # type: ignore[arg-type]
+    )
     return svc, prov
 
 

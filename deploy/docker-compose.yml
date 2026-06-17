@@ -686,7 +686,12 @@ services:
     profiles: [services]
     networks: [substrate]
 
-  # R5-S1 — execution-engine schema migration one-shot (runs `alembic upgrade head`, then exits).
+  # R5-S1 — execution-engine schema migration one-shot. Runs `alembic upgrade head` then the
+  # rls-role bootstrap: (0004) enables the RLS backstop, then the bootstrap idempotently provisions
+  # the NOSUPERUSER oraclous_app runtime role + DML GRANTs on the four engine org-scoped tables
+  # (ADR-030 §3). Migrations + this bootstrap stay on the owner; only the long-running api + the
+  # org-bound worker path below switch their DSN to oraclous_app (the maintenance/reaper/beat read
+  # engine keeps the owner DSN).
   engine-migrate:
     build:
       context: ..
@@ -694,7 +699,10 @@ services:
     image: oraclous-execution-engine-service:${IMAGE_TAG:-dev}
     environment:
       ENGINE_DATABASE_URL: "postgresql+asyncpg://oraclous:oraclous@postgres:5432/oraclous"
-    command: ["alembic", "upgrade", "head"]
+    command:
+      - sh
+      - -c
+      - "alembic upgrade head && python -m oraclous_execution_engine_service.core.bootstrap_rls_role"
     depends_on:
       postgres:
         condition: service_healthy
@@ -712,7 +720,16 @@ services:
     expose:
       - "8000"
     environment:
-      ENGINE_DATABASE_URL: "postgresql+asyncpg://oraclous:oraclous@postgres:5432/oraclous"
+      # ADR-030 §3: the ORG-BOUND request path connects as the NOSUPERUSER/NOBYPASSRLS oraclous_app
+      # role so the FORCE'd RLS policy bites it (the owner `oraclous` would bypass it). The
+      # oraclous_app role + DML GRANTs are provisioned by the postgres init script (fresh volume)
+      # and the engine-migrate bootstrap (existing volume), before this service connects.
+      ENGINE_DATABASE_URL: "postgresql+asyncpg://oraclous_app:app@postgres:5432/oraclous"
+      # The MAINTENANCE (owner) DSN the cross-org sweeps read on — the api does not run them, but it
+      # is set uniformly across the engine processes; the owner bypasses RLS so cross-org reads pass.
+      ENGINE_MAINTENANCE_DATABASE_URL: "postgresql+asyncpg://oraclous:oraclous@postgres:5432/oraclous"
+      # Refuse to start if the org-bound runtime role can bypass RLS (a void backstop) — fail closed.
+      ENGINE_RLS_ASSERT_RUNTIME_ROLE: "true"
       ENGINE_REDIS_URL: "redis://redis:6379/1"
       # Identity seam: dev-auth by default; AUTH_MODE=gateway (ADR-018) trusts the gateway's
       # X-Principal-*/X-Organisation-Id gated on the shared X-Internal-Key, and forwards the same
@@ -746,7 +763,16 @@ services:
     command: ["celery", "-A", "oraclous_execution_engine_service.tasks.celery_app:celery_app",
               "worker", "--loglevel=info", "--concurrency=2"]
     environment:
-      ENGINE_DATABASE_URL: "postgresql+asyncpg://oraclous:oraclous@postgres:5432/oraclous"
+      # ADR-030 §3: the WORKER runs BOTH the org-bound job/round-table execution (binds the task org
+      # via use_organisation_context) AND the cross-org sweeps (the reaper + Beat fire here). Its
+      # ORG-BOUND engine connects as the NOSUPERUSER oraclous_app role so RLS bites those writes; a
+      # worker left on the owner DSN would silently bypass RLS. worker_process_init asserts this
+      # role at boot (gated on the flag below). The MAINTENANCE engine is the OWNER DSN — the
+      # cross-org sweep READS run on it (it bypasses RLS), with each per-row settle going back
+      # through the org-bound engine under org_scope. Role + GRANTs from the engine-migrate bootstrap.
+      ENGINE_DATABASE_URL: "postgresql+asyncpg://oraclous_app:app@postgres:5432/oraclous"
+      ENGINE_MAINTENANCE_DATABASE_URL: "postgresql+asyncpg://oraclous:oraclous@postgres:5432/oraclous"
+      ENGINE_RLS_ASSERT_RUNTIME_ROLE: "true"
       ENGINE_REDIS_URL: "redis://redis:6379/1"
       # The worker forwards identity to the harness reconstructed from the durable job; in gateway
       # mode it sends X-Principal-*/X-Internal-Key (so the harness sees the submitting tenant).
@@ -773,7 +799,13 @@ services:
     command: ["celery", "-A", "oraclous_execution_engine_service.tasks.celery_app:celery_app",
               "beat", "--loglevel=info"]
     environment:
+      # Beat only DISPATCHES the reap/fire task messages to the broker — the WORKER executes them
+      # (and owns both engines there). Beat itself opens no DB connection, so it stays on the owner
+      # DSN and does NOT set ENGINE_RLS_ASSERT_RUNTIME_ROLE (it never opens an org-bound engine, and
+      # worker_process_init does not fire for a beat process). The cross-org sweep's actual two-engine
+      # split (owner read + org-bound settle) happens in the worker, per ADR-030 §3.
       ENGINE_DATABASE_URL: "postgresql+asyncpg://oraclous:oraclous@postgres:5432/oraclous"
+      ENGINE_MAINTENANCE_DATABASE_URL: "postgresql+asyncpg://oraclous:oraclous@postgres:5432/oraclous"
       ENGINE_REDIS_URL: "redis://redis:6379/1"
     depends_on:
       redis:

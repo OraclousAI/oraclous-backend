@@ -17,7 +17,11 @@ from typing import Any
 from oraclous_governance import Principal
 from oraclous_substrate import ProvenanceCollector, ProvenanceRecord
 
+from oraclous_execution_engine_service.core.rls import org_scope
 from oraclous_execution_engine_service.models.roundtable import EngineRoundtable
+from oraclous_execution_engine_service.repositories.maintenance_repository import (
+    EngineMaintenanceRepository,
+)
 from oraclous_execution_engine_service.repositories.roundtable_repository import (
     RoundtableRepository,
 )
@@ -52,11 +56,17 @@ class RoundtableService:
         provenance: ProvenanceCollector,
         harness: HarnessClient | None = None,
         enqueue: EnqueueFn | None = None,
+        maintenance: EngineMaintenanceRepository | None = None,
     ) -> None:
         self._roundtables = roundtables
         self._provenance = provenance
         self._harness = harness  # the worker (drive) needs this
         self._enqueue = enqueue  # the request path (create/respond) needs this
+        # ADR-030 §3: the reaper path injects the OWNER-engine cross-org reader. The stale-RUNNING
+        # enumeration reads ACROSS orgs on it (FORCE'd RLS on the org-bound engine would fail it
+        # closed); each stranded round-table is re-queued on the ORG-BOUND `roundtables` repo under
+        # org_scope(rt.org). None on the request/drive path (those are org-bound).
+        self._maintenance = maintenance
 
     async def create(
         self,
@@ -215,16 +225,27 @@ class RoundtableService:
     async def reap_stale(self, *, older_than: object) -> int:
         """System sweep (with the job reaper): re-queue round-tables stuck RUNNING past the
         lease — a driver that died mid-turn — so a fresh driver re-claims them. The CAS claim makes
-        the re-drive idempotent. Each row is re-queued + re-enqueued under its OWN org."""
+        the re-drive idempotent. Each row is re-queued + re-enqueued under its OWN org.
+
+        ADR-030 §3 two-engine carve: the stale-RUNNING ENUMERATION reads across orgs on the OWNER
+        engine (``self._maintenance``) — FORCE'd RLS on the org-bound engine would fail it closed to
+        zero rows. Each row's RUNNING→QUEUED CAS is then applied on the ORG-BOUND
+        ``self._roundtables`` repo INSIDE ``org_scope(rt.org)`` (RLS WITH CHECK admits it; a
+        cross-org write is denied 42501). The row's org comes from the trusted maintenance read,
+        never request input."""
+        reader = self._maintenance
+        if reader is None:  # the reaper path always injects it; fail loud if mis-wired
+            raise RoundtableError("reap_stale requires the maintenance (cross-org) reader")
         reaped = 0
-        for rt in await self._roundtables.list_stale_running(older_than):
+        for rt in await reader.list_stale_roundtables(older_than):
             try:
-                _, ok = await self._roundtables.transition(
-                    rt.id,
-                    rt.organisation_id,
-                    new_state="QUEUED",
-                    allowed_from=frozenset({"RUNNING"}),
-                )
+                with org_scope(rt.organisation_id):
+                    _, ok = await self._roundtables.transition(
+                        rt.id,
+                        rt.organisation_id,
+                        new_state="QUEUED",
+                        allowed_from=frozenset({"RUNNING"}),
+                    )
                 if ok and self._enqueue is not None:
                     self._enqueue(rt.id, rt.organisation_id, rt.user_id)
                     reaped += 1

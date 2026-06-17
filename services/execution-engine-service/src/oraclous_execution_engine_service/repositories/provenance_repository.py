@@ -15,15 +15,22 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
+from oraclous_execution_engine_service.core.rls import install_org_guc_guard
 from oraclous_execution_engine_service.models.provenance import EngineProvenanceEvent
 
 
 class ProvenanceRepository:
-    def __init__(self, db_url: str, *, worker_pool: bool = False) -> None:
+    def __init__(
+        self, db_url: str, *, worker_pool: bool = False, install_guard: bool = True
+    ) -> None:
         # NullPool in a worker (a task owns + disposes its connection, ADR-012); the request path
         # uses the default pool. Mirrors JobRepository.
         kwargs = {"poolclass": NullPool} if worker_pool else {}
         self._engine = create_async_engine(db_url, echo=False, **kwargs)
+        # ADR-030 §2: engine_provenance rides along on the org-bound engine (clean — every read is
+        # org-scoped via the request principal; the org-GUC guard scopes it at the data layer too).
+        if install_guard:
+            install_org_guc_guard(self._engine)
         self._session = async_sessionmaker(self._engine, expire_on_commit=False)
 
     async def close(self) -> None:

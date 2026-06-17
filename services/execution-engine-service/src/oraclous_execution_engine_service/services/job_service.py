@@ -17,11 +17,15 @@ from typing import Any
 from oraclous_governance import Principal
 from oraclous_substrate import ProvenanceCollector, ProvenanceRecord
 
+from oraclous_execution_engine_service.core.rls import org_scope
 from oraclous_execution_engine_service.domain.state import sources_for
 from oraclous_execution_engine_service.domain.status_map import map_harness_status
 from oraclous_execution_engine_service.models.enums import EngineJobState
 from oraclous_execution_engine_service.models.job import EngineJob
 from oraclous_execution_engine_service.repositories.job_repository import JobRepository
+from oraclous_execution_engine_service.repositories.maintenance_repository import (
+    EngineMaintenanceRepository,
+)
 from oraclous_execution_engine_service.services.harness_client import (
     HarnessClient,
     HarnessClientError,
@@ -50,11 +54,17 @@ class JobService:
         provenance: ProvenanceCollector,
         harness: HarnessClient | None = None,
         enqueue: EnqueueFn | None = None,
+        maintenance: EngineMaintenanceRepository | None = None,
     ) -> None:
         self._jobs = jobs
         self._provenance = provenance
         self._harness = harness  # the worker path needs this
         self._enqueue = enqueue  # the request path needs this
+        # ADR-030 §3: the reaper path injects the OWNER-engine cross-org reader. The stale-RUNNING
+        # enumeration reads ACROSS orgs on this engine (FORCE'd RLS on the org-bound engine would
+        # fail it closed); each reaped row is then settled on the ORG-BOUND `jobs` repo under
+        # org_scope(row.org). None on the request/worker-execute path (no cross-org read there).
+        self._maintenance = maintenance
 
     async def submit(
         self,
@@ -210,16 +220,28 @@ class JobService:
     async def reap_stale(self, *, older_than: datetime) -> int:
         """System sweep: a job stuck RUNNING past its lease (worker/DB blip after RUNNING) is timed
         out + retried if eligible. Cross-org maintenance — each row settles under its OWN org.
-        Scheduled by Celery Beat in S5."""
+        Scheduled by Celery Beat in S5.
+
+        ADR-030 §3 two-engine carve: the stale-RUNNING ENUMERATION reads across orgs on the OWNER
+        engine (``self._maintenance``) — FORCE'd RLS on the org-bound engine would fail it closed to
+        zero rows and never find a dead worker's job. Each reaped row is then settled on the
+        ORG-BOUND ``self._jobs`` repo INSIDE ``org_scope(job.organisation_id)``, so the row-locked
+        TIMED_OUT/retry transition + the provenance write bind that org's GUC (RLS WITH CHECK admits
+        them; a cross-org write would be denied 42501). The row's org comes from the trusted
+        maintenance read, never request input (T1-M1)."""
+        reader = self._maintenance
+        if reader is None:  # the reaper path always injects it; fail loud if mis-wired
+            raise JobError("reap_stale requires the maintenance (cross-org) reader")
         reaped = 0
-        for job in await self._jobs.list_stale_running(older_than):
+        for job in await reader.list_stale_jobs(older_than):
             try:  # one bad row (e.g. a broker hiccup on its retry) must not stop the whole sweep
-                await self._settle(
-                    job,
-                    EngineJobState.TIMED_OUT,
-                    error_type="lease_expired",
-                    error_message="worker lease expired with no terminal checkpoint",
-                )
+                with org_scope(job.organisation_id):
+                    await self._settle(
+                        job,
+                        EngineJobState.TIMED_OUT,
+                        error_type="lease_expired",
+                        error_message="worker lease expired with no terminal checkpoint",
+                    )
                 reaped += 1
             except Exception:  # noqa: BLE001, S112 — best-effort maintenance; skip the row, continue
                 continue

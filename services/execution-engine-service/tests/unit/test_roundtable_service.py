@@ -75,6 +75,17 @@ class _FakeProv:
         self.events.append(record.action)
 
 
+class _FakeMaintenance:
+    """ADR-030 §3 cross-org reader fake: the reaper enumerates stale round-tables on the owner
+    engine here, then re-queues each on the org-bound repo under org_scope. Forwards to the repo."""
+
+    def __init__(self, repo: _FakeRepo) -> None:
+        self._repo = repo
+
+    async def list_stale_roundtables(self, older_than, *, limit: int = 100):  # noqa: ANN001, ANN202
+        return await self._repo.list_stale_running(older_than, limit=limit)
+
+
 def _request_svc(harness=None):  # noqa: ANN001, ANN202
     repo, prov, calls = _FakeRepo(), _FakeProv(), []
     svc = RoundtableService(
@@ -82,6 +93,7 @@ def _request_svc(harness=None):  # noqa: ANN001, ANN202
         provenance=prov,
         harness=harness,
         enqueue=lambda r, o, u: calls.append(r),
+        maintenance=_FakeMaintenance(repo),
     )
     return svc, repo, prov, calls
 

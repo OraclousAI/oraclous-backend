@@ -68,5 +68,20 @@ services:
       - ingestion_jobs
       - recipes
       - entity_resolutions
+  # Slice (engine) — execution-engine-service: the SPLIT case. All four org-scoped tables carry a
+  # uuid organisation_id and RLS is enabled on each. The request/driver path + the org-bound Celery
+  # task execution bind the org (principal / use_organisation_context) on the org-bound oraclous_app
+  # engine, so RLS bites the full set (no exclusions). The three cross-org maintenance sweeps (the
+  # reaper list_stale_running + Beat list_enabled_cron) read across orgs on a SEPARATE owner engine
+  # that bypasses RLS (the carve, ADR-030 §3) — that is an engine/role split, NOT an RLS exclusion:
+  # the tables themselves are fully RLS-enabled, and the per-row settle after a sweep writes through
+  # the org-bound engine under org_scope, so every write is policy-scoped. engine_provenance rides
+  # along on the org-bound engine (clean).
+  execution-engine-service:
+    tables:
+      - engine_jobs
+      - engine_schedules
+      - engine_roundtables
+      - engine_provenance
   # Future slices add: capability-registry-service, harness-runtime-service,
-  # execution-engine-service, application-gateway-service.
+  # application-gateway-service.
