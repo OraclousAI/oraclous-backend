@@ -19,7 +19,12 @@ from urllib.parse import urlencode
 
 from oraclous_auth_service.core.encryption import decrypt, encrypt
 from oraclous_auth_service.core.oauth_providers import SUPPORTED, ProviderConfig, get_provider
-from oraclous_auth_service.domain.oauth import generate_pkce, generate_state, merge_scopes
+from oraclous_auth_service.domain.oauth import (
+    generate_pkce,
+    generate_state,
+    is_allowed_redirect_uri,
+    merge_scopes,
+)
 from oraclous_auth_service.domain.organisations import default_org_name
 from oraclous_auth_service.repositories.audit_repository import AuditRepository
 from oraclous_auth_service.repositories.oauth_repository import (
@@ -29,6 +34,7 @@ from oraclous_auth_service.repositories.oauth_repository import (
 from oraclous_auth_service.repositories.user_repository import UserRepository, normalize_email
 from oraclous_auth_service.services.auth_service import AuthService, TokenBundle
 from oraclous_auth_service.services.org_service import OrgService
+from oraclous_governance import is_prod
 
 _STATE_TTL_SECONDS = 600
 
@@ -69,6 +75,12 @@ class OAuthError(Exception):
     """Invalid state / code / profile — maps to a generic HTTP 400 (no oracle)."""
 
 
+class OAuthRedirectUriNotAllowedError(OAuthError):
+    """The client-supplied ``redirect_uri`` is not on the provider's server-side allow-list (WP-11,
+    T-OAUTH open-redirect). Subclass of ``OAuthError`` so it maps to the same generic HTTP 400 — the
+    rejection must not become an oracle that reveals the allowed set."""
+
+
 class OAuthProviderUnconfiguredError(Exception):
     """The provider has no client credentials configured — maps to HTTP 503."""
 
@@ -103,12 +115,23 @@ class OAuthService:
         return provider
 
     @staticmethod
+    def _check_redirect_uri(provider: ProviderConfig, redirect_uri: str) -> None:
+        """Reject a client-supplied ``redirect_uri`` not on the provider's server-side allow-list
+        (WP-11, T-OAUTH). Permissive in dev (empty list allows any), fail-closed in prod (empty list
+        denies all). Raises ``OAuthRedirectUriNotAllowedError`` (→ generic 400, no oracle)."""
+        if not is_allowed_redirect_uri(
+            redirect_uri, provider.allowed_redirect_uris, permissive_when_empty=not is_prod()
+        ):
+            raise OAuthRedirectUriNotAllowedError("redirect_uri is not permitted")
+
+    @staticmethod
     def available_providers() -> list[str]:
         """Supported providers that have credentials configured (names only — no secrets)."""
         return [name for name in SUPPORTED if get_provider(name) is not None]
 
     async def begin_login(self, *, provider_name: str, redirect_uri: str) -> str:
         provider = self._provider_or_503(provider_name)
+        self._check_redirect_uri(provider, redirect_uri)
         state = generate_state()
         verifier, challenge = generate_pkce()
         await self._states.create(
@@ -164,6 +187,7 @@ class OAuthService:
         is bound later at ``complete_connect`` from the authenticated principal, not the state — so
         no user/org is stored on the ephemeral handshake row."""
         provider = self._provider_or_503(provider_name)
+        self._check_redirect_uri(provider, redirect_uri)
         state = generate_state()
         verifier, challenge = generate_pkce()
         await self._states.create(

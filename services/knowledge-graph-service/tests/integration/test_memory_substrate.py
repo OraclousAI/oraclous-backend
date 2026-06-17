@@ -272,6 +272,78 @@ async def test_store_dedups_on_content_hash(memory_driver) -> None:  # noqa: ANN
     assert dup.memory_id == first.memory_id  # normalised-hash dedup, no second node
 
 
+async def test_content_hash_dedup_is_db_enforced_and_supersede_still_works(memory_driver) -> None:  # noqa: ANN001
+    """WP-11: the content-hash dedup is a DB-ENFORCED uniqueness invariant (kgs_memory_current_dedup
+    on the single ``current_dedup_key`` property), not just the best-effort read-then-write.
+
+    Proven by going UNDER the service's read fast-path — a direct second ``repo.create`` of the same
+    (content_hash, type, scope) with a distinct memory_id must hit the constraint and raise
+    ``MemoryDedupConflict`` (the race-loser outcome). And a content-unchanged supersede must STILL
+    succeed: the old node's key is cleared as it leaves the current set, so the successor's
+    identical key does not collide with its own predecessor."""
+    from oraclous_knowledge_graph_service.domain.memory_decay import content_hash
+    from oraclous_knowledge_graph_service.repositories.memory_repository import (
+        MemoryDedupConflict,
+        MemoryRepository,
+    )
+    from oraclous_knowledge_graph_service.schema.memory_schemas import MemoryUpdate
+
+    graphs = _FakeGraphs()
+    graph_id = uuid.uuid4()
+    graphs.register(_ORG_A, graph_id)
+    svc = _service(memory_driver, graphs)
+
+    with use_organisation_context(_ctx(_ORG_A)):
+        first = await svc.store(graph_id=graph_id, req=_create("Quota ceiling is fixed at 100"))
+
+        # Direct create that bypasses the read fast-path — same dedup tuple, new memory_id → the DB
+        # uniqueness constraint must reject it (the race-loser path the service tolerates).
+        repo = MemoryRepository(memory_driver, graph_id=str(graph_id), organisation_id=_ORG_A)
+        now = datetime.now(UTC)
+        with pytest.raises(MemoryDedupConflict):
+            repo.create(
+                memory_id=str(uuid.uuid4()),
+                memory_type=MemoryType.SEMANTIC.value,
+                content="Quota ceiling is fixed at 100",
+                content_hash=content_hash("Quota ceiling is fixed at 100"),
+                base_importance=0.5,
+                confidence=0.8,
+                scope=MemoryScope.AGENT.value,
+                source=MemorySource.AGENT.value,
+                agent_id="",
+                session_id="",
+                valid_from=now,
+                now=now,
+                embedding=None,
+                extra={"subject": "", "predicate": "", "object": "", "is_negation": False},
+            )
+
+        # exactly one CURRENT node carries the dedup key for this content.
+        records, _, _ = memory_driver.execute_query(
+            "MATCH (m:Memory {organisation_id: $org, graph_id: $graph}) "
+            "WHERE m.valid_to IS NULL AND m.current_dedup_key IS NOT NULL "
+            "RETURN count(m) AS n",
+            org=_ORG_A,
+            graph=str(graph_id),
+        )
+        assert records[0]["n"] == 1
+
+        # A content-UNCHANGED supersede (only the reason changes) keeps the same content_hash; it
+        # must still succeed because the predecessor's key is cleared as it is superseded.
+        up = await svc.supersede(
+            graph_id=graph_id,
+            memory_id=first.memory_id,
+            req=MemoryUpdate(content="Quota ceiling is fixed at 100", reason="re-affirmed"),
+        )
+        assert up.new_memory_id != first.memory_id
+
+    # the successor is the sole current keyed node; the predecessor lost its key on supersede.
+    old_node = _node(memory_driver, _ORG_A, graph_id, first.memory_id)
+    new_node = _node(memory_driver, _ORG_A, graph_id, up.new_memory_id)
+    assert old_node is not None and old_node.get("current_dedup_key") is None
+    assert new_node is not None and new_node.get("current_dedup_key") is not None
+
+
 # ---------------------------------------------------------------- decay ranking
 
 
