@@ -17,6 +17,7 @@ from oraclous_application_gateway_service.core.dependencies import (
     MemberDep,
     PaginationDep,
 )
+from oraclous_application_gateway_service.models.integration_key import IntegrationKey
 from oraclous_application_gateway_service.schema.integration_key_schemas import (
     KeyOut,
     MintedKeyResponse,
@@ -64,12 +65,14 @@ async def mint_key(
 
 
 @router.get("", response_model=list[KeyOut])
-async def list_keys(member: MemberDep, svc: KeyManagementDep, page: PaginationDep) -> list[KeyOut]:
+async def list_keys(
+    member: MemberDep, svc: KeyManagementDep, page: PaginationDep
+) -> list[IntegrationKey]:
     return await svc.list_keys(member.organisation_id, limit=page.limit, offset=page.offset)
 
 
 @router.get("/{key_id}", response_model=KeyOut)
-async def get_key(key_id: uuid.UUID, member: MemberDep, svc: KeyManagementDep) -> KeyOut:
+async def get_key(key_id: uuid.UUID, member: MemberDep, svc: KeyManagementDep) -> IntegrationKey:
     row = await svc.get(key_id=key_id, organisation_id=member.organisation_id)
     if row is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="no such integration key")

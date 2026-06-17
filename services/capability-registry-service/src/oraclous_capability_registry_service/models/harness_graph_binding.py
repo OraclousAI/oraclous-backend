@@ -14,12 +14,16 @@ delete cannot cascade here, so dangling rows are tolerated and lazily skipped on
 ``UNIQUE(harness_capability_id, graph_id)`` makes attach idempotent (the repository maps the
 IntegrityError to an already-bound success). ``created_by`` is added explicitly (the base mixin only
 gives ``created_at``/``updated_at``).
+
+No ``from __future__ import annotations`` — SQLAlchemy resolves the ``Mapped[...]`` annotations at
+mapper configuration, so they must be real types.
 """
 
-from __future__ import annotations
+import uuid
 
-from sqlalchemy import Column, ForeignKey, Index, UniqueConstraint
+from sqlalchemy import ForeignKey, Index, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.orm import Mapped, mapped_column
 
 from oraclous_capability_registry_service.models.base_model import BaseModel
 
@@ -27,17 +31,17 @@ from oraclous_capability_registry_service.models.base_model import BaseModel
 class HarnessGraphBinding(BaseModel):
     __tablename__ = "harness_graph_binding"
 
-    id = Column(UUID(as_uuid=True), primary_key=True)
-    harness_capability_id = Column(
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    harness_capability_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("capability_descriptors.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
     )
     # A plain UUID — graphs are owned by knowledge-graph-service (no cross-service FK; ADR-029 §4).
-    graph_id = Column(UUID(as_uuid=True), nullable=False)
-    organisation_id = Column(UUID(as_uuid=True), nullable=False)
-    created_by = Column(UUID(as_uuid=True), nullable=False)
+    graph_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    organisation_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    created_by: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
 
     __table_args__ = (
         UniqueConstraint("harness_capability_id", "graph_id", name="uq_harness_graph_binding_pair"),

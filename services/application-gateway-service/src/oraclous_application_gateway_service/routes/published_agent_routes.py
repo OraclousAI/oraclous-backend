@@ -24,6 +24,7 @@ from oraclous_application_gateway_service.core.dependencies import (
     PublishedAgentRepoDep,
     PublishedAgentServiceDep,
 )
+from oraclous_application_gateway_service.models.published_agent import PublishedAgent
 from oraclous_application_gateway_service.schema.invoke_schemas import (
     InvokeRequest,
     InvokeResponse,
@@ -48,7 +49,7 @@ router = APIRouter(prefix="/v1/agents", tags=["gateway"])
 @router.post("", response_model=PublishedAgentOut, status_code=status.HTTP_201_CREATED)
 async def publish_agent(
     body: PublishAgentRequest, admin: AdminDep, svc: PublishedAgentServiceDep
-) -> PublishedAgentOut:
+) -> PublishedAgent:
     try:
         return await svc.publish(
             organisation_id=admin.organisation_id,
@@ -67,7 +68,7 @@ async def publish_agent(
 @router.get("", response_model=list[PublishedAgentOut])
 async def list_agents(
     member: MemberDep, svc: PublishedAgentServiceDep, page: PaginationDep
-) -> list[PublishedAgentOut]:
+) -> list[PublishedAgent]:
     return await svc.list_agents(member.organisation_id, limit=page.limit, offset=page.offset)
 
 
@@ -84,7 +85,7 @@ async def unpublish_agent(slug: str, admin: AdminDep, svc: PublishedAgentService
 @router.get("/{slug}/details", response_model=PublishedAgentOut)
 async def get_agent_details(
     slug: str, member: MemberDep, svc: PublishedAgentServiceDep
-) -> PublishedAgentOut:
+) -> PublishedAgent:
     # member-plane single-agent read (org-scoped) — the full management view, not the key-public
     # projection. Lets a console detail page hydrate by slug without a list + client-side filter.
     row = await svc.get_agent(organisation_id=member.organisation_id, slug=slug)

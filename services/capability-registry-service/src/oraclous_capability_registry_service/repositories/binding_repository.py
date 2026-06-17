@@ -15,8 +15,9 @@ service's job (this layer has no cross-service reach).
 from __future__ import annotations
 
 import uuid
+from typing import cast
 
-from sqlalchemy import delete, select
+from sqlalchemy import CursorResult, delete, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
@@ -103,7 +104,7 @@ class BindingRepository:
                     HarnessGraphBinding.organisation_id == organisation_id,
                 )
             )
-            return (result.rowcount or 0) > 0
+            return (cast("CursorResult[object]", result).rowcount or 0) > 0
 
     async def list_by_graph(
         self, *, organisation_id: uuid.UUID, graph_id: uuid.UUID

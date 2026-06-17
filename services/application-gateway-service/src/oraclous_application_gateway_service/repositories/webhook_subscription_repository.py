@@ -8,8 +8,9 @@ reads/writes (``list_for_org`` / ``delete_for_org``) are org-scoped (ADR-006).
 from __future__ import annotations
 
 import uuid
+from typing import cast
 
-from sqlalchemy import delete, select
+from sqlalchemy import CursorResult, delete, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from oraclous_application_gateway_service.domain.pagination import DEFAULT_LIMIT
@@ -79,4 +80,4 @@ class WebhookSubscriptionRepository:
                         WebhookSubscription.organisation_id == organisation_id,
                     )
                 )
-            return result.rowcount > 0
+            return cast("CursorResult[object]", result).rowcount > 0

@@ -8,8 +8,9 @@ are reached only through an already-resolved thread, so they inherit that scopin
 from __future__ import annotations
 
 import uuid
+from typing import cast
 
-from sqlalchemy import select, update
+from sqlalchemy import CursorResult, select, update
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from oraclous_application_gateway_service.domain.pagination import DEFAULT_LIMIT
@@ -95,7 +96,7 @@ class ChatRepository:
                 )
                 .values(deleted_at=func.now())
             )
-            return result.rowcount > 0
+            return cast("CursorResult[object]", result).rowcount > 0
 
     # --- messages (reached only via an already-resolved thread) ---
 

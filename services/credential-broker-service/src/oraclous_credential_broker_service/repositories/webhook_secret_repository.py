@@ -7,8 +7,9 @@ Mirrors the ``CredentialRepository`` engine/session idiom. ``get_for_org`` filte
 from __future__ import annotations
 
 import uuid
+from typing import cast
 
-from sqlalchemy import delete, select
+from sqlalchemy import CursorResult, delete, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from oraclous_credential_broker_service.models.webhook_secret import WebhookSecret
@@ -53,7 +54,7 @@ class WebhookSecretRepository:
                         WebhookSecret.organisation_id == organisation_id,
                     )
                 )
-            return (result.rowcount or 0) > 0
+            return (cast("CursorResult[object]", result).rowcount or 0) > 0
 
     async def iter_all_ciphertexts(self) -> list[tuple[uuid.UUID, uuid.UUID, str]]:
         """Every secret as ``(id, organisation_id, encrypted_secret)`` — the backfill sweep."""

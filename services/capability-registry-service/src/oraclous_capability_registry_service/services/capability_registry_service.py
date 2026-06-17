@@ -9,6 +9,7 @@ reaches the table) and the repository auto-computes ``content_hash``. Every call
 
 from __future__ import annotations
 
+import builtins
 import uuid
 from typing import Any
 
@@ -74,7 +75,7 @@ class CapabilityRegistryService:
 
     async def list(
         self, *, organisation_id: uuid.UUID, kind: DescriptorKind | None = None
-    ) -> list[CapabilityOut]:
+    ) -> builtins.list[CapabilityOut]:
         rows = (
             await self._repo.list_by_kind(organisation_id, kind)
             if kind is not None
@@ -84,19 +85,19 @@ class CapabilityRegistryService:
 
     async def search(
         self, *, organisation_id: uuid.UUID, filter_dict: dict[str, Any]
-    ) -> list[CapabilityOut]:
+    ) -> builtins.list[CapabilityOut]:
         rows = await self._repo.search_by_descriptor(organisation_id, filter_dict)
         return [_out(r) for r in rows]
 
     async def match_capabilities(
-        self, *, organisation_id: uuid.UUID, capability_names: list[str]
-    ) -> list[CapabilityOut]:
+        self, *, organisation_id: uuid.UUID, capability_names: builtins.list[str]
+    ) -> builtins.list[CapabilityOut]:
         rows = await self._repo.match_capabilities(organisation_id, capability_names)
         return [_out(r) for r in rows]
 
     # --- tool registry (a tool is a descriptor of kind=tool with a deterministic id) ---------
 
-    async def list_tools(self, *, organisation_id: uuid.UUID) -> list[CapabilityOut]:
+    async def list_tools(self, *, organisation_id: uuid.UUID) -> builtins.list[CapabilityOut]:
         rows = await self._repo.list_by_kind(organisation_id, DescriptorKind.TOOL)
         return [_out(r) for r in rows]
 

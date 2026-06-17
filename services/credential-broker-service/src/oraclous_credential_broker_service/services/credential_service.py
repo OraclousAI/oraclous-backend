@@ -10,6 +10,7 @@ the decrypted secret is NEVER returned here — runtime resolution goes through 
 
 from __future__ import annotations
 
+import builtins
 from uuid import UUID
 
 from oraclous_credential_broker_service.domain.providers import (
@@ -114,7 +115,7 @@ class CredentialService:
 
     async def list(
         self, *, organisation_id: UUID, user_id: UUID, tool_id: UUID | None = None
-    ) -> list[CredentialOut]:
+    ) -> builtins.list[CredentialOut]:
         request = RequestCredentials(user_id=user_id, tool_id=tool_id)
         rows = await self._repo.list_credentials(request, organisation_id)
         return [_metadata(r) for r in rows]
@@ -131,12 +132,12 @@ class CredentialService:
         if not await self._repo.delete_credential(credential_id, organisation_id, user_id):
             raise CredentialNotFoundError("credential not found")
 
-    async def list_providers(self, *, user_id: UUID, organisation_id: UUID) -> list[str]:
+    async def list_providers(self, *, user_id: UUID, organisation_id: UUID) -> builtins.list[str]:
         """The distinct providers a user has connected (order-stable), org+user scoped."""
         rows = await self._repo.list_credentials(
             RequestCredentials(user_id=user_id), organisation_id
         )
-        out: list[str] = []
+        out: builtins.list[str] = []
         for r in rows:
             if r.provider not in out:
                 out.append(r.provider)

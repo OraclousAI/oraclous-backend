@@ -5,14 +5,17 @@ One row per issued integration key. The key itself is never stored: only its non
 Tenancy is ``organisation_id`` (NOT NULL — a key always carries a real org; the legacy empty-org
 placeholder is deliberately not inherited). Exactly one binding is set — a published-agent slug XOR
 capability allow-list — which is the per-key authorization the gateway enforces before forwarding.
+
+No ``from __future__ import annotations`` — SQLAlchemy resolves the ``Mapped[...]`` annotations at
+mapper configuration, so they must be real types.
 """
 
-from __future__ import annotations
-
 import uuid
+from datetime import datetime
 
-from sqlalchemy import CheckConstraint, Column, DateTime, Integer, String, Text
+from sqlalchemy import CheckConstraint, DateTime, Integer, String, Text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
+from sqlalchemy.orm import Mapped, mapped_column
 
 from oraclous_application_gateway_service.models.base_model import BaseModel
 
@@ -26,19 +29,27 @@ class IntegrationKey(BaseModel):
         ),
     )
 
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    organisation_id = Column(UUID(as_uuid=True), nullable=False, index=True)
-    key_prefix = Column(String(32), nullable=False, unique=True, index=True)
-    key_hash = Column(Text, nullable=False)
-    last4 = Column(String(4))
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    organisation_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), nullable=False, index=True
+    )
+    key_prefix: Mapped[str] = mapped_column(String(32), nullable=False, unique=True, index=True)
+    key_hash: Mapped[str] = mapped_column(Text, nullable=False)
+    last4: Mapped[str | None] = mapped_column(String(4))
     # exactly one binding (CHECK above) — the per-key authz the gateway enforces pre-forward.
     # none_as_null so Python None binds SQL NULL (not the JSONB value 'null', which would satisfy
     # `IS NOT NULL` and break the exactly-one-binding CHECK).
-    bound_agent_slug = Column(String, nullable=True)
-    capability_allow_list = Column(JSONB(none_as_null=True), nullable=True)
+    bound_agent_slug: Mapped[str | None] = mapped_column(String, nullable=True)
+    capability_allow_list: Mapped[list[str] | None] = mapped_column(
+        JSONB(none_as_null=True), nullable=True
+    )
     # per-key edge policy (enforcement lands in later slices: CORS in S5)
-    cors_origins = Column(JSONB(none_as_null=True), nullable=True)
-    rate_limit = Column(Integer, nullable=True)
-    rate_window_seconds = Column(Integer, nullable=True)
-    status = Column(String, nullable=False, default="active")  # 'active' | 'revoked'
-    expires_at = Column(DateTime(timezone=True), nullable=True)  # optional TTL; None = no expiry
+    cors_origins: Mapped[list[str] | None] = mapped_column(JSONB(none_as_null=True), nullable=True)
+    rate_limit: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    rate_window_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    status: Mapped[str] = mapped_column(
+        String, nullable=False, default="active"
+    )  # 'active' | 'revoked'
+    expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )  # optional TTL; None = no expiry

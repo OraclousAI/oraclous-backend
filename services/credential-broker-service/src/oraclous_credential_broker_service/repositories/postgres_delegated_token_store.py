@@ -20,9 +20,9 @@ matches the engine-injection pattern the broker tests use.
 from __future__ import annotations
 
 import uuid
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
-from sqlalchemy import select, update
+from sqlalchemy import Table, select, update
 
 from oraclous_credential_broker_service.models.delegated_token import DelegatedToken
 from oraclous_credential_broker_service.services.delegation_service import (
@@ -33,7 +33,9 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncEngine
 
 
-_TABLE = DelegatedToken.__table__
+# A mapped class's ``__table__`` is typed ``FromClause`` (lacks ``.insert()`` / is not an
+# ``update()`` target), but is a ``Table`` at runtime — narrow it so the Core DML below type-checks.
+_TABLE: Table = cast("Table", DelegatedToken.__table__)
 
 
 class PostgresDelegatedTokenStore:

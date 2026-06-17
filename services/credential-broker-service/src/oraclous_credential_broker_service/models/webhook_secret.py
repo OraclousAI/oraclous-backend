@@ -8,14 +8,16 @@ invariants. The raw secret is recoverable (HMAC recomputes over the raw body), s
 in the broker, behind the X-Internal-Key seam — never in the stateless gateway (ADR-008).
 
 ADR-006: ``organisation_id`` is the outermost tenancy scope (NOT NULL UUID).
-"""
 
-from __future__ import annotations
+No ``from __future__ import annotations`` — SQLAlchemy resolves the ``Mapped[...]`` annotations at
+mapper configuration, so they must be real types.
+"""
 
 import uuid
 
-from sqlalchemy import Column, String
+from sqlalchemy import String
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
+from sqlalchemy.orm import Mapped, mapped_column
 
 from oraclous_credential_broker_service.models.base_model import BaseModel
 
@@ -23,7 +25,13 @@ from oraclous_credential_broker_service.models.base_model import BaseModel
 class WebhookSecret(BaseModel):
     __tablename__ = "webhook_secrets"
 
-    id = Column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    organisation_id = Column(PG_UUID(as_uuid=True), nullable=False, index=True)
-    encrypted_secret = Column(String, nullable=False)  # AES-256-GCM (core/security.encrypt_secret)
-    status = Column(String, nullable=False, default="active")
+    id: Mapped[uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    organisation_id: Mapped[uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True), nullable=False, index=True
+    )
+    encrypted_secret: Mapped[str] = mapped_column(
+        String, nullable=False
+    )  # AES-256-GCM (core/security.encrypt_secret)
+    status: Mapped[str] = mapped_column(String, nullable=False, default="active")
