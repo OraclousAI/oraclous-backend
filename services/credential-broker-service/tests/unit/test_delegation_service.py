@@ -410,6 +410,85 @@ async def test_validate_rejects_unknown_token(service) -> None:
     assert result.reason == "unknown"
 
 
+# --- WP-11: constant-time token-hash comparison -----------------------------
+
+
+async def test_validate_uses_constant_time_hash_compare(monkeypatch) -> None:  # noqa: ANN001
+    """WP-11: the stored-vs-presented token-hash equality goes through
+    ``hmac.compare_digest`` (timing-safe), not a plain ``!=``.
+
+    A plain hex-digest comparison short-circuits on the first differing character, leaking — via
+    response timing — how many leading characters a guessed bearer shares with the stored hash.
+    This test pins that the equality check is routed through ``hmac.compare_digest`` by spying on
+    it, and that behaviour is unchanged (the correct bearer still validates)."""
+    import hmac as _hmac
+
+    from oraclous_credential_broker_service.services import delegation_service as _mod
+
+    store = _InMemoryDelegatedTokenStore()
+    service = _mod.DelegationService(store=store)
+    raw, _record = await service.mint(
+        organisation_id=_ORG,
+        member_id=_MEMBER,
+        agent_id=_AGENT,
+        scopes=_DELEGATED_SCOPES,
+        expires_at=_utc_now() + timedelta(hours=1),
+    )
+
+    calls: list[tuple[str, str]] = []
+    real_compare = _hmac.compare_digest
+
+    def _spy(a: str, b: str) -> bool:
+        calls.append((a, b))
+        return real_compare(a, b)
+
+    monkeypatch.setattr(_mod.hmac, "compare_digest", _spy)
+
+    result = await service.validate(
+        raw_token=raw,
+        organisation_id=_ORG,
+        requesting_agent_id=_AGENT,
+        requested_scopes=frozenset({"drive.read"}),
+    )
+
+    assert result.success is True  # behaviour unchanged: the correct bearer validates
+    assert calls, "token-hash equality must go through hmac.compare_digest (timing-safe)"
+
+
+async def test_validate_accepts_correct_hash_rejects_wrong_hash(service) -> None:
+    """WP-11 behaviour parity: the constant-time compare still ACCEPTS the correct bearer and
+    REJECTS a tampered one that shares the lookup prefix (a same-prefix body flip → ``unknown``)."""
+    raw, _record = await service.mint(
+        organisation_id=_ORG,
+        member_id=_MEMBER,
+        agent_id=_AGENT,
+        scopes=_DELEGATED_SCOPES,
+        expires_at=_utc_now() + timedelta(hours=1),
+    )
+
+    # Correct bearer → accepted.
+    good = await service.validate(
+        raw_token=raw,
+        organisation_id=_ORG,
+        requesting_agent_id=_AGENT,
+        requested_scopes=frozenset({"drive.read"}),
+    )
+    assert good.success is True
+
+    # Same 12-char lookup prefix, different body → the hash differs → rejected as ``unknown`` (the
+    # information-leak-safe default), never accepted.
+    tampered = raw[:12] + ("X" if raw[12:13] != "X" else "Y") + raw[13:]
+    assert tampered[:12] == raw[:12] and tampered != raw
+    bad = await service.validate(
+        raw_token=tampered,
+        organisation_id=_ORG,
+        requesting_agent_id=_AGENT,
+        requested_scopes=frozenset({"drive.read"}),
+    )
+    assert bad.success is False
+    assert bad.reason == "unknown"
+
+
 # --- revocation -------------------------------------------------------------
 
 

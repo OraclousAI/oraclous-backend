@@ -53,6 +53,24 @@ _MEMORY_INDEXES: tuple[str, ...] = (
     "ON EACH [m.content, m.organisation_id]",
 )
 
+# Content-hash dedup uniqueness (WP-11, ADR-027 §1): the store-time dedup was a best-effort
+# read-then-write (find_by_content_hash → create) with a TOCTOU window — two concurrent stores of
+# identical content could both miss and create duplicate CURRENT nodes. We make "at most one CURRENT
+# memory per (org, graph, content_hash, type, scope)" a DB-enforced invariant.
+#
+# Neo4j Community (the deployed `neo4j:5.23-community`) supports only SINGLE-PROPERTY uniqueness
+# constraints — composite/node-key constraints are Enterprise-only — and no constraint can be made
+# partial (conditioned on `valid_to IS NULL`). So the dedup key is materialised as ONE deterministic
+# property, `current_dedup_key`, that is SET only while a node is current and REMOVEd the instant a
+# node leaves the current set (supersede / contradiction-invalidate / soft-delete / merge). A
+# uniqueness constraint ignores nodes where the property is null, so historical (superseded /
+# deleted) duplicates are permitted while at most one CURRENT node per key is allowed — exactly the
+# dedup invariant, expressible on Community. `IF NOT EXISTS` keeps it idempotent at startup.
+_MEMORY_CONSTRAINTS: tuple[str, ...] = (
+    "CREATE CONSTRAINT kgs_memory_current_dedup IF NOT EXISTS "
+    "FOR (m:Memory) REQUIRE m.current_dedup_key IS UNIQUE",
+)
+
 # Composite indexes on the delta/MERGE keys the code pipeline seeks on, so a re-ingest seeks the
 # backing range index instead of label-scanning (#305): the :File delta seeks (org, graph, path)
 # and each symbol MERGE seeks (org, graph, qualified_name). Leading org id keeps the seek tenant-
@@ -103,4 +121,7 @@ def ensure_schema(driver: Driver, *, database: str | None = None) -> None:
     )
     # Agent-memory recall/dedup indexes (#332 / ADR-027 §1).
     for stmt in _MEMORY_INDEXES:
+        driver.execute_query(stmt, database_=database)
+    # Content-hash dedup uniqueness constraint (WP-11) — single-property, Community-safe.
+    for stmt in _MEMORY_CONSTRAINTS:
         driver.execute_query(stmt, database_=database)

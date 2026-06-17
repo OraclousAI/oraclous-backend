@@ -39,7 +39,10 @@ from oraclous_knowledge_graph_service.domain.memory_decay import (
     recency_factor,
 )
 from oraclous_knowledge_graph_service.repositories.graph_repository import GraphRepository
-from oraclous_knowledge_graph_service.repositories.memory_repository import MemoryRepository
+from oraclous_knowledge_graph_service.repositories.memory_repository import (
+    MemoryDedupConflict,
+    MemoryRepository,
+)
 from oraclous_knowledge_graph_service.schema.memory_schemas import (
     ConflictInfo,
     ContradictionResolution,
@@ -179,23 +182,38 @@ class MemoryService:
         )
         embedding = await asyncio.to_thread(self._embed, req.content)
 
-        await asyncio.to_thread(
-            repo.create,
-            memory_id=memory_id,
-            memory_type=req.type.value,
-            content=req.content,
-            content_hash=chash,
-            base_importance=base_imp,
-            confidence=req.confidence,
-            scope=req.scope.value,
-            source=req.source.value,
-            agent_id=req.agent_id or "",
-            session_id=req.session_id or "",
-            valid_from=req.valid_from or now,
-            now=now,
-            embedding=embedding,
-            extra=self._extra_properties(req),
-        )
+        try:
+            await asyncio.to_thread(
+                repo.create,
+                memory_id=memory_id,
+                memory_type=req.type.value,
+                content=req.content,
+                content_hash=chash,
+                base_importance=base_imp,
+                confidence=req.confidence,
+                scope=req.scope.value,
+                source=req.source.value,
+                agent_id=req.agent_id or "",
+                session_id=req.session_id or "",
+                valid_from=req.valid_from or now,
+                now=now,
+                embedding=embedding,
+                extra=self._extra_properties(req),
+            )
+        except MemoryDedupConflict:
+            # Lost the dedup race (WP-11): a concurrent store of identical content won the
+            # uniqueness constraint between our read-miss and this create. Treat as already-stored:
+            # re-read the surviving current node by content hash and return it (idempotent, same as
+            # the fast path above), never a 500.
+            survivor = await asyncio.to_thread(
+                repo.find_by_content_hash, chash, memory_type=req.type.value, scope=req.scope.value
+            )
+            if survivor is not None:
+                return MemoryCreateResponse(
+                    memory_id=survivor["memory_id"],
+                    importance_score=float(survivor["importance_score"]),
+                )
+            raise  # the survivor vanished (superseded/deleted in the same instant) — surface it
 
         # 2. Contradiction detection (semantic only): new wins, old invalidated.
         conflicts: list[ConflictInfo] = []
@@ -436,6 +454,7 @@ class MemoryService:
             memory_type=str(old["memory_type"]),
             content=new_content,
             content_hash=content_hash(new_content),
+            scope=str(old["scope"]),
             confidence=new_confidence,
             base_importance=base_imp,
             embedding=embedding,

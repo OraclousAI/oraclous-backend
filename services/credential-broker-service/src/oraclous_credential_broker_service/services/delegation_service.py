@@ -28,6 +28,7 @@ Postgres-backed store is a follow-up integration story.
 from __future__ import annotations
 
 import hashlib
+import hmac
 import secrets
 import uuid
 from collections.abc import Iterable
@@ -193,7 +194,11 @@ class DelegationService:
         """
         prefix = _prefix_of(raw_token)
         row = await self._store.get_by_prefix_for_org(prefix, organisation_id)
-        if row is None or row.token_hash != _hash_token(raw_token):
+        # Constant-time hash comparison (WP-11): a plain ``!=`` on the hex digest leaks, via timing,
+        # how many leading chars a guessed bearer shares with the stored hash. ``compare_digest``
+        # removes that side channel; behaviour is identical (equal hashes → match). The
+        # short-circuit is kept on the ``row is None`` arm only (no secret to compare on no match).
+        if row is None or not hmac.compare_digest(row.token_hash, _hash_token(raw_token)):
             # Cross-org and tampered/unknown both fall here. Returning
             # ``unknown`` (not ``org_mismatch``) is the information-leak-safe
             # default per the be-test-reviewer disposition on cross-org.

@@ -275,3 +275,71 @@ async def test_connect_maps_broker_failure_to_502(connect_ctx) -> None:
     )
     # a downstream broker failure is a deliberate 502, never a leaked 500 (no broker detail)
     assert done.status_code == 502, done.text
+
+
+# --- WP-11: redirect_uri allow-list end-to-end (T-OAUTH open-redirect) -------
+_ALLOWED_REDIRECT = "https://app.example/oauth/callback"
+
+
+@pytest.fixture
+async def allowlisted_ctx(
+    postgres_dsn: str, monkeypatch: pytest.MonkeyPatch
+) -> AsyncIterator[AsyncClient]:
+    """An OAuth app with a CONFIGURED per-provider redirect allow-list (opts the dev flow into
+    enforcement via ``OAUTH_GOOGLE_REDIRECT_URIS``) so the reject/pass behaviour is exercised
+    end-to-end through the real route + service + provider config."""
+    monkeypatch.setenv("JWT_SECRET", "oauth-redirect-secret")
+    monkeypatch.setenv("OAUTH_GOOGLE_CLIENT_ID", "google-client-id")
+    monkeypatch.setenv("OAUTH_GOOGLE_CLIENT_SECRET", "google-client-secret")
+    monkeypatch.setenv("OAUTH_GOOGLE_REDIRECT_URIS", _ALLOWED_REDIRECT)
+    engine = create_async_engine(postgres_dsn.replace("postgresql://", "postgresql+asyncpg://", 1))
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.drop_all)
+        await conn.run_sync(Base.metadata.create_all)
+    maker = async_sessionmaker(engine, expire_on_commit=False)
+    app = create_app(agent_repository=_FakeAgentRepo(), internal_service_key="x")
+    app.state.sessionmaker = maker
+    app.state.oauth_provider_client = _FakeProviderClient()
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://auth.test") as c:
+        yield c
+    await engine.dispose()
+
+
+@pytest.mark.security
+async def test_login_rejects_non_allowlisted_redirect_uri(allowlisted_ctx) -> None:
+    """A client-supplied ``redirect_uri`` not on the configured allow-list is rejected with a
+    generic 400 (no oracle revealing the allowed set), and the PKCE handshake never begins."""
+    client = allowlisted_ctx
+    resp = await client.get(
+        "/oauth/google/login", params={"redirect_uri": "https://evil.example/steal"}
+    )
+    assert resp.status_code == 400, resp.text
+
+
+@pytest.mark.security
+async def test_login_allows_allowlisted_redirect_uri(allowlisted_ctx) -> None:
+    """An allowlisted ``redirect_uri`` passes: the authorize URL is built and carries that exact
+    redirect (the dev/local OAuth flow keeps working when its callback is declared)."""
+    client = allowlisted_ctx
+    resp = await client.get("/oauth/google/login", params={"redirect_uri": _ALLOWED_REDIRECT})
+    assert resp.status_code == 200, resp.text
+    q = parse_qs(urlparse(resp.json()["authorize_url"]).query)
+    assert q["redirect_uri"] == [_ALLOWED_REDIRECT]
+
+
+@pytest.mark.security
+async def test_connect_begin_rejects_non_allowlisted_redirect_uri(allowlisted_ctx) -> None:
+    """The authenticated connect-begin enforces the same allow-list as login (both take a
+    client-supplied redirect_uri). A non-allowlisted redirect is a generic 400."""
+    client = allowlisted_ctx
+    # authenticate via the (allowlisted) login flow first
+    login = await client.get("/oauth/google/login", params={"redirect_uri": _ALLOWED_REDIRECT})
+    state = parse_qs(urlparse(login.json()["authorize_url"]).query)["state"][0]
+    cb = await client.get("/oauth/google/callback", params={"code": "c", "state": state})
+    hdr = {"Authorization": f"Bearer {cb.json()['access_token']}"}
+    resp = await client.post(
+        "/oauth/google/connect",
+        json={"redirect_uri": "https://evil.example/steal", "scopes": []},
+        headers=hdr,
+    )
+    assert resp.status_code == 400, resp.text

@@ -23,12 +23,13 @@ Sync driver calls throughout (the service wraps them in ``asyncio.to_thread``).
 
 from __future__ import annotations
 
+import hashlib
 import logging
 from datetime import UTC, datetime
 from typing import Any
 
 from neo4j import Driver
-from neo4j.exceptions import Neo4jError
+from neo4j.exceptions import ConstraintError, Neo4jError
 from oraclous_substrate.access import enforced_organisation_id
 
 from oraclous_knowledge_graph_service.domain.memory_decay import sanitize_lucene_query
@@ -58,6 +59,23 @@ def _subtype_label(memory_type: str) -> str:
     if label is None:  # validated upstream by the MemoryType enum — defence in depth
         raise ValueError(f"unknown memory type at write boundary: {memory_type!r}")
     return label
+
+
+def _dedup_key(
+    *, organisation_id: str, graph_id: str, content_hash: str, memory_type: str, scope: str
+) -> str:
+    """The deterministic single-property dedup key backing the WP-11 uniqueness constraint
+    (kgs_memory_current_dedup). Encodes the full dedup tuple (org, graph, content_hash, type, scope)
+    that ``find_by_content_hash`` matches on, so the constraint enforces exactly that
+    read-then-write invariant — but only over CURRENT nodes (REMOVEd when a node leaves the set)."""
+    raw = "\x1f".join((organisation_id, graph_id, content_hash, memory_type, scope))
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+class MemoryDedupConflict(RuntimeError):
+    """A CREATE raced another store of identical content (org, graph, content_hash, type, scope) and
+    lost the uniqueness constraint (WP-11). The service treats this as already-stored: re-read by
+    content hash and return the surviving node."""
 
 
 def _dt(value: Any) -> datetime | None:
@@ -166,34 +184,50 @@ class MemoryRepository:
     ) -> None:
         """Create one typed memory node. ``organisation_id`` is stamped from the bound context
         inside ``_run`` (injected scope — never a caller value); ``extra`` carries the closed
-        type-specific property set built by the service (bound parameters, never interpolated)."""
+        type-specific property set built by the service (bound parameters, never interpolated).
+
+        The current-node ``current_dedup_key`` is stamped here so the WP-11 uniqueness constraint
+        enforces the content-hash dedup invariant; a concurrent store of identical content that
+        loses the constraint raises ``MemoryDedupConflict`` (the service re-reads the survivor)."""
         label = _subtype_label(memory_type)
-        self._run(
-            f"CREATE (m:Memory:{label} {{"
-            "  memory_id: $memory_id, organisation_id: $organisation_id, graph_id: $graph_id,"
-            "  memory_type: $memory_type, content: $content, content_hash: $content_hash,"
-            "  importance_score: $base_importance, base_importance: $base_importance,"
-            "  access_count: 0, last_accessed_at: datetime($now),"
-            "  valid_from: datetime($valid_from),"
-            "  valid_to: null, ingested_at: datetime($now), updated_at: datetime($now),"
-            "  source: $source, agent_id: $agent_id, session_id: $session_id,"
-            "  confidence: $confidence, scope: $scope, embedding: $embedding })"
-            " SET m += $extra",
-            memory_id=memory_id,
-            memory_type=memory_type,
-            content=content,
+        dedup_key = _dedup_key(
+            organisation_id=self._org(),
+            graph_id=self._graph_id,
             content_hash=content_hash,
-            base_importance=base_importance,
-            confidence=confidence,
+            memory_type=memory_type,
             scope=scope,
-            source=source,
-            agent_id=agent_id,
-            session_id=session_id,
-            valid_from=valid_from.isoformat(),
-            now=now.isoformat(),
-            embedding=embedding,
-            extra=extra,
         )
+        try:
+            self._run(
+                f"CREATE (m:Memory:{label} {{"
+                "  memory_id: $memory_id, organisation_id: $organisation_id, graph_id: $graph_id,"
+                "  memory_type: $memory_type, content: $content, content_hash: $content_hash,"
+                "  current_dedup_key: $dedup_key,"
+                "  importance_score: $base_importance, base_importance: $base_importance,"
+                "  access_count: 0, last_accessed_at: datetime($now),"
+                "  valid_from: datetime($valid_from),"
+                "  valid_to: null, ingested_at: datetime($now), updated_at: datetime($now),"
+                "  source: $source, agent_id: $agent_id, session_id: $session_id,"
+                "  confidence: $confidence, scope: $scope, embedding: $embedding })"
+                " SET m += $extra",
+                memory_id=memory_id,
+                memory_type=memory_type,
+                content=content,
+                content_hash=content_hash,
+                dedup_key=dedup_key,
+                base_importance=base_importance,
+                confidence=confidence,
+                scope=scope,
+                source=source,
+                agent_id=agent_id,
+                session_id=session_id,
+                valid_from=valid_from.isoformat(),
+                now=now.isoformat(),
+                embedding=embedding,
+                extra=extra,
+            )
+        except ConstraintError as exc:  # lost the dedup race — a current twin already exists
+            raise MemoryDedupConflict(content_hash) from exc
 
     # --------------------------------------------------- contradictions / linking
 
@@ -242,7 +276,11 @@ class MemoryRepository:
             "MERGE (new_m)-[:CONTRADICTS {detected_at: datetime($now), resolution: $resolution}]"
             "->(old_m) "
             "SET old_m.valid_to = CASE WHEN $resolution = 'new_wins' THEN datetime($now) "
-            "ELSE old_m.valid_to END",
+            "ELSE old_m.valid_to END "
+            # When new wins, the old node leaves the current set — clear its dedup key so the
+            # constraint stops counting it (WP-11). A non-new_wins resolution leaves it current.
+            "FOREACH (_ IN CASE WHEN $resolution = 'new_wins' THEN [1] ELSE [] END | "
+            "  REMOVE old_m.current_dedup_key)",
             new_id=new_id,
             old_id=old_id,
             resolution=resolution,
@@ -415,6 +453,7 @@ class MemoryRepository:
         memory_type: str,
         content: str,
         content_hash: str,
+        scope: str,
         confidence: float,
         base_importance: float,
         embedding: list[float] | None,
@@ -438,12 +477,25 @@ class MemoryRepository:
         set_embedding = (
             "new.embedding = $embedding, " if (embedding is not None or content_changed) else ""
         )
+        new_dedup_key = _dedup_key(
+            organisation_id=self._org(),
+            graph_id=self._graph_id,
+            content_hash=content_hash,
+            memory_type=memory_type,
+            scope=scope,
+        )
         records = self._run(
             "MATCH (old:Memory {organisation_id: $organisation_id, graph_id: $graph_id, "
             "memory_id: $old_id}) WHERE old.valid_to IS NULL "
+            # The old node leaves the current set: clear its dedup key so the constraint no longer
+            # counts it (else an unchanged-content supersede would collide with itself).
             "SET old.valid_to = datetime($now), old.updated_at = datetime($now) "
+            "REMOVE old.current_dedup_key "
             f"CREATE (new:Memory:{label}) SET new = properties(old), "
             "  new.memory_id = $new_id, new.content = $content, new.content_hash = $content_hash, "
+            # `new = properties(old)` copied the (now-removed) old key shape; restamp the
+            # successor's own dedup key from its (possibly unchanged) content_hash + type + scope.
+            "  new.current_dedup_key = $new_dedup_key, "
             "  new.confidence = $confidence, new.importance_score = $base_importance, "
             "  new.base_importance = $base_importance, new.access_count = 0, "
             f"  {set_embedding}"
@@ -466,6 +518,7 @@ class MemoryRepository:
             new_id=new_id,
             content=content,
             content_hash=content_hash,
+            new_dedup_key=new_dedup_key,
             confidence=confidence,
             base_importance=base_importance,
             embedding=embedding,
@@ -479,6 +532,9 @@ class MemoryRepository:
             "MATCH (m:Memory {organisation_id: $organisation_id, graph_id: $graph_id, "
             "memory_id: $memory_id}) WHERE m.valid_to IS NULL "
             "SET m.valid_to = datetime($now), m.updated_at = datetime($now) "
+            # Leaving the current set: clear the dedup key so a later re-store of the same content
+            # is not blocked by this now-deleted node (WP-11).
+            "REMOVE m.current_dedup_key "
             "RETURN m.memory_id AS memory_id",
             memory_id=memory_id,
             now=now.isoformat(),
@@ -533,6 +589,9 @@ class MemoryRepository:
             "SET loser.valid_to = datetime($now), loser.updated_at = datetime($now), "
             "winner.base_importance = CASE WHEN winner.base_importance + loser.base_importance "
             "> 1.0 THEN 1.0 ELSE winner.base_importance + loser.base_importance END "
+            # Losers leave the current set — clear their dedup key (WP-11) so a later re-store of
+            # the absorbed content is not blocked by a consolidated-away node.
+            "REMOVE loser.current_dedup_key "
             "CREATE (winner)-[:SUPERSEDES {reason: 'consolidation', "
             "superseded_at: datetime($now)}]->(loser) "
             "WITH winner, loser "
