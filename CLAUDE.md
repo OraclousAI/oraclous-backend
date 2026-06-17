@@ -411,6 +411,7 @@ A story is **done** when, and only when (Definition of Done, impl/infra):
 - Overall **red-PR board health** → the **CTO** owns this in the daily board-check.
 - **CI workflow files** (`.github/workflows/*`) → `devops-implementer` (via the coordinator); never edit them from an application-code PR.
 - A push that fails the **local pre-push gate** (§4.7) is the implementer's own fix before re-pushing — never a separate `[fix]` issue.
+- **Type-check ratchet (WP-7, A6).** CI's `lint` job and the pre-push hook run `uv run mypy services packages`. It is type-**GATED** today for `packages/*` + `auth-service` + `knowledge-retriever-service` (errors fail CI). The other six services are kept lenient via `[[tool.mypy.overrides]] ignore_errors = true` in `pyproject.toml` (with a ratchet TODO there). New code lands typed; to tighten a lenient service, fix its mypy errors then delete its override block — never widen the lenient set. No bare `# type: ignore` (always a `[error-code]`).
 
 ### 10.1 Rebasing
 

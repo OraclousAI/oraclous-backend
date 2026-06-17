@@ -27,8 +27,13 @@ jobs:
         run: uv run ruff check .
       - name: Ruff format
         run: uv run ruff format --check .
-      - name: Type check
+      - name: Type check (tools)
         run: uv run mypy tools
+      - name: Type check (services + packages — WP-7 ratchet, A6)
+        # Gates packages/* + auth-service + knowledge-retriever-service today; the six
+        # not-yet-typed services are kept lenient via [[tool.mypy.overrides]] in
+        # pyproject (ratchet TODO documented there). Tighten one service at a time.
+        run: uv run mypy services packages
       - name: Import contracts (four-layer architecture)
         run: uv run lint-imports
       - name: Organisation-scoping guardrails

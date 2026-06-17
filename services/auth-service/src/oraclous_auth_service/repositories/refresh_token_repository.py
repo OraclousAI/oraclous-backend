@@ -10,8 +10,9 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from typing import cast
 
-from sqlalchemy import select, update
+from sqlalchemy import CursorResult, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oraclous_auth_service.models.refresh_token_model import RefreshToken
@@ -70,4 +71,4 @@ class RefreshTokenRepository:
             .values(status="revoked")
         )
         await self._session.commit()
-        return int(result.rowcount or 0)
+        return int(cast("CursorResult[object]", result).rowcount or 0)

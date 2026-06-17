@@ -30,7 +30,7 @@ async def subgraph(
     limit: int = Query(default=250, ge=1, le=1000),
 ) -> SubgraphResultModel:
     result = await service.subgraph(graph_id=str(graph_id), limit=limit)
-    return SubgraphResultModel(**result)
+    return SubgraphResultModel.model_validate(result)
 
 
 @router.get("/{graph_id}/neighbors/{node_id}", response_model=list[NodeResultModel])

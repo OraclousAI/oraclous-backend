@@ -8,8 +8,9 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from typing import cast
 
-from sqlalchemy import select, update
+from sqlalchemy import CursorResult, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oraclous_auth_service.models.invitation_model import OrgInvitation
@@ -86,7 +87,7 @@ class InvitationRepository:
             .values(status="revoked")
         )
         await self._session.flush()
-        return int(result.rowcount or 0)
+        return int(cast("CursorResult[object]", result).rowcount or 0)
 
     async def mark_accepted(
         self, *, invitation_id: str, accepted_by_user_id: str, accepted_at: datetime
@@ -113,4 +114,4 @@ class InvitationRepository:
             .values(status="revoked")
         )
         await self._session.flush()
-        return (result.rowcount or 0) > 0
+        return (cast("CursorResult[object]", result).rowcount or 0) > 0
