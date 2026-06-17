@@ -14,6 +14,11 @@ from oraclous_substrate import ProvenanceCollector
 from oraclous_telemetry import Severity, alert, evaluate_readiness, exit_on_degrade_enabled
 
 from oraclous_execution_engine_service.core.config import get_settings
+from oraclous_execution_engine_service.core.rls import (
+    RlsBypassingRoleError,
+    assert_runtime_role_isolates,
+    build_rls_engine,
+)
 from oraclous_execution_engine_service.repositories.job_repository import JobRepository
 from oraclous_execution_engine_service.repositories.provenance_repository import (
     ProvenanceRepository,
@@ -28,6 +33,30 @@ from oraclous_execution_engine_service.repositories.schedule_repository import S
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
+
+    # ADR-030 §3: fail closed LOUDLY if the ORG-BOUND runtime role bypasses RLS (a superuser /
+    # BYPASSRLS role makes the FORCE'd policy inert — T1-M3). A mis-deployed bypassing role is a
+    # hard configuration error, so it exits the process rather than quietly serving an unscoped
+    # store. Gated on ENGINE_RLS_ASSERT_RUNTIME_ROLE (the deployed oraclous_app api + worker set it;
+    # a deliberate owner-DSN dev/test run leaves it off). Asserts the org-bound DSN the request path
+    # uses — the maintenance/owner engine is intended to bypass RLS for the cross-org sweeps and is
+    # not asserted.
+    if settings.rls_assert_runtime_role:
+        assert_engine = build_rls_engine(settings.database_url)
+        try:
+            await assert_runtime_role_isolates(assert_engine)
+        except RlsBypassingRoleError as exc:
+            alert(
+                Severity.ERROR,
+                "rls_runtime_role_bypasses",
+                "execution-engine-service",
+                "runtime DB role bypasses RLS; refusing to start (ADR-030 §3)",
+                error=str(exc),
+            )
+            await assert_engine.dispose()
+            raise SystemExit(1) from exc
+        await assert_engine.dispose()
+
     job_repo: JobRepository | None = None
     schedule_repo: ScheduleRepository | None = None
     roundtable_repo: RoundtableRepository | None = None

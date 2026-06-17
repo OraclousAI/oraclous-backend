@@ -15,16 +15,28 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
+from oraclous_execution_engine_service.core.rls import install_org_guc_guard
 from oraclous_execution_engine_service.models.enums import EngineJobState
 from oraclous_execution_engine_service.models.job import EngineJob
 
 
 class JobRepository:
-    def __init__(self, db_url: str, *, worker_pool: bool = False) -> None:
+    def __init__(
+        self, db_url: str, *, worker_pool: bool = False, install_guard: bool = True
+    ) -> None:
         # NullPool in the Celery worker: a task owns its connection and disposes it (ADR-012); never
         # share a pool across tasks. The request path uses the default pool.
         kwargs = {"poolclass": NullPool} if worker_pool else {}
         self._engine = create_async_engine(db_url, echo=False, **kwargs)
+        # ADR-030 §2: the ORG-BOUND engine carries the org-GUC guard so every transaction binds
+        # app.current_organisation_id from the bound OrganisationContext (fail-closed to the empty
+        # GUC → zero rows when none is bound). The request/driver path binds the org via the
+        # principal / use_organisation_context before any query; the cross-org sweeps settle each
+        # row under org_scope(row.org). `install_guard=False` is the MAINTENANCE reader on the owner
+        # DSN (it bypasses RLS, so the guard would be inert anyway — skip it to mirror auth's
+        # owner-engine credential store, which carries no guard).
+        if install_guard:
+            install_org_guc_guard(self._engine)
         self._session = async_sessionmaker(self._engine, expire_on_commit=False)
 
     async def close(self) -> None:

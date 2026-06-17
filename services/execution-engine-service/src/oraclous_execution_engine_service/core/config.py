@@ -32,7 +32,31 @@ class Settings(BaseSettings):
     jwt_algorithm: str = "HS256"
 
     # --- own store (Postgres): job rows + the provenance sink. No hardcoded prod secret. ---
+    # The ORG-BOUND engine DSN (ADR-030 §3): the request/driver path + the org-bound Celery task
+    # execution connect here as the NOSUPERUSER ``oraclous_app`` role so the FORCE'd RLS policy
+    # bites. Migrations, the rls-role bootstrap, AND the cross-org maintenance reader use the
+    # ``maintenance_database_url`` (the owner) instead — see below.
     database_url: str = "postgresql+asyncpg://oraclous:oraclous@postgres:5432/oraclous"
+
+    # --- the MAINTENANCE engine DSN (ADR-030 §3 carve-out, mirrors auth's owner-engine split). The
+    # cross-org sweeps — the reaper (list_stale_running) and Beat (list_enabled_cron) — read ACROSS
+    # orgs with NO bound org, so they MUST run on a role that bypasses RLS (the owner/superuser),
+    # else FORCE'd RLS fails them closed to zero rows and a dead worker's job / a due cron is never
+    # found. Defaults to the OWNER DSN; in the deployed stack the org-bound `database_url` flips to
+    # oraclous_app while this stays the owner. A self-host could instead point this at a dedicated
+    # BYPASSRLS role. The per-row settle AFTER a sweep still goes through the org-bound engine with
+    # the row's own org bound (org_scope), so only the cross-org READ uses this engine.
+    maintenance_database_url: str | None = None
+
+    # --- Postgres RLS backstop (ADR-030 / #353) ---
+    # When true, the service asserts at startup (web lifespan) AND the worker asserts at
+    # worker_process_init that the ORG-BOUND runtime DB role is NOSUPERUSER/NOBYPASSRLS (a bypassing
+    # role silently voids the RLS policy — T1-M3) and FAILS CLOSED otherwise. The deployed api +
+    # the org-bound worker path connect as oraclous_app with this on; migrations, the rls-role
+    # bootstrap, and the maintenance/reaper/beat engine keep running as the owner and never set it.
+    # Default false so a test/local run that intentionally uses the owner DSN is not forced to
+    # provision the app role.
+    rls_assert_runtime_role: bool = False
 
     # --- the durable queue (Celery over Redis; the worker runs jobs out-of-request). Redis DB **1**
     # isolates the engine's broker + result backend from the knowledge-graph worker on db 0 — they
@@ -63,8 +87,20 @@ class Settings(BaseSettings):
 
     @property
     def sync_database_url(self) -> str:
-        """The synchronous psycopg DSN Alembic uses (swaps the asyncpg driver for psycopg)."""
-        return self.database_url.replace("+asyncpg", "+psycopg")
+        """The synchronous psycopg DSN Alembic + the rls-role bootstrap use (swaps the asyncpg
+        driver for psycopg). Always the OWNER DSN — migrations + bootstrap are owner privileges."""
+        return self.maintenance_url.replace("+asyncpg", "+psycopg")
+
+    @property
+    def maintenance_url(self) -> str:
+        """The MAINTENANCE (owner / BYPASSRLS) async DSN the cross-org sweeps read on (ADR-030 §3).
+
+        Defaults to ``database_url`` so a single-DSN deploy/test (no RLS split) behaves exactly as
+        before — both engines are the owner and RLS is a no-op. In the deployed RLS stack
+        ``database_url`` flips to the org-bound oraclous_app role while ``maintenance_database_url``
+        stays the owner, so only the cross-org reader bypasses RLS. Alembic + the bootstrap derive
+        their owner DSN from this too (``sync_database_url``)."""
+        return self.maintenance_database_url or self.database_url
 
 
 @lru_cache(maxsize=1)

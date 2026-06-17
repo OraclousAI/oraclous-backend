@@ -71,6 +71,18 @@ class _FakeRepo:
         return [r for r in self.rows.values() if r.state == S.RUNNING.value]
 
 
+class _FakeMaintenance:
+    """The ADR-030 §3 cross-org reader fake: the reaper reads stale jobs from here (the owner
+    engine), then settles each on the org-bound ``jobs`` repo. Forwards to the same fake repo so the
+    test's single in-memory store is the source of truth for both halves."""
+
+    def __init__(self, jobs: _FakeRepo) -> None:
+        self._jobs = jobs
+
+    async def list_stale_jobs(self, older_than: object, *, limit: int = 100) -> list[EngineJob]:
+        return await self._jobs.list_stale_running(older_than, limit=limit)
+
+
 class _FakeHarness:
     def __init__(
         self,
@@ -329,7 +341,16 @@ async def test_reap_times_out_a_stale_running_job() -> None:
     repo = _FakeRepo()
     job = await _queued_job(repo)
     job.state = S.RUNNING.value  # stranded RUNNING (worker died after RUNNING)
-    svc, _ = _worker_svc(repo, _FakeHarness(), enqueue=lambda j, o, u: None)
+    # ADR-030 §3: the reaper enumerates stale jobs on the cross-org maintenance reader, then settles
+    # each on the org-bound repo. Inject the maintenance fake (forwards to the same store).
+    prov = _FakeProvenance()
+    svc = JobService(
+        jobs=repo,  # type: ignore[arg-type]
+        provenance=prov,  # type: ignore[arg-type]
+        harness=_FakeHarness(),  # type: ignore[arg-type]
+        enqueue=lambda j, o, u: None,
+        maintenance=_FakeMaintenance(repo),  # type: ignore[arg-type]
+    )
     reaped = await svc.reap_stale(older_than=_dt.datetime.now(_dt.UTC))
     assert reaped == 1 and repo.rows[job.id].state == S.TIMED_OUT.value
     assert repo.rows[job.id].error_type == "lease_expired"
