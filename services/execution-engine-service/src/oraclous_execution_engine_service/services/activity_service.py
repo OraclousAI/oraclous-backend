@@ -13,6 +13,7 @@ from datetime import datetime
 
 from oraclous_governance import Principal
 
+from oraclous_execution_engine_service.core.rls import org_scope
 from oraclous_execution_engine_service.models.provenance import EngineProvenanceEvent
 from oraclous_execution_engine_service.repositories.provenance_repository import (
     ProvenanceRepository,
@@ -38,7 +39,10 @@ class ActivityService:
         ``[1, MAX_ACTIVITY_LIMIT]`` so a caller can never drain the table."""
         org_id = self._require_org(principal)
         bounded = max(1, min(limit, MAX_ACTIVITY_LIMIT))
-        return await self._provenance.recent(org_id, limit=bounded)
+        # ADR-030 §3: bind the org so the engine_provenance read runs with the GUC set on the
+        # org-bound engine — else FORCE'd RLS fails it closed to zero rows (T1-M1).
+        with org_scope(org_id):
+            return await self._provenance.recent(org_id, limit=bounded)
 
     async def usage(
         self, principal: Principal, *, since: datetime | None = None
@@ -46,7 +50,9 @@ class ActivityService:
         """The org's RAW per-action usage counts (ADR-009 — counts, never money), optionally over a
         ``since`` window. Org-scoped to the caller only."""
         org_id = self._require_org(principal)
-        return await self._provenance.usage_by_action(org_id, since=since)
+        # ADR-030 §3: bind the org so the aggregate read runs with the GUC set (else RLS → zero).
+        with org_scope(org_id):
+            return await self._provenance.usage_by_action(org_id, since=since)
 
     @staticmethod
     def _require_org(principal: Principal) -> uuid.UUID:

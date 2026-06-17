@@ -66,28 +66,39 @@ class ScheduleService:
             raise ScheduleError("supply exactly one of manifest (inline) or manifest_ref")
         if type == ScheduleType.CRON.value and (not cron or not croniter.is_valid(cron)):
             raise ScheduleError("a cron schedule requires a valid cron expression")
-        row = await self._schedules.create(
-            organisation_id=org_id,
-            user_id=principal.principal_id,
-            type=type,
-            manifest_inline=manifest_inline,
-            manifest_ref=manifest_ref,
-            input_text=input_text,
-            cron=cron,
-        )
-        await self._emit(org_id, principal.principal_id, row.id, "engine.schedule.register", type)
+        # ADR-030 §3: bind the org for the whole request-path op so the org-bound engine's
+        # begin-guard sets the GUC — else FORCE'd RLS rejects the INSERT (42501). Org from the
+        # principal only (T1-M1), the same chokepoint the Beat per-schedule fire uses.
+        with org_scope(org_id):
+            row = await self._schedules.create(
+                organisation_id=org_id,
+                user_id=principal.principal_id,
+                type=type,
+                manifest_inline=manifest_inline,
+                manifest_ref=manifest_ref,
+                input_text=input_text,
+                cron=cron,
+            )
+            await self._emit(
+                org_id, principal.principal_id, row.id, "engine.schedule.register", type
+            )
         return row
 
     async def list_schedules(self, principal: Principal) -> list[EngineSchedule]:
-        return await self._schedules.list_for_org(self._require_org(principal))
+        org_id = self._require_org(principal)
+        # ADR-030 §3: bind the org so the read runs with the GUC set (else FORCE'd RLS → zero rows).
+        with org_scope(org_id):
+            return await self._schedules.list_for_org(org_id)
 
     async def delete(self, schedule_id: uuid.UUID, principal: Principal) -> None:
         org_id = self._require_org(principal)
-        if not await self._schedules.delete(schedule_id, org_id):
-            raise ScheduleError("schedule not found")
-        await self._emit(
-            org_id, principal.principal_id, schedule_id, "engine.schedule.delete", "ok"
-        )
+        # ADR-030 §3: bind the org so the DELETE (USING) + provenance write run with the GUC set.
+        with org_scope(org_id):
+            if not await self._schedules.delete(schedule_id, org_id):
+                raise ScheduleError("schedule not found")
+            await self._emit(
+                org_id, principal.principal_id, schedule_id, "engine.schedule.delete", "ok"
+            )
 
     async def fire_due(self, now: datetime) -> int:
         """Beat sweep: fire every enabled cron schedule whose latest window hasn't fired yet.
