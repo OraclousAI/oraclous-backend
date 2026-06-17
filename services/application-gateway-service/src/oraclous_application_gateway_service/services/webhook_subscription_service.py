@@ -34,10 +34,18 @@ class WebhookSubscriptionService:
         subscriptions: WebhookSubscriptionRepository,
         agents: PublishedAgentRepository,
         secret_client: WebhookSecretClient,
+        owner_subscriptions: WebhookSubscriptionRepository | None = None,
     ) -> None:
         self._subs = subscriptions
         self._agents = agents
         self._secrets = secret_client
+        # ``get_by_id`` is the pre-auth producer read and lives on the OWNER engine (it is NOT
+        # org-bound; on the org-bound engine RLS would fail it closed to zero rows — ADR-030 §3).
+        # ``delete`` uses it to read the sub (to GC its broker secret) before the org-scoped
+        # ``delete_for_org`` on the org-bound engine; the ``sub.organisation_id != organisation_id``
+        # check is the tenant guard. Defaults to the org-bound repo for back-compat in tests that
+        # pass a single repo (a single-engine test has no RLS, so get_by_id resolves either way).
+        self._owner_subs = owner_subscriptions or subscriptions
 
     async def create(
         self, *, organisation_id: uuid.UUID, agent_slug: str, signature_scheme: str = "generic"
@@ -73,9 +81,11 @@ class WebhookSubscriptionService:
         return await self._subs.list_for_org(organisation_id, limit=limit, offset=offset)
 
     async def delete(self, *, organisation_id: uuid.UUID, subscription_id: uuid.UUID) -> bool:
-        # read the sub first (org-scoped) so we can GC its broker secret; deleting the row alone
-        # would orphan the secret in the broker (R7-SEC S4).
-        sub = await self._subs.get_by_id(subscription_id)
+        # read the sub first (on the OWNER engine — get_by_id is the pre-auth producer read; the
+        # org-bound engine would fail it closed under RLS) so we can GC its broker secret; deleting
+        # the row alone orphans the secret in the broker (R7-SEC S4). The org check below is the
+        # tenant guard (a cross-tenant sub is rejected before the org-bound delete).
+        sub = await self._owner_subs.get_by_id(subscription_id)
         if sub is None or sub.organisation_id != organisation_id:
             return False
         deleted = await self._subs.delete_for_org(

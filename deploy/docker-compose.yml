@@ -593,8 +593,19 @@ services:
       EDGE_RATE_WINDOW_SECONDS: "${EDGE_RATE_WINDOW_SECONDS:-60}"
       MAX_REQUEST_BODY_BYTES: "${MAX_REQUEST_BODY_BYTES:-10485760}"
       TRUSTED_PROXY_COUNT: "${TRUSTED_PROXY_COUNT:-0}"
-      # gateway-owned datastore (R6 Slice 3, ADR-019): the integration-key store
-      DATABASE_URL: "postgresql+asyncpg://oraclous:oraclous@postgres:5432/oraclous"
+      # gateway-owned datastore (R6 Slice 3, ADR-019): the integration-key / published-agent / chat /
+      # webhook-subscription store. ADR-030 §3: the ORG-BOUND request CRUD path connects as the
+      # NOSUPERUSER/NOBYPASSRLS oraclous_app role so the FORCE'd RLS policy bites it (the owner
+      # `oraclous` would bypass it). The oraclous_app role + DML GRANTs are provisioned by the
+      # postgres init script (fresh volume) and the gateway-migrate bootstrap (existing volume),
+      # before this service connects.
+      DATABASE_URL: "postgresql+asyncpg://oraclous_app:app@postgres:5432/oraclous"
+      # The OWNER DSN the two pre-auth producer reads (integration-key get_by_prefix + webhook
+      # subscription get_by_id) resolve on — they precede org context and MUST bypass RLS, else
+      # FORCE'd RLS fails integration-key auth + inbound webhooks closed (the HARD RULE).
+      OWNER_DATABASE_URL: "postgresql+asyncpg://oraclous:oraclous@postgres:5432/oraclous"
+      # Assert the org-bound runtime role is non-bypassing at startup; refuse to come up otherwise.
+      GATEWAY_RLS_ASSERT_RUNTIME_ROLE: "true"
     depends_on:
       redis:
         condition: service_healthy
@@ -610,7 +621,12 @@ services:
     profiles: [services]
     networks: [substrate]
 
-  # R6-S3 — gateway integration-key schema migration one-shot (alembic upgrade head, then exits).
+  # R6-S3 — gateway schema migration one-shot. Runs as the OWNER (oraclous, superuser): `alembic
+  # upgrade head` creates/updates the tables AND (0006) enables the RLS backstop on the five
+  # org-scoped gateway tables, then the rls-role bootstrap idempotently provisions the NOSUPERUSER
+  # oraclous_app runtime role + DML GRANTs on those five tables (ADR-030 §3). Migrations + this
+  # bootstrap stay on the owner; only the long-running service above switches its org-bound DSN to
+  # oraclous_app (its OWNER_DATABASE_URL keeps the owner for the two pre-auth producer reads).
   gateway-migrate:
     build:
       context: ..
@@ -618,7 +634,10 @@ services:
     image: oraclous-application-gateway-service:${IMAGE_TAG:-dev}
     environment:
       DATABASE_URL: "postgresql+asyncpg://oraclous:oraclous@postgres:5432/oraclous"
-    command: ["alembic", "upgrade", "head"]
+    command:
+      - sh
+      - -c
+      - "alembic upgrade head && python -m oraclous_application_gateway_service.core.bootstrap_rls_role"
     depends_on:
       postgres:
         condition: service_healthy

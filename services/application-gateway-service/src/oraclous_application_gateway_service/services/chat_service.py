@@ -70,7 +70,9 @@ class ChatService:
         )
         if thread is None:
             return None
-        return await self._threads.list_messages(thread_id=thread_id, limit=limit, offset=offset)
+        return await self._threads.list_messages(
+            thread_id=thread_id, organisation_id=organisation_id, limit=limit, offset=offset
+        )
 
     async def delete_thread(
         self, *, thread_id: uuid.UUID, organisation_id: uuid.UUID, user_id: uuid.UUID
@@ -97,5 +99,8 @@ class ChatService:
         if thread is None:
             return None
         return await self._threads.set_message_rating(
-            thread_id=thread_id, message_id=message_id, rating=rating
+            thread_id=thread_id,
+            organisation_id=organisation_id,
+            message_id=message_id,
+            rating=rating,
         )

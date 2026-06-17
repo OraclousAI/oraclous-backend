@@ -75,6 +75,9 @@ def _app():
     get_settings.cache_clear()
     app = create_app(lifespan=None)
     app.state.integration_key_repo = _FakeKeys()
+    # the pre-auth get_by_prefix producer reads the OWNER-engine repo (ADR-030 §3); a fake has no
+    # RLS so the same instance serves both.
+    app.state.integration_key_owner_repo = app.state.integration_key_repo
     app.state.published_agent_repo = _FakeAgents()
     app.state.published_agent_repo.rows.append(
         SimpleNamespace(

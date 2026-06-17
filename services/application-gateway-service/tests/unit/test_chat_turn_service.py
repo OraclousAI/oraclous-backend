@@ -39,7 +39,7 @@ class _FakeThreads:
     async def list_messages(self, *, thread_id, limit=100, offset=0):  # noqa: ANN001
         return self.messages
 
-    async def recent_messages(self, *, thread_id, limit):  # noqa: ANN001
+    async def recent_messages(self, *, thread_id, organisation_id, limit):  # noqa: ANN001
         # the turn service loads the most-recent window (WP-10); the fake's prior history is
         # small, so the bounded read returns it unchanged (oldest->newest).
         return self.messages[-limit:]

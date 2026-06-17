@@ -133,7 +133,9 @@ class _FakeKeys:
 async def test_member_crud_is_member_only_not_a_key() -> None:
     app = _app()
     minted = mint_key("oak")
-    app.state.integration_key_repo = _FakeKeys(
+    # the pre-auth get_by_prefix producer reads the OWNER-engine repo (ADR-030 §3); a fake has no
+    # RLS so the same instance serves both.
+    app.state.integration_key_owner_repo = _FakeKeys(
         SimpleNamespace(
             id=uuid.uuid4(),
             organisation_id=_DEV_ORG,

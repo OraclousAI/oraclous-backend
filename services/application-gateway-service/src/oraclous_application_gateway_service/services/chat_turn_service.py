@@ -87,7 +87,9 @@ class ChatTurnService:
         # load the capped history BEFORE writing the new user turn — the MOST-RECENT window only
         # (build_turn_input keeps the tail), bounded so a long thread never triggers an unbounded
         # read (WP-10).
-        prior = await self._threads.recent_messages(thread_id=thread_id, limit=MAX_HISTORY_MESSAGES)
+        prior = await self._threads.recent_messages(
+            thread_id=thread_id, organisation_id=org, limit=MAX_HISTORY_MESSAGES
+        )
         history = [(m.role, m.content) for m in prior if m.role in ("user", "assistant")]
         agent_input = build_turn_input(history, content)
         # persist the user turn (derive the title on the very first message)
