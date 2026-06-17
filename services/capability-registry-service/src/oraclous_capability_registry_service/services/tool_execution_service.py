@@ -10,7 +10,7 @@ the instance counters. Async/queued execution is out of scope (→ R5); this is 
 from __future__ import annotations
 
 import uuid
-from typing import Any
+from typing import Any, cast
 
 from oraclous_capability_registry_service.domain.errors import CapabilityNotFoundError
 from oraclous_capability_registry_service.domain.executors.base import ExecutionContext
@@ -113,7 +113,8 @@ class ToolExecutionService:
                     organisation_id=organisation_id,
                     user_id=user_id,
                     requirement=req,
-                    credential_id=mappings.get(req.get("type")),
+                    # req["type"] is a str when present; a None miss is tolerated by the lookup.
+                    credential_id=mappings.get(cast("str", req.get("type"))),
                 )
             except CredentialResolutionError as exc:
                 raise ExecutionNotReadyError(

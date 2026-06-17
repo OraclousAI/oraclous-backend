@@ -38,6 +38,7 @@ dev = [
 
 [tool.mypy]
 python_version = "3.12"
+plugins = ["pydantic.mypy"]
 explicit_package_bases = true
 namespace_packages = true
 ignore_missing_imports = true
@@ -50,18 +51,20 @@ exclude = '/(migrations|tests)/'
 
 # --- WP-7 type-check ratchet (grade-A A6) ----------------------------------
 # CI runs `uv run mypy services packages` (lint job). The shared `packages/` and the
-# already-clean `auth-service` + `knowledge-retriever-service` are type-GATED now
-# (errors fail CI). The other six services are NOT yet typed — their src carries
-# ~352 real-but-not-yet-fixed mypy errors — so they are kept lenient via
-# `ignore_errors = true` below. RATCHET: fix one service's errors, then delete its
-# override block here so the gate starts enforcing it. Do NOT widen the lenient set.
+# type-GATED services (errors fail CI) are now: `auth-service` + `knowledge-retriever-service`
+# (WP-7) and `application-gateway-service` + `credential-broker-service` +
+# `capability-registry-service` (WP-7 tail — ORM models migrated to the typed
+# `Mapped[...]` / `mapped_column(...)` style, which clears the `Column[X]` cascade).
+# The three services below are NOT yet typed — their src carries real-but-not-yet-fixed
+# mypy errors that need a non-annotation refactor (knowledge-graph: a recipe-engine writer
+# Protocol; harness-runtime: `cryptography` `.sign()` private-key-union narrowing;
+# execution-engine: pervasive `EngineRoundtable | None` union-attr None-flow) — so they
+# stay lenient via `ignore_errors = true` below. RATCHET: fix one service's errors, then
+# delete its line here so the gate starts enforcing it. Do NOT widen the lenient set.
 # Tighten further (e.g. `disallow_untyped_defs`) only per-package, one at a time,
 # after a service is error-free. No bare `# type: ignore` — always a [error-code].
 [[tool.mypy.overrides]]
 module = [
-    "oraclous_application_gateway_service.*",
-    "oraclous_capability_registry_service.*",
-    "oraclous_credential_broker_service.*",
     "oraclous_execution_engine_service.*",
     "oraclous_harness_runtime_service.*",
     "oraclous_knowledge_graph_service.*",

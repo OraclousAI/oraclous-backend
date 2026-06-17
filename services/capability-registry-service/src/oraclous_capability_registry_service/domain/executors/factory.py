@@ -8,7 +8,7 @@ executor raises ``NoExecutorError`` (surfaced as a configuration error, never a 
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
 from oraclous_capability_registry_service.domain.connectors.federated_search import (
     FederatedSearchConnector,
@@ -75,7 +75,8 @@ def has_executor(descriptor: dict[str, Any]) -> bool:
 
 
 def create_executor(descriptor: dict[str, Any]) -> BaseToolExecutor:
-    executor_cls = _EXECUTORS.get(descriptor.get("id"))
+    # descriptor["id"] is a str when present; the dict lookup tolerates a None miss at runtime.
+    executor_cls = _EXECUTORS.get(cast("str", descriptor.get("id")))
     if executor_cls is not None:
         return executor_cls(descriptor)
     if _is_mcp(descriptor):

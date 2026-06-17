@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import uuid
 from decimal import Decimal
-from typing import Any
+from typing import Any, cast
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
@@ -79,7 +79,9 @@ class ExecutionRepository:
                 row.error_message = error_message
                 row.error_type = error_type
                 row.credits_consumed = credits_consumed
-                row.processing_time_ms = processing_time_ms
+                # processing_time_ms is integral ms; the Numeric(asdecimal) column reads back as
+                # Decimal, so the int write widens at the type level only (SQLAlchemy coerces).
+                row.processing_time_ms = cast("Decimal | None", processing_time_ms)
             await session.refresh(row)
             return row
 

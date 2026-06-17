@@ -21,6 +21,8 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Sequence
+from typing import Any
 
 from oraclous_errors import FieldError
 
@@ -98,7 +100,7 @@ def extract_validation_details(raw: bytes) -> list[FieldError] | None:
     return _details_from_items(detail, body_fallback=False)
 
 
-def details_from_errors(errors: list) -> list[FieldError] | None:
+def details_from_errors(errors: Sequence[Any]) -> list[FieldError] | None:
     """Leak-safe ``FieldError``s from a FastAPI ``RequestValidationError.errors()`` list, or None.
 
     Same sanitisation as the proxy path: only ``loc`` (field path) and ``type`` (machine token) are

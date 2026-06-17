@@ -18,6 +18,7 @@ from oraclous_application_gateway_service.core.dependencies import (
     MemberDep,
     PaginationDep,
 )
+from oraclous_application_gateway_service.models.chat import ChatMessage, ChatThread
 from oraclous_application_gateway_service.schema.chat_schemas import (
     ChatTurnOut,
     MessageFeedbackRequest,
@@ -41,7 +42,7 @@ router = APIRouter(prefix="/v1/chat", tags=["chat"])
 @router.post("/threads", response_model=ThreadOut, status_code=status.HTTP_201_CREATED)
 async def start_thread(
     body: StartThreadRequest, member: MemberDep, svc: ChatServiceDep
-) -> ThreadOut:
+) -> ChatThread:
     try:
         return await svc.start_thread(
             organisation_id=member.organisation_id,
@@ -58,7 +59,7 @@ async def start_thread(
 @router.get("/threads", response_model=list[ThreadOut])
 async def list_threads(
     member: MemberDep, svc: ChatServiceDep, page: PaginationDep
-) -> list[ThreadOut]:
+) -> list[ChatThread]:
     return await svc.list_threads(
         organisation_id=member.organisation_id,
         user_id=member.principal_id,
@@ -86,7 +87,7 @@ async def send_message(
 @router.get("/threads/{thread_id}/messages", response_model=list[MessageOut])
 async def list_messages(
     thread_id: uuid.UUID, member: MemberDep, svc: ChatServiceDep, page: PaginationDep
-) -> list[MessageOut]:
+) -> list[ChatMessage]:
     messages = await svc.get_messages(
         thread_id=thread_id,
         organisation_id=member.organisation_id,
