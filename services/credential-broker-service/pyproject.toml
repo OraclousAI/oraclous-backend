@@ -17,11 +17,16 @@ dependencies = [
     "python-jose[cryptography]>=3.3,<4.0",
     "oraclous-governance",
     "oraclous-telemetry",
+    # ADR-030: the async RLS GUC-binding seam (oraclous_substrate.access_async) +
+    # enable_rls_on, wired into the session factory so every request-path/worker
+    # transaction binds app.current_organisation_id for the Postgres RLS backstop.
+    "oraclous-substrate",
 ]
 
 [tool.uv.sources]
 oraclous-governance = { workspace = true }
 oraclous-telemetry = { workspace = true }
+oraclous-substrate = { workspace = true }
 
 [build-system]
 requires = ["hatchling"]

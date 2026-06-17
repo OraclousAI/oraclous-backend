@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 from sqlalchemy import Table, select, update
 
+from oraclous_credential_broker_service.core.rls import org_scope
 from oraclous_credential_broker_service.models.delegated_token import DelegatedToken
 from oraclous_credential_broker_service.services.delegation_service import (
     DelegatedTokenRecord,
@@ -45,52 +46,57 @@ class PostgresDelegatedTokenStore:
         self._engine = engine
 
     async def persist(self, token: DelegatedTokenRecord) -> None:
-        async with self._engine.begin() as conn:
-            await conn.execute(
-                _TABLE.insert().values(
-                    id=token.id,
-                    organisation_id=token.organisation_id,
-                    member_id=token.member_id,
-                    agent_id=token.agent_id,
-                    # ARRAY(String) — Postgres stores a list, the service-layer
-                    # record uses frozenset. Sort for deterministic at-rest
-                    # ordering (helps human-readable audits).
-                    scopes=sorted(token.scopes),
-                    expires_at=token.expires_at,
-                    status=token.status,
-                    token_hash=token.token_hash,
-                    token_prefix=token.token_prefix,
+        # org_scope binds the GUC so the RLS WITH CHECK admits this org's row (a write
+        # stamped for another org would be denied 42501). The engine carries the guard.
+        with org_scope(token.organisation_id):
+            async with self._engine.begin() as conn:
+                await conn.execute(
+                    _TABLE.insert().values(
+                        id=token.id,
+                        organisation_id=token.organisation_id,
+                        member_id=token.member_id,
+                        agent_id=token.agent_id,
+                        # ARRAY(String) — Postgres stores a list, the service-layer
+                        # record uses frozenset. Sort for deterministic at-rest
+                        # ordering (helps human-readable audits).
+                        scopes=sorted(token.scopes),
+                        expires_at=token.expires_at,
+                        status=token.status,
+                        token_hash=token.token_hash,
+                        token_prefix=token.token_prefix,
+                    )
                 )
-            )
 
     async def get_by_prefix_for_org(
         self, prefix: str, organisation_id: uuid.UUID
     ) -> DelegatedTokenRecord | None:
-        async with self._engine.connect() as conn:
-            stmt = (
-                select(_TABLE)
-                .where(
-                    _TABLE.c.token_prefix == prefix,
-                    _TABLE.c.organisation_id == organisation_id,
+        with org_scope(organisation_id):
+            async with self._engine.connect() as conn:
+                stmt = (
+                    select(_TABLE)
+                    .where(
+                        _TABLE.c.token_prefix == prefix,
+                        _TABLE.c.organisation_id == organisation_id,
+                    )
+                    .limit(1)
                 )
-                .limit(1)
-            )
-            row = (await conn.execute(stmt)).mappings().first()
+                row = (await conn.execute(stmt)).mappings().first()
         return _row_to_record(row) if row is not None else None
 
     async def get_by_id_for_org(
         self, token_id: uuid.UUID, organisation_id: uuid.UUID
     ) -> DelegatedTokenRecord | None:
-        async with self._engine.connect() as conn:
-            stmt = (
-                select(_TABLE)
-                .where(
-                    _TABLE.c.id == token_id,
-                    _TABLE.c.organisation_id == organisation_id,
+        with org_scope(organisation_id):
+            async with self._engine.connect() as conn:
+                stmt = (
+                    select(_TABLE)
+                    .where(
+                        _TABLE.c.id == token_id,
+                        _TABLE.c.organisation_id == organisation_id,
+                    )
+                    .limit(1)
                 )
-                .limit(1)
-            )
-            row = (await conn.execute(stmt)).mappings().first()
+                row = (await conn.execute(stmt)).mappings().first()
         return _row_to_record(row) if row is not None else None
 
     async def mark_revoked(self, token_id: uuid.UUID, organisation_id: uuid.UUID) -> int:
@@ -99,17 +105,18 @@ class PostgresDelegatedTokenStore:
         another organisation. Matches the in-memory store's semantics
         exactly (only active rows count).
         """
-        async with self._engine.begin() as conn:
-            stmt = (
-                update(_TABLE)
-                .where(
-                    _TABLE.c.id == token_id,
-                    _TABLE.c.organisation_id == organisation_id,
-                    _TABLE.c.status == "active",
+        with org_scope(organisation_id):
+            async with self._engine.begin() as conn:
+                stmt = (
+                    update(_TABLE)
+                    .where(
+                        _TABLE.c.id == token_id,
+                        _TABLE.c.organisation_id == organisation_id,
+                        _TABLE.c.status == "active",
+                    )
+                    .values(status="revoked")
                 )
-                .values(status="revoked")
-            )
-            result = await conn.execute(stmt)
+                result = await conn.execute(stmt)
         return result.rowcount
 
 

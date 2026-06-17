@@ -60,6 +60,8 @@ jobs:
         run: uv run python -m tools.lint.check_correlation_propagation
       - name: Threat-marker coverage guardrail (WP-8, A7 — every required marker maps to >=1 test)
         run: uv run python -m tools.lint.check_threat_marker_coverage
+      - name: RLS-coverage guardrail (ADR-030 §4 — every realized org-scoped table has RLS applied)
+        run: uv run python -m tools.lint.check_rls_coverage
 
   # `unit` runs the unit suite. It is intentionally RED during the TDD tests->impl window
   # (a `[tests]` PR lands failing tests for an unbuilt seam), so it is NOT a required gate.

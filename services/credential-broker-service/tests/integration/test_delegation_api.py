@@ -26,26 +26,26 @@ _HDR = {"X-Internal-Key": _INTERNAL}
 
 
 @pytest.fixture
-async def client(postgres_dsn: str, monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[AsyncClient]:
-    async_dsn = postgres_dsn.replace("postgresql://", "postgresql+asyncpg://", 1)
-    monkeypatch.setenv("DATABASE_URL", async_dsn)
+async def client(broker_dsns, monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[AsyncClient]:
+    # ADR-030: schema + RLS + the oraclous_app role are provisioned by broker_dsns (as the owner);
+    # the delegated-token store runs as the NOSUPERUSER app role so the RLS policy bites.
+    _owner_async_dsn, app_async_dsn = broker_dsns
+    monkeypatch.setenv("DATABASE_URL", app_async_dsn)
     monkeypatch.setenv("ENCRYPTION_KEY", _KEY)
     monkeypatch.setenv("INTERNAL_SERVICE_KEY", _INTERNAL)
     from oraclous_credential_broker_service.core.config import get_settings
 
     get_settings.cache_clear()
     from oraclous_credential_broker_service.app.factory import create_app
-    from oraclous_credential_broker_service.models import Base
     from oraclous_credential_broker_service.repositories.postgres_delegated_token_store import (
         PostgresDelegatedTokenStore,
     )
     from oraclous_credential_broker_service.services.delegation_service import DelegationService
+    from oraclous_substrate.access_async import install_org_guc_guard
     from sqlalchemy.ext.asyncio import create_async_engine
 
-    engine = create_async_engine(async_dsn)
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.drop_all)
-        await conn.run_sync(Base.metadata.create_all)
+    engine = create_async_engine(app_async_dsn)
+    install_org_guc_guard(engine)  # bind the org GUC per transaction (the store's engine)
     app = create_app(lifespan=None)
     app.state.delegation_service = DelegationService(
         store=PostgresDelegatedTokenStore(engine=engine)

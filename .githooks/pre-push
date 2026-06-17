@@ -36,4 +36,5 @@ uv run python -m tools.lint.check_neo4j_write_role                          || f
 uv run python -m tools.contract.verify_checksums                            || fail "contract fixture integrity"
 uv run python -m tools.lint.check_service_structure services                || fail "service architecture guardrail (ORAA-4 §21)"
 uv run python -m tools.lint.check_no_stubs services                         || fail "no-hollow guardrail (ORAA-4 §22)"
+uv run python -m tools.lint.check_rls_coverage                              || fail "RLS-coverage guardrail (ADR-030 §4)"
 echo "[pre-push] ✅ quality gate passed." >&2

@@ -11,25 +11,28 @@ import uuid
 
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import async_sessionmaker
 
+from oraclous_credential_broker_service.core.rls import build_rls_engine, org_scope
 from oraclous_credential_broker_service.models.org_data_key import OrgDataKey
 
 
 class OrgDataKeyRepository:
     def __init__(self, db_url: str) -> None:
-        self._engine = create_async_engine(db_url, echo=False)
+        # ADR-030: engine carries the RLS org-GUC guard; org_scope binds the org per op.
+        self._engine = build_rls_engine(db_url, echo=False)
         self._session = async_sessionmaker(self._engine, expire_on_commit=False)
 
     async def close(self) -> None:
         await self._engine.dispose()
 
     async def get_for_org(self, *, organisation_id: uuid.UUID) -> OrgDataKey | None:
-        async with self._session() as session:
-            result = await session.execute(
-                select(OrgDataKey).where(OrgDataKey.organisation_id == organisation_id)
-            )
-            return result.scalar_one_or_none()
+        with org_scope(organisation_id):
+            async with self._session() as session:
+                result = await session.execute(
+                    select(OrgDataKey).where(OrgDataKey.organisation_id == organisation_id)
+                )
+                return result.scalar_one_or_none()
 
     async def create(
         self,
@@ -50,11 +53,12 @@ class OrgDataKeyRepository:
             kek_key_id=kek_key_id,
         )
         try:
-            async with self._session() as session:
-                async with session.begin():
-                    session.add(row)
-                await session.refresh(row)
-                return row
+            with org_scope(organisation_id):
+                async with self._session() as session:
+                    async with session.begin():
+                        session.add(row)
+                    await session.refresh(row)
+                    return row
         except IntegrityError:
             won = await self.get_for_org(organisation_id=organisation_id)
             if won is None:

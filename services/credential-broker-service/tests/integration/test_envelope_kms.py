@@ -33,20 +33,12 @@ _ORG_B = uuid.UUID("00000000-0000-0000-0000-00000000bbbb")
 
 
 @pytest.fixture
-async def deks(postgres_dsn: str) -> AsyncIterator[OrgDataKeyRepository]:
-    """A real ``OrgDataKeyRepository`` against a freshly-migrated test Postgres."""
-    async_dsn = postgres_dsn.replace("postgresql://", "postgresql+asyncpg://", 1)
-
-    from oraclous_credential_broker_service.models import Base
-    from sqlalchemy.ext.asyncio import create_async_engine
-
-    setup_engine = create_async_engine(async_dsn)
-    async with setup_engine.begin() as conn:
-        await conn.run_sync(Base.metadata.drop_all)
-        await conn.run_sync(Base.metadata.create_all)
-    await setup_engine.dispose()
-
-    repo = OrgDataKeyRepository(async_dsn)
+async def deks(broker_dsns) -> AsyncIterator[OrgDataKeyRepository]:
+    """A real ``OrgDataKeyRepository`` against the test Postgres, running as the NOSUPERUSER
+    oraclous_app role so the RLS backstop on org_data_keys actually bites (ADR-030). broker_dsns
+    provisioned the schema + RLS + role as the owner; the repo's org_scope binds the GUC per op."""
+    _owner_async_dsn, app_async_dsn = broker_dsns
+    repo = OrgDataKeyRepository(app_async_dsn)
     yield repo
     await repo.close()
 

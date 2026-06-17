@@ -11,10 +11,14 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from oraclous_telemetry import Severity, alert, evaluate_readiness, exit_on_degrade_enabled
-from sqlalchemy.ext.asyncio import create_async_engine
 
 from oraclous_credential_broker_service.core.config import Settings, get_settings
 from oraclous_credential_broker_service.core.envelope import LocalKmsProvider, derive_local_kek
+from oraclous_credential_broker_service.core.rls import (
+    RlsBypassingRoleError,
+    assert_runtime_role_isolates,
+    build_rls_engine,
+)
 from oraclous_credential_broker_service.core.security import decrypt_secret
 from oraclous_credential_broker_service.domain.kms import KmsProvider
 from oraclous_credential_broker_service.repositories.aws_kms_provider import AwsKmsProvider
@@ -66,7 +70,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         )
         cred_repo = CredentialRepository(settings.DATABASE_URL, encrypt=envelope.encrypt)
         webhook_repo = WebhookSecretRepository(settings.DATABASE_URL)
-        engine = create_async_engine(settings.DATABASE_URL, pool_pre_ping=True)
+        # ADR-030: the delegated-token engine carries the RLS org-GUC guard too.
+        engine = build_rls_engine(settings.DATABASE_URL, pool_pre_ping=True)
         app.state.envelope_service = envelope
         app.state.org_data_key_repository = dek_repo
         app.state.credential_repository = cred_repo
@@ -88,6 +93,24 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             store="postgres",
             error=str(exc),
         )
+
+    # ADR-030 §3: fail closed LOUDLY if the runtime role bypasses RLS (a superuser / BYPASSRLS role
+    # makes the policy inert — T1-M3). Distinct from the Postgres-unavailable degrade above: a
+    # mis-deployed bypassing role is a hard configuration error, so it exits the process rather than
+    # quietly serving 503s. Gated on RLS_ASSERT_RUNTIME_ROLE (the deployed oraclous_app runtime sets
+    # it; a deliberate owner-DSN dev/test run leaves it off). Only meaningful once the store bound.
+    if settings.RLS_ASSERT_RUNTIME_ROLE and engine is not None:
+        try:
+            await assert_runtime_role_isolates(engine)
+        except RlsBypassingRoleError as exc:
+            alert(
+                Severity.ERROR,
+                "rls_runtime_role_bypasses",
+                "credential-broker-service",
+                "runtime DB role bypasses RLS; refusing to start (ADR-030 §3)",
+                error=str(exc),
+            )
+            raise SystemExit(1) from exc
 
     verdict = evaluate_readiness({"postgres": app.state.credential_repository})
     if verdict.is_degraded and exit_on_degrade_enabled():

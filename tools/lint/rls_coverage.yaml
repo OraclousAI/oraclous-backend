@@ -1,0 +1,26 @@
+# RLS-coverage manifest (ADR-030 §4) — the scope-aware source of truth for the
+# check_rls_coverage guardrail.
+#
+# Lists the services whose Postgres RLS backstop is REALIZED (per ADR-030's phased,
+# service-by-service rollout) and, for each, the org-scoped tables that must have RLS
+# enabled+forced+a policy. The guardrail enforces ONLY the services listed here, so a
+# not-yet-realized service does not fail CI; as each future slice realizes a service,
+# add it here in the same PR. The guardrail also fails if a realized service ships a
+# NEW org-scoped storage model (a class with __tablename__ + organisation_id) that is
+# absent from its table list — so a new table cannot silently dodge RLS.
+#
+# `enable_rls_on` (substrate) is the only RLS applier; each table here must be covered
+# by an enable_rls_on(...) call in that service's migrations/ (the static half), and
+# the integration isolation test proves it bites at the data layer (the DB half).
+schema_version: 1
+
+services:
+  # Slice 0 — the first realized service (most sensitive: credentials, tokens, org keys).
+  credential-broker-service:
+    tables:
+      - user_credentials
+      - webhook_secrets
+      - delegated_tokens
+      - org_data_keys
+  # Future slices add: auth-service, capability-registry-service, harness-runtime-service,
+  # execution-engine-service, application-gateway-service, knowledge-graph-service.

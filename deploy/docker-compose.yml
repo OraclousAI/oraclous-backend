@@ -131,6 +131,10 @@ services:
       retries: 10
     volumes:
       - pgdata:/var/lib/postgresql/data
+      # ADR-030 §3: provision the NOSUPERUSER oraclous_app runtime role on a FRESH volume. Each
+      # realized service's migrate one-shot also runs the idempotent bootstrap (role + per-table
+      # GRANTs) so an existing volume is covered too.
+      - ./postgres-init:/docker-entrypoint-initdb.d:ro
     networks: [substrate]
 
   redis:
@@ -427,6 +431,10 @@ services:
     networks: [substrate]
 
   # R3.5 service #4 — credential-broker: Alembic schema one-shot (user_credentials + delegated_tokens).
+  # Runs as the OWNER (oraclous, superuser): `alembic upgrade head` creates/updates the tables AND
+  # (0004) enables the RLS backstop, then the rls-role bootstrap idempotently provisions the
+  # NOSUPERUSER oraclous_app runtime role + DML GRANTs (ADR-030 §3). Migrations + this bootstrap stay
+  # on the owner; only the long-running service below switches its DSN to oraclous_app.
   credbroker-migrate:
     build:
       context: ..
@@ -436,7 +444,10 @@ services:
       DATABASE_URL: "postgresql+asyncpg://oraclous:oraclous@postgres:5432/oraclous"
       ENCRYPTION_KEY: "${CRED_BROKER_ENCRYPTION_KEY:-MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=}"
       INTERNAL_SERVICE_KEY: "${INTERNAL_SERVICE_KEY:-dev-internal-key}"
-    command: ["alembic", "upgrade", "head"]
+    command:
+      - sh
+      - -c
+      - "alembic upgrade head && python -m oraclous_credential_broker_service.core.bootstrap_rls_role"
     depends_on:
       postgres:
         condition: service_healthy
@@ -454,7 +465,13 @@ services:
     expose:
       - "8000"
     environment:
-      DATABASE_URL: "postgresql+asyncpg://oraclous:oraclous@postgres:5432/oraclous"
+      # ADR-030 §3: the RUNTIME connects as the NOSUPERUSER/NOBYPASSRLS oraclous_app role so the
+      # FORCE'd RLS policy bites it (the owner `oraclous` would bypass it). Migrations + the operator
+      # backfill keep using the owner DSN. The oraclous_app role + DML GRANTs are provisioned by the
+      # postgres init script (fresh volume) and the credbroker-migrate bootstrap (existing volume).
+      DATABASE_URL: "postgresql+asyncpg://oraclous_app:app@postgres:5432/oraclous"
+      # Refuse to start if the runtime role can bypass RLS (a void backstop) — fail closed (T1-M3).
+      RLS_ASSERT_RUNTIME_ROLE: "true"
       # Dev-only AES-256-GCM key (32 bytes b64) + internal key → key-free smokes; prod injects secrets.
       ENCRYPTION_KEY: "${CRED_BROKER_ENCRYPTION_KEY:-MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=}"
       INTERNAL_SERVICE_KEY: "${INTERNAL_SERVICE_KEY:-dev-internal-key}"
