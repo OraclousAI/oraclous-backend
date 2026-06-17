@@ -35,7 +35,8 @@ ORG_A = uuid.UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
 ORG_B = uuid.UUID("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
 
 _INSERT = (
-    "INSERT INTO public.knowledge_graphs (organisation_id, user_id, name) VALUES (:org, :u, :n)"
+    "INSERT INTO public.knowledge_graphs (id, organisation_id, user_id, name) "
+    "VALUES (:id, :org, :u, :n)"
 )
 _SELECT_NAMES = "SELECT name FROM public.knowledge_graphs"
 _COUNT = "SELECT count(*) FROM public.knowledge_graphs"
@@ -70,7 +71,9 @@ async def test_bind_org_guc_async_explicit_org_isolates(app_async_engine: AsyncE
     # WRITE org A's row, binding the GUC explicitly to org A (WITH CHECK admits it).
     async with app_async_engine.begin() as conn:
         await bind_org_guc_async(conn, organisation_id=str(ORG_A))
-        await conn.execute(text(_INSERT), {"org": ORG_A, "u": uuid.uuid4(), "n": name})
+        await conn.execute(
+            text(_INSERT), {"id": uuid.uuid4(), "org": ORG_A, "u": uuid.uuid4(), "n": name}
+        )
 
     # READ bound to org A → visible; bound to org B → invisible (no app-WHERE; RLS alone scopes).
     async with app_async_engine.begin() as conn:
@@ -87,7 +90,10 @@ async def test_bind_org_guc_async_explicit_org_isolates(app_async_engine: AsyncE
     with pytest.raises(ProgrammingError) as exc_info:
         async with app_async_engine.begin() as conn:
             await bind_org_guc_async(conn, organisation_id=str(ORG_B))
-            await conn.execute(text(_INSERT), {"org": ORG_A, "u": uuid.uuid4(), "n": "smuggled"})
+            await conn.execute(
+                text(_INSERT),
+                {"id": uuid.uuid4(), "org": ORG_A, "u": uuid.uuid4(), "n": "smuggled"},
+            )
     assert getattr(exc_info.value.orig, "sqlstate", None) == "42501"
 
 
@@ -101,7 +107,9 @@ async def test_install_org_guc_guard_binds_from_context(app_async_engine: AsyncE
     # the begin-event binds the GUC from the bound context — no explicit bind call here.
     with use_organisation_context(_ctx(ORG_A)):
         async with app_async_engine.begin() as conn:
-            await conn.execute(text(_INSERT), {"org": ORG_A, "u": uuid.uuid4(), "n": name})
+            await conn.execute(
+                text(_INSERT), {"id": uuid.uuid4(), "org": ORG_A, "u": uuid.uuid4(), "n": name}
+            )
         async with app_async_engine.begin() as conn:
             a = [r[0] for r in (await conn.execute(text(_SELECT_NAMES))).all()]
     assert name in a
