@@ -19,6 +19,8 @@ narrow ``# noqa: S608`` on the DDL statements.
 
 from __future__ import annotations
 
+import uuid
+
 ORG_COLUMN = "organisation_id"
 ORG_GUC = "app.current_organisation_id"
 _POLICY_SUFFIX = "_org_isolation"
@@ -64,7 +66,12 @@ TENANT_TABLES: tuple[str, ...] = tuple(_TABLE_COLUMNS)
 
 
 def enable_rls_on(
-    conn, table: str, *, org_column: str = ORG_COLUMN, org_column_is_uuid: bool = True
+    conn,
+    table: str,
+    *,
+    org_column: str = ORG_COLUMN,
+    org_column_is_uuid: bool = True,
+    extra_read_org_id: str | uuid.UUID | None = None,
 ) -> None:
     """Enable + FORCE row-level security and a single org-isolation policy on an
     **existing** ``public.<table>`` (ADR-030 §1). Idempotent.
@@ -80,7 +87,7 @@ def enable_rls_on(
         ALTER TABLE public."<table>" FORCE  ROW LEVEL SECURITY;   -- binds the owner too
         DROP POLICY IF EXISTS "<table>_org_isolation" ON public."<table>";
         CREATE POLICY "<table>_org_isolation" ON public."<table>"
-          USING      (<org_expr> = NULLIF(current_setting(<ORG_GUC>, true), '')::uuid)
+          USING      (<read_predicate>)
           WITH CHECK (<org_expr> = NULLIF(current_setting(<ORG_GUC>, true), '')::uuid);
           -- <ORG_GUC> = 'app.current_organisation_id'
 
@@ -104,20 +111,39 @@ def enable_rls_on(
     every scan. The org values in such a column are canonical uuids in production
     (the org id is ``str(uuid.uuid4())``), so the per-row ``::uuid`` cast is total.
 
+    ``extra_read_org_id`` (default ``None``) WIDENS THE READ SIDE ONLY to also admit
+    rows owned by a second, fixed org — the capability-registry's platform/global tool
+    catalogue (``PLATFORM_ORG_ID``): every tenant must *read* the shared built-in tools
+    alongside its own (ADR-006 platform-catalogue case), but must never *write* them.
+    When given, the ``USING`` clause becomes ``(<org_expr> = <guc> OR <org_expr> =
+    '<extra>'::uuid)`` while ``WITH CHECK`` stays the strict caller-org equality — so a
+    cross-org read of the platform org is admitted but a cross-org WRITE (stamping the
+    platform org, or any other org) is still denied with 42501. The literal is re-parsed
+    through :class:`uuid.UUID` here so only a canonical uuid reaches the DDL (it is a
+    trusted module constant, never request input). ``None`` (the default) leaves the
+    policy at the strict ``USING == WITH CHECK`` shape — exactly the prior behaviour, so
+    every existing call site (broker / KGS / auth) is byte-for-byte unchanged.
+
     The table name and org column are trusted callers' constants (a per-service
     manifest / model-derived column), never request input — hence the narrow
     ``# noqa: S608`` on the policy DDL. Transaction control is the caller's.
     """
     policy = f"{table}{_POLICY_SUFFIX}"
     org_expr = org_column if org_column_is_uuid else f"{org_column}::uuid"
-    predicate = f"{org_expr} = NULLIF(current_setting('{ORG_GUC}', true), '')::uuid"
+    strict_predicate = f"{org_expr} = NULLIF(current_setting('{ORG_GUC}', true), '')::uuid"
+    if extra_read_org_id is not None:
+        # re-parse through uuid.UUID: only a canonical uuid literal reaches the read DDL.
+        extra = uuid.UUID(str(extra_read_org_id))
+        read_predicate = f"{strict_predicate} OR {org_expr} = '{extra}'::uuid"
+    else:
+        read_predicate = strict_predicate
     with conn.cursor() as cur:
         cur.execute(f'ALTER TABLE public."{table}" ENABLE ROW LEVEL SECURITY')
         cur.execute(f'ALTER TABLE public."{table}" FORCE ROW LEVEL SECURITY')
         cur.execute(f'DROP POLICY IF EXISTS "{policy}" ON public."{table}"')
         cur.execute(  # noqa: S608 — only trusted constants are interpolated
             f'CREATE POLICY "{policy}" ON public."{table}" '
-            f"USING ({predicate}) WITH CHECK ({predicate})"
+            f"USING ({read_predicate}) WITH CHECK ({strict_predicate})"
         )
 
 

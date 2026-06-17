@@ -167,6 +167,11 @@ services:
     networks: [substrate]
 
   # R3.5 service #5 — capability-registry: Alembic schema one-shot (capability_descriptors).
+  # Runs as the OWNER (oraclous, superuser): `alembic upgrade head` creates/updates the tables AND
+  # (0006) enables the RLS backstop (3 strict + capability_descriptors widened-read), then the
+  # rls-role bootstrap idempotently provisions the NOSUPERUSER oraclous_app runtime role + DML GRANTs
+  # on the four org-scoped tables (ADR-030 §3). Migrations + this bootstrap stay on the owner; only
+  # the long-running service below switches its DSN to oraclous_app.
   capreg-migrate:
     build:
       context: ..
@@ -175,7 +180,10 @@ services:
     environment:
       DATABASE_URL: "postgresql+asyncpg://oraclous:oraclous@postgres:5432/oraclous"
       INTERNAL_SERVICE_KEY: "${INTERNAL_SERVICE_KEY:-dev-internal-key}"
-    command: ["alembic", "upgrade", "head"]
+    command:
+      - sh
+      - -c
+      - "alembic upgrade head && python -m oraclous_capability_registry_service.core.bootstrap_rls_role"
     depends_on:
       postgres:
         condition: service_healthy
@@ -193,7 +201,14 @@ services:
     expose:
       - "8000"
     environment:
-      DATABASE_URL: "postgresql+asyncpg://oraclous:oraclous@postgres:5432/oraclous"
+      # ADR-030 §3: the RUNTIME connects as the NOSUPERUSER/NOBYPASSRLS oraclous_app role so the
+      # FORCE'd RLS policy bites it (a superuser owner would bypass it). Only the migrate one-shot
+      # above keeps the owner DSN. The oraclous_app role + DML GRANTs are provisioned by the postgres
+      # init script (fresh volume) and the capreg-migrate bootstrap (existing volume), before this
+      # service connects.
+      DATABASE_URL: "postgresql+asyncpg://oraclous_app:app@postgres:5432/oraclous"
+      # Assert the runtime role is non-bypassing at startup; refuse to come up otherwise (T1-M3).
+      RLS_ASSERT_RUNTIME_ROLE: "true"
       INTERNAL_SERVICE_KEY: "${INTERNAL_SERVICE_KEY:-dev-internal-key}"
       AUTH_SERVICE_URL: "http://auth-service:8000"
       # Identity seam: dev-auth (Bearer dev-token → dev org) by default; AUTH_MODE=jwt consumes the

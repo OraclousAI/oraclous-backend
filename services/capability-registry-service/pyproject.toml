@@ -16,11 +16,16 @@ dependencies = [
     "python-jose[cryptography]>=3.3,<4.0",
     "httpx>=0.27,<1.0",
     "oraclous-governance",
+    # ADR-030: the async RLS GUC-binding seam (oraclous_substrate.access_async — build_rls_engine,
+    # org_scope, install_org_guc_guard, assert_non_bypassing_role, provision_app_role) + the RLS
+    # policy applier (oraclous_substrate.schema.postgres.enable_rls_on).
+    "oraclous-substrate",
     "oraclous-telemetry",
 ]
 
 [tool.uv.sources]
 oraclous-governance = { workspace = true }
+oraclous-substrate = { workspace = true }
 oraclous-telemetry = { workspace = true }
 
 [build-system]
