@@ -23,10 +23,12 @@ _OTHER_ORG = "00000000-0000-0000-0000-0000000006ff"
 
 @pytest.fixture
 async def client(
-    postgres_dsn: str, test_envelope, monkeypatch: pytest.MonkeyPatch
+    broker_dsns, test_envelope, monkeypatch: pytest.MonkeyPatch
 ) -> AsyncIterator[AsyncClient]:
-    async_dsn = postgres_dsn.replace("postgresql://", "postgresql+asyncpg://", 1)
-    monkeypatch.setenv("DATABASE_URL", async_dsn)
+    # ADR-030: repo runs as the NOSUPERUSER oraclous_app role (RLS bites); broker_dsns provisioned
+    # the schema + RLS + role as the owner.
+    _owner_async_dsn, app_async_dsn = broker_dsns
+    monkeypatch.setenv("DATABASE_URL", app_async_dsn)
     monkeypatch.setenv("ENCRYPTION_KEY", _DEV_KEY)
     monkeypatch.setenv("INTERNAL_SERVICE_KEY", _INTERNAL)
     monkeypatch.setenv("AUTH_MODE", "dev")
@@ -36,22 +38,13 @@ async def client(
 
     get_settings.cache_clear()
 
-    from oraclous_credential_broker_service.models import Base
-    from sqlalchemy.ext.asyncio import create_async_engine
-
-    setup_engine = create_async_engine(async_dsn)
-    async with setup_engine.begin() as conn:
-        await conn.run_sync(Base.metadata.drop_all)
-        await conn.run_sync(Base.metadata.create_all)
-    await setup_engine.dispose()
-
     from oraclous_credential_broker_service.app.factory import create_app
     from oraclous_credential_broker_service.repositories.credential_repository import (
         CredentialRepository,
     )
 
     app = create_app(lifespan=None)
-    repo = CredentialRepository(async_dsn, encrypt=test_envelope.encrypt)
+    repo = CredentialRepository(app_async_dsn, encrypt=test_envelope.encrypt)
     app.state.credential_repository = repo
     app.state.envelope_service = test_envelope
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://cb.test") as c:

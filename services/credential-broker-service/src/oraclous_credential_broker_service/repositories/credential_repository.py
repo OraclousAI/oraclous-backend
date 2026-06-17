@@ -14,8 +14,9 @@ from typing import Any
 from uuid import UUID
 
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import async_sessionmaker
 
+from oraclous_credential_broker_service.core.rls import build_rls_engine, org_scope
 from oraclous_credential_broker_service.core.security import encrypt_secret
 from oraclous_credential_broker_service.models.base_model import Base
 from oraclous_credential_broker_service.models.credential_model import UserCredential
@@ -39,7 +40,10 @@ async def _legacy_encrypt(*, organisation_id: UUID, plaintext: Any) -> str:  # n
 
 class CredentialRepository:
     def __init__(self, db_url: str, *, encrypt: EncryptFn | None = None) -> None:
-        self._engine = create_async_engine(db_url, echo=False)
+        # ADR-030: the engine carries the RLS org-GUC guard, so every transaction
+        # opened below binds app.current_organisation_id from the org bound via
+        # ``org_scope`` (the runtime DSN is the NOSUPERUSER oraclous_app role).
+        self._engine = build_rls_engine(db_url, echo=False)
         self._session = async_sessionmaker(self._engine, expire_on_commit=False)
         self._encrypt: EncryptFn = encrypt or _legacy_encrypt
 
@@ -64,11 +68,12 @@ class CredentialRepository:
             encrypted_cred=encrypted,
             cred_type=CredentialType(cred.cred_type),
         )
-        async with self._session() as session:
-            async with session.begin():
-                session.add(obj)
-            await session.refresh(obj)
-            return obj
+        with org_scope(organisation_id):
+            async with self._session() as session:
+                async with session.begin():
+                    session.add(obj)
+                await session.refresh(obj)
+                return obj
 
     async def upsert_oauth_credential(
         self,
@@ -88,128 +93,140 @@ class CredentialRepository:
         domain constants — §21 layering).
         """
         encrypted = await self._encrypt(organisation_id=organisation_id, plaintext=token)
-        async with self._session() as session:
-            async with session.begin():
-                result = await session.execute(
-                    select(UserCredential).where(
-                        UserCredential.organisation_id == organisation_id,
-                        UserCredential.user_id == user_id,
-                        UserCredential.provider == provider,
-                        UserCredential.cred_type == CredentialType.OAUTH,
+        with org_scope(organisation_id):
+            async with self._session() as session:
+                async with session.begin():
+                    result = await session.execute(
+                        select(UserCredential).where(
+                            UserCredential.organisation_id == organisation_id,
+                            UserCredential.user_id == user_id,
+                            UserCredential.provider == provider,
+                            UserCredential.cred_type == CredentialType.OAUTH,
+                        )
                     )
-                )
-                obj = result.scalars().first()
-                if obj is not None:
-                    obj.encrypted_cred = encrypted
-                    if name is not None:
-                        obj.name = name
-                else:
-                    obj = UserCredential(
-                        organisation_id=organisation_id,
-                        name=name,
-                        provider=provider,
-                        user_id=user_id,
-                        tool_id=tool_id,
-                        encrypted_cred=encrypted,
-                        cred_type=CredentialType.OAUTH,
-                    )
-                    session.add(obj)
-            await session.refresh(obj)
-            return obj
+                    obj = result.scalars().first()
+                    if obj is not None:
+                        obj.encrypted_cred = encrypted
+                        if name is not None:
+                            obj.name = name
+                    else:
+                        obj = UserCredential(
+                            organisation_id=organisation_id,
+                            name=name,
+                            provider=provider,
+                            user_id=user_id,
+                            tool_id=tool_id,
+                            encrypted_cred=encrypted,
+                            cred_type=CredentialType.OAUTH,
+                        )
+                        session.add(obj)
+                await session.refresh(obj)
+                return obj
 
     async def get_credential_by_id(
         self, cred_id: UUID, organisation_id: UUID, user_id: UUID | None = None
     ) -> UserCredential | None:
         # user_id filters the user-facing read to the caller's own credential; the trusted runtime
         # resolver (service→service) passes None and scopes by org only.
-        async with self._session() as session:
-            stmt = select(UserCredential).where(
-                UserCredential.id == cred_id,
-                UserCredential.organisation_id == organisation_id,
-            )
-            if user_id is not None:
-                stmt = stmt.where(UserCredential.user_id == user_id)
-            result = await session.execute(stmt)
-            return result.scalars().first()
+        with org_scope(organisation_id):
+            async with self._session() as session:
+                stmt = select(UserCredential).where(
+                    UserCredential.id == cred_id,
+                    UserCredential.organisation_id == organisation_id,
+                )
+                if user_id is not None:
+                    stmt = stmt.where(UserCredential.user_id == user_id)
+                result = await session.execute(stmt)
+                return result.scalars().first()
 
     async def list_credentials(
         self, request: RequestCredentials, organisation_id: UUID
     ) -> list[UserCredential]:
-        async with self._session() as session:
-            stmt = select(UserCredential).where(
-                UserCredential.organisation_id == organisation_id,
-                UserCredential.user_id == request.user_id,
-            )
-            if request.tool_id is not None:
-                stmt = stmt.where(UserCredential.tool_id == request.tool_id)
-            result = await session.execute(stmt)
-            return list(result.scalars().all())
+        with org_scope(organisation_id):
+            async with self._session() as session:
+                stmt = select(UserCredential).where(
+                    UserCredential.organisation_id == organisation_id,
+                    UserCredential.user_id == request.user_id,
+                )
+                if request.tool_id is not None:
+                    stmt = stmt.where(UserCredential.tool_id == request.tool_id)
+                result = await session.execute(stmt)
+                return list(result.scalars().all())
 
     async def update_credential(
         self, update: CredentialsUpdate, organisation_id: UUID, user_id: UUID
     ) -> UserCredential | None:
-        async with self._session() as session:
-            async with session.begin():
-                result = await session.execute(
-                    select(UserCredential).where(
-                        UserCredential.id == update.id,
-                        UserCredential.organisation_id == organisation_id,
-                        UserCredential.user_id == user_id,
+        with org_scope(organisation_id):
+            async with self._session() as session:
+                async with session.begin():
+                    result = await session.execute(
+                        select(UserCredential).where(
+                            UserCredential.id == update.id,
+                            UserCredential.organisation_id == organisation_id,
+                            UserCredential.user_id == user_id,
+                        )
                     )
-                )
-                obj = result.scalars().first()
-                if obj is None:
-                    return None
-                if update.name is not None:
-                    obj.name = update.name
-                obj.provider = update.provider
-                # ownership is immutable here — keep the credential bound to the authenticated user.
-                obj.user_id = user_id
-                obj.tool_id = update.tool_id
-                obj.cred_type = CredentialType(update.cred_type)
-                # Only rotate the secret when a new one is supplied; otherwise preserve the stored
-                # ciphertext (a name-only rename never re-sends the secret — FE §1.5).
-                if update.credential is not None:
-                    obj.encrypted_cred = await self._encrypt(
-                        organisation_id=organisation_id, plaintext=update.credential
-                    )
-            return obj
+                    obj = result.scalars().first()
+                    if obj is None:
+                        return None
+                    if update.name is not None:
+                        obj.name = update.name
+                    obj.provider = update.provider
+                    # ownership is immutable here — keep the credential bound to the user.
+                    obj.user_id = user_id
+                    obj.tool_id = update.tool_id
+                    obj.cred_type = CredentialType(update.cred_type)
+                    # Only rotate the secret when a new one is supplied; otherwise preserve the
+                    # stored ciphertext (a name-only rename never re-sends the secret — FE §1.5).
+                    if update.credential is not None:
+                        obj.encrypted_cred = await self._encrypt(
+                            organisation_id=organisation_id, plaintext=update.credential
+                        )
+                return obj
 
     async def update_encrypted_credential(
         self, cred_id: UUID, organisation_id: UUID, credential: dict
     ) -> bool:
         """Re-encrypt + store a credential's secret in place (used by runtime-token refresh)."""
-        async with self._session() as session:
-            async with session.begin():
-                result = await session.execute(
-                    select(UserCredential).where(
-                        UserCredential.id == cred_id,
-                        UserCredential.organisation_id == organisation_id,
+        with org_scope(organisation_id):
+            async with self._session() as session:
+                async with session.begin():
+                    result = await session.execute(
+                        select(UserCredential).where(
+                            UserCredential.id == cred_id,
+                            UserCredential.organisation_id == organisation_id,
+                        )
                     )
-                )
-                obj = result.scalars().first()
-                if obj is None:
-                    return False
-                obj.encrypted_cred = await self._encrypt(
-                    organisation_id=organisation_id, plaintext=credential
-                )
-            return True
+                    obj = result.scalars().first()
+                    if obj is None:
+                        return False
+                    obj.encrypted_cred = await self._encrypt(
+                        organisation_id=organisation_id, plaintext=credential
+                    )
+                return True
 
     async def delete_credential(self, cred_id: UUID, organisation_id: UUID, user_id: UUID) -> bool:
-        async with self._session() as session:
-            async with session.begin():
-                result = await session.execute(
-                    select(UserCredential).where(
-                        UserCredential.id == cred_id,
-                        UserCredential.organisation_id == organisation_id,
-                        UserCredential.user_id == user_id,
+        with org_scope(organisation_id):
+            async with self._session() as session:
+                async with session.begin():
+                    result = await session.execute(
+                        select(UserCredential).where(
+                            UserCredential.id == cred_id,
+                            UserCredential.organisation_id == organisation_id,
+                            UserCredential.user_id == user_id,
+                        )
                     )
-                )
-                obj = result.scalars().first()
-                if obj is None:
-                    return False
-                await session.delete(obj)
-            return True
+                    obj = result.scalars().first()
+                    if obj is None:
+                        return False
+                    await session.delete(obj)
+                return True
+
+    # NOTE: iter_all_ciphertexts + set_encrypted_cred below are the ADR-020 operator backfill
+    # (cross-org by design). They carry NO org_scope: the backfill runs on the privileged OWNER
+    # DSN (a superuser in the dev stack), which bypasses RLS, so it can sweep every org. Under the
+    # runtime oraclous_app role the empty GUC would (correctly) hide all rows — the backfill must
+    # not run under that role (ADR-030 §3; documented in core/rls.py + deploy/README).
 
     async def iter_all_ciphertexts(self) -> list[tuple[UUID, UUID, str]]:
         """Every credential as ``(id, organisation_id, encrypted_cred)`` — the ADR-020 backfill

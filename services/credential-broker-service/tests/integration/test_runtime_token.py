@@ -39,11 +39,13 @@ class _FakeRefreshClient:
 
 @pytest.fixture
 async def ctx(
-    postgres_dsn: str, test_envelope, monkeypatch: pytest.MonkeyPatch
+    broker_dsns, test_envelope, monkeypatch: pytest.MonkeyPatch
 ) -> AsyncIterator[tuple[AsyncClient, object]]:
-    async_dsn = postgres_dsn.replace("postgresql://", "postgresql+asyncpg://", 1)
+    # ADR-030: repo runs as the NOSUPERUSER oraclous_app role (RLS bites); broker_dsns provisioned
+    # the schema + RLS + role as the owner.
+    _owner_async_dsn, app_async_dsn = broker_dsns
     for k, v in {
-        "DATABASE_URL": async_dsn,
+        "DATABASE_URL": app_async_dsn,
         "ENCRYPTION_KEY": _KEY,
         "INTERNAL_SERVICE_KEY": _INTERNAL,
     }.items():
@@ -52,17 +54,11 @@ async def ctx(
 
     get_settings.cache_clear()
     from oraclous_credential_broker_service.app.factory import create_app
-    from oraclous_credential_broker_service.models import Base
     from oraclous_credential_broker_service.repositories.credential_repository import (
         CredentialRepository,
     )
-    from sqlalchemy.ext.asyncio import create_async_engine
 
-    engine = create_async_engine(async_dsn)
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.drop_all)
-        await conn.run_sync(Base.metadata.create_all)
-    repo = CredentialRepository(async_dsn, encrypt=test_envelope.encrypt)
+    repo = CredentialRepository(app_async_dsn, encrypt=test_envelope.encrypt)
     fake = _FakeRefreshClient()
     app = create_app(lifespan=None)
     app.state.credential_repository = repo
@@ -71,7 +67,6 @@ async def ctx(
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://cb.test") as c:
         yield c, fake, repo
     await repo.close()
-    await engine.dispose()
     get_settings.cache_clear()
 
 

@@ -215,3 +215,54 @@ uv run python -m tools.lint.check_neo4j_write_role
 uv run python -m tools.lint.check_neo4j_read_role
 # both exit 0 — no violations found
 ```
+
+## Postgres RLS roles (ADR-030)
+
+The Postgres row-level-security backstop (ADR-012 §2, realized by ADR-030) needs the **runtime**
+services to connect as a `NOSUPERUSER NOBYPASSRLS` role — a superuser/`BYPASSRLS` role bypasses RLS
+unconditionally, leaving the policy inert. The realized services therefore split their DB access:
+
+| Role | Attributes | Used for |
+|---|---|---|
+| `oraclous` | superuser (owner) | Alembic migrations + DDL + the operator envelope backfill (it must see every org's rows, which a superuser does by bypassing RLS) |
+| `oraclous_app` | `NOSUPERUSER NOBYPASSRLS`, DML grants only | the **runtime** service connections — the FORCE'd RLS policy bites them, scoping every row to the GUC-bound org |
+
+**Slice 0 realizes `credential-broker-service`** (its four org-scoped tables: `user_credentials`,
+`webhook_secrets`, `delegated_tokens`, `org_data_keys`). Other services follow in later slices.
+
+### Local development
+
+`oraclous_app` is provisioned two ways (both idempotent), so a fresh **or** an existing `pgdata`
+volume is covered:
+
+- **Fresh volume:** `deploy/postgres-init/01_rls_app_role.sql` is mounted at
+  `/docker-entrypoint-initdb.d/` and creates the role on first DB init.
+- **Every deploy:** the `credbroker-migrate` one-shot runs, as the owner,
+  `alembic upgrade head && python -m oraclous_credential_broker_service.core.bootstrap_rls_role`
+  — the migration enables RLS (0004) and the bootstrap (re-)creates the role + grants DML on the
+  broker tables.
+
+The runtime `credential-broker-service` then connects as `oraclous_app`
+(`DATABASE_URL=postgresql+asyncpg://oraclous_app:app@postgres:5432/oraclous`) and refuses to start
+if its role can bypass RLS (`RLS_ASSERT_RUNTIME_ROLE: "true"` → fail closed, ADR-030 §3). Dev
+password is `app`; production overrides the runtime DSN with a managed credential.
+
+> **Operator note — the envelope backfill must run as the OWNER, not `oraclous_app`.** The ADR-020
+> backfill (`python -m oraclous_credential_broker_service.tasks.backfill_envelope`) sweeps *every*
+> org's ciphertext, which RLS would hide under `oraclous_app`. Run it with `DATABASE_URL` pointed at
+> the owner (`oraclous`) DSN — it bypasses RLS as a superuser and sees all rows.
+
+### Static analysis
+
+A CI guardrail (`tools/lint/check_rls_coverage.py`, wired into the `lint` job and `.githooks/pre-push`)
+enforces that every org-scoped table of a **realized** service (listed in `tools/lint/rls_coverage.yaml`)
+has an `enable_rls_on(...)` call in that service's migrations, and that no realized service ships a
+new org-scoped storage model absent from the manifest. It is scope-aware: a not-yet-realized service
+is ignored, so the phased rollout never reddens the build before its slice lands. The data-layer
+proof that RLS actually isolates (app-`WHERE` removed; cross-org write denied 42501) is each service's
+integration isolation test (e.g. `test_rls_backstop_isolation.py`).
+
+```bash
+uv run python -m tools.lint.check_rls_coverage
+# exits 0 — every realized org-scoped table has RLS applied
+```

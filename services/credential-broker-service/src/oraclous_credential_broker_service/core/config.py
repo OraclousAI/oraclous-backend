@@ -25,6 +25,14 @@ class Settings(BaseSettings):
     AUTH_SERVICE_URL: str = "http://auth-service:8000"
     INTERNAL_SERVICE_KEY: str
 
+    # --- Postgres RLS backstop (ADR-030) ---
+    # When true, the service asserts at startup that its runtime DB role is NOSUPERUSER/NOBYPASSRLS
+    # (a bypassing role silently voids the RLS policy — T1-M3) and FAILS CLOSED otherwise. The
+    # deployed runtime connects as the oraclous_app role with this on; migrations + the operator
+    # backfill keep running as the owner (superuser) and never set this. Default false so a
+    # test/local run that intentionally uses the owner DSN is not forced to provision the app role.
+    RLS_ASSERT_RUNTIME_ROLE: bool = False
+
     # --- per-org envelope encryption (ADR-020, R7-SEC S5) ---
     # KMS_PROVIDER selects the KEK home: "local" (env KEK — dev/self-host/pre-cutover) or "aws"
     # (a CMK in AWS KMS — the cloud cutover). KMS_LOCAL_KEK is the base64 32-byte local KEK; empty

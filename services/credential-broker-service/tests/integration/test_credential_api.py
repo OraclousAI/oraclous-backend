@@ -24,28 +24,25 @@ _OTHER_ORG = "00000000-0000-0000-0000-0000000006ff"
 
 @pytest.fixture
 async def client(
-    postgres_dsn: str, test_envelope, monkeypatch: pytest.MonkeyPatch
+    broker_dsns, test_envelope, monkeypatch: pytest.MonkeyPatch
 ) -> AsyncIterator[AsyncClient]:
-    async_dsn = postgres_dsn.replace("postgresql://", "postgresql+asyncpg://", 1)
-    monkeypatch.setenv("DATABASE_URL", async_dsn)
+    # ADR-030: the service repos run as the NOSUPERUSER oraclous_app role (RLS bites them); the
+    # broker_dsns fixture already created the schema + enabled RLS + provisioned the role as the
+    # superuser owner. DATABASE_URL (what the repos read) points at the app role; the at-rest
+    # introspection reads in the tests use the superuser DSN explicitly via _owner_async_dsn.
+    owner_async_dsn, app_async_dsn = broker_dsns
+    monkeypatch.setenv("DATABASE_URL", app_async_dsn)
     monkeypatch.setenv("ENCRYPTION_KEY", _DEV_KEY)
     monkeypatch.setenv("INTERNAL_SERVICE_KEY", "dev-internal-key")
     monkeypatch.setenv("AUTH_MODE", "dev")
     monkeypatch.setenv("DEV_BEARER", "dev-token")
     monkeypatch.setenv("DEV_ORG_ID", _DEV_ORG)
+    # the owner DSN is where the at-rest ciphertext reads run (RLS would hide rows under the app
+    # role with no GUC bound) — stash it for the introspecting tests.
+    monkeypatch.setenv("_OWNER_DATABASE_URL", owner_async_dsn)
     from oraclous_credential_broker_service.core.config import get_settings
 
     get_settings.cache_clear()
-
-    # Create the schema (the Alembic one-shot does this in docker; here we do it directly).
-    from oraclous_credential_broker_service.models import Base
-    from sqlalchemy.ext.asyncio import create_async_engine
-
-    setup_engine = create_async_engine(async_dsn)
-    async with setup_engine.begin() as conn:
-        await conn.run_sync(Base.metadata.drop_all)
-        await conn.run_sync(Base.metadata.create_all)
-    await setup_engine.dispose()
 
     # ASGITransport doesn't run the lifespan, so wire app.state directly (mirrors the auth tests).
     from oraclous_credential_broker_service.app.factory import create_app
@@ -56,10 +53,14 @@ async def client(
         PostgresDelegatedTokenStore,
     )
     from oraclous_credential_broker_service.services.delegation_service import DelegationService
+    from oraclous_substrate.access_async import install_org_guc_guard
+    from sqlalchemy.ext.asyncio import create_async_engine
 
     app = create_app(lifespan=None)
-    cred_repo = CredentialRepository(async_dsn, encrypt=test_envelope.encrypt)
-    engine = create_async_engine(async_dsn)
+    # repos run as oraclous_app — the org_scope/begin-event binds the GUC so RLS admits the org.
+    cred_repo = CredentialRepository(app_async_dsn, encrypt=test_envelope.encrypt)
+    engine = create_async_engine(app_async_dsn)
+    install_org_guc_guard(engine)  # delegated-token store's externally-built engine needs it too
     app.state.credential_repository = cred_repo
     app.state.envelope_service = test_envelope
     app.state.delegation_service = DelegationService(
@@ -94,11 +95,13 @@ async def test_create_encrypts_at_rest_and_reads_are_metadata_only(client: Async
     cred_id = created.json()["id"]
     assert "credential" not in created.json()  # create response is metadata-only
 
-    # the stored ciphertext is NOT the plaintext secret
-    from oraclous_credential_broker_service.core.config import get_settings
+    # the stored ciphertext is NOT the plaintext secret — read it as the OWNER (superuser bypasses
+    # RLS) so this at-rest assertion sees the row regardless of the GUC (ADR-030).
+    import os
+
     from sqlalchemy.ext.asyncio import create_async_engine
 
-    engine = create_async_engine(get_settings().DATABASE_URL)
+    engine = create_async_engine(os.environ["_OWNER_DATABASE_URL"])
     async with engine.connect() as conn:
         stored = (
             await conn.execute(
@@ -198,11 +201,13 @@ async def test_name_only_update_preserves_secret(client: AsyncClient) -> None:
     body = _payload()
     cred_id = (await client.post("/credentials/", json=body, headers=_auth())).json()["id"]
 
-    from oraclous_credential_broker_service.core.config import get_settings
+    import os
+
     from sqlalchemy.ext.asyncio import create_async_engine
 
     async def _ciphertext() -> str:
-        engine = create_async_engine(get_settings().DATABASE_URL)
+        # read as the OWNER (bypasses RLS) so the at-rest byte-comparison is GUC-independent.
+        engine = create_async_engine(os.environ["_OWNER_DATABASE_URL"])
         async with engine.connect() as conn:
             ct = (
                 await conn.execute(

@@ -1013,6 +1013,7 @@ dependencies = [
     { name = "fastapi" },
     { name = "httpx" },
     { name = "oraclous-governance" },
+    { name = "oraclous-substrate" },
     { name = "oraclous-telemetry" },
     { name = "psycopg", extra = ["binary"] },
     { name = "pydantic" },
@@ -1030,6 +1031,7 @@ requires-dist = [
     { name = "fastapi", specifier = ">=0.115,<1.0" },
     { name = "httpx", specifier = ">=0.27,<1.0" },
     { name = "oraclous-governance", editable = "packages/governance" },
+    { name = "oraclous-substrate", editable = "packages/substrate" },
     { name = "oraclous-telemetry", editable = "packages/telemetry" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.2,<4.0" },
     { name = "pydantic", specifier = ">=2.0,<3.0" },
@@ -1251,11 +1253,17 @@ name = "oraclous-substrate"
 version = "0.0.0"
 source = { editable = "packages/substrate" }
 dependencies = [
+    { name = "oraclous-governance" },
     { name = "pyyaml" },
+    { name = "sqlalchemy", extra = ["asyncio"] },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "pyyaml", specifier = ">=6.0,<7.0" }]
+requires-dist = [
+    { name = "oraclous-governance", editable = "packages/governance" },
+    { name = "pyyaml", specifier = ">=6.0,<7.0" },
+    { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.0,<3.0" },
+]
 
 [[package]]
 name = "oraclous-telemetry"

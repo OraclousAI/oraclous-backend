@@ -63,31 +63,64 @@ _TABLE_COLUMNS: dict[str, str] = {
 TENANT_TABLES: tuple[str, ...] = tuple(_TABLE_COLUMNS)
 
 
+def enable_rls_on(conn, table: str, *, org_column: str = ORG_COLUMN) -> None:
+    """Enable + FORCE row-level security and a single org-isolation policy on an
+    **existing** ``public.<table>`` (ADR-030 §1). Idempotent.
+
+    The generic, table-creating-free RLS applier the per-service migrations call:
+    the ~28 org-scoped tables across the seven Postgres services already exist via
+    each service's own migrations, so they need RLS *added* to existing tables, not
+    re-created (unlike :func:`apply`, which is KGS's table-creating reshape).
+
+    Issues, idempotently::
+
+        ALTER TABLE public."<table>" ENABLE ROW LEVEL SECURITY;
+        ALTER TABLE public."<table>" FORCE  ROW LEVEL SECURITY;   -- binds the owner too
+        DROP POLICY IF EXISTS "<table>_org_isolation" ON public."<table>";
+        CREATE POLICY "<table>_org_isolation" ON public."<table>"
+          USING      (<org_column> = NULLIF(current_setting(<ORG_GUC>, true), '')::uuid)
+          WITH CHECK (<org_column> = NULLIF(current_setting(<ORG_GUC>, true), '')::uuid);
+          -- <ORG_GUC> = 'app.current_organisation_id'
+
+    ``WITH CHECK`` is mandatory (not just ``USING``): without it a cross-org **write**
+    is admitted (only reads are filtered). With it, an insert/update stamping another
+    org's id raises SQLSTATE 42501 (``InsufficientPrivilege``). ``FORCE`` makes the
+    policy bite the table owner role as well, so a non-``oraclous_app`` (owner) path
+    is also constrained. The ``NULLIF(...,'')`` guard fails closed to zero rows when
+    the GUC is unbound or has reverted to the empty string on a pooled connection
+    (T1-M1) rather than erroring on the ``::uuid`` cast.
+
+    The table name and org column are trusted callers' constants (a per-service
+    manifest / model-derived column), never request input — hence the narrow
+    ``# noqa: S608`` on the policy DDL. Transaction control is the caller's.
+    """
+    policy = f"{table}{_POLICY_SUFFIX}"
+    predicate = f"{org_column} = NULLIF(current_setting('{ORG_GUC}', true), '')::uuid"
+    with conn.cursor() as cur:
+        cur.execute(f'ALTER TABLE public."{table}" ENABLE ROW LEVEL SECURITY')
+        cur.execute(f'ALTER TABLE public."{table}" FORCE ROW LEVEL SECURITY')
+        cur.execute(f'DROP POLICY IF EXISTS "{policy}" ON public."{table}"')
+        cur.execute(  # noqa: S608 — only trusted constants are interpolated
+            f'CREATE POLICY "{policy}" ON public."{table}" '
+            f"USING ({predicate}) WITH CHECK ({predicate})"
+        )
+
+
 def apply(conn) -> None:
     """Create every tenant table org-scoped, with forced RLS and an org-GUC policy.
 
-    Idempotent: ``CREATE TABLE IF NOT EXISTS`` + idempotent RLS toggles + a
-    drop-then-create of the single isolation policy keep a second run a no-op.
-    Transaction control is the caller's (this does not commit).
+    Idempotent: ``CREATE TABLE IF NOT EXISTS`` + an idempotent
+    :func:`enable_rls_on` per table keep a second run a no-op. Transaction control
+    is the caller's (this does not commit). Composes :func:`enable_rls_on` so the
+    RLS shape (ENABLE+FORCE, USING **and** WITH CHECK, NULLIF fail-closed) lives in
+    exactly one place across KGS's reshape and the per-service realizations (ADR-030
+    §1) — no behaviour change for KGS.
     """
     with conn.cursor() as cur:
         for table, columns in _TABLE_COLUMNS.items():
-            policy = f"{table}{_POLICY_SUFFIX}"
             cur.execute(  # noqa: S608 — table/column names are trusted module constants
                 f'CREATE TABLE IF NOT EXISTS public."{table}" '
                 f"({ORG_COLUMN} uuid NOT NULL, {columns})"
             )
-            cur.execute(f'ALTER TABLE public."{table}" ENABLE ROW LEVEL SECURITY')
-            cur.execute(f'ALTER TABLE public."{table}" FORCE ROW LEVEL SECURITY')
-            cur.execute(f'DROP POLICY IF EXISTS "{policy}" ON public."{table}"')
-            cur.execute(  # noqa: S608 — only trusted constants are interpolated
-                f'CREATE POLICY "{policy}" ON public."{table}" '
-                # NULLIF guards the ``::uuid`` cast against the empty-string GUC
-                # that a custom (period-named) parameter reverts to once it has
-                # been SET LOCAL in a prior transaction on a pooled connection.
-                # Without it, an unbound scope errors with InvalidTextRepresentation
-                # instead of cleanly denying — same end-state (no data leaks) but
-                # fragile; with NULLIF the GUC's '' and unset both fail-closed to
-                # zero rows (T1-M1; A2/ORA-17 integration test fail-closed half).
-                f"USING ({ORG_COLUMN} = NULLIF(current_setting('{ORG_GUC}', true), '')::uuid)"
-            )
+    for table in _TABLE_COLUMNS:
+        enable_rls_on(conn, table)
