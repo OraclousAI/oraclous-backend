@@ -60,8 +60,8 @@ class _FakeSubs:
         sub = SimpleNamespace(id=uuid.uuid4(), target_slug=agent_slug, signature_scheme="generic")
         return sub, "whsec_secret_value"
 
-    async def list_subscriptions(self, *, organisation_id):  # noqa: ANN001
-        return self._rows
+    async def list_subscriptions(self, *, organisation_id, limit=100, offset=0):  # noqa: ANN001
+        return self._rows[offset : offset + limit]
 
     async def delete(self, *, organisation_id, subscription_id):  # noqa: ANN001
         if subscription_id == self._rows[0].id:

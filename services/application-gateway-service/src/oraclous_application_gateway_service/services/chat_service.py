@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import uuid
 
+from oraclous_application_gateway_service.domain.pagination import DEFAULT_LIMIT
 from oraclous_application_gateway_service.models.chat import ChatMessage, ChatThread
 from oraclous_application_gateway_service.repositories.chat_repository import ChatRepository
 from oraclous_application_gateway_service.repositories.published_agent_repository import (
@@ -44,19 +45,32 @@ class ChatService:
         )
 
     async def list_threads(
-        self, *, organisation_id: uuid.UUID, user_id: uuid.UUID
+        self,
+        *,
+        organisation_id: uuid.UUID,
+        user_id: uuid.UUID,
+        limit: int = DEFAULT_LIMIT,
+        offset: int = 0,
     ) -> list[ChatThread]:
-        return await self._threads.list_threads(organisation_id=organisation_id, user_id=user_id)
+        return await self._threads.list_threads(
+            organisation_id=organisation_id, user_id=user_id, limit=limit, offset=offset
+        )
 
     async def get_messages(
-        self, *, thread_id: uuid.UUID, organisation_id: uuid.UUID, user_id: uuid.UUID
+        self,
+        *,
+        thread_id: uuid.UUID,
+        organisation_id: uuid.UUID,
+        user_id: uuid.UUID,
+        limit: int = DEFAULT_LIMIT,
+        offset: int = 0,
     ) -> list[ChatMessage] | None:
         thread = await self._threads.get_thread(
             thread_id=thread_id, organisation_id=organisation_id, user_id=user_id
         )
         if thread is None:
             return None
-        return await self._threads.list_messages(thread_id=thread_id)
+        return await self._threads.list_messages(thread_id=thread_id, limit=limit, offset=offset)
 
     async def delete_thread(
         self, *, thread_id: uuid.UUID, organisation_id: uuid.UUID, user_id: uuid.UUID

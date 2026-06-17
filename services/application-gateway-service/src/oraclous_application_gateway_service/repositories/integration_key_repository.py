@@ -14,6 +14,7 @@ from datetime import datetime
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+from oraclous_application_gateway_service.domain.pagination import DEFAULT_LIMIT
 from oraclous_application_gateway_service.models.integration_key import IntegrationKey
 
 
@@ -70,12 +71,17 @@ class IntegrationKeyRepository:
 
     # --- org-scoped CRUD (the member-managed surface, Slice 4) ---
 
-    async def list_for_org(self, organisation_id: uuid.UUID) -> list[IntegrationKey]:
+    async def list_for_org(
+        self, organisation_id: uuid.UUID, *, limit: int = DEFAULT_LIMIT, offset: int = 0
+    ) -> list[IntegrationKey]:
         async with self._session() as session:
             result = await session.execute(
                 select(IntegrationKey)
                 .where(IntegrationKey.organisation_id == organisation_id)
-                .order_by(IntegrationKey.created_at.desc())
+                # stable ORDER BY (created_at desc, id desc) for a deterministic page (WP-10)
+                .order_by(IntegrationKey.created_at.desc(), IntegrationKey.id.desc())
+                .limit(limit)
+                .offset(offset)
             )
             return list(result.scalars().all())
 

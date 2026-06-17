@@ -20,6 +20,7 @@ from oraclous_application_gateway_service.core.dependencies import (
     BoundKeyDep,
     InvokeServiceDep,
     MemberDep,
+    PaginationDep,
     PublishedAgentRepoDep,
     PublishedAgentServiceDep,
 )
@@ -64,8 +65,10 @@ async def publish_agent(
 
 
 @router.get("", response_model=list[PublishedAgentOut])
-async def list_agents(member: MemberDep, svc: PublishedAgentServiceDep) -> list[PublishedAgentOut]:
-    return await svc.list_agents(member.organisation_id)
+async def list_agents(
+    member: MemberDep, svc: PublishedAgentServiceDep, page: PaginationDep
+) -> list[PublishedAgentOut]:
+    return await svc.list_agents(member.organisation_id, limit=page.limit, offset=page.offset)
 
 
 @router.delete("/{slug}", status_code=status.HTTP_204_NO_CONTENT)

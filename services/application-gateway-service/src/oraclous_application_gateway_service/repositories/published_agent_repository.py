@@ -11,6 +11,7 @@ import uuid
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+from oraclous_application_gateway_service.domain.pagination import DEFAULT_LIMIT
 from oraclous_application_gateway_service.models.published_agent import PublishedAgent
 
 
@@ -44,12 +45,17 @@ class PublishedAgentRepository:
             await session.refresh(row)
             return row
 
-    async def list_for_org(self, organisation_id: uuid.UUID) -> list[PublishedAgent]:
+    async def list_for_org(
+        self, organisation_id: uuid.UUID, *, limit: int = DEFAULT_LIMIT, offset: int = 0
+    ) -> list[PublishedAgent]:
         async with self._session() as session:
             result = await session.execute(
                 select(PublishedAgent)
                 .where(PublishedAgent.organisation_id == organisation_id)
-                .order_by(PublishedAgent.created_at.desc())
+                # stable ORDER BY (created_at desc, id desc) for a deterministic page (WP-10)
+                .order_by(PublishedAgent.created_at.desc(), PublishedAgent.id.desc())
+                .limit(limit)
+                .offset(offset)
             )
             return list(result.scalars().all())
 

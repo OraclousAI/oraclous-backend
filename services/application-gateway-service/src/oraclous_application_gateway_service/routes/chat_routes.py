@@ -16,6 +16,7 @@ from oraclous_application_gateway_service.core.dependencies import (
     ChatServiceDep,
     ChatTurnServiceDep,
     MemberDep,
+    PaginationDep,
 )
 from oraclous_application_gateway_service.schema.chat_schemas import (
     ChatTurnOut,
@@ -55,9 +56,14 @@ async def start_thread(
 
 
 @router.get("/threads", response_model=list[ThreadOut])
-async def list_threads(member: MemberDep, svc: ChatServiceDep) -> list[ThreadOut]:
+async def list_threads(
+    member: MemberDep, svc: ChatServiceDep, page: PaginationDep
+) -> list[ThreadOut]:
     return await svc.list_threads(
-        organisation_id=member.organisation_id, user_id=member.principal_id
+        organisation_id=member.organisation_id,
+        user_id=member.principal_id,
+        limit=page.limit,
+        offset=page.offset,
     )
 
 
@@ -79,10 +85,14 @@ async def send_message(
 
 @router.get("/threads/{thread_id}/messages", response_model=list[MessageOut])
 async def list_messages(
-    thread_id: uuid.UUID, member: MemberDep, svc: ChatServiceDep
+    thread_id: uuid.UUID, member: MemberDep, svc: ChatServiceDep, page: PaginationDep
 ) -> list[MessageOut]:
     messages = await svc.get_messages(
-        thread_id=thread_id, organisation_id=member.organisation_id, user_id=member.principal_id
+        thread_id=thread_id,
+        organisation_id=member.organisation_id,
+        user_id=member.principal_id,
+        limit=page.limit,
+        offset=page.offset,
     )
     if messages is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="no such chat thread")
