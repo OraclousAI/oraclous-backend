@@ -21,6 +21,10 @@ from oraclous_knowledge_graph_service.core.config import get_settings
 from oraclous_knowledge_graph_service.core.database import make_engine, make_sessionmaker
 from oraclous_knowledge_graph_service.core.neo4j import ensure_schema, make_neo4j_driver
 from oraclous_knowledge_graph_service.core.redis import make_redis_lock_client
+from oraclous_knowledge_graph_service.core.rls import (
+    RlsBypassingRoleError,
+    assert_runtime_role_isolates,
+)
 
 
 def _open_neo4j() -> Driver | None:
@@ -34,9 +38,29 @@ def _open_neo4j() -> Driver | None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    settings = get_settings()
     engine = make_engine()
     app.state.engine = engine
     app.state.sessionmaker = make_sessionmaker(engine)
+
+    # ADR-030 §3: fail closed LOUDLY if the runtime role bypasses RLS (a superuser / BYPASSRLS role
+    # makes the FORCE'd policy inert — T1-M3). A mis-deployed bypassing role is a hard configuration
+    # error, so it exits the process rather than quietly serving an unscoped store. Gated on
+    # KGS_RLS_ASSERT_RUNTIME_ROLE (the deployed oraclous_app web + worker set it; a deliberate
+    # owner-DSN dev/test run leaves it off). The engine the request path uses is the one asserted.
+    if settings.rls_assert_runtime_role:
+        try:
+            await assert_runtime_role_isolates(engine)
+        except RlsBypassingRoleError as exc:
+            alert(
+                Severity.ERROR,
+                "rls_runtime_role_bypasses",
+                "knowledge-graph-service",
+                "runtime DB role bypasses RLS; refusing to start (ADR-030 §3)",
+                error=str(exc),
+            )
+            await engine.dispose()
+            raise SystemExit(1) from exc
 
     driver: Driver | None = None
     # A configured Neo4j that fails to bind is a degradation; an UNSET URI is intentional CRUD-only

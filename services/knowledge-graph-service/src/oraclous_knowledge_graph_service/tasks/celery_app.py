@@ -13,8 +13,15 @@ from collections.abc import Callable
 from typing import Any
 
 from celery import Celery
+from celery.signals import worker_process_init
+from oraclous_telemetry import Severity, alert
 
 from oraclous_knowledge_graph_service.core.config import get_settings
+from oraclous_knowledge_graph_service.core.database import make_worker_engine
+from oraclous_knowledge_graph_service.core.rls import (
+    RlsBypassingRoleError,
+    assert_runtime_role_isolates,
+)
 
 _settings = get_settings()
 
@@ -61,6 +68,44 @@ celery_app.conf.beat_schedule = {
         "schedule": float(_settings.memory_consolidation_sweep_interval_seconds),
     },
 }
+
+
+@worker_process_init.connect
+def _assert_runtime_role_once_per_worker(**_kwargs: Any) -> None:
+    """ADR-030 §3 fail-closed role assertion for the Celery worker — the worker mirror of the web
+    lifespan check (the worker process never runs the FastAPI lifespan, so without this it had no
+    backstop that it runs under a NOSUPERUSER/NOBYPASSRLS role; a worker mis-deployed on the owner
+    DSN would silently bypass RLS — T1-M3).
+
+    Fires on ``worker_process_init`` — ONCE per worker process (each prefork child at boot), NOT
+    per task. Gated on ``rls_assert_runtime_role`` (default false), so a dev/test run on the owner
+    DSN starts the worker normally. When on, it builds one throwaway worker engine, asserts the
+    runtime role cannot bypass RLS, and on a bypassing role fails closed LOUDLY (log +
+    ``SystemExit``) so the worker process refuses to come up under an inert backstop. The engine is
+    disposed either way.
+    """
+    settings = get_settings()
+    if not settings.rls_assert_runtime_role:
+        return
+
+    async def _check() -> None:
+        engine = make_worker_engine()
+        try:
+            await assert_runtime_role_isolates(engine)
+        finally:
+            await engine.dispose()
+
+    try:
+        asyncio.run(_check())
+    except RlsBypassingRoleError as exc:
+        alert(
+            Severity.ERROR,
+            "rls_runtime_role_bypasses",
+            "knowledge-graph-service",
+            "worker runtime DB role bypasses RLS; refusing to start (ADR-030 §3)",
+            error=str(exc),
+        )
+        raise SystemExit(1) from exc
 
 
 class AsyncTaskExecutor:

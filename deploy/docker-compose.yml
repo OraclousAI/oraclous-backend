@@ -235,6 +235,11 @@ services:
     networks: [substrate]
 
   # R3.5-P1-S1 — schema migration one-shot (runs `alembic upgrade head`, then exits).
+  # Runs as the OWNER (oraclous, superuser): `alembic upgrade head` creates/updates the tables AND
+  # (0007) enables the RLS backstop, then the rls-role bootstrap idempotently provisions the
+  # NOSUPERUSER oraclous_app runtime role + DML GRANTs on the four KGS org-scoped tables (ADR-030 §3).
+  # Migrations + this bootstrap stay on the owner; only the long-running web + worker below switch
+  # their DSN to oraclous_app.
   kgs-migrate:
     build:
       context: ..
@@ -242,7 +247,10 @@ services:
     image: oraclous-knowledge-graph-service:${IMAGE_TAG:-dev}
     environment:
       KGS_DATABASE_URL: "postgresql+asyncpg://oraclous:oraclous@postgres:5432/oraclous"
-    command: ["alembic", "upgrade", "head"]
+    command:
+      - sh
+      - -c
+      - "alembic upgrade head && python -m oraclous_knowledge_graph_service.core.bootstrap_rls_role"
     depends_on:
       postgres:
         condition: service_healthy
@@ -273,6 +281,14 @@ services:
       - "8000"
     environment:
       <<: *kgs-env
+      # ADR-030 §3: the RUNTIME connects as the NOSUPERUSER/NOBYPASSRLS oraclous_app role so the
+      # FORCE'd RLS policy bites it (the owner `oraclous` would bypass it). Overrides the owner DSN
+      # the shared *kgs-env anchor sets — migrations + the dev-org seed keep the owner DSN. The
+      # oraclous_app role + DML GRANTs are provisioned by the postgres init script (fresh volume) and
+      # the kgs-migrate bootstrap (existing volume), before this service connects.
+      KGS_DATABASE_URL: "postgresql+asyncpg://oraclous_app:app@postgres:5432/oraclous"
+      # Refuse to start if the runtime role can bypass RLS (a void backstop) — fail closed (T1-M3).
+      KGS_RLS_ASSERT_RUNTIME_ROLE: "true"
     depends_on:
       postgres:
         condition: service_healthy
@@ -307,6 +323,13 @@ services:
       - --concurrency=2
     environment:
       <<: *kgs-env
+      # ADR-030 §3: the WORKER must also connect as the NOSUPERUSER oraclous_app role — it owns the
+      # async-ingest write path (job updates) on the FORCE'd RLS tables, binding the task org via
+      # use_organisation_context before any query (tasks/ingest_tasks.py). A worker left on the owner
+      # DSN would silently bypass RLS. Same role/DSN + assertion as the web service above; the role +
+      # GRANTs are provisioned by the kgs-migrate bootstrap it depends_on.
+      KGS_DATABASE_URL: "postgresql+asyncpg://oraclous_app:app@postgres:5432/oraclous"
+      KGS_RLS_ASSERT_RUNTIME_ROLE: "true"
     depends_on:
       postgres:
         condition: service_healthy

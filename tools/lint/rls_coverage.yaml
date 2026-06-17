@@ -57,5 +57,16 @@ services:
         reason: >-
           refresh rotation looks a token up by jti/family before re-establishing the active org
           (the org is re-derived from the validated token), so the lookup precedes the bound org.
+  # Slice (KGS) — knowledge-graph-service: the single-engine clean case. All four org-scoped tables
+  # carry a uuid organisation_id and every runtime accessor (web request + Celery worker) binds the
+  # org via use_organisation_context before any query, so RLS the full set (no exclusions). Neo4j is
+  # out of scope here — RLS is Postgres-only; KGS's Neo4j graph data is isolated by the
+  # org-scoped-label / org-property write path, not this manifest.
+  knowledge-graph-service:
+    tables:
+      - knowledge_graphs
+      - ingestion_jobs
+      - recipes
+      - entity_resolutions
   # Future slices add: capability-registry-service, harness-runtime-service,
-  # execution-engine-service, application-gateway-service, knowledge-graph-service.
+  # execution-engine-service, application-gateway-service.
