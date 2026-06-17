@@ -96,4 +96,17 @@ services:
       - executions
       - harness_graph_binding
       - capability_descriptors
-  # Future slices add: harness-runtime-service, application-gateway-service.
+  # Slice (harness-runtime) — OHM agent runtime. All four org-scoped tables carry a uuid
+  # organisation_id and every runtime accessor binds the org via org_scope before any query (the
+  # engine's org-GUC begin-guard then sets it per transaction), so RLS the full set (no exclusions).
+  # All four get the plain STRICT policy — the harness has no shared platform-catalogue case, so no
+  # read-widening. harness_provenance is INSERT-only at runtime; the strict WITH CHECK is exercised
+  # on every provenance INSERT. The four tables are owned by four independent repositories that each
+  # build their engine through build_rls_engine, so none is left unguarded.
+  harness-runtime-service:
+    tables:
+      - harness_executions
+      - harness_checkpoints
+      - harness_assignments
+      - harness_provenance
+  # Future slices add: application-gateway-service.

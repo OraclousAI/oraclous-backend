@@ -626,7 +626,12 @@ services:
     profiles: [services]
     networks: [substrate]
 
-  # R4-S1 — harness-runtime schema migration one-shot (runs `alembic upgrade head`, then exits).
+  # R4-S1 — harness-runtime schema migration one-shot. Runs as the OWNER (oraclous, superuser):
+  # `alembic upgrade head` creates/updates the tables AND (0006) enables the strict RLS backstop on
+  # the four org-scoped harness tables, then the rls-role bootstrap idempotently provisions the
+  # NOSUPERUSER oraclous_app runtime role + DML GRANTs on those four tables (ADR-030 §3). Migrations
+  # + this bootstrap stay on the owner; only the long-running service below switches its DSN to
+  # oraclous_app.
   harness-migrate:
     build:
       context: ..
@@ -634,7 +639,10 @@ services:
     image: oraclous-harness-runtime-service:${IMAGE_TAG:-dev}
     environment:
       HARNESS_DATABASE_URL: "postgresql+asyncpg://oraclous:oraclous@postgres:5432/oraclous"
-    command: ["alembic", "upgrade", "head"]
+    command:
+      - sh
+      - -c
+      - "alembic upgrade head && python -m oraclous_harness_runtime_service.core.bootstrap_rls_role"
     depends_on:
       postgres:
         condition: service_healthy
@@ -652,7 +660,14 @@ services:
     expose:
       - "8000"
     environment:
-      HARNESS_DATABASE_URL: "postgresql+asyncpg://oraclous:oraclous@postgres:5432/oraclous"
+      # ADR-030 §3: the RUNTIME connects as the NOSUPERUSER/NOBYPASSRLS oraclous_app role so the
+      # FORCE'd RLS policy bites it (a superuser owner would bypass it). Only the harness-migrate
+      # one-shot above keeps the owner DSN. The oraclous_app role + DML GRANTs are provisioned by the
+      # postgres init script (fresh volume) and the harness-migrate bootstrap (existing volume),
+      # before this service connects.
+      HARNESS_DATABASE_URL: "postgresql+asyncpg://oraclous_app:app@postgres:5432/oraclous"
+      # Assert the runtime role is non-bypassing at startup; refuse to come up otherwise (T1-M3).
+      HARNESS_RLS_ASSERT_RUNTIME_ROLE: "true"
       # Identity seam: dev-auth by default; AUTH_MODE=gateway (ADR-018) trusts the gateway's
       # X-Principal-*/X-Organisation-Id gated on the shared X-Internal-Key. The runtime forwards the
       # same identity to the registry on every dispatch.

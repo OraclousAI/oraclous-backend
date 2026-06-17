@@ -5,14 +5,17 @@ from __future__ import annotations
 import uuid
 
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import async_sessionmaker
 
+from oraclous_harness_runtime_service.core.rls import build_rls_engine, org_scope
 from oraclous_harness_runtime_service.models.assignment import HarnessAssignment
 
 
 class AssignmentRepository:
     def __init__(self, db_url: str) -> None:
-        self._engine = create_async_engine(db_url, echo=False)
+        # ADR-030: RLS org-GUC begin-guard installed on the engine (every tx binds the org). One of
+        # the four independent harness repository engines — each must be built through here.
+        self._engine = build_rls_engine(db_url, echo=False)
         self._session = async_sessionmaker(self._engine, expire_on_commit=False)
 
     async def close(self) -> None:
@@ -36,11 +39,14 @@ class AssignmentRepository:
             status="PENDING",
             input=input_text,
         )
-        async with self._session() as session:
-            async with session.begin():
-                session.add(row)
-            await session.refresh(row)
-            return row
+        # ADR-030: bind the org so the engine begin-guard sets the GUC; the FORCE'd RLS WITH CHECK
+        # admits this INSERT only because the stamped org equals the bound one.
+        with org_scope(organisation_id):
+            async with self._session() as session:
+                async with session.begin():
+                    session.add(row)
+                await session.refresh(row)
+                return row
 
     async def _set_status(
         self,
@@ -51,22 +57,23 @@ class AssignmentRepository:
         new_status: str,
     ) -> HarnessAssignment | None:
         """Org-scoped status transition under a row lock; None if missing or not in allowed_from."""
-        async with self._session() as session:
-            async with session.begin():
-                result = await session.execute(
-                    select(HarnessAssignment)
-                    .where(
-                        HarnessAssignment.id == assignment_id,
-                        HarnessAssignment.organisation_id == organisation_id,
+        with org_scope(organisation_id):
+            async with self._session() as session:
+                async with session.begin():
+                    result = await session.execute(
+                        select(HarnessAssignment)
+                        .where(
+                            HarnessAssignment.id == assignment_id,
+                            HarnessAssignment.organisation_id == organisation_id,
+                        )
+                        .with_for_update()
                     )
-                    .with_for_update()
-                )
-                row = result.scalar_one_or_none()
-                if row is None or row.status not in allowed_from:
-                    return None
-                row.status = new_status
-            await session.refresh(row)
-            return row
+                    row = result.scalar_one_or_none()
+                    if row is None or row.status not in allowed_from:
+                        return None
+                    row.status = new_status
+                await session.refresh(row)
+                return row
 
     async def claim(
         self, assignment_id: uuid.UUID, organisation_id: uuid.UUID
@@ -97,6 +104,7 @@ class AssignmentRepository:
         if status is not None:
             stmt = stmt.where(HarnessAssignment.status == status)
         stmt = stmt.order_by(HarnessAssignment.created_at.desc()).limit(limit)
-        async with self._session() as session:
-            result = await session.execute(stmt)
-            return list(result.scalars().all())
+        with org_scope(organisation_id):
+            async with self._session() as session:
+                result = await session.execute(stmt)
+                return list(result.scalars().all())

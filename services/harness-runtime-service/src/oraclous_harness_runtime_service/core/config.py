@@ -43,6 +43,13 @@ class Settings(BaseSettings):
     # --- own store (Postgres): execution rows + the provenance sink. No hardcoded prod secret. ---
     database_url: str = "postgresql+asyncpg://oraclous:oraclous@postgres:5432/oraclous"
 
+    # ADR-030 §3: when True the lifespan asserts at startup that the runtime DB role is
+    # NOSUPERUSER/NOBYPASSRLS (else the RLS backstop is inert — T1-M3) and refuses to come up
+    # otherwise. The deployed runtime (oraclous_app DSN) sets it (HARNESS_RLS_ASSERT_RUNTIME_ROLE);
+    # a deliberate owner-DSN dev/test run leaves it False (the default), so importing this module
+    # never forces the assertion.
+    rls_assert_runtime_role: bool = False
+
     # --- upstream services the runtime calls (over HTTP; never imported) ---
     capability_registry_url: str = "http://capability-registry-service:8000"
     credential_broker_url: str = "http://credential-broker-service:8000"
