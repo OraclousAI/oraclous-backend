@@ -1098,6 +1098,9 @@ paths:
       summary: List the organisation's published agents (member, org-scoped).
       operationId: listPublishedAgents
       x-stability: provisional
+      parameters:
+        - { $ref: "#/components/parameters/LimitParam" }
+        - { $ref: "#/components/parameters/OffsetParam" }
       responses:
         "200": { $ref: "#/components/responses/UpstreamJson" }
         "401": { $ref: "#/components/responses/Unauthenticated" }
@@ -1182,6 +1185,9 @@ paths:
       summary: List the organisation's integration keys (redacted — never the hash or secret).
       operationId: listIntegrationKeys
       x-stability: provisional
+      parameters:
+        - { $ref: "#/components/parameters/LimitParam" }
+        - { $ref: "#/components/parameters/OffsetParam" }
       responses:
         "200": { $ref: "#/components/responses/UpstreamJson" }
         "401": { $ref: "#/components/responses/Unauthenticated" }
@@ -1248,6 +1254,9 @@ paths:
       summary: List the member's own chat threads (most-recent first).
       operationId: listChatThreads
       x-stability: provisional
+      parameters:
+        - { $ref: "#/components/parameters/LimitParam" }
+        - { $ref: "#/components/parameters/OffsetParam" }
       responses:
         "200": { $ref: "#/components/responses/UpstreamJson" }
         "401": { $ref: "#/components/responses/Unauthenticated" }
@@ -1292,6 +1301,8 @@ paths:
       x-stability: provisional
       parameters:
         - { name: threadId, in: path, required: true, schema: { type: string } }
+        - { $ref: "#/components/parameters/LimitParam" }
+        - { $ref: "#/components/parameters/OffsetParam" }
       responses:
         "200": { $ref: "#/components/responses/UpstreamJson" }
         "401": { $ref: "#/components/responses/Unauthenticated" }
@@ -1369,6 +1380,9 @@ paths:
       summary: List the member's own webhook subscriptions.
       operationId: listWebhookSubscriptions
       x-stability: provisional
+      parameters:
+        - { $ref: "#/components/parameters/LimitParam" }
+        - { $ref: "#/components/parameters/OffsetParam" }
       responses:
         "200": { $ref: "#/components/responses/UpstreamJson" }
         "401": { $ref: "#/components/responses/Unauthenticated" }
@@ -1422,6 +1436,27 @@ components:
         A short-lived access token minted by the identity service (member credentials). The gateway verifies
         it once at the edge and forwards a verified identity downstream (ADR-018). Integration-key and
         agent-credential auth modes are added in later R6 slices.
+  parameters:
+    LimitParam:
+      name: limit
+      in: query
+      required: false
+      description: >-
+        Maximum number of items to return (WP-10 pagination). OPTIONAL and
+        backward-compatible: a caller that omits it gets the first 100 items
+        (the prior behaviour for any realistic page). Clamped to a hard maximum
+        of 200, so no single read is unbounded. The response shape is unchanged
+        — a plain array, never an items/total envelope.
+      schema: { type: integer, minimum: 1, maximum: 200, default: 100 }
+    OffsetParam:
+      name: offset
+      in: query
+      required: false
+      description: >-
+        Number of items to skip before collecting the page (WP-10 pagination).
+        OPTIONAL; defaults to 0 (start of the stable ordering). Paired with a
+        deterministic ORDER BY so paging is repeatable.
+      schema: { type: integer, minimum: 0, default: 0 }
   schemas:
     JsonObject:
       type: object

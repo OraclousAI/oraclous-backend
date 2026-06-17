@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import Annotated
 
 import httpx
-from fastapi import Depends, HTTPException, Request, status
+from fastapi import Depends, HTTPException, Query, Request, status
 from oraclous_governance import Principal, PrincipalType, org_role_at_least
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -17,6 +17,11 @@ from oraclous_application_gateway_service.core.auth import AuthError, verify_tok
 from oraclous_application_gateway_service.core.config import get_settings
 from oraclous_application_gateway_service.domain.auth_policy import is_public
 from oraclous_application_gateway_service.domain.integration_key import is_integration_key
+from oraclous_application_gateway_service.domain.pagination import (
+    DEFAULT_LIMIT,
+    MAX_LIMIT,
+    Pagination,
+)
 from oraclous_application_gateway_service.domain.upstreams import upstream_health_targets
 from oraclous_application_gateway_service.repositories.chat_repository import ChatRepository
 from oraclous_application_gateway_service.repositories.integration_key_repository import (
@@ -58,6 +63,17 @@ from oraclous_application_gateway_service.services.webhook_subscription_service 
 )
 
 _IK_RL_NS = "rl:ik:key:"  # the per-key rate-limit bucket namespace (R7-SEC S3)
+
+
+def pagination_params(
+    limit: Annotated[int, Query(ge=1, le=MAX_LIMIT)] = DEFAULT_LIMIT,
+    offset: Annotated[int, Query(ge=0)] = 0,
+) -> Pagination:
+    """OPTIONAL ``limit``/``offset`` for every collection read (WP-10). Both default
+    backward-compatibly (a caller that passes neither gets the first ``DEFAULT_LIMIT`` rows, the
+    prior behaviour for any realistic page); ``limit`` is bounded ``[1, MAX_LIMIT]`` by FastAPI's
+    validation so no single read is unbounded. The response shape is unchanged — a plain list."""
+    return Pagination(limit=limit, offset=offset)
 
 
 def get_http_client(request: Request) -> httpx.AsyncClient:
@@ -378,3 +394,4 @@ WebhookSubscriptionServiceDep = Annotated[
 WebhookIngressServiceDep = Annotated[WebhookIngressService, Depends(get_webhook_ingress_service)]
 McpKeyDep = Annotated[ResolvedKey, Depends(require_mcp_key)]
 McpServiceDep = Annotated[McpService, Depends(get_mcp_service)]
+PaginationDep = Annotated[Pagination, Depends(pagination_params)]

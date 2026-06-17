@@ -12,6 +12,7 @@ from __future__ import annotations
 import secrets
 import uuid
 
+from oraclous_application_gateway_service.domain.pagination import DEFAULT_LIMIT
 from oraclous_application_gateway_service.models.webhook_subscription import WebhookSubscription
 from oraclous_application_gateway_service.repositories.published_agent_repository import (
     PublishedAgentRepository,
@@ -62,8 +63,14 @@ class WebhookSubscriptionService:
             raise
         return sub, signing_secret  # the plaintext returned ONCE
 
-    async def list_subscriptions(self, *, organisation_id: uuid.UUID) -> list[WebhookSubscription]:
-        return await self._subs.list_for_org(organisation_id)
+    async def list_subscriptions(
+        self,
+        *,
+        organisation_id: uuid.UUID,
+        limit: int = DEFAULT_LIMIT,
+        offset: int = 0,
+    ) -> list[WebhookSubscription]:
+        return await self._subs.list_for_org(organisation_id, limit=limit, offset=offset)
 
     async def delete(self, *, organisation_id: uuid.UUID, subscription_id: uuid.UUID) -> bool:
         # read the sub first (org-scoped) so we can GC its broker secret; deleting the row alone

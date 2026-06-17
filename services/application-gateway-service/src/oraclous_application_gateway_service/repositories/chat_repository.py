@@ -12,6 +12,7 @@ import uuid
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+from oraclous_application_gateway_service.domain.pagination import DEFAULT_LIMIT
 from oraclous_application_gateway_service.models.chat import ChatMessage, ChatThread
 
 
@@ -55,7 +56,12 @@ class ChatRepository:
             return result.scalar_one_or_none()
 
     async def list_threads(
-        self, *, organisation_id: uuid.UUID, user_id: uuid.UUID
+        self,
+        *,
+        organisation_id: uuid.UUID,
+        user_id: uuid.UUID,
+        limit: int = DEFAULT_LIMIT,
+        offset: int = 0,
     ) -> list[ChatThread]:
         async with self._session() as session:
             result = await session.execute(
@@ -65,7 +71,11 @@ class ChatRepository:
                     ChatThread.created_by_user_id == user_id,
                     ChatThread.deleted_at.is_(None),
                 )
-                .order_by(ChatThread.last_message_at.desc())
+                # stable ORDER BY (last_message_at desc, id desc tiebreak) so the page window is
+                # deterministic even when several threads share a last_message_at (WP-10).
+                .order_by(ChatThread.last_message_at.desc(), ChatThread.id.desc())
+                .limit(limit)
+                .offset(offset)
             )
             return list(result.scalars().all())
 
@@ -89,14 +99,36 @@ class ChatRepository:
 
     # --- messages (reached only via an already-resolved thread) ---
 
-    async def list_messages(self, *, thread_id: uuid.UUID) -> list[ChatMessage]:
+    async def list_messages(
+        self, *, thread_id: uuid.UUID, limit: int = DEFAULT_LIMIT, offset: int = 0
+    ) -> list[ChatMessage]:
         async with self._session() as session:
             result = await session.execute(
                 select(ChatMessage)
                 .where(ChatMessage.thread_id == thread_id)
-                .order_by(ChatMessage.created_at)
+                # stable ORDER BY (created_at, id tiebreak) so the page window is deterministic
+                # even when two messages share a created_at (WP-10).
+                .order_by(ChatMessage.created_at, ChatMessage.id)
+                .limit(limit)
+                .offset(offset)
             )
             return list(result.scalars().all())
+
+    async def recent_messages(self, *, thread_id: uuid.UUID, limit: int) -> list[ChatMessage]:
+        """The most-recent ``limit`` messages on a thread, returned oldest->newest. Used to build a
+        chat turn's bounded context (the prior public ``list_messages`` returned the WHOLE
+        transcript, then the caller kept the tail — this bounds the read while preserving exactly
+        that 'most-recent window' behaviour, never the oldest page)."""
+        async with self._session() as session:
+            result = await session.execute(
+                select(ChatMessage)
+                .where(ChatMessage.thread_id == thread_id)
+                .order_by(ChatMessage.created_at.desc(), ChatMessage.id.desc())
+                .limit(limit)
+            )
+            rows = list(result.scalars().all())
+        rows.reverse()  # back to oldest->newest, the order build_turn_input expects
+        return rows
 
     async def set_message_rating(
         self, *, thread_id: uuid.UUID, message_id: uuid.UUID, rating: str

@@ -61,14 +61,15 @@ class _FakeChatRepo:
     async def get_thread(self, *, thread_id, organisation_id, user_id):  # noqa: ANN001
         return self._own(thread_id, organisation_id, user_id)
 
-    async def list_threads(self, *, organisation_id, user_id):  # noqa: ANN001
-        return [
+    async def list_threads(self, *, organisation_id, user_id, limit=100, offset=0):  # noqa: ANN001
+        rows = [
             t
             for t in self.threads
             if t.organisation_id == organisation_id
             and t.created_by_user_id == user_id
             and t.deleted_at is None
         ]
+        return rows[offset : offset + limit]
 
     async def soft_delete_thread(self, *, thread_id, organisation_id, user_id):  # noqa: ANN001
         t = self._own(thread_id, organisation_id, user_id)
@@ -77,8 +78,8 @@ class _FakeChatRepo:
         t.deleted_at = datetime.now(UTC)
         return True
 
-    async def list_messages(self, *, thread_id):  # noqa: ANN001
-        return self.messages.get(thread_id, [])
+    async def list_messages(self, *, thread_id, limit=100, offset=0):  # noqa: ANN001
+        return self.messages.get(thread_id, [])[offset : offset + limit]
 
     def add_assistant_message(self, *, thread_id):  # noqa: ANN001 — test helper
         msg = SimpleNamespace(
@@ -281,3 +282,32 @@ async def test_message_feedback_on_other_members_thread_is_404() -> None:
             headers=_DEV,
         )
         assert denied.status_code == 404
+
+
+async def test_list_threads_pagination_window_and_backward_compat() -> None:
+    # WP-10: limit/offset are OPTIONAL + honoured; the response stays a plain list (no envelope);
+    # omitting both is backward-compatible (the small fixture set comes back whole).
+    app = _app()
+    for i in range(3):
+        await app.state.chat_repo.create_thread(
+            organisation_id=_DEV_ORG, user_id=_DEV_USER, bound_agent_slug="weather", title=f"t{i}"
+        )
+    async with _client(app) as c:
+        all_threads = (await c.get("/v1/chat/threads", headers=_DEV)).json()
+        assert (
+            isinstance(all_threads, list) and len(all_threads) == 3
+        )  # plain list, unchanged shape
+
+        page = (await c.get("/v1/chat/threads?limit=2&offset=1", headers=_DEV)).json()
+        assert isinstance(page, list) and len(page) == 2
+        assert [t["id"] for t in page] == [t["id"] for t in all_threads[1:3]]
+
+
+async def test_pagination_params_are_bounded() -> None:
+    # the MAX page size + non-negative offset are enforced at the edge (422) -> no unbounded read
+    app = _app()
+    async with _client(app) as c:
+        assert (await c.get("/v1/chat/threads?limit=201", headers=_DEV)).status_code == 422
+        assert (await c.get("/v1/chat/threads?limit=0", headers=_DEV)).status_code == 422
+        assert (await c.get("/v1/chat/threads?offset=-1", headers=_DEV)).status_code == 422
+        assert (await c.get("/v1/chat/threads?limit=200", headers=_DEV)).status_code == 200

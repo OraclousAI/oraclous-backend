@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import uuid
 
+from oraclous_application_gateway_service.domain.pagination import DEFAULT_LIMIT
 from oraclous_application_gateway_service.models.published_agent import PublishedAgent
 from oraclous_application_gateway_service.repositories.published_agent_repository import (
     PublishedAgentRepository,
@@ -37,8 +38,10 @@ class PublishedAgentService:
             description=description,
         )
 
-    async def list_agents(self, organisation_id: uuid.UUID) -> list[PublishedAgent]:
-        return await self._repo.list_for_org(organisation_id)
+    async def list_agents(
+        self, organisation_id: uuid.UUID, *, limit: int = DEFAULT_LIMIT, offset: int = 0
+    ) -> list[PublishedAgent]:
+        return await self._repo.list_for_org(organisation_id, limit=limit, offset=offset)
 
     async def unpublish(self, *, organisation_id: uuid.UUID, slug: str) -> PublishedAgent | None:
         """Take a published agent down (status -> unpublished). Org-scoped, idempotent: returns the

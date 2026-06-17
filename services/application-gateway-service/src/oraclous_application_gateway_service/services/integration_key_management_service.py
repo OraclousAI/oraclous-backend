@@ -11,6 +11,7 @@ import uuid
 from datetime import datetime
 
 from oraclous_application_gateway_service.domain.integration_key import MintedKey, mint_key
+from oraclous_application_gateway_service.domain.pagination import DEFAULT_LIMIT
 from oraclous_application_gateway_service.models.integration_key import IntegrationKey
 from oraclous_application_gateway_service.repositories.integration_key_repository import (
     IntegrationKeyRepository,
@@ -61,8 +62,10 @@ class IntegrationKeyManagementService:
         )
         return minted, row
 
-    async def list_keys(self, organisation_id: uuid.UUID) -> list[IntegrationKey]:
-        return await self._keys.list_for_org(organisation_id)
+    async def list_keys(
+        self, organisation_id: uuid.UUID, *, limit: int = DEFAULT_LIMIT, offset: int = 0
+    ) -> list[IntegrationKey]:
+        return await self._keys.list_for_org(organisation_id, limit=limit, offset=offset)
 
     async def get(self, *, key_id: uuid.UUID, organisation_id: uuid.UUID) -> IntegrationKey | None:
         return await self._keys.get_for_org(key_id=key_id, organisation_id=organisation_id)

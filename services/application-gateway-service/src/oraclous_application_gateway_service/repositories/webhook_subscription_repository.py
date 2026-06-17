@@ -12,6 +12,7 @@ import uuid
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+from oraclous_application_gateway_service.domain.pagination import DEFAULT_LIMIT
 from oraclous_application_gateway_service.models.webhook_subscription import WebhookSubscription
 
 
@@ -52,12 +53,17 @@ class WebhookSubscriptionRepository:
             )
             return result.scalar_one_or_none()
 
-    async def list_for_org(self, organisation_id: uuid.UUID) -> list[WebhookSubscription]:
+    async def list_for_org(
+        self, organisation_id: uuid.UUID, *, limit: int = DEFAULT_LIMIT, offset: int = 0
+    ) -> list[WebhookSubscription]:
         async with self._session() as session:
             result = await session.execute(
                 select(WebhookSubscription)
                 .where(WebhookSubscription.organisation_id == organisation_id)
-                .order_by(WebhookSubscription.created_at.desc())
+                # stable ORDER BY (created_at desc, id desc) for a deterministic page (WP-10)
+                .order_by(WebhookSubscription.created_at.desc(), WebhookSubscription.id.desc())
+                .limit(limit)
+                .offset(offset)
             )
             return list(result.scalars().all())
 
