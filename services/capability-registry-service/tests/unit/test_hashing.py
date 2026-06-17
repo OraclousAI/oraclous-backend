@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 from oraclous_capability_registry_service.domain.hashing import compute_content_hash
 
-pytestmark = pytest.mark.unit
+pytestmark = [pytest.mark.unit, pytest.mark.capability_integrity]
 
 
 def test_key_order_is_irrelevant() -> None:

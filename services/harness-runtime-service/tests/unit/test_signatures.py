@@ -12,7 +12,7 @@ from oraclous_harness_runtime_service.domain.ohm.signatures import (
     verify_signatures,
 )
 
-pytestmark = pytest.mark.unit
+pytestmark = [pytest.mark.unit, pytest.mark.ohm_signature]
 
 _DOC = {"ohm_version": "1.0", "metadata": {"name": "X"}, "runtime": {"entrypoint": "pg"}}
 

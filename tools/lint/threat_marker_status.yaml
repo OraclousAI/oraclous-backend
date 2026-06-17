@@ -1,0 +1,46 @@
+# Threat-marker coverage status (WP-8, A7).
+#
+# Single source of truth for which pytest threat markers MUST have at least one
+# collected test (`required`) vs which are intentionally untested for now
+# (`deferred`). `tools/lint/check_threat_marker_coverage.py` reads this file plus
+# the marker list in `pytest.ini` and, for every `required` marker, asserts
+# `pytest --collect-only -m <marker>` collects >= 1 test (a zero-collection is a
+# hard failure — no silent green). Markers may be `deferred` only with a recorded
+# one-line reason; do NOT add a brand-new threat test here to satisfy the gate —
+# either mark an existing test that genuinely exercises the threat, or defer it.
+#
+# Contract enforced by the guardrail:
+#   - Every marker declared in pytest.ini that is NOT in `ignore` MUST appear here
+#     as either `required` or `deferred` (so a new marker can never slip the gate).
+#   - `required` markers MUST collect >= 1 test.
+#   - `deferred` markers carry a reason and are exempt from the >= 1 assertion.
+#   - `ignore` markers are non-threat operational markers (test-shape / pytest
+#     builtins) that the coverage contract does not police.
+
+# Threat markers that must map to >= 1 collected test (T1-T7 / ADR threat catalogue).
+required:
+  security: security-relevant tests mapped to the Structured Threat Catalogue (T1-T7)
+  isolation: cross-tenant isolation tests
+  byom: bring-your-own-model credential-path tests (T6 / broker resolve + connection base_url)
+  organization_isolation: substrate-level per-organisation isolation tests (ADR-006)
+  rebac: ReBAC access-decision / relation tests (T1-M2, T2)
+  audit: audit-event emission tests (T7)
+  race: concurrency / revocation-race tests (T2)
+  tool_dispatch: model-returned tool-call dispatch tests (T3)
+  capability_integrity: capability descriptor hash/integrity tests (T4)
+  federation: cross-organisation federation tests (T4, ADR-004)
+  ohm_signature: OHM signature verification tests (T5)
+  operator_separation: cloud operator-separation tests (T6, ADR-008)
+  contract: cross-service contract tests — internal API shape, circuit-breaker protocol (ORAA-57)
+  api_authz: API-layer authorisation tests — cross-tenant denial, ownership gate, auth boundary (T1, ORAA-55)
+
+# Threat markers intentionally not yet backed by a test (record a reason; revisit when the surface lands).
+# Empty today: every declared threat marker now maps to >= 1 collected test (WP-8).
+deferred: {}
+
+# Non-threat operational markers — test-shape selectors and pytest builtins. Not part of the
+# threat-coverage contract, so the guardrail neither requires nor forbids collection for them.
+ignore:
+  - unit          # fast, isolated tests — a test-shape selector, not a threat
+  - integration   # tests requiring real substrate — a test-shape selector, not a threat
+  - slow          # long-running tests (deselect with -m "not slow") — operational selector

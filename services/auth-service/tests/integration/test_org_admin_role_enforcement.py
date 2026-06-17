@@ -17,7 +17,7 @@ from __future__ import annotations
 import pytest
 from httpx import AsyncClient
 
-pytestmark = pytest.mark.integration
+pytestmark = [pytest.mark.integration, pytest.mark.api_authz]
 
 
 def _auth(token: str) -> dict:

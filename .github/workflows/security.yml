@@ -8,6 +8,12 @@ on:
 jobs:
   security-tests:
     runs-on: ubuntu-latest
+    # ADR-021 §1: select the key-free fake runtime explicitly (the defaults are now real/live), as
+    # the unit/integration jobs do — so a security test that boots a service through its real
+    # lifespan does not reach for the real broker / live LLM in this key-free job.
+    env:
+      CREDENTIAL_BROKER_MODE: fake
+      HARNESS_LLM_MODE: fake
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
@@ -15,13 +21,28 @@ jobs:
           version: "0.11.7"
       - run: uv python install 3.12
       - run: uv sync --all-packages --frozen
-      - name: Security-marked tests (T1–T7 threat coverage)
+
+      # WP-8 / A7: per-required-threat-marker coverage gate. Every threat marker declared in
+      # pytest.ini now maps to >=1 collected test (see tools/lint/threat_marker_status.yaml), so a
+      # zero-collection is a coverage REGRESSION, not a skeleton. `--collect-only` makes this
+      # deterministic and substrate-independent (it asserts the mapping exists without needing
+      # Neo4j/Postgres/Redis to run). There is NO `if [ -eq 5 ]` escape: exit 5 (nothing collected)
+      # fails the loop. Deferred markers (none today) would be the only ones permitted to escape.
+      - name: Threat-marker coverage gates (no zero-collection escape)
         run: |
-          set +e
-          uv run pytest -m security
-          code=$?
-          if [ "$code" -eq 5 ]; then echo "No security tests collected yet (skeleton)."; exit 0; fi
-          exit "$code"
+          for marker in security byom ohm_signature api_authz tool_dispatch capability_integrity \
+                        contract federation audit rebac operator_separation \
+                        organization_isolation isolation race; do
+            echo "::group::pytest --collect-only -m $marker"
+            uv run pytest --strict-markers --collect-only -q -m "$marker"
+            echo "::endgroup::"
+          done
+
+      # The broad security suite. The former `exit 0 on code 5` skeleton escape is REMOVED: the
+      # `security` marker maps to real T1–T7 coverage now, so a no-collection is a hard failure
+      # (mirroring the non-escapable R1 gate below).
+      - name: Security-marked tests (T1–T7 threat coverage)
+        run: uv run pytest --strict-markers -m security
 
       - name: R1 gate — adversarial delegation suite (ORA-37 / T2 verification)
         # The R1 release gate: "R1 ships nothing until this is green" (ORA-37
