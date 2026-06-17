@@ -1,0 +1,74 @@
+{{- /*
+Generic schema-migration / seed Job renderer — one Job per entry in `.Values.migrations`.
+
+Every Job is a Helm pre-install/pre-upgrade hook so the schema (and the oraclous_app role +
+DML grants the `bootstrap_rls_role` step provisions) is in place before any runtime pod starts.
+Hook weights order the chain (e.g. kgs-migrate before kgs-seed).
+
+CRITICAL — RLS split: every migration Job connects as the OWNER (`oraclous`) DSN. The Job's
+`postgres.role` is forced to "owner" below regardless of what the values file says, so a
+migrate/seed Job can NEVER be handed the oraclous_app DSN. (The pgDsnEnv helper still maps the
+role->user->Secret, so the owner password comes from the owner Secret key only.)
+*/ -}}
+{{- range $name, $job := .Values.migrations }}
+{{- if not (and (kindIs "bool" $job.enabled) (not $job.enabled)) }}
+{{- $root := $ }}
+{{- /* Force the OWNER role for every migration/seed Job — the RLS contract. */ -}}
+{{- $jobCtx := deepCopy $job }}
+{{- if $jobCtx.postgres }}
+{{- $_ := set $jobCtx.postgres "role" "owner" }}
+{{- end }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ printf "%s-%s" $root.Release.Name $name | trunc 63 | trimSuffix "-" }}
+  labels:
+    {{- include "oraclous-backend.labels" $root | nindent 4 }}
+    {{- include "oraclous-backend.selectorLabels" (dict "root" $root "name" $name) | nindent 4 }}
+    app.kubernetes.io/component: migrate
+  annotations:
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": {{ default "0" (toString $job.hookWeight) | quote }}
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: {{ default 3 $job.backoffLimit }}
+  {{- if $job.activeDeadlineSeconds }}
+  activeDeadlineSeconds: {{ $job.activeDeadlineSeconds }}
+  {{- end }}
+  template:
+    metadata:
+      labels:
+        {{- include "oraclous-backend.selectorLabels" (dict "root" $root "name" $name) | nindent 8 }}
+        app.kubernetes.io/component: migrate
+    spec:
+      restartPolicy: Never
+      {{- with $root.Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml (default $root.Values.serviceDefaults.podSecurityContext $job.podSecurityContext) | nindent 8 }}
+      containers:
+        - name: {{ $name }}
+          image: {{ include "oraclous-backend.image" (dict "root" $root "image" $job.image) | quote }}
+          imagePullPolicy: {{ default $root.Values.global.imagePullPolicy $job.image.pullPolicy }}
+          securityContext:
+            {{- toYaml (default $root.Values.serviceDefaults.containerSecurityContext $job.containerSecurityContext) | nindent 12 }}
+          command:
+            {{- toYaml $job.command | nindent 12 }}
+          env:
+            # Migrations run in prod mode too (the bootstrap_rls_role step + RLS assertions).
+            - name: RUN_MODE
+              value: "prod"
+            {{- if and $jobCtx.postgres $jobCtx.postgres.enabled }}
+            {{- include "oraclous-backend.pgDsnEnv" (dict "root" $root "ctx" $jobCtx) | nindent 12 }}
+            {{- end }}
+            {{- with $job.env }}
+            {{- include "oraclous-backend.envFromValues" (dict "map" .fromValues) | nindent 12 }}
+            {{- include "oraclous-backend.envFromSecrets" (dict "map" .fromSecrets "workload" $name) | nindent 12 }}
+            {{- end }}
+          resources:
+            {{- toYaml (default $root.Values.serviceDefaults.resources $job.resources) | nindent 12 }}
+{{- end }}
+{{- end }}

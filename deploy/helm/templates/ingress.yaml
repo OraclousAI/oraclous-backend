@@ -1,0 +1,49 @@
+{{- /*
+Ingress for the application-gateway-service — the SINGLE external surface (ORAA-4 §23 / R6).
+Every other service is ClusterIP-internal and is reached only via the gateway. The Ingress
+routes the external host to the gateway Service; TLS is operator-configured.
+*/ -}}
+{{- if .Values.ingress.enabled }}
+{{- $root := . }}
+{{- $svcName := .Values.ingress.gatewayService }}
+{{- $svc := index .Values.services $svcName }}
+{{- if not $svc }}
+{{- fail (printf "ingress.gatewayService %q is not present in .Values.services" $svcName) }}
+{{- end }}
+{{- $fullName := printf "%s-%s" .Release.Name $svcName | trunc 63 | trimSuffix "-" }}
+{{- $svcPort := default 8000 $svc.service.port }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ printf "%s-gateway" .Release.Name | trunc 63 | trimSuffix "-" }}
+  labels:
+    {{- include "oraclous-backend.labels" . | nindent 4 }}
+    app.kubernetes.io/component: ingress
+  {{- with .Values.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- with .Values.ingress.className }}
+  ingressClassName: {{ . }}
+  {{- end }}
+  {{- if .Values.ingress.tls }}
+  tls:
+    {{- toYaml .Values.ingress.tls | nindent 4 }}
+  {{- end }}
+  rules:
+    {{- range .Values.ingress.hosts }}
+    - host: {{ .host | quote }}
+      http:
+        paths:
+          {{- range (default (list (dict "path" "/" "pathType" "Prefix")) .paths) }}
+          - path: {{ .path }}
+            pathType: {{ default "Prefix" .pathType }}
+            backend:
+              service:
+                name: {{ $fullName }}
+                port:
+                  number: {{ $svcPort }}
+          {{- end }}
+    {{- end }}
+{{- end }}
