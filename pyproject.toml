@@ -117,3 +117,49 @@ forbidden_modules = [
     "oraclous_execution_engine_service",
     "oraclous_application_gateway_service",
 ]
+
+# WP-9: the "Four-layer" layers contract above groups whole SERVICES as layers,
+# but services are HTTP-coupled with zero cross-service Python imports, so a
+# `|`-grouped layer never holds its siblings independent. These two contracts
+# add the real constraints the layers contract cannot express.
+
+# Layer-1 substrate services must never import one another (HTTP-only coupling).
+# A regression — e.g. auth importing credential-broker as a library — fails here.
+[[tool.importlinter.contracts]]
+name = "Layer-1 substrate services are independent (no intra-layer imports)"
+type = "independence"
+modules = [
+    "oraclous_auth_service",
+    "oraclous_credential_broker_service",
+    "oraclous_knowledge_graph_service",
+    "oraclous_knowledge_retriever_service",
+]
+
+# Layer-3 pair must never import one another (the execution-engine orchestrates
+# the harness runtime over HTTP, never as a Python import, and vice versa).
+[[tool.importlinter.contracts]]
+name = "Layer-3 services are independent (harness vs execution-engine)"
+type = "independence"
+modules = [
+    "oraclous_harness_runtime_service",
+    "oraclous_execution_engine_service",
+]
+
+# Pin the shared-kernel DAG so a future cycle among the shared packages is
+# caught immediately. Actual edges today (importer -> importee): telemetry ->
+# errors; substrate -> governance; rebac -> substrate. `errors` is the floor;
+# `telemetry` sits above it; `governance` is independent of both and forms the
+# base alongside the telemetry tier; `substrate` sits above governance; `rebac`
+# sits at the top above substrate. Because a `layers` contract also forbids any
+# import between modules listed in the SAME `|`-group, only modules with no edge
+# between them are grouped — telemetry and errors are kept in separate tiers
+# precisely because telemetry imports errors. Tiers are listed high -> low.
+[[tool.importlinter.contracts]]
+name = "Shared kernel packages form an acyclic downward DAG"
+type = "layers"
+layers = [
+    "oraclous_rebac",
+    "oraclous_substrate",
+    "oraclous_governance | oraclous_telemetry",
+    "oraclous_errors",
+]
