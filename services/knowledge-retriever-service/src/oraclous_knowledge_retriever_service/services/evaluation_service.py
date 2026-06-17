@@ -345,7 +345,7 @@ class EvaluationService:
         for name in _METRIC_ORDER:
             warnings.extend(state.buckets.get(name, []))
         computed = [name for name in _METRIC_ORDER if state.scores[name] is not None]
-        values = [state.scores[name] for name in computed]
+        values = [v for name in computed if (v := state.scores[name]) is not None]
         overall = round(sum(values) / len(values), 4) if values else None
         faithfulness = state.scores["faithfulness"]
         is_grounded = faithfulness is not None and faithfulness >= self._grounded_threshold

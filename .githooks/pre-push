@@ -27,6 +27,7 @@ echo "[pre-push] running local quality gate (mirrors CI 'quality' job)…" >&2
 uv run ruff check .                                                          || fail "ruff lint (uv run ruff check .)"
 uv run ruff format --check .                                                 || fail "ruff format (run: uv run ruff format .)"
 uv run mypy tools                                                            || fail "mypy tools"
+uv run mypy services packages                                                || fail "mypy services packages (WP-7 type gate; ratchet in pyproject [tool.mypy])"
 uv run lint-imports                                                          || fail "import contracts (lint-imports)"
 uv run python -m tools.lint.check_org_scoping packages services             || fail "org-scoping guardrail"
 uv run python -m tools.lint.check_org_scoped_labels_schema                  || fail "org-scoped-labels YAML schema"

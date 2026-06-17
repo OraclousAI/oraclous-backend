@@ -31,8 +31,9 @@ store owns persistence and the SQL-level filters.
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from typing import cast
 
-from sqlalchemy import select, update
+from sqlalchemy import CursorResult, select, update
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from oraclous_auth_service.models.agent_model import Agent, AgentCredential
@@ -99,7 +100,7 @@ class PostgresCredentialStore:
                 .values(status="revoked", revoked_at=datetime.now(UTC))
             )
             await session.commit()
-            return result.rowcount or 0
+            return cast("CursorResult[object]", result).rowcount or 0
 
     async def organisation_id_for(self, agent_id: str) -> str | None:
         """Return the agent's organisation_id iff it has an *active* credential, else ``None``.
@@ -183,4 +184,4 @@ class PostgresCredentialStore:
                 .values(status="revoked", revoked_at=datetime.now(UTC))
             )
             await session.commit()
-            return (result.rowcount or 0) > 0
+            return (cast("CursorResult[object]", result).rowcount or 0) > 0
