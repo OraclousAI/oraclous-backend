@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from typing import Any, Protocol, runtime_checkable
 
 from oraclous_knowledge_graph_service.core.config import Settings
 
@@ -29,7 +30,26 @@ logger = logging.getLogger(__name__)
 _NO_LOCK = "no-lock"
 
 
-def make_redis_lock_client(settings: Settings) -> object | None:
+@runtime_checkable
+class RedisLockClient(Protocol):
+    """The minimal sync-Redis surface the advisory SET-NX-EX lock uses (duck-typed).
+
+    The redis driver import lives ONLY in this module (STR004), so the lock client is passed around
+    by this structural contract rather than the concrete ``redis.Redis`` type — the services/tasks
+    layers never see a driver type. A live ``redis.Redis`` satisfies it structurally; ``None``
+    (Redis unconfigured/unreachable) disables the lock.
+    """
+
+    def set(self, name: str, value: str, *, nx: bool = ..., ex: int = ...) -> Any: ...
+
+    def get(self, name: str) -> Any: ...
+
+    def delete(self, *names: str) -> Any: ...
+
+    def close(self) -> Any: ...
+
+
+def make_redis_lock_client(settings: Settings) -> RedisLockClient | None:
     """Build a sync Redis client for the advisory locks, or ``None`` when Redis is unreachable.
 
     Never raises: a connection that cannot be established degrades to ``None`` (lock disabled) so a
@@ -56,7 +76,7 @@ class RedisLock:
     so a fault degrades to "unlocked", never an exception into the caller.
     """
 
-    def __init__(self, client: object | None, *, key: str, ttl_seconds: int) -> None:
+    def __init__(self, client: RedisLockClient | None, *, key: str, ttl_seconds: int) -> None:
         self._client = client
         self._key = key
         self._ttl = ttl_seconds

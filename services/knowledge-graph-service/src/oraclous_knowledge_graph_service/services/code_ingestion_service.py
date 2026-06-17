@@ -24,7 +24,7 @@ import logging
 import time
 
 from oraclous_knowledge_graph_service.core.config import Settings, get_settings
-from oraclous_knowledge_graph_service.core.redis import RedisLock
+from oraclous_knowledge_graph_service.core.redis import RedisLock, RedisLockClient
 from oraclous_knowledge_graph_service.repositories.code_write_repository import (
     CodeGraphWriteRepository,
 )
@@ -68,7 +68,7 @@ class CodeIngestionService:
         organisation_id: str,
         database: str | None = None,
         settings: Settings | None = None,
-        lock_client: object | None = None,
+        lock_client: RedisLockClient | None = None,
     ) -> None:
         self._driver = driver
         self._org = organisation_id

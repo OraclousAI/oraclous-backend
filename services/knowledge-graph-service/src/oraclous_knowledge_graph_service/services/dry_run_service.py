@@ -20,7 +20,7 @@ from __future__ import annotations
 from typing import Any
 
 from oraclous_knowledge_graph_service.domain.ontology import Ontology
-from oraclous_knowledge_graph_service.domain.structural import ExtractionMode
+from oraclous_knowledge_graph_service.domain.structural import ExtractionMode, Primitive
 from oraclous_knowledge_graph_service.services.recipes.engine import get_recipe_engine
 from oraclous_knowledge_graph_service.services.structured.default_recipe import build_default_recipe
 from oraclous_knowledge_graph_service.services.structured.extractors import StructuredParseError
@@ -73,6 +73,7 @@ class _RecordingNoOpWriter:
         meta,
         confidence,
         container_id,
+        aliases=None,
     ) -> None:
         self.node_labels.append(label)
 
@@ -81,6 +82,10 @@ class _RecordingNoOpWriter:
 
     def merge_edge(self, *, rel_type, edges, source_id, provenance, meta) -> int:
         self.edge_types.extend([rel_type] * len(edges))
+        return len(edges)
+
+    def merge_candidate_edges(self, *, edges, source_id, provenance, meta) -> int:
+        self.edge_types.extend(["SAME_AS_CANDIDATE"] * len(edges))
         return len(edges)
 
     def merge_edge_to_stub(
@@ -102,7 +107,7 @@ class DryRunService:
 
     def __init__(self) -> None:
         self._engine = get_recipe_engine()
-        self._primitives = {"csv": CsvPrimitive(), "json": JsonPrimitive()}
+        self._primitives: dict[str, Primitive] = {"csv": CsvPrimitive(), "json": JsonPrimitive()}
 
     def preview(
         self,

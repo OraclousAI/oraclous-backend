@@ -73,11 +73,13 @@ class TaskService:
                 output=output,
                 progress=100,
             )
-            if not applied:
+            if updated is None or not applied:
                 # the harness run is committed SUCCEEDED, but our job moved under us (a concurrent
                 # cancel / terminal). Surface the split honestly instead of a fake SUCCEEDED + 200.
                 # (A reconciliation sweep to re-drive such rows is a follow-up; harness-first is the
                 # least-bad ordering since the common failure — harness down — raises before this.)
+                # ``updated is None`` is unreachable when ``applied`` (transition returns the row);
+                # it narrows ``updated`` to non-None for the return below.
                 raise TaskError(
                     "job state changed during completion; the harness run already settled"
                 )
@@ -135,8 +137,9 @@ class TaskService:
                 error_message=_bounded(result.get("error_message"), 2000),
                 progress=100,
             )
-            if not applied:
+            if updated is None or not applied:
                 # the harness already settled, but our job moved (concurrent cancel) — honest error.
+                # ``updated is None`` is unreachable when ``applied`` — it narrows for the return.
                 raise TaskError(
                     "job state changed during approval; the harness run already settled"
                 )

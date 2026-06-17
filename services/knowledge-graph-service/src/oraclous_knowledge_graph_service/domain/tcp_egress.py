@@ -45,6 +45,12 @@ from __future__ import annotations
 
 import ipaddress
 import socket
+from ipaddress import IPv4Address, IPv6Address
+
+# ``ipaddress.ip_address()`` returns exactly one of these concrete types; the abstract
+# ``ipaddress._BaseAddress`` base lacks ``is_private`` / ``is_loopback`` / ``is_link_local`` etc.
+# (those live on the concrete classes), so the guard functions type against the concrete union.
+_IPAddress = IPv4Address | IPv6Address
 
 _LINK_LOCAL_V4 = ipaddress.ip_network("169.254.0.0/16")
 _LINK_LOCAL_V6 = ipaddress.ip_network("fe80::/10")
@@ -69,7 +75,7 @@ class EgressBlockedError(Exception):
     """A user-supplied DB host is blocked by the TCP egress guard (a clear 4xx upstream)."""
 
 
-def _normalize(ip: ipaddress._BaseAddress) -> ipaddress._BaseAddress:
+def _normalize(ip: _IPAddress) -> _IPAddress:
     """An IPv4-mapped IPv6 (``::ffff:a.b.c.d``) routes to the IPv4 address — return that, so the
     link-local / private rules cannot be bypassed by mapping a blocked IPv4 into IPv6."""
     if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
@@ -77,7 +83,7 @@ def _normalize(ip: ipaddress._BaseAddress) -> ipaddress._BaseAddress:
     return ip
 
 
-def _is_always_blocked(ip: ipaddress._BaseAddress) -> bool:
+def _is_always_blocked(ip: _IPAddress) -> bool:
     """Link-local (IPv4 169.254/16, IPv6 fe80::/10) AND the enumerated cloud-metadata (IMDS)
     endpoints — ALWAYS blocked, in EITHER mode. ``allow_private`` never relaxes these: no legitimate
     DB lives at an instance-metadata endpoint, only SSRF into instance credentials/metadata."""
@@ -88,20 +94,20 @@ def _is_always_blocked(ip: ipaddress._BaseAddress) -> bool:
     return ip in _LINK_LOCAL_V6 or ip.is_link_local
 
 
-def _is_private(ip: ipaddress._BaseAddress) -> bool:
+def _is_private(ip: _IPAddress) -> bool:
     """Loopback (127/8, ::1), RFC-1918 (10/8, 172.16/12, 192.168/16), IPv6 ULA (fc00::/7), plus the
     reserved / multicast / unspecified ranges — never a valid external DB target."""
     return ip.is_loopback or ip.is_private or ip.is_reserved or ip.is_multicast or ip.is_unspecified
 
 
-def _resolve_ips(host: str) -> list[ipaddress._BaseAddress]:
+def _resolve_ips(host: str) -> list[_IPAddress]:
     """Resolve a host to its IP(s). Fail-closed: an unresolvable host raises (never silently
     treated as safe). A bare IP literal is handled by the caller before this is reached."""
     try:
         infos = socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)
     except OSError as exc:
         raise EgressBlockedError(f"cannot resolve DB host {host!r}: {exc}") from exc
-    addrs: list[ipaddress._BaseAddress] = []
+    addrs: list[_IPAddress] = []
     for info in infos:
         try:
             addrs.append(ipaddress.ip_address(info[4][0]))

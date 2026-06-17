@@ -6,14 +6,17 @@ stored is safe to persist: ``resume_messages`` is the ALREADY-REDACTED transcrip
 ``manifest_doc``
 is the OHM descriptor (capability refs + credential *ids*, never raw secrets). ``status`` drives the
 resume CAS PENDING → APPROVED/DENIED so a decision can be applied exactly once.
+
+No ``from __future__ import annotations`` — SQLAlchemy resolves the ``Mapped[...]`` annotations at
+mapper configuration, so they must be real types.
 """
 
-from __future__ import annotations
-
 import uuid
+from typing import Any
 
-from sqlalchemy import Column, String
+from sqlalchemy import String
 from sqlalchemy.dialects.postgresql import JSONB, UUID
+from sqlalchemy.orm import Mapped, mapped_column
 
 from oraclous_harness_runtime_service.models.base_model import BaseModel
 
@@ -21,13 +24,20 @@ from oraclous_harness_runtime_service.models.base_model import BaseModel
 class HarnessCheckpoint(BaseModel):
     __tablename__ = "harness_checkpoints"
 
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    organisation_id = Column(UUID(as_uuid=True), nullable=False, index=True)
-    execution_id = Column(UUID(as_uuid=True), nullable=False, index=True)
-    status = Column(String(16), nullable=False, default="PENDING")
-    manifest_doc = Column(JSONB, nullable=False)  # the sourced OHM document — replays the same run
-    resume_messages = Column(JSONB, nullable=False)  # the redacted transcript at the pause
-    pending_tool_calls = Column(JSONB, nullable=False)  # not-yet-dispatched calls (gated one first)
-    approved_tool_call_id = Column(String(128), nullable=False)
-    resume_cursor = Column(JSONB, nullable=False)  # {iteration, tool_calls_made, tokens_used}
-    redact_patterns = Column(JSONB, nullable=False)  # list[str] — rebuild redactors identically
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    organisation_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), nullable=False, index=True
+    )
+    execution_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="PENDING")
+    # the sourced OHM document — replays the same run
+    manifest_doc: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    # the redacted transcript at the pause
+    resume_messages: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, nullable=False)
+    # not-yet-dispatched calls (gated one first)
+    pending_tool_calls: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, nullable=False)
+    approved_tool_call_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    # {iteration, tool_calls_made, tokens_used}
+    resume_cursor: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    # list[str] — rebuild redactors identically
+    redact_patterns: Mapped[list[str]] = mapped_column(JSONB, nullable=False)

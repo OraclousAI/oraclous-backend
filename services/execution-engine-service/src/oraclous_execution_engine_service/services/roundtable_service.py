@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Callable
+from datetime import datetime
 from typing import Any
 
 from oraclous_governance import Principal
@@ -127,7 +128,10 @@ class RoundtableService:
         claimed, ok = await self._roundtables.transition(
             rt.id, org_id, new_state="RUNNING", allowed_from=frozenset({"QUEUED"})
         )
-        if not ok:
+        # A True ``ok`` guarantees a non-None row (transition returns (None, False) when absent), so
+        # the ``claimed is None`` arm is unreachable when ok — it just narrows ``claimed`` to
+        # non-None for the drive below (and ``claimed or rt`` already covers the no-op return).
+        if not ok or claimed is None:
             return claimed or rt
         rt = claimed
 
@@ -176,13 +180,15 @@ class RoundtableService:
 
         final = transcript[-1]["output"] if transcript else None
         await self._emit(org_id, rt.user_id, rt.id, "engine.roundtable.complete", "SUCCEEDED")
-        return await self._roundtables.update(
-            rt.id,
-            org_id,
-            state="SUCCEEDED",
-            current_turn=turn,
-            transcript=transcript,
-            final_output=final,
+        return self._require_row(
+            await self._roundtables.update(
+                rt.id,
+                org_id,
+                state="SUCCEEDED",
+                current_turn=turn,
+                transcript=transcript,
+                final_output=final,
+            )
         )
 
     async def respond(
@@ -233,7 +239,7 @@ class RoundtableService:
             self._enqueue(rt.id, org_id, principal.principal_id)
         return updated or rt
 
-    async def reap_stale(self, *, older_than: object) -> int:
+    async def reap_stale(self, *, older_than: datetime) -> int:
         """System sweep (with the job reaper): re-queue round-tables stuck RUNNING past the
         lease — a driver that died mid-turn — so a fresh driver re-claims them. The CAS claim makes
         the re-drive idempotent. Each row is re-queued + re-enqueued under its OWN org.
@@ -273,14 +279,25 @@ class RoundtableService:
         message: str,
     ) -> EngineRoundtable:
         await self._emit(org_id, rt.user_id, rt.id, "engine.roundtable.fail", "FAILED")
-        return await self._roundtables.update(
-            rt.id,
-            org_id,
-            state="FAILED",
-            current_turn=turn,
-            transcript=transcript,
-            error_message=message[:2000],
+        return self._require_row(
+            await self._roundtables.update(
+                rt.id,
+                org_id,
+                state="FAILED",
+                current_turn=turn,
+                transcript=transcript,
+                error_message=message[:2000],
+            )
         )
+
+    @staticmethod
+    def _require_row(rt: EngineRoundtable | None) -> EngineRoundtable:
+        """Resolve the post-write Optional at the service boundary: an org-scoped ``update`` returns
+        ``None`` only if the row is absent, but every caller here just claimed/locked the row under
+        a single driver, so ``None`` is an unreachable invariant breach — fail closed if it is."""
+        if rt is None:  # pragma: no cover — the single-driver claim guarantees the row exists
+            raise RoundtableError("round-table vanished mid-drive", 404)
+        return rt
 
     @staticmethod
     def _require_org(principal: Principal) -> uuid.UUID:

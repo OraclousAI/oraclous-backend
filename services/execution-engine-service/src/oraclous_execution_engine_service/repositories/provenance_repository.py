@@ -67,4 +67,6 @@ class ProvenanceRepository:
             stmt = stmt.where(EngineProvenanceEvent.created_at >= since)
         async with self._session() as session:
             result = await session.execute(stmt)
-            return [(row.action, int(row.count)) for row in result.all()]
+            # Access the count by position: ``row.count`` resolves to the tuple ``count`` METHOD
+            # (the label name collides with it), so index the second selected column instead.
+            return [(row.action, int(row[1])) for row in result.all()]
