@@ -14,6 +14,7 @@ import uuid
 from oraclous_governance import Principal
 from oraclous_substrate import ProvenanceCollector, ProvenanceRecord
 
+from oraclous_execution_engine_service.core.rls import org_scope
 from oraclous_execution_engine_service.domain.state import sources_for
 from oraclous_execution_engine_service.domain.status_map import map_harness_status
 from oraclous_execution_engine_service.models.enums import EngineJobState
@@ -44,38 +45,45 @@ class TaskService:
     async def list_tasks(self, principal: Principal) -> list[EngineJob]:
         """The open task board: the org's ESCALATED jobs (each carries a harness assignment)."""
         org_id = self._require_org(principal)
-        return await self._jobs.list_for_org(org_id, state=EngineJobState.ESCALATED.value)
+        # ADR-030 §3: bind the org so the read runs with the GUC set (else FORCE'd RLS → zero rows).
+        with org_scope(org_id):
+            return await self._jobs.list_for_org(org_id, state=EngineJobState.ESCALATED.value)
 
     async def complete(self, job_id: uuid.UUID, principal: Principal, output: str) -> EngineJob:
         org_id = self._require_org(principal)
-        job = await self._jobs.get(job_id, org_id)
-        if job is None:
-            raise TaskError("task not found")
-        if job.state != EngineJobState.ESCALATED.value or job.assignment_id is None:
-            raise TaskError("job is not an open human task")
-        # complete the harness assignment first (flips the harness's own run); then settle ours.
-        try:
-            await self._harness.complete_assignment(job.assignment_id, output)
-        except HarnessClientError as exc:
-            raise TaskError(f"harness rejected the completion: {exc}") from exc
-        allowed = frozenset(s.value for s in sources_for(EngineJobState.SUCCEEDED))
-        updated, applied = await self._jobs.transition(
-            job.id,
-            org_id,
-            new_state=EngineJobState.SUCCEEDED.value,
-            allowed_from=allowed,
-            output=output,
-            progress=100,
-        )
-        if not applied:
-            # the harness run is committed SUCCEEDED, but our job moved under us (a concurrent
-            # cancel / terminal). Surface the split honestly instead of a fake SUCCEEDED + 200.
-            # (A reconciliation sweep to re-drive such rows is a follow-up; harness-first is the
-            # least-bad ordering since the common failure — harness down — raises before this.)
-            raise TaskError("job state changed during completion; the harness run already settled")
-        await self._emit(
-            org_id, principal.principal_id, job.id, "engine.task.complete", "SUCCEEDED"
-        )
+        # ADR-030 §3: bind the org for the whole request-path op so the row-read + the CAS
+        # transition + provenance run with the GUC set on the org-bound engine (T1-M1).
+        with org_scope(org_id):
+            job = await self._jobs.get(job_id, org_id)
+            if job is None:
+                raise TaskError("task not found")
+            if job.state != EngineJobState.ESCALATED.value or job.assignment_id is None:
+                raise TaskError("job is not an open human task")
+            # complete the harness assignment first (flips the harness's own run); then settle ours.
+            try:
+                await self._harness.complete_assignment(job.assignment_id, output)
+            except HarnessClientError as exc:
+                raise TaskError(f"harness rejected the completion: {exc}") from exc
+            allowed = frozenset(s.value for s in sources_for(EngineJobState.SUCCEEDED))
+            updated, applied = await self._jobs.transition(
+                job.id,
+                org_id,
+                new_state=EngineJobState.SUCCEEDED.value,
+                allowed_from=allowed,
+                output=output,
+                progress=100,
+            )
+            if not applied:
+                # the harness run is committed SUCCEEDED, but our job moved under us (a concurrent
+                # cancel / terminal). Surface the split honestly instead of a fake SUCCEEDED + 200.
+                # (A reconciliation sweep to re-drive such rows is a follow-up; harness-first is the
+                # least-bad ordering since the common failure — harness down — raises before this.)
+                raise TaskError(
+                    "job state changed during completion; the harness run already settled"
+                )
+            await self._emit(
+                org_id, principal.principal_id, job.id, "engine.task.complete", "SUCCEEDED"
+            )
         return updated
 
     async def approve(
@@ -90,42 +98,51 @@ class TaskService:
         the harness loop (the gated tool runs); DENIED terminates it FAILED. Harness-first, then a
         CAS flip — a chained HITL re-pause leaves the job ESCALATED for the next approval."""
         org_id = self._require_org(principal)
-        job = await self._jobs.get(job_id, org_id)
-        if job is None:
-            raise TaskError("task not found")
-        if (
-            job.state != EngineJobState.ESCALATED.value
-            or job.harness_execution_id is None
-            or job.assignment_id is not None
-        ):
-            raise TaskError("job is not a mid-loop HITL approval task")
-        try:
-            result = await self._harness.resume(job.harness_execution_id, decision, decision_reason)
-        except HarnessClientError as exc:
-            raise TaskError(f"harness rejected the resume: {exc}") from exc
+        # ADR-030 §3: bind the org for the whole request-path op so the row-read + the CAS
+        # transition + provenance run with the GUC set on the org-bound engine (T1-M1).
+        with org_scope(org_id):
+            job = await self._jobs.get(job_id, org_id)
+            if job is None:
+                raise TaskError("task not found")
+            if (
+                job.state != EngineJobState.ESCALATED.value
+                or job.harness_execution_id is None
+                or job.assignment_id is not None
+            ):
+                raise TaskError("job is not a mid-loop HITL approval task")
+            try:
+                result = await self._harness.resume(
+                    job.harness_execution_id, decision, decision_reason
+                )
+            except HarnessClientError as exc:
+                raise TaskError(f"harness rejected the resume: {exc}") from exc
 
-        target = map_harness_status(result.get("status", ""))
-        if target is EngineJobState.ESCALATED:
-            # a chained HITL pause re-escalated the run; the job stays ESCALATED (next approval).
-            await self._emit(
-                org_id, principal.principal_id, job.id, "engine.task.approve", "re-escalated"
+            target = map_harness_status(result.get("status", ""))
+            if target is EngineJobState.ESCALATED:
+                # a chained HITL pause re-escalated the run; the job stays ESCALATED (next approve).
+                await self._emit(
+                    org_id, principal.principal_id, job.id, "engine.task.approve", "re-escalated"
+                )
+                return job
+            allowed = frozenset(s.value for s in sources_for(target))
+            updated, applied = await self._jobs.transition(
+                job.id,
+                org_id,
+                new_state=target.value,
+                allowed_from=allowed,
+                output=result.get("output"),
+                error_type=_bounded(result.get("error_type"), 128),
+                error_message=_bounded(result.get("error_message"), 2000),
+                progress=100,
             )
-            return job
-        allowed = frozenset(s.value for s in sources_for(target))
-        updated, applied = await self._jobs.transition(
-            job.id,
-            org_id,
-            new_state=target.value,
-            allowed_from=allowed,
-            output=result.get("output"),
-            error_type=_bounded(result.get("error_type"), 128),
-            error_message=_bounded(result.get("error_message"), 2000),
-            progress=100,
-        )
-        if not applied:
-            # the harness already settled, but our job moved (concurrent cancel) — surface honestly.
-            raise TaskError("job state changed during approval; the harness run already settled")
-        await self._emit(org_id, principal.principal_id, job.id, "engine.task.approve", decision)
+            if not applied:
+                # the harness already settled, but our job moved (concurrent cancel) — honest error.
+                raise TaskError(
+                    "job state changed during approval; the harness run already settled"
+                )
+            await self._emit(
+                org_id, principal.principal_id, job.id, "engine.task.approve", decision
+            )
         return updated
 
     @staticmethod

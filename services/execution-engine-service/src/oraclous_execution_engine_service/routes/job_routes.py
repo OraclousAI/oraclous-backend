@@ -10,10 +10,8 @@ from __future__ import annotations
 import uuid
 
 from fastapi import APIRouter, HTTPException, status
-from oraclous_governance import Principal
 
 from oraclous_execution_engine_service.core.dependencies import (
-    JobRepositoryDep,
     JobServiceDep,
     PrincipalDep,
 )
@@ -27,14 +25,6 @@ from oraclous_execution_engine_service.schema.engine_schemas import (
 from oraclous_execution_engine_service.services.job_service import JobError
 
 router = APIRouter(prefix="/v1/engine", tags=["engine"])
-
-
-def _require_org(principal: Principal) -> uuid.UUID:
-    if principal.organisation_id is None:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED, detail="no organisation scope"
-        )
-    return principal.organisation_id
 
 
 @router.post("/jobs", response_model=JobOut, status_code=status.HTTP_202_ACCEPTED)
@@ -88,15 +78,15 @@ async def cancel_job(job_id: uuid.UUID, principal: PrincipalDep, service: JobSer
 
 
 @router.get("/jobs", response_model=JobListResponse)
-async def list_jobs(principal: PrincipalDep, jobs: JobRepositoryDep) -> JobListResponse:
-    rows = await jobs.list_for_org(_require_org(principal))
+async def list_jobs(principal: PrincipalDep, service: JobServiceDep) -> JobListResponse:
+    rows = await service.list(principal)
     out = [JobOut.model_validate(r) for r in rows]
     return JobListResponse(jobs=out, total=len(out))
 
 
 @router.get("/jobs/{job_id}", response_model=JobOut)
-async def get_job(job_id: uuid.UUID, principal: PrincipalDep, jobs: JobRepositoryDep) -> JobOut:
-    row = await jobs.get(job_id, _require_org(principal))
+async def get_job(job_id: uuid.UUID, principal: PrincipalDep, service: JobServiceDep) -> JobOut:
+    row = await service.get(job_id, principal)
     if row is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="job not found")
     return JobOut.model_validate(row)

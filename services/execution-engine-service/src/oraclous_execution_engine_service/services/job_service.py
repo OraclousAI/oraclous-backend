@@ -79,29 +79,37 @@ class JobService:
         org_id = self._require_org(principal)
         if self._enqueue is None:  # request path must have a queue
             raise JobError("no job queue configured")
-        job = await self._jobs.create(
-            organisation_id=org_id,
-            user_id=principal.principal_id,
-            input_text=input_text,
-            manifest_inline=manifest_inline,
-            manifest_ref=manifest_ref,
-            max_retries=max_retries,
-            timeout_seconds=timeout_seconds,
-        )
-        # The QUEUED row is durable before the (fallible) enqueue — so if provenance or the broker
-        # hand-off fails, fail the row instead of orphaning it as a phantom QUEUED job.
-        try:
-            await self._emit(org_id, principal.principal_id, job.id, "engine.job.submit", "QUEUED")
-            self._enqueue(job.id, org_id, principal.principal_id)
-        except Exception:
-            await self._jobs.transition(
-                job.id,
-                org_id,
-                new_state=EngineJobState.FAILED.value,
-                allowed_from=frozenset({EngineJobState.QUEUED.value}),
-                error_type="enqueue_failed",
+        # ADR-030 §3: the API request path binds the org for the whole op so the org-bound engine's
+        # begin-guard sets app.current_organisation_id — without it, under FORCE'd RLS the INSERT
+        # would hit the empty GUC and the WITH CHECK would reject it (SQLSTATE 42501). The org comes
+        # from the authenticated principal only, never request input (T1-M1) — the same chokepoint
+        # the maintenance settle uses for the per-row write.
+        with org_scope(org_id):
+            job = await self._jobs.create(
+                organisation_id=org_id,
+                user_id=principal.principal_id,
+                input_text=input_text,
+                manifest_inline=manifest_inline,
+                manifest_ref=manifest_ref,
+                max_retries=max_retries,
+                timeout_seconds=timeout_seconds,
             )
-            raise
+            # The QUEUED row is durable before the (fallible) enqueue — so if provenance or the
+            # broker hand-off fails, fail the row instead of orphaning it as a phantom QUEUED job.
+            try:
+                await self._emit(
+                    org_id, principal.principal_id, job.id, "engine.job.submit", "QUEUED"
+                )
+                self._enqueue(job.id, org_id, principal.principal_id)
+            except Exception:
+                await self._jobs.transition(
+                    job.id,
+                    org_id,
+                    new_state=EngineJobState.FAILED.value,
+                    allowed_from=frozenset({EngineJobState.QUEUED.value}),
+                    error_type="enqueue_failed",
+                )
+                raise
         return job
 
     async def submit_event(
@@ -119,29 +127,34 @@ class JobService:
         org_id = self._require_org(principal)
         if self._enqueue is None:  # request path must have a queue
             raise JobError("no job queue configured")
-        job = await self._jobs.create_event(
-            organisation_id=org_id,
-            user_id=principal.principal_id,
-            input_text=input_text,
-            manifest_inline=manifest_inline,
-            manifest_ref=manifest_ref,
-            idempotency_key=idempotency_key,
-        )
-        if job is None:  # a re-delivered event — already fired; idempotent no-op
-            return None
-        # durable QUEUED row before the fallible enqueue (mirror submit) — never an orphan
-        try:
-            await self._emit(org_id, principal.principal_id, job.id, "engine.event.fire", "QUEUED")
-            self._enqueue(job.id, org_id, principal.principal_id)
-        except Exception:
-            await self._jobs.transition(
-                job.id,
-                org_id,
-                new_state=EngineJobState.FAILED.value,
-                allowed_from=frozenset({EngineJobState.QUEUED.value}),
-                error_type="enqueue_failed",
+        # ADR-030 §3: bind the org for the whole request-path op (see submit) so the org-bound
+        # engine's begin-guard sets the GUC and the RLS WITH CHECK admits the INSERT.
+        with org_scope(org_id):
+            job = await self._jobs.create_event(
+                organisation_id=org_id,
+                user_id=principal.principal_id,
+                input_text=input_text,
+                manifest_inline=manifest_inline,
+                manifest_ref=manifest_ref,
+                idempotency_key=idempotency_key,
             )
-            raise
+            if job is None:  # a re-delivered event — already fired; idempotent no-op
+                return None
+            # durable QUEUED row before the fallible enqueue (mirror submit) — never an orphan
+            try:
+                await self._emit(
+                    org_id, principal.principal_id, job.id, "engine.event.fire", "QUEUED"
+                )
+                self._enqueue(job.id, org_id, principal.principal_id)
+            except Exception:
+                await self._jobs.transition(
+                    job.id,
+                    org_id,
+                    new_state=EngineJobState.FAILED.value,
+                    allowed_from=frozenset({EngineJobState.QUEUED.value}),
+                    error_type="enqueue_failed",
+                )
+                raise
         return job
 
     async def execute(self, job_id: uuid.UUID, principal: Principal) -> EngineJob:
@@ -207,14 +220,17 @@ class JobService:
     async def cancel(self, job_id: uuid.UUID, principal: Principal) -> EngineJob:
         """Cancel a QUEUED/RUNNING/ESCALATED job. A terminal job is a no-op (returns as-is)."""
         org_id = self._require_org(principal)
-        job = await self._jobs.get(job_id, org_id)
-        if job is None:
-            raise JobError("job not found")
-        cancelled, applied = await self._transition(job, EngineJobState.CANCELLED)
-        if applied:
-            await self._emit(
-                job.organisation_id, job.user_id, job_id, "engine.job.cancel", "CANCELLED"
-            )
+        # ADR-030 §3: bind the org for the whole request-path op (see submit) so the row-read +
+        # the CAS transition + the provenance write run with the GUC set on the org-bound engine.
+        with org_scope(org_id):
+            job = await self._jobs.get(job_id, org_id)
+            if job is None:
+                raise JobError("job not found")
+            cancelled, applied = await self._transition(job, EngineJobState.CANCELLED)
+            if applied:
+                await self._emit(
+                    job.organisation_id, job.user_id, job_id, "engine.job.cancel", "CANCELLED"
+                )
         return cancelled
 
     async def reap_stale(self, *, older_than: datetime) -> int:
@@ -248,7 +264,20 @@ class JobService:
         return reaped
 
     async def get(self, job_id: uuid.UUID, principal: Principal) -> EngineJob | None:
-        return await self._jobs.get(job_id, self._require_org(principal))
+        org_id = self._require_org(principal)
+        # ADR-030 §3: bind the org so the read runs with the GUC set on the org-bound engine
+        # (under FORCE'd RLS an empty GUC fails closed to zero rows — the row would read as None).
+        with org_scope(org_id):
+            return await self._jobs.get(job_id, org_id)
+
+    async def list(self, principal: Principal) -> list[EngineJob]:
+        """The org's jobs, newest-first (request-path read). Org-scoped to the caller only."""
+        org_id = self._require_org(principal)
+        # ADR-030 §3: bind the org so the list runs with the GUC set on the org-bound engine — else
+        # FORCE'd RLS fails the read closed to zero rows. Routes call this rather than the repo
+        # directly so every request-path RLS read flows through the org_scope chokepoint.
+        with org_scope(org_id):
+            return await self._jobs.list_for_org(org_id)
 
     async def _settle(self, job: EngineJob, outcome: EngineJobState, **fields: Any) -> EngineJob:
         """Apply the run outcome, then re-queue a FAILED/TIMED_OUT job if retries remain."""

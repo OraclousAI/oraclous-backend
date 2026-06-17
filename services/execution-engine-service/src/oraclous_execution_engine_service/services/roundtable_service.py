@@ -89,22 +89,29 @@ class RoundtableService:
                 raise RoundtableError("each actor needs kind 'agent' or 'human'")
             if kind == "agent" and not (actor.get("manifest") or actor.get("manifest_ref")):
                 raise RoundtableError("an agent actor needs a manifest or manifest_ref")
-        row = await self._roundtables.create(
-            organisation_id=org_id,
-            user_id=principal.principal_id,
-            topic=topic,
-            actors=actors,
-            max_rounds=max_rounds,
-        )
-        await self._emit(
-            org_id, principal.principal_id, row.id, "engine.roundtable.create", "QUEUED"
-        )
+        # ADR-030 §3: bind the org for the whole request-path op so the org-bound engine's
+        # begin-guard sets the GUC — else FORCE'd RLS rejects the INSERT (42501). Org from the
+        # principal only (T1-M1); the driver/reaper paths bind their own org separately.
+        with org_scope(org_id):
+            row = await self._roundtables.create(
+                organisation_id=org_id,
+                user_id=principal.principal_id,
+                topic=topic,
+                actors=actors,
+                max_rounds=max_rounds,
+            )
+            await self._emit(
+                org_id, principal.principal_id, row.id, "engine.roundtable.create", "QUEUED"
+            )
         if self._enqueue is not None:
             self._enqueue(row.id, org_id, principal.principal_id)
         return row
 
     async def get(self, roundtable_id: uuid.UUID, principal: Principal) -> EngineRoundtable | None:
-        return await self._roundtables.get(roundtable_id, self._require_org(principal))
+        org_id = self._require_org(principal)
+        # ADR-030 §3: bind the org so the read runs with the GUC set (else FORCE'd RLS → zero rows).
+        with org_scope(org_id):
+            return await self._roundtables.get(roundtable_id, org_id)
 
     async def drive(self, roundtable_id: uuid.UUID, principal: Principal) -> EngineRoundtable:
         """Worker entrypoint: run agent turns until a human turn pauses it or it completes."""
@@ -183,41 +190,45 @@ class RoundtableService:
     ) -> EngineRoundtable:
         """A human answers the paused turn; append it + re-enqueue the driver to continue."""
         org_id = self._require_org(principal)
-        rt = await self._roundtables.get(roundtable_id, org_id)
-        if rt is None:
-            raise RoundtableError("round-table not found", 404)
-        if rt.state != "ESCALATED":
-            raise RoundtableError("round-table is not awaiting a human turn", 409)
-        actor = rt.actors[rt.current_turn % len(rt.actors)]
-        if actor.get("kind") != "human":
-            raise RoundtableError("the current turn is not a human turn", 409)
-        transcript = list(rt.transcript or [])
-        transcript.append(
-            {
-                "turn": rt.current_turn,
-                "role": actor.get("role"),
-                "kind": "human",
-                "output": _bounded(output),
-            }
-        )
-        # CAS ESCALATED→QUEUED so a concurrent double-respond applies exactly once (the loser 409s).
-        updated, ok = await self._roundtables.transition(
-            rt.id,
-            org_id,
-            new_state="QUEUED",
-            allowed_from=frozenset({"ESCALATED"}),
-            current_turn=rt.current_turn + 1,
-            transcript=transcript,
-        )
-        if not ok:
-            raise RoundtableError("round-table is not awaiting a human turn", 409)
-        await self._emit(
-            org_id,
-            principal.principal_id,
-            rt.id,
-            "engine.roundtable.turn",
-            f"{rt.current_turn}:human:done",
-        )
+        # ADR-030 §3: bind the org for the whole request-path op so the row-read + CAS transition +
+        # provenance write run with the GUC set on the org-bound engine (else FORCE'd RLS fails the
+        # read closed → a spurious 404, and would reject the write). Org from the principal (T1-M1).
+        with org_scope(org_id):
+            rt = await self._roundtables.get(roundtable_id, org_id)
+            if rt is None:
+                raise RoundtableError("round-table not found", 404)
+            if rt.state != "ESCALATED":
+                raise RoundtableError("round-table is not awaiting a human turn", 409)
+            actor = rt.actors[rt.current_turn % len(rt.actors)]
+            if actor.get("kind") != "human":
+                raise RoundtableError("the current turn is not a human turn", 409)
+            transcript = list(rt.transcript or [])
+            transcript.append(
+                {
+                    "turn": rt.current_turn,
+                    "role": actor.get("role"),
+                    "kind": "human",
+                    "output": _bounded(output),
+                }
+            )
+            # CAS ESCALATED→QUEUED so a concurrent double-respond applies exactly once (loser 409s).
+            updated, ok = await self._roundtables.transition(
+                rt.id,
+                org_id,
+                new_state="QUEUED",
+                allowed_from=frozenset({"ESCALATED"}),
+                current_turn=rt.current_turn + 1,
+                transcript=transcript,
+            )
+            if not ok:
+                raise RoundtableError("round-table is not awaiting a human turn", 409)
+            await self._emit(
+                org_id,
+                principal.principal_id,
+                rt.id,
+                "engine.roundtable.turn",
+                f"{rt.current_turn}:human:done",
+            )
         if self._enqueue is not None:
             self._enqueue(rt.id, org_id, principal.principal_id)
         return updated or rt
