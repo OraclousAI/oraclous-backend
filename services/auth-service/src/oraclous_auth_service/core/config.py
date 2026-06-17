@@ -38,6 +38,20 @@ class Settings:
     redis_url: str
     internal_service_key: str
     credential_broker_url: str
+    # The DSN the identity engine (users/orgs/oauth/members/invitations/refresh/audit) connects on.
+    # Defaults to ``database_url``; the deployed runtime overrides it to the NOSUPERUSER app
+    # role (ADR-030 §3) so the no-bound-org login flows prove they run under the RLS runtime role.
+    # The credential store (agents/agent_credentials) deliberately stays on ``database_url`` (owner)
+    # — it is the ADR-012 §1a org-context PRODUCER (pre-auth global resolve), so it must NOT be
+    # org-scoped/RLS-enforced on its connection; RLS there is the backstop proven by the test.
+    identity_database_url: str
+    # Postgres RLS backstop (ADR-030 Slice 1). When true, the identity engine asserts at startup
+    # that its runtime DB role is NOSUPERUSER/NOBYPASSRLS (a bypassing role silently voids the RLS
+    # policy on agents/agent_credentials — T1-M3) and FAILS CLOSED otherwise. The deployed runtime
+    # connects the identity engine as oraclous_app with this on; migrations + the owner-run grant
+    # bootstrap keep using the owner (superuser) DSN and never set this. Default false so a
+    # test/local run that intentionally uses the owner DSN is not forced to provision the app role.
+    rls_assert_runtime_role: bool
 
     @property
     def sync_database_url(self) -> str:
@@ -47,6 +61,9 @@ class Settings:
 
 def get_settings() -> Settings:
     """Return a freshly resolved :class:`Settings` snapshot."""
+    database_url = os.environ.get(
+        "DATABASE_URL", "postgresql+asyncpg://oraclous:oraclous@postgres:5432/oraclous"
+    )
     return Settings(
         jwt_secret=require_secret("JWT_SECRET", dev_default=_DEV_JWT_SECRET),
         jwt_algorithm=os.environ.get("JWT_ALGORITHM", "HS256"),
@@ -55,9 +72,10 @@ def get_settings() -> Settings:
         agent_token_ttl_minutes=int(os.environ.get("AGENT_TOKEN_TTL_MINUTES", "15")),
         user_access_token_ttl_minutes=int(os.environ.get("USER_ACCESS_TOKEN_TTL_MINUTES", "30")),
         refresh_token_ttl_days=int(os.environ.get("REFRESH_TOKEN_TTL_DAYS", "14")),
-        database_url=os.environ.get(
-            "DATABASE_URL", "postgresql+asyncpg://oraclous:oraclous@postgres:5432/oraclous"
-        ),
+        database_url=database_url,
+        # The identity engine's DSN; defaults to the owner DATABASE_URL when unset (dev/test/local
+        # run on the owner). The deployed runtime sets it to the oraclous_app role.
+        identity_database_url=os.environ.get("AUTH_IDENTITY_DATABASE_URL", database_url),
         redis_url=os.environ.get("REDIS_URL", "redis://redis:6379/0"),
         internal_service_key=require_secret(
             "INTERNAL_SERVICE_KEY", dev_default=_DEV_INTERNAL_SERVICE_KEY
@@ -65,4 +83,6 @@ def get_settings() -> Settings:
         credential_broker_url=os.environ.get(
             "CREDENTIAL_BROKER_URL", "http://credential-broker-service:8000"
         ),
+        rls_assert_runtime_role=os.environ.get("RLS_ASSERT_RUNTIME_ROLE", "").lower()
+        in ("1", "true", "yes"),
     )

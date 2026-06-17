@@ -19,7 +19,19 @@ from oraclous_auth_service.repositories.postgres_credential_store import Postgre
 
 def build_app() -> FastAPI:
     settings = get_settings()
-    agent_repository = AgentRepository(PostgresCredentialStore(settings.database_url))
+    # ADR-030 §2/§3: the credential store splits its DB access by pattern. The pre-auth cross-org
+    # resolves (validate-by-prefix / org-resolve / agent-lifecycle revoke) run on the OWNER
+    # ``database_url`` (they precede any org context and must resolve across orgs). The org-bound
+    # CRUD (create / list-by-org / get-by-org / revoke-by-org) runs on the org-bound engine, which
+    # connects as the NOSUPERUSER ``oraclous_app`` identity role (``identity_database_url``) and
+    # carries the org-GUC guard — so the RLS policy on agents/agent_credentials BITES on the actual
+    # runtime org-bound path (not just a synthetic probe). Migrations + the grant bootstrap keep
+    # using the owner DSN.
+    agent_repository = AgentRepository(
+        PostgresCredentialStore(
+            settings.database_url, org_bound_db_url=settings.identity_database_url
+        )
+    )
     return create_app(
         agent_repository=agent_repository,
         internal_service_key=settings.internal_service_key,

@@ -79,17 +79,19 @@ def repo(store: PostgresCredentialStore) -> AgentRepository:
 def org() -> str:
     """A unique organisation id per test (the agent ``organisation_id`` is ``String``).
 
-    Per-test uniqueness is what makes ``list_for_organisation(org)`` strict-
-    equality assertions safe under the session-scoped Postgres container —
-    otherwise a previous test's rows leak into this test's view.
+    A canonical UUID string (as in production, where the org id is ``str(uuid.uuid4())``):
+    the org-bound store ops now bind it via ``org_scope`` → the engine GUC guard, which
+    re-parses the org as a ``uuid.UUID``, so a uuid-shaped value is what the real runtime
+    path carries. Per-test uniqueness keeps ``list_for_organisation(org)`` strict-equality
+    assertions safe under the session-scoped Postgres container.
     """
-    return f"org-{uuid.uuid4()}"
+    return str(uuid.uuid4())
 
 
 @pytest.fixture
 def other_org() -> str:
-    """A second unique organisation id, distinct from ``org``."""
-    return f"org-{uuid.uuid4()}"
+    """A second unique organisation id, distinct from ``org`` (canonical UUID, as in prod)."""
+    return str(uuid.uuid4())
 
 
 @pytest.fixture

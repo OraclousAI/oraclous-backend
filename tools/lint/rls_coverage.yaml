@@ -12,6 +12,12 @@
 # `enable_rls_on` (substrate) is the only RLS applier; each table here must be covered
 # by an enable_rls_on(...) call in that service's migrations/ (the static half), and
 # the integration isolation test proves it bites at the data layer (the DB half).
+#
+# A service may also declare `exclusions` — org-scoped tables (a model with both
+# __tablename__ and organisation_id) that are DELIBERATELY not RLS-enabled, each with a
+# `reason`. Some org-scoped tables are read WITHOUT a bound org (login / pre-org / token
+# lookup), where an org-keyed RLS policy would fail-close the flow. An exclusion makes that
+# decision explicit + reviewable so RLS002 (org-scoped-but-unmanifested) does not fire on it.
 schema_version: 1
 
 services:
@@ -22,5 +28,34 @@ services:
       - webhook_secrets
       - delegated_tokens
       - org_data_keys
-  # Future slices add: auth-service, capability-registry-service, harness-runtime-service,
+  # Slice 1 — auth-service identity store. RLS the ALWAYS-org-bound tables only; the
+  # login/identity/cross-org tables are reached before a single org is bound, so they are
+  # documented exclusions (RLS there would fail-close login / pre-org / token-lookup flows).
+  auth-service:
+    tables:
+      - agents
+      - agent_credentials
+    exclusions:
+      - table: org_members
+        reason: >-
+          login / resolve_active_org enumerate a user's memberships ACROSS orgs
+          (organisation_ids_for(user_id) has no org filter) with no single bound org — an
+          org-keyed RLS policy would fail-close to zero rows and break LOGIN.
+      - table: auth_audit_log
+        reason: >-
+          organisation_id is NULLABLE — pre-org events (e.g. a failed login before an org is
+          resolved) carry no org; an org-keyed policy cannot scope a null-org row.
+      - table: org_invitations
+        reason: >-
+          invitations are looked up by signed token in a pre-membership flow (the invitee is
+          not yet a member of, nor scoped to, the org) — accessed before an org is bound.
+      - table: oauth_accounts
+        reason: >-
+          the OAuth callback resolves a provider identity to a user before any org context is
+          established (the org is a product of login, not an input to it).
+      - table: refresh_tokens
+        reason: >-
+          refresh rotation looks a token up by jti/family before re-establishing the active org
+          (the org is re-derived from the validated token), so the lookup precedes the bound org.
+  # Future slices add: capability-registry-service, harness-runtime-service,
   # execution-engine-service, application-gateway-service, knowledge-graph-service.

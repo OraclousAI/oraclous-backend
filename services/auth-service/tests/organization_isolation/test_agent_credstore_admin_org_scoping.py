@@ -75,17 +75,19 @@ def repo(store: PostgresCredentialStore) -> AgentRepository:
 def org_a() -> str:
     """A unique organisation id for the test's primary org per run.
 
-    Per-test uniqueness keeps the session-scoped Postgres container's
-    accumulated rows from bleeding into ``list_for_organisation`` /
-    ``get_credential`` assertions that expect a known cardinality.
+    A canonical UUID string (as in production, ``str(uuid.uuid4())``): the org-bound store
+    ops bind it via ``org_scope`` → the engine GUC guard, which re-parses it as a
+    ``uuid.UUID``. Per-test uniqueness keeps the session-scoped Postgres container's
+    accumulated rows from bleeding into ``list_for_organisation`` / ``get_credential``
+    assertions that expect a known cardinality.
     """
-    return f"org-{uuid.uuid4()}"
+    return str(uuid.uuid4())
 
 
 @pytest.fixture
 def org_b() -> str:
-    """A second unique organisation id, distinct from ``org_a``."""
-    return f"org-{uuid.uuid4()}"
+    """A second unique organisation id, distinct from ``org_a`` (canonical UUID, as in prod)."""
+    return str(uuid.uuid4())
 
 
 @pytest.fixture

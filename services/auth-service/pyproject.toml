@@ -18,11 +18,16 @@ dependencies = [
     "httpx>=0.27,<1.0",
     "oraclous-telemetry",
     "oraclous-governance",
+    # ADR-030 Slice 1: the async RLS GUC-binding seam (oraclous_substrate.access_async) +
+    # enable_rls_on, wired into the identity engine + the agents/agent_credentials migration for
+    # the Postgres RLS backstop. (Already used by the agent-identity backfill; now a direct dep.)
+    "oraclous-substrate",
 ]
 
 [tool.uv.sources]
 oraclous-telemetry = { workspace = true }
 oraclous-governance = { workspace = true }
+oraclous-substrate = { workspace = true }
 
 [build-system]
 requires = ["hatchling"]
