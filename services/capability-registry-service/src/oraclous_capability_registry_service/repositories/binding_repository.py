@@ -19,14 +19,16 @@ from typing import cast
 
 from sqlalchemy import CursorResult, delete, select
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import async_sessionmaker
 
+from oraclous_capability_registry_service.core.rls import build_rls_engine, org_scope
 from oraclous_capability_registry_service.models.harness_graph_binding import HarnessGraphBinding
 
 
 class BindingRepository:
     def __init__(self, db_url: str) -> None:
-        self._engine = create_async_engine(db_url, echo=False)
+        # ADR-030: RLS org-GUC begin-guard installed on the engine (every tx binds the org).
+        self._engine = build_rls_engine(db_url, echo=False)
         self._session = async_sessionmaker(self._engine, expire_on_commit=False)
 
     async def close(self) -> None:
@@ -53,22 +55,26 @@ class BindingRepository:
             organisation_id=organisation_id,
             created_by=created_by,
         )
-        async with self._session() as session:
-            try:
-                async with session.begin():
-                    session.add(row)
-            except IntegrityError:
-                existing = await self._get_pair(
-                    session,
-                    harness_capability_id=harness_capability_id,
-                    graph_id=graph_id,
-                    organisation_id=organisation_id,
-                )
-                if existing is not None:
-                    return existing, False
-                raise
-            await session.refresh(row)
-            return row, True
+        # ADR-030: bind the caller's org so the engine begin-guard sets app.current_organisation_id;
+        # without it the FORCE'd RLS WITH CHECK denies the INSERT (42501) under oraclous_app.
+        # The idempotent re-fetch (_get_pair) stays inside the same scope so its read sees the GUC.
+        with org_scope(organisation_id):
+            async with self._session() as session:
+                try:
+                    async with session.begin():
+                        session.add(row)
+                except IntegrityError:
+                    existing = await self._get_pair(
+                        session,
+                        harness_capability_id=harness_capability_id,
+                        graph_id=graph_id,
+                        organisation_id=organisation_id,
+                    )
+                    if existing is not None:
+                        return existing, False
+                    raise
+                await session.refresh(row)
+                return row, True
 
     async def _get_pair(
         self,
@@ -96,42 +102,47 @@ class BindingRepository:
     ) -> bool:
         """Remove the binding for the caller's org. Returns True iff a row was deleted (a missing /
         cross-org pair returns False → the service 404s)."""
-        async with self._session() as session, session.begin():
-            result = await session.execute(
-                delete(HarnessGraphBinding).where(
-                    HarnessGraphBinding.harness_capability_id == harness_capability_id,
-                    HarnessGraphBinding.graph_id == graph_id,
-                    HarnessGraphBinding.organisation_id == organisation_id,
+        # ADR-030: bind the caller's org so RLS scopes the delete to this org (else the empty GUC →
+        # zero rows match → False). The app-layer organisation_id predicate stays defense-in-depth.
+        with org_scope(organisation_id):
+            async with self._session() as session, session.begin():
+                result = await session.execute(
+                    delete(HarnessGraphBinding).where(
+                        HarnessGraphBinding.harness_capability_id == harness_capability_id,
+                        HarnessGraphBinding.graph_id == graph_id,
+                        HarnessGraphBinding.organisation_id == organisation_id,
+                    )
                 )
-            )
-            return (cast("CursorResult[object]", result).rowcount or 0) > 0
+                return (cast("CursorResult[object]", result).rowcount or 0) > 0
 
     async def list_by_graph(
         self, *, organisation_id: uuid.UUID, graph_id: uuid.UUID
     ) -> list[HarnessGraphBinding]:
         """The bindings for one graph in the caller's org (oldest first)."""
-        async with self._session() as session:
-            result = await session.execute(
-                select(HarnessGraphBinding)
-                .where(
-                    HarnessGraphBinding.graph_id == graph_id,
-                    HarnessGraphBinding.organisation_id == organisation_id,
+        with org_scope(organisation_id):
+            async with self._session() as session:
+                result = await session.execute(
+                    select(HarnessGraphBinding)
+                    .where(
+                        HarnessGraphBinding.graph_id == graph_id,
+                        HarnessGraphBinding.organisation_id == organisation_id,
+                    )
+                    .order_by(HarnessGraphBinding.created_at)
                 )
-                .order_by(HarnessGraphBinding.created_at)
-            )
-            return list(result.scalars().all())
+                return list(result.scalars().all())
 
     async def list_by_harness(
         self, *, organisation_id: uuid.UUID, harness_capability_id: uuid.UUID
     ) -> list[HarnessGraphBinding]:
         """The bindings for one harness in the caller's org (oldest first)."""
-        async with self._session() as session:
-            result = await session.execute(
-                select(HarnessGraphBinding)
-                .where(
-                    HarnessGraphBinding.harness_capability_id == harness_capability_id,
-                    HarnessGraphBinding.organisation_id == organisation_id,
+        with org_scope(organisation_id):
+            async with self._session() as session:
+                result = await session.execute(
+                    select(HarnessGraphBinding)
+                    .where(
+                        HarnessGraphBinding.harness_capability_id == harness_capability_id,
+                        HarnessGraphBinding.organisation_id == organisation_id,
+                    )
+                    .order_by(HarnessGraphBinding.created_at)
                 )
-                .order_by(HarnessGraphBinding.created_at)
-            )
-            return list(result.scalars().all())
+                return list(result.scalars().all())

@@ -83,5 +83,30 @@ services:
       - engine_schedules
       - engine_roundtables
       - engine_provenance
-  # Future slices add: capability-registry-service, harness-runtime-service,
-  # application-gateway-service.
+  # Slice (capability-registry) — unified capability/tool registry + execution. All four org-scoped
+  # tables carry a uuid organisation_id; every runtime accessor binds the org via the engine's
+  # org-GUC begin-guard before any query, so RLS the full set (no exclusions). capability_descriptors
+  # gets a WIDENED-READ policy (reads admit the caller org OR the PLATFORM_ORG that owns the shared
+  # built-in tool catalogue; writes stay strict to the caller org) — still RLS-enabled, so it is
+  # listed in `tables` (the coverage check only verifies an enable_rls_on call exists per table; the
+  # widened shape is proven by the integration isolation test).
+  capability-registry-service:
+    tables:
+      - tool_instances
+      - executions
+      - harness_graph_binding
+      - capability_descriptors
+  # Slice (harness-runtime) — OHM agent runtime. All four org-scoped tables carry a uuid
+  # organisation_id and every runtime accessor binds the org via org_scope before any query (the
+  # engine's org-GUC begin-guard then sets it per transaction), so RLS the full set (no exclusions).
+  # All four get the plain STRICT policy — the harness has no shared platform-catalogue case, so no
+  # read-widening. harness_provenance is INSERT-only at runtime; the strict WITH CHECK is exercised
+  # on every provenance INSERT. The four tables are owned by four independent repositories that each
+  # build their engine through build_rls_engine, so none is left unguarded.
+  harness-runtime-service:
+    tables:
+      - harness_executions
+      - harness_checkpoints
+      - harness_assignments
+      - harness_provenance
+  # Future slices add: application-gateway-service.

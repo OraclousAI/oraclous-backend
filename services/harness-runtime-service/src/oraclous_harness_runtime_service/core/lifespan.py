@@ -15,6 +15,10 @@ from oraclous_substrate import ProvenanceCollector
 from oraclous_telemetry import Severity, alert, evaluate_readiness, exit_on_degrade_enabled
 
 from oraclous_harness_runtime_service.core.config import get_settings
+from oraclous_harness_runtime_service.core.rls import (
+    RlsBypassingRoleError,
+    assert_runtime_role_isolates,
+)
 from oraclous_harness_runtime_service.domain.ohm.signatures import TrustStore
 from oraclous_harness_runtime_service.repositories.assignment_repository import AssignmentRepository
 from oraclous_harness_runtime_service.repositories.checkpoint_repository import CheckpointRepository
@@ -58,6 +62,28 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     verdict = evaluate_readiness({"postgres": app.state.execution_repository})
     if verdict.is_degraded and exit_on_degrade_enabled():
         raise SystemExit(1)
+
+    # ADR-030 §3: fail closed LOUDLY if the runtime role bypasses RLS (a superuser / BYPASSRLS role
+    # makes the FORCE'd policy inert — T1-M3). Distinct from the Postgres-unavailable degrade above:
+    # a mis-deployed bypassing role is a hard configuration error, so it exits the process rather
+    # than quietly serving an unscoped store. Gated on HARNESS_RLS_ASSERT_RUNTIME_ROLE (the deployed
+    # app runtime sets it; a deliberate owner-DSN dev/test run leaves it off). Asserts against the
+    # execution repo's engine — all four harness repos (execution/checkpoint/assignment/provenance)
+    # build on the same DSN/role, so one proves the role. The harness has no Celery/background
+    # worker (all DB access is in-request through these four repos), so this web-startup check is
+    # the only role assertion needed — there is no out-of-request worker engine to guard.
+    if settings.rls_assert_runtime_role and execution_repo is not None:
+        try:
+            await assert_runtime_role_isolates(execution_repo.engine)
+        except RlsBypassingRoleError as exc:
+            alert(
+                Severity.ERROR,
+                "rls_runtime_role_bypasses",
+                "harness-runtime-service",
+                "runtime DB role bypasses RLS; refusing to start (ADR-030 §3)",
+                error=str(exc),
+            )
+            raise SystemExit(1) from exc
 
     # Fail-closed LLM-mode default is `live` (ADR-021 §1). Selecting the scripted fake responder is
     # valid for CI/smoke but must be EXPLICIT — fire a loud one-time startup alert here so a deploy

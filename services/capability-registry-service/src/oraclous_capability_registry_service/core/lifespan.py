@@ -15,6 +15,11 @@ from fastapi import FastAPI
 from oraclous_telemetry import Severity, alert, evaluate_readiness, exit_on_degrade_enabled
 
 from oraclous_capability_registry_service.core.config import Settings, get_settings
+from oraclous_capability_registry_service.core.rls import (
+    RlsBypassingRoleError,
+    assert_runtime_role_isolates,
+    org_scope,
+)
 from oraclous_capability_registry_service.repositories.binding_repository import BindingRepository
 from oraclous_capability_registry_service.repositories.capability_repository import (
     CapabilityRepository,
@@ -94,6 +99,25 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             error=str(exc),
         )
 
+    # ADR-030 §3: fail closed LOUDLY if the runtime role bypasses RLS (a superuser / BYPASSRLS role
+    # makes the FORCE'd policy inert — T1-M3). Distinct from the Postgres-unavailable degrade above:
+    # a mis-deployed bypassing role is a hard configuration error, so it exits the process rather
+    # than quietly serving an unscoped store. Gated on RLS_ASSERT_RUNTIME_ROLE (the deployed app
+    # runtime sets it; a deliberate owner-DSN dev/test run leaves it off). Asserts against the
+    # capability repo's engine — all four repos build on the same DSN/role, so one proves the role.
+    if settings.RLS_ASSERT_RUNTIME_ROLE and repo is not None:
+        try:
+            await assert_runtime_role_isolates(repo.engine)
+        except RlsBypassingRoleError as exc:
+            alert(
+                Severity.ERROR,
+                "rls_runtime_role_bypasses",
+                "capability-registry-service",
+                "runtime DB role bypasses RLS; refusing to start (ADR-030 §3)",
+                error=str(exc),
+            )
+            raise SystemExit(1) from exc
+
     verdict = evaluate_readiness({"postgres": app.state.capability_repository})
     if verdict.is_degraded and exit_on_degrade_enabled():
         raise SystemExit(1)
@@ -102,11 +126,20 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # tenant org reads it via the repository's widened reads, so a freshly-provisioned org sees the
     # global tools without per-org re-seeding. A seed failure degrades to an empty catalogue (no
     # crash).
+    #
+    # ADR-030: the seed INSERTs descriptors stamped with the PLATFORM_ORG. Under the oraclous_app
+    # runtime role + FORCE'd RLS, capability_descriptors' strict WITH CHECK admits a write only when
+    # app.current_organisation_id equals the row's org — so the seed runs inside org_scope(PLATFORM)
+    # to bind the GUC to the platform org (the engine begin-guard then sets it per transaction).
+    # Without this the seed write would raise 42501 under the runtime role. Idempotent: sync_plugins
+    # upserts by (id, org), so a re-seed is a no-op. (Under the owner DSN — dev/test without the
+    # runtime role — the owner bypasses RLS, so org_scope is harmless there too.)
     if repo is not None:
         try:
-            statuses = await sync_plugins(
-                repository=repo, organisation_id=uuid.UUID(settings.PLATFORM_ORG_ID)
-            )
+            with org_scope(uuid.UUID(settings.PLATFORM_ORG_ID)):
+                statuses = await sync_plugins(
+                    repository=repo, organisation_id=uuid.UUID(settings.PLATFORM_ORG_ID)
+                )
             logger.info("seeded built-in tools into platform org: %s", statuses)
         except Exception as exc:  # noqa: BLE001 — degrade: catalogue empty, service still serves
             logger.warning("plugin seed skipped: %s", exc)

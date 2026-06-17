@@ -12,8 +12,9 @@ from datetime import datetime
 from typing import Any
 
 from sqlalchemy import func, select
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
 
+from oraclous_harness_runtime_service.core.rls import build_rls_engine, org_scope
 from oraclous_harness_runtime_service.models.execution import HarnessExecution
 
 
@@ -30,8 +31,16 @@ class ModelSpendRow:
 
 class ExecutionRepository:
     def __init__(self, db_url: str) -> None:
-        self._engine = create_async_engine(db_url, echo=False)
+        # ADR-030: build_rls_engine installs the org-GUC begin-guard so every transaction binds the
+        # org transaction-locally (fail-closed to the empty GUC when none is bound).
+        self._engine = build_rls_engine(db_url, echo=False)
         self._session = async_sessionmaker(self._engine, expire_on_commit=False)
+
+    @property
+    def engine(self) -> AsyncEngine:
+        """The RLS-guarded engine — the lifespan asserts the runtime role against it at startup
+        (all four harness repositories build on the same DSN/role, so one proves the role)."""
+        return self._engine
 
     async def close(self) -> None:
         await self._engine.dispose()
@@ -76,23 +85,27 @@ class ExecutionRepository:
             output_tokens=output_tokens,
             steps=steps,
         )
-        async with self._session() as session:
-            async with session.begin():
-                session.add(row)
-            await session.refresh(row)
-            return row
+        # ADR-030: bind the org so the engine begin-guard sets app.current_organisation_id; the
+        # FORCE'd RLS WITH CHECK admits this INSERT only when the stamped org equals the bound one.
+        with org_scope(organisation_id):
+            async with self._session() as session:
+                async with session.begin():
+                    session.add(row)
+                await session.refresh(row)
+                return row
 
     async def get(
         self, execution_id: uuid.UUID, organisation_id: uuid.UUID
     ) -> HarnessExecution | None:
-        async with self._session() as session:
-            result = await session.execute(
-                select(HarnessExecution).where(
-                    HarnessExecution.id == execution_id,
-                    HarnessExecution.organisation_id == organisation_id,
+        with org_scope(organisation_id):
+            async with self._session() as session:
+                result = await session.execute(
+                    select(HarnessExecution).where(
+                        HarnessExecution.id == execution_id,
+                        HarnessExecution.organisation_id == organisation_id,
+                    )
                 )
-            )
-            return result.scalar_one_or_none()
+                return result.scalar_one_or_none()
 
     async def update_status(
         self,
@@ -104,26 +117,27 @@ class ExecutionRepository:
     ) -> HarnessExecution | None:
         """Patch an org-scoped run's status (+ output) — when a human completes an assignment, flip
         the parked ESCALATED run to SUCCEEDED with the human's output. Org-scoped (ADR-006)."""
-        async with self._session() as session:
-            async with session.begin():
-                result = await session.execute(
-                    select(HarnessExecution)
-                    .where(
-                        HarnessExecution.id == execution_id,
-                        HarnessExecution.organisation_id == organisation_id,
+        with org_scope(organisation_id):
+            async with self._session() as session:
+                async with session.begin():
+                    result = await session.execute(
+                        select(HarnessExecution)
+                        .where(
+                            HarnessExecution.id == execution_id,
+                            HarnessExecution.organisation_id == organisation_id,
+                        )
+                        .with_for_update()
                     )
-                    .with_for_update()
-                )
-                row = result.scalar_one_or_none()
-                if row is None:
-                    return None
-                row.status = status
-                if output is not None:
-                    row.output = output
-                row.error_type = None
-                row.error_message = None
-            await session.refresh(row)
-            return row
+                    row = result.scalar_one_or_none()
+                    if row is None:
+                        return None
+                    row.status = status
+                    if output is not None:
+                        row.output = output
+                    row.error_type = None
+                    row.error_message = None
+                await session.refresh(row)
+                return row
 
     async def update_run(
         self,
@@ -144,32 +158,33 @@ class ExecutionRepository:
         error/iterations/tokens and REPLACES the step trace (caller appends the new tail). Unlike
         update_status this sets error fields verbatim (a DENIED resume preserves human_rejected).
         ``input_tokens``/``output_tokens`` are updated only when supplied (the spend breakdown)."""
-        async with self._session() as session:
-            async with session.begin():
-                result = await session.execute(
-                    select(HarnessExecution)
-                    .where(
-                        HarnessExecution.id == execution_id,
-                        HarnessExecution.organisation_id == organisation_id,
+        with org_scope(organisation_id):
+            async with self._session() as session:
+                async with session.begin():
+                    result = await session.execute(
+                        select(HarnessExecution)
+                        .where(
+                            HarnessExecution.id == execution_id,
+                            HarnessExecution.organisation_id == organisation_id,
+                        )
+                        .with_for_update()
                     )
-                    .with_for_update()
-                )
-                row = result.scalar_one_or_none()
-                if row is None:
-                    return None
-                row.status = status
-                row.output = output
-                row.error_type = error_type
-                row.error_message = error_message
-                row.iterations = iterations
-                row.total_tokens = total_tokens
-                if input_tokens is not None:
-                    row.input_tokens = input_tokens
-                if output_tokens is not None:
-                    row.output_tokens = output_tokens
-                row.steps = steps
-            await session.refresh(row)
-            return row
+                    row = result.scalar_one_or_none()
+                    if row is None:
+                        return None
+                    row.status = status
+                    row.output = output
+                    row.error_type = error_type
+                    row.error_message = error_message
+                    row.iterations = iterations
+                    row.total_tokens = total_tokens
+                    if input_tokens is not None:
+                        row.input_tokens = input_tokens
+                    if output_tokens is not None:
+                        row.output_tokens = output_tokens
+                    row.steps = steps
+                await session.refresh(row)
+                return row
 
     async def spend_by_model(
         self, organisation_id: uuid.UUID, *, since: datetime | None = None
@@ -178,38 +193,40 @@ class ExecutionRepository:
         count, over an optional ``since`` window (created_at >= since). Org-scoped (ADR-006) — the
         ``organisation_id`` filter is mandatory, so a tenant NEVER sees another org's spend. Returns
         raw token counts only; pricing is a separate read-time layer (``domain.billing.rates``)."""
-        async with self._session() as session:
-            stmt = (
-                select(
-                    HarnessExecution.model,
-                    func.coalesce(func.sum(HarnessExecution.input_tokens), 0),
-                    func.coalesce(func.sum(HarnessExecution.output_tokens), 0),
-                    func.count(HarnessExecution.id),
+        with org_scope(organisation_id):
+            async with self._session() as session:
+                stmt = (
+                    select(
+                        HarnessExecution.model,
+                        func.coalesce(func.sum(HarnessExecution.input_tokens), 0),
+                        func.coalesce(func.sum(HarnessExecution.output_tokens), 0),
+                        func.count(HarnessExecution.id),
+                    )
+                    .where(HarnessExecution.organisation_id == organisation_id)
+                    .group_by(HarnessExecution.model)
                 )
-                .where(HarnessExecution.organisation_id == organisation_id)
-                .group_by(HarnessExecution.model)
-            )
-            if since is not None:
-                stmt = stmt.where(HarnessExecution.created_at >= since)
-            result = await session.execute(stmt)
-            return [
-                ModelSpendRow(
-                    model=model,
-                    input_tokens=int(input_sum),
-                    output_tokens=int(output_sum),
-                    executions=int(count),
-                )
-                for model, input_sum, output_sum, count in result.all()
-            ]
+                if since is not None:
+                    stmt = stmt.where(HarnessExecution.created_at >= since)
+                result = await session.execute(stmt)
+                return [
+                    ModelSpendRow(
+                        model=model,
+                        input_tokens=int(input_sum),
+                        output_tokens=int(output_sum),
+                        executions=int(count),
+                    )
+                    for model, input_sum, output_sum, count in result.all()
+                ]
 
     async def list_for_org(
         self, organisation_id: uuid.UUID, *, limit: int = 50
     ) -> list[HarnessExecution]:
-        async with self._session() as session:
-            result = await session.execute(
-                select(HarnessExecution)
-                .where(HarnessExecution.organisation_id == organisation_id)
-                .order_by(HarnessExecution.created_at.desc())
-                .limit(limit)
-            )
-            return list(result.scalars().all())
+        with org_scope(organisation_id):
+            async with self._session() as session:
+                result = await session.execute(
+                    select(HarnessExecution)
+                    .where(HarnessExecution.organisation_id == organisation_id)
+                    .order_by(HarnessExecution.created_at.desc())
+                    .limit(limit)
+                )
+                return list(result.scalars().all())

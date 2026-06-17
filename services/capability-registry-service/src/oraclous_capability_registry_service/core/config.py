@@ -26,6 +26,12 @@ class Settings(BaseSettings):
     APP_NAME: str = "oraclous-capability-registry-service"
     VERSION: str = "0.0.1"
 
+    # ADR-030 §3: when True the lifespan asserts at startup that the runtime DB role is
+    # NOSUPERUSER/NOBYPASSRLS (else the RLS backstop is inert — T1-M3) and refuses to come up
+    # otherwise. The deployed runtime (oraclous_app DSN) sets it; a deliberate owner-DSN dev/test
+    # run leaves it False (the default), so importing this module never forces the assertion.
+    RLS_ASSERT_RUNTIME_ROLE: bool = False
+
     # The org that owns the built-in/platform tool catalogue (global tools). Distinct from
     # ``DEV_ORG_ID``: the catalogue is seeded under this org and every tenant org reads it (widened
     # reads), so a freshly-provisioned org sees the platform tools without per-org re-seeding.

@@ -23,8 +23,9 @@ from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import async_sessionmaker
 
+from oraclous_capability_registry_service.core.rls import build_rls_engine, org_scope
 from oraclous_capability_registry_service.domain.hashing import compute_content_hash
 from oraclous_capability_registry_service.domain.manifest import descriptor_name
 from oraclous_capability_registry_service.models.base_model import Base
@@ -52,7 +53,9 @@ class CapabilityConflictError(Exception):
 
 class CapabilityRepository:
     def __init__(self, db_url: str, *, platform_org_id: uuid.UUID | None = None) -> None:
-        self._engine = create_async_engine(db_url, echo=False)
+        # ADR-030: build_rls_engine installs the org-GUC begin-guard so every transaction binds
+        # app.current_organisation_id from the bound OrganisationContext (RLS backstop, T1-M1).
+        self._engine = build_rls_engine(db_url, echo=False)
         self._session = async_sessionmaker(self._engine, expire_on_commit=False)
         self._platform_org_id = platform_org_id
 
@@ -87,6 +90,13 @@ class CapabilityRepository:
                 by_id[row.id] = row
         return list(by_id.values())
 
+    @property
+    def engine(self) -> Any:
+        """The underlying RLS-guarded ``AsyncEngine``. Exposed so the lifespan can run the ADR-030
+        §3 runtime-role assertion against the same engine the request path uses (all repos build
+        their engine on the same DSN/role, so asserting any one proves the runtime role for all)."""
+        return self._engine
+
     async def create_tables(self) -> None:
         async with self._engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
@@ -115,27 +125,35 @@ class CapabilityRepository:
             ),
             status=status_for(descriptor, status),
         )
-        async with self._session() as session:
-            try:
-                async with session.begin():
-                    session.add(row)
-            except IntegrityError as exc:
-                raise CapabilityConflictError(
-                    f"a capability with id {row.id} already exists"
-                ) from exc
-            await session.refresh(row)
-            return row
+        # ADR-030: bind the caller's org so the engine begin-guard sets app.current_organisation_id;
+        # without it the strict WITH CHECK on capability_descriptors denies the INSERT (42501) under
+        # the oraclous_app role (writes stay strict to the caller org — a tenant can never write the
+        # platform catalogue).
+        with org_scope(organisation_id):
+            async with self._session() as session:
+                try:
+                    async with session.begin():
+                        session.add(row)
+                except IntegrityError as exc:
+                    raise CapabilityConflictError(
+                        f"a capability with id {row.id} already exists"
+                    ) from exc
+                await session.refresh(row)
+                return row
 
     async def set_status(
         self, *, descriptor_id: uuid.UUID, organisation_id: uuid.UUID, status: str
     ) -> bool:
         """Org-scoped status flip (R6 MCP-import approval). Returns True if a row was updated."""
-        async with self._session() as session, session.begin():
-            row = await session.get(CapabilityDescriptor, descriptor_id)
-            if row is None or row.organisation_id != organisation_id:
-                return False
-            row.status = status
-            return True
+        # ADR-030: bind the caller's org so RLS admits the row read + the strict WITH CHECK admits
+        # the same-org UPDATE; the app-layer org equality below is preserved as defense-in-depth.
+        with org_scope(organisation_id):
+            async with self._session() as session, session.begin():
+                row = await session.get(CapabilityDescriptor, descriptor_id)
+                if row is None or row.organisation_id != organisation_id:
+                    return False
+                row.status = status
+                return True
 
     async def set_status_if(
         self,
@@ -150,12 +168,15 @@ class CapabilityRepository:
         an unknown id, a cross-org row, or a row already past ``expected`` all return False (so the
         caller masks them identically as a 404; an already-``active`` tool can't be silently
         reverted via the reject gate)."""
-        async with self._session() as session, session.begin():
-            row = await session.get(CapabilityDescriptor, descriptor_id)
-            if row is None or row.organisation_id != organisation_id or row.status != expected:
-                return False
-            row.status = status
-            return True
+        # ADR-030: bind the caller's org so RLS admits the row read + the strict WITH CHECK admits
+        # the same-org UPDATE; the app-layer org equality below is preserved as defense-in-depth.
+        with org_scope(organisation_id):
+            async with self._session() as session, session.begin():
+                row = await session.get(CapabilityDescriptor, descriptor_id)
+                if row is None or row.organisation_id != organisation_id or row.status != expected:
+                    return False
+                row.status = status
+                return True
 
     async def upsert_by_id(
         self,
@@ -171,90 +192,102 @@ class CapabilityRepository:
         (different content_hash) updates in place; a new descriptor is created.
         """
         new_hash = compute_content_hash(descriptor)
-        async with self._session() as session:
-            try:
-                async with session.begin():
-                    result = await session.execute(
-                        select(CapabilityDescriptor).where(
-                            CapabilityDescriptor.id == descriptor_id,
-                            CapabilityDescriptor.organisation_id == organisation_id,
+        # ADR-030: bind the org so RLS admits the read + the strict WITH CHECK admits the same-org
+        # write. The startup catalogue seed already nests this under org_scope(PLATFORM_ORG); a
+        # re-bind to the same org here is a harmless idempotent nest (the prior binding is restored
+        # on exit), and the tenant path binds the caller org.
+        with org_scope(organisation_id):
+            async with self._session() as session:
+                try:
+                    async with session.begin():
+                        result = await session.execute(
+                            select(CapabilityDescriptor).where(
+                                CapabilityDescriptor.id == descriptor_id,
+                                CapabilityDescriptor.organisation_id == organisation_id,
+                            )
                         )
-                    )
-                    row = result.scalars().first()
-                    if row is None:
-                        row = CapabilityDescriptor(
-                            id=descriptor_id,
-                            organisation_id=organisation_id,
-                            kind=kind,
-                            name=descriptor_name(descriptor),
-                            descriptor=descriptor,
-                            content_hash=new_hash,
-                        )
-                        session.add(row)
-                        status = "created"
-                    elif row.content_hash != new_hash:
-                        row.descriptor = descriptor
-                        row.name = descriptor_name(descriptor)
-                        row.content_hash = new_hash
-                        status = "updated"
-                    else:
-                        status = "unchanged"
-            except IntegrityError as exc:
-                raise CapabilityConflictError(
-                    f"a capability with id {descriptor_id} already exists"
-                ) from exc
-            await session.refresh(row)
-            return row, status
+                        row = result.scalars().first()
+                        if row is None:
+                            row = CapabilityDescriptor(
+                                id=descriptor_id,
+                                organisation_id=organisation_id,
+                                kind=kind,
+                                name=descriptor_name(descriptor),
+                                descriptor=descriptor,
+                                content_hash=new_hash,
+                            )
+                            session.add(row)
+                            status = "created"
+                        elif row.content_hash != new_hash:
+                            row.descriptor = descriptor
+                            row.name = descriptor_name(descriptor)
+                            row.content_hash = new_hash
+                            status = "updated"
+                        else:
+                            status = "unchanged"
+                except IntegrityError as exc:
+                    raise CapabilityConflictError(
+                        f"a capability with id {descriptor_id} already exists"
+                    ) from exc
+                await session.refresh(row)
+                return row, status
 
     async def get_by_id(
         self, descriptor_id: uuid.UUID, organisation_id: uuid.UUID
     ) -> CapabilityDescriptor | None:
-        async with self._session() as session:
-            result = await session.execute(
-                select(CapabilityDescriptor).where(
-                    CapabilityDescriptor.id == descriptor_id,
-                    self._read_org_filter(organisation_id),
+        # ADR-030: bind the caller's org so the GUC is the caller org; the widened-read RLS policy
+        # then admits the caller's own rows AND the PLATFORM_ORG catalogue (its USING is
+        # ``org=GUC OR org=PLATFORM``). The app-layer ``_read_org_filter`` is preserved on top.
+        with org_scope(organisation_id):
+            async with self._session() as session:
+                result = await session.execute(
+                    select(CapabilityDescriptor).where(
+                        CapabilityDescriptor.id == descriptor_id,
+                        self._read_org_filter(organisation_id),
+                    )
                 )
-            )
-            rows = self._dedupe_prefer_caller(list(result.scalars().all()), organisation_id)
-            return rows[0] if rows else None
+                rows = self._dedupe_prefer_caller(list(result.scalars().all()), organisation_id)
+                return rows[0] if rows else None
 
     async def list_by_org(self, organisation_id: uuid.UUID) -> list[CapabilityDescriptor]:
-        async with self._session() as session:
-            result = await session.execute(
-                select(CapabilityDescriptor)
-                .where(self._read_org_filter(organisation_id))
-                .order_by(CapabilityDescriptor.created_at)
-            )
-            return self._dedupe_prefer_caller(list(result.scalars().all()), organisation_id)
+        with org_scope(organisation_id):
+            async with self._session() as session:
+                result = await session.execute(
+                    select(CapabilityDescriptor)
+                    .where(self._read_org_filter(organisation_id))
+                    .order_by(CapabilityDescriptor.created_at)
+                )
+                return self._dedupe_prefer_caller(list(result.scalars().all()), organisation_id)
 
     async def list_by_kind(
         self, organisation_id: uuid.UUID, kind: DescriptorKind
     ) -> list[CapabilityDescriptor]:
-        async with self._session() as session:
-            result = await session.execute(
-                select(CapabilityDescriptor)
-                .where(
-                    self._read_org_filter(organisation_id),
-                    CapabilityDescriptor.kind == kind,
+        with org_scope(organisation_id):
+            async with self._session() as session:
+                result = await session.execute(
+                    select(CapabilityDescriptor)
+                    .where(
+                        self._read_org_filter(organisation_id),
+                        CapabilityDescriptor.kind == kind,
+                    )
+                    .order_by(CapabilityDescriptor.created_at)
                 )
-                .order_by(CapabilityDescriptor.created_at)
-            )
-            return self._dedupe_prefer_caller(list(result.scalars().all()), organisation_id)
+                return self._dedupe_prefer_caller(list(result.scalars().all()), organisation_id)
 
     async def search_by_descriptor(
         self, organisation_id: uuid.UUID, filter_dict: dict[str, Any]
     ) -> list[CapabilityDescriptor]:
         """Org-scoped JSONB containment (``descriptor @> filter_dict``); widened to the platform
         org (global tools) when configured."""
-        async with self._session() as session:
-            result = await session.execute(
-                select(CapabilityDescriptor).where(
-                    self._read_org_filter(organisation_id),
-                    CapabilityDescriptor.descriptor.contains(filter_dict),
+        with org_scope(organisation_id):
+            async with self._session() as session:
+                result = await session.execute(
+                    select(CapabilityDescriptor).where(
+                        self._read_org_filter(organisation_id),
+                        CapabilityDescriptor.descriptor.contains(filter_dict),
+                    )
                 )
-            )
-            return self._dedupe_prefer_caller(list(result.scalars().all()), organisation_id)
+                return self._dedupe_prefer_caller(list(result.scalars().all()), organisation_id)
 
     async def match_capabilities(
         self, organisation_id: uuid.UUID, capability_names: list[str]
@@ -286,36 +319,43 @@ class CapabilityRepository:
     async def update_descriptor(
         self, descriptor_id: uuid.UUID, organisation_id: uuid.UUID, descriptor: dict[str, Any]
     ) -> CapabilityDescriptor | None:
-        async with self._session() as session:
-            async with session.begin():
-                result = await session.execute(
-                    select(CapabilityDescriptor).where(
-                        CapabilityDescriptor.id == descriptor_id,
-                        CapabilityDescriptor.organisation_id == organisation_id,
+        # ADR-030: bind the caller's org so RLS admits the read + the strict WITH CHECK admits the
+        # same-org UPDATE (a tenant can only mutate its own descriptors, never the platform
+        # catalogue); the app-layer org equality is preserved as defense-in-depth.
+        with org_scope(organisation_id):
+            async with self._session() as session:
+                async with session.begin():
+                    result = await session.execute(
+                        select(CapabilityDescriptor).where(
+                            CapabilityDescriptor.id == descriptor_id,
+                            CapabilityDescriptor.organisation_id == organisation_id,
+                        )
                     )
-                )
-                row = result.scalars().first()
-                if row is None:
-                    return None
-                row.descriptor = descriptor
-                row.name = descriptor_name(descriptor)
-                row.content_hash = compute_content_hash(descriptor)
-            # Reload the server-side onupdate `updated_at` before the session closes (else the
-            # detached row triggers a refresh on attribute access — DetachedInstanceError).
-            await session.refresh(row)
-            return row
+                    row = result.scalars().first()
+                    if row is None:
+                        return None
+                    row.descriptor = descriptor
+                    row.name = descriptor_name(descriptor)
+                    row.content_hash = compute_content_hash(descriptor)
+                # Reload the server-side onupdate `updated_at` before the session closes (else the
+                # detached row triggers a refresh on attribute access — DetachedInstanceError).
+                await session.refresh(row)
+                return row
 
     async def delete(self, descriptor_id: uuid.UUID, organisation_id: uuid.UUID) -> bool:
-        async with self._session() as session:
-            async with session.begin():
-                result = await session.execute(
-                    select(CapabilityDescriptor).where(
-                        CapabilityDescriptor.id == descriptor_id,
-                        CapabilityDescriptor.organisation_id == organisation_id,
+        # ADR-030: bind the caller's org so RLS scopes the read/delete to this org (else the empty
+        # GUC → no row found → False); the app-layer org equality is preserved as defense-in-depth.
+        with org_scope(organisation_id):
+            async with self._session() as session:
+                async with session.begin():
+                    result = await session.execute(
+                        select(CapabilityDescriptor).where(
+                            CapabilityDescriptor.id == descriptor_id,
+                            CapabilityDescriptor.organisation_id == organisation_id,
+                        )
                     )
-                )
-                row = result.scalars().first()
-                if row is None:
-                    return False
-                await session.delete(row)
-            return True
+                    row = result.scalars().first()
+                    if row is None:
+                        return False
+                    await session.delete(row)
+                return True
