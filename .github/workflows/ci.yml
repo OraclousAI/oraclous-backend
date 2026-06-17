@@ -62,6 +62,10 @@ jobs:
         run: uv run python -m tools.lint.check_threat_marker_coverage
       - name: RLS-coverage guardrail (ADR-030 §4 — every realized org-scoped table has RLS applied)
         run: uv run python -m tools.lint.check_rls_coverage
+      - name: Service first-party-dependency guardrail (#375 — every imported workspace package is declared)
+        run: uv run python -m tools.lint.check_service_dep_imports services
+      - name: RLS request-binding guardrail (an RLS-engine service binds the org in src)
+        run: uv run python -m tools.lint.check_rls_request_binding
 
   # `unit` runs the unit suite. It is intentionally RED during the TDD tests->impl window
   # (a `[tests]` PR lands failing tests for an unbuilt seam), so it is NOT a required gate.
