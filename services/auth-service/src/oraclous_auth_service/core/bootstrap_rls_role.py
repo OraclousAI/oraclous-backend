@@ -32,6 +32,8 @@ init script that covers a fresh ``pgdata`` volume.
 
 from __future__ import annotations
 
+from oraclous_substrate.access_async import provision_app_role
+
 from oraclous_auth_service.core.config import get_settings
 
 # Auth's always-org-bound tables RLS is enabled on (0007_enable_rls) — recorded here for the
@@ -46,35 +48,26 @@ _APP_ROLE = "oraclous_app"
 _APP_PASSWORD = "app"  # noqa: S105 — dev/self-host default, overridden in production deploys
 
 
-def _ddl() -> list[str]:
-    role = _APP_ROLE
-    return [
-        # idempotent role create (NOSUPERUSER NOBYPASSRLS so the RLS policy binds — ADR-030 §3)
-        f"DO $$ BEGIN IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '{role}') THEN "
-        f"CREATE ROLE {role} LOGIN PASSWORD '{_APP_PASSWORD}' "
-        "NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE; END IF; END $$;",
-        f"GRANT USAGE ON SCHEMA public TO {role}",
-        # ALL tables, not just the RLS pair: the identity engine runs as oraclous_app and
-        # reads/writes every identity table (users/organisations/org_members/oauth_*/refresh_tokens/
-        # invitations/audit) — a narrower grant fails login closed (permission denied for table
-        # users). RLS scopes the two enrolled tables on top of this broad grant; the rest are not
-        # RLS-d (reached before an org is bound).
-        f"GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO {role}",
-        # cover any future auth table created by a later migration without re-running this
-        f"ALTER DEFAULT PRIVILEGES IN SCHEMA public "
-        f"GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO {role}",
-    ]
-
-
 def main() -> None:
     import psycopg
 
     dsn = get_settings().sync_database_url
     # psycopg wants a libpq DSN, not a SQLAlchemy URL — strip the +psycopg driver tag.
     libpq_dsn = dsn.replace("postgresql+psycopg://", "postgresql://", 1)
-    with psycopg.connect(libpq_dsn, autocommit=True) as conn, conn.cursor() as cur:
-        for stmt in _ddl():
-            cur.execute(stmt)  # only trusted module constants are executed
+    with psycopg.connect(libpq_dsn, autocommit=True) as conn:
+        # Delegate the idempotent role-create + GRANTs to the shared substrate helper (ADR-030 §3).
+        # grant_all_tables=True: ALL tables, not just the RLS pair — the identity engine runs as
+        # oraclous_app and reads/writes every identity table (users/organisations/org_members/
+        # oauth_*/refresh_tokens/invitations/audit); a narrower grant fails login closed (permission
+        # denied for table users). RLS scopes the two enrolled tables on top of this broad grant;
+        # the rest are not RLS-d (reached before an org is bound). _RLS_TABLES passed for docs.
+        provision_app_role(
+            conn,
+            role=_APP_ROLE,
+            password=_APP_PASSWORD,
+            tables=_RLS_TABLES,
+            grant_all_tables=True,
+        )
     print(  # noqa: T201 — one-shot CLI output
         f"rls-role bootstrap complete: {_APP_ROLE} provisioned + granted (RLS: {list(_RLS_TABLES)})"
     )

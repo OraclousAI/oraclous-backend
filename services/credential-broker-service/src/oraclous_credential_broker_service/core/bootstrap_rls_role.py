@@ -24,6 +24,8 @@ init script that covers a fresh ``pgdata`` volume.
 
 from __future__ import annotations
 
+from oraclous_substrate.access_async import provision_app_role
+
 from oraclous_credential_broker_service.core.config import get_settings
 
 # The four org-scoped broker tables RLS is enabled on (0004_enable_rls). The runtime role needs DML
@@ -37,33 +39,22 @@ _APP_ROLE = "oraclous_app"
 _APP_PASSWORD = "app"  # noqa: S105 — dev/self-host default, overridden in production deploys
 
 
-def _ddl() -> list[str]:
-    role = _APP_ROLE
-    grants = [
-        f'GRANT SELECT, INSERT, UPDATE, DELETE ON public."{t}" TO {role}' for t in _RLS_TABLES
-    ]
-    return [
-        # idempotent role create (NOSUPERUSER NOBYPASSRLS so the RLS policy binds — ADR-030 §3)
-        f"DO $$ BEGIN IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '{role}') THEN "
-        f"CREATE ROLE {role} LOGIN PASSWORD '{_APP_PASSWORD}' "
-        "NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE; END IF; END $$;",
-        f"GRANT USAGE ON SCHEMA public TO {role}",
-        *grants,
-        # cover any future broker table created by a later migration without re-listing it here
-        f"ALTER DEFAULT PRIVILEGES IN SCHEMA public "
-        f"GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO {role}",
-    ]
-
-
 def main() -> None:
     import psycopg
 
     dsn = get_settings().sync_database_url
     # psycopg wants a libpq DSN, not a SQLAlchemy URL — strip the +psycopg driver tag.
     libpq_dsn = dsn.replace("postgresql+psycopg://", "postgresql://", 1)
-    with psycopg.connect(libpq_dsn, autocommit=True) as conn, conn.cursor() as cur:
-        for stmt in _ddl():
-            cur.execute(stmt)  # only trusted module constants are executed
+    with psycopg.connect(libpq_dsn, autocommit=True) as conn:
+        # Delegate the idempotent role-create + GRANTs to the shared substrate helper (ADR-030 §3).
+        # grant_all_tables=False: per-table DML grants on just the four RLS-enabled broker tables.
+        provision_app_role(
+            conn,
+            role=_APP_ROLE,
+            password=_APP_PASSWORD,
+            tables=_RLS_TABLES,
+            grant_all_tables=False,
+        )
     print(  # noqa: T201 — one-shot CLI output
         f"rls-role bootstrap complete: {_APP_ROLE} provisioned + granted on {list(_RLS_TABLES)}"
     )
