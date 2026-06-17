@@ -63,7 +63,9 @@ _TABLE_COLUMNS: dict[str, str] = {
 TENANT_TABLES: tuple[str, ...] = tuple(_TABLE_COLUMNS)
 
 
-def enable_rls_on(conn, table: str, *, org_column: str = ORG_COLUMN) -> None:
+def enable_rls_on(
+    conn, table: str, *, org_column: str = ORG_COLUMN, org_column_is_uuid: bool = True
+) -> None:
     """Enable + FORCE row-level security and a single org-isolation policy on an
     **existing** ``public.<table>`` (ADR-030 §1). Idempotent.
 
@@ -78,8 +80,8 @@ def enable_rls_on(conn, table: str, *, org_column: str = ORG_COLUMN) -> None:
         ALTER TABLE public."<table>" FORCE  ROW LEVEL SECURITY;   -- binds the owner too
         DROP POLICY IF EXISTS "<table>_org_isolation" ON public."<table>";
         CREATE POLICY "<table>_org_isolation" ON public."<table>"
-          USING      (<org_column> = NULLIF(current_setting(<ORG_GUC>, true), '')::uuid)
-          WITH CHECK (<org_column> = NULLIF(current_setting(<ORG_GUC>, true), '')::uuid);
+          USING      (<org_expr> = NULLIF(current_setting(<ORG_GUC>, true), '')::uuid)
+          WITH CHECK (<org_expr> = NULLIF(current_setting(<ORG_GUC>, true), '')::uuid);
           -- <ORG_GUC> = 'app.current_organisation_id'
 
     ``WITH CHECK`` is mandatory (not just ``USING``): without it a cross-org **write**
@@ -90,12 +92,25 @@ def enable_rls_on(conn, table: str, *, org_column: str = ORG_COLUMN) -> None:
     the GUC is unbound or has reverted to the empty string on a pooled connection
     (T1-M1) rather than erroring on the ``::uuid`` cast.
 
+    ``org_column_is_uuid`` (default ``True``) controls the **column** side of the
+    comparison. The GUC is always compared as ``uuid`` (the binding seam re-parses
+    every bound org through :class:`uuid.UUID`, so only a canonical uuid literal
+    reaches the policy). When the org column is itself ``uuid`` (credential-broker,
+    KGS — Slice 0) the comparison is ``<col> = …::uuid`` unchanged. When it is a
+    ``text``/``varchar`` column that *holds* a uuid string (auth-service stores
+    ``organisation_id`` as ``String`` — Slice 1), pass ``False`` so the column is
+    cast — ``<col>::uuid = …::uuid`` — because Postgres has no implicit ``text = uuid``
+    operator and the policy would otherwise raise ``operator does not exist`` on
+    every scan. The org values in such a column are canonical uuids in production
+    (the org id is ``str(uuid.uuid4())``), so the per-row ``::uuid`` cast is total.
+
     The table name and org column are trusted callers' constants (a per-service
     manifest / model-derived column), never request input — hence the narrow
     ``# noqa: S608`` on the policy DDL. Transaction control is the caller's.
     """
     policy = f"{table}{_POLICY_SUFFIX}"
-    predicate = f"{org_column} = NULLIF(current_setting('{ORG_GUC}', true), '')::uuid"
+    org_expr = org_column if org_column_is_uuid else f"{org_column}::uuid"
+    predicate = f"{org_expr} = NULLIF(current_setting('{ORG_GUC}', true), '')::uuid"
     with conn.cursor() as cur:
         cur.execute(f'ALTER TABLE public."{table}" ENABLE ROW LEVEL SECURITY')
         cur.execute(f'ALTER TABLE public."{table}" FORCE ROW LEVEL SECURITY')

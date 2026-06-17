@@ -20,8 +20,14 @@ test):
   RLS002 — a realized service declares an org-scoped storage model (a class with
            ``__tablename__`` AND an ``organisation_id`` column) whose table is ABSENT
            from the manifest — a new org-scoped table that would dodge the backstop.
-  RLS003 — the manifest names a service directory or table model that does not exist
-           (a stale manifest entry — fail rather than vacuously pass).
+           A table listed under the service's documented ``exclusions`` (each with a
+           ``reason``) is exempt: some org-scoped tables are deliberately NOT RLS-d
+           because they are read WITHOUT a bound org (e.g. auth's ``org_members``,
+           enumerated across a user's orgs at login — RLS would fail-close login). An
+           exclusion makes that decision explicit and reviewable rather than silent.
+  RLS003 — the manifest names a service directory or table model that does not exist,
+           OR an ``exclusions`` entry matches no org-scoped model / is also in ``tables``
+           (a stale or contradictory manifest entry — fail rather than vacuously pass).
 
 Run:  uv run python -m tools.lint.check_rls_coverage [--manifest <path>]
 Exits non-zero (1) on any violation; 0 otherwise.
@@ -50,6 +56,26 @@ class Violation:
 
     def __str__(self) -> str:
         return f"{self.service}: {self.code} {self.message}"
+
+
+def _exclusions_of(spec: dict | None) -> set[str]:
+    """The set of documented-excluded table names from a service's manifest spec.
+
+    Accepts either a mapping (``{table: reason}``) or a list of ``{table, reason}`` dicts under
+    ``exclusions`` — the reason is for the human reader/reviewer; this checker only needs the names.
+    """
+    raw = (spec or {}).get("exclusions") or {}
+    if isinstance(raw, dict):
+        return {str(t) for t in raw}
+    if isinstance(raw, list):
+        names: set[str] = set()
+        for item in raw:
+            if isinstance(item, dict) and "table" in item:
+                names.add(str(item["table"]))
+            elif isinstance(item, str):
+                names.add(item)
+        return names
+    return set()
 
 
 def _assigned_names_and_value(stmt: ast.stmt) -> tuple[list[str], ast.expr | None]:
@@ -164,12 +190,26 @@ def check(manifest_path: Path, repo_root: Path) -> list[Violation]:
 
     for service, spec in services.items():
         manifest_tables = set((spec or {}).get("tables", []) or [])
+        # Documented per-service exclusions: org-scoped tables deliberately NOT RLS-d, each with a
+        # human reason. Accepts a mapping {table: reason} or a list of {table, reason} dicts.
+        excluded_tables = _exclusions_of(spec)
         service_dir = repo_root / "services" / service
         if not service_dir.is_dir():
             violations.append(
                 Violation("RLS003", service, f"manifest names a missing service dir {service_dir}")
             )
             continue
+
+        # A table cannot be both RLS-enabled and excluded — that is a contradictory manifest.
+        for table in sorted(manifest_tables & excluded_tables):
+            violations.append(
+                Violation(
+                    "RLS003",
+                    service,
+                    f"table {table!r} is in BOTH 'tables' and 'exclusions' — a table is either "
+                    "RLS-enabled or documented-excluded, never both",
+                )
+            )
 
         # RLS001 — every manifest table is applied via enable_rls_on in migrations/.
         covered = _enable_rls_calls(service_dir / "migrations")
@@ -191,14 +231,17 @@ def check(manifest_path: Path, repo_root: Path) -> list[Violation]:
             )
             continue
         declared = _org_scoped_tables_declared(src)
-        for table in sorted(declared - manifest_tables):
+        # An org-scoped model is accounted for iff it is RLS-enabled (in `tables`) OR documented as
+        # an explicit exclusion. Anything else dodges the backstop silently → RLS002.
+        for table in sorted(declared - manifest_tables - excluded_tables):
             violations.append(
                 Violation(
                     "RLS002",
                     service,
                     f"org-scoped model table {table!r} is not in the RLS manifest; a realized "
-                    "service must list every org-scoped table so none dodges the backstop "
-                    "(add it to rls_coverage.yaml + an enable_rls_on migration)",
+                    "service must either RLS-enable every org-scoped table (add it to 'tables' + "
+                    "an enable_rls_on migration) or document it under 'exclusions' with a reason "
+                    "(an org-scoped table reached without a bound org — see ADR-030)",
                 )
             )
 
@@ -210,6 +253,18 @@ def check(manifest_path: Path, repo_root: Path) -> list[Violation]:
                     service,
                     f"manifest table {table!r} matches no org-scoped storage model under {src} "
                     "(stale manifest entry)",
+                )
+            )
+
+        # RLS003 — an exclusion that matches no org-scoped model (stale/typo'd exclusion). Excluding
+        # a table that isn't actually a declared org-scoped model is meaningless and likely a typo.
+        for table in sorted(excluded_tables - declared):
+            violations.append(
+                Violation(
+                    "RLS003",
+                    service,
+                    f"excluded table {table!r} matches no org-scoped storage model under {src} "
+                    "(stale or typo'd exclusion — an exclusion must name a real org-scoped table)",
                 )
             )
 

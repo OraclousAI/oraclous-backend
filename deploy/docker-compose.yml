@@ -376,7 +376,15 @@ services:
     image: oraclous-auth-service:${IMAGE_TAG:-dev}
     environment:
       DATABASE_URL: "postgresql+asyncpg://oraclous:oraclous@postgres:5432/oraclous"
-    command: ["alembic", "upgrade", "head"]
+    # Runs as the OWNER (oraclous, superuser): `alembic upgrade head` creates/updates the tables AND
+    # (0007) enables the RLS backstop on agents + agent_credentials, then the rls-role bootstrap
+    # idempotently provisions the NOSUPERUSER oraclous_app runtime role + DML GRANTs (ADR-030 §3).
+    # Migrations + this bootstrap stay on the owner; only the long-running service switches its
+    # identity-engine DSN to oraclous_app.
+    command:
+      - sh
+      - -c
+      - "alembic upgrade head && python -m oraclous_auth_service.core.bootstrap_rls_role"
     depends_on:
       postgres:
         condition: service_healthy
@@ -395,7 +403,21 @@ services:
     expose:
       - "8000"
     environment:
+      # ADR-030 §3: the OWNER DSN. The credential store (agents/agent_credentials) connects on this
+      # — it is the ADR-012 §1a org-context PRODUCER (its validate-by-prefix / org-resolve are pre-
+      # auth GLOBAL lookups that must resolve across orgs), so it must NOT be RLS-enforced on its
+      # connection; RLS on those two tables is the backstop proven by the isolation test. Migrations
+      # + the grant bootstrap also use this owner DSN.
       DATABASE_URL: "postgresql+asyncpg://oraclous:oraclous@postgres:5432/oraclous"
+      # ADR-030 §3: the IDENTITY engine (users/orgs/oauth/members/invitations/refresh/audit — all
+      # non-RLS, reached in pre-org/cross-org flows) connects as the NOSUPERUSER/NOBYPASSRLS
+      # oraclous_app role so the no-bound-org login/refresh flows run under the RLS runtime role.
+      # The role + DML GRANTs are provisioned by the postgres init script (fresh volume) and the
+      # auth-migrate bootstrap (existing volume).
+      AUTH_IDENTITY_DATABASE_URL: "postgresql+asyncpg://oraclous_app:app@postgres:5432/oraclous"
+      # Refuse to start if the identity engine's role can bypass RLS (a void backstop) — fail
+      # closed (T1-M3).
+      RLS_ASSERT_RUNTIME_ROLE: "true"
       REDIS_URL: "redis://redis:6379/0"
       JWT_SECRET: "${AUTH_JWT_SECRET:-dev-jwt-secret}"
       JWT_ALGORITHM: "HS256"

@@ -16,6 +16,7 @@ from oraclous_telemetry import Severity, alert, evaluate_readiness, exit_on_degr
 
 from oraclous_auth_service.core.config import get_settings
 from oraclous_auth_service.core.database import make_engine, make_sessionmaker
+from oraclous_auth_service.core.rls import RlsBypassingRoleError, assert_runtime_role_isolates
 
 _SERVICE = "auth-service"
 
@@ -37,6 +38,27 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             store="postgres",
             error=str(exc),
         )
+
+    # ADR-030 §3: fail closed LOUDLY if the runtime role bypasses RLS (a superuser / BYPASSRLS role
+    # makes the agents/agent_credentials policy inert — T1-M3). Distinct from the Postgres-down
+    # degrade above: a mis-deployed bypassing role is a hard configuration error, so it exits the
+    # process rather than quietly serving. Gated on RLS_ASSERT_RUNTIME_ROLE (the deployed app role
+    # sets it; a deliberate owner-DSN dev/test run leaves it off). Only meaningful once the engine
+    # bound. The credential store (agents/agent_credentials) is the ADR-012 §1a org-context
+    # PRODUCER and stays on the owner DSN for its pre-auth global resolves; RLS there is the
+    # backstop proven by the isolation test, not enforced on this engine's connection.
+    if settings.rls_assert_runtime_role and engine is not None:
+        try:
+            await assert_runtime_role_isolates(engine)
+        except RlsBypassingRoleError as exc:
+            alert(
+                Severity.ERROR,
+                "rls_runtime_role_bypasses",
+                _SERVICE,
+                "runtime DB role bypasses RLS; refusing to start (ADR-030 §3)",
+                error=str(exc),
+            )
+            raise SystemExit(1) from exc
     try:
         app.state.redis = aioredis.from_url(settings.redis_url)
     except Exception as exc:  # noqa: BLE001 — rate limiter fails open without Redis (non-critical)
