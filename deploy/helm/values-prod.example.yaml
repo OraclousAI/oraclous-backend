@@ -1,0 +1,227 @@
+# ==============================================================================================
+# values-prod.example.yaml — a fully-worked PRODUCTION example for the oraclous-backend chart.
+#
+# Copy this to values-prod.yaml, replace every <PLACEHOLDER>, and create the Kubernetes Secrets
+# named below BEFORE `helm install`/`helm upgrade`. This file is checked into git and therefore
+# contains NO real secret values — only the NAMES + KEYS of Secrets the operator must provision.
+#
+# It is also the file the CI `helm-chart` job renders, so it must always reference real (if
+# example) Secret names so the chart renders cleanly on every PR.
+#
+# ----------------------------------------------------------------------------------------------
+# STEP 1 — create the Kubernetes Secrets the chart references (secretKeyRef ONLY).
+#
+# The chart references these Secrets (default key shown). Create each in the release namespace:
+#
+#   # ---- Postgres roles (ADR-030 RLS split) ----
+#   kubectl create secret generic oraclous-db-owner --from-literal=password='<OWNER_DB_PASSWORD>'
+#   kubectl create secret generic oraclous-db-app   --from-literal=password='<APP_DB_PASSWORD>'
+#
+#   # ---- Neo4j role passwords (ORAA-53/58 least privilege) ----
+#   kubectl create secret generic neo4j-admin       --from-literal=password='<NEO4J_ADMIN_PASSWORD>'
+#   kubectl create secret generic neo4j-kgs-writer  --from-literal=password='<KGS_WRITER_PASSWORD>'
+#   kubectl create secret generic neo4j-krs-reader  --from-literal=password='<KRS_READER_PASSWORD>'
+#
+#   # ---- Shared platform secrets ----
+#   #   JWT_SECRET            — shared HS256 signing secret (auth issues; all services verify)
+#   #   INTERNAL_SERVICE_KEY  — shared X-Internal-Key for ADR-018 gateway-trust between services
+#   kubectl create secret generic oraclous-jwt           --from-literal=value='<JWT_SECRET>'
+#   kubectl create secret generic oraclous-internal-key  --from-literal=value='<INTERNAL_SERVICE_KEY>'
+#
+#   # ---- Per-service encryption / API keys ----
+#   #   OAUTH_ENC_KEY  — auth-service: 32-byte key (b64 or raw) encrypting stored OAuth tokens
+#   #   ENCRYPTION_KEY — credential-broker: AES-256-GCM data key, base64 of 32 bytes
+#   #   OPENROUTER/BYOM key — KGS embeddings+extraction, KRS eval judge
+#   kubectl create secret generic oauth-enc-key      --from-literal=value='<OAUTH_ENC_KEY>'
+#   kubectl create secret generic credbroker-enc-key --from-literal=value='<BASE64_32_BYTE_KEY>'
+#   kubectl create secret generic openrouter-key     --from-literal=value='<OPENROUTER_API_KEY>'
+#
+#   # ---- OAuth provider client credentials (only the providers you enable) ----
+#   kubectl create secret generic oauth-google \
+#     --from-literal=client_id='<GOOGLE_CLIENT_ID>' --from-literal=client_secret='<GOOGLE_CLIENT_SECRET>'
+#   kubectl create secret generic oauth-github \
+#     --from-literal=client_id='<GITHUB_CLIENT_ID>' --from-literal=client_secret='<GITHUB_CLIENT_SECRET>'
+#   kubectl create secret generic oauth-notion \
+#     --from-literal=client_id='<NOTION_CLIENT_ID>' --from-literal=client_secret='<NOTION_CLIENT_SECRET>'
+#
+#   # ---- TLS for the gateway Ingress (or let cert-manager create it) ----
+#   kubectl create secret tls oraclous-gateway-tls --cert=tls.crt --key=tls.key
+#
+# STEP 2 — fill in the non-secret operator values below (registry, substrate endpoints, host).
+# STEP 3 — helm upgrade --install oraclous deploy/helm -f values-prod.yaml -n <namespace>
+# ==============================================================================================
+
+global:
+  imageRegistry: "ghcr.io/oraclous"   # <-- your registry; images become e.g. ghcr.io/oraclous/oraclous-auth-service:<appVersion>
+  imagePullPolicy: IfNotPresent
+
+imagePullSecrets:
+  - name: ghcr-pull   # <-- a pre-created docker-registry Secret, if your registry is private
+
+# ── Substrate (EXTERNAL / operator-managed) ──────────────────────────────────────────────────
+substrate:
+  postgres:
+    driver: "postgresql+asyncpg"
+    host: "oraclous-pg.internal"      # <-- managed Postgres host
+    port: 5432
+    database: "oraclous"
+    query: "?ssl=require"             # <-- managed PG usually requires TLS
+    ownerUser: "oraclous"
+    appUser: "oraclous_app"
+    ownerPassword:
+      secretName: "oraclous-db-owner"  # Secret created in STEP 1
+      secretKey: "password"
+    appPassword:
+      secretName: "oraclous-db-app"
+      secretKey: "password"
+  neo4j:
+    uri: "neo4j+s://oraclous-neo4j.internal:7687"   # informational; per-role URIs below
+  redis:
+    url: "rediss://oraclous-redis.internal:6379"    # base, no db index (services append /0,/1,/2)
+
+# ── Neo4j roles + role-provisioning Job ──────────────────────────────────────────────────────
+neo4jRoles:
+  kgsWriter:
+    uri: "neo4j+s://oraclous-neo4j.internal:7687"
+    user: "kgs_writer"
+    secretName: "neo4j-kgs-writer"
+    secretKey: "password"
+  krsReader:
+    uri: "neo4j+s://oraclous-neo4j.internal:7687"
+    user: "krs_reader"
+    secretName: "neo4j-krs-reader"
+    secretKey: "password"
+
+neo4jRoleInit:
+  enabled: true                        # set false if you provision Neo4j roles out-of-band
+  image: "neo4j:5.23-community"        # any image with cypher-shell that can reach your Neo4j
+  adminUser: "neo4j"
+  adminSecretName: "neo4j-admin"
+  adminSecretKey: "password"
+
+# ── Gateway Ingress (the single external surface) ────────────────────────────────────────────
+ingress:
+  enabled: true
+  gatewayService: "application-gateway-service"
+  className: "nginx"                   # <-- your ingress controller class
+  annotations:
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+  hosts:
+    - host: "api.oraclous.example"     # <-- your real external host
+      paths:
+        - path: "/"
+          pathType: "Prefix"
+  tls:
+    - secretName: "oraclous-gateway-tls"
+      hosts:
+        - "api.oraclous.example"
+
+# ── Service overrides ─────────────────────────────────────────────────────────────────────────
+# Only the values that differ from the chart defaults are set here. The defaults already encode
+# the security contract (RLS roles, RUN_MODE=prod, gateway auth-mode, fail-closed real/live
+# runtimes); the operator only supplies Secret NAMES + the few operator-specific values.
+services:
+
+  auth-service:
+    replicas: 3
+    env:
+      fromSecrets:
+        JWT_SECRET:                 { secretName: "oraclous-jwt",          secretKey: "value" }
+        INTERNAL_SERVICE_KEY:       { secretName: "oraclous-internal-key", secretKey: "value" }
+        OAUTH_ENC_KEY:              { secretName: "oauth-enc-key",         secretKey: "value" }
+        OAUTH_GOOGLE_CLIENT_ID:     { secretName: "oauth-google",          secretKey: "client_id" }
+        OAUTH_GOOGLE_CLIENT_SECRET: { secretName: "oauth-google",          secretKey: "client_secret" }
+        OAUTH_GITHUB_CLIENT_ID:     { secretName: "oauth-github",          secretKey: "client_id" }
+        OAUTH_GITHUB_CLIENT_SECRET: { secretName: "oauth-github",          secretKey: "client_secret" }
+        OAUTH_NOTION_CLIENT_ID:     { secretName: "oauth-notion",          secretKey: "client_id" }
+        OAUTH_NOTION_CLIENT_SECRET: { secretName: "oauth-notion",          secretKey: "client_secret" }
+
+  credential-broker-service:
+    replicas: 3
+    env:
+      fromSecrets:
+        ENCRYPTION_KEY:       { secretName: "credbroker-enc-key",   secretKey: "value" }
+        INTERNAL_SERVICE_KEY: { secretName: "oraclous-internal-key", secretKey: "value" }
+        JWT_SECRET:           { secretName: "oraclous-jwt",          secretKey: "value" }
+
+  capability-registry-service:
+    env:
+      fromSecrets:
+        INTERNAL_SERVICE_KEY: { secretName: "oraclous-internal-key", secretKey: "value" }
+        JWT_SECRET:           { secretName: "oraclous-jwt",          secretKey: "value" }
+
+  knowledge-graph-service:
+    env:
+      fromSecrets:
+        KGS_INTERNAL_SERVICE_KEY: { secretName: "oraclous-internal-key", secretKey: "value" }
+        KGS_JWT_SECRET:           { secretName: "oraclous-jwt",          secretKey: "value" }
+        KGS_NEO4J_PASSWORD:       { secretName: "neo4j-kgs-writer",      secretKey: "password" }
+        KGS_OPENAI_API_KEY:       { secretName: "openrouter-key",        secretKey: "value" }
+
+  knowledge-graph-worker:
+    env:
+      fromSecrets:
+        KGS_INTERNAL_SERVICE_KEY: { secretName: "oraclous-internal-key", secretKey: "value" }
+        KGS_JWT_SECRET:           { secretName: "oraclous-jwt",          secretKey: "value" }
+        KGS_NEO4J_PASSWORD:       { secretName: "neo4j-kgs-writer",      secretKey: "password" }
+        KGS_OPENAI_API_KEY:       { secretName: "openrouter-key",        secretKey: "value" }
+
+  knowledge-retriever-service:
+    env:
+      fromSecrets:
+        KRS_INTERNAL_SERVICE_KEY: { secretName: "oraclous-internal-key", secretKey: "value" }
+        KRS_JWT_SECRET:           { secretName: "oraclous-jwt",          secretKey: "value" }
+        KRS_NEO4J_PASSWORD:       { secretName: "neo4j-krs-reader",      secretKey: "password" }
+        KRS_OPENAI_API_KEY:       { secretName: "openrouter-key",        secretKey: "value" }
+
+  harness-runtime-service:
+    env:
+      fromValues:
+        # Single-tenant? set true to let agents reach an internal LLM. Multi-tenant: keep false.
+        HARNESS_ALLOW_PRIVATE_LLM_TARGETS: "false"
+        # Operator provider->base-URL map (JSON), e.g. '{"openrouter":"https://openrouter.ai/api/v1"}'
+        HARNESS_LLM_BASE_URLS: '{"openrouter":"https://openrouter.ai/api/v1"}'
+      fromSecrets:
+        HARNESS_INTERNAL_SERVICE_KEY: { secretName: "oraclous-internal-key", secretKey: "value" }
+        HARNESS_JWT_SECRET:           { secretName: "oraclous-jwt",          secretKey: "value" }
+
+  execution-engine-service:
+    replicas: 3
+    env:
+      fromSecrets:
+        ENGINE_INTERNAL_SERVICE_KEY: { secretName: "oraclous-internal-key", secretKey: "value" }
+        ENGINE_JWT_SECRET:           { secretName: "oraclous-jwt",          secretKey: "value" }
+
+  execution-engine-worker:
+    replicas: 2
+    env:
+      fromSecrets:
+        ENGINE_INTERNAL_SERVICE_KEY: { secretName: "oraclous-internal-key", secretKey: "value" }
+        ENGINE_JWT_SECRET:           { secretName: "oraclous-jwt",          secretKey: "value" }
+
+  # execution-engine-beat: exactly one replica (the chart default); no secrets (owner DSN only).
+
+  application-gateway-service:
+    replicas: 3
+    env:
+      fromValues:
+        # REQUIRED in prod — an explicit origin allow-list. NEVER "*" (the service fail-closes on
+        # "*" or empty under RUN_MODE=prod). Comma-separated scheme://host[:port].
+        GATEWAY_CORS_ORIGINS: "https://app.oraclous.example,https://console.oraclous.example"
+        # Hop count of trusted proxies in front of the gateway (your ingress controller).
+        TRUSTED_PROXY_COUNT: "1"
+      fromSecrets:
+        JWT_SECRET:           { secretName: "oraclous-jwt",          secretKey: "value" }
+        INTERNAL_SERVICE_KEY: { secretName: "oraclous-internal-key", secretKey: "value" }
+
+# ── Migrate / seed Jobs (OWNER DSN, enforced by the chart) ─────────────────────────────────────
+migrations:
+  credbroker-migrate:
+    env:
+      fromSecrets:
+        ENCRYPTION_KEY:       { secretName: "credbroker-enc-key",    secretKey: "value" }
+        INTERNAL_SERVICE_KEY: { secretName: "oraclous-internal-key", secretKey: "value" }
+  capreg-migrate:
+    env:
+      fromSecrets:
+        INTERNAL_SERVICE_KEY: { secretName: "oraclous-internal-key", secretKey: "value" }

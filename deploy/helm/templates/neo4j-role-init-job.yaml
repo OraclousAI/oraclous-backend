@@ -1,0 +1,90 @@
+{{- /*
+Neo4j role-provisioning Job (ORAA-53 / ORAA-58 — principle of least privilege).
+
+Idempotently provisions the dedicated `kgs_writer` (publisher) and `krs_reader` (reader) Neo4j
+users on the operator-managed (external/Enterprise) Neo4j, so the knowledge-graph-service and
+knowledge-retriever-service never connect as the Neo4j admin. Mirrors the dev-stack
+`neo4j-role-setup` one-shot + `deploy/neo4j-init/*.cypher`, but injects every password from a
+Secret (admin password, kgs_writer password, krs_reader password) — no Neo4j credential literal
+appears in this manifest.
+
+Runs as a pre-install/pre-upgrade hook BEFORE the service pods start (hook-weight -5, ahead of
+the migrate Jobs), so the roles exist before KGS/KRS connect. `CREATE USER … IF NOT EXISTS` +
+`GRANT ROLE` are safe to re-run.
+*/ -}}
+{{- if .Values.neo4jRoleInit.enabled }}
+{{- $root := . }}
+{{- $init := .Values.neo4jRoleInit }}
+{{- $kgs := .Values.neo4jRoles.kgsWriter }}
+{{- $krs := .Values.neo4jRoles.krsReader }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ printf "%s-neo4j-role-init" .Release.Name | trunc 63 | trimSuffix "-" }}
+  labels:
+    {{- include "oraclous-backend.labels" . | nindent 4 }}
+    app.kubernetes.io/component: neo4j-role-init
+  annotations:
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "-5"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: {{ default 3 $init.backoffLimit }}
+  template:
+    metadata:
+      labels:
+        {{- include "oraclous-backend.selectorLabels" (dict "root" $root "name" "neo4j-role-init") | nindent 8 }}
+        app.kubernetes.io/component: neo4j-role-init
+    spec:
+      restartPolicy: Never
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.serviceDefaults.podSecurityContext | nindent 8 }}
+      containers:
+        - name: neo4j-role-init
+          image: {{ $init.image | quote }}
+          imagePullPolicy: {{ default $root.Values.global.imagePullPolicy $init.imagePullPolicy }}
+          env:
+            - name: NEO4J_URI
+              value: {{ required "neo4jRoles.kgsWriter.uri is required (Neo4j bolt URI for role-init)" $kgs.uri | quote }}
+            - name: NEO4J_ADMIN_USER
+              value: {{ default "neo4j" $init.adminUser | quote }}
+            - name: NEO4J_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ required "neo4jRoleInit.adminSecretName is required (Neo4j admin password)" $init.adminSecretName | quote }}
+                  key: {{ default "password" $init.adminSecretKey | quote }}
+            - name: KGS_WRITER_USER
+              value: {{ default "kgs_writer" $kgs.user | quote }}
+            - name: KGS_WRITER_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ required "neo4jRoles.kgsWriter.secretName is required (kgs_writer password)" $kgs.secretName | quote }}
+                  key: {{ default "password" $kgs.secretKey | quote }}
+            - name: KRS_READER_USER
+              value: {{ default "krs_reader" $krs.user | quote }}
+            - name: KRS_READER_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ required "neo4jRoles.krsReader.secretName is required (krs_reader password)" $krs.secretName | quote }}
+                  key: {{ default "password" $krs.secretKey | quote }}
+          command:
+            - sh
+            - -c
+            - |
+              set -e
+              cypher-shell -a "$NEO4J_URI" -u "$NEO4J_ADMIN_USER" -p "$NEO4J_ADMIN_PASSWORD" \
+                --param "kgs_user => '$KGS_WRITER_USER'" \
+                --param "kgs_pw => '$KGS_WRITER_PASSWORD'" \
+                --param "krs_user => '$KRS_READER_USER'" \
+                --param "krs_pw => '$KRS_READER_PASSWORD'" \
+                "CREATE USER \$kgs_user IF NOT EXISTS SET PASSWORD \$kgs_pw CHANGE NOT REQUIRED;
+                 CREATE USER \$krs_user IF NOT EXISTS SET PASSWORD \$krs_pw CHANGE NOT REQUIRED;
+                 GRANT ROLE publisher TO \$kgs_user;
+                 GRANT ROLE reader TO \$krs_user;"
+          resources:
+            {{- toYaml .Values.serviceDefaults.resources | nindent 12 }}
+{{- end }}

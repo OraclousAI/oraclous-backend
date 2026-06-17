@@ -7,7 +7,7 @@ Deployment scaffolding for oraclous-backend.
 | `docker-compose.yml` | Local self-hosted **substrate stack**: Neo4j, Postgres, Redis, Jaeger. App-service containers are added per release. |
 | `docker-compose.agent.yml` | Concurrency override — run multiple isolated stacks on one host via `COMPOSE_PROJECT_NAME` + OS-assigned ports. |
 | `docker-compose.fe-target.yml` | Fixed-port overlay for the long-lived shared **fe-target** stack used by frontend-implementer. |
-| `helm/` | Cloud-hosted chart **skeleton**; service templates added per release (R1–R6). |
+| `helm/` | **Production Helm chart** for the full backend — all nine services + workers, migrate/seed hook Jobs, the gateway Ingress, Neo4j role provisioning. Encodes the prod security contract (RLS DSN split, `RUN_MODE=prod`, secrets-as-secretKeyRef). Substrate is operator-managed/external. See [Production (Kubernetes / Helm)](#production-kubernetes--helm). |
 | `observability/` | Tracing config (Jaeger + an OpenTelemetry Collector scaffold). |
 
 ## Local stack
@@ -147,57 +147,11 @@ The knowledge-retriever-service reads these env vars:
 
 ### Production (Kubernetes / Helm)
 
-1. Create a K8s Secret containing the `kgs_writer` password:
-   ```bash
-   kubectl create secret generic neo4j-kgs-writer \
-     --from-literal=password=<strong-password>
-   ```
-
-2. Create a K8s Secret containing the `krs_reader` password:
-   ```bash
-   kubectl create secret generic neo4j-krs-reader \
-     --from-literal=password=<strong-password>
-   ```
-
-3. Create a K8s Secret for the Neo4j admin password (used by the init Job):
-   ```bash
-   kubectl create secret generic neo4j-admin \
-     --from-literal=password=<admin-password>
-   ```
-
-4. Set Helm values (see `deploy/helm/values.yaml` `neo4jRoles.kgsWriter`):
-   ```yaml
-   neo4jRoles:
-     kgsWriter:
-       uri: bolt://<neo4j-host>:7687
-       user: kgs_writer
-       secretName: neo4j-kgs-writer
-       secretKey: password
-   neo4jRoleInit:
-     enabled: true
-     adminSecretName: neo4j-admin
-   ```
-
-5. **The `neo4jRoleInit` block in `values.yaml` is scaffolding for a future Helm Job
-   template** (`deploy/helm/templates/neo4j-role-init-job.yaml`). That template does not
-   exist yet — `deploy/helm/templates/` currently contains only `NOTES.txt` and
-   `_helpers.tpl`. Setting `neo4jRoleInit.enabled: true` and running `helm upgrade` has
-   no effect until the Job template is added in a future release.
-
-   Until then, provision roles manually from a pod that can reach the Neo4j bolt port:
-   ```bash
-   # KGS write role
-   kubectl run neo4j-init --rm -it --image=neo4j:5.23-community --restart=Never -- \
-     cypher-shell -a bolt://<neo4j-host>:7687 -u neo4j -p <admin-password> \
-       --param 'kgs_writer_password => "<strong-password>"' \
-       -f /dev/stdin < deploy/neo4j-init/kgs_write_role.cypher
-
-   # KRS read role — $krs_reader_password is a required parameter, no baked-in default
-   kubectl run neo4j-init --rm -it --image=neo4j:5.23-community --restart=Never -- \
-     cypher-shell -a bolt://<neo4j-host>:7687 -u neo4j -p <admin-password> \
-       --param 'krs_reader_password => "<strong-password>"' \
-       -f /dev/stdin < deploy/neo4j-init/krs_read_role.cypher
-   ```
+The production Helm chart (`deploy/helm`) provisions the `kgs_writer` + `krs_reader` Neo4j
+roles automatically via the `neo4j-role-init` pre-install/pre-upgrade Job (passwords injected
+from Secrets), then wires KGS/KRS to their role-scoped credentials. See the consolidated
+[Production (Kubernetes / Helm)](#production-kubernetes--helm) section below for the full
+chart, the Secret list, and the deploy commands.
 
 ### Static analysis
 
@@ -266,3 +220,87 @@ integration isolation test (e.g. `test_rls_backstop_isolation.py`).
 uv run python -m tools.lint.check_rls_coverage
 # exits 0 — every realized org-scoped table has RLS applied
 ```
+
+## Production (Kubernetes / Helm)
+
+`deploy/helm` is the production chart for the **whole backend**. It templates all nine services
+(Deployments + ClusterIP Services on port 8000, `/health` liveness + `/readyz` readiness — the
+gateway uses `/health` for both since it has no `/readyz`), the KGS + execution-engine workers and
+the engine beat (no Service), the schema-migration / seed Jobs (Helm pre-install/pre-upgrade
+hooks), the gateway **Ingress** (the single external surface), and the Neo4j role-provisioning Job.
+
+The **source of truth** for every service's image, port, and env is `deploy/docker-compose.yml`
+(the dev stack); the chart encodes the same contract for production.
+
+### What the chart does NOT deploy
+
+Postgres, Neo4j, and Redis are **operator-managed / external** in production. The chart only wires
+the app services to them via `substrate.{postgres,neo4j,redis}` and the `neo4jRoles.*` values — it
+never deploys an in-cluster datastore.
+
+### Security contract encoded by the chart
+
+1. **RLS DSN split (ADR-030).** Every *runtime* service connects to Postgres as the
+   `NOSUPERUSER`/`NOBYPASSRLS` `oraclous_app` role and sets its `*_RLS_ASSERT_RUNTIME_ROLE=true`
+   (so a pod refuses to start if its role can bypass RLS). Every *migrate/seed* Job connects as the
+   `oraclous` **owner** role. This is structural: a workload declares only a `postgres.role`
+   (`app`/`owner`), the migrate-Job template **forces** `owner`, and the two passwords come from
+   two distinct Secret keys — a runtime pod can never receive the owner DSN and a migrate can never
+   receive `oraclous_app`. The gateway additionally carries `OWNER_DATABASE_URL` (owner) for its two
+   pre-auth producer reads; the execution-engine carries `ENGINE_MAINTENANCE_DATABASE_URL` (owner)
+   for cross-org sweeps.
+2. **`RUN_MODE=prod`** on every app workload (grade-A WP-1 fail-closed: a missing security secret
+   raises at boot instead of falling back to a dev default).
+3. **Secrets as `secretKeyRef` only.** No sensitive value is ever a literal in a manifest. DB
+   passwords are delivered as their own env vars from Secrets and the DSN is composed with
+   Kubernetes dependent-env-var (`$(VAR)`) expansion, so the secret lives only in the Secret object.
+   `GATEWAY_CORS_ORIGINS` must be a real origin allow-list (never `*`); left empty it fail-closes
+   under `RUN_MODE=prod`.
+
+The chart is **fail-closed**: rendering against the bare `values.yaml` errors out (`... secretName
+is required`) until the operator supplies every Secret — you cannot accidentally deploy without
+them.
+
+### Deploy
+
+1. **Create the Kubernetes Secrets** the chart references. The full list (names + keys) is
+   documented at the top of `deploy/helm/values-prod.example.yaml`:
+   the owner + `oraclous_app` DB passwords, the Neo4j admin / `kgs_writer` / `krs_reader`
+   passwords, the shared `JWT_SECRET` + `INTERNAL_SERVICE_KEY`, `OAUTH_ENC_KEY`, the
+   credential-broker `ENCRYPTION_KEY`, the OpenRouter/BYOM LLM key, the OAuth provider client
+   id/secret pairs you enable, and the gateway TLS Secret.
+
+2. **Copy + fill the values:**
+   ```bash
+   cp deploy/helm/values-prod.example.yaml values-prod.yaml
+   # edit values-prod.yaml: registry, substrate endpoints, ingress host, Secret names, CORS origins
+   ```
+
+3. **Install / upgrade** (the migrate + neo4j-role-init hook Jobs run first, in weight order:
+   `neo4j-role-init` → migrates → `kgs-seed`):
+   ```bash
+   helm upgrade --install oraclous deploy/helm -f values-prod.yaml -n oraclous --create-namespace
+   ```
+
+### Validate the chart locally
+
+```bash
+helm lint deploy/helm -f deploy/helm/values-prod.example.yaml
+helm template oraclous deploy/helm -f deploy/helm/values-prod.example.yaml | kubeconform -kubernetes-version 1.29.0 -summary -
+```
+
+CI runs `helm lint` + `helm template` (with the prod example values) on every PR via the
+`helm-chart` job in `.github/workflows/ci.yml`, so the chart stays deployable as services evolve.
+
+### Chart layout
+
+| Path | Purpose |
+| --- | --- |
+| `Chart.yaml` | Chart + app version. |
+| `values.yaml` | Full structure + safe **non-secret** prod defaults; every sensitive value is an empty `secretKeyRef` the operator fills. |
+| `values-prod.example.yaml` | Fully-worked operator example — documents every Secret name + key and every value to fill. |
+| `templates/workloads.yaml` | One generic Deployment(+Service) ranging over `.Values.services`. |
+| `templates/migrate-jobs.yaml` | One generic Job (pre-install/pre-upgrade hook, OWNER DSN) ranging over `.Values.migrations`. |
+| `templates/neo4j-role-init-job.yaml` | Provisions `kgs_writer` + `krs_reader` on the external Neo4j. |
+| `templates/ingress.yaml` | The gateway Ingress (the only external surface). |
+| `templates/_helpers.tpl` | Naming, labels, image ref, and the RLS-split DSN + secretKeyRef helpers. |

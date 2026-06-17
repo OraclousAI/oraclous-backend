@@ -1,5 +1,35 @@
-Oraclous Platform backend — Helm chart skeleton (R0.5 story 0c).
+Oraclous Platform backend — release {{ .Release.Name }} (chart {{ .Chart.Name }}-{{ .Chart.Version }}).
 
-This chart is a placeholder. Per-service Deployments, Services, and config are
-added here as each backend service ships across R1–R6. No workloads are
-rendered yet.
+Deployed workloads:
+{{- range $name, $svc := .Values.services }}
+{{- if not (and (kindIs "bool" $svc.enabled) (not $svc.enabled)) }}
+  - {{ printf "%s-%s" $.Release.Name $name }}{{ if not (and (kindIs "bool" $svc.service.enabled) (not $svc.service.enabled)) }} (Service :{{ default 8000 $svc.service.port }}){{ else }} (no Service){{ end }}
+{{- end }}
+{{- end }}
+
+Schema migration / seed Jobs ran as pre-install/pre-upgrade hooks (OWNER DSN):
+{{- range $name, $job := .Values.migrations }}
+{{- if not (and (kindIs "bool" $job.enabled) (not $job.enabled)) }}
+  - {{ printf "%s-%s" $.Release.Name $name }}
+{{- end }}
+{{- end }}
+
+{{- if .Values.ingress.enabled }}
+
+External surface (the application-gateway-service is the ONLY ingress; all others are
+ClusterIP-internal):
+{{- range .Values.ingress.hosts }}
+  - http(s)://{{ .host }}/
+{{- end }}
+{{- end }}
+
+Security contract encoded by this chart:
+  * RLS DSN split — runtime pods connect as {{ .Values.substrate.postgres.appUser }} (NOSUPERUSER/
+    NOBYPASSRLS) with *_RLS_ASSERT_RUNTIME_ROLE=true; migrate/seed Jobs connect as the OWNER
+    ({{ .Values.substrate.postgres.ownerUser }}) DSN. Both passwords come from operator Secrets.
+  * RUN_MODE=prod on every workload (fail-closed secrets).
+  * Every sensitive value is a secretKeyRef to an operator-provided Secret — no literal in any
+    manifest.
+
+Before this release is healthy the operator MUST have created every Secret referenced in
+values-prod.yaml (see deploy/helm/values-prod.example.yaml for the full list).

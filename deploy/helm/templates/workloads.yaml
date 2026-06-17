@@ -1,0 +1,145 @@
+{{- /*
+Generic workload renderer — one Deployment per entry in `.Values.services`, plus a ClusterIP
+Service for every entry that exposes an HTTP port (`service.enabled`). Workers and the beat
+process set `service.enabled: false` (no Service, no probes) and carry a custom `command`.
+
+Every app service receives:
+  * RUN_MODE=prod (grade-A WP-1 fail-closed) — injected here, not per-service, so it can't be
+    forgotten.
+  * its Postgres DSN(s) via the RLS-split helper (runtime => oraclous_app),
+  * non-secret config via env.fromValues (+ the shared ConfigMap, optional),
+  * every sensitive value via env.fromSecrets (secretKeyRef only).
+
+This is the single Deployment/Service definition for all nine app services and their
+workers/beat — there is no per-service template.
+*/ -}}
+{{- range $name, $svc := .Values.services }}
+{{- /* `enabled` defaults to true; a workload is skipped only when explicitly set to false. */}}
+{{- if not (and (kindIs "bool" $svc.enabled) (not $svc.enabled)) }}
+{{- $root := $ }}
+{{- $svcDefaults := $root.Values.serviceDefaults }}
+{{- $port := int (default 8000 $svc.port) }}
+{{- /* `service.enabled` defaults to true; a Service+probes are emitted unless EXPLICITLY false.
+       NB: Helm's `default` treats `false` as empty, so a plain `default true .enabled` would wrongly
+       re-enable a worker. We therefore test the literal bool. */}}
+{{- $exposes := not (and (kindIs "bool" $svc.service.enabled) (not $svc.service.enabled)) }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ printf "%s-%s" $root.Release.Name $name | trunc 63 | trimSuffix "-" }}
+  labels:
+    {{- include "oraclous-backend.labels" $root | nindent 4 }}
+    {{- include "oraclous-backend.selectorLabels" (dict "root" $root "name" $name) | nindent 4 }}
+    app.kubernetes.io/component: {{ default "service" $svc.component }}
+spec:
+  replicas: {{ default 1 $svc.replicas }}
+  selector:
+    matchLabels:
+      {{- include "oraclous-backend.selectorLabels" (dict "root" $root "name" $name) | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "oraclous-backend.labels" $root | nindent 8 }}
+        {{- include "oraclous-backend.selectorLabels" (dict "root" $root "name" $name) | nindent 8 }}
+        app.kubernetes.io/component: {{ default "service" $svc.component }}
+      {{- with $svc.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      {{- with $root.Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml (default $svcDefaults.podSecurityContext $svc.podSecurityContext) | nindent 8 }}
+      containers:
+        - name: {{ $name }}
+          image: {{ include "oraclous-backend.image" (dict "root" $root "image" $svc.image) | quote }}
+          imagePullPolicy: {{ default $root.Values.global.imagePullPolicy $svc.image.pullPolicy }}
+          securityContext:
+            {{- toYaml (default $svcDefaults.containerSecurityContext $svc.containerSecurityContext) | nindent 12 }}
+          {{- with $svc.command }}
+          command:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with $svc.args }}
+          args:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- if $exposes }}
+          ports:
+            - name: http
+              containerPort: {{ $port }}
+              protocol: TCP
+          {{- end }}
+          env:
+            # RUN_MODE=prod everywhere (grade-A WP-1 fail-closed). Injected centrally so no
+            # service can ship without it.
+            - name: RUN_MODE
+              value: "prod"
+            {{- if and $svc.postgres $svc.postgres.enabled }}
+            {{- include "oraclous-backend.pgDsnEnv" (dict "root" $root "ctx" $svc) | nindent 12 }}
+            {{- end }}
+            {{- with $svc.env }}
+            {{- include "oraclous-backend.envFromValues" (dict "map" .fromValues) | nindent 12 }}
+            {{- if .urls }}{{- include "oraclous-backend.envUrls" (dict "root" $root "map" .urls) | nindent 12 }}{{- end }}
+            {{- if .redis }}{{- include "oraclous-backend.envRedis" (dict "root" $root "map" .redis) | nindent 12 }}{{- end }}
+            {{- if .neo4j }}{{- include "oraclous-backend.envNeo4j" (dict "root" $root "neo4j" .neo4j) | nindent 12 }}{{- end }}
+            {{- include "oraclous-backend.envFromSecrets" (dict "map" .fromSecrets "workload" $name) | nindent 12 }}
+            {{- end }}
+          {{- if $exposes }}
+          livenessProbe:
+            httpGet:
+              path: {{ default "/health" $svc.livenessPath }}
+              port: http
+            initialDelaySeconds: {{ default 15 $svc.probeInitialDelaySeconds }}
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 6
+          readinessProbe:
+            httpGet:
+              path: {{ default "/readyz" $svc.readinessPath }}
+              port: http
+            initialDelaySeconds: {{ default 5 $svc.readinessInitialDelaySeconds }}
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 6
+          {{- end }}
+          resources:
+            {{- toYaml (default $svcDefaults.resources $svc.resources) | nindent 12 }}
+      {{- with (default $svcDefaults.nodeSelector $svc.nodeSelector) }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with (default $svcDefaults.tolerations $svc.tolerations) }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with (default $svcDefaults.affinity $svc.affinity) }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- if $exposes }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ printf "%s-%s" $root.Release.Name $name | trunc 63 | trimSuffix "-" }}
+  labels:
+    {{- include "oraclous-backend.labels" $root | nindent 4 }}
+    {{- include "oraclous-backend.selectorLabels" (dict "root" $root "name" $name) | nindent 4 }}
+    app.kubernetes.io/component: {{ default "service" $svc.component }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "oraclous-backend.selectorLabels" (dict "root" $root "name" $name) | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ default 8000 $svc.service.port }}
+      targetPort: http
+      protocol: TCP
+{{- end }}
+{{- end }}
+{{- end }}

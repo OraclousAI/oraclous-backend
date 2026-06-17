@@ -1,52 +1,668 @@
-# Placeholder values for the oraclous-backend chart skeleton.
-# Real values are populated as services are built per release.
+# Default values for the oraclous-backend chart.
+#
+# This file carries SAFE, NON-SECRET production defaults + the full structure of every workload.
+# Every SENSITIVE value is an empty secretKeyRef (`secretName: ""`) that the operator MUST fill
+# with the name of a Kubernetes Secret they create out-of-band — NO real secret value ever lives
+# in a committed file. See values-prod.example.yaml for a fully-worked operator example listing
+# every Secret name + key.
+#
+# The chart wires app services to OPERATOR-MANAGED (external) substrate — Postgres, Neo4j, Redis
+# are NOT deployed in-cluster. Set substrate.* to your managed endpoints.
+#
+# Two security primitives are encoded structurally (see templates/_helpers.tpl):
+#   1. RLS DSN split — runtime services connect as oraclous_app (NOSUPERUSER/NOBYPASSRLS) with
+#      their *_RLS_ASSERT_RUNTIME_ROLE=true; migrate/seed Jobs connect as the OWNER role. The role
+#      is a per-workload `postgres.role` field ("app"/"owner"); a migrate Job's role is FORCED to
+#      "owner" in the Job template, so a runtime pod can never get the owner DSN and a migrate can
+#      never get oraclous_app.
+#   2. RUN_MODE=prod is injected on every workload by the templates (grade-A WP-1 fail-closed).
+
 global:
+  # Prepended to every image repository when set (e.g. "ghcr.io/oraclous"). Leave "" if the
+  # repositories below are already fully-qualified.
   imageRegistry: ""
   imagePullPolicy: IfNotPresent
 
-# Substrate connection settings (operator-provided in real deployments).
+# Operator-provided pull secrets (names of pre-created docker-registry Secrets), if the registry
+# is private.
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+# ──────────────────────────────────────────────────────────────────────────────────────────────
+# Substrate — EXTERNAL / operator-managed in production. The chart does NOT deploy Postgres,
+# Neo4j, or Redis; it only wires the app services to these endpoints.
+# ──────────────────────────────────────────────────────────────────────────────────────────────
 substrate:
-  neo4j:
-    # Admin / general-purpose bolt URI.  Not used by application services directly;
-    # each service has its own role-scoped credential below (ORAA-53).
-    uri: ""
   postgres:
-    dsn: ""
+    # Non-secret DSN parts. The password is NEVER here — it is injected from a Secret (below) and
+    # the full DSN is composed via Kubernetes dependent-env-var ($(VAR)) expansion at pod start.
+    driver: "postgresql+asyncpg"
+    host: ""                 # e.g. oraclous-pg.internal  (REQUIRED)
+    port: 5432
+    database: "oraclous"
+    query: ""                # optional, e.g. "?ssl=require"
+    # The two RLS roles (ADR-030 §3). ownerUser runs migrations + owner-DSN reads; appUser is the
+    # NOSUPERUSER/NOBYPASSRLS runtime role the FORCE'd RLS policy bites.
+    ownerUser: "oraclous"
+    appUser: "oraclous_app"
+    # Passwords come from operator-created Secrets — secretKeyRef ONLY, never a literal.
+    ownerPassword:
+      secretName: ""         # REQUIRED — Secret holding the owner (oraclous) DB password
+      secretKey: "password"
+    appPassword:
+      secretName: ""         # REQUIRED — Secret holding the oraclous_app DB password
+      secretKey: "password"
+  neo4j:
+    # Admin/general bolt URI — informational; each service uses its own role-scoped credential
+    # under neo4jRoles below.
+    uri: ""
   redis:
+    # Base URL WITHOUT the db index (services pin their own db: KGS/KRS/auth=0, engine=1, gw=2).
+    # If your managed Redis requires auth, embed credentials at the operator layer or use a
+    # Secret-backed full URL per service (see env.fromSecrets on the services).
     url: ""
 
-# Per-service Neo4j role credentials (ORAA-53 — principle of least privilege).
-# Each service connects with its own dedicated Neo4j user; no service uses the
-# admin (neo4j) account.  Values are operator-supplied via K8s secrets in production.
+# Per-service Neo4j role credentials (ORAA-53 / ORAA-58 — least privilege). Each service connects
+# with its own dedicated Neo4j user; no service uses the admin (neo4j) account. Passwords are
+# operator-supplied K8s Secrets.
 neo4jRoles:
-  # knowledge-graph-service write role — `publisher` (read + write + schema creation).
-  # Env vars injected into the knowledge-graph-service pod:
-  #   KGS_NEO4J_URI      → neo4j bolt URI (typically same as substrate.neo4j.uri)
-  #   KGS_NEO4J_USER     → kgs_writer (or operator-chosen name)
-  #   KGS_NEO4J_PASSWORD → from secretName / secretKey below
   kgsWriter:
-    uri: ""          # KGS_NEO4J_URI
-    user: "kgs_writer"  # KGS_NEO4J_USER
-    secretName: ""   # K8s Secret containing KGS_NEO4J_PASSWORD
+    uri: ""                  # KGS_NEO4J_URI (bolt URI)  — REQUIRED
+    user: "kgs_writer"       # KGS_NEO4J_USER
+    secretName: ""           # REQUIRED — Secret holding KGS_NEO4J_PASSWORD
     secretKey: "password"
-
-  # knowledge-retriever-service read role — `reader` (read-only).
-  # Env vars injected into the knowledge-retriever-service pod:
-  #   KRS_NEO4J_URI, KRS_NEO4J_USER, KRS_NEO4J_PASSWORD
   krsReader:
-    uri: ""
-    user: "krs_reader"
-    secretName: ""
+    uri: ""                  # KRS_NEO4J_URI (bolt URI)  — REQUIRED
+    user: "krs_reader"       # KRS_NEO4J_USER
+    secretName: ""           # REQUIRED — Secret holding KRS_NEO4J_PASSWORD
     secretKey: "password"
 
-# Neo4j role provisioning job (runs once post-install / on upgrade).
-# Creates the kgs_writer and krs_reader users via a K8s Job using cypher-shell.
-# Requires neo4jRoles.*.secretName to be populated before install.
+# Neo4j role-provisioning Job (runs once as a pre-install/pre-upgrade hook). Creates kgs_writer +
+# krs_reader on the external Neo4j (Enterprise — GRANT ROLE) with passwords from Secrets.
 neo4jRoleInit:
   enabled: true
-  image: "neo4j:5.23-community"
-  adminSecretName: ""   # K8s Secret containing the Neo4j admin password
+  image: "neo4j:5.23-community"   # any image carrying cypher-shell
+  adminUser: "neo4j"
+  adminSecretName: ""        # REQUIRED when enabled — Secret holding the Neo4j admin password
   adminSecretKey: "password"
+  backoffLimit: 3
 
-# Per-service overrides are added here as each service ships (R1–R6).
-services: {}
+# ──────────────────────────────────────────────────────────────────────────────────────────────
+# Gateway Ingress — the application-gateway-service is the SINGLE external surface (ORAA-4 §23).
+# Every other service is ClusterIP-internal.
+# ──────────────────────────────────────────────────────────────────────────────────────────────
+ingress:
+  enabled: true
+  gatewayService: "application-gateway-service"
+  className: ""              # e.g. "nginx" / "alb"  (operator value)
+  annotations: {}
+  hosts:
+    - host: "api.oraclous.example"   # REQUIRED — your real external host
+      paths:
+        - path: "/"
+          pathType: "Prefix"
+  tls: []                    # e.g. [{ secretName: oraclous-gateway-tls, hosts: [api.oraclous.example] }]
+
+# ──────────────────────────────────────────────────────────────────────────────────────────────
+# Shared defaults applied to every workload unless overridden per-service.
+# ──────────────────────────────────────────────────────────────────────────────────────────────
+serviceDefaults:
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "256Mi"
+    limits:
+      cpu: "1"
+      memory: "1Gi"
+  podSecurityContext:
+    runAsNonRoot: true
+    seccompProfile:
+      type: RuntimeDefault
+  containerSecurityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: false
+    capabilities:
+      drop:
+        - ALL
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+# ──────────────────────────────────────────────────────────────────────────────────────────────
+# APP SERVICES — one Deployment per entry; a ClusterIP Service when service.enabled != false.
+#
+# Per service:
+#   image            : { repository, tag (defaults to chart appVersion), pullPolicy }
+#   replicas         : Deployment replica count
+#   component        : pod label app.kubernetes.io/component
+#   service.enabled  : false for workers/beat (no Service, no probes)
+#   service.port     : ClusterIP port (default 8000)
+#   readinessPath    : readiness probe path (/readyz for the 7 services; /health for the gateway,
+#                      which has no /readyz)
+#   command          : overrides the image CMD (workers/beat)
+#   postgres         : { enabled, role ("app"=oraclous_app runtime / "owner"), urlEnv, extra[] }
+#   env.fromValues   : non-secret env literals (inter-service URLs, REDIS db, feature flags, the
+#                      *_RLS_ASSERT_RUNTIME_ROLE=true flag, RUN_MODE-gated auth modes)
+#   env.fromSecrets  : sensitive env -> secretKeyRef ONLY ({ secretName, secretKey })
+# ──────────────────────────────────────────────────────────────────────────────────────────────
+services:
+
+  # ── auth-service ──────────────────────────────────────────────────────────────────────────
+  auth-service:
+    image:
+      repository: "oraclous-auth-service"
+      tag: ""
+    replicas: 2
+    component: service
+    service:
+      enabled: true
+      port: 8000
+    readinessPath: "/readyz"
+    postgres:
+      enabled: true
+      # auth-service is special: its OWNER DATABASE_URL is the ADR-012 §1a org-context PRODUCER
+      # (pre-auth, cross-org credential-store lookups must NOT be RLS-enforced), while its IDENTITY
+      # engine connects as oraclous_app so no-bound-org login/refresh run under the RLS runtime role.
+      role: "owner"          # DATABASE_URL  -> owner (credential store producer)
+      urlEnv: "DATABASE_URL"
+      extra:
+        - env: "AUTH_IDENTITY_DATABASE_URL"
+          role: "app"        # identity engine -> oraclous_app (RLS runtime role)
+    env:
+      fromValues:
+        RLS_ASSERT_RUNTIME_ROLE: "true"
+        JWT_ALGORITHM: "HS256"
+      urls:
+        CREDENTIAL_BROKER_URL: "credential-broker-service"
+      redis:
+        REDIS_URL: 0
+      fromSecrets:
+        JWT_SECRET:           { secretName: "", secretKey: "value" }
+        INTERNAL_SERVICE_KEY: { secretName: "", secretKey: "value" }
+        # OAuth: provided => /oauth/* is live; omitted => those routes 503 (boot OK). OAUTH_ENC_KEY
+        # MUST be a real 32-byte key in prod (RUN_MODE=prod fail-closes a missing one).
+        OAUTH_ENC_KEY:             { secretName: "", secretKey: "value" }
+        OAUTH_GOOGLE_CLIENT_ID:     { secretName: "", secretKey: "value" }
+        OAUTH_GOOGLE_CLIENT_SECRET: { secretName: "", secretKey: "value" }
+        OAUTH_GITHUB_CLIENT_ID:     { secretName: "", secretKey: "value" }
+        OAUTH_GITHUB_CLIENT_SECRET: { secretName: "", secretKey: "value" }
+        OAUTH_NOTION_CLIENT_ID:     { secretName: "", secretKey: "value" }
+        OAUTH_NOTION_CLIENT_SECRET: { secretName: "", secretKey: "value" }
+
+  # ── credential-broker-service ───────────────────────────────────────────────────────────────
+  credential-broker-service:
+    image:
+      repository: "oraclous-credential-broker-service"
+      tag: ""
+    replicas: 2
+    component: service
+    service:
+      enabled: true
+      port: 8000
+    readinessPath: "/readyz"
+    postgres:
+      enabled: true
+      role: "app"            # runtime -> oraclous_app (RLS bites it)
+      urlEnv: "DATABASE_URL"
+    env:
+      fromValues:
+        RLS_ASSERT_RUNTIME_ROLE: "true"
+        # ADR-018 edge-auth in prod: trust the gateway's X-Organisation-Id gated on X-Internal-Key.
+        AUTH_MODE: "gateway"
+      urls:
+        AUTH_SERVICE_URL: "auth-service"
+      fromSecrets:
+        # AES-256-GCM data-encryption key (b64, 32 bytes). REQUIRED — never a literal default.
+        ENCRYPTION_KEY:       { secretName: "", secretKey: "value" }
+        INTERNAL_SERVICE_KEY: { secretName: "", secretKey: "value" }
+        JWT_SECRET:           { secretName: "", secretKey: "value" }
+
+  # ── capability-registry-service ─────────────────────────────────────────────────────────────
+  capability-registry-service:
+    image:
+      repository: "oraclous-capability-registry-service"
+      tag: ""
+    replicas: 2
+    component: service
+    service:
+      enabled: true
+      port: 8000
+    readinessPath: "/readyz"
+    postgres:
+      enabled: true
+      role: "app"
+      urlEnv: "DATABASE_URL"
+    env:
+      fromValues:
+        RLS_ASSERT_RUNTIME_ROLE: "true"
+        AUTH_MODE: "gateway"
+        # Fail-closed real broker (ADR-021 §1) — never the fake in prod.
+        CREDENTIAL_BROKER_MODE: "real"
+        PLATFORM_ORG_ID: "00000000-0000-0000-0000-0000000000a0"
+      urls:
+        AUTH_SERVICE_URL: "auth-service"
+        CREDENTIAL_BROKER_URL: "credential-broker-service"
+        KNOWLEDGE_RETRIEVER_URL: "knowledge-retriever-service"
+        KNOWLEDGE_GRAPH_URL: "knowledge-graph-service"
+      fromSecrets:
+        INTERNAL_SERVICE_KEY: { secretName: "", secretKey: "value" }
+        JWT_SECRET:           { secretName: "", secretKey: "value" }
+
+  # ── knowledge-graph-service (KGS web) ───────────────────────────────────────────────────────
+  knowledge-graph-service:
+    image:
+      repository: "oraclous-knowledge-graph-service"
+      tag: ""
+    replicas: 2
+    component: service
+    service:
+      enabled: true
+      port: 8000
+    readinessPath: "/readyz"
+    postgres:
+      enabled: true
+      role: "app"
+      urlEnv: "KGS_DATABASE_URL"
+    env:
+      fromValues:
+        KGS_RLS_ASSERT_RUNTIME_ROLE: "true"
+        KGS_AUTH_MODE: "gateway"
+        KGS_EMBEDDER: "openai"
+        KGS_EXTRACTOR: "openai"
+        KGS_OPENAI_BASE_URL: "https://openrouter.ai/api/v1"
+        KGS_EXTRACTOR_MODEL: "openai/gpt-4o-mini"
+        KGS_EXTRACTOR_MAX_CONCURRENCY: "10"
+        # Multi-tenant prod posture: block private/loopback/internal DB egress for SQL-ingest.
+        KGS_SQL_INGEST_ALLOW_PRIVATE_EGRESS: "false"
+      neo4j:
+        role: "kgsWriter"
+        uriEnv: "KGS_NEO4J_URI"
+        userEnv: "KGS_NEO4J_USER"
+      redis:
+        KGS_REDIS_URL: 0
+      fromSecrets:
+        KGS_INTERNAL_SERVICE_KEY: { secretName: "", secretKey: "value" }
+        KGS_JWT_SECRET:           { secretName: "", secretKey: "value" }
+        KGS_NEO4J_PASSWORD:       { secretName: "", secretKey: "password" }
+        # OpenRouter/BYOM key for semantic embeddings + LLM extraction.
+        KGS_OPENAI_API_KEY:       { secretName: "", secretKey: "value" }
+
+  # ── knowledge-graph-worker (KGS Celery worker — no Service) ─────────────────────────────────
+  knowledge-graph-worker:
+    image:
+      repository: "oraclous-knowledge-graph-service"
+      tag: ""
+    replicas: 1
+    component: worker
+    service:
+      enabled: false
+    command:
+      - celery
+      - -A
+      - oraclous_knowledge_graph_service.tasks.celery_app:celery_app
+      - worker
+      - --loglevel=info
+      - --concurrency=2
+    postgres:
+      enabled: true
+      role: "app"            # worker owns the async-ingest write path; must be oraclous_app too
+      urlEnv: "KGS_DATABASE_URL"
+    env:
+      fromValues:
+        KGS_RLS_ASSERT_RUNTIME_ROLE: "true"
+        KGS_AUTH_MODE: "gateway"
+        KGS_EMBEDDER: "openai"
+        KGS_EXTRACTOR: "openai"
+        KGS_OPENAI_BASE_URL: "https://openrouter.ai/api/v1"
+        KGS_EXTRACTOR_MODEL: "openai/gpt-4o-mini"
+        KGS_EXTRACTOR_MAX_CONCURRENCY: "10"
+        KGS_SQL_INGEST_ALLOW_PRIVATE_EGRESS: "false"
+      neo4j:
+        role: "kgsWriter"
+        uriEnv: "KGS_NEO4J_URI"
+        userEnv: "KGS_NEO4J_USER"
+      redis:
+        KGS_REDIS_URL: 0
+      fromSecrets:
+        KGS_INTERNAL_SERVICE_KEY: { secretName: "", secretKey: "value" }
+        KGS_JWT_SECRET:           { secretName: "", secretKey: "value" }
+        KGS_NEO4J_PASSWORD:       { secretName: "", secretKey: "password" }
+        KGS_OPENAI_API_KEY:       { secretName: "", secretKey: "value" }
+
+  # ── knowledge-retriever-service ─────────────────────────────────────────────────────────────
+  knowledge-retriever-service:
+    image:
+      repository: "oraclous-knowledge-retriever-service"
+      tag: ""
+    replicas: 2
+    component: service
+    service:
+      enabled: true
+      port: 8000
+    readinessPath: "/readyz"
+    postgres:
+      enabled: false         # KRS reads only Neo4j (+ optional Redis cache); no Postgres.
+    env:
+      fromValues:
+        KRS_AUTH_MODE: "gateway"
+        KRS_EMBEDDING_DIM: "512"
+        KRS_QUERY_CACHE: "true"
+        KRS_QUERY_CACHE_TTL: "300"
+        KRS_FEDERATED_MAX_GRAPHS: "20"
+      urls:
+        KRS_KNOWLEDGE_GRAPH_URL: "knowledge-graph-service"
+      neo4j:
+        role: "krsReader"
+        uriEnv: "KRS_NEO4J_URI"
+        userEnv: "KRS_NEO4J_USER"
+      redis:
+        KRS_REDIS_URL: 0
+      fromSecrets:
+        KRS_INTERNAL_SERVICE_KEY: { secretName: "", secretKey: "value" }
+        KRS_JWT_SECRET:           { secretName: "", secretKey: "value" }
+        KRS_NEO4J_PASSWORD:       { secretName: "", secretKey: "password" }
+        # RAGAS-style evaluation judge key (reuses OpenRouter). Omit => /evaluate fail-closes 422.
+        KRS_OPENAI_API_KEY:       { secretName: "", secretKey: "value" }
+
+  # ── harness-runtime-service ─────────────────────────────────────────────────────────────────
+  harness-runtime-service:
+    image:
+      repository: "oraclous-harness-runtime-service"
+      tag: ""
+    replicas: 2
+    component: service
+    service:
+      enabled: true
+      port: 8000
+    readinessPath: "/readyz"
+    postgres:
+      enabled: true
+      role: "app"
+      urlEnv: "HARNESS_DATABASE_URL"
+    env:
+      fromValues:
+        HARNESS_RLS_ASSERT_RUNTIME_ROLE: "true"
+        HARNESS_AUTH_MODE: "gateway"
+        # Fail-closed real LLM (ADR-021 §1): the BYOM key is resolved per-agent via the broker
+        # (ADR-008) — there is NO platform LLM key env here.
+        HARNESS_LLM_MODE: "live"
+        # Multi-tenant prod posture: block private/loopback LLM targets (a single-tenant deploy
+        # may set this true to reach an internal LLM).
+        HARNESS_ALLOW_PRIVATE_LLM_TARGETS: "false"
+        HARNESS_MEMORY_WRITES: "true"
+        # Operator provider->base-URL map (JSON). Leave "" to use code defaults.
+        HARNESS_LLM_BASE_URLS: ""
+        # Optional deployment governance floor (force a policy set) + OHM signature trust keys.
+        HARNESS_FORCE_POLICY_SET: ""
+        HARNESS_OHM_TRUST_KEYS: ""
+      urls:
+        HARNESS_CAPABILITY_REGISTRY_URL: "capability-registry-service"
+        HARNESS_CREDENTIAL_BROKER_URL: "credential-broker-service"
+        HARNESS_KNOWLEDGE_RETRIEVER_URL: "knowledge-retriever-service"
+        HARNESS_KNOWLEDGE_GRAPH_URL: "knowledge-graph-service"
+      fromSecrets:
+        HARNESS_INTERNAL_SERVICE_KEY: { secretName: "", secretKey: "value" }
+        HARNESS_JWT_SECRET:           { secretName: "", secretKey: "value" }
+
+  # ── execution-engine-service ────────────────────────────────────────────────────────────────
+  execution-engine-service:
+    image:
+      repository: "oraclous-execution-engine-service"
+      tag: ""
+    replicas: 2
+    component: service
+    service:
+      enabled: true
+      port: 8000
+    readinessPath: "/readyz"
+    postgres:
+      enabled: true
+      role: "app"            # org-bound request path -> oraclous_app
+      urlEnv: "ENGINE_DATABASE_URL"
+      extra:
+        - env: "ENGINE_MAINTENANCE_DATABASE_URL"
+          role: "owner"      # cross-org maintenance reads -> owner (bypass RLS)
+    env:
+      fromValues:
+        ENGINE_RLS_ASSERT_RUNTIME_ROLE: "true"
+        ENGINE_AUTH_MODE: "gateway"
+      urls:
+        ENGINE_HARNESS_RUNTIME_URL: "harness-runtime-service"
+      redis:
+        ENGINE_REDIS_URL: 1
+      fromSecrets:
+        ENGINE_INTERNAL_SERVICE_KEY: { secretName: "", secretKey: "value" }
+        ENGINE_JWT_SECRET:           { secretName: "", secretKey: "value" }
+
+  # ── execution-engine-worker (Celery worker — no Service) ────────────────────────────────────
+  execution-engine-worker:
+    image:
+      repository: "oraclous-execution-engine-service"
+      tag: ""
+    replicas: 1
+    component: worker
+    service:
+      enabled: false
+    command:
+      - celery
+      - -A
+      - oraclous_execution_engine_service.tasks.celery_app:celery_app
+      - worker
+      - --loglevel=info
+      - --concurrency=2
+    postgres:
+      enabled: true
+      role: "app"            # org-bound job execution -> oraclous_app
+      urlEnv: "ENGINE_DATABASE_URL"
+      extra:
+        - env: "ENGINE_MAINTENANCE_DATABASE_URL"
+          role: "owner"      # cross-org sweep reads -> owner
+    env:
+      fromValues:
+        ENGINE_RLS_ASSERT_RUNTIME_ROLE: "true"
+        ENGINE_AUTH_MODE: "gateway"
+      urls:
+        ENGINE_HARNESS_RUNTIME_URL: "harness-runtime-service"
+      redis:
+        ENGINE_REDIS_URL: 1
+      fromSecrets:
+        ENGINE_INTERNAL_SERVICE_KEY: { secretName: "", secretKey: "value" }
+        ENGINE_JWT_SECRET:           { secretName: "", secretKey: "value" }
+
+  # ── execution-engine-beat (Celery beat — exactly one; no Service) ───────────────────────────
+  execution-engine-beat:
+    image:
+      repository: "oraclous-execution-engine-service"
+      tag: ""
+    replicas: 1               # MUST be exactly one beat process.
+    component: beat
+    service:
+      enabled: false
+    command:
+      - celery
+      - -A
+      - oraclous_execution_engine_service.tasks.celery_app:celery_app
+      - beat
+      - --loglevel=info
+    postgres:
+      # Beat opens no org-bound DB connection; it stays on the OWNER DSN and does NOT assert the
+      # runtime role. Both engine URLs point at the owner here (mirrors compose).
+      enabled: true
+      role: "owner"
+      urlEnv: "ENGINE_DATABASE_URL"
+      extra:
+        - env: "ENGINE_MAINTENANCE_DATABASE_URL"
+          role: "owner"
+    env:
+      fromValues: {}
+      redis:
+        ENGINE_REDIS_URL: 1
+      fromSecrets: {}
+
+  # ── application-gateway-service (the external surface; also gets the Ingress) ────────────────
+  application-gateway-service:
+    image:
+      repository: "oraclous-application-gateway-service"
+      tag: ""
+    replicas: 2
+    component: gateway
+    service:
+      enabled: true
+      port: 8000
+    # The gateway has NO /readyz — its /health is a dependency-free liveness probe designed to be
+    # used for readiness too. Use /health for both probes.
+    readinessPath: "/health"
+    livenessPath: "/health"
+    postgres:
+      enabled: true
+      role: "app"            # org-bound integration-key/chat/webhook CRUD -> oraclous_app
+      urlEnv: "DATABASE_URL"
+      extra:
+        - env: "OWNER_DATABASE_URL"
+          role: "owner"      # 2 pre-auth producer reads (integration-key prefix + webhook by id)
+    env:
+      fromValues:
+        GATEWAY_RLS_ASSERT_RUNTIME_ROLE: "true"
+        # The gateway VALIDATES the token at the edge (ADR-018): jwt-mode in prod.
+        GATEWAY_AUTH_MODE: "jwt"
+        # CORS: MUST be an explicit origin allow-list in prod — NEVER "*". Leave "" here so the
+        # service FAILS CLOSED (RUN_MODE=prod) until the operator sets the real origins in
+        # values-prod.yaml. Comma-separated list of scheme://host[:port].
+        GATEWAY_CORS_ORIGINS: ""
+        EDGE_RATE_LIMIT: "600"
+        EDGE_RATE_WINDOW_SECONDS: "60"
+        MAX_REQUEST_BODY_BYTES: "10485760"
+        # Number of trusted reverse proxies in front of the gateway (the Ingress controller). Set
+        # to the real hop count so client-IP rate limiting is accurate.
+        TRUSTED_PROXY_COUNT: "1"
+      urls:
+        AUTH_SERVICE_URL: "auth-service"
+        CREDENTIAL_BROKER_URL: "credential-broker-service"
+        KNOWLEDGE_GRAPH_URL: "knowledge-graph-service"
+        KNOWLEDGE_RETRIEVER_URL: "knowledge-retriever-service"
+        CAPABILITY_REGISTRY_URL: "capability-registry-service"
+        HARNESS_RUNTIME_URL: "harness-runtime-service"
+        EXECUTION_ENGINE_URL: "execution-engine-service"
+      redis:
+        REDIS_URL: 2
+      fromSecrets:
+        JWT_SECRET:           { secretName: "", secretKey: "value" }
+        INTERNAL_SERVICE_KEY: { secretName: "", secretKey: "value" }
+
+# ──────────────────────────────────────────────────────────────────────────────────────────────
+# MIGRATE / SEED — one pre-install/pre-upgrade hook Job per entry. Every Job runs as the OWNER
+# DSN (forced in the Job template). hookWeight orders the chain (e.g. kgs-migrate before kgs-seed).
+#
+# Per migration: image, command, hookWeight, postgres (role forced to owner), env.fromSecrets.
+# ──────────────────────────────────────────────────────────────────────────────────────────────
+migrations:
+
+  auth-migrate:
+    image:
+      repository: "oraclous-auth-service"
+      tag: ""
+    hookWeight: 0
+    command: ["sh", "-c", "alembic upgrade head && python -m oraclous_auth_service.core.bootstrap_rls_role"]
+    postgres:
+      enabled: true
+      urlEnv: "DATABASE_URL"
+    env:
+      fromValues: {}
+      fromSecrets: {}
+
+  credbroker-migrate:
+    image:
+      repository: "oraclous-credential-broker-service"
+      tag: ""
+    hookWeight: 0
+    command: ["sh", "-c", "alembic upgrade head && python -m oraclous_credential_broker_service.core.bootstrap_rls_role"]
+    postgres:
+      enabled: true
+      urlEnv: "DATABASE_URL"
+    env:
+      fromValues: {}
+      fromSecrets:
+        # The migrate one-shot enables RLS + grants; it also constructs settings (ENCRYPTION_KEY +
+        # INTERNAL_SERVICE_KEY are required at import under RUN_MODE=prod).
+        ENCRYPTION_KEY:       { secretName: "", secretKey: "value" }
+        INTERNAL_SERVICE_KEY: { secretName: "", secretKey: "value" }
+
+  capreg-migrate:
+    image:
+      repository: "oraclous-capability-registry-service"
+      tag: ""
+    hookWeight: 0
+    command: ["sh", "-c", "alembic upgrade head && python -m oraclous_capability_registry_service.core.bootstrap_rls_role"]
+    postgres:
+      enabled: true
+      urlEnv: "DATABASE_URL"
+    env:
+      fromValues: {}
+      fromSecrets:
+        INTERNAL_SERVICE_KEY: { secretName: "", secretKey: "value" }
+
+  kgs-migrate:
+    image:
+      repository: "oraclous-knowledge-graph-service"
+      tag: ""
+    hookWeight: 0
+    command: ["sh", "-c", "alembic upgrade head && python -m oraclous_knowledge_graph_service.core.bootstrap_rls_role"]
+    postgres:
+      enabled: true
+      urlEnv: "KGS_DATABASE_URL"
+    env:
+      fromValues: {}
+      fromSecrets: {}
+
+  kgs-seed:
+    image:
+      repository: "oraclous-knowledge-graph-service"
+      tag: ""
+    hookWeight: 5             # after kgs-migrate
+    command: ["python", "scripts/seed_dev.py"]
+    postgres:
+      enabled: true
+      urlEnv: "KGS_DATABASE_URL"
+    env:
+      fromValues: {}
+      fromSecrets: {}
+
+  gateway-migrate:
+    image:
+      repository: "oraclous-application-gateway-service"
+      tag: ""
+    hookWeight: 0
+    command: ["sh", "-c", "alembic upgrade head && python -m oraclous_application_gateway_service.core.bootstrap_rls_role"]
+    postgres:
+      enabled: true
+      urlEnv: "DATABASE_URL"
+    env:
+      fromValues: {}
+      fromSecrets: {}
+
+  harness-migrate:
+    image:
+      repository: "oraclous-harness-runtime-service"
+      tag: ""
+    hookWeight: 0
+    command: ["sh", "-c", "alembic upgrade head && python -m oraclous_harness_runtime_service.core.bootstrap_rls_role"]
+    postgres:
+      enabled: true
+      urlEnv: "HARNESS_DATABASE_URL"
+    env:
+      fromValues: {}
+      fromSecrets: {}
+
+  engine-migrate:
+    image:
+      repository: "oraclous-execution-engine-service"
+      tag: ""
+    hookWeight: 0
+    command: ["sh", "-c", "alembic upgrade head && python -m oraclous_execution_engine_service.core.bootstrap_rls_role"]
+    postgres:
+      enabled: true
+      urlEnv: "ENGINE_DATABASE_URL"
+    env:
+      fromValues: {}
+      fromSecrets: {}

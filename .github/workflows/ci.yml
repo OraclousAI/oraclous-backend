@@ -67,6 +67,43 @@ jobs:
       - name: RLS request-binding guardrail (an RLS-engine service binds the org in src)
         run: uv run python -m tools.lint.check_rls_request_binding
 
+  # `helm-chart` validates the production Helm chart on every PR (#354). It mirrors the local
+  # gate run by devops: `helm lint` + a full `helm template` rendered with the committed
+  # values-prod.example.yaml (which references real-shaped Secret NAMES, so the chart — whose
+  # secrets are fail-closed `required` — renders cleanly). This keeps deploy/helm deployable as
+  # services + env evolve; a drift between the chart and the source-of-truth compose contract that
+  # breaks rendering reddens the build here.
+  helm-chart:
+    name: "Helm chart lint + template (#354)"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: "v3.16.3"
+      - name: helm lint
+        run: helm lint deploy/helm -f deploy/helm/values-prod.example.yaml
+      - name: helm template (render all services against the prod example values)
+        run: helm template oraclous deploy/helm -f deploy/helm/values-prod.example.yaml > /tmp/helm-rendered.yaml
+      - name: Assert the prod security contract rendered (RLS split + RUN_MODE=prod + no secret literal)
+        run: |
+          set -euo pipefail
+          # RUN_MODE=prod must appear on every workload container (one per Deployment/Job).
+          workloads=$(grep -cE '^kind: (Deployment|Job)$' /tmp/helm-rendered.yaml)
+          # neo4j-role-init is the one Job that legitimately has no RUN_MODE (cypher-shell only).
+          runmodes=$(grep -c 'name: RUN_MODE' /tmp/helm-rendered.yaml)
+          echo "workloads=$workloads RUN_MODE_envs=$runmodes (expect RUN_MODE on all but neo4j-role-init)"
+          test "$runmodes" -eq "$((workloads - 1))"
+          # The runtime app DSNs must use oraclous_app; no dev secret literal may leak.
+          grep -q 'oraclous_app:\$(APP_PG_PASSWORD)' /tmp/helm-rendered.yaml
+          for bad in dev-internal-key dev-jwt-secret 'oraclous:oraclous@' 'oraclous_app:app@' kgs-writer-pass; do
+            if grep -qF "$bad" /tmp/helm-rendered.yaml; then
+              echo "SECRET LITERAL LEAK in rendered chart: $bad" >&2; exit 1
+            fi
+          done
+          echo "Helm chart security contract OK."
+
   # `unit` runs the unit suite. It is intentionally RED during the TDD tests->impl window
   # (a `[tests]` PR lands failing tests for an unbuilt seam), so it is NOT a required gate.
   unit:
