@@ -12,7 +12,13 @@ from __future__ import annotations
 import uuid
 
 from jose import JWTError, jwt
-from oraclous_governance import Principal, PrincipalType
+from oraclous_governance import (
+    JWT_REQUIRED_OPTIONS,
+    Principal,
+    PrincipalType,
+    jwt_audience,
+    jwt_issuer,
+)
 
 from oraclous_credential_broker_service.core.config import get_settings
 
@@ -82,7 +88,14 @@ async def verify_token(token: str) -> Principal:
     if not settings.JWT_SECRET:
         raise AuthError("AUTH_MODE=jwt requires JWT_SECRET")
     try:
-        claims = jwt.decode(token, settings.JWT_SECRET, algorithms=[settings.JWT_ALGORITHM])
+        claims = jwt.decode(
+            token,
+            settings.JWT_SECRET,
+            algorithms=[settings.JWT_ALGORITHM],
+            audience=jwt_audience(),
+            issuer=jwt_issuer(),
+            options=JWT_REQUIRED_OPTIONS,
+        )
     except JWTError as exc:
         raise AuthError("invalid or expired token") from exc
     return _principal_from_claims(claims)

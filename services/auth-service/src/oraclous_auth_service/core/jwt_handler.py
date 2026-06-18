@@ -23,6 +23,11 @@ import uuid
 from datetime import UTC, datetime, timedelta
 
 from jose import jwt
+from oraclous_governance import (
+    JWT_REQUIRED_OPTIONS,
+    jwt_audience,
+    jwt_issuer,
+)
 
 from oraclous_auth_service.core.config import get_settings
 
@@ -50,6 +55,11 @@ def _encode(
         "principal_type": principal_type,
         "type": kind,
         "organisation_id": organisation_id,
+        # iss/aud stamped on every token type (#356): the platform issuer identity + the audience
+        # every platform verifier requires. Sourced from the shared contract so issuer and verifiers
+        # never drift.
+        "iss": jwt_issuer(),
+        "aud": jwt_audience(),
         "iat": issued_at,
         "exp": issued_at + timedelta(seconds=ttl_seconds),
         "jti": token_jti,
@@ -149,8 +159,19 @@ def create_service_account_token(
 def decode_token(token: str) -> dict:
     """Decode and verify a JWT issued by this service.
 
-    Raises ``jose.JWTError`` (or a subclass) on any signature / expiry / format
+    REQUIRES the shared ``iss``/``aud`` (and ``exp``) claims (#356): a token missing them, or
+    carrying a wrong ``aud``/``iss``, is rejected here too (the auth-service decodes its own tokens,
+    e.g. on refresh — it must hold to the same contract every other verifier enforces).
+
+    Raises ``jose.JWTError`` (or a subclass) on any signature / expiry / format / iss / aud / claim
     failure. Callers translate that into the appropriate HTTP response.
     """
     settings = get_settings()
-    return jwt.decode(token, settings.jwt_secret, algorithms=[settings.jwt_algorithm])
+    return jwt.decode(
+        token,
+        settings.jwt_secret,
+        algorithms=[settings.jwt_algorithm],
+        audience=jwt_audience(),
+        issuer=jwt_issuer(),
+        options=JWT_REQUIRED_OPTIONS,
+    )

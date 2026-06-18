@@ -10,6 +10,7 @@ from __future__ import annotations
 import pytest
 from httpx import AsyncClient
 from jose import jwt
+from oraclous_governance import jwt_audience, jwt_issuer
 
 pytestmark = pytest.mark.integration
 
@@ -17,7 +18,10 @@ _SECRET = "integration-test-secret"  # noqa: S105 — matches the conftest fixtu
 
 
 def _org_claim(access_token: str) -> str:
-    return jwt.decode(access_token, _SECRET, algorithms=["HS256"])["organisation_id"]
+    # iss/aud are stamped on every token (#356); pass them so the decode succeeds.
+    return jwt.decode(
+        access_token, _SECRET, algorithms=["HS256"], audience=jwt_audience(), issuer=jwt_issuer()
+    )["organisation_id"]
 
 
 async def _register(client: AsyncClient, email: str) -> dict:

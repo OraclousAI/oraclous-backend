@@ -17,6 +17,7 @@ from oraclous_auth_service.app.factory import create_app
 from oraclous_auth_service.models import Base
 from oraclous_auth_service.repositories.agent_repository import AgentRepository
 from oraclous_auth_service.repositories.postgres_credential_store import PostgresCredentialStore
+from oraclous_governance import jwt_audience, jwt_issuer
 from sqlalchemy.ext.asyncio import create_async_engine
 
 pytestmark = pytest.mark.integration
@@ -45,7 +46,10 @@ async def sa_client(
 
 
 def _claims(token: str) -> dict:
-    return jwt.decode(token, _SECRET, algorithms=["HS256"])
+    # iss/aud are stamped on every token (#356); pass them so the decode succeeds.
+    return jwt.decode(
+        token, _SECRET, algorithms=["HS256"], audience=jwt_audience(), issuer=jwt_issuer()
+    )
 
 
 async def test_service_account_token_lifecycle(sa_client: AsyncClient) -> None:

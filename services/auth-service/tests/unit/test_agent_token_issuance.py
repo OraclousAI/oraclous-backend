@@ -31,11 +31,20 @@ import time
 
 import pytest
 from jose import jwt
+from oraclous_governance import jwt_audience, jwt_issuer
 
 pytestmark = pytest.mark.unit
 
 _AGENT_ID = "agent-1111-aaaa"
 _ORG_ID = "org-2222-bbbb"
+
+
+def _decode(token: str, secret: str, algorithm: str) -> dict:
+    # iss/aud are stamped on every token (#356); pass them so the decode succeeds (a token carrying
+    # aud cannot be decoded without audience= under python-jose).
+    return jwt.decode(
+        token, secret, algorithms=[algorithm], audience=jwt_audience(), issuer=jwt_issuer()
+    )
 
 
 def _read_token_settings() -> tuple[str, str]:
@@ -70,7 +79,7 @@ def test_agent_token_carries_principal_type_agent_and_org_id() -> None:
     from oraclous_auth_service.core.jwt_handler import create_agent_token
 
     token, _ = create_agent_token(agent_id=_AGENT_ID, organisation_id=_ORG_ID)
-    claims = jwt.decode(token, secret, algorithms=[algorithm])
+    claims = _decode(token, secret, algorithm)
 
     assert claims["sub"] == _AGENT_ID
     assert claims["principal_type"] == "agent"
@@ -87,7 +96,7 @@ def test_agent_token_is_short_lived_capped_at_fifteen_minutes() -> None:
     from oraclous_auth_service.core.jwt_handler import create_agent_token
 
     token, _ = create_agent_token(agent_id=_AGENT_ID, organisation_id=_ORG_ID)
-    claims = jwt.decode(token, secret, algorithms=[algorithm])
+    claims = _decode(token, secret, algorithm)
 
     assert "iat" in claims and "exp" in claims
     lifetime_seconds = int(claims["exp"]) - int(claims["iat"])
@@ -101,7 +110,7 @@ def test_agent_token_expires_in_matches_exp_claim() -> None:
 
     before = int(time.time())
     token, expires_in = create_agent_token(agent_id=_AGENT_ID, organisation_id=_ORG_ID)
-    claims = jwt.decode(token, secret, algorithms=[algorithm])
+    claims = _decode(token, secret, algorithm)
 
     # exp is in seconds-since-epoch; expires_in is a duration in seconds.
     # Allow a 2-second jitter for clock granularity at the boundary.
@@ -116,8 +125,8 @@ def test_agent_token_jti_is_unique_per_issuance() -> None:
     t1, _ = create_agent_token(agent_id=_AGENT_ID, organisation_id=_ORG_ID)
     t2, _ = create_agent_token(agent_id=_AGENT_ID, organisation_id=_ORG_ID)
 
-    c1 = jwt.decode(t1, secret, algorithms=[algorithm])
-    c2 = jwt.decode(t2, secret, algorithms=[algorithm])
+    c1 = _decode(t1, secret, algorithm)
+    c2 = _decode(t2, secret, algorithm)
 
     assert "jti" in c1 and "jti" in c2
     assert c1["jti"] != c2["jti"]

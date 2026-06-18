@@ -37,6 +37,7 @@ from dataclasses import dataclass, field
 import pytest
 from fastapi.testclient import TestClient
 from jose import jwt
+from oraclous_governance import jwt_audience, jwt_issuer
 
 pytestmark = pytest.mark.unit
 
@@ -166,7 +167,14 @@ def test_agent_token_exchanges_credential_for_jwt(
     assert body["principal_type"] == "agent"
     assert int(body["expires_in"]) > 0
 
-    claims = jwt.decode(body["access_token"], secret, algorithms=[algorithm])
+    # iss/aud are stamped on every token (#356); pass them so the decode succeeds.
+    claims = jwt.decode(
+        body["access_token"],
+        secret,
+        algorithms=[algorithm],
+        audience=jwt_audience(),
+        issuer=jwt_issuer(),
+    )
     assert claims["sub"] == agent_id
     assert claims["principal_type"] == "agent"
     assert claims["organisation_id"] == _ORG
