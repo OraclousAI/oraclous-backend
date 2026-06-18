@@ -13,7 +13,13 @@ from __future__ import annotations
 import uuid
 
 from jose import JWTError, jwt
-from oraclous_governance import Principal, PrincipalType
+from oraclous_governance import (
+    JWT_REQUIRED_OPTIONS,
+    Principal,
+    PrincipalType,
+    jwt_audience,
+    jwt_issuer,
+)
 
 from oraclous_execution_engine_service.core.config import Settings, get_settings
 
@@ -95,7 +101,14 @@ async def verify_token(token: str) -> Principal:
     if not settings.jwt_secret:
         raise AuthError("ENGINE_AUTH_MODE=jwt requires ENGINE_JWT_SECRET")
     try:
-        claims = jwt.decode(token, settings.jwt_secret, algorithms=[settings.jwt_algorithm])
+        claims = jwt.decode(
+            token,
+            settings.jwt_secret,
+            algorithms=[settings.jwt_algorithm],
+            audience=jwt_audience(),
+            issuer=jwt_issuer(),
+            options=JWT_REQUIRED_OPTIONS,
+        )
     except JWTError as exc:
         raise AuthError("invalid or expired token") from exc
     return _principal_from_claims(claims)

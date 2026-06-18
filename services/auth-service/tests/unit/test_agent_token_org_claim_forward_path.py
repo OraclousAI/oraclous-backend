@@ -29,6 +29,7 @@ import uuid
 
 import pytest
 from jose import jwt
+from oraclous_governance import jwt_audience, jwt_issuer
 from oraclous_governance.context import (
     OrganisationContext,
     Principal,
@@ -69,7 +70,10 @@ async def test_agent_token_org_claim_feeds_governance_resolver_without_membershi
     organisation_uuid = uuid.uuid4()
 
     token, _ = create_agent_token(agent_id=str(agent_uuid), organisation_id=str(organisation_uuid))
-    claims = jwt.decode(token, secret, algorithms=[algorithm])
+    # iss/aud are stamped on every token (#356); pass them so the decode succeeds.
+    claims = jwt.decode(
+        token, secret, algorithms=[algorithm], audience=jwt_audience(), issuer=jwt_issuer()
+    )
 
     # Build a Principal exactly the way the gateway will: from the JWT claims.
     principal = Principal(

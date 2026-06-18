@@ -19,6 +19,7 @@ from oraclous_auth_service.domain.passwords import (
     validate_password_strength,
     verify_password,
 )
+from oraclous_governance import jwt_audience, jwt_issuer
 
 pytestmark = pytest.mark.unit
 
@@ -34,7 +35,11 @@ def _secret_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def _decode(token: str) -> dict:
-    return jwt.decode(token, _SECRET, algorithms=["HS256"])
+    # iss/aud are now stamped on every token (#356); pass them so the decode succeeds (a token
+    # carrying aud cannot be decoded without audience= under python-jose).
+    return jwt.decode(
+        token, _SECRET, algorithms=["HS256"], audience=jwt_audience(), issuer=jwt_issuer()
+    )
 
 
 # --- JWT/Principal Contract ---------------------------------------------------
