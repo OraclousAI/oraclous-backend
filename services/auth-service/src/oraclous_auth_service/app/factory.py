@@ -28,7 +28,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError
-from oraclous_telemetry import evaluate_readiness, install_telemetry
+from oraclous_telemetry import evaluate_readiness, install_telemetry, instrument_app
 from pydantic import BaseModel
 
 from oraclous_auth_service.core.jwt_handler import (
@@ -326,6 +326,7 @@ def create_app(
     """
     app = FastAPI(title="oraclous-auth-service", version="0.0.1", lifespan=lifespan)
     install_telemetry(app)  # WP-6: JSON structured logging + correlation-id middleware
+    instrument_app(app, with_neo4j=False)  # #366: OTel tracing (no-op unless OTEL endpoint set)
     app.state.agent_repository = agent_repository
     app.state.internal_service_key = internal_service_key
     # Production wires app.state.redis / app.state.sessionmaker at startup; tests leave them unset

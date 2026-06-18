@@ -8,6 +8,29 @@ dependencies = [
     # transitive dependency of every service via FastAPI; declaring it here keeps the shared
     # middleware self-contained.
     "starlette>=0.37",
+    # OpenTelemetry tracing (#366 part 2). ALL OTel deps live HERE, in the shared telemetry package,
+    # so they reach every service TRANSITIVELY (every service already declares oraclous-telemetry) —
+    # NOT per-service. This is deliberate: it is exactly what avoids the #375 missing-dep-in-image
+    # class (a service importing a dep its own image never installs). The tracing seam is a no-op
+    # unless OTEL_EXPORTER_OTLP_ENDPOINT / OTEL_ENABLED is set (oraclous_telemetry.tracing), so these
+    # wheels add weight but zero behaviour to a dev/test install.
+    #   * sdk/api — the TracerProvider + Resource + BatchSpanProcessor (api comes in transitively).
+    "opentelemetry-sdk>=1.27,<2.0",
+    #   * OTLP gRPC exporter — emits spans to the Jaeger all-in-one at jaeger:4317.
+    "opentelemetry-exporter-otlp-proto-grpc>=1.27,<2.0",
+    #   * instrumentors (a separate 0.x version line from the sdk/api 1.x line):
+    "opentelemetry-instrumentation-fastapi>=0.48b0,<1.0",
+    "opentelemetry-instrumentation-httpx>=0.48b0,<1.0",
+    "opentelemetry-instrumentation-asyncpg>=0.48b0,<1.0",
+    #   * celery — the worker-side span-per-task + traceparent propagation (KGS/engine workers).
+    "opentelemetry-instrumentation-celery>=0.48b0,<1.0",
+    # NOTE — neo4j: the OpenTelemetry contrib project ships NO `opentelemetry-instrumentation-neo4j`
+    # (verified absent from the registry), so there is no neo4j-driver instrumentor to install. KGS/
+    # KRS neo4j (bolt) calls are NOT captured as their own client span; they still run *inside* the
+    # FastAPI server span (the trace/context is bound for the request), so a neo4j-touching request
+    # is still one trace — only the per-bolt-query span is absent. `instrument_app`/`instrument_worker`
+    # attempt a Neo4jInstrumentor opportunistically (best-effort, debug-logged on absence) so the day
+    # such a package exists, declaring it here is the only change needed.
 ]
 
 [build-system]

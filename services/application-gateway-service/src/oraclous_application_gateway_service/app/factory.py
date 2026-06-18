@@ -16,7 +16,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from oraclous_errors import ErrorCode, FieldError, status_to_code
-from oraclous_telemetry import configure_structured_logging
+from oraclous_telemetry import configure_structured_logging, instrument_app
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from oraclous_application_gateway_service.core.agent_cors_middleware import AgentCorsMiddleware
@@ -105,6 +105,11 @@ def create_app(*, lifespan=None) -> FastAPI:
     app.add_middleware(AgentCorsMiddleware)
     # Outermost: mint the req_ id + set X-Request-Id on every response (success and error).
     app.add_middleware(RequestIdMiddleware)
+    # #366: OTel tracing — the inbound server span + the httpx-instrumented proxy hops to upstreams,
+    # so a gateway→upstream request is ONE trace in Jaeger. No-op unless OTEL_EXPORTER_OTLP_ENDPOINT
+    # is set (the gate); the gateway's own RequestIdMiddleware already binds the WP-6 id the
+    # correlation span-processor stamps onto every span.
+    instrument_app(app, with_neo4j=False)
 
     @app.exception_handler(RouteNotFoundError)
     async def _on_route_not_found(request: Request, exc: RouteNotFoundError) -> JSONResponse:

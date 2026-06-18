@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from fastapi import FastAPI, Request, status
 from fastapi.responses import JSONResponse
-from oraclous_telemetry import evaluate_readiness, install_telemetry
+from oraclous_telemetry import evaluate_readiness, install_telemetry, instrument_app
 
 from oraclous_capability_registry_service.core.config import get_settings
 from oraclous_capability_registry_service.domain.errors import (
@@ -39,6 +39,7 @@ def create_app(*, lifespan=None) -> FastAPI:
     settings = get_settings()
     app = FastAPI(title=settings.APP_NAME, version=settings.VERSION, lifespan=lifespan)
     install_telemetry(app)  # WP-6: JSON structured logging + correlation-id middleware
+    instrument_app(app, with_neo4j=False)  # #366: OTel tracing (no-op unless OTEL endpoint set)
     app.include_router(capability_router)
     app.include_router(tool_router)
     app.include_router(instance_router)

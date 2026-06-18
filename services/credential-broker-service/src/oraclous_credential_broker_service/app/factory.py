@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from fastapi import FastAPI, Request, status
 from fastapi.responses import JSONResponse
-from oraclous_telemetry import evaluate_readiness, install_telemetry
+from oraclous_telemetry import evaluate_readiness, install_telemetry, instrument_app
 
 from oraclous_credential_broker_service.routes.credential_routes import router as credential_router
 from oraclous_credential_broker_service.routes.internal_routes import router as internal_router
@@ -14,6 +14,7 @@ from oraclous_credential_broker_service.services.credential_service import Crede
 def create_app(*, lifespan=None) -> FastAPI:
     app = FastAPI(title="oraclous-credential-broker-service", version="0.0.1", lifespan=lifespan)
     install_telemetry(app)  # WP-6: JSON structured logging + correlation-id middleware
+    instrument_app(app, with_neo4j=False)  # #366: OTel tracing (no-op unless OTEL endpoint set)
     app.include_router(credential_router)
     app.include_router(internal_router)
 
