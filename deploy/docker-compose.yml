@@ -27,6 +27,14 @@ name: oraclous-backend
 # feature (GRANT ROLE), and this dev stack runs Neo4j Community. Org isolation here is property-based
 # (organisation_id stamps + scoped reads), not Neo4j RBAC, so the default user is safe for dev; prod
 # (Helm/Enterprise) uses kgs_writer. The service's own config default is still kgs_writer.
+# #366 part 2 — OpenTelemetry tracing endpoint. Merged into EVERY service + worker + beat env block
+# below so each emits OTLP spans to the Jaeger all-in-one (gRPC, 4317). This is THE gate: the shared
+# oraclous_telemetry tracing seam is a no-op unless OTEL_EXPORTER_OTLP_ENDPOINT is set, so dev/test/
+# standalone runs (which don't set it) are behaviour-neutral; setting it here turns tracing on for the
+# deployed stack. Override/disable per env via deploy/.env (set it empty to fall back to no-op).
+x-otel-env: &otel-env
+  OTEL_EXPORTER_OTLP_ENDPOINT: "${OTEL_EXPORTER_OTLP_ENDPOINT:-http://jaeger:4317}"
+
 x-kgs-env: &kgs-env
   # Auth: dev-mode (Bearer dev-token) by default for the standalone smoke. The full stack runs
   # KGS_AUTH_MODE=gateway (ADR-018 edge-auth): trust the gateway's X-Principal-*/X-Organisation-Id,
@@ -201,6 +209,7 @@ services:
     expose:
       - "8000"
     environment:
+      <<: *otel-env  # #366: OTLP endpoint (gated tracing → jaeger:4317)
       # ADR-030 §3: the RUNTIME connects as the NOSUPERUSER/NOBYPASSRLS oraclous_app role so the
       # FORCE'd RLS policy bites it (a superuser owner would bypass it). Only the migrate one-shot
       # above keeps the owner DSN. The oraclous_app role + DML GRANTs are provisioned by the postgres
@@ -295,7 +304,7 @@ services:
     expose:
       - "8000"
     environment:
-      <<: *kgs-env
+      <<: [*kgs-env, *otel-env]  # #366: + OTLP endpoint (gated tracing → jaeger:4317)
       # ADR-030 §3: the RUNTIME connects as the NOSUPERUSER/NOBYPASSRLS oraclous_app role so the
       # FORCE'd RLS policy bites it (the owner `oraclous` would bypass it). Overrides the owner DSN
       # the shared *kgs-env anchor sets — migrations + the dev-org seed keep the owner DSN. The
@@ -337,7 +346,7 @@ services:
       - --loglevel=info
       - --concurrency=2
     environment:
-      <<: *kgs-env
+      <<: [*kgs-env, *otel-env]  # #366: + OTLP endpoint (gated tracing → jaeger:4317)
       # ADR-030 §3: the WORKER must also connect as the NOSUPERUSER oraclous_app role — it owns the
       # async-ingest write path (job updates) on the FORCE'd RLS tables, binding the task org via
       # use_organisation_context before any query (tasks/ingest_tasks.py). A worker left on the owner
@@ -368,6 +377,7 @@ services:
     expose:
       - "8000"
     environment:
+      <<: *otel-env  # #366: OTLP endpoint (gated tracing → jaeger:4317)
       # Auth: dev by default for the standalone smoke. Full stack runs KRS_AUTH_MODE=gateway
       # (ADR-018): trust the gateway's X-Principal-*/X-Organisation-Id, gated on the shared X-Internal-Key.
       KRS_AUTH_MODE: "${KRS_AUTH_MODE:-dev}"
@@ -441,6 +451,7 @@ services:
     expose:
       - "8000"
     environment:
+      <<: *otel-env  # #366: OTLP endpoint (gated tracing → jaeger:4317)
       # ADR-030 §3: the OWNER DSN. The credential store (agents/agent_credentials) connects on this
       # — it is the ADR-012 §1a org-context PRODUCER (its validate-by-prefix / org-resolve are pre-
       # auth GLOBAL lookups that must resolve across orgs), so it must NOT be RLS-enforced on its
@@ -525,6 +536,7 @@ services:
     expose:
       - "8000"
     environment:
+      <<: *otel-env  # #366: OTLP endpoint (gated tracing → jaeger:4317)
       # ADR-030 §3: the RUNTIME connects as the NOSUPERUSER/NOBYPASSRLS oraclous_app role so the
       # FORCE'd RLS policy bites it (the owner `oraclous` would bypass it). Migrations + the operator
       # backfill keep using the owner DSN. The oraclous_app role + DML GRANTs are provisioned by the
@@ -570,6 +582,7 @@ services:
     ports:
       - "8006:8000"
     environment:
+      <<: *otel-env  # #366: OTLP endpoint (gated tracing → jaeger:4317)
       # upstream base URLs (the route table maps path-prefixes onto these over the substrate net)
       AUTH_SERVICE_URL: "http://auth-service:8000"
       CREDENTIAL_BROKER_URL: "http://credential-broker-service:8000"
@@ -679,6 +692,7 @@ services:
     expose:
       - "8000"
     environment:
+      <<: *otel-env  # #366: OTLP endpoint (gated tracing → jaeger:4317)
       # ADR-030 §3: the RUNTIME connects as the NOSUPERUSER/NOBYPASSRLS oraclous_app role so the
       # FORCE'd RLS policy bites it (a superuser owner would bypass it). Only the harness-migrate
       # one-shot above keeps the owner DSN. The oraclous_app role + DML GRANTs are provisioned by the
@@ -769,6 +783,7 @@ services:
     expose:
       - "8000"
     environment:
+      <<: *otel-env  # #366: OTLP endpoint (gated tracing → jaeger:4317)
       # ADR-030 §3: the ORG-BOUND request path connects as the NOSUPERUSER/NOBYPASSRLS oraclous_app
       # role so the FORCE'd RLS policy bites it (the owner `oraclous` would bypass it). The
       # oraclous_app role + DML GRANTs are provisioned by the postgres init script (fresh volume)
@@ -812,6 +827,7 @@ services:
     command: ["celery", "-A", "oraclous_execution_engine_service.tasks.celery_app:celery_app",
               "worker", "--loglevel=info", "--concurrency=2"]
     environment:
+      <<: *otel-env  # #366: OTLP endpoint (gated tracing → jaeger:4317)
       # ADR-030 §3: the WORKER runs BOTH the org-bound job/round-table execution (binds the task org
       # via use_organisation_context) AND the cross-org sweeps (the reaper + Beat fire here). Its
       # ORG-BOUND engine connects as the NOSUPERUSER oraclous_app role so RLS bites those writes; a
@@ -848,6 +864,7 @@ services:
     command: ["celery", "-A", "oraclous_execution_engine_service.tasks.celery_app:celery_app",
               "beat", "--loglevel=info"]
     environment:
+      <<: *otel-env  # #366: OTLP endpoint (gated tracing → jaeger:4317)
       # Beat only DISPATCHES the reap/fire task messages to the broker — the WORKER executes them
       # (and owns both engines there). Beat itself opens no DB connection, so it stays on the owner
       # DSN and does NOT set ENGINE_RLS_ASSERT_RUNTIME_ROLE (it never opens an org-bound engine, and

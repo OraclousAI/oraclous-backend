@@ -40,11 +40,26 @@ from oraclous_telemetry.readiness import (
     evaluate_readiness,
     exit_on_degrade_enabled,
 )
+from oraclous_telemetry.tracing import (
+    configure_tracing,
+    instrument_app,
+    instrument_worker,
+    reset_tracing,
+    tracing_enabled,
+)
 from oraclous_telemetry.wiring import install_telemetry
+from oraclous_telemetry.worker_correlation import (
+    REQUEST_ID_HEADER_KEY,
+    attach_request_id,
+    bind_request_id_from_headers,
+    clear_request_id,
+    request_id_from_headers,
+)
 
 __all__ = [
     "EXIT_ON_DEGRADE_ENV",
     "REQUEST_ID_HEADER",
+    "REQUEST_ID_HEADER_KEY",
     "STATUS_DEGRADED",
     "STATUS_OK",
     "CorrelationFilter",
@@ -55,18 +70,27 @@ __all__ = [
     "Severity",
     "Sink",
     "alert",
+    "attach_request_id",
     "bind_organisation_id",
     "bind_request_id",
+    "bind_request_id_from_headers",
+    "clear_request_id",
     "configure_structured_logging",
+    "configure_tracing",
     "evaluate_readiness",
     "exit_on_degrade_enabled",
     "get_organisation_id",
     "get_request_id",
     "install_telemetry",
+    "instrument_app",
+    "instrument_worker",
     "new_request_id",
     "register_sink",
+    "request_id_from_headers",
     "reset_organisation_id",
     "reset_request_id",
     "reset_sinks",
+    "reset_tracing",
     "structured_logging_dictconfig",
+    "tracing_enabled",
 ]

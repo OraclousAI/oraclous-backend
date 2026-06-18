@@ -7,7 +7,7 @@ This module only composes them.
 from __future__ import annotations
 
 from fastapi import FastAPI
-from oraclous_telemetry import install_telemetry
+from oraclous_telemetry import install_telemetry, instrument_app
 
 from oraclous_knowledge_graph_service.core.lifespan import lifespan
 from oraclous_knowledge_graph_service.routes import (
@@ -30,6 +30,7 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
     install_telemetry(app)  # WP-6: JSON structured logging + correlation-id middleware
+    instrument_app(app)  # #366: OTel tracing (no-op unless OTEL endpoint set); neo4j-using service
     app.include_router(health_routes.router)
     app.include_router(graph_routes.router)
     app.include_router(resolution_routes.router)
