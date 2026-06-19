@@ -11,12 +11,14 @@ from __future__ import annotations
 
 import re
 import uuid
+from pathlib import Path
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from oraclous_ohm.errors import OHMImportError
 from oraclous_ohm.import_.parse import AgentDefinition
+from oraclous_ohm.import_.skills import ResolvedSkill, inline_skills, try_resolve_skill
 from oraclous_ohm.manifest import (
     OHMCapability,
     OHMManifest,
@@ -79,9 +81,16 @@ def _dedup_preserving(items: list[str]) -> tuple[list[str], bool]:
 
 
 def map_agent_to_member(
-    agent: AgentDefinition, *, owner_organization_id: uuid.UUID
+    agent: AgentDefinition,
+    *,
+    owner_organization_id: uuid.UUID,
+    skills_root: str | Path | None = None,
 ) -> AgentMapping:
-    """Map a parsed agent to an ``OHMMember`` + generated sub-harness (ADR-034 §2)."""
+    """Map a parsed agent to an ``OHMMember`` + generated sub-harness (ADR-034 §2).
+
+    When ``skills_root`` is given, the agent's ``skills`` are resolved there (#406): leaf skills are
+    inlined into the sub-harness prompt; orchestrator/missing skills are flagged, not inlined.
+    """
     role = slugify(agent.name)
     if not role:
         raise OHMImportError(f"{agent.source}: agent name {agent.name!r} slugifies to empty")
@@ -118,8 +127,12 @@ def map_agent_to_member(
             "confirm",
             "possible human-gate marker in body; kind:human detection is #408",
         )
-    if agent.skills:
-        flag("F-SKILLS-DEFERRED", "info", f"{len(agent.skills)} skill(s) not yet resolved (#407)")
+    if agent.skills and skills_root is None:
+        flag(
+            "F-SKILLS-DEFERRED",
+            "info",
+            f"{len(agent.skills)} skill(s) unresolved; pass skills_root",
+        )
 
     if not tools:
         flag(
@@ -153,8 +166,35 @@ def map_agent_to_member(
                 f"model {agent.model!r} not a known tier; verbatim",
             )
 
+    # resolve + inline leaf skills (#406); orchestrator/missing skills are flagged, never inlined
+    leaves: list[ResolvedSkill] = []
+    if skills_root is not None:
+        for skill in agent.skills:
+            try:
+                resolved = try_resolve_skill(skill, skills_root)
+            except OHMImportError as exc:
+                flag("F-SKILL-MISSING", "blocking", f"skill {skill!r} malformed: {exc}")
+                continue
+            if resolved is None:
+                flag("F-SKILL-MISSING", "blocking", f"skill {skill!r} not found under skills_root")
+            elif resolved.kind == "orchestrator":
+                sig = ", ".join(resolved.orchestrator_signals)
+                flag(
+                    "F-SKILL-ORCHESTRATOR", "confirm", f"skill {skill!r} orchestrator ({sig}); #407"
+                )
+            else:
+                leaves.append(resolved)
+                flag(
+                    "F-SKILL-RESOLVED",
+                    "info",
+                    f"skill {skill!r} (leaf) inlined from {resolved.source}",
+                )
+
+    effective_body = inline_skills(agent.body, leaves)
     prompts = (
-        [OHMPrompt(role="primary", source="inline", body=agent.body)] if agent.body.strip() else []
+        [OHMPrompt(role="primary", source="inline", body=effective_body)]
+        if effective_body.strip()
+        else []
     )
     if not prompts:
         flag("F-NOPROMPT", "confirm", "agent has no body; sub-harness has no system prompt")
