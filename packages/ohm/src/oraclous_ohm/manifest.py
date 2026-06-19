@@ -113,6 +113,7 @@ class OHMMember(BaseModel):
     inputs: list[str] = Field(default_factory=list)
     outputs_schema: dict[str, Any] = Field(default_factory=dict)  # typed output contract
     human_role: str | None = None  # REQUIRED for kind: human
+    schedule: str | None = None  # cron expr for a scheduled standing-team member (ADR-034 §6)
 
     @model_validator(mode="after")
     def _human_requires_role(self) -> OHMMember:
