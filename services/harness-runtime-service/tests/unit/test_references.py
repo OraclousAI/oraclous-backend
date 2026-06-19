@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import pytest
-from oraclous_harness_runtime_service.domain.ohm.errors import OHMReferenceError
-from oraclous_harness_runtime_service.domain.ohm.parse import load_ohm
-from oraclous_harness_runtime_service.domain.ohm.references import resolve_capabilities
+from oraclous_ohm.errors import OHMReferenceError
+from oraclous_ohm.parse import load_ohm
+from oraclous_ohm.references import resolve_capabilities
 
 pytestmark = pytest.mark.unit
 

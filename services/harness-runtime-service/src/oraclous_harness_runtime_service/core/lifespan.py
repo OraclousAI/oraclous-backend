@@ -11,6 +11,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from oraclous_ohm.signatures import TrustStore
 from oraclous_substrate import ProvenanceCollector
 from oraclous_telemetry import Severity, alert, evaluate_readiness, exit_on_degrade_enabled
 
@@ -19,7 +20,6 @@ from oraclous_harness_runtime_service.core.rls import (
     RlsBypassingRoleError,
     assert_runtime_role_isolates,
 )
-from oraclous_harness_runtime_service.domain.ohm.signatures import TrustStore
 from oraclous_harness_runtime_service.repositories.assignment_repository import AssignmentRepository
 from oraclous_harness_runtime_service.repositories.checkpoint_repository import CheckpointRepository
 from oraclous_harness_runtime_service.repositories.execution_repository import ExecutionRepository

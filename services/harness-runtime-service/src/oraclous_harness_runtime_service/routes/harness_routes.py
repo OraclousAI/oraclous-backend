@@ -12,6 +12,7 @@ from datetime import datetime
 
 from fastapi import APIRouter, HTTPException, status
 from oraclous_governance import Principal
+from oraclous_ohm.errors import OHMError
 
 from oraclous_harness_runtime_service.core.dependencies import (
     AssignmentRepositoryDep,
@@ -21,7 +22,6 @@ from oraclous_harness_runtime_service.core.dependencies import (
     PrincipalDep,
     SpendServiceDep,
 )
-from oraclous_harness_runtime_service.domain.ohm.errors import OHMError
 from oraclous_harness_runtime_service.schema.harness_schemas import (
     AssignmentListResponse,
     AssignmentOut,

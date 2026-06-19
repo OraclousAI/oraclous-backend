@@ -25,8 +25,8 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec, ed25519, padding, rsa
 from cryptography.hazmat.primitives.asymmetric.types import PrivateKeyTypes, PublicKeyTypes
 
-from oraclous_harness_runtime_service.domain.ohm.canonical import canonical_bytes
-from oraclous_harness_runtime_service.domain.ohm.errors import OHMSignatureError
+from oraclous_ohm.canonical import canonical_bytes
+from oraclous_ohm.errors import OHMSignatureError
 
 _SUPPORTED = {"EdDSA", "ES256", "RS256"}
 

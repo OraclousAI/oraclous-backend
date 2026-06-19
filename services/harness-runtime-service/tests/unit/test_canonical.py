@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import pytest
-from oraclous_harness_runtime_service.domain.ohm.canonical import canonical_bytes, content_hash
+from oraclous_ohm.canonical import canonical_bytes, content_hash
 
 pytestmark = pytest.mark.unit
 

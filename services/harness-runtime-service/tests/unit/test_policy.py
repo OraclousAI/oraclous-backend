@@ -3,14 +3,14 @@
 from __future__ import annotations
 
 import pytest
-from oraclous_harness_runtime_service.domain.ohm.errors import OHMGovernanceError
-from oraclous_harness_runtime_service.domain.ohm.parse import load_ohm
 from oraclous_harness_runtime_service.domain.policy import (
     DEFAULT_POLICY_SET_REF,
     build_envelope,
     enforce_load_policy,
     resolve_policy_set,
 )
+from oraclous_ohm.errors import OHMGovernanceError
+from oraclous_ohm.parse import load_ohm
 
 pytestmark = pytest.mark.unit
 

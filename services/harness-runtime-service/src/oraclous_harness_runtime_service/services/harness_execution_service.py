@@ -20,6 +20,11 @@ from typing import Any
 
 import yaml
 from oraclous_governance import Principal
+from oraclous_ohm.canonical import content_hash
+from oraclous_ohm.errors import OHMParseError, OHMReferenceError
+from oraclous_ohm.parse import load_ohm
+from oraclous_ohm.references import resolve_capabilities
+from oraclous_ohm.signatures import TrustStore, verify_signatures
 from oraclous_substrate import ProvenanceCollector, ProvenanceRecord
 
 from oraclous_harness_runtime_service.domain.llm.base import LLMClient, ToolSpec
@@ -38,11 +43,6 @@ from oraclous_harness_runtime_service.domain.loop.tool_use import (
     LoopStep,
     run_tool_use_loop,
 )
-from oraclous_harness_runtime_service.domain.ohm.canonical import content_hash
-from oraclous_harness_runtime_service.domain.ohm.errors import OHMParseError, OHMReferenceError
-from oraclous_harness_runtime_service.domain.ohm.parse import load_ohm
-from oraclous_harness_runtime_service.domain.ohm.references import resolve_capabilities
-from oraclous_harness_runtime_service.domain.ohm.signatures import TrustStore, verify_signatures
 from oraclous_harness_runtime_service.domain.policy import (
     build_envelope,
     enforce_load_policy,

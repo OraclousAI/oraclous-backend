@@ -17,6 +17,7 @@ dependencies = [
     "oraclous-governance",
     "oraclous-substrate",
     "oraclous-telemetry",
+    "oraclous-ohm",
     "python-jose[cryptography]>=3.3,<4.0",
     "cryptography>=42,<46",
 ]
@@ -25,6 +26,7 @@ dependencies = [
 oraclous-governance = { workspace = true }
 oraclous-substrate = { workspace = true }
 oraclous-telemetry = { workspace = true }
+oraclous-ohm = { workspace = true }
 
 [build-system]
 requires = ["hatchling"]

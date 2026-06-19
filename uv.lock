@@ -15,6 +15,7 @@ members = [
     "oraclous-harness-runtime-service",
     "oraclous-knowledge-graph-service",
     "oraclous-knowledge-retriever-service",
+    "oraclous-ohm",
     "oraclous-rebac",
     "oraclous-substrate",
     "oraclous-telemetry",
@@ -1336,6 +1337,7 @@ dependencies = [
     { name = "fastapi" },
     { name = "httpx" },
     { name = "oraclous-governance" },
+    { name = "oraclous-ohm" },
     { name = "oraclous-substrate" },
     { name = "oraclous-telemetry" },
     { name = "psycopg", extra = ["binary"] },
@@ -1355,6 +1357,7 @@ requires-dist = [
     { name = "fastapi", specifier = ">=0.115,<1.0" },
     { name = "httpx", specifier = ">=0.27,<1.0" },
     { name = "oraclous-governance", editable = "packages/governance" },
+    { name = "oraclous-ohm", editable = "packages/ohm" },
     { name = "oraclous-substrate", editable = "packages/substrate" },
     { name = "oraclous-telemetry", editable = "packages/telemetry" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.2,<4.0" },
@@ -1464,6 +1467,23 @@ requires-dist = [
     { name = "python-jose", extras = ["cryptography"], specifier = ">=3.3,<4.0" },
     { name = "redis", specifier = ">=5.0,<7.0" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.30,<1.0" },
+]
+
+[[package]]
+name = "oraclous-ohm"
+version = "0.0.0"
+source = { editable = "packages/ohm" }
+dependencies = [
+    { name = "cryptography" },
+    { name = "pydantic" },
+    { name = "pyyaml" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "cryptography", specifier = ">=42,<46" },
+    { name = "pydantic", specifier = ">=2.0,<3.0" },
+    { name = "pyyaml", specifier = ">=6.0,<7.0" },
 ]
 
 [[package]]
