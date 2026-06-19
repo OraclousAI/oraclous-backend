@@ -13,10 +13,10 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-import yaml
 from pydantic import BaseModel, ConfigDict, Field
 
 from oraclous_ohm.errors import OHMImportError
+from oraclous_ohm.import_._frontmatter import split_frontmatter
 
 
 class AgentDefinition(BaseModel):
@@ -33,26 +33,6 @@ class AgentDefinition(BaseModel):
     source: str = "<unknown>"
 
 
-def _split_frontmatter(text: str) -> tuple[dict[str, Any], str]:
-    """Split a frontmatter document into (frontmatter mapping, body). Fail-closed if absent."""
-    stripped = text.lstrip()
-    if not stripped.startswith("---"):
-        raise OHMImportError("no YAML frontmatter (expected a leading '---' fence)")
-    # drop the leading fence, then split on the closing fence
-    rest = stripped[len("---") :].lstrip("\n")
-    parts = rest.split("\n---", 1)
-    if len(parts) != 2:
-        raise OHMImportError("unterminated YAML frontmatter (missing closing '---' fence)")
-    fm_text, body = parts
-    try:
-        front = yaml.safe_load(fm_text) or {}
-    except yaml.YAMLError as exc:
-        raise OHMImportError(f"frontmatter is not valid YAML: {exc}") from exc
-    if not isinstance(front, dict):
-        raise OHMImportError("frontmatter must be a YAML mapping")
-    return front, body.lstrip("\n")
-
-
 def _as_str_list(value: Any) -> list[str]:
     """Normalize ``tools``/``skills`` (a YAML list, a comma string, or absent) -> list[str]."""
     if value is None:
@@ -66,7 +46,7 @@ def _as_str_list(value: Any) -> list[str]:
 
 def parse_agent_text(text: str, source: str = "<unknown>") -> AgentDefinition:
     """Parse the text of a ``.claude/agents/*.md`` agent into an ``AgentDefinition``."""
-    front, body = _split_frontmatter(text)
+    front, body = split_frontmatter(text)
     if not front.get("name"):
         raise OHMImportError(f"{source}: agent frontmatter is missing a 'name'")
     return AgentDefinition(
