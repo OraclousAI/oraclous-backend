@@ -12,11 +12,11 @@ from __future__ import annotations
 import re
 import uuid
 from pathlib import Path
-from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from oraclous_ohm.errors import OHMImportError
+from oraclous_ohm.import_._flags import FlagSeverity, ImportFlag
 from oraclous_ohm.import_.parse import AgentDefinition
 from oraclous_ohm.import_.skills import ResolvedSkill, inline_skills, try_resolve_skill
 from oraclous_ohm.manifest import (
@@ -40,19 +40,6 @@ _MODEL_TIER_BINDINGS: dict[str, str] = {
 # Conservative in-body human-gate markers (ADR-034 §6, conservative bias). kind:human is #408; here
 # we only DETECT and flag, so a missed gate can't silently become an agent member.
 _HUMAN_GATE_MARKERS = ("human-or-outsource", "the author uploads", "author uploads", "human gate")
-
-FlagSeverity = Literal["blocking", "confirm", "info"]
-
-
-class ImportFlag(BaseModel):
-    """A surfaced import decision/risk for the O8 dry-run — never a silent resolution."""
-
-    model_config = ConfigDict(extra="ignore")
-
-    code: str
-    severity: FlagSeverity
-    member_role: str
-    message: str
 
 
 class AgentMapping(BaseModel):
