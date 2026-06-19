@@ -106,6 +106,7 @@ class OHMMember(BaseModel):
     role: str = Field(min_length=1)
     kind: Literal["agent", "human"]
     manifest_ref: str | None = None  # the sub-harness OHM (kind: agent)
+    tools: list[str] = Field(default_factory=list)  # capability ceiling (ADR-032); deny-by-default
     subgoal: str | None = None
     depends_on: list[str] = Field(default_factory=list)  # member roles to wait on (fan-in barrier)
     fan_out: OHMFanOut | None = None

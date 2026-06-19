@@ -1,7 +1,7 @@
 """Capability-absence: a team member's tools[] is a hard ceiling (issue #396, ADR-032).
 
 A member may use a capability only if it is in the member's declared ``tools`` ceiling. The ceiling
-is deny-by-default (an empty ``tools`` permits nothing) and is never widened — this is the structural
+is deny-by-default (an empty ``tools`` permits nothing) and is never widened — the structural
 basis of the book studio's author gates: an agent imported with ``tools: Read,Grep,Glob,Write``
 literally cannot publish. The runtime wires ``assert_capability_allowed`` into the single dispatch
 seam (E3); these tests pin the pure guard.
@@ -10,7 +10,6 @@ seam (E3); these tests pin the pure guard.
 from __future__ import annotations
 
 import pytest
-
 from oraclous_ohm.capabilities import (
     assert_capability_allowed,
     capability_allowed,

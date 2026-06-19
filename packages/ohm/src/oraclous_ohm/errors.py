@@ -39,3 +39,8 @@ class OHMGovernanceError(OHMError):
 class OHMDagError(OHMError):
     """The team's member DAG is invalid — a cycle, a depends_on to an unknown member, or a
     duplicate member role. Raised by the v1.1 topological resolver; fail-closed."""
+
+
+class OHMCapabilityError(OHMError):
+    """A member was offered a capability outside its declared ``tools`` ceiling (capability-absence,
+    ADR-032). Raised at the dispatch seam; fail-closed — no path may widen a member's ceiling."""
