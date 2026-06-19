@@ -11,7 +11,6 @@ from __future__ import annotations
 import uuid
 
 import pytest
-
 from oraclous_ohm.errors import OHMSchemaError, OHMVersionError
 from oraclous_ohm.parse import load_ohm
 
@@ -19,7 +18,11 @@ from oraclous_ohm.parse import load_ohm
 def _v10() -> dict:
     return {
         "ohm_version": "1.0",
-        "metadata": {"id": str(uuid.uuid4()), "name": "a", "owner_organization_id": str(uuid.uuid4())},
+        "metadata": {
+            "id": str(uuid.uuid4()),
+            "name": "a",
+            "owner_organization_id": str(uuid.uuid4()),
+        },
         "capabilities": [{"ref": "core/echo@1", "binding": "echo"}],
         "runtime": {"entrypoint": "echo"},
     }

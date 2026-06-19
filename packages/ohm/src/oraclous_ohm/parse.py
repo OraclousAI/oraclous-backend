@@ -14,13 +14,14 @@ import yaml
 from pydantic import ValidationError
 
 from oraclous_ohm.errors import (
+    OHMDagError,
     OHMParseError,
     OHMSchemaError,
     OHMVersionError,
 )
 from oraclous_ohm.manifest import OHMManifest
 
-_SUPPORTED_VERSIONS = frozenset({"1.0"})
+_SUPPORTED_VERSIONS = frozenset({"1.0", "1.1"})
 
 
 def load_ohm(raw: str | dict[str, Any]) -> OHMManifest:
@@ -47,17 +48,21 @@ def load_ohm(raw: str | dict[str, Any]) -> OHMManifest:
     except ValidationError as exc:
         raise OHMSchemaError(f"OHM failed schema validation: {exc}") from exc
 
-    # entrypoint cross-check: with actors declared it names an actor role; otherwise a capability
-    # binding (the implicit single-agent case).
-    if manifest.actors:
-        if manifest.entrypoint_actor() is None:
+    # entrypoint cross-check: a v1.1 team names a member role (or a capability binding); with actors
+    # declared it names an actor role; otherwise a capability binding (the single-agent case).
+    entrypoint = manifest.runtime.entrypoint
+    if manifest.members:
+        if manifest.member_by_role(entrypoint) is None and manifest.entrypoint_capability() is None:
             raise OHMSchemaError(
-                f"runtime.entrypoint {manifest.runtime.entrypoint!r} matches no actors[].role"
+                f"runtime.entrypoint {entrypoint!r} matches no members[].role or "
+                "capabilities[].binding"
             )
+    elif manifest.actors:
+        if manifest.entrypoint_actor() is None:
+            raise OHMSchemaError(f"runtime.entrypoint {entrypoint!r} matches no actors[].role")
     elif manifest.entrypoint_capability() is None:
         raise OHMSchemaError(
-            f"runtime.entrypoint {manifest.runtime.entrypoint!r} does not match any "
-            "capabilities[].binding"
+            f"runtime.entrypoint {entrypoint!r} does not match any capabilities[].binding"
         )
 
     # Bindings + roles are dispatch keys downstream — duplicates would silently shadow each other
@@ -66,6 +71,16 @@ def load_ohm(raw: str | dict[str, Any]) -> OHMManifest:
     _reject_duplicates([m.role for m in manifest.models], "models[].role")
     _reject_duplicates([p.role for p in manifest.prompts], "prompts[].role")
     _reject_duplicates([a.role for a in manifest.actors], "actors[].role")
+
+    # a v1.1 team's member DAG must be acyclic, reference only declared members, and carry no
+    # duplicate roles — reject a malformed topology at load (fail-closed) rather than at run time.
+    if manifest.members:
+        from oraclous_ohm.dag import topological_stages
+
+        try:
+            topological_stages(manifest.members)
+        except OHMDagError as exc:
+            raise OHMSchemaError(f"invalid team member DAG: {exc}") from exc
     return manifest
 
 
