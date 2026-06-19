@@ -12,7 +12,7 @@ from __future__ import annotations
 import uuid
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 ProtocolShape = Literal["native", "openai-compatible", "gemini-compatible"]
 
@@ -23,6 +23,8 @@ class OHMMetadata(BaseModel):
     id: uuid.UUID
     name: str = Field(min_length=1)
     owner_organization_id: uuid.UUID
+    # v1.1: "team" enables the team blocks below; default "agent" keeps v1.0 behaviour.
+    kind: Literal["agent", "team"] = "agent"
     created_at: str | None = None
     description: str | None = None
     labels: dict[str, str] = Field(default_factory=dict)
@@ -82,6 +84,105 @@ class OHMRuntime(BaseModel):
     observability_tags: dict[str, str] = Field(default_factory=dict)
 
 
+# ── OHM v1.1 team blocks (ADR-031; additive) ───────────────────────────────────────────────
+class OHMFanOut(BaseModel):
+    """N-way fan-out: one member instance per item in ``over`` (a JSONPath into team state)."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    over: str = Field(min_length=1)
+    max_parallel: int = Field(default=1, ge=1)
+
+
+class OHMMember(BaseModel):
+    """A team member (v1.1 ``members[]``; a richer, DAG-capable successor to ``OHMActor``).
+
+    An ``agent`` runs its referenced sub-harness; a ``human`` is a blocking task-board node. The
+    ``depends_on`` roles form the fan-in barrier. A ``human`` member requires a ``human_role``.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    role: str = Field(min_length=1)
+    kind: Literal["agent", "human"]
+    manifest_ref: str | None = None  # the sub-harness OHM (kind: agent)
+    subgoal: str | None = None
+    depends_on: list[str] = Field(default_factory=list)  # member roles to wait on (fan-in barrier)
+    fan_out: OHMFanOut | None = None
+    inputs: list[str] = Field(default_factory=list)
+    outputs_schema: dict[str, Any] = Field(default_factory=dict)  # typed output contract
+    human_role: str | None = None  # REQUIRED for kind: human
+
+    @model_validator(mode="after")
+    def _human_requires_role(self) -> OHMMember:
+        if self.kind == "human" and not self.human_role:
+            raise ValueError("a human member requires 'human_role'")
+        return self
+
+
+class OHMTermination(BaseModel):
+    """Goal-aware stop conditions for a team run (distinct from per-member tool/time caps)."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    max_wall_seconds: int | None = None
+    max_rounds: int | None = None
+    convergence: str | None = None  # e.g. "evaluator>=0.8"
+
+
+class OHMOrchestration(BaseModel):
+    """The coordinator's brief — routing CHOICE is prose; mechanics/budgets/gates stay coded."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    # media: round-table | board | blackboard | handoff | a2a
+    medium: list[str] = Field(default_factory=list)
+    style: str = ""
+    success_criteria: str = ""
+    termination: OHMTermination = Field(default_factory=OHMTermination)
+
+
+class OHMTaskBoard(BaseModel):
+    """First-class assignable tasks for the team."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    columns: list[str] = Field(
+        default_factory=lambda: [
+            "proposed",
+            "claimed",
+            "in_progress",
+            "blocked",
+            "done",
+            "escalated",
+        ]
+    )
+
+
+class OHMBudget(BaseModel):
+    """The TEAM-POOLED budget — the single governed ceiling for the whole fan-out (ADR-031 keystone:
+    one Team Harness = one budget surface; no per-member budget escapes it)."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    max_tokens_total: int | None = None
+    max_tool_calls_total: int | None = None
+    max_sub_runs: int | None = None
+    max_usd_total: float | None = None
+    ttl_seconds: int | None = None
+
+
+class OHMPrecedence(BaseModel):
+    """Hierarchy-of-Truth (A-NEW-3): the source's truth ranking (highest first). ``graph: derived``
+    (default) keeps graph state derived-and-disposable; ``authoritative`` is an explicit opt-in mode
+    — graph-as-truth is never imposed."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    order: list[str] = Field(default_factory=list)
+    graph: Literal["authoritative", "derived"] = "derived"
+
+
 class OHMManifest(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
@@ -95,7 +196,22 @@ class OHMManifest(BaseModel):
     runtime: OHMRuntime
     signatures: list[dict[str, Any]] = Field(default_factory=list)
 
+    # ── v1.1 team blocks (additive; consulted only when metadata.kind == "team") ────────────
+    members: list[OHMMember] = Field(default_factory=list)
+    orchestration: OHMOrchestration | None = None
+    task_board: OHMTaskBoard | None = None
+    budget: OHMBudget | None = None
+    precedence: OHMPrecedence | None = None
+    schemas: dict[str, Any] = Field(default_factory=dict)
+
     # ── resolution helpers (pure) ──────────────────────────────────────────────
+    def is_team(self) -> bool:
+        """True when this manifest is a Team Harness (OHM v1.1)."""
+        return self.metadata.kind == "team"
+
+    def member_by_role(self, role: str) -> OHMMember | None:
+        return next((m for m in self.members if m.role == role), None)
+
     def capability_by_binding(self, binding: str) -> OHMCapability | None:
         return next((c for c in self.capabilities if c.binding == binding), None)
 
