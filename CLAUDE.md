@@ -4,13 +4,13 @@ This file is the working contract for any AI agent (Claude Code, an agent in the
 
 This repo is **`OraclousAI/oraclous-backend`** — the Python codebase for the Oraclous Platform. It is a working **8-service platform** built end-to-end through R7-SEC, each service under `services/<service>/` and layered per ORAA-4 §21 (`routes → services → domain → repositories → core`): `auth-service` (identity, orgs, roles), `credential-broker-service` (encrypted connections + per-org KMS envelope), `knowledge-graph-service` (ingest → graph), `knowledge-retriever-service` (search + subgraph), `capability-registry-service` (tools/connectors + MCP import), `harness-runtime-service` (R4 OHM agent runtime), `execution-engine-service` (R5 durable orchestration), and `application-gateway-service` (R6 edge — the sole external surface).
 
-**Operating model (current):** work is tracked as **GitHub Issues + PRs in this repo**. The ORAA-4 gates, the `.githooks` (pre-push + commit-msg), and the `main` branch ruleset below are enforced and current. Where this file mentions a "PaperClip board", "issue assignment via heartbeats", or "agent identity = issue assignment", that describes the prior multi-agent operating model — the governance **rules** (gates, no-attribution, one-commit-per-concern, non-author review, up-to-date base) still apply; the **board** is now GitHub Issues.
+**Operating model (current):** work is tracked as **GitHub Issues + PRs in this repo**, driven via the **`gh`** CLI; agents pick up issues by assignee/label. The ORAA-4 gates, the `.githooks` (pre-push + commit-msg), and the `main` branch ruleset below are enforced and current. The governance **rules** (gates, no-attribution, one-commit-per-concern, non-author review, up-to-date base) apply throughout; the **board** is GitHub Issues.
 
 ---
 
 ## 0. Operating Contract (single authority)
 
-All agents operating in this session are governed by the **ORAA-4 Operating Contract** (the PaperClip document `operating-contract`) — the canonical source for gate→owner maps, run-completion rules, review depth, workspace discipline, and engineering governance.
+All agents operating in this session are governed by the **ORAA-4 Operating Contract** (`operating-contract`) — the canonical source for gate→owner maps, run-completion rules, review depth, workspace discipline, and engineering governance.
 
 **When this file and ORAA-4 diverge, ORAA-4 wins.** Open a `docs-writer` issue to reconcile this file.
 
@@ -25,9 +25,9 @@ Key provisions every agent must observe:
 
 ## Governance gates — canonical in ORAA-4
 
-This is a pointer, not a restatement: ORAA-4 (the PaperClip document `operating-contract`) is authoritative, and on any divergence ORAA-4 wins. The gates that bite most in this repo:
+This is a pointer, not a restatement: ORAA-4 (`operating-contract`) is authoritative, and on any divergence ORAA-4 wins. The gates that bite most in this repo:
 
-- **§5 commits + pre-push + no attribution.** Commit messages are `[ORAA-xx] [agent:NAME] msg`, one commit per concern. Never write `Co-Authored-By`, `Generated`, `claude`, `paperclip`, or 🤖 in commits, PR bodies, or comments. The `pre-push` hook (mirroring the full CI `quality` job) and the `commit-msg` hook (commit format + no-attribution) are both wired via `core.hooksPath=.githooks` and block bad pushes/commits locally.
+- **§5 commits + pre-push + no attribution.** Commit messages are `[ORAA-xx] [agent:NAME] msg`, one commit per concern. Never write `Co-Authored-By`, `Generated`, `claude`, or 🤖 in commits, PR bodies, or comments. The `pre-push` hook (mirroring the full CI `quality` job) and the `commit-msg` hook (commit format + no-attribution) are both wired via `core.hooksPath=.githooks` and block bad pushes/commits locally.
 - **§5 PR-BUNDLING LAW (non-negotiable).** **Never ship a one-commit-per-PR stream.** "One commit per concern" means **multiple commits inside ONE PR**, NOT one PR per commit. Bundle related concerns into a single PR — CI (~6 min) + non-author review + redeploy run **once per PR**, so a separate PR per commit multiplies the cost. An issue with N sub-tasks ships as **one PR with N commits, never N PRs** (e.g. a mypy + OTel + Celery issue = one PR / three commits). Default to **fewer, bigger PRs**; the only exception is changes in different repos (which can't share a PR).
 - **§13.1 pre-open readiness.** Before OPENING a PR for review it must be pre-push-clean, CI-green, and rebased onto current `main` (not BEHIND). You own this; a reviewer never discovers red CI or a needed rebase.
 - **§13.4 branch-from-merged-tests.** An `[impl]` PR branches from / rebases onto the commit where its `[tests]` PR merged, before opening — this kills add/add conflicts and preserves ADR-010 two-PR independence.
@@ -60,7 +60,7 @@ The **CTO agent** holds full technical authority over this repo: it signs off fi
 
 Planning, architecture, cross-cutting agreement, infra, and documentation happen in the **coordinator** session at the workspace root — not here. Specifically:
 
-- `product-planner`, `solution-architect`, `security-architect`, `devops-implementer`, `docs-writer` all live in the coordinator session. You receive **ready, briefed issues** with lift-tags from them via issue assignment on the PaperClip board; you do not plan or architect here.
+- `product-planner`, `solution-architect`, `security-architect`, `devops-implementer`, `docs-writer` all live in the coordinator session. You receive **ready, briefed issues** with lift-tags from them via GitHub issue assignment; you do not plan or architect here.
 - When this session needs an architecture decision, a Contract, a brief fix, threat tagging, infra, or a doc change, it **escalates to the coordinator** by reassigning the issue to the relevant coordinator persona — it does not load that persona here.
 - The one apparent exception is review at the Tests Review gate: that is `be-test-reviewer` (a distinct narrow persona that lives here), **not** `solution-architect`/`security-architect`. `be-test-reviewer` verifies tests against already-made decisions and escalates decision-level problems up to the coordinator.
 
@@ -94,7 +94,7 @@ This file summarises the backend invariants and points at the knowledge base for
 | PR conventions | [PR Conventions](https://oraclous.atlassian.net/wiki/spaces/OP/pages/393465) |
 | Definition of Done | [Definition of Done](https://oraclous.atlassian.net/wiki/spaces/OP/pages/66010) |
 
-The master board for all work is **PaperClip**, not any of the above. Work is organised as Goals (releases) → Projects (epics) → Issues; agents wake on assignment via heartbeats. There is no sprint board and no query language — your work is whatever is assigned to you on the board (see §5).
+The master board for all work is **GitHub Issues + PRs**, not any of the above. Work is organised as Goals (releases) → Projects (epics) → Issues; agents pick up issues by assignee/label, driven via the `gh` CLI. Your work is whatever is assigned to you on GitHub (see §5).
 
 ---
 
@@ -202,7 +202,7 @@ Target under 300 net lines of code per PR. If you cross that, justify it in the 
 
 ### 4.4 Branch model
 
-`main` is protected; no direct pushes. Work happens on branches named `<agent-name>/<issue-key>-<slug>`, e.g. `backend-implementer/ORAA-178-organisation-id-on-substrate-writes`. The issue key is the PaperClip issue identifier (e.g. `ORAA-178`).
+`main` is protected; no direct pushes. Work happens on branches named `<agent-name>/<issue-key>-<slug>`, e.g. `backend-implementer/ORAA-178-organisation-id-on-substrate-writes`. The issue key is the GitHub issue identifier (e.g. `ORAA-178`).
 
 ### 4.5 Commits
 
@@ -216,11 +216,11 @@ Longer body if needed.
 
 The agent prefix is part of the commit message because all agents share the human GitHub account; the prefix is how the audit trail attributes work to agents.
 
-**One commit per concern** — never bundle unrelated changes into a single commit. **Forbidden in any commit message** (and any PR body or review): `Co-Authored-By` in any variant, "Generated with"/"Generated by", `claude.ai`, `paperclip.ing`, any Anthropic attribution, and the robot emoji. This is enforced by `.githooks/commit-msg` wired in via `core.hooksPath`.
+**One commit per concern** — never bundle unrelated changes into a single commit. **Forbidden in any commit message** (and any PR body or review): `Co-Authored-By` in any variant, "Generated with"/"Generated by", `claude.ai`, any Anthropic attribution, and the robot emoji. This is enforced by `.githooks/commit-msg` wired in via `core.hooksPath`.
 
 ### 4.6 Spikes are explicit
 
-Prototype or exploratory work that does not follow TDD is a **spike** and must be marked as such on the PaperClip issue and in the PR title (`[spike]`). Spikes do not merge to `main`; they produce findings that feed a normal TDD issue.
+Prototype or exploratory work that does not follow TDD is a **spike** and must be marked as such on the GitHub issue and in the PR title (`[spike]`). Spikes do not merge to `main`; they produce findings that feed a normal TDD issue.
 
 ### 4.7 Mandatory local pre-push gate (ORAA-4 §5)
 
@@ -245,15 +245,15 @@ Per-run git worktrees are currently **OFF**, so every agent that writes this rep
 
 ## 5. Agent identity and the board (operational)
 
-Agent identity is **PaperClip issue assignment** — the agent the issue is assigned to *is* the acting persona. There is no separate identity field; whoever the issue is assigned to owns it.
+Agent identity is **GitHub issue assignment** — the agent the issue is assigned to *is* the acting persona. There is no separate identity field; whoever the issue is assigned to owns it.
 
 ### 5.1 Your work
 
-Your work is the set of issues assigned to you on the PaperClip board. You wake on assignment via a heartbeat; there is no query to run and no queue to poll. When you pick up an issue, read it and its comments first — the last `[agent:NAME]` comment with an action trailer tells you where the work stands.
+Your work is the set of GitHub issues assigned to you. When you pick up an issue, read it and its comments first — the last `[agent:NAME]` comment with an action trailer tells you where the work stands.
 
 ### 5.2 The `needs-human` attention flag
 
-PaperClip issues carry a **needs-human attention flag**. Set it when you escalate to the human; the CTO/human clears it when the escalation is resolved. It is the controlled signal that an issue is blocked on a human decision — do not merge or advance an issue while its needs-human flag is set.
+GitHub issues carry a **`needs-human` label**. Set it when you escalate to the human; the CTO/human clears it when the escalation is resolved. It is the controlled signal that an issue is blocked on a human decision — do not merge or advance an issue while its `needs-human` label is set.
 
 ### 5.3 Comment prefix on everything you write
 
@@ -272,13 +272,13 @@ action: handoff_to | status_change | escalation | observation | review_request |
 to: target-agent-name (for handoff_to)
 ```
 
-### 5.4 Operations (PaperClip)
+### 5.4 Operations (GitHub)
 
 | Operation | Implementation |
 | --- | --- |
-| `my work` | The issues assigned to you on the board; you are woken on assignment, not by polling |
+| `my work` | The GitHub issues assigned to you |
 | `handoff_to` | Reassign the issue to the next owner with explicit acceptance criteria; post a handoff comment with the `action: handoff_to` trailer |
-| `escalate_to_human` | (1) Reassign the issue to the CTO/Reza. (2) Set the issue's needs-human attention flag. (3) Post a structured escalation comment with a **specific question** and the `action: escalation` trailer. **All three together; partial escalations are bugs.** |
+| `escalate_to_human` | (1) Reassign the issue to the CTO/Reza. (2) Set the issue's `needs-human` label. (3) Post a structured escalation comment with a **specific question** and the `action: escalation` trailer. **All three together; partial escalations are bugs.** |
 | `complete` | Per the run-completion contract: a run may only end by **reassigning to a named next owner**, **creating an assigned child issue**, or **escalating with a specific question** — never "done, nothing assigned". Post a completion comment with the `action: complete` trailer summarising delivery against acceptance criteria |
 | `observe` | Post a comment with the `action: observation` trailer; no reassignment |
 | `review_request` | Reassign the issue to the reviewer per the work (`code-reviewer`, `be-test-reviewer`, or an architect via the coordinator); post the `action: review_request` trailer |
@@ -400,7 +400,7 @@ A story is **done** when, and only when (Definition of Done, impl/infra):
 5. Coverage on new code is adequate; no new flaky tests; no regressions in the full suite. A regression discovered in a *different* story is filed as a separate critical `[regression]` issue (linked and assigned) — it does **not** hold the current story hostage.
 6. If service behaviour changed: `docs-writer` has updated the affected service reference page or has an open assigned issue to do so.
 7. If architecture-significant: a follow-up ADR issue is open if any architectural decision crystallised (ADRs are accepted by the CTO).
-8. The PaperClip issue is closed by reassigning to a named next owner / spawning a child issue, never left "done, nothing assigned" (§5.4). Human-approval issues stay open until Reza explicitly approves.
+8. The GitHub issue is closed by reassigning to a named next owner / spawning a child issue, never left "done, nothing assigned" (§5.4). Human-approval issues stay open until Reza explicitly approves.
 
 ---
 
@@ -485,7 +485,7 @@ If a story brief lacks a lift-tag for code that you believe has a legacy precurs
 
 ### 12.4 Cross-repo shapes are not yours to define
 
-If you need a data shape, API response, or relation that crosses the repo boundary (anything the frontend also consumes, anything that is a contract between two services), **you do not define it locally**. You open a `Contract` issue on the PaperClip board and assign it to `solution-architect`, then stop, per the [Cross-cutting agreement protocol](https://oraclous.atlassian.net/wiki/spaces/OP/pages/1245185) *(read-only mirror)*. The shape is decided by `solution-architect` and recorded canonically in `oraclous-knowledge` before either side implements. Defining a cross-repo shape locally is a process violation of the same class as editing tests to make them pass.
+If you need a data shape, API response, or relation that crosses the repo boundary (anything the frontend also consumes, anything that is a contract between two services), **you do not define it locally**. You open a `Contract` issue on GitHub and assign it to `solution-architect`, then stop, per the [Cross-cutting agreement protocol](https://oraclous.atlassian.net/wiki/spaces/OP/pages/1245185) *(read-only mirror)*. The shape is decided by `solution-architect` and recorded canonically in `oraclous-knowledge` before either side implements. Defining a cross-repo shape locally is a process violation of the same class as editing tests to make them pass.
 
 **Where some of these Contracts now originate (the design tier).** A cross-repo Contract assigned to `solution-architect` may originate from the frontend **`experience-architect`** (the Design tier): when a user journey needs a gateway capability that does not exist — e.g. an OAuth-connect bridge so a provider token captured at login by `auth-service` becomes resolvable as a tool credential through the broker — `experience-architect` files the gap as a Contract framing the *user-facing requirement*, `solution-architect` owns the system shape, and the paired backend implementing issue lands in this session. Treat it like any other Contract: the shape is decided and recorded in `oraclous-knowledge` before you implement.
 
@@ -513,8 +513,8 @@ If you are resuming work mid-task and have lost prior session context:
 
 1. Read this file.
 2. Read your own skill page from [Agent Skills Catalogue](https://oraclous.atlassian.net/wiki/spaces/OP/pages/753852) *(read-only mirror)*.
-3. Read the **ORAA-4 Operating Contract** (PaperClip `operating-contract`) — the single authority; where it and this file diverge, ORAA-4 wins.
-4. Look at the PaperClip board: the issue assigned to you that is in progress is yours.
+3. Read the **ORAA-4 Operating Contract** (`operating-contract`) — the single authority; where it and this file diverge, ORAA-4 wins.
+4. Look at GitHub: the issue assigned to you that is in progress is yours.
 5. Read that issue's comments; the last `[agent:NAME]` comment with an action trailer tells you where you are.
 6. Read the linked tests PR (if at Implementation stage) or the brief (if at Tests Authoring).
 7. Before any push, run the mandatory local pre-push gate (§4.7).

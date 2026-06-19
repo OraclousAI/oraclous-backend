@@ -2,7 +2,7 @@
 
 The Python monorepo for the Oraclous Platform: the substrate, capability registry, harness runtime, execution engine, application gateway, and the supporting services that back them.
 
-> The working contract for any agent (or human) in this repo is [`CLAUDE.md`](./CLAUDE.md) — read it first. Architecture and releases are canonical in Confluence (space `OP`).
+> The working contract for any agent (or human) in this repo is [`CLAUDE.md`](./CLAUDE.md) — read it first. Architecture and releases are canonical in the `oraclous-knowledge` git repository (Confluence space `OP` is a read-only mirror). Work is tracked as GitHub Issues + PRs.
 
 ## Layout
 
@@ -34,7 +34,7 @@ Commit-message policy is enforced by a hook in `.githooks/`. Activate once after
 git config core.hooksPath .githooks
 ```
 
-The hook rejects forbidden attribution trailers (`Co-Authored-By`, `Generated with/by`, `claude.ai`, `anthropic`, `paperclip.ing`, `🤖`). See `CLAUDE.md` §4.5 for the expected commit format.
+The hook rejects forbidden attribution trailers (`Co-Authored-By`, `Generated with/by`, `claude.ai`, `anthropic`, `🤖`). See `CLAUDE.md` §4.5 for the expected commit format.
 
 ## Contributing
 

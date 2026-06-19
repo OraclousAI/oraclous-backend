@@ -190,7 +190,7 @@ jobs:
 
   # r3_5_gate — the §22 hardened per-service acceptance gate (R3.5). Static half here; the
   # docker-up + integration + smoke steps are added per-service as each is rebuilt (gates 3-5).
-  # Gate 6 (Reza sign-off) is the PaperClip needs-human flag, not a CI step. Modelled on r2-gate.
+  # Gate 6 (Reza sign-off) is the needs-human label on the GitHub issue, not a CI step. Modelled on r2-gate.
   r3_5_gate:
     name: "R3.5 acceptance gate — service architecture + no-hollow + audit (ORAA-4 §21/§22)"
     runs-on: ubuntu-latest
