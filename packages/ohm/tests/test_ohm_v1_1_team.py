@@ -10,14 +10,13 @@ from __future__ import annotations
 import uuid
 
 import pytest
-from pydantic import ValidationError
-
 from oraclous_ohm.manifest import (
     OHMBudget,
     OHMManifest,
     OHMMember,
     OHMPrecedence,
 )
+from pydantic import ValidationError
 
 _ORG = str(uuid.uuid4())
 _MID = str(uuid.uuid4())
@@ -66,9 +65,15 @@ def _team_manifest() -> dict:
             "medium": ["blackboard", "board"],
             "style": "Fan out researchers; barrier; analysts; round-table; escalate to editor.",
             "success_criteria": "Every finding cites >=1 source; 0 unresolved CONTRADICTS.",
-            "termination": {"max_wall_seconds": 7200, "max_rounds": 3, "convergence": "evaluator>=0.8"},
+            "termination": {
+                "max_wall_seconds": 7200,
+                "max_rounds": 3,
+                "convergence": "evaluator>=0.8",
+            },
         },
-        "task_board": {"columns": ["proposed", "claimed", "in_progress", "blocked", "done", "escalated"]},
+        "task_board": {
+            "columns": ["proposed", "claimed", "in_progress", "blocked", "done", "escalated"]
+        },
         "budget": {
             "max_tokens_total": 8_000_000,
             "max_tool_calls_total": 5000,
