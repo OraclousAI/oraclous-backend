@@ -10,7 +10,6 @@ from __future__ import annotations
 import uuid
 
 import pytest
-
 from oraclous_ohm.errors import OHMImportError
 from oraclous_ohm.import_.mapping import AgentMapping, map_agent_to_member
 from oraclous_ohm.import_.parse import AgentDefinition
@@ -105,7 +104,9 @@ def test_duplicate_tools_deduped_and_flagged() -> None:
 
 
 def test_subgoal_from_body_when_no_description() -> None:
-    m = map_agent_to_member(_agent(description="", body="Mission: draw.\nMore."), owner_organization_id=_ORG)
+    m = map_agent_to_member(
+        _agent(description="", body="Mission: draw.\nMore."), owner_organization_id=_ORG
+    )
     assert m.member.subgoal == "Mission: draw."
     assert "F-SUBGOAL-FROMBODY" in _codes(m)
 
@@ -122,13 +123,17 @@ def test_slug_flag_when_name_differs() -> None:
 
 
 def test_human_gate_marker_flagged_but_still_agent() -> None:
-    m = map_agent_to_member(_agent(body="The author uploads the final file."), owner_organization_id=_ORG)
+    m = map_agent_to_member(
+        _agent(body="The author uploads the final file."), owner_organization_id=_ORG
+    )
     assert m.member.kind == "agent"  # detection only; kind:human is #408
     assert "F-HUMANGATE" in _codes(m)
 
 
 def test_always_flags_idgen_and_entrypoint() -> None:
-    assert {"F-IDGEN", "F-ENTRYPOINT"} <= _codes(map_agent_to_member(_agent(), owner_organization_id=_ORG))
+    assert {"F-IDGEN", "F-ENTRYPOINT"} <= _codes(
+        map_agent_to_member(_agent(), owner_organization_id=_ORG)
+    )
 
 
 def test_name_slugifying_to_empty_fails_closed() -> None:
