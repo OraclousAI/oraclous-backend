@@ -1,4 +1,4 @@
-"""Parse a .claude/agents/*.md into an AgentDefinition (issue #405; ADR-034 §1, the import front door).
+"""Parse a .claude/agents/*.md into an AgentDefinition (issue #405; ADR-034 §1).
 
 The parser is tolerant of the real, loosely-specified .claude/agents format: ``tools`` may be a YAML
 list OR a comma string; ``skills`` is optional; the markdown body (the agent's system prompt) is the
@@ -11,7 +11,6 @@ import textwrap
 from pathlib import Path
 
 import pytest
-
 from oraclous_ohm.errors import OHMImportError
 from oraclous_ohm.import_.parse import AgentDefinition, discover_agents, parse_agent_text
 

@@ -44,3 +44,8 @@ class OHMDagError(OHMError):
 class OHMCapabilityError(OHMError):
     """A member was offered a capability outside its declared ``tools`` ceiling (capability-absence,
     ADR-032). Raised at the dispatch seam; fail-closed — no path may widen a member's ceiling."""
+
+
+class OHMImportError(OHMError):
+    """An existing agent setup could not be imported — a malformed/absent frontmatter, a missing
+    ``name``, or an unresolvable skill (ADR-034). Fail-closed; the importer flags, never guesses."""
