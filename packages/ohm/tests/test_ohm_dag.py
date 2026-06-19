@@ -11,7 +11,6 @@ from __future__ import annotations
 import uuid
 
 import pytest
-
 from oraclous_ohm.dag import topological_stages
 from oraclous_ohm.errors import OHMDagError
 from oraclous_ohm.manifest import OHMManifest, OHMMember
@@ -70,7 +69,12 @@ def test_manifest_execution_stages() -> None:
                 "kind": "team",
             },
             "members": [
-                {"role": "researcher", "kind": "agent", "manifest_ref": "org:x/r@1", "depends_on": []},
+                {
+                    "role": "researcher",
+                    "kind": "agent",
+                    "manifest_ref": "org:x/r@1",
+                    "depends_on": [],
+                },
                 {
                     "role": "editor",
                     "kind": "human",

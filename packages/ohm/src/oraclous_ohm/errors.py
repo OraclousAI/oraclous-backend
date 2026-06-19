@@ -34,3 +34,8 @@ class OHMVersionError(OHMError):
 
 class OHMGovernanceError(OHMError):
     """The harness violates its policy-set constraints. (slice 3)"""
+
+
+class OHMDagError(OHMError):
+    """The team's member DAG is invalid — a cycle, a depends_on to an unknown member, or a
+    duplicate member role. Raised by the v1.1 topological resolver; fail-closed."""

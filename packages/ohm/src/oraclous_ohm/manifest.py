@@ -212,6 +212,14 @@ class OHMManifest(BaseModel):
     def member_by_role(self, role: str) -> OHMMember | None:
         return next((m for m in self.members if m.role == role), None)
 
+    def execution_stages(self) -> list[list[str]]:
+        """Topologically-ordered execution stages over the team's ``members`` — fan-out within a
+        stage, fan-in barrier between stages. Empty when the manifest has no members. Raises
+        ``OHMDagError`` on a cycle / unknown depends_on / duplicate role (fail-closed)."""
+        from oraclous_ohm.dag import topological_stages
+
+        return topological_stages(self.members)
+
     def capability_by_binding(self, binding: str) -> OHMCapability | None:
         return next((c for c in self.capabilities if c.binding == binding), None)
 
