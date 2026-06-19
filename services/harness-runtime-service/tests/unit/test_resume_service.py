@@ -12,11 +12,11 @@ from types import SimpleNamespace
 
 import pytest
 from oraclous_governance import Principal, PrincipalType
-from oraclous_harness_runtime_service.domain.ohm.signatures import TrustStore
 from oraclous_harness_runtime_service.services.harness_execution_service import (
     HarnessExecutionService,
     ResumeError,
 )
+from oraclous_ohm.signatures import TrustStore
 
 pytestmark = pytest.mark.unit
 

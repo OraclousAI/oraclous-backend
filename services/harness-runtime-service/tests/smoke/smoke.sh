@@ -31,7 +31,7 @@ export GATEWAY_AUTH_MODE=jwt HARNESS_AUTH_MODE=gateway CAPABILITY_REGISTRY_AUTH_
 _SIGN_PY='import json,sys
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ed25519
-from oraclous_harness_runtime_service.domain.ohm.signatures import make_signature
+from oraclous_ohm.signatures import make_signature
 KEY="/keys/priv.pem"
 if sys.argv[1]=="keygen":
     k=ed25519.Ed25519PrivateKey.generate()

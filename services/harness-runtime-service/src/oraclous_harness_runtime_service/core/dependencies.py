@@ -15,6 +15,7 @@ from typing import Annotated
 from fastapi import Depends, Header, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from oraclous_governance import Principal
+from oraclous_ohm.signatures import TrustStore
 from oraclous_substrate import ProvenanceCollector
 
 from oraclous_harness_runtime_service.core.auth import (
@@ -23,7 +24,6 @@ from oraclous_harness_runtime_service.core.auth import (
     verify_token,
 )
 from oraclous_harness_runtime_service.core.config import Settings, get_settings
-from oraclous_harness_runtime_service.domain.ohm.signatures import TrustStore
 from oraclous_harness_runtime_service.repositories.assignment_repository import AssignmentRepository
 from oraclous_harness_runtime_service.repositories.checkpoint_repository import CheckpointRepository
 from oraclous_harness_runtime_service.repositories.execution_repository import ExecutionRepository

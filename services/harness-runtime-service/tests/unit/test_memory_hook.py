@@ -22,7 +22,6 @@ import pytest
 from oraclous_governance import Principal, PrincipalType
 from oraclous_harness_runtime_service.core.config import get_settings
 from oraclous_harness_runtime_service.core.dependencies import get_memory_writer
-from oraclous_harness_runtime_service.domain.ohm.signatures import TrustStore
 from oraclous_harness_runtime_service.services.harness_execution_service import (
     HarnessExecutionService,
 )
@@ -31,6 +30,7 @@ from oraclous_harness_runtime_service.services.memory_client import (
     _pending,
     drain_pending_writes,
 )
+from oraclous_ohm.signatures import TrustStore
 
 pytestmark = pytest.mark.unit
 

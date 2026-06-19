@@ -5,8 +5,8 @@ from __future__ import annotations
 import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ec, ed25519, rsa
-from oraclous_harness_runtime_service.domain.ohm.errors import OHMSignatureError
-from oraclous_harness_runtime_service.domain.ohm.signatures import (
+from oraclous_ohm.errors import OHMSignatureError
+from oraclous_ohm.signatures import (
     TrustStore,
     make_signature,
     verify_signatures,

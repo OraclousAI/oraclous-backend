@@ -12,8 +12,8 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from oraclous_harness_runtime_service.domain.ohm.errors import OHMReferenceError
-from oraclous_harness_runtime_service.domain.ohm.manifest import OHMManifest
+from oraclous_ohm.errors import OHMReferenceError
+from oraclous_ohm.manifest import OHMManifest
 
 # (ref, explicit_id) -> the resolved registry tool item (carries id + descriptor).
 CapabilityResolver = Callable[[str, str | None], Awaitable[dict[str, Any]]]

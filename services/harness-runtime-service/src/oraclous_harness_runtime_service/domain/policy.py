@@ -17,8 +17,8 @@ import fnmatch
 import re
 from dataclasses import dataclass, field
 
-from oraclous_harness_runtime_service.domain.ohm.errors import OHMGovernanceError
-from oraclous_harness_runtime_service.domain.ohm.manifest import OHMManifest
+from oraclous_ohm.errors import OHMGovernanceError
+from oraclous_ohm.manifest import OHMManifest
 
 
 @dataclass(frozen=True, slots=True)
