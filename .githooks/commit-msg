@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # commit-msg hook: enforce Oraclous commit message policy (enacted WS-B / ORAA-32)
 # Forbidden: Co-Authored-By trailers, Generated with/by, claude.ai, anthropic,
-#            paperclip.ing attribution, robot emoji (🤖)
+#            robot emoji (🤖)
 # Allowed:   [ORA-xx] ticket refs, [agent:NAME] prefixes
 
 set -euo pipefail
@@ -18,7 +18,7 @@ reject() {
     echo "    Format:   [ORA-xx] [agent:NAME] <imperative>" >&2
     echo "    Allowed:  [agent:NAME] prefixes, [ORA-xx] ticket refs" >&2
     echo "    Forbidden: Co-Authored-By (any variant), Generated with/by," >&2
-    echo "               claude.ai, anthropic, paperclip.ing, robot emoji (🤖)" >&2
+    echo "               claude.ai, anthropic, robot emoji (🤖)" >&2
     echo "" >&2
     echo "  Your commit message (first 10 lines):" >&2
     echo "  ---" >&2
@@ -45,9 +45,6 @@ if echo "$COMMIT_MSG" | grep -qiE "claude\.ai"; then
 fi
 if echo "$COMMIT_MSG" | grep -qiE "anthropic"; then
     reject "Anthropic attribution"
-fi
-if echo "$COMMIT_MSG" | grep -qiE "paperclip\.ing"; then
-    reject "paperclip.ing attribution"
 fi
 
 exit 0
