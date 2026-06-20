@@ -220,9 +220,12 @@ jobs:
   e2e:
     name: "Deployed-stack e2e through the gateway (no fakes; rules 3-5)"
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: 45  # building ~14 service images from scratch + the full stack is the long pole
     env:
       HARNESS_LLM_MODE: fake
+      # The application services sit behind `profiles: [services]`; without this, `up` brings up ONLY
+      # the infra (postgres/redis/neo4j) and the gateway never starts.
+      COMPOSE_PROFILES: services
       COMPOSE: "docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.dev-ports.yml"
       COMPOSE_OAUTH: "docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.dev-ports.yml -f deploy/docker-compose.e2e-oauth.yml"
     steps:
