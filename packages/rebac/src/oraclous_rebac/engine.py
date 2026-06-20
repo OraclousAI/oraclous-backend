@@ -237,6 +237,15 @@ ON MATCH SET r.role_id = CASE WHEN r.role_id IS NULL THEN $role_id ELSE r.role_i
 RETURN r.role_id AS role_id
 """
 
+# The global system Permission nodes. Without these, _BOOTSTRAP_PERM_EDGE_QUERY's
+# ``MATCH (p:Permission:__System__ {name})`` finds nothing → NO HAS_PERMISSION edge is wired →
+# check_graph_permission's Phase-B (role→permission) ALWAYS returns False. Org-independent +
+# idempotent (MERGE), so seeding them in every bootstrap_graph_roles is safe.
+_BOOTSTRAP_SYSTEM_PERM_QUERY = """
+MERGE (p:Permission:__System__ {name: $name})
+ON CREATE SET p.resource_type = $resource_type, p.action = $action, p.created_at = $now
+"""
+
 _BOOTSTRAP_PERM_EDGE_QUERY = """
 MATCH (r:Role:__System__ {graph_id: $graph_id, organisation_id: $organisation_id, name: $role_name})
 MATCH (p:Permission:__System__ {name: $perm_name})
@@ -892,6 +901,19 @@ class ReBACEngine:
 
         now = _now()
         async with driver.session() as session:
+            # Seed the global system Permission nodes FIRST — _BOOTSTRAP_PERM_EDGE_QUERY MATCHes
+            # them, so without this no role→permission edge is wired and every check fails closed.
+            for perm in _SYSTEM_PERMISSIONS:
+                await session.run(
+                    _BOOTSTRAP_SYSTEM_PERM_QUERY,
+                    {
+                        "name": perm["name"],
+                        "resource_type": perm.get("resource_type"),
+                        "action": perm.get("action"),
+                        "now": now,
+                    },
+                )
+
             for role_name in _SYSTEM_ROLES:
                 await session.run(
                     _BOOTSTRAP_ROLE_QUERY,
