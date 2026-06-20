@@ -32,3 +32,21 @@ A feature is **NOT tested and NOT done** until it has been driven against the **
 ## RULE 2 — THE RULES LIVE IN GIT, NOT IN PAPERCLIP/ORAA
 
 Governance for this repo is this file + `CLAUDE.md`, both checked into the repo. Paperclip / ORAA / external agent bundles are not the source of truth and are being removed. Do not add new pointers to them.
+
+---
+
+## RULE 3 — RUN THE E2E LOCALLY BEFORE OPENING THE PR
+
+GitHub CI **cannot** run the deployed-stack e2e (it has no running stack). Therefore the e2e suite is run **locally against the deployed stack** before the PR is opened, and its PASS banner is **pasted into the PR body**. A behaviour-touching PR that does not carry a deployed-stack e2e PASS is **not ready** and must not be opened for review.
+
+```
+scripts/e2e.sh --up      # bring the stack up, then run tests/e2e -m e2e through the gateway
+```
+
+The suite **auto-skips** when the gateway (`:8006`) is unreachable — a "skip" is **not** a pass and does not satisfy this rule. Only a real green run counts.
+
+---
+
+## RULE 4 — THE CTO VERIFIES THE REAL E2E AT THE PR (CI-green is not enough to merge)
+
+For any behaviour-touching backend PR, the **CTO agent must verify the real gateway/MCP e2e passes on the deployed stack before merging** — not merge on CI-green alone. CI-green + unit + testcontainers are necessary but never sufficient (Rule 1). The CTO either re-runs `scripts/e2e.sh` or confirms the PASS banner in the PR body against the current head. A PR without a verified real-e2e PASS does not merge.
