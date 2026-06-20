@@ -1,0 +1,96 @@
+"""Team-run bridge (#419 wiring): run_team driven by the real harness-execution path.
+
+Pure unit with a fake harness client — proves each member becomes a harness call, typed hand-offs
+thread into the harness input, a member failure fails closed, an inline sub-harness is passed, and a
+human gate pauses the run through the bridge. (The durable persistence is a later wiring step.)
+"""
+
+from __future__ import annotations
+
+import uuid
+from typing import Any
+
+import pytest
+from oraclous_execution_engine_service.services.team_run import (
+    render_member_input,
+    run_team_harness,
+)
+from oraclous_ohm.manifest import OHMManifest, OHMMember, OHMMetadata, OHMRuntime
+
+pytestmark = pytest.mark.unit
+
+_ORG = uuid.UUID("87654321-4321-8765-4321-876543210000")
+
+
+class _FakeHarness:
+    """Records every execute() call and always succeeds."""
+
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+
+    async def execute(
+        self,
+        *,
+        input_text: str,
+        manifest_inline: dict[str, Any] | None = None,
+        manifest_ref: str | None = None,
+    ) -> dict[str, Any]:
+        self.calls.append(
+            {"input": input_text, "ref": manifest_ref, "inline": manifest_inline is not None}
+        )
+        return {"status": "SUCCEEDED", "output": "ran"}
+
+
+def _m(role: str, deps: list[str] | None = None) -> OHMMember:
+    return OHMMember(role=role, kind="agent", manifest_ref=f"org:x/{role}@1", depends_on=deps or [])
+
+
+def _gate(role: str, deps: list[str] | None = None) -> OHMMember:
+    return OHMMember(role=role, kind="human", human_role="author", depends_on=deps or [])
+
+
+def _team(members: list[OHMMember]) -> OHMManifest:
+    return OHMManifest(
+        ohm_version="1.1",
+        metadata=OHMMetadata(id=uuid.uuid4(), name="t", owner_organization_id=_ORG, kind="team"),
+        members=members,
+        runtime=OHMRuntime(entrypoint=members[0].role),
+    )
+
+
+async def test_each_member_runs_as_a_harness_call_with_threaded_handoff() -> None:
+    harness = _FakeHarness()
+    res = await run_team_harness(_team([_m("a"), _m("b", ["a"])]), harness)
+    assert res.status == "completed"
+    assert len(harness.calls) == 2  # a and b each executed as a harness call
+    assert any(
+        "From a:" in c["input"] for c in harness.calls
+    )  # b got a's typed hand-off, not a blob
+
+
+async def test_member_harness_failure_fails_closed() -> None:
+    class _Failing:
+        async def execute(self, **kw: Any) -> dict[str, Any]:
+            return {"status": "FAILED", "output": None}
+
+    with pytest.raises(Exception):  # noqa: B017,PT011 — a member that doesn't SUCCEED fails the run
+        await run_team_harness(_team([_m("a")]), _Failing())
+
+
+async def test_inline_subharness_is_passed_when_provided() -> None:
+    harness = _FakeHarness()
+    await run_team_harness(_team([_m("a")]), harness, sub_harnesses={"a": {"ohm_version": "1.0"}})
+    assert harness.calls[0]["inline"] is True  # the generated sub-harness went inline, not by ref
+
+
+async def test_human_gate_pauses_through_the_bridge() -> None:
+    harness = _FakeHarness()
+    res = await run_team_harness(_team([_m("a"), _gate("g", ["a"]), _m("b", ["g"])]), harness)
+    assert res.status == "paused" and res.paused_at == ["g"]
+    assert all("Objective" not in c["input"] or "b" not in c["input"] for c in harness.calls)
+    assert len(harness.calls) == 1  # only 'a' ran; 'b' is past the gate and never dispatched
+
+
+def test_render_member_input_threads_envelopes() -> None:
+    text = render_member_input(_m("c", ["a"]), [], fan_item={"k": 1})
+    assert "Item:" in text
