@@ -19,6 +19,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from oraclous_ohm.aggregate import aggregate_reduce
 from oraclous_ohm.envelope import HandoffEnvelope, build_handoff
 from oraclous_ohm.manifest import OHMManifest, OHMMember
 
@@ -101,9 +102,18 @@ async def run_team(
             inbound.append(env)
             envelopes.append(env)
         if member.fan_out is not None:
-            items = _resolve_over(member.fan_out.over, state, results)
-            results[role] = await _gather_capped(
-                [dispatch(member, inbound, item) for item in items], member.fan_out.max_parallel
+            fan = member.fan_out
+            items = _resolve_over(fan.over, state, results)
+            outputs = await _gather_capped(
+                [dispatch(member, inbound, item) for item in items], fan.max_parallel
+            )
+            # MERGE the fan-out outputs via the reducer (ADR-035 B3), not last-writer-wins.
+            results[role] = aggregate_reduce(
+                outputs,
+                strategy=fan.reduce,
+                field=fan.reduce_field,
+                on=fan.reduce_key,
+                key=fan.reduce_key,
             )
         else:
             results[role] = await dispatch(member, inbound, None)
