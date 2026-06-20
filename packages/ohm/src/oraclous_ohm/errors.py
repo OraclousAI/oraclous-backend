@@ -49,3 +49,8 @@ class OHMCapabilityError(OHMError):
 class OHMImportError(OHMError):
     """An existing agent setup could not be imported — a malformed/absent frontmatter, a missing
     ``name``, or an unresolvable skill (ADR-034). Fail-closed; the importer flags, never guesses."""
+
+
+class OHMHandoffError(OHMError):
+    """A member→member hand-off payload failed validation against the producer's ``outputs_schema``
+    (ADR-035 §3). Fail-closed — a bad payload is an error, never a silently-truncated string."""
