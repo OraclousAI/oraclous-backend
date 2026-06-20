@@ -1,9 +1,9 @@
-"""Team-run service — drive / persist / pause / advance (unit; fake repo + fake harness).
+"""Team-run service — async create→worker-drive / pause / advance (unit; fake repo + fake harness).
 
-Proves the reachable team-run entry point's logic without a DB: ``create_and_run`` drives the member
-DAG through the (fake) harness and persists the outcome, a human gate PAUSES the run durably, and
-``advance`` resumes it past the decided gate. Org-scoping + the not-a-team / cross-org guards are
-exercised too. The DB-backed RLS isolation is proven separately in the integration test.
+The request path (``create``/``advance``) validates + persists QUEUED + ENQUEUES; the WORKER
+claims QUEUED→RUNNING and drives the member DAG through the harness. These tests prove that split
+plus a durable human-gate pause and resume, org-scoping, the ceiling 422, fail-not-strand (G-C), and
+no-double-exec on resume (G-D). DB-backed RLS + cross-request resume are in the integration test.
 """
 
 from __future__ import annotations
@@ -96,6 +96,21 @@ class FakeHarness:
         return {"status": "SUCCEEDED", "output": f"done: {input_text[:30]}"}
 
 
+def _svc(repo: FakeTeamRunRepo, harness: Any) -> tuple[TeamRunService, list[uuid.UUID]]:
+    """A service with the enqueue captured (not a broker) — create/advance is a pure DB write."""
+    enqueued: list[uuid.UUID] = []
+    svc = TeamRunService(
+        team_runs=repo, harness=harness, enqueue=lambda rid, _org, _user: enqueued.append(rid)
+    )
+    return svc, enqueued
+
+
+async def _run(svc: TeamRunService, principal: Principal, **kwargs: Any) -> EngineTeamRun:
+    """Simulate the full path: the request (create → QUEUED + enqueue) then the WORKER (drive)."""
+    row = await svc.create(principal, **kwargs)
+    return await svc.drive(row.id, principal)
+
+
 def _team(members: list[dict[str, Any]]) -> dict[str, Any]:
     return {
         "ohm_version": "1.1",
@@ -139,50 +154,76 @@ def _human(role: str, deps: list[str] | None = None) -> dict[str, Any]:
     return {"role": role, "kind": "human", "human_role": "reviewer", "depends_on": deps or []}
 
 
-async def test_create_and_run_drives_team_through_harness_and_persists_succeeded() -> None:
+# ── the async create → worker-drive split ────────────────────────────────────────────────────
+
+
+async def test_create_enqueues_a_queued_run_without_driving() -> None:
     repo, harness = FakeTeamRunRepo(), FakeHarness()
-    svc = TeamRunService(team_runs=repo, harness=harness)
+    svc, enqueued = _svc(repo, harness)
     manifest = _team([_agent("researcher"), _agent("writer", ["researcher"])])
 
-    row = await svc.create_and_run(
-        _principal(), manifest=manifest, sub_harnesses={}, gate_decisions={}
-    )
+    row = await svc.create(_principal(), manifest=manifest, sub_harnesses={}, gate_decisions={})
 
+    assert row.state == "QUEUED"  # the request returns immediately; the worker drives
+    assert enqueued == [row.id]  # the run was handed to the worker
+    assert harness.inputs == []  # nothing executed on the request path
+
+
+async def test_worker_drive_runs_the_team_through_the_harness_and_persists() -> None:
+    repo, harness = FakeTeamRunRepo(), FakeHarness()
+    svc, _ = _svc(repo, harness)
+    row = await _run(
+        svc,
+        _principal(),
+        manifest=_team([_agent("a"), _agent("b", ["a"])]),
+        sub_harnesses={},
+        gate_decisions={},
+    )
     assert row.state == "SUCCEEDED"
-    assert len(harness.inputs) == 2  # both members ran through the real-shaped harness call
-    assert set(row.results) == {"researcher", "writer"}
-    assert repo.rows[row.id].state == "SUCCEEDED"  # persisted, not just returned
+    assert len(harness.inputs) == 2  # both members ran on the worker
+    assert set(row.results) == {"a", "b"}
+    assert repo.rows[row.id].state == "SUCCEEDED"  # persisted
 
 
 async def test_human_gate_pauses_the_run_durably() -> None:
     repo, harness = FakeTeamRunRepo(), FakeHarness()
-    svc = TeamRunService(team_runs=repo, harness=harness)
+    svc, _ = _svc(repo, harness)
     manifest = _team(
         [_agent("researcher"), _human("approval", ["researcher"]), _agent("writer", ["approval"])]
     )
-
-    row = await svc.create_and_run(
-        _principal(), manifest=manifest, sub_harnesses={}, gate_decisions={}
-    )
-
+    row = await _run(svc, _principal(), manifest=manifest, sub_harnesses={}, gate_decisions={})
     assert row.state == "PAUSED"
     assert row.paused_at == ["approval"]
-    assert "writer" not in row.results  # downstream did NOT cross the gate
+    assert "writer" not in row.results
     assert len(harness.inputs) == 1  # only the researcher ran; the writer is gated off
 
 
-async def test_advance_resumes_a_paused_run_past_the_gate() -> None:
+async def test_advance_re_enqueues_a_queued_run_without_driving() -> None:
     repo, harness = FakeTeamRunRepo(), FakeHarness()
-    svc = TeamRunService(team_runs=repo, harness=harness)
+    svc, enqueued = _svc(repo, harness)
+    manifest = _team([_agent("researcher"), _human("approval", ["researcher"])])
+    paused = await _run(svc, _principal(), manifest=manifest, sub_harnesses={}, gate_decisions={})
+    assert paused.state == "PAUSED"
+    enqueued.clear()
+
+    advanced = await svc.advance(paused.id, _principal(), {"approval": "approve"})
+
+    assert advanced.state == "QUEUED"  # advance returns it to QUEUED; the worker drives the resume
+    assert enqueued == [paused.id]  # re-handed to the worker
+    assert len(harness.inputs) == 1  # advance itself did NOT drive (still just the researcher)
+
+
+async def test_advance_then_worker_drive_resumes_past_the_gate() -> None:
+    repo, harness = FakeTeamRunRepo(), FakeHarness()
+    svc, _ = _svc(repo, harness)
     manifest = _team(
         [_agent("researcher"), _human("approval", ["researcher"]), _agent("writer", ["approval"])]
     )
-    paused = await svc.create_and_run(
-        _principal(), manifest=manifest, sub_harnesses={}, gate_decisions={}
-    )
+    paused = await _run(svc, _principal(), manifest=manifest, sub_harnesses={}, gate_decisions={})
     assert paused.state == "PAUSED"
 
-    resumed = await svc.advance(paused.id, _principal(), {"approval": "approve"})
+    await svc.advance(paused.id, _principal(), {"approval": "approve"})
+    resumed = await svc.drive(paused.id, _principal())  # the worker picks up the re-queued run
 
     assert resumed.state == "SUCCEEDED"
     assert "writer" in resumed.results  # the gate opened and the writer finally ran
@@ -191,19 +232,18 @@ async def test_advance_resumes_a_paused_run_past_the_gate() -> None:
 
 async def test_a_rejected_gate_halts_the_run() -> None:
     repo, harness = FakeTeamRunRepo(), FakeHarness()
-    svc = TeamRunService(team_runs=repo, harness=harness)
+    svc, _ = _svc(repo, harness)
     manifest = _team([_agent("researcher"), _human("approval", ["researcher"])])
-    paused = await svc.create_and_run(
-        _principal(), manifest=manifest, sub_harnesses={}, gate_decisions={}
-    )
+    paused = await _run(svc, _principal(), manifest=manifest, sub_harnesses={}, gate_decisions={})
 
-    rejected = await svc.advance(paused.id, _principal(), {"approval": "reject"})
+    await svc.advance(paused.id, _principal(), {"approval": "reject"})
+    rejected = await svc.drive(paused.id, _principal())
 
     assert rejected.state == "REJECTED"
 
 
 async def test_not_a_team_manifest_is_422() -> None:
-    svc = TeamRunService(team_runs=FakeTeamRunRepo(), harness=FakeHarness())
+    svc, _ = _svc(FakeTeamRunRepo(), FakeHarness())
     agent_doc = {
         "ohm_version": "1.0",
         "metadata": {"id": str(uuid.uuid4()), "name": "a", "owner_organization_id": str(_ORG)},
@@ -211,43 +251,38 @@ async def test_not_a_team_manifest_is_422() -> None:
         "runtime": {"entrypoint": "primary"},
     }
     with pytest.raises(TeamRunError) as exc:
-        await svc.create_and_run(
-            _principal(), manifest=agent_doc, sub_harnesses={}, gate_decisions={}
-        )
+        await svc.create(_principal(), manifest=agent_doc, sub_harnesses={}, gate_decisions={})
     assert exc.value.status_code == 422
 
 
 async def test_principal_without_org_is_403() -> None:
-    svc = TeamRunService(team_runs=FakeTeamRunRepo(), harness=FakeHarness())
-    manifest = _team([_agent("a")])
+    svc, _ = _svc(FakeTeamRunRepo(), FakeHarness())
     with pytest.raises(TeamRunError) as exc:
-        await svc.create_and_run(
-            _principal(org=None), manifest=manifest, sub_harnesses={}, gate_decisions={}
+        await svc.create(
+            _principal(org=None), manifest=_team([_agent("a")]), sub_harnesses={}, gate_decisions={}
         )
     assert exc.value.status_code == 403
 
 
 async def test_get_is_org_scoped_cross_org_is_not_found() -> None:
     repo, harness = FakeTeamRunRepo(), FakeHarness()
-    svc = TeamRunService(team_runs=repo, harness=harness)
-    row = await svc.create_and_run(
-        _principal(), manifest=_team([_agent("a")]), sub_harnesses={}, gate_decisions={}
+    svc, _ = _svc(repo, harness)
+    row = await _run(
+        svc, _principal(), manifest=_team([_agent("a")]), sub_harnesses={}, gate_decisions={}
     )
     with pytest.raises(TeamRunError) as exc:
         await svc.get(row.id, _principal(org=uuid.uuid4()))  # a different org
     assert exc.value.status_code == 404
 
 
-# ── audit remediation (G-A ceiling, G-C fail-not-strand + reap, G-D no double-exec) ──────────
+# ── G-A ceiling, G-C fail-not-strand + reap, G-D no double-exec ──────────────────────────────
 
 
 async def test_subharness_exceeding_member_tools_ceiling_is_rejected_422() -> None:
-    # G-A: member declares tools=['Read'] but the sub-harness smuggles a 'shell' capability — the
-    # harness would build its ceiling from the sub-harness, so this MUST be rejected before run.
-    svc = TeamRunService(team_runs=FakeTeamRunRepo(), harness=FakeHarness())
+    svc, _ = _svc(FakeTeamRunRepo(), FakeHarness())
     manifest = _team([_agent("r", tools=["Read"])])
     with pytest.raises(TeamRunError) as exc:
-        await svc.create_and_run(
+        await svc.create(
             _principal(),
             manifest=manifest,
             sub_harnesses={"r": _sub("r", bindings=["shell"])},  # outside the ['Read'] ceiling
@@ -257,14 +292,14 @@ async def test_subharness_exceeding_member_tools_ceiling_is_rejected_422() -> No
 
 
 async def test_subharness_within_member_tools_ceiling_is_accepted() -> None:
-    # G-A: a sub-harness whose capabilities are within the member's ceiling runs normally.
     repo, harness = FakeTeamRunRepo(), FakeHarness()
-    svc = TeamRunService(team_runs=repo, harness=harness)
+    svc, _ = _svc(repo, harness)
     manifest = _team([_agent("r", tools=["Read", "Grep"])])
-    row = await svc.create_and_run(
+    row = await _run(
+        svc,
         _principal(),
         manifest=manifest,
-        sub_harnesses={"r": _sub("r", bindings=["Read"])},  # subset of the ceiling
+        sub_harnesses={"r": _sub("r", bindings=["Read"])},
         gate_decisions={},
     )
     assert row.state == "SUCCEEDED"
@@ -272,15 +307,15 @@ async def test_subharness_within_member_tools_ceiling_is_accepted() -> None:
 
 async def test_non_harness_error_mid_drive_fails_run_not_strands_it() -> None:
     # G-C: any drive exception (not just HarnessClientError) transitions RUNNING -> FAILED, never
-    # leave the row stuck RUNNING forever.
+    # leaves the row stuck RUNNING forever.
     class BoomHarness:
         async def execute(self, **kwargs: Any) -> dict[str, Any]:
             raise ValueError("decode blew up")  # NOT a HarnessClientError
 
     repo = FakeTeamRunRepo()
-    svc = TeamRunService(team_runs=repo, harness=BoomHarness())
-    row = await svc.create_and_run(
-        _principal(), manifest=_team([_agent("a")]), sub_harnesses={}, gate_decisions={}
+    svc, _ = _svc(repo, BoomHarness())
+    row = await _run(
+        svc, _principal(), manifest=_team([_agent("a")]), sub_harnesses={}, gate_decisions={}
     )
     assert row.state == "FAILED"  # not stranded in RUNNING
     assert "decode blew up" in (row.error_message or "")
@@ -306,7 +341,7 @@ async def test_reap_stale_fails_stranded_running_team_runs() -> None:
         async def list_stale_team_runs(self, older_than: Any, *, limit: int = 100) -> list:
             return [stranded]
 
-    svc = TeamRunService(team_runs=repo)  # reaper path: no harness
+    svc = TeamRunService(team_runs=repo)  # reaper path: no harness, no enqueue
     import datetime as _dt
 
     reaped = await svc.reap_stale(
@@ -320,27 +355,25 @@ async def test_reap_stale_fails_stranded_running_team_runs() -> None:
 async def test_advance_does_not_re_execute_completed_members() -> None:
     # G-D: resuming past a gate must NOT re-dispatch the already-completed pre-gate member.
     repo, harness = FakeTeamRunRepo(), FakeHarness()
-    svc = TeamRunService(team_runs=repo, harness=harness)
+    svc, _ = _svc(repo, harness)
     manifest = _team(
         [_agent("researcher"), _human("approval", ["researcher"]), _agent("writer", ["approval"])]
     )
-    paused = await svc.create_and_run(
-        _principal(), manifest=manifest, sub_harnesses={}, gate_decisions={}
-    )
+    paused = await _run(svc, _principal(), manifest=manifest, sub_harnesses={}, gate_decisions={})
     assert paused.state == "PAUSED"
     assert len(harness.inputs) == 1  # researcher ran once before the gate
 
     await svc.advance(paused.id, _principal(), {"approval": "approve"})
+    await svc.drive(paused.id, _principal())
 
     researcher_runs = sum(1 for i in harness.inputs if "researcher" in i)
-    assert researcher_runs == 1  # researcher fired exactly once across create + advance (not twice)
+    assert researcher_runs == 1  # researcher fired exactly once across create + resume (not twice)
     assert len(harness.inputs) == 2  # only researcher + writer, never a re-run
 
 
 async def test_cancellation_mid_drive_marks_failed_then_propagates() -> None:
-    # Red-team G-C: a cancellation (asyncio.CancelledError is BaseException, not Exception, in 3.12)
-    # must NOT strand the row RUNNING — it is marked FAILED, then the CancelledError propagates
-    # (a cancellation is never swallowed).
+    # G-C: a cancellation (asyncio.CancelledError is BaseException, not Exception, in 3.12) must NOT
+    # strand the row RUNNING — it is marked FAILED, then the CancelledError propagates.
     import asyncio
 
     class CancelHarness:
@@ -348,10 +381,10 @@ async def test_cancellation_mid_drive_marks_failed_then_propagates() -> None:
             raise asyncio.CancelledError
 
     repo = FakeTeamRunRepo()
-    svc = TeamRunService(team_runs=repo, harness=CancelHarness())
+    svc, _ = _svc(repo, CancelHarness())
+    row = await svc.create(
+        _principal(), manifest=_team([_agent("a")]), sub_harnesses={}, gate_decisions={}
+    )
     with pytest.raises(asyncio.CancelledError):
-        await svc.create_and_run(
-            _principal(), manifest=_team([_agent("a")]), sub_harnesses={}, gate_decisions={}
-        )
-    row = next(iter(repo.rows.values()))
-    assert row.state == "FAILED"  # marked FAILED before propagation, not left stranded RUNNING
+        await svc.drive(row.id, _principal())
+    assert repo.rows[row.id].state == "FAILED"  # marked FAILED before propagation, not stranded
