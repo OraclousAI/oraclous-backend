@@ -24,6 +24,7 @@ fail() {
 }
 
 echo "[pre-push] running local quality gate (mirrors CI 'quality' job)…" >&2
+uv lock --check                                                             || fail "uv.lock out of sync with pyproject (run: uv lock, then commit uv.lock) — #460"
 uv run ruff check .                                                          || fail "ruff lint (uv run ruff check .)"
 uv run ruff format --check .                                                 || fail "ruff format (run: uv run ruff format .)"
 uv run mypy tools                                                            || fail "mypy tools"
