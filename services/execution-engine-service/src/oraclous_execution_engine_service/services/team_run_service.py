@@ -1,17 +1,15 @@
 """Team-run service (ORAA-4 §21 services layer) — the durable, reachable entry point for running an
 OHM v1.1 Team Harness.
 
-This is the front door the orchestrator (``oraclous_ohm.orchestrate.run_team``) lacked: a request
-creates a ``engine_team_runs`` row, the service drives the member DAG through the REAL harness
-(``run_team_harness`` → ``HarnessClient.execute`` per member, the typed hand-off envelopes threaded)
-and persists the outcome. A human gate pauses the run durably (state ``PAUSED`` + ``paused_at``); a
-later ``advance`` records the decision and re-drives past it. A member whose harness does not
-succeed fails the run (fail-closed).
-
-The drive is synchronous in the request path (it reuses the per-request, identity-propagating
-``HarnessClient`` — ADR-018). Moving the drive onto the Celery worker (like jobs/round-tables) so a
-long team run returns 202 immediately is a follow-up; the durable row + the QUEUED/RUNNING claim are
-already shaped for it (the worker would call ``_drive`` exactly as the request path does here).
+This is the front door the orchestrator (``oraclous_ohm.orchestrate.run_team``) lacked. The request
+path (``create``/``advance``) validates + persists a ``engine_team_runs`` row + ENQUEUES it (202);
+the WORKER (``drive``, called from ``run_tasks.drive_team_run_task``) claims it QUEUED→RUNNING and
+drives the member DAG through the REAL harness (``run_team_harness`` → ``HarnessClient.execute`` per
+member, the typed hand-off envelopes threaded), persisting the outcome — so a 30-agent team never
+blocks/times out the request (same async pattern as jobs/round-tables). A human gate pauses the run
+durably (state ``PAUSED`` + ``paused_at``); ``advance`` records the decision, returns it to QUEUED,
+and re-enqueues the worker to resume past it (re-using persisted results — G-D). A member whose
+harness does not succeed fails the run (fail-closed); a stranded RUNNING run is swept by the reaper.
 """
 
 from __future__ import annotations
@@ -19,7 +17,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import uuid
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from datetime import datetime
 from typing import Any
 
@@ -41,6 +39,9 @@ from oraclous_execution_engine_service.services.team_run import run_team_harness
 # orchestrator status -> persisted team-run state
 _STATUS_TO_STATE = {"completed": "SUCCEEDED", "paused": "PAUSED", "rejected": "REJECTED"}
 
+# (team_run_id, organisation_id, user_id) -> None — hands a QUEUED run to the worker (broker).
+EnqueueFn = Callable[[uuid.UUID, uuid.UUID, uuid.UUID], None]
+
 
 class TeamRunError(Exception):
     """A client-facing team-run failure carrying an HTTP status (mapped in the route)."""
@@ -56,11 +57,14 @@ class TeamRunService:
         *,
         team_runs: TeamRunRepository,
         harness: HarnessClient | None = None,
+        enqueue: EnqueueFn | None = None,
     ) -> None:
-        # harness is required for the request/driver path; the reaper path (reap_stale) constructs
-        # the service without one (it only FAILs stranded rows, never drives).
+        # The drive runs on the WORKER (like jobs/round-tables): the request path (create/advance)
+        # needs `enqueue` (hand the QUEUED run to the broker) but NOT a harness; the worker `drive`
+        # needs `harness` but not `enqueue`; the reaper path (reap_stale) needs neither.
         self._team_runs = team_runs
         self._harness = harness
+        self._enqueue = enqueue
 
     def _org(self, principal: Principal) -> uuid.UUID:
         if principal.organisation_id is None:  # fail-closed tenancy (ADR-006)
@@ -102,7 +106,7 @@ class TeamRunService:
                     f"sub_harness for '{role}' exceeds its tools ceiling: {exc}", 422
                 ) from exc
 
-    async def create_and_run(
+    async def create(
         self,
         principal: Principal,
         *,
@@ -110,6 +114,8 @@ class TeamRunService:
         sub_harnesses: dict[str, dict],
         gate_decisions: Mapping[str, str],
     ) -> EngineTeamRun:
+        """Request path: validate + persist a QUEUED run + hand it to the worker (202). The drive
+        runs on the worker so a large team (30 agents) never blocks/times out the HTTP request."""
         org = self._org(principal)
         team = self._load_team(manifest)  # validate BEFORE persisting
         self._enforce_member_ceilings(team, sub_harnesses)  # ADR-032/035 §5 — fail-closed ceiling
@@ -121,7 +127,21 @@ class TeamRunService:
                 sub_harnesses=sub_harnesses,
                 gate_decisions=dict(gate_decisions),
             )
-        return await self._drive(row, team, org)
+        if self._enqueue is not None:
+            self._enqueue(row.id, org, principal.principal_id)
+        return row  # QUEUED — the worker drives it
+
+    async def drive(self, team_run_id: uuid.UUID, principal: Principal) -> EngineTeamRun:
+        """Worker entrypoint: claim the QUEUED run and drive its member DAG through the harness. A
+        resume re-uses the persisted results (G-D — completed members not re-run). Single-driver:
+        a redelivered task that finds it no longer QUEUED no-ops (the CAS claim in ``_drive``)."""
+        org = self._org(principal)
+        with org_scope(org):
+            row = await self._team_runs.get(team_run_id, org)
+        if row is None:
+            raise TeamRunError("team run not found", 404)
+        team = self._load_team(row.manifest)
+        return await self._drive(row, team, org, completed=dict(row.results))
 
     async def get(self, team_run_id: uuid.UUID, principal: Principal) -> EngineTeamRun:
         org = self._org(principal)
@@ -134,7 +154,9 @@ class TeamRunService:
     async def advance(
         self, team_run_id: uuid.UUID, principal: Principal, gate_decisions: Mapping[str, str]
     ) -> EngineTeamRun:
-        """Record a human gate decision on a PAUSED run and re-drive past the now-decided gate."""
+        """Request path: record a human gate decision on a PAUSED run, return it to QUEUED, and
+        re-enqueue the worker to drive past the now-decided gate (202). The worker re-uses the
+        persisted results (G-D), so completed members are not re-executed on resume."""
         org = self._org(principal)
         row = await self.get(team_run_id, principal)
         if row.state != "PAUSED":
@@ -150,10 +172,9 @@ class TeamRunService:
             )
         if not applied or claimed is None:  # lost the race (already advanced) — return current
             return await self.get(team_run_id, principal)
-        team = self._load_team(claimed.manifest)
-        # resume past the gate WITHOUT re-running already-completed members (G-D): their persisted
-        # results are passed as `completed`, so their side effects fire once, not on every advance.
-        return await self._drive(claimed, team, org, completed=dict(claimed.results))
+        if self._enqueue is not None:
+            self._enqueue(team_run_id, org, principal.principal_id)
+        return claimed  # QUEUED — the worker drives the resume
 
     async def _drive(
         self,

@@ -40,7 +40,11 @@ from oraclous_execution_engine_service.services.roundtable_service import Roundt
 from oraclous_execution_engine_service.services.schedule_service import ScheduleService
 from oraclous_execution_engine_service.services.task_service import TaskService
 from oraclous_execution_engine_service.services.team_run_service import TeamRunService
-from oraclous_execution_engine_service.tasks.run_tasks import enqueue_job, enqueue_roundtable
+from oraclous_execution_engine_service.tasks.run_tasks import (
+    enqueue_job,
+    enqueue_roundtable,
+    enqueue_team_run,
+)
 
 _bearer = HTTPBearer(auto_error=False)
 
@@ -205,11 +209,10 @@ def get_team_run_repository(request: Request) -> TeamRunRepository:
 
 def get_team_run_service(
     team_runs: Annotated[TeamRunRepository, Depends(get_team_run_repository)],
-    harness: Annotated[HarnessClient, Depends(get_harness_client)],
 ) -> TeamRunService:
-    # the request path drives the team synchronously through the per-request, identity-propagating
-    # harness client (ADR-018) — the same client the task-board complete uses.
-    return TeamRunService(team_runs=team_runs, harness=harness)
+    # the request path only validates/creates/advances + ENQUEUES; the worker drives the team
+    # (run_tasks.drive_team_run_task), so a large team never blocks the request. No harness here.
+    return TeamRunService(team_runs=team_runs, enqueue=enqueue_team_run)
 
 
 PrincipalDep = Annotated[Principal, Depends(get_principal)]
