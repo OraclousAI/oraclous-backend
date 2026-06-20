@@ -109,7 +109,7 @@ class _Service(FederatedRetrievalService):
         )
         self._fake_repo = repo
 
-    def _repo(self):
+    def _repo(self, organisation_id=None):  # ADR-036: per-branch org override; the fake ignores it
         return self._fake_repo
 
 
