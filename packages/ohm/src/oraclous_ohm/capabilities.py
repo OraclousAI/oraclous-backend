@@ -11,7 +11,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 
 from oraclous_ohm.errors import OHMCapabilityError
-from oraclous_ohm.manifest import OHMMember
+from oraclous_ohm.manifest import OHMManifest, OHMMember
 
 
 def ceiling(member: OHMMember) -> frozenset[str]:
@@ -38,3 +38,17 @@ def effective_capabilities(member: OHMMember, offered: Iterable[str]) -> set[str
     """The capabilities a member actually gets: ``offered`` capped by its ceiling. Bounds whatever a
     sub-harness / orchestrator offers — the ceiling can only narrow it, never widen."""
     return set(offered) & ceiling(member)
+
+
+def assert_subharness_within_ceiling(member: OHMMember, sub: OHMManifest) -> None:
+    """Fail-closed: every capability the member's sub-harness declares must be within the member's
+    ``tools`` ceiling (the sub-harness can only narrow it, never widen). Raises
+    ``OHMCapabilityError`` on the first binding outside the ceiling.
+
+    This is the cross-member dispatch guard (ADR-032/035 §5): a team member's ``tools[]`` is the
+    authoritative ceiling, and the per-member sub-harness the runtime actually executes builds its
+    policy ceiling from *its own* ``capabilities[]`` — so without this check a coordinator or client
+    could hand a member a capability it never declared simply by widening the sub-harness manifest.
+    A tool-less member (empty ceiling) admits a tool-less sub-harness only."""
+    for cap in sub.capabilities:
+        assert_capability_allowed(member, cap.binding)
