@@ -192,6 +192,11 @@ def build_envelope(
     gated = frozenset(
         c.binding for c in manifest.capabilities if _hitl_flagged(c.config.get("hitl"))
     )
+    # The capability CEILING (ADR-035 §5) — the closed set of tool bindings this harness may EVER
+    # dispatch = every binding it declares. The dispatch seam (tool_use.py) denies anything outside
+    # it, fail-closed; no orchestrator/coordinator path can widen it. Empty (a tool-less reasoning
+    # agent) imposes no restriction. This is what makes the shipped ceiling field actually fire.
+    ceiling = frozenset(c.binding for c in manifest.capabilities)
     redact = _validated_redact_patterns(manifest.governance.redact_patterns or [])
     if policy.max_tool_calls is not None:
         max_iterations = min(hard_max_iterations, policy.max_tool_calls + 1)
@@ -203,5 +208,6 @@ def build_envelope(
         max_wall_time_seconds=policy.max_wall_time_seconds,
         max_tokens=policy.max_tokens,
         gated_bindings=gated,
+        tool_ceiling=ceiling,
         redact_patterns=redact,
     )

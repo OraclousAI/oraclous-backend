@@ -84,7 +84,19 @@ def test_envelope_carries_budget_gates_and_redaction() -> None:
     assert env.max_wall_time_seconds == 60
     assert env.max_iterations == 9  # service hard cap
     assert env.gated_bindings == frozenset({"pg"})  # config.hitl: true
+    assert env.tool_ceiling == frozenset({"pg"})  # the declared capability binding(s)
     assert env.redact_patterns == ("secret-\\d+",)
+
+
+def test_envelope_ceiling_is_the_declared_capability_set_distinct_from_gating() -> None:
+    # ADR-035 §5: the ceiling is every declared binding (the closed dispatchable set), independent
+    # of HITL gating. With no HITL flag, the binding is in the ceiling but NOT gated — distinct.
+    strict = resolve_policy_set("policy-set:production-strict@1.0.0")
+    env = build_envelope(_ohm(hitl=False), strict, hard_max_iterations=9)
+    assert env.tool_ceiling == frozenset(
+        {"pg"}
+    )  # the agent may only ever dispatch its declared tools
+    assert env.gated_bindings == frozenset()  # not HITL-flagged — ceiling != gating
 
 
 def test_forbidden_matches_an_unversioned_ref() -> None:
