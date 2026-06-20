@@ -83,6 +83,7 @@ class FakeHarness:
 
     def __init__(self) -> None:
         self.inputs: list[str] = []
+        self.calls: list[dict[str, Any]] = []  # #471: record the threaded trace_id/parent per call
 
     async def execute(
         self,
@@ -91,9 +92,15 @@ class FakeHarness:
         manifest_inline: dict[str, Any] | None = None,
         manifest_ref: str | None = None,
         capability_ceiling: list[str] | None = None,
+        parent_execution_id: uuid.UUID | None = None,
+        trace_id: uuid.UUID | None = None,
     ) -> dict[str, Any]:
         self.inputs.append(input_text)
-        return {"status": "SUCCEEDED", "output": f"done: {input_text[:30]}"}
+        eid = uuid.uuid4()  # each member 'execution' gets an id → the engine records the tree
+        self.calls.append(
+            {"id": eid, "parent_execution_id": parent_execution_id, "trace_id": trace_id}
+        )
+        return {"id": str(eid), "status": "SUCCEEDED", "output": f"done: {input_text[:30]}"}
 
 
 def _svc(repo: FakeTeamRunRepo, harness: Any) -> tuple[TeamRunService, list[uuid.UUID]]:
@@ -183,6 +190,28 @@ async def test_worker_drive_runs_the_team_through_the_harness_and_persists() -> 
     assert len(harness.inputs) == 2  # both members ran on the worker
     assert set(row.results) == {"a", "b"}
     assert repo.rows[row.id].state == "SUCCEEDED"  # persisted
+
+
+async def test_run_tree_records_root_and_children_and_threads_trace(  # ADR-037 D3 / #471
+) -> None:
+    repo, harness = FakeTeamRunRepo(), FakeHarness()
+    svc, _ = _svc(repo, harness)
+    row = await _run(
+        svc,
+        _principal(),
+        manifest=_team([_agent("a"), _agent("b", ["a"])]),
+        sub_harnesses={},
+        gate_decisions={},
+    )
+    # the run is its own tree root (root_execution_id minted = its own id)
+    assert row.root_execution_id == row.id
+    # every member's harness execution id is recorded as a child → the tree is reassemblable
+    member_ids = [str(c["id"]) for c in harness.calls]
+    assert sorted(row.child_execution_ids) == sorted(member_ids)
+    assert len(row.child_execution_ids) == 2
+    # each member run was threaded with trace_id == the root and parent == the root
+    assert all(c["trace_id"] == row.id for c in harness.calls)
+    assert all(c["parent_execution_id"] == row.id for c in harness.calls)
 
 
 async def test_human_gate_pauses_the_run_durably() -> None:
