@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# commit-msg hook: enforce Oraclous commit message policy (enacted WS-B / ORAA-32)
-# Forbidden: Co-Authored-By trailers, Generated with/by, claude.ai, anthropic,
-#            robot emoji (🤖)
-# Allowed:   [ORA-xx] ticket refs, [agent:NAME] prefixes
+# commit-msg hook: forbid attribution trailers in commit messages.
+# Forbidden: Co-Authored-By trailers, Generated with/by, claude.ai, anthropic, robot emoji (🤖)
+# Reference an issue with the GitHub number, e.g. [#445]; [agent:NAME] / [area] prefixes are allowed.
+# Rules live in the repo (FUCK_CLAUDE_FUCK_PAPERCLIP.md + CLAUDE.md), not in any external tracker.
 
 set -euo pipefail
 
@@ -14,9 +14,9 @@ reject() {
     echo "  COMMIT REJECTED: forbidden content in commit message" >&2
     echo "  Reason: $reason" >&2
     echo "" >&2
-    echo "  Oraclous commit policy (WS-B):" >&2
-    echo "    Format:   [ORA-xx] [agent:NAME] <imperative>" >&2
-    echo "    Allowed:  [agent:NAME] prefixes, [ORA-xx] ticket refs" >&2
+    echo "  Commit policy:" >&2
+    echo "    Format:   [#<issue>] [area] <imperative>   (e.g. [#445] [impl] add ...)" >&2
+    echo "    Allowed:  [#<issue>] GitHub refs, [agent:NAME] / [area] prefixes" >&2
     echo "    Forbidden: Co-Authored-By (any variant), Generated with/by," >&2
     echo "               claude.ai, anthropic, robot emoji (🤖)" >&2
     echo "" >&2

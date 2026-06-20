@@ -27,7 +27,7 @@ Key provisions every agent must observe:
 
 This is a pointer, not a restatement: ORAA-4 (`operating-contract`) is authoritative, and on any divergence ORAA-4 wins. The gates that bite most in this repo:
 
-- **§5 commits + pre-push + no attribution.** Commit messages are `[ORAA-xx] [agent:NAME] msg`, one commit per concern. Never write `Co-Authored-By`, `Generated`, `claude`, or 🤖 in commits, PR bodies, or comments. The `pre-push` hook (mirroring the full CI `quality` job) and the `commit-msg` hook (commit format + no-attribution) are both wired via `core.hooksPath=.githooks` and block bad pushes/commits locally.
+- **§5 commits + pre-push + no attribution.** Commit messages are `[#<issue>] [agent:NAME] msg`, one commit per concern. Never write `Co-Authored-By`, `Generated`, `claude`, or 🤖 in commits, PR bodies, or comments. The `pre-push` hook (mirroring the full CI `quality` job) and the `commit-msg` hook (commit format + no-attribution) are both wired via `core.hooksPath=.githooks` and block bad pushes/commits locally.
 - **§5 PR-BUNDLING LAW (non-negotiable).** **Never ship a one-commit-per-PR stream.** "One commit per concern" means **multiple commits inside ONE PR**, NOT one PR per commit. Bundle related concerns into a single PR — CI (~6 min) + non-author review + redeploy run **once per PR**, so a separate PR per commit multiplies the cost. An issue with N sub-tasks ships as **one PR with N commits, never N PRs** (e.g. a mypy + OTel + Celery issue = one PR / three commits). Default to **fewer, bigger PRs**; the only exception is changes in different repos (which can't share a PR).
 - **§13.1 pre-open readiness.** Before OPENING a PR for review it must be pre-push-clean, CI-green, and rebased onto current `main` (not BEHIND). You own this; a reviewer never discovers red CI or a needed rebase.
 - **§13.4 branch-from-merged-tests.** An `[impl]` PR branches from / rebases onto the commit where its `[tests]` PR merged, before opening — this kills add/add conflicts and preserves ADR-010 two-PR independence.
@@ -202,14 +202,14 @@ Target under 300 net lines of code per PR. If you cross that, justify it in the 
 
 ### 4.4 Branch model
 
-`main` is protected; no direct pushes. Work happens on branches named `<agent-name>/<issue-key>-<slug>`, e.g. `backend-implementer/ORAA-178-organisation-id-on-substrate-writes`. The issue key is the GitHub issue identifier (e.g. `ORAA-178`).
+`main` is protected; no direct pushes. Work happens on branches named `<agent-name>/<issue>-<slug>`, e.g. `backend-implementer/178-organisation-id-on-substrate-writes`. The issue identifier is the GitHub issue number (e.g. `#178`).
 
 ### 4.5 Commits
 
 Every commit message follows:
 
 ```
-[ORAA-42] [agent:backend-implementer] Short imperative description
+[#42] [agent:backend-implementer] Short imperative description
 
 Longer body if needed.
 ```
