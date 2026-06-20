@@ -23,6 +23,8 @@ jobs:
           version: "0.11.7"
       - run: uv python install 3.12
       - run: uv sync --all-packages --frozen
+      - name: Lockfile consistency (#460 — committed uv.lock matches pyproject; not just dirty-tree)
+        run: uv lock --check
       - name: Ruff lint
         run: uv run ruff check .
       - name: Ruff format
