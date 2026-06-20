@@ -54,7 +54,7 @@ def test_sub_harness_loads_through_the_real_loader() -> None:
     assert loaded.primary_prompt() is not None
     assert loaded.primary_prompt().body == "You are diagram-generator."  # type: ignore[union-attr]
     assert loaded.primary_model().binding == "anthropic/claude-sonnet-4-6"  # type: ignore[union-attr]
-    assert loaded.runtime.entrypoint == "Read"  # = capabilities[0].binding
+    assert loaded.runtime.entrypoint == "primary"  # the agent actor (actors-path, not a tool)
 
 
 def test_tools_become_capabilities_with_provisional_ref() -> None:
@@ -91,10 +91,12 @@ def test_model_unknown_passes_through_verbatim() -> None:
     assert "F-MODEL-PASSTHROUGH" in _codes(m)
 
 
-def test_empty_tools_blocks_with_no_sub_harness() -> None:
+def test_empty_tools_is_reasoning_only() -> None:
     m = map_agent_to_member(_agent(tools=[]), owner_organization_id=_ORG)
-    assert m.sub_harness is None  # cannot resolve an entrypoint -> no loadable sub-harness
-    assert {f.code: f.severity for f in m.flags}.get("F-NOTOOLS") == "blocking"
+    assert m.sub_harness is not None  # tool-less agents are valid (a reasoning-only actor)
+    assert {f.code: f.severity for f in m.flags}.get("F-NOTOOLS") == "info"
+    loaded = load_ohm(m.sub_harness.model_dump(mode="json"))  # loads with zero capabilities
+    assert loaded.runtime.entrypoint == "primary"
 
 
 def test_duplicate_tools_deduped_and_flagged() -> None:
@@ -130,10 +132,8 @@ def test_human_gate_marker_flagged_but_still_agent() -> None:
     assert "F-HUMANGATE" in _codes(m)
 
 
-def test_always_flags_idgen_and_entrypoint() -> None:
-    assert {"F-IDGEN", "F-ENTRYPOINT"} <= _codes(
-        map_agent_to_member(_agent(), owner_organization_id=_ORG)
-    )
+def test_always_flags_idgen() -> None:
+    assert "F-IDGEN" in _codes(map_agent_to_member(_agent(), owner_organization_id=_ORG))
 
 
 def test_name_slugifying_to_empty_fails_closed() -> None:

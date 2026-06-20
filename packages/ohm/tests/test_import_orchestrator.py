@@ -20,6 +20,7 @@ from oraclous_ohm.import_.orchestrator import (
     adapt_orchestrator_skill_by_name,
 )
 from oraclous_ohm.import_.skills import resolve_skill
+from oraclous_ohm.parse import load_ohm
 
 _ORG = uuid.UUID("87654321-4321-8765-4321-876543210000")
 
@@ -145,3 +146,13 @@ def test_by_name_wrapper(tmp_path: Path) -> None:
     _make_orch(tmp_path)
     plan = adapt_orchestrator_skill_by_name("myorch", tmp_path, owner_organization_id=_ORG)
     assert len(plan.members) == 6
+
+
+def test_member_sub_harnesses_built_and_load(tmp_path: Path) -> None:
+    _make_orch(tmp_path)
+    plan = _adapt(tmp_path)
+    assert set(plan.sub_harnesses) == {m.role for m in plan.members}  # one sub-harness per member
+    loaded = load_ohm(plan.sub_harnesses["alpha"].model_dump(mode="json"))  # tool-less, loads
+    assert loaded.primary_prompt().body.startswith("# 01-alpha brief")  # type: ignore[union-attr]
+    assert loaded.runtime.entrypoint == "primary"
+    assert "F-MEMBER-SUBHARNESS" in {f.code for f in plan.flags}
