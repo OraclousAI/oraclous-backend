@@ -211,3 +211,45 @@ def enqueue_job(job_id: uuid.UUID, organisation_id: uuid.UUID, user_id: uuid.UUI
 def enqueue_roundtable(rt_id: uuid.UUID, organisation_id: uuid.UUID, user_id: uuid.UUID) -> None:
     """Fire-and-forget: hand a round-table to the driver over the broker."""
     drive_roundtable_task.delay(str(rt_id), str(organisation_id), str(user_id))
+
+
+@celery_app.task(bind=True, name="engine.drive_team_run")
+def drive_team_run_task(  # noqa: ANN001, ANN201
+    self, team_run_id: str, organisation_id: str, user_id: str
+):  # noqa: ARG001
+    return AsyncTaskExecutor.run_async_task(
+        _drive_team_run_async, team_run_id, organisation_id, user_id
+    )
+
+
+async def _drive_team_run_async(run_id_s: str, org_id_s: str, user_id_s: str) -> dict[str, Any]:
+    """Worker: drive a QUEUED team run's member DAG through the harness (mirrors the round-table
+    driver). The org-bound engine + identity-propagating harness are built here; the drive is
+    single-driver (the CAS QUEUED→RUNNING claim in the service no-ops a redelivery)."""
+    settings = get_settings()
+    run_id, org_id, user_id = uuid.UUID(run_id_s), uuid.UUID(org_id_s), uuid.UUID(user_id_s)
+    principal = Principal(
+        principal_id=user_id, principal_type=PrincipalType.USER, organisation_id=org_id
+    )
+    context = OrganisationContext(
+        organisation_id=org_id, principal_id=user_id, principal_type=PrincipalType.USER
+    )
+    with use_organisation_context(context):
+        team_runs = TeamRunRepository(settings.database_url, worker_pool=True)
+        harness = HarnessClient(
+            settings.harness_runtime_url,
+            headers=build_downstream_headers(principal, settings),
+            timeout=settings.harness_request_timeout,
+        )
+        try:
+            service = TeamRunService(team_runs=team_runs, harness=harness)
+            result = await service.drive(run_id, principal)
+            return {"team_run_id": run_id_s, "state": result.state}
+        finally:
+            await harness.aclose()
+            await team_runs.close()
+
+
+def enqueue_team_run(run_id: uuid.UUID, organisation_id: uuid.UUID, user_id: uuid.UUID) -> None:
+    """Fire-and-forget: hand a QUEUED team run to the worker driver over the broker."""
+    drive_team_run_task.delay(str(run_id), str(organisation_id), str(user_id))
