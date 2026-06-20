@@ -66,6 +66,8 @@ jobs:
         run: uv run python -m tools.lint.check_service_dep_imports services
       - name: RLS request-binding guardrail (an RLS-engine service binds the org in src)
         run: uv run python -m tools.lint.check_rls_request_binding
+      - name: Seam-wiring guardrail (#446 — every built control seam is wired on a request path)
+        run: uv run python -m tools.lint.check_seam_wired
 
   # `helm-chart` validates the production Helm chart on every PR (#354). It mirrors the local
   # gate run by devops: `helm lint` + a full `helm template` rendered with the committed
