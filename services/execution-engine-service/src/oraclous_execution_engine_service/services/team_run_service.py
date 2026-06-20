@@ -16,6 +16,8 @@ already shaped for it (the worker would call ``_drive`` exactly as the request p
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import uuid
 from collections.abc import Mapping
 from datetime import datetime
@@ -184,8 +186,8 @@ class TeamRunService:
                 completed=completed,
             )
         except Exception as exc:  # noqa: BLE001 — never strand the run in RUNNING (G-C); fail closed
-            # ANY drive error (harness failure, decode, network, bug) -> FAILED, not a stuck RUNNING
-            # row. A process death mid-drive (no except runs) is swept by the reaper (list_stale).
+            # ANY in-process drive error (harness failure, decode, network, bug) -> FAILED, not a
+            # stuck RUNNING row. Return the FAILED row to the caller.
             with org_scope(org):
                 updated, _ = await self._team_runs.transition(
                     row.id,
@@ -195,6 +197,23 @@ class TeamRunService:
                     error_message=str(exc)[:2000] or type(exc).__name__,
                 )
             return updated or claimed
+        except BaseException as exc:
+            # NOT a normal error — task cancellation (ASGI client disconnect / worker SIGTERM) or
+            # system exit, which are BaseException (not Exception) in 3.12 and would otherwise skip
+            # the handler above and strand the row RUNNING. Best-effort mark FAILED (shielded so the
+            # cancellation does not abort the write), then PROPAGATE — never swallow a cancellation.
+            # If shutdown races us, the reaper sweeps the stale RUNNING row (the durable backstop).
+            with contextlib.suppress(BaseException), org_scope(org):
+                await asyncio.shield(
+                    self._team_runs.transition(
+                        row.id,
+                        org,
+                        new_state="FAILED",
+                        allowed_from=frozenset({"RUNNING"}),
+                        error_message=f"cancelled mid-drive: {type(exc).__name__}",
+                    )
+                )
+            raise
         with org_scope(org):
             updated, _ = await self._team_runs.transition(
                 row.id,
