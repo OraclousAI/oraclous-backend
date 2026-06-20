@@ -45,6 +45,10 @@ class PolicyEnvelope:
     max_wall_time_seconds: int | None
     max_tokens: int | None
     gated_bindings: frozenset[str] = field(default_factory=frozenset)
+    # The acting member's capability CEILING (ADR-032/035 §5) — the closed set of tool bindings it
+    # may EVER dispatch. Empty = no ceiling (single-agent path); a team member's tools[] populate it
+    # so no orchestrator/coordinator path can hand the member a capability it never declared.
+    tool_ceiling: frozenset[str] = field(default_factory=frozenset)
     redact_patterns: tuple[str, ...] = ()
 
 
