@@ -186,6 +186,7 @@ class HarnessExecutionService:
         manifest_ref: str | None,
         user_input: str,
         principal: Principal,
+        capability_ceiling: list[str] | None = None,
     ) -> HarnessExecution:
         # Fail-closed tenancy (ADR-006/T1-M1): org is the principal's ONLY, never the manifest's.
         if principal.organisation_id is None:
@@ -211,7 +212,12 @@ class HarnessExecutionService:
         if actor is not None and actor.kind == "human":
             return await self._dispatch_human(manifest, actor, org_id, principal, user_input, chash)
 
-        envelope, tool_specs, dispatch, llm = await self._build_runnable(manifest, policy, org_id)
+        # cap the ceiling by the caller's member tools[] (ADR-032/035 §5) — fail-closed for a
+        # manifest_ref member too, whose registered manifest could otherwise declare a broader set.
+        ext_ceiling = frozenset(capability_ceiling) if capability_ceiling is not None else None
+        envelope, tool_specs, dispatch, llm = await self._build_runnable(
+            manifest, policy, org_id, external_ceiling=ext_ceiling
+        )
         execution_id = uuid.uuid4()
         resource = f"harness_execution:{execution_id}"
         prompt = manifest.primary_prompt()
@@ -586,11 +592,19 @@ class HarnessExecutionService:
         manifest,  # noqa: ANN001
         policy,  # noqa: ANN001
         org_id: uuid.UUID,
+        *,
+        external_ceiling: frozenset[str] | None = None,
     ) -> tuple[Any, list[ToolSpec], Any, LLMClient]:
         """Resolve + materialise the manifest's capabilities, build the dispatch + the LLM + the
-        runtime envelope. Shared by execute() and resume() so a resume sets up identically."""
+        runtime envelope. Shared by execute() and resume() so a resume sets up identically.
+        ``external_ceiling`` caps the ceiling by the caller's member ``tools[]`` (ADR-032)."""
         resolved = await self._resolve_all(manifest)
-        envelope = build_envelope(manifest, policy, hard_max_iterations=self._max_iterations)
+        envelope = build_envelope(
+            manifest,
+            policy,
+            hard_max_iterations=self._max_iterations,
+            external_ceiling=external_ceiling,
+        )
         instance_by_binding, tool_specs = await self._materialise(manifest, resolved)
 
         async def dispatch(spec: ToolSpec, args: dict[str, Any]) -> dict[str, Any]:

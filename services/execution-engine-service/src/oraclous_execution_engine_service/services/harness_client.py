@@ -105,13 +105,15 @@ class HarnessClient:
         input_text: str,
         manifest_inline: dict[str, Any] | None = None,
         manifest_ref: str | None = None,
+        capability_ceiling: list[str] | None = None,
         timeout: float | None = None,  # noqa: ASYNC109 — forwarded to httpx, not an asyncio cancel
     ) -> dict[str, Any]:
         """Run a harness to completion/escalation and return its ``HarnessExecutionOut`` JSON.
 
         Supply exactly one of ``manifest_inline`` (a parsed OHM object) or ``manifest_ref`` (a
-        registered harness id). ``timeout`` (the job's declared wall-clock) overrides the client
-        default for this call; exceeding it raises ``HarnessTimeout`` → the job is timed out."""
+        registered harness id). ``capability_ceiling`` (a team member's ``tools[]``) caps the
+        harness's runtime ceiling, fail-closed (ADR-032/035 §5). ``timeout`` (the job's declared
+        wall-clock) overrides the client default; exceeding it raises ``HarnessTimeout``."""
         body: dict[str, Any] = {"input": input_text}
         if manifest_inline is not None:
             body["manifest"] = manifest_inline
@@ -119,6 +121,8 @@ class HarnessClient:
             body["manifest_ref"] = manifest_ref
         else:
             raise HarnessClientError("a manifest_inline or manifest_ref is required")
+        if capability_ceiling is not None:
+            body["capability_ceiling"] = capability_ceiling
         kwargs: dict[str, Any] = {"json": body}
         if timeout is not None:
             kwargs["timeout"] = timeout

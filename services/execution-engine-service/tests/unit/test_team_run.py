@@ -34,15 +34,27 @@ class _FakeHarness:
         input_text: str,
         manifest_inline: dict[str, Any] | None = None,
         manifest_ref: str | None = None,
+        capability_ceiling: list[str] | None = None,
     ) -> dict[str, Any]:
         self.calls.append(
-            {"input": input_text, "ref": manifest_ref, "inline": manifest_inline is not None}
+            {
+                "input": input_text,
+                "ref": manifest_ref,
+                "inline": manifest_inline is not None,
+                "ceiling": capability_ceiling,
+            }
         )
         return {"status": "SUCCEEDED", "output": "ran"}
 
 
-def _m(role: str, deps: list[str] | None = None) -> OHMMember:
-    return OHMMember(role=role, kind="agent", manifest_ref=f"org:x/{role}@1", depends_on=deps or [])
+def _m(role: str, deps: list[str] | None = None, tools: list[str] | None = None) -> OHMMember:
+    return OHMMember(
+        role=role,
+        kind="agent",
+        manifest_ref=f"org:x/{role}@1",
+        depends_on=deps or [],
+        tools=tools or [],
+    )
 
 
 def _gate(role: str, deps: list[str] | None = None) -> OHMMember:
@@ -81,6 +93,25 @@ async def test_inline_subharness_is_passed_when_provided() -> None:
     harness = _FakeHarness()
     await run_team_harness(_team([_m("a")]), harness, sub_harnesses={"a": {"ohm_version": "1.0"}})
     assert harness.calls[0]["inline"] is True  # the generated sub-harness went inline, not by ref
+
+
+async def test_member_tools_are_passed_as_the_capability_ceiling_inline_and_by_ref() -> None:
+    # Red-team G-A: the member's tools[] must cap the harness for BOTH the inline AND the
+    # manifest_ref path, so a registered manifest_ref harness can never exceed what the member
+    # declared. The dispatch always sends capability_ceiling=member.tools.
+    harness = _FakeHarness()
+    # 'a' runs inline (sub-harness given); 'b' runs by manifest_ref (no sub-harness) — both capped
+    await run_team_harness(
+        _team([_m("a", tools=["Read", "Write"]), _m("b", ["a"], tools=["Grep"])]),
+        harness,
+        sub_harnesses={"a": {"ohm_version": "1.0"}},
+    )
+    by_input = {("a" if c["inline"] else "b"): c for c in harness.calls}
+    assert by_input["a"]["ceiling"] == ["Read", "Write"]  # inline member: capped by its tools[]
+    assert by_input["b"]["ceiling"] == ["Grep"]  # manifest_ref member: ALSO capped (the bypass fix)
+    assert (
+        by_input["b"]["ref"] is not None and by_input["b"]["inline"] is False
+    )  # truly the ref path
 
 
 async def test_human_gate_pauses_through_the_bridge() -> None:

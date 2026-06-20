@@ -31,6 +31,7 @@ class _Harness(Protocol):
         input_text: str,
         manifest_inline: dict[str, Any] | None = ...,
         manifest_ref: str | None = ...,
+        capability_ceiling: list[str] | None = ...,
     ) -> dict[str, Any]: ...
 
 
@@ -59,6 +60,10 @@ def make_harness_dispatch(
             input_text=render_member_input(member, envelopes, fan_item),
             manifest_inline=sub,
             manifest_ref=(member.manifest_ref if sub is None else None),
+            # the member's tools[] is the authoritative ceiling (ADR-032/035 §5) — it caps the
+            # harness fail-closed for BOTH the inline AND the manifest_ref path, so a registered
+            # manifest_ref harness can never exceed what the member declared (red-team G-A).
+            capability_ceiling=list(member.tools),
         )
         status = result.get("status")
         if status != "SUCCEEDED":  # fail-closed — a member's harness must succeed

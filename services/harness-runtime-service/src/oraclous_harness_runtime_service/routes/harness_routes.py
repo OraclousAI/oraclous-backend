@@ -60,6 +60,7 @@ async def execute_harness(
             manifest_ref=body.manifest_ref,
             user_input=body.input,
             principal=principal,
+            capability_ceiling=body.capability_ceiling,
         )
     except OHMError as exc:
         raise HTTPException(

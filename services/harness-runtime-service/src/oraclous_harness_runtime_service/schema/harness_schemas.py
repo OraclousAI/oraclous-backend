@@ -30,6 +30,9 @@ class ExecuteHarnessRequest(BaseModel):
     manifest: dict[str, Any] | None = None
     manifest_ref: str | None = None
     input: str = Field(min_length=1)
+    # an external capability ceiling (a team member's tools[] — ADR-032/035 §5): the runtime ceiling
+    # is INTERSECTED with this, so a manifest_ref harness cannot exceed what the member declared.
+    capability_ceiling: list[str] | None = None
 
     @model_validator(mode="after")
     def _exactly_one_manifest(self) -> ExecuteHarnessRequest:
