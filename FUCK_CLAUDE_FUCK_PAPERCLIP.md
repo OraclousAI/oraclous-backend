@@ -50,3 +50,16 @@ The suite **auto-skips** when the gateway (`:8006`) is unreachable — a "skip" 
 ## RULE 4 — THE CTO VERIFIES THE REAL E2E AT THE PR (CI-green is not enough to merge)
 
 For any behaviour-touching backend PR, the **CTO agent must verify the real gateway/MCP e2e passes on the deployed stack before merging** — not merge on CI-green alone. CI-green + unit + testcontainers are necessary but never sufficient (Rule 1). The CTO either re-runs `scripts/e2e.sh` or confirms the PASS banner in the PR body against the current head. A PR without a verified real-e2e PASS does not merge.
+
+---
+
+## RULE 5 — E2E IS THE END USER, THROUGH THE GATEWAY (nothing direct, nothing mocked, nothing assumed)
+
+**Every e2e test simulates a real user's interaction through the application-gateway (`:8006`) — the only surface a real user touches.** This is the law for how every agent in this repo builds and reviews e2e tests:
+
+- **Through the gateway only.** A real user never calls a service directly, so an e2e **never** hits a service port directly (`:8007`/`:8008`/…), and never an internal/`/internal` endpoint. It goes through `:8006` with a **real JWT from a real registration**.
+- **The user brings their own everything, through the public APIs.** Their data, their model, their token — stored/configured via the real user-facing endpoints (e.g. `POST /credentials/` for BYOM), never injected server-side, never read from a config the user wouldn't control, never hardcoded in the test.
+- **Nothing mocked, nothing assumed, nothing DB-direct.** No `FakeHarness`, no fake repos, no monkeypatch, no internal-function calls, no asserting against the database. Real services, real worker/broker, real harness. Faking a genuinely external third party (an OAuth provider, a model API) is replaced by a **real local server** (e.g. `dex`) or the user's **real sandbox credential** — not a mock.
+- **End-user perspective only.** Assertions are on what the user observes through the API (status, response body, the run's state) — the things a real user would see.
+
+A test that hits a service directly, mocks one of our services, or asserts against the DB is **not an e2e** and does not satisfy the Definition of Done. This understanding is part of the agent flow: a reviewer rejects any "e2e" that bypasses the gateway or fakes the platform.
