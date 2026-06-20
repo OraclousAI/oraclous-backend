@@ -19,6 +19,8 @@ grant call IS the proof the gate mediates the read.
 
 from __future__ import annotations
 
+import time
+import uuid
 from collections.abc import Callable
 
 import httpx
@@ -107,3 +109,76 @@ def test_only_the_owner_can_share_a_graph(
     assert stolen.status_code == 404, (
         f"a non-owner grant must 404, got {stolen.status_code}: {stolen.text}"
     )
+
+
+def _ingest_marker(owner_c: httpx.Client, graph_id: str, marker: str) -> None:
+    """Org A ingests a unique-marker text into its graph and waits for the job to finish, so the
+    graph has a REAL row (a Chunk) only the owner org owns — what a cross-org read must surface."""
+    text = f"{marker} is a unique marker phrase about quantum widgets in Paris."
+    job = owner_c.post(
+        f"/api/v1/graphs/{graph_id}/ingest", json={"content": text, "source_type": "text"}
+    )
+    assert job.status_code == 202, job.text
+    job_id = job.json()["id"]
+    for _ in range(40):
+        state = owner_c.get(f"/api/v1/graphs/{graph_id}/jobs/{job_id}").json().get("status")
+        if str(state).upper() in ("SUCCEEDED", "COMPLETED"):
+            return
+        if str(state).upper() in ("FAILED", "ERROR"):
+            raise AssertionError(f"ingest job failed: {state}")
+        time.sleep(2)
+    raise AssertionError("ingest job never completed")
+
+
+def _fulltext(client: httpx.Client, graph_id: str, marker: str) -> httpx.Response:
+    return client.post(
+        "/v1/federated/search",
+        json={"query": marker, "mode": "fulltext", "graph_ids": [graph_id]},
+    )
+
+
+def test_a_granted_foreign_graph_returns_the_owner_org_rows(
+    register: Callable[..., dict], gateway_client: Callable[[str], httpx.Client]
+) -> None:
+    """ADR-036: the cross-org read completes — a granted foreign graph returns the OWNER org's ROWS
+    (not empty). Deny before grant; after the grant the grantee reads org A's actual ingested row;
+    a third, ungranted org never can. The deny→grant→read flip across one grant call is the proof
+    the per-branch owner-org binding is gated on a fail-closed ReBAC grant."""
+    owner = register("Org A Owner")
+    grantee = register("Org B User")
+    outsider = register("Org C User")  # never granted — isolation control
+    owner_c = gateway_client(owner["token"])
+    grantee_c = gateway_client(grantee["token"])
+    outsider_c = gateway_client(outsider["token"])
+
+    # (1) org A owns a graph with a real, owner-org-only row
+    graph_id = owner_c.post("/api/v1/graphs", json={"name": "org-a-kb"}).json()["id"]
+    marker = f"ZULU{uuid.uuid4().hex[:8].upper()}"
+    _ingest_marker(owner_c, graph_id, marker)
+    own = _fulltext(owner_c, graph_id, marker)
+    assert own.status_code == 200 and marker in own.text, "owner must read its own row (sanity)"
+
+    # (2) BEFORE any grant: org B and org C are fail-closed denied (no oracle)
+    assert _fulltext(grantee_c, graph_id, marker).status_code == 403
+    assert _fulltext(outsider_c, graph_id, marker).status_code == 403
+
+    # (3) org A grants org B a read
+    grant = owner_c.post(
+        f"/api/v1/graphs/{graph_id}/grants",
+        json={
+            "grantee_organisation_id": grantee["org_id"],
+            "grantee_user_id": grantee["user_id"],
+            "level": "read",
+        },
+    )
+    assert grant.status_code == 201, grant.text
+
+    # (4) AFTER the grant: org B now reads org A's OWNER-ORG row (the marker) — the completed read
+    after = _fulltext(grantee_c, graph_id, marker)
+    assert after.status_code == 200, after.text
+    assert marker in after.text, (
+        f"granted graph must return OWNER org rows; marker {marker!r} absent: {after.text[:160]}"
+    )
+
+    # (5) the ungranted org C still cannot — the grant is per-grantee, not a blanket cross-org open
+    assert _fulltext(outsider_c, graph_id, marker).status_code == 403
