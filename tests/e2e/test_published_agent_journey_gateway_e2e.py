@@ -12,6 +12,7 @@ is a deeper registry concern.)
 
 from __future__ import annotations
 
+import os
 import uuid
 from collections.abc import Callable
 
@@ -21,6 +22,7 @@ import pytest
 pytestmark = [pytest.mark.e2e, pytest.mark.integration, pytest.mark.security]
 
 _REF = "core/knowledge-retriever@1.0.0"  # a bound capability ref (publish accepts any ref string)
+_MODEL_KEY = os.environ.get("OPENROUTER_API_KEY")  # the user's BYOM key (for the live-invoke test)
 
 
 def test_publish_an_agent_mint_a_key_and_enforce_the_public_plane(
@@ -76,3 +78,80 @@ def test_a_published_agent_is_org_isolated_through_the_gateway(
     )
     others = gateway_client(register("Pub B")["token"]).get("/v1/agents").json()
     assert all(a["slug"] != slug for a in others)  # B's org does not see A's published agent
+
+
+def test_invoking_a_non_harness_binding_returns_a_clear_error(
+    register: Callable[..., dict], gateway_client: Callable[[str], httpx.Client]
+) -> None:
+    """Invoke requires the binding to be a runnable (kind=harness) capability. Binding to anything
+    else is a clear 422 'not runnable' — NOT the opaque 'could not be parsed' it used to surface."""
+    owner = gateway_client(register("Pub")["token"])
+    slug = f"bad-{uuid.uuid4().hex[:8]}"
+    owner.post("/v1/agents", json={"slug": slug, "bound_capability_ref": "not-a-harness-ref"})
+    key = owner.post("/v1/integration-keys", json={"bound_agent_slug": slug}).json()["key"]
+    resp = gateway_client(key).post(f"/v1/agents/{slug}/invoke", json={"input": "hi"})
+    assert resp.status_code == 422, resp.text
+    assert "not runnable" in resp.json()["error"]["message"]  # clear, actionable message
+
+
+@pytest.mark.byom
+@pytest.mark.skipif(not _MODEL_KEY, reason="OPENROUTER_API_KEY not set (the user's BYOM key)")
+def test_a_user_publishes_a_real_agent_and_invokes_it_with_their_model(
+    register: Callable[..., dict], gateway_client: Callable[[str], httpx.Client]
+) -> None:
+    """The full real flow, all through the gateway, no mocks: the user stores their model token,
+    registers a kind=harness capability whose OHM uses that model, publishes an agent bound to it,
+    mints a key, and invokes it — getting a REAL OpenRouter completion (the per-run nonce echoed).
+    Needs the LIVE harness (scripts/e2e.sh --byom)."""
+    user = register("Agent Publisher")
+    c = gateway_client(user["token"])
+    org = c.get("/v1/auth/me").json()["organisation_id"]
+
+    cred = c.post(
+        "/credentials/",
+        json={
+            "tool_id": str(uuid.uuid4()),
+            "user_id": user["user_id"],
+            "name": "my model",
+            "provider": "openrouter",
+            "cred_type": "api_key",
+            "credential": {"api_key": _MODEL_KEY},
+        },
+    ).json()["id"]
+
+    nonce = uuid.uuid4().hex[:10]
+    ohm = {
+        "ohm_version": "1.0",
+        "metadata": {"id": str(uuid.uuid4()), "name": "real-agent", "owner_organization_id": org},
+        "models": [
+            {
+                "role": "primary",
+                "binding": "openrouter/openai/gpt-4o-mini",
+                "protocol_shape": "openai-compatible",
+                "config": {"credential_id": cred},
+            }
+        ],
+        "actors": [{"role": "primary", "kind": "agent"}],
+        "prompts": [
+            {"role": "primary", "source": "inline", "body": f"Reply with exactly: {nonce}"}
+        ],
+        "runtime": {"entrypoint": "primary"},
+    }
+    cap_id = c.post(
+        "/api/v1/capabilities", json={"name": "real-agent", "kind": "harness", "descriptor": ohm}
+    ).json()["id"]
+
+    slug = f"real-{uuid.uuid4().hex[:8]}"
+    assert (
+        c.post(
+            "/v1/agents", json={"slug": slug, "bound_capability_ref": cap_id, "display_name": "R"}
+        ).status_code
+        == 201
+    )
+    key = c.post("/v1/integration-keys", json={"bound_agent_slug": slug}).json()["key"]
+
+    resp = gateway_client(key).post(f"/v1/agents/{slug}/invoke", json={"input": "go"})
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["status"] == "succeeded", body
+    assert nonce in str(body.get("output") or ""), body  # a real LLM ran, via the published agent
