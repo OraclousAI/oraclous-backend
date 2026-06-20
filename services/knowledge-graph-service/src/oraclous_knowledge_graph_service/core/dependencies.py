@@ -28,6 +28,7 @@ from oraclous_governance import (
     resolve_organisation_context,
     use_organisation_context,
 )
+from oraclous_rebac import ReBACEngine
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from oraclous_knowledge_graph_service.core.auth import (
@@ -52,6 +53,7 @@ from oraclous_knowledge_graph_service.services.community_summarizer import make_
 from oraclous_knowledge_graph_service.services.credential_client import make_credential_broker
 from oraclous_knowledge_graph_service.services.dry_run_service import DryRunService
 from oraclous_knowledge_graph_service.services.embedder import Embedder, make_embedder
+from oraclous_knowledge_graph_service.services.grant_service import GraphGrantService
 from oraclous_knowledge_graph_service.services.graph_service import GraphService
 from oraclous_knowledge_graph_service.services.job_service import JobService
 from oraclous_knowledge_graph_service.services.memory_service import MemoryService
@@ -154,6 +156,16 @@ def get_graph_service(
         else None
     )
     return GraphService(GraphRepository(session), write_repo)
+
+
+def get_grant_service(
+    request: Request,
+    graphs: Annotated[GraphService, Depends(get_graph_service)],
+) -> GraphGrantService:
+    """The cross-org graph-grant service (#446 — the ReBAC gate). Uses the async Neo4j driver opened
+    in lifespan for the ReBAC engine; None when the substrate is unconfigured (the route 503s)."""
+    async_driver = getattr(request.app.state, "neo4j_async_driver", None)
+    return GraphGrantService(graphs=graphs, engine=ReBACEngine(), async_driver=async_driver)
 
 
 def get_neo4j_driver(request: Request) -> Driver:
@@ -332,6 +344,7 @@ def get_dry_run_service() -> DryRunService:
 
 # Public dependency aliases for route signatures.
 GraphServiceDep = Annotated[GraphService, Depends(get_graph_service)]
+GrantServiceDep = Annotated[GraphGrantService, Depends(get_grant_service)]
 UserIdDep = Annotated[uuid.UUID, Depends(get_current_user_id)]
 JobServiceDep = Annotated[JobService, Depends(get_job_service)]
 GraphWriteRepoDep = Annotated[GraphWriteRepository, Depends(get_graph_write_repo)]

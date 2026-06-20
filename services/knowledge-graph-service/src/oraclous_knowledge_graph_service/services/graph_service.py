@@ -100,6 +100,12 @@ class GraphService:
             raise GraphNotFound(str(graph_id))
         return graph
 
+    async def assert_owned(self, *, graph_id: uuid.UUID, user_id: uuid.UUID) -> None:
+        """Public owner gate for cross-cutting callers (e.g. the cross-org grant): raises
+        ``GraphNotFound`` (→ 404, no leak) unless the graph is owned by ``user_id`` in the bound
+        org. Only a graph's owner may share it."""
+        await self._owned_or_404(graph_id=graph_id, user_id=user_id)
+
     async def get_graph(self, *, graph_id: uuid.UUID, user_id: uuid.UUID) -> Graph:
         graph = await self._owned_or_404(graph_id=graph_id, user_id=user_id)
         return await self._with_live_counts(graph)

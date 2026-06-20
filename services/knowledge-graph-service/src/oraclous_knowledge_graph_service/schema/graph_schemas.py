@@ -46,3 +46,19 @@ class GraphResponse(BaseModel):
             created_at=g.created_at,
             updated_at=g.updated_at,
         )
+
+
+class GraphGrantRequest(BaseModel):
+    """Cross-org grant body (#446): the graph owner shares a READ with another org's user."""
+
+    grantee_organisation_id: uuid.UUID
+    grantee_user_id: uuid.UUID
+    level: str = "read"  # read-only for this slice (write/admin deferred)
+
+
+class GraphGrantResponse(BaseModel):
+    graph_id: uuid.UUID
+    grantee_organisation_id: uuid.UUID
+    grantee_user_id: uuid.UUID
+    level: str
+    granted: bool

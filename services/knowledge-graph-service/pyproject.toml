@@ -29,12 +29,14 @@ dependencies = [
     "tree-sitter-javascript>=0.23,<0.24",
     "tree-sitter-typescript>=0.23,<0.24",
     "oraclous-governance",
+    "oraclous-rebac",
     "oraclous-substrate",
     "oraclous-telemetry",
 ]
 
 [tool.uv.sources]
 oraclous-governance = { workspace = true }
+oraclous-rebac = { workspace = true }
 oraclous-substrate = { workspace = true }
 oraclous-telemetry = { workspace = true }
 
