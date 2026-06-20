@@ -158,6 +158,41 @@ class OHMTermination(BaseModel):
     convergence: str | None = None  # e.g. "evaluator>=0.8"
 
 
+class OHMGateCheck(BaseModel):
+    """One check in a named gate battery (ADR-037 Decision 2 / #470). ``evaluator`` checks grade
+    ``rubric`` via ``core/evaluate``; ``deterministic`` checks call a registered ``core/check/<id>``
+    predicate by ``check_ref``. ``severity`` is the precedence/AND-floor tier (default CRITICAL =
+    blocking). ``applies_when`` (REUSE ``OHMRunIf``) skips refresh-only gates fail-closed."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    name: str = Field(min_length=1)  # unique within the battery; the addressable check id
+    kind: Literal["evaluator", "deterministic"]
+    rubric: str | None = None  # evaluator: the prose criterion the judge grades
+    check_ref: str | None = None  # deterministic: a registered core/check/<id> predicate
+    params: dict[str, Any] = Field(
+        default_factory=dict
+    )  # e.g. {"min_ratio": 0.333, "threshold": 0.6}
+    severity: Literal["CRITICAL", "MAJOR", "MINOR"] = "CRITICAL"
+    applies_when: OHMRunIf | None = None
+
+
+class OHMGateBattery(BaseModel):
+    """A named, deterministic, multi-check evaluator battery (ADR-037 Decision 2 / #470).
+
+    ``floor: "and"`` (EURail report-editor 10-gate) PASSES iff every applicable check passes — flat,
+    no tiers. ``floor: "precedence"`` (book QA Lock) PASSES iff no CRITICAL check fails; MAJOR/MINOR
+    failures are reported-but-non-blocking while every CRITICAL clears (integrity > fact > grammar >
+    engagement). Checks are ordered = evaluation order + within-tier precedence rank."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    name: str = Field(min_length=1)
+    description: str = ""
+    checks: list[OHMGateCheck]
+    floor: Literal["and", "precedence"] = "and"
+
+
 class OHMOrchestration(BaseModel):
     """The coordinator's brief — routing CHOICE is prose; mechanics/budgets/gates stay coded."""
 
@@ -231,11 +266,18 @@ class OHMManifest(BaseModel):
     budget: OHMBudget | None = None
     precedence: OHMPrecedence | None = None
     schemas: dict[str, Any] = Field(default_factory=dict)
+    # ADR-037 / E4 #470 — named gate batteries (a sibling of `schemas`; same record-once rule).
+    # Referenced from orchestration.success_criteria / termination.convergence by a `battery:<name>`
+    # token; resolved fail-closed (an undeclared reference aborts the load — see `resolve_battery`).
+    batteries: dict[str, OHMGateBattery] = Field(default_factory=dict)
 
     # ── resolution helpers (pure) ──────────────────────────────────────────────
     def is_team(self) -> bool:
         """True when this manifest is a Team Harness (OHM v1.1)."""
         return self.metadata.kind == "team"
+
+    def battery_by_name(self, name: str) -> OHMGateBattery | None:
+        return self.batteries.get(name)
 
     def member_by_role(self, role: str) -> OHMMember | None:
         return next((m for m in self.members if m.role == role), None)
