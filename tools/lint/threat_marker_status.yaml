@@ -45,3 +45,4 @@ ignore:
   - integration   # tests requiring real substrate — a test-shape selector, not a threat
   - slow          # long-running tests (deselect with -m "not slow") — operational selector
   - e2e           # deployed-stack tests driven through the gateway — a test-shape selector
+  - oauth         # e2e needing a real dex OIDC provider — a test-shape selector

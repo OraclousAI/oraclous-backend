@@ -6,6 +6,7 @@
 #   scripts/e2e.sh            # deterministic suite (fake LLM): -m "e2e and not byom"
 #   scripts/e2e.sh --up       # bring the stack up (fake LLM) first, then run the deterministic suite
 #   scripts/e2e.sh --byom     # BYOM real-LLM run: harness -> LIVE, -m byom (needs OPENROUTER_API_KEY)
+#   scripts/e2e.sh --oauth    # OAuth login: bring up a real dex OIDC provider, -m oauth
 #   scripts/e2e.sh --all      # deterministic (fake) THEN BYOM (live), restoring fake at the end
 #
 # Two LLM modes are mutually exclusive in one stack: the deterministic team-run asserts scripted
@@ -15,6 +16,20 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 COMPOSE="docker compose --env-file deploy/.env -f deploy/docker-compose.yml -f deploy/docker-compose.dev-ports.yml"
+OAUTH_COMPOSE="$COMPOSE -f deploy/docker-compose.e2e-oauth.yml"
+
+run_oauth() {
+  echo ">> bringing up a real dex OIDC provider + configuring the auth-service…"
+  $OAUTH_COMPOSE up -d --wait dex
+  $OAUTH_COMPOSE up -d --force-recreate --no-deps auth-service
+  # wait for the RECREATED auth-service to be back AND configured (dex listed), not just the gateway
+  for _ in $(seq 1 30); do
+    curl -fsS http://localhost:8006/oauth/providers 2>/dev/null | grep -q '"dex"' && break
+    sleep 1
+  done
+  echo ">> OAuth login e2e through the gateway (real dex, real password)…"
+  uv run pytest tests/e2e -m oauth -v -p no:cacheprovider && _banner "OAuth (real dex)"
+}
 
 _recreate_harness() {  # $1 = fake|live
   echo ">> harness -> HARNESS_LLM_MODE=$1"
@@ -44,7 +59,8 @@ _require_gateway
 run_deterministic() {
   _recreate_harness fake
   echo ">> deterministic e2e through the gateway (fake LLM)…"
-  uv run pytest tests/e2e -m "e2e and not byom" -v -p no:cacheprovider && _banner "deterministic"
+  uv run pytest tests/e2e -m "e2e and not byom and not oauth" -v -p no:cacheprovider \
+    && _banner "deterministic"
 }
 
 run_byom() {
@@ -55,7 +71,8 @@ run_byom() {
 }
 
 case "$MODE" in
-  --byom) run_byom ;;
-  --all)  run_deterministic; run_byom; _recreate_harness fake ;;  # leave the stack deterministic
-  *)      run_deterministic ;;
+  --byom)  run_byom ;;
+  --oauth) run_oauth ;;
+  --all)   run_deterministic; run_byom; _recreate_harness fake ;;  # leave the stack deterministic
+  *)       run_deterministic ;;
 esac
