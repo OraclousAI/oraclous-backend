@@ -98,3 +98,27 @@ def test_render_report_is_human_readable(tmp_path: Path) -> None:
     assert "Import dry-run" in text
     assert "GO:" in text
     assert "members:" in text
+
+
+def _two_team(root: Path) -> None:
+    ag = root / ".claude" / "agents"
+    ag.mkdir(parents=True)
+    (ag / "scout.md").write_text("---\nname: scout\ntools: Read\n---\nresearch.")
+    (ag / "writer.md").write_text("---\nname: writer\ntools: Write\n---\nwrite.")
+    for num, team, agent in [("1", "research", "scout"), ("2", "writing", "writer")]:
+        t = root / "teams" / f"{num}-{team}"
+        t.mkdir(parents=True)
+        (t / "charter.md").write_text(
+            f'# Team {num} — {team} ("x")\n## Roster\n| Agent | Type | Model | Job |\n'
+            f"| --- | --- | --- | --- |\n| `{agent}` | subagent | opus | do |\n"
+        )
+
+
+def test_charter_team_pipeline_no_handoffs(tmp_path: Path) -> None:
+    # book-shaped: no ## Handoff edges; structure comes from the numbered charters
+    _two_team(tmp_path)
+    result = import_setup(tmp_path, owner_organization_id=_ORG)
+    by = {m.role: m for m in result.manifest.members}  # type: ignore[union-attr]
+    assert by["writer"].depends_on == ["scout"]  # team 2 depends_on team 1
+    assert result.manifest.execution_stages() == [["scout"], ["writer"]]  # type: ignore[union-attr]
+    assert any(f.code == "F-CHARTER-PIPELINE" for f in result.flags)
