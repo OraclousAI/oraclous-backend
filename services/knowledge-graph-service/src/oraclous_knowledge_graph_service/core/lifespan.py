@@ -19,7 +19,11 @@ from oraclous_telemetry import Severity, alert, evaluate_readiness, exit_on_degr
 
 from oraclous_knowledge_graph_service.core.config import get_settings
 from oraclous_knowledge_graph_service.core.database import make_engine, make_sessionmaker
-from oraclous_knowledge_graph_service.core.neo4j import ensure_schema, make_neo4j_driver
+from oraclous_knowledge_graph_service.core.neo4j import (
+    ensure_schema,
+    make_neo4j_async_driver,
+    make_neo4j_driver,
+)
 from oraclous_knowledge_graph_service.core.redis import make_redis_lock_client
 from oraclous_knowledge_graph_service.core.rls import (
     RlsBypassingRoleError,
@@ -81,6 +85,22 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.neo4j_driver = driver
     app.state.neo4j_bind_failed = neo4j_bind_failed
 
+    # An async Neo4j driver JUST for the ReBAC engine (cross-org grant writes). Best-effort: a bind
+    # failure disables granting but never gates readiness or graph CRUD (which use the sync driver).
+    app.state.neo4j_async_driver = None
+    if not neo4j_bind_failed:
+        try:
+            app.state.neo4j_async_driver = await make_neo4j_async_driver(get_settings())
+        except Exception as exc:  # noqa: BLE001 — degrade to grant-off, do not crash the app
+            alert(
+                Severity.ERROR,
+                "rebac_store_bind_failed",
+                "knowledge-graph-service",
+                "Neo4j async driver unavailable; cross-org grants disabled",
+                store="neo4j",
+                error=str(exc),
+            )
+
     # Advisory sync Redis client for the per-(org,graph) community-detect lock (#303). A Redis
     # outage degrades to lock-off (detection still runs) — it never gates readiness.
     app.state.detect_lock_client = await asyncio.to_thread(make_redis_lock_client, get_settings())
@@ -96,6 +116,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     finally:
         if driver is not None:
             await asyncio.to_thread(driver.close)
+        async_driver = getattr(app.state, "neo4j_async_driver", None)
+        if async_driver is not None:
+            await async_driver.close()
         lock_client = getattr(app.state, "detect_lock_client", None)
         if lock_client is not None:
             await asyncio.to_thread(lock_client.close)

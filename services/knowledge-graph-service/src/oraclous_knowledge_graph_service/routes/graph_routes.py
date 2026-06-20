@@ -11,12 +11,19 @@ import uuid
 
 from fastapi import APIRouter, HTTPException, status
 
-from oraclous_knowledge_graph_service.core.dependencies import GraphServiceDep, UserIdDep
+from oraclous_knowledge_graph_service.core.dependencies import (
+    GrantServiceDep,
+    GraphServiceDep,
+    UserIdDep,
+)
 from oraclous_knowledge_graph_service.schema.graph_schemas import (
     CreateGraphRequest,
+    GraphGrantRequest,
+    GraphGrantResponse,
     GraphResponse,
     UpdateGraphRequest,
 )
+from oraclous_knowledge_graph_service.services.grant_service import GrantUnavailable
 from oraclous_knowledge_graph_service.services.graph_service import (
     GraphNotFound,
     ReservedGraphName,
@@ -79,3 +86,41 @@ async def delete_graph(graph_id: uuid.UUID, service: GraphServiceDep, user_id: U
         await service.delete_graph(graph_id=graph_id, user_id=user_id)
     except GraphNotFound:
         raise _NOT_FOUND from None
+
+
+@router.post(
+    "/{graph_id}/grants",
+    response_model=GraphGrantResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def grant_graph_read(
+    graph_id: uuid.UUID,
+    body: GraphGrantRequest,
+    service: GrantServiceDep,
+    owner_user_id: UserIdDep,
+) -> GraphGrantResponse:
+    """The graph's OWNER shares a READ on it with another organisation's user (#446 — the ReBAC
+    gate, ADR-004). Owner-gated: a graph the caller does not own → 404 (no leak). Records a ReBAC
+    relation only — writes no data and widens no read predicate (RLS stays the wall)."""
+    try:
+        await service.grant_read(
+            graph_id=graph_id,
+            owner_user_id=owner_user_id,
+            grantee_organisation_id=body.grantee_organisation_id,
+            grantee_user_id=body.grantee_user_id,
+        )
+    except GraphNotFound:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="graph not found"
+        ) from None
+    except GrantUnavailable:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="rebac store unavailable"
+        ) from None
+    return GraphGrantResponse(
+        graph_id=graph_id,
+        grantee_organisation_id=body.grantee_organisation_id,
+        grantee_user_id=body.grantee_user_id,
+        level=body.level,
+        granted=True,
+    )
