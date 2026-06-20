@@ -145,3 +145,42 @@ def test_charter_team_pipeline_no_handoffs(tmp_path: Path) -> None:
     assert by["writer"].depends_on == ["scout"]  # team 2 depends_on team 1
     assert result.manifest.execution_stages() == [["scout"], ["writer"]]  # type: ignore[union-attr]
     assert any(f.code == "F-CHARTER-PIPELINE" for f in result.flags)
+
+
+def _hierarchy_of_truth(root: Path) -> None:
+    """A root AGENTS.md declaring the book's Hierarchy of Truth (the precedence convention)."""
+    (root / "AGENTS.md").write_text(
+        "# Book studio\n\n## 2. Hierarchy of Truth (conflict resolution order)\n\n"
+        "When two sources disagree, the higher layer wins.\n\n"
+        "```\n"
+        "rules/   (thesis · voice)   ← highest authority\n"
+        "  >  bible/   (canonical claims)\n"
+        "  >  outline/TOC.md   (the living table of contents)\n"
+        "  >  drafts/   (prose)\n"
+        "```\n"
+    )
+
+
+def test_import_captures_the_hierarchy_of_truth_precedence(tmp_path: Path) -> None:
+    # item 9: the importer reads the declared truth ordering onto the manifest + the dry-run report.
+    _agent_team(tmp_path)
+    _hierarchy_of_truth(tmp_path)
+    result = import_setup(tmp_path, owner_organization_id=_ORG, name="book")
+    assert result.manifest is not None
+    assert result.manifest.precedence is not None
+    assert result.manifest.precedence.order == ["rules", "bible", "outline/TOC.md", "drafts"]
+    assert (
+        result.manifest.precedence.graph == "derived"
+    )  # graph-as-truth is NOT imposed (E6 opt-in)
+    assert result.report.precedence == ["rules", "bible", "outline/TOC.md", "drafts"]
+    assert "rules > bible > outline/TOC.md > drafts" in render_report(result.report)
+
+
+def test_import_does_not_fabricate_precedence_when_undeclared(tmp_path: Path) -> None:
+    # no AGENTS.md / hierarchy declaration -> precedence stays None (never invented).
+    _agent_team(tmp_path)
+    result = import_setup(tmp_path, owner_organization_id=_ORG)
+    assert result.manifest is not None
+    assert result.manifest.precedence is None
+    assert result.report.precedence == []
+    assert "precedence: (none)" in render_report(result.report)

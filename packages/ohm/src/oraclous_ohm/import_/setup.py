@@ -21,6 +21,7 @@ from oraclous_ohm.import_.handoff import HandoffSpec, parse_handoff
 from oraclous_ohm.import_.mapping import map_agent_to_member, slugify
 from oraclous_ohm.import_.orchestrator import adapt_orchestrator_skill
 from oraclous_ohm.import_.parse import discover_agents, parse_agent_file
+from oraclous_ohm.import_.precedence import parse_precedence
 from oraclous_ohm.import_.schedules import parse_cron
 from oraclous_ohm.import_.skills import resolve_skill
 from oraclous_ohm.manifest import OHMManifest, OHMMember
@@ -40,6 +41,7 @@ class ImportReport(BaseModel):
     schedules: dict[str, str] = Field(default_factory=dict)  # role -> cron
     resolved_skills: int = 0
     unresolved_skills: int = 0
+    precedence: list[str] = Field(default_factory=list)  # the declared truth ordering (item 9, [])
     blocking: list[str] = Field(default_factory=list)  # blocking-flag messages
     confirm_count: int = 0
     info_count: int = 0
@@ -85,6 +87,11 @@ def _build_report(
     by_sev: dict[str, list[ImportFlag]] = {"blocking": [], "confirm": [], "info": []}
     for f in flags:
         by_sev[f.severity].append(f)
+    precedence = (
+        list(assembly.manifest.precedence.order)
+        if assembly and assembly.manifest.precedence
+        else []
+    )
     return ImportReport(
         team_name=name,
         shape=shape,
@@ -93,6 +100,7 @@ def _build_report(
         stages=stages,
         cyclic_routing=cyclic,
         schedules=schedules,
+        precedence=precedence,
         resolved_skills=sum(1 for f in flags if f.code == "F-SKILL-RESOLVED"),
         unresolved_skills=sum(1 for f in flags if f.code == "F-SKILL-MISSING"),
         blocking=[f"{f.code}: {f.message}" for f in by_sev["blocking"]],
@@ -231,6 +239,19 @@ def import_setup(
         orchestration=orchestration,
     )
     flags.extend(assembly.flags)
+    # item 9 (A-NEW-3): capture the source's declared Hierarchy-of-Truth ordering onto the manifest
+    # (carried through the run as provenance; graph-vs-file ENFORCEMENT is E6). None if undeclared.
+    precedence = parse_precedence(root)
+    if precedence is not None:
+        assembly.manifest.precedence = precedence
+        flags.append(
+            ImportFlag(
+                code="F-PRECEDENCE",
+                severity="info",
+                member_role="",
+                message=f"hierarchy-of-truth -> {' > '.join(precedence.order)}",
+            )
+        )
     return ImportResult(
         manifest=assembly.manifest,
         report=_build_report(team_name, shape, assembly, flags),
@@ -247,6 +268,7 @@ def render_report(report: ImportReport) -> str:
         f"  DAG stages: {len(report.stages)}"
         + (" — cyclic/standing team (routing, not pipeline)" if report.cyclic_routing else ""),
         f"  schedules: {len(report.schedules)}",
+        f"  precedence: {' > '.join(report.precedence) if report.precedence else '(none)'}",
         f"  skills: {report.resolved_skills} resolved, {report.unresolved_skills} unresolved",
         f"  flags: {len(report.blocking)} blocking, {report.confirm_count} confirm, "
         f"{report.info_count} info",
