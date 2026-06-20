@@ -61,6 +61,8 @@ async def execute_harness(
             user_input=body.input,
             principal=principal,
             capability_ceiling=body.capability_ceiling,
+            parent_execution_id=body.parent_execution_id,
+            trace_id=body.trace_id,
         )
     except OHMError as exc:
         raise HTTPException(

@@ -187,6 +187,8 @@ class HarnessExecutionService:
         user_input: str,
         principal: Principal,
         capability_ceiling: list[str] | None = None,
+        parent_execution_id: uuid.UUID | None = None,
+        trace_id: uuid.UUID | None = None,
     ) -> HarnessExecution:
         # Fail-closed tenancy (ADR-006/T1-M1): org is the principal's ONLY, never the manifest's.
         if principal.organisation_id is None:
@@ -273,6 +275,9 @@ class HarnessExecutionService:
             input_tokens=result.input_tokens,
             output_tokens=result.output_tokens,
             steps=steps,
+            # run-tree correlation (#471): trace_id None at the root → repo mints it = execution_id.
+            trace_id=trace_id,
+            parent_execution_id=parent_execution_id,
         )
         await self._emit_provenance(
             result.steps,

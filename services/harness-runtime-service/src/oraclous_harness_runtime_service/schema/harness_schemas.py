@@ -33,6 +33,12 @@ class ExecuteHarnessRequest(BaseModel):
     # an external capability ceiling (a team member's tools[] — ADR-032/035 §5): the runtime ceiling
     # is INTERSECTED with this, so a manifest_ref harness cannot exceed what the member declared.
     capability_ceiling: list[str] | None = None
+    # run-tree correlation (ADR-037 Decision 3 / #471) — internal-plane only (engine→harness).
+    # Correlation HINTS, never access grants: org stays the principal's (ORG001) and reads filter on
+    # it, so a forged trace_id from org-A can't reach org-B's rows (H1/H4). trace_id None → the
+    # harness mints it = this execution's id (the run-tree root).
+    parent_execution_id: uuid.UUID | None = None
+    trace_id: uuid.UUID | None = None
 
     @model_validator(mode="after")
     def _exactly_one_manifest(self) -> ExecuteHarnessRequest:
@@ -70,6 +76,9 @@ class HarnessExecutionOut(BaseModel):
     total_tokens: int
     steps: list[StepOut]
     created_at: datetime | None
+    # run-tree correlation (#471): trace_id groups the tree; parent is the dispatching execution.
+    trace_id: uuid.UUID | None = None
+    parent_execution_id: uuid.UUID | None = None
 
 
 class ExecutionListResponse(BaseModel):
