@@ -28,6 +28,7 @@ from oraclous_execution_engine_service.repositories.roundtable_repository import
     RoundtableRepository,
 )
 from oraclous_execution_engine_service.repositories.schedule_repository import ScheduleRepository
+from oraclous_execution_engine_service.repositories.team_run_repository import TeamRunRepository
 
 
 @asynccontextmanager
@@ -60,23 +61,27 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     job_repo: JobRepository | None = None
     schedule_repo: ScheduleRepository | None = None
     roundtable_repo: RoundtableRepository | None = None
+    team_run_repo: TeamRunRepository | None = None
     provenance_repo: ProvenanceRepository | None = None
     sink: PostgresProvenanceSink | None = None
     try:
         job_repo = JobRepository(settings.database_url)
         schedule_repo = ScheduleRepository(settings.database_url)
         roundtable_repo = RoundtableRepository(settings.database_url)
+        team_run_repo = TeamRunRepository(settings.database_url)
         provenance_repo = ProvenanceRepository(settings.database_url)
         sink = PostgresProvenanceSink(settings.database_url)
         app.state.job_repository = job_repo
         app.state.schedule_repository = schedule_repo
         app.state.roundtable_repository = roundtable_repo
+        app.state.team_run_repository = team_run_repo
         app.state.provenance_repository = provenance_repo
         app.state.provenance = ProvenanceCollector(sink)
     except Exception as exc:  # noqa: BLE001 — degrade: data routes 503, /health reflects it
         app.state.job_repository = None
         app.state.schedule_repository = None
         app.state.roundtable_repository = None
+        app.state.team_run_repository = None
         app.state.provenance_repository = None
         app.state.provenance = None
         alert(
@@ -101,6 +106,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             await schedule_repo.close()
         if roundtable_repo is not None:
             await roundtable_repo.close()
+        if team_run_repo is not None:
+            await team_run_repo.close()
         if provenance_repo is not None:
             await provenance_repo.close()
         if sink is not None:
