@@ -91,7 +91,18 @@ async def test_fan_out_expansion() -> None:
     members = [_m("researcher", fan_out=OHMFanOut(over="$.modules", max_parallel=2))]
     res = await run_team(_team(members), dispatch, state={"modules": ["m1", "m2", "m3"]})
     assert sorted(seen) == ["m1", "m2", "m3"]  # one dispatch per item
-    assert len(res.results["researcher"]) == 3  # outputs collected
+    assert len(res.results["researcher"]) == 3  # outputs collected (default concat)
+
+
+async def test_fan_out_outputs_are_merged_by_the_reducer() -> None:
+    # ADR-035 B3: fan-out outputs MERGE through the reducer (EURail: N batches -> 1 ledger),
+    # replacing the round-table's last-writer-wins.
+    async def dispatch(member: OHMMember, envs: list[HandoffEnvelope], item: Any) -> dict:
+        return {"evidence": [item]}  # each instance contributes an evidence list
+
+    fan = OHMFanOut(over="$.items", max_parallel=2, reduce="concat", reduce_field="evidence")
+    res = await run_team(_team([_m("r", fan_out=fan)]), dispatch, state={"items": ["a", "b", "c"]})
+    assert res.results["r"] == ["a", "b", "c"]  # 3 evidence lists merged into one, not 3 raw dicts
 
 
 async def test_conditional_skip() -> None:
