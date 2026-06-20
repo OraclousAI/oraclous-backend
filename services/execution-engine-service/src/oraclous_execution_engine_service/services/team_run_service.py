@@ -18,19 +18,22 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Mapping
+from datetime import datetime
+from typing import Any
 
 from oraclous_governance import Principal
-from oraclous_ohm.errors import OHMError
+from oraclous_ohm.capabilities import assert_subharness_within_ceiling
+from oraclous_ohm.errors import OHMCapabilityError, OHMError
 from oraclous_ohm.manifest import OHMManifest
 from oraclous_ohm.parse import load_ohm
 
 from oraclous_execution_engine_service.core.rls import org_scope
 from oraclous_execution_engine_service.models.team_run import EngineTeamRun
-from oraclous_execution_engine_service.repositories.team_run_repository import TeamRunRepository
-from oraclous_execution_engine_service.services.harness_client import (
-    HarnessClient,
-    HarnessClientError,
+from oraclous_execution_engine_service.repositories.maintenance_repository import (
+    EngineMaintenanceRepository,
 )
+from oraclous_execution_engine_service.repositories.team_run_repository import TeamRunRepository
+from oraclous_execution_engine_service.services.harness_client import HarnessClient
 from oraclous_execution_engine_service.services.team_run import run_team_harness
 
 # orchestrator status -> persisted team-run state
@@ -50,8 +53,10 @@ class TeamRunService:
         self,
         *,
         team_runs: TeamRunRepository,
-        harness: HarnessClient,
+        harness: HarnessClient | None = None,
     ) -> None:
+        # harness is required for the request/driver path; the reaper path (reap_stale) constructs
+        # the service without one (it only FAILs stranded rows, never drives).
         self._team_runs = team_runs
         self._harness = harness
 
@@ -71,6 +76,30 @@ class TeamRunService:
             raise TeamRunError("a Team Harness must declare at least one member", 422)
         return manifest
 
+    def _enforce_member_ceilings(
+        self, team: OHMManifest, sub_harnesses: Mapping[str, dict]
+    ) -> None:
+        """Fail-closed (ADR-032/035 §5): each provided sub-harness may only declare capabilities
+        WITHIN its member's ``tools`` ceiling — the harness builds its policy ceiling from the
+        sub-harness's own ``capabilities[]``, so an unchecked sub-harness would let a client widen a
+        member past what it declared. Reject (422) any sub-harness that exceeds its member's ceiling
+        or names an unknown role."""
+        by_role = {m.role: m for m in team.members}
+        for role, sub_doc in sub_harnesses.items():
+            member = by_role.get(role)
+            if member is None:
+                raise TeamRunError(f"sub_harness for unknown member role '{role}'", 422)
+            try:
+                sub = load_ohm(sub_doc)
+            except OHMError as exc:
+                raise TeamRunError(f"invalid sub_harness for '{role}': {exc}", 422) from exc
+            try:
+                assert_subharness_within_ceiling(member, sub)
+            except OHMCapabilityError as exc:
+                raise TeamRunError(
+                    f"sub_harness for '{role}' exceeds its tools ceiling: {exc}", 422
+                ) from exc
+
     async def create_and_run(
         self,
         principal: Principal,
@@ -81,6 +110,7 @@ class TeamRunService:
     ) -> EngineTeamRun:
         org = self._org(principal)
         team = self._load_team(manifest)  # validate BEFORE persisting
+        self._enforce_member_ceilings(team, sub_harnesses)  # ADR-032/035 §5 — fail-closed ceiling
         with org_scope(org):  # bind the org-GUC so the RLS-backstopped INSERT is admitted (ADR-030)
             row = await self._team_runs.create(
                 organisation_id=org,
@@ -119,36 +149,50 @@ class TeamRunService:
         if not applied or claimed is None:  # lost the race (already advanced) — return current
             return await self.get(team_run_id, principal)
         team = self._load_team(claimed.manifest)
-        return await self._drive(claimed, team, org)
+        # resume past the gate WITHOUT re-running already-completed members (G-D): their persisted
+        # results are passed as `completed`, so their side effects fire once, not on every advance.
+        return await self._drive(claimed, team, org, completed=dict(claimed.results))
 
-    async def _drive(self, row: EngineTeamRun, team: OHMManifest, org: uuid.UUID) -> EngineTeamRun:
+    async def _drive(
+        self,
+        row: EngineTeamRun,
+        team: OHMManifest,
+        org: uuid.UUID,
+        *,
+        completed: dict[str, Any] | None = None,
+    ) -> EngineTeamRun:
         """Claim the run RUNNING, drive the member DAG through the harness, persist the outcome.
 
         Every DB op binds the org-GUC (``org_scope``) so the RLS backstop admits it (ADR-030); the
-        harness drive runs OUTSIDE the binding (it is an HTTP call, not a DB op). NB: ``advance``
-        re-drives the full DAG from the start — resuming from the gate (skipping completed members)
-        is a follow-up once the per-member results are replayed as cached inputs."""
+        harness drive runs OUTSIDE the binding (it is an HTTP call, not a DB op). ``completed``
+        seeds already-finished members on a resume so they are not re-dispatched (G-D)."""
         with org_scope(org):
             claimed, applied = await self._team_runs.transition(
                 row.id, org, new_state="RUNNING", allowed_from=frozenset({"QUEUED"})
             )
         if not applied or claimed is None:  # a concurrent driver owns it — no-op
             return claimed or row
+        harness = self._harness
+        if harness is None:  # only the reaper builds a harness-less service, and it never drives
+            raise RuntimeError("team-run drive requires a harness client")
         try:
             result = await run_team_harness(
                 team,
-                self._harness,
+                harness,
                 sub_harnesses=dict(row.sub_harnesses),
                 gate_decisions=dict(row.gate_decisions),
+                completed=completed,
             )
-        except HarnessClientError as exc:
+        except Exception as exc:  # noqa: BLE001 — never strand the run in RUNNING (G-C); fail closed
+            # ANY drive error (harness failure, decode, network, bug) -> FAILED, not a stuck RUNNING
+            # row. A process death mid-drive (no except runs) is swept by the reaper (list_stale).
             with org_scope(org):
                 updated, _ = await self._team_runs.transition(
                     row.id,
                     org,
                     new_state="FAILED",
                     allowed_from=frozenset({"RUNNING"}),
-                    error_message=str(exc)[:2000],
+                    error_message=str(exc)[:2000] or type(exc).__name__,
                 )
             return updated or claimed
         with org_scope(org):
@@ -161,3 +205,24 @@ class TeamRunService:
                 paused_at=list(result.paused_at),
             )
         return updated or claimed
+
+    async def reap_stale(
+        self, maintenance: EngineMaintenanceRepository, *, older_than: datetime
+    ) -> int:
+        """Fail team runs stuck RUNNING past the lease (a driver that died mid-drive, where no
+        in-process except ran). Cross-org ENUMERATION is on the maintenance/owner engine; each FAIL
+        is org-bound (``org_scope``) on the org engine — the ADR-030 §3 carve. We FAIL (not
+        re-queue) so a stranded run does not silently re-execute its members; re-POST if wanted."""
+        stale = await maintenance.list_stale_team_runs(older_than)
+        reaped = 0
+        for row in stale:
+            with org_scope(row.organisation_id):
+                _, applied = await self._team_runs.transition(
+                    row.id,
+                    row.organisation_id,
+                    new_state="FAILED",
+                    allowed_from=frozenset({"RUNNING"}),
+                    error_message="reaped: stale RUNNING past lease (driver died mid-drive)",
+                )
+            reaped += int(applied)
+        return reaped
