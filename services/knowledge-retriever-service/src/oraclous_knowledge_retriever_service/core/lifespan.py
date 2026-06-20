@@ -21,7 +21,10 @@ from neo4j import Driver
 from oraclous_telemetry import Severity, alert, evaluate_readiness, exit_on_degrade_enabled
 
 from oraclous_knowledge_retriever_service.core.config import get_settings
-from oraclous_knowledge_retriever_service.core.neo4j import make_neo4j_driver
+from oraclous_knowledge_retriever_service.core.neo4j import (
+    make_neo4j_async_driver,
+    make_neo4j_driver,
+)
 from oraclous_knowledge_retriever_service.services.eval_judge import make_judge
 
 
@@ -63,6 +66,25 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         )
     app.state.neo4j_driver = driver
     app.state.neo4j_bind_failed = neo4j_bind_failed
+
+    # Async Neo4j driver for the cross-org ReBAC decision (#446) — used ONLY by the federation
+    # access check to resolve a HAS_ROLE grant (no write Cypher). Best-effort: a bind failure
+    # degrades cross-org admission to OFF (a request naming a foreign graph 403s as before) without
+    # touching the read path. None when Neo4j is unset.
+    rebac_async_driver = None
+    if driver is not None:
+        try:
+            rebac_async_driver = await make_neo4j_async_driver(get_settings())
+        except Exception as exc:  # noqa: BLE001 — degrade: cross-org admission OFF, reads unaffected
+            alert(
+                Severity.WARNING,
+                "rebac_store_bind_failed",
+                "knowledge-retriever-service",
+                "Neo4j async driver unavailable; cross-org graph admission disabled",
+                store="neo4j",
+                error=str(exc),
+            )
+    app.state.neo4j_async_driver = rebac_async_driver
 
     # Advisory query cache (#308): a configured Redis that fails to bind degrades to cache-off — it
     # never gates readiness (only Neo4j does), so a Redis outage cannot take retrieval down.
@@ -109,6 +131,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     finally:
         if driver is not None:
             await asyncio.to_thread(driver.close)
+        rebac_drv = getattr(app.state, "neo4j_async_driver", None)
+        if rebac_drv is not None:
+            await rebac_drv.close()
         if redis_client is not None:
             await redis_client.aclose()
         judge = getattr(app.state, "eval_judge", None)

@@ -31,7 +31,12 @@ import uuid
 from collections.abc import Callable
 from typing import Any
 
-from oraclous_substrate.access import enforced_organisation_id
+from oraclous_substrate.access import (
+    CrossOrganisationDenied,
+    authorise_cross_org_traversal,
+    enforced_organisation_id,
+)
+from oraclous_substrate.rebac import AccessDecisionClient
 
 from oraclous_knowledge_retriever_service.contracts import (
     FederatedEdgeResult,
@@ -180,11 +185,16 @@ class FederatedRetrievalService:
         max_per_graph_k: int,
         max_total: int,
         max_subgraph_nodes: int,
+        rebac_client: AccessDecisionClient | None = None,
     ) -> None:
         self._driver = driver
         self._embedder = embedder
         self._registry = registry
         self._db = database
+        # The fail-closed cross-org access-decision client (#446). None = cross-org admission OFF:
+        # an explicitly-named foreign graph stays inaccessible (the pre-#446 behaviour), never
+        # fail-open. When present, a granted foreign graph is ADMITTED into the fan-out scope.
+        self._rebac = rebac_client
         self._max_graphs = max_graphs
         self._max_per_graph_k = max_per_graph_k
         self._max_total = max_total
@@ -237,9 +247,10 @@ class FederatedRetrievalService:
     async def resolve_scope(
         self, *, principal, graph_ids: list[uuid.UUID] | None
     ) -> FederatedScope:
-        """Resolve the fan-out scope. Explicit subset = validated ∩ accessible, FAIL-CLOSED (any
-        unknown/inaccessible id rejects the whole query). Default = ALL accessible graphs, capped
-        at max_graphs (newest first; the rest reported as skipped, never silently dropped)."""
+        """Resolve the fan-out scope. Explicit subset = validated against (home-org accessible ∪
+        ReBAC-granted), FAIL-CLOSED (any id that is neither rejects the whole query). Default = ALL
+        home-org accessible graphs, capped at max_graphs (newest first; the rest reported as
+        skipped, never silently dropped) — the default set is NEVER widened by cross-org grants."""
         accessible = await self._registry.accessible_graphs(principal)
         by_id = {g.id: g for g in accessible}
         if graph_ids is not None:
@@ -249,15 +260,43 @@ class FederatedRetrievalService:
                 raise FederatedCapError("graph_ids must not be an empty list (omit it for all)")
             requested = list(dict.fromkeys(str(g) for g in graph_ids))  # dedup, order-preserving
             inaccessible = [g for g in requested if g not in by_id]
-            if inaccessible:
-                # One message for unknown AND other-org ids — no existence oracle.
+            # #446: a graph outside the home-org set may still be reachable by an explicit ReBAC
+            # grant (ADR-004). Admit the granted ones; the rest stay inaccessible (fail-closed).
+            granted = await self._admit_granted(inaccessible) if inaccessible else {}
+            still_denied = [g for g in inaccessible if g not in granted]
+            if still_denied:
+                # One message for unknown AND ungranted other-org ids — no existence oracle.
                 raise FederatedAccessError(
                     "one or more requested graphs are not accessible to the caller"
                 )
-            return FederatedScope([by_id[g] for g in requested], [])
+            return FederatedScope([by_id[g] if g in by_id else granted[g] for g in requested], [])
         selected = accessible[: self._max_graphs]
         skipped = [g.id for g in accessible[self._max_graphs :]]
         return FederatedScope(selected, skipped)
+
+    async def _admit_granted(self, graph_ids: list[str]) -> dict[str, GraphInfo]:
+        """ReBAC-check each foreign (non-home-org) graph the caller explicitly named. A graph the
+        caller has been granted a read on (a HAS_ROLE relation, ADR-004) is ADMITTED into the
+        fan-out as a minimal ``GraphInfo``; anything else stays denied. FAIL-CLOSED: with no client
+        (admission OFF) or on ANY non-grant decision (absent / ambiguous / store error — all of
+        which ``authorise_cross_org_traversal`` collapses to a denial), the graph is NOT admitted.
+        The org + subject for the decision come from the bound org-context, never an argument
+        (ADR-006)."""
+        if self._rebac is None:
+            return {}
+        granted: dict[str, GraphInfo] = {}
+        for gid in graph_ids:
+            try:
+                await authorise_cross_org_traversal(
+                    self._rebac, resource=f"graph-{gid}", relation="read"
+                )
+            except CrossOrganisationDenied:
+                continue  # not granted → stays inaccessible (no existence oracle in the message)
+            # Admitted. The grantee org cannot see the foreign graph's name (it is the owner org's),
+            # and the row-read stays org-scoped (foreign-row visibility is the deferred slice), so a
+            # placeholder name is correct here — admission proves the GATE, not content visibility.
+            granted[gid] = GraphInfo(id=gid, name="(shared graph)")
+        return granted
 
     # ── fan-out ──────────────────────────────────────────────────────────────────────────────
 
