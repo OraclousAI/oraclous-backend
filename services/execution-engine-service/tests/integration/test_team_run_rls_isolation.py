@@ -83,6 +83,12 @@ def _human(role: str, deps: list[str] | None = None) -> dict[str, Any]:
     return {"role": role, "kind": "human", "human_role": "author", "depends_on": deps or []}
 
 
+async def _run(svc: TeamRunService, principal: Principal, **kwargs: Any) -> Any:
+    """The request (create → QUEUED) then the WORKER (drive) — the async path, inline here."""
+    row = await svc.create(principal, **kwargs)
+    return await svc.drive(row.id, principal)
+
+
 @pytest.fixture
 async def team_run_service(engine_dsns) -> AsyncIterator[TeamRunService]:  # noqa: ANN001
     """The REAL request-path TeamRunService on the org-bound ``oraclous_app`` engine — the service
@@ -98,13 +104,17 @@ async def team_run_service(engine_dsns) -> AsyncIterator[TeamRunService]:  # noq
 async def test_team_run_persists_and_reads_back_on_org_bound_engine(
     team_run_service: TeamRunService,
 ) -> None:
-    """create_and_run on the org-bound engine binds the org itself, so the RLS-backstopped INSERT is
+    """create+drive on the org-bound engine binds the org itself, so the RLS-backstopped INSERT is
     admitted (without org_scope it would raise 42501 against the empty GUC) — and the tenant
     reads its own run back."""
     manifest = _team(ORG_A, [_agent("researcher"), _agent("writer", ["researcher"])])
 
-    run = await team_run_service.create_and_run(
-        _principal(ORG_A, USER_A), manifest=manifest, sub_harnesses={}, gate_decisions={}
+    run = await _run(
+        team_run_service,
+        _principal(ORG_A, USER_A),
+        manifest=manifest,
+        sub_harnesses={},
+        gate_decisions={},
     )
     assert run.state == "SUCCEEDED"
     assert run.organisation_id == ORG_A
@@ -119,7 +129,8 @@ async def test_cross_org_team_run_read_is_denied_by_rls(
 ) -> None:
     """Org A runs a team; org B's request-path read never sees it — the team_runs RLS policy scopes
     the org-bound engine to the request-bound org (the backstop bites, not just app-layer WHERE)."""
-    a_run = await team_run_service.create_and_run(
+    a_run = await _run(
+        team_run_service,
         _principal(ORG_A, USER_A),
         manifest=_team(ORG_A, [_agent("a")]),
         sub_harnesses={},
@@ -135,7 +146,8 @@ async def test_cross_org_team_run_read_is_denied_by_rls(
     assert exc.value.status_code == 404
 
     # org B's own run succeeds + is isolated; org A still sees only its own.
-    b_run = await team_run_service.create_and_run(
+    b_run = await _run(
+        team_run_service,
         _principal(ORG_B, USER_B),
         manifest=_team(ORG_B, [_agent("b")]),
         sub_harnesses={},
@@ -160,12 +172,16 @@ async def test_cross_request_gate_resume_against_real_db(engine_dsns) -> None:  
         [_agent("researcher"), _human("approval", ["researcher"]), _agent("writer", ["approval"])],
     )
 
-    # ── request 1: create + drive -> PAUSED at the gate, persisted to the DB ──
+    # ── request 1: create + worker-drive -> PAUSED at the gate, persisted to the DB ──
     repo1 = TeamRunRepository(app_dsn)
     harness1 = _FakeHarness()
     try:
-        paused = await TeamRunService(team_runs=repo1, harness=harness1).create_and_run(
-            _principal(ORG_A, USER_A), manifest=manifest, sub_harnesses={}, gate_decisions={}
+        paused = await _run(
+            TeamRunService(team_runs=repo1, harness=harness1),
+            _principal(ORG_A, USER_A),
+            manifest=manifest,
+            sub_harnesses={},
+            gate_decisions={},
         )
     finally:
         await repo1.close()
@@ -174,7 +190,8 @@ async def test_cross_request_gate_resume_against_real_db(engine_dsns) -> None:  
     assert len(harness1.inputs) == 1  # only the researcher ran before the gate
     run_id = paused.id
 
-    # ── a SEPARATE request/connection reads the PAUSED run back + ADVANCES it past the gate ──
+    # ── a SEPARATE request/connection reads PAUSED back, ADVANCES (→QUEUED), then the worker
+    # drives the resume to SUCCEEDED — pause + gate decision survive across requests ──
     repo2 = TeamRunRepository(app_dsn)
     harness2 = _FakeHarness()
     try:
@@ -183,9 +200,13 @@ async def test_cross_request_gate_resume_against_real_db(engine_dsns) -> None:  
         assert refetched.state == "PAUSED"  # the pause survived across the request boundary (DB)
         assert "researcher" in refetched.results  # the pre-gate result is durably persisted
 
-        resumed = await svc2.advance(run_id, _principal(ORG_A, USER_A), {"approval": "approve"})
-        assert resumed.state == "SUCCEEDED"  # advancing the gate ran the rest to completion
+        advanced = await svc2.advance(run_id, _principal(ORG_A, USER_A), {"approval": "approve"})
+        assert advanced.state == "QUEUED"  # advance re-queues; the worker drives the resume
+        resumed = await svc2.drive(run_id, _principal(ORG_A, USER_A))
+        assert resumed.state == "SUCCEEDED"  # the worker resumed past the gate to completion
         assert "writer" in resumed.results  # the gated-off member ran only after the gate opened
+        # the researcher (pre-gate) is NOT re-run on resume — request-2's harness never saw it (G-D)
+        assert all("researcher" not in i for i in harness2.inputs)
     finally:
         await repo2.close()
 
