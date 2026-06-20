@@ -215,9 +215,26 @@ WITH u
 MATCH (r:Role:__System__ {graph_id: $graph_id, organisation_id: $organisation_id, name: $role_name})
 MERGE (u)-[hr:HAS_ROLE {graph_id: $graph_id, organisation_id: $organisation_id}]->(r)
 ON CREATE SET hr.granted_at = $now, hr.granted_by = $granted_by,
-              hr.expires_at = $expires_at, hr.is_active = true
+              hr.expires_at = $expires_at, hr.is_active = true,
+              hr.owner_organisation_id = $owner_organisation_id
 ON MATCH SET hr.granted_at = $now, hr.granted_by = $granted_by,
-             hr.expires_at = $expires_at, hr.is_active = true
+             hr.expires_at = $expires_at, hr.is_active = true,
+             hr.owner_organisation_id = $owner_organisation_id
+"""
+
+# Read-back (ADR-036 / Contract G2): the OWNER org recorded on a grantee-scoped HAS_ROLE edge — the
+# org whose ROWS the granted caller may read. The MATCH key is identical to the Phase-B check (the
+# grantee org + graph), so this only ever returns an owner org for a grant the caller genuinely
+# holds; NULL/absent → no cross-org row read (the consumer fail-closes). Read-only, no write.
+_GRANT_OWNER_ORG_QUERY = """
+MATCH (u:User:__Platform__ {user_id: $user_id})
+  -[hr:HAS_ROLE {graph_id: $graph_id, organisation_id: $organisation_id}]->
+  (:Role:__System__ {graph_id: $graph_id, organisation_id: $organisation_id})
+WHERE hr.is_active = true AND hr.owner_organisation_id IS NOT NULL
+  AND (hr.expires_at IS NULL OR hr.expires_at > datetime())
+RETURN hr.owner_organisation_id AS owner_org
+ORDER BY hr.granted_at DESC
+LIMIT 1
 """
 
 _REVOKE_ROLE_QUERY = """
@@ -820,10 +837,16 @@ class ReBACEngine:
         granted_by: str,
         expires_at: str | None = None,
         email: str | None = None,
+        owner_organisation_id: str | None = None,
     ) -> None:
         """MERGE a HAS_ROLE edge scoped by ``organisation_id`` + ``graph_id``;
         invalidate the cache so a freshly granted role is not masked by a stale
         deny (AC#3).
+
+        ``owner_organisation_id`` (ADR-036 / Contract G2) is recorded as a NON-KEY read-back
+        property on the edge — the org whose ROWS this grant lets the (cross-org) grantee read. It
+        must be server-derived under owner proof by the caller (KGS ``grant_read``), never client
+        input. None for ordinary same-org grants (no cross-org row visibility).
         """
         _require_org(organisation_id)
         _require_graph(graph_id)
@@ -839,12 +862,44 @@ class ReBACEngine:
                     "granted_by": granted_by,
                     "expires_at": expires_at,
                     "email": email,
+                    "owner_organisation_id": owner_organisation_id,
                     "now": _now(),
                 },
             )
         await self.invalidate_permission_cache(
             organisation_id=organisation_id, user_id=target_user_id, graph_id=graph_id
         )
+
+    async def grant_owner_org(
+        self,
+        driver: AsyncDriver,
+        *,
+        organisation_id: str,
+        graph_id: str,
+        subject: dict[str, str],
+    ) -> str | None:
+        """The OWNER org recorded on the caller's grant for ``graph_id`` (ADR-036 / Contract G2) —
+        the org whose rows the granted caller may read — or None if there is no active grant with a
+        recorded owner org. Scoped by the GRANTEE org (``organisation_id``, the caller's bound org)
+        exactly like ``check_graph_permission``, so it can only ever surface the owner org of a
+        grant the caller holds. Only user subjects carry graph grants; else → None (fail-closed).
+        """
+        _require_org(organisation_id)
+        _require_graph(graph_id)
+        subject_type, subject_id = _require_subject(subject)
+        if subject_type != "user":
+            return None
+        async with driver.session() as session:
+            result = await session.run(
+                _GRANT_OWNER_ORG_QUERY,
+                {
+                    "user_id": subject_id,
+                    "graph_id": graph_id,
+                    "organisation_id": organisation_id,
+                },
+            )
+            row = await result.single()
+        return row["owner_org"] if row else None
 
     async def revoke_role(
         self,

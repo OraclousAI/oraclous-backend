@@ -28,14 +28,20 @@ class AccessRequest:
 
 @dataclass(frozen=True, slots=True)
 class AccessDecision:
-    """An explicit, typed allow/deny decision with a rationale."""
+    """An explicit, typed allow/deny decision with a rationale.
+
+    ``owner_organisation_id`` (ADR-036) is read-back metadata, populated ONLY on an ``allowed``
+    cross-org grant: the org whose ROWS the grant lets the (cross-org) subject read. ``None`` for an
+    ordinary allow (same-org access — no cross-org row visibility) and always ``None`` on a deny.
+    """
 
     allowed: bool
     reason: str = ""
+    owner_organisation_id: str | None = None
 
     @classmethod
-    def allow(cls, reason: str = "") -> AccessDecision:
-        return cls(allowed=True, reason=reason)
+    def allow(cls, reason: str = "", *, owner_organisation_id: str | None = None) -> AccessDecision:
+        return cls(allowed=True, reason=reason, owner_organisation_id=owner_organisation_id)
 
     @classmethod
     def deny(cls, reason: str) -> AccessDecision:
@@ -50,6 +56,14 @@ class RelationResolver(Protocol):
     """
 
     async def resolve(self, request: AccessRequest) -> bool | None: ...
+
+
+class OwnerOrgResolver(Protocol):
+    """Optional resolver capability (ADR-036): after an allow, yields the owner org of the granted
+    cross-org resource (or None). A resolver that implements it lets the seam surface the owner org
+    on the AccessDecision; one that does not is unaffected (owner org stays None — fail-closed)."""
+
+    async def resolve_owner_org(self, request: AccessRequest) -> str | None: ...
 
 
 class AccessDecisionClient:
@@ -71,6 +85,19 @@ class AccessDecisionClient:
             return AccessDecision.deny("resolver error; failing closed")
 
         if resolved is True:
-            return AccessDecision.allow("relation present")
+            # ADR-036: only AFTER an allow, surface the owner org of the granted resource (if the
+            # resolver supports it). A read-back failure leaves it None — the consumer fail-closes
+            # (no cross-org row read), never opening the decision wider than the bare allow.
+            owner_org = await self._resolve_owner_org(request)
+            return AccessDecision.allow("relation present", owner_organisation_id=owner_org)
         # Absent (False) or ambiguous (None) both deny — fail-closed default.
         return AccessDecision.deny("relation absent or ambiguous; failing closed")
+
+    async def _resolve_owner_org(self, request: AccessRequest) -> str | None:
+        owner_resolver = getattr(self._resolver, "resolve_owner_org", None)
+        if owner_resolver is None:
+            return None
+        try:
+            return await owner_resolver(request)
+        except Exception:
+            return None  # read-back failure → no cross-org row read (fail-closed)

@@ -158,10 +158,14 @@ def get_federated_service(
     rebac_async_driver = getattr(request.app.state, "neo4j_async_driver", None)
     rebac_client = None
     if rebac_async_driver is not None:
+        engine = ReBACEngine()
         rebac_client = AccessDecisionClient(
             resolver=ReBACEngineResolver(
-                permission_check=ReBACEngine().check_graph_permission,
+                permission_check=engine.check_graph_permission,
                 driver=rebac_async_driver,
+                # ADR-036: the seam reads back the owner org of a granted graph so the fan-out can
+                # bind it and return the owner's rows.
+                owner_org_check=engine.grant_owner_org,
             )
         )
     return FederatedRetrievalService(

@@ -124,7 +124,7 @@ def bind_organisation_guc(cursor: object) -> None:
 
 async def authorise_cross_org_traversal(
     client: AccessDecisionClient, *, resource: str, relation: str
-) -> None:
+) -> str | None:
     """Authorise a cross-organisation traversal through the ReBAC client
     (reshape of ``federation_service::_validate_and_filter``).
 
@@ -132,6 +132,10 @@ async def authorise_cross_org_traversal(
     never from arguments. Fail-closed (ADR-004; T1-M2): an absent, ambiguous, or
     errored decision denies. The denial does not echo the target resource id
     (enumeration-prevention).
+
+    Returns the **owner organisation id** (ADR-036) when the grant authorises reading another org's
+    rows — the org whose data the granted caller may read — or ``None`` for an ordinary same-org
+    allow. Raises ``CrossOrganisationDenied`` on any non-grant.
     """
     context = current_organisation_context()
     request = AccessRequest(
@@ -146,6 +150,7 @@ async def authorise_cross_org_traversal(
     decision = await client.check(request)
     if not decision.allowed:
         raise CrossOrganisationDenied("cross-organisation traversal denied")
+    return decision.owner_organisation_id
 
 
 def scoped_write_node(driver: object, *, label: str, properties: Mapping[str, object]) -> None:

@@ -203,11 +203,18 @@ class FederatedRetrievalService:
         # return thousands of nodes). The aggregate cap the FE explorer is sized for.
         self._max_subgraph_nodes = max_subgraph_nodes
 
-    def _repo(self) -> RetrievalRepository:
+    def _repo(self, organisation_id: str | None = None) -> RetrievalRepository:
         # The SAME fail-closed, org-scoped repository the single-graph reads use — every fan-out
         # branch carries the org + graph predicates as bound parameters.
+        #
+        # Per-branch org binding (ADR-036): a cross-org graph admitted by a ReBAC grant passes its
+        # OWNER org here, so THAT branch reads the owner's rows; home/default graphs pass None → the
+        # caller's enforced org (unchanged). The graph_id predicate still pins the slice, so a
+        # granted branch can only ever read that one graph's owner-org rows, never another.
         return RetrievalRepository(
-            self._driver, organisation_id=enforced_organisation_id(), database=self._db
+            self._driver,
+            organisation_id=organisation_id or enforced_organisation_id(),
+            database=self._db,
         )
 
     # ── scope resolution (the no-new-access gate) ────────────────────────────────────────────
@@ -287,15 +294,20 @@ class FederatedRetrievalService:
         granted: dict[str, GraphInfo] = {}
         for gid in graph_ids:
             try:
-                await authorise_cross_org_traversal(
+                owner_org = await authorise_cross_org_traversal(
                     self._rebac, resource=f"graph-{gid}", relation="read"
                 )
             except CrossOrganisationDenied:
                 continue  # not granted → stays inaccessible (no existence oracle in the message)
+            # ADR-036: admit ONLY if the grant carries an OWNER org (the org whose rows the read
+            # binds). A grant without one (e.g. written before ADR-036) is DROPPED — never read
+            # under the caller's org, never None into Cypher; it returns empty until re-granted.
+            if not owner_org:
+                continue
             # Admitted. The grantee org cannot see the foreign graph's name (it is the owner org's),
-            # and the row-read stays org-scoped (foreign-row visibility is the deferred slice), so a
-            # placeholder name is correct here — admission proves the GATE, not content visibility.
-            granted[gid] = GraphInfo(id=gid, name="(shared graph)")
+            # so the placeholder name stands; the owner org binds the per-branch read to exactly
+            # this graph's owner-org rows (the graph_id predicate pins the slice — no widening).
+            granted[gid] = GraphInfo(id=gid, name="(shared graph)", owner_organisation_id=owner_org)
         return granted
 
     # ── fan-out ──────────────────────────────────────────────────────────────────────────────
@@ -313,9 +325,13 @@ class FederatedRetrievalService:
         ``failed`` and the successful graphs' results are returned, so one bad graph never 500s the
         whole federated query. The org/graph predicates are unaffected (security is per-branch and
         in-query), so dropping a branch cannot widen access."""
-        repo = self._repo()
 
         async def one(graph: GraphInfo) -> Any:
+            # ADR-036: per-branch repository — bound to the graph's OWNER org for an admitted
+            # cross-org grant, else the caller's org. Built on the event loop (org context bound)
+            # before the off-loop Cypher; never one shared repo (which would bleed an owner org
+            # across concurrent branches).
+            repo = self._repo(graph.owner_organisation_id)
             return await asyncio.to_thread(call, repo, graph.id)
 
         outcomes = await asyncio.gather(*(one(g) for g in graphs), return_exceptions=True)
@@ -494,11 +510,12 @@ class FederatedRetrievalService:
             failed=failed,
         )
 
-        repo = self._repo()
-
         async def one(graph: GraphInfo, node_ids: list[str]) -> dict:
             if not node_ids:
                 return {"nodes": [], "edges": []}
+            # ADR-036: per-branch repo (owner org for an admitted grant, else the caller's), same as
+            # _fan_out — the neighborhood read of a granted graph binds the owner org too.
+            repo = self._repo(graph.owner_organisation_id)
             return await asyncio.to_thread(
                 repo.entity_neighborhood,
                 graph_id=graph.id,

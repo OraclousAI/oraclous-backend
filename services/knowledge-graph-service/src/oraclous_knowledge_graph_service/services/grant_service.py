@@ -12,6 +12,7 @@ from __future__ import annotations
 import uuid
 
 from oraclous_rebac import ReBACEngine
+from oraclous_substrate.access import enforced_organisation_id
 
 from oraclous_knowledge_graph_service.services.graph_service import GraphService
 
@@ -47,6 +48,10 @@ class GraphGrantService:
         gid = f"graph-{graph_id}"
         owner = f"user-{owner_user_id}"
         org = str(grantee_organisation_id)
+        # ADR-036 / Contract G2: the OWNER org — the org that owns this graph — is the owner's bound
+        # org, which `assert_owned` just verified. Server-derived here (NEVER from a request body);
+        # recorded on the grant edge so federation can bind it to read the owner's rows.
+        owner_org = enforced_organisation_id()
         # Seed the system roles for (graph, GRANTEE org) so grant_role can MATCH the viewer role,
         # then grant the grantee user a read-level (viewer) role under the grantee org.
         await self._engine.bootstrap_graph_roles(
@@ -59,6 +64,7 @@ class GraphGrantService:
             target_user_id=f"user-{grantee_user_id}",
             role_name="viewer",
             granted_by=owner,
+            owner_organisation_id=owner_org,
         )
         try:
             await self._engine.invalidate_permission_cache(
