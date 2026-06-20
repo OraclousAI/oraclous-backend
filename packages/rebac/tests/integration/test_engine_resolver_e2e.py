@@ -186,3 +186,52 @@ async def test_cross_organisation_check_returns_zero(
 # error test becomes writable — drop a closed driver in, observe the error
 # reason at the seam. Until then, asserting it end-to-end here would pin
 # behaviour the engine does not currently produce.
+
+
+# ── Phase B (HAS_ROLE) — the REAL grant flow, against real Neo4j (#456) ─────
+#
+# Every test above seeds CAN_ACCESS directly (Phase A). The role-based path
+# bootstrap_graph_roles -> grant_role -> check (Phase B HAS_ROLE -> Role ->
+# Permission) was NEVER exercised end-to-end (the substrate federation test
+# mocks the client) — which hid a bug: the global :Permission:__System__ nodes
+# were never seeded, so _BOOTSTRAP_PERM_EDGE_QUERY's MATCH found nothing, no
+# HAS_PERMISSION edge was wired, and every role-based grant failed closed.
+# This drives the REAL chain (client.check -> resolver -> engine, Phase B) so
+# that bug cannot regress.
+import uuid  # noqa: E402
+
+
+async def test_grant_role_authorizes_a_read_through_the_real_phase_b_chain(
+    rebac_async_driver, null_async_redis
+) -> None:
+    engine = ReBACEngine(redis=null_async_redis)
+    org = str(uuid.uuid4())
+    graph = "graph-" + str(uuid.uuid4())
+    granted = "user-" + str(uuid.uuid4())
+    other = "user-" + str(uuid.uuid4())
+    owner = "user-" + str(uuid.uuid4())
+    client = _make_client(rebac_async_driver, null_async_redis)
+
+    def _req(subject: str) -> AccessRequest:
+        return AccessRequest(organisation_id=org, subject=subject, resource=graph, relation="read")
+
+    # deny BEFORE any grant (no role, no permission)
+    assert (await client.check(_req(granted))).allowed is False
+
+    # seed the system roles+permissions for (graph, org), then grant viewer
+    await engine.bootstrap_graph_roles(
+        rebac_async_driver, organisation_id=org, graph_id=graph, owner_user_id=owner
+    )
+    await engine.grant_role(
+        rebac_async_driver,
+        organisation_id=org,
+        graph_id=graph,
+        target_user_id=granted,
+        role_name="viewer",
+        granted_by=owner,
+    )
+
+    # ALLOW after grant (viewer -> graph:read satisfies a read), and an ungranted
+    # user is still denied (the grant is subject-scoped, not graph-wide).
+    assert (await client.check(_req(granted))).allowed is True
+    assert (await client.check(_req(other))).allowed is False

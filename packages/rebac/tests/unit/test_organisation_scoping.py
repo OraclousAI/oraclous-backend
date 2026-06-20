@@ -217,6 +217,11 @@ class TestOrganisationIdBoundToQueries:
         params = _params_of(session)
         assert params
         for p in params:
+            # The global system-Permission catalog (_BOOTSTRAP_SYSTEM_PERM_QUERY) is org-INDEPENDENT
+            # by design — the Permission NODES are shared system-wide; org-scoping lives on roles
+            # + HAS_ROLE/HAS_PERMISSION edges, which carry organisation_id. Exempt only that query.
+            if "resource_type" in p and "organisation_id" not in p:
+                continue
             assert p.get("organisation_id") == _ORG_A, f"bootstrap query missing org scope: {p}"
 
 

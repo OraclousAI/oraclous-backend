@@ -119,7 +119,7 @@ async def test_traversal_decision_is_org_and_subject_scoped_from_context() -> No
     assert len(resolver.calls) == 1
     req = resolver.calls[0]
     assert req.organisation_id == str(ORG_A)
-    assert req.subject == str(PRINCIPAL)
+    assert req.subject == f"user-{PRINCIPAL}"  # the seam prefixes the subject (ReBAC vocabulary)
     assert req.resource == TARGET
     assert req.relation == RELATION
 
