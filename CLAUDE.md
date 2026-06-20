@@ -391,9 +391,12 @@ Reference: [Definition of Done](https://oraclous.atlassian.net/wiki/spaces/OP/pa
 
 ## 9. Done means done
 
+> **⚠️ DEPLOYED-STACK VERIFICATION LAW (non-negotiable, do not bypass).** A feature is **not tested / not done** until it has been **driven against the DEPLOYED docker stack** (the built images, real services, real Celery worker/broker, real harness — `deploy/docker-compose.yml` [+ `docker-compose.dev-ports.yml`]) **through its real HTTP API endpoints** (or an MCP server). **CI-green, unit tests, and testcontainers integration tests are necessary but NOT sufficient** — they run a *hypothesised* version (a real DB but `FakeHarness`/fake repos/mocked seams) and never exercise the engine↔worker↔harness HTTP wiring, the broker, or the registry seed. **Forbidden as a substitute for the deployed proof:** custom backend logic in the test (fakes/monkeypatch), calling internal functions, or asserting against the DB directly. The acceptance bar is: rebuild the changed images from current `main`, recreate the services, wait healthy, and prove the bound behaviour with `curl` against the live endpoints. *(Why: the team-runtime shipped CI-green but the running stack was stale and the full HTTP wiring was never exercised end-to-end — CI-green ≠ runs-deployed; real-stack runs also surface what CI can't, e.g. `ENGINE_AUTH_MODE=gateway` needing `X-Internal-Key` + `X-Principal-*` headers, not a bearer.)*
+
 A story is **done** when, and only when (Definition of Done, impl/infra):
 
 1. **CI is green** — quality (ruff check + format-check + collect), unit, integration (via testcontainers/docker), and security-if-applicable all pass.
+1b. **Deployed-stack e2e proven** — the bound behaviour is demonstrated against the **deployed docker stack via its real HTTP API** (the DEPLOYED-STACK VERIFICATION LAW above), not testcontainers/mocks/DB-direct alone. CI-green alone never satisfies this.
 2. The `[tests]` PR and the `[impl]` PR are both **merged** — "PR opened" is not done.
 3. It has been **reviewed by a non-implementer** (full or light gate per §8 severity); every required reviewer signed off explicitly (no silent approvals); the PR author was never the sole merger.
 4. The **CTO merged** the PR (Reza merges only at release level) and recorded it in the merge digest.
