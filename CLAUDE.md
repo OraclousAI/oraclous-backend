@@ -396,10 +396,11 @@ Reference: [Definition of Done](https://oraclous.atlassian.net/wiki/spaces/OP/pa
 A story is **done** when, and only when (Definition of Done, impl/infra):
 
 1. **CI is green** — quality (ruff check + format-check + collect), unit, integration (via testcontainers/docker), and security-if-applicable all pass.
-1b. **Deployed-stack e2e proven** — the bound behaviour is demonstrated against the **deployed docker stack via its real HTTP API** (the DEPLOYED-STACK VERIFICATION LAW above), not testcontainers/mocks/DB-direct alone. CI-green alone never satisfies this.
+1b. **Deployed-stack e2e proven** — the bound behaviour is demonstrated against the **deployed docker stack via its real HTTP API, through the application-gateway** (the DEPLOYED-STACK VERIFICATION LAW above; `FUCK_CLAUDE_FUCK_PAPERCLIP.md`), not testcontainers/mocks/DB-direct alone. CI-green alone never satisfies this.
+1c. **E2E run locally before the PR is opened, PASS pasted into the PR** (`scripts/e2e.sh --up`) — GitHub CI cannot run the deployed-stack e2e (no stack), so it runs locally pre-PR; the suite auto-skips when the gateway is down and a skip is **not** a pass (`FUCK_CLAUDE_FUCK_PAPERCLIP.md` rule 3).
 2. The `[tests]` PR and the `[impl]` PR are both **merged** — "PR opened" is not done.
 3. It has been **reviewed by a non-implementer** (full or light gate per §8 severity); every required reviewer signed off explicitly (no silent approvals); the PR author was never the sole merger.
-4. The **CTO merged** the PR (Reza merges only at release level) and recorded it in the merge digest.
+4. The **CTO merged** the PR (Reza merges only at release level) and recorded it in the merge digest. For a behaviour-touching PR the **CTO verifies the real gateway/MCP e2e PASS on the deployed stack before merging** — never on CI-green alone (`FUCK_CLAUDE_FUCK_PAPERCLIP.md` rule 4).
 5. Coverage on new code is adequate; no new flaky tests; no regressions in the full suite. A regression discovered in a *different* story is filed as a separate critical `[regression]` issue (linked and assigned) — it does **not** hold the current story hostage.
 6. If service behaviour changed: `docs-writer` has updated the affected service reference page or has an open assigned issue to do so.
 7. If architecture-significant: a follow-up ADR issue is open if any architectural decision crystallised (ADRs are accepted by the CTO).
