@@ -29,6 +29,7 @@ def _env(
     max_wall: int | None = None,
     max_tokens: int | None = None,
     gated: frozenset[str] = frozenset(),
+    ceiling: frozenset[str] = frozenset(),
     redact: tuple[str, ...] = (),
 ) -> PolicyEnvelope:
     return PolicyEnvelope(
@@ -37,6 +38,7 @@ def _env(
         max_wall_time_seconds=max_wall,
         max_tokens=max_tokens,
         gated_bindings=gated,
+        tool_ceiling=ceiling,
         redact_patterns=redact,
     )
 
@@ -209,6 +211,58 @@ async def test_hitl_gate_halts_before_dispatch() -> None:
     assert result.status is HarnessStatus.ESCALATED
     assert result.error_type == "hitl_required"
     assert dispatched is False  # the gated capability was NOT executed
+
+
+async def test_capability_ceiling_denies_out_of_ceiling_tool() -> None:
+    # ADR-035 §5 / item 4: a binding outside the acting member's ceiling is fail-closed denied —
+    # never dispatched, regardless of what the model (or any routing path) asked for.
+    dispatched = False
+
+    async def _watch(spec: ToolSpec, args: dict) -> dict:
+        nonlocal dispatched
+        dispatched = True
+        return {"ok": 1}
+
+    result = await run_tool_use_loop(
+        llm=_ScriptedLLM(),
+        system="",
+        user_input="go",
+        tool_specs=[_SPEC],
+        dispatch=_watch,
+        policy=_env(ceiling=frozenset({"read"})),  # _SPEC.binding "pg" is NOT in the ceiling
+    )
+    assert dispatched is False  # the out-of-ceiling capability never reached a side effect
+    assert any(
+        s.kind is StepKind.TOOL and s.status == "error" and "capability_denied" in (s.detail or "")
+        for s in result.steps
+    )
+
+
+async def test_in_ceiling_tool_dispatches_normally() -> None:
+    result = await run_tool_use_loop(
+        llm=_ScriptedLLM(),
+        system="",
+        user_input="go",
+        tool_specs=[_SPEC],
+        dispatch=_ok_dispatch,
+        policy=_env(ceiling=frozenset({"pg"})),  # binding "pg" IS in the ceiling
+    )
+    assert result.status is HarnessStatus.SUCCEEDED
+    assert any(s.status == "ok" for s in result.steps if s.kind is StepKind.TOOL)
+
+
+async def test_empty_ceiling_imposes_no_restriction() -> None:
+    # the single-agent path passes no ceiling -> behaviour unchanged (regression guard)
+    result = await run_tool_use_loop(
+        llm=_ScriptedLLM(),
+        system="",
+        user_input="go",
+        tool_specs=[_SPEC],
+        dispatch=_ok_dispatch,
+        policy=_env(),
+    )
+    assert result.status is HarnessStatus.SUCCEEDED
+    assert any(s.status == "ok" for s in result.steps if s.kind is StepKind.TOOL)
 
 
 async def test_wall_time_budget_halts() -> None:
