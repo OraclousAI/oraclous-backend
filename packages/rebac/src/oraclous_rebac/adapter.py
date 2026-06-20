@@ -69,6 +69,20 @@ class _PermissionCheck(Protocol):
     ) -> bool: ...
 
 
+class _OwnerOrgCheck(Protocol):
+    """Matches ``ReBACEngine.grant_owner_org`` — returns the owner org recorded on the caller's
+    grant for a graph (ADR-036), or None. Positional driver, keyword-only org / graph / subject."""
+
+    async def __call__(
+        self,
+        driver: object,
+        *,
+        organisation_id: str,
+        graph_id: str,
+        subject: dict[str, str],
+    ) -> str | None: ...
+
+
 class ReBACEngineResolver:
     """Substrate-seam-compatible resolver backed by ``ReBACEngine``."""
 
@@ -77,9 +91,13 @@ class ReBACEngineResolver:
         *,
         permission_check: _PermissionCheck,
         driver: object | None = None,
+        owner_org_check: _OwnerOrgCheck | None = None,
     ) -> None:
         self._permission_check = permission_check
         self._driver = driver
+        # Optional (ADR-036): when wired, the seam reads back the owner org of a granted cross-org
+        # graph so federation can bind it. Absent → no owner org surfaces (consumer fail-closes).
+        self._owner_org_check = owner_org_check
 
     async def resolve(self, request: AccessRequest) -> bool | None:
         if not request.subject.startswith(_USER_SUBJECT_PREFIX):
@@ -96,4 +114,20 @@ class ReBACEngineResolver:
             subject={"type": "user", "id": request.subject},
             graph_id=request.resource,
             required_level=required_level,
+        )
+
+    async def resolve_owner_org(self, request: AccessRequest) -> str | None:
+        """The owner org of the caller's grant for the requested graph (ADR-036), or None. Only ever
+        called by the seam AFTER ``resolve`` allows; same fail-closed subject/resource guards."""
+        if self._owner_org_check is None:
+            return None
+        if not request.subject.startswith(_USER_SUBJECT_PREFIX):
+            return None
+        if not request.resource.startswith(_GRAPH_RESOURCE_PREFIX):
+            return None
+        return await self._owner_org_check(
+            self._driver,
+            organisation_id=request.organisation_id,
+            graph_id=request.resource,
+            subject={"type": "user", "id": request.subject},
         )
