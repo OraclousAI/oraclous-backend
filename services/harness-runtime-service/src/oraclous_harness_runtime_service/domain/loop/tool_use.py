@@ -157,6 +157,33 @@ async def run_tool_use_loop(
             # Coded governance — enforced BEFORE any dispatch, regardless of what the prose said.
             if _over_wall_time():
                 return _escalate("budget", "wall_time", "wall-time budget exhausted", iteration)
+            # Capability-absence ceiling (ADR-035 §5) — upstream of policy; fail-closed DENY of any
+            # binding outside the acting member's tools[] BEFORE the gate/budget/dispatch. No path
+            # widens the ceiling; an out-of-ceiling call never reaches a side effect.
+            if spec is not None and policy.tool_ceiling and spec.binding not in policy.tool_ceiling:
+                denied = {
+                    "error": "capability_denied",
+                    "detail": f"{spec.binding!r} outside ceiling",
+                }
+                content = _redact(json.dumps(denied), redactors)
+                messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": tc["id"],
+                        "name": tc["name"],
+                        "content": content,
+                    }
+                )
+                steps.append(
+                    LoopStep(
+                        len(steps),
+                        StepKind.TOOL,
+                        f"{spec.binding}.{spec.operation}",
+                        "error",
+                        _truncate(content),
+                    )
+                )
+                continue
             gated = spec is not None and spec.binding in policy.gated_bindings
             if spec is not None and gated and tc["id"] != approved_id:
                 # Pause: checkpoint the not-yet-dispatched calls (this one first) for resume.
