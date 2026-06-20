@@ -33,11 +33,13 @@ from datetime import datetime
 from oraclous_execution_engine_service.models.job import EngineJob
 from oraclous_execution_engine_service.models.roundtable import EngineRoundtable
 from oraclous_execution_engine_service.models.schedule import EngineSchedule
+from oraclous_execution_engine_service.models.team_run import EngineTeamRun
 from oraclous_execution_engine_service.repositories.job_repository import JobRepository
 from oraclous_execution_engine_service.repositories.roundtable_repository import (
     RoundtableRepository,
 )
 from oraclous_execution_engine_service.repositories.schedule_repository import ScheduleRepository
+from oraclous_execution_engine_service.repositories.team_run_repository import TeamRunRepository
 
 
 class EngineMaintenanceRepository:
@@ -56,11 +58,13 @@ class EngineMaintenanceRepository:
             maintenance_url, worker_pool=True, install_guard=False
         )
         self._schedules = ScheduleRepository(maintenance_url, worker_pool=True, install_guard=False)
+        self._team_runs = TeamRunRepository(maintenance_url, worker_pool=True, install_guard=False)
 
     async def close(self) -> None:
         await self._jobs.close()
         await self._roundtables.close()
         await self._schedules.close()
+        await self._team_runs.close()
 
     async def list_stale_jobs(self, older_than: datetime, *, limit: int = 100) -> list[EngineJob]:
         """RUNNING jobs whose lease has expired — across ALL orgs (the reaper's read)."""
@@ -71,6 +75,12 @@ class EngineMaintenanceRepository:
     ) -> list[EngineRoundtable]:
         """RUNNING round-tables whose driver died mid-turn — across ALL orgs (the reaper's read)."""
         return await self._roundtables.list_stale_running(older_than, limit=limit)
+
+    async def list_stale_team_runs(
+        self, older_than: datetime, *, limit: int = 100
+    ) -> list[EngineTeamRun]:
+        """RUNNING team runs whose driver died mid-drive — across ALL orgs (the reaper's read)."""
+        return await self._team_runs.list_stale_running(older_than, limit=limit)
 
     async def list_enabled_cron(self, *, limit: int = 500) -> list[EngineSchedule]:
         """All enabled cron schedules — across ALL orgs (Beat's read)."""

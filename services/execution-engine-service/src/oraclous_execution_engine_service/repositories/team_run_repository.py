@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import uuid
+from datetime import datetime
 from typing import Any
 
 from sqlalchemy import select
@@ -95,3 +96,20 @@ class TeamRunRepository:
             if row is not None:
                 await session.refresh(row)
             return row, True
+
+    async def list_stale_running(
+        self, older_than: datetime, *, limit: int = 100
+    ) -> list[EngineTeamRun]:
+        """RUNNING team runs whose last update predates the lease — the reaper's system sweep for a
+        driver that died mid-drive. NOT org-scoped (maintenance read on the owner engine); each row
+        is failed under its own org via ``org_scope`` (same ADR-006 carve-out as the job reaper)."""
+        async with self._session() as session:
+            result = await session.execute(
+                select(EngineTeamRun)
+                .where(
+                    EngineTeamRun.state == "RUNNING",
+                    EngineTeamRun.updated_at < older_than,
+                )
+                .limit(limit)
+            )
+            return list(result.scalars().all())

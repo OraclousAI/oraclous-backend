@@ -34,10 +34,12 @@ from oraclous_execution_engine_service.repositories.roundtable_repository import
     RoundtableRepository,
 )
 from oraclous_execution_engine_service.repositories.schedule_repository import ScheduleRepository
+from oraclous_execution_engine_service.repositories.team_run_repository import TeamRunRepository
 from oraclous_execution_engine_service.services.harness_client import HarnessClient
 from oraclous_execution_engine_service.services.job_service import JobService
 from oraclous_execution_engine_service.services.roundtable_service import RoundtableService
 from oraclous_execution_engine_service.services.schedule_service import ScheduleService
+from oraclous_execution_engine_service.services.team_run_service import TeamRunService
 from oraclous_execution_engine_service.tasks.celery_app import AsyncTaskExecutor, celery_app
 
 
@@ -97,6 +99,7 @@ async def _reap_async() -> dict[str, int]:
     # cross-org read closed and no dead worker's job/round-table is ever found.
     jobs = JobRepository(settings.database_url, worker_pool=True)
     roundtables = RoundtableRepository(settings.database_url, worker_pool=True)
+    team_runs = TeamRunRepository(settings.database_url, worker_pool=True)
     sink = PostgresProvenanceSink(settings.database_url, worker_pool=True)
     maintenance = EngineMaintenanceRepository(settings.maintenance_url)
     try:
@@ -112,10 +115,19 @@ async def _reap_async() -> dict[str, int]:
             enqueue=enqueue_roundtable,
             maintenance=maintenance,
         ).reap_stale(older_than=older_than)
-        return {"reaped": reaped, "roundtables_reaped": rt_reaped}
+        # and FAIL team runs whose driver died mid-drive (FAIL, not re-queue — no re-execution).
+        tr_reaped = await TeamRunService(team_runs=team_runs).reap_stale(
+            maintenance, older_than=older_than
+        )
+        return {
+            "reaped": reaped,
+            "roundtables_reaped": rt_reaped,
+            "team_runs_reaped": tr_reaped,
+        }
     finally:
         await jobs.close()
         await roundtables.close()
+        await team_runs.close()
         await sink.close()
         await maintenance.close()
 
