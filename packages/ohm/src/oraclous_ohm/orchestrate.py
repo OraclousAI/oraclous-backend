@@ -21,7 +21,8 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from oraclous_ohm.aggregate import aggregate_reduce
 from oraclous_ohm.envelope import HandoffEnvelope, build_handoff
-from oraclous_ohm.manifest import OHMManifest, OHMMember
+from oraclous_ohm.errors import OHMError
+from oraclous_ohm.manifest import OHMManifest, OHMMember, OHMOrchestration
 
 # Dispatch one member (+ optional fan-out item) given its inbound hand-offs -> output payload.
 DispatchFn = Callable[[OHMMember, list[HandoffEnvelope], Any], Awaitable[Any]]
@@ -161,3 +162,67 @@ async def run_team(
     return TeamRunResult(
         results=results, envelopes=envelopes, skipped=skipped, stages=stages, status="completed"
     )
+
+
+# ── B2: the prose-interpreting orchestration agent (ADR-035; OPT-IN, behind a flag) ──────────
+# Decide the next member role(s) to dispatch, given the orchestration brief, the results so far, and
+# the not-yet-run members. Returns [] when the coordinator declares the goal met (success_criteria).
+# INJECTED — an LLM coordinator in the runtime; a deterministic stand-in in tests.
+CoordinateFn = Callable[[OHMOrchestration, dict[str, Any], list[str]], Awaitable[list[str]]]
+
+
+async def run_team_coordinated(
+    manifest: OHMManifest,
+    dispatch: DispatchFn,
+    coordinate: CoordinateFn,
+    *,
+    state: dict[str, Any] | None = None,
+    max_rounds: int = 20,
+) -> TeamRunResult:
+    """B2 (OPT-IN): a PROSE-interpreting coordinator routes the team instead of the fixed DAG.
+
+    "Choice is prose, mechanics are coded" (ADR-035): the coordinator (an LLM in the runtime) reads
+    the ``orchestration`` brief + the results so far and picks the next member(s) to dispatch, until
+    it declares the goal met (returns ``[]``). But the MECHANICS are coded and non-overridable —
+
+    - the coordinator may route ONLY to DECLARED members (the R4 T3-M1 guardrail): a route to an
+      unknown member is fail-closed (``OHMError``), so no prose path grants a member/capability the
+      manifest never declared; and
+    - the loop is bounded by a coded TERMINATION (``max_rounds`` ∩ ``orchestration.termination``),
+      so a coordinator that never converges cannot run away.
+
+    This ships behind a flag; the generated DAG (``run_team``) is the default path. ``dispatch`` is
+    the same injected member-dispatch ``run_team`` uses (so the per-member ceiling still binds)."""
+    state = state or {}
+    brief = manifest.orchestration or OHMOrchestration()
+    by_role = {m.role: m for m in manifest.members}
+    results: dict[str, Any] = {}
+    envelopes: list[HandoffEnvelope] = []
+    cap = min(max_rounds, brief.termination.max_rounds or max_rounds)
+
+    async def run_one(role: str) -> None:
+        member = by_role[role]
+        inbound: list[HandoffEnvelope] = []
+        for dep in member.depends_on:
+            produced = results.get(dep)
+            if produced is None:
+                continue
+            payload = produced if isinstance(produced, dict) else {"output": produced}
+            env = build_handoff(by_role[dep], member, payload, objective_slice=member.subgoal or "")
+            inbound.append(env)
+            envelopes.append(env)
+        results[role] = await dispatch(member, inbound, None)
+
+    rounds = 0
+    while rounds < cap:
+        rounds += 1
+        remaining = [r for r in by_role if r not in results]
+        next_roles = await coordinate(brief, dict(results), remaining)
+        if not next_roles:  # the coordinator declared the goal met (prose success_criteria)
+            break
+        for role in next_roles:  # GUARDRAIL: route only to declared members (fail-closed)
+            if role not in by_role:
+                raise OHMError(f"coordinator routed to undeclared member {role!r}")
+        await asyncio.gather(*(run_one(role) for role in next_roles))  # a coordinator-chosen stage
+
+    return TeamRunResult(results=results, envelopes=envelopes, stages=[], status="completed")
