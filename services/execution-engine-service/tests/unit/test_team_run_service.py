@@ -90,6 +90,7 @@ class FakeHarness:
         input_text: str,
         manifest_inline: dict[str, Any] | None = None,
         manifest_ref: str | None = None,
+        capability_ceiling: list[str] | None = None,
     ) -> dict[str, Any]:
         self.inputs.append(input_text)
         return {"status": "SUCCEEDED", "output": f"done: {input_text[:30]}"}
@@ -334,3 +335,23 @@ async def test_advance_does_not_re_execute_completed_members() -> None:
     researcher_runs = sum(1 for i in harness.inputs if "researcher" in i)
     assert researcher_runs == 1  # researcher fired exactly once across create + advance (not twice)
     assert len(harness.inputs) == 2  # only researcher + writer, never a re-run
+
+
+async def test_cancellation_mid_drive_marks_failed_then_propagates() -> None:
+    # Red-team G-C: a cancellation (asyncio.CancelledError is BaseException, not Exception, in 3.12)
+    # must NOT strand the row RUNNING — it is marked FAILED, then the CancelledError propagates
+    # (a cancellation is never swallowed).
+    import asyncio
+
+    class CancelHarness:
+        async def execute(self, **kwargs: Any) -> dict[str, Any]:
+            raise asyncio.CancelledError
+
+    repo = FakeTeamRunRepo()
+    svc = TeamRunService(team_runs=repo, harness=CancelHarness())
+    with pytest.raises(asyncio.CancelledError):
+        await svc.create_and_run(
+            _principal(), manifest=_team([_agent("a")]), sub_harnesses={}, gate_decisions={}
+        )
+    row = next(iter(repo.rows.values()))
+    assert row.state == "FAILED"  # marked FAILED before propagation, not left stranded RUNNING
