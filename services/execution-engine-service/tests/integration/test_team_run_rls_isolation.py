@@ -37,7 +37,11 @@ def _principal(org: uuid.UUID, user: uuid.UUID) -> Principal:
 
 
 class _FakeHarness:
-    """Every member 'executes' to SUCCEEDED — tests persistence + RLS, not the loop."""
+    """Every member 'executes' to SUCCEEDED — tests persistence + RLS, not the loop. Records each
+    member input so a test can assert WHO ran (and that a resumed member is not re-executed)."""
+
+    def __init__(self) -> None:
+        self.inputs: list[str] = []
 
     async def execute(
         self,
@@ -47,6 +51,7 @@ class _FakeHarness:
         manifest_ref: str | None = None,
         capability_ceiling: list[str] | None = None,
     ) -> dict[str, Any]:
+        self.inputs.append(input_text)
         return {"status": "SUCCEEDED", "output": f"done: {input_text[:30]}"}
 
 
@@ -72,6 +77,10 @@ def _agent(role: str, deps: list[str] | None = None) -> dict[str, Any]:
         "subgoal": f"do {role}",
         "depends_on": deps or [],
     }
+
+
+def _human(role: str, deps: list[str] | None = None) -> dict[str, Any]:
+    return {"role": role, "kind": "human", "human_role": "author", "depends_on": deps or []}
 
 
 @pytest.fixture
@@ -134,3 +143,55 @@ async def test_cross_org_team_run_read_is_denied_by_rls(
     )
     assert (await team_run_service.get(b_run.id, _principal(ORG_B, USER_B))).id == b_run.id
     assert (await team_run_service.get(a_run.id, _principal(ORG_A, USER_A))).id == a_run.id
+
+
+async def test_cross_request_gate_resume_against_real_db(engine_dsns) -> None:  # noqa: ANN001
+    """Step 4 (the durable gate-resume seam) end-to-end on REAL Postgres + RLS — not a fake repo.
+
+    Request 1 drives a gated team and it PAUSES at the human gate, durably persisted. A SEPARATE
+    request (a fresh service on a fresh connection — as a different worker/process would) reads the
+    PAUSED state back from the DB and ADVANCES it past the gate to SUCCEEDED. The pre-gate member is
+    NOT re-executed on resume (its result is read back from the row, G-D) — proving the pause truly
+    survives across requests and resume is idempotent over side effects, against real persistence.
+    """
+    _owner, app_dsn = engine_dsns
+    manifest = _team(
+        ORG_A,
+        [_agent("researcher"), _human("approval", ["researcher"]), _agent("writer", ["approval"])],
+    )
+
+    # ── request 1: create + drive -> PAUSED at the gate, persisted to the DB ──
+    repo1 = TeamRunRepository(app_dsn)
+    harness1 = _FakeHarness()
+    try:
+        paused = await TeamRunService(team_runs=repo1, harness=harness1).create_and_run(
+            _principal(ORG_A, USER_A), manifest=manifest, sub_harnesses={}, gate_decisions={}
+        )
+    finally:
+        await repo1.close()
+    assert paused.state == "PAUSED"
+    assert paused.paused_at == ["approval"]
+    assert len(harness1.inputs) == 1  # only the researcher ran before the gate
+    run_id = paused.id
+
+    # ── a SEPARATE request/connection reads the PAUSED run back + ADVANCES it past the gate ──
+    repo2 = TeamRunRepository(app_dsn)
+    harness2 = _FakeHarness()
+    try:
+        svc2 = TeamRunService(team_runs=repo2, harness=harness2)
+        refetched = await svc2.get(run_id, _principal(ORG_A, USER_A))
+        assert refetched.state == "PAUSED"  # the pause survived across the request boundary (DB)
+        assert "researcher" in refetched.results  # the pre-gate result is durably persisted
+
+        resumed = await svc2.advance(run_id, _principal(ORG_A, USER_A), {"approval": "approve"})
+        assert resumed.state == "SUCCEEDED"  # advancing the gate ran the rest to completion
+        assert "writer" in resumed.results  # the gated-off member ran only after the gate opened
+    finally:
+        await repo2.close()
+
+    # the researcher (pre-gate) executed EXACTLY once across BOTH requests — the resume reused the
+    # persisted result instead of re-running it (G-D, proven against the real DB).
+    assert (
+        sum(1 for i in harness2.inputs if "researcher" in i) == 0
+    )  # request-2 harness never reran it
+    assert any("writer" in i for i in harness2.inputs)  # request-2 only ran the post-gate member
