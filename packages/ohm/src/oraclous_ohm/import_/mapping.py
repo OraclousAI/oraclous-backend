@@ -20,6 +20,7 @@ from oraclous_ohm.import_._flags import FlagSeverity, ImportFlag
 from oraclous_ohm.import_.parse import AgentDefinition
 from oraclous_ohm.import_.skills import ResolvedSkill, inline_skills, try_resolve_skill
 from oraclous_ohm.manifest import (
+    OHMActor,
     OHMCapability,
     OHMManifest,
     OHMMember,
@@ -65,6 +66,42 @@ def _dedup_preserving(items: list[str]) -> tuple[list[str], bool]:
             seen.add(item)
             out.append(item)
     return out, len(out) != len(items)
+
+
+def build_subharness(
+    role: str,
+    *,
+    owner_organization_id: uuid.UUID,
+    body: str,
+    tools: list[str] | None = None,
+    model: OHMModel | None = None,
+    description: str | None = None,
+    source: str = "<import>",
+) -> OHMManifest:
+    """Build a loadable sub-harness via the actors path (entrypoint -> a 'primary' agent actor).
+
+    A tool-less agent is valid (reasoning-only) — the actor entrypoint loads without capabilities,
+    so this never leans on an arbitrary tool to satisfy the loader. ``tools`` populate the sub-
+    harness ``capabilities[]``; the parent member's ``tools`` ceiling is set separately.
+    """
+    capabilities = [OHMCapability(ref=f"core/{slugify(t)}@1", binding=t) for t in (tools or [])]
+    prompts = [OHMPrompt(role="primary", source="inline", body=body)] if body.strip() else []
+    return OHMManifest(
+        ohm_version="1.0",
+        metadata=OHMMetadata(
+            id=uuid.uuid4(),
+            name=role,
+            owner_organization_id=owner_organization_id,
+            kind="agent",
+            description=description,
+            labels={"oraclous.import/source": source},
+        ),
+        capabilities=capabilities,
+        models=[model] if model else [],
+        prompts=prompts,
+        actors=[OHMActor(role="primary", kind="agent")],
+        runtime=OHMRuntime(entrypoint="primary"),
+    )
 
 
 def map_agent_to_member(
@@ -122,31 +159,25 @@ def map_agent_to_member(
         )
 
     if not tools:
+        flag("F-NOTOOLS", "info", "agent declares no tools; reasoning-only sub-harness")
+    else:
         flag(
-            "F-NOTOOLS",
-            "blocking",
-            "agent declares no tools; sub-harness cannot resolve an entrypoint",
+            "F-TOOLREF",
+            "confirm",
+            f"{len(tools)} tool ref(s) synthesized core/<name>@1 (no registry)",
         )
-        return AgentMapping(member=member, sub_harness=None, flags=flags)
 
-    capabilities = [OHMCapability(ref=f"core/{slugify(t)}@1", binding=t) for t in tools]
-    flag(
-        "F-TOOLREF",
-        "confirm",
-        f"{len(capabilities)} tool ref(s) synthesized core/<name>@1 (no registry)",
-    )
-
+    model: OHMModel | None = None
     if not agent.model:
-        models: list[OHMModel] = []
         flag("F-MODEL-ABSENT", "confirm", "no model declared; runtime default applies")
     else:
         key = agent.model.strip().lower()
         if key in _MODEL_TIER_BINDINGS:
             binding = _MODEL_TIER_BINDINGS[key]
-            models = [OHMModel(role="primary", binding=binding, protocol_shape="native")]
+            model = OHMModel(role="primary", binding=binding, protocol_shape="native")
             flag("F-MODEL-RESOLVED", "info", f"tier {key!r} -> {binding} (provisional, confirm)")
         else:
-            models = [OHMModel(role="primary", binding=agent.model, protocol_shape="native")]
+            model = OHMModel(role="primary", binding=agent.model, protocol_shape="native")
             flag(
                 "F-MODEL-PASSTHROUGH",
                 "confirm",
@@ -178,12 +209,7 @@ def map_agent_to_member(
                 )
 
     effective_body = inline_skills(agent.body, leaves)
-    prompts = (
-        [OHMPrompt(role="primary", source="inline", body=effective_body)]
-        if effective_body.strip()
-        else []
-    )
-    if not prompts:
+    if not effective_body.strip():
         flag("F-NOPROMPT", "confirm", "agent has no body; sub-harness has no system prompt")
 
     flag(
@@ -191,25 +217,14 @@ def map_agent_to_member(
         "info",
         "sub-harness metadata.id is a random uuid4 (no stable re-import identity)",
     )
-    flag(
-        "F-ENTRYPOINT",
-        "info",
-        f"runtime.entrypoint={tools[0]!r} satisfies the load cross-check only",
-    )
 
-    sub_harness = OHMManifest(
-        ohm_version="1.0",
-        metadata=OHMMetadata(
-            id=uuid.uuid4(),
-            name=role,
-            owner_organization_id=owner_organization_id,
-            kind="agent",
-            description=(agent.description or None),
-            labels={"oraclous.import/source": agent.source},
-        ),
-        capabilities=capabilities,
-        models=models,
-        prompts=prompts,
-        runtime=OHMRuntime(entrypoint=tools[0]),
+    sub_harness = build_subharness(
+        role,
+        owner_organization_id=owner_organization_id,
+        body=effective_body,
+        tools=tools,
+        model=model,
+        description=(agent.description or None),
+        source=agent.source,
     )
     return AgentMapping(member=member, sub_harness=sub_harness, flags=flags)
