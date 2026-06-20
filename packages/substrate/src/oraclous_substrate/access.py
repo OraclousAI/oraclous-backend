@@ -136,7 +136,10 @@ async def authorise_cross_org_traversal(
     context = current_organisation_context()
     request = AccessRequest(
         organisation_id=str(context.organisation_id),
-        subject=str(context.principal_id),
+        # The ReBAC seam vocabulary is ``user-<id>`` / ``graph-<id>`` (the resolver discriminates
+        # the subject TYPE by this prefix and fails closed without it). The caller prefixes resource
+        # (``graph-<id>``); the subject is prefixed here from the bound principal.
+        subject=f"user-{context.principal_id}",
         resource=resource,
         relation=relation,
     )
