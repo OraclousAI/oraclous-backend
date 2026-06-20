@@ -13,6 +13,7 @@ from oraclous_execution_engine_service.routes import (
     roundtable_routes,
     schedule_routes,
     task_routes,
+    team_run_routes,
 )
 
 
@@ -25,5 +26,6 @@ def create_app() -> FastAPI:
     app.include_router(task_routes.router)
     app.include_router(schedule_routes.router)
     app.include_router(roundtable_routes.router)
+    app.include_router(team_run_routes.router)
     app.include_router(activity_routes.router)
     return app

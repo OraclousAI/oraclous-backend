@@ -232,3 +232,36 @@ class RoundtableOut(BaseModel):
     final_output: str | None
     error_message: str | None
     created_at: datetime | None
+
+
+class CreateTeamRunRequest(BaseModel):
+    """Run an OHM v1.1 Team Harness: the team manifest + the per-role generated sub-harnesses.
+
+    ``manifest`` is the Team Harness OHM (``metadata.kind == "team"`` with ``members``).
+    ``sub_harnesses`` maps each member ``role`` to its generated single-agent sub-harness OHM (run
+    inline by the harness);
+    a role without one falls back to the member's ``manifest_ref``. ``gate_decisions`` pre-seeds any
+    human-gate decisions (role → ``approve`` | ``reject``) for a run that should not pause.
+    """
+
+    manifest: dict[str, Any]
+    sub_harnesses: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    gate_decisions: dict[str, Literal["approve", "reject"]] = Field(default_factory=dict)
+
+
+class AdvanceTeamRunRequest(BaseModel):
+    """Advance a PAUSED team run past its human gate(s): role → ``approve`` | ``reject``."""
+
+    gate_decisions: dict[str, Literal["approve", "reject"]] = Field(min_length=1)
+
+
+class TeamRunOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    organisation_id: uuid.UUID
+    state: str
+    results: dict[str, Any]
+    paused_at: list[str]
+    error_message: str | None
+    created_at: datetime | None

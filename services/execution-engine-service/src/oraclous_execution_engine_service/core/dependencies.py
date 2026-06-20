@@ -32,12 +32,14 @@ from oraclous_execution_engine_service.repositories.roundtable_repository import
     RoundtableRepository,
 )
 from oraclous_execution_engine_service.repositories.schedule_repository import ScheduleRepository
+from oraclous_execution_engine_service.repositories.team_run_repository import TeamRunRepository
 from oraclous_execution_engine_service.services.activity_service import ActivityService
 from oraclous_execution_engine_service.services.harness_client import HarnessClient
 from oraclous_execution_engine_service.services.job_service import JobService
 from oraclous_execution_engine_service.services.roundtable_service import RoundtableService
 from oraclous_execution_engine_service.services.schedule_service import ScheduleService
 from oraclous_execution_engine_service.services.task_service import TaskService
+from oraclous_execution_engine_service.services.team_run_service import TeamRunService
 from oraclous_execution_engine_service.tasks.run_tasks import enqueue_job, enqueue_roundtable
 
 _bearer = HTTPBearer(auto_error=False)
@@ -191,6 +193,25 @@ def get_task_service(
     return TaskService(jobs=jobs, harness=harness, provenance=provenance)
 
 
+def get_team_run_repository(request: Request) -> TeamRunRepository:
+    repo = getattr(request.app.state, "team_run_repository", None)
+    if repo is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="engine store unavailable (DATABASE_URL not reachable)",
+        )
+    return repo
+
+
+def get_team_run_service(
+    team_runs: Annotated[TeamRunRepository, Depends(get_team_run_repository)],
+    harness: Annotated[HarnessClient, Depends(get_harness_client)],
+) -> TeamRunService:
+    # the request path drives the team synchronously through the per-request, identity-propagating
+    # harness client (ADR-018) — the same client the task-board complete uses.
+    return TeamRunService(team_runs=team_runs, harness=harness)
+
+
 PrincipalDep = Annotated[Principal, Depends(get_principal)]
 JobRepositoryDep = Annotated[JobRepository, Depends(get_job_repository)]
 JobServiceDep = Annotated[JobService, Depends(get_job_service)]
@@ -198,3 +219,4 @@ ActivityServiceDep = Annotated[ActivityService, Depends(get_activity_service)]
 TaskServiceDep = Annotated[TaskService, Depends(get_task_service)]
 ScheduleServiceDep = Annotated[ScheduleService, Depends(get_schedule_service)]
 RoundtableServiceDep = Annotated[RoundtableService, Depends(get_roundtable_service)]
+TeamRunServiceDep = Annotated[TeamRunService, Depends(get_team_run_service)]
