@@ -12,16 +12,36 @@ from __future__ import annotations
 import pytest
 from oraclous_ohm.capabilities import (
     assert_capability_allowed,
+    assert_subharness_within_ceiling,
     capability_allowed,
     ceiling,
     effective_capabilities,
 )
 from oraclous_ohm.errors import OHMCapabilityError
-from oraclous_ohm.manifest import OHMMember
+from oraclous_ohm.manifest import (
+    OHMActor,
+    OHMCapability,
+    OHMManifest,
+    OHMMember,
+    OHMMetadata,
+    OHMRuntime,
+)
 
 
 def _m(tools: list[str]) -> OHMMember:
     return OHMMember(role="r", kind="agent", manifest_ref="org:x/a@1", tools=tools)
+
+
+def _sub(bindings: list[str]) -> OHMManifest:
+    import uuid
+
+    return OHMManifest(
+        ohm_version="1.0",
+        metadata=OHMMetadata(id=uuid.uuid4(), name="s", owner_organization_id=uuid.uuid4()),
+        capabilities=[OHMCapability(ref=f"core/{b}@1", binding=b) for b in bindings],
+        actors=[OHMActor(role="primary", kind="agent")],
+        runtime=OHMRuntime(entrypoint="primary"),
+    )
 
 
 def test_member_tools_ceiling_defaults_empty() -> None:
@@ -62,3 +82,20 @@ def test_book_drafting_agent_cannot_publish() -> None:
     assert capability_allowed(drafter, "Write") is True
     for forbidden in ("publish_to_kdp", "send_email", "spend"):
         assert capability_allowed(drafter, forbidden) is False
+
+
+def test_subharness_within_ceiling_passes() -> None:
+    # a sub-harness whose capabilities are a subset of the member's tools ceiling is allowed
+    assert assert_subharness_within_ceiling(_m(["Read", "Write"]), _sub(["Read"])) is None
+
+
+def test_subharness_exceeding_ceiling_is_fail_closed() -> None:
+    # the cross-member guard (ADR-035 §5): a sub-harness cannot widen the member past its tools[]
+    with pytest.raises(OHMCapabilityError):
+        assert_subharness_within_ceiling(_m(["Read"]), _sub(["Read", "shell"]))
+
+
+def test_tool_less_member_admits_only_a_tool_less_subharness() -> None:
+    assert assert_subharness_within_ceiling(_m([]), _sub([])) is None  # empty ⊆ empty
+    with pytest.raises(OHMCapabilityError):
+        assert_subharness_within_ceiling(_m([]), _sub(["anything"]))  # empty ceiling denies all
