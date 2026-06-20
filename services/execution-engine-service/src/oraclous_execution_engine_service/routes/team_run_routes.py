@@ -26,12 +26,14 @@ from oraclous_execution_engine_service.services.team_run_service import TeamRunE
 router = APIRouter(prefix="/v1/engine", tags=["engine-team-runs"])
 
 
-@router.post("/team-runs", response_model=TeamRunOut, status_code=status.HTTP_201_CREATED)
+@router.post("/team-runs", response_model=TeamRunOut, status_code=status.HTTP_202_ACCEPTED)
 async def create_team_run(
     body: CreateTeamRunRequest, principal: PrincipalDep, service: TeamRunServiceDep
 ) -> TeamRunOut:
+    # 202: the run is validated + persisted QUEUED and handed to the worker, which drives the team
+    # asynchronously (a 30-agent team would otherwise block the request). Poll GET for state.
     try:
-        row = await service.create_and_run(
+        row = await service.create(
             principal,
             manifest=body.manifest,
             sub_harnesses=body.sub_harnesses,
@@ -53,7 +55,11 @@ async def get_team_run(
     return TeamRunOut.model_validate(row)
 
 
-@router.post("/team-runs/{team_run_id}/advance", response_model=TeamRunOut)
+@router.post(
+    "/team-runs/{team_run_id}/advance",
+    response_model=TeamRunOut,
+    status_code=status.HTTP_202_ACCEPTED,
+)
 async def advance_team_run(
     team_run_id: uuid.UUID,
     body: AdvanceTeamRunRequest,
