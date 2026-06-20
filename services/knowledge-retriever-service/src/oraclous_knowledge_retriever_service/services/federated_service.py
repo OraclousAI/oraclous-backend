@@ -307,9 +307,7 @@ class FederatedRetrievalService:
             # Admitted. The grantee org cannot see the foreign graph's name (it is the owner org's),
             # so the placeholder name stands; the owner org binds the per-branch read to exactly
             # this graph's owner-org rows (the graph_id predicate pins the slice — no widening).
-            granted[gid] = GraphInfo(
-                id=gid, name="(shared graph)", owner_organisation_id=owner_org
-            )
+            granted[gid] = GraphInfo(id=gid, name="(shared graph)", owner_organisation_id=owner_org)
         return granted
 
     # ── fan-out ──────────────────────────────────────────────────────────────────────────────

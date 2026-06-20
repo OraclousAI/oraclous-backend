@@ -231,7 +231,9 @@ MATCH (u:User:__Platform__ {user_id: $user_id})
   -[hr:HAS_ROLE {graph_id: $graph_id, organisation_id: $organisation_id}]->
   (:Role:__System__ {graph_id: $graph_id, organisation_id: $organisation_id})
 WHERE hr.is_active = true AND hr.owner_organisation_id IS NOT NULL
+  AND (hr.expires_at IS NULL OR hr.expires_at > datetime())
 RETURN hr.owner_organisation_id AS owner_org
+ORDER BY hr.granted_at DESC
 LIMIT 1
 """
 
