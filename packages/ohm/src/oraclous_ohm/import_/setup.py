@@ -57,6 +57,10 @@ class ImportResult(BaseModel):
     manifest: OHMManifest | None = None
     report: ImportReport
     flags: list[ImportFlag] = Field(default_factory=list)
+    # role -> the generated single-agent sub-harness OHM (as a plain dict), ready to pass straight
+    # into the team-run API's `sub_harnesses`. Without this the imported team LOADS but cannot RUN
+    # (its members' manifest_refs resolve to nothing registered) — the import->run seam (ADR-035).
+    sub_harnesses: dict[str, dict] = Field(default_factory=dict)
 
 
 def _is_orchestrator_dir(root: Path) -> bool:
@@ -140,6 +144,7 @@ def import_setup(
     flags: list[ImportFlag] = []
     members: list[OHMMember] = []
     handoffs: dict[str, HandoffSpec] = {}
+    sub_harnesses: dict[str, dict] = {}  # role -> generated sub-harness OHM (the runnable bodies)
     orchestration = None
     shape = "none"
 
@@ -157,6 +162,8 @@ def import_setup(
             members.append(mapping.member)
             flags.extend(mapping.flags)
             handoffs[mapping.member.role] = parse_handoff(agent.body)
+            if mapping.sub_harness is not None:  # keep the runnable body, don't discard it (G-B)
+                sub_harnesses[mapping.member.role] = mapping.sub_harness.model_dump(mode="json")
         by_role = {m.role: m for m in members}
         charters = [parse_charter(cf) for cf in sorted(root.glob("teams/*/charter.md"))]
         for charter in charters:
@@ -197,6 +204,8 @@ def import_setup(
         members = plan.members
         orchestration = plan.orchestration
         flags.extend(plan.flags)
+        for role, sub in plan.sub_harnesses.items():  # keep the orchestrator bodies too (G-B)
+            sub_harnesses[role] = sub.model_dump(mode="json")
     else:
         flags.append(
             ImportFlag(
@@ -226,6 +235,7 @@ def import_setup(
         manifest=assembly.manifest,
         report=_build_report(team_name, shape, assembly, flags),
         flags=flags,
+        sub_harnesses=sub_harnesses,
     )
 
 
