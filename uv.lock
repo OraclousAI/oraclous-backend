@@ -10,6 +10,7 @@ members = [
     "oraclous-capability-registry-service",
     "oraclous-credential-broker-service",
     "oraclous-errors",
+    "oraclous-eval",
     "oraclous-execution-engine-service",
     "oraclous-governance",
     "oraclous-harness-runtime-service",
@@ -1277,6 +1278,21 @@ version = "0.0.0"
 source = { editable = "packages/errors" }
 
 [[package]]
+name = "oraclous-eval"
+version = "0.0.0"
+source = { editable = "packages/eval" }
+dependencies = [
+    { name = "openai" },
+    { name = "pydantic" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "openai", specifier = ">=1.40,<2.0" },
+    { name = "pydantic", specifier = ">=2.0,<3.0" },
+]
+
+[[package]]
 name = "oraclous-execution-engine-service"
 version = "0.1.0"
 source = { editable = "services/execution-engine-service" }
@@ -1447,6 +1463,7 @@ dependencies = [
     { name = "httpx" },
     { name = "neo4j" },
     { name = "openai" },
+    { name = "oraclous-eval" },
     { name = "oraclous-governance" },
     { name = "oraclous-rebac" },
     { name = "oraclous-substrate" },
@@ -1464,6 +1481,7 @@ requires-dist = [
     { name = "httpx", specifier = ">=0.27,<1.0" },
     { name = "neo4j", specifier = ">=5.23,<6.0" },
     { name = "openai", specifier = ">=1.40,<2.0" },
+    { name = "oraclous-eval", editable = "packages/eval" },
     { name = "oraclous-governance", editable = "packages/governance" },
     { name = "oraclous-rebac", editable = "packages/rebac" },
     { name = "oraclous-substrate", editable = "packages/substrate" },

@@ -1,0 +1,16 @@
+[project]
+name = "oraclous-eval"
+version = "0.0.0"
+description = "The shared flow-level evaluation engine (ADR-037 / E4) — one LLM-as-judge seam + a rubric-agnostic evaluator producing the typed Verdict. Generalized out of the KRS retrieval judge (#331); consumed by core/evaluate (#469), the named gate battery (#470), and KRS's retrieval rubric (a thin caller)."
+requires-python = "==3.12.*"
+dependencies = [
+    "pydantic>=2.0,<3.0",
+    "openai>=1.40,<2.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/oraclous_eval"]
