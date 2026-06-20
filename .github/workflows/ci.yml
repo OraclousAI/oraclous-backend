@@ -226,6 +226,17 @@ jobs:
       # The application services sit behind `profiles: [services]`; without this, `up` brings up ONLY
       # the infra (postgres/redis/neo4j) and the gateway never starts.
       COMPOSE_PROFILES: services
+      # Edge-auth (ADR-018), as deploy/.env sets for a real deployment: the gateway VALIDATES the user
+      # JWT and downstream services TRUST the forwarded X-Principal. The compose default is `dev` (only
+      # the fixed dev-token), which rejects the real JWTs the e2e registers — so wire the real chain.
+      GATEWAY_AUTH_MODE: jwt
+      ENGINE_AUTH_MODE: gateway
+      HARNESS_AUTH_MODE: gateway
+      KGS_AUTH_MODE: gateway
+      KRS_AUTH_MODE: gateway
+      CRED_BROKER_AUTH_MODE: gateway
+      CAPABILITY_REGISTRY_AUTH_MODE: gateway
+      CAPABILITY_REGISTRY_BROKER_MODE: real
       COMPOSE: "docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.dev-ports.yml"
       COMPOSE_OAUTH: "docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.dev-ports.yml -f deploy/docker-compose.e2e-oauth.yml"
     steps:
