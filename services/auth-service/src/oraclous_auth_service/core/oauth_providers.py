@@ -29,7 +29,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 
-SUPPORTED = ("google", "github", "notion")
+SUPPORTED = ("google", "github", "notion", "dex")
 
 
 @dataclass(frozen=True, slots=True)
@@ -63,6 +63,16 @@ _ENDPOINTS: dict[str, dict] = {
         "userinfo_url": "",  # Notion returns the owner in the token response — no separate call
         "default_scopes": (),
     },
+    # A generic, self-hosted OIDC provider (e.g. dex). Its endpoints are NOT fixed — they are read
+    # from the env (a self-hosted issuer's URLs are deployment-specific), so all three endpoint URLs
+    # come from OAUTH_DEX_{AUTHORIZE,TOKEN,USERINFO}_URL. Used by the OAuth-connect e2e against a
+    # real local dex; in prod it is simply unconfigured (no client creds → get_provider → None).
+    "dex": {
+        "authorize_url": "",
+        "token_url": "",
+        "userinfo_url": "",
+        "default_scopes": ("openid", "email", "profile"),
+    },
 }
 
 
@@ -84,13 +94,22 @@ def get_provider(name: str) -> ProviderConfig | None:
     client_secret = os.environ.get(f"OAUTH_{name.upper()}_CLIENT_SECRET", "")
     if not client_id or not client_secret:
         return None
+    # Endpoints may be overridden from the env — required for a self-hosted OIDC provider (dex),
+    # whose URLs are deployment-specific (the auth-service FETCHES token/userinfo over the internal
+    # network while it RETURNS the authorize URL to the client, so they may legitimately differ).
+    pfx = f"OAUTH_{name.upper()}"
+    authorize_url = os.environ.get(f"{pfx}_AUTHORIZE_URL") or spec["authorize_url"]
+    token_url = os.environ.get(f"{pfx}_TOKEN_URL") or spec["token_url"]
+    userinfo_url = os.environ.get(f"{pfx}_USERINFO_URL", spec["userinfo_url"])
+    if not authorize_url or not token_url:
+        return None  # an incompletely-configured provider is treated as unknown
     return ProviderConfig(
         name=name,
         client_id=client_id,
         client_secret=client_secret,
-        authorize_url=spec["authorize_url"],
-        token_url=spec["token_url"],
-        userinfo_url=spec["userinfo_url"],
+        authorize_url=authorize_url,
+        token_url=token_url,
+        userinfo_url=userinfo_url,
         default_scopes=spec["default_scopes"],
         allowed_redirect_uris=_allowed_redirect_uris(name),
     )
