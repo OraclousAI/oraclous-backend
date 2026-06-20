@@ -103,6 +103,22 @@ class OHMFanOut(BaseModel):
     )
 
 
+class OHMRunIf(BaseModel):
+    """Declarative conditional dispatch (ADR-035): run this member only if a prior member's output
+    satisfies the test — so conditional routing (bitcoin: "research regime is tradeable → dispatch
+    the Instrument Design team") is EXPRESSIBLE in the manifest and evaluated by ``run_team``,
+    reachable through the team-run API (vs an injected Python predicate). ``from_role`` must be a
+    ``depends_on`` of this member so its output is ready; evaluation is fail-closed (skip on any
+    error / missing source)."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    from_role: str = Field(min_length=1)  # the prior member whose output to test
+    field: str | None = None  # a key into from_role's output dict (None = the whole output)
+    op: Literal["truthy", "eq", "ne", "gt", "lt", "gte", "lte", "in"] = "truthy"
+    value: Any = None
+
+
 class OHMMember(BaseModel):
     """A team member (v1.1 ``members[]``; a richer, DAG-capable successor to ``OHMActor``).
 
@@ -119,6 +135,7 @@ class OHMMember(BaseModel):
     subgoal: str | None = None
     depends_on: list[str] = Field(default_factory=list)  # member roles to wait on (fan-in barrier)
     fan_out: OHMFanOut | None = None
+    run_if: OHMRunIf | None = None  # conditional dispatch: skip unless a prior output satisfies it
     inputs: list[str] = Field(default_factory=list)
     outputs_schema: dict[str, Any] = Field(default_factory=dict)  # typed output contract
     human_role: str | None = None  # REQUIRED for kind: human

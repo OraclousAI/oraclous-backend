@@ -15,7 +15,13 @@ from oraclous_execution_engine_service.services.team_run import (
     render_member_input,
     run_team_harness,
 )
-from oraclous_ohm.manifest import OHMManifest, OHMMember, OHMMetadata, OHMRuntime
+from oraclous_ohm.manifest import (
+    OHMManifest,
+    OHMMember,
+    OHMMetadata,
+    OHMRunIf,
+    OHMRuntime,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -125,3 +131,21 @@ async def test_human_gate_pauses_through_the_bridge() -> None:
 def test_render_member_input_threads_envelopes() -> None:
     text = render_member_input(_m("c", ["a"]), [], fan_item={"k": 1})
     assert "Item:" in text
+
+
+async def test_run_if_conditional_dispatch_is_honoured_through_the_team_run_bridge() -> None:
+    # Connectedness: conditional dispatch reaches the team-run path — run_team_harness -> run_team
+    # evaluates OHMMember.run_if from the manifest (reachable via POST /v1/engine/team-runs), not an
+    # injected predicate. research SUCCEEDS, so 'run only if status != SUCCEEDED' skips instrument.
+    harness = _FakeHarness()
+    instrument = OHMMember(
+        role="instrument",
+        kind="agent",
+        manifest_ref="org:x/instrument@1",
+        depends_on=["research"],
+        run_if=OHMRunIf(from_role="research", field="status", op="ne", value="SUCCEEDED"),
+    )
+    res = await run_team_harness(_team([_m("research"), instrument]), harness)
+    assert "instrument" in res.skipped  # conditionally skipped on research's status
+    assert len(harness.calls) == 1  # only research ran; instrument never dispatched
+    assert all(c["ref"] != "org:x/instrument@1" for c in harness.calls)
