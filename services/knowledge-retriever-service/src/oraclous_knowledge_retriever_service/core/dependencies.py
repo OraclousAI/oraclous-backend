@@ -22,6 +22,9 @@ from oraclous_governance import (
     resolve_organisation_context,
     use_organisation_context,
 )
+from oraclous_rebac import ReBACEngine
+from oraclous_rebac.adapter import ReBACEngineResolver
+from oraclous_substrate.rebac import AccessDecisionClient
 
 from oraclous_knowledge_retriever_service.core.auth import (
     AuthError,
@@ -149,6 +152,18 @@ def get_federated_service(
         dev_bearer=settings.dev_bearer,
         internal_service_key=settings.internal_service_key,
     )
+    # Cross-org ReBAC admission (#446): the fail-closed access-decision client that lets a caller
+    # name a FOREIGN graph it has been granted (ADR-004). Wired only when the async Neo4j driver is
+    # bound; None degrades admission to OFF (a foreign graph stays inaccessible — never fail-open).
+    rebac_async_driver = getattr(request.app.state, "neo4j_async_driver", None)
+    rebac_client = None
+    if rebac_async_driver is not None:
+        rebac_client = AccessDecisionClient(
+            resolver=ReBACEngineResolver(
+                permission_check=ReBACEngine().check_graph_permission,
+                driver=rebac_async_driver,
+            )
+        )
     return FederatedRetrievalService(
         driver,
         HashingEmbedder(dim=settings.embedding_dim),
@@ -158,6 +173,7 @@ def get_federated_service(
         max_per_graph_k=settings.federated_max_per_graph_k,
         max_total=settings.federated_max_total,
         max_subgraph_nodes=settings.federated_max_subgraph_nodes,
+        rebac_client=rebac_client,
     )
 
 
