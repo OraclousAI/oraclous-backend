@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -37,6 +37,8 @@ class TeamRunResult(BaseModel):
     envelopes: list[HandoffEnvelope] = Field(default_factory=list)
     skipped: list[str] = Field(default_factory=list)
     stages: list[list[str]] = Field(default_factory=list)
+    status: Literal["completed", "paused", "rejected"] = "completed"
+    paused_at: list[str] = Field(default_factory=list)  # the human gate role(s) the run blocks on
 
 
 def _resolve_over(over: str, state: dict[str, Any], results: dict[str, Any]) -> list[Any]:
@@ -63,9 +65,16 @@ async def run_team(
     *,
     state: dict[str, Any] | None = None,
     predicate: PredicateFn | None = None,
+    gate_decisions: dict[str, str] | None = None,
 ) -> TeamRunResult:
-    """Execute a Team Harness member DAG stage by stage, a real fan-in barrier between stages."""
+    """Execute a Team Harness member DAG stage by stage, a real fan-in barrier between stages.
+
+    A ``kind: human`` member is a BLOCKING gate (ADR-035 §6): the run PAUSES at its stage until the
+    gate is advanced via ``gate_decisions[role]`` ('approve' / 'reject'); downstream ``depends_on``
+    members cannot run until it is approved — agents cannot cross a human gate by any path.
+    """
     state = state or {}
+    gates = gate_decisions or {}
     by_role = {m.role: m for m in manifest.members}
     stages = manifest.execution_stages()  # topological_stages — fail-closed on cycle/unknown/dup
     results: dict[str, Any] = {}
@@ -74,6 +83,10 @@ async def run_team(
 
     async def run_member(role: str) -> None:
         member = by_role[role]
+        if member.kind == "human":
+            # a blocking gate — never dispatched; by the time we run it, it is an approved decision
+            results[role] = {"gate": role, "decision": gates.get(role)}
+            return
         if predicate is not None and not predicate(member, results):
             skipped.append(role)
             results[role] = None
@@ -96,6 +109,29 @@ async def run_team(
             results[role] = await dispatch(member, inbound, None)
 
     for stage in stages:
+        stage_gates = [r for r in stage if by_role[r].kind == "human"]
+        undecided = [g for g in stage_gates if gates.get(g) is None]
+        if undecided:  # block: pause the run; downstream depends_on members do not run
+            return TeamRunResult(
+                results=results,
+                envelopes=envelopes,
+                skipped=skipped,
+                stages=stages,
+                status="paused",
+                paused_at=undecided,
+            )
+        rejected = [g for g in stage_gates if gates.get(g) == "reject"]
+        if rejected:  # the author rejected — halt; downstream does not run
+            return TeamRunResult(
+                results=results,
+                envelopes=envelopes,
+                skipped=skipped,
+                stages=stages,
+                status="rejected",
+                paused_at=rejected,
+            )
         await asyncio.gather(*(run_member(role) for role in stage))  # the fan-in barrier
 
-    return TeamRunResult(results=results, envelopes=envelopes, skipped=skipped, stages=stages)
+    return TeamRunResult(
+        results=results, envelopes=envelopes, skipped=skipped, stages=stages, status="completed"
+    )
