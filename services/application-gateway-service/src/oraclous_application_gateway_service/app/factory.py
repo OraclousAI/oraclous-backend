@@ -145,11 +145,16 @@ def create_app(*, lifespan=None) -> FastAPI:
     @app.exception_handler(StarletteHTTPException)
     async def _on_http_exc(request: Request, exc: StarletteHTTPException) -> JSONResponse:
         # Gateway own HTTP errors (401 edge-auth, 405, 503 unavailable, …). Re-attach exc.headers so
-        # WWW-Authenticate: Bearer survives on 401; map the status to a closed-enum code.
+        # WWW-Authenticate: Bearer survives on 401; map the status to a closed code. Surface the
+        # route's OWN detail as the message when present (e.g. a published-agent 422 "...not
+        # runnable") — it is GATEWAY-authored, never an upstream leak, so without this a clear,
+        # actionable message is replaced by the code's generic text ("could not be parsed").
+        detail = exc.detail if isinstance(exc.detail, str) and exc.detail.strip() else None
         return gateway_error(
             request,
             code=status_to_code(exc.status_code),
             status_code=exc.status_code,
+            message=detail,
             headers=dict(exc.headers or {}),
         )
 
