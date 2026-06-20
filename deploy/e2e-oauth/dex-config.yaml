@@ -1,0 +1,24 @@
+# A REAL OIDC provider (dex) for the OAuth-connect e2e — not a mock.
+# The LOCAL connector is real username/password auth (enablePasswordDB). A real user logs in with a
+# real password; the e2e scripts the real authorization-code + PKCE flow against it.
+issuer: http://localhost:5556/dex
+storage:
+  type: memory
+web:
+  http: 0.0.0.0:5556
+oauth2:
+  skipApprovalScreen: true   # no consent screen — the e2e still does a real login
+  passwordConnector: local
+staticClients:
+  - id: oraclous-auth
+    secret: oraclous-dex-secret
+    name: Oraclous
+    redirectURIs:
+      - http://localhost:9999/cb   # a placeholder the e2e captures (no real server needed)
+enablePasswordDB: true
+staticPasswords:
+  - email: oauthuser@oraclous.test
+    # bcrypt of "Password123!" — a real password the e2e logs in with
+    hash: "$2b$10$mSIqicBlmHrqWuGHMAXqaeN2GkzzDgY1NblE4.ZxaylGUxlzIa5VO"
+    username: oauthuser
+    userID: "00000000-0000-0000-0000-000000000001"

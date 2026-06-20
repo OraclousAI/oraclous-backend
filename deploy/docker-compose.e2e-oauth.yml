@@ -1,0 +1,37 @@
+# A real local OIDC provider (dex) for the OAuth-connect e2e. Overlay on the main stack so dex shares
+# the project network: the auth-service reaches it at http://dex:5556 (internal) while the e2e and the
+# browser-style authorize redirect reach it at http://localhost:5556 (published).
+#
+#   docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.dev-ports.yml \
+#       -f deploy/docker-compose.e2e-oauth.yml up -d dex
+services:
+  dex:
+    image: ghcr.io/dexidp/dex:v2.39.1
+    command: ["dex", "serve", "/etc/dex/config.yaml"]
+    volumes:
+      - ./e2e-oauth/dex-config.yaml:/etc/dex/config.yaml:ro
+    ports:
+      - "5556:5556"
+    networks:
+      - substrate   # same network as the auth-service, so it resolves http://dex:5556 internally
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:5556/dex/.well-known/openid-configuration"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # Configure the auth-service for the local dex provider. The auth-service RETURNS the authorize URL
+  # to the client (host-reachable localhost:5556) but FETCHES token/userinfo itself (internal dex:5556).
+  auth-service:
+    environment:
+      OAUTH_DEX_CLIENT_ID: "oraclous-auth"
+      OAUTH_DEX_CLIENT_SECRET: "oraclous-dex-secret"
+      OAUTH_DEX_AUTHORIZE_URL: "http://localhost:5556/dex/auth"
+      OAUTH_DEX_TOKEN_URL: "http://dex:5556/dex/token"
+      OAUTH_DEX_USERINFO_URL: "http://dex:5556/dex/userinfo"
+      OAUTH_DEX_REDIRECT_URIS: "http://localhost:9999/cb"
+
+networks:
+  substrate:
+    name: oraclous-backend_substrate
+    external: true
