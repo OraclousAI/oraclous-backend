@@ -16,6 +16,7 @@ from typing import Annotated
 from fastapi import Depends, Header, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from neo4j import Driver
+from oraclous_eval import RubricEvaluator
 from oraclous_governance import (
     OrganisationContext,
     Principal,
@@ -38,6 +39,9 @@ from oraclous_knowledge_retriever_service.services.eval_judge import EvalJudge
 from oraclous_knowledge_retriever_service.services.evaluation_service import EvaluationService
 from oraclous_knowledge_retriever_service.services.federated_service import (
     FederatedRetrievalService,
+)
+from oraclous_knowledge_retriever_service.services.flow_evaluation_service import (
+    FlowEvaluationService,
 )
 from oraclous_knowledge_retriever_service.services.graph_registry_client import GraphRegistryClient
 from oraclous_knowledge_retriever_service.services.retrieval_service import RetrievalService
@@ -229,6 +233,27 @@ def get_evaluation_service(
     )
 
 
+def get_flow_evaluation_service(
+    request: Request,
+    judge: Annotated[EvalJudge, Depends(get_eval_judge)],
+    _org: Annotated[OrganisationContext, Depends(bind_org_context)],
+) -> FlowEvaluationService:
+    """core/evaluate (ADR-037 / #469): the shared packages/eval evaluator over the ONE lifespan
+    judge (KRS's ``app.state.eval_judge`` duck-types ``oraclous_eval.EvalJudge``). Depends on
+    ``bind_org_context`` so the request's org is bound before the route server-stamps it (H2); a
+    missing judge surfaces as the typed 422 via ``get_eval_judge``. ``eval_slots`` caps concurrent
+    evaluations (→ 429); absent on a bare test app → uncapped."""
+    settings = get_settings()
+    evaluator = RubricEvaluator(
+        judge,
+        max_concurrency=settings.eval_max_concurrency,
+        deadline_seconds=settings.eval_deadline_seconds,
+        slots=getattr(request.app.state, "eval_slots", None),
+    )
+    return FlowEvaluationService(evaluator)
+
+
+FlowEvalServiceDep = Annotated[FlowEvaluationService, Depends(get_flow_evaluation_service)]
 UserIdDep = Annotated[uuid.UUID, Depends(get_current_user_id)]
 PrincipalDep = Annotated[Principal, Depends(get_principal)]
 RetrievalServiceDep = Annotated[RetrievalService, Depends(get_retrieval_service)]

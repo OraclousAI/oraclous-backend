@@ -11,6 +11,7 @@ from oraclous_knowledge_retriever_service.routes import (
     federated_routes,
     graph_routes,
     health_routes,
+    internal_routes,
     search_routes,
 )
 
@@ -24,4 +25,7 @@ def create_app() -> FastAPI:
     app.include_router(graph_routes.router)
     app.include_router(evaluation_routes.router)
     app.include_router(federated_routes.router)
+    app.include_router(
+        internal_routes.router
+    )  # core/evaluate — the flow-level judge (ADR-037/#469)
     return app
