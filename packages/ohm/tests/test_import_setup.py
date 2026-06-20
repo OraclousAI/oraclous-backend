@@ -11,6 +11,7 @@ from __future__ import annotations
 import uuid
 from pathlib import Path
 
+from oraclous_ohm.capabilities import assert_subharness_within_ceiling
 from oraclous_ohm.import_.setup import import_setup, render_report
 from oraclous_ohm.parse import load_ohm
 
@@ -61,6 +62,28 @@ def test_agent_team_imports_and_loads(tmp_path: Path) -> None:
     assert result.manifest is not None
     loaded = load_ohm(result.manifest.model_dump(mode="json"))  # the assembled team loads
     assert loaded.is_team()
+
+
+def test_import_exposes_runnable_sub_harnesses_within_each_ceiling(tmp_path: Path) -> None:
+    # G-B: the importer GENERATES a sub-harness per agent member; it must EXPOSE them (else the team
+    # loads but cannot run — its members' manifest_refs resolve to nothing registered). Each must be
+    # a loadable OHM whose capabilities are within the member's tools ceiling, so it drops straight
+    # into the team-run API's sub_harnesses and passes its fail-closed ceiling check (G-A).
+    _agent_team(tmp_path)
+    result = import_setup(tmp_path, owner_organization_id=_ORG, name="demo")
+    assert result.manifest is not None
+
+    agent_roles = {m.role for m in result.manifest.members if m.kind == "agent"}
+    assert agent_roles == {"a", "b"}  # the two agent members (gate-d is human — no sub-harness)
+    assert agent_roles.issubset(result.sub_harnesses)  # every agent member's body is exposed
+
+    by_role = {m.role: m for m in result.manifest.members}
+    for role, sub_doc in result.sub_harnesses.items():
+        sub = load_ohm(sub_doc)  # each exposed sub-harness is a loadable OHM
+        assert_subharness_within_ceiling(by_role[role], sub)  # and within its declared ceiling
+    # 'a' declared tools Read+Write -> its sub-harness exposes exactly those bindings
+    a_sub = load_ohm(result.sub_harnesses["a"])
+    assert {c.binding for c in a_sub.capabilities} == {"Read", "Write"}
 
 
 def test_skill_inlined_and_schedule_attached(tmp_path: Path) -> None:
