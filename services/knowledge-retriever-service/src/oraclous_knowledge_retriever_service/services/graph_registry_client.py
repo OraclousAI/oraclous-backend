@@ -30,10 +30,16 @@ class GraphRegistryError(Exception):
 
 @dataclass(frozen=True)
 class GraphInfo:
-    """One accessible graph: its id (str UUID) + display name (for result labeling)."""
+    """One accessible graph: its id (str UUID) + display name (for result labeling).
+
+    ``owner_organisation_id`` (ADR-036) is set ONLY for a cross-org graph admitted by a ReBAC grant
+    — the owner org whose rows the read binds. ``None`` for home-org graphs (the read binds the
+    caller's own org, unchanged). Defaulted so existing construction sites are unaffected.
+    """
 
     id: str
     name: str
+    owner_organisation_id: str | None = None
 
 
 class GraphRegistryClient:
