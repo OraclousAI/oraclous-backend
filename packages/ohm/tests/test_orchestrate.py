@@ -12,7 +12,17 @@ import uuid
 from typing import Any
 
 from oraclous_ohm.envelope import HandoffEnvelope
-from oraclous_ohm.manifest import OHMFanOut, OHMManifest, OHMMember, OHMMetadata, OHMRuntime
+from oraclous_ohm.errors import OHMError
+from oraclous_ohm.manifest import (
+    OHMFanOut,
+    OHMManifest,
+    OHMMember,
+    OHMMetadata,
+    OHMOrchestration,
+    OHMRunIf,
+    OHMRuntime,
+    OHMTermination,
+)
 from oraclous_ohm.orchestrate import run_team
 
 _ORG = uuid.UUID("87654321-4321-8765-4321-876543210000")
@@ -30,11 +40,12 @@ def _m(
     )
 
 
-def _team(members: list[OHMMember]) -> OHMManifest:
+def _team(members: list[OHMMember], orchestration: OHMOrchestration | None = None) -> OHMManifest:
     return OHMManifest(
         ohm_version="1.1",
         metadata=OHMMetadata(id=uuid.uuid4(), name="t", owner_organization_id=_ORG, kind="team"),
         members=members,
+        orchestration=orchestration,
         runtime=OHMRuntime(entrypoint=members[0].role),
     )
 
@@ -140,3 +151,70 @@ async def test_conditional_skip() -> None:
     assert "b" in res.skipped
     assert res.results["b"] is None
     assert res.results["c"] == {"ok": "c"}
+
+
+# ── (A) declarative conditional dispatch (run_if) — reachable via the manifest ───────────────
+
+
+def _cond(role: str, deps: list[str], run_if: OHMRunIf) -> OHMMember:
+    return OHMMember(
+        role=role, kind="agent", manifest_ref=f"org:x/{role}@1", depends_on=deps, run_if=run_if
+    )
+
+
+async def test_run_if_skips_the_member_when_a_prior_output_fails_the_test() -> None:
+    # bitcoin: dispatch instrument-design ONLY if research regime is tradeable. Here flat -> skip.
+    seen: list[str] = []
+
+    async def dispatch(member: OHMMember, envs: list[HandoffEnvelope], item: Any) -> dict:
+        seen.append(member.role)
+        return {"regime": "flat"} if member.role == "research" else {"ok": member.role}
+
+    instrument = _cond(
+        "instrument",
+        ["research"],
+        OHMRunIf(from_role="research", field="regime", op="eq", value="tradeable"),
+    )
+    res = await run_team(_team([_m("research"), instrument]), dispatch)
+    assert "instrument" in res.skipped  # the regime was flat -> conditionally skipped
+    assert "instrument" not in seen  # never dispatched
+    assert res.results["instrument"] is None
+
+
+async def test_run_if_runs_the_member_when_a_prior_output_satisfies_the_test() -> None:
+    async def dispatch(member: OHMMember, envs: list[HandoffEnvelope], item: Any) -> dict:
+        return {"regime": "tradeable"} if member.role == "research" else {"ok": member.role}
+
+    instrument = _cond(
+        "instrument",
+        ["research"],
+        OHMRunIf(from_role="research", field="regime", op="eq", value="tradeable"),
+    )
+    res = await run_team(_team([_m("research"), instrument]), dispatch)
+    assert "instrument" not in res.skipped
+    assert res.results["instrument"] == {"ok": "instrument"}
+
+
+# ── (B) team-level termination: max_wall_seconds bounds the DAG run ──────────────────────────
+
+
+async def test_max_wall_seconds_fails_a_runaway_team() -> None:
+    # ADR-035 termination: a DAG run that exceeds the team wall-clock fails (vs running unbounded).
+    async def slow(member: OHMMember, envs: list[HandoffEnvelope], item: Any) -> dict:
+        await asyncio.sleep(2.0)
+        return {"r": member.role}
+
+    brief = OHMOrchestration(termination=OHMTermination(max_wall_seconds=1))
+    import pytest
+
+    with pytest.raises(OHMError, match="max_wall_seconds"):
+        await run_team(_team([_m("a")], orchestration=brief), slow)
+
+
+async def test_no_termination_means_no_deadline() -> None:
+    # the default (no max_wall_seconds) imposes no deadline — a normal run completes unchanged.
+    async def dispatch(member: OHMMember, envs: list[HandoffEnvelope], item: Any) -> dict:
+        return {"r": member.role}
+
+    res = await run_team(_team([_m("a")]), dispatch)  # no orchestration block
+    assert res.status == "completed" and res.results["a"] == {"r": "a"}

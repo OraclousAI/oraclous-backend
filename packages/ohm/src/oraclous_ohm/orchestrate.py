@@ -14,6 +14,7 @@ stage + ``fan_out``), and ``conditional`` (a skip predicate) are the three patte
 from __future__ import annotations
 
 import asyncio
+import time
 from collections.abc import Awaitable, Callable
 from typing import Any, Literal
 
@@ -22,7 +23,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from oraclous_ohm.aggregate import aggregate_reduce
 from oraclous_ohm.envelope import HandoffEnvelope, build_handoff
 from oraclous_ohm.errors import OHMError
-from oraclous_ohm.manifest import OHMManifest, OHMMember, OHMOrchestration
+from oraclous_ohm.manifest import OHMManifest, OHMMember, OHMOrchestration, OHMRunIf
 
 # Dispatch one member (+ optional fan-out item) given its inbound hand-offs -> output payload.
 DispatchFn = Callable[[OHMMember, list[HandoffEnvelope], Any], Awaitable[Any]]
@@ -48,6 +49,37 @@ def _resolve_over(over: str, state: dict[str, Any], results: dict[str, Any]) -> 
     key = over[2:] if over.startswith("$.") else over
     value = state.get(key, results.get(key))
     return list(value) if isinstance(value, (list, tuple)) else []
+
+
+def _eval_run_if(cond: OHMRunIf, results: dict[str, Any]) -> bool:
+    """Evaluate a declarative conditional (OHMMember.run_if) against produced results — a safe,
+    no-eval comparison, FAIL-CLOSED (False) on a missing source or any type error. Returns True =
+    run the member, False = skip it."""
+    src = results.get(cond.from_role)
+    if src is None:  # the gated-on member didn't run / produced nothing -> do not run
+        return False
+    value = src.get(cond.field) if (cond.field is not None and isinstance(src, dict)) else src
+    try:
+        match cond.op:
+            case "truthy":
+                return bool(value)
+            case "eq":
+                return bool(value == cond.value)
+            case "ne":
+                return bool(value != cond.value)
+            case "in":
+                return value in cond.value
+            case "gt":
+                return bool(value > cond.value)
+            case "lt":
+                return bool(value < cond.value)
+            case "gte":
+                return bool(value >= cond.value)
+            case "lte":
+                return bool(value <= cond.value)
+    except TypeError:  # incomparable types / non-container 'in' -> fail-closed
+        return False
+    return False
 
 
 async def _gather_capped(coros: list[Awaitable[Any]], max_parallel: int) -> list[Any]:
@@ -89,6 +121,12 @@ async def run_team(
     results: dict[str, Any] = dict(done)  # reuse already-completed members (resume), never re-run
     envelopes: list[HandoffEnvelope] = []
     skipped: list[str] = []
+    # team-level termination (ADR-035): a wall-clock deadline for the whole DAG run. max_rounds /
+    # convergence apply to the cyclic/B2 path, not this single-pass DAG; max_wall_seconds binds.
+    _max_wall = (
+        manifest.orchestration.termination.max_wall_seconds if manifest.orchestration else None
+    )
+    _deadline = time.monotonic() + _max_wall if _max_wall else None
 
     async def run_member(role: str) -> None:
         if role in done:  # already executed in a prior drive — reuse, do not dispatch again
@@ -99,6 +137,11 @@ async def run_team(
             results[role] = {"gate": role, "decision": gates.get(role)}
             return
         if predicate is not None and not predicate(member, results):
+            skipped.append(role)
+            results[role] = None
+            return
+        if member.run_if is not None and not _eval_run_if(member.run_if, results):
+            # declarative conditional dispatch (ADR-035): a prior output did not satisfy the test
             skipped.append(role)
             results[role] = None
             return
@@ -157,7 +200,18 @@ async def run_team(
                 status="rejected",
                 paused_at=rejected,
             )
-        await asyncio.gather(*(run_member(role) for role in stage))  # the fan-in barrier
+        barrier = asyncio.gather(*(run_member(role) for role in stage))  # the fan-in barrier
+        if _deadline is not None:  # enforce the team wall-clock deadline across the barrier
+            remaining = _deadline - time.monotonic()
+            if remaining <= 0:
+                barrier.cancel()
+                raise OHMError(f"team run exceeded max_wall_seconds ({_max_wall})")
+            try:
+                await asyncio.wait_for(barrier, timeout=remaining)
+            except TimeoutError as exc:
+                raise OHMError(f"team run exceeded max_wall_seconds ({_max_wall})") from exc
+        else:
+            await barrier
 
     return TeamRunResult(
         results=results, envelopes=envelopes, skipped=skipped, stages=stages, status="completed"
