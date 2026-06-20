@@ -39,4 +39,5 @@ uv run python -m tools.lint.check_no_stubs services                         || f
 uv run python -m tools.lint.check_rls_coverage                              || fail "RLS-coverage guardrail (ADR-030 §4)"
 uv run python -m tools.lint.check_service_dep_imports services              || fail "service first-party-dependency guardrail (#375 class)"
 uv run python -m tools.lint.check_rls_request_binding                       || fail "RLS request-binding guardrail"
+uv run python -m tools.lint.check_seam_wired                                || fail "seam-wiring guardrail (#446 — a built control seam is unwired)"
 echo "[pre-push] ✅ quality gate passed." >&2

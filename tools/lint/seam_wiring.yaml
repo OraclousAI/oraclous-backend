@@ -1,0 +1,26 @@
+# Seam-wiring manifest (ORAA — anti-"built-but-unwired" guardrail, #446).
+#
+# Each entry declares a SECURITY/CONTROL seam that exists in the codebase and a `symbol` that, to
+# count the seam as WIRED, must appear in at least one SERVICE request-path source file
+# (services/*/src/**, tests excluded). A seam that is built but referenced on ZERO request paths is
+# the #446/#456 bug class: the ReBAC engine existed and was unit-tested (against a mocked boundary),
+# but it fired on no request path at all — so cross-org reads silently fell through it. CI was green
+# the whole time. This guardrail fails the moment a declared seam's wiring symbol vanishes from
+# every service, so the control cannot regress back to built-but-unwired unnoticed.
+#
+# Add a seam here when you wire a new cross-cutting control into a request path; the entry then
+# locks that wiring in. Keep it CONSERVATIVE — a presence check, total-absence only (zero false
+# positives). It proves the call-site exists somewhere on a service path; it does NOT prove the call
+# is on the RIGHT path with the RIGHT arguments — that is the job of the per-feature deployed-stack
+# e2e (e.g. the #446 deny->grant->allow gateway proof), which this guardrail complements, not
+# replaces.
+seams:
+  rebac-cross-org-admission:
+    symbol: authorise_cross_org_traversal
+    rationale: >
+      The ReBAC engine (ADR-004) must mediate at least one cross-organisation request path. The
+      federated knowledge-retriever's accessible-set admission (resolve_scope, #446) routes a
+      caller-named foreign graph through authorise_cross_org_traversal so a ReBAC grant ADMITS it
+      and the absence of one DENIES it. Before #446 the engine fired on zero request paths — a
+      built-but-unwired security control that fails OPEN on cross-org reads. If this symbol
+      disappears from every service src, the gate is gone: fail CI.
