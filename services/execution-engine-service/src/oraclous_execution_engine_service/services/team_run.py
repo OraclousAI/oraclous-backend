@@ -74,7 +74,11 @@ async def run_team_harness(
     *,
     sub_harnesses: dict[str, dict[str, Any]] | None = None,
     gate_decisions: dict[str, str] | None = None,
+    completed: dict[str, Any] | None = None,
 ) -> TeamRunResult:
-    """Run a Team Harness member DAG, dispatching each member as a real harness execution."""
+    """Run a Team Harness member DAG, dispatching each member as a real harness execution.
+
+    ``completed`` (members that already ran in a prior drive) is passed through so a resume past a
+    human gate does not re-dispatch already-finished members (their side effects fire once)."""
     dispatch = make_harness_dispatch(harness, sub_harnesses or {})
-    return await run_team(manifest, dispatch, gate_decisions=gate_decisions)
+    return await run_team(manifest, dispatch, gate_decisions=gate_decisions, completed=completed)

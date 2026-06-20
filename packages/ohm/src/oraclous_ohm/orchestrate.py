@@ -67,22 +67,31 @@ async def run_team(
     state: dict[str, Any] | None = None,
     predicate: PredicateFn | None = None,
     gate_decisions: dict[str, str] | None = None,
+    completed: dict[str, Any] | None = None,
 ) -> TeamRunResult:
     """Execute a Team Harness member DAG stage by stage, a real fan-in barrier between stages.
 
     A ``kind: human`` member is a BLOCKING gate (ADR-035 §6): the run PAUSES at its stage until the
     gate is advanced via ``gate_decisions[role]`` ('approve' / 'reject'); downstream ``depends_on``
     members cannot run until it is approved — agents cannot cross a human gate by any path.
+
+    ``completed`` seeds the results of members that ALREADY ran in a prior drive (resume past a
+    human gate): those members are NOT dispatched again — their cached output is reused (so inbound
+    hand-offs still thread downstream), which makes ``advance`` idempotent over a member's side
+    effects instead of re-executing the whole DAG.
     """
     state = state or {}
     gates = gate_decisions or {}
+    done = completed or {}
     by_role = {m.role: m for m in manifest.members}
     stages = manifest.execution_stages()  # topological_stages — fail-closed on cycle/unknown/dup
-    results: dict[str, Any] = {}
+    results: dict[str, Any] = dict(done)  # reuse already-completed members (resume), never re-run
     envelopes: list[HandoffEnvelope] = []
     skipped: list[str] = []
 
     async def run_member(role: str) -> None:
+        if role in done:  # already executed in a prior drive — reuse, do not dispatch again
+            return
         member = by_role[role]
         if member.kind == "human":
             # a blocking gate — never dispatched; by the time we run it, it is an approved decision
