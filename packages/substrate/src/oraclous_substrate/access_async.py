@@ -72,6 +72,14 @@ if TYPE_CHECKING:
 # org but not a full principal (the trusted-caller / worker / store-admin DB paths).
 _RLS_PRINCIPAL = uuid.UUID("00000000-0000-0000-0000-0000000005d5")
 
+# #466: a fixed advisory-lock key shared by EVERY service's RLS-role bootstrap. All `*-migrate`
+# containers connect to the one `oraclous` DB and each provisions the SAME cluster-level
+# `oraclous_app` role; running concurrently they race the shared `pg_authid`/grant catalog rows
+# (`tuple concurrently updated`). A per-DB advisory lock on this key serializes them — first one
+# provisions (idempotent), the rest block then re-run idempotently. The value is arbitrary but MUST
+# be identical across all callers (any signed 64-bit int); the trailing 466 traces it to the issue.
+_PROVISION_ROLE_LOCK_KEY = 4_660_466
+
 
 class RlsBypassingRoleError(RuntimeError):
     """The runtime DB role bypasses RLS (rolsuper/rolbypassrls) — the backstop is void."""
@@ -295,7 +303,15 @@ def provision_app_role(
     caller's. See ``provision_app_role_ddl`` for the ``grant_all_tables`` semantics.
     """
     with conn.cursor() as cur:
-        for stmt in provision_app_role_ddl(
-            role=role, password=password, tables=tables, grant_all_tables=grant_all_tables
-        ):
-            cur.execute(stmt)  # only trusted module constants are executed
+        # #466: serialize concurrent provisioning (see _PROVISION_ROLE_LOCK_KEY). ``conn`` is
+        # autocommit, so a transaction-scoped lock would release immediately — take a SESSION-level
+        # advisory lock and release it explicitly (it also auto-releases if the session dies
+        # mid-provision, so a crashing migrate container never wedges the rest).
+        cur.execute("SELECT pg_advisory_lock(%s)", (_PROVISION_ROLE_LOCK_KEY,))
+        try:
+            for stmt in provision_app_role_ddl(
+                role=role, password=password, tables=tables, grant_all_tables=grant_all_tables
+            ):
+                cur.execute(stmt)  # only trusted module constants are executed
+        finally:
+            cur.execute("SELECT pg_advisory_unlock(%s)", (_PROVISION_ROLE_LOCK_KEY,))
