@@ -211,3 +211,54 @@ jobs:
         run: uv run python -m tools.lint.check_no_stubs services
       - name: Hollowness audit (true-completion map; informational)
         run: uv run python -m tools.audit.hollowness_audit services
+
+  # Deployed-stack e2e (FUCK_CLAUDE_FUCK_PAPERCLIP.md rules 3-5): builds + brings up the REAL stack
+  # and drives every user journey THROUGH THE GATEWAY — no fakes, no mocks, no DB-direct. This is the
+  # mechanical form of rule 4 (CTO verifies the real e2e), so it no longer depends on a human running
+  # it locally. Keyless by default: the fake harness (deterministic LLM) + the hashing embedder; the
+  # BYOM real-LLM leg runs ONLY when the OPENROUTER_API_KEY secret is present.
+  e2e:
+    name: "Deployed-stack e2e through the gateway (no fakes; rules 3-5)"
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    env:
+      HARNESS_LLM_MODE: fake
+      COMPOSE: "docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.dev-ports.yml"
+      COMPOSE_OAUTH: "docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.dev-ports.yml -f deploy/docker-compose.e2e-oauth.yml"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          version: "0.11.7"
+      - run: uv python install 3.12
+      - run: uv sync --all-packages --frozen
+      - name: Build + start the deployed stack (keyless)
+        run: $COMPOSE up -d --build --wait
+      - name: Wait for the gateway (a skip is NOT a pass — fail if it never comes up)
+        run: |
+          for _ in $(seq 1 60); do curl -fsS localhost:8006/health >/dev/null 2>&1 && exit 0; sleep 2; done
+          echo "::error::gateway :8006 never became healthy"; exit 1
+      - name: Deterministic e2e through the gateway
+        run: uv run pytest tests/e2e -m "e2e and not byom and not oauth" -v -p no:cacheprovider
+      - name: OAuth login e2e (a real local dex provider)
+        run: |
+          $COMPOSE_OAUTH up -d --wait dex
+          $COMPOSE_OAUTH up -d --force-recreate --no-deps auth-service
+          for _ in $(seq 1 30); do curl -fsS localhost:8006/oauth/providers 2>/dev/null | grep -q '"dex"' && break; sleep 1; done
+          uv run pytest tests/e2e -m oauth -v -p no:cacheprovider
+      - name: BYOM real-LLM e2e (only when the model-key secret is set)
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+        run: |
+          if [ -z "${OPENROUTER_API_KEY:-}" ]; then
+            echo "OPENROUTER_API_KEY secret not set — skipping the BYOM real-LLM leg"; exit 0
+          fi
+          HARNESS_LLM_MODE=live $COMPOSE up -d --force-recreate --no-deps harness-runtime-service
+          for _ in $(seq 1 30); do curl -fsS localhost:8007/health >/dev/null 2>&1 && break; sleep 1; done
+          uv run pytest tests/e2e -m byom -v -p no:cacheprovider
+      - name: Stack logs on failure
+        if: failure()
+        run: $COMPOSE_OAUTH logs --tail 200
+      - name: Tear down
+        if: always()
+        run: $COMPOSE_OAUTH down -v

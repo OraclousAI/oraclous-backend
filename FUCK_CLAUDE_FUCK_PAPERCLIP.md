@@ -51,6 +51,8 @@ The suite **auto-skips** when the gateway (`:8006`) is unreachable — a "skip" 
 
 For any behaviour-touching backend PR, the **CTO agent must verify the real gateway/MCP e2e passes on the deployed stack before merging** — not merge on CI-green alone. CI-green + unit + testcontainers are necessary but never sufficient (Rule 1). The CTO either re-runs `scripts/e2e.sh` or confirms the PASS banner in the PR body against the current head. A PR without a verified real-e2e PASS does not merge.
 
+**This is now mechanized: the CI `e2e` job (`.github/workflows/ci.yml`) builds + brings up the real stack and runs the gateway e2e on every PR** — deterministic + OAuth (real dex) keyless, plus the BYOM real-LLM leg when the `OPENROUTER_API_KEY` secret is set. So "the e2e is green" is a required check, not a manual local step. The local `scripts/e2e.sh` run (Rule 3) remains the fast pre-PR feedback loop; the CI job is the gate.
+
 ---
 
 ## RULE 5 — E2E IS THE END USER, THROUGH THE GATEWAY (nothing direct, nothing mocked, nothing assumed)
