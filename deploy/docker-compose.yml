@@ -48,9 +48,11 @@ x-kgs-env: &kgs-env
   KGS_NEO4J_USER: "neo4j"
   KGS_NEO4J_PASSWORD: "password"
   KGS_REDIS_URL: "redis://redis:6379/0"
-  # Slice 3 (#269): real semantic embeddings (text-embedding-3-small via OpenRouter) for similarity
-  # edges AND the free-text/retrieval path — the openai_api_key + base_url below are already wired.
-  KGS_EMBEDDER: "openai"
+  # Embeddings for similarity edges + the free-text/retrieval path. "hashing" (default) is keyless +
+  # deterministic — so the knowledge path works with NO key (local/CI) and never 503s on an embeddings
+  # cold-start. Set KGS_EMBEDDER=openai (with a key) for real semantic embeddings (text-embedding via
+  # OpenRouter; the openai_api_key + base_url below are already wired).
+  KGS_EMBEDDER: "${KGS_EMBEDDER:-hashing}"
   # Free-text entity/relation extraction. "null" (default) = lexical only (:Document/:Chunk),
   # key-free CI. "openai" = LLM extraction over an OpenAI-compatible endpoint (OpenRouter) using the
   # platform key — also materialises real :Entity nodes + their relationships, linked to chunks.
