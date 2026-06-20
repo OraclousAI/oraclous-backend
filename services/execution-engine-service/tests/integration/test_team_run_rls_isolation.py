@@ -45,6 +45,7 @@ class _FakeHarness:
         input_text: str,
         manifest_inline: dict[str, Any] | None = None,
         manifest_ref: str | None = None,
+        capability_ceiling: list[str] | None = None,
     ) -> dict[str, Any]:
         return {"status": "SUCCEEDED", "output": f"done: {input_text[:30]}"}
 

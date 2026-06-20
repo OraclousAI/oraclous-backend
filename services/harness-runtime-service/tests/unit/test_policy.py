@@ -99,6 +99,39 @@ def test_envelope_ceiling_is_the_declared_capability_set_distinct_from_gating() 
     assert env.gated_bindings == frozenset()  # not HITL-flagged — ceiling != gating
 
 
+def test_external_ceiling_intersects_the_declared_set_fail_closed() -> None:
+    # Red-team G-A: a caller-supplied ceiling (a team member's tools[]) caps the runtime ceiling by
+    # INTERSECTION, so a manifest (even one fetched by manifest_ref) can never exceed it.
+    strict = resolve_policy_set("policy-set:production-strict@1.0.0")
+    manifest = _ohm()  # declares one binding: 'pg'
+
+    # member allows 'pg' -> the binding survives the intersection
+    assert build_envelope(
+        manifest, strict, hard_max_iterations=9, external_ceiling=frozenset({"pg"})
+    ).tool_ceiling == frozenset({"pg"})
+
+    # member's tools[] does NOT include 'pg' -> the manifest's binding is DENIED (capped out)
+    assert (
+        build_envelope(
+            manifest, strict, hard_max_iterations=9, external_ceiling=frozenset({"other"})
+        ).tool_ceiling
+        == frozenset()
+    )
+
+    # an empty member ceiling -> deny-all (deny-by-default, ADR-032)
+    assert (
+        build_envelope(
+            manifest, strict, hard_max_iterations=9, external_ceiling=frozenset()
+        ).tool_ceiling
+        == frozenset()
+    )
+
+    # no external cap (single-agent path) -> the declared set is unchanged
+    assert build_envelope(
+        manifest, strict, hard_max_iterations=9, external_ceiling=None
+    ).tool_ceiling == frozenset({"pg"})
+
+
 def test_forbidden_matches_an_unversioned_ref() -> None:
     # H2: an unversioned/odd-cased ref must not dodge a "core/shell-exec@*" forbidden glob.
     strict = resolve_policy_set("policy-set:production-strict@1.0.0")

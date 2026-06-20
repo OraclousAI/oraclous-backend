@@ -183,12 +183,21 @@ def _validated_redact_patterns(patterns: list[str]) -> tuple[str, ...]:
 
 
 def build_envelope(
-    manifest: OHMManifest, policy: PolicySet, *, hard_max_iterations: int
+    manifest: OHMManifest,
+    policy: PolicySet,
+    *,
+    hard_max_iterations: int,
+    external_ceiling: frozenset[str] | None = None,
 ) -> PolicyEnvelope:
     """Build the effective runtime envelope. The iteration cap is a safety backstop derived from the
     policy's tool-call budget (so a stricter tier's smaller budget actually binds), bounded by the
     service hard cap. HITL gates come from capabilities flagged ``config.hitl``; redaction patterns
-    are validated (a bad pattern is a governance error, not a 500)."""
+    are validated (a bad pattern is a governance error, not a 500).
+
+    ``external_ceiling`` is a caller-supplied cap (a team member's ``tools[]`` — ADR-032/035 §5):
+    the effective ceiling is INTERSECTED with it, so the harness can NEVER dispatch a binding the
+    member did not declare — even when the manifest is fetched by ``manifest_ref`` from the registry
+    and declares a broader ``capabilities[]``. ``None`` = no external cap (single-agent)."""
     gated = frozenset(
         c.binding for c in manifest.capabilities if _hitl_flagged(c.config.get("hitl"))
     )
@@ -197,6 +206,8 @@ def build_envelope(
     # it, fail-closed; no orchestrator/coordinator path can widen it. Empty (a tool-less reasoning
     # agent) imposes no restriction. This is what makes the shipped ceiling field actually fire.
     ceiling = frozenset(c.binding for c in manifest.capabilities)
+    if external_ceiling is not None:  # cap by the member's tools[] — fail-closed, can only narrow
+        ceiling = ceiling & external_ceiling
     redact = _validated_redact_patterns(manifest.governance.redact_patterns or [])
     if policy.max_tool_calls is not None:
         max_iterations = min(hard_max_iterations, policy.max_tool_calls + 1)
