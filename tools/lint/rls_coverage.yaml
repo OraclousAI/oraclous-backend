@@ -83,6 +83,7 @@ services:
       - engine_schedules
       - engine_roundtables
       - engine_provenance
+      - engine_team_runs
   # Slice (capability-registry) — unified capability/tool registry + execution. All four org-scoped
   # tables carry a uuid organisation_id; every runtime accessor binds the org via the engine's
   # org-GUC begin-guard before any query, so RLS the full set (no exclusions). capability_descriptors

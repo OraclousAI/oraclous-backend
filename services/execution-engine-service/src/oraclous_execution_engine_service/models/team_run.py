@@ -1,0 +1,47 @@
+"""EngineTeamRun ORM model (ORAA-4 §21 models layer).
+
+A team run is ONE execution of an OHM v1.1 Team Harness: its member DAG is driven by the
+orchestrator (``oraclous_ohm.orchestrate.run_team``) through the harness, member by member, with
+the typed hand-off envelopes threaded by ``depends_on``. This row is the DURABLE state of the run
+— the team manifest, the generated per-role sub-harnesses, the accumulated per-member results, and
+the human gate(s) it is paused on — so a pause survives across requests and the run is resumable.
+Org-scoped (ADR-006); the org-GUC backstop (ADR-030) is enabled on this table in migration 0005.
+
+State machine: ``QUEUED → RUNNING → SUCCEEDED | PAUSED (a human gate) | REJECTED (gate rejected) |
+FAILED (a member harness did not succeed)``. ``PAUSED`` is re-drivable: ``advance`` records the gate
+decision, returns the row to ``QUEUED``, and re-drives past the now-decided gate.
+
+No ``from __future__ import annotations`` — SQLAlchemy resolves the ``Mapped[...]`` annotations at
+mapper configuration, so they must be real types.
+"""
+
+import uuid
+from typing import Any
+
+from sqlalchemy import String, Text
+from sqlalchemy.dialects.postgresql import JSONB, UUID
+from sqlalchemy.orm import Mapped, mapped_column
+
+from oraclous_execution_engine_service.models.base_model import BaseModel
+
+
+class EngineTeamRun(BaseModel):
+    __tablename__ = "engine_team_runs"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    organisation_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), nullable=False, index=True
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    # the OHM v1.1 Team Harness manifest (metadata.kind == "team") being run
+    manifest: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    # role -> the generated single-agent sub-harness OHM for that member (passed inline to harness)
+    sub_harnesses: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    # role -> "approve" | "reject" for each human gate that has been decided (seeded + via advance)
+    gate_decisions: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    state: Mapped[str] = mapped_column(String(16), nullable=False, default="QUEUED")
+    # role -> the member's output (the orchestrator's per-member results)
+    results: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    # the human gate role(s) the run is currently blocked on (empty unless PAUSED)
+    paused_at: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)

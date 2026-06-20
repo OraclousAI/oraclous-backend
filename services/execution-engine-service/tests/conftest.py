@@ -30,7 +30,13 @@ APP_ROLE = "oraclous_app"
 APP_PASSWORD = "app"  # noqa: S105 — ephemeral test-container role, not a real secret
 
 # The execution-engine's four org-scoped tables (RLS enabled on each — 0004_enable_rls).
-RLS_TABLES = ("engine_jobs", "engine_schedules", "engine_roundtables", "engine_provenance")
+RLS_TABLES = (
+    "engine_jobs",
+    "engine_schedules",
+    "engine_roundtables",
+    "engine_provenance",
+    "engine_team_runs",
+)
 
 
 @pytest.fixture(scope="session")
