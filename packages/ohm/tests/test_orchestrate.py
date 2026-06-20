@@ -105,6 +105,28 @@ async def test_fan_out_outputs_are_merged_by_the_reducer() -> None:
     assert res.results["r"] == ["a", "b", "c"]  # 3 evidence lists merged into one, not 3 raw dicts
 
 
+async def test_fan_out_synthesize_merges_via_an_llm_pass() -> None:
+    # ADR-035 B3: reduce="synthesize" dispatches the member ONCE MORE over the N outputs (an LLM
+    # synthesis — EURail's ledger), so the result is the synthesized merge, not a concat.
+    calls: list[Any] = []
+
+    async def dispatch(member: OHMMember, envs: list[HandoffEnvelope], item: Any) -> dict:
+        calls.append(item)
+        if isinstance(item, dict) and "synthesize" in item:
+            return {"ledger": f"merged {len(item['synthesize'])} batches"}
+        return {"batch": item}
+
+    fan = OHMFanOut(
+        over="$.items", max_parallel=2, reduce="synthesize", synthesize_prompt="merge into a ledger"
+    )
+    res = await run_team(_team([_m("r", fan_out=fan)]), dispatch, state={"items": ["a", "b", "c"]})
+    assert res.results["r"] == {"ledger": "merged 3 batches"}  # synthesized, not a raw list
+    assert len(calls) == 4  # 3 fan-out instances + 1 synthesis pass over their outputs
+    assert (
+        calls[-1]["instruction"] == "merge into a ledger"
+    )  # the prompt threaded into the synthesis
+
+
 async def test_conditional_skip() -> None:
     async def dispatch(member: OHMMember, envs: list[HandoffEnvelope], item: Any) -> dict:
         return {"ok": member.role}

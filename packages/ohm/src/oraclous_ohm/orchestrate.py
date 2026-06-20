@@ -116,14 +116,21 @@ async def run_team(
             outputs = await _gather_capped(
                 [dispatch(member, inbound, item) for item in items], fan.max_parallel
             )
-            # MERGE the fan-out outputs via the reducer (ADR-035 B3), not last-writer-wins.
-            results[role] = aggregate_reduce(
-                outputs,
-                strategy=fan.reduce,
-                field=fan.reduce_field,
-                on=fan.reduce_key,
-                key=fan.reduce_key,
-            )
+            if fan.reduce == "synthesize":
+                # ADR-035 B3: an LLM-SYNTHESIS pass merges the N outputs into one (not a
+                # deterministic concat; EURail: 14 batches -> 1 ledger) — the member is dispatched
+                # once more over all N outputs, through dispatch (the harness/LLM).
+                syn_item = {"synthesize": outputs, "instruction": fan.synthesize_prompt or ""}
+                results[role] = await dispatch(member, inbound, syn_item)
+            else:
+                # MERGE the fan-out outputs via the DETERMINISTIC reducer (ADR-035 B3).
+                results[role] = aggregate_reduce(
+                    outputs,
+                    strategy=fan.reduce,
+                    field=fan.reduce_field,
+                    on=fan.reduce_key,
+                    key=fan.reduce_key,
+                )
         else:
             results[role] = await dispatch(member, inbound, None)
 

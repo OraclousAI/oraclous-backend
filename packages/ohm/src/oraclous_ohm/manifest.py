@@ -92,10 +92,15 @@ class OHMFanOut(BaseModel):
 
     over: str = Field(min_length=1)
     max_parallel: int = Field(default=1, ge=1)
-    # how the fan-out outputs merge (concat | dedupe | group_by) — ADR-035 B3
+    # how the fan-out outputs merge (concat | dedupe | group_by | synthesize) — ADR-035 B3.
+    # concat/dedupe/group_by are the DETERMINISTIC reducer (aggregate.reduce); synthesize is an
+    # LLM-synthesis pass (the member merges its own N outputs into one — e.g. EURail's ledger).
     reduce: str = "concat"
     reduce_field: str | None = None  # extract this list field from each output before merging
     reduce_key: str | None = None  # the dedupe/group_by key
+    synthesize_prompt: str | None = (
+        None  # the instruction for an LLM synthesis pass (reduce=synthesize)
+    )
 
 
 class OHMMember(BaseModel):
