@@ -141,15 +141,14 @@ def test_a_scheduled_run_consumes_a_stored_secret_with_no_prompt(
     assert _TAVILY not in ex.text  # the stored secret never surfaces in the run record
 
 
-def test_an_unconfigured_keyed_tool_fails_closed_at_the_edge_with_no_leak(
+def test_an_unconfigured_keyed_tool_returns_a_typed_needs_credential_at_the_edge(
     register: Callable[..., dict], gateway_client: Callable[[str], httpx.Client]
 ) -> None:
-    """The 'wall' fails closed: a missing required key returns a clean 409 through the gateway —
-    no dispatch, no secret, no upstream internals. The registry emits a typed, leak-safe
-    ``needs_credential`` token at the substrate (unit-proven in the capability-registry); surfacing
-    that token through the gateway's ORA-37 envelope to the frontend onboarding prompt is a
-    cross-repo Contract follow-up — the edge deliberately strips upstream error detail today
-    (#490; Interface Contracts §3 rule 8)."""
+    """The 'wall' is ACTIONABLE through the gateway (#502): a missing required key fails closed with
+    a typed, leak-safe ``needs_credential`` envelope — the edge normalises the registry's
+    credential-miss 409 into ``code=CREDENTIALS_REQUIRED`` carrying ``{requirement_id, provider}``
+    (and NOTHING else: no dispatch, no secret, no login_url/host/internals). This is the end-to-end
+    proof the registry→gateway normalisation surfaces the onboarding signal a FE can render."""
     user = register("O1 NeedsCred")
     c = gateway_client(user["token"])
     cap = _web_research_cap(c)
@@ -161,7 +160,12 @@ def test_an_unconfigured_keyed_tool_fails_closed_at_the_edge_with_no_leak(
     )
     assert ex.status_code == 409, ex.text  # fail-closed: required credential unmapped, no dispatch
     body = ex.json()
-    assert body["error"]["code"] == "CONFLICT", body  # the canonical edge envelope
-    assert body["error"]["retryable"] is False, body  # re-running without onboarding won't help
+    err = body["error"]
+    assert err["code"] == "CREDENTIALS_REQUIRED", body  # the edge forwarded the typed signal
+    assert err["retryable"] is False, body  # re-running without onboarding won't help
+    assert err["needs_credential"] == {"requirement_id": "api_key", "provider": "web_search"}, body
+    # leak-safety: ONLY the token pair — never a key, a login_url, an internal host, or scopes
     assert "hits" not in ex.text  # the tool never dispatched
-    assert "tvly-" not in ex.text.lower()  # no key material anywhere in the edge response
+    assert "tvly-" not in ex.text.lower()
+    assert "login_url" not in ex.text and "missing_scopes" not in ex.text
+    assert "internal" not in ex.text.lower() and "://" not in ex.text

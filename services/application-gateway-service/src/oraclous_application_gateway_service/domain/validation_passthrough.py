@@ -24,7 +24,7 @@ import re
 from collections.abc import Sequence
 from typing import Any
 
-from oraclous_errors import FieldError
+from oraclous_errors import FieldError, NeedsCredential
 
 _MAX_FIELDS = 20  # cap the number of surfaced field errors
 _MAX_FIELD_LEN = 64  # a field PATH is short; a longer one is suspicious → truncate
@@ -33,6 +33,10 @@ _MAX_BODY = 64 * 1024  # never parse an oversized body
 _NON_TOKEN = re.compile(r"[^A-Z0-9_]")
 _NON_FIELD = re.compile(r"[^A-Za-z0-9_]")  # a loc part is a field name, never a value
 _LEAD = re.compile(r"^[^A-Z]+")
+_NON_CRED_TOKEN = re.compile(r"[^A-Za-z0-9_.-]")  # requirement_id/provider charset (no /:@/space)
+_LEAD_NON_ALNUM = re.compile(r"^[^A-Za-z0-9]+")  # a token must start alnum (per the envelope RE)
+_MAX_REQUIREMENT_LEN = 64
+_MAX_PROVIDER_LEN = 48
 
 
 def _loc_to_field(loc: object, *, body_fallback: bool = False) -> str | None:
@@ -111,3 +115,42 @@ def details_from_errors(errors: Sequence[Any]) -> list[FieldError] | None:
     if not isinstance(errors, list):
         return None
     return _details_from_items(errors, body_fallback=True)
+
+
+def _cred_token(value: object, *, limit: int) -> str | None:
+    """Sanitise a credential ``requirement_id``/``provider`` to the leak-safe token charset + cap.
+
+    Strips any character outside ``[A-Za-z0-9_.-]`` (so a URL, an internal host:port, an ``@``, or a
+    secret cannot survive), drops a leading non-alnum so the result matches the envelope's
+    ``^[A-Za-z0-9]...`` pattern, and caps the length. Returns None when nothing usable remains.
+    """
+    if not isinstance(value, str):
+        return None
+    token = _LEAD_NON_ALNUM.sub("", _NON_CRED_TOKEN.sub("", value))[:limit]
+    return token or None
+
+
+def extract_needs_credential(raw: bytes) -> NeedsCredential | None:
+    """Extract a leak-safe ``needs_credential`` token from an upstream 409 body, or None.
+
+    A capability-registry credential miss returns a 409 whose body carries
+    ``needs_credential: {requirement_id, provider}`` (the only place the missing requirement is
+    named). This surfaces ONLY those two machine tokens, sanitised + capped — it NEVER surfaces
+    ``login_url``/``missing_scopes`` (a URL could carry an internal host). Returns None — so the
+    proxy falls back to the canonical CONFLICT envelope — when no safe token is extractable, so a
+    genuine state-conflict 409 (no credential signal in its body) is never mislabelled.
+    """
+    if not raw or len(raw) > _MAX_BODY:
+        return None
+    try:
+        body = json.loads(raw)
+    except (ValueError, TypeError):
+        return None
+    nc = body.get("needs_credential") if isinstance(body, dict) else None
+    if not isinstance(nc, dict):
+        return None
+    requirement_id = _cred_token(nc.get("requirement_id"), limit=_MAX_REQUIREMENT_LEN)
+    provider = _cred_token(nc.get("provider"), limit=_MAX_PROVIDER_LEN)
+    if requirement_id is None or provider is None:
+        return None
+    return NeedsCredential(requirement_id, provider)

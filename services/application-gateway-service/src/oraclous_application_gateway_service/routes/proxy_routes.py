@@ -1,8 +1,8 @@
-"""Reverse-proxy catch-all route (ORAA-4 §21 routes layer).
+"""Reverse-proxy catch-all route (routes layer).
 
 A single catch-all that forwards any non-``/health`` request to its upstream. A successful (or
 redirect) response is BUFFERED then returned whole; an upstream 4xx/5xx is NORMALISED into the
-canonical ORA-37 error envelope under the same HTTP status — its body is drained and discarded,
+canonical error envelope under the same HTTP status — its body is drained and discarded,
 never relayed, so an upstream stack trace / internal host / SQL error cannot leak through the edge
 (Interface Contracts §3 rule 8). Buffering (not a detached stream) is deliberate: the generic proxy
 relays bounded JSON API responses, and a ``StreamingResponse`` whose source connection was reclaimed
@@ -21,6 +21,7 @@ from starlette.responses import Response
 
 from oraclous_application_gateway_service.core.dependencies import EdgePrincipalDep, ProxyServiceDep
 from oraclous_application_gateway_service.domain.validation_passthrough import (
+    extract_needs_credential,
     extract_validation_details,
 )
 from oraclous_application_gateway_service.schema.error import gateway_error
@@ -66,6 +67,18 @@ async def proxy(
                     status_code=422,
                     message="One or more fields failed validation.",
                     details=details,
+                )
+        # 409 with a credential miss: surface ONLY the leak-safe needs_credential token
+        # ({requirement_id, provider}) so the caller knows which credential to onboard — selected
+        # from the body, never from the status, so a genuine state-conflict 409 stays CONFLICT.
+        if upstream.status_code == 409:
+            needs_credential = extract_needs_credential(raw)
+            if needs_credential is not None:
+                return gateway_error(
+                    request,
+                    code=ErrorCode.CREDENTIALS_REQUIRED,
+                    status_code=409,
+                    needs_credential=needs_credential,
                 )
         return gateway_error(
             request, code=status_to_code(upstream.status_code), status_code=upstream.status_code
