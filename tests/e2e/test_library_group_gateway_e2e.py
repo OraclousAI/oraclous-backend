@@ -71,3 +71,21 @@ def test_unknown_operation_fails_closed(
     iid = _instantiate(c, cap["id"])
     out = _run(c, iid, {"operation": "rm_rf", "text": "x"})
     assert out["status"] == "FAILED" and out["error_type"] == "INVALID_OPERATION"
+
+
+def test_oversized_text_is_capped_and_an_adversarial_input_is_fast(
+    register: Callable[..., dict], gateway_client: Callable[[str], httpx.Client]
+) -> None:
+    """#488 ReDoS hardening, proven through the gateway: the arg cap fail-closes an oversized text,
+    and an adversarial-but-under-cap input returns promptly (the regex no longer backtracks)."""
+    user = register("Library ReDoS")
+    c = gateway_client(user["token"])
+    cap = _text_tools_cap(c)
+    iid = _instantiate(c, cap["id"])
+
+    oversized = _run(c, iid, {"operation": "to_upper", "text": "a" * 100_001})
+    assert oversized["status"] == "FAILED" and oversized["error_type"] == "INVALID_INPUT"
+
+    # what was minutes of CPU on the old quadratic regex now returns immediately
+    adversarial = _run(c, iid, {"operation": "extract_emails", "text": "a@" + "." * 90_000})
+    assert adversarial["status"] == "SUCCESS" and adversarial["output_data"]["emails"] == []

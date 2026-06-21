@@ -9,7 +9,10 @@ from __future__ import annotations
 
 import re
 
-_EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
+# Bounded + non-overlapping so the match is LINEAR (no catastrophic backtracking): the dot lives
+# only in a repeated label group, never in a label class, every quantifier length-capped. Prior bad:
+# `[A-Za-z0-9.-]+\.[A-Za-z]{2,}` overlapped dot+letters and backtracked quadratically (#488 fix).
+_EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9-]{1,63}(?:\.[A-Za-z0-9-]{1,63}){1,8}")
 
 
 def word_count(text: str) -> dict:
