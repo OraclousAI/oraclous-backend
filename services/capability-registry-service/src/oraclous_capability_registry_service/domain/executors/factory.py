@@ -30,6 +30,9 @@ from oraclous_capability_registry_service.domain.connectors.postgresql import Po
 from oraclous_capability_registry_service.domain.connectors.recall_memory import (
     RecallMemoryConnector,
 )
+from oraclous_capability_registry_service.domain.connectors.web_research import (
+    WebResearchConnector,
+)
 from oraclous_capability_registry_service.domain.executors.base import BaseToolExecutor
 from oraclous_capability_registry_service.domain.plugins.builtin import (
     FederatedSearchPlugin,
@@ -41,6 +44,7 @@ from oraclous_capability_registry_service.domain.plugins.builtin import (
     NotionReaderPlugin,
     PostgreSQLReaderPlugin,
     RecallMemoryPlugin,
+    WebResearchPlugin,
 )
 
 
@@ -60,6 +64,7 @@ _EXECUTORS: dict[str, type[BaseToolExecutor]] = {
     GraphIngestPlugin.plugin_id(): GraphIngestConnector,
     RecallMemoryPlugin.plugin_id(): RecallMemoryConnector,
     FederatedSearchPlugin.plugin_id(): FederatedSearchConnector,
+    WebResearchPlugin.plugin_id(): WebResearchConnector,
 }
 
 
