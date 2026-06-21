@@ -264,3 +264,25 @@ def test_flow_eval_gate_produces_a_verdict_without_branching_state(  # ADR-037 /
     assert run["state"] == "SUCCEEDED"  # the verdict NEVER branches the run state (E8 boundary)
     assert run["verdict"] is not None  # the gate fired and PRODUCED + STORED a verdict
     assert "pass" in run["verdict"]  # a typed verdict (pass/score/recommended_action)
+
+
+def test_undeclared_battery_success_criteria_is_rejected_at_create(  # #479 fail-fast
+    tmp_path: Path,
+    register: Callable[..., dict],
+    gateway_client: Callable[[str], httpx.Client],
+) -> None:
+    """A `battery:<name>` success_criteria naming an UNDECLARED battery is a 422 at create through
+    the gateway — never an UnknownBattery that escapes the grader and strands the run in RUNNING."""
+    _book_studio(tmp_path)
+    imported = import_setup(tmp_path, owner_organization_id=uuid.uuid4(), name="studio")
+    assert imported.manifest is not None
+    manifest = imported.manifest.model_dump(mode="json")
+    orchestration = manifest.get("orchestration") or {}
+    orchestration["success_criteria"] = "battery:does-not-exist"  # not in manifest.batteries
+    manifest["orchestration"] = orchestration
+    a = gateway_client(register("Battery Typo")["token"])
+    resp = a.post(
+        "/v1/engine/team-runs",
+        json={"manifest": manifest, "sub_harnesses": imported.sub_harnesses, "gate_decisions": {}},
+    )
+    assert resp.status_code == 422, resp.text  # rejected at create, not stranded at drive

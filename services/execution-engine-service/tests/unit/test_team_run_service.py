@@ -334,6 +334,30 @@ async def test_gate_eval_failure_is_fail_closed_and_run_still_succeeds() -> None
     )  # a fail-closed verdict recorded
 
 
+async def test_undeclared_battery_success_criteria_is_422_at_create() -> None:  # #479
+    """A `battery:<name>` success_criteria naming a battery NOT in manifest.batteries is rejected at
+    CREATE (422) — fail-fast, so it can never reach grade time as an UnknownBattery that strands the
+    run in RUNNING (the original #477 defect)."""
+    repo, harness = FakeTeamRunRepo(), FakeHarness()
+    svc, _ = _svc(repo, harness, evaluate=FakeEvaluate())
+    manifest = _team([_agent("a")], success_criteria="battery:does-not-exist")
+    with pytest.raises(TeamRunError) as exc:
+        await svc.create(_principal(), manifest=manifest, sub_harnesses={}, gate_decisions={})
+    assert exc.value.status_code == 422
+
+
+async def test_unexpected_grader_error_is_fail_closed_not_a_strand() -> None:  # #479
+    """An UNEXPECTED grader error type (not in the old narrow except tuple) must STILL fail closed —
+    the catch-all keeps the grade off _drive's try/except path from stranding the run RUNNING."""
+    repo, harness = FakeTeamRunRepo(), FakeHarness()
+    evaluate = FakeEvaluate(raise_exc=RuntimeError("boom"))  # RuntimeError — not in the old tuple
+    svc, _ = _svc(repo, harness, evaluate=evaluate)
+    manifest = _team([_agent("a")], success_criteria="is correct")
+    row = await _run(svc, _principal(), manifest=manifest, sub_harnesses={}, gate_decisions={})
+    assert row.state == "SUCCEEDED"  # the run is NOT stranded — the catch-all caught it
+    assert row.verdict is not None and row.verdict["pass"] is False  # fail-closed verdict recorded
+
+
 async def test_no_success_criteria_skips_grading() -> None:  # #477
     repo, harness = FakeTeamRunRepo(), FakeHarness()
     evaluate = FakeEvaluate()

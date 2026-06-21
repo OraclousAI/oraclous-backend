@@ -176,6 +176,17 @@ class OHMGateCheck(BaseModel):
     severity: Literal["CRITICAL", "MAJOR", "MINOR"] = "CRITICAL"
     applies_when: OHMRunIf | None = None
 
+    @model_validator(mode="after")
+    def _kind_requires_its_target(self) -> OHMGateCheck:
+        # fail-fast (#479): an evaluator check MUST carry a non-empty rubric (else it grades the
+        # empty string → core/evaluate 422s on min_length and collapses the whole battery); a
+        # deterministic check MUST name a check_ref. Catch the misdeclaration at load, not at grade.
+        if self.kind == "evaluator" and not (self.rubric and self.rubric.strip()):
+            raise ValueError("an evaluator gate check requires a non-empty 'rubric'")
+        if self.kind == "deterministic" and not self.check_ref:
+            raise ValueError("a deterministic gate check requires a 'check_ref'")
+        return self
+
 
 class OHMGateBattery(BaseModel):
     """A named, deterministic, multi-check evaluator battery (ADR-037 Decision 2 / #470).
