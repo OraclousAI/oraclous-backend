@@ -265,6 +265,9 @@ class TeamRunOut(BaseModel):
     paused_at: list[str]
     error_message: str | None
     created_at: datetime | None
+    # the flow-evaluation verdict (#477) — PRODUCED + STORED at the gate, surfaced read-side here;
+    # the run state is never branched on it (consuming it is E8). NULL until graded.
+    verdict: dict[str, Any] | None = None
 
 
 class TeamRunTreeOut(BaseModel):

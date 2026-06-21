@@ -108,11 +108,53 @@ class FakeHarness:
         }
 
 
-def _svc(repo: FakeTeamRunRepo, harness: Any) -> tuple[TeamRunService, list[uuid.UUID]]:
+class FakeEvaluate:
+    """A stand-in EvaluateClient (#477): records each call, returns a scripted Verdict or raises."""
+
+    def __init__(
+        self, *, score: float = 0.8, passed: bool = True, raise_exc: Exception | None = None
+    ) -> None:
+        self.calls: list[dict[str, Any]] = []
+        self._score, self._passed, self._raise = score, passed, raise_exc
+
+    async def evaluate(
+        self,
+        *,
+        target_ref: str,
+        target_output: str,
+        success_criteria: str,
+        target_kind: str = "run",
+        pass_threshold: float = 0.7,
+    ) -> dict[str, Any]:
+        self.calls.append(
+            {
+                "target_ref": target_ref,
+                "success_criteria": success_criteria,
+                "output": target_output,
+            }
+        )
+        if self._raise is not None:
+            raise self._raise
+        return {
+            "pass": self._passed,
+            "score": self._score,
+            "recommended_action": "accept" if self._passed else "escalate_human",
+        }
+
+    async def aclose(self) -> None:  # pragma: no cover - parity with the real client
+        return None
+
+
+def _svc(
+    repo: FakeTeamRunRepo, harness: Any, *, evaluate: Any = None
+) -> tuple[TeamRunService, list[uuid.UUID]]:
     """A service with the enqueue captured (not a broker) — create/advance is a pure DB write."""
     enqueued: list[uuid.UUID] = []
     svc = TeamRunService(
-        team_runs=repo, harness=harness, enqueue=lambda rid, _org, _user: enqueued.append(rid)
+        team_runs=repo,
+        harness=harness,
+        enqueue=lambda rid, _org, _user: enqueued.append(rid),
+        evaluate=evaluate,
     )
     return svc, enqueued
 
@@ -123,8 +165,8 @@ async def _run(svc: TeamRunService, principal: Principal, **kwargs: Any) -> Engi
     return await svc.drive(row.id, principal)
 
 
-def _team(members: list[dict[str, Any]]) -> dict[str, Any]:
-    return {
+def _team(members: list[dict[str, Any]], *, success_criteria: str | None = None) -> dict[str, Any]:
+    team: dict[str, Any] = {
         "ohm_version": "1.1",
         "metadata": {
             "id": str(uuid.uuid4()),
@@ -135,6 +177,9 @@ def _team(members: list[dict[str, Any]]) -> dict[str, Any]:
         "members": members,
         "runtime": {"entrypoint": members[0]["role"]},
     }
+    if success_criteria is not None:  # #477 — declare the flow-evaluation gate
+        team["orchestration"] = {"success_criteria": success_criteria}
+    return team
 
 
 def _agent(
@@ -249,6 +294,66 @@ async def test_status_progress_is_partial_when_paused_at_a_gate() -> None:  # #4
     st = await svc.status(row.id, p)
     assert st.state == "PAUSED" and st.healthy is True  # paused at a human gate is HEALTHY
     assert st.progress == 33  # 1 of 3 members done before the gate → goal-attainment 33%
+
+
+async def test_gate_stores_verdict_on_succeeded_row_without_branching_state() -> (
+    None
+):  # #477 E8 guard
+    """The HARD E4/E8 boundary (ADR-037 line 116): the gate PRODUCES + STORES the verdict, but a
+    FAILING verdict must NOT branch the state machine and must NOT enqueue anything — consuming the
+    verdict (re-dispatch) is E8. A reviewer rejects any wiring that does otherwise."""
+    repo, harness = FakeTeamRunRepo(), FakeHarness()
+    evaluate = FakeEvaluate(
+        score=0.2, passed=False
+    )  # a FAILING verdict, recommended_action escalate
+    svc, enqueued = _svc(repo, harness, evaluate=evaluate)
+    manifest = _team([_agent("a"), _agent("b", ["a"])], success_criteria="the result is correct")
+    row = await _run(svc, _principal(), manifest=manifest, sub_harnesses={}, gate_decisions={})
+    # the verdict is produced + stored on the row...
+    assert row.verdict is not None and row.verdict["pass"] is False
+    assert evaluate.calls and evaluate.calls[0]["success_criteria"] == "the result is correct"
+    # ...the run STATE is NOT branched on it (a failing verdict still SUCCEEDS)...
+    assert row.state == "SUCCEEDED"
+    # ...and NOTHING was enqueued off the verdict (only the create's enqueue — the drive added none)
+    assert enqueued == [row.id]
+
+
+async def test_gate_eval_failure_is_fail_closed_and_run_still_succeeds() -> None:  # #477
+    from oraclous_execution_engine_service.services.evaluate_client import EvaluateClientError
+
+    repo, harness = FakeTeamRunRepo(), FakeHarness()
+    evaluate = FakeEvaluate(raise_exc=EvaluateClientError("judge unreachable"))
+    svc, _ = _svc(repo, harness, evaluate=evaluate)
+    manifest = _team([_agent("a")], success_criteria="is correct")
+    row = await _run(svc, _principal(), manifest=manifest, sub_harnesses={}, gate_decisions={})
+    assert (
+        row.state == "SUCCEEDED"
+    )  # the run's success is INDEPENDENT of the grader being reachable
+    assert (
+        row.verdict is not None and row.verdict["pass"] is False
+    )  # a fail-closed verdict recorded
+
+
+async def test_no_success_criteria_skips_grading() -> None:  # #477
+    repo, harness = FakeTeamRunRepo(), FakeHarness()
+    evaluate = FakeEvaluate()
+    svc, _ = _svc(repo, harness, evaluate=evaluate)
+    row = await _run(
+        svc, _principal(), manifest=_team([_agent("a")]), sub_harnesses={}, gate_decisions={}
+    )
+    assert evaluate.calls == []  # no gate declared → the grader is never called
+    assert row.verdict is None and row.state == "SUCCEEDED"
+
+
+async def test_progress_blends_verdict_score_capped_by_completion() -> None:  # #477
+    repo, harness = FakeTeamRunRepo(), FakeHarness()
+    evaluate = FakeEvaluate(score=0.6, passed=True)
+    svc, _ = _svc(repo, harness, evaluate=evaluate)
+    manifest = _team([_agent("a"), _agent("b", ["a"])], success_criteria="is good")
+    row = await _run(svc, _principal(), manifest=manifest, sub_harnesses={}, gate_decisions={})
+    st = await svc.status(row.id, _principal())
+    # both members done (completion 100) but the evaluator graded 0.6 → goal-attainment 60
+    assert st.progress == 60
 
 
 async def test_human_gate_pauses_the_run_durably() -> None:

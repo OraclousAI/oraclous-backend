@@ -227,3 +227,40 @@ def test_o4_status_surface_through_the_gateway(  # ADR-037 D5 / #472
 
     b = gateway_client(register("Status Intruder")["token"])
     assert b.get(f"/v1/engine/team-runs/{run_id}/status").status_code == 404  # B can't read A's
+
+
+def test_flow_eval_gate_produces_a_verdict_without_branching_state(  # ADR-037 / #477
+    tmp_path: Path,
+    register: Callable[..., dict],
+    gateway_client: Callable[[str], httpx.Client],
+) -> None:
+    """The flow-evaluation gate FIRES end-to-end through the gateway: a completed team run carrying
+    a prose ``success_criteria`` is graded at the gate and a verdict is PRODUCED + STORED on the run
+    (surfaced on the run read). The HARD E4/E8 boundary holds end-to-end — the run STATE is NOT
+    branched on the verdict (it is SUCCEEDED regardless). The judge may be unconfigured on the
+    stack, in which case the gate records a fail-closed verdict (pass=false) and the run SUCCEEDS —
+    exactly the contract; a real PASS verdict is the EURail M2 milestone (#385)."""
+    _book_studio(tmp_path)
+    imported = import_setup(tmp_path, owner_organization_id=uuid.uuid4(), name="studio")
+    assert imported.manifest is not None
+    manifest = imported.manifest.model_dump(mode="json")
+    # the user declares a flow-evaluation gate on their team (a real OHM authoring choice). The
+    # importer leaves orchestration null for a plain studio, so build the block.
+    orchestration = manifest.get("orchestration") or {}
+    orchestration["success_criteria"] = (
+        "the chapter is well-structured, accurate, and faithful to the approved outline"
+    )
+    manifest["orchestration"] = orchestration
+    body = {
+        "manifest": manifest,
+        "sub_harnesses": imported.sub_harnesses,
+        "gate_decisions": {"gate-a": "approve"},  # pre-approve → drives straight to the gate
+    }
+    a = gateway_client(register("Verdict Owner")["token"])
+    run_id = a.post("/v1/engine/team-runs", json=body).json()["id"]
+    assert _poll(a, run_id, {"SUCCEEDED", "FAILED", "REJECTED"})["state"] == "SUCCEEDED"
+
+    run = a.get(f"/v1/engine/team-runs/{run_id}").json()
+    assert run["state"] == "SUCCEEDED"  # the verdict NEVER branches the run state (E8 boundary)
+    assert run["verdict"] is not None  # the gate fired and PRODUCED + STORED a verdict
+    assert "pass" in run["verdict"]  # a typed verdict (pass/score/recommended_action)

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import uuid
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -25,6 +26,7 @@ from typing import Any
 from oraclous_governance import Principal
 from oraclous_ohm.capabilities import assert_subharness_within_ceiling
 from oraclous_ohm.errors import OHMCapabilityError, OHMError
+from oraclous_ohm.gate_battery import OHMGateCheck, evaluate_gate, is_battery_reference
 from oraclous_ohm.manifest import OHMManifest
 from oraclous_ohm.parse import load_ohm
 
@@ -34,6 +36,10 @@ from oraclous_execution_engine_service.repositories.maintenance_repository impor
     EngineMaintenanceRepository,
 )
 from oraclous_execution_engine_service.repositories.team_run_repository import TeamRunRepository
+from oraclous_execution_engine_service.services.evaluate_client import (
+    EvaluateClient,
+    EvaluateClientError,
+)
 from oraclous_execution_engine_service.services.harness_client import HarnessClient
 from oraclous_execution_engine_service.services.team_run import run_team_harness
 
@@ -66,17 +72,51 @@ class TeamRunStatus:
     cost_tokens: int
 
 
+def _verdict_score(verdict: Any) -> float | None:
+    """A 0–1 attainment from a stored verdict (#477): a prose Verdict's ``score``, or a battery
+    verdict's passed-fraction over its checks. ``None`` when absent/unparseable (fail-closed)."""
+    if not isinstance(verdict, dict):
+        return None
+    score = verdict.get("score")
+    if isinstance(score, int | float) and not isinstance(score, bool):
+        return max(0.0, min(1.0, float(score)))
+    checks = verdict.get("check_verdicts")
+    if isinstance(checks, list) and checks:
+        passed = sum(1 for c in checks if isinstance(c, dict) and c.get("passed"))
+        return passed / len(checks)
+    return None
+
+
 def _member_completion_progress(row: EngineTeamRun) -> int:
-    """Goal-attainment by member completion (ADR-037 Decision 5): the fraction of the team's
-    declared members whose node reached a terminal result, as 0–100. Naturally floored (never ahead
-    of work done) and fail-closed (no members → 100 only once SUCCEEDED, else 0). The evaluator
-    partial + count-target blend lands when flow-level evaluation is wired into the drive (#470)."""
+    """Goal-attainment progress (ADR-037 Decision 5), 0–100. Base = member completion (the fraction
+    of declared members whose node reached a terminal result). When a flow-evaluation verdict is
+    stored (#477), the evaluator partial is the PRIMARY signal, capped by member completion so it
+    never reports ahead of the work actually done. Fail-closed: no/unparseable verdict → pure member
+    completion; no members → 100 only once SUCCEEDED."""
     members = row.manifest.get("members", []) if isinstance(row.manifest, dict) else []
     total = len(members)
-    if total == 0:
-        return 100 if row.state == "SUCCEEDED" else 0
-    done = len(row.results or {})
-    return min(100, round(100 * done / total))
+    completion = (
+        (100 if row.state == "SUCCEEDED" else 0)
+        if total == 0
+        else min(100, round(100 * len(row.results or {}) / total))
+    )
+    score = _verdict_score(row.verdict)
+    if score is None:
+        return completion
+    return min(round(100 * score), completion)  # the evaluator partial, capped by work-done
+
+
+def _grade_target(team: OHMManifest, results: dict[str, Any]) -> str:
+    """Reduce the per-member results to ONE string to grade — the team's terminal (sink) members'
+    output (the roles no other member depends on). One sink → its output; several → a deterministic
+    JSON of the sink subset; none identifiable → a JSON of all results (fail-safe, never empty)."""
+    depended = {d for m in team.members for d in m.depends_on}
+    sinks = [m.role for m in team.members if m.role not in depended and m.role in results]
+    if len(sinks) == 1:
+        out = results.get(sinks[0])
+        return out if isinstance(out, str) else json.dumps(out, default=str, sort_keys=True)
+    chosen = {r: results[r] for r in (sinks or list(results))}
+    return json.dumps(chosen, default=str, sort_keys=True)
 
 
 class TeamRunService:
@@ -86,13 +126,17 @@ class TeamRunService:
         team_runs: TeamRunRepository,
         harness: HarnessClient | None = None,
         enqueue: EnqueueFn | None = None,
+        evaluate: EvaluateClient | None = None,
     ) -> None:
         # The drive runs on the WORKER (like jobs/round-tables): the request path (create/advance)
         # needs `enqueue` (hand the QUEUED run to the broker) but NOT a harness; the worker `drive`
-        # needs `harness` but not `enqueue`; the reaper path (reap_stale) needs neither.
+        # needs `harness` but not `enqueue`; the reaper path (reap_stale) needs neither. `evaluate`
+        # (the flow judge, #477) is the worker's gate grader — None ⇒ no gate eval (the run still
+        # completes; the gate is simply not graded).
         self._team_runs = team_runs
         self._harness = harness
         self._enqueue = enqueue
+        self._evaluate = evaluate
 
     def _org(self, principal: Principal) -> uuid.UUID:
         if principal.organisation_id is None:  # fail-closed tenancy (ADR-006)
@@ -196,6 +240,50 @@ class TeamRunService:
             last_outcome=row.state,
             cost_tokens=int(row.cost_tokens or 0),
         )
+
+    async def _grade_gate(
+        self, team: OHMManifest, run_id: uuid.UUID, result: Any
+    ) -> dict[str, Any] | None:
+        """Grade a COMPLETED run at the ``success_criteria`` gate (#477). PRODUCES + returns the
+        verdict dict; the caller STORES it on the SUCCEEDED row. This NEVER branches the run state
+        and NEVER enqueues — consuming the verdict (re-dispatch/termination) is E8 (ADR-037 §4).
+        Fail-closed: any grader error → a recorded ``pass=false`` verdict, and the run still
+        SUCCEEDS (the run's own success is independent of the grader being reachable)."""
+        if self._evaluate is None or team.orchestration is None:
+            return None
+        success_criteria = team.orchestration.success_criteria
+        if not success_criteria:  # no gate declared → nothing to grade
+            return None
+        grade_target = _grade_target(team, result.results)
+        try:
+            if is_battery_reference(success_criteria):
+                # battery: resolved + iterated ENGINE-side; only each check's PROSE rubric leaves
+                # the engine to core/evaluate (the battery token would 422 at KRS).
+                async def _invoke(check: OHMGateCheck, output: str) -> float:
+                    resp = await self._evaluate.evaluate(  # type: ignore[union-attr]
+                        target_ref=f"{run_id}/{check.name}",
+                        target_output=output,
+                        success_criteria=check.rubric or "",
+                    )
+                    raw = resp.get("score", 0.0)
+                    return float(raw) if isinstance(raw, int | float) else 0.0
+
+                battery_verdict = await evaluate_gate(
+                    team, grade_target, evaluate=_invoke, gate="success_criteria"
+                )
+                return battery_verdict.model_dump() if battery_verdict is not None else None
+            return await self._evaluate.evaluate(
+                target_ref=str(run_id),
+                target_output=grade_target,
+                success_criteria=success_criteria,
+            )
+        except (EvaluateClientError, ValueError, KeyError, TypeError) as exc:
+            return {  # fail-closed verdict; the run still SUCCEEDS (state unchanged)
+                "pass": False,
+                "score": 0.0,
+                "recommended_action": "escalate_human",
+                "reason": f"grader unavailable ({type(exc).__name__})",
+            }
 
     async def advance(
         self, team_run_id: uuid.UUID, principal: Principal, gate_decisions: Mapping[str, str]
@@ -302,6 +390,13 @@ class TeamRunService:
                     )
                 )
             raise
+        # flow-evaluation gate (#477): grade ONLY a completed run; PRODUCE + STORE the verdict on
+        # the SUCCEEDED row. The run STATE is NOT branched on the verdict and NOTHING is enqueued
+        # off it — consuming it (re-dispatch / termination) is E8 (ADR-037 §4). A grader failure
+        # yields a fail-closed verdict and the run still SUCCEEDS (handled inside _grade_gate).
+        verdict = (
+            await self._grade_gate(team, row.id, result) if result.status == "completed" else None
+        )
         with org_scope(org):
             updated, _ = await self._team_runs.transition(
                 row.id,
@@ -312,6 +407,7 @@ class TeamRunService:
                 paused_at=list(result.paused_at),
                 child_execution_ids=child_ids,  # the member executions that form this run's tree
                 cost_tokens=prior_cost + sum(cost_deltas),  # O4: the run's accumulated token cost
+                verdict=verdict,  # the gate verdict (None unless completed); state stays unchanged
             )
         return updated or claimed
 
