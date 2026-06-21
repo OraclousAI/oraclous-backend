@@ -38,6 +38,7 @@ from oraclous_execution_engine_service.repositories.team_run_repository import T
 from oraclous_execution_engine_service.services.evaluate_client import EvaluateClient
 from oraclous_execution_engine_service.services.harness_client import HarnessClient
 from oraclous_execution_engine_service.services.job_service import JobService
+from oraclous_execution_engine_service.services.registry_client import RegistryClient
 from oraclous_execution_engine_service.services.roundtable_service import RoundtableService
 from oraclous_execution_engine_service.services.schedule_service import ScheduleService
 from oraclous_execution_engine_service.services.team_run_service import TeamRunService
@@ -155,6 +156,7 @@ async def _fire_schedules_async() -> dict[str, int]:
             jobs=jobs,
             provenance=ProvenanceCollector(sink),
             enqueue=enqueue_job,
+            enqueue_adopted_tool=enqueue_adopted_tool,
             maintenance=maintenance,
         )
         fired = await service.fire_due(datetime.now(UTC))
@@ -209,9 +211,81 @@ def enqueue_job(job_id: uuid.UUID, organisation_id: uuid.UUID, user_id: uuid.UUI
     run_engine_job_task.delay(str(job_id), str(organisation_id), str(user_id))
 
 
+@celery_app.task(bind=True, name="engine.run_adopted_tool")
+def run_adopted_tool_task(  # noqa: ANN001, ANN201
+    self,
+    run_id: str,
+    instance_id: str,
+    input_data: dict[str, Any],
+    organisation_id: str,
+    user_id: str,
+):  # noqa: ARG001
+    return AsyncTaskExecutor.run_async_task(
+        _run_adopted_tool_async, run_id, instance_id, input_data, organisation_id, user_id
+    )
+
+
+async def _run_adopted_tool_async(
+    run_id_s: str, instance_id_s: str, input_data: dict[str, Any], org_id_s: str, user_id_s: str
+) -> dict[str, Any]:
+    """Worker: dispatch an ADOPTED_TOOL_RUN schedule fire to the capability-registry (#489).
+
+    The engine already wrote the idempotency row (in ScheduleService._fire_adopted_tool) BEFORE this
+    task was enqueued — so reaching this worker means the dispatch is NOT a duplicate. The worker
+    reconstructs the schedule-owner principal (no SYSTEM principal exists — the auto-fire acts as
+    the owner), binds the org context, calls the registry instance /execute over HTTP with the SAME
+    downstream identity headers the request path builds (so the registry sees the right tenant), and
+    stamps the registry ExecutionOut.id back onto the run row. NullPool engine + a per-task client,
+    disposed after (ADR-012 worker invariant)."""
+    settings = get_settings()
+    run_id = uuid.UUID(run_id_s)
+    instance_id, org_id, user_id = (
+        uuid.UUID(instance_id_s),
+        uuid.UUID(org_id_s),
+        uuid.UUID(user_id_s),
+    )
+    principal = Principal(
+        principal_id=user_id, principal_type=PrincipalType.USER, organisation_id=org_id
+    )
+    context = OrganisationContext(
+        organisation_id=org_id, principal_id=user_id, principal_type=PrincipalType.USER
+    )
+    with use_organisation_context(context):
+        jobs = JobRepository(settings.database_url, worker_pool=True)
+        registry = RegistryClient(
+            settings.capability_registry_url,
+            headers=build_downstream_headers(principal, settings),
+            timeout=settings.capability_registry_request_timeout,
+        )
+        try:
+            result = await registry.execute(instance_id, input_data)
+            execution_id = result.get("id")
+            if execution_id is not None:
+                await jobs.set_adopted_execution_id(run_id, org_id, uuid.UUID(str(execution_id)))
+            return {"run_id": run_id_s, "execution_id": execution_id}
+        finally:
+            await registry.aclose()
+            await jobs.close()
+
+
 def enqueue_roundtable(rt_id: uuid.UUID, organisation_id: uuid.UUID, user_id: uuid.UUID) -> None:
     """Fire-and-forget: hand a round-table to the driver over the broker."""
     drive_roundtable_task.delay(str(rt_id), str(organisation_id), str(user_id))
+
+
+def enqueue_adopted_tool(
+    run_id: uuid.UUID,
+    instance_id: uuid.UUID,
+    input_data: dict[str, Any],
+    organisation_id: uuid.UUID,
+    user_id: uuid.UUID,
+) -> None:
+    """Fire-and-forget: hand an ADOPTED_TOOL_RUN schedule fire to the registry-execute worker over
+    the broker (#489). NOT awaited inline in the Beat sweep — a slow/down registry must never block
+    the cross-org tick (the dedupe row is already written, so the dispatch is non-duplicate)."""
+    run_adopted_tool_task.delay(
+        str(run_id), str(instance_id), input_data, str(organisation_id), str(user_id)
+    )
 
 
 @celery_app.task(bind=True, name="engine.drive_team_run")

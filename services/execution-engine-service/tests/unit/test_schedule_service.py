@@ -37,6 +37,29 @@ def _schedule(*, cron: str | None, last_fired: datetime | None = None) -> Engine
         input_text="go",
         enabled=True,
         last_fired_at=last_fired,
+        target_kind="harness_job",
+        instance_id=None,
+        input_data=None,
+    )
+
+
+_INSTANCE = uuid.uuid4()
+
+
+def _adopted_schedule(*, cron: str | None, last_fired: datetime | None = None) -> EngineSchedule:
+    return EngineSchedule(
+        id=uuid.uuid4(),
+        organisation_id=_ORG,
+        user_id=_USER,
+        type="cron",
+        cron=cron,
+        manifest_ref=None,
+        input_text="scheduled",
+        enabled=True,
+        last_fired_at=last_fired,
+        target_kind="adopted_tool_run",
+        instance_id=_INSTANCE,
+        input_data={"channel": "email", "content": "weekly digest"},
     )
 
 
@@ -51,6 +74,11 @@ class _FakeSchedRepo:
 
     async def list_for_org(self, org: uuid.UUID, *, limit: int = 100) -> list[EngineSchedule]:
         return [r for r in self.rows if r.organisation_id == org]
+
+    async def get(self, schedule_id: uuid.UUID, org: uuid.UUID) -> EngineSchedule | None:
+        return next(
+            (r for r in self.rows if r.id == schedule_id and r.organisation_id == org), None
+        )
 
     async def delete(self, schedule_id: uuid.UUID, org: uuid.UUID) -> bool:
         before = len(self.rows)
@@ -70,6 +98,10 @@ class _FakeJobRepo:
     def __init__(self) -> None:
         self.created: list[str] = []
         self.seen: set[str] = set()
+        # adopted-tool-run idempotency ledger (#489): the (org, key) unique row
+        self.adopted_created: list[str] = []
+        self.adopted_seen: set[str] = set()
+        self.adopted_rows: list[SimpleNamespace] = []
 
     async def create_scheduled(self, *, idempotency_key: str, **_kw: object):  # noqa: ANN202
         if idempotency_key in self.seen:  # the (org, key) unique constraint
@@ -77,6 +109,40 @@ class _FakeJobRepo:
         self.seen.add(idempotency_key)
         self.created.append(idempotency_key)
         return SimpleNamespace(id=uuid.uuid4())
+
+    async def create_adopted_tool_run(  # noqa: ANN202
+        self, *, organisation_id: uuid.UUID, schedule_id: uuid.UUID, idempotency_key: str
+    ):
+        # mirror the real (org, idempotency_key) unique constraint: a duplicate window → None
+        if idempotency_key in self.adopted_seen:
+            return None
+        self.adopted_seen.add(idempotency_key)
+        self.adopted_created.append(idempotency_key)
+        row = SimpleNamespace(
+            id=uuid.uuid4(),
+            organisation_id=organisation_id,
+            schedule_id=schedule_id,
+            idempotency_key=idempotency_key,
+            execution_id=None,
+        )
+        self.adopted_rows.append(row)
+        return row
+
+    async def set_adopted_execution_id(
+        self, run_id: uuid.UUID, organisation_id: uuid.UUID, execution_id: uuid.UUID
+    ) -> None:
+        for r in self.adopted_rows:
+            if r.id == run_id and r.organisation_id == organisation_id:
+                r.execution_id = execution_id
+
+    async def list_adopted_runs_for_schedule(  # noqa: ANN202
+        self, schedule_id: uuid.UUID, organisation_id: uuid.UUID, *, limit: int = 100
+    ):
+        return [
+            r
+            for r in self.adopted_rows
+            if r.schedule_id == schedule_id and r.organisation_id == organisation_id
+        ]
 
 
 class _FakeProv:
@@ -100,7 +166,7 @@ class _FakeMaintenance:
 
 
 def _svc(
-    srepo: _FakeSchedRepo, jrepo: _FakeJobRepo, enqueue=None
+    srepo: _FakeSchedRepo, jrepo: _FakeJobRepo, enqueue=None, enqueue_adopted_tool=None
 ) -> tuple[ScheduleService, _FakeProv]:  # noqa: ANN001
     prov = _FakeProv()
     svc = ScheduleService(
@@ -108,6 +174,7 @@ def _svc(
         jobs=jrepo,  # type: ignore[arg-type]
         provenance=prov,  # type: ignore[arg-type]
         enqueue=enqueue,
+        enqueue_adopted_tool=enqueue_adopted_tool,
         maintenance=_FakeMaintenance(srepo),  # type: ignore[arg-type]
     )
     return svc, prov
@@ -220,3 +287,155 @@ async def test_fire_due_idempotent_create_advances_without_double_enqueue() -> N
     fired = await svc.fire_due(_NOW)
     assert fired == 0 and calls == []  # no double fire
     assert srepo.rows[0].last_fired_at == _PREV  # but the cursor still advances
+
+
+# ── register validation: target_kind × manifest combinations (#489) ──────────────────────────────
+async def test_register_adopted_tool_run_valid() -> None:
+    svc, prov = _svc(_FakeSchedRepo(), _FakeJobRepo())
+    row = await svc.register(
+        _principal(),
+        type="cron",
+        target_kind="adopted_tool_run",
+        input_text="scheduled",
+        cron="* * * * *",
+        instance_id=_INSTANCE,
+        input_data={"channel": "email"},
+    )
+    assert row.target_kind == "adopted_tool_run"
+    assert row.instance_id == _INSTANCE and row.input_data == {"channel": "email"}
+    assert row.manifest_inline is None and row.manifest_ref is None
+    assert "engine.schedule.register" in prov.events
+
+
+async def test_register_adopted_tool_run_requires_instance_id() -> None:
+    svc, _ = _svc(_FakeSchedRepo(), _FakeJobRepo())
+    with pytest.raises(ScheduleError):  # no instance_id
+        await svc.register(
+            _principal(),
+            type="cron",
+            target_kind="adopted_tool_run",
+            input_text="scheduled",
+            cron="* * * * *",
+        )
+
+
+async def test_register_adopted_tool_run_forbids_a_manifest() -> None:
+    svc, _ = _svc(_FakeSchedRepo(), _FakeJobRepo())
+    with pytest.raises(ScheduleError):  # adopted_tool_run + a manifest is invalid
+        await svc.register(
+            _principal(),
+            type="cron",
+            target_kind="adopted_tool_run",
+            input_text="scheduled",
+            cron="* * * * *",
+            instance_id=_INSTANCE,
+            manifest_ref="h",
+        )
+
+
+async def test_register_harness_job_forbids_instance_id() -> None:
+    svc, _ = _svc(_FakeSchedRepo(), _FakeJobRepo())
+    with pytest.raises(ScheduleError):  # harness_job + instance_id is invalid
+        await svc.register(
+            _principal(),
+            type="cron",
+            target_kind="harness_job",
+            input_text="go",
+            cron="* * * * *",
+            manifest_ref="h",
+            instance_id=_INSTANCE,
+        )
+
+
+# ── fire branch: ADOPTED_TOOL_RUN (create-before-dispatch + no double-fire) (#489) ────────────────
+async def test_fire_due_adopted_tool_creates_row_before_dispatch() -> None:
+    sched = _adopted_schedule(cron="* * * * *", last_fired=None)
+    srepo = _FakeSchedRepo([sched])
+    jrepo = _FakeJobRepo()
+    dispatches: list = []
+    svc, prov = _svc(
+        srepo,
+        jrepo,
+        enqueue_adopted_tool=lambda run, inst, data, o, u: dispatches.append((inst, data, o, u)),
+    )
+    fired = await svc.fire_due(_NOW)
+    # the idempotency row was created (the dedupe gate) AND exactly one dispatch was enqueued
+    assert fired == 1 and len(jrepo.adopted_created) == 1 and len(dispatches) == 1
+    inst, data, org, user = dispatches[0]
+    assert inst == _INSTANCE  # the curated instance is dispatched
+    assert data == {"channel": "email", "content": "weekly digest"}  # the schedule's input_data
+    assert org == _ORG and user == _USER  # the schedule-OWNER principal (no SYSTEM actor)
+    assert srepo.rows[0].last_fired_at == _PREV  # cursor advanced
+    assert "engine.schedule.fire" in prov.events
+    # NO harness engine_job was created for an adopted-tool fire
+    assert jrepo.created == []
+
+
+async def test_fire_now_twice_same_window_dispatches_exactly_once() -> None:
+    # THE merge gate: a duplicate same-window fire produces NO second registry dispatch. The
+    # (org, idempotency_key) row is the gate — the second fire's create returns None, so the
+    # enqueue callback is called EXACTLY ONCE across two same-window fires.
+    sched = _adopted_schedule(cron="* * * * *", last_fired=None)
+    srepo = _FakeSchedRepo([sched])
+    jrepo = _FakeJobRepo()
+    dispatches: list = []
+    svc, _ = _svc(
+        srepo,
+        jrepo,
+        enqueue_adopted_tool=lambda run, inst, data, o, u: dispatches.append(inst),
+    )
+    first = await svc.fire_now(sched.id, _principal())
+    second = await svc.fire_now(sched.id, _principal())  # same window (now is fixed-ish by cursor)
+    assert len(dispatches) == 1  # exactly one dispatch — the dedupe row blocked the second
+    assert len(jrepo.adopted_created) == 1  # only one idempotency row
+    assert first.last_fired_at is not None and second.last_fired_at == first.last_fired_at
+
+
+async def test_create_adopted_tool_run_is_idempotent_on_org_key() -> None:
+    # the repo-level dedupe: a second create on the same (org, key) returns None (the unique
+    # constraint), so the fire branch never enqueues a second dispatch for that window.
+    jrepo = _FakeJobRepo()
+    sid = uuid.uuid4()
+    key = f"{sid}:{_PREV.isoformat()}"
+    first = await jrepo.create_adopted_tool_run(
+        organisation_id=_ORG, schedule_id=sid, idempotency_key=key
+    )
+    second = await jrepo.create_adopted_tool_run(
+        organisation_id=_ORG, schedule_id=sid, idempotency_key=key
+    )
+    assert first is not None and second is None
+    assert jrepo.adopted_created == [key]  # only one row written
+
+
+async def test_fire_now_adopted_tool_without_callback_is_a_hollow_noop() -> None:
+    # the fire-now DI guard: if enqueue_adopted_tool is NOT injected, the branch creates the dedupe
+    # row + advances the cursor but DISPATCHES NOTHING (a green-but-hollow path) — proving the DI
+    # MUST inject the callback (it does, in get_schedule_service; guarded by the test below).
+    sched = _adopted_schedule(cron="* * * * *", last_fired=None)
+    srepo = _FakeSchedRepo([sched])
+    jrepo = _FakeJobRepo()
+    svc, prov = _svc(srepo, jrepo, enqueue_adopted_tool=None)  # callback NOT wired
+    row = await svc.fire_now(sched.id, _principal())
+    assert len(jrepo.adopted_created) == 1  # the dedupe row IS written...
+    assert "engine.schedule.fire" not in prov.events  # ...but NOTHING was dispatched (hollow)
+    assert row.last_fired_at is not None  # cursor still advances (window IS fired)
+
+
+async def test_fire_now_adopted_tool_dispatches_when_callback_wired() -> None:
+    # the positive of the DI guard: fire-now WITH the callback wired (as get_schedule_service does)
+    # actually queues a dispatch — the path is not silently hollow.
+    sched = _adopted_schedule(cron="* * * * *", last_fired=None)
+    srepo = _FakeSchedRepo([sched])
+    jrepo = _FakeJobRepo()
+    dispatches: list = []
+    svc, _ = _svc(
+        srepo, jrepo, enqueue_adopted_tool=lambda run, inst, data, o, u: dispatches.append(inst)
+    )
+    await svc.fire_now(sched.id, _principal())
+    assert dispatches == [_INSTANCE]  # fire-now queued exactly one registry dispatch
+
+
+async def test_fire_now_missing_schedule_raises() -> None:
+    svc, _ = _svc(_FakeSchedRepo(), _FakeJobRepo(), enqueue_adopted_tool=lambda *a: None)
+    with pytest.raises(ScheduleError):
+        await svc.fire_now(uuid.uuid4(), _principal())

@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
 from oraclous_execution_engine_service.core.rls import install_org_guc_guard
+from oraclous_execution_engine_service.models.adopted_tool_run import AdoptedToolRun
 from oraclous_execution_engine_service.models.enums import EngineJobState
 from oraclous_execution_engine_service.models.job import EngineJob
 
@@ -101,6 +102,68 @@ class JobRepository:
             )
         except IntegrityError:
             return None
+
+    async def create_adopted_tool_run(
+        self,
+        *,
+        organisation_id: uuid.UUID,
+        schedule_id: uuid.UUID,
+        idempotency_key: str,
+    ) -> AdoptedToolRun | None:
+        """Create the adopted-tool-run idempotency row for a schedule fire — idempotent on
+        ``(org, idempotency_key)`` (#489). Returns the row, or None if the window already fired (a
+        duplicate tick / a second fire-now). This row is the dedupe GATE: it is written
+        transactionally BEFORE the registry dispatch is enqueued, so a None return means a second
+        same-window dispatch is skipped (no double execution). ``execution_id`` is stamped later."""
+        row = AdoptedToolRun(
+            id=uuid.uuid4(),
+            organisation_id=organisation_id,
+            schedule_id=schedule_id,
+            idempotency_key=idempotency_key,
+        )
+        try:
+            async with self._session() as session:
+                async with session.begin():
+                    session.add(row)
+                await session.refresh(row)
+                return row
+        except IntegrityError:
+            return None
+
+    async def set_adopted_execution_id(
+        self, run_id: uuid.UUID, organisation_id: uuid.UUID, execution_id: uuid.UUID
+    ) -> None:
+        """Stamp the registry ExecutionOut.id onto the adopted-tool-run row AFTER the worker
+        dispatched it (so a schedule's fires are auditable / readable). Org-scoped (ADR-006)."""
+        async with self._session() as session:
+            async with session.begin():
+                row = (
+                    await session.execute(
+                        select(AdoptedToolRun).where(
+                            AdoptedToolRun.id == run_id,
+                            AdoptedToolRun.organisation_id == organisation_id,
+                        )
+                    )
+                ).scalar_one_or_none()
+                if row is not None:
+                    row.execution_id = execution_id
+
+    async def list_adopted_runs_for_schedule(
+        self, schedule_id: uuid.UUID, organisation_id: uuid.UUID, *, limit: int = 100
+    ) -> list[AdoptedToolRun]:
+        """The adopted-tool-run rows a schedule has produced, newest-first (org-scoped). The
+        readable proof a schedule fired + its stamped registry execution_id(s)."""
+        async with self._session() as session:
+            result = await session.execute(
+                select(AdoptedToolRun)
+                .where(
+                    AdoptedToolRun.schedule_id == schedule_id,
+                    AdoptedToolRun.organisation_id == organisation_id,
+                )
+                .order_by(AdoptedToolRun.created_at.desc())
+                .limit(limit)
+            )
+            return list(result.scalars().all())
 
     async def create_event(
         self,

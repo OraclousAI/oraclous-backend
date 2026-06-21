@@ -75,6 +75,11 @@ class Settings(BaseSettings):
     # 25s deadline returns partial rather than 504-burning (ADR-037 Decision 5).
     knowledge_retriever_url: str = "http://knowledge-retriever-service:8000"
     evaluate_request_timeout: float = 35.0
+    # the capability-registry hosts adopted/curated tool instances; an ADOPTED_TOOL_RUN schedule
+    # fires one over HTTP (#489). The 30s timeout fits a fast SYNCHRONOUS tool execute — NOT the
+    # 600s harness budget (a tool /execute is sub-second, never an LLM loop).
+    capability_registry_url: str = "http://capability-registry-service:8000"
+    capability_registry_request_timeout: float = 30.0
     # the reaper times out a job stuck RUNNING longer than this (worker/DB blip after RUNNING). Set
     # ABOVE the Celery hard limit (3600s) so a healthy long run is never falsely reaped.
     running_lease_seconds: int = 3900

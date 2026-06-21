@@ -39,6 +39,9 @@ _RLS_TABLES = (
     "engine_roundtables",
     "engine_provenance",
     "engine_team_runs",  # (#479) explicit grant parity — team runs landed after this list existed
+    "engine_adopted_tool_runs",  # (#489) the adopted-tool-run idempotency ledger — explicit grant
+    # so a FRESH deploy grants oraclous_app DML on it (ALTER DEFAULT PRIVILEGES only covers tables
+    # created AFTER this bootstrap, not 0009's already-created table).
 )
 
 # Dev/self-host runtime role + password. Production overrides the org-bound runtime DSN with a

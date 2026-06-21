@@ -36,3 +36,12 @@ class EngineSchedule(BaseModel):
     input_text: Mapped[str] = mapped_column(Text, nullable=False)
     enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     last_fired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # WHAT this schedule fires (#489). ``harness_job`` (default, matching the migration
+    # server_default so old rows read clean) fires a durable harness engine_job from the inline/ref
+    # manifest; ``adopted_tool_run`` fires a capability-registry instance /execute (``instance_id``
+    # + ``input_data``, no manifest).
+    target_kind: Mapped[str] = mapped_column(String(16), nullable=False, default="harness_job")
+    # the curated/adopted capability-registry instance to execute (adopted_tool_run only)
+    instance_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    # the input payload forwarded to the instance /execute (adopted_tool_run only)
+    input_data: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
