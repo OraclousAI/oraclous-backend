@@ -15,6 +15,7 @@ function exception is structured, never a leaked traceback.
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from oraclous_capability_registry_service.domain.executors.base import (
@@ -26,6 +27,9 @@ from oraclous_capability_registry_service.domain.libraries.registry import (
     get_operation,
     operation_names,
 )
+
+#: hard cap on any string argument — bounds CPU/memory on a hostile input before dispatch.
+_MAX_ARG_CHARS = 100_000
 
 
 class LibraryGroupExecutor(InternalTool):
@@ -54,8 +58,17 @@ class LibraryGroupExecutor(InternalTool):
                     error_message=f"'{name}' must be a {expected.__name__}",
                     error_type="INVALID_INPUT",
                 )
+            # Cap string args so a hostile input can't drive a function into pathological cost.
+            if isinstance(value, str) and len(value) > _MAX_ARG_CHARS:
+                return ExecutionResult(
+                    success=False,
+                    error_message=f"'{name}' exceeds the {_MAX_ARG_CHARS}-character limit",
+                    error_type="INVALID_INPUT",
+                )
             kwargs[name] = value
-        # Trusted curated code, called in-process. The InternalTool base wraps this in the outer
-        # timeout + the uniform exception→structured-result map, so a function bug never leaks.
-        data = spec.func(**kwargs)
+        # Trusted curated code, but run OFF the event loop (asyncio.to_thread) so one CPU-bound
+        # cannot freeze other tenants on this worker; the InternalTool outer timeout + the uniform
+        # exception→structured-result map still apply. (A runaway thread can't be killed, so the
+        # primary bound is the curated functions staying linear + the arg-length cap above.)
+        data = await asyncio.to_thread(spec.func, **kwargs)
         return ExecutionResult(success=True, data=data, metadata={"operation": operation})

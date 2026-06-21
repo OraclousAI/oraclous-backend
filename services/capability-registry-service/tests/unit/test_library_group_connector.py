@@ -53,6 +53,20 @@ async def test_extract_emails_is_distinct_and_sorted() -> None:
     assert res.success and res.data == {"emails": ["a@x.test", "b@y.test"]}
 
 
+async def test_an_oversized_text_arg_is_rejected_before_dispatch() -> None:
+    res = await _ex().execute({"operation": "to_upper", "text": "a" * 100_001}, _ctx())
+    assert not res.success and res.error_type == "INVALID_INPUT"
+
+
+async def test_extract_emails_is_linear_on_adversarial_input() -> None:
+    # The old quadratic regex took minutes on this kind of input; the bounded regex is instant, so
+    # this test completing fast (no timeout) proves the catastrophic backtracking is gone. Kept just
+    # under the 100k arg cap so the regex (not the cap) is what handles it.
+    adversarial = "a@" + "." * 90_000
+    res = await _ex().execute({"operation": "extract_emails", "text": adversarial}, _ctx())
+    assert res.success and res.data == {"emails": []}
+
+
 async def test_unknown_operation_is_rejected() -> None:
     res = await _ex().execute({"operation": "delete_everything", "text": "x"}, _ctx())
     assert not res.success and res.error_type == "INVALID_OPERATION"
