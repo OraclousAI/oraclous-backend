@@ -320,6 +320,13 @@ class OHMManifest(BaseModel):
     def primary_model(self) -> OHMModel | None:
         return self.model_by_role("primary") or (self.models[0] if self.models else None)
 
+    def evaluator_model(self) -> OHMModel | None:
+        """The team's BYOM judge model for flow-evaluation (ADR-037 / BYOM-judge): a ``models[]``
+        entry with ``role="evaluator"`` carrying ``config.credential_id``. Unlike ``primary_model``
+        there is NO ``models[0]`` fallback — absence returns ``None`` so the gate falls back to the
+        operator-configured judge key rather than mis-grading with the first model's credential."""
+        return self.model_by_role("evaluator")
+
     def prompt_by_role(self, role: str) -> OHMPrompt | None:
         return next((p for p in self.prompts if p.role == role), None)
 
