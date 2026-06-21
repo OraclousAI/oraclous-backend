@@ -47,6 +47,15 @@ class ExecutionNotReadyError(Exception):
         self.detail = detail or {}
 
 
+def _capped(value: object, *, limit: int = 64) -> object:
+    """Bound a user-authored requirement field so the leak-safe ``needs_credential`` token can never
+    become a reflected-value relay channel once it is surfaced. ``type`` is enum-validated at
+    descriptor ingest, but a non-oauth requirement's ``provider`` is otherwise uncapped — capping
+    it here makes the token safe BY CONSTRUCTION (the gateway strips it today; the #502 FE Contract
+    will relay it), independent of any downstream sanitiser (#483 envelope discipline)."""
+    return value[:limit] if isinstance(value, str) else value
+
+
 def _credential_requirements(descriptor: dict[str, Any]) -> list[dict[str, Any]]:
     spec = descriptor.get("spec") or {}
     return [
@@ -129,7 +138,7 @@ class ToolExecutionService:
                     detail={
                         "needs_credential": {
                             "requirement_id": req.get("type"),
-                            "provider": req.get("provider"),
+                            "provider": _capped(req.get("provider")),
                         },
                         "login_url": exc.login_url,
                         "missing_scopes": exc.missing_scopes,

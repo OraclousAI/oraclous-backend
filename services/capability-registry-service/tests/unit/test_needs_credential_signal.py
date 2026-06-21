@@ -51,8 +51,11 @@ class _FakeInstances:
 
 
 class _FakeCaps:
+    def __init__(self, descriptor: dict | None = None) -> None:
+        self._descriptor = descriptor or _DESCRIPTOR
+
     async def get_by_id(self, capability_id, organisation_id):  # noqa: ANN001, ANN202, ARG002
-        return SimpleNamespace(organisation_id=_ORG, status="active", descriptor=_DESCRIPTOR)
+        return SimpleNamespace(organisation_id=_ORG, status="active", descriptor=self._descriptor)
 
 
 class _MissBroker:
@@ -65,10 +68,38 @@ class _MissBroker:
         )
 
 
-def _svc() -> ToolExecutionService:
+def _svc(descriptor: dict | None = None) -> ToolExecutionService:
     return ToolExecutionService(
-        instances=_FakeInstances(), capabilities=_FakeCaps(), executions=None, broker=_MissBroker()
+        instances=_FakeInstances(),
+        capabilities=_FakeCaps(descriptor),
+        executions=None,
+        broker=_MissBroker(),
     )
+
+
+async def test_needs_credential_provider_is_capped_by_construction() -> None:
+    """A user-authored descriptor's provider (non-oauth requirements aren't length-capped at ingest)
+    is bounded BY CONSTRUCTION in the token, so it can never become a reflected-value relay channel
+    once surfaced — independent of the gateway strip or the #502 FE Contract."""
+    oversized = {
+        "id": WebResearchPlugin.plugin_id(),
+        "kind": "tool",
+        "metadata": {"name": "core/web-research"},
+        "spec": {
+            "type": "web_research",
+            "credential_requirements": [
+                {"type": "api_key", "provider": "p" * 5000, "required": True},
+            ],
+        },
+    }
+    with pytest.raises(ExecutionNotReadyError) as ei:
+        await _svc(oversized).execute_sync(
+            instance_id=_INST,
+            body=ExecuteRequest(input_data={"operation": "search", "query": "x"}),
+            organisation_id=_ORG,
+            user_id=uuid.uuid4(),
+        )
+    assert len(ei.value.detail["needs_credential"]["provider"]) == 64  # capped, not the 5000 input
 
 
 async def test_missing_credential_yields_a_typed_needs_credential_token() -> None:
