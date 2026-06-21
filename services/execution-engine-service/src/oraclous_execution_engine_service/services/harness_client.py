@@ -106,6 +106,8 @@ class HarnessClient:
         manifest_inline: dict[str, Any] | None = None,
         manifest_ref: str | None = None,
         capability_ceiling: list[str] | None = None,
+        parent_execution_id: uuid.UUID | None = None,
+        trace_id: uuid.UUID | None = None,
         timeout: float | None = None,  # noqa: ASYNC109 — forwarded to httpx, not an asyncio cancel
     ) -> dict[str, Any]:
         """Run a harness to completion/escalation and return its ``HarnessExecutionOut`` JSON.
@@ -123,6 +125,12 @@ class HarnessClient:
             raise HarnessClientError("a manifest_inline or manifest_ref is required")
         if capability_ceiling is not None:
             body["capability_ceiling"] = capability_ceiling
+        # run-tree correlation (#471): thread the root trace_id + the dispatching member's execution
+        # so the harness stamps each member run into the same tree (serialised as str for JSON).
+        if parent_execution_id is not None:
+            body["parent_execution_id"] = str(parent_execution_id)
+        if trace_id is not None:
+            body["trace_id"] = str(trace_id)
         kwargs: dict[str, Any] = {"json": body}
         if timeout is not None:
             kwargs["timeout"] = timeout

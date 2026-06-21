@@ -13,6 +13,8 @@ survives across requests) is the next wiring step on a team-run model + the task
 from __future__ import annotations
 
 import json
+import uuid
+from collections.abc import Callable
 from typing import Any, Protocol
 
 from oraclous_ohm.envelope import HandoffEnvelope
@@ -32,6 +34,8 @@ class _Harness(Protocol):
         manifest_inline: dict[str, Any] | None = ...,
         manifest_ref: str | None = ...,
         capability_ceiling: list[str] | None = ...,
+        parent_execution_id: uuid.UUID | None = ...,
+        trace_id: uuid.UUID | None = ...,
     ) -> dict[str, Any]: ...
 
 
@@ -50,9 +54,18 @@ def render_member_input(
 
 
 def make_harness_dispatch(
-    harness: _Harness, sub_harnesses: dict[str, dict[str, Any]]
+    harness: _Harness,
+    sub_harnesses: dict[str, dict[str, Any]],
+    *,
+    trace_id: uuid.UUID | None = None,
+    parent_execution_id: uuid.UUID | None = None,
+    on_child: Callable[[str], None] | None = None,
 ) -> DispatchFn:
-    """Build a ``run_team`` dispatch that runs each member as a real harness execution."""
+    """Build a ``run_team`` dispatch that runs each member as a real harness execution.
+
+    Run-tree correlation (#471): ``trace_id`` (the team-run root) + ``parent_execution_id`` are
+    threaded into every member's harness run so the harness stamps each into the same tree; each
+    member's harness execution id is surfaced via ``on_child`` so the engine records the tree."""
 
     async def dispatch(member: OHMMember, envelopes: list[HandoffEnvelope], fan_item: Any) -> Any:
         sub = sub_harnesses.get(member.role)
@@ -64,10 +77,17 @@ def make_harness_dispatch(
             # harness fail-closed for BOTH the inline AND the manifest_ref path, so a registered
             # manifest_ref harness can never exceed what the member declared (red-team G-A).
             capability_ceiling=list(member.tools),
+            parent_execution_id=parent_execution_id,
+            trace_id=trace_id,
         )
         status = result.get("status")
         if status != "SUCCEEDED":  # fail-closed — a member's harness must succeed
             raise HarnessClientError(f"member {member.role!r} harness did not succeed: {status}")
+        # run-tree (#471): record the child execution id so the engine reassembles the tree from its
+        # own record (no cross-DB read into the harness). Skipped if the harness omitted an id.
+        child_id = result.get("id")
+        if on_child is not None and child_id is not None:
+            on_child(str(child_id))
         return {"output": result.get("output"), "status": status}
 
     return dispatch
@@ -80,10 +100,20 @@ async def run_team_harness(
     sub_harnesses: dict[str, dict[str, Any]] | None = None,
     gate_decisions: dict[str, str] | None = None,
     completed: dict[str, Any] | None = None,
+    trace_id: uuid.UUID | None = None,
+    parent_execution_id: uuid.UUID | None = None,
+    on_child: Callable[[str], None] | None = None,
 ) -> TeamRunResult:
     """Run a Team Harness member DAG, dispatching each member as a real harness execution.
 
     ``completed`` (members that already ran in a prior drive) is passed through so a resume past a
-    human gate does not re-dispatch already-finished members (their side effects fire once)."""
-    dispatch = make_harness_dispatch(harness, sub_harnesses or {})
+    human gate does not re-dispatch already-finished members (their side effects fire once).
+    ``trace_id``/``parent_execution_id``/``on_child`` thread + collect the run-tree (#471)."""
+    dispatch = make_harness_dispatch(
+        harness,
+        sub_harnesses or {},
+        trace_id=trace_id,
+        parent_execution_id=parent_execution_id,
+        on_child=on_child,
+    )
     return await run_team(manifest, dispatch, gate_decisions=gate_decisions, completed=completed)

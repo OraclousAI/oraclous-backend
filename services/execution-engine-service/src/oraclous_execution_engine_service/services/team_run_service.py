@@ -189,15 +189,26 @@ class TeamRunService:
         Every DB op binds the org-GUC (``org_scope``) so the RLS backstop admits it (ADR-030); the
         harness drive runs OUTSIDE the binding (it is an HTTP call, not a DB op). ``completed``
         seeds already-finished members on a resume so they are not re-dispatched (G-D)."""
+        # run-tree (#471): this run's tree root = trace_id threaded to every member. Minted = the
+        # run's own id on first drive; STABLE across resume (read-if-already-set), so a resumed run
+        # keeps the same tree. Persisted on the RUNNING claim so it is durable before any dispatch.
+        root_execution_id = row.root_execution_id or row.id
         with org_scope(org):
             claimed, applied = await self._team_runs.transition(
-                row.id, org, new_state="RUNNING", allowed_from=frozenset({"QUEUED"})
+                row.id,
+                org,
+                new_state="RUNNING",
+                allowed_from=frozenset({"QUEUED"}),
+                root_execution_id=root_execution_id,
             )
         if not applied or claimed is None:  # a concurrent driver owns it — no-op
             return claimed or row
         harness = self._harness
         if harness is None:  # only the reaper builds a harness-less service, and it never drives
             raise RuntimeError("team-run drive requires a harness client")
+        # accumulate this drive's child execution ids onto any recorded by a prior (resumed) drive
+        # (`or []` — a freshly-built / pre-migration row may carry NULL before the DB default fires)
+        child_ids: list[str] = list(row.child_execution_ids or [])
         try:
             result = await run_team_harness(
                 team,
@@ -205,6 +216,9 @@ class TeamRunService:
                 sub_harnesses=dict(row.sub_harnesses),
                 gate_decisions=dict(row.gate_decisions),
                 completed=completed,
+                trace_id=root_execution_id,
+                parent_execution_id=root_execution_id,
+                on_child=child_ids.append,
             )
         except Exception as exc:  # noqa: BLE001 — never strand the run in RUNNING (G-C); fail closed
             # ANY in-process drive error (harness failure, decode, network, bug) -> FAILED, not a
@@ -216,6 +230,7 @@ class TeamRunService:
                     new_state="FAILED",
                     allowed_from=frozenset({"RUNNING"}),
                     error_message=str(exc)[:2000] or type(exc).__name__,
+                    child_execution_ids=child_ids,  # record what was dispatched before the failure
                 )
             return updated or claimed
         except BaseException as exc:
@@ -243,6 +258,7 @@ class TeamRunService:
                 allowed_from=frozenset({"RUNNING"}),
                 results=dict(result.results),
                 paused_at=list(result.paused_at),
+                child_execution_ids=child_ids,  # the member executions that form this run's tree
             )
         return updated or claimed
 

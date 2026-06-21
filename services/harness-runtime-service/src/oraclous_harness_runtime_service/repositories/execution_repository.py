@@ -65,6 +65,8 @@ class ExecutionRepository:
         model: str | None = None,
         input_tokens: int = 0,
         output_tokens: int = 0,
+        trace_id: uuid.UUID | None = None,
+        parent_execution_id: uuid.UUID | None = None,
     ) -> HarnessExecution:
         row = HarnessExecution(
             id=execution_id,
@@ -84,6 +86,9 @@ class ExecutionRepository:
             input_tokens=input_tokens,
             output_tokens=output_tokens,
             steps=steps,
+            # run-tree correlation (#471): root mints trace_id = its own id when none was passed.
+            trace_id=trace_id if trace_id is not None else execution_id,
+            parent_execution_id=parent_execution_id,
         )
         # ADR-030: bind the org so the engine begin-guard sets app.current_organisation_id; the
         # FORCE'd RLS WITH CHECK admits this INSERT only when the stamped org equals the bound one.

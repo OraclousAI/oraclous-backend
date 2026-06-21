@@ -84,6 +84,38 @@ async def test_post_team_run_maps_teamrunerror_to_its_http_status() -> None:
     assert resp.status_code == 422  # TeamRunError(status) -> HTTPException(status), not a 500
 
 
+async def test_get_tree_returns_root_and_children() -> None:  # ADR-037 D3 / #471
+    rid, c1, c2 = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+    row = _queued_row({"kind": "team"})
+    row.id = rid
+    row.root_execution_id = rid
+    row.child_execution_ids = [str(c1), str(c2)]
+    row.state = "SUCCEEDED"
+
+    class FakeService:
+        async def get(self, run_id: uuid.UUID, principal: Principal) -> EngineTeamRun:
+            return row
+
+    async with await _client(FakeService()) as c:
+        resp = await c.get(f"/v1/engine/team-runs/{rid}/tree")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["team_run_id"] == str(rid)
+    assert body["root_execution_id"] == str(rid)  # the run is its own tree root
+    assert sorted(body["child_execution_ids"]) == sorted([str(c1), str(c2)])
+    assert body["state"] == "SUCCEEDED"
+
+
+async def test_get_tree_cross_org_is_404() -> None:  # H1/H4
+    class CrossOrgService:
+        async def get(self, run_id: uuid.UUID, principal: Principal) -> EngineTeamRun:
+            raise TeamRunError("team run not found", 404)  # org-scoped get → 404 for another org
+
+    async with await _client(CrossOrgService()) as c:
+        resp = await c.get(f"/v1/engine/team-runs/{uuid.uuid4()}/tree")
+    assert resp.status_code == 404  # a cross-org tree id is not-found, never a leak
+
+
 async def test_advance_team_run_returns_202() -> None:
     class FakeService:
         async def advance(

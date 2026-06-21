@@ -41,6 +41,8 @@ class _FakeHarness:
         manifest_inline: dict[str, Any] | None = None,
         manifest_ref: str | None = None,
         capability_ceiling: list[str] | None = None,
+        parent_execution_id: uuid.UUID | None = None,
+        trace_id: uuid.UUID | None = None,
     ) -> dict[str, Any]:
         self.calls.append(
             {
@@ -48,9 +50,11 @@ class _FakeHarness:
                 "ref": manifest_ref,
                 "inline": manifest_inline is not None,
                 "ceiling": capability_ceiling,
+                "parent_execution_id": parent_execution_id,
+                "trace_id": trace_id,
             }
         )
-        return {"status": "SUCCEEDED", "output": "ran"}
+        return {"id": str(uuid.uuid4()), "status": "SUCCEEDED", "output": "ran"}
 
 
 def _m(role: str, deps: list[str] | None = None, tools: list[str] | None = None) -> OHMMember:

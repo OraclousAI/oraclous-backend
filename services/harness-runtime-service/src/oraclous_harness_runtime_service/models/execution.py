@@ -44,3 +44,11 @@ class HarnessExecution(BaseModel):
     input_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     output_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     steps: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, nullable=False, default=list)
+    # ── run-tree correlation (ADR-037 Decision 3 / #471; additive, nullable) ──────────────────
+    # trace_id groups every execution in ONE logical run-tree; the root execution mints it to its
+    # own id (mint-if-absent). parent_execution_id is the dispatching member's run (NULL at root).
+    # trace_id is indexed for the tree read; org-scoped reads still filter organisation_id (+ RLS).
+    trace_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), nullable=True, index=True
+    )
+    parent_execution_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
