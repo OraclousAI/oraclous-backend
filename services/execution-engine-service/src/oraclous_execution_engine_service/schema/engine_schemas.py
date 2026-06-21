@@ -277,3 +277,28 @@ class TeamRunTreeOut(BaseModel):
     root_execution_id: uuid.UUID | None
     state: str
     child_execution_ids: list[uuid.UUID]
+
+
+class TeamRunCost(BaseModel):
+    """A team run's metered cost. ``tokens`` are RAW counts (ADR-009 — the canonical metering, never
+    a price). ``usd`` is a read-time price ESTIMATE, ``None`` until the per-model breakdown is wired
+    (the harness holds the per-execution model; usd-by-trace is the documented follow-on)."""
+
+    tokens: int
+    usd: float | None = None
+
+
+class TeamRunStatusOut(BaseModel):
+    """O4 light status surface (ADR-037 Decision 5 / #472) — a one-glance 'is my team healthy / did
+    it run / what did it cost' view for a standing team. ``progress`` is goal-attainment (member
+    completion of the run-tree, 0–100), NOT the old hardcoded 5/100. Request-path org-scoped (H3): a
+    cross-org id is a 404. No full-trace machinery — that is the opt-in run-tree (Decision 3)."""
+
+    team_run_id: uuid.UUID
+    organisation_id: uuid.UUID
+    healthy: bool
+    state: str
+    progress: int
+    last_run_at: datetime | None
+    last_outcome: str
+    cost: TeamRunCost

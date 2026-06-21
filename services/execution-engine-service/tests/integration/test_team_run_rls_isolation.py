@@ -55,10 +55,12 @@ class _FakeHarness:
     ) -> dict[str, Any]:
         self.inputs.append(input_text)
         # #471: a real execution id per member → the engine records child_execution_ids (the tree).
+        # #472: total_tokens → the engine accumulates the run's cost for the O4 status surface.
         return {
             "id": str(uuid.uuid4()),
             "status": "SUCCEEDED",
             "output": f"done: {input_text[:30]}",
+            "total_tokens": 100,
         }
 
 
@@ -133,6 +135,12 @@ async def test_team_run_persists_and_reads_back_on_org_bound_engine(
     # are recorded as children, read back under the request-bound org (RLS-admitted).
     assert fetched.root_execution_id == run.id
     assert len(fetched.child_execution_ids) == 2  # researcher + writer, the tree's leaves
+
+    # O4 status (#472) on the real org-bound engine: goal-attainment progress + accumulated cost,
+    # read through the request-path org-scoped status (H3 — not the cross-org maintenance reader).
+    status = await team_run_service.status(run.id, _principal(ORG_A, USER_A))
+    assert status.progress == 100 and status.healthy is True  # both members done → 100
+    assert status.cost_tokens == 200  # Σ the members' total_tokens (2 × 100)
 
 
 async def test_cross_org_team_run_read_is_denied_by_rls(

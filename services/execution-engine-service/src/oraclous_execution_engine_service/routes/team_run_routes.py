@@ -19,7 +19,9 @@ from oraclous_execution_engine_service.core.dependencies import PrincipalDep, Te
 from oraclous_execution_engine_service.schema.engine_schemas import (
     AdvanceTeamRunRequest,
     CreateTeamRunRequest,
+    TeamRunCost,
     TeamRunOut,
+    TeamRunStatusOut,
     TeamRunTreeOut,
 )
 from oraclous_execution_engine_service.services.team_run_service import TeamRunError
@@ -73,6 +75,28 @@ async def get_team_run_tree(
         root_execution_id=row.root_execution_id,
         state=row.state,
         child_execution_ids=[uuid.UUID(c) for c in (row.child_execution_ids or [])],
+    )
+
+
+@router.get("/team-runs/{team_run_id}/status", response_model=TeamRunStatusOut)
+async def get_team_run_status(
+    team_run_id: uuid.UUID, principal: PrincipalDep, service: TeamRunServiceDep
+) -> TeamRunStatusOut:
+    """O4 light status (#472): is my team healthy / what's its progress / what did it cost — one
+    glance, no full-trace machinery. Request-path org-scoped (H3): a cross-org id is a 404."""
+    try:
+        s = await service.status(team_run_id, principal)
+    except TeamRunError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+    return TeamRunStatusOut(
+        team_run_id=s.team_run_id,
+        organisation_id=s.organisation_id,
+        healthy=s.healthy,
+        state=s.state,
+        progress=s.progress,
+        last_run_at=s.last_run_at,
+        last_outcome=s.last_outcome,
+        cost=TeamRunCost(tokens=s.cost_tokens, usd=None),
     )
 
 
