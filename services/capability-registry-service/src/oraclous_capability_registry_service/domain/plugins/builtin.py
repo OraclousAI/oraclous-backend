@@ -534,3 +534,40 @@ class WebResearchPlugin(_ConnectorToolPlugin):
         },
     }
     OUTPUT_SCHEMA = {"type": "object"}
+
+
+@plugin_registry.register
+class ScriptIngestionPlugin(_ConnectorToolPlugin):
+    """Adopt a curated loader as a scheduled-ingestion tool (#487 / ADR-038 D1) — bound as
+    ``core/script-ingestion@1.0.0``. The ``run`` op runs a curated loader (by ``loader_id``,
+    never a free argv) as a guarded subprocess and lands its JSON output on the org-scoped Execution
+    row. The cron that fires it on a cadence is #489; this is the manual-dispatch executor it will
+    schedule. User-supplied loader adoption (HITL) is a follow-up; only curated loaders here."""
+
+    NAME = "Script Ingestion"  # slug ``script-ingestion`` MUST match the ref's name slug
+    CATEGORY = "INGESTION"
+    DESCRIPTION = (
+        "Run a curated ingestion loader as a guarded subprocess and capture its JSON output to the "
+        "org store. Curated loaders only (no arbitrary commands); resource + time capped."
+    )
+    TYPE = "INTERNAL"
+    TAGS = ["ingestion", "loader", "script", "scheduled"]
+    CAPABILITIES = [
+        {
+            "name": "run",
+            "description": "Run a curated loader by id and capture its JSON output.",
+            "parameters": {"loader_id": "str", "args": "object", "graph_id": "str"},
+        },
+    ]
+    CREDENTIAL_REQUIREMENTS: list[dict] = []  # the curated synthetic loaders are keyless
+    INPUT_SCHEMA = {
+        "type": "object",
+        "required": ["loader_id"],
+        "properties": {
+            "loader_id": {"type": "string", "minLength": 1},
+            "args": {"type": "object"},
+            "graph_id": {"type": "string", "format": "uuid"},
+            "source_type": {"type": "string"},
+        },
+    }
+    OUTPUT_SCHEMA = {"type": "object"}
