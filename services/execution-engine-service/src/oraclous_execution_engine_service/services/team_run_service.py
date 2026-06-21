@@ -54,11 +54,19 @@ EnqueueFn = Callable[[uuid.UUID, uuid.UUID, uuid.UUID], None]
 
 
 class TeamRunError(Exception):
-    """A client-facing team-run failure carrying an HTTP status (mapped in the route)."""
+    """A client-facing team-run failure carrying an HTTP status (mapped in the route).
 
-    def __init__(self, message: str, status_code: int = 400) -> None:
+    ``error_type`` is a leak-safe machine token (never a value) the route surfaces in a STRUCTURED
+    422 detail so the gateway maps it to VALIDATION_FAILED + a field-level issue (#483
+    Option A) instead of the misleading MALFORMED_REQUEST a free-string detail falls back to. Only
+    used for 422s; other statuses keep a plain string detail."""
+
+    def __init__(
+        self, message: str, status_code: int = 400, *, error_type: str = "team_run_invalid"
+    ) -> None:
         super().__init__(message)
         self.status_code = status_code
+        self.error_type = error_type
 
 
 @dataclass(frozen=True)
@@ -150,11 +158,19 @@ class TeamRunService:
         try:
             manifest = load_ohm(document)
         except OHMError as exc:  # malformed / invalid OHM is a 422, not a 500
-            raise TeamRunError(f"invalid OHM manifest: {exc}", 422) from exc
+            raise TeamRunError(
+                f"invalid OHM manifest: {exc}", 422, error_type="invalid_manifest"
+            ) from exc
         if not manifest.is_team():
-            raise TeamRunError("manifest is not a Team Harness (metadata.kind must be 'team')", 422)
+            raise TeamRunError(
+                "manifest is not a Team Harness (metadata.kind must be 'team')",
+                422,
+                error_type="not_a_team",
+            )
         if not manifest.members:
-            raise TeamRunError("a Team Harness must declare at least one member", 422)
+            raise TeamRunError(
+                "a Team Harness must declare at least one member", 422, error_type="no_members"
+            )
         # fail-fast (#479): a `battery:<name>` success_criteria must name a DECLARED battery —
         # resolve now so an undeclared one is a 422 at create, not an UnknownBattery that strands
         # the run at grade time. (The gate uses success_criteria for the single-pass DAG.)
@@ -165,7 +181,9 @@ class TeamRunService:
                 resolve_battery(manifest, manifest.orchestration.success_criteria)
             except UnknownBattery as exc:
                 raise TeamRunError(
-                    f"success_criteria references an undeclared battery: {exc}", 422
+                    f"success_criteria references an undeclared battery: {exc}",
+                    422,
+                    error_type="undeclared_battery",
                 ) from exc
         return manifest
 
@@ -181,16 +199,26 @@ class TeamRunService:
         for role, sub_doc in sub_harnesses.items():
             member = by_role.get(role)
             if member is None:
-                raise TeamRunError(f"sub_harness for unknown member role '{role}'", 422)
+                raise TeamRunError(
+                    f"sub_harness for unknown member role '{role}'",
+                    422,
+                    error_type="unknown_member_role",
+                )
             try:
                 sub = load_ohm(sub_doc)
             except OHMError as exc:
-                raise TeamRunError(f"invalid sub_harness for '{role}': {exc}", 422) from exc
+                raise TeamRunError(
+                    f"invalid sub_harness for '{role}': {exc}",
+                    422,
+                    error_type="invalid_sub_harness",
+                ) from exc
             try:
                 assert_subharness_within_ceiling(member, sub)
             except OHMCapabilityError as exc:
                 raise TeamRunError(
-                    f"sub_harness for '{role}' exceeds its tools ceiling: {exc}", 422
+                    f"sub_harness for '{role}' exceeds its tools ceiling: {exc}",
+                    422,
+                    error_type="ceiling_exceeded",
                 ) from exc
 
     async def create(

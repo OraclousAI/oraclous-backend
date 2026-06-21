@@ -29,6 +29,21 @@ from oraclous_execution_engine_service.services.team_run_service import TeamRunE
 router = APIRouter(prefix="/v1/engine", tags=["engine-team-runs"])
 
 
+def _http(exc: TeamRunError) -> HTTPException:
+    """Map a ``TeamRunError`` to an ``HTTPException`` (#483 Option A). A **422** gets a
+    STRUCTURED detail (``[{"loc":["body"], "type": <token>, "msg": str(exc)}]``) so the gateway's
+    422 passthrough surfaces ``VALIDATION_FAILED`` with a field-level issue — instead of the
+    misleading ``MALFORMED_REQUEST`` a free-string detail falls back to. The gateway drops the
+    value-reflecting ``msg`` (leak-safe — Interface Contracts §3 rule 8), keeping only loc + type.
+    Non-422 statuses keep a plain string detail (they already map to the right canonical code)."""
+    if exc.status_code == 422:
+        return HTTPException(
+            status_code=422,
+            detail=[{"loc": ["body"], "type": exc.error_type, "msg": str(exc)}],
+        )
+    return HTTPException(status_code=exc.status_code, detail=str(exc))
+
+
 @router.post("/team-runs", response_model=TeamRunOut, status_code=status.HTTP_202_ACCEPTED)
 async def create_team_run(
     body: CreateTeamRunRequest, principal: PrincipalDep, service: TeamRunServiceDep
@@ -43,7 +58,7 @@ async def create_team_run(
             gate_decisions=body.gate_decisions,
         )
     except TeamRunError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+        raise _http(exc) from exc
     return TeamRunOut.model_validate(row)
 
 
@@ -54,7 +69,7 @@ async def get_team_run(
     try:
         row = await service.get(team_run_id, principal)
     except TeamRunError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+        raise _http(exc) from exc
     return TeamRunOut.model_validate(row)
 
 
@@ -68,7 +83,7 @@ async def get_team_run_tree(
     try:
         row = await service.get(team_run_id, principal)
     except TeamRunError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+        raise _http(exc) from exc
     return TeamRunTreeOut(
         team_run_id=row.id,
         organisation_id=row.organisation_id,
@@ -87,7 +102,7 @@ async def get_team_run_status(
     try:
         s = await service.status(team_run_id, principal)
     except TeamRunError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+        raise _http(exc) from exc
     return TeamRunStatusOut(
         team_run_id=s.team_run_id,
         organisation_id=s.organisation_id,
@@ -114,5 +129,5 @@ async def advance_team_run(
     try:
         row = await service.advance(team_run_id, principal, body.gate_decisions)
     except TeamRunError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+        raise _http(exc) from exc
     return TeamRunOut.model_validate(row)
