@@ -157,3 +157,39 @@ def test_a_team_run_is_org_isolated_across_users_through_the_gateway(
     )
     b = gateway_client(register("User B")["token"])
     assert b.get(f"/v1/engine/team-runs/{run_id}").status_code == 404  # B cannot see A's run
+
+
+def test_run_tree_is_reachable_and_org_isolated_through_the_gateway(  # ADR-037 D3 / #471
+    tmp_path: Path,
+    register: Callable[..., dict],
+    gateway_client: Callable[[str], httpx.Client],
+) -> None:
+    """The run-tree, end-to-end through the gateway on the deployed stack: a completed team run
+    exposes its tree (root_execution_id == the run id + the member harness executions as children),
+    and user B cannot read user A's tree (a cross-org tree id is a 404, never a leak — H1/H4)."""
+    _book_studio(tmp_path)
+    imported = import_setup(tmp_path, owner_organization_id=uuid.uuid4(), name="studio")
+    assert imported.manifest is not None
+    # pre-approve the gate so the run drives straight to SUCCEEDED → a fully-populated tree
+    body = {
+        "manifest": imported.manifest.model_dump(mode="json"),
+        "sub_harnesses": imported.sub_harnesses,
+        "gate_decisions": {"gate-a": "approve"},
+    }
+    a = gateway_client(register("Tree Owner")["token"])
+    created = a.post("/v1/engine/team-runs", json=body)
+    assert created.status_code == 202, created.text
+    run_id = created.json()["id"]
+    done = _poll(a, run_id, {"SUCCEEDED", "FAILED", "REJECTED"})
+    assert done["state"] == "SUCCEEDED", done
+
+    tree = a.get(f"/v1/engine/team-runs/{run_id}/tree")
+    assert tree.status_code == 200, tree.text
+    body_t = tree.json()
+    assert body_t["team_run_id"] == run_id
+    assert body_t["root_execution_id"] == run_id  # the run is its own tree root
+    # both members (researcher + writer) ran as real harness executions → recorded as children
+    assert len(body_t["child_execution_ids"]) >= 2
+
+    b = gateway_client(register("Tree Intruder")["token"])
+    assert b.get(f"/v1/engine/team-runs/{run_id}/tree").status_code == 404  # B can't read A's tree
