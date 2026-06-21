@@ -65,3 +65,14 @@ For any behaviour-touching backend PR, the **CTO agent must verify the real gate
 - **End-user perspective only.** Assertions are on what the user observes through the API (status, response body, the run's state) — the things a real user would see.
 
 A test that hits a service directly, mocks one of our services, or asserts against the DB is **not an e2e** and does not satisfy the Definition of Done. This understanding is part of the agent flow: a reviewer rejects any "e2e" that bypasses the gateway or fakes the platform.
+
+---
+
+## RULE 6 — CTO AND USE-CASE-GUARDIAN REVIEW START THE MOMENT THE PR IS CREATED
+
+Every PR requires **two** reviews — the **CTO** (technical correctness) and the **use-case-guardian** (the use cases stay runnable). **Both start the instant the PR is opened, and run in parallel — with CI, and with each other.** A PR is never "open → wait for CI → then review"; it is **CI + CTO + use-case-guardian, all at once, from creation.**
+
+- **Neither review waits on CI.** CI-green is a *merge* precondition (Rule 4), not a *review-start* precondition. A reviewer reads the diff and posts findings while CI is still running.
+- **Neither review waits on the other**, or on any optional/adversarial/extra verification. Do not serialize the use-case-guardian behind the CTO, or either review behind a deeper check. An adversarial/extra pass runs *in parallel* and only ever gates the final merge, never the start of review.
+- **Both must sign off before merge** (no merge on a single review); the PR author is never the sole approver. The use-case-guardian posts its approving review under the **`johnkennII`** identity (agents share the human account, so the author can't self-approve).
+- The merge happens when **all three** are satisfied — CI green, CTO signed off, use-case-guardian approved — but all three were *in flight from the moment the PR opened*.
