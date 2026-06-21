@@ -1,4 +1,4 @@
-"""Graph ontology (ORAA-4 §21 domain layer — pure, no I/O).
+"""Graph ontology (domain layer — pure, no I/O).
 
 An ontology constrains which entity labels a graph admits, with a mode:
   - open   : no constraint (default).

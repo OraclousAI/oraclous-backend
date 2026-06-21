@@ -1,4 +1,4 @@
-"""Outbound-URL egress guard for USER-supplied LLM base URLs (ORAA-4 §21 domain layer).
+"""Outbound-URL egress guard for USER-supplied LLM base URLs (domain layer).
 
 A custom BYOM connection may carry its own ``base_url`` (any OpenAI-compatible endpoint). That URL
 is attacker-controllable, so before the runtime makes a request to it we validate it as an SSRF

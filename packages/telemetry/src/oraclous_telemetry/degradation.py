@@ -7,7 +7,7 @@ fail-open fallback is taken, …). Today it is backed by structured logging carr
 PagerDuty, an event bus) be wired in later WITHOUT touching any call site.
 
 This is deliberately NOT a framework: no batching, no transport, no config. Just the event shape,
-one ``alert(...)`` function, and a pluggable sink list. Layering (ORAA-4 §21): shared package — it
+one ``alert(...)`` function, and a pluggable sink list. Layering: shared package — it
 imports no service and holds no business logic; services call ``alert(...)`` from their ``core``
 layer (e.g. a lifespan catch site).
 """

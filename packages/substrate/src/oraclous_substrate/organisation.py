@@ -1,4 +1,4 @@
-"""Seed organisation for single-org deployments (ORA-16 / A1, AC#5).
+"""Seed organisation for single-org deployments (A1, AC#5).
 
 A1 makes ``organisation_id`` mandatory on every substrate primitive. A
 single-organisation deployment keeps behaving as before by scoping everything

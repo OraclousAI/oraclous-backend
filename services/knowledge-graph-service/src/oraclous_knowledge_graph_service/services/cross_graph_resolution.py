@@ -1,4 +1,4 @@
-"""Cross-graph SAME_AS candidate generation (ORAA-4 §21 services layer) — #330 / ADR-026.
+"""Cross-graph SAME_AS candidate generation (services layer) — #330 / ADR-026.
 
 Given the canonical entities of TWO org-owned graphs, flag the pairs that look like the same
 real-world entity — flagged, NEVER auto-merged: each pair becomes a `SAME_AS_CANDIDATE` edge in

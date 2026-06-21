@@ -1,4 +1,4 @@
-"""Organisation-scoped Postgres substrate schema + RLS (ORA-16 / A1, AC#2).
+"""Organisation-scoped Postgres substrate schema + RLS (A1, AC#2).
 
 Reshape of the knowledge-graph tenant tables in
 ``knowledge-graph-builder/app/models/graph.py`` (scoped by ``graph_id`` /
@@ -9,7 +9,7 @@ row-level security is the defense-in-depth backstop behind the write path
 ``apply(conn)`` takes any DB-API/psycopg connection and is idempotent — re-running
 it neither raises nor duplicates policies. The org column, RLS toggles and the
 isolation policy are applied uniformly so no tenant table can be enrolled without
-them. The org GUC (``ORG_GUC``) is set per-connection by the write path (A2/ORA-17),
+them. The org GUC (``ORG_GUC``) is set per-connection by the write path (A2),
 which is out of scope here.
 
 Identifiers interpolated into DDL are trusted module constants (the table-name

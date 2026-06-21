@@ -1,4 +1,4 @@
-"""Execution repository (ORAA-4 §21 repositories layer).
+"""Execution repository (repositories layer).
 
 The only DB seam for execution provenance. Every read/write is org-scoped (ADR-006). Stores the
 credential *refs* (types/scopes) used, never the secret material.

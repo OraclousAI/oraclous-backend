@@ -1,4 +1,4 @@
-"""Capability registry routes (ORAA-4 §21 routes layer).
+"""Capability registry routes (routes layer).
 
 Thin handlers: parse → one CapabilityRegistryService call → DTO. ``organisation_id`` comes from the
 authenticated principal (``OrganisationIdDep``), never the request body (ORG001). The service's

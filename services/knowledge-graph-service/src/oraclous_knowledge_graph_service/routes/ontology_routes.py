@@ -1,4 +1,4 @@
-"""Ontology routes (ORAA-4 §21 routes layer) — get/set a graph's label ontology (owner scoped).
+"""Ontology routes (routes layer) — get/set a graph's label ontology (owner scoped).
 
 Slice C adds a graph-independent authoring aid: ``POST /api/v1/ontology/suggest`` infers a typed
 ontology from a text sample (schema synthesis) and returns it in the SAME shape the per-graph

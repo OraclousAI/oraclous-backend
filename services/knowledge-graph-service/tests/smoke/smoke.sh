@@ -3,7 +3,7 @@
 #
 # S1: graph CRUD (Postgres). S2: async text/document ingestion -> real :Document/:Chunk nodes in
 # Neo4j (org + graph stamped), key-free (dev-auth + hashing embedder + null extractor — no API key).
-# This is the runbook Reza runs to sign off (ORAA-4 §22 gate 6).
+# This is the runbook Reza runs to sign off (per-service DoD gate 6).
 #
 # Usage (from repo root):  bash services/knowledge-graph-service/tests/smoke/smoke.sh
 # Env: KGS_SMOKE_URL (default http://localhost:8003); KGS_SMOKE_NO_COMPOSE=1 to skip bring-up.

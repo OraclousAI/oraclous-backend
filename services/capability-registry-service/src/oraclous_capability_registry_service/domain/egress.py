@@ -1,4 +1,4 @@
-"""SSRF egress guard (ORAA-4 §21 domain layer) — pure URL/IP classification for outbound calls.
+"""SSRF egress guard (domain layer) — pure URL/IP classification for outbound calls.
 
 An imported external MCP server URL is attacker-influenced; before the registry calls it we reject
 any URL that targets our own infrastructure. ``is_public_url`` is a PURE structural gate (scheme +

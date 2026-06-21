@@ -1,4 +1,4 @@
-"""Real provider refresh client (ORAA-4 §21 services layer — external integration).
+"""Real provider refresh client (services layer — external integration).
 
 Implements the ``RefreshClient`` port against the live Google / GitHub / Notion token endpoints via
 httpx, using the broker's own provider client credentials (env). Automated CI uses a fake client

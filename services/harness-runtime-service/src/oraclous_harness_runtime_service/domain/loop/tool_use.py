@@ -1,4 +1,4 @@
-"""Agent tool-use loop (ORAA-4 §21 domain layer) — reshape of the legacy ``AgentExecutor`` loop.
+"""Agent tool-use loop (domain layer) — reshape of the legacy ``AgentExecutor`` loop.
 
 Plan→act→observe, capability-agnostic: call the LLM with the available ``ToolSpec``s; if it returns
 no tool calls, that text is the final answer; otherwise dispatch each call (via the injected

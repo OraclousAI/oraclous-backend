@@ -1,4 +1,4 @@
-"""Harness → engine status mapping (ORAA-4 §21 domain layer) — pure, no I/O.
+"""Harness → engine status mapping (domain layer) — pure, no I/O.
 
 A synchronous harness run returns ``HarnessExecutionOut.status`` ∈ {SUCCEEDED, FAILED, ESCALATED}.
 This maps that terminal/wait outcome onto the engine's job state. (TIMED_OUT/CANCELLED are engine

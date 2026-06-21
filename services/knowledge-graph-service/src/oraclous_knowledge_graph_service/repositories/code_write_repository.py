@@ -1,4 +1,4 @@
-"""Org-scoped code-graph writer (ORAA-4 §21 repositories layer — the only Neo4j driver access).
+"""Org-scoped code-graph writer (repositories layer — the only Neo4j driver access).
 
 Reshaped from legacy `develop@84152635 code_parser_service.write_code_graph_sync` (Stage 5) +
 the delta/embedding/stale-sweep stages (1/4/6, #305): ordered idempotent MERGEs, with

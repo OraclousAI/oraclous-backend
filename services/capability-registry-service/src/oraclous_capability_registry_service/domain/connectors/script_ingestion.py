@@ -1,4 +1,4 @@
-"""Script-ingestion connector (ORAA-4 §21 domain layer) — adopt a loader as a registry tool (#487).
+"""Script-ingestion connector (domain layer) — adopt a loader as a registry tool (#487).
 
 Runs a CURATED loader (selected by ``loader_id`` from :mod:`domain.loaders.registry`, never a free
 argv) as a subprocess inside the registry container, captures its stdout, and returns it as the

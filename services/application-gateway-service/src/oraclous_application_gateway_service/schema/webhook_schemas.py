@@ -1,4 +1,4 @@
-"""Webhook subscription shapes (ORAA-4 §21 schema layer)."""
+"""Webhook subscription shapes (schema layer)."""
 
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-"""SQL relational ingestion use-case (ORAA-4 §21 services layer).
+"""SQL relational ingestion use-case (services layer).
 
 Orchestrates a SQL source into the graph, reusing the EXISTING deterministic recipe engine + the
 org-scoped writer (no new graph-write path):

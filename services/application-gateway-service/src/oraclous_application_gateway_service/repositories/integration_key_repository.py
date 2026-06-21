@@ -1,4 +1,4 @@
-"""Integration-key store (ORAA-4 §21 repositories layer) — a gateway-owned DB seam.
+"""Integration-key store (repositories layer) — a gateway-owned DB seam.
 
 A gateway-owned Postgres table (ADR-019). ``get_by_prefix`` is the pre-auth lookup that PRODUCES org
 context (a UNIQUE prefix → exactly one row), so it is intentionally not org-filtered; every other

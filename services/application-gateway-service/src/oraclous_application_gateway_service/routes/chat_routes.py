@@ -1,4 +1,4 @@
-"""Chat routes (ORAA-4 §21 routes layer) — the member console chat plane, org + member scoped.
+"""Chat routes (routes layer) — the member console chat plane, org + member scoped.
 
 A member starts a thread bound to a published agent, sends messages (each runs the agent via the
 harness + persists the reply), reads the transcript, lists their own threads, and soft-deletes. All

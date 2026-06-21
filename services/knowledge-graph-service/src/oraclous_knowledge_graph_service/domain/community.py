@@ -1,4 +1,4 @@
-"""Community-detection domain layer (ORAA-4 §21 domain layer — pure, no I/O) (#303).
+"""Community-detection domain layer (domain layer — pure, no I/O) (#303).
 
 Restores the legacy hierarchical community capability
 (``knowledge-graph-builder/app/tasks/community_tasks.py`` +

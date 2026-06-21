@@ -1,4 +1,4 @@
-"""Test fixtures for oraclous-knowledge-graph-service (ORA-18 / A3).
+"""Test fixtures for oraclous-knowledge-graph-service.
 
 Local fixtures only; the cross-service substrate harness (real Neo4j /
 Postgres / Redis) is in ``tests/conftest.py`` at the repo root.

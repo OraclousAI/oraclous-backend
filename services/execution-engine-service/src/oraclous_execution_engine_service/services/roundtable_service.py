@@ -1,4 +1,4 @@
-"""Round-table coordination (ORAA-4 §21 services layer).
+"""Round-table coordination (services layer).
 
 Drives N actors (agents + humans) over ONE shared transcript, turn by turn — no new execution
 primitive. ``create`` records the round-table + enqueues the driver; the worker ``drive`` runs each

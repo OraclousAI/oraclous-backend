@@ -1,4 +1,4 @@
-"""Ingestion request/response DTOs (ORAA-4 §21 schema layer — Pydantic only).
+"""Ingestion request/response DTOs (schema layer — Pydantic only).
 
 `organisation_id` is never exposed (ORG001) — it is internal scope, not a client field.
 """

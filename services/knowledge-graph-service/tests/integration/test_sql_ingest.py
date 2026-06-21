@@ -1,4 +1,4 @@
-"""Real-Postgres SQL relational ingest integration test (#307, ORAA-4 §22 — real substrate).
+"""Real-Postgres SQL relational ingest integration test (#307 — real substrate).
 
 Proves the SQL connector + relational recipe path end-to-end against a REAL Postgres (a
 testcontainer) and a REAL Neo4j (a testcontainer), not a mock:

@@ -1,4 +1,4 @@
-"""App lifecycle (ORAA-4 §21 core layer) — open/close the capability store.
+"""App lifecycle (core layer) — open/close the capability store.
 
 The schema is created by the Alembic one-shot (not here). Degrades gracefully: if Postgres is
 unreachable at startup the app still serves ``/health`` and the data routes report 503.

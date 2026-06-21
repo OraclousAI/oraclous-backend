@@ -1,4 +1,4 @@
-"""Failing test for ``organisation_id`` on the credential storage model (ORA-33, R1-B2).
+"""Failing test for ``organisation_id`` on the credential storage model (R1-B2).
 
 Behavioural reference: legacy
 ``credential-broker-service/app/models/credential_model.py`` (``UserCredential``),

@@ -1,4 +1,4 @@
-"""Integration-key management shapes (ORAA-4 §21 schema layer) — the member-managed CRUD surface."""
+"""Integration-key management shapes (schema layer) — the member-managed CRUD surface."""
 
 from __future__ import annotations
 

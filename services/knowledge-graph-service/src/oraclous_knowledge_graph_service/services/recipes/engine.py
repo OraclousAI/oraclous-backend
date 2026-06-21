@@ -1,4 +1,4 @@
-"""Recipe execution engine (ORAA-4 §21 services layer — planning only, no driver).
+"""Recipe execution engine (services layer — planning only, no driver).
 
 Faithful port of legacy `develop@84152635 knowledge-graph-builder/app/recipes/engine.py` (ADR-022):
 deterministic, no-LLM interpretation of a validated recipe over a StructuralRepresentation into the

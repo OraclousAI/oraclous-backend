@@ -1,4 +1,4 @@
-"""Capability-kind plugin contract + registry (ORAA-4 §21 domain layer; reshape of legacy
+"""Capability-kind plugin contract + registry (domain layer; reshape of legacy
 ``oraclous-core-service/app/tools/plugin.py``).
 
 A plugin contributes one OHM descriptor to the registry. Built-in tools register themselves at

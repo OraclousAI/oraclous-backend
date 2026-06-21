@@ -1,4 +1,4 @@
-"""Integration-key crypto-shape helpers (ORAA-4 §21 domain layer) — pure, no I/O.
+"""Integration-key crypto-shape helpers (domain layer) — pure, no I/O.
 
 Token format: ``<scheme>-<prefix>-<secret>`` where ``scheme`` ∈ {``oak`` (org key), ``oag`` (agent
 key)}, ``prefix`` is a 16-hex **non-secret** lookup id (UNIQUE per key, used to find the row), and

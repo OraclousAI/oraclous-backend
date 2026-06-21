@@ -1,4 +1,4 @@
-"""Invitation routes (ORAA-4 §21 routes layer).
+"""Invitation routes (routes layer).
 
 Admin-gated create/list/revoke under an org; public peek + authenticated accept by token
 (rate-limited on the token prefix). Thin handlers — InvitationService raises, factory maps to HTTP.

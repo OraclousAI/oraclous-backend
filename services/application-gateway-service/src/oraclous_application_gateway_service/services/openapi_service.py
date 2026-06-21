@@ -1,4 +1,4 @@
-"""Published OpenAPI contract loader (ORAA-4 §21 services layer).
+"""Published OpenAPI contract loader (services layer).
 
 Loads the canonical ``openapi/v1.yaml`` (the R6 public contract, ADR-015) once and caches it. The
 route layer serves it at ``/v1/openapi.json`` + ``/docs``. This is a static-asset load — no network,

@@ -1,4 +1,4 @@
-"""Identity seam (ORAA-4 §21 core layer) — pluggable principal verification.
+"""Identity seam (core layer) — pluggable principal verification.
 
 Mirrors the KGS/KRS seam so the credential-broker scopes every credential read/write by the
 authenticated principal's organisation (ORG001: org comes from the token, never the request body).

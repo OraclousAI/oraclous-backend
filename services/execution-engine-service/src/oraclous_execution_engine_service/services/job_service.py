@@ -1,4 +1,4 @@
-"""Job orchestration spine (ORAA-4 §21 services layer).
+"""Job orchestration spine (services layer).
 
 A submit creates a QUEUED engine_jobs row and ENQUEUES it (S2): the route returns 202 + the QUEUED
 job; a Celery worker later calls execute(), which runs the harness over HTTP and checkpoints the

@@ -1,4 +1,4 @@
-"""Chat surface shapes (ORAA-4 §21 schema layer) — the member console chat plane."""
+"""Chat surface shapes (schema layer) — the member console chat plane."""
 
 from __future__ import annotations
 

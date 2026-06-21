@@ -1,4 +1,4 @@
-"""Webhook signature verification (ORAA-4 §21 domain layer) — pure, no I/O.
+"""Webhook signature verification (domain layer) — pure, no I/O.
 
 The subscription PINS its scheme, so a scheme is never inferred from request headers (no downgrade
 attack). Constant-time compare; fail-closed on any absent/malformed/mismatched signature, and on an

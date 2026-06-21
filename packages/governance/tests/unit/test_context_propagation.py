@@ -1,4 +1,4 @@
-"""Failing tests for organisation-context propagation (ORA-14, story 0f).
+"""Failing tests for organisation-context propagation.
 
 Scope: the propagation utilities of ``packages/governance`` — how a resolved
 ``OrganisationContext`` is bound for the duration of a request and read by

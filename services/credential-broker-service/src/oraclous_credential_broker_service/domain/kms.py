@@ -1,4 +1,4 @@
-"""KMS provider seam (ORAA-4 §21 domain layer, ADR-020) — the narrow interface the envelope service
+"""KMS provider seam (domain layer, ADR-020) — the narrow interface the envelope service
 depends on, so the per-org DEK lifecycle is independent of *where* the KEK lives.
 
 A KEK (key-encryption key) wraps a per-org DEK (data-encryption key). ``generate_data_key`` mints a

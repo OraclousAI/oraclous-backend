@@ -1,4 +1,4 @@
-"""Redis cache keys isolate organisations on the real harness (ORA-16 / A1, AC#4).
+"""Redis cache keys isolate organisations on the real harness (A1, AC#4).
 
 RED until `backend-implementer` adds `oraclous_substrate.cache_keys`.
 

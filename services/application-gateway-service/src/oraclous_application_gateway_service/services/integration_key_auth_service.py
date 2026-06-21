@@ -1,4 +1,4 @@
-"""Integration-key validation (ORAA-4 §21 services layer) — the inbound authz floor (ADR-019).
+"""Integration-key validation (services layer) — the inbound authz floor (ADR-019).
 
 Resolves an ``oak-``/``oag-`` bearer to an authenticated Principal WITHOUT a JWT: prefix lookup →
 constant-time hash compare → status/TTL checks → mint a SERVICE_ACCOUNT Principal under the key's

@@ -1,4 +1,4 @@
-"""Recipe-graph writer port (ORAA-4 §21 domain layer — a structural contract, no I/O).
+"""Recipe-graph writer port (domain layer — a structural contract, no I/O).
 
 The recipe engine (``services/recipes``) and its extraction/similarity passes plan the unified-graph
 writes and call them on an injected *writer*. The live writer is the org-scoped

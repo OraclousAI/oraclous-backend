@@ -1,4 +1,4 @@
-"""Organisation routes (ORAA-4 §21 routes layer).
+"""Organisation routes (routes layer).
 
 Thin handlers: parse → one OrgService call → DTO. Org membership/role authorisation lives in the
 service; its `OrgNotFoundError` (404) / `OrgForbiddenError` (403) are mapped by `app/factory.py`.

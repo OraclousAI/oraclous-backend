@@ -1,4 +1,4 @@
-"""Real OAuth provider HTTP client (ORAA-4 §21 services layer — external integration).
+"""Real OAuth provider HTTP client (services layer — external integration).
 
 Implements the ``ProviderClient`` port against the live Google / GitHub / Notion endpoints over
 httpx.

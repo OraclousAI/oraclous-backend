@@ -1,4 +1,4 @@
-"""Published-agent management shapes (ORAA-4 §21 schema layer)."""
+"""Published-agent management shapes (schema layer)."""
 
 from __future__ import annotations
 

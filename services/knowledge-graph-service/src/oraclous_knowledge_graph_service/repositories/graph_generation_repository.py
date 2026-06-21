@@ -1,4 +1,4 @@
-"""Per-graph generation counter (ORAA-4 §21 repositories layer — the cache-invalidation seam, #308).
+"""Per-graph generation counter (repositories layer — the cache-invalidation seam, #308).
 
 The KGS writes the graph; the knowledge-retriever caches reads. After a successful ingest the KGS
 ``INCR``s a neutral per-graph "generation" counter in Redis (``graph_generation_key`` — a graph-
@@ -30,7 +30,7 @@ class GraphGenerationRepository:
     def bump_for(cls, *, redis_url: str, organisation_id: str, graph_id: str) -> None:
         """Open a short-lived sync Redis client from ``redis_url``, bump, close (#308).
 
-        The Redis driver is constructed HERE (the repositories layer, ORAA-4 §21) — never in the
+        The Redis driver is constructed HERE (the repositories layer) — never in the
         Celery task — so a worker stays free of direct driver imports. Task-scoped: a worker has no
         shared client, so the connection is opened and closed per ingest, mirroring the per-task
         Neo4j-driver / NullPool-engine discipline (ADR-012). Fully advisory (see ``bump``).

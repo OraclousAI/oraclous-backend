@@ -1,11 +1,11 @@
-"""Failing unit tests for the agent principal model + credential lifecycle (ORA-30, R1-A1).
+"""Failing unit tests for the agent principal model + credential lifecycle (R1-A1).
 
 Behavioural reference: legacy ``auth-service/app/models/service_account_model.py``
 (``AgentServiceAccountKey``) and ``app/repositories/service_account_repository.py``
 (``ServiceAccountRepository``), **reshaped** from the service-account-key pattern to
 a first-class ``agent`` principal. Lift-tag: Lift.
 
-What these tests pin (ORA-30 acceptance criteria):
+What these tests pin (R1-A1 acceptance criteria):
 - a credential is generated **once** with an ``oag_`` prefix, stored only as a
   bcrypt hash, prefix-indexed, and never retrievable after creation;
 - ``AgentRepository.validate_credential()`` does a prefix-guarded prefix lookup
@@ -15,7 +15,7 @@ What these tests pin (ORA-30 acceptance criteria):
 - credentials whose prefix is not ``oag_`` are rejected by the guard *before* any
   store lookup (Structured Threat Catalogue T2 — new principal, no escalation path).
 
-Out of scope here (do not test): token issuance + endpoints (ORA-31 / A2) and
+Out of scope here (do not test): token issuance + endpoints (A2) and
 delegation (Epic B).
 
 These tests describe behaviour, not implementation. The repository's persistence

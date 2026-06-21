@@ -1,4 +1,4 @@
-"""Recipe library use-cases (ORAA-4 §21 services layer).
+"""Recipe library use-cases (services layer).
 
 Validate-then-store: a submitted recipe is validated against the format-0.2 schema + the safe-
 identifier rules (the same engine validation used at run time) before it is persisted, so a bad

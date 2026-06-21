@@ -1,5 +1,5 @@
 """Reference loader, scanner, and checksum logic for the gateway error-envelope
-contract fixture (Contract ORA-37, Interface Contracts §3).
+contract fixture (Interface Contracts §3).
 
 The DATA under ``packages/errors/contract/`` is the single source of truth shared
 across repositories (copied-with-checksum per the Cross-cutting agreement protocol

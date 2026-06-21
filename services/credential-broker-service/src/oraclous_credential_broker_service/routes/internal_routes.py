@@ -1,4 +1,4 @@
-"""Internal (service-to-service) routes (ORAA-4 §21 routes layer).
+"""Internal (service-to-service) routes (routes layer).
 
 X-Internal-Key-gated endpoints for trusted callers (capability-registry, harness-runtime). S2 adds
 the provider catalogue; S3/S5b add runtime-token + delegation endpoints under the same gate.

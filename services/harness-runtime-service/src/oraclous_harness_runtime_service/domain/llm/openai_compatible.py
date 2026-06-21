@@ -1,4 +1,4 @@
-"""OpenAI-compatible LLM client (ORAA-4 §21 domain layer; ADR-007 ``openai-compatible`` shape).
+"""OpenAI-compatible LLM client (domain layer; ADR-007 ``openai-compatible`` shape).
 
 Speaks the OpenAI Chat Completions protocol (``POST /chat/completions`` with ``tools``) — which
 OpenRouter serves for Claude / OpenAI / Gemini / many models behind one key. It owns its own

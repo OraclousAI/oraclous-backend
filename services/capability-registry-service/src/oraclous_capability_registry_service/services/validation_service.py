@@ -1,4 +1,4 @@
-"""Execution-readiness validation (ORAA-4 §21 services layer; reshape of legacy
+"""Execution-readiness validation (services layer; reshape of legacy
 ``oraclous-core-service/app/services/validation_service.py``).
 
 Produces a structured readiness report for a tool instance: the tool descriptor exists, every

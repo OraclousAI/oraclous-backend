@@ -1,4 +1,4 @@
-"""Engine provenance read repository (ORAA-4 §21 repositories layer).
+"""Engine provenance read repository (repositories layer).
 
 The read seam over ``engine_provenance`` — the substrate's audit/event log. The write side is the
 substrate ``ProvenanceSink`` (``provenance_sink.py``); this is the only place reads of those rows

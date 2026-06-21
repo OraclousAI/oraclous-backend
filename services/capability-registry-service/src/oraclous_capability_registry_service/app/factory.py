@@ -1,4 +1,4 @@
-"""FastAPI app factory (ORAA-4 §21) — build the app, wire routers, no business logic here.
+"""FastAPI app factory — build the app, wire routers, no business logic here.
 
 Replaces the R2 stub shell: capability descriptor CRUD + search/match are real, org-scoped, and
 backed by Postgres. ``GET /health`` stays a dependency-free probe so the container is healthy even

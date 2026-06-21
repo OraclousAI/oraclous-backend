@@ -1,4 +1,4 @@
-"""Chat context serialization (ORAA-4 §21 domain layer) — pure.
+"""Chat context serialization (domain layer) — pure.
 
 The harness runs ONE OHM against ONE ``input`` per execute (no conversation field), so a chat
 turn folds the prior turns + the new user message into one delimited transcript block, capped by

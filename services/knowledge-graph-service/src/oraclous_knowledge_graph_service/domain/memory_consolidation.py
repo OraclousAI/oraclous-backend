@@ -1,4 +1,4 @@
-"""Similarity-based memory consolidation (ORAA-4 §21 domain layer — pure, no I/O).
+"""Similarity-based memory consolidation (domain layer — pure, no I/O).
 
 Issue #332 / ADR-027 §3. The legacy consolidation was hash-dedup pretending to be similarity; this
 is the real thing: memories whose stored embeddings sit above a cosine threshold cluster together

@@ -1,4 +1,4 @@
-"""Real-Neo4j-GDS integration test for community detection (#303, ORAA-4 §22 — real substrate).
+"""Real-Neo4j-GDS integration test for community detection (#303 — real substrate).
 
 This MUST prove ``gds.louvain`` actually runs on ``neo4j:5.23-community`` (the deployed image, with
 the GDS plugin), not against a mock. A dedicated GDS-enabled container is spun up (the shared

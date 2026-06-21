@@ -1,4 +1,4 @@
-"""TCP egress guard unit tests (#307, ORAA-4 §22 failure modes — the DECIDED Option B check).
+"""TCP egress guard unit tests (#307, per-service DoD failure modes — the DECIDED Option B check).
 
 BLOCK in multi-tenant mode: 169.254.169.254 (cloud metadata) / 127.0.0.1 (loopback) / 10.x
 (RFC-1918) / a bare `postgres` single-label / `localhost` / `metadata.google.internal`. ALLOW a

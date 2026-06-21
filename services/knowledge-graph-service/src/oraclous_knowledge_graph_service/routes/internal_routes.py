@@ -1,4 +1,4 @@
-"""Internal routes (ORAA-4 §21 routes layer) — the agent/capability-addressable, gateway-trusted
+"""Internal routes (routes layer) — the agent/capability-addressable, gateway-trusted
 surface (ADR-018).
 
 These endpoints are reached over the internal trust path: in gateway mode the caller's verified

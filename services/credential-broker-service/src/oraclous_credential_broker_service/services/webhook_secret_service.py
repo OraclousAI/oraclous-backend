@@ -1,4 +1,4 @@
-"""Webhook-secret management (ORAA-4 §21 services layer) — mint + resolve, org-scoped.
+"""Webhook-secret management (services layer) — mint + resolve, org-scoped.
 
 ``mint`` encrypts a signing secret at rest (AES-256-GCM); ``resolve`` returns the plaintext for the
 trusted gateway to recompute an inbound HMAC over the raw body. Both are X-Internal-Key gated at the

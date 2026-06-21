@@ -1,4 +1,4 @@
-"""EngineJob ORM model (ORAA-4 §21 models layer).
+"""EngineJob ORM model (models layer).
 
 The durable job record: one harness run tracked out-of-request through the engine state machine
 (``EngineJobState``). Org-scoped (ADR-006). Columns beyond S1 (retry/timeout/schedule/assignment/

@@ -1,4 +1,4 @@
-"""Edge-protection pure helpers (ORAA-4 §21 domain layer) — no I/O.
+"""Edge-protection pure helpers (domain layer) — no I/O.
 
 Client-IP derivation under an explicit X-Forwarded-For trust boundary, a cheap Content-Length
 fast-path check, and the rate-limit decision shape. Pure, testable without Redis or a socket.

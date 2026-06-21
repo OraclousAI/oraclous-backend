@@ -1,4 +1,4 @@
-"""Document → text extractors (ORAA-4 §21 services layer) — a pluggable per-content-type registry.
+"""Document → text extractors (services layer) — a pluggable per-content-type registry.
 
 Reshaped from legacy `develop@84152635 knowledge-graph-builder/app/services/{document_processor,
 pdf_extractor,vision_extractor,md_extractor}.py`. The legacy code was four free-standing modules
@@ -128,7 +128,7 @@ def _extract_pdf_tables(data: bytes) -> list[str]:
     """Per-table "[Table]\\n<tab-rows>" blocks via pdfplumber; [] if pdfplumber absent or fails.
 
     pdfplumber is an optional richer-extraction dep — table mining is best-effort and never sinks a
-    PDF whose text already parsed (legacy pdf_extractor behaviour, ORAA-4 §21).
+    PDF whose text already parsed (legacy pdf_extractor behaviour).
     """
     try:
         import pdfplumber
@@ -242,7 +242,7 @@ _REGISTRY: dict[str, DocumentExtractor] = {
 
 
 def register_extractor(kind: str, extractor: DocumentExtractor) -> None:
-    """Register (or override) the extractor for a kind — the plug-in seam (ORAA-4 §21)."""
+    """Register (or override) the extractor for a kind — the plug-in seam."""
     _REGISTRY[kind] = extractor
 
 

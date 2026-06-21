@@ -1,4 +1,4 @@
-"""Ingestion-job use-cases (ORAA-4 §21 services layer).
+"""Ingestion-job use-cases (services layer).
 
 Owner-gated (a job is only visible/creatable on a graph the caller owns — reuses GraphService's
 gate, so cross-user/cross-org → 404) and org-scoped (the repository enforces the org). `submit`

@@ -1,4 +1,4 @@
-"""The organisation backfill migration passes the 0b org-scoping gate (ORA-24 / D1, AC#2).
+"""The organisation backfill migration passes the 0b org-scoping gate (D1, AC#2).
 
 RED until ``backend-implementer`` adds ``oraclous_substrate.migrations.org_backfill``.
 

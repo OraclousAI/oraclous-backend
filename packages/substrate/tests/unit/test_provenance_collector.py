@@ -1,4 +1,4 @@
-"""Failing tests for the substrate provenance collector seam (ORA-15, story 0g).
+"""Failing tests for the substrate provenance collector seam (story 0g).
 
 Behavioural reference: legacy ``knowledge-graph-builder/app/services/audit_service.py``
 (``log_public_call``), reshaped into a single-write-path collector.

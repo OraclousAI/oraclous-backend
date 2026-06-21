@@ -1,4 +1,4 @@
-"""Federated cross-graph retrieval (ORAA-4 §21 services layer) — #330 / ADR-026.
+"""Federated cross-graph retrieval (services layer) — #330 / ADR-026.
 
 Query ALL the graphs a caller can read from one place. Four modes: ``entity`` (case-insensitive
 name/alias match over canonical entities — the legacy UNION-ALL fan-out, lifted as per-graph

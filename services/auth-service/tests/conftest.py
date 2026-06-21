@@ -1,11 +1,10 @@
-"""Auth-service local test conftest (ORA-45).
+"""Auth-service local test conftest.
 
 Re-creates the substrate Postgres harness fixture here (mirror of the root
 ``tests/conftest.py``'s ``postgres_dsn``) so this suite can be run in isolation
 via ``uv run pytest services/auth-service/tests`` when the shared pytest
 session aborts collection on an unmerged sibling import — the soft-coupling
-fallback called out in the ORA-45 brief (applicable until ORA-17 lands and
-``oraclous_substrate.access`` imports cleanly).
+fallback (applicable until ``oraclous_substrate.access`` imports cleanly).
 
 Only the Postgres fixture is duplicated; Neo4j and Redis aren't reachable from
 the auth-service identity store (ADR-012 §1a — auth-service is a distinct

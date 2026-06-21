@@ -1,1 +1,1 @@
-"""services layer (ORAA-4 §21)."""
+"""services layer."""

@@ -1,4 +1,4 @@
-"""Engine DTOs (ORAA-4 §21 schema layer) — Pydantic request/response models only.
+"""Engine DTOs (schema layer) — Pydantic request/response models only.
 
 organisation_id/user_id are never inbound (ORG001); both come from the authenticated principal in
 the route. A job runs an OHM supplied inline (``manifest``) or by reference (``manifest_ref``).

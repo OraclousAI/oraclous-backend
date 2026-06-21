@@ -1,4 +1,4 @@
-"""Built-in tool plugins (ORAA-4 §21 domain layer).
+"""Built-in tool plugins (domain layer).
 
 The registry's seeded catalogue — the connector tool *descriptors* (manifests). Their executors land
 in S4/S5; here they are real registry entries (id, version, metadata, spec, credential

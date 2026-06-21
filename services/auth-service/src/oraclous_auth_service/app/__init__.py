@@ -1,4 +1,4 @@
-"""FastAPI app factory for the auth-service (ORA-31 / R1-A2).
+"""FastAPI app factory for the auth-service (R1-A2).
 
 The factory accepts the agent repository and the internal-service-key verifier
 as dependencies so the endpoints are testable without a real database or Redis.

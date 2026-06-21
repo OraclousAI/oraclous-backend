@@ -1,11 +1,11 @@
-"""Failing tests for the request-scoped organisation-context kernel (ORA-14, story 0f).
+"""Failing tests for the request-scoped organisation-context kernel.
 
 Scope: ``packages/governance`` — the organisation-context *object* and the
 resolution that obtains ``organisation_id`` from the authenticated principal.
 Propagation across async boundaries is pinned separately in
 ``test_context_propagation.py``.
 
-Shape reference: Contract ORA-3 (ratified Option B, 28 May 2026) — the substrate
+Shape reference: the org-context Contract (ratified Option B, 28 May 2026) — the substrate
 resolves ``organisation_id`` from organisation membership; the principal carries
 identity only (``principal_id`` from the JWT ``sub``, ``principal_type`` from the
 token). Active-organisation selection for multi-org principals is a *validated*
@@ -42,7 +42,7 @@ pytestmark = [pytest.mark.unit]
 class _Membership:
     """Test double for the membership store.
 
-    The real store lives in the substrate (ORA-15 / Epic A2); here it is injected
+    The real store lives in the substrate; here it is injected
     via the ``MembershipResolver`` seam. ``organisations_for`` returns the
     organisations the principal BELONGS_TO.
     """
@@ -62,7 +62,7 @@ def _principal(
     organisation_claim: uuid.UUID | None = None,
 ) -> Principal:
     # ``organisation_id`` on the principal is the optional auth-issued org claim
-    # (R1 agent tokens, ORA-31); ``None`` models the R0.5 "identity only"
+    # (R1 agent tokens); ``None`` models the R0.5 "identity only"
     # principal that must be resolved against membership.
     return Principal(
         principal_id=uuid.uuid4(),
@@ -76,7 +76,7 @@ def _principal(
 
 def test_membership_resolver_is_the_injected_seam() -> None:
     """The membership store is reached through a named typed protocol, so the
-    real substrate store can be swapped for a double here (ORA-15 / A2)."""
+    real substrate store can be swapped for a double here."""
     assert hasattr(MembershipResolver, "organisations_for")
 
 
@@ -220,7 +220,7 @@ async def test_org_claim_is_preferred_over_membership() -> None:
     tokens), it is preferred over membership resolution and the per-request
     membership lookup is skipped entirely.
 
-    Per Contract ORA-3's forward path: the claim is auth-issued (signed token =
+    Per the org-context Contract's forward path: the claim is auth-issued (signed token =
     authenticated context, not a request-body value), so it is a trusted single
     source that removes the per-request lookup. The claim winning over a
     *different* membership proves the preference; the resolver never being called

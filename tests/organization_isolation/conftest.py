@@ -7,7 +7,7 @@ Why this exists: Postgres superusers (and ``BYPASSRLS`` roles) bypass row-level
 security entirely, and the 0d harness container connects as its bootstrap
 superuser. So an RLS-isolation test issued over the raw superuser ``postgres_dsn``
 proves nothing — RLS never bites. The A2 enforcement seam's data-layer backstop
-is only real for a non-superuser role (ADR-012 precondition; mirrors the ORA-20
+is only real for a non-superuser role (ADR-012 precondition; mirrors the RLS
 gate's harness note). Tests that assert RLS isolation must use ``app_dsn``.
 
 Schema/DDL (CREATE TABLE, ENABLE/FORCE RLS, policies) is applied as the superuser

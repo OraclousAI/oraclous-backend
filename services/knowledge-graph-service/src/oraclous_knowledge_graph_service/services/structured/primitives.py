@@ -1,4 +1,4 @@
-"""CSV + JSON structural primitives (ORAA-4 §21 services layer).
+"""CSV + JSON structural primitives (services layer).
 
 Reshaped from legacy `develop@84152635` csv/json primitives: operate on text (not a path) and — for
 CSV — emit a synthetic TABLE container unit so the engine materialises a `:Table` node (the legacy

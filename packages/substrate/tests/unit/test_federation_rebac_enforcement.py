@@ -1,5 +1,5 @@
 """Federation cross-organisation traversal is mediated by the ReBAC client
-(ORA-17 / A2, AC#3).
+(A2, AC#3).
 
 RED until ``backend-implementer`` adds ``oraclous_substrate.access``.
 
@@ -7,13 +7,13 @@ Reshape (lift-tag **Reshape**) of the legacy fail-closed cross-tenant check in
 ``knowledge-graph-builder`` ``app/services/federation_service.py::_validate_and_filter``
 (and the cross-graph ``app/tasks/federation_tasks.py`` path): instead of the legacy
 ownership / ``federatable`` check that raised ``FederationError 403``, a cross-graph
-traversal is routed through the substrate ReBAC access-decision client (ORA-15 / 0g),
+traversal is routed through the substrate ReBAC access-decision client,
 which fails closed on an absent, ambiguous, or errored decision (ADR-004; Threat
-Catalogue T1-M2). The denial must not leak the target resource id (legacy ORA-89
+Catalogue T1-M2). The denial must not leak the target resource id (legacy
 enumeration-prevention invariant).
 
-Subject and ``organisation_id`` for the decision are taken from the bound org-context
-(ORA-14 / 0f), never from a request body (ADR-006).
+Subject and ``organisation_id`` for the decision are taken from the bound org-context,
+never from a request body (ADR-006).
 """
 
 from __future__ import annotations
@@ -125,7 +125,7 @@ async def test_traversal_decision_is_org_and_subject_scoped_from_context() -> No
 
 
 async def test_traversal_denial_does_not_leak_resource_id() -> None:
-    """Legacy ORA-89 invariant: the denial must not echo the target resource id
+    """Legacy invariant: the denial must not echo the target resource id
     (prevents resource enumeration via error text)."""
     client = _client(result=None)
     with use_organisation_context(_ctx()):

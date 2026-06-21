@@ -1,4 +1,4 @@
-"""Application assembly (ORAA-4 §21 app layer) — build FastAPI, include routers, NO handlers.
+"""Application assembly (app layer) — build FastAPI, include routers, NO handlers.
 
 All request handling lives in `routes/`; all wiring in `core/dependencies` + `core/lifespan`.
 This module only composes them.

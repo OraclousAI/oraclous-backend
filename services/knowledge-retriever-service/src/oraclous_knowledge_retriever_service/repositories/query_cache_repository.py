@@ -1,4 +1,4 @@
-"""Redis query cache (ORAA-4 §21 repositories layer — the only Redis access, #308).
+"""Redis query cache (repositories layer — the only Redis access, #308).
 
 Lift-and-reshape of the legacy ``knowledge-graph-builder/app/services/query_cache_service.py``:
 cache the search/subgraph read envelope keyed by ``org + graph + generation + query-hash`` (the

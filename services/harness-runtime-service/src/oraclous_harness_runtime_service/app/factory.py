@@ -1,4 +1,4 @@
-"""Application assembly (ORAA-4 §21 app layer) — build FastAPI, include routers, NO handlers."""
+"""Application assembly (app layer) — build FastAPI, include routers, NO handlers."""
 
 from __future__ import annotations
 

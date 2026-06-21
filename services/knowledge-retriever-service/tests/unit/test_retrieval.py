@@ -211,7 +211,7 @@ async def test_subgraph_maps_nodes_and_flattens_edges() -> None:
 
 
 async def test_subgraph_edge_carries_score_property() -> None:
-    # ORAA-277: edge property bag (e.g. `score` on SIMILAR_TO/SAME_AS_CANDIDATE) must reach the
+    # Edge property bag (e.g. `score` on SIMILAR_TO/SAME_AS_CANDIDATE) must reach the
     # response, mirroring the node `props` projection — not be dropped at the edge boundary.
     driver = _FakeDriver(
         [

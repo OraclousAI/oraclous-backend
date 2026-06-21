@@ -1,4 +1,4 @@
-"""Org-scoped recipe-graph writer (ORAA-4 §21 repositories layer — the only Neo4j driver access).
+"""Org-scoped recipe-graph writer (repositories layer — the only Neo4j driver access).
 
 Holds the unified-graph-model Cypher lifted from legacy `develop@84152635 recipes/engine.py`,
 reshaped so `organisation_id` is threaded into EVERY MERGE/MATCH key map and stamped on create (next

@@ -46,15 +46,15 @@ jobs:
         run: uv run python -m tools.lint.check_org_scoped_labels_schema
       - name: Test-import hygiene guardrail (TDD-window collection safety)
         run: uv run python -m tools.lint.check_test_imports packages services tests
-      - name: Neo4j write-role bypass guardrail (ORAA-53 / T6)
+      - name: Neo4j write-role bypass guardrail (T6)
         run: uv run python -m tools.lint.check_neo4j_write_role
-      - name: Contract fixture integrity (error envelope, ORA-37)
+      - name: Contract fixture integrity (error envelope)
         run: uv run python -m tools.contract.verify_checksums
-      - name: Neo4j read-role bypass guardrail (ORAA-58 / T6)
+      - name: Neo4j read-role bypass guardrail (T6)
         run: uv run python -m tools.lint.check_neo4j_read_role
-      - name: Service architecture guardrail (ORAA-4 §21, R3.5)
+      - name: Service architecture guardrail (R3.5)
         run: uv run python -m tools.lint.check_service_structure services
-      - name: No-hollow guardrail (ORAA-4 §22, R3.5)
+      - name: No-hollow guardrail (R3.5)
         run: uv run python -m tools.lint.check_no_stubs services
       - name: Release-coverage guardrail (WP-3/4 — all dockerized claimed_done services built + scanned/signed)
         run: uv run python -m tools.lint.check_release_coverage
@@ -156,14 +156,14 @@ jobs:
           if [ "$code" -eq 5 ]; then echo "No integration tests collected yet."; exit 0; fi
           exit "$code"
 
-  # The R2 acceptance gate (ORAA-80) is RETIRED: it verified the hollow R2 deliverables inside the
+  # The R2 acceptance gate is RETIRED: it verified the hollow R2 deliverables inside the
   # legacy oraclous-core-service (deleted under §15) and several surfaces deferred to R4/R6 (MCP,
   # agent schemas, scope-allocation). R3.5 rebuilt those deliverables for real in the new services;
   # the `r3_5_gate` below + each service's own unit/integration suites + the §22 sign-offs are the
   # live acceptance now.
 
   worktree-test:
-    name: "Per-run worktree isolation probe (ORAA-130)"
+    name: "Per-run worktree isolation probe"
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -196,7 +196,7 @@ jobs:
   # docker-up + integration + smoke steps are added per-service as each is rebuilt (gates 3-5).
   # Gate 6 (Reza sign-off) is the needs-human label on the GitHub issue, not a CI step. Modelled on r2-gate.
   r3_5_gate:
-    name: "R3.5 acceptance gate — service architecture + no-hollow + audit (ORAA-4 §21/§22)"
+    name: "R3.5 acceptance gate — service architecture + no-hollow + audit"
     runs-on: ubuntu-latest
     # ADR-021 §1: select the key-free fake runtime explicitly (the defaults are now real/live).
     env:

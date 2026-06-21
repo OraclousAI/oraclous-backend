@@ -1,4 +1,4 @@
-"""uvicorn entrypoint (ORAA-4 §21) — production composition of the auth-service app.
+"""uvicorn entrypoint — production composition of the auth-service app.
 
 Wires the real Postgres-backed agent repository + the user-identity lifespan (which opens the
 sessionmaker + Redis) and exposes module-level ``app`` for

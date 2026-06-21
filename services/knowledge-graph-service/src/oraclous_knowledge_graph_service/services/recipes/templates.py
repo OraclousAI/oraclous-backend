@@ -1,4 +1,4 @@
-"""Reusable recipe templates (ORAA-4 §21 services layer — pure data, no I/O).
+"""Reusable recipe templates (services layer — pure data, no I/O).
 
 A *template* is an author-ready format-0.2 recipe built for a recurring concern, so a caller can
 ingest a known JSON shape into a typed subgraph without hand-writing the recipe. These are plain

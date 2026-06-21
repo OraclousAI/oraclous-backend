@@ -1,5 +1,5 @@
 """Writer-layer organisation isolation, proven at the data layer
-(ORA-18 / Epic A3, on the ORA-12 substrate harness — writer half).
+(on the substrate harness — writer half).
 
 Stands up real Neo4j (via the session-scoped ``neo4j_driver`` fixture in
 ``tests/conftest.py``), seeds two organisations' nodes with the deliberate
@@ -22,9 +22,9 @@ consume the substrate seam ``oraclous_substrate.access`` per
 WITH-CHECK backstop, so this test proves the control).
 
 RED until:
-  * ``oraclous_governance.context`` exposes ``OrganisationContext`` (ORA-14)
+  * ``oraclous_governance.context`` exposes ``OrganisationContext``
   * ``oraclous_knowledge_graph_service.multi_tenant`` exposes
-    ``OrganisationScopedKGWriter`` (ORA-18 impl)
+    ``OrganisationScopedKGWriter``
 """
 
 from __future__ import annotations
@@ -50,7 +50,7 @@ _PRINCIPAL = uuid.UUID("99999999-9999-9999-9999-999999999999")
 
 def _context(organisation_id: uuid.UUID):
     """Local import keeps the not-yet-built seam out of module-level collection
-    (ORA-48 / TST001)."""
+    (TST001)."""
     from oraclous_governance.context import OrganisationContext, PrincipalType
 
     return OrganisationContext(

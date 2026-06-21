@@ -1,4 +1,4 @@
-"""App lifecycle (ORAA-4 §21 core layer) — open/close shared connections.
+"""App lifecycle (core layer) — open/close shared connections.
 
 The Postgres engine + sessionmaker and (when `KGS_NEO4J_URI` is set) the Neo4j driver are built once
 at startup and disposed at shutdown, exposed on `app.state`. The Neo4j schema (org-scoped indexes)

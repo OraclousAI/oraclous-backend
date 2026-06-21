@@ -1,4 +1,4 @@
-"""Webhook-secret internal shapes (ORAA-4 §21 schema layer) — X-Internal-Key service-to-service.
+"""Webhook-secret internal shapes (schema layer) — X-Internal-Key service-to-service.
 
 ``*Input`` (not ``*Request``): the trusted caller supplies ``organisation_id`` — the X-Internal-Key
 gate is the control, so org-in-body is service→service plumbing (the ResolveCredentialInput idiom).

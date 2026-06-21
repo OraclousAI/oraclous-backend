@@ -1,4 +1,4 @@
-"""Harness routes (ORAA-4 §21 routes layer) — parse → ONE service call → HTTP map. No logic.
+"""Harness routes (routes layer) — parse → ONE service call → HTTP map. No logic.
 
 ``POST .../execute`` runs an inline OHM to completion; ``GET .../executions/{id}`` returns a prior
 run (org-scoped). A malformed OHM is the caller's fault (422); a registry/dependency failure during

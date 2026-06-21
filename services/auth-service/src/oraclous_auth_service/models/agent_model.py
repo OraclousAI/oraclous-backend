@@ -1,4 +1,4 @@
-"""ORM models for the agent principal and its credentials (ORA-30 / R1-A1).
+"""ORM models for the agent principal and its credentials (R1-A1).
 
 Reshaped from the legacy service-account-key pattern
 (``auth-service/app/models/service_account_model.AgentServiceAccountKey``) onto a

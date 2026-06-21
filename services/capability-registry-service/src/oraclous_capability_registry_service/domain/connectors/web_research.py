@@ -1,4 +1,4 @@
-"""Web-research connector (ORAA-4 §21 domain layer) — the pre-registered live-web tool group.
+"""Web-research connector (domain layer) — the pre-registered live-web tool group.
 
 Three operations behind one curated tool (ADR-039 D1), so an imported live-web researcher runs
 immediately (the gap that left EURail's researchers reason-only):

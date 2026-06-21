@@ -1,4 +1,4 @@
-"""Invitation token domain (ORAA-4 §21 domain layer, threat T-INVITE).
+"""Invitation token domain (domain layer, threat T-INVITE).
 
 A high-entropy (256-bit) URL-safe token is generated once and returned to the inviter; only its
 SHA-256 hash + a lookup prefix are stored (never the raw token). Acceptance recomputes the hash and

@@ -1,4 +1,4 @@
-"""Per-org envelope cipher primitives + the local KMS provider (ORAA-4 §21 core layer, ADR-020).
+"""Per-org envelope cipher primitives + the local KMS provider (core layer, ADR-020).
 
 The versioned ciphertext lets the single-key (v1) and envelope (v2) formats coexist during the
 online migration:

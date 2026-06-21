@@ -63,7 +63,7 @@ substrate:
     # Secret-backed full URL per service (see env.fromSecrets on the services).
     url: ""
 
-# Per-service Neo4j role credentials (ORAA-53 / ORAA-58 — least privilege). Each service connects
+# Per-service Neo4j role credentials (least privilege). Each service connects
 # with its own dedicated Neo4j user; no service uses the admin (neo4j) account. Passwords are
 # operator-supplied K8s Secrets.
 neo4jRoles:
@@ -89,7 +89,7 @@ neo4jRoleInit:
   backoffLimit: 3
 
 # ──────────────────────────────────────────────────────────────────────────────────────────────
-# Gateway Ingress — the application-gateway-service is the SINGLE external surface (ORAA-4 §23).
+# Gateway Ingress — the application-gateway-service is the SINGLE external surface.
 # Every other service is ClusterIP-internal.
 # ──────────────────────────────────────────────────────────────────────────────────────────────
 ingress:

@@ -1,7 +1,7 @@
 """Postgres-backed implementation of the ``_DelegatedTokenStore`` protocol
-(ORA-37 / R1 gate).
+(R1 gate).
 
-The ORA-32 unit suite pins the in-memory store under which ``DelegationService``
+The unit suite pins the in-memory store under which ``DelegationService``
 already passes; this is the production-backed companion the R1 adversarial
 suite (``tests/security/test_adversarial_delegation.py``) drives — the only
 way to prove forgery / expiry / scope-creep rejection at the data layer, on

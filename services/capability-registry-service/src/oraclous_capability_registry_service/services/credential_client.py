@@ -1,4 +1,4 @@
-"""Credential-broker seam (ORAA-4 §21 services layer; reshape of legacy
+"""Credential-broker seam (services layer; reshape of legacy
 ``oraclous-core-service/app/services/credential_client.py``).
 
 The capability registry is a service-to-service caller of the credential-broker — it never decrypts

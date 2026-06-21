@@ -1,4 +1,4 @@
-"""Substrate data migrations (ORA-24 / D1).
+"""Substrate data migrations (D1).
 
 One-time, idempotent migrations that bring an existing deployment's substrate data
 up to the organisation-scoped shape A1 declares. Each migration is paired with a

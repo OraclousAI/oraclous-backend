@@ -1,4 +1,4 @@
-"""Recipe library routes (ORAA-4 §21 routes layer) — store/list/get recipes (org-scoped).
+"""Recipe library routes (routes layer) — store/list/get recipes (org-scoped).
 
 Slice C adds two authoring aids alongside the library CRUD:
   POST /recipes/dry-run   — preview a recipe over a sample with NO Neo4j writes (node labels +

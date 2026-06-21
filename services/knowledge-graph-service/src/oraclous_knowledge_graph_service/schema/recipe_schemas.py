@@ -1,4 +1,4 @@
-"""Recipe library DTOs (ORAA-4 §21 schema layer — Pydantic only)."""
+"""Recipe library DTOs (schema layer — Pydantic only)."""
 
 from __future__ import annotations
 

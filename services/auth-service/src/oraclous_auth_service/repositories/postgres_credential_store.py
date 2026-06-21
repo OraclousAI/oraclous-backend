@@ -1,11 +1,11 @@
 """Postgres-backed agent credential store for the auth-service identity
-domain (ORA-45 / R1-A3; RLS made live for the org-bound path by ADR-030 Slice 1).
+domain (R1-A3; RLS made live for the org-bound path by ADR-030 Slice 1).
 
-Implements the ORA-30 ``CredentialStore`` Protocol against SQLAlchemy 2.0
+Implements the ``CredentialStore`` Protocol against SQLAlchemy 2.0
 async + asyncpg, plus the org-scoped administrative surface (ADR-012 §1a (b)).
 Lift-tag **Reshape** of ``auth-service/app/repositories/service_account_repository.py``
 in the legacy worktree: same ``WHERE status='active'`` filter + prefix-index
-lookup + ``UPDATE`` revoke, refit behind the ORA-30 port and onto the agent
+lookup + ``UPDATE`` revoke, refit behind the port and onto the agent
 principal.
 
 Architecture (ADR-012 §1a + ADR-030 §2/§3): the auth-service identity store is a
@@ -75,7 +75,7 @@ from oraclous_auth_service.models.base import Base
 
 
 class PostgresCredentialStore:
-    """Postgres implementation of the ORA-30 CredentialStore port + admin surface.
+    """Postgres implementation of the CredentialStore port + admin surface.
 
     Two engines, split by access pattern (ADR-030 §2/§3): the org-bound CRUD runs on the
     GUC-guarded ``oraclous_app`` engine (RLS bites), the pre-auth cross-org resolves run
@@ -105,7 +105,7 @@ class PostgresCredentialStore:
         await self._engine.dispose()
         await self._org_engine.dispose()
 
-    # --- ORA-30 CredentialStore port: persist is org-bound (org-bound engine — RLS bites) -----
+    # --- CredentialStore port: persist is org-bound (org-bound engine — RLS bites) -----
 
     async def persist(self, agent: Agent, credential: AgentCredential) -> None:
         """Insert the agent and its credential in a single transaction.
@@ -146,7 +146,7 @@ class PostgresCredentialStore:
         Keyed by ``agent_id`` with NO org in scope (the internal lifecycle revoke —
         ``DELETE /internal/agent-credentials/{agent_id}``), so it runs on the owner engine like the
         resolves: routing it through the org-bound engine with no bound org would fail-close to zero
-        rows and break revoke. Returns the number of rows affected (the ORA-30 unit suite pins this
+        rows and break revoke. Returns the number of rows affected (the unit suite pins this
         as the revoke-count contract).
         """
         async with self._session_factory() as session:

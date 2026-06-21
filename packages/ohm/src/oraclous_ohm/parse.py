@@ -1,4 +1,4 @@
-"""OHM loader (ORAA-4 §21 domain layer; OHM v1.0 spec §3/§7).
+"""OHM loader (domain layer; OHM v1.0 spec §3/§7).
 
 Slice-1 load: parse YAML (or accept an already-parsed object), validate the structured schema, gate
 the version, and cross-check that the runtime entrypoint names a declared capability binding. Atomic

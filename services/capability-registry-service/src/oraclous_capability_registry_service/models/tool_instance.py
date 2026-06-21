@@ -1,4 +1,4 @@
-"""ToolInstance ORM (ORAA-4 §21 models layer; reshape of legacy
+"""ToolInstance ORM (models layer; reshape of legacy
 ``oraclous-core-service/app/models/tool_instance.py``).
 
 A configured instance of a tool bound to an org + user. Org-scoped (``organisation_id`` NOT NULL —

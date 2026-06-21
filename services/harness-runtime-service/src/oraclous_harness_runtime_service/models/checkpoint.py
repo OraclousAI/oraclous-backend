@@ -1,4 +1,4 @@
-"""HarnessCheckpoint ORM model (ORAA-4 §21 models layer).
+"""HarnessCheckpoint ORM model (models layer).
 
 The parkable state of a run paused at a mid-loop HITL gate (R5-S6). Org-scoped (ADR-006), loosely
 coupled to the execution by ``execution_id`` (no FK, matching ``harness_assignments``). Everything

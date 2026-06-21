@@ -1,4 +1,4 @@
-"""Community + analytics routes (ORAA-4 §21 routes layer) — thin: parse → one service call → map.
+"""Community + analytics routes (routes layer) — thin: parse → one service call → map.
 
 Restores the legacy community/analytics surface (``communities.py`` + the ``graphs.py`` community
 routes), RE-ARCHITECTED onto the in-DB GDS analytics service. No business logic, no DB access, no

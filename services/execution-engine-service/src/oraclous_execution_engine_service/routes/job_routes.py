@@ -1,4 +1,4 @@
-"""Engine job routes (ORAA-4 §21 routes layer) — parse → ONE service/repo call → HTTP map. No logic.
+"""Engine job routes (routes layer) — parse → ONE service/repo call → HTTP map. No logic.
 
 ``POST .../jobs`` submits a durable harness job (S1: runs synchronously, returns the terminal job);
 ``GET .../jobs/{id}`` + ``GET .../jobs`` read prior jobs (org-scoped). A bad request body is 400; an

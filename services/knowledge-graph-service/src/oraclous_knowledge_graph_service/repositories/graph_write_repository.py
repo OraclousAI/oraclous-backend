@@ -1,4 +1,4 @@
-"""Neo4j write + schema repository (ORAA-4 §21 repositories layer — the only Neo4j driver access).
+"""Neo4j write + schema repository (repositories layer — the only Neo4j driver access).
 
 Builds a lexical neo4j_graphrag `Neo4jGraph` of one `:Document` + N `:Chunk` nodes (matching the
 default `LexicalGraphConfig`, so the base writer treats them as lexical and adds no `:__Entity__`)

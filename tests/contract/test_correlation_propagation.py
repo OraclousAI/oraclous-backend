@@ -1,4 +1,4 @@
-"""Contract: the end-to-end correlation id propagates gateway → upstream (WP-6, ORAA-4 A5).
+"""Contract: the end-to-end correlation id propagates gateway → upstream (WP-6).
 
 Two halves:
 

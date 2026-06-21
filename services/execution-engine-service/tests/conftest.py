@@ -2,7 +2,7 @@
 
 Provides the ``postgres_dsn`` fixture (a session-scoped ephemeral Postgres testcontainer) for this
 service's integration suite, mirroring the other Postgres-backed services so the suite runs in
-isolation against a real substrate (ORAA-4 §22 — smoke vs real substrate).
+isolation against a real substrate (smoke vs real substrate).
 
 ADR-030 (#353): ``engine_dsns`` derives a NOSUPERUSER/NOBYPASSRLS ``oraclous_app`` DSN (asyncpg)
 from the superuser container so the RLS-backstop isolation test exercises the **real org-bound

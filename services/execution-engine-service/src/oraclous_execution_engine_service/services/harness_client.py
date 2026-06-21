@@ -1,4 +1,4 @@
-"""Harness-runtime client (ORAA-4 §21 services layer).
+"""Harness-runtime client (services layer).
 
 The engine composes the harness-runtime over HTTP — it never imports it (four-layer contract: both
 are Layer 3, so they talk by API exactly as the harness calls the registry). Identity is propagated

@@ -1,6 +1,6 @@
 """SQL database connector — PostgreSQL (asyncpg) + MySQL (aiomysql) relational ingest source.
 
-ORAA-4 §21: this lives under ``domain/connectors/`` (the STR004-exempt connector layer — its
+This lives under ``domain/connectors/`` (the STR004-exempt connector layer — its
 asyncpg/aiomysql driver use is the OUTBOUND payload to an EXTERNAL user DB, not the service's own
 persistence, which stays in ``repositories/``). Lift-and-reshape of legacy ``develop@84152635
 knowledge-graph-builder/app/services/database_connector_service.py`` (the PostgreSQL + MySQL halves;

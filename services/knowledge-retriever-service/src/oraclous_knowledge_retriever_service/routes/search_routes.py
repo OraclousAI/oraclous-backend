@@ -1,4 +1,4 @@
-"""Search routes (ORAA-4 §21 routes layer) — semantic / fulltext / hybrid over the graph KGS wrote.
+"""Search routes (routes layer) — semantic / fulltext / hybrid over the graph KGS wrote.
 
 Thin: parse → one service call → return list[NodeResult]. Org scope is bound by the dependency
 chain behind the retrieval service; graph_id is a request field.

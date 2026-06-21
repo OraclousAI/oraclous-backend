@@ -1,4 +1,4 @@
-"""Cross-org MAINTENANCE reader (ORAA-4 §21 repositories layer; ADR-030 §3 carve-out).
+"""Cross-org MAINTENANCE reader (repositories layer; ADR-030 §3 carve-out).
 
 The three cross-org sweeps run OUT-OF-REQUEST with NO bound org — the reaper
 (``JobRepository.list_stale_running`` + ``RoundtableRepository.list_stale_running``) and Celery Beat

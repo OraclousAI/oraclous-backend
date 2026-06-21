@@ -1,7 +1,7 @@
-"""Neo4j connection (ORAA-4 §21 core layer — connection setup).
+"""Neo4j connection (core layer — connection setup).
 
-A single sync `neo4j.Driver` opened as the read role (ORAA-53) from `KRS_NEO4J_*`. KRS is strictly
-READ-ONLY (ORAA-58 / T6): it never issues write Cypher and never creates indexes — schema (any
+A single sync `neo4j.Driver` opened as the read role from `KRS_NEO4J_*`. KRS is strictly
+READ-ONLY (T6): it never issues write Cypher and never creates indexes — schema (any
 fulltext index included) is owned by the write side (knowledge-graph-service). The fulltext modality
 therefore uses an index-free `CONTAINS` scan, org-scoped in-query (Community lacks RLS).
 """
@@ -30,7 +30,7 @@ def make_neo4j_driver(settings: Settings) -> Driver:
 async def make_neo4j_async_driver(settings: Settings) -> AsyncDriver:
     """An async Neo4j driver for the ReBAC engine (it requires ``neo4j.AsyncDriver``); the read path
     stays on the sync driver. Used ONLY to resolve the cross-org access decision (a HAS_ROLE lookup)
-    — KRS issues no write Cypher (ORAA-58 / T6). Separate from ``make_neo4j_driver`` so a ReBAC bind
+    — KRS issues no write Cypher (T6). Separate from ``make_neo4j_driver`` so a ReBAC bind
     failure degrades cross-org admission to OFF without taking retrieval down."""
     if not settings.neo4j_uri:
         raise Neo4jUnconfiguredError("KRS_NEO4J_URI is not set")

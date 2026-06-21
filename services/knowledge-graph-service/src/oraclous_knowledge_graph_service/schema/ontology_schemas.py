@@ -1,4 +1,4 @@
-"""Ontology DTOs (ORAA-4 §21 schema layer — Pydantic only).
+"""Ontology DTOs (schema layer — Pydantic only).
 
 Slice B: the request/response carry an optional TYPED layer (entity/relationship type definitions +
 free-text extraction hints) on top of the legacy labels-only shape. Every field is optional, so an

@@ -2,7 +2,7 @@
 
 The gateway's upstream client uses a MockTransport that answers ``/health`` 200 for some upstreams
 and refuses others; ``GET /health/upstreams`` rolls them up (HTTP 200, body reflects degraded). The
-gateway's own errors (404/401) carry the canonical ORA-37 envelope
+gateway's own errors (404/401) carry the canonical error envelope
 ``{"error": {"code", "message", "requestId", "retryable"}}`` with a server-minted ``requestId``
 echoed in ``X-Request-Id``.
 """

@@ -1,9 +1,9 @@
-"""Readiness-reflecting health helper (ADR-021 startup-degradation policy, ORAA-297).
+"""Readiness-reflecting health helper (ADR-021 startup-degradation policy).
 
 Each substrate/runtime service binds its critical store(s) into ``app.state`` at startup; a
 store-bind failure leaves the attribute ``None`` (degrade-don't-crash). This helper turns that
 state into a uniform health verdict so every service's ``/health`` + ``/readyz`` routes stay thin
-(no DB access in routes, §21) and consistent.
+(no DB access in routes) and consistent.
 
 Policy (ADR-021):
 * ``/health`` is **liveness** — always HTTP 200; the *body* reflects ``ok`` vs ``degraded`` so an

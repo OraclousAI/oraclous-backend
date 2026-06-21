@@ -1,4 +1,4 @@
-"""Harness↔graph binding repository (ORAA-4 §21 repositories layer; ADR-029).
+"""Harness↔graph binding repository (repositories layer; ADR-029).
 
 The ONLY place that touches the DB driver for harness↔graph bindings. Every read and write is scoped
 by ``organisation_id`` (ADR-006) — supplied by the caller from the authenticated principal, never a

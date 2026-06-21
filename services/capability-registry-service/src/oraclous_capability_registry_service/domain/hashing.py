@@ -1,4 +1,4 @@
-"""Content hashing (ORAA-4 §21 domain layer) — pure, no I/O.
+"""Content hashing (domain layer) — pure, no I/O.
 
 A capability descriptor's ``content_hash`` is the SHA-256 of its canonical JSON form: None-valued
 keys stripped (so a Pydantic ``model_dump()`` roundtrip hashes identically to the equivalent raw

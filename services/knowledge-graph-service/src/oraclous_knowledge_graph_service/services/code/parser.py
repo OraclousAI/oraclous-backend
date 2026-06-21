@@ -1,4 +1,4 @@
-"""Tree-sitter code parser (ORAA-4 §21 services layer — pure, key-free, no DB).
+"""Tree-sitter code parser (services layer — pure, key-free, no DB).
 
 Faithful port of legacy `develop@84152635 .../services/code_parser_service.py`
 (Stages 0–3): walk source files, tree-sitter-parse, extract a deterministic code knowledge graph

@@ -1,4 +1,4 @@
-"""Provider/data-source capability catalogue (ORAA-4 §21 domain layer). Pure, no I/O.
+"""Provider/data-source capability catalogue (domain layer). Pure, no I/O.
 
 Lifted from the legacy ``credential-broker-service/app/core/constants.py`` DATA_SOURCE_CAPABILITIES:
 which data sources each provider exposes, the OAuth scopes each requires, and the operations it

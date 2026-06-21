@@ -6,7 +6,7 @@ info:
     The public REST contract served by the application-gateway-service — the platform's single
     external edge (ADR-015, ADR-018). Every request is authenticated once at the edge (a bearer JWT
     issued by the identity service); the gateway forwards a verified identity downstream and streams the
-    upstream response back. Every 4xx/5xx the caller sees is the canonical **ORA-37 error envelope**
+    upstream response back. Every 4xx/5xx the caller sees is the canonical **error envelope**
     (`components/schemas/ErrorEnvelope`) — gateway-own errors and normalised upstream errors alike;
     an upstream body is never relayed, so no stack/SQL/internal-host detail can leak (Interface
     Contracts §3).
@@ -1689,7 +1689,7 @@ components:
       additionalProperties: false
       required: [error]
       description: >-
-        Canonical ORA-37 envelope for every 4xx/5xx the gateway produces (own + normalised upstream).
+        Canonical error envelope for every 4xx/5xx the gateway produces (own + normalised upstream).
         `additionalProperties` is false at every level so no stack/cause/exception/trace field can ever
         exist. Mirrors packages/errors/contract/error-envelope.schema.json (the cross-repo source).
       properties:

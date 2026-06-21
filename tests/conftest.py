@@ -1,4 +1,4 @@
-"""Substrate test harness (ORA-12 / 0d).
+"""Substrate test harness.
 
 Session-scoped, auto-torn-down real Neo4j, Postgres and Redis instances via
 testcontainers, so integration / organization_isolation / security tests
@@ -8,15 +8,15 @@ only when a test requests a fixture — so unit tests stay fast and Docker-free.
 The harness exposes both sync and async surfaces over the **same** underlying
 container so adversarial / engine-driven suites that need an async driver
 (``ReBACEngine``, async SQLAlchemy) share the container with the existing
-Cypher-level ORA-34 / ORA-35 fixtures rather than spawning duplicates.
+Cypher-level fixtures rather than spawning duplicates.
 
 Public fixtures:
 
-* ``neo4j_driver`` — session-scoped sync ``neo4j.Driver`` (legacy + ORA-34/35)
+* ``neo4j_driver`` — session-scoped sync ``neo4j.Driver``
 * ``neo4j_url`` — session-scoped ``bolt://`` URL for the same container
 * ``neo4j_async_driver`` — function-scoped ``neo4j.AsyncDriver`` with a
   per-test ``MATCH (n) DETACH DELETE n`` so adversarial tests assert on a
-  clean graph (ORA-37 R1 gate)
+  clean graph
 * ``postgres_dsn`` — session-scoped libpq DSN (``postgresql://…``) for psycopg
 * ``postgres_async_dsn`` — session-scoped asyncpg DSN
   (``postgresql+asyncpg://…``) for async SQLAlchemy engines
@@ -24,7 +24,7 @@ Public fixtures:
 * ``redis_url`` — session-scoped ``redis://…`` URL for the same container
 * ``redis_async_client`` — function-scoped async ``redis.asyncio.Redis``
   with a per-test ``FLUSHDB`` so cache-invalidation assertions are not
-  poisoned by neighbouring tests (ORA-37 R1 gate)
+  poisoned by neighbouring tests
 """
 
 from __future__ import annotations

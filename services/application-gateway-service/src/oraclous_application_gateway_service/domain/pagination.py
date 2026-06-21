@@ -1,4 +1,4 @@
-"""Pagination domain (ORAA-4 §21 domain layer) — bound every unbounded collection read (WP-10).
+"""Pagination domain (domain layer) — bound every unbounded collection read (WP-10).
 
 A collection endpoint accepts an OPTIONAL ``limit`` + ``offset``. Defaults are deliberately
 backward-compatible: ``limit`` is optional and defaults GENEROUSLY (``DEFAULT_LIMIT``) so an

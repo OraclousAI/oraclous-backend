@@ -1,4 +1,4 @@
-"""JSON structured-logging config (WP-6, ORAA-4 A5) — one shared ``logging.dictConfig`` factory.
+"""JSON structured-logging config (WP-6) — one shared ``logging.dictConfig`` factory.
 
 Every service calls :func:`configure_structured_logging` at app startup. It installs a JSON
 formatter on the root logger whose every record carries the bound ``request_id`` (and

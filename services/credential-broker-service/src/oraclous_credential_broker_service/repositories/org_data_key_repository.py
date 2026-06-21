@@ -1,4 +1,4 @@
-"""Org-DEK store (ORAA-4 §21 repositories layer, ADR-020) — the only DB access for org_data_keys.
+"""Org-DEK store (repositories layer, ADR-020) — the only DB access for org_data_keys.
 
 One wrapped DEK per org (UNIQUE ``organisation_id``). ``wrapped_dek`` is stored base64 (the
 KEK-wrapped bytes); the plaintext DEK never touches this layer. ``create`` handles the unique-org

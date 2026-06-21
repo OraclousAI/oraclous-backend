@@ -1,4 +1,4 @@
-"""Route table (ORAA-4 §21 domain layer) — pure, no I/O.
+"""Route table (domain layer) — pure, no I/O.
 
 Maps a request path-prefix to the upstream base URL that serves it, resolved by **longest-prefix
 match** so colliding stems disambiguate correctly (e.g. ``/api/v1/graphs`` → knowledge-graph vs

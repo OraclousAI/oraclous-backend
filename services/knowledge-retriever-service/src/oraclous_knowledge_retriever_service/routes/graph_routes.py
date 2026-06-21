@@ -1,4 +1,4 @@
-"""Graph traversal + temporal routes (ORAA-4 §21 routes layer).
+"""Graph traversal + temporal routes (routes layer).
 
 GET /v1/graph/{graph_id}/subgraph?limit=... — a bounded {nodes, edges} slice for visualisation.
 GET /v1/graph/{graph_id}/neighbors/{node_id} — 1-hop neighbourhood of a node.

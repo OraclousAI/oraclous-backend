@@ -1,4 +1,4 @@
-"""LLM judge client for retrieval-quality evaluation (ORAA-4 §21 services layer) (#331).
+"""LLM judge client for retrieval-quality evaluation (services layer) (#331).
 
 KRS's ONE OpenAI-compatible client. Mirrors how KGS builds its extractor/summarizer client
 (``KGS_OPENAI_*`` → OpenRouter by default): the judge is an injectable protocol so unit tests pass

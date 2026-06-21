@@ -1,4 +1,4 @@
-"""DI providers (ORAA-4 §21 core layer) — wiring only.
+"""DI providers (core layer) — wiring only.
 
 The shared upstream HTTP client, the route table, and the proxy service are opened/built in
 ``core/lifespan`` and resolved per request from ``app.state``.

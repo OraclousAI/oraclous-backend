@@ -1,4 +1,4 @@
-"""Tests proving the TDD-window test-import hygiene guardrail fires (ORA-48 / 0b).
+"""Tests proving the TDD-window test-import hygiene guardrail fires (0b).
 
 The importability resolver is injected so these are deterministic and do not
 depend on which seams happen to be built on the tree under test.
@@ -52,7 +52,7 @@ def test_tst001_built_seam_module_level_not_flagged() -> None:
 
 
 def test_tst001_built_module_but_missing_symbol_flagged() -> None:
-    # The exact ORA-34 failure: module imports, symbol does not exist yet.
+    # The exact failure: module imports, symbol does not exist yet.
     src = "from oraclous_rebac import ReBACEngine\n"
     rules = _rules(src, built={"oraclous_rebac": {"OtherThing"}})
     assert {v.rule for v in rules} == {"TST001"}

@@ -1,4 +1,4 @@
-"""Activity + usage read service (ORAA-4 §21 services layer).
+"""Activity + usage read service (services layer).
 
 Two read surfaces over the engine's ``engine_provenance`` audit log: the org's recent activity feed,
 and its RAW per-action usage counts. Both are org-scoped from the authenticated principal ONLY

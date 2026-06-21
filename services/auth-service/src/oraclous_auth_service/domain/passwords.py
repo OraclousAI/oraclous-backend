@@ -1,4 +1,4 @@
-"""Password hashing + strength policy (ORAA-4 §21 domain layer, threat T-PWD).
+"""Password hashing + strength policy (domain layer, threat T-PWD).
 
 bcrypt cost=12 (pinned). The raw password is never logged or persisted — only the bcrypt hash.
 bcrypt silently truncates input beyond 72 bytes, which would let a long password be matched by any

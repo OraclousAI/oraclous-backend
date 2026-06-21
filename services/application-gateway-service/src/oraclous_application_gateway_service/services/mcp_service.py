@@ -1,4 +1,4 @@
-"""MCP server adapter (ORAA-4 §21 services layer) — JSON-RPC ⇄ published agents + the invoke path.
+"""MCP server adapter (services layer) — JSON-RPC ⇄ published agents + the invoke path.
 
 Translates the MCP subset (initialize / tools/list / tools/call) onto the existing surfaces: the
 org's published agents (scoped by the connecting integration key's binding) become MCP tools, and a

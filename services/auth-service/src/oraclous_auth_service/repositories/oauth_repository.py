@@ -1,4 +1,4 @@
-"""OAuth repositories (ORAA-4 §21 repositories layer — the only oauth_* SQL).
+"""OAuth repositories (repositories layer — the only oauth_* SQL).
 
 ``OAuthAccountRepository`` upserts a user's encrypted provider tokens (org-scoped).
 ``OAuthStateRepository`` stores + atomically consumes single-use handshake state (replay-safe).

@@ -1,4 +1,4 @@
-"""FastAPI app factory (ORAA-4 §21) — build the app, wire routers, no business logic here."""
+"""FastAPI app factory — build the app, wire routers, no business logic here."""
 
 from __future__ import annotations
 

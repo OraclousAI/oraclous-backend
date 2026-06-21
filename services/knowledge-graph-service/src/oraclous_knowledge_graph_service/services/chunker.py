@@ -1,4 +1,4 @@
-"""Text chunking (ORAA-4 §21 services layer).
+"""Text chunking (services layer).
 
 Lifted from the legacy `DocumentPrimitive` decomposition (develop@84152635): split on blank lines,
 strip, drop empties — one free-text chunk per paragraph block. Deterministic, zero-dependency. The

@@ -1,4 +1,4 @@
-"""Community LLM summarisation (ORAA-4 §21 services layer) (#303).
+"""Community LLM summarisation (services layer) (#303).
 
 Restores the legacy ``community_summarizer.py``: for each detected community, an LLM reads
 its member entities + the relationships between them and produces a ``summary`` (2-3 sentences), a

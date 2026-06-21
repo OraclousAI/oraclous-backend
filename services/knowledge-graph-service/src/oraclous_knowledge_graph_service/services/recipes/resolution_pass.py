@@ -1,4 +1,4 @@
-"""Entity resolution / canonicalization (ORAA-4 §21 services layer — planning, no driver).
+"""Entity resolution / canonicalization (services layer — planning, no driver).
 
 Recipe enrichment Slice 4 (#269), RESOLVE-ON-WRITE. The hybrid extraction pass (Slice 2) mines
 entities from a record's prose field; THIS module canonicalizes those entities DURING ingestion so a

@@ -1,4 +1,4 @@
-"""CSV + JSON extraction (ORAA-4 §21 services layer).
+"""CSV + JSON extraction (services layer).
 
 Lifted from legacy `develop@84152635 knowledge-graph-builder/app/services/{csv_extractor,
 json_extractor}.py`, adapted to operate on in-memory text (ingestion carries bytes, not a path).
@@ -21,7 +21,7 @@ class StructuredParseError(ValueError):
     """A structured source could not be fully parsed (e.g. trailing un-decodable JSONL bytes).
 
     Raised — never swallowed — so a partially-readable JSONL source surfaces the dropped tail
-    rather than silently losing records (ORAA-263). The service layer wraps it into a
+    rather than silently losing records. The service layer wraps it into a
     `StructuredIngestionError` at the ingestion boundary.
     """
 
@@ -158,7 +158,7 @@ def _stream_decode(text: str) -> list[Any]:
     Tolerant of pretty-printed / concatenated / non-newline-delimited records: it skips
     inter-record whitespace, decodes one value, and advances the index — so a record spanning
     several lines (a pretty-printed object) is read whole, unlike the legacy splitlines() path
-    that lost any line that wasn't a self-contained JSON value (ORAA-263, the EURail 2-of-601 loss).
+    that lost any line that wasn't a self-contained JSON value (the EURail 2-of-601 loss).
 
     If, after consuming every decodable value, non-whitespace trailing bytes remain that cannot be
     decoded, raises `StructuredParseError` rather than silently dropping the tail.

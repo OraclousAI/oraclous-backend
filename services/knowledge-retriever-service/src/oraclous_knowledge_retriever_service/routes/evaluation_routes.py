@@ -1,4 +1,4 @@
-"""Evaluation route (ORAA-4 §21 routes layer) (#331).
+"""Evaluation route (routes layer) (#331).
 
 POST /v1/graph/{graph_id}/evaluate — RAGAS-style retrieval-quality scoring (faithfulness,
 answer_relevance, context_precision, context_recall) over the EXISTING KRS retrieval path,

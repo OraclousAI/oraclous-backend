@@ -1,7 +1,7 @@
-"""One-time organisation backfill across the substrate stores (ORA-24 / D1).
+"""One-time organisation backfill across the substrate stores (D1).
 
 Brings a pre-A1 deployment — substrate data scoped only by ``graph_id`` / ``user_id``
-— up to the organisation-scoped shape A1 (ORA-16) declares, seeding the well-known
+— up to the organisation-scoped shape A1 declares, seeding the well-known
 ``SEED_ORGANISATION_ID`` so a single-organisation deployment keeps behaving as before
 (ADR-006; T1: a primitive a query can reach without an organisation is a cross-org
 read). Reshape of the legacy ``knowledge-graph-builder`` alembic add-column+backfill

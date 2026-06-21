@@ -1,4 +1,4 @@
-"""Ingestion routes (ORAA-4 §21 routes layer) — thin: parse → one service call → HTTP map.
+"""Ingestion routes (routes layer) — thin: parse → one service call → HTTP map.
 
 POST /ingest (inline text) and /upload (file) create a job and enqueue async processing (202).
 GET /jobs/{job_id} polls status; GET /documents lists ingested documents (the job rows) for a graph.

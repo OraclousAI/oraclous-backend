@@ -1,4 +1,4 @@
-"""Organisation use-cases (ORAA-4 §21 services layer).
+"""Organisation use-cases (services layer).
 
 Create an org (creator becomes its owner member), list a user's orgs, read/patch a single org with
 membership + role authorisation, and resolve the active organisation for a token. Cross-org access

@@ -1,4 +1,4 @@
-"""Agent-memory Neo4j repository (ORAA-4 §21 repositories layer — the only Neo4j access).
+"""Agent-memory Neo4j repository (repositories layer — the only Neo4j access).
 
 Issue #332 / ADR-027 §1. ``:Memory(:Episodic|:Semantic|:Procedural)`` nodes carry the unified-graph
 scope stamps: ``organisation_id`` is injected UNCONDITIONALLY from the bound governance context via

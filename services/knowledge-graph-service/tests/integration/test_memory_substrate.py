@@ -1,4 +1,4 @@
-"""Real-Neo4j integration tests for the agent-memory vertical (#332 / ADR-027, ORAA-4 §22).
+"""Real-Neo4j integration tests for the agent-memory vertical (#332 / ADR-027).
 
 Drives the REAL ``MemoryService`` → ``MemoryRepository`` → Neo4j path against the shared
 testcontainer (repo-root ``tests/conftest.py``), with ``ensure_schema`` applying the real indexes —
@@ -17,7 +17,7 @@ Pinned here:
   * CROSS-ORG ISOLATION — org B sees nothing of org A at BOTH the graph gate and the substrate;
   * the token budget in /context is respected.
 
-Marked ``integration`` + ``organization_isolation`` (Docker required, §9.3).
+Marked ``integration`` + ``organization_isolation`` (Docker required).
 """
 
 from __future__ import annotations

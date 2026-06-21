@@ -1,6 +1,6 @@
-"""Failing tests for the substrate metering emission hooks (ORA-22, story C2).
+"""Failing tests for the substrate metering emission hooks (story C2).
 
-C1 (ORA-21) built the append-only usage-event stream primitive
+C1 built the append-only usage-event stream primitive
 (``oraclous_substrate.usage.UsageEventStream.emit``). C2 wires *emission* into
 the metered actions: it turns each metered op into a well-formed usage event and
 emits it through that single stream. Per the R0.5 release page deliverable 5 and
@@ -32,7 +32,7 @@ The four metered actions (ADR-009 Decision §5):
 Two architect rulings are **settled** on this story and pinned by this suite:
 
 1. **No priced/rated unit at the substrate.** Per ADR-009 ruling
-   (solution-architect, ORA-22 comments 10133 + 10167), the substrate emits the
+   (solution-architect, comments 10133 + 10167), the substrate emits the
    raw cost-driving signal only — never USD and never *credits*. ``credits`` is
    a per-operation rated unit (the legacy ``calculate_credits`` is a rate table,
    not a count), categorically identical to USD for ADR-009 purposes: a price
@@ -40,7 +40,7 @@ Two architect rulings are **settled** on this story and pinned by this suite:
    change. The rate arithmetic lives in the downstream billing/rater, not here.
    Pinned by ``test_no_metered_action_emits_a_priced_or_rated_unit`` and
    ``test_capability_invocation_emits_raw_cost_driver_dimensions``.
-2. **Failure classes are distinguished** (security-architect ruling, ORA-22
+2. **Failure classes are distinguished** (security-architect ruling,
    comment 10134). A *pipeline* failure (the durable write / queue is
    unavailable) is non-blocking: the metered op completes, the event is captured
    for replay. A *missing org-context* is a T1-M1 fail-closed tenancy violation

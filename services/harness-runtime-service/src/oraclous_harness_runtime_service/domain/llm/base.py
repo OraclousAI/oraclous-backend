@@ -1,4 +1,4 @@
-"""LLM client seam (ORAA-4 §21 domain layer; ADR-007).
+"""LLM client seam (domain layer; ADR-007).
 
 The tool-use loop talks to one ``LLMClient`` interface and never branches on provider. Each concrete
 client owns its own message/tool marshalling and declares its ``protocol_shape`` (native /

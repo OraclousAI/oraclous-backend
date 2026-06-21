@@ -1,4 +1,4 @@
-"""Pluggable web-search providers (ORAA-4 §21 domain layer) — the factory behind ``web.search``.
+"""Pluggable web-search providers (domain layer) — the factory behind ``web.search``.
 
 The web-research battery's ``search`` operation is provider-agnostic. A :class:`SearchProvider` ABC
 defines the contract (``query`` + a per-org BYOM ``api_key`` → a ranked :class:`SearchHit` list);

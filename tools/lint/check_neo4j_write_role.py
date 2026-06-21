@@ -1,5 +1,5 @@
 """Static guardrail: knowledge-graph-service must use the write-role Neo4j credential
-(ORAA-53 / T6).
+(T6).
 
 Acceptance criterion AC2: "No code path bypasses write-capable connection."
 
@@ -96,7 +96,7 @@ class _Visitor(ast.NodeVisitor):
                     self.path,
                     line,
                     f"admin env var {name!r} used in knowledge-graph-service; "
-                    f"use KGS_NEO4J_* credentials instead (ORAA-53 / T6)",
+                    f"use KGS_NEO4J_* credentials instead (T6)",
                 )
             )
 
@@ -135,7 +135,7 @@ class _Visitor(ast.NodeVisitor):
                     self.path,
                     node.lineno,
                     f"hardcoded Neo4j URI {node.value!r} in knowledge-graph-service; "
-                    "connection URI must come from KGS_NEO4J_URI (ORAA-53)",
+                    "connection URI must come from KGS_NEO4J_URI",
                 )
             )
         self.generic_visit(node)

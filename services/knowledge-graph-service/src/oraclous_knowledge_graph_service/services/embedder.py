@@ -1,4 +1,4 @@
-"""Embedding seam (ORAA-4 §21 services layer).
+"""Embedding seam (services layer).
 
 `Embedder` Protocol with two implementations:
   - HashingEmbedder (DEFAULT, key-free): deterministic signed feature-hashing into a fixed-dim,

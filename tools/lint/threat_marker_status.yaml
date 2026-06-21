@@ -31,8 +31,8 @@ required:
   federation: cross-organisation federation tests (T4, ADR-004)
   ohm_signature: OHM signature verification tests (T5)
   operator_separation: cloud operator-separation tests (T6, ADR-008)
-  contract: cross-service contract tests — internal API shape, circuit-breaker protocol (ORAA-57)
-  api_authz: API-layer authorisation tests — cross-tenant denial, ownership gate, auth boundary (T1, ORAA-55)
+  contract: cross-service contract tests — internal API shape, circuit-breaker protocol
+  api_authz: API-layer authorisation tests — cross-tenant denial, ownership gate, auth boundary (T1)
 
 # Threat markers intentionally not yet backed by a test (record a reason; revisit when the surface lands).
 # Empty today: every declared threat marker now maps to >= 1 collected test (WP-8).

@@ -1,4 +1,4 @@
-"""Failure-mode tests for readiness-reflecting health (ADR-021 / ORAA-297).
+"""Failure-mode tests for readiness-reflecting health (ADR-021).
 
 Hard DoD per ADR-021: simulate a critical-store bind failure at startup and assert (a) the
 degradation alert fires and (b) ``/health`` reflects degraded while ``/readyz`` 503s; a healthy

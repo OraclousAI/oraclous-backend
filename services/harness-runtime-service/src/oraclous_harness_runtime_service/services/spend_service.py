@@ -1,4 +1,4 @@
-"""Spend read service (ORAA-4 §21 services layer; #252).
+"""Spend read service (services layer; #252).
 
 Assembles the spend ESTIMATE for an org: it asks the execution repository for per-model raw-token
 sums (org-scoped — never cross-org), prices each priced row through the pure

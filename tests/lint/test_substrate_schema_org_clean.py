@@ -1,4 +1,4 @@
-"""The substrate schema package passes the 0b organisation-scoping gate (ORA-16 / A1, AC#1).
+"""The substrate schema package passes the 0b organisation-scoping gate (A1, AC#1).
 
 RED until `backend-implementer` adds `oraclous_substrate.schema.postgres`.
 

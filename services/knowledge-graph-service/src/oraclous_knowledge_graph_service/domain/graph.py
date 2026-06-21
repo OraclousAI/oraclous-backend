@@ -1,4 +1,4 @@
-"""Domain entities (ORAA-4 §21 domain layer — pure, no I/O)."""
+"""Domain entities (domain layer — pure, no I/O)."""
 
 from __future__ import annotations
 

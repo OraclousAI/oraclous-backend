@@ -1,4 +1,4 @@
-"""TCP egress guard for USER-supplied DB hosts (ORAA-4 §21 domain layer — pure, no I/O except DNS).
+"""TCP egress guard for USER-supplied DB hosts (domain layer — pure, no I/O except DNS).
 
 A SQL ingest resolves a ``connection_string`` from the broker and then opens a RAW TCP connection to
 its ``host:port`` (asyncpg / aiomysql). The existing HRS + CRS egress guards are HTTP(S)-URL guards

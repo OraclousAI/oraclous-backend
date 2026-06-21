@@ -1,5 +1,4 @@
-"""Multi-tenant write-path wrappers for the knowledge graph service
-(ORA-18 / Epic A3).
+"""Multi-tenant write-path wrappers for the knowledge graph service.
 
 Lifts ``MultiTenantKGWriter`` from the legacy
 ``knowledge-graph-builder/app/components/multi_tenant_components.py`` and extends
@@ -31,7 +30,7 @@ from neo4j_graphrag.experimental.components.kg_writer import Neo4jWriter
 
 # Module-level (NOT a ``from-import``) so the substrate's canonical
 # ``ORGANISATION_ID_PROPERTY`` is reached via attribute lookup at use-time —
-# this is what makes it a single source of truth (ADR-012 §1b / ORA-52).
+# this is what makes it a single source of truth (ADR-012 §1b).
 from oraclous_substrate import access
 
 if TYPE_CHECKING:
@@ -203,22 +202,22 @@ class MultiTenantKGWriter:
 
 class OrganisationScopedKGWriter(MultiTenantKGWriter):
     """Outer organisation-scoping wrapper above ``MultiTenantKGWriter``
-    (ORA-18 / A3 Extend step; ORA-52 follow-up).
+    (the Extend step).
 
     Stamps ``organisation_id`` on every node and relationship in addition to
     ``graph_id``. The stamp value is sourced live from the substrate seam
     via ``access.enforced_organisation_id`` at run time — never from a
-    constructor argument or a request body (ADR-012 §1b / T1-M1 / ORA-52
-    AC2). ``organisation_id`` is outermost; ``graph_id`` is inner; a caller /
+    constructor argument or a request body (ADR-012 §1b / T1-M1 / AC2).
+    ``organisation_id`` is outermost; ``graph_id`` is inner; a caller /
     LLM-extracted ``organisation_id`` on a node or relationship is
     unconditionally overwritten with the bound-context value (T1 defence).
 
     The property key is sourced from the substrate's canonical
-    ``access.ORGANISATION_ID_PROPERTY`` (ORA-52 AC1 — single source of truth)
+    ``access.ORGANISATION_ID_PROPERTY`` (AC1 — single source of truth)
     so a rename of the property name propagates from one site.
 
     The ``context`` keyword argument is accepted for backward compatibility
-    with the original ORA-18 call sites but is **deliberately ignored** —
+    with the original call sites but is **deliberately ignored** —
     the substrate seam is the single source of truth.
 
     Fail-closed: ``.run()`` raises ``MissingOrganisationContextError`` if no

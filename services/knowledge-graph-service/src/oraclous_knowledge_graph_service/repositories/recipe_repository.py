@@ -1,4 +1,4 @@
-"""Recipe library repository (ORAA-4 §21 repositories layer — the only `recipes` SQL).
+"""Recipe library repository (repositories layer — the only `recipes` SQL).
 
 Org-scoped (ADR-006). Versioned: `store` inserts a NEW (id, version, org) row — never an UPDATE.
 `get_latest` returns the highest-version recipe_json for an id; `list_summaries` lists the latest

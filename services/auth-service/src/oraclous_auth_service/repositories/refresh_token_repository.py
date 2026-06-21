@@ -1,4 +1,4 @@
-"""Refresh-token repository (ORAA-4 §21 repositories layer — the only ``refresh_tokens`` SQL).
+"""Refresh-token repository (repositories layer — the only ``refresh_tokens`` SQL).
 
 Backs the rotation family (threat T-REFRESH). Lookup is by ``jti`` — a 256-bit unguessable value
 carried in the refresh JWT — so the read is global by design (like the credential-prefix lookup);

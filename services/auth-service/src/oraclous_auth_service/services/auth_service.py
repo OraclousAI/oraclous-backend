@@ -1,4 +1,4 @@
-"""User authentication use-cases (ORAA-4 §21 services layer).
+"""User authentication use-cases (services layer).
 
 All identity business logic lives here: registration, login, refresh-token rotation with reuse
 detection, password change, and the `/me` projection. Routes parse + map HTTP only; repositories do

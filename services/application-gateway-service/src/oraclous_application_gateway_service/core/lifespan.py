@@ -1,4 +1,4 @@
-"""App lifecycle (ORAA-4 §21 core layer) — open/close the upstream HTTP client, Redis, and the
+"""App lifecycle (core layer) — open/close the upstream HTTP client, Redis, and the
 gateway DB.
 
 The gateway's substrate is the upstream services (one shared ``httpx.AsyncClient``), a Redis

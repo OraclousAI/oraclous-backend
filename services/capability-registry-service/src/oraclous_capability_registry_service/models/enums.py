@@ -1,4 +1,4 @@
-"""Domain enums (ORAA-4 §21 models layer)."""
+"""Domain enums (models layer)."""
 
 from __future__ import annotations
 

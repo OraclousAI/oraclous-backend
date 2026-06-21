@@ -1,4 +1,4 @@
-"""Seed organisation for single-org deployments (ORA-16 / A1, AC#5).
+"""Seed organisation for single-org deployments (A1, AC#5).
 
 RED until `backend-implementer` adds `oraclous_substrate.organisation`.
 

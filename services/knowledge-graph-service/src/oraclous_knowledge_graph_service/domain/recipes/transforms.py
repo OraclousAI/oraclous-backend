@@ -1,4 +1,4 @@
-"""Deterministic value transforms (ORAA-4 §21 domain layer — pure `str -> str`, no I/O).
+"""Deterministic value transforms (domain layer — pure `str -> str`, no I/O).
 
 A *transform* is a named, pure function the recipe engine applies to the raw value read from a
 field BEFORE it is used (as an identity component or a property value). Transforms are general —

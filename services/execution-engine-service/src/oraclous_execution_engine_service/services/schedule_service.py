@@ -1,4 +1,4 @@
-"""Schedule orchestration (ORAA-4 §21 services layer).
+"""Schedule orchestration (services layer).
 
 The request path registers/lists/deletes schedules (org-scoped). The beat path calls ``fire_due``:
 for each enabled cron schedule whose most-recent window hasn't been fired, it creates a QUEUED job

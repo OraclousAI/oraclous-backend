@@ -1,4 +1,4 @@
-"""Integration-key management routes (ORAA-4 §21 routes layer) — member-managed, org-scoped.
+"""Integration-key management routes (routes layer) — member-managed, org-scoped.
 
 Mint / list / get / rotate / revoke under ``/v1/integration-keys``. The plaintext secret is returned
 ONCE (on mint and rotate) and never again. All routes require a member (user) credential and are

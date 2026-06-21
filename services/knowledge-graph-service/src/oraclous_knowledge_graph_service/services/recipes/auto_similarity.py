@@ -1,4 +1,4 @@
-"""Auto-trigger similarity-rule synthesis (ORAA-4 §21 services layer — planning, no driver).
+"""Auto-trigger similarity-rule synthesis (services layer — planning, no driver).
 
 Issue #310. The legacy `similarity_service` ran similarity on EVERY ingest (gated by
 `SIMILARITY_AUTO_TRIGGER_ON_INGEST`), not only when an author declared it. The shipped #269

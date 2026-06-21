@@ -1,4 +1,4 @@
-"""Failing tests for the ``DelegationService`` (ORA-32 / R1-B1).
+"""Failing tests for the ``DelegationService`` (R1-B1).
 
 Pins the per-use validation behaviour the broker must enforce on every use of a
 delegated token. The acceptance criteria from the brief, mapped to tests:
@@ -20,8 +20,8 @@ T2 failure mode for agents; the broker is the layer that enforces the cap.
 
 These tests describe behaviour at the service-layer seam, not its persistence:
 ``_InMemoryDelegatedTokenStore`` is a test double mirroring the
-``_InMemoryCredentialStore`` idiom established in ORA-30
-(``services/auth-service/tests/unit/test_agent_credential_lifecycle.py``). The
+``_InMemoryCredentialStore`` idiom established in
+``services/auth-service/tests/unit/test_agent_credential_lifecycle.py``. The
 Postgres-backed store is deferred to a follow-up integration story.
 
 RED until ``backend-implementer`` creates:
@@ -73,7 +73,7 @@ class _StoredToken:
 class _InMemoryDelegatedTokenStore:
     """Test double for the delegated-token persistence seam.
 
-    Mirrors the ``_InMemoryCredentialStore`` idiom from ORA-30 — it is a *port*
+    Mirrors the ``_InMemoryCredentialStore`` idiom — it is a *port*
     the service constructs against, not the production Postgres-backed store.
     All reads are organisation-scoped: a cross-org read returns ``None`` even
     when the token id matches (defence-in-depth above ReBAC).

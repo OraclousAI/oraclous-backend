@@ -1,4 +1,4 @@
-"""EngineProvenanceEvent ORM model (ORAA-4 §21 models layer; CLAUDE.md §3.7, T7-M1).
+"""EngineProvenanceEvent ORM model (models layer; CLAUDE.md §3.7, T7-M1).
 
 The durable sink behind the substrate ``ProvenanceCollector``. Stores the five required provenance
 fields per engine event (job.submit / job.run / job.cancel / schedule.fire / task.complete). The

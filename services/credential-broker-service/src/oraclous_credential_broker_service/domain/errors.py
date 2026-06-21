@@ -1,4 +1,4 @@
-"""OAuth runtime-token error codes (ORAA-4 §21 domain layer).
+"""OAuth runtime-token error codes (domain layer).
 
 Lifted from the legacy ``constants.py`` OAUTH_ERROR_CODES — the stable codes the broker returns in
 its structured error response so callers can branch (re-consent, retry, etc.).

@@ -1,4 +1,4 @@
-"""Edge identity termination (ORAA-4 §21 core layer) — verify ONCE at the gateway.
+"""Edge identity termination (core layer) — verify ONCE at the gateway.
 
 Reuses the ``oraclous-governance`` ``Principal`` and the SAME claim contract the substrate services
 enforce, so the gateway is not a second source of truth: ``dev`` mode maps the fixed ``dev-token``

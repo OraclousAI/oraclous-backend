@@ -1,4 +1,4 @@
-"""End-to-end correlation id — the contextvar + the ASGI middleware (WP-6, ORAA-4 A5).
+"""End-to-end correlation id — the contextvar + the ASGI middleware (WP-6, A5).
 
 One shared implementation, consumed by every service. The gateway mints a server-authoritative
 ``req_`` request id at the edge (``oraclous_errors.new_request_id``) and forwards it as

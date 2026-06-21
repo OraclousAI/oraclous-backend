@@ -1,4 +1,4 @@
-"""Mid-loop HITL checkpoint repository (ORAA-4 §21 repositories layer). Org-scoped (ADR-006)."""
+"""Mid-loop HITL checkpoint repository (repositories layer). Org-scoped (ADR-006)."""
 
 from __future__ import annotations
 

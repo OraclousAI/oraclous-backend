@@ -1,4 +1,4 @@
-"""Failure-mode tests for readiness-reflecting health (ADR-021 / ORAA-297).
+"""Failure-mode tests for readiness-reflecting health (ADR-021).
 
 Simulate the critical-store (Postgres) bind failure at startup → the degradation alert fires and
 ``/health`` reflects degraded while ``/readyz`` 503s; a healthy startup reports the live status.

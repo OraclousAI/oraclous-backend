@@ -1,7 +1,7 @@
 """Failing unit tests for the ``/agent-token`` per-credential-prefix rate limiter
-(ORA-31 / R1-A2).
+(R1-A2).
 
-What these tests pin (ORA-31 acceptance criterion: ``/agent-token`` is
+What these tests pin (R1-A2 acceptance criterion: ``/agent-token`` is
 rate-limited with the same shape as ``/service-token``):
 
 * The dependency reads the ``credential`` field from the request body and

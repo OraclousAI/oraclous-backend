@@ -1,4 +1,4 @@
-"""MCP client connector (ORAA-4 §21 domain layer) — invoke a tool on an EXTERNAL MCP server.
+"""MCP client connector (domain layer) — invoke a tool on an EXTERNAL MCP server.
 
 The mirror of the gateway's MCP *server* (S8): an imported ``kind=tool, spec.type=mcp`` descriptor
 points at a third-party MCP server; this executor calls its ``tools/call`` over the same hand-built

@@ -5,7 +5,7 @@ runtime RLS backstop (ADR-012); Neo4j community does not, so for the Neo4j /
 Redis dimensions these static checks are the **build-time anti-drift
 compensating control** on the schema / DDL / cache-key seams — they catch the
 shapes that would defeat tenant isolation at the schema boundary, but they are
-NOT a runtime substitute for RLS (security-architect concurrence, ORA-41).
+NOT a runtime substitute for RLS (security-architect concurrence).
 
   ORG001 — ``organisation_id`` must not be read from an untrusted request body.
            It is resolved from the authenticated principal context (the
@@ -21,7 +21,7 @@ NOT a runtime substitute for RLS (security-architect concurrence, ORA-41).
            off ambiguous names (``request``/``req``/``data``) which routinely
            name such domain objects. Best-effort heuristic — the authoritative
            T1 control is the runtime org-context plus the organisation-isolation
-           tests, not this linter (ORA-40 / security-architect ruling).
+           tests, not this linter (security-architect ruling).
   ORG002 — a substrate storage model (a class with ``__tablename__``) must
            declare an ``organisation_id`` column.
   ORG003 — a Neo4j index/constraint DDL over an org-scoped label (or built over
@@ -37,15 +37,15 @@ NOT a runtime substitute for RLS (security-architect concurrence, ORA-41).
            write, and is exempt; a deliberately global key (rate-limit counter,
            health probe) must carry an explicit ``# org-scoping: global`` comment
            on its line rather than a silent bypass (security-architect
-           precondition #2, ORA-41).
+           precondition #2).
   ORG005 — a Neo4j vector/fulltext index DDL must include ``organisation_id``
            (a vector/fulltext index without org returns cross-org neighbours
            regardless of runtime filters). Flags such a ``CREATE VECTOR INDEX`` /
            ``CREATE FULLTEXT INDEX`` omitting org; passes when org is present.
 
 The set of org-scoped labels is loaded from the single source of truth at
-``packages/substrate/src/oraclous_substrate/schema/org_scoped_labels.yaml``
-(ORA-51). Both the substrate (at module-import time) and this linter (at
+``packages/substrate/src/oraclous_substrate/schema/org_scoped_labels.yaml``.
+Both the substrate (at module-import time) and this linter (at
 lint time) derive from the same file, so structural drift is impossible —
 adding a label to the YAML extends both the substrate's ``apply()`` coverage
 and the ORG003 recognition set with no other code change. The YAML's shape is
@@ -73,13 +73,13 @@ BODY_SOURCES = {"body", "payload", "request", "req", "data"}
 # Attribute reads (body.organisation_id) are checked only against unambiguous
 # HTTP-body names. `request`/`req`/`data` routinely name domain objects that
 # legitimately carry the tenancy scope through a seam, so flagging attribute reads
-# off them is a false positive (ORA-40 / security-architect ruling).
+# off them is a false positive (security-architect ruling).
 ATTRIBUTE_BODY_SOURCES = {"body", "payload"}
 REQUEST_MODEL_SUFFIXES = ("Request", "Body", "Payload")
 PYDANTIC_BASES = {"BaseModel"}
 SKIP_DIRS = {".venv", "venv", "__pycache__", "build", "dist", ".git"}
 
-# --- ORA-41 / ORA-51: Neo4j label / Redis prefix / index DDL coverage -----------
+# --- Neo4j label / Redis prefix / index DDL coverage -----------
 
 # Canonical YAML path. Resolved from this module's filesystem location
 # (tools/lint/check_org_scoping.py -> repo root -> packages/substrate/...). The

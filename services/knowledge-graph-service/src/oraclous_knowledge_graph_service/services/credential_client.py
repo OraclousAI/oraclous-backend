@@ -1,4 +1,4 @@
-"""Credential-broker seam (ORAA-4 §21 services layer).
+"""Credential-broker seam (services layer).
 
 KGS resolves a SQL ingest's ``connection_string`` credential by ``credential_id`` from the
 credential-broker — it never decrypts or stores secrets (ADR-008 operator separation). Mirrors the

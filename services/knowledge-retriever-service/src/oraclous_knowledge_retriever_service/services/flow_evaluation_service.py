@@ -1,4 +1,4 @@
-"""Flow-level evaluation use-case (ADR-037 / #469) — ORAA-4 §21 services layer.
+"""Flow-level evaluation use-case (ADR-037 / #469) — services layer.
 
 Builds a ``Rubric`` from the manifest ``success_criteria`` and runs the shared ``packages/eval``
 evaluator over the one judge, returning the typed ``Verdict``. Prose criteria → one holistic

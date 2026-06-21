@@ -1,4 +1,4 @@
-"""Health DTOs (ORAA-4 §21 schema layer)."""
+"""Health DTOs (schema layer)."""
 
 from __future__ import annotations
 

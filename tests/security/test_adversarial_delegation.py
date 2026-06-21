@@ -1,4 +1,4 @@
-"""Adversarial delegation suite — the R1 security gate (ORA-37 / R1-E1).
+"""Adversarial delegation suite — the R1 security gate (R1-E1).
 
 The four cases here are the substrate-level proof that the R1 delegation
 primitives mitigate Structured Threat Catalogue **T2** end-to-end, at the
@@ -39,9 +39,9 @@ RED-before-impl posture:
 
 * Cases 1–3 import ``PostgresDelegatedTokenStore`` (a class the implementer
   must create on the broker side — the production-backed companion to the
-  in-memory store under which the ORA-32 unit suite already passes).
+  in-memory store under which the unit suite already passes).
   Import is function-local per the TDD-window convention (TST001).
-* Case 4 drives the engine that already exists post-ORA-35 and asserts
+* Case 4 drives the engine that already exists post-delegation-edges and asserts
   the data-layer invariant the cache + edge soft-revoke must together
   uphold under load. Treat it as a regression backstop on the R1-C2 work:
   if an implementer ever optimises the cache by skipping invalidation,
@@ -348,7 +348,7 @@ async def test_scope_creep_rejected_at_validation(
 # NB to be-test-reviewer: the engine's own ``_DELEGATION_GRANT_QUERY``
 # carries the same null-property MERGE shape and crashes at runtime any
 # time it is invoked with ``scope='graph'`` (no subgraph_id). That is a
-# latent ORA-35 impl bug — flagged in the PR description, out of scope
+# latent delegation-edge impl bug — flagged in the PR description, out of scope
 # to fix here, and the reason this seed bypasses ``delegate_to_agent``
 # in favour of raw Cypher.
 _SEED_FOR_RACE = """

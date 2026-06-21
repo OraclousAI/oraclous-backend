@@ -1,4 +1,4 @@
-"""LLM temporal extraction (ORAA-4 §21 domain layer — pure, no I/O).
+"""LLM temporal extraction (domain layer — pure, no I/O).
 
 Restores the legacy `pipeline_service.py` temporal capability (#311), lift-and-reshaped onto the
 shipped #269 recipe extraction pass instead of a parallel pipeline. The recipe model already CARRIES

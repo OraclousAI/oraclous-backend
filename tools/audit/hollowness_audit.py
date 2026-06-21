@@ -1,4 +1,4 @@
-"""Hollowness audit (ORAA-4 §23, R3.5) — produce a true-completion map of the services.
+"""Hollowness audit (R3.5) — produce a true-completion map of the services.
 
 Read-only. This is the report behind the R3.5 decision that R2/R3 shipped hollow: for each
 service it measures the mechanical signals of hollowness and prints a per-service verdict
@@ -12,7 +12,7 @@ Per service it reports:
   * whether any route handler's module reaches a repositories/ layer at all.
 
 Verdict heuristic (a signal, not a proof): HOLLOW if it has HOL markers OR a stub class OR has
-route endpoints but no repositories/ layer; otherwise PLAUSIBLY REAL (verify via the §22 smoke).
+route endpoints but no repositories/ layer; otherwise PLAUSIBLY REAL (verify via smoke).
 
 Run:  uv run python -m tools.audit.hollowness_audit [services]
 Always exits 0 (it is a report, not a gate).
@@ -114,7 +114,7 @@ def _hol_count(root: Path) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(description="Hollowness audit (ORAA-4 §23).")
+    ap = argparse.ArgumentParser(description="Hollowness audit (R3.5).")
     ap.add_argument("services_dir", nargs="?", default="services")
     args = ap.parse_args(argv)
     services_dir = Path(args.services_dir)
@@ -122,7 +122,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"no services dir at {services_dir}", file=sys.stderr)
         return 0
 
-    print("R3.5 HOLLOWNESS AUDIT — true-completion map (ORAA-4 §23)\n")
+    print("R3.5 HOLLOWNESS AUDIT — true-completion map\n")
     print(
         f"{'service':<30} {'LOC':>6} {'endpts':>6} {'HOL':>4} {'stubcls':>7} {'repos':>5} verdict"
     )
@@ -136,13 +136,13 @@ def main(argv: list[str] | None = None) -> int:
         has_repo = _has_repositories(root)
         repo_flag = "yes" if has_repo else "no"
         hollow = bool(hol) or bool(stubcls) or (endpoints > 0 and not has_repo)
-        verdict = "HOLLOW" if hollow else "PLAUSIBLY REAL (verify via §22 smoke)"
+        verdict = "HOLLOW" if hollow else "PLAUSIBLY REAL (verify via per-service smoke)"
         print(
             f"{svc:<30} {loc:>6} {endpoints:>6} {hol:>4} {len(stubcls):>7} {repo_flag:>5} {verdict}"
         )
         for sc in stubcls:
             print(f"{'':<32}   stub class: {sc}")
-    print("\nVerdict is a mechanical signal, not a proof. A service is done only by the §22 gate")
+    print("\nVerdict is a mechanical signal, not a proof. Done only by the per-service DoD gate")
     print("(incl. Reza smoke sign-off). Re-open every HOLLOW 'done' story under R3.5.")
     return 0
 

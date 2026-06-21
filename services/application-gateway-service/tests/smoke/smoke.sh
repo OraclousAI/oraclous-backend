@@ -2,7 +2,7 @@
 # R3.5 service #6 — application-gateway acceptance smoke.
 # GW-1: the gateway boots as a real §21 service and serves /health.
 # GW-2: it reverse-proxies a routed request to a real upstream (capability-registry), streams a
-#       successful response through, normalises an upstream error into the ORA-37 envelope, 404s an
+#       successful response through, normalises an upstream error into the error envelope, 404s an
 #       unknown prefix, and 502s when the upstream is down.
 #
 # Usage (from repo root):  bash services/application-gateway-service/tests/smoke/smoke.sh
@@ -106,7 +106,7 @@ print(f'  rollup consistent: overall={d[\"overall\"]} statuses={ups}')
 " && pass "/health/upstreams aggregates per-service health + consistent overall rollup (HTTP 200)" \
   || fail "aggregated health wrong: $agg"
 
-step "10. GW-5: the gateway own-error is the canonical ORA-37 envelope"
+step "10. GW-5: the gateway own-error is the canonical error envelope"
 hdrs=$(curl -s -D - -o /tmp/gw_404.json -H "Authorization: Bearer dev-token" "${GW}/totally/unknown")
 python3 -c "
 import json, re
@@ -116,7 +116,7 @@ assert d['message'] and d['retryable'] is False, d
 assert re.match(r'^req_[0-9A-Za-z]+\$', d['requestId']), d
 assert set(d) == {'code', 'message', 'requestId', 'retryable'}, d
 " && echo "$hdrs" | tr -d '\r' | grep -qi '^x-request-id:' \
-  && pass "gateway 404 -> ORA-37 envelope {error:{code,message,requestId,retryable}} + X-Request-Id" \
+  && pass "gateway 404 -> error envelope {error:{code,message,requestId,retryable}} + X-Request-Id" \
   || fail "envelope missing/non-conformant: $(cat /tmp/gw_404.json)"
 
 step "11. GW-2: upstream down -> 502 envelope (fail-closed, no hang)"
@@ -125,18 +125,18 @@ down=$(curl -s -w '\n%{http_code}' -H "Authorization: Bearer dev-token" "${GW}/a
 code=$(echo "$down" | tail -1)
 { [[ "$code" == "502" || "$code" == "504" ]] \
   && echo "$down" | grep -qE '"code":"(SERVICE_UNAVAILABLE|GATEWAY_TIMEOUT)"'; } \
-  && pass "upstream down -> ${code} ORA-37 envelope (gateway did not hang)" \
+  && pass "upstream down -> ${code} error envelope (gateway did not hang)" \
   || fail "expected 502/504 envelope, got: $down"
 ${COMPOSE} up -d capability-registry-service >/dev/null 2>&1
 
-step "12. GW-6: the published OpenAPI v1 contract is served at the edge (ADR-015) + matches the ORA-37 taxonomy"
+step "12. GW-6: the published OpenAPI v1 contract is served at the edge (ADR-015) + matches the error-envelope taxonomy"
 curl -fsS "${GW}/v1/openapi.json" -o /tmp/gw_openapi.json
 ROOT_DIR="$ROOT" python3 -c "
 import json, os
 spec = json.load(open('/tmp/gw_openapi.json'))
 assert str(spec['openapi']).startswith('3.'), spec.get('openapi')
 assert spec['info']['title'] == 'Oraclous Platform API', spec['info']
-# the published error component's code enum must equal the cross-repo ORA-37 taxonomy, byte-for-byte
+# the published error component's code enum must equal the cross-repo error-envelope taxonomy, byte-for-byte
 published = spec['components']['schemas']['ErrorEnvelope']['properties']['error']['properties']['code']['enum']
 canonical = json.load(open(os.path.join(os.environ['ROOT_DIR'],
     'packages/errors/contract/error-envelope.schema.json')))['properties']['error']['properties']['code']['enum']
@@ -144,8 +144,8 @@ assert published == canonical, (published, canonical)
 # the contract documents real proxied operations and never the internal plane
 assert '/v1/engine/jobs' in spec['paths'] and '/api/v1/tools' in spec['paths'], list(spec['paths'])
 assert not any(p.startswith('/internal') for p in spec['paths']), 'internal plane disclosed'
-print(f'  served OpenAPI {spec[\"openapi\"]} — {len(spec[\"paths\"])} paths, error enum == ORA-37 taxonomy')
-" && pass "/v1/openapi.json -> valid OpenAPI 3.x, error component == ORA-37 taxonomy, no /internal" \
+print(f'  served OpenAPI {spec[\"openapi\"]} — {len(spec[\"paths\"])} paths, error enum == error-envelope taxonomy')
+" && pass "/v1/openapi.json -> valid OpenAPI 3.x, error component == error-envelope taxonomy, no /internal" \
   || fail "published contract missing/inconsistent: $(head -c 200 /tmp/gw_openapi.json)"
 
 # the reverse-proxy catch-all must NOT shadow the served contract (it is the edge route, public)
@@ -163,7 +163,7 @@ enum = spec['components']['schemas']['ErrorEnvelope']['properties']['error']['pr
 err = json.load(open('/tmp/gw_404.json'))['error']  # captured in step 10
 assert err['code'] in enum, (err['code'], enum)
 assert set(err) == {'code','message','requestId','retryable'}, err
-" && pass "the gateway's emitted error body conforms to its own published ORA-37 contract" \
+" && pass "the gateway's emitted error body conforms to its own published error-envelope contract" \
   || fail "emitted error does not match the published contract"
 
 if [[ "${GW_SMOKE_NO_COMPOSE:-0}" != "1" ]]; then
@@ -179,7 +179,7 @@ e = json.load(open('/tmp/gw_413.json'))['error']
 assert e['code'] == 'PAYLOAD_TOO_LARGE' and e['retryable'] is False, e
 assert e['code'] in enum and set(e) == {'code','message','requestId','retryable'}, e
 " && grep -qi '^x-request-id:' /tmp/gw_413h.txt \
-    && pass "oversize POST -> 413 PAYLOAD_TOO_LARGE ORA-37 envelope + X-Request-Id (in the published enum)" \
+    && pass "oversize POST -> 413 PAYLOAD_TOO_LARGE error envelope + X-Request-Id (in the published enum)" \
     || fail "size guard 413 failed: $(cat /tmp/gw_413.json)"
   # chunked / omitted-length: the byte counter (not the header) must catch it
   cc=$(printf '%s' "$BIG" | curl -s -o /tmp/gw_413c.json -w '%{http_code}' "${AUTH[@]}" \

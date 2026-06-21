@@ -1,4 +1,4 @@
-"""Capability registry DTOs (ORAA-4 §21 schema layer) — Pydantic request/response models only.
+"""Capability registry DTOs (schema layer) — Pydantic request/response models only.
 
 ``organisation_id`` is never an inbound field (ORG001): it is resolved from the authenticated
 principal in the route. It appears only on the *response* projection.

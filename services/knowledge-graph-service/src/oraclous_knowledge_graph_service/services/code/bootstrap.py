@@ -1,4 +1,4 @@
-"""Stage 0 — repository bootstrap (ORAA-4 §21 services layer — key-free, no DB).
+"""Stage 0 — repository bootstrap (services layer — key-free, no DB).
 
 Faithful lift-and-reshape of legacy `develop@84152635 code_parser_service.bootstrap_repository`
 (Stage 0): resolve a source tree (one of two ways), walk it, and parse dependency manifests into

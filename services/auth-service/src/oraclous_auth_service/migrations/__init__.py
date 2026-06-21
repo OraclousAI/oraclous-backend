@@ -1,4 +1,4 @@
-"""Auth-service migrations (ORA-36 / R1-D1 onward).
+"""Auth-service migrations (R1-D1 onward).
 
 Migrations that target the auth-service identity domain (``agents`` /
 ``agent_credentials``). Per ADR-001 / ADR-012 §1a, the auth-service is the

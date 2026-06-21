@@ -1,6 +1,5 @@
 """Agent-as-subject + ``delegated_to`` / ``delegated_by`` + delegation traversal
-+ revocation propagation (ORA-35 / R1-C2; lift-tag **Greenfield**, builds on
-C1 / [ORA-34]).
++ revocation propagation (R1-C2; lift-tag **Greenfield**, builds on C1).
 
 **Q1 revision (ratified by solution-architect, comment 10261; bounced via
 be-test-reviewer, comment 10269):** the engine's permission check is
@@ -919,7 +918,7 @@ class TestFailClosed:
             )
 
 
-# ── 14. Null-subgraph_id regression backstop (ORA-37 R1-gate discovery) ───
+# ── 14. Null-subgraph_id regression backstop (R1-gate discovery) ───
 #
 # The R1 adversarial suite caught a T2-M2 defeat that the mocked-driver
 # suite above missed: the original `_DELEGATION_GRANT_QUERY` and
@@ -943,7 +942,7 @@ class TestFailClosed:
 class TestGraphScopeOmitsNullSubgraphIdFromRelPattern:
     """The DELEGATED_TO relationship pattern (the ``{...}`` immediately
     after ``:DELEGATED_TO`` inside ``[...]``) must not include
-    ``subgraph_id`` on the graph-scope path. ORA-37 R1-gate regression
+    ``subgraph_id`` on the graph-scope path. R1-gate regression
     backstop — without this, the real-substrate adversarial suite is the
     only line of defence and a future refactor could re-introduce the
     null-property bug without a unit-level warning.

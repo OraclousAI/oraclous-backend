@@ -1,4 +1,4 @@
-"""Tool executor base classes (ORAA-4 §21 domain layer; reshape of legacy
+"""Tool executor base classes (domain layer; reshape of legacy
 ``oraclous-core-service/app/tools/base/*`` + ``interfaces/tool_executor``).
 
 ``ExecutionContext`` carries the resolved credentials into a single execution; its ``__repr__``

@@ -1,4 +1,4 @@
-"""Published-agent store (ORAA-4 §21 repositories layer) — gateway-owned, org-scoped (ADR-019).
+"""Published-agent store (repositories layer) — gateway-owned, org-scoped (ADR-019).
 
 Every read/write filters ``organisation_id`` (ADR-006) — including the invoke-time resolution by
 ``(org, slug)``, where the org comes from the integration key, never the request body. This is a

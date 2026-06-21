@@ -1,4 +1,4 @@
-"""Ingestion-job domain records (ORAA-4 §21 domain layer — pure, no I/O)."""
+"""Ingestion-job domain records (domain layer — pure, no I/O)."""
 
 from __future__ import annotations
 

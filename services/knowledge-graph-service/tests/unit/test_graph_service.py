@@ -65,7 +65,7 @@ class _FakeRepo:
 
 
 class _FakeWriteRepo:
-    """Records the graph_id-scoped Neo4j cascade the delete flow must trigger (ORAA-261)."""
+    """Records the graph_id-scoped Neo4j cascade the delete flow must trigger."""
 
     def __init__(self) -> None:
         self.deleted: list[str] = []
@@ -113,7 +113,7 @@ async def test_delete_other_owner_raises() -> None:
 
 
 async def test_delete_cascades_neo4j_nodes_for_owned_graph() -> None:
-    # ORAA-261: deleting a graph must cascade its Neo4j nodes (graph_id-scoped DETACH DELETE),
+    # Deleting a graph must cascade its Neo4j nodes (graph_id-scoped DETACH DELETE),
     # not just remove the Postgres metadata row.
     repo = _FakeRepo()
     write_repo = _FakeWriteRepo()
@@ -177,5 +177,5 @@ async def test_create_allows_non_reserved_name() -> None:
 
 
 def test_graphnodeservice_alias_is_graphservice() -> None:
-    # Legacy patch target preserved (ORAA-55 era tests reference GraphNodeService).
+    # Legacy patch target preserved (early tests reference GraphNodeService).
     assert GraphNodeService is GraphService

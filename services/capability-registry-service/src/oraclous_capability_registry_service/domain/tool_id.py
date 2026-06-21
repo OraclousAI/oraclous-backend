@@ -1,4 +1,4 @@
-"""Deterministic tool ids (ORAA-4 §21 domain layer; port of legacy
+"""Deterministic tool ids (domain layer; port of legacy
 ``oraclous-core-service/app/utils/tool_id_generator.py``).
 
 A tool's id is a deterministic UUIDv5 of its identity (name/version/category) so the same tool gets

@@ -1,4 +1,4 @@
-"""Postgres provenance sink (ORAA-4 §21 repositories layer; CLAUDE.md §3.7).
+"""Postgres provenance sink (repositories layer; CLAUDE.md §3.7).
 
 The concrete ``ProvenanceSink`` behind the substrate ``ProvenanceCollector``. It is the only place
 that persists engine provenance (no direct-to-store bypass elsewhere).

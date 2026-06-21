@@ -1,4 +1,4 @@
-"""Credential CRUD routes (ORAA-4 §21 routes layer).
+"""Credential CRUD routes (routes layer).
 
 Thin handlers: parse → one CredentialService call → DTO. Both ``organisation_id`` AND ``user_id``
 come from the authenticated principal (``OrganisationIdDep`` / ``PrincipalUserIdDep``), never the

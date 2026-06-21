@@ -1,1 +1,1 @@
-"""domain layer (ORAA-4 §21)."""
+"""domain layer."""

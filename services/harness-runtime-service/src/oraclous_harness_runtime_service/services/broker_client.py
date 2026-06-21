@@ -1,4 +1,4 @@
-"""Credential-broker client (ORAA-4 §21 services layer).
+"""Credential-broker client (services layer).
 
 The runtime resolves a BYOM **model** credential (an API key) the same way the capability-registry
 resolves tool credentials: the broker's internal, org-scoped ``/internal/resolve-credential`` gated

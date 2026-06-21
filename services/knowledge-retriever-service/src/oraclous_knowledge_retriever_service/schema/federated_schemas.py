@@ -1,4 +1,4 @@
-"""Federated-query DTOs (ORAA-4 §21 schema layer — Pydantic only) — #330 / ADR-026.
+"""Federated-query DTOs (schema layer — Pydantic only) — #330 / ADR-026.
 
 `organisation_id` is never an inbound field; the org scope is resolved from the principal.
 `graph_ids` is the OPTIONAL explicit subset — validated ∩ accessible, fail-closed; omitted/null

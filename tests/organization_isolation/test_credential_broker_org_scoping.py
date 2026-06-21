@@ -1,4 +1,4 @@
-"""Organisation- AND user-scoped credential storage (ORA-33, R1-B2; hardened by the
+"""Organisation- AND user-scoped credential storage (R1-B2; hardened by the
 credential-broker defense-in-depth follow-up).
 
 The repository scopes every read and write by ``organisation_id`` AND ``user_id`` as
@@ -7,7 +7,7 @@ Threat Catalogue T6, ADR-008), nor be read/updated/deleted by another user withi
 trusted runtime resolver passes ``user_id=None`` to scope by org only (service→service, acting for
 whatever user is executing); the user-facing surface always passes the principal's user id.
 
-Proven at the data layer against a real Postgres (ORA-12 harness), per the no-mocks-for-the-database
+Proven at the data layer against real Postgres, per the no-mocks-for-the-database
 rule. ``organisation_id`` + ``user_id`` are explicit repository arguments resolved from the
 authenticated context — never from a request body (ORG001). Per-org KMS key material is out of
 scope (deferred to R8).

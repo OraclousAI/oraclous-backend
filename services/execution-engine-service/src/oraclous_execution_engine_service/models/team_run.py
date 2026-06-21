@@ -1,4 +1,4 @@
-"""EngineTeamRun ORM model (ORAA-4 §21 models layer).
+"""EngineTeamRun ORM model (models layer).
 
 A team run is ONE execution of an OHM v1.1 Team Harness: its member DAG is driven by the
 orchestrator (``oraclous_ohm.orchestrate.run_team``) through the harness, member by member, with

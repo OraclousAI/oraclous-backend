@@ -1,7 +1,7 @@
 """Adapter wiring ``ReBACEngine`` into the substrate ``AccessDecisionClient``
-seam as a production resolver (ORA-46).
+seam as a production resolver.
 
-Satisfies the ORA-15 ``RelationResolver`` protocol — ``async def resolve(
+Satisfies the substrate ``RelationResolver`` protocol — ``async def resolve(
 AccessRequest) -> bool | None`` — by dispatching to
 ``ReBACEngine.check_graph_permission``. The seam remains the single fail-closed
 chokepoint; this adapter:
@@ -18,7 +18,7 @@ chokepoint; this adapter:
   error* reason, distinct from a definitive *absent* deny.
 
 Production *injection* (wiring this adapter into a live request path) is out
-of scope for ORA-46 — it lands with the first real consumer at R3/R6 — so the
+of scope here — it lands with the first real consumer at R3/R6 — so the
 adapter is engine-agnostic in its callable: tests inject a stub
 ``permission_check``, production injects ``engine.check_graph_permission``.
 """
@@ -43,7 +43,7 @@ _RELATION_TO_LEVEL: dict[str, str] = {
 # Subject and resource type discrimination. The seam's vocabulary uses
 # ``user-<id>`` and ``graph-<id>`` (case-sensitive, lowercased) — see
 # ``packages/substrate/tests/unit/test_rebac_client.py``. Agent subjects
-# (ORA-27 C2) and non-graph resource types get their own resolvers; this
+# and non-graph resource types get their own resolvers; this
 # adapter fails closed on anything else.
 _USER_SUBJECT_PREFIX = "user-"
 _GRAPH_RESOURCE_PREFIX = "graph-"

@@ -1,4 +1,4 @@
-"""Tests for the Neo4j write-role bypass guardrail (ORAA-53 / T6).
+"""Tests for the Neo4j write-role bypass guardrail (T6).
 
 Verifies that check_neo4j_write_role fires on each bypass pattern and passes
 clean KGS-style code.

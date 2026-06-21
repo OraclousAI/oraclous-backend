@@ -1,4 +1,4 @@
-"""Upstream health aggregation (ORAA-4 §21 services layer).
+"""Upstream health aggregation (services layer).
 
 Fans out to every fronted upstream's ``/health`` concurrently (bounded by the small fixed fan-out +
 a short per-check timeout) and rolls the results up: an upstream is ``ok`` (200), ``degraded``

@@ -1,4 +1,4 @@
-"""OAuth routes (ORAA-4 §21 routes layer).
+"""OAuth routes (routes layer).
 
 `GET /oauth/{provider}/login` returns the provider authorize URL (PKCE challenge embedded).
 `GET /oauth/{provider}/callback` exchanges the code and returns the app's tokens **in the body**

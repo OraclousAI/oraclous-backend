@@ -1,6 +1,6 @@
-"""Failing unit tests for the agent token + credential endpoints (ORA-31 / R1-A2).
+"""Failing unit tests for the agent token + credential endpoints (R1-A2).
 
-What these tests pin (ORA-31 acceptance criteria):
+What these tests pin (R1-A2 acceptance criteria):
 
 * ``POST /agent-token`` exchanges a raw agent credential for a JWT carrying
   ``principal_type=agent`` and the agent's ``organisation_id``. Bad credentials

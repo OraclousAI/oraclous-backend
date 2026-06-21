@@ -1,4 +1,4 @@
-"""LLM entity + relationship extraction seam (ORAA-4 §21 services layer).
+"""LLM entity + relationship extraction seam (services layer).
 
 The non-lexical half of free-text ingestion. When `KGS_EXTRACTOR=openai`, this turns each ingested
 text chunk into real domain entities + the relationships between them, so a Markdown/PDF/text file

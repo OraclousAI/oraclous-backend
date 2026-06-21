@@ -1,4 +1,4 @@
-"""Graph-ingest connector (ORAA-4 §21 domain layer) — the first-party in-loop ingestion tool.
+"""Graph-ingest connector (domain layer) — the first-party in-loop ingestion tool.
 
 The WRITE twin of the knowledge-retriever connector (#245): where the retriever POSTs a query to the
 knowledge-retriever's ``/v1/search/{mode}``, this POSTs ``{graph_id, content, source_type?,

@@ -1,4 +1,4 @@
-"""Service configuration (ORAA-4 §21 core layer) — env → Settings (harness runtime, R4).
+"""Service configuration (core layer) — env → Settings (harness runtime, R4).
 
 The harness runtime is a Layer-3 interpreter: it loads an OHM, runs the agent tool-use loop, and
 dispatches each capability invocation to the capability-registry over HTTP. It owns a small Postgres

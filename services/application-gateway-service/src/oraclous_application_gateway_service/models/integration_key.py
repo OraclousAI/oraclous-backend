@@ -1,4 +1,4 @@
-"""Integration-key ORM model (ORAA-4 §21 models layer) — the R6 stateful authz floor (ADR-019).
+"""Integration-key ORM model (models layer) — the R6 stateful authz floor (ADR-019).
 
 One row per issued integration key. The key itself is never stored: only its non-secret lookup
 ``key_prefix`` (UNIQUE), its SHA-256 ``key_hash`` (constant-time compared), and ``last4`` (display).

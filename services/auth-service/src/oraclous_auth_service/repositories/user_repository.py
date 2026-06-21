@@ -1,4 +1,4 @@
-"""User repository (ORAA-4 §21 repositories layer — the only ``users`` SQL).
+"""User repository (repositories layer — the only ``users`` SQL).
 
 Identity lookups (by email at login, by id) are deliberately **global / pre-auth**: they precede any
 organisation context (you must identify the user before you can resolve their org). Email is

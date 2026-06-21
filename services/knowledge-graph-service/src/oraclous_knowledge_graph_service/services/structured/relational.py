@@ -1,4 +1,4 @@
-"""Relational structural primitive + default relational recipe (ORAA-4 §21 services layer).
+"""Relational structural primitive + default relational recipe (services layer).
 
 Turns an introspected SQL :class:`SchemaSnapshot` (+ its fetched rows) into the SAME
 :class:`StructuralRepresentation` vocabulary the recipe engine already projects for CSV/JSON, so a

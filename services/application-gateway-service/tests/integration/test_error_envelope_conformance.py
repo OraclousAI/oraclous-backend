@@ -1,4 +1,4 @@
-"""Integration: every error the gateway emits conforms to the ORA-37 contract (ORA-54).
+"""Integration: every error the gateway emits conforms to the error-envelope contract.
 
 Drives each gateway error path (own 404, edge 401, upstream-unavailable 502, upstream-timeout 504,
 and a normalised upstream 4xx) through the real app and asserts each response body validates against
@@ -145,7 +145,7 @@ async def test_unhandled_exception_is_conformant() -> None:
     _assert_conformant(r)
 
 
-# --- #281: the gateway's OWN request-body 422 emits the ORA-37 envelope, not FastAPI {detail:[...]}
+# --- #281: the gateway's OWN request-body 422 emits the error envelope, not FastAPI {detail:[...]}
 
 
 class _NoopRepo:
@@ -183,7 +183,7 @@ async def test_own_request_validation_422_is_conformant(management_client: Async
     )
     assert r.status_code == 422, r.text
     body = r.json()
-    # the ORA-37 envelope, NOT FastAPI's {"detail": [...]}
+    # the error envelope, NOT FastAPI's {"detail": [...]}
     assert "detail" not in body
     assert body["error"]["code"] == "VALIDATION_FAILED"
     assert body["error"]["retryable"] is False

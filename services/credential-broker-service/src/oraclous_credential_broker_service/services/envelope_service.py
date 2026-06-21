@@ -1,4 +1,4 @@
-"""Per-org envelope encryption service (ORAA-4 §21 services layer, ADR-020).
+"""Per-org envelope encryption service (services layer, ADR-020).
 
 The org-aware replacement for ``core/security``'s module-level encrypt/decrypt. ``encrypt`` always
 writes the envelope (v2) under the org's DEK; ``decrypt`` is **format-polymorphic** — a v2

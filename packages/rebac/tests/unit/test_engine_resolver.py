@@ -1,8 +1,8 @@
-"""Failing tests for the ReBAC engine resolver adapter (ORA-46).
+"""Failing tests for the ReBAC engine resolver adapter.
 
-The adapter satisfies the ORA-15 substrate seam's ``RelationResolver`` protocol —
+The adapter satisfies the substrate seam's ``RelationResolver`` protocol —
 ``async def resolve(AccessRequest) -> bool | None`` — by dispatching to the
-ORA-34 ``ReBACEngine``'s ``check_graph_permission``. The seam remains the
+``ReBACEngine``'s ``check_graph_permission``. The seam remains the
 single fail-closed chokepoint; the adapter:
 
 * maps the seam's vocabulary onto the engine's: ``organisation_id→organisation_id``,
@@ -138,7 +138,7 @@ async def test_returns_false_when_engine_definitively_denies() -> None:
 
 
 async def test_argument_mapping_pins_field_correspondence() -> None:
-    """ORA-46 AC: organisation_id→organisation_id, subject→subject (dict),
+    """AC: organisation_id→organisation_id, subject→subject (dict),
     resource→graph_id, relation→required_level (via defined lookup).
 
     A wiring mistake here would silently authorise the wrong tenant or wrong
@@ -196,7 +196,7 @@ async def test_unknown_relation_returns_none_and_skips_engine() -> None:
 @pytest.mark.parametrize(
     "non_user_subject",
     [
-        "agent-bot-7",  # ORA-27 C2 future, but not in this story's scope
+        "agent-bot-7",  # agent subjects are not in this story's scope
         "service-cron-1",
         "1234",  # no prefix at all
         "USER-1234",  # case matters; convention is lowercase
@@ -207,7 +207,7 @@ async def test_non_user_subject_returns_none_and_skips_engine(
 ) -> None:
     """Out-of-domain subjects (non-``user-``) fail closed without an engine
     call. The brief is explicit: "never a best-effort engine call". Agent
-    subjects land in ORA-27 C2 with their own resolver, not this one.
+    subjects land with their own resolver, not this one.
     """
     check = _RecordingCheck(result=True)
     resolver = _make_adapter(check)

@@ -1,6 +1,6 @@
 {
-  "$comment": "Negative-test pattern set for Contract ORA-37 / Interface Contracts §3 'Sensitive-data rules — must NEVER appear in an error body'. If any pattern matches a serialised error response body, the body leaks. 'rule' maps to the numbered §3 rule. 'example' is a deliberately-fake string the pattern must match (powers the scanner self-test); examples are non-functional placeholders, never real secrets. 'flags' is a subset of 'ims'.",
-  "contract": "ORA-37",
+  "$comment": "Negative-test pattern set for the error-envelope Contract / Interface Contracts §3 'Sensitive-data rules — must NEVER appear in an error body'. If any pattern matches a serialised error response body, the body leaks. 'rule' maps to the numbered §3 rule. 'example' is a deliberately-fake string the pattern must match (powers the scanner self-test); examples are non-functional placeholders, never real secrets. 'flags' is a subset of 'ims'.",
+  "contract": "error-envelope",
   "canonical_home": "https://oraclous.atlassian.net/wiki/spaces/OP/pages/1277953",
   "patterns": [
     { "id": "py_traceback_header", "rule": 1, "flags": "", "description": "Python traceback header", "regex": "Traceback \\(most recent call last\\)", "example": "Traceback (most recent call last):" },

@@ -1,4 +1,4 @@
-"""Chat persistence ORM models (ORAA-4 §21 models layer) — R6 Slice 6 (ADR-019).
+"""Chat persistence ORM models (models layer) — R6 Slice 6 (ADR-019).
 
 Gateway-owned, org-scoped chat. A **thread** binds to a published-agent slug (resolved via the S4
 PublishedAgentRepository) and is **private to its creating member** within the org (reads filter

@@ -1,4 +1,4 @@
-"""Engine schedule repository (ORAA-4 §21 repositories layer).
+"""Engine schedule repository (repositories layer).
 
 The only DB seam for engine schedule rows. Org-scoped (ADR-006) for the API; ``list_enabled_cron``
 is the reaper-style system sweep Celery Beat fires from (cross-org maintenance — same ADR-006

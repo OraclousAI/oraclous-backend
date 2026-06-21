@@ -1,9 +1,9 @@
-"""Legacy un-org-scoped Redis query-cache keys do not survive the migration (ORA-24 / D1).
+"""Legacy un-org-scoped Redis query-cache keys do not survive the migration (D1).
 
 RED until ``backend-implementer`` adds ``oraclous_substrate.migrations.org_backfill``.
 
 The legacy query cache keyed entries as ``qcache:{graph_id}:{sha256}`` — graph the
-only tenant scope. A1 (ORA-16) reshaped the key to
+only tenant scope. A1 reshaped the key to
 ``qcache:{organisation_id}:{graph_id}:{digest}`` (``oraclous_substrate.cache_keys``).
 A legacy entry **cannot** be backfilled in place: its key carries only the query
 *hash*, so the new org-then-graph key (which hashes the query *text*) cannot be

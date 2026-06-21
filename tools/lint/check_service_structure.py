@@ -1,4 +1,4 @@
-"""Canonical service-architecture guardrail (ORAA-4 §21, R3.5).
+"""Canonical service-architecture guardrail (R3.5).
 
 Every service under ``services/<svc>/src/oraclous_<svc>_service/`` must follow the canonical
 layered layout (see oraclous-knowledge/engineering/service-architecture-standard.md). This
@@ -216,7 +216,7 @@ def load_status(status_path: Path) -> dict[str, dict]:
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(
-        description="Canonical service-architecture guardrail (STR001-005, ORAA-4 §21)."
+        description="Canonical service-architecture guardrail (STR001-005)."
     )
     ap.add_argument("services_dir", nargs="?", default="services")
     ap.add_argument("--status", default="tools/lint/service_status.yaml")
@@ -273,7 +273,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if enforced_failures:
         print(
-            "SERVICE STRUCTURE — a structure-enforced service violates the layout (ORAA-4 §21):",
+            "SERVICE STRUCTURE — a structure-enforced service violates the layout:",
             file=sys.stderr,
         )
         for v in enforced_failures:

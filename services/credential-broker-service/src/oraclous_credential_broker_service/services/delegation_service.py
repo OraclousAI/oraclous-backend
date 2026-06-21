@@ -1,4 +1,4 @@
-"""Delegated-token service layer (ORA-32 / R1-B1).
+"""Delegated-token service layer (R1-B1).
 
 The broker enforces, on every use of a delegated token, that:
 

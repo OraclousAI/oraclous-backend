@@ -1,4 +1,4 @@
-"""Auth request/response DTOs (ORAA-4 §21 schema layer).
+"""Auth request/response DTOs (schema layer).
 
 Email is a constrained ``str`` (a lightweight ``@`` shape check) rather than ``EmailStr`` to keep
 the slice free of the ``email-validator`` dependency; the repository normalises to lowercase. None

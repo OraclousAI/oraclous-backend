@@ -1,4 +1,4 @@
-"""Per-credential-prefix rate limiter for ``POST /agent-token`` (ORA-31).
+"""Per-credential-prefix rate limiter for ``POST /agent-token``.
 
 Reshaped from the legacy ``auth-service/app/core/rate_limiter.enforce_key_prefix_rate_limit``:
 

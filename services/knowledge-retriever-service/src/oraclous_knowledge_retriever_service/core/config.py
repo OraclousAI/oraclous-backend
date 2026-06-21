@@ -1,9 +1,9 @@
-"""Service configuration (ORAA-4 §21 core layer) — env → Settings (KRS read side).
+"""Service configuration (core layer) — env → Settings (KRS read side).
 
 KRS is read-only: it queries the org-scoped Neo4j graph that knowledge-graph-service writes. Same
 dev-auth seam + same dev organisation as KGS (so it reads the data KGS wrote), and the SAME
 deterministic hashing embedder + dimension (512) so a query vector lives in the same space as the
-stored chunk embeddings — key-free semantic search. `neo4j_uri` has no hardcoded default (ORAA-53).
+stored chunk embeddings — key-free semantic search. `neo4j_uri` has no hardcoded default.
 """
 
 from __future__ import annotations
@@ -31,7 +31,7 @@ class Settings(BaseSettings):
     jwt_secret: str | None = None
     jwt_algorithm: str = "HS256"
 
-    # --- Neo4j (read role krs_reader, ORAA-53). No hardcoded URI default. ---
+    # --- Neo4j (read role krs_reader). No hardcoded URI default. ---
     neo4j_uri: str | None = None
     neo4j_user: str = "krs_reader"
     neo4j_password: str = "krs-reader-pass"  # noqa: S105 — dev default; prod injects via secret

@@ -1,4 +1,4 @@
-"""HarnessProvenanceEvent ORM model (ORAA-4 §21 models layer; CLAUDE.md §3.7, T7-M1).
+"""HarnessProvenanceEvent ORM model (models layer; CLAUDE.md §3.7, T7-M1).
 
 The durable sink behind the substrate ``ProvenanceCollector``. Stores the five required provenance
 fields per step (llm.complete / capability.invoke / governance.gate / human.assign). The owning

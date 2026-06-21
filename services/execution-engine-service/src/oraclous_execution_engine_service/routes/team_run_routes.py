@@ -1,4 +1,4 @@
-"""Engine team-run routes (ORAA-4 §21 routes layer) — parse → ONE service call → HTTP map.
+"""Engine team-run routes (routes layer) — parse → ONE service call → HTTP map.
 
 The reachable entry point for the team orchestrator (it had none — ORAA E3): an OHM v1.1 Team
 Harness can now be run over HTTP.

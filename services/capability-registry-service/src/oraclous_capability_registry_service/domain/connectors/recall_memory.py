@@ -1,4 +1,4 @@
-"""Recall-memory connector (ORAA-4 §21 domain layer) — the in-loop agent-memory recall tool.
+"""Recall-memory connector (domain layer) — the in-loop agent-memory recall tool.
 
 Issue #332 / ADR-027 §6. Mirrors ``core/find-similar@1.0.0`` (#310): a first-party, org-scoped,
 credential-free read tool an agent OPTS INTO via its OHM toolset as ``core/recall-memory@1.0.0`` —

@@ -1,4 +1,4 @@
-"""Tool registry routes (ORAA-4 §21 routes layer).
+"""Tool registry routes (routes layer).
 
 A tool is a capability descriptor of ``kind=tool``; these routes are the tool-shaped view over the
 unified registry. Registration derives a deterministic id from the descriptor's identity so the same

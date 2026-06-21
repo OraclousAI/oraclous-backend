@@ -1,9 +1,9 @@
 """Cross-organisation isolation for the ADR-009 usage-aggregation primitive
-(ORA-23, story C3).
+(story C3).
 
 AC4 of the brief: "Tests on the 0d harness prove an org A admin cannot
 aggregate org B." This pins the seam contract — the aggregator's read is
-implicitly scoped to the ambient organisation-context (0f / ORA-14), and the
+implicitly scoped to the ambient organisation-context (0f), and the
 ReBAC gate is checked against the **bound** organisation's resource only. So:
 
 * Even with both organisations' events sharing a single store, an aggregate
@@ -21,7 +21,7 @@ isolation suite): an in-memory store double that filters by ``organisation_id``,
 two distinct org contexts, and an assertion that no event with the *other*
 organisation's id appears in the local aggregate.
 
-Per the ORA-48 TDD-window guardrail, the not-yet-built
+Per the TDD-window guardrail, the not-yet-built
 ``oraclous_substrate.aggregation`` seam is imported function-locally so
 collection stays clean. RED until backend-implementer creates it.
 """

@@ -1,4 +1,4 @@
-"""Behavioural lift of the legacy ReBAC engine into ``packages/rebac`` (ORA-34).
+"""Behavioural lift of the legacy ReBAC engine into ``packages/rebac``.
 
 Lift-tag **Extract + Reshape**. Behavioural reference:
 ``knowledge-graph-builder/app/services/rebac_service.py`` (``ReBACService``) plus

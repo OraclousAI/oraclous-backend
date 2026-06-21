@@ -1,4 +1,4 @@
-"""Hybrid free-text-on-a-field extraction pass (ORAA-4 §21 services layer — planning, no driver).
+"""Hybrid free-text-on-a-field extraction pass (services layer — planning, no driver).
 
 Recipe enrichment Slice 2 (#269). The deterministic recipe engine projects a structured record into
 its node/edge graph; THIS pass runs AFTER that projection and mines extra entities from a designated

@@ -1,4 +1,4 @@
-"""Unit tests for the degradation-alert seam (ADR-021 §2, ORAA-297).
+"""Unit tests for the degradation-alert seam (ADR-021 §2).
 
 Pins three things the seam guarantees:
 

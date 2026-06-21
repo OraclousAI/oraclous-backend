@@ -1,4 +1,4 @@
-"""Tests for the Neo4j read-role bypass guardrail (ORAA-58 / T6).
+"""Tests for the Neo4j read-role bypass guardrail (T6).
 
 Verifies that check_neo4j_read_role fires on each bypass pattern and passes
 clean KRS-style code.

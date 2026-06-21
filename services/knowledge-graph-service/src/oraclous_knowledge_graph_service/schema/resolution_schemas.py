@@ -1,4 +1,4 @@
-"""Resolution request/response DTOs (ORAA-4 §21 schema layer — Pydantic only, no logic).
+"""Resolution request/response DTOs (schema layer — Pydantic only, no logic).
 
 The HITL approve/reject contract for a `SAME_AS_CANDIDATE` pair (#279). `organisation_id` is never
 an inbound field (ORG001) — it is resolved from the principal context. The candidate id is in the

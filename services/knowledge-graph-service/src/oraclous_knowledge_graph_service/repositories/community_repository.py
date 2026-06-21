@@ -1,4 +1,4 @@
-"""Community-detection repository (ORAA-4 §21 repos layer — the ONLY GDS/Neo4j access; #303).
+"""Community-detection repository (repos layer — the ONLY GDS/Neo4j access; #303).
 
 RE-ARCHITECTS the legacy in-memory ``leidenalg``/``igraph`` community pipeline
 (``knowledge-graph-builder/app/tasks/community_tasks.py``) onto in-DB Neo4j GDS Louvain: the graph

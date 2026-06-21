@@ -1,4 +1,4 @@
-"""KGS graph-membership client (ORAA-4 §21 services layer; ADR-029 §3).
+"""KGS graph-membership client (services layer; ADR-029 §3).
 
 The registry has no graph table and knowledge-graph-service exposes no graph
 ``owner_organization_id``, so the binding's graph side is verified by a KGS *membership* call:

@@ -1,4 +1,4 @@
-"""Integration: GET /v1/engine/activity + /v1/engine/usage vs real Postgres (ORAA-4 §22).
+"""Integration: GET /v1/engine/activity + /v1/engine/usage vs real Postgres.
 
 Seeds ``engine_provenance`` rows for two orgs, then proves:
   * /activity returns ONLY the caller's events, newest-first, and honours ``limit`` (default + cap);

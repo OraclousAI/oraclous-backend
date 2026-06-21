@@ -1,4 +1,4 @@
-"""Structured (CSV/JSON) ingestion use-case (ORAA-4 §21 services layer).
+"""Structured (CSV/JSON) ingestion use-case (services layer).
 
 The recipe-driven path: decompose the source (primitive) -> pick a recipe (a supplied/stored recipe,
 else a synthesised default) -> run the engine over the org-scoped writer. Synchronous (the engine +
@@ -71,7 +71,7 @@ class StructuredIngestionService:
             representation = primitive.decompose(text, ExtractionMode.FULL, name=document)
         except StructuredParseError as exc:
             # A JSONL source with an un-parseable tail must fail loudly (records would be dropped),
-            # not silently ingest a partial graph (ORAA-263).
+            # not silently ingest a partial graph.
             raise StructuredIngestionError(str(exc)) from exc
         record_units = [u for u in representation.units if u.kind.value == "record"]
         if not record_units:

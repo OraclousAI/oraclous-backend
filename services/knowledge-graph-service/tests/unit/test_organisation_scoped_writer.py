@@ -1,5 +1,5 @@
 """Outer organisation-scoping layer for the multi-tenant KG writer
-(ORA-18 / Epic A3, the *Extend* step — writer half).
+(the *Extend* step — writer half).
 
 These tests pin the new contract for ``OrganisationScopedKGWriter``: scope by
 ``organisation_id`` (taken from the resolved ``OrganisationContext`` — never
@@ -10,7 +10,7 @@ is preserved.
 
 Threats mitigated: T1 (cross-tenant data leakage). The fail-closed
 construction pattern aligns with ADR-006 (organisation_id on every operation)
-and the [A2] enforcement story (ORA-17).
+and the enforcement story.
 
 Module placement: ``solution-architect`` ratified Option B (split) on
 31 May 2026 — the writer lives in ``knowledge-graph-service`` (write path);
@@ -20,9 +20,9 @@ Both consume the substrate seam ``oraclous_substrate.access`` per
 [ADR-012](https://oraclous.atlassian.net/wiki/spaces/OP/pages/2490396) §1;
 neither forks org-scoping.
 
-Imports of the not-yet-built seams ``oraclous_governance.context`` (ORA-14)
-and ``oraclous_knowledge_graph_service.multi_tenant`` (ORA-18 impl) are
-function-local per ORA-48 / TST001 (the TDD-window collection-safety
+Imports of the not-yet-built seams ``oraclous_governance.context``
+and ``oraclous_knowledge_graph_service.multi_tenant`` are
+function-local per TST001 (the TDD-window collection-safety
 convention): collection succeeds, each test fails RED at *runtime* with
 ``ModuleNotFoundError`` until the paired ``[impl]`` PRs land.
 """
@@ -119,7 +119,7 @@ class TestWriterRuntimeFailClosed:
     bound — there is no implicit / default scope.
 
     The 'no implicit / default scope' invariant originally lived at
-    construction (ORA-18) but moved to runtime in ORA-52 / ADR-012 §1b: the
+    construction but moved to runtime per ADR-012 §1b: the
     writer sources its ``organisation_id`` live from the substrate seam at
     stamping time, so a request body cannot redirect scope at construction
     (T1-M1). The same fail-closed guarantee is preserved — just at the

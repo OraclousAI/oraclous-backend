@@ -1,4 +1,4 @@
-"""Tool instance DTOs (ORAA-4 §21 schema layer) — Pydantic request/response models only.
+"""Tool instance DTOs (schema layer) — Pydantic request/response models only.
 
 ``organisation_id`` and ``user_id`` are never inbound (ORG001): both are resolved from the
 authenticated principal in the route. ``workflow_id`` is gone (workflows retired, ADR-005).

@@ -1,4 +1,4 @@
-"""CapabilityDescriptor ORM (ORAA-4 §21 models layer; reshape of legacy
+"""CapabilityDescriptor ORM (models layer; reshape of legacy
 ``oraclous-core-service/app/models/capability_descriptor.py``).
 
 The unified registry: a *tool* is a descriptor of ``kind=tool``. Every row is org-scoped

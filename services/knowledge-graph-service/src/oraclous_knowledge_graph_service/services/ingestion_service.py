@@ -1,4 +1,4 @@
-"""Ingestion use-case (ORAA-4 §21 services layer) — extract → chunk → embed → (extract) → write.
+"""Ingestion use-case (services layer) — extract → chunk → embed → (extract) → write.
 
 The text/document spine: turn raw bytes into a `:Document`/`:Chunk` graph via the org-scoped writer.
 

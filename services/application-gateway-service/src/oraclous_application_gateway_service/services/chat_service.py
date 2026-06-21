@@ -1,4 +1,4 @@
-"""Chat thread management (ORAA-4 §21 services layer) — start/list/transcript/soft-delete.
+"""Chat thread management (services layer) — start/list/transcript/soft-delete.
 
 Org + creating-member scoped (a thread is private to its creator). A thread binds to a
 published-agent slug, resolved via the S4 PublishedAgentRepository (one resolution path for chat +

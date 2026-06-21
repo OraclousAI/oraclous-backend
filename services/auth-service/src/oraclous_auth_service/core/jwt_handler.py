@@ -1,4 +1,4 @@
-"""JWT issuance for every principal type (ORA-31 / R1-A2 · extended R3.5-P3-S1).
+"""JWT issuance for every principal type (R1-A2 · extended R3.5-P3-S1).
 
 One issuer, one shared secret (HS256), one decode path — the cross-service JWT/Principal Contract
 (`oraclous-knowledge/flows/interface-contracts.md`). Every token carries `organisation_id` (ADR-006

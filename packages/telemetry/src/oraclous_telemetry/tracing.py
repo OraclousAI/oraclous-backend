@@ -29,7 +29,7 @@ WP-6 correlation join. A lightweight :class:`logging`-free span processor stamps
 every span at start, so a trace in Jaeger carries the same ``request_id`` the JSON logs do — logs
 and traces join on one id without the handler threading anything.
 
-Layering (ORAA-4 §21): this is a shared package — it imports OpenTelemetry (a declared third-party
+Layering: this is a shared package — it imports OpenTelemetry (a declared third-party
 dep of :mod:`oraclous_telemetry`) and ``oraclous_telemetry.correlation``, but **no service**. All
 OpenTelemetry imports are lazy (inside the functions) so ``import oraclous_telemetry`` never hard-
 requires the OTel wheels and the gate short-circuits before any OTel symbol is touched.

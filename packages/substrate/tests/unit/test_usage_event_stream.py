@@ -1,4 +1,4 @@
-"""Failing tests for the substrate usage-event-stream seam (ORA-21, story C1).
+"""Failing tests for the substrate usage-event-stream seam (story C1).
 
 Behavioural reference (Reshape): legacy
 ``knowledge-graph-builder/app/services/audit_service.py`` (audit emission) and
@@ -20,7 +20,7 @@ Threat Catalogue contracts the brief tags:
   must structurally exclude plaintext customer payload.
 
 Identity (``organisation_id``/``principal``) is taken from the **ambient**
-organisation-context (0f / ORA-14), never from the caller's metering payload —
+organisation-context (0f), never from the caller's metering payload —
 the emit path reads ``current_organisation_context()`` rather than accepting an
 ``organisation_id`` argument, so there is no body-supplied channel to smuggle one
 through. Wiring emission into call sites is C2 (out of scope here); this seam is
@@ -76,7 +76,7 @@ class _RecordingStore:
 
     Records every append and serves organisation-scoped reads — standing in for
     the real substrate store whose data-layer row-level-security backstop is
-    A1 / ORA-16. The double filters by ``organisation_id`` so a leak would have
+    A1. The double filters by ``organisation_id`` so a leak would have
     to come from the stream handing it the wrong scope.
     """
 
@@ -242,7 +242,7 @@ async def test_emit_rejects_non_numeric_quantity() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# ORA-44 — metering-integrity hardening: non-finite quantity is rejected
+# metering-integrity hardening: non-finite quantity is rejected
 #
 # nan / inf / -inf are float instances and therefore pass the existing
 # ``isinstance(quantity, (int, float))`` guard, but they corrupt downstream
@@ -252,7 +252,7 @@ async def test_emit_rejects_non_numeric_quantity() -> None:
 # the same validation site that already rejects blank and non-numeric values,
 # *before* the store.write call — must land before C2 so no call site can ever
 # pass one through. Non-blocking residual raised by code-reviewer and
-# security-architect on ORA-21 PR #20.
+# security-architect on the C1 stream PR #20.
 # --------------------------------------------------------------------------- #
 
 

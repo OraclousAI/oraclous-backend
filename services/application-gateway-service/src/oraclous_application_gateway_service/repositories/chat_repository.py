@@ -1,4 +1,4 @@
-"""Chat store (ORAA-4 §21 repositories layer) — gateway-owned, org-scoped + per-member (ADR-019).
+"""Chat store (repositories layer) — gateway-owned, org-scoped + per-member (ADR-019).
 
 Every thread read/write filters ``organisation_id`` AND ``created_by_user_id`` (private
 to its creator within the org); a cross-tenant miss returns None (-> 404). Messages

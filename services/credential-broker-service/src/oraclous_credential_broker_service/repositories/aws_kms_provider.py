@@ -1,4 +1,4 @@
-"""AWS KMS provider (ORAA-4 §21 repositories layer, ADR-020) — the cloud drop-in for the KMS seam.
+"""AWS KMS provider (repositories layer, ADR-020) — the cloud drop-in for the KMS seam.
 
 The CMK never leaves AWS KMS; the broker only ever sees a wrapped DEK + its transiently-unwrapped
 plaintext. ``boto3`` is imported lazily so it is NOT a hard dependency of the local-default

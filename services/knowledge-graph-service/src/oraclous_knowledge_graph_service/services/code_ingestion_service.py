@@ -1,4 +1,4 @@
-"""Code ingestion use-case — the full 6-stage pipeline (ORAA-4 §21 services layer, #305).
+"""Code ingestion use-case — the full 6-stage pipeline (services layer, #305).
 
 Lift-and-reshape of legacy `develop@84152635 code_parser_service` (all six stages), org+graph
 scoped (the scope is server-injected at construction; the caller can never override it):

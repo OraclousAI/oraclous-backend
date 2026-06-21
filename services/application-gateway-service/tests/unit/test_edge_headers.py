@@ -100,7 +100,7 @@ def test_a_forged_cross_org_assertion_can_never_set_the_upstream_tenant() -> Non
 
 
 def test_response_headers_strip_fingerprinting_and_reflected_trust_headers() -> None:
-    # anti-fingerprinting (ORAA-279) + a reflect-guard: an upstream response carrying
+    # anti-fingerprinting + a reflect-guard: an upstream response carrying
     # `server`/`x-powered-by` or echoing a trust header must never reach the client.
     raw = [
         (b"content-type", b"application/json"),

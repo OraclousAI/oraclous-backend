@@ -1,4 +1,4 @@
-"""RAGAS-style retrieval-quality evaluation (ORAA-4 §21 services layer) (#331).
+"""RAGAS-style retrieval-quality evaluation (services layer) (#331).
 
 NATIVE LLM-judge implementations of the four RAGAS metrics — direct prompts against the one
 OpenAI-compatible judge client, NOT the ragas/langchain/pandas stack the legacy

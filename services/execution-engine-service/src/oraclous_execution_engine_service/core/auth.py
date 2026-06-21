@@ -1,4 +1,4 @@
-"""Identity seam (ORAA-4 §21 core layer) — pluggable principal verification (execution engine).
+"""Identity seam (core layer) — pluggable principal verification (execution engine).
 
 Mirrors the harness-runtime seam so the mode swap is local + consistent across services: `gateway`
 (ADR-018) trusts the gateway's verified `X-Principal-*`/`X-Organisation-Id` headers gated by

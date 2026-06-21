@@ -1,4 +1,4 @@
-"""Engine schedule routes (ORAA-4 §21 routes layer) — parse → ONE service call → HTTP map.
+"""Engine schedule routes (routes layer) — parse → ONE service call → HTTP map.
 
 Cron schedules are fired by Celery Beat (``fire_due``); the API only registers/lists/deletes them.
 """

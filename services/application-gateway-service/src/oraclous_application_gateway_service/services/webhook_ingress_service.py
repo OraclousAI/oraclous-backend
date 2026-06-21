@@ -1,4 +1,4 @@
-"""Webhook ingress (ORAA-4 §21 services layer) — verify an inbound signed webhook, then fire an
+"""Webhook ingress (services layer) — verify an inbound signed webhook, then fire an
 engine event under the subscription's org.
 
 The inbound POST carries NO bearer; the subscription id + the HMAC signature ARE the credential. The

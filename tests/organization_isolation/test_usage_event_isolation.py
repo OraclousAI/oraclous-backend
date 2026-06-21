@@ -1,10 +1,10 @@
-"""Organisation isolation for the ADR-009 usage-event stream (ORA-21, story C1).
+"""Organisation isolation for the ADR-009 usage-event stream (story C1).
 
 AC4: org A cannot read org B's usage events. This pins the *seam* contract —
 the stream's read is implicitly scoped to the ambient organisation-context
-(0f / ORA-14): there is no caller-supplied ``organisation_id`` argument, so a
+(0f): there is no caller-supplied ``organisation_id`` argument, so a
 principal can only ever read their own organisation's events. The data-layer
-row-level-security backstop (T1-M3) is A1 / ORA-16's concern and is proven
+row-level-security backstop (T1-M3) is A1's concern and is proven
 separately against real Postgres in ``test_two_org_substrate.py``; this asserts
 the API can never be *asked* for another organisation's data in the first place.
 

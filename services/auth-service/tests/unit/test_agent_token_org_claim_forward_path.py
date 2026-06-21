@@ -1,7 +1,7 @@
-"""Failing pin for the ORA-3 auth-side forward path (ORA-31 / R1-A2).
+"""Failing pin for the auth-side org-claim forward path (R1-A2).
 
-ORA-31's acceptance criterion: *"The agent JWT's ``organisation_id`` claim
-satisfies the ORA-3 forward path (packages/governance prefers the claim when
+The R1-A2 acceptance criterion: *"The agent JWT's ``organisation_id`` claim
+satisfies the org-claim forward path (packages/governance prefers the claim when
 present)."*
 
 That contract has two ends:
@@ -17,7 +17,7 @@ That contract has two ends:
 This is a single end-to-end pin against both seams; the governance fail-closed
 paths and the auth issuance shape are exercised in their own files.
 
-Behavioural reference: Contract ORA-3 (Option B, ratified 28 May 2026).
+Behavioural reference: the org-claim forward-path Contract (Option B, ratified 28 May 2026).
 
 RED until ``oraclous_auth_service.core.jwt_handler.create_agent_token`` exists.
 """

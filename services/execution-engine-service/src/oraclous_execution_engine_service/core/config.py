@@ -1,4 +1,4 @@
-"""Service configuration (ORAA-4 §21 core layer) — env → Settings (execution engine, R5).
+"""Service configuration (core layer) — env → Settings (execution engine, R5).
 
 The execution engine is a Layer-3 orchestrator: it runs harnesses as durable jobs, schedules them,
 manages the human task board, and resumes paused runs — calling the harness-runtime over HTTP (never

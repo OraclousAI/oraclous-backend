@@ -1,4 +1,4 @@
-"""Send-to-drafts connector (ORAA-4 §21 domain layer) — the delivery SINK (#489 / ADR-039 D1).
+"""Send-to-drafts connector (domain layer) — the delivery SINK (#489 / ADR-039 D1).
 
 The structural delivery boundary: a generator agent can only *deliver* through a **declared,
 ceiling-gated** sink, and this sink **only records a DRAFT — never sends or publishes**. The

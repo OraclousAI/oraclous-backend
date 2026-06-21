@@ -1,4 +1,4 @@
-"""Content-similarity post-projection pass (ORAA-4 §21 services layer — planning, no driver).
+"""Content-similarity post-projection pass (services layer — planning, no driver).
 
 Recipe enrichment Slice 3 (#269), enriched with per-type thresholds (#310). The deterministic recipe
 engine projects each structured record into its node/edge graph; THIS pass runs AFTER that

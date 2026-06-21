@@ -1,9 +1,9 @@
 """Agent-delegation relation edges carry ``organisation_id``; the delegation
 traversal honours scope, soft-revoke, live expiry, the cross-org boundary,
-and the no-transitive-delegation rule (ORA-35 / R1-C2; T1 + T2 + T2-M2).
+and the no-transitive-delegation rule (R1-C2; T1 + T2 + T2-M2).
 
 Proven at the data layer on the 0d real-substrate harness (``neo4j_driver``),
-following the precedent in ``test_rebac_org_edges.py`` (C1 / ORA-34). This
+following the precedent in ``test_rebac_org_edges.py`` (C1). This
 pins the ADR-006 reshape invariants the C2 delegation traversal MUST honour:
 
 * the ``DELEGATED_TO`` edge is scoped by ``organisation_id`` so a check in
@@ -21,15 +21,14 @@ pins the ADR-006 reshape invariants the C2 delegation traversal MUST honour:
 
 The async engine cannot be driven by the harness's *sync* ``neo4j_driver``,
 so this file asserts the org-scoped traversal invariants directly in Cypher
-— the same data-layer approach the ORA-34 / ORA-16 harness tests use. RED
+— the same data-layer approach the org-edge harness tests use. RED
 once the substrate / engine schema enforces it; the seed here writes the
 edges the reshape requires.
 
 NB ``neo4j:5.23-community``: property-existence constraints are Enterprise-
 only, so "every delegation edge carries ``organisation_id``" is proven by
 data-layer isolation (an un-scoped edge is not matched), not a NOT-NULL
-constraint. Flagged for the architect at Tests Review (same note as
-C1 / ORA-16 / ORA-34).
+constraint. Flagged for the architect at Tests Review (same note as C1).
 """
 
 from __future__ import annotations

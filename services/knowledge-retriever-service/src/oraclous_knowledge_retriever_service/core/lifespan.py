@@ -1,4 +1,4 @@
-"""App lifecycle (ORAA-4 §21 core layer) — open/close the read-only Neo4j driver (no schema).
+"""App lifecycle (core layer) — open/close the read-only Neo4j driver (no schema).
 
 Also opens an advisory async Redis client for the query cache (#308) when KRS_QUERY_CACHE is on;
 a Redis that fails to bind degrades to cache-off (the read path still serves), never a hard stop —
@@ -32,7 +32,7 @@ def _open_neo4j() -> Driver | None:
     settings = get_settings()
     if not settings.neo4j_uri:
         return None
-    # KRS is read-only (ORAA-58 / T6): it opens the driver but never creates schema/indexes.
+    # KRS is read-only (T6): it opens the driver but never creates schema/indexes.
     return make_neo4j_driver(settings)
 
 

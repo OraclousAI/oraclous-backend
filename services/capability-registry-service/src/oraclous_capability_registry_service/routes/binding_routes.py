@@ -1,4 +1,4 @@
-"""Harness↔graph binding routes (ORAA-4 §21 routes layer; ADR-029 §6 / Contract §G2).
+"""Harness↔graph binding routes (routes layer; ADR-029 §6 / Contract §G2).
 
 Thin handlers: parse → one BindingService call → DTO. ``organisation_id`` + ``user_id`` come from
 the authenticated principal (``OrganisationIdDep`` / ``PrincipalDep``), never the request body

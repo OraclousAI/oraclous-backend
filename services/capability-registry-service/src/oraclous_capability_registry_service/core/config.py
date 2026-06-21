@@ -1,4 +1,4 @@
-"""capability-registry-service settings (ORAA-4 §21 core layer).
+"""capability-registry-service settings (core layer).
 
 ``INTERNAL_SERVICE_KEY`` has no default: the service fails closed when absent
 (Structured Threat Catalogue T6, ADR-008). The identity seam mirrors the

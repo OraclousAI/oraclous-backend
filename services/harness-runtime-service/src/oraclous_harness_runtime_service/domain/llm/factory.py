@@ -1,4 +1,4 @@
-"""LLM client factory (ORAA-4 §21 domain layer; ADR-007).
+"""LLM client factory (domain layer; ADR-007).
 
 `fake` mode → the key-free deterministic client (CI/smoke). `live` mode → a real client built from
 the OHM model's ``protocol_shape`` + a BYOM key (resolved via the credential-broker; ADR-008 — no

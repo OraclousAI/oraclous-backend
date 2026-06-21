@@ -1,4 +1,4 @@
-"""Validator for the canonical org-scoped-labels YAML (ORA-51).
+"""Validator for the canonical org-scoped-labels YAML.
 
 Pins the YAML's shape so neither side (substrate import-time read or lint-time
 read) can be silently poisoned by a malformed update. Each failure mode

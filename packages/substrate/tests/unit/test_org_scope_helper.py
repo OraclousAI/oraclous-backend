@@ -1,4 +1,4 @@
-"""ORA-52 — substrate org-scope helper (AC1, ADR-012 §1/§1b).
+"""Substrate org-scope helper (AC1, ADR-012 §1/§1b).
 
 The substrate access seam must publish ONE canonical source for:
 
@@ -9,7 +9,7 @@ The substrate access seam must publish ONE canonical source for:
 
 Every module that needs either MUST source it from this helper — never
 inline-derive. This pins the ADR-012 §1/§1b drift-prevention contract that
-``solution-architect`` flagged on the ORA-18 Code Review: a change to the
+``solution-architect`` flagged on the Code Review: a change to the
 property name or the predicate spelling propagates from one place.
 
 These tests fail RED until ``backend-implementer`` adds the helper surface to
@@ -17,7 +17,7 @@ These tests fail RED until ``backend-implementer`` adds the helper surface to
 ``scoped_write_node`` to compose it.
 
 Imports of the not-yet-built helper symbols are function-local per
-ORA-48 / TST001 — collection succeeds; tests fail at runtime with
+TST001 — collection succeeds; tests fail at runtime with
 ``ImportError`` until the paired ``[impl]`` PR lands.
 """
 

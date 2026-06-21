@@ -1,4 +1,4 @@
-"""OAuth login use-cases (ORAA-4 §21 services layer, threats T-OAUTH / T-OAUTH-PLAINTEXT).
+"""OAuth login use-cases (services layer, threats T-OAUTH / T-OAUTH-PLAINTEXT).
 
 begin_login → a signed-free PKCE handshake: generate state + verifier (verifier kept server-side,
 encrypted, in oauth_states), build the provider authorize URL with the S256 challenge. callback →

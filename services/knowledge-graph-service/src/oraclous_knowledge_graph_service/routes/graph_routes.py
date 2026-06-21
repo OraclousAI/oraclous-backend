@@ -1,4 +1,4 @@
-"""Graph CRUD routes (ORAA-4 §21 routes layer).
+"""Graph CRUD routes (routes layer).
 
 Handlers are thin: parse the request, make ONE service call, map the result (or a domain error) to
 HTTP. No business logic, no DB access, no non-BaseModel classes here (§21 routes rules). The org

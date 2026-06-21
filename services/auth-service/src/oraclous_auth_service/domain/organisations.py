@@ -1,4 +1,4 @@
-"""Organisation domain rules (ORAA-4 §21 domain layer) — slug + role hierarchy, no I/O.
+"""Organisation domain rules (domain layer) — slug + role hierarchy, no I/O.
 
 Pure functions: ``slugify`` derives a URL handle from a name (the repository resolves collisions by
 suffixing); ``OrgRole`` + ``role_rank``/``can_manage`` express the owner > admin > member hierarchy

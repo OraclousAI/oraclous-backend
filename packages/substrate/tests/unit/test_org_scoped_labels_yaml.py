@@ -1,4 +1,4 @@
-"""ORG_SCOPED_LABELS derives from the canonical YAML at substrate import (ORA-51).
+"""ORG_SCOPED_LABELS derives from the canonical YAML at substrate import.
 
 RED until ``backend-implementer`` makes
 ``packages/substrate/src/oraclous_substrate/schema/neo4j.py`` derive its
@@ -12,14 +12,14 @@ This is the v2 single-source-of-truth swap: the v1 mirror constant in
 lint) deriving from the same YAML file. The substrate side is pinned here;
 the lint side is pinned in ``tests/lint/test_check_org_scoping.py``.
 
-The pre-ORA-51 behaviour the substrate must preserve (see ``neo4j.py`` on
+The prior behaviour the substrate must preserve (see ``neo4j.py`` on
 origin/main):
 
   ORG_SCOPED_LABELS = ("__Entity__", "__Community__", "__Contradiction__", "Chunk")
   ORG_SCOPED_RELATIONSHIP_TYPES = ("IN_COMMUNITY",)
 
 The YAML must carry exactly these so ``apply()`` continues to index the same
-labels and relationship types. The brief's example YAML (see ORA-51
+labels and relationship types. The brief's example YAML (see the brief
 description) shows ``relationship_types: []``, which — if taken literally —
 would drop ``IN_COMMUNITY`` from the org-scoped relationship-index loop.
 That contradicts the brief's own "No application behaviour change at runtime"

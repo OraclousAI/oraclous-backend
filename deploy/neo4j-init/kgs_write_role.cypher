@@ -1,4 +1,4 @@
-// Neo4j write-role initialisation for knowledge-graph-service (ORAA-53).
+// Neo4j write-role initialisation for knowledge-graph-service.
 //
 // Creates a dedicated `kgs_writer` user with the `publisher` role (read +
 // write + schema-element creation; no admin/RBAC capabilities).  Principle of

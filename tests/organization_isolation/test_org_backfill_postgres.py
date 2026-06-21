@@ -1,4 +1,4 @@
-"""Idempotent organisation backfill of the legacy Postgres tenant tables (ORA-24 / D1).
+"""Idempotent organisation backfill of the legacy Postgres tenant tables (D1).
 
 RED until ``backend-implementer`` adds ``oraclous_substrate.migrations.org_backfill``.
 
@@ -15,7 +15,7 @@ These are *data + schema* tests on the real Postgres harness: a legacy un-scoped
 state is seeded, the migration runs, and the catalog + rows are introspected.
 Per the product-planner boundary note (2026-05-29) the migration is *authored and
 rehearsed* now; the production run is gated on A2/A3. Runtime RLS write/query
-enforcement is A2 (ORA-17), explicitly out of scope here — these assert the
+enforcement is A2, explicitly out of scope here — these assert the
 backfill leaves no row unscoped and re-running is a no-op, plus a tested rollback.
 
 Migration contract under test (to be implemented):

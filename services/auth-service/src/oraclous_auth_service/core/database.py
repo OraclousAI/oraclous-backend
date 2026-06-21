@@ -1,4 +1,4 @@
-"""Async Postgres engine + session (ORAA-4 §21 core layer — connection setup).
+"""Async Postgres engine + session (core layer — connection setup).
 
 Connections are opened here and in `core/lifespan`; the actual SQL lives in `repositories/` (the
 only layer that touches a driver, per §21 rule 3).

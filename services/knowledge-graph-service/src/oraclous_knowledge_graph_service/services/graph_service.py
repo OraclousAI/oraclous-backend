@@ -1,7 +1,7 @@
-"""Graph use-cases (ORAA-4 §21 services layer — all business logic lives here, not in routes).
+"""Graph use-cases (services layer — all business logic lives here, not in routes).
 
 Replaces the legacy inline `GraphNodeService` stub that lived *inside* the route module
-(a §21 violation). The org scope is enforced fail-closed in the repository
+(a service-architecture violation). The org scope is enforced fail-closed in the repository
 (`enforced_organisation_id`); this layer adds the per-user ownership gate.
 """
 
@@ -126,7 +126,7 @@ class GraphService:
         await self._owned_or_404(graph_id=graph_id, user_id=user_id)
         # Cascade the graph's Neo4j nodes/edges before the Postgres row, so a Neo4j failure aborts
         # the delete (surfaced, not swallowed) and the metadata row survives to retry — never an
-        # orphaned graph (the leak ORAA-261 fixes). When the substrate is unwired (unit tests /
+        # orphaned graph (the leak this fixes). When the substrate is unwired (unit tests /
         # Neo4j unconfigured) `write_repo` is None and only the Postgres row is removed.
         if self._write_repo is not None:
             await asyncio.to_thread(self._write_repo.delete_graph_nodes, graph_id=str(graph_id))

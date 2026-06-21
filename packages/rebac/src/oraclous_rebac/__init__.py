@@ -1,5 +1,4 @@
-"""oraclous-rebac — Layer 1 ReBAC engine (ORA-34) + substrate-seam adapter
-(ORA-46).
+"""oraclous-rebac — Layer 1 ReBAC engine + substrate-seam adapter.
 
 Extracted from the legacy ``knowledge-graph-builder`` ReBAC service and
 reshaped so every relation edge carries ``organisation_id`` (ADR-006). See
