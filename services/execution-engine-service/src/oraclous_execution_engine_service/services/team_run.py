@@ -60,12 +60,15 @@ def make_harness_dispatch(
     trace_id: uuid.UUID | None = None,
     parent_execution_id: uuid.UUID | None = None,
     on_child: Callable[[str], None] | None = None,
+    on_cost: Callable[[int], None] | None = None,
 ) -> DispatchFn:
     """Build a ``run_team`` dispatch that runs each member as a real harness execution.
 
     Run-tree correlation (#471): ``trace_id`` (the team-run root) + ``parent_execution_id`` are
     threaded into every member's harness run so the harness stamps each into the same tree; each
-    member's harness execution id is surfaced via ``on_child`` so the engine records the tree."""
+    member's harness execution id is surfaced via ``on_child`` so the engine records the tree.
+    O4 metering (#472): each member's ``total_tokens`` is surfaced via ``on_cost`` so the engine
+    accumulates the run's RAW token cost from the harness's own metering (ADR-009)."""
 
     async def dispatch(member: OHMMember, envelopes: list[HandoffEnvelope], fan_item: Any) -> Any:
         sub = sub_harnesses.get(member.role)
@@ -88,6 +91,9 @@ def make_harness_dispatch(
         child_id = result.get("id")
         if on_child is not None and child_id is not None:
             on_child(str(child_id))
+        # O4 metering (#472): accumulate this member's RAW token cost (0 if the harness omitted it)
+        if on_cost is not None:
+            on_cost(int(result.get("total_tokens") or 0))
         return {"output": result.get("output"), "status": status}
 
     return dispatch
@@ -103,17 +109,20 @@ async def run_team_harness(
     trace_id: uuid.UUID | None = None,
     parent_execution_id: uuid.UUID | None = None,
     on_child: Callable[[str], None] | None = None,
+    on_cost: Callable[[int], None] | None = None,
 ) -> TeamRunResult:
     """Run a Team Harness member DAG, dispatching each member as a real harness execution.
 
     ``completed`` (members that already ran in a prior drive) is passed through so a resume past a
     human gate does not re-dispatch already-finished members (their side effects fire once).
-    ``trace_id``/``parent_execution_id``/``on_child`` thread + collect the run-tree (#471)."""
+    ``trace_id``/``parent_execution_id``/``on_child`` thread + collect the run-tree (#471);
+    ``on_cost`` accumulates the run's RAW token cost (#472)."""
     dispatch = make_harness_dispatch(
         harness,
         sub_harnesses or {},
         trace_id=trace_id,
         parent_execution_id=parent_execution_id,
         on_child=on_child,
+        on_cost=on_cost,
     )
     return await run_team(manifest, dispatch, gate_decisions=gate_decisions, completed=completed)

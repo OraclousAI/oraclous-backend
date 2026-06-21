@@ -18,7 +18,7 @@ mapper configuration, so they must be real types.
 import uuid
 from typing import Any
 
-from sqlalchemy import String, Text
+from sqlalchemy import Integer, String, Text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -52,3 +52,8 @@ class EngineTeamRun(BaseModel):
     # reassembled from the engine's own record (no cross-DB query). Both org-scoped by the row.
     root_execution_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
     child_execution_ids: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
+    # ── O4 metering (ADR-037 Decision 5 / #472; additive) ─────────────────────────────────────
+    # Accumulated RAW token cost of this run = Σ the member harness executions' total_tokens (read
+    # from each dispatch response — the harness's existing metering, ADR-009 raw counts, never a
+    # price). Read by the O4 light-status surface; usd is priced read-time, never persisted here.
+    cost_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
