@@ -1709,6 +1709,7 @@ components:
                 - NOT_FOUND
                 - METHOD_NOT_ALLOWED
                 - CONFLICT
+                - CREDENTIALS_REQUIRED
                 - PAYLOAD_TOO_LARGE
                 - UNSUPPORTED_MEDIA_TYPE
                 - RATE_LIMITED
@@ -1731,6 +1732,24 @@ components:
               minItems: 1
               description: Present only for VALIDATION_FAILED. Closed sub-vocabulary; never the raw offending value.
               items: { $ref: "#/components/schemas/ErrorDetail" }
+            needs_credential:
+              type: object
+              additionalProperties: false
+              required: [requirement_id, provider]
+              description: Present only for CREDENTIALS_REQUIRED. Names the missing credential requirement + provider so the FE can prompt onboarding. Leak-safe machine tokens — never a value, URL, host, or secret.
+              properties:
+                requirement_id:
+                  type: string
+                  minLength: 1
+                  maxLength: 64
+                  pattern: "^[A-Za-z0-9][A-Za-z0-9_.-]*$"
+                  description: The missing requirement's type token, e.g. api_key. Never a value.
+                provider:
+                  type: string
+                  minLength: 1
+                  maxLength: 48
+                  pattern: "^[A-Za-z0-9][A-Za-z0-9_.-]*$"
+                  description: The provider the credential is for, e.g. web_search. Never a value.
   responses:
     UpstreamJson:
       description: Success — a JSON body produced and owned by the upstream service, streamed through unchanged.

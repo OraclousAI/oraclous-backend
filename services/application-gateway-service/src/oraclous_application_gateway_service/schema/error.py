@@ -1,6 +1,6 @@
-"""Gateway own-error envelope (ORAA-4 §21 schema layer).
+"""Gateway own-error envelope (schema layer).
 
-Builds the canonical ORA-37 error envelope (``{"error": {...}}``) via the shared
+Builds the canonical error envelope (``{"error": {...}}``) via the shared
 ``oraclous_errors`` emitter for the gateway's OWN errors. The server-minted
 ``requestId`` is read from ``request.state`` (set by ``RequestIdMiddleware``) and
 echoed in the ``X-Request-Id`` response header by that middleware. Messages are the
@@ -17,6 +17,7 @@ from fastapi.responses import JSONResponse
 from oraclous_errors import (
     ErrorCode,
     FieldError,
+    NeedsCredential,
     build_envelope,
     http_status_for,
     new_request_id,
@@ -41,13 +42,15 @@ def gateway_error(
     message: str | None = None,
     retryable: bool | None = None,
     details: Sequence[FieldError] | None = None,
+    needs_credential: NeedsCredential | None = None,
     headers: dict[str, str] | None = None,
 ) -> JSONResponse:
     """Build a contract-conformant error response for one of the gateway's own errors.
 
     ``status_code`` defaults to the code's taxonomy status; pass it explicitly to
     preserve a more specific HTTP semantic (e.g. 502 Bad Gateway with a
-    SERVICE_UNAVAILABLE code). ``headers`` (e.g. ``WWW-Authenticate``) are attached
+    SERVICE_UNAVAILABLE code). ``needs_credential`` is the optional leak-safe token for a
+    CREDENTIALS_REQUIRED response. ``headers`` (e.g. ``WWW-Authenticate``) are attached
     verbatim; ``X-Request-Id`` is added by the middleware.
     """
     body = build_envelope(
@@ -56,6 +59,7 @@ def gateway_error(
         message=message,
         retryable=retryable,
         details=details,
+        needs_credential=needs_credential,
     )
     return JSONResponse(
         status_code=status_code if status_code is not None else http_status_for(code),

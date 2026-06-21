@@ -1,4 +1,4 @@
-"""The closed ORA-37 error-code taxonomy and its server-side policy.
+"""The closed error-code taxonomy and its server-side policy.
 
 Mirrors ``packages/errors/contract/error-code-taxonomy.json`` and the curated
 message of each ``packages/errors/contract/samples/<CODE>.json``. The contract
@@ -15,7 +15,7 @@ from enum import StrEnum
 
 
 class ErrorCode(StrEnum):
-    """The 13-value closed taxonomy. The frontend branches only on this code."""
+    """The 14-value closed taxonomy. The frontend branches only on this code."""
 
     VALIDATION_FAILED = "VALIDATION_FAILED"
     MALFORMED_REQUEST = "MALFORMED_REQUEST"
@@ -24,6 +24,7 @@ class ErrorCode(StrEnum):
     NOT_FOUND = "NOT_FOUND"
     METHOD_NOT_ALLOWED = "METHOD_NOT_ALLOWED"
     CONFLICT = "CONFLICT"
+    CREDENTIALS_REQUIRED = "CREDENTIALS_REQUIRED"
     PAYLOAD_TOO_LARGE = "PAYLOAD_TOO_LARGE"
     UNSUPPORTED_MEDIA_TYPE = "UNSUPPORTED_MEDIA_TYPE"
     RATE_LIMITED = "RATE_LIMITED"
@@ -56,6 +57,9 @@ CODE_POLICY: dict[ErrorCode, CodePolicy] = {
     ),
     ErrorCode.CONFLICT: CodePolicy(
         409, False, "The request conflicts with the current state of the resource."
+    ),
+    ErrorCode.CREDENTIALS_REQUIRED: CodePolicy(
+        409, False, "A required credential is missing or needs authorization."
     ),
     ErrorCode.PAYLOAD_TOO_LARGE: CodePolicy(413, False, "The request payload is too large."),
     ErrorCode.UNSUPPORTED_MEDIA_TYPE: CodePolicy(

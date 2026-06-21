@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://oraclous.dev/contracts/error-envelope/v1.json",
   "title": "Gateway error envelope",
-  "description": "Canonical shape for every 4xx/5xx response the gateway produces and the frontend api-client consumes. Contract ORA-37; canonical home Interface Contracts §3. additionalProperties is false at every level so no stack/cause/exception/trace field can ever exist.",
+  "description": "Canonical shape for every 4xx/5xx response the gateway produces and the frontend api-client consumes. Canonical home: oraclous-knowledge interface-contracts §3. additionalProperties is false at every level so no stack/cause/exception/trace field can ever exist.",
   "type": "object",
   "additionalProperties": false,
   "required": ["error"],
@@ -23,6 +23,7 @@
             "NOT_FOUND",
             "METHOD_NOT_ALLOWED",
             "CONFLICT",
+            "CREDENTIALS_REQUIRED",
             "PAYLOAD_TOO_LARGE",
             "UNSUPPORTED_MEDIA_TYPE",
             "RATE_LIMITED",
@@ -66,6 +67,28 @@
               }
             }
           }
+        },
+        "needs_credential": {
+          "description": "Present only for CREDENTIALS_REQUIRED (and optional even there). Names the missing credential requirement + provider so the FE can prompt onboarding. Leak-safe machine tokens — the pattern forbids '/', ':', '@' and whitespace, so never a value, URL, host, or secret.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["requirement_id", "provider"],
+          "properties": {
+            "requirement_id": {
+              "description": "The missing requirement's type token, e.g. api_key. Never a value.",
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*$"
+            },
+            "provider": {
+              "description": "The provider the credential is for, e.g. web_search. Never a value.",
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 48,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*$"
+            }
+          }
         }
       },
       "allOf": [
@@ -77,6 +100,15 @@
           },
           "then": { "required": ["details"] },
           "else": { "not": { "required": ["details"] } }
+        },
+        {
+          "$comment": "needs_credential is permitted only for CREDENTIALS_REQUIRED (optional even there).",
+          "if": {
+            "required": ["code"],
+            "properties": { "code": { "const": "CREDENTIALS_REQUIRED" } }
+          },
+          "then": {},
+          "else": { "not": { "required": ["needs_credential"] } }
         }
       ]
     }

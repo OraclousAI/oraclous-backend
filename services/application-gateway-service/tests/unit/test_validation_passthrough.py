@@ -1,11 +1,15 @@
-"""Unit: leak-safe 422 extraction — adversarial loc/type inputs (#225, #281)."""
+"""Unit: leak-safe 422 + 409-needs_credential extraction — adversarial inputs (#225, #281, #502)."""
 
 from __future__ import annotations
 
+import json
+
 from oraclous_application_gateway_service.domain.validation_passthrough import (
     details_from_errors,
+    extract_needs_credential,
     extract_validation_details,
 )
+from oraclous_errors import ErrorCode, NeedsCredential, build_envelope, new_request_id
 from tools.contract.error_envelope import scan_forbidden
 
 
@@ -13,6 +17,77 @@ def _raw(detail: object) -> bytes:
     import json
 
     return json.dumps({"detail": detail}).encode()
+
+
+def _nc_raw(needs_credential: object) -> bytes:
+    # the registry 409 body shape (#490): detail/error_code + the nested needs_credential token
+    return json.dumps(
+        {
+            "detail": "credential not mapped",
+            "error_code": "credential_not_mapped",
+            "needs_credential": needs_credential,
+            "login_url": "https://idp.internal:8443/oauth/authorize?secret=tvly-xyz",
+            "missing_scopes": ["read"],
+        }
+    ).encode()
+
+
+def test_needs_credential_clean_token_extracts() -> None:
+    nc = extract_needs_credential(_nc_raw({"requirement_id": "api_key", "provider": "web_search"}))
+    assert nc == NeedsCredential("api_key", "web_search")
+
+
+def test_needs_credential_never_surfaces_login_url_or_scopes() -> None:
+    # the registry body carries a login_url with an internal host + a secret query param — the
+    # extractor must surface ONLY requirement_id/provider, never the URL/host/secret/scopes.
+    nc = extract_needs_credential(_nc_raw({"requirement_id": "api_key", "provider": "web_search"}))
+    assert nc is not None
+    blob = f"{nc.requirement_id} {nc.provider}"
+    assert "idp.internal" not in blob and "tvly-xyz" not in blob and "read" not in blob
+    assert scan_forbidden(blob) == []
+
+
+def test_needs_credential_url_or_host_provider_is_neutralised() -> None:
+    # an attacker-shaped provider can never carry a URL/host/@ through the token charset
+    for bad in ("http://evil/cb", "idp.internal:8443", "user@host", "a/../b"):
+        nc = extract_needs_credential(_nc_raw({"requirement_id": "api_key", "provider": bad}))
+        if nc is not None:
+            assert "/" not in nc.provider and ":" not in nc.provider and "@" not in nc.provider
+            # and whatever survives is always a buildable (contract-conformant) envelope
+            build_envelope(
+                ErrorCode.CREDENTIALS_REQUIRED, request_id=new_request_id(), needs_credential=nc
+            )
+
+
+def test_needs_credential_oversized_is_capped() -> None:
+    nc = extract_needs_credential(_nc_raw({"requirement_id": "a" * 500, "provider": "b" * 500}))
+    assert nc is not None and len(nc.requirement_id) <= 64 and len(nc.provider) <= 48
+
+
+def test_needs_credential_internal_host_ip_or_digit_run_is_dropped() -> None:
+    # a token whose SHAPE is an internal host / private IP / long digit run survives the charset but
+    # is dropped at the edge (the runtime mirror of the forbidden-substring classes) → no signal,
+    # never a leak. The proxy then falls back to a bare CONFLICT, leaking nothing.
+    for bad in (
+        "db.svc.cluster.local",
+        "broker.internal",
+        "10.0.0.5",
+        "192.168.1.1",
+        "4111111111111111",  # 16-digit run
+    ):
+        nc = extract_needs_credential(_nc_raw({"requirement_id": "api_key", "provider": bad}))
+        assert nc is None, bad
+    # a clean machine-token provider is unaffected
+    ok = extract_needs_credential(_nc_raw({"requirement_id": "api_key", "provider": "web_search"}))
+    assert ok is not None and ok.provider == "web_search"
+
+
+def test_needs_credential_absent_or_malformed_returns_none() -> None:
+    assert extract_needs_credential(b'{"detail":"x","error_code":"no_executor"}') is None
+    assert extract_needs_credential(_nc_raw("not-a-dict")) is None
+    assert extract_needs_credential(_nc_raw({"requirement_id": "api_key"})) is None  # no provider
+    assert extract_needs_credential(b"not json") is None
+    assert extract_needs_credential(b"") is None
 
 
 def test_dict_key_value_in_loc_is_neutralised() -> None:

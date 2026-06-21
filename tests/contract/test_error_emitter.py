@@ -1,4 +1,4 @@
-"""Conformance tests for the ``oraclous_errors`` emitter against the ORA-37 contract.
+"""Conformance tests for the ``oraclous_errors`` emitter against the error-envelope contract.
 
 Pairs with ``test_error_envelope_fixture.py`` (which proves the fixture artifacts
 are internally consistent); this proves the Python emitter never drifts from those
@@ -20,6 +20,7 @@ from oraclous_errors import (
     REQUEST_ID_PATTERN,
     ErrorCode,
     FieldError,
+    NeedsCredential,
     build_envelope,
     default_message,
     new_request_id,
@@ -45,6 +46,12 @@ def _envelope_for(code: ErrorCode) -> dict:
     if code is ErrorCode.VALIDATION_FAILED:
         return build_envelope(
             code, request_id=new_request_id(), details=[FieldError("email", "INVALID_FORMAT")]
+        )
+    if code is ErrorCode.CREDENTIALS_REQUIRED:
+        return build_envelope(
+            code,
+            request_id=new_request_id(),
+            needs_credential=NeedsCredential("api_key", "web_search"),
         )
     return build_envelope(code, request_id=new_request_id())
 
@@ -122,6 +129,46 @@ def test_details_forbidden_on_other_codes() -> None:
         build_envelope(
             ErrorCode.NOT_FOUND, request_id=new_request_id(), details=[FieldError("x", "BAD")]
         )
+
+
+# --- needs_credential discipline -------------------------------------------
+
+
+def test_needs_credential_only_on_credentials_required() -> None:
+    with pytest.raises(ValueError):
+        build_envelope(
+            ErrorCode.NOT_FOUND,
+            request_id=new_request_id(),
+            needs_credential=NeedsCredential("api_key", "web_search"),
+        )
+
+
+def test_needs_credential_charset_fail_closed() -> None:
+    # a value that slipped past an extractor (URL/host/path in either field) raises at the seam
+    for bad in (
+        NeedsCredential("api_key", "http://evil/cb"),
+        NeedsCredential("bad/id", "web_search"),
+        NeedsCredential("api_key", "user@host"),
+    ):
+        with pytest.raises(ValueError):
+            build_envelope(
+                ErrorCode.CREDENTIALS_REQUIRED, request_id=new_request_id(), needs_credential=bad
+            )
+
+
+def test_credentials_required_envelope_carries_the_token(
+    validator: Draft202012Validator,
+) -> None:
+    env = build_envelope(
+        ErrorCode.CREDENTIALS_REQUIRED,
+        request_id=new_request_id(),
+        needs_credential=NeedsCredential("api_key", "web_search"),
+    )
+    assert validator.is_valid(env)
+    assert env["error"]["needs_credential"] == {
+        "requirement_id": "api_key",
+        "provider": "web_search",
+    }
 
 
 # --- upstream status normalisation -----------------------------------------
