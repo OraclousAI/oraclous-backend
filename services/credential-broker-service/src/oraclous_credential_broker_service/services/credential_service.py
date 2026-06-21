@@ -1,4 +1,4 @@
-"""Credential use-cases (ORAA-4 §21 services layer).
+"""Credential use-cases (services layer).
 
 Orchestrates the org-scoped repository with the encryption seam: the repository encrypts on write
 (AES-256-GCM). Credentials are personal, so every user-facing read/write is scoped by BOTH the

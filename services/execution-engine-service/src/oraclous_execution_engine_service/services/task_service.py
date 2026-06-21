@@ -1,4 +1,4 @@
-"""Human task board (ORAA-4 §21 services layer).
+"""Human task board (services layer).
 
 The engine's task board is its own ESCALATED ``engine_jobs`` (each parked job carries the harness
 ``assignment_id``). Completing a task drives the harness over HTTP — it marks the assignment

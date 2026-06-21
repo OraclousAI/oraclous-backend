@@ -1,4 +1,4 @@
-"""Published-agent invoke (ORAA-4 §21 services layer) — resolve the bound agent, run it, project.
+"""Published-agent invoke (services layer) — resolve the bound agent, run it, project.
 
 The per-key binding (the key's bound slug must match the invoked agent) is enforced upstream in the
 ``require_bound_key`` dependency. Here: resolve the slug to a published agent IN THE KEY'S ORG, run

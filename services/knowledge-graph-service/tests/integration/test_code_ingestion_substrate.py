@@ -1,4 +1,4 @@
-"""Real-Neo4j integration test for the 6-stage code-ingestion pipeline (#305, ORAA-4 §22).
+"""Real-Neo4j integration test for the 6-stage code-ingestion pipeline (#305).
 
 Proves the restored stages against a live ``neo4j:5.23-community`` (a dedicated module-scoped
 container, mirroring ``test_community_gds.py`` — the repo-root ``neo4j_driver`` session fixture is

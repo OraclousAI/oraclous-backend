@@ -1,4 +1,4 @@
-"""AES-256-GCM credential encryption (ORAA-4 §21 core layer, threat T6 / plaintext-at-rest).
+"""AES-256-GCM credential encryption (core layer, threat T6 / plaintext-at-rest).
 
 Lifted from the legacy ``credential-broker-service/app/core/security.py``: the base64
 ``ENCRYPTION_KEY`` decodes to 32 bytes (AES-256); a fresh 96-bit nonce per encrypt; the stored value

@@ -4,7 +4,7 @@ R3.5 service #5 — the unified **capability + tool registry** (ported from the 
 `oraclous-core-service`). A *tool* is a capability descriptor of `kind=tool`; the registry is the
 sole authority for capability lookups, matching, and (later slices) tool execution.
 
-Layered per ORAA-4 §21: `routes → services → domain → repositories → core`. Every descriptor is
+Layered per the service-architecture standard: `routes → services → domain → repositories → core`. Every descriptor is
 org-scoped (ADR-006); the organisation is resolved from the authenticated principal, never a request
 body (ORG001). Identity is a pluggable seam (`AUTH_MODE=dev` binds a fixed dev principal/org from a
 bearer; `AUTH_MODE=jwt` decodes the real auth-service HS256 token).

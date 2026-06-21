@@ -1,1 +1,1 @@
-"""routes layer (ORAA-4 §21 knowledge-retriever-service)."""
+"""routes layer (knowledge-retriever-service)."""

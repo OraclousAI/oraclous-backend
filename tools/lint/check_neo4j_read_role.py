@@ -1,5 +1,5 @@
 """Static guardrail: knowledge-retriever-service must use the read-role Neo4j
-credential and must contain no write Cypher (ORAA-58 / T6).
+credential and must contain no write Cypher (T6).
 
 Acceptance criterion AC2: "No write Cypher (CREATE, MERGE, SET, DELETE) in
 retriever service."
@@ -124,7 +124,7 @@ class _Visitor(ast.NodeVisitor):
                     self.path,
                     line,
                     f"Cypher write keyword {keyword!r} in string literal inside "
-                    "knowledge-retriever-service; KRS is read-only (ORAA-58 / T6)",
+                    "knowledge-retriever-service; KRS is read-only (T6)",
                 )
             )
 
@@ -140,7 +140,7 @@ class _Visitor(ast.NodeVisitor):
                     self.path,
                     line,
                     f"admin env var {name!r} used in knowledge-retriever-service; "
-                    "use KRS_NEO4J_* credentials instead (ORAA-58 / T6)",
+                    "use KRS_NEO4J_* credentials instead (T6)",
                 )
             )
 
@@ -156,7 +156,7 @@ class _Visitor(ast.NodeVisitor):
                     self.path,
                     line,
                     f"write-role env var {name!r} used in knowledge-retriever-service; "
-                    "KRS must use KRS_NEO4J_* credentials, not KGS_NEO4J_* (ORAA-58 / T6)",
+                    "KRS must use KRS_NEO4J_* credentials, not KGS_NEO4J_* (T6)",
                 )
             )
 
@@ -203,7 +203,7 @@ class _Visitor(ast.NodeVisitor):
                         self.path,
                         node.lineno,
                         f"hardcoded Neo4j URI {node.value!r} in knowledge-retriever-service; "
-                        "connection URI must come from KRS_NEO4J_URI (ORAA-58)",
+                        "connection URI must come from KRS_NEO4J_URI",
                     )
                 )
         self.generic_visit(node)

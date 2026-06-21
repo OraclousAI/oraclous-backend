@@ -1,4 +1,4 @@
-"""OAuth scope reasoning (ORAA-4 §21 domain layer). Pure, no I/O."""
+"""OAuth scope reasoning (domain layer). Pure, no I/O."""
 
 from __future__ import annotations
 

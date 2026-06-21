@@ -1,4 +1,4 @@
-"""MCP server route (ORAA-4 §21 routes layer) — POST /v1/mcp, JSON-RPC over Streamable HTTP.
+"""MCP server route (routes layer) — POST /v1/mcp, JSON-RPC over Streamable HTTP.
 
 The integration-key bearer is the auth (a member JWT -> 403, in the dep). A single JSON-RPC message
 per POST (the 2025-06-18 revision dropped batching); the three methods are request/response (no

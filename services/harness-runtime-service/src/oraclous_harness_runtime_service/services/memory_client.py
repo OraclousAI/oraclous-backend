@@ -1,4 +1,4 @@
-"""Post-run agent-memory writer (ORAA-4 §21 services layer) — issue #332 / ADR-027 §5.
+"""Post-run agent-memory writer (services layer) — issue #332 / ADR-027 §5.
 
 FIRE-AND-FORGET + FAIL-SOFT — the zero-risk constraint, MANDATORY: a memory write must NEVER fail,
 block, or slow a run. ``schedule_*`` spawns a detached asyncio task (strong-ref'd so it is not

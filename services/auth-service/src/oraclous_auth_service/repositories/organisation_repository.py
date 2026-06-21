@@ -1,4 +1,4 @@
-"""Organisation repository (ORAA-4 §21 repositories layer — the only ``organisations`` SQL).
+"""Organisation repository (repositories layer — the only ``organisations`` SQL).
 
 Lookups are by id/slug; authorization (is the caller a member?) is enforced by the service via the
 membership repository, not here — this is a plain data accessor. The slug unique index is the

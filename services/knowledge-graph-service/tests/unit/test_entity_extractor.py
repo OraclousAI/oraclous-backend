@@ -393,7 +393,7 @@ async def test_ingest_strict_ontology_drops_off_type_entity_before_write() -> No
     assert result.entity_relationships == 0  # WORKS_AT edge dropped with Company
 
 
-# --- ORAA-272: chunks extract CONCURRENTLY (capped), not one-await-at-a-time --------------------
+# --- chunks extract CONCURRENTLY (capped), not one-await-at-a-time --------------------
 class _ConcurrencyProbeLLM(LLMInterface):
     """Records the observed max number of in-flight `extract_for_chunk` calls.
 

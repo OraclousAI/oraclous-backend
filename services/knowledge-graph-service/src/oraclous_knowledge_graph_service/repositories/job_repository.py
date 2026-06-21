@@ -1,4 +1,4 @@
-"""Ingestion-job repository (ORAA-4 §21 repositories layer — the only `ingestion_jobs` SQL).
+"""Ingestion-job repository (repositories layer — the only `ingestion_jobs` SQL).
 
 Org-scoped fail-closed via `oraclous_substrate.access.enforced_organisation_id()` (ADR-006), exactly
 like the graph repository. Used from the request path (create/get/list) and from the Celery worker

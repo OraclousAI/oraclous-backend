@@ -1,4 +1,4 @@
-"""Integration: GET /v1/harnesses/spend vs real Postgres (#252; ORAA-4 §22).
+"""Integration: GET /v1/harnesses/spend vs real Postgres (#252).
 
 Seeds ``harness_executions`` for two orgs across two models (one priced, one unknown), then proves
 the real SQL aggregation + read-time pricing:

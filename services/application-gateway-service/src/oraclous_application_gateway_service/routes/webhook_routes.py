@@ -1,4 +1,4 @@
-"""Webhook ingress + subscription routes (ORAA-4 §21 routes layer).
+"""Webhook ingress + subscription routes (routes layer).
 
 Two planes:
 * ``POST /v1/webhooks/{subscription_id}`` — PUBLIC (no bearer; the id + the HMAC signature are the

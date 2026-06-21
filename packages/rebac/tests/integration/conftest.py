@@ -1,10 +1,9 @@
-"""Integration fixtures for the ReBAC engine-resolver adapter end-to-end suite
-(ORA-46).
+"""Integration fixtures for the ReBAC engine-resolver adapter end-to-end suite.
 
 These fixtures spin up an ephemeral Neo4j container and expose an *async*
 ``neo4j.AsyncDriver`` — the engine is async and the substrate harness's shared
-``neo4j_driver`` is sync (the ORA-34 integration suite worked around this by
-asserting in raw Cypher; ORA-46 needs the engine actually wired up, so an
+``neo4j_driver`` is sync (the engine integration suite worked around this by
+asserting in raw Cypher; the adapter end-to-end suite needs the engine actually wired up, so an
 async driver is unavoidable).
 
 Known duplication: this spins up a second Neo4j container alongside the
@@ -45,7 +44,7 @@ def rebac_neo4j_url() -> Iterator[str]:
 
 @pytest_asyncio.fixture(scope="function")
 async def rebac_async_driver(rebac_neo4j_url: str) -> AsyncIterator[AsyncDriver]:
-    """A connected ``neo4j.AsyncDriver`` for the ORA-46 e2e suite.
+    """A connected ``neo4j.AsyncDriver`` for the adapter e2e suite.
 
     Function-scoped so each test seeds and tears down its own graph state —
     the container is shared (session-scoped via ``rebac_neo4j_url``), only
@@ -56,7 +55,7 @@ async def rebac_async_driver(rebac_neo4j_url: str) -> AsyncIterator[AsyncDriver]
     driver = AsyncGraphDatabase.driver(rebac_neo4j_url, auth=("neo4j", "password"))
     try:
         await driver.verify_connectivity()
-        # Clean slate per test: ORA-46 e2e tests assert exact-presence /
+        # Clean slate per test: the e2e tests assert exact-presence /
         # exact-absence and cross-org isolation, which a dirty graph would
         # silently corrupt.
         async with driver.session() as session:
@@ -73,8 +72,8 @@ class _NullAsyncRedis:
     The engine treats a missing/erroring cache as best-effort: cache miss →
     fall through to Neo4j; cache write failure → log and continue. This stub
     makes that behaviour deterministic for the integration suite, isolating
-    the test from a Redis dependency that adds no signal to the ORA-46
-    contract (the cache pinning lives in ORA-34's unit suite).
+    the test from a Redis dependency that adds no signal to the adapter
+    contract (the cache pinning lives in the engine's unit suite).
     """
 
     async def get(self, key: str) -> None:  # noqa: ARG002 — signature parity with redis.asyncio

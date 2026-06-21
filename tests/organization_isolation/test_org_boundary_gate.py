@@ -1,13 +1,13 @@
-"""R0.5 organisation-boundary release gate — substrate level (ORA-20 / B2).
+"""R0.5 organisation-boundary release gate — substrate level (B2).
 
 This is **the** R0.5 release gate (the brief: "R0.5 ships nothing until it is
 green"). It proves the five organisation-boundary denials *at the data layer*
-against real Neo4j / Postgres / Redis on the 0d harness (ORA-12):
+against real Neo4j / Postgres / Redis on the 0d harness:
 
     1. cross-organisation read denial      (Postgres, RLS driven from the org-context)
     2. cross-organisation write denial      (Postgres, RLS WITH CHECK + hidden-row UPDATE/DELETE)
     3. cross-organisation Cypher-traversal denial (Neo4j, org-scoped traversal; cross-org
-       ReBAC federation is the A3/ORA-18 retriever seam, deferred there)
+       ReBAC federation is the A3 retriever seam, deferred there)
     4. cross-organisation search denial      (Neo4j fulltext, org-scoped)
     5. cross-organisation cache miss          (Redis, organisation-then-graph scoped keys)
 
@@ -16,28 +16,28 @@ bound organisation and ignores a caller-supplied ``organisation_id`` (T1-M1, gra
 and the binding fail-closed criterion: with no organisation context bound, every scoped
 substrate access raises rather than defaulting to some organisation.
 
-**Binding acceptance criterion (ORA-20).** Each denial is asserted against a real
+**Binding acceptance criterion.** Each denial is asserted against a real
 store at the data layer: a principal bound to organisation A cannot touch
 organisation B's rows *regardless of request shape* (even when the request names
 B's id explicitly). A mocked-DB HTTP 403 does NOT satisfy this gate, and this
-suite deliberately does NOT reuse the B1 (ORA-19) mocked API-403 pattern — that
+suite deliberately does NOT reuse the B1 mocked API-403 pattern — that
 suite asserts at the API/authz layer; this one asserts at the substrate.
 
 **TDD state.** RED until Epic A lands, by design (ADR-010):
-  * A1 (ORA-16) — ``oraclous_substrate.schema.{postgres,neo4j}``, ``.cache_keys``,
+  * A1 — ``oraclous_substrate.schema.{postgres,neo4j}``, ``.cache_keys``,
     ``.organisation`` (the org-scoped schema, RLS policy, cache keys).
-  * A2 (ORA-17) — ``oraclous_substrate.access`` (PROPOSED below): the query/write
+  * A2 — ``oraclous_substrate.access`` (PROPOSED below): the query/write
     paths that take ``organisation_id`` from the authenticated org-context
     (``oraclous_governance``) — never from a request body — and apply it to every
     store, failing closed when no context is bound.
-  * A3 (ORA-18) — the retriever/writer org-scoping the search + traversal denials
+  * A3 — the retriever/writer org-scoping the search + traversal denials
     exercise.
 
 ----------------------------------------------------------------------------
 PROPOSED A2/A3 ENFORCEMENT SEAM — ``oraclous_substrate.access``
 ----------------------------------------------------------------------------
 The gate drives enforcement through one cohesive substrate access module. It is
-the test-author's proposed seam for A2/ORA-17 and is flagged for solution-architect
+the test-author's proposed seam for A2 and is flagged for solution-architect
 (who owns the A2 shape) and security-architect (who co-signs this gate, threat T1)
 to ratify or redirect at Tests Review. If redirected, only the imports here change;
 the behavioural assertions stand. Every function below reads the bound
@@ -65,7 +65,7 @@ Postgres superusers (and BYPASSRLS roles) bypass row-level security entirely, an
 the 0d harness container connects as a superuser. For RLS to actually bite, the
 gate creates a dedicated NOSUPERUSER / NOBYPASSRLS application role and points the
 scoped connection at it — standing in for the substrate's real application role.
-A2/ORA-17 owns defining that production role; this is flagged for the architect.
+A2 owns defining that production role; this is flagged for the architect.
 
 Threats: T1 — M1 (org-context fail-closed) + M3 (substrate org-scoping). ADR-006
 (organisation as outermost tenancy unit), ADR-004 (federation via ReBAC traversal).
@@ -318,7 +318,7 @@ def test_cross_organisation_cypher_traversal_is_denied(
 
         # NB: whether scoped_traverse *consults* ReBAC on a cross-organisation request
         # (ADR-004 fail-closed federation, T1-M2) is the cross-org traversal path, which
-        # A3/ORA-18 owns and asserts at the retriever seam. This gate proves the intra-org
+        # A3 owns and asserts at the retriever seam. This gate proves the intra-org
         # data-layer scoping it owns. The earlier unit-level AccessDecisionClient sub-assertion
         # here duplicated packages/substrate/tests/unit/test_rebac_client.py and was dropped at
         # Tests Review (be-test-reviewer + security-architect — accepted residual on T1-M2).

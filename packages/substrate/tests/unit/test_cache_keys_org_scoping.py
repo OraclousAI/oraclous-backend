@@ -1,4 +1,4 @@
-"""organisation_id as the outer scope on the Redis cache-key convention (ORA-16 / A1).
+"""organisation_id as the outer scope on the Redis cache-key convention (A1).
 
 RED until `backend-implementer` adds `oraclous_substrate.cache_keys`.
 

@@ -1,4 +1,4 @@
-"""Engine job state machine (ORAA-4 §21 domain layer) — pure, no I/O.
+"""Engine job state machine (domain layer) — pure, no I/O.
 
 The allowed transitions for an ``EngineJob``. Terminal states never transition again; ``ESCALATED``
 is a wait state resolved by complete/approve/cancel; ``FAILED``/``TIMED_OUT`` may re-enter QUEUED

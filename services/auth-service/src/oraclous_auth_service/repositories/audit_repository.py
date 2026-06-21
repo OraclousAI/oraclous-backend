@@ -1,4 +1,4 @@
-"""Auth audit repository (ORAA-4 §21 repositories layer — the only ``auth_audit_log`` SQL).
+"""Auth audit repository (repositories layer — the only ``auth_audit_log`` SQL).
 
 Append-only: ``record`` inserts one immutable event row. Auditing is best-effort and must not break
 the audited operation, so callers fold failures into a no-op (see the services).

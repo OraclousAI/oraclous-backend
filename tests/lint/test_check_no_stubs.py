@@ -1,4 +1,4 @@
-"""Tests for the no-hollow guardrail (HOL001-005, ORAA-4 §22, R3.5)."""
+"""Tests for the no-hollow guardrail (HOL001-005, per-service DoD, R3.5)."""
 
 from __future__ import annotations
 

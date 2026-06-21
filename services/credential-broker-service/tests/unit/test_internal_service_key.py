@@ -1,4 +1,4 @@
-"""Failing tests for credential-broker internal-service-key hardening (ORA-33, R1-B2).
+"""Failing tests for credential-broker internal-service-key hardening (R1-B2).
 
 Behavioural reference: legacy ``credential-broker-service/app/core/config.py``,
 which ships a hardcoded internal service key

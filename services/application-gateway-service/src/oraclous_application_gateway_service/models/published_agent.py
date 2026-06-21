@@ -1,4 +1,4 @@
-"""Published-agent ORM model (ORAA-4 §21 models layer) — R6 Slice 4 (ADR-019).
+"""Published-agent ORM model (models layer) — R6 Slice 4 (ADR-019).
 
 An org publishes one of its agents under a public ``slug`` that external callers reach through an
 integration key. The row binds the slug to ``bound_capability_ref`` — the capability/harness

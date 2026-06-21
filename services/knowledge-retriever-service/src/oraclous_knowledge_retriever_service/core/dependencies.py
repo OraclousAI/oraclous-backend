@@ -1,4 +1,4 @@
-"""DI providers (ORAA-4 §21 core layer) — wiring only.
+"""DI providers (core layer) — wiring only.
 
 `bind_org_context` resolves the caller's organisation from the authenticated principal and binds it
 into the governance ContextVar for the request; every repository read then sees it via

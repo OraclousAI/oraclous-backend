@@ -1,4 +1,4 @@
-"""Engine round-table routes (ORAA-4 §21 routes layer) — parse → ONE service call → HTTP map.
+"""Engine round-table routes (routes layer) — parse → ONE service call → HTTP map.
 
 ``POST /v1/engine/roundtables`` starts a round-table (202; the driver runs agent turns async);
 ``GET /v1/engine/roundtables/{id}`` reads it; ``POST /v1/engine/roundtables/{id}/respond`` submits a

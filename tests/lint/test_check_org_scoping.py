@@ -1,4 +1,4 @@
-"""Tests proving the organisation-scoping guardrails fire (ORA-10 / 0b)."""
+"""Tests proving the organisation-scoping guardrails fire."""
 
 from pathlib import Path
 
@@ -30,7 +30,7 @@ def test_org001_pydantic_request_model_input_field() -> None:
 
 def test_org001_non_pydantic_request_dataclass_not_flagged() -> None:
     # A plain domain value object named *Request that carries organisation_id
-    # through a seam is not an inbound body schema, so it is not flagged (ORA-40).
+    # through a seam is not an inbound body schema, so it is not flagged.
     src = (
         "@dataclass(frozen=True, slots=True)\n"
         "class AccessRequest:\n"
@@ -47,7 +47,7 @@ def test_org001_attribute_from_body_still_flagged() -> None:
 
 def test_org001_attribute_from_request_domain_object_not_flagged() -> None:
     # `request`/`req`/`data` routinely name domain objects; an attribute read off
-    # them is not body trust (the rebac.py:64 pattern). ORA-40 / security-architect.
+    # them is not body trust (the rebac.py:64 pattern). security-architect.
     src = "def check(request):\n    return request.organisation_id\n"
     assert "ORG001" not in _rules(src)
 
@@ -135,7 +135,7 @@ def test_clean_source_has_no_violations() -> None:
     assert _rules("def add(a, b):\n    return a + b\n") == set()
 
 
-# --- ORA-41: Neo4j label DDL (ORG003) -------------------------------------------
+# --- Neo4j label DDL (ORG003) -------------------------------------------
 
 
 def test_org003_org_scoped_label_index_without_org_is_flagged() -> None:
@@ -195,7 +195,7 @@ def test_org003_ddl_in_docstring_not_flagged() -> None:
     assert "ORG003" not in _rules(src)
 
 
-# --- ORA-41: Redis qcache key prefix (ORG004) -----------------------------------
+# --- Redis qcache key prefix (ORG004) -----------------------------------
 
 
 def test_org004_qcache_key_without_org_outer_segment_is_flagged() -> None:
@@ -242,7 +242,7 @@ def test_org004_test_style_org_constant_segment_passes() -> None:
     assert "ORG004" not in _rules(src)
 
 
-# --- ORA-41: vector / fulltext index DDL (ORG005) -------------------------------
+# --- vector / fulltext index DDL (ORG005) -------------------------------
 
 
 def test_org005_vector_index_without_org_is_flagged() -> None:
@@ -275,7 +275,7 @@ def test_org005_vector_index_with_interpolated_org_passes() -> None:
     assert "ORG005" not in _rules(src)
 
 
-# --- ORA-51: YAML as canonical source for ORG_SCOPED_LABELS (v2 mechanism) -----
+# --- YAML as canonical source for ORG_SCOPED_LABELS (v2 mechanism) -----
 #
 # The v1 mirror constant in tools/lint/check_org_scoping.py is being replaced.
 # The lint rule must read the YAML at lint time (no substrate import) so
@@ -354,7 +354,7 @@ def test_no_mirror_constant_in_lint_source() -> None:
     assert "ORG_SCOPED_NEO4J_LABELS" not in source, (
         "lint module must not declare an ORG_SCOPED_NEO4J_LABELS mirror "
         "constant; the YAML at packages/substrate/src/oraclous_substrate/"
-        "schema/org_scoped_labels.yaml is the single source of truth (ORA-51)"
+        "schema/org_scoped_labels.yaml is the single source of truth"
     )
 
 

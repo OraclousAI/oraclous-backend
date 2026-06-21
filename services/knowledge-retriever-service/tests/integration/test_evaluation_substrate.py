@@ -1,4 +1,4 @@
-"""Real-Neo4j integration for the evaluation endpoint (#331, ORAA-4 §22 — real substrate).
+"""Real-Neo4j integration for the evaluation endpoint (#331 — real substrate).
 
 A real Neo4j container is seeded with org-stamped :Chunk graphs; evaluation runs through the
 REAL route → REAL RetrievalService → REAL repository Cypher (only the LLM judge is fake), so the

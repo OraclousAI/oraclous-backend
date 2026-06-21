@@ -1,4 +1,4 @@
-"""Request/response DTOs (ORAA-4 §21 schema layer — Pydantic only, no logic, no persistence).
+"""Request/response DTOs (schema layer — Pydantic only, no logic, no persistence).
 
 `organisation_id` is never an inbound field (ORG001) — it is resolved from the authenticated
 principal context, never trusted from the body.

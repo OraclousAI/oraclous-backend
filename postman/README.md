@@ -64,7 +64,7 @@ they apply to every call):
 - **Webhooks** (R6 Slice 7) — the **`Webhooks (R6 S7)`** folder. A member registers a webhook for a published agent (`POST /v1/webhook-subscriptions`, capturing `{{webhook_sub_id}}` + `{{webhook_signing_secret}}` — the secret is shown **once**), then the **public** inbound request (`POST /v1/webhooks/{{webhook_sub_id}}`) fires it: a **pre-request script** signs the raw body with the captured secret into `X-Hub-Signature-256` (HMAC-SHA256), so a correct signature → `202` and a tampered one → `404`. The inbound door uses **no bearer** (it authenticates by the signature). Run after the publish step (it sets `{{pub_slug}}`).
 - **MCP server** (R6 Slice 8) — the **`MCP Server (R6 S8)`** folder. An MCP (Model Context Protocol) JSON-RPC server (`POST /v1/mcp`) exposing the org's published agents as tools to external MCP clients. Auth is your **integration key** (`{{integration_key}}` as a Bearer — a member JWT is `403`), so mint a bound key first. `initialize` → the handshake; `tools/list` → the agents your key may invoke (scoped by its binding); `tools/call` (name = the agent slug) → runs the agent through the invoke path and returns `{content, isError}` (the harness internals never leak; a tool outside the binding → a JSON-RPC `unknown tool` error).
 
-Both 429 and 413 are the standard ORA-37 error envelope (`{error:{code,message,requestId,retryable}}`).
+Both 429 and 413 are the standard error envelope (`{error:{code,message,requestId,retryable}}`).
 
 ## Service ports (direct)
 

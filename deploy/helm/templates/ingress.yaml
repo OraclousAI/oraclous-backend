@@ -1,5 +1,5 @@
 {{- /*
-Ingress for the application-gateway-service — the SINGLE external surface (ORAA-4 §23 / R6).
+Ingress for the application-gateway-service — the SINGLE external surface (R6).
 Every other service is ClusterIP-internal and is reached only via the gateway. The Ingress
 routes the external host to the gateway Service; TLS is operator-configured.
 */ -}}

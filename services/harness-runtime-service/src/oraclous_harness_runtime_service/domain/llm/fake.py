@@ -1,4 +1,4 @@
-"""Deterministic fake LLM client (ORAA-4 §21 domain layer).
+"""Deterministic fake LLM client (domain layer).
 
 The key-free seam that lets the whole runtime — OHM load → tool-use loop → real registry dispatch →
 provenance — be exercised in CI without an external model key. Its behaviour is intentionally simple

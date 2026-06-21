@@ -1,4 +1,4 @@
-"""Redis client factory + advisory per-(org,graph) lock (ORAA-4 §21 core layer) — connection setup
+"""Redis client factory + advisory per-(org,graph) lock (core layer) — connection setup
 and the SET-NX-EX primitive, no business logic.
 
 A SYNC ``redis.Redis`` used for the per-(org,graph) locks (community-detect #303, code-ingest +

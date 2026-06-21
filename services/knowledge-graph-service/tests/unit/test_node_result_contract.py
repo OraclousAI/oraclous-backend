@@ -1,4 +1,4 @@
-"""NodeResult TypedDict — failing tests for envelope shape (ORAA-227).
+"""NodeResult TypedDict — failing tests for envelope shape.
 
 [R3-KGS-4] Acceptance criteria:
 1. ``NodeResult`` TypedDict exists and is importable from
@@ -8,7 +8,7 @@
 3. Write-path endpoints return data serialisable to ``NodeResult`` shape
 
 All imports of ``oraclous_knowledge_graph_service.contracts`` are
-function-local (TST001 / ORA-48) so this file collects cleanly during the
+function-local (TST001) so this file collects cleanly during the
 TDD window before the contracts module exists.  Tests fail at runtime with
 ``ModuleNotFoundError`` until the paired ``[impl]`` PR lands.
 

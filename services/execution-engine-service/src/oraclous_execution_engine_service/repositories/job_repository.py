@@ -1,4 +1,4 @@
-"""Engine job repository (ORAA-4 §21 repositories layer).
+"""Engine job repository (repositories layer).
 
 The only DB seam for engine job rows. Every read/write is org-scoped (ADR-006): writes carry the
 resolved ``organisation_id`` and reads filter on it, so a tenant never reads another's jobs.

@@ -1,5 +1,5 @@
 """Failing org-scoping tests for the Postgres-backed agent CredentialStore
-(ORA-45, R1-A3).
+(R1-A3).
 
 Pins the two ADR-012 §1a invariants for the auth-service identity store:
 
@@ -24,8 +24,7 @@ through ``oraclous_substrate.access`` (the prefix lookup precedes authentication
 and there is no actor context yet to scope by). Tests live in
 ``services/auth-service/tests/...`` rather than ``tests/organization_isolation/``
 so this suite can be run in isolation when the shared pytest session aborts
-collection on an unmerged substrate import (the soft-coupling fallback in the
-ORA-45 brief).
+collection on an unmerged substrate import (the soft-coupling fallback).
 
 RED until ``backend-implementer`` adds the real
 ``oraclous_auth_service.repositories.postgres_credential_store.PostgresCredentialStore``

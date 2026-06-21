@@ -1,4 +1,4 @@
-"""OHM canonical serialisation + content hash (ORAA-4 §21 domain layer; OHM v1.0 spec §5).
+"""OHM canonical serialisation + content hash (domain layer; OHM v1.0 spec §5).
 
 The signed/hashed form of an OHM is the document with its ``signatures`` field removed, serialised
 deterministically. We use canonical JSON (sorted keys, tight separators, UTF-8) rather than YAML

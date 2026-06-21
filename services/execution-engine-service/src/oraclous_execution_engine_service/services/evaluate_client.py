@@ -1,4 +1,4 @@
-"""core/evaluate client (ORAA-4 §21 services layer) — the engine grades a completed team run.
+"""core/evaluate client (services layer) — the engine grades a completed team run.
 
 The engine composes the knowledge-retriever's ``core/evaluate`` (the flow judge) over HTTP — it
 never imports it (both are Layer-3-and-below; they talk by API). Identity is propagated per the

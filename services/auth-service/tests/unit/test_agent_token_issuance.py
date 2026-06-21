@@ -1,10 +1,10 @@
-"""Failing unit tests for the agent JWT issuance (ORA-31 / R1-A2).
+"""Failing unit tests for the agent JWT issuance (R1-A2).
 
-What these tests pin (ORA-31 acceptance criteria):
+What these tests pin (R1-A2 acceptance criteria):
 
 * ``create_agent_token(agent_id, organisation_id)`` returns a JWT signed with the
   service's secret carrying ``principal_type=agent``, ``sub=agent_id``, the
-  ``organisation_id`` claim (the ORA-3 auth-side pairing — Option B, ratified),
+  ``organisation_id`` claim (the auth-side org pairing — Option B, ratified),
   and the standard short-life token housekeeping (``iat``, ``exp``, ``jti``).
 * The token is short-lived — the SA token's 15-minute window is the documented
   precedent and the legacy ``_SA_TOKEN_EXPIRE_MINUTES`` from

@@ -1,5 +1,5 @@
 """Substrate-level organisation-isolation pattern, proven at the data layer
-(ORA-12 / 0d).
+(0d).
 
 This is the harness demonstration, not the R0.5 release gate. It stands up two
 organisations' rows in a real Postgres and shows that a query filtered by

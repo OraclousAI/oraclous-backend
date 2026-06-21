@@ -1,4 +1,4 @@
-"""Invitation repository (ORAA-4 §21 repositories layer — the only ``org_invitations`` SQL).
+"""Invitation repository (repositories layer — the only ``org_invitations`` SQL).
 
 Lookup by token_prefix is a deliberate pre-auth global resolve (the accepter presents only the raw
 token); the row still carries ``organisation_id``. Listing/revoking is org-scoped by the caller.

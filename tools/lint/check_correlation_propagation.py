@@ -1,4 +1,4 @@
-"""Static guardrail: end-to-end correlation-id propagation (WP-6, ORAA-4 A5).
+"""Static guardrail: end-to-end correlation-id propagation (WP-6).
 
 Two recurrence classes this guards against:
 

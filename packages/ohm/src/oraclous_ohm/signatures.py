@@ -1,4 +1,4 @@
-"""OHM signature verification (ORAA-4 §21 domain layer; OHM v1.0 spec §2/§7).
+"""OHM signature verification (domain layer; OHM v1.0 spec §2/§7).
 
 Verifies the ``signatures`` block against a configured **trust store** (signer-id → public key PEM).
 The signed bytes are the OHM's canonical, signature-excluded form (see ``canonical.py``); each entry

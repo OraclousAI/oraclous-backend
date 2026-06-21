@@ -1,4 +1,4 @@
-"""Identity seam (ORAA-4 §21 core layer) — pluggable principal verification.
+"""Identity seam (core layer) — pluggable principal verification.
 
 `dev` mode: a fixed bearer resolves to a fixed dev principal, and a `StaticMembershipResolver` maps
 it to the single dev organisation (the key-free local seam). `jwt` mode (R3.5-P3): a real HS256 JWT

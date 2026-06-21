@@ -1,4 +1,4 @@
-"""App lifecycle (ORAA-4 §21 core layer) — open/close the Postgres store + provenance sink.
+"""App lifecycle (core layer) — open/close the Postgres store + provenance sink.
 
 Schema is created by the Alembic one-shot. Degrades gracefully: if Postgres is unreachable at
 startup the app still serves ``/health`` and the job routes report 503.

@@ -1,4 +1,4 @@
-"""User-identity routes (ORAA-4 §21 routes layer).
+"""User-identity routes (routes layer).
 
 Each handler parses the request, makes ONE `AuthService` call, and maps the result to a DTO.
 Domain failures (`AuthenticationError`, `EmailAlreadyRegisteredError`, `PasswordPolicyError`) are

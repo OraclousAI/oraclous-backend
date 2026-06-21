@@ -1,4 +1,4 @@
-"""Capability-registry client (ORAA-4 §21 services layer).
+"""Capability-registry client (services layer).
 
 The engine composes the capability-registry over HTTP — it never imports it (four-layer contract:
 the engine is Layer 3, the registry Layer 2, so they talk by API exactly as the harness calls the

@@ -1,4 +1,4 @@
-"""Entity-resolution audit repository (ORAA-4 §21 repositories layer — the only home for the
+"""Entity-resolution audit repository (repositories layer — the only home for the
 `entity_resolutions` SQL).
 
 Records + reads the HITL verdict on a `SAME_AS_CANDIDATE` pair (#279). Org-scoped via

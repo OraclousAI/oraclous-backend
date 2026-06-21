@@ -1,4 +1,4 @@
-"""Envelope backfill (ORAA-4 §21 services layer, ADR-020 §3 step 3) — re-encrypt v1 → v2, online.
+"""Envelope backfill (services layer, ADR-020 §3 step 3) — re-encrypt v1 → v2, online.
 
 Walks every stored ciphertext (credentials + webhook secrets); a v2 value is skipped (idempotent), a
 legacy v1 value is decrypted (polymorphic, via the single key) and re-encrypted under the org's DEK

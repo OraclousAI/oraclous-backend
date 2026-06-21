@@ -5,7 +5,7 @@ and runs the agent **plan→act→observe** tool-use loop — each tool call is 
 capability-registry's real execute, results are fed back, and the loop iterates to an answer under a
 budget, writing provenance every step.
 
-Layered per ORAA-4 §21 (`routes → services → domain → repositories → core`). It composes the other
+Layered per the service-architecture standard (`routes → services → domain → repositories → core`). It composes the other
 services over HTTP (it never imports them): the **capability-registry** (resolve capability → instance
 → execute) and, from slice 4, the **credential-broker** (BYOM model creds).
 
@@ -53,7 +53,7 @@ executions` (list) + `GET /v1/harnesses/assignments` (the task board).
 retrieval — a later capability; deliberately the same provenance write path, not a privileged one).
 This completes the R4 build.
 
-## Definition of Done (ORAA-4 §22 — 8 gates)
+## Definition of Done (8 gates)
 
 | # | Gate | Status |
 | --- | --- | --- |

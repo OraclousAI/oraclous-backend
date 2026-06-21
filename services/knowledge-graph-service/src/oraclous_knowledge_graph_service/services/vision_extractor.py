@@ -1,4 +1,4 @@
-"""Vision (image → text) extraction seam (ORAA-4 §21 services layer).
+"""Vision (image → text) extraction seam (services layer).
 
 Reshaped from legacy `develop@84152635 knowledge-graph-builder/app/services/vision_extractor.py`.
 The legacy extractor called the Anthropic + OpenAI SDKs directly (two hardcoded vendor paths, an

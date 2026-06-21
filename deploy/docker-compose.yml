@@ -13,8 +13,8 @@
 #
 # Neo4j users provisioned by this stack:
 #   neo4j / password  — admin (dev-only; never expose in production)
-#   kgs_writer / kgs-writer-pass — publisher role; used by knowledge-graph-service (ORAA-53)
-#   krs_reader / krs-reader-pass — reader role; used by knowledge-retriever-service (ORAA-53)
+#   kgs_writer / kgs-writer-pass — publisher role; used by knowledge-graph-service
+#   krs_reader / krs-reader-pass — reader role; used by knowledge-retriever-service
 #
 # The knowledge-graph-service reads these env vars:
 #   KGS_NEO4J_URI      bolt://neo4j:7687
@@ -23,7 +23,7 @@
 name: oraclous-backend
 
 # Shared KGS environment (API + worker). S2 wires Neo4j + Redis/Celery for ingestion.
-# Dev uses the default `neo4j` user: the kgs_writer least-privilege role (ORAA-53) is an Enterprise
+# Dev uses the default `neo4j` user: the kgs_writer least-privilege role is an Enterprise
 # feature (GRANT ROLE), and this dev stack runs Neo4j Community. Org isolation here is property-based
 # (organisation_id stamps + scoped reads), not Neo4j RBAC, so the default user is safe for dev; prod
 # (Helm/Enterprise) uses kgs_writer. The service's own config default is still kgs_writer.
@@ -104,7 +104,7 @@ services:
   # because in dev KGS/KRS connect as the `neo4j` admin user (see the x-anchor) and nothing
   # `depends_on` this one-shot. So a fresh `docker compose down -v` start no longer leaves this
   # container Exited(1). Production (Enterprise) runs all four statements and the grants apply.
-  # Dev-only credentials below; production injects KGS_NEO4J_PASSWORD via K8s secret. (ORAA-53.)
+  # Dev-only credentials below; production injects KGS_NEO4J_PASSWORD via K8s secret.
   neo4j-role-setup:
     image: neo4j:5.23-community
     depends_on:

@@ -1,4 +1,4 @@
-"""Harness execution DTOs (ORAA-4 §21 schema layer) — Pydantic request/response models only.
+"""Harness execution DTOs (schema layer) — Pydantic request/response models only.
 
 ``organisation_id`` is never inbound (ORG001) — it is resolved from the authenticated principal in
 the route. The manifest is supplied inline (raw YAML or an already-parsed object); ``manifest_ref``

@@ -1,4 +1,4 @@
-"""Edge auth policy (ORAA-4 §21 domain layer) — pure, no I/O.
+"""Edge auth policy (domain layer) — pure, no I/O.
 
 The closed allow-list of UNAUTHENTICATED public prefixes. Token issuance is unauthenticated by
 definition (login/register/refresh, the OAuth dance), so these proxy through without an edge JWT;

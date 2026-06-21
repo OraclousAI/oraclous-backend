@@ -1,4 +1,4 @@
-"""Failing tests for the substrate ReBAC access-decision seam (ORA-15, story 0g).
+"""Failing tests for the substrate ReBAC access-decision seam (story 0g).
 
 Behavioural reference: legacy ``knowledge-graph-builder/app/services/rebac_service.py``
 (``check_graph_permission``), reshaped to the four-layer substrate seam.

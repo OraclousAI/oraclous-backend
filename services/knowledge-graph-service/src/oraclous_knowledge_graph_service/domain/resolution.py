@@ -1,4 +1,4 @@
-"""Entity-resolution HITL domain (ORAA-4 §21 domain layer — pure, no I/O).
+"""Entity-resolution HITL domain (domain layer — pure, no I/O).
 
 The entity-resolution pass (#269) flags ambiguous-band duplicate pairs as `SAME_AS_CANDIDATE`
 edges between two canonical `:__Entity__` nodes for human review — flagged, not auto-merged. This

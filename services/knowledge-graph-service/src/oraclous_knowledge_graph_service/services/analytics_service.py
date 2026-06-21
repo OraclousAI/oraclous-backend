@@ -1,4 +1,4 @@
-"""Graph-analytics + community use-cases (ORAA-4 §21 services layer — all business logic) (#303).
+"""Graph-analytics + community use-cases (services layer — all business logic) (#303).
 
 Domain orchestration over the in-DB GDS Louvain :class:`CommunityRepository`: detect (Louvain's
 native dendrogram — an honest, variable level count, not a fixed 5), list (filter by level + kind),

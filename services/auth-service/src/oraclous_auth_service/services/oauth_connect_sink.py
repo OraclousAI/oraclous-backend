@@ -1,4 +1,4 @@
-"""Broker connect-sink HTTP client (ORAA-4 §21 services layer — internal integration).
+"""Broker connect-sink HTTP client (services layer — internal integration).
 
 Implements the ``ConnectSink`` port against the credential-broker's internal G1 bridge
 (``POST /internal/oauth-connect``, X-Internal-Key gated). The auth-service connect flow exchanges

@@ -1,4 +1,4 @@
-"""HarnessAssignment ORM model (ORAA-4 §21 models layer).
+"""HarnessAssignment ORM model (models layer).
 
 A human-actor task-board assignment: when a harness's entrypoint actor is a human, the runtime halts
 the run (escalation) and records the work to be done here, addressed to a workspace ``human_role``.

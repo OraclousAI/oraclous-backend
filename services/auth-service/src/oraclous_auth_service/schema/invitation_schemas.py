@@ -1,4 +1,4 @@
-"""Invitation request/response DTOs (ORAA-4 §21 schema layer).
+"""Invitation request/response DTOs (schema layer).
 
 The raw token is returned exactly once (in ``CreateInvitationResponse.token``); it is never echoed
 again. Peek/accept take the token in the body (never the URL) so it is not logged (T-INVITE/leak).

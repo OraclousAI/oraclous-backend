@@ -1,4 +1,4 @@
-"""Integration-key management (ORAA-4 §21 services layer) — mint/list/get/rotate/revoke, org-scoped.
+"""Integration-key management (services layer) — mint/list/get/rotate/revoke, org-scoped.
 
 Mint generates a key (the plaintext is returned once, never stored) bound to a published-agent slug
 (validated to exist in the org) XOR a capability allow-list. Org-scoped — a member

@@ -1,4 +1,4 @@
-"""Tool execution routes (ORAA-4 §21 routes layer).
+"""Tool execution routes (routes layer).
 
 Synchronous dispatch of a configured instance + provenance lookup. Org + user come from the
 authenticated principal (ORG001). ``ExecutionNotReadyError`` maps to 409 (factory handler).

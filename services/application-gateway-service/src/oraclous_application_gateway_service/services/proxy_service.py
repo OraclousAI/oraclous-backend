@@ -1,4 +1,4 @@
-"""Reverse-proxy orchestration (ORAA-4 §21 services layer).
+"""Reverse-proxy orchestration (services layer).
 
 Resolves the request path to an upstream via the route table (closed allow-list — unknown prefix →
 ``RouteNotFoundError`` → 404), applies the forward header policy (drop ``host`` + hop-by-hop), and

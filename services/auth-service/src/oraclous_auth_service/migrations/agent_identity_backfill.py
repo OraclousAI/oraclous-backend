@@ -1,24 +1,24 @@
-"""Idempotent pre-R1 agent-identity backfill (ORA-36 / R1-D1).
+"""Idempotent pre-R1 agent-identity backfill (R1-D1).
 
 For every agent that existed before R1 — a legacy ``(:Agent:__Platform__)``
 node carrying only the legacy ``org_id`` property — this migration issues
 the three R1 artifacts the agent principal needs:
 
 1. a Postgres ``agents`` row keyed on the legacy ``agent_id``, carrying
-   ``organisation_id`` per ADR-006 (ORA-30 / R1-A1);
+   ``organisation_id`` per ADR-006 (R1-A1);
 2. a structurally **inert** Postgres ``agent_credentials`` row tied to that
    agent — bcrypt hash of a discarded random secret, status
    ``pending_rotation`` so the row is excluded from the active-prefix
-   lookup (sec-arch R1 defense-in-depth; ORA-36 comment 10346);
+   lookup (sec-arch R1 defense-in-depth);
 3. the ReBAC-traversable ``organisation_id`` stamp on the
    ``(:Agent:__Platform__)`` subject node — via the substrate-owned
    :func:`oraclous_substrate.migrations.agent_subject_node.stamp_agent_subject_node`
-   helper (sol-arch decomposition; ORA-36 comment 10345).
+   helper (sol-arch decomposition).
 
 The orchestrator lives in auth-service per the sol-arch ruling: each store
 is written by its owner. The Postgres half stays inside the auth-service
 identity domain (raw INSERTs on the caller's ``postgres_conn``, mirroring
-the ORA-24 ``org_backfill`` caller-controlled-transaction model); the
+the ``org_backfill`` caller-controlled-transaction model); the
 Neo4j half delegates to the substrate helper so the canonical
 ``organisation_id`` property spelling and the request-path-isolation
 invariants stay single-sourced.
@@ -43,12 +43,12 @@ from oraclous_substrate.migrations.agent_subject_node import (
 from oraclous_substrate.organisation import SEED_ORGANISATION_ID
 
 _BACKFILL_USER_ID = "ora36-backfill"
-# A discrete status distinct from the ORA-30 lifecycle's ``active`` /
+# A discrete status distinct from the credential lifecycle's ``active`` /
 # ``revoked`` so the partial UNIQUE INDEX ``credential_prefix WHERE
 # status='active'`` (ADR-012 §1a) stays free, and ``active_credentials_by_prefix``
 # (the bcrypt-verify entry point) never returns these rows.
 _BACKFILL_STATUS = "pending_rotation"
-# Mirrors the ORA-30 12-char prefix width; the value is meaningless because
+# Mirrors the 12-char prefix width; the value is meaningless because
 # ``status != 'active'`` makes the prefix unreachable from validate_credential.
 _BACKFILL_PREFIX_PREFIX = "oag_bf"
 _BCRYPT_ROUNDS = 12
@@ -144,7 +144,7 @@ def _insert_inert_credential_if_missing(conn, *, agent_id: str, organisation_id:
     credential_hash = bcrypt.hashpw(raw.encode(), bcrypt.gensalt(rounds=_BCRYPT_ROUNDS)).decode()
     # `raw` falls out of scope here; no further reference exists in process.
     credential_id = str(uuid.uuid4())
-    # 12-char prefix to mirror the ORA-30 convention; meaningless because
+    # 12-char prefix to mirror the credential convention; meaningless because
     # status != 'active' makes the prefix unreachable.
     prefix = f"{_BACKFILL_PREFIX_PREFIX}{secrets.token_urlsafe(6)}"[:12]
     with conn.cursor() as cur:
@@ -182,7 +182,7 @@ def backfill_agent_identity(
 
     Caller-controlled txn: this function does **not** commit the Postgres
     side. The caller is responsible for ``conn.commit()`` / rollback at the
-    transactional boundary (mirrors the ORA-24 ``org_backfill`` pattern).
+    transactional boundary (mirrors the ``org_backfill`` pattern).
 
     Idempotent: a re-run skips agents whose principal already exists and
     credentials whose any-status row already exists; Neo4j stamps preserve

@@ -1,4 +1,4 @@
-"""Substrate query/write-path organisation enforcement — unit contracts (ORA-17 / A2).
+"""Substrate query/write-path organisation enforcement — unit contracts (A2).
 
 RED until ``backend-implementer`` adds ``oraclous_substrate.access``.
 
@@ -9,10 +9,10 @@ Reshape (lift-tag **Reshape**) of the organisation-blind tenant scoping in
   called from ``app/services/retriever_factory.py:149``) — a query mutator that
   appended ``WHERE node.graph_id = $graph_id`` after the first ``MATCH`` with the
   value supplied by the *caller*. A2 makes it organisation-aware: the filter value
-  is taken from the bound governance org-context (ORA-14 / 0f), never from a
+  is taken from the bound governance org-context (0f), never from a
   caller/request-body argument, and absent-context fails closed.
 * ``app/core/database.py::get_db()`` — the DB session seam. A2 binds the Postgres
-  RLS GUC (``app.current_organisation_id``, ORA-16) from the org-context so A1's
+  RLS GUC (``app.current_organisation_id``) from the org-context so A1's
   row-level-security policy actually isolates at runtime.
 
 These are the unit-level contracts (pure logic + a fake cursor). The data-layer

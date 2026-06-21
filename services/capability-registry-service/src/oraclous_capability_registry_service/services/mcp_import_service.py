@@ -1,4 +1,4 @@
-"""MCP import/discovery (ORAA-4 §21 services layer, R6 MCP-import).
+"""MCP import/discovery (services layer, R6 MCP-import).
 
 Register an EXTERNAL MCP server: egress-check the URL, call its ``tools/list`` over the hand-built
 JSON-RPC subset the executor uses, and store each discovered tool as a ``kind=tool, spec.type=mcp``

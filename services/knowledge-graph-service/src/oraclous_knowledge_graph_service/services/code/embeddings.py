@@ -1,4 +1,4 @@
-"""Stage 4 — code-symbol embedding generation (ORAA-4 §21 services layer — no DB).
+"""Stage 4 — code-symbol embedding generation (services layer — no DB).
 
 Faithful lift-and-reshape of legacy `develop@84152635 code_parser_service.generate_embeddings`
 (Stage 4): embed every Function + Class symbol from the qualified name + signature + docstring,

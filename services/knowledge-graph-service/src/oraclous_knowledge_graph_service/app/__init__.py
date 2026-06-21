@@ -1,4 +1,4 @@
-"""Application package (ORAA-4 §21). `create_app` is the canonical assembly entrypoint."""
+"""Application package. `create_app` is the canonical assembly entrypoint."""
 
 from __future__ import annotations
 

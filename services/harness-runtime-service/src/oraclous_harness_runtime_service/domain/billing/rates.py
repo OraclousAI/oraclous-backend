@@ -1,4 +1,4 @@
-"""LLM USD rate table + pricing (ORAA-4 §21 pure-domain layer; #252).
+"""LLM USD rate table + pricing (pure-domain layer; #252).
 
 ADR-009 stays intact: the substrate records RAW tokens only; this module is the READ-TIME pricing
 layer that turns those tokens into an ESTIMATE of the user's provider spend (BYOM). It is NOT

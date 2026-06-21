@@ -1,4 +1,4 @@
-"""Library-group connector (ORAA-4 §21 domain layer) — a curated library as a tool group (#488).
+"""Library-group connector (domain layer) — a curated library as a tool group (#488).
 
 Mounts a curated in-repo library's exported functions as one tool with one operation per
 function (ADR-038 D1). Dispatches IN-PROCESS by ``input_data['operation']`` to the matching

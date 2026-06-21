@@ -1,4 +1,4 @@
-"""Runtime OAuth-token brokering (ORAA-4 §21 services layer, threats T-OAUTH-REFRESH / T6).
+"""Runtime OAuth-token brokering (services layer, threats T-OAUTH-REFRESH / T6).
 
 ``get_provider_token`` resolves a fresh provider access token for (org, user, provider): decrypt the
 stored OAuth credential, refresh it against the provider if near-expiry (re-encrypting the new grant

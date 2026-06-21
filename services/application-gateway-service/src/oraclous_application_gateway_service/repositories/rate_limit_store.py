@@ -1,4 +1,4 @@
-"""Rate-limit store (ORAA-4 §21 repositories layer) — the ONLY Redis access in the gateway.
+"""Rate-limit store (repositories layer) — the ONLY Redis access in the gateway.
 
 A fixed-window counter (INCR + EXPIRE in one transactional pipeline — a crash between them cannot
 leave a TTL-less key that blocks the bucket forever), lifted from the auth-service limiter. The edge

@@ -1,4 +1,4 @@
-"""DI providers (ORAA-4 §21 core layer) — wiring only.
+"""DI providers (core layer) — wiring only.
 
 Resolves the authenticated principal (gateway / dev / jwt), builds the per-request registry client
 with the *downstream* identity headers (so the registry sees the same tenant — ADR-018 propagation),

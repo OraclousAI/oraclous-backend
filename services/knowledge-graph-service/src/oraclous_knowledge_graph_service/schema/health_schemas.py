@@ -1,4 +1,4 @@
-"""Health DTO (ORAA-4 §21 schema layer — Pydantic only)."""
+"""Health DTO (schema layer — Pydantic only)."""
 
 from __future__ import annotations
 

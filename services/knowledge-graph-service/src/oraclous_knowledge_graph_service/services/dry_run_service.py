@@ -1,4 +1,4 @@
-"""Recipe dry-run use-case (ORAA-4 §21 services layer) — an authoring aid (Slice C).
+"""Recipe dry-run use-case (services layer) — an authoring aid (Slice C).
 
 Preview what a STRUCTURED (CSV/JSON) recipe + sample would project into the graph WITHOUT touching
 Neo4j: decompose the sample (the same primitives the real path uses), pick the recipe (supplied,

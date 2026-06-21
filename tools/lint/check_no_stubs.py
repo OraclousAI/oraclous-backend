@@ -1,8 +1,8 @@
-"""No-hollow guardrail (ORAA-4 §22, R3.5) — a service marked done may contain no stubs.
+"""No-hollow guardrail (R3.5) — a service marked done may contain no stubs.
 
 R2/R3 shipped hollow: stub endpoints, ``raise NotImplementedError``, a ``GraphNodeService``
 stub class inside a route file. Those stories passed the Definition of Done because the tests
-were written against the stubs. This checker is the mechanism (ORAA-4 §20) that makes that
+were written against the stubs. This checker is the mechanism that makes that
 impossible: a service cannot be flipped to ``claimed_done: true`` in
 ``tools/lint/service_status.yaml`` while any HOL marker remains in its non-test source.
 
@@ -217,7 +217,7 @@ def iter_py_files(paths: list[Path]):
 
 
 def main(argv: list[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(description="No-hollow guardrail (HOL001-005, ORAA-4 §22).")
+    ap = argparse.ArgumentParser(description="No-hollow guardrail (HOL001-005).")
     ap.add_argument("paths", nargs="*", default=["services"])
     ap.add_argument("--status", default="tools/lint/service_status.yaml")
     ap.add_argument(
@@ -243,7 +243,7 @@ def main(argv: list[str] | None = None) -> int:
             info_count += len(viols)
 
     if enforced_failures:
-        print("HOLLOWNESS — a claimed-done service contains stubs (ORAA-4 §22):", file=sys.stderr)
+        print("HOLLOWNESS — a claimed-done service contains stubs:", file=sys.stderr)
         for v in enforced_failures:
             print(f"  {v}", file=sys.stderr)
         return 1

@@ -1,4 +1,4 @@
-"""Structural representation vocabulary (ORAA-4 §21 domain layer — pure, no I/O).
+"""Structural representation vocabulary (domain layer — pure, no I/O).
 
 Lifted verbatim from legacy `develop@84152635 knowledge-graph-builder/app/recipes/primitives/
 interface.py` (ADR-022). A per-type Primitive deterministically decomposes a source into a flat list

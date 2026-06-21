@@ -1,4 +1,4 @@
-"""Agent-memory request/response DTOs (ORAA-4 §21 schema layer — Pydantic only).
+"""Agent-memory request/response DTOs (schema layer — Pydantic only).
 
 Issue #332 / ADR-027 §1/§4. Shapes mirror the legacy ``app/schemas/memory.py`` (develop@84152635)
 verbatim, so a legacy memory client ports unchanged. ``organisation_id`` is never a client field

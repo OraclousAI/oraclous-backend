@@ -1,4 +1,4 @@
-"""Retrieval DTOs (ORAA-4 §21 schema layer — Pydantic only)."""
+"""Retrieval DTOs (schema layer — Pydantic only)."""
 
 from __future__ import annotations
 

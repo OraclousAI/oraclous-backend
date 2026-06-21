@@ -1,4 +1,4 @@
-"""Pure-ASGI correlation-id middleware (ORAA-4 §21 core layer).
+"""Pure-ASGI correlation-id middleware (core layer).
 
 Mints a server-authoritative ``req_`` request id at the edge of every request,
 stashes it on ``scope["state"]`` (readable as ``request.state.request_id`` by the

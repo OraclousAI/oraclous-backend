@@ -1,4 +1,4 @@
-"""Upstream targets (ORAA-4 §21 domain layer) — pure, no I/O.
+"""Upstream targets (domain layer) — pure, no I/O.
 
 The named set of upstream services the gateway health-aggregates (base URLs come from Settings).
 """

@@ -1,4 +1,4 @@
-"""Declarative base + timestamp mixin (ORAA-4 §21 models layer).
+"""Declarative base + timestamp mixin (models layer).
 
 Holds ORM *declarations* only (Mapped columns) — declaring schema is not driver/connection ACCESS,
 which lives in repositories/ + core/ (STR004 exemption for the models/ layer). The gateway gains its

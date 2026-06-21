@@ -1,4 +1,4 @@
-"""Notion reader connector (ORAA-4 §21 domain layer; reshape of legacy
+"""Notion reader connector (domain layer; reshape of legacy
 ``oraclous-core-service/app/tools/implementations/ingestion/notion_reader.py``).
 
 A real HTTP connector: authenticates to the Notion API with the resolved ``api_key`` and runs read

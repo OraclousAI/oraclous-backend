@@ -1,4 +1,4 @@
-"""Team-run repository (ORAA-4 §21 repositories layer). Org-scoped (ADR-006); the org-GUC guard
+"""Team-run repository (repositories layer). Org-scoped (ADR-006); the org-GUC guard
 (ADR-030) is installed on the engine, so every query is RLS-backstopped on the ``oraclous_app``.
 """
 

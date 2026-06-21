@@ -1,4 +1,4 @@
-"""Capability descriptor repository (ORAA-4 §21 repositories layer; reshape of legacy
+"""Capability descriptor repository (repositories layer; reshape of legacy
 ``oraclous-core-service/app/repositories/capability_descriptor_repository.py``).
 
 The ONLY place that touches the DB driver for capability descriptors. Every read and write is

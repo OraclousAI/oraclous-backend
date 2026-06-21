@@ -1,4 +1,4 @@
-"""Validator for the canonical org-scoped-labels YAML (ORA-51).
+"""Validator for the canonical org-scoped-labels YAML.
 
 RED until ``backend-implementer`` adds:
   * ``packages/substrate/src/oraclous_substrate/schema/org_scoped_labels.yaml``
@@ -70,7 +70,7 @@ def test_canonical_yaml_validates() -> None:
 def test_canonical_yaml_contains_currently_org_scoped_labels() -> None:
     """Behavioural-preservation guard: the v2 swap is mechanism-only, not semantics.
 
-    Before ORA-51 the substrate's ``ORG_SCOPED_LABELS`` was
+    Before the YAML swap the substrate's ``ORG_SCOPED_LABELS`` was
     ``("__Entity__", "__Community__", "__Contradiction__", "Chunk")`` (see
     ``packages/substrate/.../schema/neo4j.py`` on origin/main). The YAML
     must carry exactly that set in that order or the substrate's ``apply()``

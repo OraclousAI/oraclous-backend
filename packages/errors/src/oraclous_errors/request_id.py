@@ -1,4 +1,4 @@
-"""Server-authoritative request-correlation id minting for the ORA-37 envelope."""
+"""Server-authoritative request-correlation id minting for the error envelope."""
 
 from __future__ import annotations
 

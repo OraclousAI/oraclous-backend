@@ -1,4 +1,4 @@
-"""Accessible-graph-set enumeration (ORAA-4 §21 services layer) — the ADR-026 federation seam.
+"""Accessible-graph-set enumeration (services layer) — the ADR-026 federation seam.
 
 A federated query may fan out over EXACTLY the graphs the caller can already read individually —
 the org-scoped set in the KGS Postgres `knowledge_graphs` registry. KRS cannot reach that registry

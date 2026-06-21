@@ -1,4 +1,4 @@
-"""Entity-resolution HITL use-cases (ORAA-4 §21 services layer — all business logic, not in routes).
+"""Entity-resolution HITL use-cases (services layer — all business logic, not in routes).
 
 Actions a human verdict on a `SAME_AS_CANDIDATE` pair (#279): APPROVE merges the two canonical
 entities into one (folding aliases + re-pointing relationships, deleting the candidate edge);

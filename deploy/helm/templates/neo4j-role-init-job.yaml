@@ -1,5 +1,5 @@
 {{- /*
-Neo4j role-provisioning Job (ORAA-53 / ORAA-58 — principle of least privilege).
+Neo4j role-provisioning Job (principle of least privilege).
 
 Idempotently provisions the dedicated `kgs_writer` (publisher) and `krs_reader` (reader) Neo4j
 users on the operator-managed (external/Enterprise) Neo4j, so the knowledge-graph-service and

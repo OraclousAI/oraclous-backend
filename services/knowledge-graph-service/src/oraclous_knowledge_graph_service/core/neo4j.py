@@ -1,6 +1,6 @@
-"""Neo4j connection + startup schema (ORAA-4 §21 core layer — connection setup).
+"""Neo4j connection + startup schema (core layer — connection setup).
 
-A single SYNC `neo4j.Driver` opened as the `kgs_writer` role (ORAA-53) from `KGS_NEO4J_*`. The
+A single SYNC `neo4j.Driver` opened as the `kgs_writer` role from `KGS_NEO4J_*`. The
 neo4j_graphrag `Neo4jWriter` is a sync-driver component, so the write path is sync (awaited via the
 async wrapper). `ensure_schema` applies the unified-graph-model indexes idempotently at startup.
 

@@ -1,1 +1,1 @@
-"""App composition (ORAA-4 §21)."""
+"""App composition."""

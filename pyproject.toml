@@ -22,7 +22,7 @@ dev = [
     "testcontainers>=4.8,<5.0",
     "neo4j>=5.23,<6.0",
     # neo4j-graphrag: legacy multi-tenant components compose its retrievers /
-    # writer (ORA-18 / A3 Lift). The SUT modules import VectorRetriever /
+    # writer. The SUT modules import VectorRetriever /
     # VectorCypherRetriever / HybridRetriever / Neo4jWriter at module level so
     # tests can monkeypatch them. Code-reviewer to confirm whether to also
     # pin into the per-service `dependencies` lists for production install.

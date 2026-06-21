@@ -1,4 +1,4 @@
-"""Execution DTOs (ORAA-4 §21 schema layer)."""
+"""Execution DTOs (schema layer)."""
 
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-"""Liveness + readiness routes (ORAA-4 §21 routes layer). Unauthenticated.
+"""Liveness + readiness routes (routes layer). Unauthenticated.
 
 ``/health`` is liveness (always HTTP 200; body reflects ok/degraded so a startup store-bind failure
 is visible — ADR-021). ``/readyz`` is readiness (503 when the critical store didn't bind so an

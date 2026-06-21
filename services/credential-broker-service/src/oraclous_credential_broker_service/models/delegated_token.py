@@ -1,4 +1,4 @@
-"""``DelegatedToken`` storage model (ORA-32 / R1-B1).
+"""``DelegatedToken`` storage model (R1-B1).
 
 The broker persists a row per minted delegated token bound to
 ``(organisation, member, agent, scopes, expiry)``. The raw bearer bytes are

@@ -1,4 +1,4 @@
-"""Ontology use-cases (ORAA-4 §21 services layer) — set/get a graph's label ontology.
+"""Ontology use-cases (services layer) — set/get a graph's label ontology.
 
 Owner-gated (reuses GraphService's gate). Validates the mode and that every allowed label is a safe
 identifier (the same allowlist the recipe writer enforces) before persisting, so a stored ontology

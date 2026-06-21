@@ -1,9 +1,9 @@
-"""Edge-protection ASGI middleware (ORAA-4 §21 core layer) — request-size guard + rate limit.
+"""Edge-protection ASGI middleware (core layer) — request-size guard + rate limit.
 
 Both are pure ASGI (never ``BaseHTTPMiddleware``) so they do not buffer the streaming reverse-proxy
 responses and can wrap the inbound ``receive`` channel. They run INSIDE ``RequestIdMiddleware``, so
 the ``req_`` id is already on ``scope["state"]`` so every 413/429 carries ``X-Request-Id``.
-Each emits the canonical ORA-37 envelope directly via :func:`_send_envelope` (they sit outside the
+Each emits the canonical error envelope directly via :func:`_send_envelope` (they sit outside the
 app's exception handlers).
 
 * ``SizeGuardMiddleware`` — FAIL-CLOSED. 413 ``PAYLOAD_TOO_LARGE`` when the body is not positively

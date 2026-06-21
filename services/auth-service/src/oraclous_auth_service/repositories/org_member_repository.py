@@ -1,4 +1,4 @@
-"""Org-membership repository (ORAA-4 §21 repositories layer — the only ``org_members`` SQL).
+"""Org-membership repository (repositories layer — the only ``org_members`` SQL).
 
 Backs the governance ``MembershipResolver`` (``organisations_for``) and the role checks that
 authorise org management. Membership is the edge that scopes a human to an organisation.

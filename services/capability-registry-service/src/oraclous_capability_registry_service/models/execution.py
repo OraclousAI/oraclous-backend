@@ -1,4 +1,4 @@
-"""Execution ORM (ORAA-4 §21 models layer; reshape of legacy
+"""Execution ORM (models layer; reshape of legacy
 ``oraclous-core-service/app/models/execution.py``).
 
 Provenance of every tool dispatch. Org-scoped (ADR-006/ORG002). ``credential_refs`` records which

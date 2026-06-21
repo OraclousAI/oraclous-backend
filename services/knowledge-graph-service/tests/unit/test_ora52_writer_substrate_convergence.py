@@ -1,6 +1,5 @@
-"""ORA-52 — converge the multi-tenant KG writer onto the substrate
-org-scoping helper + authenticated-context binding (follow-up to ORA-18
-Code Review).
+"""Converge the multi-tenant KG writer onto the substrate
+org-scoping helper + authenticated-context binding (Code Review follow-up).
 
 This module pins the two follow-up acceptance criteria on the writer side:
 
@@ -21,7 +20,7 @@ analogue. See
 ``services/knowledge-retriever-service/tests/unit/test_ora52_substrate_convergence.py``.)
 
 Imports of substrate symbols that may not yet exist (``ORGANISATION_ID_PROPERTY``)
-are function-local per ORA-48 / TST001 so collection succeeds; tests fail at
+are function-local per TST001 so collection succeeds; tests fail at
 runtime with ``ImportError`` until the paired ``[impl]`` PR lands.
 
 Threats: T1 (cross-tenant writes via property injection /

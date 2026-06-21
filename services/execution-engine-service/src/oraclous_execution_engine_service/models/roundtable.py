@@ -1,4 +1,4 @@
-"""EngineRoundtable ORM model (ORAA-4 §21 models layer).
+"""EngineRoundtable ORM model (models layer).
 
 A round-table coordinates N actors (agents + humans) over ONE shared transcript, turn by turn. It
 adds no execution primitive — the engine drives each agent turn through the harness (like a job) and

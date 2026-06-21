@@ -1,4 +1,4 @@
-"""Cred-broker webhook-secret client (ORAA-4 §21 services layer).
+"""Cred-broker webhook-secret client (services layer).
 
 Mints + resolves a webhook signing secret over the broker's X-Internal-Key ``/internal`` endpoints
 (the ADR-008 home for recoverable secret material). The gateway holds only the broker secret id;

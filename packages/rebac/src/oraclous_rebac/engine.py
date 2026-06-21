@@ -1,13 +1,13 @@
 """ReBAC engine — extracted from the legacy ``knowledge-graph-builder`` and
-reshaped to scope every relation edge by ``organisation_id`` (ORA-34, ADR-006),
-then extended with agent-as-subject delegation (ORA-35 / R1-C2, ADR-013 §3).
+reshaped to scope every relation edge by ``organisation_id`` (ADR-006),
+then extended with agent-as-subject delegation (R1-C2, ADR-013 §3).
 
 Behavioural reference: ``app/services/rebac_service.py`` in the legacy
 codebase. Preserved here: cache→Phase B→Phase A resolution order, fail-closed
 on any backend error, the 60-second permission cache, soft-revoke (no DELETE),
 live-checked grant expiry, parameterised Cypher (injection-safe).
 
-Reshape (the contract pinned by the merged ORA-34 + ORA-35 ``[tests]`` PRs):
+Reshape (the contract pinned by the merged ``[tests]`` PRs):
 
 * ``organisation_id`` is the outermost scope on every entry point — passed as a
   keyword argument, validated non-blank, and bound into every Cypher query as
@@ -39,7 +39,7 @@ Reshape (the contract pinned by the merged ORA-34 + ORA-35 ``[tests]`` PRs):
 
 This module deliberately does not adapt the engine into ``oraclous_substrate``'s
 ``resolve(AccessRequest) -> bool | None`` resolver protocol. The substrate seam
-(ORA-15) consumes a resolver via dependency injection and is tested with a
+consumes a resolver via dependency injection and is tested with a
 test-double; whether to wire ``ReBACEngine`` as the production resolver is an
 open question for the coordinator ``solution-architect`` and is deferred.
 
@@ -314,7 +314,7 @@ RETURN sg.subgraph_id AS subgraph_id, sg.name AS name,
 """
 
 
-# ── R1-C2 (ORA-35) delegation surface ──────────────────────────────────────
+# ── R1-C2 delegation surface ──────────────────────────────────────
 # Polymorphic subject discriminator per ADR-013 §3 (Bounds on adapter logic):
 # the substrate seam's AccessRequest carries a polymorphic subject, so the
 # engine's check is polymorphic too. The CRUD methods (delegate_to_agent /
@@ -361,7 +361,7 @@ RETURN perm_count > 0 AS authorized
 LIMIT 1
 """
 
-# Grant queries are dispatched by scope (ORA-37 R1-gate discovery): Neo4j
+# Grant queries are dispatched by scope (R1-gate discovery): Neo4j
 # rejects MERGE on a relationship whose key map contains a null property
 # value (``SemanticError: Cannot merge … because of null property value
 # for 'subgraph_id'``). The graph-scope variant therefore omits
@@ -404,7 +404,7 @@ ON MATCH SET d.granted_at = $now, d.granted_by = $granted_by,
 """
 
 # Revoke is a single query with the scope/subgraph_id check in WHERE rather
-# than in the relationship pattern key — the ORA-37 R1-gate discovery: a
+# than in the relationship pattern key — the R1-gate discovery: a
 # pattern like ``{subgraph_id: $subgraph_id}`` with ``$subgraph_id=null``
 # matches **zero** rows under Cypher three-valued logic, so the pre-fix
 # revoke silently no-op'd for every graph-scope delegation and the edge
@@ -584,7 +584,7 @@ class ReBACEngine:
 
         authorized = False
 
-        # Phase B — HAS_ROLE traversal (ORA-48 model, org-scoped).
+        # Phase B — HAS_ROLE traversal (org-scoped).
         try:
             async with driver.session() as session:
                 result = await session.run(
@@ -653,7 +653,7 @@ class ReBACEngine:
         except Exception as exc:  # pragma: no cover
             logger.warning("Redis permission cache invalidation error: %s", exc)
 
-    # ── Agent delegation (R1-C2, ORA-35) ─────────────────────────────────
+    # ── Agent delegation (R1-C2) ─────────────────────────────────
 
     async def _check_agent_graph_permission(
         self,
@@ -740,7 +740,7 @@ class ReBACEngine:
                 f"member_user_id={member_user_id!r} looks like an agent identifier"
             )
 
-        # Dispatch by scope (ORA-37 fix): the graph-scope query omits
+        # Dispatch by scope: the graph-scope query omits
         # ``subgraph_id`` from the MERGE relationship-pattern key so Neo4j
         # does not crash on the null value. ``scope`` is still passed in
         # params under both branches — kept for symmetry with the revoke

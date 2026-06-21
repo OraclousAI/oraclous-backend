@@ -1,4 +1,4 @@
-"""Knowledge-retriever connector (ORAA-4 §21 domain layer) — the first-party in-loop retrieval tool.
+"""Knowledge-retriever connector (domain layer) — the first-party in-loop retrieval tool.
 
 Unlike the SaaS readers, this connector targets a SIBLING internal service (knowledge-retriever),
 not a third party: it POSTs the org's ``{query, graph_id, top_k}`` to ``/v1/search/{mode}`` and

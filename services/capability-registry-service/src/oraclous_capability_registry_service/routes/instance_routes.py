@@ -1,4 +1,4 @@
-"""Tool instance routes (ORAA-4 §21 routes layer).
+"""Tool instance routes (routes layer).
 
 Thin handlers over the instance manager + validation service. The org and owning user come from the
 authenticated principal (ORG001), never the request body. ``InstanceNotFoundError`` /

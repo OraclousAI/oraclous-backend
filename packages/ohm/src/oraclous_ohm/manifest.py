@@ -1,4 +1,4 @@
-"""OHM manifest model (ORAA-4 §21 domain layer; OHM v1.0 standalone spec §2).
+"""OHM manifest model (domain layer; OHM v1.0 standalone spec §2).
 
 A pure, I/O-free representation of an Oraclous Harness Manifest. Slice 1 models the structured zone
 faithfully but keeps semantics thin: capabilities/models/prompts/runtime are cross-checked

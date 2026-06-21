@@ -1,4 +1,4 @@
-"""Entity-resolution HITL routes (ORAA-4 §21 routes layer).
+"""Entity-resolution HITL routes (routes layer).
 
 The action surface for the duplicate-candidate review queue (#279). Thin handlers: parse, ONE
 service call, map a domain error to HTTP. No business logic, no DB access, no non-BaseModel classes.

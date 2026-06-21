@@ -1,6 +1,6 @@
 # oraclous-errors
 
-Shared error taxonomy and the **ORA-37 gateway error-envelope emitter**.
+Shared error taxonomy and the **gateway error-envelope emitter**.
 
 Two parts live here:
 
@@ -8,7 +8,7 @@ Two parts live here:
   Schema (`error-envelope.schema.json`), the code taxonomy (`error-code-taxonomy.json`),
   the sensitive-data negative-test set (`forbidden-substrings.json`), one valid sample
   per code (`samples/`), and a `CHECKSUMS.sha256` drift guard. The frontend copies this
-  directory verbatim. Edits go through Contract ORA-37 (solution-architect owns the shape);
+  directory verbatim. Edits go through the error-envelope Contract (solution-architect owns the shape);
   regenerate checksums with `uv run python -m tools.contract.verify_checksums --write`.
 - **`src/oraclous_errors/`** — the Python emitter every backend service uses to produce a
   conformant envelope without re-declaring the shape: `ErrorCode` (the closed 13-value

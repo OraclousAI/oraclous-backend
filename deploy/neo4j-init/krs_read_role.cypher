@@ -1,4 +1,4 @@
-// Neo4j read-role initialisation for knowledge-retriever-service (ORAA-58).
+// Neo4j read-role initialisation for knowledge-retriever-service.
 //
 // Creates a dedicated `krs_reader` user with the `reader` role (read-only;
 // no write, schema-change, or admin capabilities).  Principle of least

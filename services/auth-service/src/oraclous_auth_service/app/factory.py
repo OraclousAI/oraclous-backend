@@ -1,4 +1,4 @@
-"""FastAPI app factory + routes for agent tokens (ORA-31 / R1-A2).
+"""FastAPI app factory + routes for agent tokens (R1-A2).
 
 Endpoints:
 
@@ -14,7 +14,7 @@ Endpoints:
 Reshape note: route shapes mirror the legacy ``/service-token``,
 ``/internal/service-account-keys`` and ``/me`` endpoints, with SA-only fields
 (``tenant_id``/``home_graph_id``) removed and ``organisation_id`` added per the
-ORA-3 / ADR-006 contract.
+ADR-006 contract.
 """
 
 from __future__ import annotations

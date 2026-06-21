@@ -5,7 +5,7 @@
 # (oraclous_substrate.schema.neo4j) and the linter (tools.lint.check_org_scoping)
 # both derive from this file at module-import time / lint time respectively.
 # The validator at tools/lint/check_org_scoped_labels_schema.py pins the
-# allowed shape. (ORA-51)
+# allowed shape.
 schema_version: 1
 labels:
   - "__Entity__"

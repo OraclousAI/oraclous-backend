@@ -1,4 +1,4 @@
-"""Community request/response DTOs (ORAA-4 §21 schema layer — Pydantic only, no logic) (#303).
+"""Community request/response DTOs (schema layer — Pydantic only, no logic) (#303).
 
 The wire contract for the community + analytics surface, mirroring the legacy shapes
 (``community_schemas.Community``, the ``/analytics`` body, the detect ``{job_id,status}``).

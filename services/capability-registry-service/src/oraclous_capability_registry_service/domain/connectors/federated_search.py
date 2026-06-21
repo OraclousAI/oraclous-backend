@@ -1,4 +1,4 @@
-"""Federated-search connector (ORAA-4 §21 domain layer) — cross-graph search as an agent tool.
+"""Federated-search connector (domain layer) — cross-graph search as an agent tool.
 
 Issue #330 / ADR-026. The federation twin of the knowledge-retriever connector: a first-party,
 org-scoped, credential-free read tool an agent binds in-loop to search ALL the workspaces its

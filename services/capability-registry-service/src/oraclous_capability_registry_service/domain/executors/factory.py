@@ -1,4 +1,4 @@
-"""Executor factory (ORAA-4 §21 domain layer; reshape of legacy ``app/tools/factory.py`` +
+"""Executor factory (domain layer; reshape of legacy ``app/tools/factory.py`` +
 ``app/tools/registry.py`` in-process executor cache).
 
 Maps a tool descriptor to its concrete executor class by the descriptor's deterministic id. Only

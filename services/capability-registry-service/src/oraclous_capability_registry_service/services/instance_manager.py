@@ -1,4 +1,4 @@
-"""Tool instance use-cases (ORAA-4 §21 services layer; reshape of legacy
+"""Tool instance use-cases (services layer; reshape of legacy
 ``oraclous-core-service/app/services/instance_manager.py``).
 
 Creates and configures tool instances. On create it resolves the instance's required credential

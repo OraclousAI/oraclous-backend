@@ -1,4 +1,4 @@
-"""Substrate usage-aggregation primitive (Layer 1, ADR-009 / ORA-23 / story C3).
+"""Substrate usage-aggregation primitive (Layer 1, ADR-009 / story C3).
 
 A query primitive over the C1 usage-event stream (``oraclous_substrate.usage``)
 that returns per-organisation aggregates — total event count, totals by unit,
@@ -13,7 +13,7 @@ from substrate-internal paths (none today) and the R0.5 "no HTTP route"
 acceptance criterion is held by both this module's lack of any HTTP-framework
 import and by the test that scans ``services/`` for references.
 
-Identity is sourced from the ambient organisation-context (0f / ORA-14): the
+Identity is sourced from the ambient organisation-context: the
 public method exposes no caller-supplied ``organisation_id`` parameter, so
 there is no body-supplied channel to smuggle a tenant scope through (T1-M1).
 

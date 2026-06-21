@@ -1,4 +1,4 @@
-"""uvicorn entrypoint (ORAA-4 §21) — production composition of the credential-broker app."""
+"""uvicorn entrypoint — production composition of the credential-broker app."""
 
 from __future__ import annotations
 

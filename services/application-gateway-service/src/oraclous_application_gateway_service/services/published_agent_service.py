@@ -1,4 +1,4 @@
-"""Published-agent management (ORAA-4 §21 services layer) — publish + list, org-scoped."""
+"""Published-agent management (services layer) — publish + list, org-scoped."""
 
 from __future__ import annotations
 

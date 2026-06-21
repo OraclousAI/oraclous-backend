@@ -1,4 +1,4 @@
-"""Cross-organisation graph grants (ORAA-4 §21 services layer) — the ReBAC GATE (ADR-004, #446).
+"""Cross-organisation graph grants (services layer) — the ReBAC GATE (ADR-004, #446).
 
 A graph's owner shares a READ on it with another organisation's user. RLS stays the wall (this
 writes NO data and does not widen any row-read predicate); it records a ReBAC ``HAS_ROLE`` relation

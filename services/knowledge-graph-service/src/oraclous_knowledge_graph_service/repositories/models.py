@@ -1,4 +1,4 @@
-"""ORM table models (ORAA-4 §21 repositories layer — the only home for `__tablename__`).
+"""ORM table models (repositories layer — the only home for `__tablename__`).
 
 Lifted/reshaped from legacy `develop@84152635 knowledge-graph-builder/app/models/graph.py`.
 Every row is anchored on `organisation_id` (ADR-006) in addition to the legacy `user_id` owner.

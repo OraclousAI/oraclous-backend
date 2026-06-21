@@ -1,4 +1,4 @@
-"""Published-agent public surface shapes (ORAA-4 §21 schema layer) — the integration-key plane.
+"""Published-agent public surface shapes (schema layer) — the integration-key plane.
 
 Deliberately NARROW projections: the public metadata + invoke response expose only display + result
 fields, never the gateway/harness internals (org id, harness/content ids, step transcript, token

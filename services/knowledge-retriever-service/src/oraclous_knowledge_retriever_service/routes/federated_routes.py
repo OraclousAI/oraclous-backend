@@ -1,4 +1,4 @@
-"""Federated cross-graph routes (ORAA-4 §21 routes layer) — #330 / ADR-026.
+"""Federated cross-graph routes (routes layer) — #330 / ADR-026.
 
 POST /v1/federated/search    — entity / semantic / fulltext / hybrid across the caller's
                                accessible graphs; every hit labeled source_graph_id/name.

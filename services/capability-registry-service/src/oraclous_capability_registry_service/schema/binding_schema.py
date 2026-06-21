@@ -1,4 +1,4 @@
-"""Harness↔graph binding DTOs (ORAA-4 §21 schema layer; ADR-029 §6 / Contract §G2).
+"""Harness↔graph binding DTOs (schema layer; ADR-029 §6 / Contract §G2).
 
 Pydantic request/response models only. ``organisation_id`` is never an inbound field (ORG001) — it
 is resolved from the authenticated principal in the route. The FE labels these "workspace"/"agent";

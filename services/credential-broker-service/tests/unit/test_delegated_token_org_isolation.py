@@ -1,4 +1,4 @@
-"""Failing org-isolation tests for the delegated-token surface (ORA-32 / R1-B1).
+"""Failing org-isolation tests for the delegated-token surface (R1-B1).
 
 The delegated-token primitive sits on the Substrate side of the four-layer
 model: per ADR-006, every read and write the broker performs must be scoped by

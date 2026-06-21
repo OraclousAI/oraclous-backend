@@ -1,4 +1,4 @@
-"""Engine activity + usage read routes (ORAA-4 §21 routes layer) — parse → ONE service call → map.
+"""Engine activity + usage read routes (routes layer) — parse → ONE service call → map.
 
 ``GET /v1/engine/activity`` returns the org's most-recent provenance/audit events (newest-first,
 ``limit``-capped). ``GET /v1/engine/usage`` returns the org's RAW per-action usage counts (ADR-009 —

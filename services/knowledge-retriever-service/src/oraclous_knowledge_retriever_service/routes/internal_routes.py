@@ -1,4 +1,4 @@
-"""Internal-plane routes (ORAA-4 §21 routes layer) — the agent/capability-addressable surface.
+"""Internal-plane routes (routes layer) — the agent/capability-addressable surface.
 
 `POST /internal/v1/evaluate` is the backing of the `core/evaluate` capability (ADR-037 / #469): a
 caller (the harness orchestration agent, the named battery #470, the team-run gate #477) grades an

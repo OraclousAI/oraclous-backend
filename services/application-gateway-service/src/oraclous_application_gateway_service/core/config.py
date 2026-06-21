@@ -1,4 +1,4 @@
-"""application-gateway settings (ORAA-4 §21 core layer).
+"""application-gateway settings (core layer).
 
 The gateway is a reverse-proxy edge that, since R6 Slice 3 (ADR-019), also owns a small Postgres for
 the integration-key store. Settings carry the upstream base URLs

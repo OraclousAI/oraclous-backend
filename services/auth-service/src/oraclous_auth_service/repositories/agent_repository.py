@@ -1,4 +1,4 @@
-"""Agent principal + credential lifecycle repository (ORA-30 / R1-A1).
+"""Agent principal + credential lifecycle repository (R1-A1).
 
 Reshaped from the legacy ``ServiceAccountRepository``. The raw credential is
 generated here and returned exactly once; only its bcrypt hash and a prefix

@@ -1,4 +1,4 @@
-"""App lifecycle (ORAA-4 §21 core layer) — open/close the Postgres engine + Redis.
+"""App lifecycle (core layer) — open/close the Postgres engine + Redis.
 
 Wires the async sessionmaker (used by the user-identity routes) and a Redis client (used by the
 rate limiter) into `app.state`. Degrades gracefully: if Postgres/Redis are unreachable at startup

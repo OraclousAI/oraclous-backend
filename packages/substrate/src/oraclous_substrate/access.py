@@ -2,7 +2,7 @@
 
 The single, canonical boundary through which every substrate read and write is
 scoped to an organisation. ``organisation_id`` is always sourced from the bound
-governance org-context (0f / ORA-14), never from a caller/request-body argument,
+governance org-context, never from a caller/request-body argument,
 and an absent context fails closed (Threat Catalogue T1-M1; ADR-006).
 
 Reshape of the organisation-blind tenant scoping in ``knowledge-graph-builder``:
@@ -38,8 +38,7 @@ if TYPE_CHECKING:
 # Single source of truth: every storage stamp and every Cypher parameter
 # scoping a read MUST reference this constant rather than embed the string
 # literal ``"organisation_id"``. A rename here propagates to every site that
-# composes the constant or ``org_scope_predicate``. (ORA-52 follow-up to the
-# ORA-18 Code Review architecture sign-off.)
+# composes the constant or ``org_scope_predicate``.
 ORGANISATION_ID_PROPERTY = "organisation_id"
 
 # A Neo4j label is an identifier, never request input: validate before it is
@@ -63,7 +62,7 @@ def enforced_organisation_id() -> str:
 
 def org_scope_predicate(alias: str = "node") -> str:
     """The canonical parameterised Cypher predicate fragment scoping a read
-    to the bound organisation (ADR-012 §1b; ORA-52).
+    to the bound organisation (ADR-012 §1b).
 
     Returns ``<alias>.organisation_id = $organisation_id``. Both the property
     name on the left and the parameter name on the right are sourced from
@@ -86,7 +85,7 @@ def org_scoped_cypher(query: str, *, alias: str = "node") -> tuple[str, dict[str
     ``$organisation_id`` is returned unchanged. Fail-closed without a context.
 
     Composes ``org_scope_predicate`` for the WHERE-clause fragment so the
-    predicate spelling stays in one place (ADR-012 §1b / ORA-52).
+    predicate spelling stays in one place (ADR-012 §1b).
     """
     params = {ORGANISATION_ID_PROPERTY: enforced_organisation_id()}
     if f"${ORGANISATION_ID_PROPERTY}" in query:
@@ -166,7 +165,7 @@ def scoped_write_node(driver: object, *, label: str, properties: Mapping[str, ob
         raise ValueError(f"unsafe Neo4j label: {label!r}")
     props = dict(properties)
     # Stamp via the canonical constant so a rename propagates from one site
-    # (ADR-012 §1b / ORA-52). Context wins; any caller-supplied org id is
+    # (ADR-012 §1b). Context wins; any caller-supplied org id is
     # silently overwritten — Neo4j community has no WITH-CHECK backstop, so
     # this stamping is the primary write-isolation control.
     props[ORGANISATION_ID_PROPERTY] = org_id
@@ -174,7 +173,7 @@ def scoped_write_node(driver: object, *, label: str, properties: Mapping[str, ob
 
 
 # --------------------------------------------------------------------------- #
-# Scoped store operations (ADR-012 ratified surface, ORA-20 gate's call sites).
+# Scoped store operations (ADR-012 ratified surface).
 # Each composes the enforcement primitives above. ``scoped_pg_connection``
 # centralises the NOSUPERUSER/NOBYPASSRLS role precondition (ADR-012 §3.3.4(a) /
 # Threat Catalogue T1-M3) as a structural chokepoint — never push it to callers.

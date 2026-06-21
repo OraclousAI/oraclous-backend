@@ -1,4 +1,4 @@
-"""OAuth domain helpers (ORAA-4 §21 domain layer, threat T-OAUTH). Pure, no I/O.
+"""OAuth domain helpers (domain layer, threat T-OAUTH). Pure, no I/O.
 
 PKCE (S256) generation, opaque random state, and scope set-union merge. The verifier is kept
 server-side (an ``oauth_states`` row); only the challenge is sent to the provider.

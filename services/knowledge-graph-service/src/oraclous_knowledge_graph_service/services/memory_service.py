@@ -1,4 +1,4 @@
-"""Agent-memory use-cases (ORAA-4 §21 services layer — all business logic lives here).
+"""Agent-memory use-cases (services layer — all business logic lives here).
 
 Issue #332 / ADR-027. Orchestrates the memory store/recall vertical:
 

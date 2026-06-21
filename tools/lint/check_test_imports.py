@@ -1,4 +1,4 @@
-"""Static guardrail for TDD-window test-import hygiene (ORA-48, R0.5 story 0b follow-up).
+"""Static guardrail for TDD-window test-import hygiene (R0.5 story 0b follow-up).
 
 A ``[tests]`` PR legitimately lands tests for an intra-repo seam before its
 implementation exists (the TDD contract, CLAUDE.md §4.1). If such a test imports
@@ -6,7 +6,7 @@ the not-yet-built seam at *module level*, pytest aborts collection (exit 2) for
 the whole run — reddening every open PR's quality / integration / security gate,
 not just its own, until the paired ``[impl]`` lands.
 
-The convention (security-architect coverage-safety concurrence, ORA-48): import a
+The convention (security-architect coverage-safety concurrence): import a
 not-yet-built intra-repo seam *function-locally* (inside the test or fixture), so
 the module collects cleanly and the test fails at *runtime* with
 ``ModuleNotFoundError`` — RED-by-design, on its own marker only, never masking

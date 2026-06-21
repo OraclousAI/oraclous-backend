@@ -4,7 +4,7 @@
 |---|---|
 | **Status** | Retired |
 | **Retirement date** | 4 June 2026 |
-| **Retired by** | [ORAA-78](https://oraclous.atlassian.net/browse/ORA-78) |
+| **Retired by** | Workflow-concept retirement (see ADR-005 below) |
 | **ADR reference** | [ADR-005 — Workflow Concept Retirement; Harness as Replacement](https://oraclous.atlassian.net/wiki/spaces/OP/pages/753772) |
 | **Replacement** | Harness runtime (OHM documents + capability composition); harness orchestrator capabilities ship in R4 |
 

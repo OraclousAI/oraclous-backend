@@ -1,1 +1,1 @@
-"""schema layer (ORAA-4 §21)."""
+"""schema layer."""

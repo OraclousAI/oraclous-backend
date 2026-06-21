@@ -1,4 +1,4 @@
-"""Chat turn (ORAA-4 §21 services layer) — run a chat turn through the harness, persist both sides.
+"""Chat turn (services layer) — run a chat turn through the harness, persist both sides.
 
 Resolve the thread (org + member) + its bound published agent, fold the capped prior-turn history +
 the new user message into the SINGLE harness ``input`` (the harness is stateless one-in-one-out),

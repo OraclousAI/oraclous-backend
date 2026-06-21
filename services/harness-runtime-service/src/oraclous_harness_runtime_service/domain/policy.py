@@ -1,4 +1,4 @@
-"""Governance policy sets + enforcement (ORAA-4 §21 domain layer; Section 6 + Structured Governance
+"""Governance policy sets + enforcement (domain layer; Section 6 + Structured Governance
 Taxonomy v1.0).
 
 An OHM references a policy set via ``governance.policy_set_ref``; this module is the built-in

@@ -1,4 +1,4 @@
-"""Webhook-secret store (ORAA-4 §21 repositories layer) — org-scoped, the only DB access for it.
+"""Webhook-secret store (repositories layer) — org-scoped, the only DB access for it.
 
 Mirrors the ``CredentialRepository`` engine/session idiom. ``get_for_org`` filters
 ``organisation_id`` (ADR-006) — a cross-org id returns None (the route then 404s).

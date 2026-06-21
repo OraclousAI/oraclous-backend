@@ -1,4 +1,4 @@
-"""Public read-path contracts for knowledge-retriever-service (ORAA-60).
+"""Public read-path contracts for knowledge-retriever-service.
 
 NodeResult is the canonical OHM-shaped envelope returned by all five
 retrieval endpoints.  It mirrors the shape defined in

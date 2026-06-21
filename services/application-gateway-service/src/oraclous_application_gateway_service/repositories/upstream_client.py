@@ -1,4 +1,4 @@
-"""Upstream HTTP client (ORAA-4 §21 repositories layer) — the gateway's only external substrate.
+"""Upstream HTTP client (repositories layer) — the gateway's only external substrate.
 
 Opens a STREAMING request to an upstream over the shared ``httpx.AsyncClient`` (bounded timeouts)
 and returns the still-open response for the caller to stream back + close. Connect/timeout failures

@@ -119,7 +119,7 @@ async def test_subgraph_returns_nodes_and_edges(client) -> None:
     assert set(body.keys()) == {"nodes", "edges"}  # strict {nodes, edges} envelope
     assert {n["id"] for n in body["nodes"]} == {"4:x:1", "4:y:2"}
     # Edges carry a `properties` bag (mirrors nodes); an edge `score` (e.g. on SIMILAR_TO)
-    # surfaces through it for the FE explorer (ORAA-277).
+    # surfaces through it for the FE explorer.
     assert all(set(e.keys()) == {"source", "target", "type", "properties"} for e in body["edges"])
     assert body["edges"][0] == {
         "source": "4:x:1",

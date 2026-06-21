@@ -1,4 +1,4 @@
-"""Domain errors (ORAA-4 §21 domain layer)."""
+"""Domain errors (domain layer)."""
 
 from __future__ import annotations
 

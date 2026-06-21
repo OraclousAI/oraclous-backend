@@ -2,8 +2,8 @@
 
 R3.5 service #6 — the single **reverse-proxy edge** fronting the backend services. R6 hardens it: it
 now also owns Redis (the edge rate limiter, Slice 2) and a small Postgres (the integration-key store,
-Slice 3 / ADR-019) alongside the shared `httpx` client to the upstreams. Layered per ORAA-4 §21:
-`routes → services → domain → repositories → core`.
+Slice 3 / ADR-019) alongside the shared `httpx` client to the upstreams. Layered per the
+service-architecture standard: `routes → services → domain → repositories → core`.
 
 Until the gateway fronts everything, the services also stay reachable directly by host port. The
 platform-internal `/internal/*` plane (X-Internal-Key, service-to-service) is **never** edge-exposed.

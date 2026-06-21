@@ -1,4 +1,4 @@
-"""Harness execution spine (ORAA-4 §21 services layer).
+"""Harness execution spine (services layer).
 
 Turns an OHM + an input into a completed run:
   source the manifest (inline YAML/object, or a ``manifest_ref`` → a registered kind=harness

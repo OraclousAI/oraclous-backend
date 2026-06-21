@@ -1,4 +1,4 @@
-"""Tests for the canonical service-architecture guardrail (STR001-006, ORAA-4 §21, R3.5)."""
+"""Tests for the canonical service-architecture guardrail (STR001-006, R3.5)."""
 
 from __future__ import annotations
 
@@ -113,7 +113,7 @@ def test_str005_scattered_service_module_at_package_root(tmp_path: Path) -> None
     assert "STR005" in _codes(pkg)
 
 
-# --- documented §21 exceptions / STR006 (#301, #302) ----------------------------------------
+# --- documented structure exceptions / STR006 (#301, #302) ----------------------------------------
 
 
 def test_documented_exception_for_absent_optional_layer_is_accepted(

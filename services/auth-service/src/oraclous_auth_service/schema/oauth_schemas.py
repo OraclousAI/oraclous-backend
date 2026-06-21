@@ -1,4 +1,4 @@
-"""OAuth request/response DTOs (ORAA-4 §21 schema layer)."""
+"""OAuth request/response DTOs (schema layer)."""
 
 from __future__ import annotations
 

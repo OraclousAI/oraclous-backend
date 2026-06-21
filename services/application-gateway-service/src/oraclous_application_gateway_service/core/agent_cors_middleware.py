@@ -1,4 +1,4 @@
-"""Per-key CORS for the published-agent public plane (ORAA-4 §21 core layer).
+"""Per-key CORS for the published-agent public plane (core layer).
 
 A path-scoped pure-ASGI middleware (never ``BaseHTTPMiddleware`` — the streaming proxy must not be
 buffered) that sits OUTSIDE the gateway-wide ``CORSMiddleware`` (added after it → wraps it). For

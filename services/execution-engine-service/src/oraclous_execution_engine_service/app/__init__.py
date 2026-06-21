@@ -1,1 +1,1 @@
-"""app layer (ORAA-4 §21)."""
+"""app layer."""

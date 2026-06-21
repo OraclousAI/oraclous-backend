@@ -95,7 +95,7 @@ async def test_list_graphs_isolates_a_failing_count() -> None:
     assert out[0].node_count == 0  # degraded to stored, did not crash the whole list
 
 
-# --- ORAA-261: graph delete cascades the Neo4j nodes ------------------------------------------
+# --- graph delete cascades the Neo4j nodes ------------------------------------------
 class _RecordingDriver:
     """Captures the Cypher + bound params of the last execute_query (no real Neo4j)."""
 

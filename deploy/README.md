@@ -98,7 +98,7 @@ COMPOSE_PROJECT_NAME=oraclous-fe-target \
 
 Contact the CTO if the fe-target stack is down.
 
-## Neo4j roles (ORAA-53 / ORAA-58)
+## Neo4j roles
 
 The knowledge-graph-service (write path) connects to Neo4j as a dedicated
 `kgs_writer` user with the `publisher` role (read + write + schema-element

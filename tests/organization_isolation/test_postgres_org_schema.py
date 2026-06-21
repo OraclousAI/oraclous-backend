@@ -1,4 +1,4 @@
-"""Every substrate Postgres tenant table is organisation-scoped with RLS (ORA-16 / A1, AC#2).
+"""Every substrate Postgres tenant table is organisation-scoped with RLS (A1, AC#2).
 
 RED until `backend-implementer` adds `oraclous_substrate.schema.postgres`.
 
@@ -9,7 +9,7 @@ unit, with row-level security as the defense-in-depth backstop (ADR-006, T1).
 
 These are *schema* tests on the real Postgres harness (AC#6): they introspect
 the catalog after the substrate applies its schema. Row-level write/query
-enforcement is A2 (ORA-17), explicitly out of scope here.
+enforcement is A2, explicitly out of scope here.
 """
 
 from __future__ import annotations

@@ -17,7 +17,7 @@
 #   kubectl create secret generic oraclous-db-owner --from-literal=password='<OWNER_DB_PASSWORD>'
 #   kubectl create secret generic oraclous-db-app   --from-literal=password='<APP_DB_PASSWORD>'
 #
-#   # ---- Neo4j role passwords (ORAA-53/58 least privilege) ----
+#   # ---- Neo4j role passwords (least privilege) ----
 #   kubectl create secret generic neo4j-admin       --from-literal=password='<NEO4J_ADMIN_PASSWORD>'
 #   kubectl create secret generic neo4j-kgs-writer  --from-literal=password='<KGS_WRITER_PASSWORD>'
 #   kubectl create secret generic neo4j-krs-reader  --from-literal=password='<KRS_READER_PASSWORD>'

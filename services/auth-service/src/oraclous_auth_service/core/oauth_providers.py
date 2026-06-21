@@ -1,4 +1,4 @@
-"""OAuth provider registry (ORAA-4 §21 core layer — config).
+"""OAuth provider registry (core layer — config).
 
 Google / GitHub / Notion endpoint config + per-provider client id/secret read lazily from the env
 (``OAUTH_<PROVIDER>_CLIENT_ID`` / ``_CLIENT_SECRET``). A provider with no configured client is

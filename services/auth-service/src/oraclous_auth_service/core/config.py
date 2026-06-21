@@ -1,4 +1,4 @@
-"""Auth-service settings loader (ORA-31 · extended R3.5-P3-S1).
+"""Auth-service settings loader (extended R3.5-P3-S1).
 
 Reads JWT, Postgres, Redis and internal-key config from the environment. Kept as a frozen dataclass
 recomputed on every :func:`get_settings` call (NOT lru-cached) so the agent-token tests can mutate

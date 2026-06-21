@@ -1,5 +1,5 @@
 """End-to-end tests: the ReBAC engine resolver adapter, wired through the
-substrate seam, against a real Neo4j (ORA-46 AC: "End-to-end through
+substrate seam, against a real Neo4j ("End-to-end through
 AccessDecisionClient + real adapter").
 
 These assert what the unit suite cannot — that the *real* ``ReBACEngine``
@@ -8,7 +8,7 @@ False when it does not, and returns 0 (deny) on a cross-org check. The
 engine's full traversal (Phase B HAS_ROLE → Phase A CAN_ACCESS fallback) is
 exercised behaviourally: tests seed Phase A edges directly, because the
 Phase B HAS_ROLE traversal needs system-Permission nodes the engine does not
-seed itself (that seeding is intentionally not in ORA-34 scope and lands
+seed itself (that seeding is intentionally out of the engine's scope and lands
 with the first real consumer).
 
 Markers: ``integration`` (real substrate via testcontainers), ``rebac``,
@@ -148,8 +148,8 @@ async def test_cross_organisation_check_returns_zero(
     """ADR-006: an identical (user, graph) under a different organisation
     must resolve to deny — even though the CAN_ACCESS edge exists, it carries
     a different ``organisation_id`` so the Phase A query's WHERE clause drops
-    it. This is the cross-org-returns-0 invariant the ORA-34 data-layer test
-    proves at the Cypher level; ORA-46 proves it end-to-end through the
+    it. This is the cross-org-returns-0 invariant the engine data-layer test
+    proves at the Cypher level; this suite proves it end-to-end through the
     adapter + seam.
     """
     # Seeded only for ORG_A.
@@ -172,8 +172,8 @@ async def test_cross_organisation_check_returns_zero(
 # ── On the "deny+reason on engine error" e2e AC bullet ─────────────────────
 #
 # The AC's "deny+reason on engine error" end-to-end is *not* asserted here,
-# deliberately. The current ``ReBACEngine.check_graph_permission`` (merged in
-# ORA-34) swallows Neo4j exceptions internally and returns ``False`` — by
+# deliberately. The current ``ReBACEngine.check_graph_permission``
+# swallows Neo4j exceptions internally and returns ``False`` — by
 # design (it self-denies fail-closed). The adapter's no-pre-collapse contract
 # is pinned at unit level (``test_engine_error_propagates_not_collapsed_to_false``
 # and ``test_seam_end_to_end_allow_definitive_deny_error_deny_reasons_distinguishable``
@@ -182,7 +182,7 @@ async def test_cross_organisation_check_returns_zero(
 # Flagging this as a contract gap for be-test-reviewer / coordinator
 # solution-architect: if the SA ruling on fail-closed authority placement is
 # "seam-owns-fail-closed", the engine should be refactored to surface
-# exceptions (a small ORA-34 follow-up), at which point a real-engine e2e
+# exceptions (a small engine follow-up), at which point a real-engine e2e
 # error test becomes writable — drop a closed driver in, observe the error
 # reason at the seam. Until then, asserting it end-to-end here would pin
 # behaviour the engine does not currently produce.

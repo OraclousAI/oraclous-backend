@@ -1,4 +1,4 @@
-"""Ontology → free-text extraction schema compiler (ORAA-4 §21 domain layer — pure, no I/O).
+"""Ontology → free-text extraction schema compiler (domain layer — pure, no I/O).
 
 The bridge that lets a graph's TYPED ontology drive free-text LLM extraction, restoring the legacy
 instruction-driven extraction — made better: instead of injecting the schema as plain text in the

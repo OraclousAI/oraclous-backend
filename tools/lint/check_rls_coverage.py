@@ -2,7 +2,7 @@
 has the Postgres row-level-security backstop applied.
 
 ADR-012 §2 committed to RLS as the defense-in-depth backstop; ADR-030 realizes it
-service-by-service. This guardrail is the recurrence mechanism (ORAA-4 §20): once a
+service-by-service. This guardrail is the recurrence mechanism: once a
 service is realized, a new org-scoped table that ships WITHOUT RLS — or a table that
 drops its ``enable_rls_on`` call — fails CI, rather than silently leaving a row-level
 hole behind the app-layer ``WHERE``.

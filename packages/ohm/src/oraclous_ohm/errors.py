@@ -1,4 +1,4 @@
-"""OHM error taxonomy (ORAA-4 §21 domain layer; OHM v1.0 spec §7).
+"""OHM error taxonomy (domain layer; OHM v1.0 spec §7).
 
 The full set is declared here so the slice-2 parser/loader extends it without churn; slice 1 raises
 ``OHMParseError`` / ``OHMSchemaError`` / ``OHMVersionError`` from the thin loader. Each maps to a

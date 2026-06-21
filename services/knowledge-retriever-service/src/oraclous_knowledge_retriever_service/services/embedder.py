@@ -1,4 +1,4 @@
-"""Query embedder (ORAA-4 §21 services layer).
+"""Query embedder (services layer).
 
 The deterministic, key-free signed feature-hashing embedder — BYTE-IDENTICAL to the knowledge-graph-
 service write-side embedder (same blake2b feature-hashing, dim + L2 norm). Identity

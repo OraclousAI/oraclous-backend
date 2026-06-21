@@ -1,4 +1,4 @@
-"""Schema-synthesis use-case (ORAA-4 §21 services layer) — an authoring aid (Slice C).
+"""Schema-synthesis use-case (services layer) — an authoring aid (Slice C).
 
 Infer a suggested typed ontology from a text SAMPLE, so an author does not have to hand-write the
 entity/relationship types before they ingest. It wraps neo4j-graphrag's

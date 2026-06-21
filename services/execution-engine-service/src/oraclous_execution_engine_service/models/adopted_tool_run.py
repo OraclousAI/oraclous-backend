@@ -1,4 +1,4 @@
-"""AdoptedToolRun ORM model (ORAA-4 §21 models layer).
+"""AdoptedToolRun ORM model (models layer).
 
 The idempotency ledger for an ADOPTED_TOOL_RUN schedule fire (#489). A schedule whose
 ``target_kind == adopted_tool_run`` fires a capability-registry instance ``/execute`` instead of a

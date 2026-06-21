@@ -1,11 +1,11 @@
-"""Published OpenAPI contract routes (ORAA-4 §21 routes layer).
+"""Published OpenAPI contract routes (routes layer).
 
 Serves the canonical R6 public contract (ADR-015) at ``/v1/openapi.json`` +
 ``/v1/openapi.yaml`` and a Swagger UI at ``/docs``. Registered BEFORE the reverse-proxy
 catch-all so the edge serves them, never forwards them to an upstream. They are public
 (no edge auth) — the contract is a deliberate, curated disclosure surface: it carries only
 the intended public operations (never the ``/internal/*`` plane), and its error component
-is the closed ORA-37 envelope.
+is the closed error envelope.
 """
 
 from __future__ import annotations

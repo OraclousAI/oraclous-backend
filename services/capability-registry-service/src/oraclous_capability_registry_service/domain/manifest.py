@@ -1,4 +1,4 @@
-"""OHM-v1 manifest validation (ORAA-4 §21 domain layer) — pure, no I/O.
+"""OHM-v1 manifest validation (domain layer) — pure, no I/O.
 
 Validation happens at PERSIST time (registration), not at allocation: a malformed descriptor never
 reaches the table. The decisive rule (recon T2/T8): a ``oauth_token`` credential requirement must

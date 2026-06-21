@@ -1,4 +1,4 @@
-"""Gateway health routes (ORAA-4 §21 routes layer).
+"""Gateway health routes (routes layer).
 
 ``GET /health`` is a dependency-free liveness probe — it answers even when every upstream is down,
 so the container is healthy independently of the substrate. ``GET /health/upstreams`` aggregates

@@ -1,4 +1,4 @@
-"""Capability-kind plugins (ORAA-4 §21 domain layer).
+"""Capability-kind plugins (domain layer).
 
 Importing this package imports ``builtin`` so the built-in tool plugins register themselves against
 ``plugin_registry`` (import side-effect = discovery).

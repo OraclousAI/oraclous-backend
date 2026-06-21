@@ -1,4 +1,4 @@
-"""Retrieval use-cases (ORAA-4 §21 services layer) — the five read modalities.
+"""Retrieval use-cases (services layer) — the five read modalities.
 
 semantic (cosine over chunk embeddings, key-free), fulltext (index-free CONTAINS scan), hybrid (RRF
 fusion, k=60), graph-traverse (1-hop neighbours), temporal (valid as-of). Every result is the

@@ -1,4 +1,4 @@
-"""Organisation request/response DTOs (ORAA-4 §21 schema layer).
+"""Organisation request/response DTOs (schema layer).
 
 No ``organisation_id`` is accepted off a request body (it is the path/route, never input); these are
 plain create/update payloads + the org projection.

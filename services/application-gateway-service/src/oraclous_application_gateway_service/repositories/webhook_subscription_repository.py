@@ -1,4 +1,4 @@
-"""Webhook-subscription store (ORAA-4 §21 repositories layer) — a gateway-owned DB seam.
+"""Webhook-subscription store (repositories layer) — a gateway-owned DB seam.
 
 ``get_by_id`` is intentionally NOT org-scoped: the opaque id IS the bearer-less credential the
 inbound POST presents, and the row carries the org it then asserts to the engine. The MEMBER-facing

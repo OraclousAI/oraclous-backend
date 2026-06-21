@@ -1,4 +1,4 @@
-"""GitHub reader connector (ORAA-4 §21 domain layer).
+"""GitHub reader connector (domain layer).
 
 A real HTTP connector: authenticates to the GitHub REST API with the resolved ``api_key`` (a PAT)
 and runs read operations (``list_files``, ``read_file``). The live call is key-gated;

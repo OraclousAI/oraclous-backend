@@ -1,4 +1,4 @@
-"""Capability-registry client (ORAA-4 §21 services layer).
+"""Capability-registry client (services layer).
 
 The runtime composes the capability-registry over HTTP — it never imports it (four-layer contract).
 This client resolves an OHM capability reference to a registry descriptor, materialises a registry

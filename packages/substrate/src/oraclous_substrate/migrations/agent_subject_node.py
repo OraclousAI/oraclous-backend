@@ -1,16 +1,16 @@
-"""Context-free explicit-org Neo4j writer for Agent ReBAC subject nodes (ORA-36 / R1-D1).
+"""Context-free explicit-org Neo4j writer for Agent ReBAC subject nodes (R1-D1).
 
 A migration is context-less by definition: there is no bound governance
 ``organisation_id`` to source from. Yet the substrate still has to write
 ``organisation_id`` onto every legacy ``(:Agent:__Platform__)`` node so the
-C2 delegation traversal (ORA-35) can resolve it. This helper accepts the
+C2 delegation traversal can resolve it. This helper accepts the
 ``organisation_id`` as an explicit parameter — sibling to the
 ``org_backfill`` primitives that stamp an explicit ``SEED_ORGANISATION_ID``
 — and stamps it idempotently via ``MERGE … ON CREATE/ON MATCH`` plus
 ``COALESCE`` (a node that already carries ``organisation_id`` keeps it on
 re-run; a node missing it gets the value supplied here).
 
-Per security-architect R2 (ORA-36 comment 10346): this writer lives in the
+Per security-architect R2: this writer lives in the
 substrate ``migrations`` namespace, NOT on ``oraclous_substrate.access``. A
 caller-chooses-org writer at the request-path access seam is a T1
 cross-organisation-write primitive — the migration needs the capability,
@@ -18,11 +18,11 @@ the request path must never have it. The canonical ``organisation_id``
 property name is single-sourced from ``oraclous_substrate.schema.neo4j``
 (``ORG_PROPERTY``).
 
-The Agent label literal (``Agent:__Platform__``) matches the ORA-35 ReBAC
+The Agent label literal (``Agent:__Platform__``) matches the ReBAC
 engine's MERGE/MATCH patterns; ``Agent`` is deliberately NOT in
 ``oraclous_substrate.schema.neo4j.ORG_SCOPED_LABELS`` (the YAML registry
 that ``org_backfill`` iterates over), so the legacy Agent corpus is
-invisible to the ORA-24 org backfill — ORA-36 is the migration that brings
+invisible to the org backfill — this is the migration that brings
 it under the org scope.
 """
 
@@ -30,7 +30,7 @@ from __future__ import annotations
 
 from oraclous_substrate.schema.neo4j import ORG_PROPERTY
 
-# The Agent ReBAC subject-node label, mirroring the ORA-35 engine's MERGE/MATCH
+# The Agent ReBAC subject-node label, mirroring the engine's MERGE/MATCH
 # pattern in ``oraclous_rebac.engine``. Treated as a trusted module constant —
 # never request input — so safe to compose into Cypher.
 _AGENT_LABEL = "Agent:__Platform__"

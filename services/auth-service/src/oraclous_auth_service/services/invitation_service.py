@@ -1,4 +1,4 @@
-"""Invitation use-cases (ORAA-4 §21 services layer, threat T-INVITE / T-PRIV).
+"""Invitation use-cases (services layer, threat T-INVITE / T-PRIV).
 
 Create (admin+ only; supersedes any prior pending for the same email), list, revoke, public peek,
 and accept → membership. Every accept/peek failure mode (unknown / expired / revoked / replayed /

@@ -1,4 +1,4 @@
-"""Harness↔graph binding use-cases (ORAA-4 §21 services layer; ADR-029 / Contract §G2).
+"""Harness↔graph binding use-cases (services layer; ADR-029 / Contract §G2).
 
 The authority for the workspace↔harness curation edge. Orchestrates the org-scoped binding
 repository with two visibility checks (ADR-029 §3, both sides verified):

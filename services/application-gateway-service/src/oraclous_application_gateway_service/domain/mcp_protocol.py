@@ -1,4 +1,4 @@
-"""MCP / JSON-RPC protocol helpers (ORAA-4 §21 domain layer) — pure, no I/O.
+"""MCP / JSON-RPC protocol helpers (domain layer) — pure, no I/O.
 
 A hand-rolled subset of the Model Context Protocol over JSON-RPC 2.0: ``initialize`` + `tools/list`
 + ``tools/call`` (no resources/prompts/sampling in S8). The gateway exposes the org's PUBLISHED

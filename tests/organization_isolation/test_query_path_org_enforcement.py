@@ -1,9 +1,9 @@
 """Data-layer proof that A2's enforcement isolates organisations at runtime
-(ORA-17 / A2, AC#4) — on the ORA-12 (0d) testcontainers harness.
+(AC#4) — on the 0d testcontainers harness.
 
 RED until ``backend-implementer`` adds ``oraclous_substrate.access``.
 
-Distinct from ORA-16/A1's ``organization_isolation`` tests, which proved the
+Distinct from A1's ``organization_isolation`` tests, which proved the
 *schema* carries ``organisation_id`` (org-scoped Neo4j indexes; Postgres org column
 + forced RLS policy + flags). Here we prove the *enforcement path A2 builds on top*
 actually isolates at the data layer:
@@ -11,7 +11,7 @@ actually isolates at the data layer:
 * **Neo4j** — ``org_scoped_cypher`` (reshape of ``_inject_graph_id_filter``) sources
   the filter from the bound org-context, so a read issued under org A's context
   never returns org B's nodes. Neo4j community has no RLS backstop, so this app-layer
-  enforcement is the *primary* line of defence (ORA-17 brief addendum). Proven on the
+  enforcement is the *primary* line of defence. Proven on the
   read path via the enforcement helper — not a hand-written ``WHERE``.
 * **Postgres** — ``bind_organisation_guc`` (reshape of ``get_db()``) sets the RLS GUC
   from the org-context, activating A1's row-level-security policy so reads *and*
@@ -20,8 +20,8 @@ actually isolates at the data layer:
 Write isolation (AC#4 "cannot ... write org B") is proven on both stores: Postgres
 via the RLS WITH CHECK, and Neo4j via ``scoped_write_node`` (ADR-012), which stamps
 the bound-context organisation onto ``CREATE`` and ignores any caller-supplied
-``organisation_id``. Per the Tests Review ruling (solution-architect + security-architect,
-ORA-17 escalation), the Neo4j write helper IS in A2 scope and the proof is required
+``organisation_id``. Per the Tests Review ruling (solution-architect + security-architect),
+the Neo4j write helper IS in A2 scope and the proof is required
 here: Neo4j community has no WITH-CHECK/RLS backstop, so the app-layer write
 enforcement is the primary control and must be proven, not deferred.
 

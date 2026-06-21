@@ -1,4 +1,4 @@
-"""Team-run service (ORAA-4 §21 services layer) — the durable, reachable entry point for running an
+"""Team-run service (services layer) — the durable, reachable entry point for running an
 OHM v1.1 Team Harness.
 
 This is the front door the orchestrator (``oraclous_ohm.orchestrate.run_team``) lacked. The request

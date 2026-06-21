@@ -1,4 +1,4 @@
-"""Substrate Neo4j primitives carry organisation_id (ORA-16 / A1, AC#3).
+"""Substrate Neo4j primitives carry organisation_id (A1, AC#3).
 
 RED until `backend-implementer` adds `oraclous_substrate.schema.neo4j`.
 
@@ -13,7 +13,7 @@ so AC#3 ("nodes + relationships carry organisation_id; ... indexes include it")
 is proven here via (a) org-scoped indexes and (b) data-layer property isolation,
 *not* a NOT-NULL constraint. Flagged for the architect at Tests Review: the
 mandatory-org enforcement on writes is either Enterprise-only or belongs to the
-write path (A2 / ORA-17).
+write path (A2).
 """
 
 from __future__ import annotations

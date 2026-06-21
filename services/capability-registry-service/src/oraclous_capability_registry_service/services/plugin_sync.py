@@ -1,4 +1,4 @@
-"""Plugin discovery + manifest seeding (ORAA-4 §21 services layer; reshape of legacy
+"""Plugin discovery + manifest seeding (services layer; reshape of legacy
 ``sync_plugins_to_registry``).
 
 Seeds every registered capability-kind plugin's OHM descriptor into an organisation's registry.

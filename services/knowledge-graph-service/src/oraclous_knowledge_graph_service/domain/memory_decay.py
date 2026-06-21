@@ -1,4 +1,4 @@
-"""Agent-memory decay + ranking math (ORAA-4 §21 domain layer — pure functions, no I/O).
+"""Agent-memory decay + ranking math (domain layer — pure functions, no I/O).
 
 Issue #332 / ADR-027 §2. The Ebbinghaus forgetting-curve math is LIFTED VERBATIM from the legacy
 ``knowledge-graph-builder/app/services/memory_service.py`` (develop@84152635):

@@ -1,4 +1,4 @@
-"""Find-similar connector (ORAA-4 §21 domain layer) — the in-loop "entities similar to X" tool.
+"""Find-similar connector (domain layer) — the in-loop "entities similar to X" tool.
 
 Issue #310. The twin of the knowledge-retriever connector: a first-party, org-scoped,
 credential-free read tool an agent binds in-loop to ask "what is similar to this node?". It GETs the

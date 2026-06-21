@@ -1,4 +1,4 @@
-"""Generic REST connector (ORAA-4 §21 domain layer) — curated data sources as a tool (#489).
+"""Generic REST connector (domain layer) — curated data sources as a tool (#489).
 
 Fetches a curated :mod:`source_providers` source's endpoint over HTTPS and returns its parsed dict
 on the org-scoped Execution row. The ``source_id`` selects a curated provider (never a free URL),

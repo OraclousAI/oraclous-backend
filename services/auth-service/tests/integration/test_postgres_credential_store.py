@@ -1,8 +1,8 @@
 """Failing integration tests for the real Postgres-backed agent CredentialStore
-(ORA-45, R1-A3).
+(R1-A3).
 
-Pins, against a real Postgres (ORA-12 / 0d harness), the contract the ORA-30
-unit suite asserts against the in-memory double:
+Pins, against a real Postgres (0d harness), the contract the unit
+suite asserts against the in-memory double:
 
 * ``persist`` writes the agent + credential to SQL;
 * ``active_credentials_by_prefix`` does the prefix lookup and applies the
@@ -16,15 +16,15 @@ unit suite asserts against the in-memory double:
 * the full ``AgentRepository`` round-trip (create → validate → revoke → expiry)
   works end-to-end against real SQL.
 
-The in-memory double remains for the ORA-30 unit suite; nothing here mocks the
+The in-memory double remains for the unit suite; nothing here mocks the
 database. Behavioural reference: legacy
 ``auth-service/app/repositories/service_account_repository.py`` (lift-tag
 **Reshape**) — same ``WHERE status='active'`` + prefix-index pattern, refit
-behind the ORA-30 port and onto the agent principal per ADR-006.
+behind the port and onto the agent principal per ADR-006.
 
 RED until ``backend-implementer`` adds the real
 ``oraclous_auth_service.repositories.postgres_credential_store`` module
-implementing the ORA-30 ``CredentialStore`` port against SQLAlchemy + Postgres.
+implementing the ``CredentialStore`` port against SQLAlchemy + Postgres.
 """
 
 from __future__ import annotations
@@ -71,7 +71,7 @@ async def store(postgres_dsn: str) -> AsyncIterator[PostgresCredentialStore]:
 
 @pytest.fixture
 def repo(store: PostgresCredentialStore) -> AgentRepository:
-    """The ORA-30 ``AgentRepository`` wired against the real Postgres store."""
+    """The ``AgentRepository`` wired against the real Postgres store."""
     return AgentRepository(store=store)
 
 
@@ -100,7 +100,7 @@ def user() -> str:
     return f"user-{uuid.uuid4()}"
 
 
-# --- ORA-30 port contract against real SQL ----------------------------------
+# --- port contract against real SQL ----------------------------------
 
 
 async def test_create_persists_agent_and_credential_in_sql(
@@ -134,7 +134,7 @@ async def test_active_credentials_by_prefix_excludes_revoked_at_sql_layer(
 ) -> None:
     """``WHERE status='active'`` lives in the SQL — revoked rows are filtered.
 
-    Pins the contract the ORA-30 unit suite asserts on the double: the status
+    Pins the contract the unit suite asserts on the double: the status
     filter belongs in the store, not the repository.
     """
     raw, agent = await repo.create_agent(organisation_id=org, created_by_user_id=user)
@@ -175,7 +175,7 @@ async def test_expired_credential_is_rejected_by_repo_not_store(
 ) -> None:
     """Repo-side expiry check: the row is still ``status='active'`` in SQL.
 
-    Pins the split-of-concerns the ORA-30 port asserts — the SQL filter is
+    Pins the split-of-concerns the port asserts — the SQL filter is
     ``status='active'`` only; the ``expires_at`` clock comparison happens in
     ``AgentRepository.validate_credential``. A regression that moved expiry
     into SQL would change the rowcount returned by the bare port method.

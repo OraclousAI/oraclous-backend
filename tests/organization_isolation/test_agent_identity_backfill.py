@@ -1,4 +1,4 @@
-"""Idempotent pre-R1 agent-identity backfill (ORA-36 / R1-D1).
+"""Idempotent pre-R1 agent-identity backfill (R1-D1).
 
 RED until ``backend-implementer`` adds
 ``oraclous_auth_service.migrations.agent_identity_backfill``.
@@ -11,7 +11,7 @@ issue, for every agent that existed pre-R1 (a legacy
 the three artifacts R1 declares for an agent principal:
 
 1.  a Postgres ``agents`` row keyed on the legacy ``agent_id``, carrying
-    ``organisation_id`` per ADR-006 (ORA-30 / R1-A1);
+    ``organisation_id`` per ADR-006 (R1-A1);
 2.  at least one Postgres ``agent_credentials`` row tied to that agent and
     carrying the same ``organisation_id`` (the raw credential is **not**
     reconstructable — the row exists so the principal has a credential of
@@ -31,7 +31,7 @@ store written by its owner (ADR-001 / ADR-012 §1a / §1b). Concretely:
   ``rollback_agent_identity``) lives in **auth-service**:
   ``oraclous_auth_service.migrations.agent_identity_backfill``.
 * The Postgres writes use auth-service-owned helpers (hash / prefix /
-  active-prefix-unique convention from ORA-30 / ADR-012 §1a, kept in one
+  active-prefix-unique convention from ADR-012 §1a, kept in one
   home) over the caller's ``postgres_conn`` (caller-controlled txn —
   mirrors ``org_backfill``).
 * The Neo4j stamp composes a new context-free, explicit-org node-writer
@@ -45,7 +45,7 @@ store written by its owner (ADR-001 / ADR-012 §1a / §1b). Concretely:
   single-sourced from ``oraclous_substrate.access`` (§1b); the dangerous
   capability stays out of the seam.
 
-The migration is asserted against the real ORA-12 substrate harness
+The migration is asserted against the real substrate harness
 (``neo4j_driver`` + ``postgres_dsn``). Per the brief the migration is
 *authored and rehearsed* now; this suite is the staging-rehearsal contract.
 
@@ -81,7 +81,7 @@ import pytest
 pytestmark = [pytest.mark.integration, pytest.mark.organization_isolation]
 
 # Per-suite marker scoping cleanup so legacy seeds don't bleed into the
-# session-shared Neo4j container (mirrors the ORA-24 Neo4j suite pattern).
+# session-shared Neo4j container (mirrors the org-backfill Neo4j suite pattern).
 _NEO4J_MARKER_PROP = "_ora36_marker"
 
 # Per-test agent identifiers. The migration must accept arbitrary legacy
@@ -135,10 +135,10 @@ def _seed_legacy_agents(driver, marker: str) -> None:
 
 
 def _create_agent_tables(conn) -> None:
-    """Create the ORA-30 ``agents`` + ``agent_credentials`` tables in legacy shape.
+    """Create the ``agents`` + ``agent_credentials`` tables in legacy shape.
 
     DDL mirrors ``oraclous_auth_service.models.agent_model`` exactly — the
-    suite seeds the schema R1-A1 deployed (ORA-30) so the migration runs
+    suite seeds the schema R1-A1 deployed so the migration runs
     against the same table shape as production. The partial unique index
     on ``credential_prefix WHERE status='active'`` (ADR-012 §1a) is
     preserved so a migration that issues duplicate active prefixes will
@@ -231,7 +231,7 @@ def legacy_neo4j(neo4j_driver, marker: str):
 
 @pytest.fixture
 def fresh_pg(postgres_dsn: str) -> Iterator[psycopg.Connection]:
-    """A Postgres connection with the ORA-30 agent tables freshly created.
+    """A Postgres connection with the agent tables freshly created.
 
     Drop-then-create per test so the session-shared container's accumulated
     rows from neighbouring suites cannot bleed into orphan-count assertions.
@@ -483,7 +483,7 @@ class TestOrganisationIdMatchesEverywhere:
     ) -> None:
         """Agent C has no legacy ``org_id`` at all. The migration must
         still produce a *correctly-scoped* principal — the seed org is
-        the documented fallback (ADR-006 + ORA-24 precedent). A backfill
+        the documented fallback (ADR-006 + org-backfill precedent). A backfill
         that left this agent without a principal would be the exact T2
         gap the brief calls out."""
         from oraclous_auth_service.migrations import agent_identity_backfill
@@ -1007,7 +1007,7 @@ class TestAccessSeamRemainsCallerOrgFree:
             "oraclous_substrate.access exposes a Neo4j-touching callable "
             "that accepts `organisation_id` as a parameter — a T1 cross-"
             "org-write primitive at the request boundary (security-"
-            f"architect R2 / ORA-36). Offenders: {offenders}. The new "
+            f"architect R2). Offenders: {offenders}. The new "
             "explicit-org writer the agent-identity migration composes "
             "MUST live in oraclous_substrate.migrations, never on the seam."
         )

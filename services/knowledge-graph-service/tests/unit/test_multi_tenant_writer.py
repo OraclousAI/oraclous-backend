@@ -1,5 +1,5 @@
 """MultiTenantKGWriter — preserved legacy ``graph_id`` + ingestion-provenance
-behaviour (ORA-18 / Epic A3, Lift step).
+behaviour (Lift step).
 
 Behavioural reference: legacy
 ``knowledge-graph-builder/app/components/multi_tenant_components.py``
@@ -7,7 +7,7 @@ Behavioural reference: legacy
 provenance contract — unconditional ``graph_id`` overwrite, ingestion-source
 sanitisation, empty-name entity drop, duplicate-relationship dedup with weight,
 bitemporal timestamps — so the lift cannot regress them. The *outer
-organisation-scoping layer* added by ORA-18 is covered in
+organisation-scoping layer* is covered in
 [test_organisation_scoped_writer.py](./test_organisation_scoped_writer.py).
 
 Module placement: ``solution-architect`` ratified Option B (split) on
@@ -80,7 +80,7 @@ def _writer(
     ingestion_source: str | None = None,
 ):
     """Local-import factory keeping the SUT module-level import out of test
-    collection (ORA-48 / TST001 — TDD-window collection safety)."""
+    collection (TST001 — TDD-window collection safety)."""
     from oraclous_knowledge_graph_service.multi_tenant import MultiTenantKGWriter
 
     return MultiTenantKGWriter(

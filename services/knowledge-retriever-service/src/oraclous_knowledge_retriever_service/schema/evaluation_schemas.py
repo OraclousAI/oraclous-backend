@@ -1,4 +1,4 @@
-"""Evaluation DTOs (ORAA-4 §21 schema layer — Pydantic only) (#331).
+"""Evaluation DTOs (schema layer — Pydantic only) (#331).
 
 Lifts the legacy evaluation endpoint's request/response SHAPE (the old knowledge-graph-builder
 ``evaluation_schemas.py``) — NOT its ragas/langchain implementation. Question/answer/ground-truth

@@ -1,4 +1,4 @@
-"""Failure-mode tests for readiness-reflecting health (ADR-021 / ORAA-297).
+"""Failure-mode tests for readiness-reflecting health (ADR-021).
 
 Simulate a configured-Neo4j bind failure at startup → the alert fires and ``/health`` reflects
 degraded while ``/readyz`` 503s; a healthy bind reports ``ok``. The critical store is Neo4j.

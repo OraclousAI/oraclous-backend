@@ -1,4 +1,4 @@
-"""Human-actor assignment repository (ORAA-4 §21 repositories layer). Org-scoped (ADR-006)."""
+"""Human-actor assignment repository (repositories layer). Org-scoped (ADR-006)."""
 
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-"""Loader for the canonical org-scoped-labels YAML (ORA-51).
+"""Loader for the canonical org-scoped-labels YAML.
 
 This module is the single source of truth for which Neo4j labels and
 relationship types carry the organisation_id tenancy seam. The substrate's

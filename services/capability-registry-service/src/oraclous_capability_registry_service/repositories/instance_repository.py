@@ -1,4 +1,4 @@
-"""Tool instance repository (ORAA-4 §21 repositories layer; reshape of legacy
+"""Tool instance repository (repositories layer; reshape of legacy
 ``oraclous-core-service/app/repositories/instance_repository.py``).
 
 The only DB seam for tool instances. Every read/write is org-scoped (ADR-006) — the organisation is

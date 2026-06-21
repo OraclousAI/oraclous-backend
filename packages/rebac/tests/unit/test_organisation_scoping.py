@@ -1,5 +1,5 @@
 """ADR-006 reshape: ``organisation_id`` is the outermost scope on the ReBAC
-engine (ORA-34).
+engine.
 
 These are the NEW org-scoping assertions layered on top of the lifted legacy
 behaviour (``test_rebac_engine.py``). They pin the reshape the extraction adds:

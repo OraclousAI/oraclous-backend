@@ -1,4 +1,4 @@
-"""Organisation-scoped Neo4j substrate schema (ORA-16 / A1, AC#3).
+"""Organisation-scoped Neo4j substrate schema (A1, AC#3).
 
 Reshape of the legacy ``graph_id``-scoped indexes in
 ``knowledge-graph-builder`` (``entity_temporal_idx``, ``rel_temporal_idx``,
@@ -7,7 +7,7 @@ outermost scope above ``graph_id`` on both node and relationship indexes.
 
 NB the harness/runtime image is ``neo4j:5.23-community``. Property-*existence*
 constraints (``REQUIRE … IS NOT NULL``) are an Enterprise feature, so mandatory
-org presence is enforced by the write path (A2/ORA-17), not a DB constraint here;
+org presence is enforced by the write path (A2), not a DB constraint here;
 A1 provides the org-scoped indexes + data-layer scoping (ADR-006).
 
 ``apply(driver)`` takes a neo4j driver and is idempotent via
@@ -15,7 +15,7 @@ A1 provides the org-scoped indexes + data-layer scoping (ADR-006).
 index. Identifiers below are trusted module constants, never request input.
 
 The label and relationship-type sets are derived from the canonical YAML at
-``org_scoped_labels.yaml`` at module-import time (ORA-51); the lint guardrail
+``org_scoped_labels.yaml`` at module-import time; the lint guardrail
 in ``tools.lint.check_org_scoping`` reads the same file at lint time. Adding
 an entry to the YAML extends both this module's ``apply()`` coverage and the
 ORG003 recognition set with no other code change.

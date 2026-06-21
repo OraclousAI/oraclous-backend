@@ -12,9 +12,9 @@
 #                                (flip true only when the §22 8-gate per-service DoD is met; a stub then
 #                                 can never be marked done — flipping this is what makes "hollow = not done")
 #   port_source:        true  -> this dir is a legacy port-source kept until its logic is ported (read-only ref)
-#   deletable:          false -> may NOT be deleted (salvage-then-delete is human-gated, ORAA-4 §15/§23)
+# deletable: false -> may NOT be deleted (salvage-then-delete is human-gated, /§23)
 #
-# Canonical authority: ORAA-4 §21/§22/§23; narrative: oraclous-knowledge/engineering/service-architecture-standard.md.
+# Canonical authority: /§22/§23; narrative: oraclous-knowledge/engineering/service-architecture-standard.md.
 
 services:
   # R3.5: all six services rebuilt real, end-to-end, and §22-signed-off (claimed_done locks no-stubs).

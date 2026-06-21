@@ -1,4 +1,4 @@
-"""Idempotent organisation backfill of legacy Neo4j nodes + relationships (ORA-24 / D1).
+"""Idempotent organisation backfill of legacy Neo4j nodes + relationships (D1).
 
 RED until ``backend-implementer`` adds ``oraclous_substrate.migrations.org_backfill``.
 
@@ -13,7 +13,7 @@ is a cross-org read).
 Asserted on the real Neo4j harness. Test data is tagged with a per-test marker so
 the assertions are deterministic against the session-shared container; the
 migration itself scopes globally. Mandatory-org *enforcement* on writes is the
-write path (A2 / ORA-17) and Enterprise-only NOT-NULL constraints are out of
+write path (A2) and Enterprise-only NOT-NULL constraints are out of
 scope — this proves the one-time backfill leaves nothing of those labels/types
 unscoped and that re-running is a no-op, plus a tested rollback.
 

@@ -45,7 +45,7 @@ def test_extract_json_schema() -> None:
     assert out["field_schema"] == {"name": "string", "age": "integer"}
 
 
-# --- JSONL robustness (ORAA-263) ----------------------------------------------
+# --- JSONL robustness ---------------------------------------------------------
 def test_jsonl_newline_delimited_yields_all_records() -> None:
     # (a) cleanly newline-split JSONL — every line a self-contained object.
     text = (

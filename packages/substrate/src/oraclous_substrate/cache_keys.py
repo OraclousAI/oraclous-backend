@@ -1,4 +1,4 @@
-"""Organisation-scoped Redis cache keys (ORA-16 / A1, AC#4; generation #308).
+"""Organisation-scoped Redis cache keys (A1, AC#4; generation #308).
 
 Reshape of ``knowledge-graph-builder/app/services/query_cache_service.py``: the
 legacy key ``qcache:{graph_id}:{sha256}`` (``graph_id`` the only tenant scope)

@@ -1,4 +1,4 @@
-"""Failing tests for the ``DelegatedToken`` storage model (ORA-32 / R1-B1).
+"""Failing tests for the ``DelegatedToken`` storage model (R1-B1).
 
 The delegated-token primitive lets a member mint a short-lived, scope-limited
 token bound to a specific agent. The broker persists the binding and validates
@@ -112,7 +112,7 @@ def test_delegated_token_has_status_column() -> None:
 
 
 def test_delegated_token_does_not_store_raw_secret() -> None:
-    """Internal-only invariant (ORA-32 AC4): no column holds the raw bearer value.
+    """Internal-only invariant (AC4): no column holds the raw bearer value.
 
     The broker may persist an opaque ``token_hash`` / ``token_prefix`` index for
     lookup, but never the raw bytes. The mint surface returns the raw value

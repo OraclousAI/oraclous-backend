@@ -1,4 +1,4 @@
-"""Unit tests for the readiness verdict helper (ADR-021 startup-degradation policy, ORAA-297)."""
+"""Unit tests for the readiness verdict helper (ADR-021 startup-degradation policy)."""
 
 from __future__ import annotations
 

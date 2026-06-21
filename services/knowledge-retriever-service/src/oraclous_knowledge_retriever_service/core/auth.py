@@ -1,4 +1,4 @@
-"""Identity seam (ORAA-4 §21 core layer) — pluggable principal verification (KRS read side).
+"""Identity seam (core layer) — pluggable principal verification (KRS read side).
 
 `dev` mode: a fixed bearer resolves to a fixed dev principal, and a `StaticMembershipResolver` maps
 it to the single dev organisation (the same org KGS writes to, so KRS reads that org's graph). `jwt`

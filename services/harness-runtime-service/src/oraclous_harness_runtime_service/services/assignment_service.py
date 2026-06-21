@@ -1,4 +1,4 @@
-"""Human-actor assignment lifecycle (ORAA-4 §21 services layer).
+"""Human-actor assignment lifecycle (services layer).
 
 R4 (S5) creates a PENDING ``harness_assignments`` row when a human is the entrypoint actor and parks
 the run ESCALATED. This service is the claim/complete round-trip the execution-engine (R5 S4) drives

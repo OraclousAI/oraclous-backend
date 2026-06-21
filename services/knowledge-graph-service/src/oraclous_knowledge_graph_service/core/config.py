@@ -1,9 +1,9 @@
-"""Service configuration (ORAA-4 §21 core layer) — env → Settings.
+"""Service configuration (core layer) — env → Settings.
 
 Pydantic-settings; each knob is a `KGS_`-prefixed env var with a dev-friendly default so the
 service runs from `docker compose` with no secrets (the dev-auth + hashing-embedder seams). S2 adds
 the ingestion surface: Neo4j (write role kgs_writer), Redis/Celery, and the embedder/extractor
-seams. `neo4j_uri` has NO hardcoded default (ORAA-53) — it must come from `KGS_NEO4J_URI`; when
+seams. `neo4j_uri` has NO hardcoded default — it must come from `KGS_NEO4J_URI`; when
 unset the service runs in graph-CRUD-only mode and ingestion endpoints report the missing substrate.
 """
 
@@ -44,7 +44,7 @@ class Settings(BaseSettings):
     # run that intentionally uses the owner DSN is not forced to provision the app role.
     rls_assert_runtime_role: bool = False
 
-    # --- Neo4j (kgs_writer role, ORAA-53). No hardcoded URI default. ---
+    # --- Neo4j (kgs_writer role). No hardcoded URI default. ---
     neo4j_uri: str | None = None
     neo4j_user: str = "kgs_writer"
     neo4j_password: str = "kgs-writer-pass"  # noqa: S105 — dev default; prod injects via secret

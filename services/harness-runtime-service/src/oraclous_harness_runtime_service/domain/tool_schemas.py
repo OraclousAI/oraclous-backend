@@ -1,4 +1,4 @@
-"""Capability descriptor → LLM tool schemas (ORAA-4 §21 domain layer).
+"""Capability descriptor → LLM tool schemas (domain layer).
 
 A capability descriptor declares one or more *operations* (``spec.capabilities`` — e.g. a database
 reader's ``list_tables`` / ``query``). Each operation becomes one LLM-callable ``ToolSpec`` named

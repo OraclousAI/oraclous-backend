@@ -1,4 +1,4 @@
-"""Default-recipe synthesis (ORAA-4 §21 services layer).
+"""Default-recipe synthesis (services layer).
 
 So a user can ingest a CSV/JSON and immediately get graph nodes WITHOUT authoring a recipe: build a
 valid format-0.2 recipe from the structural representation that maps every RECORD unit to a

@@ -1,5 +1,5 @@
 """Smoke test proving the substrate harness brings up real Neo4j, Postgres and
-Redis and that each is reachable from a test (ORA-12 / 0d)."""
+Redis and that each is reachable from a test."""
 
 import pytest
 

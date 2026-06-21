@@ -1,4 +1,4 @@
-"""Synchronous tool execution (ORAA-4 §21 services layer; reshape of legacy
+"""Synchronous tool execution (services layer; reshape of legacy
 ``oraclous-core-service/app/services/tool_execution_service.py``).
 
 The execution spine: validate readiness → resolve credentials via the broker seam → record a QUEUED

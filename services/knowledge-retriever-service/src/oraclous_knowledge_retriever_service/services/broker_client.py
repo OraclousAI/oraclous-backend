@@ -1,4 +1,4 @@
-"""Credential-broker client (ORAA-4 §21 services layer) — BYOM judge key resolution.
+"""Credential-broker client (services layer) — BYOM judge key resolution.
 
 core/evaluate resolves a per-org BYOM **judge** credential (an OpenRouter API key) the same way the
 harness resolves a BYOM model credential: the broker's internal, org-scoped

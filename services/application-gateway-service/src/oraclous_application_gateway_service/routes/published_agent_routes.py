@@ -1,4 +1,4 @@
-"""Published-agent routes (ORAA-4 §21 routes layer) — a member-managed plane + a key-public plane.
+"""Published-agent routes (routes layer) — a member-managed plane + a key-public plane.
 
 Member (user JWT, org-scoped): ``POST /v1/agents`` publishes; ``GET /v1/agents`` lists the org's
 agents; ``GET /v1/agents/{slug}/details`` hydrates a single agent's full management view (so a

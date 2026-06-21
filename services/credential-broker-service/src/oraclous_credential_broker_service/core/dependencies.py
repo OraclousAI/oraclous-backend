@@ -1,4 +1,4 @@
-"""DI providers (ORAA-4 §21 core layer) — wiring only.
+"""DI providers (core layer) — wiring only.
 
 Repositories/services are opened once in `core/lifespan` and resolved per request from `app.state`.
 The X-Internal-Key verifier gates the service-to-service endpoints (fail-closed, constant-time).

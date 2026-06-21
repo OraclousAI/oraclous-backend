@@ -1,5 +1,5 @@
 """ReBAC relation edges carry organisation_id; cross-org checks return 0
-(ORA-34, AC#2).
+(AC#2).
 
 Proven at the data layer on the 0d real-substrate harness (``neo4j_driver``),
 following the precedent in ``test_neo4j_org_scoping.py``. This pins the
@@ -10,16 +10,16 @@ an identical (user, graph) under a different organisation resolves to 0
 
 The engine-object behaviour (cache→Phase B→Phase A, fail-closed, soft-revoke,
 cache invalidation) is pinned at unit level in
-``packages/rebac/tests/unit/``; the substrate seam wiring is covered by ORA-15.
+``packages/rebac/tests/unit/``; the substrate seam wiring is covered separately.
 The async engine cannot be driven by the harness's *sync* ``neo4j_driver``, so
 this test asserts the org-scoped traversal invariant directly in Cypher — the
-same data-layer approach the ORA-16 harness test uses. RED once the substrate /
+same data-layer approach the schema harness test uses. RED once the substrate /
 engine schema enforces it; the seed here writes the edges the reshape requires.
 
 NB ``neo4j:5.23-community``: property-existence constraints are Enterprise-only,
 so "every edge carries organisation_id" is proven by data-layer isolation (an
 edge lacking it is not matched by an org-scoped query), not a NOT-NULL
-constraint. Flagged for the architect at Tests Review (same note as ORA-16).
+constraint. Flagged for the architect at Tests Review.
 """
 
 from __future__ import annotations

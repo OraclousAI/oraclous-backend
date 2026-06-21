@@ -1,9 +1,9 @@
-"""FastAPI app factory (ORAA-4 §21) — build the app, wire routers + error envelope, no logic here.
+"""FastAPI app factory — build the app, wire routers + error envelope, no logic here.
 
 ``/health`` + ``/health/upstreams`` are served locally; the catch-all reverse-proxy forwards
 everything else. The health router is included FIRST so health is never shadowed. CORS is terminated
 once at the edge, and ``RequestIdMiddleware`` mints the correlation id. Every error the gateway
-returns — its own and any unhandled exception — is the canonical ORA-37 envelope; an exception body
+returns — its own and any unhandled exception — is the canonical error envelope; an exception body
 never leaks a traceback or detail (Interface Contracts §3).
 """
 
@@ -128,7 +128,7 @@ def create_app(*, lifespan=None) -> FastAPI:
     async def _on_request_validation(request: Request, exc: RequestValidationError) -> JSONResponse:
         # The gateway's OWN request-body validation (integration-key mint, published-agent publish,
         # …) — without this handler FastAPI would emit its default ``{"detail": [...]}``, which a
-        # typed client that only knows the ORA-37 ``{"error": {...}}`` envelope swallows as a
+        # typed client that only knows the ``{"error": {...}}`` envelope swallows as a
         # generic INTERNAL_ERROR (#281). Map it onto VALIDATION_FAILED, surfacing ONLY the field
         # path + an error-type machine token (never the value-reflecting ``msg``/``ctx`` — §3 rule
         # 8). If no safe field-level detail is extractable, fall back to one generic detail so the

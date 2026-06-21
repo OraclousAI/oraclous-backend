@@ -21,7 +21,7 @@ from tools.contract.error_envelope import (
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Verify error-envelope contract fixture integrity (Contract ORA-37).",
+        description="Verify error-envelope contract fixture integrity.",
     )
     parser.add_argument(
         "--write",

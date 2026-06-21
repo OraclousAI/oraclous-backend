@@ -1,4 +1,4 @@
-"""Graph repository (ORAA-4 §21 repositories layer — the only home for graph-metadata SQL).
+"""Graph repository (repositories layer — the only home for graph-metadata SQL).
 
 Every query is scoped to the caller's organisation via
 `oraclous_substrate.access.enforced_organisation_id()` (ADR-006 / ADR-012, fail-closed): the org id

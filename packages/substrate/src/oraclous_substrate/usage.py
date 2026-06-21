@@ -4,7 +4,7 @@ The append-only metering stream. Every metered action emits one structured
 usage event ``{organisation_id, principal, action_type, quantity, unit,
 dimensions, timestamp}`` through ``UsageEventStream.emit`` — the single write
 path. Identity (``organisation_id``, ``principal``) is taken from the ambient
-organisation-context (0f / ORA-14), never from the caller's metering payload, so
+organisation-context, never from the caller's metering payload, so
 there is no request-body channel through which a tenant scope could be smuggled
 (Structured Threat Catalogue T1-M1). There is no update or delete path:
 corrections are compensating events, not edits (ADR-009).
@@ -16,7 +16,7 @@ separable downstream consumer; this seam only emits and reads the stream.
 
 The store is injected (a ``UsageEventStore``): this seam owns the schema,
 validation, and context-sourcing, not the storage backend (whose data-layer
-row-level-security backstop is A1 / ORA-16). Wiring emission into call sites is
+row-level-security backstop is A1). Wiring emission into call sites is
 C2 and out of scope here.
 """
 
@@ -60,7 +60,7 @@ class UsageEventStore(Protocol):
     """Persists and serves usage events, scoped by organisation.
 
     The stream's only collaborator. The data-layer row-level-security backstop
-    (T1-M3) lives in the concrete store (A1 / ORA-16), not in this seam.
+    (T1-M3) lives in the concrete store (A1), not in this seam.
     """
 
     async def write(self, event: UsageEvent) -> None: ...

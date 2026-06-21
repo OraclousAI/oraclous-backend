@@ -1,4 +1,4 @@
-"""Capability registry use-cases (ORAA-4 §21 services layer; reshape of legacy
+"""Capability registry use-cases (services layer; reshape of legacy
 ``oraclous-core-service/app/services/capability_registry.py``).
 
 The sole authority for capability lookups. Orchestrates the org-scoped repository with OHM-v1

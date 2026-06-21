@@ -1,4 +1,4 @@
-"""Symmetric encryption for OAuth tokens at rest (ORAA-4 §21 core layer, threat T-OAUTH-PLAINTEXT).
+"""Symmetric encryption for OAuth tokens at rest (core layer, threat T-OAUTH-PLAINTEXT).
 
 AES-256-GCM (authenticated). The 32-byte key comes from ``OAUTH_ENC_KEY`` (urlsafe-base64); a fixed
 dev default keeps the local stack key-free. Each ``encrypt`` uses a fresh 96-bit nonce; the stored

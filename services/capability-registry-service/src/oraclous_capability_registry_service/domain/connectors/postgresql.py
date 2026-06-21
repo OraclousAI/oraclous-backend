@@ -1,4 +1,4 @@
-"""PostgreSQL reader connector (ORAA-4 §21 domain layer; reshape of legacy
+"""PostgreSQL reader connector (domain layer; reshape of legacy
 ``oraclous-core-service/app/tools/implementations/ingestion/postgresql_reader.py``).
 
 A real connector: it opens an asyncpg connection from the resolved ``connection_string`` credential

@@ -1,4 +1,4 @@
-"""Org-scoped read repository (ORAA-4 §21 repositories layer — the only Neo4j driver access).
+"""Org-scoped read repository (repositories layer — the only Neo4j driver access).
 
 Every read is scoped by organisation_id (from the bound governance context, passed in by the route)
 AND graph_id, both as bound parameters — never interpolated (Community has no RLS, so isolation is
@@ -43,7 +43,7 @@ class RetrievalRepository:
         )
 
     def fulltext(self, *, graph_id: str, query: str, top_k: int) -> list[dict]:
-        # Index-free, read-only lexical match (ORAA-58 / T6: KRS issues no write Cypher, so it never
+        # Index-free, read-only lexical match (T6: KRS issues no write Cypher, so it never
         # creates a fulltext index). Case-insensitive substring over :Chunk text, org+graph scoped.
         return self._query(
             "MATCH (c:Chunk) "

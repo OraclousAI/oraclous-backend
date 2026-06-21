@@ -1,4 +1,4 @@
-"""EngineSchedule ORM model (ORAA-4 §21 models layer).
+"""EngineSchedule ORM model (models layer).
 
 A durable schedule that fires a harness job. Org-scoped (ADR-006). ``cron`` schedules are fired by
 Celery Beat (``fire_due``); ``manual`` schedules fire only via the API. ``last_fired_at`` is the

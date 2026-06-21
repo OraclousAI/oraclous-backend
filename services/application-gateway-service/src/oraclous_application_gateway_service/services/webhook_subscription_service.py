@@ -1,4 +1,4 @@
-"""Webhook-subscription management (ORAA-4 §21 services layer) — member self-service CRUD.
+"""Webhook-subscription management (services layer) — member self-service CRUD.
 
 A member registers a webhook for one of their org's PUBLISHED agents: the service mints a signing
 secret, stores it in the broker (only the reference lands in the gateway), and returns the plaintext

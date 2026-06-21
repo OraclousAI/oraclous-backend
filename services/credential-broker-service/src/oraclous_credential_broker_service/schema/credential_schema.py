@@ -3,7 +3,7 @@
 ``organisation_id`` is deliberately **not** a field on any of these inbound
 schemas: it is resolved from the authenticated principal context and passed
 explicitly to the repository, never trusted from a request body (ORG001
-guardrail / ORA-40 security-architect ruling, ADR-006).
+guardrail / security-architect ruling, ADR-006).
 """
 
 from __future__ import annotations

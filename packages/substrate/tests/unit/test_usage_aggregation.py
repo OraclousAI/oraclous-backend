@@ -1,7 +1,7 @@
-"""Failing tests for the substrate usage-aggregation primitive (ORA-23, story C3).
+"""Failing tests for the substrate usage-aggregation primitive (story C3).
 
-C1 (ORA-21) built the append-only usage-event stream
-(``oraclous_substrate.usage.UsageEventStream``). C2 (ORA-22) wired emission into
+C1 built the append-only usage-event stream
+(``oraclous_substrate.usage.UsageEventStream``). C2 wired emission into
 the metered actions. C3 sits one layer up: a substrate-level **query primitive**
 that returns per-organisation aggregates over a configurable time range, gated
 by a ReBAC org-admin relation. Lift-tag is **Greenfield** — no legacy aggregation
@@ -11,7 +11,7 @@ These tests pin the ADR-009 / threat-catalogue contracts the brief tags:
 
 * **AC1 — correct per-organisation totals over a time range**, with reads
   org-scoped (T1-M1). The aggregator takes ``organisation_id`` only from the
-  ambient organisation-context (0f / ORA-14), never from a caller argument, so
+  ambient organisation-context (0f), never from a caller argument, so
   there is no body-supplied channel to smuggle a tenant scope through.
 * **AC2 — ReBAC-gated to an org-admin relation** (T2 / ADR-004); a non-admin is
   denied, and "denied" means *fail-closed*: an absent relation, an ambiguous
@@ -22,12 +22,12 @@ These tests pin the ADR-009 / threat-catalogue contracts the brief tags:
 * **AC4 — cross-organisation isolation** is pinned in
   ``tests/organization_isolation/test_usage_aggregation_isolation.py``.
 
-ADR-009 rules-of-engagement (settled by ORA-22 rulings 10133/10167 and pinned by
+ADR-009 rules-of-engagement (settled by rulings 10133/10167 and pinned by
 C2's suite) carry forward here: the aggregator returns the **raw** signal
 (tokens, count, bytes) and never a priced/rated unit (no USD, no credits).
 Billing is the downstream consumer.
 
-Per the ORA-48 TDD-window guardrail, intra-repo seams that do not yet exist on
+Per the TDD-window guardrail, intra-repo seams that do not yet exist on
 the tree are imported **function-locally** so module-level collection does not
 abort. The already-built seams (``oraclous_governance``,
 ``oraclous_substrate.usage``, ``oraclous_substrate.rebac``) are imported at

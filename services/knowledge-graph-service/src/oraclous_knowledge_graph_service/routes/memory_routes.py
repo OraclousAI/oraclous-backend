@@ -1,4 +1,4 @@
-"""Agent-memory routes (ORAA-4 §21 routes layer) — issue #332 / ADR-027 §4.
+"""Agent-memory routes (routes layer) — issue #332 / ADR-027 §4.
 
 Six endpoints mirroring the legacy shapes under ``/api/v1/graphs/{graph_id}/memories``:
 

@@ -1,4 +1,4 @@
-"""Per-key CORS policy (ORAA-4 §21 domain layer) — pure origin + header logic for the agent plane.
+"""Per-key CORS policy (domain layer) — pure origin + header logic for the agent plane.
 
 The published-agent widget routes (``GET /v1/agents/{slug}`` + ``.../invoke``) are the only
 browser-embeddable surface. Each integration key carries its own ``cors_origins`` allow-list. A

@@ -1,4 +1,4 @@
-"""DI providers for the user-identity routes (ORAA-4 §21 core layer) — wiring only.
+"""DI providers for the user-identity routes (core layer) — wiring only.
 
 The session comes from the app-state sessionmaker (wired by `core/lifespan` in production, or by the
 test fixtures), committed on success via `session_scope`. `get_auth_service` assembles the

@@ -1,8 +1,8 @@
-"""Integration: the full user-identity flow against real Postgres (testcontainers, ORA-12 harness).
+"""Integration: the full user-identity flow against real Postgres (testcontainers harness).
 
 Drives the live FastAPI app (no mocks below the route) over httpx ASGITransport against a real
 Postgres: register → login → refresh-rotation + reuse-detection → `/me` revocation re-check. Proves
-the §22 "real endpoints vs real substrate" gate for Slice 1.
+the "real endpoints vs real substrate" gate for Slice 1.
 """
 
 from __future__ import annotations

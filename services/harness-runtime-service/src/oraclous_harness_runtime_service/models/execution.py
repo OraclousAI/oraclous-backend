@@ -1,4 +1,4 @@
-"""HarnessExecution ORM model (ORAA-4 §21 models layer).
+"""HarnessExecution ORM model (models layer).
 
 One row per harness run: the resolved harness identity, the terminal status, the final output, and a
 JSON step trace. Org-scoped (ADR-006). The registry keeps its own per-tool execution rows; this row

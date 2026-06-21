@@ -1,4 +1,4 @@
-"""OHM atomic reference resolution (ORAA-4 §21 domain layer; OHM v1.0 spec §3).
+"""OHM atomic reference resolution (domain layer; OHM v1.0 spec §3).
 
 "Every reference resolves at harness load time, atomically. If any reference fails, the entire load
 fails. Partial loads are never permitted." Resolves **all** of an OHM's capability references up

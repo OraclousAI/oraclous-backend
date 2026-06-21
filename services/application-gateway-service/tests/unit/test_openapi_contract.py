@@ -1,5 +1,5 @@
 """Unit: the gateway publishes the OpenAPI v1 contract (ADR-015), serves it at the edge, and the
-contract is internally consistent with the canonical ORA-37 error taxonomy.
+contract is internally consistent with the canonical error taxonomy.
 """
 
 from __future__ import annotations
