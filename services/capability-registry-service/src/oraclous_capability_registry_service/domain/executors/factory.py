@@ -16,6 +16,9 @@ from oraclous_capability_registry_service.domain.connectors.federated_search imp
 from oraclous_capability_registry_service.domain.connectors.find_similar import (
     FindSimilarConnector,
 )
+from oraclous_capability_registry_service.domain.connectors.generic_rest import (
+    GenericRestConnector,
+)
 from oraclous_capability_registry_service.domain.connectors.github import GitHubReader
 from oraclous_capability_registry_service.domain.connectors.graph_ingest import (
     GraphIngestConnector,
@@ -51,6 +54,7 @@ from oraclous_capability_registry_service.domain.plugins.builtin import (
     NotionReaderPlugin,
     PostgreSQLReaderPlugin,
     RecallMemoryPlugin,
+    RestConnectorPlugin,
     ScriptIngestionPlugin,
     WebResearchPlugin,
 )
@@ -75,6 +79,7 @@ _EXECUTORS: dict[str, type[BaseToolExecutor]] = {
     WebResearchPlugin.plugin_id(): WebResearchConnector,
     ScriptIngestionPlugin.plugin_id(): ScriptIngestionConnector,
     LibraryGroupPlugin.plugin_id(): LibraryGroupExecutor,
+    RestConnectorPlugin.plugin_id(): GenericRestConnector,
 }
 
 
