@@ -47,6 +47,15 @@ class ExecutionNotReadyError(Exception):
         self.detail = detail or {}
 
 
+def _capped(value: object, *, limit: int = 64) -> object:
+    """Bound a user-authored requirement field so the leak-safe ``needs_credential`` token can never
+    become a reflected-value relay channel once it is surfaced. ``type`` is enum-validated at
+    descriptor ingest, but a non-oauth requirement's ``provider`` is otherwise uncapped — capping
+    it here makes the token safe BY CONSTRUCTION (the gateway strips it today; the #502 FE Contract
+    will relay it), independent of any downstream sanitiser (#483 envelope discipline)."""
+    return value[:limit] if isinstance(value, str) else value
+
+
 def _credential_requirements(descriptor: dict[str, Any]) -> list[dict[str, Any]]:
     spec = descriptor.get("spec") or {}
     return [
@@ -117,10 +126,23 @@ class ToolExecutionService:
                     credential_id=mappings.get(cast("str", req.get("type"))),
                 )
             except CredentialResolutionError as exc:
+                # O1 "no auth-prompt wall" (ADR-039): a satisfied requirement dispatches
+                # silently; a missing one fails closed with a typed, leak-safe needs_credential
+                # token so the caller knows EXACTLY which credential to onboard — requirement_id
+                # + provider ONLY, NEVER a value or credential_id (#483 envelope discipline).
+                # The store (POST /credentials/) + resolve path are already built; this completes
+                # the signal on the miss so the user can paste the key once and re-run.
                 raise ExecutionNotReadyError(
                     str(exc),
                     error_code=exc.error_code,
-                    detail={"login_url": exc.login_url, "missing_scopes": exc.missing_scopes},
+                    detail={
+                        "needs_credential": {
+                            "requirement_id": req.get("type"),
+                            "provider": _capped(req.get("provider")),
+                        },
+                        "login_url": exc.login_url,
+                        "missing_scopes": exc.missing_scopes,
+                    },
                 ) from exc
             credentials[resolved.credential_type] = resolved.payload
             credential_refs.append(
