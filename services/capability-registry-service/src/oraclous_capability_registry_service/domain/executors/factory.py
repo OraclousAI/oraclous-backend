@@ -42,25 +42,43 @@ from oraclous_capability_registry_service.domain.connectors.script_ingestion imp
 from oraclous_capability_registry_service.domain.connectors.send_to_drafts import (
     SendToDraftsConnector,
 )
+from oraclous_capability_registry_service.domain.connectors.standard_tools import (
+    BashConnector,
+    EditFileConnector,
+    GlobConnector,
+    GrepConnector,
+    ReadFileConnector,
+    WebFetchConnector,
+    WebSearchConnector,
+    WriteFileConnector,
+)
 from oraclous_capability_registry_service.domain.connectors.web_research import (
     WebResearchConnector,
 )
 from oraclous_capability_registry_service.domain.executors.base import BaseToolExecutor
 from oraclous_capability_registry_service.domain.plugins.builtin import (
+    BashToolPlugin,
+    EditToolPlugin,
     FederatedSearchPlugin,
     FindSimilarPlugin,
     GitHubReaderPlugin,
+    GlobToolPlugin,
     GraphIngestPlugin,
+    GrepToolPlugin,
     KnowledgeRetrieverPlugin,
     LibraryGroupPlugin,
     MySQLReaderPlugin,
     NotionReaderPlugin,
     PostgreSQLReaderPlugin,
+    ReadToolPlugin,
     RecallMemoryPlugin,
     RestConnectorPlugin,
     ScriptIngestionPlugin,
     SendToDraftsPlugin,
+    WebFetchToolPlugin,
     WebResearchPlugin,
+    WebSearchToolPlugin,
+    WriteToolPlugin,
 )
 
 
@@ -85,6 +103,17 @@ _EXECUTORS: dict[str, type[BaseToolExecutor]] = {
     LibraryGroupPlugin.plugin_id(): LibraryGroupExecutor,
     RestConnectorPlugin.plugin_id(): GenericRestConnector,
     SendToDraftsPlugin.plugin_id(): SendToDraftsConnector,
+    # The standard agent toolset (#440 / #507) — the eight curated core/* tools an imported
+    # .claude/agents team binds. Read/Write/Edit/Grep/Glob/Bash are sandbox-confined; WebSearch/
+    # WebFetch delegate to the web-research search/fetch path (shared SSRF gate + provider factory).
+    ReadToolPlugin.plugin_id(): ReadFileConnector,
+    WriteToolPlugin.plugin_id(): WriteFileConnector,
+    EditToolPlugin.plugin_id(): EditFileConnector,
+    GrepToolPlugin.plugin_id(): GrepConnector,
+    GlobToolPlugin.plugin_id(): GlobConnector,
+    BashToolPlugin.plugin_id(): BashConnector,
+    WebSearchToolPlugin.plugin_id(): WebSearchConnector,
+    WebFetchToolPlugin.plugin_id(): WebFetchConnector,
 }
 
 

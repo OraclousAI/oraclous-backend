@@ -641,6 +641,243 @@ class RestConnectorPlugin(_ConnectorToolPlugin):
     OUTPUT_SCHEMA = {"type": "object"}
 
 
+_TEXT_OUTPUT = {"type": "object"}
+
+
+@plugin_registry.register
+class ReadToolPlugin(_ConnectorToolPlugin):
+    """Standard agent toolset (#440 / #507) — ``Read``, bound ``core/read@1``. Reads a UTF-8 text
+    file from the per-org sandbox workspace. ``NAME`` slugifies to exactly ``read`` so the
+    importer's ``core/read@1`` ref resolves. Keyless; sandbox-confined; no host access."""
+
+    NAME = "Read"  # slug ``read`` MUST match the imported ref's name slug
+    CATEGORY = "FILESYSTEM"
+    DESCRIPTION = "Read a UTF-8 text file from the agent's sandbox workspace."
+    TYPE = "INTERNAL"
+    TAGS = ["standard", "filesystem", "read", "agent-tool"]
+    CAPABILITIES = [
+        {
+            "name": "read",
+            "description": "Read a text file from the sandbox and return its content.",
+            "parameters": {"path": "str"},
+        },
+    ]
+    CREDENTIAL_REQUIREMENTS: list[dict] = []  # sandbox-confined; keyless
+    INPUT_SCHEMA = {
+        "type": "object",
+        "required": ["path"],
+        "properties": {"path": {"type": "string", "minLength": 1}},
+    }
+    OUTPUT_SCHEMA = _TEXT_OUTPUT
+
+
+@plugin_registry.register
+class WriteToolPlugin(_ConnectorToolPlugin):
+    """Standard agent toolset (#440 / #507) — ``Write``, bound ``core/write@1``. Writes text to a
+    path in the per-org sandbox workspace (parent dirs created). Keyless; sandbox-confined."""
+
+    NAME = "Write"  # slug ``write`` MUST match the imported ref's name slug
+    CATEGORY = "FILESYSTEM"
+    DESCRIPTION = "Write text to a file in the agent's sandbox workspace."
+    TYPE = "INTERNAL"
+    TAGS = ["standard", "filesystem", "write", "agent-tool"]
+    CAPABILITIES = [
+        {
+            "name": "write",
+            "description": "Write text to a sandbox file and return the byte count.",
+            "parameters": {"path": "str", "content": "str"},
+        },
+    ]
+    CREDENTIAL_REQUIREMENTS: list[dict] = []  # sandbox-confined; keyless
+    INPUT_SCHEMA = {
+        "type": "object",
+        "required": ["path", "content"],
+        "properties": {
+            "path": {"type": "string", "minLength": 1},
+            "content": {"type": "string"},
+        },
+    }
+    OUTPUT_SCHEMA = _TEXT_OUTPUT
+
+
+@plugin_registry.register
+class EditToolPlugin(_ConnectorToolPlugin):
+    """Standard agent toolset (#440 / #507) — ``Edit``, bound ``core/edit@1``. String-replaces a
+    unique ``old_string`` with ``new_string`` in a sandbox file. Keyless; sandbox-confined."""
+
+    NAME = "Edit"  # slug ``edit`` MUST match the imported ref's name slug
+    CATEGORY = "FILESYSTEM"
+    DESCRIPTION = "Replace a unique substring in a file in the agent's sandbox workspace."
+    TYPE = "INTERNAL"
+    TAGS = ["standard", "filesystem", "edit", "agent-tool"]
+    CAPABILITIES = [
+        {
+            "name": "edit",
+            "description": "Replace old_string with new_string in a sandbox file (must be unique).",
+            "parameters": {"path": "str", "old_string": "str", "new_string": "str"},
+        },
+    ]
+    CREDENTIAL_REQUIREMENTS: list[dict] = []  # sandbox-confined; keyless
+    INPUT_SCHEMA = {
+        "type": "object",
+        "required": ["path", "old_string", "new_string"],
+        "properties": {
+            "path": {"type": "string", "minLength": 1},
+            "old_string": {"type": "string", "minLength": 1},
+            "new_string": {"type": "string"},
+        },
+    }
+    OUTPUT_SCHEMA = _TEXT_OUTPUT
+
+
+@plugin_registry.register
+class GrepToolPlugin(_ConnectorToolPlugin):
+    """Standard agent toolset (#440 / #507) — ``Grep``, bound ``core/grep@1``. Regex-searches the
+    per-org sandbox (bounded) and returns the matching lines. Keyless; sandbox-confined."""
+
+    NAME = "Grep"  # slug ``grep`` MUST match the imported ref's name slug
+    CATEGORY = "FILESYSTEM"
+    DESCRIPTION = "Regex-search files in the agent's sandbox workspace and return matching lines."
+    TYPE = "INTERNAL"
+    TAGS = ["standard", "filesystem", "grep", "search", "agent-tool"]
+    CAPABILITIES = [
+        {
+            "name": "grep",
+            "description": "Search the sandbox for a regex and return matching lines (bounded).",
+            "parameters": {"pattern": "str", "path": "str"},
+        },
+    ]
+    CREDENTIAL_REQUIREMENTS: list[dict] = []  # sandbox-confined; keyless
+    INPUT_SCHEMA = {
+        "type": "object",
+        "required": ["pattern"],
+        "properties": {
+            "pattern": {"type": "string", "minLength": 1},
+            "path": {"type": "string"},
+        },
+    }
+    OUTPUT_SCHEMA = _TEXT_OUTPUT
+
+
+@plugin_registry.register
+class GlobToolPlugin(_ConnectorToolPlugin):
+    """Standard agent toolset (#440 / #507) — ``Glob``, bound ``core/glob@1``. Lists per-org sandbox
+    paths matching a glob pattern. Keyless; sandbox-confined."""
+
+    NAME = "Glob"  # slug ``glob`` MUST match the imported ref's name slug
+    CATEGORY = "FILESYSTEM"
+    DESCRIPTION = "List files in the agent's sandbox workspace matching a glob pattern."
+    TYPE = "INTERNAL"
+    TAGS = ["standard", "filesystem", "glob", "agent-tool"]
+    CAPABILITIES = [
+        {
+            "name": "glob",
+            "description": "List sandbox paths matching a glob pattern (bounded).",
+            "parameters": {"pattern": "str"},
+        },
+    ]
+    CREDENTIAL_REQUIREMENTS: list[dict] = []  # sandbox-confined; keyless
+    INPUT_SCHEMA = {
+        "type": "object",
+        "required": ["pattern"],
+        "properties": {"pattern": {"type": "string", "minLength": 1}},
+    }
+    OUTPUT_SCHEMA = _TEXT_OUTPUT
+
+
+@plugin_registry.register
+class BashToolPlugin(_ConnectorToolPlugin):
+    """Standard agent toolset (#440 / #507) — ``Bash``, bound ``core/bash@1``. Runs a command in the
+    per-org sandbox as a guarded subprocess (RLIMIT + process-group kill + capped output + clean
+    minimal env; the cwd is the sandbox root). Keyless; output-capped; secrets never echoed."""
+
+    NAME = "Bash"  # slug ``bash`` MUST match the imported ref's name slug
+    CATEGORY = "EXECUTION"
+    DESCRIPTION = (
+        "Run a shell command in the agent's sandbox workspace as a guarded subprocess "
+        "(resource-capped, time-limited, output-capped; the registry's secrets are never exposed)."
+    )
+    TYPE = "INTERNAL"
+    TAGS = ["standard", "execution", "bash", "shell", "agent-tool"]
+    CAPABILITIES = [
+        {
+            "name": "bash",
+            "description": "Run a shell command in the sandbox and return stdout/stderr/exit_code.",
+            "parameters": {"command": "str"},
+        },
+    ]
+    CREDENTIAL_REQUIREMENTS: list[dict] = []  # sandbox-confined; keyless
+    INPUT_SCHEMA = {
+        "type": "object",
+        "required": ["command"],
+        "properties": {"command": {"type": "string", "minLength": 1}},
+    }
+    OUTPUT_SCHEMA = _TEXT_OUTPUT
+
+
+@plugin_registry.register
+class WebSearchToolPlugin(_ConnectorToolPlugin):
+    """Standard agent toolset (#440 / #507) — ``WebSearch``, bound ``core/websearch@1``. Searches
+    the live web; delegates to the web-research search path (BYOM ``api_key`` via the provider
+    factory). ``NAME`` is the single word ``WebSearch`` so it slugifies to exactly ``websearch``
+    (the importer's ref), NOT ``web-search``. Key-gated like Web Research's ``search``."""
+
+    NAME = "WebSearch"  # slug ``websearch`` (one word — NOT ``web-search``) MUST match the ref slug
+    CATEGORY = "RESEARCH"
+    DESCRIPTION = "Search the live web and return ranked hits (bring-your-own search api_key)."
+    TYPE = "API"
+    TAGS = ["standard", "web", "search", "agent-tool"]
+    CAPABILITIES = [
+        {
+            "name": "search",
+            "description": "Search the live web and return ranked hits.",
+            "parameters": {"query": "str", "max_results": "int"},
+        },
+    ]
+    # A per-org web-search api_key (same as Web Research's `search`); resolved at dispatch. REQUIRED
+    # so the dispatch path resolves it; an unconfigured instance fails closed.
+    CREDENTIAL_REQUIREMENTS = [{"type": "api_key", "provider": "web_search", "required": True}]
+    INPUT_SCHEMA = {
+        "type": "object",
+        "required": ["query"],
+        "properties": {
+            "query": {"type": "string", "minLength": 1},
+            "max_results": {"type": "integer", "minimum": 1, "maximum": 20},
+        },
+    }
+    OUTPUT_SCHEMA = _TEXT_OUTPUT
+
+
+@plugin_registry.register
+class WebFetchToolPlugin(_ConnectorToolPlugin):
+    """Standard agent toolset (#440 / #507) — ``WebFetch``, bound ``core/webfetch@1``. HTTP-GETs a
+    URL and returns its text; delegates to the web-research fetch path (the shared SSRF-guarded
+    egress gate + per-hop redirect re-validation). ``NAME`` is the single word ``WebFetch`` so it
+    slugifies to exactly ``webfetch`` (the importer's ref), NOT ``web-fetch``. Keyless."""
+
+    NAME = "WebFetch"  # slug ``webfetch`` (one word — NOT ``web-fetch``) MUST match the ref slug
+    CATEGORY = "RESEARCH"
+    DESCRIPTION = (
+        "HTTP GET a URL and return its text body. Internal/private targets are refused (SSRF-safe)."
+    )
+    TYPE = "API"
+    TAGS = ["standard", "web", "fetch", "agent-tool"]
+    CAPABILITIES = [
+        {
+            "name": "fetch",
+            "description": "HTTP GET a URL and return its raw text body.",
+            "parameters": {"url": "str"},
+        },
+    ]
+    CREDENTIAL_REQUIREMENTS: list[dict] = []  # fetch is keyless (SSRF-guarded)
+    INPUT_SCHEMA = {
+        "type": "object",
+        "required": ["url"],
+        "properties": {"url": {"type": "string", "minLength": 1}},
+    }
+    OUTPUT_SCHEMA = _TEXT_OUTPUT
+
+
 @plugin_registry.register
 class SendToDraftsPlugin(_ConnectorToolPlugin):
     """Delivery SINK (#489 / ADR-039 D1) — bound as ``core/send-to-drafts@1.0.0``. The ``send`` op
