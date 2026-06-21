@@ -23,3 +23,11 @@ class FlowEvaluateRequest(BaseModel):
     )  # the inline output text to grade (no fetch-by-ref yet)
     success_criteria: str = Field(min_length=1)
     pass_threshold: float = 0.7
+    # BYOM judge (ADR-037 / BYOM-judge): when set, KRS resolves THIS per-org credential from the
+    # broker and grades with the caller's own OpenRouter key (a manifest role="evaluator" model's
+    # config.credential_id), instead of the operator KRS_OPENAI_API_KEY. Still NO organisation_id in
+    # the body (server-stamped, H2) — the credential is resolved under the bound principal's org.
+    # judge_model is the WHOLE model binding (e.g. "openrouter/openai/gpt-4o-mini"); KRS owns the
+    # split. Both optional → existing callers + the operator-key path are unchanged.
+    judge_credential_id: str | None = None
+    judge_model: str | None = None
