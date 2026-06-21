@@ -20,6 +20,7 @@ from oraclous_execution_engine_service.schema.engine_schemas import (
     AdvanceTeamRunRequest,
     CreateTeamRunRequest,
     TeamRunOut,
+    TeamRunTreeOut,
 )
 from oraclous_execution_engine_service.services.team_run_service import TeamRunError
 
@@ -53,6 +54,26 @@ async def get_team_run(
     except TeamRunError as exc:
         raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
     return TeamRunOut.model_validate(row)
+
+
+@router.get("/team-runs/{team_run_id}/tree", response_model=TeamRunTreeOut)
+async def get_team_run_tree(
+    team_run_id: uuid.UUID, principal: PrincipalDep, service: TeamRunServiceDep
+) -> TeamRunTreeOut:
+    """The run-tree (#471): the root + the member harness execution ids this run dispatched. Reads
+    through the SAME org-scoped ``service.get`` as the run itself — a cross-org id is a 404 (H1/H4),
+    never a leak. The tree is the engine's own record (no cross-DB read into the harness)."""
+    try:
+        row = await service.get(team_run_id, principal)
+    except TeamRunError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+    return TeamRunTreeOut(
+        team_run_id=row.id,
+        organisation_id=row.organisation_id,
+        root_execution_id=row.root_execution_id,
+        state=row.state,
+        child_execution_ids=[uuid.UUID(c) for c in (row.child_execution_ids or [])],
+    )
 
 
 @router.post(

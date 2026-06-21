@@ -50,9 +50,16 @@ class _FakeHarness:
         manifest_inline: dict[str, Any] | None = None,
         manifest_ref: str | None = None,
         capability_ceiling: list[str] | None = None,
+        parent_execution_id: uuid.UUID | None = None,
+        trace_id: uuid.UUID | None = None,
     ) -> dict[str, Any]:
         self.inputs.append(input_text)
-        return {"status": "SUCCEEDED", "output": f"done: {input_text[:30]}"}
+        # #471: a real execution id per member → the engine records child_execution_ids (the tree).
+        return {
+            "id": str(uuid.uuid4()),
+            "status": "SUCCEEDED",
+            "output": f"done: {input_text[:30]}",
+        }
 
 
 def _team(org: uuid.UUID, members: list[dict[str, Any]]) -> dict[str, Any]:
@@ -122,6 +129,10 @@ async def test_team_run_persists_and_reads_back_on_org_bound_engine(
 
     fetched = await team_run_service.get(run.id, _principal(ORG_A, USER_A))
     assert fetched.id == run.id and fetched.state == "SUCCEEDED"
+    # run-tree (#471) persists on the real org-bound engine: the run is its own root + both members
+    # are recorded as children, read back under the request-bound org (RLS-admitted).
+    assert fetched.root_execution_id == run.id
+    assert len(fetched.child_execution_ids) == 2  # researcher + writer, the tree's leaves
 
 
 async def test_cross_org_team_run_read_is_denied_by_rls(

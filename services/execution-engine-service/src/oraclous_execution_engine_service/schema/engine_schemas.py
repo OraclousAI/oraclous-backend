@@ -265,3 +265,15 @@ class TeamRunOut(BaseModel):
     paused_at: list[str]
     error_message: str | None
     created_at: datetime | None
+
+
+class TeamRunTreeOut(BaseModel):
+    """The run-tree of a team run (ADR-037 Decision 3 / #471): the root (= the trace_id threaded to
+    every member) + the member harness execution ids the engine dispatched. Reassembled from the
+    engine's OWN record — no cross-DB read into the harness. Org-scoped: a cross-org id is a 404."""
+
+    team_run_id: uuid.UUID
+    organisation_id: uuid.UUID
+    root_execution_id: uuid.UUID | None
+    state: str
+    child_execution_ids: list[uuid.UUID]
