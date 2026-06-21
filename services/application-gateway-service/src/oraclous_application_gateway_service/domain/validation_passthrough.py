@@ -1,4 +1,4 @@
-"""Leak-safe 422 → VALIDATION_FAILED extraction (ORAA-4 §21 domain layer) — pure, no I/O.
+"""Leak-safe 422 → VALIDATION_FAILED + 409 → CREDENTIALS_REQUIRED extraction (domain layer) — pure.
 
 The gateway never relays an error body verbatim (§3 rule 8). A 422 is the one case where there is
 *user-correctable* signal worth surfacing — but only the SHAPE of the failure, never a value. This
@@ -37,6 +37,23 @@ _NON_CRED_TOKEN = re.compile(r"[^A-Za-z0-9_.-]")  # requirement_id/provider char
 _LEAD_NON_ALNUM = re.compile(r"^[^A-Za-z0-9]+")  # a token must start alnum (per the envelope RE)
 _MAX_REQUIREMENT_LEN = 64
 _MAX_PROVIDER_LEN = 48
+# The token charset alone still admits an internal-host / private-IP / long-digit shape (dots,
+# hyphens and digits are legal). Those would never be a real requirement-type/provider name, so we
+# drop them at the edge — the live mirror of the forbidden-substring classes the contract scanner
+# enforces in tests (internal_dns_suffix / private_ip / long_digit_run), so no such shape reaches a
+# client even though that scanner does not ship to gateway runtime.
+_IPV4_RE = re.compile(r"^\d{1,3}(?:\.\d{1,3}){3}$")
+_LONG_DIGIT_RUN_RE = re.compile(r"\d{13,}")
+_INTERNAL_SUFFIXES = (".internal", ".local", ".lan", ".corp", ".svc", ".cluster.local", ".intra")
+
+
+def _looks_sensitive(token: str) -> bool:
+    low = token.lower()
+    return bool(
+        _IPV4_RE.match(token)
+        or _LONG_DIGIT_RUN_RE.search(token)
+        or low.endswith(_INTERNAL_SUFFIXES)
+    )
 
 
 def _loc_to_field(loc: object, *, body_fallback: bool = False) -> str | None:
@@ -127,7 +144,9 @@ def _cred_token(value: object, *, limit: int) -> str | None:
     if not isinstance(value, str):
         return None
     token = _LEAD_NON_ALNUM.sub("", _NON_CRED_TOKEN.sub("", value))[:limit]
-    return token or None
+    if not token or _looks_sensitive(token):
+        return None
+    return token
 
 
 def extract_needs_credential(raw: bytes) -> NeedsCredential | None:

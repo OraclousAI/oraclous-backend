@@ -64,6 +64,24 @@ def test_needs_credential_oversized_is_capped() -> None:
     assert nc is not None and len(nc.requirement_id) <= 64 and len(nc.provider) <= 48
 
 
+def test_needs_credential_internal_host_ip_or_digit_run_is_dropped() -> None:
+    # a token whose SHAPE is an internal host / private IP / long digit run survives the charset but
+    # is dropped at the edge (the runtime mirror of the forbidden-substring classes) → no signal,
+    # never a leak. The proxy then falls back to a bare CONFLICT, leaking nothing.
+    for bad in (
+        "db.svc.cluster.local",
+        "broker.internal",
+        "10.0.0.5",
+        "192.168.1.1",
+        "4111111111111111",  # 16-digit run
+    ):
+        nc = extract_needs_credential(_nc_raw({"requirement_id": "api_key", "provider": bad}))
+        assert nc is None, bad
+    # a clean machine-token provider is unaffected
+    ok = extract_needs_credential(_nc_raw({"requirement_id": "api_key", "provider": "web_search"}))
+    assert ok is not None and ok.provider == "web_search"
+
+
 def test_needs_credential_absent_or_malformed_returns_none() -> None:
     assert extract_needs_credential(b'{"detail":"x","error_code":"no_executor"}') is None
     assert extract_needs_credential(_nc_raw("not-a-dict")) is None
