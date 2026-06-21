@@ -385,6 +385,10 @@ services:
       KRS_AUTH_MODE: "${KRS_AUTH_MODE:-dev}"
       KRS_DEV_BEARER: "dev-token"
       KRS_INTERNAL_SERVICE_KEY: "${INTERNAL_SERVICE_KEY:-dev-internal-key}"
+      # BYOM judge (ADR-037 / BYOM-judge): core/evaluate resolves a per-org judge key (a manifest
+      # role="evaluator" model's config.credential_id) from the broker, so a user brings their own
+      # OpenRouter key via the gateway credentials API instead of the operator KRS_OPENAI_API_KEY.
+      KRS_CREDENTIAL_BROKER_URL: "http://credential-broker-service:8000"
       KRS_JWT_SECRET: "${AUTH_JWT_SECRET:-dev-jwt-secret}"
       KRS_NEO4J_URI: "bolt://neo4j:7687"
       KRS_NEO4J_USER: "neo4j"

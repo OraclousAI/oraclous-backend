@@ -48,6 +48,10 @@ class Settings(BaseSettings):
     # fan-out, never "assume all". Caps are config (ADR-026): the most graphs one query fans out
     # over, the most hits one graph may contribute, and the merged total cap. ---
     knowledge_graph_url: str | None = None
+    # the credential-broker — core/evaluate resolves a per-org BYOM judge key from it (a manifest
+    # role="evaluator" model's config.credential_id), so the user's key is brought via the gateway
+    # credentials API, never a server env (ADR-037 / BYOM-judge). None → only the operator key path.
+    credential_broker_url: str | None = None
     federated_max_graphs: int = 20
     federated_max_per_graph_k: int = 25
     federated_max_total: int = 200

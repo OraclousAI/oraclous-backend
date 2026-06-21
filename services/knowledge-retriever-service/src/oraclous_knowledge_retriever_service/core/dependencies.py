@@ -33,7 +33,7 @@ from oraclous_knowledge_retriever_service.core.auth import (
     principal_from_gateway_headers,
     verify_token,
 )
-from oraclous_knowledge_retriever_service.core.config import get_settings
+from oraclous_knowledge_retriever_service.core.config import Settings, get_settings
 from oraclous_knowledge_retriever_service.services.embedder import HashingEmbedder
 from oraclous_knowledge_retriever_service.services.eval_judge import EvalJudge
 from oraclous_knowledge_retriever_service.services.evaluation_service import EvaluationService
@@ -213,6 +213,15 @@ def get_eval_judge(request: Request) -> EvalJudge:
     return judge
 
 
+def get_eval_judge_optional(request: Request) -> EvalJudge | None:
+    """The lifespan judge singleton, or ``None`` (no raise) — the BYOM-judge route can't hard-depend
+    on the singleton (a request may bring its own per-org credential instead). The route maps a
+    ``None`` singleton (and no BYOM credential) to the typed 422 via :func:`get_eval_judge`. Kept a
+    DI provider (not a bare ``app.state`` read) so tests inject a fake judge via overrides."""
+    judge: EvalJudge | None = getattr(request.app.state, "eval_judge", None)
+    return judge
+
+
 def get_evaluation_service(
     request: Request,
     retrieval: Annotated[RetrievalService, Depends(get_retrieval_service)],
@@ -233,6 +242,21 @@ def get_evaluation_service(
     )
 
 
+def build_flow_eval_service(
+    judge: EvalJudge, request: Request, settings: Settings
+) -> FlowEvaluationService:
+    """Wrap an ``EvalJudge`` — the lifespan singleton OR a per-request BYOM judge (BYOM-judge) — in
+    the shared ``RubricEvaluator`` → ``FlowEvaluationService``. ``eval_slots`` caps concurrent
+    evaluations (→ 429) on BOTH paths; absent on a bare test app → uncapped."""
+    evaluator = RubricEvaluator(
+        judge,
+        max_concurrency=settings.eval_max_concurrency,
+        deadline_seconds=settings.eval_deadline_seconds,
+        slots=getattr(request.app.state, "eval_slots", None),
+    )
+    return FlowEvaluationService(evaluator)
+
+
 def get_flow_evaluation_service(
     request: Request,
     judge: Annotated[EvalJudge, Depends(get_eval_judge)],
@@ -241,16 +265,9 @@ def get_flow_evaluation_service(
     """core/evaluate (ADR-037 / #469): the shared packages/eval evaluator over the ONE lifespan
     judge (KRS's ``app.state.eval_judge`` duck-types ``oraclous_eval.EvalJudge``). Depends on
     ``bind_org_context`` so the request's org is bound before the route server-stamps it (H2); a
-    missing judge surfaces as the typed 422 via ``get_eval_judge``. ``eval_slots`` caps concurrent
-    evaluations (→ 429); absent on a bare test app → uncapped."""
-    settings = get_settings()
-    evaluator = RubricEvaluator(
-        judge,
-        max_concurrency=settings.eval_max_concurrency,
-        deadline_seconds=settings.eval_deadline_seconds,
-        slots=getattr(request.app.state, "eval_slots", None),
-    )
-    return FlowEvaluationService(evaluator)
+    missing judge surfaces as the typed 422 via ``get_eval_judge``. The BYOM-judge path (a per-org
+    credential) is built in the route, not here, since it depends on the request body."""
+    return build_flow_eval_service(judge, request, get_settings())
 
 
 FlowEvalServiceDep = Annotated[FlowEvaluationService, Depends(get_flow_evaluation_service)]

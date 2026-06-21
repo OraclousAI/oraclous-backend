@@ -8,7 +8,7 @@ import uuid
 
 import pytest
 from oraclous_knowledge_retriever_service.core.config import get_settings
-from oraclous_knowledge_retriever_service.core.dependencies import get_eval_judge
+from oraclous_knowledge_retriever_service.core.dependencies import get_eval_judge_optional
 
 pytestmark = pytest.mark.integration
 
@@ -39,7 +39,7 @@ class _FakeJudge:
 
 @pytest.fixture
 def client(app, async_client):
-    app.dependency_overrides[get_eval_judge] = lambda: _FakeJudge()
+    app.dependency_overrides[get_eval_judge_optional] = lambda: _FakeJudge()
     yield async_client
     app.dependency_overrides.clear()
 
@@ -55,7 +55,7 @@ async def test_returns_a_structured_verdict(client) -> None:
 
 
 async def test_below_threshold_does_not_pass(app, client) -> None:
-    app.dependency_overrides[get_eval_judge] = lambda: _FakeJudge(score=0.2)  # override the 0.9
+    app.dependency_overrides[get_eval_judge_optional] = lambda: _FakeJudge(score=0.2)
     resp = await client.post("/internal/v1/evaluate", json=_body(), headers=_AUTH)
     assert resp.json()["pass"] is False and resp.json()["recommended_action"] == "revise"
 
@@ -65,7 +65,7 @@ async def test_requires_auth(client) -> None:
 
 
 async def test_no_judge_configured_is_typed_422(app, async_client) -> None:
-    # no get_eval_judge override → app.state.eval_judge unset → the typed 422 (never fake scores)
+    # no get_eval_judge_optional override → app.state.eval_judge unset → the typed 422 (no fakes)
     resp = await async_client.post("/internal/v1/evaluate", json=_body(), headers=_AUTH)
     assert resp.status_code == 422
 
@@ -92,3 +92,57 @@ async def test_graded_org_is_server_stamped_not_from_body(client) -> None:
     org = resp.json()["evaluated"]["organisation_id"]
     assert org != evil  # the smuggled body org never wins
     assert org == get_settings().dev_org_id  # it is the principal's (dev) org, server-stamped
+
+
+async def test_byom_judge_credential_grades_via_broker_without_singleton(
+    app, async_client, monkeypatch
+) -> None:
+    """ADR-037 / BYOM-judge: a judge_credential_id makes KRS resolve the caller's own key per-org
+    from the broker and grade with a PER-REQUEST judge — with NO operator singleton configured
+    (app.state.eval_judge unset). This is the unit-level negative control: the BYOM path must NOT
+    need KRS_OPENAI_API_KEY, and the per-request judge must be aclose()'d."""
+    closed: list[bool] = []
+
+    class _ByomJudge:
+        async def complete_json(self, *, system: str, user: str) -> str:
+            return '{"score": 0.95, "reason": "ok"}'
+
+        async def complete_text(self, *, system: str, user: str) -> str:
+            return "t"
+
+        async def aclose(self) -> None:
+            closed.append(True)
+
+    async def _fake_resolve(settings, *, credential_id, judge_model, organisation_id):  # noqa: ANN001
+        assert credential_id == "cred-byom"  # the request's credential reached the resolver
+        return _ByomJudge()
+
+    import oraclous_knowledge_retriever_service.routes.internal_routes as ir
+
+    monkeypatch.setattr(ir, "resolve_byom_judge", _fake_resolve)
+    # NO get_eval_judge_optional override → the singleton is None; only the BYOM path can succeed.
+    resp = await async_client.post(
+        "/internal/v1/evaluate", json=_body(judge_credential_id="cred-byom"), headers=_AUTH
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["pass"] is True and resp.json()["score"] == 0.95
+    assert closed == [True]  # the per-request judge was closed (no client leak)
+
+
+async def test_byom_credential_unresolvable_is_fail_closed_422(
+    app, async_client, monkeypatch
+) -> None:
+    """An unresolvable BYOM credential (broker 404 / missing key) is a typed 422 — fail-closed,
+    never a silently-fabricated score."""
+    from oraclous_knowledge_retriever_service.services.broker_client import BrokerError
+
+    async def _boom(settings, *, credential_id, judge_model, organisation_id):  # noqa: ANN001
+        raise BrokerError("credential cred-x not found")
+
+    import oraclous_knowledge_retriever_service.routes.internal_routes as ir
+
+    monkeypatch.setattr(ir, "resolve_byom_judge", _boom)
+    resp = await async_client.post(
+        "/internal/v1/evaluate", json=_body(judge_credential_id="cred-x"), headers=_AUTH
+    )
+    assert resp.status_code == 422

@@ -125,12 +125,16 @@ class FakeEvaluate:
         success_criteria: str,
         target_kind: str = "run",
         pass_threshold: float = 0.7,
+        judge_credential_id: str | None = None,
+        judge_model: str | None = None,
     ) -> dict[str, Any]:
         self.calls.append(
             {
                 "target_ref": target_ref,
                 "success_criteria": success_criteria,
                 "output": target_output,
+                "judge_credential_id": judge_credential_id,
+                "judge_model": judge_model,
             }
         )
         if self._raise is not None:
@@ -367,6 +371,39 @@ async def test_no_success_criteria_skips_grading() -> None:  # #477
     )
     assert evaluate.calls == []  # no gate declared → the grader is never called
     assert row.verdict is None and row.state == "SUCCEEDED"
+
+
+async def test_gate_threads_evaluator_credential_when_declared() -> None:  # BYOM-judge
+    """A manifest role='evaluator' model makes the engine thread judge_credential_id + the whole
+    binding into the core/evaluate call (so KRS grades with the user's own key)."""
+    repo, harness = FakeTeamRunRepo(), FakeHarness()
+    evaluate = FakeEvaluate(score=0.9, passed=True)
+    svc, _ = _svc(repo, harness, evaluate=evaluate)
+    manifest = _team([_agent("a")], success_criteria="is good")
+    manifest["models"] = [
+        {
+            "role": "evaluator",
+            "binding": "openrouter/openai/gpt-4o-mini",
+            "protocol_shape": "openai-compatible",
+            "config": {"credential_id": "cred-byom"},
+        }
+    ]
+    row = await _run(svc, _principal(), manifest=manifest, sub_harnesses={}, gate_decisions={})
+    assert row.state == "SUCCEEDED" and row.verdict["pass"] is True
+    call = evaluate.calls[0]
+    assert call["judge_credential_id"] == "cred-byom"
+    assert call["judge_model"] == "openrouter/openai/gpt-4o-mini"  # WHOLE binding; KRS splits
+
+
+async def test_gate_omits_evaluator_credential_when_not_declared() -> None:  # BYOM-judge fallback
+    repo, harness = FakeTeamRunRepo(), FakeHarness()
+    evaluate = FakeEvaluate()
+    svc, _ = _svc(repo, harness, evaluate=evaluate)
+    manifest = _team([_agent("a")], success_criteria="is good")  # no evaluator model
+    await _run(svc, _principal(), manifest=manifest, sub_harnesses={}, gate_decisions={})
+    call = evaluate.calls[0]
+    assert call["judge_credential_id"] is None  # → KRS uses the operator key
+    assert call["judge_model"] is None
 
 
 async def test_progress_blends_verdict_score_capped_by_completion() -> None:  # #477

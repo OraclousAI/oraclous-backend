@@ -75,6 +75,8 @@ class EvaluateClient:
         success_criteria: str,
         target_kind: str = "run",
         pass_threshold: float = 0.7,
+        judge_credential_id: str | None = None,
+        judge_model: str | None = None,
     ) -> dict[str, Any]:
         """Grade ``target_output`` against ``success_criteria`` (prose — NEVER a ``battery:`` token;
         the battery is iterated engine-side and only each check's prose rubric is sent here).
@@ -82,13 +84,20 @@ class EvaluateClient:
         Returns the Verdict JSON. Raises ``EvaluateRejected`` on a reachable non-2xx and
         ``EvaluateClientError`` on transport/timeout — the gate maps both to a fail-closed verdict
         (the run still SUCCEEDS)."""
-        body = {
+        body: dict[str, Any] = {
             "target_kind": target_kind,
             "target_ref": target_ref,
             "target_output": target_output,
             "success_criteria": success_criteria,  # NO organisation_id — server-stamped (H2)
             "pass_threshold": pass_threshold,
         }
+        # BYOM judge (ADR-037 / BYOM-judge): when the manifest declares an evaluator credential, KRS
+        # resolves THAT per-org key from the broker and grades with the user's own key. Only sent
+        # when present, so the operator-key path is unchanged. KRS owns the model-binding split.
+        if judge_credential_id is not None:
+            body["judge_credential_id"] = judge_credential_id
+        if judge_model is not None:
+            body["judge_model"] = judge_model
         try:
             resp = await self._client.post("/internal/v1/evaluate", json=body)
         except httpx.HTTPError as exc:  # transport (connect/pool/read timeout) → unreachable
