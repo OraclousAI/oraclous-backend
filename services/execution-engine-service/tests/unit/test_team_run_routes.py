@@ -116,6 +116,43 @@ async def test_get_tree_cross_org_is_404() -> None:  # H1/H4
     assert resp.status_code == 404  # a cross-org tree id is not-found, never a leak
 
 
+async def test_get_status_returns_progress_health_cost() -> None:  # ADR-037 D5 / #472
+    from oraclous_execution_engine_service.services.team_run_service import TeamRunStatus
+
+    rid = uuid.uuid4()
+    s = TeamRunStatus(
+        team_run_id=rid,
+        organisation_id=_ORG,
+        healthy=True,
+        state="SUCCEEDED",
+        progress=100,
+        last_run_at=None,
+        last_outcome="SUCCEEDED",
+        cost_tokens=200,
+    )
+
+    class FakeService:
+        async def status(self, run_id: uuid.UUID, principal: Principal) -> TeamRunStatus:
+            return s
+
+    async with await _client(FakeService()) as c:
+        resp = await c.get(f"/v1/engine/team-runs/{rid}/status")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["progress"] == 100 and body["healthy"] is True and body["state"] == "SUCCEEDED"
+    assert body["cost"] == {"tokens": 200, "usd": None}  # raw metering; usd priced read-time later
+
+
+async def test_get_status_cross_org_is_404() -> None:  # H3
+    class CrossOrgService:
+        async def status(self, run_id: uuid.UUID, principal: Principal) -> object:
+            raise TeamRunError("team run not found", 404)  # org-scoped status → 404 for another org
+
+    async with await _client(CrossOrgService()) as c:
+        resp = await c.get(f"/v1/engine/team-runs/{uuid.uuid4()}/status")
+    assert resp.status_code == 404  # a cross-org status id is not-found, never a leak
+
+
 async def test_advance_team_run_returns_202() -> None:
     class FakeService:
         async def advance(

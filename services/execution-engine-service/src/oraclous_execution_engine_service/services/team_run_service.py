@@ -18,6 +18,7 @@ import asyncio
 import contextlib
 import uuid
 from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
@@ -49,6 +50,33 @@ class TeamRunError(Exception):
     def __init__(self, message: str, status_code: int = 400) -> None:
         super().__init__(message)
         self.status_code = status_code
+
+
+@dataclass(frozen=True)
+class TeamRunStatus:
+    """The O4 light-status value object (ADR-037 Decision 5 / #472) the route maps to its DTO."""
+
+    team_run_id: uuid.UUID
+    organisation_id: uuid.UUID
+    healthy: bool
+    state: str
+    progress: int
+    last_run_at: datetime | None
+    last_outcome: str
+    cost_tokens: int
+
+
+def _member_completion_progress(row: EngineTeamRun) -> int:
+    """Goal-attainment by member completion (ADR-037 Decision 5): the fraction of the team's
+    declared members whose node reached a terminal result, as 0–100. Naturally floored (never ahead
+    of work done) and fail-closed (no members → 100 only once SUCCEEDED, else 0). The evaluator
+    partial + count-target blend lands when flow-level evaluation is wired into the drive (#470)."""
+    members = row.manifest.get("members", []) if isinstance(row.manifest, dict) else []
+    total = len(members)
+    if total == 0:
+        return 100 if row.state == "SUCCEEDED" else 0
+    done = len(row.results or {})
+    return min(100, round(100 * done / total))
 
 
 class TeamRunService:
@@ -151,6 +179,24 @@ class TeamRunService:
             raise TeamRunError("team run not found", 404)
         return row
 
+    async def status(self, team_run_id: uuid.UUID, principal: Principal) -> TeamRunStatus:
+        """O4 light status (ADR-037 Decision 5 / #472): a one-glance health/progress/cost view.
+        Reads through the SAME request-path org-scoped ``get`` (H3 — NOT the cross-org maintenance
+        reader), so a cross-org id is a 404, never a leak. ``progress`` is goal-attainment by member
+        completion of the run-tree (0–100), replacing the old hardcoded 5/100."""
+        row = await self.get(team_run_id, principal)
+        return TeamRunStatus(
+            team_run_id=row.id,
+            organisation_id=row.organisation_id,
+            healthy=row.state
+            != "FAILED",  # FAILED is unhealthy; QUEUED/RUNNING/PAUSED/SUCCEEDED ok
+            state=row.state,
+            progress=_member_completion_progress(row),
+            last_run_at=row.created_at,
+            last_outcome=row.state,
+            cost_tokens=int(row.cost_tokens or 0),
+        )
+
     async def advance(
         self, team_run_id: uuid.UUID, principal: Principal, gate_decisions: Mapping[str, str]
     ) -> EngineTeamRun:
@@ -209,6 +255,10 @@ class TeamRunService:
         # accumulate this drive's child execution ids onto any recorded by a prior (resumed) drive
         # (`or []` — a freshly-built / pre-migration row may carry NULL before the DB default fires)
         child_ids: list[str] = list(row.child_execution_ids or [])
+        # O4 metering (#472): this drive's per-member token costs, summed onto the prior cost on
+        # resume (only the not-yet-completed members re-dispatch, so their cost is counted once).
+        cost_deltas: list[int] = []
+        prior_cost = int(row.cost_tokens or 0)
         try:
             result = await run_team_harness(
                 team,
@@ -219,6 +269,7 @@ class TeamRunService:
                 trace_id=root_execution_id,
                 parent_execution_id=root_execution_id,
                 on_child=child_ids.append,
+                on_cost=cost_deltas.append,
             )
         except Exception as exc:  # noqa: BLE001 — never strand the run in RUNNING (G-C); fail closed
             # ANY in-process drive error (harness failure, decode, network, bug) -> FAILED, not a
@@ -231,6 +282,7 @@ class TeamRunService:
                     allowed_from=frozenset({"RUNNING"}),
                     error_message=str(exc)[:2000] or type(exc).__name__,
                     child_execution_ids=child_ids,  # record what was dispatched before the failure
+                    cost_tokens=prior_cost + sum(cost_deltas),  # ...and what it cost
                 )
             return updated or claimed
         except BaseException as exc:
@@ -259,6 +311,7 @@ class TeamRunService:
                 results=dict(result.results),
                 paused_at=list(result.paused_at),
                 child_execution_ids=child_ids,  # the member executions that form this run's tree
+                cost_tokens=prior_cost + sum(cost_deltas),  # O4: the run's accumulated token cost
             )
         return updated or claimed
 

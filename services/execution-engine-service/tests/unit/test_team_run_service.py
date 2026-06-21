@@ -100,7 +100,12 @@ class FakeHarness:
         self.calls.append(
             {"id": eid, "parent_execution_id": parent_execution_id, "trace_id": trace_id}
         )
-        return {"id": str(eid), "status": "SUCCEEDED", "output": f"done: {input_text[:30]}"}
+        return {
+            "id": str(eid),
+            "status": "SUCCEEDED",
+            "output": f"done: {input_text[:30]}",
+            "total_tokens": 100,  # #472: each member 'costs' 100 raw tokens → engine accumulates
+        }
 
 
 def _svc(repo: FakeTeamRunRepo, harness: Any) -> tuple[TeamRunService, list[uuid.UUID]]:
@@ -212,6 +217,38 @@ async def test_run_tree_records_root_and_children_and_threads_trace(  # ADR-037 
     # each member run was threaded with trace_id == the root and parent == the root
     assert all(c["trace_id"] == row.id for c in harness.calls)
     assert all(c["parent_execution_id"] == row.id for c in harness.calls)
+    # O4 metering (#472): the run's cost accumulates each member's total_tokens (2 × 100)
+    assert row.cost_tokens == 200
+
+
+async def test_status_reports_full_progress_and_cost_on_completion() -> None:  # ADR-037 D5 / #472
+    repo, harness = FakeTeamRunRepo(), FakeHarness()
+    svc, _ = _svc(repo, harness)
+    p = _principal()
+    row = await _run(
+        svc,
+        p,
+        manifest=_team([_agent("a"), _agent("b", ["a"])]),
+        sub_harnesses={},
+        gate_decisions={},
+    )
+    st = await svc.status(row.id, p)
+    assert st.state == "SUCCEEDED" and st.healthy is True
+    assert st.progress == 100  # both members done → goal attained (not the old hardcoded 5/100)
+    assert st.cost_tokens == 200  # Σ the members' total_tokens (2 × 100)
+
+
+async def test_status_progress_is_partial_when_paused_at_a_gate() -> None:  # #472
+    repo, harness = FakeTeamRunRepo(), FakeHarness()
+    svc, _ = _svc(repo, harness)
+    p = _principal()
+    manifest = _team(
+        [_agent("researcher"), _human("approval", ["researcher"]), _agent("writer", ["approval"])]
+    )
+    row = await _run(svc, p, manifest=manifest, sub_harnesses={}, gate_decisions={})
+    st = await svc.status(row.id, p)
+    assert st.state == "PAUSED" and st.healthy is True  # paused at a human gate is HEALTHY
+    assert st.progress == 33  # 1 of 3 members done before the gate → goal-attainment 33%
 
 
 async def test_human_gate_pauses_the_run_durably() -> None:

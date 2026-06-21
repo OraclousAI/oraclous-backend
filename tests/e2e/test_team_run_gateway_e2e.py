@@ -193,3 +193,37 @@ def test_run_tree_is_reachable_and_org_isolated_through_the_gateway(  # ADR-037 
 
     b = gateway_client(register("Tree Intruder")["token"])
     assert b.get(f"/v1/engine/team-runs/{run_id}/tree").status_code == 404  # B can't read A's tree
+
+
+def test_o4_status_surface_through_the_gateway(  # ADR-037 D5 / #472
+    tmp_path: Path,
+    register: Callable[..., dict],
+    gateway_client: Callable[[str], httpx.Client],
+) -> None:
+    """The O4 light status, end-to-end through the gateway: a completed team run reports
+    goal-attainment progress == 100 (not the old hardcoded 5/100), healthy, its accumulated token
+    cost, and the terminal outcome; and user B cannot read user A's status (cross-org 404 — H3)."""
+    _book_studio(tmp_path)
+    imported = import_setup(tmp_path, owner_organization_id=uuid.uuid4(), name="studio")
+    assert imported.manifest is not None
+    body = {
+        "manifest": imported.manifest.model_dump(mode="json"),
+        "sub_harnesses": imported.sub_harnesses,
+        "gate_decisions": {"gate-a": "approve"},  # pre-approve → drives straight to SUCCEEDED
+    }
+    a = gateway_client(register("Status Owner")["token"])
+    run_id = a.post("/v1/engine/team-runs", json=body).json()["id"]
+    assert _poll(a, run_id, {"SUCCEEDED", "FAILED", "REJECTED"})["state"] == "SUCCEEDED"
+
+    status = a.get(f"/v1/engine/team-runs/{run_id}/status")
+    assert status.status_code == 200, status.text
+    s = status.json()
+    assert s["team_run_id"] == run_id
+    assert s["progress"] == 100  # goal-attainment by member completion (every member done)
+    assert s["healthy"] is True and s["state"] == "SUCCEEDED" and s["last_outcome"] == "SUCCEEDED"
+    assert (
+        s["cost"]["tokens"] >= 0 and "usd" in s["cost"]
+    )  # raw metering surfaced; usd priced later
+
+    b = gateway_client(register("Status Intruder")["token"])
+    assert b.get(f"/v1/engine/team-runs/{run_id}/status").status_code == 404  # B can't read A's

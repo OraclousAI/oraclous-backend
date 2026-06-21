@@ -166,7 +166,12 @@ class JobService:
         if job is None:
             raise JobError("job not found")
 
-        running, started = await self._transition(job, EngineJobState.RUNNING, progress=5)
+        # progress is goal-attainment, not elapsed-time (ADR-037 Decision 5 / #472): a single
+        # harness job has attained nothing until it completes, so RUNNING is 0 (not the old
+        # arbitrary 5); terminal SUCCEEDED is 100 below. The evaluator-partial signal blends in once
+        # flow-level evaluation is wired into the harness path (#470 follow-on); team runs carry the
+        # richer member-completion progress via the O4 status surface.
+        running, started = await self._transition(job, EngineJobState.RUNNING, progress=0)
         if not started:  # cancelled before pickup, or not in a runnable state — leave it alone
             return running
 
