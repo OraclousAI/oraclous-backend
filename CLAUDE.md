@@ -2,43 +2,43 @@
 
 This file is the working contract for any AI agent (Claude Code, an agent in the harness runtime, or otherwise) operating in this repository. Read it in full at the start of every session.
 
-This repo is **`OraclousAI/oraclous-backend`** — the Python codebase for the Oraclous Platform. It is a working **8-service platform** built end-to-end through R7-SEC, each service under `services/<service>/` and layered per ORAA-4 §21 (`routes → services → domain → repositories → core`): `auth-service` (identity, orgs, roles), `credential-broker-service` (encrypted connections + per-org KMS envelope), `knowledge-graph-service` (ingest → graph), `knowledge-retriever-service` (search + subgraph), `capability-registry-service` (tools/connectors + MCP import), `harness-runtime-service` (R4 OHM agent runtime), `execution-engine-service` (R5 durable orchestration), and `application-gateway-service` (R6 edge — the sole external surface).
+This repo is **`OraclousAI/oraclous-backend`** — the Python codebase for the Oraclous Platform. It is a working **8-service platform** built end-to-end through R7-SEC, each service under `services/<service>/` and layered (`routes → services → domain → repositories → core`): `auth-service` (identity, orgs, roles), `credential-broker-service` (encrypted connections + per-org KMS envelope), `knowledge-graph-service` (ingest → graph), `knowledge-retriever-service` (search + subgraph), `capability-registry-service` (tools/connectors + MCP import), `harness-runtime-service` (R4 OHM agent runtime), `execution-engine-service` (R5 durable orchestration), and `application-gateway-service` (R6 edge — the sole external surface).
 
-**Operating model (current):** work is tracked as **GitHub Issues + PRs in this repo**, driven via the **`gh`** CLI; agents pick up issues by assignee/label. The ORAA-4 gates, the `.githooks` (pre-push + commit-msg), and the `main` branch ruleset below are enforced and current. The governance **rules** (gates, no-attribution, one-commit-per-concern, non-author review, up-to-date base) apply throughout; the **board** is GitHub Issues.
+**Operating model (current):** work is tracked as **GitHub Issues + PRs in this repo**, driven via the **`gh`** CLI; agents pick up issues by assignee/label. The `.githooks` (pre-push + commit-msg) and the `main` branch ruleset below are enforced and current. The governance **rules** (gates, no-attribution, one-commit-per-concern, non-author review, up-to-date base) apply throughout; the **board** is GitHub Issues.
 
 ---
 
-## 0. Operating Contract (single authority)
+## 0. The rules live in git — `FUCK_CLAUDE_FUCK_PAPERCLIP.md` + this file
 
-All agents operating in this session are governed by the **ORAA-4 Operating Contract** (`operating-contract`) — the canonical source for gate→owner maps, run-completion rules, review depth, workspace discipline, and engineering governance.
+The canonical rules for this repo are **`FUCK_CLAUDE_FUCK_PAPERCLIP.md`** (repo root, in git) plus this `CLAUDE.md`. There is no external operating contract, agent bundle, or tracker — **paperclip/ORAA are removed**. **When anything disagrees with `FUCK_CLAUDE_FUCK_PAPERCLIP.md`, that file wins**; when this file disagrees with shipped reality, fix this file.
 
-**When this file and ORAA-4 diverge, ORAA-4 wins.** Open a `docs-writer` issue to reconcile this file.
+`FUCK_CLAUDE_FUCK_PAPERCLIP.md` (RULES 1–6): R1 deployed-stack testing is mandatory; R2 the rules live in git, not paperclip/ORAA; R3 run the e2e locally before opening the PR; R4 the CTO verifies the real e2e at the PR (CI-green is not enough to merge); R5 e2e is the end user, through the gateway (nothing direct/mocked/DB-direct); R6 the CTO and use-case-guardian review **start the moment a PR is created**, in parallel with CI and each other.
 
-Key provisions every agent must observe:
+Key provisions every agent observes:
 
-- **§5 Pre-push gate is an enforced hook.** This repo ships `.githooks/pre-push` (`core.hooksPath=.githooks`); a push that fails is **blocked locally**. The hook mirrors the **full CI `quality` job** (ruff check/format, mypy, import-contracts, org-scoping, labels-schema, test-import hygiene, neo4j write-role, contract checksums) — not a subset (see §4.7).
-- **§6 Review depth + server-side gate.** High-severity changes get the full gate; low-severity get a light ≥1-reviewer gate; when in doubt, treat as High (see §8). `main` is protected by a **GitHub ruleset** (public repo, no admin bypass): required CI checks + a non-author approving review + up-to-date base. The CTO merges via `oraclous-knowledge/operations/gated_merge.sh`. See ORAA-4 §20.
-- **§12 Workspace discipline.** Per-run git worktrees are currently OFF; every writer shares one checkout, so writer runs serialize and always end clean (see §4.8).
+- **Pre-push gate is an enforced hook.** This repo ships `.githooks/pre-push` (`core.hooksPath=.githooks`); a push that fails is **blocked locally**. The hook mirrors the **full CI `quality` job** (ruff check/format, mypy, import-contracts, org-scoping, labels-schema, test-import hygiene, neo4j write-role, contract checksums) — not a subset (see §4.7).
+- **Review depth + server-side gate.** High-severity changes get the full gate; low-severity get a light ≥1-reviewer gate; when in doubt, treat as High (see §8). `main` is protected by a **GitHub ruleset** (public repo, no admin bypass): required CI checks + a non-author approving review + up-to-date base. The CTO merges via `oraclous-knowledge/operations/gated_merge.sh`.
+- **Workspace discipline.** Per-run git worktrees are currently OFF; every writer shares one checkout, so writer runs serialize and always end clean (see §4.8).
 - **Run-completion.** A run may only end by reassigning the issue to a named next owner, creating an assigned child issue, or escalating with a specific question — never "done, nothing assigned" (see §5.4). A brief is not done until at least one child implementation issue exists.
 
 ---
 
-## Governance gates — canonical in ORAA-4
+## Governance gates
 
-This is a pointer, not a restatement: ORAA-4 (`operating-contract`) is authoritative, and on any divergence ORAA-4 wins. The gates that bite most in this repo:
+The rules that bite most in this repo. Canonical: `FUCK_CLAUDE_FUCK_PAPERCLIP.md` + this file.
 
-- **§5 commits + pre-push + no attribution.** Commit messages are `[#<issue>] [agent:NAME] msg`, one commit per concern. Never write `Co-Authored-By`, `Generated`, `claude`, or 🤖 in commits, PR bodies, or comments. The `pre-push` hook (mirroring the full CI `quality` job) and the `commit-msg` hook (commit format + no-attribution) are both wired via `core.hooksPath=.githooks` and block bad pushes/commits locally.
-- **§5 PR-BUNDLING LAW (non-negotiable).** **Never ship a one-commit-per-PR stream.** "One commit per concern" means **multiple commits inside ONE PR**, NOT one PR per commit. Bundle related concerns into a single PR — CI (~6 min) + non-author review + redeploy run **once per PR**, so a separate PR per commit multiplies the cost. An issue with N sub-tasks ships as **one PR with N commits, never N PRs** (e.g. a mypy + OTel + Celery issue = one PR / three commits). Default to **fewer, bigger PRs**; the only exception is changes in different repos (which can't share a PR).
-- **§13.1 pre-open readiness.** Before OPENING a PR for review it must be pre-push-clean, CI-green, and rebased onto current `main` (not BEHIND). You own this; a reviewer never discovers red CI or a needed rebase.
-- **§13.4 branch-from-merged-tests.** An `[impl]` PR branches from / rebases onto the commit where its `[tests]` PR merged, before opening — this kills add/add conflicts and preserves ADR-010 two-PR independence.
-- **§9 DoD + handoff.** Done = CI-green + mergeable + non-implementer review + PR merged + handed off to the next owner (§9.1 — never finish your part and leave the issue parked). Small conflicts/misalignments are folded into the current PR, not new tickets (§9.2).
-- **§9.3 docker.** Multi-service functionality is `docker-required`; run its integration tests on Docker. If the daemon is down, raise an error and block `needs-human` — never skip.
-- **§17 structure.** New code lives under `services/<service>/`; do not extend the legacy `oraclous-core-service`; never commit `__pycache__`/`*.pyc`.
-- **§21 canonical service architecture (R3.5).** Every service follows the layered structure `routes → services → domain → repositories → core` (package root `src/oraclous_<svc>_service/`). **No business logic, no DB drivers, and no non-`BaseModel` class defs in `routes/`; repositories are the ONLY DB/Neo4j/Redis access.** Enforced by `tools/lint/check_service_structure.py` + `check_no_stubs.py` + per-service `[tool.importlinter]` contracts (CI `lint` + pre-push). Standard: `oraclous-knowledge/engineering/service-architecture-standard.md` (ORAA-4 §21).
-- **§22 hardened per-service DoD (R3.5).** A SERVICE is done only by 8 gates: structure + **not-hollow** (`check_no_stubs` zero findings; flip `tools/lint/service_status.yaml`) + runs (`docker compose up` healthy) + real endpoints (integration vs real substrate) + **smoke vs real substrate** (`smoke.sh`, the `r3_5_gate` CI job) + **Reza sign-off** (`needs-human`). A stub never passes done.
-- **§23 R3.5 delivery.** Active release: rebuild every service real, **per service**, in **≤6 coarse vertical slices** (no micro-tickets). Spec = legacy `develop@84152635` (`git show develop:<path>`; never write `legacy-reference`). `oraclous-core-service` = salvage-then-delete (human-gated). Old R4–R8 roadmap discarded.
-- **§16 KB currency.** If you change `oraclous-knowledge`, keep the docs current and refresh graphify in the same change.
-- Full text: ORAA-4 + `oraclous-knowledge/engineering/`.
+- **Commits + pre-push + no attribution.** Commit messages are `[#<issue>] [agent:NAME] msg`, one commit per concern. Never write `Co-Authored-By`, `Generated`, `claude`, or 🤖 in commits, PR bodies, or comments. The `pre-push` hook (mirroring the full CI `quality` job) and the `commit-msg` hook (commit format + no-attribution) are both wired via `core.hooksPath=.githooks` and block bad pushes/commits locally.
+- **PR-BUNDLING LAW (non-negotiable).** **Never ship a one-commit-per-PR stream.** "One commit per concern" means **multiple commits inside ONE PR**, NOT one PR per commit. Bundle related concerns into a single PR — CI (~6 min) + non-author review + redeploy run **once per PR**, so a separate PR per commit multiplies the cost. An issue with N sub-tasks ships as **one PR with N commits, never N PRs** (e.g. a mypy + OTel + Celery issue = one PR / three commits). Default to **fewer, bigger PRs**; the only exception is changes in different repos (which can't share a PR).
+- **Pre-open readiness.** Before OPENING a PR for review it must be pre-push-clean, CI-green, and rebased onto current `main` (not BEHIND). You own this; a reviewer never discovers red CI or a needed rebase.
+- **Branch-from-merged-tests.** An `[impl]` PR branches from / rebases onto the commit where its `[tests]` PR merged, before opening — this kills add/add conflicts and preserves ADR-010 two-PR independence.
+- **DoD + handoff.** Done = CI-green + mergeable + non-implementer review + PR merged + handed off to the next owner (never finish your part and leave the issue parked). Small conflicts/misalignments are folded into the current PR, not new tickets.
+- **Docker.** Multi-service functionality is `docker-required`; run its integration tests on Docker. If the daemon is down, raise an error and block `needs-human` — never skip.
+- **Structure.** New code lives under `services/<service>/`; do not extend the legacy `oraclous-core-service`; never commit `__pycache__`/`*.pyc`.
+- **Canonical service architecture (R3.5).** Every service follows the layered structure `routes → services → domain → repositories → core` (package root `src/oraclous_<svc>_service/`). **No business logic, no DB drivers, and no non-`BaseModel` class defs in `routes/`; repositories are the ONLY DB/Neo4j/Redis access.** Enforced by `tools/lint/check_service_structure.py` + `check_no_stubs.py` + per-service `[tool.importlinter]` contracts (CI `lint` + pre-push). Standard: `oraclous-knowledge/engineering/service-architecture-standard.md`.
+- **Hardened per-service DoD (R3.5).** A SERVICE is done only by 8 gates: structure + **not-hollow** (`check_no_stubs` zero findings; flip `tools/lint/service_status.yaml`) + runs (`docker compose up` healthy) + real endpoints (integration vs real substrate) + **smoke vs real substrate** (`smoke.sh`, the `r3_5_gate` CI job) + **Reza sign-off** (`needs-human`). A stub never passes done.
+- **R3.5 delivery.** Active release: rebuild every service real, **per service**, in **≤6 coarse vertical slices** (no micro-tickets). Spec = legacy `develop@84152635` (`git show develop:<path>`; never write `legacy-reference`). `oraclous-core-service` = salvage-then-delete (human-gated). Old R4–R8 roadmap discarded.
+- **KB currency.** If you change `oraclous-knowledge`, keep the docs current and refresh graphify in the same change.
+- Full text: `FUCK_CLAUDE_FUCK_PAPERCLIP.md` + `oraclous-knowledge/engineering/`.
 
 ---
 
@@ -181,7 +181,7 @@ Every issue that touches code follows the test-first flow:
 
 The implementer **never** modifies tests to make them pass. If a test is wrong, that is a discovery: flag it to `test-author` with the specific reason and propose a corrected test.
 
-**Import not-yet-built intra-repo seams function-locally.** A `[tests]` PR lands tests for a seam (`oraclous_*`) before its `[impl]` exists. If those tests import the not-yet-built seam at *module level*, `pytest` aborts collection (exit 2) for the **whole** run — reddening every open PR's quality/integration/security gate until the `[impl]` lands. Instead, import the seam **inside the test or fixture** (function-locally): the module collects cleanly and the test fails at *runtime* with `ModuleNotFoundError` — RED-by-design, on its own marker only, never masking other suites. Never convert a missing intra-repo seam into a *skip* (`pytest.importorskip("oraclous_…")` or `try/except ImportError → pytest.skip`): a skip turns missing coverage green, and for a `security`-marked test that hides an unverified threat behind a green gate. A missing intra-repo seam must hard-fail, never skip. Enforced by the `check_test_imports` guardrail (TST001/TST002) in CI; the rule self-clears once the `[impl]` lands. The mandatory pre-push `pytest --collect-only` (§4.7) catches function-local-import violations before they ever reach CI. (ORAA-48; security-architect coverage-safety concurrence.)
+**Import not-yet-built intra-repo seams function-locally.** A `[tests]` PR lands tests for a seam (`oraclous_*`) before its `[impl]` exists. If those tests import the not-yet-built seam at *module level*, `pytest` aborts collection (exit 2) for the **whole** run — reddening every open PR's quality/integration/security gate until the `[impl]` lands. Instead, import the seam **inside the test or fixture** (function-locally): the module collects cleanly and the test fails at *runtime* with `ModuleNotFoundError` — RED-by-design, on its own marker only, never masking other suites. Never convert a missing intra-repo seam into a *skip* (`pytest.importorskip("oraclous_…")` or `try/except ImportError → pytest.skip`): a skip turns missing coverage green, and for a `security`-marked test that hides an unverified threat behind a green gate. A missing intra-repo seam must hard-fail, never skip. Enforced by the `check_test_imports` guardrail (TST001/TST002) in CI; the rule self-clears once the `[impl]` lands. The mandatory pre-push `pytest --collect-only` (§4.7) catches function-local-import violations before they ever reach CI. (security-architect coverage-safety concurrence.)
 
 Reference: [ADR-010 — Test-Driven Development with Test-Author Agent](https://oraclous.atlassian.net/wiki/spaces/OP/pages/557078).
 
@@ -222,7 +222,7 @@ The agent prefix is part of the commit message because all agents share the huma
 
 Prototype or exploratory work that does not follow TDD is a **spike** and must be marked as such on the GitHub issue and in the PR title (`[spike]`). Spikes do not merge to `main`; they produce findings that feed a normal TDD issue.
 
-### 4.7 Mandatory local pre-push gate (ORAA-4 §5)
+### 4.7 Mandatory local pre-push gate
 
 Before **any** `git push`, run — locally — the same cheap checks CI's `quality` job runs, and push only if they are clean:
 
@@ -232,7 +232,7 @@ uv run ruff check . && uv run ruff format --check . && uv run pytest --collect-o
 
 `pytest --collect-only` automatically catches function-local-import violations (§4.1) before they redden CI for every open PR. A push that fails these checks is the implementer's own responsibility to fix before re-pushing — it does **not** become a separate `[fix]` issue.
 
-### 4.8 Workspace discipline (ORAA-4 §12)
+### 4.8 Workspace discipline
 
 Per-run git worktrees are currently **OFF**, so every agent that writes this repo shares **one** checkout. Therefore:
 
@@ -289,7 +289,7 @@ This discipline is enforced by skill rules through R6. From R7 onward it is addi
 
 ## 6. Repository layout
 
-The repo holds the 8 services above under `services/<service>/`, each layered `routes → services → domain → repositories → core` (ORAA-4 §21); shared packages live under `packages/`. New work conforms to this shape; deviations require an ADR.
+The repo holds the 8 services above under `services/<service>/`, each layered `routes → services → domain → repositories → core`; shared packages live under `packages/`. New work conforms to this shape; deviations require an ADR.
 
 ```
 oraclous-backend/
@@ -371,7 +371,7 @@ Some services exist in legacy form at `/Users/reza/workspace/OraclousAI/legacy-r
 
 ## 8. Gates
 
-Review depth follows **ORAA-4 §6 severity**. **High severity** — all backend application code, plus infra touching auth/data/billing/secrets/IAM — gets the full gate below. **Low severity** — infra not touching those surfaces, and docs — gets a light gate: at least one non-implementer reviewer before merge. **When in doubt, treat as High.** No agent self-merges; the PR author is never the sole merger.
+Review depth follows **severity**. **High severity** — all backend application code, plus infra touching auth/data/billing/secrets/IAM — gets the full gate below. **Low severity** — infra not touching those surfaces, and docs — gets a light gate: at least one non-implementer reviewer before merge. **When in doubt, treat as High.** No agent self-merges; the PR author is never the sole merger.
 
 The full gate for application code:
 
@@ -517,7 +517,7 @@ If you are resuming work mid-task and have lost prior session context:
 
 1. Read this file.
 2. Read your own skill page from [Agent Skills Catalogue](https://oraclous.atlassian.net/wiki/spaces/OP/pages/753852) *(read-only mirror)*.
-3. Read the **ORAA-4 Operating Contract** (`operating-contract`) — the single authority; where it and this file diverge, ORAA-4 wins.
+3. Read **`FUCK_CLAUDE_FUCK_PAPERCLIP.md`** — the canonical rules; where it and this file diverge, that file wins.
 4. Look at GitHub: the issue assigned to you that is in progress is yours.
 5. Read that issue's comments; the last `[agent:NAME]` comment with an action trailer tells you where you are.
 6. Read the linked tests PR (if at Implementation stage) or the brief (if at Tests Authoring).
