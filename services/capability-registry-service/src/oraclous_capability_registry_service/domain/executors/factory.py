@@ -23,6 +23,9 @@ from oraclous_capability_registry_service.domain.connectors.graph_ingest import 
 from oraclous_capability_registry_service.domain.connectors.knowledge_retriever import (
     KnowledgeRetrieverConnector,
 )
+from oraclous_capability_registry_service.domain.connectors.library_group import (
+    LibraryGroupExecutor,
+)
 from oraclous_capability_registry_service.domain.connectors.mcp import McpToolExecutor
 from oraclous_capability_registry_service.domain.connectors.mysql import MySQLReader
 from oraclous_capability_registry_service.domain.connectors.notion import NotionReader
@@ -43,6 +46,7 @@ from oraclous_capability_registry_service.domain.plugins.builtin import (
     GitHubReaderPlugin,
     GraphIngestPlugin,
     KnowledgeRetrieverPlugin,
+    LibraryGroupPlugin,
     MySQLReaderPlugin,
     NotionReaderPlugin,
     PostgreSQLReaderPlugin,
@@ -70,6 +74,7 @@ _EXECUTORS: dict[str, type[BaseToolExecutor]] = {
     FederatedSearchPlugin.plugin_id(): FederatedSearchConnector,
     WebResearchPlugin.plugin_id(): WebResearchConnector,
     ScriptIngestionPlugin.plugin_id(): ScriptIngestionConnector,
+    LibraryGroupPlugin.plugin_id(): LibraryGroupExecutor,
 }
 
 
