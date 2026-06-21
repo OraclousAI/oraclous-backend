@@ -70,6 +70,11 @@ class Settings(BaseSettings):
     harness_runtime_url: str = "http://harness-runtime-service:8000"
     # an out-of-request harness run can be long (an LLM loop) — generous default.
     harness_request_timeout: float = 600.0
+    # the knowledge-retriever hosts core/evaluate (the flow judge) — the engine grades a completed
+    # team run at the gate (ADR-037 / #477). Bounded UNDER the harness budget; the judge's own
+    # 25s deadline returns partial rather than 504-burning (ADR-037 Decision 5).
+    knowledge_retriever_url: str = "http://knowledge-retriever-service:8000"
+    evaluate_request_timeout: float = 35.0
     # the reaper times out a job stuck RUNNING longer than this (worker/DB blip after RUNNING). Set
     # ABOVE the Celery hard limit (3600s) so a healthy long run is never falsely reaped.
     running_lease_seconds: int = 3900

@@ -57,3 +57,9 @@ class EngineTeamRun(BaseModel):
     # from each dispatch response — the harness's existing metering, ADR-009 raw counts, never a
     # price). Read by the O4 light-status surface; usd is priced read-time, never persisted here.
     cost_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # ── flow-evaluation verdict (ADR-037 / #477; additive, nullable) ──────────────────────────
+    # The typed Verdict / OHMBatteryVerdict (model_dump) from grading the completed run at the gate
+    # — pass/score/recommended_action/failures. PRODUCED + STORED here, surfaced read-side; the
+    # run STATE is never branched on it (consuming it = re-dispatch = E8, out of scope). NULL until
+    # graded; a fail-closed verdict (pass=false) is stored if the judge is unreachable/unconfigured.
+    verdict: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)

@@ -805,6 +805,7 @@ services:
       ENGINE_JWT_SECRET: "${AUTH_JWT_SECRET:-dev-jwt-secret}"
       ENGINE_INTERNAL_SERVICE_KEY: "${INTERNAL_SERVICE_KEY:-dev-internal-key}"
       ENGINE_HARNESS_RUNTIME_URL: "http://harness-runtime-service:8000"
+      ENGINE_KNOWLEDGE_RETRIEVER_URL: "http://knowledge-retriever-service:8000"  # core/evaluate (#477)
     depends_on:
       postgres:
         condition: service_healthy
@@ -847,6 +848,7 @@ services:
       ENGINE_DEV_BEARER: "dev-token"
       ENGINE_INTERNAL_SERVICE_KEY: "${INTERNAL_SERVICE_KEY:-dev-internal-key}"
       ENGINE_HARNESS_RUNTIME_URL: "http://harness-runtime-service:8000"
+      ENGINE_KNOWLEDGE_RETRIEVER_URL: "http://knowledge-retriever-service:8000"  # core/evaluate (#477)
     depends_on:
       postgres:
         condition: service_healthy
