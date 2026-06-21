@@ -489,8 +489,9 @@ class WebResearchPlugin(_ConnectorToolPlugin):
     """Pre-registered live-web research tool group (#486 / ADR-039 D1) — bound as
     ``core/web-research@1.0.0``. Three operations: ``search`` the live web (BYOM ``api_key`` via the
     SearchProvider factory — Tavily first), ``fetch`` a URL's raw text, ``read`` a URL as readable
-    text. ``search`` is key-gated (a per-org broker credential); ``fetch``/``read`` are keyless.
-    This is the gap that left EURail's researchers reason-only (north-star item 5)."""
+    text. The tool is **key-gated** by a per-org web-search credential — ``search`` consumes it;
+    ``fetch``/``read`` do not, but the group carries one key. The gap that left EURail's researchers
+    reason-only (north-star item 5)."""
 
     NAME = "Web Research"  # slug ``web-research`` MUST match the ref's name slug
     CATEGORY = "RESEARCH"
@@ -517,9 +518,11 @@ class WebResearchPlugin(_ConnectorToolPlugin):
             "parameters": {"url": "str"},
         },
     ]
-    # search needs a per-org web-search key (resolved at dispatch); fetch/read are keyless, so the
-    # requirement is NOT mandatory: search validates the key at runtime and fails closed if absent.
-    CREDENTIAL_REQUIREMENTS = [{"type": "api_key", "provider": "web_search", "required": False}]
+    # A per-org web-search api_key, resolved at dispatch (ADR-038 D3 / ADR-008). REQUIRED so the
+    # dispatch path resolves it — the registry resolves only `required` credentials, with no per-op
+    # concept, so a mixed tool group is key-gated as a whole: `search` consumes the key; `fetch`/
+    # `read` don't, but the instance must carry one. An unconfigured instance fails closed (409).
+    CREDENTIAL_REQUIREMENTS = [{"type": "api_key", "provider": "web_search", "required": True}]
     INPUT_SCHEMA = {
         "type": "object",
         "properties": {
