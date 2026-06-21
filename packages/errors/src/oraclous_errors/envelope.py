@@ -1,4 +1,4 @@
-"""Builder for the ORA-37 gateway error envelope.
+"""Builder for the canonical gateway error envelope.
 
 Produces the exact ``{"error": {...}}`` shape defined by
 ``packages/errors/contract/error-envelope.schema.json`` as a plain ``dict`` — no
@@ -18,6 +18,11 @@ from oraclous_errors.codes import CODE_POLICY, ErrorCode
 
 _ISSUE_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
 _FIELD_RE = re.compile(r"^[A-Za-z0-9_.\[\]-]+$")  # field name/path charset — never @/:/space
+# A credential requirement_id / provider is a machine token: alnum-led, then alnum/_/./-, capped.
+# The charset forbids '/', ':', '@', and whitespace by construction, so the token can never carry a
+# URL, an internal host, a path, or a secret value into a user-facing body (leak-safe at the seam).
+_REQ_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
+_PROVIDER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,47}$")
 
 
 @dataclass(frozen=True)
@@ -32,6 +37,21 @@ class FieldError:
     issue: str
 
 
+@dataclass(frozen=True)
+class NeedsCredential:
+    """The ``needs_credential`` token on a CREDENTIALS_REQUIRED envelope.
+
+    Names WHICH credential a caller must onboard to proceed — ``requirement_id`` (the requirement
+    type, e.g. ``api_key``) and ``provider`` (e.g. ``web_search``). Both are leak-safe machine
+    tokens by construction (``_REQ_RE``/``_PROVIDER_RE``): never a value, a credential id, a URL, or
+    a secret. The frontend renders an onboarding prompt off this pair; it carries no ``login_url``
+    (a real URL would risk surfacing an internal host — that stays service-internal).
+    """
+
+    requirement_id: str
+    provider: str
+
+
 def build_envelope(
     code: ErrorCode,
     *,
@@ -39,11 +59,13 @@ def build_envelope(
     message: str | None = None,
     retryable: bool | None = None,
     details: Sequence[FieldError] | None = None,
+    needs_credential: NeedsCredential | None = None,
 ) -> dict[str, Any]:
     """Build a contract-conformant error envelope.
 
     ``message`` and ``retryable`` default to the code's curated policy. ``details``
-    is required for VALIDATION_FAILED and forbidden for every other code (mirrors
+    is required for VALIDATION_FAILED and forbidden for every other code; the optional
+    ``needs_credential`` token is permitted only for CREDENTIALS_REQUIRED (both mirror
     the schema's if/then/else), so a misuse raises ``ValueError`` at the call site
     rather than emitting a non-conformant body.
     """
@@ -54,6 +76,23 @@ def build_envelope(
         "requestId": request_id,
         "retryable": policy.retryable_default if retryable is None else retryable,
     }
+    if code is ErrorCode.CREDENTIALS_REQUIRED:
+        if needs_credential is not None:
+            # Fail-closed at the seam: a non-conformant requirement_id/provider (e.g. a value that
+            # slipped past an extractor) raises here rather than being relayed in the body (§3 rule
+            # 8). The charset guarantees no URL / host / secret can ride through.
+            if not _REQ_RE.match(needs_credential.requirement_id):
+                raise ValueError("needs_credential.requirement_id must be a capped machine token")
+            if not _PROVIDER_RE.match(needs_credential.provider):
+                raise ValueError("needs_credential.provider must be a capped machine token")
+            inner["needs_credential"] = {
+                "requirement_id": needs_credential.requirement_id,
+                "provider": needs_credential.provider,
+            }
+    elif needs_credential is not None:
+        raise ValueError(
+            f"'needs_credential' is only valid for CREDENTIALS_REQUIRED, not {code.value}"
+        )
     if code is ErrorCode.VALIDATION_FAILED:
         if not details:
             raise ValueError("VALIDATION_FAILED requires a non-empty 'details' list")

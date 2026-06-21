@@ -1,10 +1,10 @@
 """Reference self-test for the gateway error-envelope contract fixture.
 
-Contract ORA-37 / Interface Contracts §3. This proves the shared artifacts under
+Interface Contracts §3. This proves the shared artifacts under
 ``packages/errors/contract/`` are internally consistent, that the JSON Schema
 enforces the §3 constraints, and runs the forbidden-substring negative test over
-the curated samples. The backend api error-path tests (ORA-54) and the frontend
-api-client tests (ORA-55) consume the *same* artifacts; this is the fixture's own
+the curated samples. The backend api error-path tests and the frontend
+api-client tests consume the *same* artifacts; this is the fixture's own
 enforcement that it is correct before either side depends on it.
 
 Marked ``unit`` (fast, isolated) and ``security`` (the §3 dominant risk is
@@ -37,6 +37,7 @@ EXPECTED_CODES = {
     "NOT_FOUND",
     "METHOD_NOT_ALLOWED",
     "CONFLICT",
+    "CREDENTIALS_REQUIRED",
     "PAYLOAD_TOO_LARGE",
     "UNSUPPORTED_MEDIA_TYPE",
     "RATE_LIMITED",
@@ -80,10 +81,10 @@ def test_schema_is_itself_valid(schema: dict[str, Any]) -> None:
     Draft202012Validator.check_schema(schema)  # raises if the schema is malformed
 
 
-def test_code_enum_is_the_closed_set_of_13(schema: dict[str, Any]) -> None:
+def test_code_enum_is_the_closed_set_of_14(schema: dict[str, Any]) -> None:
     enum = schema["properties"]["error"]["properties"]["code"]["enum"]
     assert set(enum) == EXPECTED_CODES
-    assert len(enum) == 13
+    assert len(enum) == 14
 
 
 def test_additional_properties_false_at_every_level(schema: dict[str, Any]) -> None:
@@ -182,6 +183,39 @@ def test_rejects_reflected_value_in_issue(validator: Draft202012Validator) -> No
         "details": [{"field": "email", "issue": "not-an-email@x"}],
     }
     assert not _is_valid(validator, obj)
+
+
+# --- needs_credential (CREDENTIALS_REQUIRED only) --------------------------
+
+_CR: dict[str, Any] = {
+    "code": "CREDENTIALS_REQUIRED",
+    "message": "A required credential is missing or needs authorization.",
+    "requestId": "req_01TESTTESTTESTTESTTEST00",
+    "retryable": False,
+}
+
+
+def test_needs_credential_only_on_credentials_required(validator: Draft202012Validator) -> None:
+    nc = {"requirement_id": "api_key", "provider": "web_search"}
+    # needs_credential on a non-CREDENTIALS_REQUIRED code is rejected (the second allOf branch)
+    assert not _is_valid(validator, {**BASE, "needs_credential": nc})
+    # CREDENTIALS_REQUIRED is valid WITHOUT needs_credential (optional even there)
+    assert _is_valid(validator, dict(_CR))
+    # CREDENTIALS_REQUIRED with a well-formed needs_credential is accepted
+    assert _is_valid(validator, {**_CR, "needs_credential": nc})
+
+
+def test_rejects_needs_credential_extra_key(validator: Draft202012Validator) -> None:
+    # additionalProperties:false — a value/secret field can never ride along
+    bad = {"requirement_id": "api_key", "provider": "web_search", "value": "tvly-secret"}
+    assert not _is_valid(validator, {**_CR, "needs_credential": bad})
+
+
+def test_rejects_url_or_host_shaped_provider(validator: Draft202012Validator) -> None:
+    # the charset forbids '/', ':', '@' — a needs_credential token can never carry a URL/host/secret
+    for bad in ("http://evil/cb", "internal-host:8080", "user@host", "a/../b"):
+        env = {**_CR, "needs_credential": {"requirement_id": "api_key", "provider": bad}}
+        assert not _is_valid(validator, env), bad
 
 
 # --- forbidden-substring negative test -------------------------------------
