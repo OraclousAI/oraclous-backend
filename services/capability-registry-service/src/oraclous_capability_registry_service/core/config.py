@@ -48,6 +48,11 @@ class Settings(BaseSettings):
     # targets the knowledge-graph-service (write path), not the retriever (read path).
     KNOWLEDGE_GRAPH_URL: str = "http://knowledge-graph-service:8000"
 
+    # --- web-research battery (#486 / ADR-039) — the default web.search provider. The connector's
+    # SearchProvider factory resolves this by name (tavily | …); a per-call `provider` overrides it.
+    # web.search is BYOM-keyed (the api_key is a per-org broker credential, NOT a server env).
+    WEB_SEARCH_PROVIDER: str = "tavily"
+
     # --- credential-broker seam (tool execution resolves credentials here; never decrypts) ---
     CREDENTIAL_BROKER_URL: str = "http://credential-broker-service:8000"
     # Fail-CLOSED default (ADR-021 §1): "real" — a deploy that forgets the override talks to the

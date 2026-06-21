@@ -482,3 +482,55 @@ class FederatedSearchPlugin(_ConnectorToolPlugin):
             "meta": {"type": "object"},
         },
     }
+
+
+@plugin_registry.register
+class WebResearchPlugin(_ConnectorToolPlugin):
+    """Pre-registered live-web research tool group (#486 / ADR-039 D1) — bound as
+    ``core/web-research@1.0.0``. Three operations: ``search`` the live web (BYOM ``api_key`` via the
+    SearchProvider factory — Tavily first), ``fetch`` a URL's raw text, ``read`` a URL as readable
+    text. The tool is **key-gated** by a per-org web-search credential — ``search`` consumes it;
+    ``fetch``/``read`` do not, but the group carries one key. The gap that left EURail's researchers
+    reason-only (north-star item 5)."""
+
+    NAME = "Web Research"  # slug ``web-research`` MUST match the ref's name slug
+    CATEGORY = "RESEARCH"
+    DESCRIPTION = (
+        "Live-web research: search the web (bring-your-own search api_key), fetch a URL's raw "
+        "text, or read a URL as readable text. Internal/private targets are refused (SSRF-safe)."
+    )
+    TYPE = "API"
+    TAGS = ["web", "search", "research", "live-web"]
+    CAPABILITIES = [
+        {
+            "name": "search",
+            "description": "Search the live web and return ranked hits (BYOM api_key).",
+            "parameters": {"query": "str", "max_results": "int", "provider": "str"},
+        },
+        {
+            "name": "fetch",
+            "description": "HTTP GET a URL and return its raw text body.",
+            "parameters": {"url": "str"},
+        },
+        {
+            "name": "read",
+            "description": "HTTP GET a URL and return readable text (tags/script stripped).",
+            "parameters": {"url": "str"},
+        },
+    ]
+    # A per-org web-search api_key, resolved at dispatch (ADR-038 D3 / ADR-008). REQUIRED so the
+    # dispatch path resolves it — the registry resolves only `required` credentials, with no per-op
+    # concept, so a mixed tool group is key-gated as a whole: `search` consumes the key; `fetch`/
+    # `read` don't, but the instance must carry one. An unconfigured instance fails closed (409).
+    CREDENTIAL_REQUIREMENTS = [{"type": "api_key", "provider": "web_search", "required": True}]
+    INPUT_SCHEMA = {
+        "type": "object",
+        "properties": {
+            "operation": {"type": "string", "enum": ["search", "fetch", "read"]},
+            "query": {"type": "string"},
+            "max_results": {"type": "integer", "minimum": 1, "maximum": 20},
+            "provider": {"type": "string"},
+            "url": {"type": "string"},
+        },
+    }
+    OUTPUT_SCHEMA = {"type": "object"}
