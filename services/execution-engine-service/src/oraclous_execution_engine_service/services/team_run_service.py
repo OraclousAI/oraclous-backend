@@ -273,6 +273,16 @@ class TeamRunService:
             grade_target = _grade_target(
                 team, result.results
             )  # inside the try → reducer errors too
+            # BYOM judge (ADR-037 / BYOM-judge): a role="evaluator" model declares the per-org judge
+            # credential — thread it so KRS grades with the user's OWN key (None → operator key).
+            # The engine never holds the key (ADR-008): it passes only the credential_id + binding.
+            ev_model = team.evaluator_model()
+            judge_credential_id: str | None = None
+            judge_model: str | None = None
+            if ev_model is not None:
+                cid = ev_model.config.get("credential_id")
+                judge_credential_id = str(cid) if cid else None
+                judge_model = ev_model.binding
             if is_battery_reference(success_criteria):
                 # battery: resolved + iterated ENGINE-side; only each check's PROSE rubric leaves
                 # the engine to core/evaluate (the battery token would 422 at KRS).
@@ -281,6 +291,8 @@ class TeamRunService:
                         target_ref=f"{run_id}/{check.name}",
                         target_output=output,
                         success_criteria=check.rubric or "",
+                        judge_credential_id=judge_credential_id,
+                        judge_model=judge_model,
                     )
                     raw = resp.get("score", 0.0)
                     return float(raw) if isinstance(raw, int | float) else 0.0
@@ -293,6 +305,8 @@ class TeamRunService:
                 target_ref=str(run_id),
                 target_output=grade_target,
                 success_criteria=success_criteria,
+                judge_credential_id=judge_credential_id,
+                judge_model=judge_model,
             )
         except Exception as exc:  # noqa: BLE001 — ANY grader-side failure fails CLOSED, never strands
             # The grade runs OUTSIDE _drive's try/except, so an escaping error would fail the Celery
