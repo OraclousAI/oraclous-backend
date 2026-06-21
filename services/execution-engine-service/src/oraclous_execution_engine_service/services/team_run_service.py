@@ -26,7 +26,13 @@ from typing import Any
 from oraclous_governance import Principal
 from oraclous_ohm.capabilities import assert_subharness_within_ceiling
 from oraclous_ohm.errors import OHMCapabilityError, OHMError
-from oraclous_ohm.gate_battery import OHMGateCheck, evaluate_gate, is_battery_reference
+from oraclous_ohm.gate_battery import (
+    OHMGateCheck,
+    UnknownBattery,
+    evaluate_gate,
+    is_battery_reference,
+    resolve_battery,
+)
 from oraclous_ohm.manifest import OHMManifest
 from oraclous_ohm.parse import load_ohm
 
@@ -36,10 +42,7 @@ from oraclous_execution_engine_service.repositories.maintenance_repository impor
     EngineMaintenanceRepository,
 )
 from oraclous_execution_engine_service.repositories.team_run_repository import TeamRunRepository
-from oraclous_execution_engine_service.services.evaluate_client import (
-    EvaluateClient,
-    EvaluateClientError,
-)
+from oraclous_execution_engine_service.services.evaluate_client import EvaluateClient
 from oraclous_execution_engine_service.services.harness_client import HarnessClient
 from oraclous_execution_engine_service.services.team_run import run_team_harness
 
@@ -152,6 +155,18 @@ class TeamRunService:
             raise TeamRunError("manifest is not a Team Harness (metadata.kind must be 'team')", 422)
         if not manifest.members:
             raise TeamRunError("a Team Harness must declare at least one member", 422)
+        # fail-fast (#479): a `battery:<name>` success_criteria must name a DECLARED battery —
+        # resolve now so an undeclared one is a 422 at create, not an UnknownBattery that strands
+        # the run at grade time. (The gate uses success_criteria for the single-pass DAG.)
+        if manifest.orchestration is not None and is_battery_reference(
+            manifest.orchestration.success_criteria
+        ):
+            try:
+                resolve_battery(manifest, manifest.orchestration.success_criteria)
+            except UnknownBattery as exc:
+                raise TeamRunError(
+                    f"success_criteria references an undeclared battery: {exc}", 422
+                ) from exc
         return manifest
 
     def _enforce_member_ceilings(
@@ -254,8 +269,10 @@ class TeamRunService:
         success_criteria = team.orchestration.success_criteria
         if not success_criteria:  # no gate declared → nothing to grade
             return None
-        grade_target = _grade_target(team, result.results)
         try:
+            grade_target = _grade_target(
+                team, result.results
+            )  # inside the try → reducer errors too
             if is_battery_reference(success_criteria):
                 # battery: resolved + iterated ENGINE-side; only each check's PROSE rubric leaves
                 # the engine to core/evaluate (the battery token would 422 at KRS).
@@ -277,7 +294,12 @@ class TeamRunService:
                 target_output=grade_target,
                 success_criteria=success_criteria,
             )
-        except (EvaluateClientError, ValueError, KeyError, TypeError) as exc:
+        except Exception as exc:  # noqa: BLE001 — ANY grader-side failure fails CLOSED, never strands
+            # The grade runs OUTSIDE _drive's try/except, so an escaping error would fail the Celery
+            # task and strand the run RUNNING. The contract (docstring) is absolute: a grader error
+            # → a recorded pass=false verdict and the run STILL SUCCEEDS. So catch everything here —
+            # EvaluateRejected/EvaluateClientError, an UnknownBattery from a stray battery ref, a
+            # decode/shape bug, anything — the run's success is independent of the grader.
             return {  # fail-closed verdict; the run still SUCCEEDS (state unchanged)
                 "pass": False,
                 "score": 0.0,
