@@ -9,6 +9,9 @@ requirements). Each registers itself against ``plugin_registry`` at import; the 
 
 from __future__ import annotations
 
+from oraclous_capability_registry_service.domain.connectors.source_providers import (
+    available_sources,
+)
 from oraclous_capability_registry_service.domain.libraries import registry as library_registry
 from oraclous_capability_registry_service.domain.plugins.base import (
     CapabilityKindPlugin,
@@ -598,6 +601,41 @@ class LibraryGroupPlugin(_ConnectorToolPlugin):
         "properties": {
             "operation": {"type": "string", "enum": library_registry.operation_names()},
             "text": {"type": "string"},
+        },
+    }
+    OUTPUT_SCHEMA = {"type": "object"}
+
+
+@plugin_registry.register
+class RestConnectorPlugin(_ConnectorToolPlugin):
+    """Curated REST data-source connector (#489 / ADR-039 D1), bound ``core/rest-connector@1.0.0``.
+    The ``fetch`` op reads a curated source/endpoint (``source_id`` selects a provider from
+    ``domain/connectors/source_providers``, never a free URL) over a SSRF-guarded HTTPS GET and
+    returns its parsed dict. The two shipped sources (mempool.space, alternative.me) are keyless
+    public GETs; keyed sources (FRED/CoinMetrics/Binance) slot in as BYOM providers, a follow-up."""
+
+    NAME = "REST Connector"  # slug ``rest-connector`` MUST match the ref's name slug
+    CATEGORY = "CONNECTOR"
+    DESCRIPTION = (
+        "Fetch a curated external data source over a SSRF-guarded HTTPS GET. Sources are curated "
+        "(no free URL); the shipped set is keyless public data (mempool.space, alternative.me)."
+    )
+    TYPE = "API"
+    TAGS = ["connector", "rest", "data", "bitcoin"]
+    CAPABILITIES = [
+        {
+            "name": "fetch",
+            "description": "Fetch a curated source endpoint and return its parsed data.",
+            "parameters": {"source_id": "str", "endpoint": "str"},
+        },
+    ]
+    CREDENTIAL_REQUIREMENTS: list[dict] = []  # the shipped sources are keyless
+    INPUT_SCHEMA = {
+        "type": "object",
+        "required": ["source_id", "endpoint"],
+        "properties": {
+            "source_id": {"type": "string", "enum": available_sources()},
+            "endpoint": {"type": "string", "minLength": 1},
         },
     }
     OUTPUT_SCHEMA = {"type": "object"}
