@@ -9,6 +9,7 @@ requirements). Each registers itself against ``plugin_registry`` at import; the 
 
 from __future__ import annotations
 
+from oraclous_capability_registry_service.domain.libraries import registry as library_registry
 from oraclous_capability_registry_service.domain.plugins.base import (
     CapabilityKindPlugin,
     plugin_registry,
@@ -568,6 +569,35 @@ class ScriptIngestionPlugin(_ConnectorToolPlugin):
             "args": {"type": "object"},
             "graph_id": {"type": "string", "format": "uuid"},
             "source_type": {"type": "string"},
+        },
+    }
+    OUTPUT_SCHEMA = {"type": "object"}
+
+
+@plugin_registry.register
+class LibraryGroupPlugin(_ConnectorToolPlugin):
+    """Mount a curated in-repo library as a typed tool group (#488 / ADR-038 D1) — bound as
+    ``core/text-tools@1.0.0``. One operation per exported function (CAPABILITIES + the op enum
+    are GENERATED from ``domain/libraries/registry`` so they never drift from the callables). Each
+    operation is dispatched in-process by :class:`LibraryGroupExecutor`. Curated, trusted, keyless;
+    user-supplied library adoption (subprocess + HITL) is a follow-up."""
+
+    NAME = "Text Tools"  # slug ``text-tools`` MUST match the ref's name slug
+    CATEGORY = "TRANSFORM"
+    DESCRIPTION = (
+        "A curated in-repo library exposed as a typed tool group: one operation per exported "
+        "function (word_count / to_upper / extract_emails). Deterministic, keyless, in-process."
+    )
+    TYPE = "INTERNAL"
+    TAGS = ["library", "transform", "text", "curated"]
+    CAPABILITIES = library_registry.capabilities()  # one per function, generated from the registry
+    CREDENTIAL_REQUIREMENTS: list[dict] = []  # curated, in-process, keyless
+    INPUT_SCHEMA = {
+        "type": "object",
+        "required": ["operation"],
+        "properties": {
+            "operation": {"type": "string", "enum": library_registry.operation_names()},
+            "text": {"type": "string"},
         },
     }
     OUTPUT_SCHEMA = {"type": "object"}
