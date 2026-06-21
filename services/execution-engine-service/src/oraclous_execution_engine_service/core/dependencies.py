@@ -41,6 +41,7 @@ from oraclous_execution_engine_service.services.schedule_service import Schedule
 from oraclous_execution_engine_service.services.task_service import TaskService
 from oraclous_execution_engine_service.services.team_run_service import TeamRunService
 from oraclous_execution_engine_service.tasks.run_tasks import (
+    enqueue_adopted_tool,
     enqueue_job,
     enqueue_roundtable,
     enqueue_team_run,
@@ -149,8 +150,17 @@ def get_schedule_service(
     jobs: Annotated[JobRepository, Depends(get_job_repository)],
     provenance: Annotated[ProvenanceCollector, Depends(get_provenance)],
 ) -> ScheduleService:
-    # the request path only registers/lists/deletes — beat fires (run_tasks builds its own).
-    return ScheduleService(schedules=schedules, jobs=jobs, provenance=provenance)
+    # the request path registers/lists/deletes AND fires-now (#489): fire-now reuses the Beat fire
+    # branch, so it needs BOTH enqueue callbacks (harness-job queue + adopted-tool registry
+    # dispatch) — without enqueue_adopted_tool the adopted_tool_run branch would create the dedupe
+    # row + advance the cursor but never dispatch (a green-but-hollow no-op).
+    return ScheduleService(
+        schedules=schedules,
+        jobs=jobs,
+        provenance=provenance,
+        enqueue=enqueue_job,
+        enqueue_adopted_tool=enqueue_adopted_tool,
+    )
 
 
 def get_roundtable_repository(request: Request) -> RoundtableRepository:

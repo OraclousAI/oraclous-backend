@@ -47,6 +47,9 @@ class ScheduleRepository:
         manifest_inline: dict | None = None,
         manifest_ref: str | None = None,
         cron: str | None = None,
+        target_kind: str = "harness_job",
+        instance_id: uuid.UUID | None = None,
+        input_data: dict | None = None,
     ) -> EngineSchedule:
         row = EngineSchedule(
             id=uuid.uuid4(),
@@ -58,6 +61,9 @@ class ScheduleRepository:
             manifest_ref=manifest_ref,
             input_text=input_text,
             enabled=True,
+            target_kind=target_kind,
+            instance_id=instance_id,
+            input_data=input_data,
         )
         async with self._session() as session:
             async with session.begin():

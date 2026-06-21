@@ -6,11 +6,19 @@ import enum
 
 
 class ScheduleType(enum.StrEnum):
-    """How a schedule fires a harness job."""
+    """WHEN a schedule fires (orthogonal to ``TargetKind``, which controls WHAT it fires)."""
 
     MANUAL = "manual"  # fired only via the API (no automatic firing)
     CRON = "cron"  # a cron expression, fired by Celery Beat
     EVENT = "event"  # an external event (wiring is a later capability)
+
+
+class TargetKind(enum.StrEnum):
+    """WHAT a schedule fires (orthogonal to ``ScheduleType``, which controls WHEN). Default
+    ``harness_job`` so existing/old schedule rows read as the original harness-job path (#489)."""
+
+    HARNESS_JOB = "harness_job"  # the original path: enqueue a durable harness engine_job
+    ADOPTED_TOOL_RUN = "adopted_tool_run"  # enqueue a capability-registry instance /execute
 
 
 class EngineJobState(enum.StrEnum):

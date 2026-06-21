@@ -12,7 +12,11 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from oraclous_execution_engine_service.models.enums import EngineJobState, ScheduleType
+from oraclous_execution_engine_service.models.enums import (
+    EngineJobState,
+    ScheduleType,
+    TargetKind,
+)
 
 
 class HealthResponse(BaseModel):
@@ -116,19 +120,35 @@ class ApproveTaskRequest(BaseModel):
 
 
 class RegisterScheduleRequest(BaseModel):
-    """Register a schedule that fires a harness job. A cron schedule needs a cron expression; the
-    OHM is supplied inline (``manifest``) or by registry id (``manifest_ref``) — exactly one."""
+    """Register a schedule. A cron schedule needs a cron expression. WHAT it fires is
+    ``target_kind`` (#489): a ``harness_job`` (the default) supplies the OHM inline (``manifest``)
+    or by registry id (``manifest_ref``) — exactly one — and no ``instance_id``; an
+    ``adopted_tool_run`` supplies an ``instance_id`` (the curated/adopted capability-registry
+    instance) + optional ``input_data``, and NO manifest."""
 
     type: ScheduleType = ScheduleType.CRON
     cron: str | None = None
+    target_kind: TargetKind = TargetKind.HARNESS_JOB
     manifest: dict[str, Any] | None = None
     manifest_ref: str | None = Field(default=None, max_length=512)
+    instance_id: uuid.UUID | None = None
+    input_data: dict[str, Any] | None = None
     input: str = Field(min_length=1)
 
     @model_validator(mode="after")
-    def _exactly_one_manifest(self) -> RegisterScheduleRequest:
-        if (self.manifest is None) == (self.manifest_ref is None):
-            raise ValueError("supply exactly one of 'manifest' (inline) or 'manifest_ref'")
+    def _target_kind_shape(self) -> RegisterScheduleRequest:
+        # The exactly-one-manifest rule is CONDITIONAL on target_kind (#489): harness_job keeps it;
+        # adopted_tool_run forbids both manifests and requires an instance_id.
+        if self.target_kind == TargetKind.HARNESS_JOB:
+            if (self.manifest is None) == (self.manifest_ref is None):
+                raise ValueError("supply exactly one of 'manifest' (inline) or 'manifest_ref'")
+            if self.instance_id is not None:
+                raise ValueError("'instance_id' is only for target_kind 'adopted_tool_run'")
+        else:  # adopted_tool_run
+            if self.manifest is not None or self.manifest_ref is not None:
+                raise ValueError("an 'adopted_tool_run' schedule takes no manifest/manifest_ref")
+            if self.instance_id is None:
+                raise ValueError("an 'adopted_tool_run' schedule requires 'instance_id'")
         return self
 
 
@@ -139,7 +159,9 @@ class ScheduleOut(BaseModel):
     organisation_id: uuid.UUID
     type: str
     cron: str | None
+    target_kind: str
     manifest_ref: str | None
+    instance_id: uuid.UUID | None
     input_text: str
     enabled: bool
     last_fired_at: datetime | None
@@ -148,6 +170,24 @@ class ScheduleOut(BaseModel):
 
 class ScheduleListResponse(BaseModel):
     schedules: list[ScheduleOut]
+    total: int
+
+
+class AdoptedToolRunOut(BaseModel):
+    """One adopted-tool-run idempotency row a schedule produced (#489). ``execution_id`` is the
+    registry ExecutionOut.id the worker dispatched + stamped (null until the worker stamps it)."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    schedule_id: uuid.UUID
+    idempotency_key: str
+    execution_id: uuid.UUID | None
+    created_at: datetime | None
+
+
+class AdoptedToolRunListResponse(BaseModel):
+    runs: list[AdoptedToolRunOut]
     total: int
 
 
