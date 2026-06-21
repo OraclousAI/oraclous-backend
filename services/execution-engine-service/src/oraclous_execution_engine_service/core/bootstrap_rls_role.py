@@ -6,9 +6,9 @@ Run as the PRIVILEGED OWNER (the ``oraclous`` superuser) by the engine-migrate o
 ``alembic upgrade head`` has created the tables. Idempotent + re-runnable:
 
 * ``CREATE ROLE oraclous_app LOGIN NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE`` if absent.
-* ``GRANT USAGE ON SCHEMA public`` and ``GRANT SELECT, INSERT, UPDATE, DELETE`` on the four
-  org-scoped engine tables to ``oraclous_app`` (and on FUTURE tables via ALTER DEFAULT PRIVILEGES so
-  a later migration's tables are covered without re-running this with new names).
+* ``GRANT USAGE ON SCHEMA public`` and ``GRANT SELECT, INSERT, UPDATE, DELETE`` on the org-scoped
+  engine tables to ``oraclous_app`` (and on FUTURE tables via ALTER DEFAULT PRIVILEGES so a later
+  migration's tables are covered without re-running this with new names).
 
 The ORG-BOUND runtime — the api + the org-bound Celery worker path — then connects as
 ``oraclous_app`` (a non-owner, NOSUPERUSER role), so the FORCE'd RLS policy bites it. The OWNER
@@ -33,7 +33,13 @@ from oraclous_execution_engine_service.core.config import get_settings
 
 # The four org-scoped engine tables RLS is enabled on (0004_enable_rls). The runtime role needs DML
 # on exactly these (no sequences — all PKs are client-generated UUIDs).
-_RLS_TABLES = ("engine_jobs", "engine_schedules", "engine_roundtables", "engine_provenance")
+_RLS_TABLES = (
+    "engine_jobs",
+    "engine_schedules",
+    "engine_roundtables",
+    "engine_provenance",
+    "engine_team_runs",  # (#479) explicit grant parity — team runs landed after this list existed
+)
 
 # Dev/self-host runtime role + password. Production overrides the org-bound runtime DSN with a
 # managed credential; this default keeps the dev docker stack key-free and matches the compose

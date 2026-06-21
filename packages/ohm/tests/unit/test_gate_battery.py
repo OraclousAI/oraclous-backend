@@ -228,3 +228,22 @@ def test_manifest_parses_batteries_block() -> None:
     m = OHMManifest.model_validate(raw)
     assert m.battery_by_name("report-editor-10gate").floor == "and"
     assert m.orchestration.success_criteria == "battery:report-editor-10gate"
+
+
+def test_gate_check_kind_requires_its_target() -> None:  # #479
+    """An evaluator check MUST carry a non-empty rubric (else it grades '' → core/evaluate 422s and
+    collapses the whole battery); a deterministic check MUST name a check_ref. Caught at load."""
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        OHMGateCheck(name="c", kind="evaluator")  # no rubric
+    with pytest.raises(ValidationError):
+        OHMGateCheck(name="c", kind="evaluator", rubric="   ")  # blank rubric
+    with pytest.raises(ValidationError):
+        OHMGateCheck(name="c", kind="deterministic")  # no check_ref
+    # the well-formed cases parse
+    assert OHMGateCheck(name="c", kind="evaluator", rubric="grade it").rubric == "grade it"
+    assert (
+        OHMGateCheck(name="c", kind="deterministic", check_ref="core/check/x").kind
+        == "deterministic"
+    )
