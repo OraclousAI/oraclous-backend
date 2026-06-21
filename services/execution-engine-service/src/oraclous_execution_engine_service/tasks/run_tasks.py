@@ -35,6 +35,7 @@ from oraclous_execution_engine_service.repositories.roundtable_repository import
 )
 from oraclous_execution_engine_service.repositories.schedule_repository import ScheduleRepository
 from oraclous_execution_engine_service.repositories.team_run_repository import TeamRunRepository
+from oraclous_execution_engine_service.services.evaluate_client import EvaluateClient
 from oraclous_execution_engine_service.services.harness_client import HarnessClient
 from oraclous_execution_engine_service.services.job_service import JobService
 from oraclous_execution_engine_service.services.roundtable_service import RoundtableService
@@ -236,17 +237,26 @@ async def _drive_team_run_async(run_id_s: str, org_id_s: str, user_id_s: str) ->
     )
     with use_organisation_context(context):
         team_runs = TeamRunRepository(settings.database_url, worker_pool=True)
+        headers = build_downstream_headers(principal, settings)
         harness = HarnessClient(
             settings.harness_runtime_url,
-            headers=build_downstream_headers(principal, settings),
+            headers=headers,
             timeout=settings.harness_request_timeout,
         )
+        # the flow judge — grade the completed run at the gate (#477); same identity headers, so KRS
+        # server-stamps the verdict's org from THIS run's principal (H2).
+        evaluate = EvaluateClient(
+            settings.knowledge_retriever_url,
+            headers=headers,
+            timeout=settings.evaluate_request_timeout,
+        )
         try:
-            service = TeamRunService(team_runs=team_runs, harness=harness)
+            service = TeamRunService(team_runs=team_runs, harness=harness, evaluate=evaluate)
             result = await service.drive(run_id, principal)
             return {"team_run_id": run_id_s, "state": result.state}
         finally:
             await harness.aclose()
+            await evaluate.aclose()
             await team_runs.close()
 
 
