@@ -196,3 +196,46 @@ async def test_invalid_operation_is_rejected() -> None:
     ex = _connector(lambda _r: httpx.Response(200, text="x"))
     res = await ex.execute({"operation": "delete-everything", "url": _PUBLIC}, _ctx())
     assert not res.success and res.error_type == "INVALID_OPERATION"
+
+
+# --- redirect handling + body caps ---------------------------------------------------------------
+
+
+async def test_a_safe_single_hop_redirect_is_followed() -> None:
+    def handler(req: httpx.Request) -> httpx.Response:
+        if req.url.path == "/a":
+            return httpx.Response(302, headers={"location": "http://1.1.1.1/b"})
+        return httpx.Response(200, text="final body")
+
+    ex = _connector(handler)
+    res = await ex.execute({"operation": "fetch", "url": "http://1.1.1.1/a"}, _ctx())
+    assert res.success and res.data["content"] == "final body"
+
+
+async def test_a_redirect_loop_over_the_cap_fails_closed() -> None:
+    hops = {"n": 0}
+
+    def handler(_req: httpx.Request) -> httpx.Response:
+        hops["n"] += 1
+        return httpx.Response(302, headers={"location": f"http://1.1.1.1/hop{hops['n']}"})
+
+    ex = _connector(handler)
+    res = await ex.execute({"operation": "fetch", "url": "http://1.1.1.1/start"}, _ctx())
+    assert not res.success and res.error_type == "TOO_MANY_REDIRECTS"
+    assert hops["n"] <= 5  # _MAX_REDIRECTS + 1 attempts, then bail
+
+
+async def test_fetch_caps_an_oversized_body_and_flags_truncation() -> None:
+    big = "x" * 250_000
+    ex = _connector(lambda _r: httpx.Response(200, text=big))
+    res = await ex.execute({"operation": "fetch", "url": _PUBLIC}, _ctx())
+    assert res.success
+    assert len(res.data["content"]) == 100_000  # _MAX_TEXT_CHARS
+    assert res.metadata["truncated"] is True
+
+
+async def test_read_on_a_plaintext_body_returns_the_text() -> None:
+    ex = _connector(lambda _r: httpx.Response(200, text="just plain text, no tags"))
+    res = await ex.execute({"operation": "read", "url": _PUBLIC}, _ctx())
+    assert res.success
+    assert res.data["title"] == "" and "just plain text" in res.data["text"]

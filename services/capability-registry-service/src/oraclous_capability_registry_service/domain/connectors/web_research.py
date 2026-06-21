@@ -9,21 +9,21 @@ immediately (the gap that left EURail's researchers reason-only):
 * ``read``  — HTTP GET a URL → readable text (tags/script stripped, ``<title>`` kept). **Keyless.**
 
 Security posture: ``fetch``/``read`` are an SSRF surface (an agent could aim them at an internal
-service or the cloud metadata endpoint), so every URL is validated **before** any network call:
-only ``http``/``https`` and only hosts that resolve to public addresses; a private / loopback /
-link-local / reserved target is refused fail-closed. Bodies are size-capped. No-leak throughout: a
-missing key, a provider error, a blocked URL, or an upstream 4xx is a structured failure that never
-echoes an upstream body. ``transport`` is an injectable test seam.
+service or the cloud metadata endpoint), so every URL — and every redirect hop — is screened by the
+shared :func:`egress_allowed` gate (the same one the MCP connector uses) **before** any request:
+http(s)-only, a hostname denylist (``localhost``/``metadata``/``*.internal``/single-label), and a
+literal-IP + resolved-IP private/loopback/link-local check. Its documented residual (a DNS-rebinding
+TOCTOU between the resolve-check and the connect) is the codebase-wide recorded follow-on, accepted
+equally here. Bodies are size-capped. No-leak throughout: a missing key, a provider error, a blocked
+URL, or an upstream 4xx is a structured failure that never echoes an upstream body. ``transport`` is
+an injectable test seam.
 """
 
 from __future__ import annotations
 
-import asyncio
-import ipaddress
-import socket
 from html.parser import HTMLParser
 from typing import Any
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import urljoin
 
 import httpx
 
@@ -33,13 +33,18 @@ from oraclous_capability_registry_service.domain.connectors.search_providers imp
     clamp_max_results,
     get_search_provider,
 )
+from oraclous_capability_registry_service.domain.egress import egress_allowed
 from oraclous_capability_registry_service.domain.executors.base import (
     ExecutionContext,
     ExecutionResult,
     InternalTool,
 )
 
-_TIMEOUT_S = 30.0
+# The per-request HTTP timeout sits UNDER the InternalTool hard timeout (``timeout_s`` below) so a
+# slow host surfaces the connector's own FETCH_UNREACHABLE, not the wrapper's generic TIMEOUT
+# (the same discipline as FederatedSearchConnector).
+_FETCH_TIMEOUT_S = 12.0
+_OUTER_TIMEOUT_S = 50.0  # headroom for up to _MAX_REDIRECTS sequential hops
 _MAX_TEXT_CHARS = 100_000
 _MAX_REDIRECTS = 4
 _USER_AGENT = "OraclousWebResearch/1.0"
@@ -91,39 +96,12 @@ def _html_to_text(body: str) -> tuple[str, str]:
     return parser.title.strip(), parser.text()
 
 
-async def _assert_public_url(url: str) -> None:
-    """Fail-closed SSRF guard: http(s) scheme only, and every resolved IP must be public.
-
-    Raises :class:`ValueError` with a coarse reason on a non-public / malformed target. DNS runs
-    off the event loop. A host that resolves to *any* private/loopback/link-local/reserved/
-    multicast address is refused (defends against DNS-rebinding to an internal / metadata IP).
-    """
-    parts = urlsplit(url)
-    if parts.scheme not in ("http", "https"):
-        raise ValueError("only http/https URLs are allowed")
-    host = parts.hostname
-    if not host:
-        raise ValueError("the URL has no host")
-    try:
-        infos = await asyncio.to_thread(
-            socket.getaddrinfo, host, parts.port or 0, 0, socket.SOCK_STREAM
-        )
-    except OSError as exc:
-        raise ValueError("the host could not be resolved") from exc
-    addresses = {info[4][0] for info in infos}
-    if not addresses:
-        raise ValueError("the host could not be resolved")
-    for addr in addresses:
-        try:
-            ip = ipaddress.ip_address(addr)
-        except ValueError as exc:
-            raise ValueError("the host resolved to an invalid address") from exc
-        if not ip.is_global or ip.is_multicast or ip.is_reserved:
-            raise ValueError("the URL points at a non-public address")
-
-
 class WebResearchConnector(InternalTool):
     """The ``search`` / ``fetch`` / ``read`` tool group. ``search`` is BYOM-keyed; rest keyless."""
+
+    #: outer hard timeout (InternalTool wrapper); sits ABOVE the per-request fetch timeout so a
+    #: single slow hop surfaces FETCH_UNREACHABLE rather than the wrapper's generic TIMEOUT.
+    timeout_s: float = _OUTER_TIMEOUT_S
 
     #: injectable httpx transport for tests (None → real network)
     transport: httpx.AsyncBaseTransport | None = None
@@ -190,14 +168,19 @@ class WebResearchConnector(InternalTool):
         current = url
         resp: httpx.Response | None = None
         async with httpx.AsyncClient(
-            headers=headers, timeout=_TIMEOUT_S, transport=self.transport, follow_redirects=False
+            headers=headers,
+            timeout=_FETCH_TIMEOUT_S,
+            transport=self.transport,
+            follow_redirects=False,
         ) as client:
             for _ in range(_MAX_REDIRECTS + 1):
-                try:
-                    await _assert_public_url(current)
-                except ValueError as exc:
+                # Screen every hop through the shared SSRF egress gate BEFORE requesting it; manual
+                # redirects keep a 3xx from steering the fetch onto an internal/metadata target.
+                if not await egress_allowed(current):
                     return ExecutionResult(
-                        success=False, error_message=str(exc), error_type="UNSAFE_URL"
+                        success=False,
+                        error_message="the URL is not an allowed public target",
+                        error_type="UNSAFE_URL",
                     )
                 try:
                     resp = await client.get(current)
