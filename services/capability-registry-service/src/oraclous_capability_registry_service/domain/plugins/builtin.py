@@ -639,3 +639,38 @@ class RestConnectorPlugin(_ConnectorToolPlugin):
         },
     }
     OUTPUT_SCHEMA = {"type": "object"}
+
+
+@plugin_registry.register
+class SendToDraftsPlugin(_ConnectorToolPlugin):
+    """Delivery SINK (#489 / ADR-039 D1) — bound as ``core/send-to-drafts@1.0.0``. The ``send`` op
+    records a delivery as a DRAFT (never published) on the org Execution row. The structural
+    boundary: a generator can only deliver through this declared, ceiling-gated sink, and the sink
+    cannot send — an external publish is a separate human-gated step. Keyless, content-capped."""
+
+    NAME = "Send to Drafts"  # slug ``send-to-drafts`` MUST match the ref's name slug
+    CATEGORY = "DELIVERY"
+    DESCRIPTION = (
+        "Record a delivery (channel + content) as a DRAFT on the org drafts queue. This sink only "
+        "drafts — it never sends or publishes; an external send is a separate human-gated step."
+    )
+    TYPE = "INTERNAL"
+    TAGS = ["delivery", "sink", "drafts", "notification"]
+    CAPABILITIES = [
+        {
+            "name": "send",
+            "description": "Record a delivery as a DRAFT (never published).",
+            "parameters": {"channel": "str", "content": "str", "recipient": "str"},
+        },
+    ]
+    CREDENTIAL_REQUIREMENTS: list[dict] = []  # keyless; drafts only, no external credential
+    INPUT_SCHEMA = {
+        "type": "object",
+        "required": ["channel", "content"],
+        "properties": {
+            "channel": {"type": "string", "enum": ["email", "slack", "notification", "webhook"]},
+            "content": {"type": "string", "minLength": 1},
+            "recipient": {"type": "string"},
+        },
+    }
+    OUTPUT_SCHEMA = {"type": "object"}

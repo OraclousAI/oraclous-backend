@@ -39,6 +39,9 @@ from oraclous_capability_registry_service.domain.connectors.recall_memory import
 from oraclous_capability_registry_service.domain.connectors.script_ingestion import (
     ScriptIngestionConnector,
 )
+from oraclous_capability_registry_service.domain.connectors.send_to_drafts import (
+    SendToDraftsConnector,
+)
 from oraclous_capability_registry_service.domain.connectors.web_research import (
     WebResearchConnector,
 )
@@ -56,6 +59,7 @@ from oraclous_capability_registry_service.domain.plugins.builtin import (
     RecallMemoryPlugin,
     RestConnectorPlugin,
     ScriptIngestionPlugin,
+    SendToDraftsPlugin,
     WebResearchPlugin,
 )
 
@@ -80,6 +84,7 @@ _EXECUTORS: dict[str, type[BaseToolExecutor]] = {
     ScriptIngestionPlugin.plugin_id(): ScriptIngestionConnector,
     LibraryGroupPlugin.plugin_id(): LibraryGroupExecutor,
     RestConnectorPlugin.plugin_id(): GenericRestConnector,
+    SendToDraftsPlugin.plugin_id(): SendToDraftsConnector,
 }
 
 
