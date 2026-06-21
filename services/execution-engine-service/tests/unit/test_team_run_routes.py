@@ -71,17 +71,43 @@ async def test_post_team_run_returns_202_queued_and_calls_create() -> None:
     assert svc.created == [{"kind": "team"}]  # the route handed the body to the service
 
 
-async def test_post_team_run_maps_teamrunerror_to_its_http_status() -> None:
+async def test_post_team_run_422_emits_structured_detail_for_the_gateway() -> None:
+    # #483: a 422 TeamRunError must surface a STRUCTURED detail ([{loc,type,msg}]) so the gateway
+    # maps it to VALIDATION_FAILED (field=body, issue=<type>), not the misleading MALFORMED_REQUEST
+    # a free-string detail falls back to. The gateway drops the value-reflecting msg.
     class BadService:
         async def create(self, *args: Any, **kwargs: Any) -> EngineTeamRun:
-            raise TeamRunError("manifest is not a Team Harness", 422)
+            raise TeamRunError(
+                "sub_harness for 'x' exceeds its tools ceiling: …",
+                422,
+                error_type="ceiling_exceeded",
+            )
 
     async with await _client(BadService()) as c:
         resp = await c.post(
             "/v1/engine/team-runs",
             json={"manifest": {}, "sub_harnesses": {}, "gate_decisions": {}},
         )
-    assert resp.status_code == 422  # TeamRunError(status) -> HTTPException(status), not a 500
+    assert resp.status_code == 422, resp.text
+    detail = resp.json()["detail"]
+    assert isinstance(detail, list) and len(detail) == 1, detail  # the Pydantic-shaped list
+    assert detail[0]["loc"] == ["body"] and detail[0]["type"] == "ceiling_exceeded", detail
+    assert "msg" in detail[0]  # the gateway extracts loc+type only, dropping the value-bearing msg
+
+
+async def test_post_team_run_non_422_keeps_string_detail() -> None:
+    # a non-422 (e.g. 403) already maps to the right canonical code — keep the plain string detail.
+    class BadService:
+        async def create(self, *args: Any, **kwargs: Any) -> EngineTeamRun:
+            raise TeamRunError("authenticated principal has no organisation scope", 403)
+
+    async with await _client(BadService()) as c:
+        resp = await c.post(
+            "/v1/engine/team-runs",
+            json={"manifest": {}, "sub_harnesses": {}, "gate_decisions": {}},
+        )
+    assert resp.status_code == 403
+    assert isinstance(resp.json()["detail"], str)  # string detail, not the structured list
 
 
 async def test_get_tree_returns_root_and_children() -> None:  # ADR-037 D3 / #471
