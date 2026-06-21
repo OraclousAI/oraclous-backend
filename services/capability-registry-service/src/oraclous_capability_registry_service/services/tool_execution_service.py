@@ -117,10 +117,23 @@ class ToolExecutionService:
                     credential_id=mappings.get(cast("str", req.get("type"))),
                 )
             except CredentialResolutionError as exc:
+                # O1 "no auth-prompt wall" (ADR-039): a satisfied requirement dispatches
+                # silently; a missing one fails closed with a typed, leak-safe needs_credential
+                # token so the caller knows EXACTLY which credential to onboard — requirement_id
+                # + provider ONLY, NEVER a value or credential_id (#483 envelope discipline).
+                # The store (POST /credentials/) + resolve path are already built; this completes
+                # the signal on the miss so the user can paste the key once and re-run.
                 raise ExecutionNotReadyError(
                     str(exc),
                     error_code=exc.error_code,
-                    detail={"login_url": exc.login_url, "missing_scopes": exc.missing_scopes},
+                    detail={
+                        "needs_credential": {
+                            "requirement_id": req.get("type"),
+                            "provider": req.get("provider"),
+                        },
+                        "login_url": exc.login_url,
+                        "missing_scopes": exc.missing_scopes,
+                    },
                 ) from exc
             credentials[resolved.credential_type] = resolved.payload
             credential_refs.append(
