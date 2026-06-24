@@ -175,3 +175,47 @@ def test_handoff_envelope_carries_an_optional_source_layer_default_none() -> Non
     assert (
         HandoffEnvelope(from_role="a", to_role="b", source_layer="drafts").source_layer == "drafts"
     )
+
+
+# ------------------------------------------------- read-side tier ranking (#514 read enforcement)
+
+
+def _hit(name: str, path: str) -> dict:
+    return {"name": name, "path": path}
+
+
+def test_a_canonical_hit_outranks_a_lower_tier_hit_regardless_of_input_order() -> None:
+    """The read acceptance: a bible-tier hit outranks a drafts-tier hit (DEMOTE, not drop)."""
+    from oraclous_ohm.precedence_resolution import rank_hits_by_precedence
+
+    hits = [_hit("draft", "drafts/ch1.md"), _hit("canon", "bible/canon.md")]
+    ranked = rank_hits_by_precedence(hits, lambda h: h["path"], _ORDER)
+    assert [h["name"] for h, _ in ranked] == ["canon", "draft"]  # bible first
+    assert [tier for _, tier in ranked] == ["bible", "drafts"]  # each paired with its tier
+    assert all(h in hits for h, _ in ranked)  # nothing dropped — demoted, still present
+
+
+def test_a_derived_graph_hit_is_demoted_below_every_file_tier_by_default() -> None:
+    from oraclous_ohm.precedence_resolution import rank_hits_by_precedence
+
+    hits = [_hit("graph", "scratch/auto.md"), _hit("canon", "bible/canon.md")]
+    ranked = rank_hits_by_precedence(hits, lambda h: h["path"], _ORDER)
+    assert [h["name"] for h, _ in ranked] == ["canon", "graph"]  # graph (derived) ranks last
+    assert [tier for _, tier in ranked] == ["bible", "graph"]
+
+
+def test_graph_authoritative_lifts_a_graph_hit_above_a_file_tier_when_declared() -> None:
+    from oraclous_ohm.precedence_resolution import rank_hits_by_precedence
+
+    hits = [_hit("canon", "bible/canon.md"), _hit("graph", "scratch/auto.md")]
+    ranked = rank_hits_by_precedence(hits, lambda h: h["path"], _ORDER, graph_authoritative=True)
+    assert [h["name"] for h, _ in ranked] == ["graph", "canon"]  # graph wins only when declared
+
+
+def test_score_order_is_preserved_within_a_tier_stable_sort() -> None:
+    """Two same-tier hits keep their input (score) order — the ranking is a stable demotion."""
+    from oraclous_ohm.precedence_resolution import rank_hits_by_precedence
+
+    hits = [_hit("d1", "drafts/a.md"), _hit("b1", "bible/x.md"), _hit("d2", "drafts/b.md")]
+    ranked = rank_hits_by_precedence(hits, lambda h: h["path"], _ORDER)
+    assert [h["name"] for h, _ in ranked] == ["b1", "d1", "d2"]  # bible up; d1 before d2 preserved
