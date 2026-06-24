@@ -24,6 +24,7 @@ from oraclous_ohm.aggregate import aggregate_reduce
 from oraclous_ohm.envelope import HandoffEnvelope, build_handoff
 from oraclous_ohm.errors import OHMError
 from oraclous_ohm.manifest import OHMManifest, OHMMember, OHMOrchestration, OHMRunIf
+from oraclous_ohm.precedence_resolution import clamp_member_source
 
 # Dispatch one member (+ optional fan-out item) given its inbound hand-offs -> output payload.
 DispatchFn = Callable[[OHMMember, list[HandoffEnvelope], Any], Awaitable[Any]]
@@ -127,6 +128,14 @@ async def run_team(
         manifest.orchestration.termination.max_wall_seconds if manifest.orchestration else None
     )
     _deadline = time.monotonic() + _max_wall if _max_wall else None
+    # #514 Hierarchy-of-Truth: when the manifest declares a precedence order, a member's hand-off is
+    # fail-closed to the non-canonical FLOOR tier — a member can never inject a canonical
+    # (rules/bible/toc) claim through a hand-off. No precedence declared → tagging is off (None).
+    _floor_tier: str | None = (
+        clamp_member_source(None, manifest.precedence.order)
+        if manifest.precedence is not None and manifest.precedence.order
+        else None
+    )
 
     async def run_member(role: str) -> None:
         if role in done:  # already executed in a prior drive — reuse, do not dispatch again
@@ -152,6 +161,8 @@ async def run_team(
                 continue
             payload = produced if isinstance(produced, dict) else {"output": produced}
             env = build_handoff(by_role[dep], member, payload, objective_slice=member.subgoal or "")
+            if _floor_tier is not None:  # precedence declared → tag the hand-off's (clamped) tier
+                env = env.model_copy(update={"source_layer": _floor_tier})
             inbound.append(env)
             envelopes.append(env)
         if member.fan_out is not None:
