@@ -50,7 +50,8 @@ _RETURN_FIELDS = (
     "m.base_importance AS base_importance, m.importance_score AS importance_score, "
     "m.access_count AS access_count, m.confidence AS confidence, m.scope AS scope, "
     "m.agent_id AS agent_id, m.session_id AS session_id, m.valid_from AS valid_from, "
-    "m.valid_to AS valid_to, m.ingested_at AS ingested_at, m.last_accessed_at AS last_accessed_at"
+    "m.valid_to AS valid_to, m.ingested_at AS ingested_at, m.last_accessed_at AS last_accessed_at, "
+    "m.team_id AS team_id"  # team-scope blackboard (#513): for the team's per-team read isolation
 )
 
 

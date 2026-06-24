@@ -40,6 +40,7 @@ class _RecordingHarness:
         trace_id: uuid.UUID | None = None,
         workspace_root: str | None = None,
         graph_id: str | None = None,
+        team_id: str | None = None,
     ) -> dict[str, Any]:
         self.calls.append({"graph_id": graph_id})
         return {"id": str(uuid.uuid4()), "status": "SUCCEEDED", "output": "ran"}

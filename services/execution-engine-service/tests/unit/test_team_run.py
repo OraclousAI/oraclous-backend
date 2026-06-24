@@ -45,6 +45,7 @@ class _FakeHarness:
         trace_id: uuid.UUID | None = None,
         workspace_root: str | None = None,
         graph_id: str | None = None,
+        team_id: str | None = None,
     ) -> dict[str, Any]:
         self.calls.append(
             {

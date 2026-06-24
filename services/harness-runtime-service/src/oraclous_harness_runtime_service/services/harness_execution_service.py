@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 import yaml
@@ -55,7 +56,7 @@ from oraclous_harness_runtime_service.repositories.assignment_repository import 
 from oraclous_harness_runtime_service.repositories.checkpoint_repository import CheckpointRepository
 from oraclous_harness_runtime_service.repositories.execution_repository import ExecutionRepository
 from oraclous_harness_runtime_service.services.broker_client import BrokerClient, BrokerError
-from oraclous_harness_runtime_service.services.memory_client import MemoryWriter
+from oraclous_harness_runtime_service.services.memory_client import MemoryReader, MemoryWriter
 from oraclous_harness_runtime_service.services.registry_client import RegistryClient, RegistryError
 
 logger = logging.getLogger(__name__)
@@ -160,6 +161,7 @@ class HarnessExecutionService:
         llm_allow_private: bool,
         max_iterations: int,
         memory: MemoryWriter | None = None,
+        memory_reader: MemoryReader | None = None,
     ) -> None:
         self._registry = registry
         self._broker = broker
@@ -178,6 +180,9 @@ class HarnessExecutionService:
         # The post-run memory hook (#332 / ADR-027 §5). None when HARNESS_MEMORY_WRITES is off
         # (the code default) — flag off means ZERO memory calls, not a no-op writer.
         self._memory = memory
+        # The team-scope blackboard READ (#513). None → no in-loop team-memory injection (a
+        # single-agent run, or memory off). Fail-soft, so a present reader never risks the run.
+        self._memory_reader = memory_reader
 
     async def execute(
         self,
@@ -191,6 +196,7 @@ class HarnessExecutionService:
         trace_id: uuid.UUID | None = None,
         workspace_root: str | None = None,
         graph_id: str | None = None,
+        team_id: str | None = None,
     ) -> HarnessExecution:
         # Fail-closed tenancy (ADR-006/T1-M1): org is the principal's ONLY, never the manifest's.
         if principal.organisation_id is None:
@@ -230,6 +236,20 @@ class HarnessExecutionService:
         execution_id = uuid.uuid4()
         resource = f"harness_execution:{execution_id}"
         prompt = manifest.primary_prompt()
+        # team-scope blackboard READ (#513): when a team member is bound to a graph and a reader
+        # is wired, give the loop a fail-soft fetch of the team's current memory (the adopted graph,
+        # scope=team for THIS team) to inject before the first LLM turn — concurrent + cross-run
+        # visibility. None otherwise → the loop reasons exactly as before (zero behaviour change).
+        memory_context: Callable[[], Awaitable[str | None]] | None = None
+        reader = self._memory_reader
+        if reader is not None and team_id is not None and graph_id is not None:
+            bound_graph, bound_team, bound_query = graph_id, team_id, user_input
+
+            async def memory_context() -> str | None:
+                return await reader.team_context(
+                    graph_id=bound_graph, team_id=bound_team, query=bound_query
+                )
+
         try:
             result = await run_tool_use_loop(
                 llm=llm,
@@ -238,6 +258,7 @@ class HarnessExecutionService:
                 tool_specs=tool_specs,
                 dispatch=dispatch,
                 policy=envelope,
+                memory_context=memory_context,
             )
         finally:
             await self._aclose_llm(llm)
@@ -315,7 +336,11 @@ class HarnessExecutionService:
                 output=result.output,
                 tool_names=_tool_step_names(result.steps),
                 execution_id=execution_id,
-                graph_id=_manifest_graph_context(manifest),
+                # graph-adopt (#513): the run's BOUND graph (the user's adopted graph) is the team
+                # blackboard — write there, never resolve_default_graph (no second graph). Fall back
+                # to the manifest graph context only when the run carries no binding (legacy).
+                graph_id=graph_id or _manifest_graph_context(manifest),
+                team_id=team_id,
             )
         except Exception:  # noqa: BLE001 — the run is done; the memory hook can never undo it
             logger.warning("post-run memory hook failed; run unaffected")
@@ -566,14 +591,17 @@ class HarnessExecutionService:
         tool_names: list[str],
         execution_id: uuid.UUID,
         graph_id: str | None,
+        team_id: str | None = None,
         human_feedback: str | None = None,
     ) -> None:
         """The flag-gated, fail-soft post-run memory hook (#332 / ADR-027 §5).
 
         No writer (flag off) → ZERO calls. A completed run (SUCCEEDED/FAILED) schedules one
         episodic outcome memory; explicit human feedback additionally schedules a procedural one.
-        Scheduling is fire-and-forget (≈2s-timeout detached tasks) and everything is swallowed —
-        this method can never raise into the run path.
+        A team run (``team_id`` set, #513) writes them ``scope=team`` under the team identity so the
+        team's members + future runs share the blackboard; else ``scope=agent``. Scheduling is
+        fire-and-forget (≈2s-timeout detached tasks) and everything is swallowed — this method can
+        never raise into the run path.
         """
         if self._memory is None or status not in _MEMORY_TERMINAL_STATUSES:
             return
@@ -587,6 +615,7 @@ class HarnessExecutionService:
                 tool_names=tool_names,
                 execution_id=execution_id,
                 graph_id=graph_id,
+                team_id=team_id,
             )
             if human_feedback and human_feedback.strip():
                 self._memory.schedule_human_feedback(
@@ -595,6 +624,7 @@ class HarnessExecutionService:
                     feedback=human_feedback,
                     execution_id=execution_id,
                     graph_id=graph_id,
+                    team_id=team_id,
                 )
         except Exception:  # noqa: BLE001 — belt-and-braces; the writer already swallows everything
             logger.warning("post-run memory hook failed to schedule; run unaffected")

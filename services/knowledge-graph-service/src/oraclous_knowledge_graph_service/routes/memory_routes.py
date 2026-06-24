@@ -92,6 +92,7 @@ async def get_memory_context(
     scope: str | None = Query(default=None, description="Comma-separated scopes"),
     max_tokens: int = Query(default=2000, ge=100, le=8000),
     include_types: str | None = Query(default=None, description="Comma-separated memory types"),
+    team_id: str | None = Query(default=None, description="Team identity for team-scope isolation"),
 ) -> MemoryContext:
     scopes = [s.strip() for s in scope.split(",") if s.strip()] if scope else None
     types = [t.strip() for t in include_types.split(",") if t.strip()] if include_types else None
@@ -102,6 +103,7 @@ async def get_memory_context(
             scopes=scopes,
             max_tokens=max_tokens,
             include_types=types,
+            team_id=team_id,
         )
     except GraphNotVisible:
         raise _GRAPH_NOT_FOUND from None

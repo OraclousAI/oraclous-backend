@@ -144,21 +144,31 @@ class MemoryService:
 
     @staticmethod
     def _extra_properties(req: MemoryCreate) -> dict[str, Any]:
-        """The closed type-specific property set (legacy verbatim; bound params downstream)."""
+        """The closed type-specific property set (legacy verbatim; bound params downstream).
+
+        Team-scope blackboard (#513): a ``scope=team`` memory carries its ``team_id`` so the team's
+        reads can isolate ITS blackboard even when teams share a graph (``SET m += $extra``)."""
         if req.type is MemoryType.EPISODIC:
-            return {"event_type": req.event_type or "interaction", "user_id": req.user_id or ""}
-        if req.type is MemoryType.SEMANTIC:
-            return {
+            extra: dict[str, Any] = {
+                "event_type": req.event_type or "interaction",
+                "user_id": req.user_id or "",
+            }
+        elif req.type is MemoryType.SEMANTIC:
+            extra = {
                 "subject": req.subject or "",
                 "predicate": req.predicate or "",
                 "object": req.object or "",
                 "is_negation": req.is_negation,
             }
-        return {
-            "category": req.category or "preference",
-            "trigger_pattern": req.trigger_pattern or "",
-            "times_applied": 0,
-        }
+        else:
+            extra = {
+                "category": req.category or "preference",
+                "trigger_pattern": req.trigger_pattern or "",
+                "times_applied": 0,
+            }
+        if req.team_id:
+            extra["team_id"] = req.team_id
+        return extra
 
     async def store(self, *, graph_id: uuid.UUID, req: MemoryCreate) -> MemoryCreateResponse:
         repo = await self._visible_repo(graph_id)
@@ -367,8 +377,13 @@ class MemoryService:
         scopes: list[str] | None = None,
         max_tokens: int = 2000,
         include_types: list[str] | None = None,
+        team_id: str | None = None,
     ) -> MemoryContext:
-        """Token-budgeted '## Relevant Memory' block (legacy assembly verbatim), hybrid-ranked."""
+        """Token-budgeted '## Relevant Memory' block (legacy assembly verbatim), hybrid-ranked.
+
+        Team-scope blackboard (#513): when ``team_id`` is given, the candidates are isolated
+        to THAT team's memories — so a team reads only ITS blackboard even when teams share a graph
+        (the read the harness loop injects with ``scope=team`` + ``team_id``)."""
         repo = await self._visible_repo(graph_id)
         t0 = time.monotonic()
         now = datetime.now(UTC)
@@ -394,6 +409,8 @@ class MemoryService:
             ):
                 merged = candidates.setdefault(row["memory_id"], row)
                 merged["vector_score"] = row["vector_score"]
+        if team_id is not None:  # team-scope isolation (#513): keep only THIS team's memories
+            candidates = {mid: c for mid, c in candidates.items() if c.get("team_id") == team_id}
         ranked = self._rank(candidates, hybrid=qvec is not None, now=now)
 
         sections: dict[str, list[str]] = {"semantic": [], "procedural": [], "episodic": []}

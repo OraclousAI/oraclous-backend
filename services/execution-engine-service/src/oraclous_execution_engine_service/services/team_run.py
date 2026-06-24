@@ -38,6 +38,7 @@ class _Harness(Protocol):
         trace_id: uuid.UUID | None = ...,
         workspace_root: str | None = ...,
         graph_id: str | None = ...,
+        team_id: str | None = ...,
     ) -> dict[str, Any]: ...
 
 
@@ -65,6 +66,7 @@ def make_harness_dispatch(
     on_cost: Callable[[int], None] | None = None,
     workspace_root: str | None = None,
     graph_id: str | None = None,
+    team_id: str | None = None,
 ) -> DispatchFn:
     """Build a ``run_team`` dispatch that runs each member as a real harness execution.
 
@@ -93,6 +95,10 @@ def make_harness_dispatch(
             # graph-ingest / find-similar) target — set on each instance's config so the model
             # never invents a UUID. org-scoped at create (cross-org rejected).
             graph_id=graph_id,
+            # team-scope blackboard (#513): the stable team identity (team-manifest id) every member
+            # shares — the harness writes/reads team-scope memory under it, so concurrent members +
+            # future runs of the same team see one blackboard (the adopted-graph world-model).
+            team_id=team_id,
         )
         status = result.get("status")
         if status != "SUCCEEDED":  # fail-closed — a member's harness must succeed
@@ -130,6 +136,9 @@ async def run_team_harness(
     human gate does not re-dispatch already-finished members (their side effects fire once).
     ``trace_id``/``parent_execution_id``/``on_child`` thread + collect the run-tree (#471);
     ``on_cost`` accumulates the run's RAW token cost (#472)."""
+    # team-scope blackboard (#513): the STABLE team identity is the team-manifest id — derived here
+    # (not a separate binding) + threaded to every member so they share one team-scope memory.
+    team_id = str(manifest.metadata.id)
     dispatch = make_harness_dispatch(
         harness,
         sub_harnesses or {},
@@ -139,5 +148,6 @@ async def run_team_harness(
         on_cost=on_cost,
         workspace_root=workspace_root,
         graph_id=graph_id,
+        team_id=team_id,
     )
     return await run_team(manifest, dispatch, gate_decisions=gate_decisions, completed=completed)

@@ -32,7 +32,7 @@ from oraclous_harness_runtime_service.services.broker_client import BrokerClient
 from oraclous_harness_runtime_service.services.harness_execution_service import (
     HarnessExecutionService,
 )
-from oraclous_harness_runtime_service.services.memory_client import MemoryWriter
+from oraclous_harness_runtime_service.services.memory_client import MemoryReader, MemoryWriter
 from oraclous_harness_runtime_service.services.registry_client import RegistryClient
 from oraclous_harness_runtime_service.services.spend_service import SpendService
 
@@ -182,6 +182,23 @@ def get_memory_writer(
     )
 
 
+def get_memory_reader(
+    principal: Annotated[Principal, Depends(get_principal)],
+) -> MemoryReader | None:
+    """The team-scope blackboard READER (#513 / ADR-027 reshape) — gated by the SAME
+    ``HARNESS_MEMORY_WRITES`` flag as the writer (memory off ⇒ no read injection). Carries the
+    caller's verified identity (ADR-018) so KGS scopes the team-memory read to the same tenant.
+    Fail-soft, so a wired reader never risks a run."""
+    settings = get_settings()
+    if not settings.memory_writes:
+        return None
+    return MemoryReader(
+        base_url=settings.knowledge_graph_url,
+        headers=build_downstream_headers(principal, settings),
+        timeout=settings.memory_write_timeout,
+    )
+
+
 def get_harness_service(
     registry: Annotated[RegistryClient, Depends(get_registry_client)],
     broker: Annotated[BrokerClient, Depends(get_broker_client)],
@@ -191,6 +208,7 @@ def get_harness_service(
     provenance: Annotated[ProvenanceCollector, Depends(get_provenance)],
     trust: Annotated[TrustStore, Depends(get_trust_store)],
     memory: Annotated[MemoryWriter | None, Depends(get_memory_writer)],
+    memory_reader: Annotated[MemoryReader | None, Depends(get_memory_reader)],
 ) -> HarnessExecutionService:
     settings = get_settings()
     return HarnessExecutionService(
@@ -209,6 +227,7 @@ def get_harness_service(
         llm_allow_private=settings.allow_private_llm_targets,
         max_iterations=settings.max_iterations,
         memory=memory,
+        memory_reader=memory_reader,
     )
 
 

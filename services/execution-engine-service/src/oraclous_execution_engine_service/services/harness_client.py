@@ -110,6 +110,7 @@ class HarnessClient:
         trace_id: uuid.UUID | None = None,
         workspace_root: str | None = None,
         graph_id: str | None = None,
+        team_id: str | None = None,
         timeout: float | None = None,  # noqa: ASYNC109 — forwarded to httpx, not an asyncio cancel
     ) -> dict[str, Any]:
         """Run a harness to completion/escalation and return its ``HarnessExecutionOut`` JSON.
@@ -141,6 +142,9 @@ class HarnessClient:
         # the graph tools (knowledge-retriever / graph-ingest / find-similar) target it.
         if graph_id is not None:
             body["graph_id"] = graph_id
+        # team-scope blackboard (#513): the team identity the harness writes/reads memory under.
+        if team_id is not None:
+            body["team_id"] = team_id
         kwargs: dict[str, Any] = {"json": body}
         if timeout is not None:
             kwargs["timeout"] = timeout

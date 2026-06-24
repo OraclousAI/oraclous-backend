@@ -65,6 +65,7 @@ async def execute_harness(
             trace_id=body.trace_id,
             workspace_root=body.workspace_root,
             graph_id=body.graph_id,
+            team_id=body.team_id,
         )
     except OHMError as exc:
         raise HTTPException(

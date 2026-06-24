@@ -54,6 +54,7 @@ class _FakeHarness:
         trace_id: uuid.UUID | None = None,
         workspace_root: str | None = None,
         graph_id: str | None = None,
+        team_id: str | None = None,
     ) -> dict[str, Any]:
         self.inputs.append(input_text)
         # #471: a real execution id per member → the engine records child_execution_ids (the tree).
