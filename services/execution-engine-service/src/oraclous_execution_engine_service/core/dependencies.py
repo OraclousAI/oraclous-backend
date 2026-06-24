@@ -34,6 +34,7 @@ from oraclous_execution_engine_service.repositories.roundtable_repository import
 from oraclous_execution_engine_service.repositories.schedule_repository import ScheduleRepository
 from oraclous_execution_engine_service.repositories.team_run_repository import TeamRunRepository
 from oraclous_execution_engine_service.services.activity_service import ActivityService
+from oraclous_execution_engine_service.services.graph_client import GraphClient
 from oraclous_execution_engine_service.services.harness_client import HarnessClient
 from oraclous_execution_engine_service.services.job_service import JobService
 from oraclous_execution_engine_service.services.roundtable_service import RoundtableService
@@ -217,12 +218,31 @@ def get_team_run_repository(request: Request) -> TeamRunRepository:
     return repo
 
 
+async def get_graph_client(
+    principal: Annotated[Principal, Depends(get_principal)],
+) -> AsyncIterator[GraphClient]:
+    # the request-path create validates a graph-bound run's graph_id org-scoped (#524) — forward the
+    # caller's identity so KGS scopes the GET to the same tenant (cross-org graph → 404 → rejected).
+    settings = get_settings()
+    client = GraphClient(
+        settings.knowledge_graph_url,
+        headers=build_downstream_headers(principal, settings),
+        timeout=settings.knowledge_graph_request_timeout,
+    )
+    try:
+        yield client
+    finally:
+        await client.aclose()
+
+
 def get_team_run_service(
     team_runs: Annotated[TeamRunRepository, Depends(get_team_run_repository)],
+    graphs: Annotated[GraphClient, Depends(get_graph_client)],
 ) -> TeamRunService:
     # the request path only validates/creates/advances + ENQUEUES; the worker drives the team
     # (run_tasks.drive_team_run_task), so a large team never blocks the request. No harness here.
-    return TeamRunService(team_runs=team_runs, enqueue=enqueue_team_run)
+    # `graphs` is the request-path KGS existence check for a graph-bound run's graph_id (#524).
+    return TeamRunService(team_runs=team_runs, enqueue=enqueue_team_run, graphs=graphs)
 
 
 PrincipalDep = Annotated[Principal, Depends(get_principal)]

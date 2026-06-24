@@ -50,6 +50,11 @@ class EngineTeamRun(BaseModel):
     # re-threads the SAME tree to the remaining members. Validated org-scoped at create (must be
     # under WORKSPACES_ROOT/<org>); NULL → the default per-org scratch sandbox (non-file-native).
     workspace_root: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # ── graph substrate (#524, ADR-040 Decision 7; additive, nullable) ─────────────────────────
+    # The team's bound graph (the trusted per-run input). Persisted so a resume past a gate re-binds
+    # the SAME graph to the remaining members. Validated org-scoped at create (must belong to the
+    # caller's org via KGS); NULL → the model supplies graph_id per call / KGS org-default graph.
+    graph_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     # ── run-tree correlation (ADR-037 Decision 3 / #471; additive, nullable) ──────────────────
     # root_execution_id is this run's tree root = the trace_id threaded to every member harness run
     # (minted = this run's id on first drive; STABLE across resume — read-if-NULL). The list

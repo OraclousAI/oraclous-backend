@@ -37,6 +37,7 @@ class _Harness(Protocol):
         parent_execution_id: uuid.UUID | None = ...,
         trace_id: uuid.UUID | None = ...,
         workspace_root: str | None = ...,
+        graph_id: str | None = ...,
     ) -> dict[str, Any]: ...
 
 
@@ -63,6 +64,7 @@ def make_harness_dispatch(
     on_child: Callable[[str], None] | None = None,
     on_cost: Callable[[int], None] | None = None,
     workspace_root: str | None = None,
+    graph_id: str | None = None,
 ) -> DispatchFn:
     """Build a ``run_team`` dispatch that runs each member as a real harness execution.
 
@@ -87,6 +89,10 @@ def make_harness_dispatch(
             # file-native blackboard (#518): the trusted per-run working tree every member's file
             # tools operate on in place (the harness sets it on each file-tool instance's config).
             workspace_root=workspace_root,
+            # graph substrate (#524): the per-run graph the graph tools (knowledge-retriever /
+            # graph-ingest / find-similar) target — set on each instance's config so the model
+            # never invents a UUID. org-scoped at create (cross-org rejected).
+            graph_id=graph_id,
         )
         status = result.get("status")
         if status != "SUCCEEDED":  # fail-closed — a member's harness must succeed
@@ -116,6 +122,7 @@ async def run_team_harness(
     on_child: Callable[[str], None] | None = None,
     on_cost: Callable[[int], None] | None = None,
     workspace_root: str | None = None,
+    graph_id: str | None = None,
 ) -> TeamRunResult:
     """Run a Team Harness member DAG, dispatching each member as a real harness execution.
 
@@ -131,5 +138,6 @@ async def run_team_harness(
         on_child=on_child,
         on_cost=on_cost,
         workspace_root=workspace_root,
+        graph_id=graph_id,
     )
     return await run_team(manifest, dispatch, gate_decisions=gate_decisions, completed=completed)

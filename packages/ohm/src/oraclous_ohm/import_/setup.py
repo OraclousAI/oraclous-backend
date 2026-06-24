@@ -18,7 +18,7 @@ from oraclous_ohm.import_._flags import ImportFlag
 from oraclous_ohm.import_.assemble import TeamAssembly, assemble_team
 from oraclous_ohm.import_.charter import CharterTeam, parse_charter
 from oraclous_ohm.import_.handoff import HandoffSpec, parse_handoff
-from oraclous_ohm.import_.mapping import map_agent_to_member, slugify
+from oraclous_ohm.import_.mapping import Substrate, map_agent_to_member, slugify
 from oraclous_ohm.import_.orchestrator import adapt_orchestrator_skill
 from oraclous_ohm.import_.parse import discover_agents, parse_agent_file
 from oraclous_ohm.import_.precedence import parse_precedence
@@ -144,9 +144,17 @@ def _fold_charter_pipeline(
 
 
 def import_setup(
-    path: str | Path, *, owner_organization_id: uuid.UUID, name: str | None = None
+    path: str | Path,
+    *,
+    owner_organization_id: uuid.UUID,
+    name: str | None = None,
+    substrate: Substrate = "graph",
 ) -> ImportResult:
-    """Discover a setup, run the importer, and return the team + O8 dry-run report."""
+    """Discover a setup, run the importer, and return the team + O8 dry-run report.
+
+    ``substrate`` selects the tool substrate (#509, ADR-040 Decision 7): the cloud-first default
+    ``"graph"`` remaps file tools onto the seeded graph capabilities; ``"file"`` keeps the sandbox
+    file tools for the parked local-single-tenant / file-native blackboard mode (#512/#518)."""
     root = Path(path)
     team_name = name or root.name
     flags: list[ImportFlag] = []
@@ -165,7 +173,10 @@ def import_setup(
         for agent_file in discover_agents(agents_dir):
             agent = parse_agent_file(agent_file)
             mapping = map_agent_to_member(
-                agent, owner_organization_id=owner_organization_id, skills_root=skills_root
+                agent,
+                owner_organization_id=owner_organization_id,
+                skills_root=skills_root,
+                substrate=substrate,
             )
             members.append(mapping.member)
             flags.extend(mapping.flags)

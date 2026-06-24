@@ -80,6 +80,11 @@ class Settings(BaseSettings):
     # 600s harness budget (a tool /execute is sub-second, never an LLM loop).
     capability_registry_url: str = "http://capability-registry-service:8000"
     capability_registry_request_timeout: float = 30.0
+    # the knowledge-graph-service owns graphs; a graph-bound team run (#524, ADR-040 Decision 7) is
+    # validated org-scoped at create by GETting the graph here (cross-org → KGS 404 → 422 fail-fast,
+    # not a confusing mid-run member failure). A read-only GET — sub-second, not an LLM loop.
+    knowledge_graph_url: str = "http://knowledge-graph-service:8000"
+    knowledge_graph_request_timeout: float = 30.0
     # the reaper times out a job stuck RUNNING longer than this (worker/DB blip after RUNNING). Set
     # ABOVE the Celery hard limit (3600s) so a healthy long run is never falsely reaped.
     running_lease_seconds: int = 3900

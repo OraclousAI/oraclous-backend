@@ -43,6 +43,10 @@ class ExecuteHarnessRequest(BaseModel):
     # file-tool instance's config so the member's file tools operate in place on it (org-confined by
     # the capability-registry sandbox guard, #517). None → the default per-org scratch sandbox.
     workspace_root: str | None = None
+    # graph substrate (#524): the team run's bound graph. The harness sets it on each instance's
+    # config so the graph tools (knowledge-retriever / graph-ingest / find-similar) target it
+    # (org-scoped at create + by KGS RLS). None → the model supplies graph_id / KGS org-default.
+    graph_id: str | None = None
 
     @model_validator(mode="after")
     def _exactly_one_manifest(self) -> ExecuteHarnessRequest:

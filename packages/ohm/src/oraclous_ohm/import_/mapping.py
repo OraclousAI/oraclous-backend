@@ -12,6 +12,7 @@ from __future__ import annotations
 import re
 import uuid
 from pathlib import Path
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -41,6 +42,33 @@ _MODEL_TIER_BINDINGS: dict[str, str] = {
 # Conservative in-body human-gate markers (ADR-034 §6, conservative bias). kind:human is #408; here
 # we only DETECT and flag, so a missed gate can't silently become an agent member.
 _HUMAN_GATE_MARKERS = ("human-or-outsource", "the author uploads", "author uploads", "human gate")
+
+Substrate = Literal["graph", "file"]
+
+# Cloud-first / graph-primary (#509, ADR-040 Decision 7): under the default graph substrate an
+# imported team's declared FILE tools are remapped onto the seeded GRAPH capabilities — members
+# RETRIEVE FROM / WRITE TO the graph, not a server-side file sandbox. Only the capability **ref**
+# changes (the registry resolves by slug, dropping @version); the binding (the tool name) is
+# preserved, so the member's tools ceiling (ADR-032, binding-based) stays valid and the model keeps
+# calling Read/Write — they just hit graph retrieval / ingest. Bash stays the sandbox exec fallback
+# (#507); a non-file tool keeps its synthesized core/<slug>@1 ref. ``substrate="file"`` is the
+# explicit opt-out for the parked local-single-tenant mode (#512/#518), kept as-is.
+_GRAPH_REMAP: dict[str, str] = {
+    "Read": "core/knowledge-retriever@1.0.0",
+    "Grep": "core/knowledge-retriever@1.0.0",
+    "Glob": "core/find-similar@1.0.0",
+    "Write": "core/graph-ingest@1.0.0",
+    "Edit": "core/graph-ingest@1.0.0",
+}
+
+
+def _capability_ref(tool: str, substrate: Substrate) -> str:
+    """The sub-harness capability ref for a declared tool. Under the graph substrate a file tool
+    remaps onto its seeded graph capability (real ref, not provisional); otherwise the tool's ref is
+    the provisional synthesized ``core/<slug>@1`` (surfaced as F-TOOLREF for the O8 dry-run)."""
+    if substrate == "graph" and tool in _GRAPH_REMAP:
+        return _GRAPH_REMAP[tool]
+    return f"core/{slugify(tool)}@1"
 
 
 class AgentMapping(BaseModel):
@@ -77,14 +105,18 @@ def build_subharness(
     model: OHMModel | None = None,
     description: str | None = None,
     source: str = "<import>",
+    substrate: Substrate = "graph",
 ) -> OHMManifest:
     """Build a loadable sub-harness via the actors path (entrypoint -> a 'primary' agent actor).
 
     A tool-less agent is valid (reasoning-only) — the actor entrypoint loads without capabilities,
     so this never leans on an arbitrary tool to satisfy the loader. ``tools`` populate the sub-
-    harness ``capabilities[]``; the parent member's ``tools`` ceiling is set separately.
+    harness ``capabilities[]``; the parent member's ``tools`` ceiling is set separately. Under the
+    default graph ``substrate`` file tools remap onto the seeded graph capabilities (#509).
     """
-    capabilities = [OHMCapability(ref=f"core/{slugify(t)}@1", binding=t) for t in (tools or [])]
+    capabilities = [
+        OHMCapability(ref=_capability_ref(t, substrate), binding=t) for t in (tools or [])
+    ]
     prompts = [OHMPrompt(role="primary", source="inline", body=body)] if body.strip() else []
     return OHMManifest(
         ohm_version="1.0",
@@ -109,6 +141,7 @@ def map_agent_to_member(
     *,
     owner_organization_id: uuid.UUID,
     skills_root: str | Path | None = None,
+    substrate: Substrate = "graph",
 ) -> AgentMapping:
     """Map a parsed agent to an ``OHMMember`` + generated sub-harness (ADR-034 §2).
 
@@ -161,11 +194,23 @@ def map_agent_to_member(
     if not tools:
         flag("F-NOTOOLS", "info", "agent declares no tools; reasoning-only sub-harness")
     else:
-        flag(
-            "F-TOOLREF",
-            "confirm",
-            f"{len(tools)} tool ref(s) synthesized core/<name>@1 (no registry)",
-        )
+        # under the graph substrate (#509) the file tools remap onto REAL seeded graph caps — only
+        # the still-provisional synthesized core/<slug>@1 refs warrant F-TOOLREF; a remapped tool is
+        # surfaced as F-GRAPHTOOL so the O8 dry-run shows the substrate decision (flag-not-guess).
+        remapped = [t for t in tools if _capability_ref(t, substrate) != f"core/{slugify(t)}@1"]
+        synthesized = [t for t in tools if t not in remapped]
+        if synthesized:
+            flag(
+                "F-TOOLREF",
+                "confirm",
+                f"{len(synthesized)} tool ref(s) synthesized core/<name>@1 (no registry)",
+            )
+        if remapped:
+            flag(
+                "F-GRAPHTOOL",
+                "info",
+                f"{len(remapped)} file tool(s) remapped onto seeded graph capabilities (#509)",
+            )
 
     model: OHMModel | None = None
     if not agent.model:
@@ -226,5 +271,6 @@ def map_agent_to_member(
         model=model,
         description=(agent.description or None),
         source=agent.source,
+        substrate=substrate,
     )
     return AgentMapping(member=member, sub_harness=sub_harness, flags=flags)

@@ -106,7 +106,9 @@ def test_a_team_of_agents_runs_on_the_users_own_model_through_the_gateway(
     # 2) import a real multi-agent studio, then point EVERY member's model at the user's credential
     nonce = uuid.uuid4().hex[:10]
     _echo_studio(tmp_path, nonce)
-    imported = import_setup(tmp_path, owner_organization_id=uuid.uuid4(), name="studio")
+    imported = import_setup(
+        tmp_path, owner_organization_id=uuid.uuid4(), name="studio", substrate="file"
+    )
     assert imported.manifest is not None
     sub_harnesses = {role: dict(sub) for role, sub in imported.sub_harnesses.items()}
     assert set(sub_harnesses) == {"researcher", "writer"}

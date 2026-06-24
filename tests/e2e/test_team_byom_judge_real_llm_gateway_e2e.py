@@ -106,7 +106,9 @@ def test_team_run_is_judged_by_the_users_own_model_through_the_gateway(
     #    user's credential, with a success_criteria the echoed nonce verifiably satisfies
     nonce = uuid.uuid4().hex[:10]
     _echo_studio(tmp_path, nonce)
-    imported = import_setup(tmp_path, owner_organization_id=uuid.uuid4(), name="studio")
+    imported = import_setup(
+        tmp_path, owner_organization_id=uuid.uuid4(), name="studio", substrate="file"
+    )
     assert imported.manifest is not None
     sub_harnesses = {role: dict(sub) for role, sub in imported.sub_harnesses.items()}
     for sub in sub_harnesses.values():
