@@ -69,15 +69,27 @@ def _batch_ingest(c: httpx.Client, graph_id: str, root: Path) -> int:
 
 
 def _search_hit(c: httpx.Client, graph_id: str, query: str) -> bool:
-    """One fulltext search through the gateway — True iff the query string appears in the hits."""
-    r = c.post("/v1/search/fulltext", json={"query": query, "graph_id": graph_id, "top_k": 10})
+    """One HYBRID search through the gateway — True iff the query string appears in the hits.
+
+    HYBRID (not fulltext): on a fresh graph's lexical index (HashingEmbedder), ``fulltext`` needs
+    near-exact term matching and misses a marker on a cold stack, while ``hybrid`` surfaces it — the
+    path #527's graph-retrieval e2e proved green on CI's cold stack."""
+    r = c.post("/v1/search/hybrid", json={"query": query, "graph_id": graph_id, "top_k": 10})
     assert r.status_code == 200, r.text
     return query in r.text
 
 
+def _landed(c: httpx.Client, graph_id: str, paths: set[str]) -> bool:
+    """Index-INDEPENDENT 'landed' check: every path is a processed document (the job list), so the
+    content is in the graph even before the search index catches up."""
+    r = c.get(f"/api/v1/graphs/{graph_id}/documents")
+    assert r.status_code == 200, r.text
+    return paths <= {d.get("filename") for d in r.json()}
+
+
 def _eventually_found(c: httpx.Client, graph_id: str, marker: str, tries: int = 20) -> bool:
-    """Search with bounded backoff: the fulltext index can lag a SUCCEEDED ingest job (especially on
-    a cold/fresh stack), so a single search on job completion is racy — poll the search instead."""
+    """Search with bounded backoff: the search index can lag a SUCCEEDED ingest job (especially on a
+    cold/fresh stack), so a single search on job completion is racy — poll the search instead."""
     for _ in range(tries):
         if _search_hit(c, graph_id, marker):
             return True
@@ -96,10 +108,11 @@ def test_a_folder_of_content_lands_in_the_graph_and_reingest_is_idempotent(
 
     markers = _content_tree(tmp_path, uuid.uuid4().hex[:8])
 
-    # (1) batch-ingest the folder → every file's content lands + retrieves (the search is polled
-    #     with backoff: jobs are async + the fulltext index lags completion on a cold stack)
+    # (1) batch-ingest the folder → every file LANDS (index-independent doc check) + RETRIEVES
+    #     (hybrid search, polled with backoff: jobs are async + the index lags on a cold stack)
     n = _batch_ingest(c, graph_id, tmp_path)
     assert n == len(markers)
+    assert _landed(c, graph_id, set(markers)), "not every file became a processed document"
     for rel, marker in markers.items():
         assert _eventually_found(c, graph_id, marker), (
             f"{rel!r} content ({marker}) did not retrieve"
