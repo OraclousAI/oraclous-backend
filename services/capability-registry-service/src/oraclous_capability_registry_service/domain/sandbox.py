@@ -23,9 +23,34 @@ SANDBOX_PARENT = Path(
     os.environ.get("ORACLOUS_AGENT_SANDBOX_ROOT", "/tmp/oraclous-agent-sandbox")  # noqa: S108
 )
 
+#: operator-configured root under which a file-native team's working tree MUST live, scoped per org
+#: (``WORKSPACES_ROOT/<org>``). ``working_dir`` is user-controlled (instance config), so it is
+#: itself confined under this org-scoped root — a system path, an escape, or another org's subtree
+#: is rejected fail-closed (ADR-006 org-scoping, ADR-008 operator separation). The operator mounts
+#: the real workspaces volume and overrides this env in served/multi-tenant mode.
+WORKSPACES_ROOT = Path(
+    os.environ.get("ORACLOUS_WORKSPACES_ROOT", "/tmp/oraclous-agent-workspaces")  # noqa: S108
+)
+
 
 class SandboxPathError(ValueError):
     """A requested path escapes (or could not be confined to) the organisation sandbox root."""
+
+
+def _confined_working_dir(organisation_id: uuid.UUID, working_dir: str) -> Path:
+    """A user-declared working tree, confined fail-closed UNDER the org-scoped workspaces root.
+
+    ``working_dir`` is UNTRUSTED (user-controlled instance config). It must resolve to the org's
+    workspaces root (``WORKSPACES_ROOT/<org>``) or a path under it; a system path (``/``, ``/proc``,
+    ``/etc``…), anything outside the root, or ANOTHER org's subtree is rejected with
+    :class:`SandboxPathError` BEFORE any filesystem op. The org segment is the authenticated
+    ``organisation_id`` (never user input), so a tenant cannot reach another tenant's tree. This is
+    the served/multi-tenant default; single-tenant local GO may relax the root (E7)."""
+    org_root = (WORKSPACES_ROOT / str(organisation_id)).resolve()
+    candidate = Path(working_dir).resolve()
+    if candidate != org_root and org_root not in candidate.parents:
+        raise SandboxPathError("working_dir escapes the org's allowed workspace root")
+    return candidate
 
 
 def sandbox_root(organisation_id: uuid.UUID, working_dir: str | None = None) -> Path:
@@ -37,7 +62,10 @@ def sandbox_root(organisation_id: uuid.UUID, working_dir: str | None = None) -> 
     book studio's ``bible/``/``rules/``/``drafts/``), no migration into a scratch store. The org-id
     still scopes the default root; a declared ``working_dir`` is the team's own tree (its path is
     resolved by the run, already org-bound)."""
-    root = Path(working_dir) if working_dir else SANDBOX_PARENT / str(organisation_id)
+    if working_dir:
+        root = _confined_working_dir(organisation_id, working_dir)
+    else:
+        root = SANDBOX_PARENT / str(organisation_id)
     root.mkdir(parents=True, exist_ok=True)
     return root
 
