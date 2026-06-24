@@ -62,6 +62,9 @@ class MemoryCreate(BaseModel):
     confidence: float = Field(default=0.8, ge=0.0, le=1.0)
     scope: MemoryScope = MemoryScope.AGENT
     agent_id: str | None = None
+    # team-scope blackboard (#513): the team identity for a ``scope=team`` memory, so a team's
+    # reads (context filtered by team_id) see only ITS blackboard even when teams share a graph.
+    team_id: str | None = None
     session_id: str | None = None
     source: MemorySource = MemorySource.AGENT
     valid_from: datetime | None = None
