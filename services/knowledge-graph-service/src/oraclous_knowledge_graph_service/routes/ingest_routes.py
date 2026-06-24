@@ -20,6 +20,8 @@ from oraclous_knowledge_graph_service.core.dependencies import (
 )
 from oraclous_knowledge_graph_service.domain.connectors.sql_connector import DbSyncMode
 from oraclous_knowledge_graph_service.schema.ingest_schemas import (
+    BatchIngestRequest,
+    BatchIngestResponse,
     IngestTextRequest,
     JobResponse,
     SqlIngestRequest,
@@ -55,6 +57,33 @@ async def ingest_text(
     except GraphNotFound:
         raise _GRAPH_NOT_FOUND from None
     return JobResponse.of(job)
+
+
+@router.post(
+    "/batch-ingest", response_model=BatchIngestResponse, status_code=status.HTTP_202_ACCEPTED
+)
+async def batch_ingest(
+    graph_id: uuid.UUID, body: BatchIngestRequest, service: JobServiceDep, user_id: UserIdDep
+) -> BatchIngestResponse:
+    """Land a FOLDER/REPO of content in the org graph in one call (#522, the cloud content-in flow):
+    one async ingest job per item, each idempotent on its ``path`` (re-ingest replaces, never
+    duplicates). Thin orchestration over single-ingest — poll each job via ``GET /jobs/{id}``.
+    Org-scoped: the org is bound from the principal, never the body."""
+    jobs: list[JobResponse] = []
+    try:
+        for item in body.items:
+            job = await service.submit(
+                user_id=user_id,
+                graph_id=graph_id,
+                data=item.content.encode("utf-8"),
+                filename=item.path,
+                source_type=item.source_type,
+                recipe_id=item.recipe_id,
+            )
+            jobs.append(JobResponse.of(job))
+    except GraphNotFound:
+        raise _GRAPH_NOT_FOUND from None
+    return BatchIngestResponse(jobs=jobs)
 
 
 @router.post("/upload", response_model=JobResponse, status_code=status.HTTP_202_ACCEPTED)

@@ -13,6 +13,24 @@ from pydantic import BaseModel, Field
 from oraclous_knowledge_graph_service.domain.job import IngestionJobRecord
 
 
+class BatchIngestItem(BaseModel):
+    """One file in a batch/folder ingest (#522). ``path`` is the document identity (the relative
+    path in the folder) — re-ingest of the same path REPLACES, so a refresh is idempotent."""
+
+    path: str = Field(min_length=1)
+    content: str = Field(min_length=1)
+    source_type: str = "text"
+    recipe_id: str | None = None
+
+
+class BatchIngestRequest(BaseModel):
+    """Land a FOLDER/REPO of content in one call (#522) — one async ingest job per item. At least
+    one item (an empty batch is a 422); ``organisation_id`` is never a body field (bound from the
+    principal)."""
+
+    items: list[BatchIngestItem] = Field(min_length=1)
+
+
 class IngestTextRequest(BaseModel):
     content: str = Field(min_length=1)
     filename: str | None = None
@@ -107,6 +125,13 @@ class JobResponse(BaseModel):
             created_at=job.created_at,
             updated_at=job.updated_at,
         )
+
+
+class BatchIngestResponse(BaseModel):
+    """The batch/folder ingest result (#522): one enqueued job per item (poll each via
+    ``GET /jobs/{id}``). ``organisation_id`` is never exposed."""
+
+    jobs: list[JobResponse]
 
 
 class GraphIdName(BaseModel):
