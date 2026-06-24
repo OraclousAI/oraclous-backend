@@ -17,10 +17,12 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import os
 import uuid
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 from oraclous_governance import Principal
@@ -67,6 +69,30 @@ class TeamRunError(Exception):
         super().__init__(message)
         self.status_code = status_code
         self.error_type = error_type
+
+
+#: operator-configured org-scoped workspaces root (MUST match the capability-registry sandbox guard,
+#: #517). A team's ``workspace_root`` is validated fail-fast at create against ``<root>/<org>`` so a
+#: bad root is a clear 422 here, not a confusing mid-run member failure (defense-in-depth: the
+#: registry tool-level guard remains the authoritative boundary). Override per deployment.
+_WORKSPACES_ROOT = Path(
+    os.environ.get("ORACLOUS_WORKSPACES_ROOT", "/tmp/oraclous-agent-workspaces")  # noqa: S108
+)
+
+
+def _validate_workspace_root(organisation_id: uuid.UUID, workspace_root: str) -> None:
+    """Fail-fast org-scoped check (mirrors #517): ``workspace_root`` MUST resolve to the org's
+    workspaces root (``WORKSPACES_ROOT/<org>``) or a path under it. A system path, a path outside
+    the root, or another org's subtree raises a 422. The org segment is the authenticated org (never
+    user input), so a tenant cannot target another tenant's tree."""
+    org_root = (_WORKSPACES_ROOT / str(organisation_id)).resolve()
+    candidate = Path(workspace_root).resolve()
+    if candidate != org_root and org_root not in candidate.parents:
+        raise TeamRunError(
+            "workspace_root must resolve under the org's allowed workspaces root",
+            422,
+            error_type="invalid_workspace_root",
+        )
 
 
 @dataclass(frozen=True)
@@ -228,12 +254,17 @@ class TeamRunService:
         manifest: dict,
         sub_harnesses: dict[str, dict],
         gate_decisions: Mapping[str, str],
+        workspace_root: str | None = None,
     ) -> EngineTeamRun:
         """Request path: validate + persist a QUEUED run + hand it to the worker (202). The drive
         runs on the worker so a large team (30 agents) never blocks/times out the HTTP request."""
         org = self._org(principal)
         team = self._load_team(manifest)  # validate BEFORE persisting
         self._enforce_member_ceilings(team, sub_harnesses)  # ADR-032/035 §5 — fail-closed ceiling
+        if (
+            workspace_root is not None
+        ):  # file-native (#518): org-scoped, fail-fast 422 (not mid-run)
+            _validate_workspace_root(org, workspace_root)
         with org_scope(org):  # bind the org-GUC so the RLS-backstopped INSERT is admitted (ADR-030)
             row = await self._team_runs.create(
                 organisation_id=org,
@@ -241,6 +272,7 @@ class TeamRunService:
                 manifest=manifest,
                 sub_harnesses=sub_harnesses,
                 gate_decisions=dict(gate_decisions),
+                workspace_root=workspace_root,
             )
         if self._enqueue is not None:
             self._enqueue(row.id, org, principal.principal_id)
@@ -422,6 +454,7 @@ class TeamRunService:
                 parent_execution_id=root_execution_id,
                 on_child=child_ids.append,
                 on_cost=cost_deltas.append,
+                workspace_root=row.workspace_root,  # file-native (#518): the run's working tree
             )
         except Exception as exc:  # noqa: BLE001 — never strand the run in RUNNING (G-C); fail closed
             # ANY in-process drive error (harness failure, decode, network, bug) -> FAILED, not a

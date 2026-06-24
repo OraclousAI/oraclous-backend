@@ -37,6 +37,7 @@ class TeamRunRepository:
         manifest: dict[str, Any],
         sub_harnesses: dict[str, Any],
         gate_decisions: dict[str, Any],
+        workspace_root: str | None = None,
     ) -> EngineTeamRun:
         row = EngineTeamRun(
             id=uuid.uuid4(),
@@ -48,6 +49,7 @@ class TeamRunRepository:
             state="QUEUED",
             results={},
             paused_at=[],
+            workspace_root=workspace_root,
         )
         async with self._session() as session:
             async with session.begin():

@@ -56,6 +56,7 @@ async def create_team_run(
             manifest=body.manifest,
             sub_harnesses=body.sub_harnesses,
             gate_decisions=body.gate_decisions,
+            workspace_root=body.workspace_root,
         )
     except TeamRunError as exc:
         raise _http(exc) from exc

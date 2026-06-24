@@ -287,6 +287,10 @@ class CreateTeamRunRequest(BaseModel):
     manifest: dict[str, Any]
     sub_harnesses: dict[str, dict[str, Any]] = Field(default_factory=dict)
     gate_decisions: dict[str, Literal["approve", "reject"]] = Field(default_factory=dict)
+    # file-native blackboard (#518): the team's real working tree, threaded to every member's file
+    # tools so they read/write it in place. Trusted per-run input — validated org-scoped at create
+    # (must resolve under WORKSPACES_ROOT/<org>); None → the default per-org scratch sandbox.
+    workspace_root: str | None = None
 
 
 class AdvanceTeamRunRequest(BaseModel):

@@ -189,6 +189,7 @@ class HarnessExecutionService:
         capability_ceiling: list[str] | None = None,
         parent_execution_id: uuid.UUID | None = None,
         trace_id: uuid.UUID | None = None,
+        workspace_root: str | None = None,
     ) -> HarnessExecution:
         # Fail-closed tenancy (ADR-006/T1-M1): org is the principal's ONLY, never the manifest's.
         if principal.organisation_id is None:
@@ -218,7 +219,7 @@ class HarnessExecutionService:
         # manifest_ref member too, whose registered manifest could otherwise declare a broader set.
         ext_ceiling = frozenset(capability_ceiling) if capability_ceiling is not None else None
         envelope, tool_specs, dispatch, llm = await self._build_runnable(
-            manifest, policy, org_id, external_ceiling=ext_ceiling
+            manifest, policy, org_id, external_ceiling=ext_ceiling, workspace_root=workspace_root
         )
         execution_id = uuid.uuid4()
         resource = f"harness_execution:{execution_id}"
@@ -599,10 +600,12 @@ class HarnessExecutionService:
         org_id: uuid.UUID,
         *,
         external_ceiling: frozenset[str] | None = None,
+        workspace_root: str | None = None,
     ) -> tuple[Any, list[ToolSpec], Any, LLMClient]:
         """Resolve + materialise the manifest's capabilities, build the dispatch + the LLM + the
         runtime envelope. Shared by execute() and resume() so a resume sets up identically.
-        ``external_ceiling`` caps the ceiling by the caller's member ``tools[]`` (ADR-032)."""
+        ``external_ceiling`` caps the ceiling by the caller's member ``tools[]`` (ADR-032).
+        ``workspace_root`` (#518) is set on each file-tool instance's config → file-native."""
         resolved = await self._resolve_all(manifest)
         envelope = build_envelope(
             manifest,
@@ -610,7 +613,9 @@ class HarnessExecutionService:
             hard_max_iterations=self._max_iterations,
             external_ceiling=external_ceiling,
         )
-        instance_by_binding, tool_specs = await self._materialise(manifest, resolved)
+        instance_by_binding, tool_specs = await self._materialise(
+            manifest, resolved, workspace_root=workspace_root
+        )
 
         async def dispatch(spec: ToolSpec, args: dict[str, Any]) -> dict[str, Any]:
             instance_id = instance_by_binding.get(spec.binding)
@@ -799,6 +804,8 @@ class HarnessExecutionService:
         self,
         manifest,
         resolved: dict[str, dict[str, Any]],  # noqa: ANN001
+        *,
+        workspace_root: str | None = None,
     ) -> tuple[dict[str, uuid.UUID], list[ToolSpec]]:
         """Find-or-create a registry instance per capability + build the agent's full toolset.
 
@@ -820,12 +827,19 @@ class HarnessExecutionService:
                 if prior is not None and str(prior.get("capability_id")) == str(item["id"]):
                     instance_id = uuid.UUID(str(prior["id"]))
                 else:
+                    cap_config = {
+                        k: v for k, v in cap.config.items() if k not in _RESERVED_CONFIG_KEYS
+                    }
+                    # file-native blackboard (#518): set the team run's trusted working tree on the
+                    # instance so the member's file tools operate in place (org-confined by the
+                    # registry sandbox guard, #517). Team-run sub-harness ids are unique per import,
+                    # so the find-or-create reuse above never carries a stale workspace_root.
+                    if workspace_root is not None:
+                        cap_config["working_dir"] = workspace_root
                     instance = await self._registry.create_instance(
                         capability_id=str(item["id"]),
                         name=name,
-                        configuration={
-                            k: v for k, v in cap.config.items() if k not in _RESERVED_CONFIG_KEYS
-                        },
+                        configuration=cap_config,
                     )
                     instance_id = uuid.UUID(str(instance["id"]))
                 instance_by_binding[cap.binding] = instance_id
