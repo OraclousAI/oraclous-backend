@@ -55,7 +55,8 @@ def _batch_ingest(c: httpx.Client, graph_id: str, root: Path) -> int:
     jobs = resp.json()["jobs"]
     assert len(jobs) == len(items)
     for job in jobs:
-        for _ in range(45):
+        # async Celery worker: poll generously — a cold/fresh stack's first job warms it
+        for _ in range(60):
             state = str(c.get(f"/api/v1/graphs/{graph_id}/jobs/{job['id']}").json().get("status"))
             if state.upper() in ("SUCCEEDED", "COMPLETED"):
                 break
@@ -67,10 +68,21 @@ def _batch_ingest(c: httpx.Client, graph_id: str, root: Path) -> int:
     return len(items)
 
 
-def _found(c: httpx.Client, graph_id: str, marker: str) -> bool:
-    r = c.post("/v1/search/fulltext", json={"query": marker, "graph_id": graph_id, "top_k": 10})
+def _search_hit(c: httpx.Client, graph_id: str, query: str) -> bool:
+    """One fulltext search through the gateway — True iff the query string appears in the hits."""
+    r = c.post("/v1/search/fulltext", json={"query": query, "graph_id": graph_id, "top_k": 10})
     assert r.status_code == 200, r.text
-    return marker in r.text
+    return query in r.text
+
+
+def _eventually_found(c: httpx.Client, graph_id: str, marker: str, tries: int = 20) -> bool:
+    """Search with bounded backoff: the fulltext index can lag a SUCCEEDED ingest job (especially on
+    a cold/fresh stack), so a single search on job completion is racy — poll the search instead."""
+    for _ in range(tries):
+        if _search_hit(c, graph_id, marker):
+            return True
+        time.sleep(2)
+    return False
 
 
 def test_a_folder_of_content_lands_in_the_graph_and_reingest_is_idempotent(
@@ -84,17 +96,21 @@ def test_a_folder_of_content_lands_in_the_graph_and_reingest_is_idempotent(
 
     markers = _content_tree(tmp_path, uuid.uuid4().hex[:8])
 
-    # (1) batch-ingest the folder → every file's content lands + retrieves
+    # (1) batch-ingest the folder → every file's content lands + retrieves (the search is polled
+    #     with backoff: jobs are async + the fulltext index lags completion on a cold stack)
     n = _batch_ingest(c, graph_id, tmp_path)
     assert n == len(markers)
     for rel, marker in markers.items():
-        assert _found(c, graph_id, marker), f"{rel!r} content ({marker}) did not land/retrieve"
+        assert _eventually_found(c, graph_id, marker), (
+            f"{rel!r} content ({marker}) did not retrieve"
+        )
 
-    # (2) the team CONFIG was NOT ingested (a charter/agent prompt never enters the graph)
-    assert not _found(c, graph_id, "scribe"), "team config leaked into the knowledge graph"
+    # (2) the team CONFIG was NOT ingested — it was never submitted, so a single search settles it
+    #     (the index is already warm from (1)); no need to wait on something that must never appear
+    assert not _search_hit(c, graph_id, "scribe"), "team config leaked into the knowledge graph"
 
     # (3) re-ingest the SAME folder → idempotent: content still retrieves (deterministic-id replace,
     #     not a doubled or broken graph)
     _batch_ingest(c, graph_id, tmp_path)
     for rel, marker in markers.items():
-        assert _found(c, graph_id, marker), f"re-ingest lost {rel!r} ({marker})"
+        assert _eventually_found(c, graph_id, marker), f"re-ingest lost {rel!r} ({marker})"
