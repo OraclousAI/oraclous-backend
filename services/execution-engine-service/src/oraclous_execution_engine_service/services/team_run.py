@@ -39,6 +39,8 @@ class _Harness(Protocol):
         workspace_root: str | None = ...,
         graph_id: str | None = ...,
         team_id: str | None = ...,
+        precedence_order: list[str] | None = ...,
+        graph_authoritative: bool = ...,
     ) -> dict[str, Any]: ...
 
 
@@ -67,6 +69,8 @@ def make_harness_dispatch(
     workspace_root: str | None = None,
     graph_id: str | None = None,
     team_id: str | None = None,
+    precedence_order: list[str] | None = None,
+    graph_authoritative: bool = False,
 ) -> DispatchFn:
     """Build a ``run_team`` dispatch that runs each member as a real harness execution.
 
@@ -99,6 +103,10 @@ def make_harness_dispatch(
             # shares — the harness writes/reads team-scope memory under it, so concurrent members +
             # future runs of the same team see one blackboard (the adopted-graph world-model).
             team_id=team_id,
+            # Hierarchy of Truth (#538): the team's precedence + authoritative flag, bound onto
+            # each knowledge-retriever instance so a member's in-loop read is auto-ranked (#514).
+            precedence_order=precedence_order,
+            graph_authoritative=graph_authoritative,
         )
         status = result.get("status")
         if status != "SUCCEEDED":  # fail-closed — a member's harness must succeed
@@ -129,6 +137,8 @@ async def run_team_harness(
     on_cost: Callable[[int], None] | None = None,
     workspace_root: str | None = None,
     graph_id: str | None = None,
+    precedence_order: list[str] | None = None,
+    graph_authoritative: bool = False,
 ) -> TeamRunResult:
     """Run a Team Harness member DAG, dispatching each member as a real harness execution.
 
@@ -149,5 +159,7 @@ async def run_team_harness(
         workspace_root=workspace_root,
         graph_id=graph_id,
         team_id=team_id,
+        precedence_order=precedence_order,
+        graph_authoritative=graph_authoritative,
     )
     return await run_team(manifest, dispatch, gate_decisions=gate_decisions, completed=completed)

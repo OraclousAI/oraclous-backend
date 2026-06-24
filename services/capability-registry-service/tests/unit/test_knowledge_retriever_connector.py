@@ -173,3 +173,46 @@ async def test_a_transport_error_is_unreachable() -> None:
     ex = _connector(handler)
     res = await ex.execute({"graph_id": _GRAPH, "query": "q"}, _ctx())
     assert not res.success and res.error_type == "RETRIEVER_UNREACHABLE"
+
+
+def _ctx_with(configuration: dict) -> ExecutionContext:
+    return ExecutionContext(
+        instance_id=uuid.uuid4(),
+        organisation_id=_ORG,
+        user_id=_USER,
+        execution_id=uuid.uuid4(),
+        configuration=configuration,
+    )
+
+
+async def test_bound_precedence_is_forwarded_to_the_retriever_search() -> None:
+    """#538: the run binds the team's precedence on the instance config → the connector forwards it
+    to /v1/search so the retriever ranks canonical-first (the model never supplies it)."""
+    seen: dict = {}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        seen["body"] = json.loads(req.content)
+        return httpx.Response(200, json=[{"id": "n1", "type": "Chunk", "properties": {}}])
+
+    ex = _connector(handler)
+    prec = {"order": ["rules", "bible", "drafts"], "graph_authoritative": True}
+    res = await ex.execute(
+        {"query": "x", "mode": "hybrid"},
+        _ctx_with({"graph_id": _GRAPH, "precedence": prec}),
+    )
+    assert res.success
+    assert seen["body"]["precedence"] == prec  # forwarded verbatim from the bound config
+
+
+async def test_unbound_precedence_is_omitted_from_the_search() -> None:
+    """Additive (#536/#538): no bound precedence → the search body is unchanged."""
+    seen: dict = {}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        seen["body"] = json.loads(req.content)
+        return httpx.Response(200, json=[])
+
+    ex = _connector(handler)
+    res = await ex.execute({"query": "x"}, _ctx_with({"graph_id": _GRAPH}))
+    assert res.success
+    assert "precedence" not in seen["body"]

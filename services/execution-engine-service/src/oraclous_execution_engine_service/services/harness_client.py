@@ -111,6 +111,8 @@ class HarnessClient:
         workspace_root: str | None = None,
         graph_id: str | None = None,
         team_id: str | None = None,
+        precedence_order: list[str] | None = None,
+        graph_authoritative: bool = False,
         timeout: float | None = None,  # noqa: ASYNC109 — forwarded to httpx, not an asyncio cancel
     ) -> dict[str, Any]:
         """Run a harness to completion/escalation and return its ``HarnessExecutionOut`` JSON.
@@ -145,6 +147,12 @@ class HarnessClient:
         # team-scope blackboard (#513): the team identity the harness writes/reads memory under.
         if team_id is not None:
             body["team_id"] = team_id
+        # Hierarchy of Truth (#538/#514): the team's precedence the harness binds onto each
+        # knowledge-retriever instance so a member's in-loop retrieval is auto-ranked (read-side).
+        if precedence_order is not None:
+            body["precedence_order"] = precedence_order
+        if graph_authoritative:
+            body["graph_authoritative"] = graph_authoritative
         kwargs: dict[str, Any] = {"json": body}
         if timeout is not None:
             kwargs["timeout"] = timeout
