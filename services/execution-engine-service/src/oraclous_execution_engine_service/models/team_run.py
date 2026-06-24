@@ -45,6 +45,11 @@ class EngineTeamRun(BaseModel):
     # the human gate role(s) the run is currently blocked on (empty unless PAUSED)
     paused_at: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # ── file-native blackboard (#518; additive, nullable) ─────────────────────────────────────
+    # The team's real working tree (the trusted per-run input). Persisted so a resume past a gate
+    # re-threads the SAME tree to the remaining members. Validated org-scoped at create (must be
+    # under WORKSPACES_ROOT/<org>); NULL → the default per-org scratch sandbox (non-file-native).
+    workspace_root: Mapped[str | None] = mapped_column(Text, nullable=True)
     # ── run-tree correlation (ADR-037 Decision 3 / #471; additive, nullable) ──────────────────
     # root_execution_id is this run's tree root = the trace_id threaded to every member harness run
     # (minted = this run's id on first drive; STABLE across resume — read-if-NULL). The list

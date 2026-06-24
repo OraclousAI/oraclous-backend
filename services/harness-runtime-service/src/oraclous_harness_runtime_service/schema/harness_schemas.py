@@ -39,6 +39,10 @@ class ExecuteHarnessRequest(BaseModel):
     # harness mints it = this execution's id (the run-tree root).
     parent_execution_id: uuid.UUID | None = None
     trace_id: uuid.UUID | None = None
+    # file-native blackboard (#518): the team run's trusted working tree. The harness sets it on
+    # file-tool instance's config so the member's file tools operate in place on it (org-confined by
+    # the capability-registry sandbox guard, #517). None → the default per-org scratch sandbox.
+    workspace_root: str | None = None
 
     @model_validator(mode="after")
     def _exactly_one_manifest(self) -> ExecuteHarnessRequest:
