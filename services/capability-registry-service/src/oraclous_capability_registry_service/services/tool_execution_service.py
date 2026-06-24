@@ -162,6 +162,11 @@ class ToolExecutionService:
             credential_refs=credential_refs,
         )
 
+        instance_config = dict(instance.configuration or {})
+        # File-native blackboard (ADR-040 / #512): a declared working tree (the team's git-markdown
+        # tree, or a team run's workspace_root the harness writes into each file-tool instance's
+        # config) makes the file tools operate IN PLACE on it. None → the default per-org scratch.
+        working_dir = instance_config.get("working_dir")
         context = ExecutionContext(
             instance_id=instance_id,
             organisation_id=organisation_id,
@@ -169,8 +174,9 @@ class ToolExecutionService:
             execution_id=execution.id,
             principal_type=principal_type,
             credentials=credentials,
-            configuration=dict(instance.configuration or {}),
+            configuration=instance_config,
             settings=dict(instance.settings or {}),
+            working_dir=str(working_dir) if working_dir else None,
         )
         try:
             executor = create_executor(descriptor)

@@ -28,23 +28,34 @@ class SandboxPathError(ValueError):
     """A requested path escapes (or could not be confined to) the organisation sandbox root."""
 
 
-def sandbox_root(organisation_id: uuid.UUID) -> Path:
-    """The org's scratch root, created on first use. The org-id segment keeps orgs isolated."""
-    root = SANDBOX_PARENT / str(organisation_id)
+def sandbox_root(organisation_id: uuid.UUID, working_dir: str | None = None) -> Path:
+    """The confinement root for the org's file tools, created on first use.
+
+    By default this is the per-org scratch root (``SANDBOX_PARENT/<org>``) — host-ephemeral,
+    isolated by org. For a **file-native** team (ADR-040 / #512) ``working_dir`` is the team's real
+    git-markdown working tree: the SAME confinement guard then operates IN PLACE on that tree (the
+    book studio's ``bible/``/``rules/``/``drafts/``), no migration into a scratch store. The org-id
+    still scopes the default root; a declared ``working_dir`` is the team's own tree (its path is
+    resolved by the run, already org-bound)."""
+    root = Path(working_dir) if working_dir else SANDBOX_PARENT / str(organisation_id)
     root.mkdir(parents=True, exist_ok=True)
     return root
 
 
-def resolve_in_sandbox(organisation_id: uuid.UUID, rel_path: str) -> Path:
-    """Resolve ``rel_path`` to an absolute path CONFINED under the org sandbox root, fail-closed.
+def resolve_in_sandbox(
+    organisation_id: uuid.UUID, rel_path: str, working_dir: str | None = None
+) -> Path:
+    """Resolve ``rel_path`` to an absolute path CONFINED under the sandbox root, fail-closed.
 
     A leading ``/`` is treated as sandbox-root-relative (an agent saying ``/notes.txt`` means the
     sandbox's ``notes.txt``, never the host root). After resolution the path MUST sit under the root
     — ``..`` traversal, an escaping symlink, or anything that lands outside raises
-    :class:`SandboxPathError`. The path need not exist (a Write target won't yet)."""
+    :class:`SandboxPathError`. The path need not exist (a Write target won't yet). When
+    ``working_dir`` is set the root is the team's real working tree (file-native); the guard is
+    otherwise unchanged."""
     if not isinstance(rel_path, str) or not rel_path.strip():
         raise SandboxPathError("a non-empty 'path' is required")
-    root = sandbox_root(organisation_id)
+    root = sandbox_root(organisation_id, working_dir)
     # Treat an absolute path as root-relative (strip leading separators) so it can never reach the
     # host filesystem root; a relative path joins onto the root as written.
     candidate = (root / rel_path.lstrip("/\\")).resolve()

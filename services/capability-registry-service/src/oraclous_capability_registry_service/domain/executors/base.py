@@ -36,6 +36,9 @@ class ExecutionContext(BaseModel):
     credentials: dict[str, Any] = Field(default_factory=dict)
     configuration: dict[str, Any] = Field(default_factory=dict)
     settings: dict[str, Any] = Field(default_factory=dict)
+    # File-native blackboard (ADR-040 / #512): the team's real git-markdown working tree the file
+    # tools read/write IN PLACE. None → the default per-org scratch sandbox (legacy behaviour).
+    working_dir: str | None = None
 
     def __repr__(self) -> str:  # redact secrets from logs/tracebacks
         keys = sorted(self.credentials)
