@@ -28,6 +28,8 @@ class Statement:
     predicate: str
     object: str  # noqa: A003 — the claim's object; the triple's third term, not the builtin
     is_negation: bool = False
+    source: str | None = None  # the fact's tier/source path (additive, #514); find_contradictions
+    # keys only on subject/predicate/object/is_negation, so source never changes contradiction eq.
 
 
 def find_contradictions(new: Statement, existing: Iterable[Statement]) -> list[Statement]:

@@ -31,6 +31,8 @@ class HandoffEnvelope(BaseModel):
     )  # validated vs the producer's outputs_schema
     provenance_ref: str | None = None  # the sub-run that produced it (one provenance stream)
     cursor: str | None = None  # optional continuation token for streamed/paginated work
+    source_layer: str | None = None  # the hand-off's truth tier (additive, #514) — clamped to the
+    # non-canonical floor at the dispatch boundary; a member can't self-assign a canonical tier.
 
 
 def validate_payload(payload: dict[str, Any], outputs_schema: dict[str, Any]) -> list[str]:
