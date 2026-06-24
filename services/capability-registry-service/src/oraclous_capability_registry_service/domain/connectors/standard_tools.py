@@ -63,7 +63,9 @@ class ReadFileConnector(InternalTool):
         self, input_data: dict[str, Any], context: ExecutionContext
     ) -> ExecutionResult:
         try:
-            path = resolve_in_sandbox(context.organisation_id, input_data.get("path", ""))
+            path = resolve_in_sandbox(
+                context.organisation_id, input_data.get("path", ""), context.working_dir
+            )
         except SandboxPathError as exc:
             return _bad(str(exc))
         if not path.is_file():
@@ -92,7 +94,9 @@ class WriteFileConnector(InternalTool):
         if len(encoded) > _MAX_FILE_BYTES:
             return _bad("content exceeds the write size limit", error_type="FILE_TOO_LARGE")
         try:
-            path = resolve_in_sandbox(context.organisation_id, input_data.get("path", ""))
+            path = resolve_in_sandbox(
+                context.organisation_id, input_data.get("path", ""), context.working_dir
+            )
         except SandboxPathError as exc:
             return _bad(str(exc))
         try:
@@ -118,7 +122,9 @@ class EditFileConnector(InternalTool):
         if not old:
             return _bad("'old_string' must be non-empty")
         try:
-            path = resolve_in_sandbox(context.organisation_id, input_data.get("path", ""))
+            path = resolve_in_sandbox(
+                context.organisation_id, input_data.get("path", ""), context.working_dir
+            )
         except SandboxPathError as exc:
             return _bad(str(exc))
         if not path.is_file():
@@ -157,11 +163,11 @@ class GrepConnector(InternalTool):
             regex = re.compile(pattern)
         except re.error:
             return _bad("'pattern' is not a valid regular expression")
-        root = sandbox_root(context.organisation_id)
+        root = sandbox_root(context.organisation_id, context.working_dir)
         sub = input_data.get("path")
         try:
             search_root = (
-                resolve_in_sandbox(context.organisation_id, sub)
+                resolve_in_sandbox(context.organisation_id, sub, context.working_dir)
                 if isinstance(sub, str) and sub
                 else root
             )
@@ -197,7 +203,7 @@ class GlobConnector(InternalTool):
         pattern = input_data.get("pattern")
         if not isinstance(pattern, str) or not pattern:
             return _bad("'pattern' is required")
-        root = sandbox_root(context.organisation_id)
+        root = sandbox_root(context.organisation_id, context.working_dir)
         # glob is rooted at the sandbox; an absolute/`..` pattern can't escape — Path.glob never
         # leaves the base, and we additionally drop anything that resolves outside (symlink safety).
         paths: list[str] = []

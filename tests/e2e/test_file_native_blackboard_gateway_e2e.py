@@ -1,13 +1,12 @@
 """File-native blackboard DEPLOYED-STACK proof through the API GATEWAY — NO fakes (#512, E6).
 
 ADR-040 / lock item 8: a file-native team reads/writes its real git-markdown tree IN PLACE. This
-drives the deployed stack (gateway :8006, real capability-registry, real sandbox) and proves that a
-file tool bound to a declared ``working_dir`` writes ``bible/*.md`` INTO that tree — not into the
-default per-org scratch root — and that the fail-closed confinement guard still rejects an escape.
+drives the deployed stack (gateway :8006, real capability-registry, real sandbox) and proves:
+  * a file tool bound to a working tree UNDER the org-scoped workspaces root writes ``bible/*.md``
+    INTO that tree (not the default scratch root); and
+  * the untrusted ``working_dir`` is confined fail-closed — a system path (``/``) and another org's
+    workspace are REJECTED through the gateway (org-scoping / operator-separation, ADR-006/008).
 Real services, real filesystem, nothing mocked, no internal port, no DB-direct.
-
-RED until #512 [impl] threads ``working_dir`` (from the team run's ``workspace_root``, here supplied
-directly as the tool instance's configuration) into the file tools' ExecutionContext.
 
 Auto-skips when the gateway is down (conftest); a skip is not a pass.
 """
@@ -21,6 +20,10 @@ import httpx
 import pytest
 
 pytestmark = [pytest.mark.e2e, pytest.mark.integration]
+
+# The capability-registry container's default org-scoped workspaces root (sandbox.WORKSPACES_ROOT);
+# a real working tree must live under ``<root>/<org>/…``. The operator overrides this in prod.
+_WORKSPACES_ROOT = "/tmp/oraclous-agent-workspaces"  # noqa: S108 — container-local default
 
 
 def _cap_id(c: httpx.Client, name: str) -> str:
@@ -51,9 +54,10 @@ def _exec(c: httpx.Client, instance_id: str, input_data: dict) -> dict:
 def test_a_file_native_member_writes_bible_md_in_place_through_the_gateway(
     register: Callable[..., dict], gateway_client: Callable[[str], httpx.Client]
 ) -> None:
-    """A Write bound to a working tree lands bible/canon.md IN it, not the default scratch."""
-    c = gateway_client(register("File-Native")["token"])
-    work_tree = f"/tmp/book-ws-{uuid.uuid4().hex}"  # noqa: S108 — declared file-native working tree
+    """A Write bound to the org's tree lands bible/canon.md IN it, not the default scratch."""
+    user = register("File-Native")
+    c = gateway_client(user["token"])
+    work_tree = f"{_WORKSPACES_ROOT}/{user['org_id']}/book-{uuid.uuid4().hex[:8]}"
 
     writer = _instance(c, "Write", {"working_dir": work_tree})
     w = _exec(
@@ -61,24 +65,46 @@ def test_a_file_native_member_writes_bible_md_in_place_through_the_gateway(
     )
     assert w["status"] == "SUCCESS", w
 
-    # Read bound to the SAME working tree sees it in place
     reader = _instance(c, "Read", {"working_dir": work_tree})
     r = _exec(c, reader, {"operation": "read", "path": "bible/canon.md"})
     assert r["status"] == "SUCCESS" and "Alice leads." in r["output_data"]["content"], r
 
-    # Discriminator: a Read on the DEFAULT scratch root (no working_dir) must NOT find it —
-    # proving the write landed in the real tree, not a copy in the per-org sandbox.
+    # Discriminator: a Read on the DEFAULT scratch root (no working_dir) must NOT find it.
     default_reader = _instance(c, "Read", {})
     rd = _exec(c, default_reader, {"operation": "read", "path": "bible/canon.md"})
     assert rd["status"] != "SUCCESS" or "Alice leads." not in str(rd.get("output_data")), rd
 
 
-def test_a_write_outside_the_working_tree_fails_closed_through_the_gateway(
+def test_an_in_tree_escape_fails_closed_through_the_gateway(
     register: Callable[..., dict], gateway_client: Callable[[str], httpx.Client]
 ) -> None:
-    """Confinement preserved on the deployed stack: a traversal escape is rejected."""
-    c = gateway_client(register("File-Native Guard")["token"])
-    work_tree = f"/tmp/book-ws-{uuid.uuid4().hex}"  # noqa: S108 — declared file-native working tree
+    """Within a valid working tree the ``..`` guard still rejects a traversal escape."""
+    user = register("File-Native Guard")
+    c = gateway_client(user["token"])
+    work_tree = f"{_WORKSPACES_ROOT}/{user['org_id']}/book-{uuid.uuid4().hex[:8]}"
     writer = _instance(c, "Write", {"working_dir": work_tree})
     out = _exec(c, writer, {"operation": "write", "path": "../escape.md", "content": "nope"})
+    assert out["status"] != "SUCCESS", out
+
+
+def test_a_system_working_dir_is_rejected_through_the_gateway(
+    register: Callable[..., dict], gateway_client: Callable[[str], httpx.Client]
+) -> None:
+    """The flagged escape: ``working_dir="/"`` + read /proc/self/environ is REJECTED."""
+    c = gateway_client(register("File-Native SSRF")["token"])
+    reader = _instance(c, "Read", {"working_dir": "/"})
+    out = _exec(c, reader, {"operation": "read", "path": "proc/self/environ"})
+    assert out["status"] != "SUCCESS", out
+    assert "OPENROUTER" not in str(out.get("output_data")), "container env must never be readable"
+
+
+def test_another_orgs_workspace_is_rejected_through_the_gateway(
+    register: Callable[..., dict], gateway_client: Callable[[str], httpx.Client]
+) -> None:
+    """A working_dir under ANOTHER org's subtree is a cross-tenant escape — rejected."""
+    user = register("File-Native CrossOrg")
+    c = gateway_client(user["token"])
+    other_tree = f"{_WORKSPACES_ROOT}/{uuid.uuid4()}/book"  # a different org's path
+    reader = _instance(c, "Read", {"working_dir": other_tree})
+    out = _exec(c, reader, {"operation": "read", "path": "bible/canon.md"})
     assert out["status"] != "SUCCESS", out
