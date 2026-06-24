@@ -107,7 +107,13 @@ class FakeHarness:
         self.inputs.append(input_text)
         eid = uuid.uuid4()  # each member 'execution' gets an id → the engine records the tree
         self.calls.append(
-            {"id": eid, "parent_execution_id": parent_execution_id, "trace_id": trace_id}
+            {
+                "id": eid,
+                "parent_execution_id": parent_execution_id,
+                "trace_id": trace_id,
+                "precedence_order": precedence_order,  # #538: assert _drive extracts from manifest
+                "graph_authoritative": graph_authoritative,
+            }
         )
         return {
             "id": str(eid),
@@ -178,7 +184,12 @@ async def _run(svc: TeamRunService, principal: Principal, **kwargs: Any) -> Engi
     return await svc.drive(row.id, principal)
 
 
-def _team(members: list[dict[str, Any]], *, success_criteria: str | None = None) -> dict[str, Any]:
+def _team(
+    members: list[dict[str, Any]],
+    *,
+    success_criteria: str | None = None,
+    precedence: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     team: dict[str, Any] = {
         "ohm_version": "1.1",
         "metadata": {
@@ -192,6 +203,8 @@ def _team(members: list[dict[str, Any]], *, success_criteria: str | None = None)
     }
     if success_criteria is not None:  # #477 — declare the flow-evaluation gate
         team["orchestration"] = {"success_criteria": success_criteria}
+    if precedence is not None:  # #538 — declare the Hierarchy of Truth (order + graph mode)
+        team["precedence"] = precedence
     return team
 
 
@@ -253,6 +266,60 @@ async def test_worker_drive_runs_the_team_through_the_harness_and_persists() -> 
     assert len(harness.inputs) == 2  # both members ran on the worker
     assert set(row.results) == {"a", "b"}
     assert repo.rows[row.id].state == "SUCCEEDED"  # persisted
+
+
+async def test_drive_extracts_authoritative_precedence_from_the_manifest() -> None:
+    """#538 _drive extraction: a declared `graph: authoritative` Hierarchy of Truth is read off the
+    MANIFEST and threaded to every member's harness call (the layer above run_team_harness, which is
+    where the `graph == "authoritative"` comparison + the order ternary live)."""
+    repo, harness = FakeTeamRunRepo(), FakeHarness()
+    svc, _ = _svc(repo, harness)
+    order = ["rules", "bible", "toc", "drafts"]
+    await _run(
+        svc,
+        _principal(),
+        manifest=_team(
+            [_agent("a"), _agent("b", ["a"])],
+            precedence={"order": order, "graph": "authoritative"},
+        ),
+        sub_harnesses={},
+        gate_decisions={},
+    )
+    assert len(harness.calls) == 2
+    assert all(c["precedence_order"] == order for c in harness.calls)
+    assert all(c["graph_authoritative"] is True for c in harness.calls)  # graph == "authoritative"
+
+
+async def test_drive_extracts_derived_precedence_as_graph_authoritative_false() -> None:
+    """The default/derived mode: `graph: derived` threads the order but `graph_authoritative=False`
+    (the comparison is against "authoritative", not "derived") — the common production case."""
+    repo, harness = FakeTeamRunRepo(), FakeHarness()
+    svc, _ = _svc(repo, harness)
+    order = ["rules", "bible", "drafts"]
+    await _run(
+        svc,
+        _principal(),
+        manifest=_team([_agent("a")], precedence={"order": order, "graph": "derived"}),
+        sub_harnesses={},
+        gate_decisions={},
+    )
+    assert harness.calls[0]["precedence_order"] == order
+    assert harness.calls[0]["graph_authoritative"] is False
+
+
+async def test_drive_without_precedence_threads_none_fail_soft() -> None:
+    """Back-compat: a team with no declared Hierarchy of Truth threads None/False to members."""
+    repo, harness = FakeTeamRunRepo(), FakeHarness()
+    svc, _ = _svc(repo, harness)
+    await _run(
+        svc,
+        _principal(),
+        manifest=_team([_agent("a")]),
+        sub_harnesses={},
+        gate_decisions={},
+    )
+    assert harness.calls[0]["precedence_order"] is None
+    assert harness.calls[0]["graph_authoritative"] is False
 
 
 async def test_run_tree_records_root_and_children_and_threads_trace(  # ADR-037 D3 / #471

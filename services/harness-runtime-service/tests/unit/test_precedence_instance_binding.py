@@ -92,3 +92,16 @@ async def test_no_precedence_leaves_the_instance_config_unbound() -> None:
     registry = _RecordingRegistry()
     await _service(registry)._materialise(_manifest(), _RESOLVED)
     assert "precedence" not in registry.created[0]  # additive — absent precedence = unchanged
+
+
+async def test_derived_mode_binds_graph_authoritative_false() -> None:
+    """The default/derived mode (graph_authoritative omitted → False) is the common case — pin that
+    the False value flows through faithfully (not hardcoded True / coerced)."""
+    registry = _RecordingRegistry()
+    await _service(registry)._materialise(
+        _manifest(), _RESOLVED, precedence_order=["rules", "bible"]
+    )
+    assert registry.created[0]["precedence"] == {
+        "order": ["rules", "bible"],
+        "graph_authoritative": False,
+    }
