@@ -43,6 +43,7 @@ class _FakeHarness:
         capability_ceiling: list[str] | None = None,
         parent_execution_id: uuid.UUID | None = None,
         trace_id: uuid.UUID | None = None,
+        workspace_root: str | None = None,
     ) -> dict[str, Any]:
         self.calls.append(
             {
@@ -52,6 +53,7 @@ class _FakeHarness:
                 "ceiling": capability_ceiling,
                 "parent_execution_id": parent_execution_id,
                 "trace_id": trace_id,
+                "workspace_root": workspace_root,
             }
         )
         return {"id": str(uuid.uuid4()), "status": "SUCCEEDED", "output": "ran"}
