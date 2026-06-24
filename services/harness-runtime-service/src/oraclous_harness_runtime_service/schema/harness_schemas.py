@@ -47,6 +47,10 @@ class ExecuteHarnessRequest(BaseModel):
     # config so the graph tools (knowledge-retriever / graph-ingest / find-similar) target it
     # (org-scoped at create + by KGS RLS). None → the model supplies graph_id / KGS org-default.
     graph_id: str | None = None
+    # team-scope blackboard (#513): the stable team identity (team-manifest id). The post-run memory
+    # hook writes ``scope=team`` under it (into the bound graph) + the loop reads the team's memory.
+    # None → a single-agent run (legacy ``scope=agent``).
+    team_id: str | None = None
 
     @model_validator(mode="after")
     def _exactly_one_manifest(self) -> ExecuteHarnessRequest:

@@ -98,6 +98,7 @@ async def run_tool_use_loop(
     dispatch: Dispatch,
     policy: PolicyEnvelope,
     resume_state: LoopCheckpoint | None = None,
+    memory_context: Callable[[], Awaitable[str | None]] | None = None,
 ) -> LoopResult:
     by_name = {s.name: s for s in tool_specs}
     if resume_state is not None:
@@ -112,6 +113,15 @@ async def run_tool_use_loop(
         tool_calls_made = 0
         tokens_used = 0
         resume_iteration = 0
+        # team-scope blackboard READ (#513, ADR-027): before the first LLM turn, pull the team's
+        # current memory (the bound/adopted graph, scope=team) and prepend it to the system prompt,
+        # so the member reasons with what concurrent members + prior runs of the team already wrote.
+        # Fail-soft by contract — the reader swallows its own errors (returns None); a memory read
+        # can never block/fail a run. Resumes skip it (the parked messages already carry context).
+        if memory_context is not None:
+            block = await memory_context()
+            if block:
+                system = f"{block}\n\n{system}" if system else block
     # The input/output split accumulates over THIS segment (the checkpoint cursor carries only the
     # cumulative total, so a resumed run's split reflects its post-resume turns).
     input_used = 0

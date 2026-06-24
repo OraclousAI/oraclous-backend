@@ -118,8 +118,12 @@ class MemoryWriter:
         tool_names: list[str],
         execution_id: uuid.UUID,
         graph_id: str | None,
+        team_id: str | None = None,
     ) -> None:
-        """ONE episodic memory per completed run: agent, task, result status, key tool usage."""
+        """ONE episodic memory per completed run: agent, task, result status, key tool usage.
+
+        Team run (#513): ``team_id`` set → ``scope=team`` under the team identity, so concurrent
+        members + future runs of the team share the blackboard; else legacy ``scope=agent``."""
         tools = ", ".join(dict.fromkeys(tool_names)) or "none"
         content = (
             f"Agent '{harness_name}' run {status}. "
@@ -132,11 +136,12 @@ class MemoryWriter:
                 "type": "episodic",
                 "content": content,
                 "source": "agent",
-                "scope": "agent",
+                "scope": "team" if team_id else "agent",
                 "agent_id": harness_id,
                 "session_id": str(execution_id),
                 "event_type": "harness_run",
                 **({"graph_id": graph_id} if graph_id else {}),
+                **({"team_id": team_id} if team_id else {}),
             }
         )
 
@@ -148,8 +153,11 @@ class MemoryWriter:
         feedback: str,
         execution_id: uuid.UUID,
         graph_id: str | None,
+        team_id: str | None = None,
     ) -> None:
-        """A procedural memory when explicit human feedback exists (a HITL decision reason)."""
+        """A procedural memory when explicit human feedback exists (a HITL decision reason).
+
+        Team run (#513): ``team_id`` → ``scope=team`` (the team's blackboard); else ``agent``."""
         self._schedule(
             {
                 "type": "procedural",
@@ -157,11 +165,12 @@ class MemoryWriter:
                     f"Human feedback on agent '{harness_name}': {_clip(feedback, _FEEDBACK_TRUNC)}"
                 ),
                 "source": "user_feedback",
-                "scope": "agent",
+                "scope": "team" if team_id else "agent",
                 "agent_id": harness_id,
                 "session_id": str(execution_id),
                 "category": "feedback",
                 **({"graph_id": graph_id} if graph_id else {}),
+                **({"team_id": team_id} if team_id else {}),
             }
         )
 
@@ -225,3 +234,56 @@ class MemoryWriter:
                 resp.status_code,
                 payload.get("type"),
             )
+
+
+class MemoryReader:
+    """The team-scope blackboard READ (#513, ADR-027) — fetch the team's current memory block
+    from the adopted graph for in-loop injection (``scope=team`` for THIS team).
+
+    Fail-soft, mirroring the writer's zero-risk property: EVERY failure (unreachable KGS,
+    non-200, malformed body, timeout) returns ``None``, so a memory read can never block, slow past
+    its short timeout, or fail a run. Unlike the writer it is AWAITED (the loop needs it before
+    reasoning), but awaited under a bounded timeout and degrades to no-context on any fault."""
+
+    def __init__(
+        self,
+        *,
+        base_url: str,
+        headers: dict[str, str],
+        timeout: float = 2.0,
+        transport: httpx.AsyncBaseTransport | None = None,
+    ) -> None:
+        self._base_url = base_url.rstrip("/")
+        self._headers = headers
+        self._timeout = timeout
+        self._transport = transport
+
+    async def team_context(
+        self, *, graph_id: str, team_id: str, query: str, max_tokens: int = 2000
+    ) -> str | None:
+        """The ``## Relevant Memory`` block for this team in the graph, or None (fail-soft)."""
+        params: dict[str, str | int] = {
+            "query": (query or "team")[:_INPUT_TRUNC],
+            "scope": "team",
+            "team_id": team_id,
+            "max_tokens": max_tokens,
+        }
+        try:
+            async with httpx.AsyncClient(
+                base_url=self._base_url,
+                headers=self._headers,
+                timeout=self._timeout,
+                transport=self._transport,
+                follow_redirects=False,
+            ) as client:
+                resp = await client.get(
+                    f"/api/v1/graphs/{graph_id}/memories/context", params=params
+                )
+            if resp.status_code != 200:
+                logger.warning("team memory read skipped: KGS returned %s", resp.status_code)
+                return None
+            block = resp.json().get("context_block")
+            return block or None
+        except Exception as exc:  # noqa: BLE001 — fail-soft: a read can never hurt a run
+            logger.warning("team memory read skipped (%s): %s", type(exc).__name__, exc)
+            return None
