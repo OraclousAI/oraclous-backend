@@ -16,6 +16,7 @@ dependencies = [
     "oraclous-substrate",
     "oraclous-rebac",
     "oraclous-eval",
+    "oraclous-ohm",
     "python-jose[cryptography]>=3.3,<4.0",
     "oraclous-telemetry",
 ]
@@ -25,6 +26,7 @@ oraclous-governance = { workspace = true }
 oraclous-substrate = { workspace = true }
 oraclous-rebac = { workspace = true }
 oraclous-eval = { workspace = true }
+oraclous-ohm = { workspace = true }
 oraclous-telemetry = { workspace = true }
 
 [build-system]

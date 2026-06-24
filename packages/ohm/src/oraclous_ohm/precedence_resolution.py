@@ -15,6 +15,8 @@ precedence logic never leaks into a service.
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from oraclous_ohm.contradictions import Statement, find_contradictions
 
 _GRAPH_TIER = "graph"
@@ -69,3 +71,26 @@ def clamp_member_source(declared: str | None, order: list[str]) -> str:
     ``graph`` (fail-closed non-canonical).
     """
     return order[-1] if order else _GRAPH_TIER
+
+
+def rank_hits_by_precedence[T](
+    hits: list[T],
+    path_of: Callable[[T], str],
+    order: list[str],
+    *,
+    graph_authoritative: bool = False,
+) -> list[tuple[T, str]]:
+    """DEMOTE-not-drop read-side tier ranking (#514 read enforcement, CTO ruling).
+
+    Pairs each hit with its path-derived tier (``tier_for_path(path_of(hit), order)``) and
+    STABLE-sorts so a higher-tier (canonical) hit outranks a lower-tier/derived one. Nothing is
+    dropped — a demoted hit ranks *below*, still returned (derived context stays, never canonical);
+    score order is preserved WITHIN a tier (stable sort). A derived (``graph``) hit ranks last
+    unless ``graph_authoritative``. Deterministically realizes the read acceptance (a contradicting
+    graph node does NOT override ``bible``) with no LLM, no triples — the read-side counterpart to
+    ``resolve_by_precedence`` (which stays the hand-off enforcement).
+    """
+    tiered = [(hit, tier_for_path(path_of(hit), order)) for hit in hits]
+    return sorted(
+        tiered, key=lambda ht: _rank(ht[1], order, graph_authoritative=graph_authoritative)
+    )

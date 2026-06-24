@@ -16,15 +16,21 @@ _AUTH = {"Authorization": "Bearer dev-token"}
 
 
 class _FakeRetrievalService:
-    async def semantic(self, *, graph_id, query, top_k):
+    async def semantic(
+        self, *, graph_id, query, top_k, precedence_order=None, graph_authoritative=False
+    ):
         return [
             NodeResult(id="4:x:1", type="Chunk", properties={"text": "ada lovelace", "score": 0.9})
         ]
 
-    async def fulltext(self, *, graph_id, query, top_k):
+    async def fulltext(
+        self, *, graph_id, query, top_k, precedence_order=None, graph_authoritative=False
+    ):
         return [NodeResult(id="4:x:1", type="Chunk", properties={"text": "ada", "score": 2.1})]
 
-    async def hybrid(self, *, graph_id, query, top_k):
+    async def hybrid(
+        self, *, graph_id, query, top_k, precedence_order=None, graph_authoritative=False
+    ):
         return [NodeResult(id="4:x:1", type="Chunk", properties={"text": "ada", "rrf_score": 0.03})]
 
     async def neighbors(self, *, graph_id, node_id, top_k):

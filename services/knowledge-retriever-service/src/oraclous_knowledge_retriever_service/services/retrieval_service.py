@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 
+from oraclous_ohm.precedence_resolution import rank_hits_by_precedence
 from oraclous_substrate.access import enforced_organisation_id
 
 from oraclous_knowledge_retriever_service.contracts import EdgeResult, NodeResult, SubgraphResult
@@ -52,6 +53,31 @@ def _to_node_result(row: dict) -> NodeResult:
     if row.get("relationship") is not None:
         properties["relationship"] = row["relationship"]
     return NodeResult(id=row["id"], type=labels[0] if labels else "Node", properties=properties)
+
+
+def _apply_precedence(
+    results: list[NodeResult], order: list[str] | None, *, graph_authoritative: bool
+) -> list[NodeResult]:
+    """Read-side Hierarchy-of-Truth ranking (#514, CTO ruling). When ``order`` is given, stamp each
+    hit's path-derived ``precedence_tier`` (from its ``ingestion_source``) and DEMOTE lower-tier /
+    derived hits below the canonical ones — stable, nothing dropped. No-op when ``order`` is empty.
+    The tier/rank logic lives in ``oraclous_ohm`` (never in the service)."""
+    if not order:
+        return results
+    ranked = rank_hits_by_precedence(
+        results,
+        lambda n: str(n["properties"].get("ingestion_source") or ""),
+        order,
+        graph_authoritative=graph_authoritative,
+    )
+    return [
+        NodeResult(
+            id=node["id"],
+            type=node["type"],
+            properties={**node["properties"], "precedence_tier": tier},
+        )
+        for node, tier in ranked
+    ]
 
 
 def _to_edge_result(row: dict) -> EdgeResult:
@@ -110,11 +136,21 @@ class RetrievalService:
             graph_id=graph_id, query_text=query, retriever_type=modality, result=payload
         )
 
-    async def semantic(self, *, graph_id: str, query: str, top_k: int) -> list[NodeResult]:
+    async def semantic(
+        self,
+        *,
+        graph_id: str,
+        query: str,
+        top_k: int,
+        precedence_order: list[str] | None = None,
+        graph_authoritative: bool = False,
+    ) -> list[NodeResult]:
         cache_query = self._cache_query(query, top_k)
         cached = await self._cache_get(graph_id=graph_id, query=cache_query, modality="semantic")
         if cached is not None:
-            return cached["results"]
+            return _apply_precedence(
+                cached["results"], precedence_order, graph_authoritative=graph_authoritative
+            )
         qvec = self._embedder.embed(query)
         repo = self._repo()
         rows = await asyncio.to_thread(repo.semantic, graph_id=graph_id, qvec=qvec, top_k=top_k)
@@ -122,13 +158,23 @@ class RetrievalService:
         await self._cache_set(
             graph_id=graph_id, query=cache_query, modality="semantic", payload={"results": results}
         )
-        return results
+        return _apply_precedence(results, precedence_order, graph_authoritative=graph_authoritative)
 
-    async def fulltext(self, *, graph_id: str, query: str, top_k: int) -> list[NodeResult]:
+    async def fulltext(
+        self,
+        *,
+        graph_id: str,
+        query: str,
+        top_k: int,
+        precedence_order: list[str] | None = None,
+        graph_authoritative: bool = False,
+    ) -> list[NodeResult]:
         cache_query = self._cache_query(query, top_k)
         cached = await self._cache_get(graph_id=graph_id, query=cache_query, modality="fulltext")
         if cached is not None:
-            return cached["results"]
+            return _apply_precedence(
+                cached["results"], precedence_order, graph_authoritative=graph_authoritative
+            )
         repo = self._repo()
         rows = await asyncio.to_thread(
             repo.fulltext,
@@ -140,13 +186,24 @@ class RetrievalService:
         await self._cache_set(
             graph_id=graph_id, query=cache_query, modality="fulltext", payload={"results": results}
         )
-        return results
+        return _apply_precedence(results, precedence_order, graph_authoritative=graph_authoritative)
 
-    async def hybrid(self, *, graph_id: str, query: str, top_k: int) -> list[NodeResult]:
+    async def hybrid(
+        self,
+        *,
+        graph_id: str,
+        query: str,
+        top_k: int,
+        precedence_order: list[str] | None = None,
+        graph_authoritative: bool = False,
+    ) -> list[NodeResult]:
         cache_query = self._cache_query(query, top_k)
         cached = await self._cache_get(graph_id=graph_id, query=cache_query, modality="hybrid")
         if cached is not None:
-            return cached["results"]
+            return _apply_precedence(
+                cached["results"], precedence_order, graph_authoritative=graph_authoritative
+            )
+        # the fusion inputs stay UNRANKED (no precedence) — precedence applies to the fused result
         sem = await self.semantic(graph_id=graph_id, query=query, top_k=top_k * 2)
         ful = await self.fulltext(graph_id=graph_id, query=query, top_k=top_k * 2)
         fused: dict[str, dict] = {}
@@ -168,7 +225,7 @@ class RetrievalService:
         await self._cache_set(
             graph_id=graph_id, query=cache_query, modality="hybrid", payload={"results": results}
         )
-        return results
+        return _apply_precedence(results, precedence_order, graph_authoritative=graph_authoritative)
 
     async def neighbors(self, *, graph_id: str, node_id: str, top_k: int) -> list[NodeResult]:
         repo = self._repo()
