@@ -55,6 +55,8 @@ class _FakeHarness:
         workspace_root: str | None = None,
         graph_id: str | None = None,
         team_id: str | None = None,
+        precedence_order: list[str] | None = None,  # additive (#538) — accepted, ignored here
+        graph_authoritative: bool = False,
     ) -> dict[str, Any]:
         self.inputs.append(input_text)
         # #471: a real execution id per member → the engine records child_execution_ids (the tree).

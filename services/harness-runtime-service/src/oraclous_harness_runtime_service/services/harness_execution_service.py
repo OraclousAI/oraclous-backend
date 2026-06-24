@@ -197,6 +197,8 @@ class HarnessExecutionService:
         workspace_root: str | None = None,
         graph_id: str | None = None,
         team_id: str | None = None,
+        precedence_order: list[str] | None = None,
+        graph_authoritative: bool = False,
     ) -> HarnessExecution:
         # Fail-closed tenancy (ADR-006/T1-M1): org is the principal's ONLY, never the manifest's.
         if principal.organisation_id is None:
@@ -232,6 +234,8 @@ class HarnessExecutionService:
             external_ceiling=ext_ceiling,
             workspace_root=workspace_root,
             graph_id=graph_id,
+            precedence_order=precedence_order,
+            graph_authoritative=graph_authoritative,
         )
         execution_id = uuid.uuid4()
         resource = f"harness_execution:{execution_id}"
@@ -638,6 +642,8 @@ class HarnessExecutionService:
         external_ceiling: frozenset[str] | None = None,
         workspace_root: str | None = None,
         graph_id: str | None = None,
+        precedence_order: list[str] | None = None,
+        graph_authoritative: bool = False,
     ) -> tuple[Any, list[ToolSpec], Any, LLMClient]:
         """Resolve + materialise the manifest's capabilities, build the dispatch + the LLM + the
         runtime envelope. Shared by execute() and resume() so a resume sets up identically.
@@ -651,7 +657,12 @@ class HarnessExecutionService:
             external_ceiling=external_ceiling,
         )
         instance_by_binding, tool_specs = await self._materialise(
-            manifest, resolved, workspace_root=workspace_root, graph_id=graph_id
+            manifest,
+            resolved,
+            workspace_root=workspace_root,
+            graph_id=graph_id,
+            precedence_order=precedence_order,
+            graph_authoritative=graph_authoritative,
         )
 
         async def dispatch(spec: ToolSpec, args: dict[str, Any]) -> dict[str, Any]:
@@ -844,6 +855,8 @@ class HarnessExecutionService:
         *,
         workspace_root: str | None = None,
         graph_id: str | None = None,
+        precedence_order: list[str] | None = None,
+        graph_authoritative: bool = False,
     ) -> tuple[dict[str, uuid.UUID], list[ToolSpec]]:
         """Find-or-create a registry instance per capability + build the agent's full toolset.
 
@@ -878,6 +891,14 @@ class HarnessExecutionService:
                     # (the model never invents a UUID; org-scoped at create + by KGS RLS).
                     if graph_id is not None:
                         cap_config["graph_id"] = graph_id
+                    # Hierarchy of Truth (#538): bind the team's precedence so the retriever ranks
+                    # each member's in-loop read canonical-first (#536 ranks). Bound on every
+                    # instance; only the retriever connector reads it. Empty order → unbound.
+                    if precedence_order:
+                        cap_config["precedence"] = {
+                            "order": precedence_order,
+                            "graph_authoritative": graph_authoritative,
+                        }
                     instance = await self._registry.create_instance(
                         capability_id=str(item["id"]),
                         name=name,

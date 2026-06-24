@@ -51,6 +51,11 @@ class ExecuteHarnessRequest(BaseModel):
     # hook writes ``scope=team`` under it (into the bound graph) + the loop reads the team's memory.
     # None → a single-agent run (legacy ``scope=agent``).
     team_id: str | None = None
+    # Hierarchy of Truth (#538): the team's declared precedence (order high→low + graph mode). The
+    # harness binds it on each instance's config so the knowledge-retriever ranks a member's in-loop
+    # read canonical-first (#536). None/empty → no precedence applied (read unchanged).
+    precedence_order: list[str] | None = None
+    graph_authoritative: bool = False
 
     @model_validator(mode="after")
     def _exactly_one_manifest(self) -> ExecuteHarnessRequest:

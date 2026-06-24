@@ -89,7 +89,16 @@ class KnowledgeRetrieverConnector(InternalTool):
         top_k = input_data.get("top_k", _DEFAULT_TOP_K)
 
         settings = get_settings()
-        body = {"query": query, "graph_id": graph_id, "top_k": top_k}
+        body: dict[str, Any] = {"query": query, "graph_id": graph_id, "top_k": top_k}
+        # Hierarchy-of-Truth (#538): the run binds the team's precedence on this instance's config
+        # (like graph_id), so the retriever ranks each member's in-loop read canonical-first — the
+        # model never supplies it. Forwarded only when bound; absent → the read is unchanged (#536).
+        precedence = context.configuration.get("precedence")
+        if isinstance(precedence, dict) and precedence.get("order"):
+            body["precedence"] = {
+                "order": precedence["order"],
+                "graph_authoritative": bool(precedence.get("graph_authoritative", False)),
+            }
         try:
             async with httpx.AsyncClient(
                 base_url=settings.KNOWLEDGE_RETRIEVER_URL.rstrip("/"),

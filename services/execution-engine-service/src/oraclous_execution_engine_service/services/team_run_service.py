@@ -490,6 +490,17 @@ class TeamRunService:
                 on_cost=cost_deltas.append,
                 workspace_root=row.workspace_root,  # file-native (#518): the run's working tree
                 graph_id=row.graph_id,  # graph substrate (#524): the run's bound graph
+                # Hierarchy of Truth (#538/#514): the team's declared precedence, read off the
+                # MANIFEST (no persisted column — rides off `team`), bound onto each retriever
+                # instance so a member's in-loop retrieval is auto-ranked.
+                precedence_order=(
+                    list(team.precedence.order)
+                    if team.precedence is not None and team.precedence.order
+                    else None
+                ),
+                graph_authoritative=(
+                    team.precedence is not None and team.precedence.graph == "authoritative"
+                ),
             )
         except Exception as exc:  # noqa: BLE001 — never strand the run in RUNNING (G-C); fail closed
             # ANY in-process drive error (harness failure, decode, network, bug) -> FAILED, not a
