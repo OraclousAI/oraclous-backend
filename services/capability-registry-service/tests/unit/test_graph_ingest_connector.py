@@ -182,7 +182,10 @@ def test_graph_ingest_is_registered_as_a_builtin_with_an_executor() -> None:
     desc = GraphIngestPlugin.descriptor()
     assert desc["metadata"]["name"] == "Graph Ingest"
     assert desc["spec"]["credential_requirements"] == []  # credential-less (internal trust path)
-    assert desc["spec"]["input_schema"]["required"] == ["graph_id", "content"]
+    # graph substrate (#524): graph_id is OPTIONAL — the run binds the graph, so the model never has
+    # to invent a UUID; only `content` is required (an explicit graph_id still wins when supplied).
+    assert desc["spec"]["input_schema"]["required"] == ["content"]
+    assert "graph_id" in desc["spec"]["input_schema"]["properties"]
     # the descriptor maps to the GraphIngestConnector executor
     assert has_executor(desc)
     assert gid in _EXECUTORS

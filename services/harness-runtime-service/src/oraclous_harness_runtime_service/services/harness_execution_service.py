@@ -190,6 +190,7 @@ class HarnessExecutionService:
         parent_execution_id: uuid.UUID | None = None,
         trace_id: uuid.UUID | None = None,
         workspace_root: str | None = None,
+        graph_id: str | None = None,
     ) -> HarnessExecution:
         # Fail-closed tenancy (ADR-006/T1-M1): org is the principal's ONLY, never the manifest's.
         if principal.organisation_id is None:
@@ -219,7 +220,12 @@ class HarnessExecutionService:
         # manifest_ref member too, whose registered manifest could otherwise declare a broader set.
         ext_ceiling = frozenset(capability_ceiling) if capability_ceiling is not None else None
         envelope, tool_specs, dispatch, llm = await self._build_runnable(
-            manifest, policy, org_id, external_ceiling=ext_ceiling, workspace_root=workspace_root
+            manifest,
+            policy,
+            org_id,
+            external_ceiling=ext_ceiling,
+            workspace_root=workspace_root,
+            graph_id=graph_id,
         )
         execution_id = uuid.uuid4()
         resource = f"harness_execution:{execution_id}"
@@ -601,6 +607,7 @@ class HarnessExecutionService:
         *,
         external_ceiling: frozenset[str] | None = None,
         workspace_root: str | None = None,
+        graph_id: str | None = None,
     ) -> tuple[Any, list[ToolSpec], Any, LLMClient]:
         """Resolve + materialise the manifest's capabilities, build the dispatch + the LLM + the
         runtime envelope. Shared by execute() and resume() so a resume sets up identically.
@@ -614,7 +621,7 @@ class HarnessExecutionService:
             external_ceiling=external_ceiling,
         )
         instance_by_binding, tool_specs = await self._materialise(
-            manifest, resolved, workspace_root=workspace_root
+            manifest, resolved, workspace_root=workspace_root, graph_id=graph_id
         )
 
         async def dispatch(spec: ToolSpec, args: dict[str, Any]) -> dict[str, Any]:
@@ -806,6 +813,7 @@ class HarnessExecutionService:
         resolved: dict[str, dict[str, Any]],  # noqa: ANN001
         *,
         workspace_root: str | None = None,
+        graph_id: str | None = None,
     ) -> tuple[dict[str, uuid.UUID], list[ToolSpec]]:
         """Find-or-create a registry instance per capability + build the agent's full toolset.
 
@@ -836,6 +844,10 @@ class HarnessExecutionService:
                     # so the find-or-create reuse above never carries a stale workspace_root.
                     if workspace_root is not None:
                         cap_config["working_dir"] = workspace_root
+                    # graph substrate (#524): bind the run's graph so the graph tools target it
+                    # (the model never invents a UUID; org-scoped at create + by KGS RLS).
+                    if graph_id is not None:
+                        cap_config["graph_id"] = graph_id
                     instance = await self._registry.create_instance(
                         capability_id=str(item["id"]),
                         name=name,

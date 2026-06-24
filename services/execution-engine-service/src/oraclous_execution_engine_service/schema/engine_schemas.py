@@ -291,6 +291,11 @@ class CreateTeamRunRequest(BaseModel):
     # tools so they read/write it in place. Trusted per-run input — validated org-scoped at create
     # (must resolve under WORKSPACES_ROOT/<org>); None → the default per-org scratch sandbox.
     workspace_root: str | None = None
+    # graph substrate (#524, ADR-040 Decision 7): the team's bound graph, threaded to every member's
+    # graph tools (knowledge-retriever / graph-ingest / find-similar) so they target it. Trusted
+    # per-run input — validated org-scoped at create (must belong to the caller's org via KGS);
+    # None → the model supplies a graph_id per call / the KGS org-default graph.
+    graph_id: str | None = None
 
 
 class AdvanceTeamRunRequest(BaseModel):

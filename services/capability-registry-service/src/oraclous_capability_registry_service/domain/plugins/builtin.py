@@ -256,9 +256,17 @@ class GraphIngestPlugin(_ConnectorToolPlugin):
     CREDENTIAL_REQUIREMENTS: list[dict] = []  # first-party: reached over the internal trust path
     INPUT_SCHEMA = {
         "type": "object",
-        "required": ["graph_id", "content"],
+        "required": ["content"],
         "properties": {
-            "graph_id": {"type": "string", "format": "uuid"},
+            # graph substrate (#524): the run binds a graph, so graph_id is OPTIONAL — omit it and
+            # the bound graph is used (never invent a UUID). Only set it to target a different graph
+            # your org owns. KGS RLS scopes it to the caller's org either way.
+            "graph_id": {
+                "type": "string",
+                "format": "uuid",
+                "description": "Optional; defaults to the run's bound graph. Omit unless targeting "
+                "a different graph your org owns.",
+            },
             "content": {"type": "string", "minLength": 1},
             "source_type": {"type": "string"},
             "recipe_id": {"type": "string"},
@@ -297,9 +305,17 @@ class KnowledgeRetrieverPlugin(_ConnectorToolPlugin):
     CREDENTIAL_REQUIREMENTS: list[dict] = []  # first-party: reached over the internal trust path
     INPUT_SCHEMA = {
         "type": "object",
-        "required": ["graph_id", "query"],
+        "required": ["query"],
         "properties": {
-            "graph_id": {"type": "string", "format": "uuid"},
+            # graph substrate (#524): the run binds a graph, so graph_id is OPTIONAL — omit it and
+            # the bound graph is searched (never invent a UUID). Only set it to target a different
+            # graph your org owns. KGS RLS scopes it to the caller's org either way.
+            "graph_id": {
+                "type": "string",
+                "format": "uuid",
+                "description": "Optional; defaults to the run's bound graph. Omit unless targeting "
+                "a different graph your org owns.",
+            },
             "query": {"type": "string", "minLength": 1},
             "top_k": {"type": "integer", "minimum": 1, "maximum": 100, "default": 10},
             "mode": {"type": "string", "enum": ["semantic", "fulltext", "hybrid"]},
@@ -414,9 +430,17 @@ class FindSimilarPlugin(_ConnectorToolPlugin):
     CREDENTIAL_REQUIREMENTS: list[dict] = []  # first-party: reached over the internal trust path
     INPUT_SCHEMA = {
         "type": "object",
-        "required": ["graph_id", "node_id"],
+        "required": ["node_id"],
         "properties": {
-            "graph_id": {"type": "string", "format": "uuid"},
+            # graph substrate (#524): the run binds a graph, so graph_id is OPTIONAL — omit it and
+            # the bound graph is used (never invent a UUID). Only set it to target a different graph
+            # your org owns. KGS RLS scopes it to the caller's org either way.
+            "graph_id": {
+                "type": "string",
+                "format": "uuid",
+                "description": "Optional; defaults to the run's bound graph. Omit unless targeting "
+                "a different graph your org owns.",
+            },
             "node_id": {"type": "string", "minLength": 1},
             "top_k": {"type": "integer", "minimum": 1, "maximum": 100, "default": 10},
             "min_score": {"type": "number", "minimum": 0, "maximum": 1, "default": 0.0},

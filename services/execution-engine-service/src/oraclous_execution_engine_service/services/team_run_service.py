@@ -45,6 +45,7 @@ from oraclous_execution_engine_service.repositories.maintenance_repository impor
 )
 from oraclous_execution_engine_service.repositories.team_run_repository import TeamRunRepository
 from oraclous_execution_engine_service.services.evaluate_client import EvaluateClient
+from oraclous_execution_engine_service.services.graph_client import GraphClient, GraphClientError
 from oraclous_execution_engine_service.services.harness_client import HarnessClient
 from oraclous_execution_engine_service.services.team_run import run_team_harness
 
@@ -164,16 +165,20 @@ class TeamRunService:
         harness: HarnessClient | None = None,
         enqueue: EnqueueFn | None = None,
         evaluate: EvaluateClient | None = None,
+        graphs: GraphClient | None = None,
     ) -> None:
         # The drive runs on the WORKER (like jobs/round-tables): the request path (create/advance)
         # needs `enqueue` (hand the QUEUED run to the broker) but NOT a harness; the worker `drive`
         # needs `harness` but not `enqueue`; the reaper path (reap_stale) needs neither. `evaluate`
         # (the flow judge, #477) is the worker's gate grader — None ⇒ no gate eval (the run still
-        # completes; the gate is simply not graded).
+        # completes; the gate is simply not graded). `graphs` (#524) is the request path's KGS
+        # existence check for a graph-bound run — None ⇒ no fail-fast check (KGS RLS still scopes
+        # the tools mid-run), so a wired client is how a cross-org graph_id is rejected at create.
         self._team_runs = team_runs
         self._harness = harness
         self._enqueue = enqueue
         self._evaluate = evaluate
+        self._graphs = graphs
 
     def _org(self, principal: Principal) -> uuid.UUID:
         if principal.organisation_id is None:  # fail-closed tenancy (ADR-006)
@@ -247,6 +252,29 @@ class TeamRunService:
                     error_type="ceiling_exceeded",
                 ) from exc
 
+    async def _validate_graph_id(self, organisation_id: uuid.UUID, graph_id: str) -> None:
+        """Fail-fast org-scoped check (#524, ADR-040 Decision 7): the bound ``graph_id`` MUST exist
+        in the caller's organisation. The KGS GET is org-scoped by the engine's downstream headers,
+        so a graph the org does not own returns 404 → a clear 422 here, not a confusing mid-run
+        member failure (defense-in-depth: the registry tool-level KGS RLS remains authoritative).
+        With no ``graphs`` client wired the check is skipped (RLS still scopes the tools)."""
+        if self._graphs is None:
+            return
+        try:
+            exists = await self._graphs.graph_exists(graph_id)
+        except GraphClientError as exc:  # KGS unreachable / inconclusive — fail closed (not admit)
+            raise TeamRunError(
+                "could not validate graph_id against the knowledge-graph-service",
+                502,
+                error_type="graph_validation_failed",
+            ) from exc
+        if not exists:
+            raise TeamRunError(
+                "graph_id does not exist in your organisation",
+                422,
+                error_type="invalid_graph_id",
+            )
+
     async def create(
         self,
         principal: Principal,
@@ -255,6 +283,7 @@ class TeamRunService:
         sub_harnesses: dict[str, dict],
         gate_decisions: Mapping[str, str],
         workspace_root: str | None = None,
+        graph_id: str | None = None,
     ) -> EngineTeamRun:
         """Request path: validate + persist a QUEUED run + hand it to the worker (202). The drive
         runs on the worker so a large team (30 agents) never blocks/times out the HTTP request."""
@@ -265,6 +294,10 @@ class TeamRunService:
             workspace_root is not None
         ):  # file-native (#518): org-scoped, fail-fast 422 (not mid-run)
             _validate_workspace_root(org, workspace_root)
+        if (
+            graph_id is not None
+        ):  # graph substrate (#524): org-scoped, fail-fast 422 (cross-org graph rejected here)
+            await self._validate_graph_id(org, graph_id)
         with org_scope(org):  # bind the org-GUC so the RLS-backstopped INSERT is admitted (ADR-030)
             row = await self._team_runs.create(
                 organisation_id=org,
@@ -273,6 +306,7 @@ class TeamRunService:
                 sub_harnesses=sub_harnesses,
                 gate_decisions=dict(gate_decisions),
                 workspace_root=workspace_root,
+                graph_id=graph_id,
             )
         if self._enqueue is not None:
             self._enqueue(row.id, org, principal.principal_id)
@@ -455,6 +489,7 @@ class TeamRunService:
                 on_child=child_ids.append,
                 on_cost=cost_deltas.append,
                 workspace_root=row.workspace_root,  # file-native (#518): the run's working tree
+                graph_id=row.graph_id,  # graph substrate (#524): the run's bound graph
             )
         except Exception as exc:  # noqa: BLE001 — never strand the run in RUNNING (G-C); fail closed
             # ANY in-process drive error (harness failure, decode, network, bug) -> FAILED, not a

@@ -62,7 +62,10 @@ class GraphIngestConnector(InternalTool):
     async def _execute_internal(
         self, input_data: dict[str, Any], context: ExecutionContext
     ) -> ExecutionResult:
-        graph_id = input_data.get("graph_id")
+        # graph substrate (#524): the per-run bound graph (instance config) is the fallback, so the
+        # model never has to invent a UUID; an explicit tool-call graph_id still wins. Either way
+        # KGS RLS scopes it to the caller's org (a cross-org graph_id surfaces as the KGS 4xx).
+        graph_id = input_data.get("graph_id") or context.configuration.get("graph_id")
         content = input_data.get("content")
         if not isinstance(graph_id, str) or not graph_id.strip():
             return ExecutionResult(

@@ -41,6 +41,7 @@ class FakeTeamRunRepo:
         sub_harnesses: dict[str, Any],
         gate_decisions: dict[str, Any],
         workspace_root: str | None = None,
+        graph_id: str | None = None,
     ) -> EngineTeamRun:
         row = EngineTeamRun(
             id=uuid.uuid4(),
@@ -53,6 +54,7 @@ class FakeTeamRunRepo:
             results={},
             paused_at=[],
             workspace_root=workspace_root,
+            graph_id=graph_id,
         )
         self.rows[row.id] = row
         return row
@@ -97,6 +99,7 @@ class FakeHarness:
         parent_execution_id: uuid.UUID | None = None,
         trace_id: uuid.UUID | None = None,
         workspace_root: str | None = None,
+        graph_id: str | None = None,
     ) -> dict[str, Any]:
         self.inputs.append(input_text)
         eid = uuid.uuid4()  # each member 'execution' gets an id → the engine records the tree
