@@ -107,7 +107,9 @@ def test_a_file_native_member_writes_bible_in_place_through_a_team_run(
     nonce = f"canon-{uuid.uuid4().hex[:10]}"
 
     _scribe_studio(tmp_path, nonce)
-    imported = import_setup(tmp_path, owner_organization_id=uuid.uuid4(), name="studio")
+    imported = import_setup(
+        tmp_path, owner_organization_id=uuid.uuid4(), name="studio", substrate="file"
+    )
     assert imported.manifest is not None
     sub_harnesses = {role: dict(sub) for role, sub in imported.sub_harnesses.items()}
     for sub in sub_harnesses.values():

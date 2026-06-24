@@ -58,7 +58,10 @@ def test_sub_harness_loads_through_the_real_loader() -> None:
 
 
 def test_tools_become_capabilities_with_provisional_ref() -> None:
-    m = map_agent_to_member(_agent(), owner_organization_id=_ORG)
+    # substrate="file" is the provisional-synthesis path: the file substrate keeps the synthesized
+    # core/<slug>@1 refs (+ F-TOOLREF). Under the cloud-first graph default (#509) these file tools
+    # remap onto seeded graph caps instead — that path is covered by test_import_graph_remap.py.
+    m = map_agent_to_member(_agent(), owner_organization_id=_ORG, substrate="file")
     assert m.sub_harness is not None
     caps = {c.binding: c.ref for c in m.sub_harness.capabilities}
     assert caps == {

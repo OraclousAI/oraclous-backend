@@ -38,7 +38,9 @@ def _one_member_team(root: Path) -> None:
 
 
 def _post_run(c: httpx.Client, root: Path, workspace_root: str) -> httpx.Response:
-    imported = import_setup(root, owner_organization_id=uuid.uuid4(), name="studio")
+    imported = import_setup(
+        root, owner_organization_id=uuid.uuid4(), name="studio", substrate="file"
+    )
     assert imported.manifest is not None
     return c.post(
         "/v1/engine/team-runs",

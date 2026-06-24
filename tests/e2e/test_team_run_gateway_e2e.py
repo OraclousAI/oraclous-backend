@@ -73,7 +73,9 @@ def test_book_studio_runs_through_the_gateway_with_a_blocking_gate(
     """Import a book studio, run it THROUGH THE GATEWAY: it pauses at the human gate (item 4b),
     advancing crosses it, and it completes — real auth, real worker, real harness, no fakes."""
     _book_studio(tmp_path)
-    imported = import_setup(tmp_path, owner_organization_id=uuid.uuid4(), name="studio")
+    imported = import_setup(
+        tmp_path, owner_organization_id=uuid.uuid4(), name="studio", substrate="file"
+    )
     assert imported.manifest is not None
     body = {
         "manifest": imported.manifest.model_dump(mode="json"),
@@ -110,7 +112,9 @@ def test_capability_ceiling_rejects_a_smuggled_send_through_the_gateway(
     """Item 4: a sub-harness that smuggles a 'send' capability past the writer's ceiling is rejected
     422 — at the gateway, before any run."""
     _book_studio(tmp_path)
-    imported = import_setup(tmp_path, owner_organization_id=uuid.uuid4(), name="studio")
+    imported = import_setup(
+        tmp_path, owner_organization_id=uuid.uuid4(), name="studio", substrate="file"
+    )
     assert imported.manifest is not None
     subs = dict(imported.sub_harnesses)
     subs["writer"] = {
@@ -143,7 +147,9 @@ def test_a_team_run_is_org_isolated_across_users_through_the_gateway(
 ) -> None:
     """Cross-tenant isolation through the gateway: user A's run is invisible to user B (RLS)."""
     _book_studio(tmp_path)
-    imported = import_setup(tmp_path, owner_organization_id=uuid.uuid4(), name="studio")
+    imported = import_setup(
+        tmp_path, owner_organization_id=uuid.uuid4(), name="studio", substrate="file"
+    )
     assert imported.manifest is not None
     body = {
         "manifest": imported.manifest.model_dump(mode="json"),
@@ -168,7 +174,9 @@ def test_run_tree_is_reachable_and_org_isolated_through_the_gateway(  # ADR-037 
     exposes its tree (root_execution_id == the run id + the member harness executions as children),
     and user B cannot read user A's tree (a cross-org tree id is a 404, never a leak — H1/H4)."""
     _book_studio(tmp_path)
-    imported = import_setup(tmp_path, owner_organization_id=uuid.uuid4(), name="studio")
+    imported = import_setup(
+        tmp_path, owner_organization_id=uuid.uuid4(), name="studio", substrate="file"
+    )
     assert imported.manifest is not None
     # pre-approve the gate so the run drives straight to SUCCEEDED → a fully-populated tree
     body = {
@@ -204,7 +212,9 @@ def test_o4_status_surface_through_the_gateway(  # ADR-037 D5 / #472
     goal-attainment progress == 100 (not the old hardcoded 5/100), healthy, its accumulated token
     cost, and the terminal outcome; and user B cannot read user A's status (cross-org 404 — H3)."""
     _book_studio(tmp_path)
-    imported = import_setup(tmp_path, owner_organization_id=uuid.uuid4(), name="studio")
+    imported = import_setup(
+        tmp_path, owner_organization_id=uuid.uuid4(), name="studio", substrate="file"
+    )
     assert imported.manifest is not None
     body = {
         "manifest": imported.manifest.model_dump(mode="json"),
@@ -241,7 +251,9 @@ def test_flow_eval_gate_produces_a_verdict_without_branching_state(  # ADR-037 /
     stack, in which case the gate records a fail-closed verdict (pass=false) and the run SUCCEEDS —
     exactly the contract; a real PASS verdict is the EURail M2 milestone (#385)."""
     _book_studio(tmp_path)
-    imported = import_setup(tmp_path, owner_organization_id=uuid.uuid4(), name="studio")
+    imported = import_setup(
+        tmp_path, owner_organization_id=uuid.uuid4(), name="studio", substrate="file"
+    )
     assert imported.manifest is not None
     manifest = imported.manifest.model_dump(mode="json")
     # the user declares a flow-evaluation gate on their team (a real OHM authoring choice). The
@@ -274,7 +286,9 @@ def test_undeclared_battery_success_criteria_is_rejected_at_create(  # #479 fail
     """A `battery:<name>` success_criteria naming an UNDECLARED battery is a 422 at create through
     the gateway — never an UnknownBattery that escapes the grader and strands the run in RUNNING."""
     _book_studio(tmp_path)
-    imported = import_setup(tmp_path, owner_organization_id=uuid.uuid4(), name="studio")
+    imported = import_setup(
+        tmp_path, owner_organization_id=uuid.uuid4(), name="studio", substrate="file"
+    )
     assert imported.manifest is not None
     manifest = imported.manifest.model_dump(mode="json")
     orchestration = manifest.get("orchestration") or {}
