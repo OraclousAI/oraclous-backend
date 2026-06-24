@@ -107,3 +107,34 @@ async def test_complete_assignment_marshals_and_wraps_transport() -> None:
 
     with pytest.raises(HarnessClientError):  # harness down → clean error, not a 500
         await _client(down).complete_assignment(aid, "x")
+
+
+async def test_precedence_marshalled_into_the_execute_body() -> None:
+    """#538: the team's precedence is marshalled into the engine→harness POST body."""
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"id": "x", "status": "SUCCEEDED", "output": "done"})
+
+    await _client(handler).execute(
+        input_text="go",
+        manifest_inline={"ohm_version": "1.0"},
+        precedence_order=["rules", "bible"],
+        graph_authoritative=True,
+    )
+    assert captured["body"]["precedence_order"] == ["rules", "bible"]
+    assert captured["body"]["graph_authoritative"] is True
+
+
+async def test_default_precedence_is_omitted_from_the_execute_body() -> None:
+    """Additive: no precedence + the default graph_authoritative=False → neither key is sent."""
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"id": "x", "status": "SUCCEEDED", "output": "done"})
+
+    await _client(handler).execute(input_text="go", manifest_inline={"ohm_version": "1.0"})
+    assert "precedence_order" not in captured["body"]
+    assert "graph_authoritative" not in captured["body"]
