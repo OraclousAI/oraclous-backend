@@ -130,3 +130,33 @@ async def test_get_artifact_serves_verbatim_content(client, fake_service) -> Non
 async def test_get_missing_artifact_is_404(client) -> None:
     resp = await client.get(f"/v1/artifacts/{uuid.uuid4()}", headers=_AUTH)
     assert resp.status_code == 404
+
+
+async def test_get_artifact_decodes_base64_stored_content() -> None:
+    """Ingest stores ``source_content`` base64-encoded; the REAL service decodes it so /v1/artifacts
+    serves the verbatim file (#543). The route-level fake returns the already-decoded value, so this
+    exercises the decode in JobService.get_artifact directly."""
+    import base64
+
+    from oraclous_knowledge_graph_service.services.job_service import JobService
+
+    rec = _record(uuid.uuid4(), filename="reports/thesis.md")
+
+    class _Repo:
+        async def get(self, job_id):
+            return rec if job_id == rec.id else None
+
+        async def get_source_content(self, job_id):
+            return base64.b64encode(b"# verbatim\nbody").decode("ascii")
+
+    class _Graphs:
+        async def get_graph(self, *, graph_id, user_id):
+            return None
+
+    svc = JobService(
+        job_repo=_Repo(),  # type: ignore[arg-type]
+        graph_service=_Graphs(),  # type: ignore[arg-type]
+        enqueue=lambda *_a, **_k: None,
+    )
+    _job, content = await svc.get_artifact(user_id=uuid.uuid4(), artifact_id=rec.id)
+    assert content == "# verbatim\nbody"

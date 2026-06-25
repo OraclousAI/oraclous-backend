@@ -11,6 +11,7 @@ broker.
 from __future__ import annotations
 
 import base64
+import binascii
 import uuid
 from collections.abc import Callable
 
@@ -124,5 +125,13 @@ class JobService:
         if job is None:
             raise JobNotFound(str(artifact_id))
         await self._graphs.get_graph(graph_id=job.graph_id, user_id=user_id)
-        content = await self._jobs.get_source_content(artifact_id)
+        raw = await self._jobs.get_source_content(artifact_id)
+        # ingest stores source_content base64-encoded (submit, above; the worker decodes it the same
+        # way) — serve the VERBATIM file, decoded. Fall back to the raw value if it is not base64.
+        content: str | None = raw
+        if raw is not None:
+            try:
+                content = base64.b64decode(raw, validate=True).decode("utf-8", errors="replace")
+            except (ValueError, binascii.Error):
+                content = raw
         return job, content
