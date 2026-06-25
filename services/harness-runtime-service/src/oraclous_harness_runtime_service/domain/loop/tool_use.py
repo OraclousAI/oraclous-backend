@@ -89,6 +89,19 @@ def _redact(text: str, patterns: list[re.Pattern[str]]) -> str:
     return text
 
 
+# Completion contract (#543): a member that HAS tools but answers on turn one without calling any of
+# them has likely emitted a plan/handoff instead of doing the work (the imported-conductor-agent
+# stub). Nudge it ONCE to actually use its tools before the loop accepts the answer. Bounded to a
+# single nudge so a legitimately tool-less reasoning member still terminates.
+_TOOL_USE_NUDGE = (
+    "You replied without calling any tool. You are executing inside Oraclous now — there is no "
+    "human to act on a handoff or a proposed next step. If your objective requires producing or "
+    "saving any output, you MUST call your tools to do it now (your Write tool persists your "
+    "result to the team graph; your Read tool gathers context). Do the work and call the tool — "
+    "do not only describe it. If you genuinely have no action to take, state that explicitly."
+)
+
+
 async def run_tool_use_loop(
     *,
     llm: LLMClient,
@@ -128,6 +141,11 @@ async def run_tool_use_loop(
     output_used = 0
     steps: list[LoopStep] = []
     last_text = ""
+    nudged = False  # completion contract (#543): one-time "use your tools" re-prompt — see below
+    # Gate the nudge to PRODUCING members — those with a graph-ingest ("ingest") tool that are meant
+    # to persist output. A reasoning/retrieval-only member that legitimately answers without a tool
+    # is never re-prompted (so the completion contract can't add a spurious turn to it).
+    produces = any(s.operation == "ingest" for s in tool_specs)
     started = time.monotonic()
 
     def _over_wall_time() -> bool:
@@ -282,6 +300,16 @@ async def run_tool_use_loop(
             steps.append(
                 LoopStep(len(steps), StepKind.LLM, "primary", "answer", _truncate(last_text))
             )
+            # Completion contract (#543): if this tool-capable member answered without ever calling
+            # a tool, nudge it ONCE to actually use its tools before accepting. Turns an imported
+            # conductor-agent's handoff stub into a real tool-using turn; one-shot so a genuinely
+            # tool-less reasoning member still terminates on the next pass.
+            if not nudged and produces and tool_calls_made == 0:
+                nudged = True
+                messages.append({"role": "assistant", "content": last_text})
+                messages.append({"role": "user", "content": _TOOL_USE_NUDGE})
+                steps.append(LoopStep(len(steps), StepKind.LLM, "primary", "nudge", "use-tools"))
+                continue
             return LoopResult(
                 HarnessStatus.SUCCEEDED,
                 last_text,

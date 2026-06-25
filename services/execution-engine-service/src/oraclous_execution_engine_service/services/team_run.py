@@ -44,6 +44,24 @@ class _Harness(Protocol):
     ) -> dict[str, Any]: ...
 
 
+# Imported Claude-Code "conductor" agents are written to PROPOSE a `## Handoff` for a human to
+# dispatch; run inline inside Oraclous with a thin objective, a model satisfies that persona by
+# emitting a handoff stub (no tool calls, no output). This directive re-frames the member as the
+# EXECUTOR — do the work now and call its tools — so its in-loop graph-ingest fires and the
+# artifacts land on the bound graph (#543 / ADR-041). Compatible with non-imported members (it
+# only asks them to use whatever tools they have); fail-soft (it never blocks a legitimately
+# tool-less reasoning turn — the loop's completion contract handles acceptance).
+EXECUTION_DIRECTIVE = (
+    "You are EXECUTING this objective right now inside Oraclous — you are not planning, and "
+    "there is no human who will act on a handoff. Do the work yourself and USE YOUR TOOLS to do "
+    "it: your Write tool persists your output to the team's shared knowledge graph (this is how "
+    "your work is saved and made visible to the rest of the team); your Read tool retrieves what "
+    "other members have already written there. Produce your substantive output and persist it "
+    "with your Write tool before you finish. A reply that only proposes a '## Handoff' or a next "
+    "step, without doing the work and calling your tools, is NOT an acceptable result."
+)
+
+
 def render_member_input(
     member: OHMMember, envelopes: list[HandoffEnvelope], fan_item: Any = None
 ) -> str:
@@ -55,6 +73,7 @@ def render_member_input(
         parts.append(f"Item: {json.dumps(fan_item, default=str)}")
     for env in envelopes:
         parts.append(f"From {env.from_role}: {json.dumps(env.payload, default=str)}")
+    parts.append(EXECUTION_DIRECTIVE)
     return "\n\n".join(parts)
 
 
@@ -109,16 +128,21 @@ def make_harness_dispatch(
             graph_authoritative=graph_authoritative,
         )
         status = result.get("status")
-        if status != "SUCCEEDED":  # fail-closed — a member's harness must succeed
-            raise HarnessClientError(f"member {member.role!r} harness did not succeed: {status}")
-        # run-tree (#471): record the child execution id so the engine reassembles the tree from its
-        # own record (no cross-DB read into the harness). Skipped if the harness omitted an id.
+        # run-tree (#471): record the child execution id + token cost BEFORE the fail-closed check,
+        # so a FAILED member is still surfaced in GET /tree (not an empty []) and its tokens still
+        # count. Skipped if the harness omitted an id.
         child_id = result.get("id")
         if on_child is not None and child_id is not None:
             on_child(str(child_id))
         # O4 metering (#472): accumulate this member's RAW token cost (0 if the harness omitted it)
         if on_cost is not None:
             on_cost(int(result.get("total_tokens") or 0))
+        if status != "SUCCEEDED":  # fail-closed — surface the REAL harness error, not a bare status
+            detail = result.get("error_message") or result.get("error_type")
+            raise HarnessClientError(
+                f"member {member.role!r} harness did not succeed: {status}"
+                + (f" — {detail}" if detail else "")
+            )
         return {"output": result.get("output"), "status": status}
 
     return dispatch

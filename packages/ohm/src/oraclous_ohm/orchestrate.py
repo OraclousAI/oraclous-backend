@@ -14,6 +14,7 @@ stage + ``fan_out``), and ``conditional`` (a skip predicate) are the three patte
 from __future__ import annotations
 
 import asyncio
+import os
 import time
 from collections.abc import Awaitable, Callable
 from typing import Any, Literal
@@ -28,6 +29,12 @@ from oraclous_ohm.precedence_resolution import clamp_member_source
 
 # Dispatch one member (+ optional fan-out item) given its inbound hand-offs -> output payload.
 DispatchFn = Callable[[OHMMember, list[HandoffEnvelope], Any], Awaitable[Any]]
+
+# Stage fan-out cap (#543): a wide imported team (e.g. 18 members collapsed into one flat stage)
+# would otherwise fire every member's LLM call at once against ONE shared per-org BYOM key and
+# self-throttle (429), failing a random member non-deterministically. Bound how many members
+# dispatch concurrently per stage; env-overridable for keys with higher rate limits.
+_STAGE_CONCURRENCY = max(1, int(os.environ.get("OHM_TEAM_STAGE_CONCURRENCY") or "4"))
 # Whether to dispatch a member given the results so far (conditional skip); default = always.
 PredicateFn = Callable[[OHMMember, dict[str, Any]], bool]
 
@@ -189,6 +196,15 @@ async def run_team(
         else:
             results[role] = await dispatch(member, inbound, None)
 
+    # Stage fan-out cap (#543): bound how many members dispatch concurrently so a wide stage cannot
+    # self-throttle the shared BYOM key. Wraps the run_member calls (NOT the inner fan_out dispatch,
+    # which keeps its own max_parallel) so there is no semaphore re-entrancy / deadlock.
+    stage_sem = asyncio.Semaphore(_STAGE_CONCURRENCY)
+
+    async def _bounded(role: str) -> None:
+        async with stage_sem:
+            await run_member(role)
+
     for stage in stages:
         stage_gates = [r for r in stage if by_role[r].kind == "human"]
         undecided = [g for g in stage_gates if gates.get(g) is None]
@@ -211,7 +227,7 @@ async def run_team(
                 status="rejected",
                 paused_at=rejected,
             )
-        barrier = asyncio.gather(*(run_member(role) for role in stage))  # the fan-in barrier
+        barrier = asyncio.gather(*(_bounded(role) for role in stage))  # the fan-in barrier (capped)
         if _deadline is not None:  # enforce the team wall-clock deadline across the barrier
             remaining = _deadline - time.monotonic()
             if remaining <= 0:
