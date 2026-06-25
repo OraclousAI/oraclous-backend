@@ -113,6 +113,12 @@ class GitHubSinkConnector(InternalTool):
                 },
             )
 
+        # a prior delivery to this (org, repo, head) means the head branch + PR already exist (the
+        # recurring-refresh case) → write the diff to the existing branch, never re-create it. Only
+        # the FIRST delivery creates the branch + PR; a create conflict THERE is a genuine GIT_REF
+        # conflict (fail closed). Keyed on delivery_state, so the unit branch-conflict test (no
+        # injected repo → no prior state → first delivery) still fails closed as specified.
+        redeliver = bool(stored)
         content_by_path = {f["path"]: str(f["content"]) for f in files}
         headers = {"Authorization": f"token {token}", "Accept": "application/vnd.github+json"}
         async with httpx.AsyncClient(
@@ -122,9 +128,10 @@ class GitHubSinkConnector(InternalTool):
             transport=self.transport,
             follow_redirects=False,
         ) as client:
-            conflict = await self._ensure_branch(client, forge, repo, base_branch, head_branch)
-            if conflict is not None:
-                return conflict
+            if not redeliver:
+                conflict = await self._ensure_branch(client, forge, repo, base_branch, head_branch)
+                if conflict is not None:
+                    return conflict
             for path in changed:
                 body: dict[str, Any] = {
                     "message": input_data.get("commit_message", "deliver"),
@@ -136,21 +143,30 @@ class GitHubSinkConnector(InternalTool):
                 existing = await self._existing_sha(client, repo, path, head_branch)
                 if existing:  # an existing file → the Contents API requires its blob sha to update
                     body["sha"] = existing
-                put = await client.put(f"/repos/{repo}/contents/{path}", json=body)
-                if put.status_code not in (200, 201):
-                    return self._forge_error(put.status_code, f"writing {path}")
-            pr = await client.post(
-                f"/repos/{repo}/pulls",
-                json={
-                    "title": input_data.get("pr_title", "Delivery"),
-                    "body": input_data.get("pr_body", ""),
-                    "head": head_branch,
-                    "base": base_branch,
-                },
-            )
-            if pr.status_code not in (200, 201):
-                return self._forge_error(pr.status_code, "opening the PR")
-            pr_url = pr.json().get("html_url")
+                # github's PUT /contents creates OR updates; gitea's PUT is update-only (requires a
+                # sha — verified: a new-file PUT 422s "[SHA]: Required"), so a NEW file on gitea is
+                # created via POST. Update (sha present) is PUT on both forges.
+                method = "POST" if (forge == "gitea" and not existing) else "PUT"
+                write = await client.request(method, f"/repos/{repo}/contents/{path}", json=body)
+                if write.status_code not in (200, 201):
+                    return self._forge_error(write.status_code, f"writing {path}")
+            if redeliver:
+                # the PR for head→base was opened by the first delivery; reuse it (best-effort) —
+                # opening a second would conflict, and the diff lands on the same branch regardless.
+                pr_url = await self._existing_pr_url(client, repo, head_branch)
+            else:
+                pr = await client.post(
+                    f"/repos/{repo}/pulls",
+                    json={
+                        "title": input_data.get("pr_title", "Delivery"),
+                        "body": input_data.get("pr_body", ""),
+                        "head": head_branch,
+                        "base": base_branch,
+                    },
+                )
+                if pr.status_code not in (200, 201):
+                    return self._forge_error(pr.status_code, "opening the PR")
+                pr_url = pr.json().get("html_url")
 
         # record the new state so the NEXT delivery diffs against it (recurring-refresh clean delta)
         if self.delivery_repo is not None:
@@ -206,6 +222,17 @@ class GitHubSinkConnector(InternalTool):
         r = await client.get(f"/repos/{repo}/contents/{path}", params={"ref": ref})
         if r.status_code == 200 and isinstance(r.json(), dict):
             return r.json().get("sha")
+        return None
+
+    @staticmethod
+    async def _existing_pr_url(client: httpx.AsyncClient, repo: str, head: str) -> str | None:
+        """The html_url of the open PR whose head is ``head`` (github + gitea common shape), else
+        None — a re-deliver reuses the first delivery's PR rather than opening a duplicate."""
+        r = await client.get(f"/repos/{repo}/pulls", params={"state": "open"})
+        if r.status_code == 200 and isinstance(r.json(), list):
+            for pr in r.json():
+                if (pr.get("head") or {}).get("ref") == head:
+                    return pr.get("html_url")
         return None
 
     @staticmethod
