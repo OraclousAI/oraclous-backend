@@ -145,6 +145,26 @@ async def test_deliver_writes_changed_files_via_contents_api_and_opens_a_pr(forg
     assert "/pulls" in methods_paths
 
 
+async def test_repo_can_be_bound_on_the_instance_configuration_not_the_input() -> None:
+    """The instance can be CONFIGURED for a repo (the "configured, not passed" shape, #542): a
+    deliver with no explicit ``repo`` falls back to the instance configuration's repo, and every
+    forge call targets that bound repo."""
+    seen: list[tuple[str, str]] = []
+    ctx = ExecutionContext(
+        instance_id=uuid.uuid4(),
+        organisation_id=uuid.uuid4(),
+        user_id=uuid.uuid4(),
+        execution_id=uuid.uuid4(),
+        configuration={"forge": "github", "repo": _REPO},
+        credentials={"api_key": {"api_key": "ghp_dummy"}},
+    )
+    deliver = {k: v for k, v in _deliver([{"path": "a.md", "content": "x"}]).items() if k != "repo"}
+    res = await _sink(_forge_handler(seen)).execute(deliver, ctx)
+    assert res.success, res.error_message
+    assert res.data["status"] == "DELIVERED"
+    assert seen and all(_REPO in p for _, p in seen)  # every forge call hit the bound config repo
+
+
 # ----------------------------------------------------------------- fail-closed
 
 
