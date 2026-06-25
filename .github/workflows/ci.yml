@@ -267,7 +267,10 @@ jobs:
       - name: Arm the gitea deliver-back forge (#515 — mint admin/token so the O7 e2e RUNS)
         run: scripts/setup-gitea-e2e.sh >> "$GITHUB_ENV"
       - name: Deterministic e2e through the gateway
-        run: uv run pytest tests/e2e -m "e2e and not byom and not oauth" -v -p no:cacheprovider
+        # `github` is DESELECTED here (like byom): the real-github.com O7 keyed proof (#542) is
+        # human-gated — run locally via `scripts/e2e.sh --github` with deploy/.env creds + Reza
+        # sign-off (CI has no real write PAT). The gitea forge is its deterministic CI counterpart.
+        run: uv run pytest tests/e2e -m "e2e and not byom and not oauth and not github" -v -p no:cacheprovider
       - name: OAuth login e2e (a real local dex provider)
         run: |
           $COMPOSE_OAUTH up -d --wait dex
