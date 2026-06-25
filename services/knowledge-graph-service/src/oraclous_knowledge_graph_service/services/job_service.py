@@ -93,3 +93,36 @@ class JobService:
         return await self._jobs.list_for_graph(
             graph_id, exclude_source_types=(COMMUNITY_DETECT_SOURCE_TYPE,)
         )
+
+    async def list_artifacts(
+        self,
+        *,
+        user_id: uuid.UUID,
+        graph_id: uuid.UUID,
+        q: str | None = None,
+        source_type: str | None = None,
+    ) -> list[IngestionJobRecord]:
+        """The graph's ARTIFACTS (its ingested documents) for the unified /v1/artifacts surface
+        (#543) — optionally filtered by a filename query ``q`` or ``source_type``. Org-scoped via
+        graph ownership (a non-owned graph → GraphNotFound → 404). Verbatim content is served only
+        by ``get_artifact`` (the list is summaries)."""
+        records = await self.list_documents(user_id=user_id, graph_id=graph_id)
+        if source_type:
+            records = [r for r in records if r.source_type == source_type]
+        if q:
+            ql = q.lower()
+            records = [r for r in records if ql in (r.filename or "").lower()]
+        return records
+
+    async def get_artifact(
+        self, *, user_id: uuid.UUID, artifact_id: uuid.UUID
+    ) -> tuple[IngestionJobRecord, str | None]:
+        """One artifact's record + its verbatim content (#543). Org-scoped: the repo read is
+        org-bound, and the owning graph is ownership-checked; a missing / cross-org artifact raises
+        JobNotFound (→ 404)."""
+        job = await self._jobs.get(artifact_id)
+        if job is None:
+            raise JobNotFound(str(artifact_id))
+        await self._graphs.get_graph(graph_id=job.graph_id, user_id=user_id)
+        content = await self._jobs.get_source_content(artifact_id)
+        return job, content

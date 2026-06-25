@@ -11,6 +11,7 @@ from oraclous_telemetry import install_telemetry, instrument_app
 
 from oraclous_knowledge_graph_service.core.lifespan import lifespan
 from oraclous_knowledge_graph_service.routes import (
+    artifacts_routes,
     community_routes,
     graph_routes,
     health_routes,
@@ -42,4 +43,5 @@ def create_app() -> FastAPI:
     app.include_router(community_routes.kinds_router)
     app.include_router(community_routes.router)
     app.include_router(memory_routes.router)
+    app.include_router(artifacts_routes.router)  # /v1/artifacts — unified served surface (#543)
     return app
