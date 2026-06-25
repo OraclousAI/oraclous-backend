@@ -30,6 +30,9 @@ from oraclous_capability_registry_service.domain.executors.base import (
 
 _TIMEOUT_S = 30.0
 _INGEST_PATH = "/internal/v1/ingest"
+# the source_types the KGS extractor accepts; an agent-supplied value outside this set defaults to
+# "text" (the free-text path) so an agent write always indexes instead of failing extraction (#543).
+_KGS_SOURCE_TYPES = frozenset({"text", "md", "markdown", "csv", "json", "code", "pdf"})
 
 
 class GraphIngestConnector(InternalTool):
@@ -81,8 +84,15 @@ class GraphIngestConnector(InternalTool):
             )
         # The org is NEVER taken from the body (ORG001); it is forwarded from the execution context.
         body: dict[str, Any] = {"graph_id": graph_id, "content": content}
+        # Normalize the source_type: an agent (LLM) may set an arbitrary value (e.g. "automated"),
+        # but the KGS extractor is strict and rejects unknown types (the ingest job then FAILS, so
+        # the artifact is stored-but-not-indexed). Agent writes are text/markdown — default an
+        # unrecognized type to the free-text "text" path so the write actually indexes (#543). An
+        # absent type is left to the KGS default (also "text").
         source_type = input_data.get("source_type")
         if source_type is not None:
+            if not isinstance(source_type, str) or source_type.lower() not in _KGS_SOURCE_TYPES:
+                source_type = "text"
             body["source_type"] = source_type
         recipe_id = input_data.get("recipe_id")
         if recipe_id is not None:
