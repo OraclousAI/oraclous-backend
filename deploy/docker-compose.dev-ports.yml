@@ -36,3 +36,9 @@ services:
   execution-engine-service:
     ports:
       - "8008:8000"
+  # the deliver-back (#515) test forge — host-published so scripts/e2e.sh can mint the admin/token
+  # and the e2e setup can create repos + assert the landed files (the registry reaches it internally
+  # at gitea:3000; the e2e setup reaches it here at localhost:3001).
+  gitea:
+    ports:
+      - "3001:3000"

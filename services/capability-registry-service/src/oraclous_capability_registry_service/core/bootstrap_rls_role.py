@@ -33,7 +33,13 @@ from oraclous_capability_registry_service.core.config import get_settings
 
 # The four org-scoped capability-registry tables RLS is enabled on (0006_enable_rls). The runtime
 # role needs DML on exactly these (no sequences — all PKs are client-generated UUIDs).
-_RLS_TABLES = ("tool_instances", "executions", "harness_graph_binding", "capability_descriptors")
+_RLS_TABLES = (
+    "tool_instances",
+    "executions",
+    "harness_graph_binding",
+    "capability_descriptors",
+    "delivery_state",
+)
 
 # Dev/self-host runtime role + password. Production overrides the runtime DSN with a managed
 # credential; this default keeps the dev docker stack key-free and matches the compose runtime DSN

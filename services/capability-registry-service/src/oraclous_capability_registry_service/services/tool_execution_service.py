@@ -12,6 +12,7 @@ from __future__ import annotations
 import uuid
 from typing import Any, cast
 
+from oraclous_capability_registry_service.domain.connectors.github_sink import GitHubSinkConnector
 from oraclous_capability_registry_service.domain.errors import CapabilityNotFoundError
 from oraclous_capability_registry_service.domain.executors.base import ExecutionContext
 from oraclous_capability_registry_service.domain.executors.factory import (
@@ -22,6 +23,9 @@ from oraclous_capability_registry_service.domain.executors.factory import (
 from oraclous_capability_registry_service.models.enums import ExecutionStatus, InstanceStatus
 from oraclous_capability_registry_service.repositories.capability_repository import (
     CapabilityRepository,
+)
+from oraclous_capability_registry_service.repositories.delivery_state_repository import (
+    DeliveryStateRepository,
 )
 from oraclous_capability_registry_service.repositories.execution_repository import (
     ExecutionRepository,
@@ -73,11 +77,15 @@ class ToolExecutionService:
         capabilities: CapabilityRepository,
         executions: ExecutionRepository,
         broker: CredentialBrokerPort,
+        delivery_state: DeliveryStateRepository | None = None,
     ) -> None:
         self._instances = instances
         self._capabilities = capabilities
         self._executions = executions
         self._broker = broker
+        # the deliver-back clean-delta store, injected into a GitHubSinkConnector at execute time
+        # (None on a unit/test construction → the sink first-delivers everything, no persistence).
+        self._delivery_state = delivery_state
 
     async def execute_sync(
         self,
@@ -180,6 +188,10 @@ class ToolExecutionService:
         )
         try:
             executor = create_executor(descriptor)
+            if isinstance(executor, GitHubSinkConnector):
+                # the sink owns the clean-delta; the service owns the DB repo (keeps the executor a
+                # pure descriptor object, mirroring how executions/instances are service-held).
+                executor.delivery_repo = self._delivery_state
             result = await executor.execute(body.input_data, context)
         except NoExecutorError as exc:  # defensive — has_executor already gated this
             raise ExecutionNotReadyError(str(exc), error_code="no_executor") from exc

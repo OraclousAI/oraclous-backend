@@ -935,3 +935,69 @@ class SendToDraftsPlugin(_ConnectorToolPlugin):
         },
     }
     OUTPUT_SCHEMA = {"type": "object"}
+
+
+@plugin_registry.register
+class GitHubSinkPlugin(_ConnectorToolPlugin):
+    """Deliver-back git-tree SINK (#515 / E6 O7) — bound as ``core/github-sink@1.0.0``. The
+    ``deliver`` op writes a team's outputs into the user's git tree (a head branch + a PR) via the
+    GitHub/Gitea-common Contents API, with Oraclous owning the clean-delta (an identical re-deliver
+    is a NO_OP; a changed file writes only that diff). A DISTINCT capability from the read-only
+    ``GitHub Reader`` — write is never folded into the read tool. PAT via the broker, egress-gated.
+    """
+
+    NAME = "GitHub Sink"  # slug ``github-sink`` MUST match the ref's name slug
+    CATEGORY = "DELIVERY"
+    DESCRIPTION = (
+        "Deliver files into a user's git tree (github or gitea) on a head branch + a PR via the "
+        "Contents API. A recurring deliver writes a clean diff, never a clobber (identical→NO_OP)."
+    )
+    TYPE = "API"
+    TAGS = ["delivery", "sink", "github", "gitea", "git"]
+    CAPABILITIES = [
+        {
+            "name": "deliver",
+            "description": "Write changed files to a head branch + open a PR (clean-delta).",
+            "parameters": {
+                "repo": "str",
+                "base_branch": "str",
+                "head_branch": "str",
+                "files": "list",
+            },
+        },
+    ]
+    CREDENTIAL_REQUIREMENTS: list[dict] = [
+        {"type": "api_key", "provider": "github", "required": True}
+    ]
+    CONFIGURATION_SCHEMA = {
+        "type": "object",
+        "properties": {
+            "forge": {"type": "string", "enum": ["github", "gitea"], "default": "github"},
+            "base_url": {"type": "string"},
+        },
+    }
+    INPUT_SCHEMA = {
+        "type": "object",
+        "required": ["operation", "repo", "files"],
+        "properties": {
+            "operation": {"type": "string", "enum": ["deliver"]},
+            "repo": {"type": "string"},
+            "base_branch": {"type": "string"},
+            "head_branch": {"type": "string"},
+            "files": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "required": ["path", "content"],
+                    "properties": {
+                        "path": {"type": "string"},
+                        "content": {"type": "string"},
+                    },
+                },
+            },
+            "commit_message": {"type": "string"},
+            "pr_title": {"type": "string"},
+            "pr_body": {"type": "string"},
+        },
+    }
+    OUTPUT_SCHEMA = {"type": "object"}

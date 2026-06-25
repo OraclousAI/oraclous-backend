@@ -38,6 +38,23 @@ _recreate_harness() {  # $1 = fake|live
   echo "!! harness did not become healthy" >&2; return 1
 }
 
+_setup_gitea() {  # arm the deliver-back (#515) forge: mint admin/token (shared script) + relax egress
+  # the admin/token mint + GITEA_* shape lives in ONE shared script (scripts/setup-gitea-e2e.sh) the
+  # CI deployed-stack-e2e step also calls, so the gitea setup never drifts (the CTO's no-drift fix).
+  local kv
+  if ! kv=$(COMPOSE="$COMPOSE" bash scripts/setup-gitea-e2e.sh); then
+    echo ">> deliver-back e2e (#515) will SKIP (gitea setup unavailable)"; return 0
+  fi
+  while IFS= read -r line; do [[ -n "$line" ]] && export "${line?}"; done <<< "$kv"
+  # the github-sink must reach gitea:3000 (a single-label private host) → recreate the registry with
+  # the single-tenant egress knob on (default off; IMDS/metadata stay blocked in either mode). CI
+  # sets this knob as a job env at `up` instead, so it does not need this recreate.
+  CAPABILITY_REGISTRY_ALLOW_PRIVATE_EGRESS=true $COMPOSE up -d --force-recreate --no-deps \
+    capability-registry-service >/dev/null 2>&1 || true
+  for _ in $(seq 1 20); do curl -fsS http://localhost:8001/health >/dev/null 2>&1 && break; sleep 1; done
+  echo ">> gitea armed + registry egress-relaxed — deliver-back e2e (#515) will RUN"
+}
+
 _require_gateway() {
   curl -fsS http://localhost:8006/health >/dev/null 2>&1 && return 0
   echo "!! gateway :8006 is NOT reachable — bring the stack up first (scripts/e2e.sh --up)." >&2
@@ -58,6 +75,7 @@ _require_gateway
 
 run_deterministic() {
   _recreate_harness fake
+  _setup_gitea
   echo ">> deterministic e2e through the gateway (fake LLM)…"
   uv run pytest tests/e2e -m "e2e and not byom and not oauth" -v -p no:cacheprovider \
     && _banner "deterministic"

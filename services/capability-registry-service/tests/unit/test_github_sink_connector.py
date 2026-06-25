@@ -70,7 +70,9 @@ def _forge_handler(seen: list[tuple[str, str]]) -> Callable[[httpx.Request], htt
             return httpx.Response(200, json={"object": {"sha": "basesha"}})
         if m == "GET" and "/contents/" in p:  # file does not exist yet → create (no sha needed)
             return httpx.Response(404, json={"message": "Not Found"})
-        if m == "PUT" and "/contents/" in p:  # create/update one file → one commit
+        if m in ("PUT", "POST") and "/contents/" in p:  # write a file → one commit. github PUT
+            # creates-or-updates; gitea's PUT is update-only (verified: a new-file PUT 422s
+            # "[SHA]: Required"), so a NEW file on gitea is created via POST.
             return httpx.Response(201, json={"commit": {"sha": "filecommitsha"}})
         if m == "POST" and p.endswith("/pulls"):
             return httpx.Response(
@@ -136,7 +138,10 @@ async def test_deliver_writes_changed_files_via_contents_api_and_opens_a_pr(forg
     methods_paths = " ".join(f"{m}{p}" for m, p in seen)
     # a head branch was created (per-forge shim) + each file written via the Contents API + a PR
     assert ("/git/refs" in methods_paths) if forge == "github" else ("/branches" in methods_paths)
-    assert methods_paths.count("PUT") == 2  # one Contents PUT per changed file
+    # one Contents write per changed file — github PUT, gitea POST (its PUT is update-only, needs a
+    # sha; a new file is created via POST — verified against real gitea 1.22).
+    content_writes = sum(1 for m, p in seen if m in ("PUT", "POST") and "/contents/" in p)
+    assert content_writes == 2
     assert "/pulls" in methods_paths
 
 

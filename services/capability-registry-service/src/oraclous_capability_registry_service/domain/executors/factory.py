@@ -20,6 +20,7 @@ from oraclous_capability_registry_service.domain.connectors.generic_rest import 
     GenericRestConnector,
 )
 from oraclous_capability_registry_service.domain.connectors.github import GitHubReader
+from oraclous_capability_registry_service.domain.connectors.github_sink import GitHubSinkConnector
 from oraclous_capability_registry_service.domain.connectors.graph_ingest import (
     GraphIngestConnector,
 )
@@ -62,6 +63,7 @@ from oraclous_capability_registry_service.domain.plugins.builtin import (
     FederatedSearchPlugin,
     FindSimilarPlugin,
     GitHubReaderPlugin,
+    GitHubSinkPlugin,
     GlobToolPlugin,
     GraphIngestPlugin,
     GrepToolPlugin,
@@ -93,6 +95,7 @@ _EXECUTORS: dict[str, type[BaseToolExecutor]] = {
     MySQLReaderPlugin.plugin_id(): MySQLReader,
     NotionReaderPlugin.plugin_id(): NotionReader,
     GitHubReaderPlugin.plugin_id(): GitHubReader,
+    GitHubSinkPlugin.plugin_id(): GitHubSinkConnector,
     KnowledgeRetrieverPlugin.plugin_id(): KnowledgeRetrieverConnector,
     FindSimilarPlugin.plugin_id(): FindSimilarConnector,
     GraphIngestPlugin.plugin_id(): GraphIngestConnector,
