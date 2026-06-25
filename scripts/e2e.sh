@@ -38,26 +38,17 @@ _recreate_harness() {  # $1 = fake|live
   echo "!! harness did not become healthy" >&2; return 1
 }
 
-_setup_gitea() {  # arm the deliver-back (#515) forge: mint admin + token, export GITEA_*, relax egress
-  curl -fsS http://localhost:3001/api/healthz >/dev/null 2>&1 || {
-    echo ">> gitea (:3001) not reachable — the deliver-back e2e (#515) will SKIP"; return 0; }
-  # idempotent admin (ignore 'user already exists'); the gitea CLI runs as the git user
-  $COMPOSE exec -u git -T gitea gitea admin user create \
-    --admin --username oraclous --password oraclous-e2e \
-    --email oraclous@example.com --must-change-password=false >/dev/null 2>&1 || true
-  local tok
-  tok=$(curl -fsS -u oraclous:oraclous-e2e -X POST \
-          http://localhost:3001/api/v1/users/oraclous/tokens \
-          -H 'Content-Type: application/json' \
-          -d "{\"name\":\"e2e-$$-$RANDOM\",\"scopes\":[\"write:repository\",\"write:user\"]}" \
-          2>/dev/null | python3 -c 'import sys,json;print(json.load(sys.stdin).get("sha1",""))' \
-          2>/dev/null) || true
-  [[ -n "${tok:-}" ]] || { echo ">> could not mint a gitea token — deliver-back e2e will SKIP"; return 0; }
-  export GITEA_TOKEN="$tok"
-  export GITEA_API_BASE="http://localhost:3001/api/v1"
-  export GITEA_INTERNAL_BASE="http://gitea:3000/api/v1"
+_setup_gitea() {  # arm the deliver-back (#515) forge: mint admin/token (shared script) + relax egress
+  # the admin/token mint + GITEA_* shape lives in ONE shared script (scripts/setup-gitea-e2e.sh) the
+  # CI deployed-stack-e2e step also calls, so the gitea setup never drifts (the CTO's no-drift fix).
+  local kv
+  if ! kv=$(COMPOSE="$COMPOSE" bash scripts/setup-gitea-e2e.sh); then
+    echo ">> deliver-back e2e (#515) will SKIP (gitea setup unavailable)"; return 0
+  fi
+  while IFS= read -r line; do [[ -n "$line" ]] && export "${line?}"; done <<< "$kv"
   # the github-sink must reach gitea:3000 (a single-label private host) → recreate the registry with
-  # the single-tenant egress knob on (default off; IMDS/metadata stay blocked in either mode)
+  # the single-tenant egress knob on (default off; IMDS/metadata stay blocked in either mode). CI
+  # sets this knob as a job env at `up` instead, so it does not need this recreate.
   CAPABILITY_REGISTRY_ALLOW_PRIVATE_EGRESS=true $COMPOSE up -d --force-recreate --no-deps \
     capability-registry-service >/dev/null 2>&1 || true
   for _ in $(seq 1 20); do curl -fsS http://localhost:8001/health >/dev/null 2>&1 && break; sleep 1; done

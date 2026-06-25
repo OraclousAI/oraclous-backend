@@ -241,6 +241,11 @@ jobs:
       CRED_BROKER_AUTH_MODE: gateway
       CAPABILITY_REGISTRY_AUTH_MODE: gateway
       CAPABILITY_REGISTRY_BROKER_MODE: real
+      # #515 deliver-back: the github-sink reaches the same-stack gitea forge at gitea:3000 (a
+      # single-label private host the SSRF gate rejects by default). Relax egress for THIS test stack
+      # only (single-tenant; default-OFF in prod; IMDS/link-local stay blocked in either mode). The
+      # forge admin/token is minted by the "Arm the gitea deliver-back forge" step below.
+      CAPABILITY_REGISTRY_ALLOW_PRIVATE_EGRESS: "true"
       COMPOSE: "docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.dev-ports.yml"
       COMPOSE_OAUTH: "docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.dev-ports.yml -f deploy/docker-compose.e2e-oauth.yml"
     steps:
@@ -256,6 +261,11 @@ jobs:
         run: |
           for _ in $(seq 1 60); do curl -fsS localhost:8006/health >/dev/null 2>&1 && exit 0; sleep 2; done
           echo "::error::gateway :8006 never became healthy"; exit 1
+      # #515: mint the gitea admin/token + export GITEA_* so the deliver-back e2e RUNS (not skips on
+      # requires_gitea). Same shared script scripts/e2e.sh calls (no drift). Fails loud if the
+      # already-healthy gitea cannot be set up — a skip would not count as the O7 proof (rule 3).
+      - name: Arm the gitea deliver-back forge (#515 — mint admin/token so the O7 e2e RUNS)
+        run: scripts/setup-gitea-e2e.sh >> "$GITHUB_ENV"
       - name: Deterministic e2e through the gateway
         run: uv run pytest tests/e2e -m "e2e and not byom and not oauth" -v -p no:cacheprovider
       - name: OAuth login e2e (a real local dex provider)
