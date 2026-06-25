@@ -245,6 +245,11 @@ services:
       # to the knowledge-graph-service's /internal/v1/ingest over the same internal/gateway-trust
       # path (no broker credential), the caller's org identity forwarded the same way.
       KNOWLEDGE_GRAPH_URL: "http://knowledge-graph-service:8000"
+      # Single-tenant egress relaxation for the deliver-back e2e: the github-sink delivers into the
+      # same-stack gitea forge (http://gitea:3000 — a single-label private host the SSRF gate rejects
+      # by default). Default OFF (multi-tenant safe); IMDS/metadata stay blocked in either mode. The
+      # deliver-back e2e (scripts/e2e.sh) recreates this service with it true.
+      CAPABILITY_REGISTRY_ALLOW_PRIVATE_EGRESS: "${CAPABILITY_REGISTRY_ALLOW_PRIVATE_EGRESS:-false}"
     depends_on:
       postgres:
         condition: service_healthy
@@ -889,6 +894,37 @@ services:
     profiles: [services]
     networks: [substrate]
 
+  # Deliver-back (#515 / E6 O7) test forge — a REAL Gitea the github-sink delivers into via the
+  # Contents API (the deterministic O7 proof; the real-github.com proof is #542). No fakes — the
+  # same real-substrate pattern as the testcontainers. LOCAL stack only (not a platform service).
+  # The registry reaches it at http://gitea:3000 (single-label → needs the registry's
+  # CAPABILITY_REGISTRY_ALLOW_PRIVATE_EGRESS knob); the e2e setup reaches it on the host via
+  # docker-compose.dev-ports (3001). INSTALL_LOCK skips the web installer; scripts/e2e.sh mints the
+  # admin + a scoped token at run time (no secret baked into the image).
+  gitea:
+    image: gitea/gitea:1.22
+    restart: unless-stopped
+    environment:
+      USER_UID: "1000"
+      USER_GID: "1000"
+      GITEA__security__INSTALL_LOCK: "true"
+      GITEA__server__HTTP_PORT: "3000"
+      GITEA__server__ROOT_URL: "http://localhost:3001/"
+      GITEA__database__DB_TYPE: "sqlite3"
+      GITEA__service__DISABLE_REGISTRATION: "true"
+    expose:
+      - "3000"
+    volumes:
+      - gitea_data:/data
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:3000/api/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    profiles: [services]
+    networks: [substrate]
+
 networks:
   substrate:
     driver: bridge
@@ -898,3 +934,4 @@ volumes:
   neo4j_logs:
   neo4j_plugins:
   pgdata:
+  gitea_data:

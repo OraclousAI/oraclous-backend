@@ -38,6 +38,32 @@ _recreate_harness() {  # $1 = fake|live
   echo "!! harness did not become healthy" >&2; return 1
 }
 
+_setup_gitea() {  # arm the deliver-back (#515) forge: mint admin + token, export GITEA_*, relax egress
+  curl -fsS http://localhost:3001/api/healthz >/dev/null 2>&1 || {
+    echo ">> gitea (:3001) not reachable — the deliver-back e2e (#515) will SKIP"; return 0; }
+  # idempotent admin (ignore 'user already exists'); the gitea CLI runs as the git user
+  $COMPOSE exec -u git -T gitea gitea admin user create \
+    --admin --username oraclous --password oraclous-e2e \
+    --email oraclous@example.com --must-change-password=false >/dev/null 2>&1 || true
+  local tok
+  tok=$(curl -fsS -u oraclous:oraclous-e2e -X POST \
+          http://localhost:3001/api/v1/users/oraclous/tokens \
+          -H 'Content-Type: application/json' \
+          -d "{\"name\":\"e2e-$$-$RANDOM\",\"scopes\":[\"write:repository\",\"write:user\"]}" \
+          2>/dev/null | python3 -c 'import sys,json;print(json.load(sys.stdin).get("sha1",""))' \
+          2>/dev/null) || true
+  [[ -n "${tok:-}" ]] || { echo ">> could not mint a gitea token — deliver-back e2e will SKIP"; return 0; }
+  export GITEA_TOKEN="$tok"
+  export GITEA_API_BASE="http://localhost:3001/api/v1"
+  export GITEA_INTERNAL_BASE="http://gitea:3000/api/v1"
+  # the github-sink must reach gitea:3000 (a single-label private host) → recreate the registry with
+  # the single-tenant egress knob on (default off; IMDS/metadata stay blocked in either mode)
+  CAPABILITY_REGISTRY_ALLOW_PRIVATE_EGRESS=true $COMPOSE up -d --force-recreate --no-deps \
+    capability-registry-service >/dev/null 2>&1 || true
+  for _ in $(seq 1 20); do curl -fsS http://localhost:8001/health >/dev/null 2>&1 && break; sleep 1; done
+  echo ">> gitea armed + registry egress-relaxed — deliver-back e2e (#515) will RUN"
+}
+
 _require_gateway() {
   curl -fsS http://localhost:8006/health >/dev/null 2>&1 && return 0
   echo "!! gateway :8006 is NOT reachable — bring the stack up first (scripts/e2e.sh --up)." >&2
@@ -58,6 +84,7 @@ _require_gateway
 
 run_deterministic() {
   _recreate_harness fake
+  _setup_gitea
   echo ">> deterministic e2e through the gateway (fake LLM)…"
   uv run pytest tests/e2e -m "e2e and not byom and not oauth" -v -p no:cacheprovider \
     && _banner "deterministic"
