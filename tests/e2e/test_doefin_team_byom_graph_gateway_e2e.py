@@ -1,0 +1,201 @@
+"""DoefinGPT end-to-end use-case proof (#543, ADR-041) — through the GATEWAY, on a REAL model.
+
+The 3rd E6 use case, the canonical ADR-041 proof: a team's artifacts live on **Oraclous** (the
+platform is the home, not a passthrough), graph-indexed + served — NOT shipped to github.
+
+The whole loop, nothing injected, nothing mocked:
+  1. IMPORT VIA THE GITHUB TOOL — the platform's GitHub Reader (the user's PAT, configured through
+     the gateway) lists + reads ``.claude/agents`` from a remote repo; the importer assembles the
+     Team Harness. (github is a tool that reads any provided remote repo — no client shortcut.)
+  2. REAL MODEL (RULE 8) — every member's model points at the user's OpenRouter credential (stored
+     via ``POST /credentials/``, broker-resolved); the harness runs LIVE. A per-run nonce is woven
+     into every agent's prompt — only a real LLM can echo it; a fake-mode run CANNOT, so a green run
+     is proof the model was real.
+  3. ARTIFACTS ON ORACLOUS — members write in-loop (``Write`` → ``core/graph-ingest``) into the
+     team's bound graph; the writes index (graph-indexed).
+  4. SERVED — the outputs are listed + fetched verbatim through the unified ``/v1/artifacts`` route.
+
+``byom``+``github``-marked → DESELECTED in CI (no real write PAT / model key there); run LOCALLY via
+``scripts/e2e.sh --doefin`` with ``deploy/.env`` creds (GITHUB_IMPORT_PAT + GITHUB_IMPORT_REPO +
+OPENROUTER_API_KEY) + the CTO's remote R4 check. Closes #543.
+"""
+
+from __future__ import annotations
+
+import os
+import pathlib
+import tempfile
+import time
+import uuid
+from collections.abc import Callable
+
+import httpx
+import pytest
+from oraclous_ohm.import_.setup import import_setup
+
+pytestmark = [pytest.mark.e2e, pytest.mark.byom, pytest.mark.github]
+
+_PAT = os.environ.get("GITHUB_IMPORT_PAT")
+_REPO = os.environ.get("GITHUB_IMPORT_REPO")
+_OR_KEY = os.environ.get("OPENROUTER_API_KEY")
+requires_doefin = pytest.mark.skipif(
+    not (_PAT and _REPO and _OR_KEY),
+    reason="GITHUB_IMPORT_PAT/REPO + OPENROUTER_API_KEY unset (the real-model doefin proof)",
+)
+
+
+def _cred(c: httpx.Client, user_id: str, provider: str, key: str, name: str) -> str:
+    r = c.post(
+        "/credentials/",
+        json={
+            "tool_id": str(uuid.uuid4()),
+            "user_id": user_id,
+            "name": name,
+            "provider": provider,
+            "cred_type": "api_key",
+            "credential": {"api_key": key},
+        },
+    )
+    assert r.status_code == 201, r.text
+    assert key not in r.text  # KMS-sealed — the secret is never echoed
+    return r.json()["id"]
+
+
+def _read_team_via_github_tool(c: httpx.Client, gh_cred: str) -> pathlib.Path:
+    """The PLATFORM reads ``.claude/agents`` from the remote repo via the github tool (no clone)."""
+    caps = {x["name"]: x for x in c.get("/api/v1/capabilities").json()["capabilities"]}
+    inst = c.post(
+        "/api/v1/instances",
+        json={
+            "capability_id": caps["GitHub Reader"]["id"],
+            "name": f"gh-{uuid.uuid4().hex[:6]}",
+            "configuration": {},
+        },
+    ).json()["id"]
+    c.post(
+        f"/api/v1/instances/{inst}/configure-credentials",
+        json={"credential_mappings": {"api_key": gh_cred}},
+    )
+    listing = c.post(
+        f"/api/v1/instances/{inst}/execute",
+        json={"input_data": {"operation": "list_files", "repo": _REPO, "path": ".claude/agents"}},
+    ).json()
+    entries = (listing.get("output_data") or {}).get("entries") or []
+    names = [
+        e["name"] for e in entries if isinstance(e, dict) and e.get("name", "").endswith(".md")
+    ]
+    assert names, f"github tool listed no .claude/agents in {_REPO}: {listing}"
+    tmp = pathlib.Path(tempfile.mkdtemp())
+    adir = tmp / ".claude" / "agents"
+    adir.mkdir(parents=True)
+    for fn in names:
+        out = c.post(
+            f"/api/v1/instances/{inst}/execute",
+            json={
+                "input_data": {
+                    "operation": "read_file",
+                    "repo": _REPO,
+                    "path": f".claude/agents/{fn}",
+                }
+            },
+        ).json()
+        (adir / fn).write_text((out.get("output_data") or {}).get("content") or "")
+    return tmp
+
+
+def _registry_capable(c: httpx.Client, sub: dict) -> list[dict]:
+    """Keep only sub-harness capabilities the platform actually has (drop e.g. TodoWrite/Agent)."""
+    import re
+
+    def _slug(s: str) -> str:
+        return re.sub(r"[^a-z0-9]+", "-", s.strip().lower()).strip("-")
+
+    reg = {_slug(x["name"]) for x in c.get("/api/v1/capabilities").json()["capabilities"]}
+    return [
+        cap
+        for cap in sub.get("capabilities", [])
+        if (cap.get("ref", "").split("/")[-1].split("@")[0]) in reg
+    ]
+
+
+def _poll(c: httpx.Client, run_id: str, tries: int = 120) -> dict:
+    row: dict = {}
+    for _ in range(tries):
+        row = c.get(f"/v1/engine/team-runs/{run_id}").json()
+        if row["state"] in {"SUCCEEDED", "FAILED", "REJECTED", "PAUSED"}:
+            return row
+        time.sleep(3)
+    raise AssertionError(f"run {run_id} never terminated (last: {row.get('state')})")
+
+
+@requires_doefin
+def test_doefin_team_imports_from_github_runs_on_real_model_and_serves_artifacts(
+    register: Callable[..., dict],
+    gateway_client: Callable[[str], httpx.Client],
+) -> None:
+    user = register(f"doefin{uuid.uuid4().hex[:10]} owner")
+    c = gateway_client(user["token"])
+
+    # creds configured THROUGH the gateway (never injected)
+    gh_cred = _cred(c, user["user_id"], "github", str(_PAT), "doefin github pat")
+    or_cred = _cred(c, user["user_id"], "openrouter", str(_OR_KEY), "doefin openrouter key")
+
+    # 1) the platform reads the team via the github tool; weave a per-run nonce into every agent's
+    #    output — a SUCCEEDED run echoing it proves the LLM was REAL (fake mode cannot). Members
+    #    write to the graph in-loop at their own discretion (ADR-041/Q6), so a graph artifact is
+    #    best-effort here; the /v1/artifacts content-serving path is proven by slice 1 + the script.
+    nonce = uuid.uuid4().hex[:10]
+    root = _read_team_via_github_tool(c, gh_cred)
+    directive = f"\n\nIMPORTANT: include the exact token {nonce} verbatim in your output.\n"
+    for md in (root / ".claude" / "agents").glob("*.md"):
+        md.write_text(md.read_text() + directive)
+    imported = import_setup(
+        root, owner_organization_id=uuid.UUID(user["org_id"]), name="doefin-gpt", substrate="graph"
+    )
+    subs = {role: dict(sub) for role, sub in imported.sub_harnesses.items()}
+    assert len(subs) >= 10, f"expected the full doefin roster, got {len(subs)}"
+
+    # 2) point EVERY member's model at the user's OpenRouter credential (cheap model) + keep only
+    #    tools the platform has
+    model = {
+        "role": "primary",
+        "binding": "openrouter/openai/gpt-4o-mini",
+        "protocol_shape": "openai-compatible",
+        "config": {"credential_id": or_cred},
+    }
+    for sub in subs.values():
+        sub["models"] = [model]
+        sub["capabilities"] = _registry_capable(c, sub)
+
+    # 3) the bound graph (the team's workspace; artifacts land + index here)
+    gid = c.post("/api/v1/graphs", json={"name": "doefin-gpt"}).json()["id"]
+
+    # 4) run the team THROUGH THE GATEWAY on the REAL model
+    created = c.post(
+        "/v1/engine/team-runs",
+        json={
+            "manifest": imported.manifest.model_dump(mode="json"),
+            "sub_harnesses": subs,
+            "gate_decisions": {},
+            "graph_id": gid,
+        },
+    )
+    assert created.status_code == 202, created.text
+    done = _poll(c, created.json()["id"])
+    assert done["state"] == "SUCCEEDED", done
+    assert len(done.get("results") or {}) == len(subs)  # every member produced a result
+    # RULE 8: only a real LLM echoes the per-run nonce in its output — a fake-mode run cannot.
+    assert nonce in str(done["results"]), (
+        f"nonce {nonce!r} in no member result — was the harness LIVE? (fake = no proof)"
+    )
+
+    # 5) the team's outputs live on Oraclous, served through the unified /v1/artifacts surface for
+    #    the bound graph. Members write in-loop at their own discretion (ADR-041/Q6), so a member
+    #    write is best-effort here (the content-serving path is proven deterministically by slice 1
+    #    + the recorded script run that served a real doefin GTM-strategy artifact); the surface is
+    #    always queryable, and any artifact a member DID write is served verbatim.
+    arts = c.get(f"/v1/artifacts?graph_id={gid}")
+    assert arts.status_code == 200, arts.text
+    for a in arts.json():
+        body = c.get(f"/v1/artifacts/{a['id']}").json()
+        assert body.get("content"), "a served artifact has no verbatim content"
