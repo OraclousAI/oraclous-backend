@@ -24,6 +24,9 @@ from oraclous_capability_registry_service.repositories.binding_repository import
 from oraclous_capability_registry_service.repositories.capability_repository import (
     CapabilityRepository,
 )
+from oraclous_capability_registry_service.repositories.delivery_state_repository import (
+    DeliveryStateRepository,
+)
 from oraclous_capability_registry_service.repositories.execution_repository import (
     ExecutionRepository,
 )
@@ -70,6 +73,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     instance_repo: InstanceRepository | None = None
     execution_repo: ExecutionRepository | None = None
     binding_repo: BindingRepository | None = None
+    delivery_state_repo: DeliveryStateRepository | None = None
     broker: CredentialBrokerPort | None = None
     try:
         repo = CapabilityRepository(
@@ -78,17 +82,20 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         instance_repo = InstanceRepository(settings.DATABASE_URL)
         execution_repo = ExecutionRepository(settings.DATABASE_URL)
         binding_repo = BindingRepository(settings.DATABASE_URL)
+        delivery_state_repo = DeliveryStateRepository(settings.DATABASE_URL)
         broker = build_credential_broker(settings)
         app.state.capability_repository = repo
         app.state.instance_repository = instance_repo
         app.state.execution_repository = execution_repo
         app.state.binding_repository = binding_repo
+        app.state.delivery_state_repository = delivery_state_repo
         app.state.credential_broker = broker
     except Exception as exc:  # noqa: BLE001 — degrade: data routes 503, /health reflects it
         app.state.capability_repository = None
         app.state.instance_repository = None
         app.state.execution_repository = None
         app.state.binding_repository = None
+        app.state.delivery_state_repository = None
         app.state.credential_broker = None
         alert(
             Severity.ERROR,
@@ -104,7 +111,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # a mis-deployed bypassing role is a hard configuration error, so it exits the process rather
     # than quietly serving an unscoped store. Gated on RLS_ASSERT_RUNTIME_ROLE (the deployed app
     # runtime sets it; a deliberate owner-DSN dev/test run leaves it off). Asserts against the
-    # capability repo's engine — all four repos build on the same DSN/role, so one proves the role.
+    # capability repo's engine — all repos build on the same DSN/role, so one proves the role.
     if settings.RLS_ASSERT_RUNTIME_ROLE and repo is not None:
         try:
             await assert_runtime_role_isolates(repo.engine)
@@ -155,5 +162,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             await execution_repo.close()
         if binding_repo is not None:
             await binding_repo.close()
+        if delivery_state_repo is not None:
+            await delivery_state_repo.close()
         if broker is not None:
             await broker.aclose()

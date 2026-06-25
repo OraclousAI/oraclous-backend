@@ -25,6 +25,9 @@ from oraclous_capability_registry_service.repositories.binding_repository import
 from oraclous_capability_registry_service.repositories.capability_repository import (
     CapabilityRepository,
 )
+from oraclous_capability_registry_service.repositories.delivery_state_repository import (
+    DeliveryStateRepository,
+)
 from oraclous_capability_registry_service.repositories.execution_repository import (
     ExecutionRepository,
 )
@@ -132,14 +135,27 @@ def get_credential_broker(request: Request) -> CredentialBrokerPort:
     return broker
 
 
+def get_delivery_state_repository(request: Request) -> DeliveryStateRepository | None:
+    """The deliver-back clean-delta store. None-tolerant: only the github-sink needs it, so a
+    missing store must NOT 503 every other tool execution (the sink then first-delivers-all)."""
+    return getattr(request.app.state, "delivery_state_repository", None)
+
+
 def get_tool_execution_service(
     instances: Annotated[InstanceRepository, Depends(get_instance_repository)],
     capabilities: Annotated[CapabilityRepository, Depends(get_capability_repository)],
     executions: Annotated[ExecutionRepository, Depends(get_execution_repository)],
     broker: Annotated[CredentialBrokerPort, Depends(get_credential_broker)],
+    delivery_state: Annotated[
+        DeliveryStateRepository | None, Depends(get_delivery_state_repository)
+    ],
 ) -> ToolExecutionService:
     return ToolExecutionService(
-        instances=instances, capabilities=capabilities, executions=executions, broker=broker
+        instances=instances,
+        capabilities=capabilities,
+        executions=executions,
+        broker=broker,
+        delivery_state=delivery_state,
     )
 
 
