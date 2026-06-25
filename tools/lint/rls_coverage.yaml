@@ -97,6 +97,7 @@ services:
       - tool_instances
       - executions
       - harness_graph_binding
+      - delivery_state
       - capability_descriptors
   # Slice (harness-runtime) — OHM agent runtime. All four org-scoped tables carry a uuid
   # organisation_id and every runtime accessor binds the org via org_scope before any query (the
