@@ -69,10 +69,14 @@ class GitHubSinkConnector(InternalTool):
                 error_message="a github/gitea api_key (PAT) credential is required",
                 error_type="INVALID_INPUT",
             )
-        repo = input_data.get("repo")
+        # repo may be bound on the instance configuration (the sink IS for that repo — the
+        # "configured, not passed" shape, #542) or passed per deliver; configuration takes the bind.
+        repo = input_data.get("repo") or context.configuration.get("repo")
         if not isinstance(repo, str) or not repo:
             return ExecutionResult(
-                success=False, error_message="'repo' is required", error_type="INVALID_INPUT"
+                success=False,
+                error_message="'repo' is required (deliver input or instance configuration)",
+                error_type="INVALID_INPUT",
             )
         files = input_data.get("files") or []
         for f in files:
