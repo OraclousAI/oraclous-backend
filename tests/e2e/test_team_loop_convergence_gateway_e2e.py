@@ -236,3 +236,12 @@ def test_non_converging_loop_halts_at_a_coded_bound_and_is_re_runnable(
     assert any(s == "failed" for s in member_status.values()), (
         f"the halted loop's members must be re-runnable (failed): {member_status}"
     )
+    # a GENUINE coded-bound halt, not a setup failure: the loop actually EXECUTED a round (the
+    # nonce proves the real model ran) and the FAILURE is "did not converge", not a member crash.
+    assert nonce in str(done.get("results") or {}), (
+        f"the halted loop never executed a round — not a coded-bound halt: {done}"
+    )
+    err = done.get("error_message") or ""
+    assert "did not converge" in err, (
+        f"the halt must be a coded convergence bound, not another failure: {err!r}"
+    )

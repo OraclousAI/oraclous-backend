@@ -496,7 +496,12 @@ async def run_loop_seam(
     _cost = cost_so_far or (lambda: 0)
     loop_roles = set(loop.members)
     results: dict[str, Any] = dict(seed_results or {})
-    member_status: dict[str, str] = {}
+    # ADR-042 (#551): a seeded loop member already delivered in a prior drive — record it succeeded
+    # (mirrors run_team's ``completed`` handling) so an immediate convergence on resume (coordinator
+    # returns [] because every member already produced) does not drop its terminal status.
+    member_status: dict[str, str] = {
+        role: "succeeded" for role in loop_roles if results.get(role) is not None
+    }
     member_errors: dict[str, str] = {}
     envelopes: list[HandoffEnvelope] = []
     started = _clock()
