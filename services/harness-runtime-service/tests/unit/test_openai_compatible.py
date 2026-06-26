@@ -136,11 +136,14 @@ async def _expect_error(status: int, body: str = "boom") -> LLMClientError:
     return ei.value
 
 
-@pytest.mark.parametrize("status", [408, 409, 429, 500, 502, 503, 504, 529])
+@pytest.mark.parametrize(
+    "status",
+    [408, 409, 429, 500, 502, 503, 504, 529, 520, 522, 524, 527],  # incl. Cloudflare 52x (origin)
+)
 async def test_transient_statuses_are_classified_transient(status: int) -> None:
     exc = await _expect_error(status)
     assert exc.status_code == status
-    assert exc.transient is True  # the retry loop will back off + retry these
+    assert exc.transient is True  # retried with backoff (any listed 4xx or any 5xx)
 
 
 @pytest.mark.parametrize("status", [400, 401, 403, 404, 422])

@@ -21,11 +21,19 @@ from oraclous_harness_runtime_service.domain.llm.base import (
     ToolSpec,
 )
 
-# HTTP statuses that are TRANSIENT — a retry (with backoff) may succeed: 408 request-timeout, 409
-# conflict, 429 rate-limit (the shared BYOM key throttle — #543's random-member killer), 5xx server
-# errors, and 529 (Anthropic "overloaded" via OpenRouter). Everything else (400/401/403/404 — bad
-# request, auth, model-not-found) is PERMANENT and fails fast (ADR-042 #551).
-_TRANSIENT_STATUSES = frozenset({408, 409, 429, 500, 502, 503, 504, 529})
+# Which non-2xx statuses are TRANSIENT — a retry (with backoff) may succeed: 408 request-timeout,
+# 409 conflict, 429 rate-limit (the shared BYOM key throttle — #543's random-member killer), and ANY
+# 5xx (500–599). The 5xx range deliberately spans the Cloudflare statuses 520–527 too: OpenRouter
+# sits behind Cloudflare, which returns 52x on an origin hiccup (transient) — a fixed {500,502,503,
+# 504,529} set would fail those fast and defeat the retry for the real transient class. Everything
+# else (400/401/403/404/422 — bad request, auth, KEY-LIMIT 403, model-not-found) is PERMANENT and
+# fails fast (ADR-042 #551).
+_TRANSIENT_4XX = frozenset({408, 409, 429})
+
+
+def _status_is_transient(status_code: int) -> bool:
+    """True when a non-2xx LLM-call status is worth a bounded retry (transient), not fail-fast."""
+    return status_code in _TRANSIENT_4XX or 500 <= status_code <= 599
 
 
 class LLMClientError(Exception):
@@ -140,7 +148,7 @@ class OpenAICompatibleClient:
             raise LLMClientError(
                 f"LLM call → {sc}",
                 status_code=sc,
-                transient=sc in _TRANSIENT_STATUSES,
+                transient=_status_is_transient(sc),
             )
         data = resp.json()
         choice = (data.get("choices") or [{}])[0]
