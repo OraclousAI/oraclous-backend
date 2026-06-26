@@ -153,8 +153,8 @@ class OHMTermination(BaseModel):
 
     model_config = ConfigDict(extra="ignore")
 
-    max_wall_seconds: int | None = None
-    max_rounds: int | None = None
+    max_wall_seconds: int | None = Field(default=None, ge=1)
+    max_rounds: int | None = Field(default=None, ge=1)  # ADR-043: at least one conductor round
     convergence: str | None = None  # e.g. "evaluator>=0.8"
 
 
@@ -233,6 +233,19 @@ class OHMOrchestration(BaseModel):
     # bounded coordinator seam; an empty list means a purely acyclic team (runs all on run_team).
     loops: list[OHMLoop] = Field(default_factory=list)
 
+    @model_validator(mode="after")
+    def _convergence_requires_criteria(self) -> OHMOrchestration:
+        # ADR-043 #552: a declared loop convergence threshold ("evaluator>=0.8") grades the loop's
+        # output against ``success_criteria`` — so a threshold WITHOUT a prose rubric can never be
+        # confirmed. Reject the combo fail-fast at load (mirrors OHMGateCheck) rather than let the
+        # coded done-check silently skip the grade at run time.
+        if self.termination.convergence and self.termination.convergence.strip():
+            if not (self.success_criteria and self.success_criteria.strip()):
+                raise ValueError(
+                    "orchestration.termination.convergence requires a non-empty success_criteria"
+                )
+        return self
+
 
 class OHMTaskBoard(BaseModel):
     """First-class assignable tasks for the team."""
@@ -257,11 +270,11 @@ class OHMBudget(BaseModel):
 
     model_config = ConfigDict(extra="ignore")
 
-    max_tokens_total: int | None = None
-    max_tool_calls_total: int | None = None
-    max_sub_runs: int | None = None
-    max_usd_total: float | None = None
-    ttl_seconds: int | None = None
+    max_tokens_total: int | None = Field(default=None, ge=1)
+    max_tool_calls_total: int | None = Field(default=None, ge=1)
+    max_sub_runs: int | None = Field(default=None, ge=1)
+    max_usd_total: float | None = Field(default=None, gt=0)
+    ttl_seconds: int | None = Field(default=None, ge=1)
 
 
 class OHMPrecedence(BaseModel):
