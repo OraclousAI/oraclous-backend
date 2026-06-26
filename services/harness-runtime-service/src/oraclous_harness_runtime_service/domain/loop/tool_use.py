@@ -294,13 +294,16 @@ async def run_tool_use_loop(
 
     async def _complete_with_retry(iteration: int) -> Any:
         """Call the model, retrying ONLY transient errors (backoff+jitter, bounded). Raises the
-        last exception when retries are exhausted or the error is permanent (ADR-042 #551)."""
+        last exception when retries are exhausted, the error is permanent, or the wall-time budget
+        is spent — so a retry storm can never run past max_wall_time_seconds (ADR-042 #551)."""
         attempt = 0
         while True:
             try:
                 return await llm.complete(messages=messages, system=system, tools=tool_specs)
             except Exception as exc:  # noqa: BLE001
-                if attempt >= _LLM_MAX_RETRIES or not _is_transient(exc):
+                # do NOT retry past the wall-time budget — otherwise N retries (each up to the LLM
+                # timeout) + their backoff could run several× past max_wall_time_seconds.
+                if attempt >= _LLM_MAX_RETRIES or not _is_transient(exc) or _over_wall_time():
                     raise
                 steps.append(
                     LoopStep(
@@ -308,6 +311,10 @@ async def run_tool_use_loop(
                     )
                 )
                 await _async_sleep(_retry_delay(attempt))
+                if (
+                    _over_wall_time()
+                ):  # the backoff itself may cross the deadline — stop, don't retry
+                    raise
                 attempt += 1
 
     for iteration in range(resume_iteration + 1, policy.max_iterations + 1):

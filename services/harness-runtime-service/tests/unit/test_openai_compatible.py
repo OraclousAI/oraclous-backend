@@ -122,6 +122,53 @@ async def test_non_2xx_raises() -> None:
         )
 
 
+# ── ADR-042 (#551): the transient/permanent classification + leak-safety the retry depends on ──
+
+
+async def _expect_error(status: int, body: str = "boom") -> LLMClientError:
+    def handler(_req: httpx.Request) -> httpx.Response:
+        return httpx.Response(status, text=body)
+
+    with pytest.raises(LLMClientError) as ei:
+        await _client(handler).complete(
+            messages=[{"role": "user", "content": "x"}], system="", tools=[]
+        )
+    return ei.value
+
+
+@pytest.mark.parametrize("status", [408, 409, 429, 500, 502, 503, 504, 529])
+async def test_transient_statuses_are_classified_transient(status: int) -> None:
+    exc = await _expect_error(status)
+    assert exc.status_code == status
+    assert exc.transient is True  # the retry loop will back off + retry these
+
+
+@pytest.mark.parametrize("status", [400, 401, 403, 404, 422])
+async def test_permanent_statuses_are_classified_permanent(status: int) -> None:
+    exc = await _expect_error(status)
+    assert exc.status_code == status
+    assert exc.transient is False  # auth/model-not-found/bad-request fail fast — never retried
+
+
+async def test_a_timeout_is_transient() -> None:
+    def handler(_req: httpx.Request) -> httpx.Response:
+        raise httpx.ReadTimeout("slow")
+
+    with pytest.raises(LLMClientError) as ei:
+        await _client(handler).complete(
+            messages=[{"role": "user", "content": "x"}], system="", tools=[]
+        )
+    assert ei.value.transient is True  # a transport timeout is retryable
+
+
+async def test_error_message_does_not_leak_the_upstream_body() -> None:
+    # leak-safety (CLAUDE.md §11): the provider body may echo the customer's prompt/output, and this
+    # message flows into the served team-run error_message — it must carry ONLY the coarse status.
+    exc = await _expect_error(500, body="SECRET customer prompt echoed back")
+    assert "SECRET" not in str(exc)
+    assert "500" in str(exc)
+
+
 # ── #252 — capture the prompt/completion (input/output) usage split ───────────────────────────────
 
 

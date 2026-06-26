@@ -131,8 +131,14 @@ class OpenAICompatibleClient:
             ) from exc
         if resp.status_code // 100 != 2:
             sc = resp.status_code
+            # leak-safe: the provider's response BODY may carry the customer's prompt/output echoed
+            # back, and this message flows into the harness LoopResult.error_message → the team-run
+            # error_message (persisted + served via GET). Surface only the coarse status, never the
+            # body (CLAUDE.md §11 — no customer data in error messages/logs; ADR-042 broadened the
+            # reach of this string). The body, if needed, belongs in a debug log, never a surfaced
+            # error.
             raise LLMClientError(
-                f"LLM call → {sc}: {resp.text[:300]}",
+                f"LLM call → {sc}",
                 status_code=sc,
                 transient=sc in _TRANSIENT_STATUSES,
             )

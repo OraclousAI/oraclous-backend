@@ -563,3 +563,26 @@ async def test_transient_retries_are_bounded_then_fail(monkeypatch: pytest.Monke
     )
     assert result.status is HarnessStatus.FAILED  # retries exhausted → FAILED, not infinite
     assert llm.calls == tool_use._LLM_MAX_RETRIES + 1  # the initial try + the bounded retries
+
+
+async def test_transient_retry_respects_the_wall_time_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # ADR-042 (#551): a retry storm must NOT run past max_wall_time_seconds. A clock that is within
+    # budget until the first attempt, then past it, must stop the retry after ONE attempt — without
+    # the wall-time guard the loop would burn all _LLM_MAX_RETRIES (each up to the LLM timeout).
+    monkeypatch.setattr(tool_use, "_async_sleep", _no_sleep)
+    llm = _FlakyLLM(fail_n=999)  # always transient
+    monkeypatch.setattr(
+        tool_use.time, "monotonic", lambda: 0.0 if llm.calls == 0 else 100.0
+    )  # 0 at start + the first wall check; 100 (past the 1s budget) once an attempt has run
+    result = await run_tool_use_loop(
+        llm=llm,
+        system="",
+        user_input="go",
+        tool_specs=[_SPEC],
+        dispatch=_ok_dispatch,
+        policy=_env(max_wall=1),
+    )
+    assert result.status is HarnessStatus.FAILED
+    assert llm.calls == 1  # the wall-time budget stopped the retry after the first attempt
