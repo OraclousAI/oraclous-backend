@@ -1,8 +1,10 @@
-"""assemble_team -> OHM v1.1 Team Harness (#408; ADR-034 §6).
+"""assemble_team -> OHM v1.1 Team Harness (#408; ADR-034 §6; ADR-043 §552 loop isolation).
 
-Acyclic handoffs become depends_on edges (a pipeline); a cyclic handoff graph is a standing team,
-so the edges demote to routing-hints (not forced into a DAG). The assembled team must load via
-the real ``load_ohm``. Schedules attach to members by role. Caller members are never mutated.
+Acyclic handoffs become depends_on edges (a pipeline). A GENUINE cycle is isolated as a Tarjan
+strongly-connected component — an ``OHMOrchestration`` loop seam the conductor's bounded coordinator
+runs (ADR-043) — while the acyclic remainder still runs on ``run_team``; a single back-edge among N
+agents yields a SMALL loop, never a whole-team flip. The assembled team must load via the real
+``load_ohm``. Schedules attach to members by role. Caller members are never mutated.
 """
 
 from __future__ import annotations
@@ -49,17 +51,10 @@ def test_assembled_team_loads_through_the_real_loader() -> None:
     assert loaded.execution_stages() == [["a"], ["b"]]
 
 
-def test_cyclic_handoffs_demote_to_routing() -> None:
-    members = [_m("a"), _m("b")]
-    handoffs = {"a": HandoffSpec(next_agents=["b"]), "b": HandoffSpec(next_agents=["a"])}
-    asm = assemble_team("t", members, owner_organization_id=_ORG, handoffs=handoffs)
-    assert asm.cyclic_routing is True
-    assert "F-CYCLIC-ROUTING" in _codes(asm)
-    by = {m.role: m for m in asm.manifest.members}
-    assert by["a"].depends_on == [] and by["b"].depends_on == []  # NOT forced into a DAG
-    assert asm.manifest.orchestration is not None
-    assert "Handoff routing" in asm.manifest.orchestration.style
-    load_ohm(asm.manifest.model_dump(mode="json"))  # still loads
+# NB the pre-ADR-043 ``test_cyclic_handoffs_demote_to_routing`` (a cyclic graph demoted the WHOLE
+# team to a routing-hint string with depends_on=[]) is SUPERSEDED by the ADR-043 loop-isolation
+# tests below — ``test_full_team_cycle_is_a_single_loop_of_all_members`` covers the same 2-agent
+# mutual handoff under the new contract (a loop seam, not a routing string).
 
 
 def test_schedules_attached_and_team_loads() -> None:
