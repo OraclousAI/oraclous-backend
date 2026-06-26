@@ -427,11 +427,46 @@ DoneCheckFn = Callable[[dict[str, Any]], Awaitable[bool]]
 # returns [] when it BELIEVES the goal is met (still confirmed by the coded done-check).
 LoopCoordinateFn = Callable[["OHMLoop", dict[str, Any], int], Awaitable[list[str]]]
 
-#: the terminal status of a loop seam — converged, halted at a runaway bound, or PAUSED on a
-#: per-round HITL gate (PR-C step 6) awaiting a human decision.
+#: the terminal status of a loop seam — converged, halted at a runaway bound, PAUSED on a per-round
+#: HITL gate (PR-C), or ESCALATED after recalibration gave up (#553, slice 2/3).
 LoopSeamStatus = Literal[
-    "converged", "max_rounds", "wall_time", "cost_budget", "no_progress", "paused"
+    "converged", "max_rounds", "wall_time", "cost_budget", "no_progress", "paused", "escalate"
 ]
+
+#: the closed action set a recalibration may emit (#553) — no open-ended "think more".
+RecalAction = Literal[
+    "re-plan", "re-frame-objective", "change-strategy", "re-scope-member", "escalate"
+]
+
+
+class Diagnostic(BaseModel):
+    """The CODED, external read of WHY a loop stalled (#553) — never the model's self-grade. Built
+    from the loop's own observable state + the done-check's side-channel; handed to the recalibrator
+    so the model only PICKS a tactic from the closed set, it does not diagnose itself."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    stall_kind: Literal["coordinator", "signature"]  # which no_progress path fired
+    missing_members: list[str] = Field(default_factory=list)  # coverage-floor gaps (produced None)
+    failed_members: dict[str, str] = Field(default_factory=dict)  # role -> leak-safe error
+    artifacts_landed: bool | None = None  # the done-check's landed-artifacts gate (None if unknown)
+    evaluator_score: float | None = None  # the separate-evaluator scalar grade (None if no judge)
+    evaluator_floor: float | None = None
+
+
+class RecalDirective(BaseModel):
+    """ONE recalibration directive (#553) — a closed-set action + the failed/blocked members to
+    resume over. The ``reason`` is a leak-safe code token, never a raw member output."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    action: RecalAction
+    reason: str = ""
+    member_targets: list[str] = Field(default_factory=list)
+
+
+#: Given (loop, coded Diagnostic) return ONE directive, or None to halt fail-closed (#553).
+RecalibrateFn = Callable[["OHMLoop", Diagnostic], Awaitable["RecalDirective | None"]]
 
 
 class LoopSeamResult(BaseModel):
@@ -447,6 +482,9 @@ class LoopSeamResult(BaseModel):
     status: LoopSeamStatus = "max_rounds"
     # PR-C: the undecided per-round HITL gate role(s) the loop is PAUSED on (status == "paused")
     paused_at: list[str] = Field(default_factory=list)
+    # #553: how many recalibrations this loop spent + the last directive (resume cursor + audit)
+    recalibrations_used: int = 0
+    last_directive: RecalDirective | None = None
 
 
 def _loop_inbound(
@@ -501,6 +539,11 @@ async def run_loop_seam(
     gate_decisions: dict[str, str] | None = None,
     resume_from_round: int = 0,
     started_at: float | None = None,
+    recalibrate: RecalibrateFn | None = None,
+    recalibration_cap: int = 1,
+    done_check_diag: dict[str, Any] | None = None,
+    resume_recalibrations_used: int = 0,
+    resume_last_directive_digest: str | None = None,
 ) -> LoopSeamResult:
     """Run ONE loop SCC round-by-round under coded governance (ADR-043 #552); see module note.
 
@@ -530,6 +573,12 @@ async def run_loop_seam(
     started = started_at if started_at is not None else _clock()
     rounds = resume_from_round  # PR-C: resume continues the round counter, no fresh round budget
     last_signature: str | None = None
+    # #553: bounded recalibration — clamp the cap to [0,3] (ADR-043: 1-2, max 3); resume the count +
+    # the last directive digest so the cap + anti-repeat survive a HITL pause/approve cycle.
+    cap = min(max(recalibration_cap, 0), 3)
+    recalibrations_used = resume_recalibrations_used
+    last_directive: RecalDirective | None = None
+    last_directive_digest = resume_last_directive_digest
 
     def _result(status: LoopSeamStatus, paused_at: list[str] | None = None) -> LoopSeamResult:
         return LoopSeamResult(
@@ -540,7 +589,58 @@ async def run_loop_seam(
             rounds=rounds,
             status=status,
             paused_at=paused_at or [],
+            recalibrations_used=recalibrations_used,
+            last_directive=last_directive,
         )
+
+    def _diagnose(stall_kind: str) -> Diagnostic:
+        # #553: the CODED, external read of the stall — coverage gaps + failed members from the
+        # loop's own state + the done-check side-channel (artifacts/grade). Never a self-grade.
+        dcd = done_check_diag or {}
+        return Diagnostic(
+            stall_kind=stall_kind,  # type: ignore[arg-type]
+            missing_members=[r for r in loop.members if results.get(r) is None],
+            failed_members={
+                r: member_errors.get(r, "") for r, s in member_status.items() if s == "failed"
+            },
+            artifacts_landed=dcd.get("artifacts_ok"),
+            evaluator_score=dcd.get("evaluator_score"),
+            evaluator_floor=dcd.get("evaluator_floor"),
+        )
+
+    async def _maybe_recalibrate(stall_kind: str) -> LoopSeamResult | None:
+        # #553: on a stall, ONE bounded recalibration BEFORE halting — diagnose (coded), pick ONE
+        # directive from the closed set (the model only picks a tactic), apply it (mark the targets
+        # not-produced so the coordinator must re-route), and continue. Returns a terminal result to
+        # HALT, or None to CONTINUE the loop. Fail-closed: no recalibrator / cap exhausted / an
+        # unparseable directive / a repeat directive all halt (no_progress or escalate).
+        nonlocal recalibrations_used, last_directive, last_directive_digest
+        if recalibrate is None or recalibrations_used >= cap:
+            return _result("no_progress")
+        directive = await recalibrate(loop, _diagnose(stall_kind))
+        if directive is None:
+            return _result("no_progress")  # unparseable / router unreachable → halt
+        last_directive = directive
+        # the directive's EFFECT = the in-loop dispatchable members it actually frees (a gate is
+        # re-rendered each round, so targeting one is a no-op; a duplicate / out-of-loop target
+        # changes nothing). Anti-repeat keys off THIS normalized effect (sorted, de-duped) so a
+        # near-duplicate (re-ordered / duplicated / ghost target) cannot slip the guard.
+        targets = sorted(
+            {r for r in directive.member_targets if r in loop_roles and r not in gate_roles}
+        )
+        digest = f"{directive.action}|{','.join(targets)}"
+        if directive.action == "escalate" or digest == last_directive_digest:
+            return _result("escalate")  # closed-set escalate, or anti-repeat → human
+        for role in targets:  # resume over the freed failed/blocked work members (#551)
+            results[role] = None
+            member_status[role] = "blocked"
+        last_directive_digest = digest
+        recalibrations_used += 1
+        # NB: last_signature is deliberately NOT reset — the re-routed members are re-dispatched
+        # next round and a no-op directive re-stalls immediately (1 round, not 2); a real change
+        # moves the signature on its own. No ephemeral breadcrumb is written into results (it would
+        # leak into the coordinator + the coded done-check, which read the live dict).
+        return None  # continue the loop — the next round re-routes to the freed members
 
     while rounds < max_rounds:
         # bounds are checked FIRST → halt-with-partial, and a blown budget WINS over a pending gate
@@ -569,7 +669,12 @@ async def run_loop_seam(
                 raise OHMError(f"loop coordinator routed to non-loop member {role!r}")
         if not next_roles:
             # the coordinator believes the goal is met — the CODED check decides, not the model.
-            return _result("converged" if await done_check(results) else "no_progress")
+            if await done_check(results):
+                return _result("converged")
+            recal = await _maybe_recalibrate("coordinator")  # #553: ONE recalibration before halt
+            if recal is not None:
+                return recal
+            continue  # a directive re-routed the targets — run another round
 
         rounds += 1
         for role in next_roles:
@@ -589,7 +694,10 @@ async def run_loop_seam(
             return _result("converged")
         signature = _progress_signature(results, member_status)  # no-progress: nothing changed
         if signature == last_signature:
-            return _result("no_progress")
+            recal = await _maybe_recalibrate("signature")  # #553: ONE recalibration before halt
+            if recal is not None:
+                return recal
+            continue  # a directive re-routed the targets — run another round
         last_signature = signature
 
     return _result("max_rounds")
