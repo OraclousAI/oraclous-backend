@@ -22,7 +22,10 @@ checkpoint: the assistant turn is stored redacted (``last_text``), like every to
 
 from __future__ import annotations
 
+import asyncio
 import json
+import os
+import random
 import re
 import time
 from collections.abc import Awaitable, Callable
@@ -37,6 +40,28 @@ from oraclous_harness_runtime_service.models.enums import HarnessStatus, StepKin
 Dispatch = Callable[[ToolSpec, dict[str, Any]], Awaitable[dict[str, Any]]]
 
 _REDACTED = "[REDACTED]"
+
+# Transient-LLM-error retry (ADR-042 #551): a producing team fans many members at ONE shared BYOM
+# key, so a random member hits a rate-limit (429) / timeout / 5xx — transient, not a real failure.
+# Retry such a call a bounded number of times with exponential backoff + full jitter BEFORE the run
+# fails; a PERMANENT error (auth / model-not-found / bad-request) is NOT retried (fails fast). The
+# transient/permanent split is the LLM client's (LLMClientError.transient). Env-overridable.
+_LLM_MAX_RETRIES = max(0, int(os.environ.get("HARNESS_LLM_MAX_RETRIES") or "4"))
+_LLM_RETRY_BASE_S = max(0.0, float(os.environ.get("HARNESS_LLM_RETRY_BASE_SECONDS") or "0.5"))
+_LLM_RETRY_MAX_S = max(0.0, float(os.environ.get("HARNESS_LLM_RETRY_MAX_SECONDS") or "8.0"))
+# indirected so a unit test can substitute a no-op sleep (deterministic, fast)
+_async_sleep = asyncio.sleep
+
+
+def _is_transient(exc: BaseException) -> bool:
+    """An LLM-call error a bounded retry may recover (the client marks it ``transient``)."""
+    return bool(getattr(exc, "transient", False))
+
+
+def _retry_delay(attempt: int) -> float:
+    """Exponential backoff with FULL jitter for retry ``attempt`` (0-based), capped."""
+    ceiling = min(_LLM_RETRY_MAX_S, _LLM_RETRY_BASE_S * (2**attempt))
+    return random.uniform(0, ceiling)  # noqa: S311 — jitter, not security-sensitive
 
 
 @dataclass(frozen=True, slots=True)
@@ -267,13 +292,35 @@ async def run_tool_use_loop(
         if escalation is not None:
             return escalation
 
+    async def _complete_with_retry(iteration: int) -> Any:
+        """Call the model, retrying ONLY transient errors (backoff+jitter, bounded). Raises the
+        last exception when retries are exhausted or the error is permanent (ADR-042 #551)."""
+        attempt = 0
+        while True:
+            try:
+                return await llm.complete(messages=messages, system=system, tools=tool_specs)
+            except Exception as exc:  # noqa: BLE001
+                if attempt >= _LLM_MAX_RETRIES or not _is_transient(exc):
+                    raise
+                steps.append(
+                    LoopStep(
+                        len(steps), StepKind.LLM, "primary", "retry", _truncate(f"transient: {exc}")
+                    )
+                )
+                await _async_sleep(_retry_delay(attempt))
+                attempt += 1
+
     for iteration in range(resume_iteration + 1, policy.max_iterations + 1):
         if _over_wall_time():
             return _escalate("budget", "wall_time", "wall-time budget exhausted", iteration)
 
+        # ADR-042 (#551): a TRANSIENT provider error (rate-limit / timeout / 5xx / overloaded) is
+        # retried with backoff+jitter before the run fails — so one member hitting the shared BYOM
+        # key's throttle does not spuriously fail the team. A PERMANENT error (auth / model-not-
+        # found / bad-request) is not retried; an exhausted transient or a permanent error → FAILED.
         try:
-            resp = await llm.complete(messages=messages, system=system, tools=tool_specs)
-        except Exception as exc:  # noqa: BLE001 — an LLM-call failure is a hard fail for the run
+            resp = await _complete_with_retry(iteration)
+        except Exception as exc:  # noqa: BLE001 — transient exhausted, or a permanent error → FAILED
             steps.append(
                 LoopStep(len(steps), StepKind.LLM, "primary", "error", _truncate(str(exc)))
             )

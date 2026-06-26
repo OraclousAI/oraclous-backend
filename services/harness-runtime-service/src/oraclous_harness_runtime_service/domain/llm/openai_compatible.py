@@ -21,9 +21,26 @@ from oraclous_harness_runtime_service.domain.llm.base import (
     ToolSpec,
 )
 
+# HTTP statuses that are TRANSIENT — a retry (with backoff) may succeed: 408 request-timeout, 409
+# conflict, 429 rate-limit (the shared BYOM key throttle — #543's random-member killer), 5xx server
+# errors, and 529 (Anthropic "overloaded" via OpenRouter). Everything else (400/401/403/404 — bad
+# request, auth, model-not-found) is PERMANENT and fails fast (ADR-042 #551).
+_TRANSIENT_STATUSES = frozenset({408, 409, 429, 500, 502, 503, 504, 529})
+
 
 class LLMClientError(Exception):
-    """The upstream LLM call failed (transport or non-2xx). Surfaced as a FAILED run by the loop."""
+    """The upstream LLM call failed (transport or non-2xx). Surfaced as a FAILED run by the loop.
+
+    ``transient`` marks a failure a bounded retry may recover (rate-limit / timeout / 5xx /
+    overloaded); the tool-use loop retries those with backoff+jitter before declaring FAILED, and
+    fails a permanent error (auth / model-not-found / bad-request) fast (ADR-042 #551)."""
+
+    def __init__(
+        self, message: str, *, status_code: int | None = None, transient: bool = False
+    ) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+        self.transient = transient
 
 
 def _to_wire(messages: list[Message], system: str) -> list[dict[str, Any]]:
@@ -105,9 +122,20 @@ class OpenAICompatibleClient:
         if tools:
             body["tools"] = _tools_payload(tools)
             body["tool_choice"] = "auto"
-        resp = await self._client.post("/chat/completions", json=body)
+        try:
+            resp = await self._client.post("/chat/completions", json=body)
+        except (httpx.TimeoutException, httpx.TransportError) as exc:
+            # a network timeout / transport error is transient — the loop retries it (ADR-042 #551)
+            raise LLMClientError(
+                f"LLM call transport error: {type(exc).__name__}", transient=True
+            ) from exc
         if resp.status_code // 100 != 2:
-            raise LLMClientError(f"LLM call → {resp.status_code}: {resp.text[:300]}")
+            sc = resp.status_code
+            raise LLMClientError(
+                f"LLM call → {sc}: {resp.text[:300]}",
+                status_code=sc,
+                transient=sc in _TRANSIENT_STATUSES,
+            )
         data = resp.json()
         choice = (data.get("choices") or [{}])[0]
         msg = choice.get("message") or {}
