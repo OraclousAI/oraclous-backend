@@ -1,8 +1,9 @@
 """Team-run bridge (#419 wiring): run_team driven by the real harness-execution path.
 
 Pure unit with a fake harness client — proves each member becomes a harness call, typed hand-offs
-thread into the harness input, a member failure fails closed, an inline sub-harness is passed, and a
-human gate pauses the run through the bridge. (The durable persistence is a later wiring step.)
+thread into the harness input, a member failure is RECORDED (ADR-042 non-aborting: it does not abort
+the team, the verdict is "failed"), an inline sub-harness is passed, and a human gate pauses the run
+through the bridge. (The durable persistence is a later wiring step.)
 """
 
 from __future__ import annotations

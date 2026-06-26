@@ -140,10 +140,21 @@ def _member_completion_progress(row: EngineTeamRun) -> int:
     completion; no members → 100 only once SUCCEEDED."""
     members = row.manifest.get("members", []) if isinstance(row.manifest, dict) else []
     total = len(members)
+    # ADR-042 (#551): count DELIVERED members, NOT len(results). The non-aborting failure path now
+    # populates results[role]=None for a failed/blocked member, so len(results) would count it as
+    # complete and report a FAILED run at ~100%. Base completion on per-member status (succeeded,
+    # plus a declared-no-op "skipped"); fall back to len(results) only for pre-ADR-042 rows with no
+    # recorded member_status (mirrors the _completed_for_resume back-compat).
+    ms = row.member_status or {}
+    delivered = (
+        sum(1 for s in ms.values() if s in ("succeeded", "skipped"))
+        if ms
+        else len(row.results or {})
+    )
     completion = (
         (100 if row.state == "SUCCEEDED" else 0)
         if total == 0
-        else min(100, round(100 * len(row.results or {}) / total))
+        else min(100, round(100 * delivered / total))
     )
     score = _verdict_score(row.verdict)
     if score is None:
@@ -534,7 +545,10 @@ class TeamRunService:
         # (`or []` — a freshly-built / pre-migration row may carry NULL before the DB default fires)
         child_ids: list[str] = list(row.child_execution_ids or [])
         # O4 metering (#472): this drive's per-member token costs, summed onto the prior cost on
-        # resume (only the not-yet-completed members re-dispatch, so their cost is counted once).
+        # resume (succeeded members are not re-dispatched, so their cost is counted once). NB on an
+        # ADR-042 re-run a FAILED member's first-attempt tokens are already in prior_cost and its
+        # re-dispatch adds more — both are REAL spend, so the accumulated total intentionally counts
+        # every attempt of a re-run member (it is not a double-count of the same work).
         cost_deltas: list[int] = []
         prior_cost = int(row.cost_tokens or 0)
         try:
