@@ -11,11 +11,15 @@ from __future__ import annotations
 
 import uuid
 
+import pytest
 from oraclous_ohm.import_.assemble import assemble_team
 from oraclous_ohm.import_.handoff import HandoffSpec
 from oraclous_ohm.import_.schedules import ScheduledJob
 from oraclous_ohm.manifest import OHMMember
 from oraclous_ohm.parse import load_ohm
+
+# without this, the gate's `-m unit --strict-markers` job DESELECTS the whole file (it never runs)
+pytestmark = pytest.mark.unit
 
 _ORG = uuid.UUID("87654321-4321-8765-4321-876543210000")
 
