@@ -725,6 +725,10 @@ class TeamRunService:
                 sub_harnesses=dict(row.sub_harnesses),
                 gate_decisions=dict(row.gate_decisions),
                 completed=completed,
+                # PR-C: the prior per-loop checkpoint, so a resumed loop continues at a round
+                # boundary (round counter + original wall-clock start) not restarting. `or {}`
+                # tolerates a pre-PR-C / pre-migration row whose column is still NULL.
+                loop_state=dict(row.loop_state or {}),
                 trace_id=root_execution_id,
                 parent_execution_id=root_execution_id,
                 on_child=child_ids.append,
@@ -816,6 +820,7 @@ class TeamRunService:
                 child_execution_ids=child_ids,  # the member executions that form this run's tree
                 cost_tokens=prior_cost + sum(cost_deltas),  # O4: the run's accumulated token cost
                 verdict=verdict,  # the gate verdict (None unless completed); state stays unchanged
+                loop_state=dict(result.loop_state),  # PR-C: the per-loop checkpoint (resume cursor)
             )
         return updated or claimed
 

@@ -79,3 +79,8 @@ class EngineTeamRun(BaseModel):
     # blocked members here, and the re-run re-drives exactly those (seeding the succeeded ones via
     # ``completed``). Empty until the first drive records it.
     member_status: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    # ── per-loop checkpoint (ADR-043 #552 PR-C; additive) ─────────────────────────────────────
+    # "<loop_index>" -> {round, started_at, status} — set by the hybrid conductor so a loop resumes
+    # at a ROUND boundary (the round counter + the ORIGINAL wall-clock start survive a HITL pause /
+    # crash, instead of restarting the loop). Empty for an acyclic team or until a loop runs.
+    loop_state: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
