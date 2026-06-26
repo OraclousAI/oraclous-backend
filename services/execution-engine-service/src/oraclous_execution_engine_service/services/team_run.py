@@ -13,6 +13,7 @@ survives across requests) is the next wiring step on a team-run model + the task
 from __future__ import annotations
 
 import json
+import time
 import uuid
 from collections.abc import Callable
 from typing import Any, Protocol
@@ -265,6 +266,7 @@ async def run_team_hybrid(
     sub_harnesses: dict[str, dict[str, Any]] | None = None,
     gate_decisions: dict[str, str] | None = None,
     completed: dict[str, Any] | None = None,
+    loop_state: dict[str, Any] | None = None,
     trace_id: uuid.UUID | None = None,
     parent_execution_id: uuid.UUID | None = None,
     on_child: Callable[[str], None] | None = None,
@@ -328,6 +330,9 @@ async def run_team_hybrid(
 
     condensed, _ = _condense(manifest, loops)
     loop_results: dict[int, LoopSeamResult] = {}
+    in_loop_state = loop_state or {}  # PR-C: prior per-loop checkpoint (resume), by loop index
+    out_loop_state: dict[str, Any] = {}  # PR-C: the checkpoint to persist after this drive
+    paused_gates: list[str] = []  # PR-C: per-round HITL gate(s) a loop is paused on
 
     async def hybrid_dispatch(
         member: OHMMember, envelopes: list[HandoffEnvelope], fan_item: Any
@@ -338,6 +343,17 @@ async def run_team_hybrid(
         loop = loops[i]
         # seed the loop with any members already delivered in a prior drive (resume / re-run)
         seed = {r: completed[r] for r in loop.members if completed and r in completed}
+        # PR-C: resume the round-index + the ORIGINAL wall-clock start ONLY for a PAUSED loop (a
+        # mid-loop HITL suspension — continue where it left off; the epoch started_at survives the
+        # process restart across a long pause so the wall-clock measures real elapsed time). A loop
+        # that halted at a BOUND (max_rounds / wall / cost / no_progress) is a spent attempt — an
+        # ADR-042 re-run must RESTART it (round 0, fresh wall-clock), not resume the spent round.
+        cp = in_loop_state.get(str(i), {})
+        if cp.get("status") == "paused":
+            resume_round = int(cp.get("round") or 0)
+            started = float(cp["started_at"]) if cp.get("started_at") is not None else time.time()
+        else:
+            resume_round, started = 0, time.time()
         seam = await run_loop_seam(
             loop,
             by_role,
@@ -349,10 +365,21 @@ async def run_team_hybrid(
             max_cost=max_cost,
             cost_so_far=cost_so_far,
             seed_results=seed or None,
+            gate_decisions=gate_decisions,
+            resume_from_round=resume_round,
+            started_at=started,
+            clock=time.time,
         )
         loop_results[i] = seam
-        if seam.status != "converged":  # a non-converged loop fails its node → downstream BLOCKED
-            raise HarnessClientError(f"loop {i} did not converge: {seam.status}")
+        out_loop_state[str(i)] = {
+            "round": seam.rounds,
+            "started_at": started,
+            "status": seam.status,
+        }
+        if seam.status == "paused":  # PR-C: a per-round HITL gate awaits a human decision
+            paused_gates.extend(seam.paused_at)
+        if seam.status != "converged":  # paused OR a bound halt → block downstream (#551 non-abort)
+            raise HarnessClientError(f"loop {i}: {seam.status}")
         return {"loop": i, "status": seam.status, "output": seam.results}
 
     skeleton = await run_team(
@@ -369,6 +396,8 @@ async def run_team_hybrid(
         skeleton.member_status.update(seam.member_status)
         skeleton.member_errors.update(seam.member_errors)
         skeleton.envelopes.extend(seam.envelopes)
+        if seam.status == "paused":
+            continue  # PR-C: a PAUSED loop is NOT a failure — its members are not marked failed
         # a non-converged loop FAILED AS A UNIT — its goal was not met though its members each
         # dispatched. Mark EVERY loop member failed so the run is re-runnable (re-drives the loop,
         # ADR-042 #551); a member that genuinely raised in-loop keeps its own leak-safe error.
@@ -380,6 +409,13 @@ async def run_team_hybrid(
         skeleton.results.pop(_loop_node_role(i), None)
         skeleton.member_status.pop(_loop_node_role(i), None)
         skeleton.member_errors.pop(_loop_node_role(i), None)
+    skeleton.loop_state = out_loop_state  # PR-C: the per-loop checkpoint for the engine to persist
+    # PR-C: a per-round HITL gate PAUSES the team (awaiting the human decision) — not a failure; the
+    # advance machinery resumes it. Pause takes precedence over a run_team-marked blocked member.
+    if paused_gates:
+        skeleton.status = "paused"
+        skeleton.paused_at = sorted(set(skeleton.paused_at) | set(paused_gates))
+        return skeleton
     # the team SUCCEEDS only when every member delivered (ADR-042); any failed/blocked → FAILED
     if any(s in ("failed", "blocked") for s in skeleton.member_status.values()):
         skeleton.status = "failed"
@@ -395,8 +431,13 @@ async def run_team_hybrid(
 # router's, so no runtime output is ever re-emitted into a model prompt or a log.
 
 
-def _render_coordinator_prompt(loop: OHMLoop, results: dict[str, Any], rounds_left: int) -> str:
-    """The coordinator's input — loop structure + a per-member produced flag (NO raw outputs)."""
+def _render_coordinator_prompt(
+    loop: OHMLoop, results: dict[str, Any], rounds_left: int, members: list[str] | None = None
+) -> str:
+    """The coordinator's input — loop structure + a per-member produced flag (NO raw outputs).
+    ``members`` (default = every loop member) is the WORK members the router may pick — a per-round
+    HITL gate (kind:human) is excluded (the seam handles it), so the router never routes to it."""
+    roles = members if members is not None else list(loop.members)
     lines = [
         "You are the COORDINATOR of a team loop. Pick the SINGLE next member to run so the loop",
         "makes progress toward its goal. You do NOT decide when the loop is done and you do NOT do",
@@ -405,7 +446,7 @@ def _render_coordinator_prompt(loop: OHMLoop, results: dict[str, Any], rounds_le
         f"Rounds left before the loop is force-stopped: {rounds_left}.",
         "Members of this loop (role — its handoff intent — has it produced yet?):",
     ]
-    for role in loop.members:
+    for role in roles:
         intent = loop.routing.get(role, "") or "(no stated intent)"
         produced = "produced" if results.get(role) is not None else "not yet produced"
         lines.append(f"  - {role} — {intent} — {produced}")
@@ -471,16 +512,20 @@ def make_loop_coordinator(harness: _Harness, team: OHMManifest) -> LoopCoordinat
     the next loop member. Picks-only (``capability_ceiling=[]``), leak-safe (structure not content),
     fail-closed (an unreachable/garbled router yields ``[]`` → the coded done-check rules)."""
     sub = _coordinator_subharness(team)
+    by_role = {m.role: m for m in team.members}
 
     async def coordinate(loop: OHMLoop, results: dict[str, Any], rounds_left: int) -> list[str]:
+        # PR-C: route ONLY among work members — a kind:human per-round gate is a structural pause
+        # (the seam pauses/renders it), never a coordinator pick, so it can't waste a round.
+        work = [r for r in loop.members if not (by_role.get(r) and by_role[r].kind == "human")]
         try:
             out = await harness.execute(
-                input_text=_render_coordinator_prompt(loop, results, rounds_left),
+                input_text=_render_coordinator_prompt(loop, results, rounds_left, members=work),
                 manifest_inline=sub,
                 capability_ceiling=[],  # the router is granted NO capability
             )
         except HarnessClientError:
             return []  # router unreachable → give up this round; the coded done-check decides
-        return _parse_next_roles(out.get("output"), allowed=set(loop.members))
+        return _parse_next_roles(out.get("output"), allowed=set(work))
 
     return coordinate

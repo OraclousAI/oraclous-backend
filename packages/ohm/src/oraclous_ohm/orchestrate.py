@@ -66,6 +66,9 @@ class TeamRunResult(BaseModel):
     member_status: dict[str, str] = Field(default_factory=dict)
     # role -> the failure detail for a "failed" member (leak-safe str of the dispatch error)
     member_errors: dict[str, str] = Field(default_factory=dict)
+    # PR-C (ADR-043 #552): per-loop checkpoint — "<loop_index>" -> {round, started_at, status}. The
+    # hybrid driver sets it so the engine can persist it + resume a loop at a round boundary.
+    loop_state: dict[str, Any] = Field(default_factory=dict)
 
 
 def _resolve_over(over: str, state: dict[str, Any], results: dict[str, Any]) -> list[Any]:
@@ -424,8 +427,11 @@ DoneCheckFn = Callable[[dict[str, Any]], Awaitable[bool]]
 # returns [] when it BELIEVES the goal is met (still confirmed by the coded done-check).
 LoopCoordinateFn = Callable[["OHMLoop", dict[str, Any], int], Awaitable[list[str]]]
 
-#: the terminal status of a loop seam — converged, or halted at one of the four runaway bounds.
-LoopSeamStatus = Literal["converged", "max_rounds", "wall_time", "cost_budget", "no_progress"]
+#: the terminal status of a loop seam — converged, halted at a runaway bound, or PAUSED on a
+#: per-round HITL gate (PR-C step 6) awaiting a human decision.
+LoopSeamStatus = Literal[
+    "converged", "max_rounds", "wall_time", "cost_budget", "no_progress", "paused"
+]
 
 
 class LoopSeamResult(BaseModel):
@@ -439,6 +445,8 @@ class LoopSeamResult(BaseModel):
     envelopes: list[HandoffEnvelope] = Field(default_factory=list)
     rounds: int = 0
     status: LoopSeamStatus = "max_rounds"
+    # PR-C: the undecided per-round HITL gate role(s) the loop is PAUSED on (status == "paused")
+    paused_at: list[str] = Field(default_factory=list)
 
 
 def _loop_inbound(
@@ -490,11 +498,25 @@ async def run_loop_seam(
     cost_so_far: Callable[[], int] | None = None,
     clock: Callable[[], float] | None = None,
     seed_results: dict[str, Any] | None = None,
+    gate_decisions: dict[str, str] | None = None,
+    resume_from_round: int = 0,
+    started_at: float | None = None,
 ) -> LoopSeamResult:
-    """Run ONE loop SCC round-by-round under coded governance (ADR-043 #552); see module note."""
+    """Run ONE loop SCC round-by-round under coded governance (ADR-043 #552); see module note.
+
+    PR-C (step 6): a ``kind:"human"`` loop member is a per-round GATE — the loop PAUSES before a
+    round while any gate is undecided (no auto-skip), resuming once ``gate_decisions`` carries the
+    decision. ``resume_from_round`` + ``started_at`` make the seam resumable at a round boundary:
+    the round counter continues (a resume can't buy a fresh round budget) and wall-clock is measured
+    from the ORIGINAL run start (a long human pause does not reset the timeout). The four runaway
+    bounds are checked FIRST each round, so a blown budget halts even with a gate pending."""
     _clock = clock or time.monotonic
     _cost = cost_so_far or (lambda: 0)
+    gates = gate_decisions or {}
     loop_roles = set(loop.members)
+    # PR-C: a kind:human loop member is a per-round approval gate (reuses run_team's human-gate
+    # vocabulary). It is never harness-dispatched — rendered (its decision recorded) once decided.
+    gate_roles = [r for r in loop.members if r in by_role and by_role[r].kind == "human"]
     results: dict[str, Any] = dict(seed_results or {})
     # ADR-042 (#551): a seeded loop member already delivered in a prior drive — record it succeeded
     # (mirrors run_team's ``completed`` handling) so an immediate convergence on resume (coordinator
@@ -504,11 +526,12 @@ async def run_loop_seam(
     }
     member_errors: dict[str, str] = {}
     envelopes: list[HandoffEnvelope] = []
-    started = _clock()
-    rounds = 0
+    # PR-C: wall-clock from the ORIGINAL run start (persisted across a pause), never reset on resume
+    started = started_at if started_at is not None else _clock()
+    rounds = resume_from_round  # PR-C: resume continues the round counter, no fresh round budget
     last_signature: str | None = None
 
-    def _result(status: LoopSeamStatus) -> LoopSeamResult:
+    def _result(status: LoopSeamStatus, paused_at: list[str] | None = None) -> LoopSeamResult:
         return LoopSeamResult(
             results=results,
             member_status=member_status,
@@ -516,16 +539,31 @@ async def run_loop_seam(
             envelopes=envelopes,
             rounds=rounds,
             status=status,
+            paused_at=paused_at or [],
         )
 
     while rounds < max_rounds:
-        # bounds are checked BEFORE dispatching the round → halt-with-partial, never abort
+        # bounds are checked FIRST → halt-with-partial, and a blown budget WINS over a pending gate
         if max_wall_seconds is not None and _clock() - started > max_wall_seconds:
             return _result("wall_time")
         if max_cost is not None and _cost() > max_cost:
             return _result("cost_budget")
+        # PR-C: the HITL gate CHECK runs before EVERY round — an UNDECIDED gate always PAUSES (no
+        # auto-skip; rounds NOT incremented, so resuming re-enters this check idempotently).
+        # SEMANTICS: the human's GO is a ONE-TIME approval that applies to the loop (the book's §22
+        # GO gate) — once decided in ``gate_decisions`` it stays a GO across rounds, not re-consumed
+        # per round. Re-approving every iteration would clear the decision each round — a deliberate
+        # non-default (flagged for the use-case-guardian to confirm).
+        undecided = [g for g in gate_roles if gates.get(g) is None]
+        if undecided:
+            return _result("paused", paused_at=undecided)
+        for g in gate_roles:  # render the GO once into the loop state (recorded, never dispatched)
+            if results.get(g) is None:
+                results[g] = {"gate": g, "decision": gates.get(g)}
+                member_status[g] = "succeeded"
 
         next_roles = await coordinate(loop, dict(results), max_rounds - rounds)
+        next_roles = list(dict.fromkeys(next_roles))  # PR-C: within-round de-dup — dispatch once
         for role in next_roles:  # fail-closed: route ONLY to declared loop members
             if role not in loop_roles:
                 raise OHMError(f"loop coordinator routed to non-loop member {role!r}")
@@ -536,6 +574,8 @@ async def run_loop_seam(
         rounds += 1
         for role in next_roles:
             member = by_role[role]
+            if member.kind == "human":  # a gate is rendered at the round top, never dispatched
+                continue
             inbound = _loop_inbound(loop, member, results, by_role, envelopes)
             try:
                 results[role] = await dispatch(member, inbound, None)
