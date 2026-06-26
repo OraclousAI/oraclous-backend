@@ -13,6 +13,7 @@ survives across requests) is the next wiring step on a team-run model + the task
 from __future__ import annotations
 
 import json
+import time
 import uuid
 from collections.abc import Callable
 from typing import Any, Protocol
@@ -265,6 +266,7 @@ async def run_team_hybrid(
     sub_harnesses: dict[str, dict[str, Any]] | None = None,
     gate_decisions: dict[str, str] | None = None,
     completed: dict[str, Any] | None = None,
+    loop_state: dict[str, Any] | None = None,
     trace_id: uuid.UUID | None = None,
     parent_execution_id: uuid.UUID | None = None,
     on_child: Callable[[str], None] | None = None,
@@ -328,6 +330,9 @@ async def run_team_hybrid(
 
     condensed, _ = _condense(manifest, loops)
     loop_results: dict[int, LoopSeamResult] = {}
+    in_loop_state = loop_state or {}  # PR-C: prior per-loop checkpoint (resume), by loop index
+    out_loop_state: dict[str, Any] = {}  # PR-C: the checkpoint to persist after this drive
+    paused_gates: list[str] = []  # PR-C: per-round HITL gate(s) a loop is paused on
 
     async def hybrid_dispatch(
         member: OHMMember, envelopes: list[HandoffEnvelope], fan_item: Any
@@ -338,6 +343,13 @@ async def run_team_hybrid(
         loop = loops[i]
         # seed the loop with any members already delivered in a prior drive (resume / re-run)
         seed = {r: completed[r] for r in loop.members if completed and r in completed}
+        # PR-C: resume the round-index + the ORIGINAL wall-clock start from the prior checkpoint. An
+        # epoch (time.time) origin survives the process restart across a long human pause, so the
+        # wall-clock bound measures real elapsed time (a resume can't reset it). clock=time.time
+        # pairs with the epoch started_at (the seam compares _clock() - started).
+        cp = in_loop_state.get(str(i), {})
+        resume_round = int(cp.get("round") or 0)
+        started = float(cp["started_at"]) if cp.get("started_at") is not None else time.time()
         seam = await run_loop_seam(
             loop,
             by_role,
@@ -349,10 +361,21 @@ async def run_team_hybrid(
             max_cost=max_cost,
             cost_so_far=cost_so_far,
             seed_results=seed or None,
+            gate_decisions=gate_decisions,
+            resume_from_round=resume_round,
+            started_at=started,
+            clock=time.time,
         )
         loop_results[i] = seam
-        if seam.status != "converged":  # a non-converged loop fails its node → downstream BLOCKED
-            raise HarnessClientError(f"loop {i} did not converge: {seam.status}")
+        out_loop_state[str(i)] = {
+            "round": seam.rounds,
+            "started_at": started,
+            "status": seam.status,
+        }
+        if seam.status == "paused":  # PR-C: a per-round HITL gate awaits a human decision
+            paused_gates.extend(seam.paused_at)
+        if seam.status != "converged":  # paused OR a bound halt → block downstream (#551 non-abort)
+            raise HarnessClientError(f"loop {i}: {seam.status}")
         return {"loop": i, "status": seam.status, "output": seam.results}
 
     skeleton = await run_team(
@@ -369,6 +392,8 @@ async def run_team_hybrid(
         skeleton.member_status.update(seam.member_status)
         skeleton.member_errors.update(seam.member_errors)
         skeleton.envelopes.extend(seam.envelopes)
+        if seam.status == "paused":
+            continue  # PR-C: a PAUSED loop is NOT a failure — its members are not marked failed
         # a non-converged loop FAILED AS A UNIT — its goal was not met though its members each
         # dispatched. Mark EVERY loop member failed so the run is re-runnable (re-drives the loop,
         # ADR-042 #551); a member that genuinely raised in-loop keeps its own leak-safe error.
@@ -380,6 +405,13 @@ async def run_team_hybrid(
         skeleton.results.pop(_loop_node_role(i), None)
         skeleton.member_status.pop(_loop_node_role(i), None)
         skeleton.member_errors.pop(_loop_node_role(i), None)
+    skeleton.loop_state = out_loop_state  # PR-C: the per-loop checkpoint for the engine to persist
+    # PR-C: a per-round HITL gate PAUSES the team (awaiting the human decision) — not a failure; the
+    # advance machinery resumes it. Pause takes precedence over a run_team-marked blocked member.
+    if paused_gates:
+        skeleton.status = "paused"
+        skeleton.paused_at = sorted(set(skeleton.paused_at) | set(paused_gates))
+        return skeleton
     # the team SUCCEEDS only when every member delivered (ADR-042); any failed/blocked → FAILED
     if any(s in ("failed", "blocked") for s in skeleton.member_status.values()):
         skeleton.status = "failed"
