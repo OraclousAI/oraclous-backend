@@ -548,13 +548,16 @@ async def run_loop_seam(
             return _result("wall_time")
         if max_cost is not None and _cost() > max_cost:
             return _result("cost_budget")
-        # PR-C: per-round HITL gate — PAUSE before the round while any gate is undecided (no auto-
-        # skip; rounds NOT incremented, so resuming re-enters this check idempotently). Once every
-        # gate is decided, render it into the loop state (recorded, never harness-dispatched).
+        # PR-C: the HITL gate CHECK runs before EVERY round — an UNDECIDED gate always PAUSES (no
+        # auto-skip; rounds NOT incremented, so resuming re-enters this check idempotently).
+        # SEMANTICS: the human's GO is a ONE-TIME approval that applies to the loop (the book's §22
+        # GO gate) — once decided in ``gate_decisions`` it stays a GO across rounds, not re-consumed
+        # per round. Re-approving every iteration would clear the decision each round — a deliberate
+        # non-default (flagged for the use-case-guardian to confirm).
         undecided = [g for g in gate_roles if gates.get(g) is None]
         if undecided:
             return _result("paused", paused_at=undecided)
-        for g in gate_roles:
+        for g in gate_roles:  # render the GO once into the loop state (recorded, never dispatched)
             if results.get(g) is None:
                 results[g] = {"gate": g, "decision": gates.get(g)}
                 member_status[g] = "succeeded"
