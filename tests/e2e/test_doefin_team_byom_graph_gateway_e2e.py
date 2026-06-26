@@ -218,3 +218,9 @@ def test_doefin_team_imports_from_github_runs_on_real_model_and_serves_artifacts
     assert any(b.get("content") for b in served), (
         f"no artifact landed + served on the bound graph for a SUCCEEDED run: {arts.json()}"
     )
+    # provenance: the graph is created fresh per-run, so a served artifact is necessarily from THIS
+    # run — and a served artifact carrying the per-run nonce (the members weave it into their output
+    # and persist it) proves the served deliverable is real + from this run, not a stale one.
+    assert any(nonce in (b.get("content") or "") for b in served), (
+        f"no served artifact carried the per-run nonce {nonce!r} (served={len(served)})"
+    )

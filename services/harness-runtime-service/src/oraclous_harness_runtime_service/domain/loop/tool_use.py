@@ -58,10 +58,15 @@ def _is_transient(exc: BaseException) -> bool:
     return bool(getattr(exc, "transient", False))
 
 
-def _retry_delay(attempt: int) -> float:
-    """Exponential backoff with FULL jitter for retry ``attempt`` (0-based), capped."""
+def _retry_delay(attempt: int, retry_after: float | None = None) -> float:
+    """Exponential backoff with FULL jitter for retry ``attempt`` (0-based), capped. Honours a
+    server ``Retry-After`` hint (429/503) when present — wait at least that long, but still capped
+    at ``_LLM_RETRY_MAX_S`` so a large hint cannot blow the wall-time budget (ADR-042 #551)."""
     ceiling = min(_LLM_RETRY_MAX_S, _LLM_RETRY_BASE_S * (2**attempt))
-    return random.uniform(0, ceiling)  # noqa: S311 — jitter, not security-sensitive
+    backoff = random.uniform(0, ceiling)  # noqa: S311 — jitter, not security-sensitive
+    if retry_after is not None:
+        return max(min(retry_after, _LLM_RETRY_MAX_S), backoff)
+    return backoff
 
 
 @dataclass(frozen=True, slots=True)
@@ -310,7 +315,7 @@ async def run_tool_use_loop(
                         len(steps), StepKind.LLM, "primary", "retry", _truncate(f"transient: {exc}")
                     )
                 )
-                await _async_sleep(_retry_delay(attempt))
+                await _async_sleep(_retry_delay(attempt, getattr(exc, "retry_after", None)))
                 if (
                     _over_wall_time()
                 ):  # the backoff itself may cross the deadline — stop, don't retry

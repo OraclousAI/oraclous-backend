@@ -44,11 +44,31 @@ class LLMClientError(Exception):
     fails a permanent error (auth / model-not-found / bad-request) fast (ADR-042 #551)."""
 
     def __init__(
-        self, message: str, *, status_code: int | None = None, transient: bool = False
+        self,
+        message: str,
+        *,
+        status_code: int | None = None,
+        transient: bool = False,
+        retry_after: float | None = None,
     ) -> None:
         super().__init__(message)
         self.status_code = status_code
         self.transient = transient
+        # the server's Retry-After hint in seconds (429/503), if it sent one — the loop waits at
+        # least this long (capped) before retrying, instead of guessing with backoff alone.
+        self.retry_after = retry_after
+
+
+def _parse_retry_after(value: str | None) -> float | None:
+    """Parse a Retry-After header's delta-seconds form (an int). An HTTP-date form / junk → None
+    (the loop falls back to exponential backoff)."""
+    if not value:
+        return None
+    try:
+        secs = float(value.strip())
+    except ValueError:
+        return None
+    return secs if secs >= 0 else None
 
 
 def _to_wire(messages: list[Message], system: str) -> list[dict[str, Any]]:
@@ -149,6 +169,7 @@ class OpenAICompatibleClient:
                 f"LLM call → {sc}",
                 status_code=sc,
                 transient=_status_is_transient(sc),
+                retry_after=_parse_retry_after(resp.headers.get("retry-after")),
             )
         data = resp.json()
         choice = (data.get("choices") or [{}])[0]

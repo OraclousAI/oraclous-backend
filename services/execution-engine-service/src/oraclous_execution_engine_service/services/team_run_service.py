@@ -578,7 +578,11 @@ class TeamRunService:
             )
         except Exception as exc:  # noqa: BLE001 — never strand the run in RUNNING (G-C); fail closed
             # ANY in-process drive error (harness failure, decode, network, bug) -> FAILED, not a
-            # stuck RUNNING row. Return the FAILED row to the caller.
+            # stuck RUNNING row. Return the FAILED row to the caller. NB this path does NOT record
+            # per-member member_status (it stays {}), so the run is NOT re-runnable (rerun → 409
+            # nothing_to_rerun). That is intentional for a TEAM-level hard fail — most notably a
+            # max_wall_seconds timeout (OHMError from run_team): re-running the same DAG would just
+            # time out again, so the recovery is a fresh POST, not a per-member re-drive (ADR-042).
             with org_scope(org):
                 updated, _ = await self._team_runs.transition(
                     row.id,

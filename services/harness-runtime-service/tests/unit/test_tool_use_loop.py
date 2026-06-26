@@ -565,6 +565,14 @@ async def test_transient_retries_are_bounded_then_fail(monkeypatch: pytest.Monke
     assert llm.calls == tool_use._LLM_MAX_RETRIES + 1  # the initial try + the bounded retries
 
 
+def test_retry_delay_honors_a_retry_after_hint_capped() -> None:
+    # ADR-042 (#551): a server Retry-After hint is honoured (wait at least that long) but CAPPED at
+    # _LLM_RETRY_MAX_S so a large hint can't blow the wall-time budget; no hint → pure backoff.
+    assert tool_use._retry_delay(0, retry_after=5.0) >= 5.0  # honoured
+    assert tool_use._retry_delay(0, retry_after=1000.0) <= tool_use._LLM_RETRY_MAX_S  # capped
+    assert tool_use._retry_delay(0, None) <= tool_use._LLM_RETRY_BASE_S  # backoff only, bounded
+
+
 async def test_transient_retry_respects_the_wall_time_budget(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

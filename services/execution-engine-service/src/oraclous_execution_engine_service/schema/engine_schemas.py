@@ -325,7 +325,9 @@ class TeamRunOut(BaseModel):
     @field_validator("member_status", mode="before")
     @classmethod
     def _coerce_member_status(cls, v: Any) -> Any:
-        # a row not yet driven (QUEUED) carries NULL/None before the first drive records statuses
+        # A real flushed row already holds {} (the column default + migration 0012 server_default),
+        # so a QUEUED run is {} not None. This only coerces None from a Python-constructed/unflushed
+        # row (e.g. the route unit tests) or a hypothetical pre-migration NULL — fail-soft.
         return v or {}
 
 

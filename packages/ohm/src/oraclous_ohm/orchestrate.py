@@ -28,6 +28,11 @@ from oraclous_ohm.manifest import OHMManifest, OHMMember, OHMOrchestration, OHMR
 from oraclous_ohm.precedence_resolution import clamp_member_source
 
 # Dispatch one member (+ optional fan-out item) given its inbound hand-offs -> output payload.
+# LEAK-SAFETY CONTRACT (ADR-042 / CLAUDE.md §11): when dispatch RAISES, ``str(exc)`` is recorded in
+# ``member_errors`` and persisted + served in the team-run ``error_message`` — so the raised error
+# MUST be leak-safe (a coarse status/role, never an upstream response body, prompt, or model text).
+# The engine's ``make_harness_dispatch`` honours this (it surfaces the harness's own error_type, not
+# a provider body; the LLM client already strips the body — see openai_compatible.py's classifier).
 DispatchFn = Callable[[OHMMember, list[HandoffEnvelope], Any], Awaitable[Any]]
 
 # Stage fan-out cap (#543): a wide imported team (e.g. 18 members collapsed into one flat stage)

@@ -164,6 +164,30 @@ async def test_a_timeout_is_transient() -> None:
     assert ei.value.transient is True  # a transport timeout is retryable
 
 
+async def test_retry_after_header_is_parsed_onto_the_error() -> None:
+    def handler(_req: httpx.Request) -> httpx.Response:
+        return httpx.Response(429, text="slow down", headers={"Retry-After": "3"})
+
+    with pytest.raises(LLMClientError) as ei:
+        await _client(handler).complete(
+            messages=[{"role": "user", "content": "x"}], system="", tools=[]
+        )
+    assert ei.value.retry_after == 3.0  # the server's wait hint is carried for the retry loop
+    assert ei.value.transient is True
+
+
+async def test_a_non_numeric_retry_after_is_ignored() -> None:
+    def handler(_req: httpx.Request) -> httpx.Response:
+        return httpx.Response(503, headers={"Retry-After": "Wed, 21 Oct 2025 07:28:00 GMT"})
+
+    with pytest.raises(LLMClientError) as ei:
+        await _client(handler).complete(
+            messages=[{"role": "user", "content": "x"}], system="", tools=[]
+        )
+    assert ei.value.retry_after is None  # HTTP-date form → fall back to exponential backoff
+    assert ei.value.transient is True
+
+
 async def test_error_message_does_not_leak_the_upstream_body() -> None:
     # leak-safety (CLAUDE.md §11): the provider body may echo the customer's prompt/output, and this
     # message flows into the served team-run error_message — it must carry ONLY the coarse status.
