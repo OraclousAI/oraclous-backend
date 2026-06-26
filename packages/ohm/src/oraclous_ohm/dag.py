@@ -49,3 +49,50 @@ def topological_stages(members: list[OHMMember]) -> list[list[str]]:
         done |= set(ready)
         remaining -= set(ready)
     return stages
+
+
+def strongly_connected_components(graph: dict[str, set[str]]) -> list[list[str]]:
+    """Tarjan's strongly-connected components of a directed graph (node -> successor nodes).
+
+    Used by the importer (ADR-043 #552) to isolate each GENUINE loop in the handoff graph: an SCC of
+    >=2 nodes — or a single node with a self-edge — is a real cycle the conductor runs as a bounded
+    coordinator seam; every other node is its own singleton SCC (the acyclic skeleton on run_team).
+    ``graph`` must include EVERY node as a key (leaf nodes map to an empty set). Each returned SCC
+    is sorted; successors are visited in sorted order, so the output is deterministic. Pure + I/O-
+    free.
+    Teams are small (tens of members), so a recursive walk is well within the recursion limit."""
+    index: dict[str, int] = {}
+    lowlink: dict[str, int] = {}
+    on_stack: set[str] = set()
+    stack: list[str] = []
+    counter = 0
+    sccs: list[list[str]] = []
+
+    def _strongconnect(node: str) -> None:
+        nonlocal counter
+        index[node] = lowlink[node] = counter
+        counter += 1
+        stack.append(node)
+        on_stack.add(node)
+        for succ in sorted(graph.get(node, ())):
+            if succ not in graph:
+                continue  # an edge to an unknown node is ignored (the caller validates membership)
+            if succ not in index:
+                _strongconnect(succ)
+                lowlink[node] = min(lowlink[node], lowlink[succ])
+            elif succ in on_stack:
+                lowlink[node] = min(lowlink[node], index[succ])
+        if lowlink[node] == index[node]:  # node is an SCC root — pop the component
+            component: list[str] = []
+            while True:
+                w = stack.pop()
+                on_stack.discard(w)
+                component.append(w)
+                if w == node:
+                    break
+            sccs.append(sorted(component))
+
+    for node in sorted(graph):
+        if node not in index:
+            _strongconnect(node)
+    return sccs
