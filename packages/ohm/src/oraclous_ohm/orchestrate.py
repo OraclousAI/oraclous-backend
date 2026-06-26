@@ -157,11 +157,27 @@ async def run_team(
         else None
     )
 
+    def _blocked_by_upstream(role: str) -> bool:
+        """ADR-042 (#551): True when a member's upstream dependency FAILED or is itself BLOCKED — it
+        can't honour its inbound contract. Deps are in EARLIER topological stages, so their terminal
+        status is already recorded here; this propagates BLOCKED transitively down the DAG. Applies
+        to a human GATE too (a gate with a failed upstream is unproducible input — BLOCK, never
+        PAUSE the run on it)."""
+        return any(member_status.get(d) in ("failed", "blocked") for d in by_role[role].depends_on)
+
     async def run_member(role: str) -> None:
         if role in done:  # already executed in a prior drive — reuse, do not dispatch again
             member_status[role] = "succeeded"  # a seeded member already delivered (resume/re-run)
             return
         member = by_role[role]
+        # ADR-042 non-aborting failure: a member (agent OR human gate) blocked by an upstream
+        # failure is recorded BLOCKED (never dispatched, not raised), so independent members run and
+        # the failure is re-runnable. Checked FIRST so a blocked gate cannot reach the human branch
+        # below and pause the run on unproducible input.
+        if _blocked_by_upstream(role):
+            results[role] = None
+            member_status[role] = "blocked"
+            return
         if member.kind == "human":
             # a blocking gate — never dispatched; by the time we run it, it is an approved decision
             results[role] = {"gate": role, "decision": gates.get(role)}
@@ -177,17 +193,6 @@ async def run_team(
             skipped.append(role)
             results[role] = None
             member_status[role] = "skipped"
-            return
-        # ADR-042 (#551) non-aborting failure: a member whose upstream dependency FAILED (or is
-        # itself BLOCKED by an upstream failure) cannot honour its inbound contract — it is BLOCKED,
-        # never dispatched, and recorded (not raised). Deps are in EARLIER topological stages, so
-        # their terminal status is already known here; BLOCKED propagates transitively down the DAG.
-        blocked_on = next(
-            (d for d in member.depends_on if member_status.get(d) in ("failed", "blocked")), None
-        )
-        if blocked_on is not None:
-            results[role] = None
-            member_status[role] = "blocked"
             return
         inbound: list[HandoffEnvelope] = []
         for dep in member.depends_on:
@@ -245,7 +250,12 @@ async def run_team(
             await run_member(role)
 
     for stage in stages:
-        stage_gates = [r for r in stage if by_role[r].kind == "human"]
+        # ADR-042 (#551): a human gate whose upstream FAILED/BLOCKED is NOT a real decision point —
+        # exclude it from the pause/reject check so a failed producer no longer surfaces as a
+        # healthy PAUSED run; run_member then records it BLOCKED (and the run resolves to "failed").
+        stage_gates = [
+            r for r in stage if by_role[r].kind == "human" and not _blocked_by_upstream(r)
+        ]
         undecided = [g for g in stage_gates if gates.get(g) is None]
         if undecided:  # block: pause the run; downstream depends_on members do not run
             return TeamRunResult(

@@ -293,3 +293,35 @@ async def test_rerun_seeds_succeeded_members_and_redispatches_the_failed_one() -
     assert seen2 == ["b"]  # ONLY the previously-failed member re-dispatched; a, c reused
     assert second.status == "completed"
     assert second.member_status == {"a": "succeeded", "b": "succeeded", "c": "succeeded"}
+
+
+def _human(role: str, deps: list[str] | None = None) -> OHMMember:
+    return OHMMember(role=role, kind="human", human_role="author", depends_on=deps or [])
+
+
+async def test_human_gate_with_a_failed_upstream_is_blocked_not_paused() -> None:
+    # ADR-042 (#551): a human gate whose upstream member FAILED is unproducible input — it must be
+    # BLOCKED (and the run "failed"/re-runnable), NOT surface a human task on a failed producer
+    # (which the old per-stage pause check did, masking the failure as a healthy PAUSED run).
+    dispatch, seen = _failing_dispatch("a")
+    team = _team([_m("a"), _human("approval", ["a"]), _m("writer", ["approval"])])
+    res = await run_team(team, dispatch)
+    assert res.status == "failed"  # NOT "paused" — the gate's upstream failed
+    assert res.member_status == {"a": "failed", "approval": "blocked", "writer": "blocked"}
+    assert res.paused_at == []  # the run did not pause on the unproducible gate
+    assert "approval" not in seen  # the gate (and its downstream) were never reached
+
+
+async def test_fan_out_member_failure_is_recorded_not_aborted() -> None:
+    # ADR-042 (#551): a fan_out member whose dispatch raises (any item) is recorded FAILED at the
+    # member level (member-grained), without aborting an independent peer in the same stage.
+    async def dispatch(member: OHMMember, envs: list[HandoffEnvelope], item: Any) -> dict:
+        if member.role == "fanner":
+            raise RuntimeError("fan item boom")
+        return {"out": member.role}
+
+    team = _team([_m("fanner", fan_out=OHMFanOut(over="$.items", max_parallel=2)), _m("peer")])
+    res = await run_team(team, dispatch, state={"items": ["x", "y"]})
+    assert res.member_status == {"fanner": "failed", "peer": "succeeded"}
+    assert res.status == "failed"
+    assert res.results["peer"] == {"out": "peer"}  # the independent peer still produced
