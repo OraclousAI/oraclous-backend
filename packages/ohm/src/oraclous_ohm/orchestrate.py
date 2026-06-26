@@ -48,8 +48,17 @@ class TeamRunResult(BaseModel):
     envelopes: list[HandoffEnvelope] = Field(default_factory=list)
     skipped: list[str] = Field(default_factory=list)
     stages: list[list[str]] = Field(default_factory=list)
-    status: Literal["completed", "paused", "rejected"] = "completed"
+    # ADR-042 (#551): a producing team run is "completed" (→ SUCCEEDED) ONLY when EVERY member
+    # delivered; if any member FAILED or was BLOCKED by an upstream failure it is "failed" (→
+    # FAILED), with the failed/blocked members re-runnable (re-drive with the succeeded members
+    # seeded via ``completed``). One member failing no longer aborts the team (see ``run_member``).
+    status: Literal["completed", "paused", "rejected", "failed"] = "completed"
     paused_at: list[str] = Field(default_factory=list)  # the human gate role(s) the run blocks on
+    # ADR-042 per-member terminal status — role -> "succeeded"|"failed"|"blocked"|"skipped". The
+    # team verdict derives from it (SUCCEEDED iff none failed/blocked); re-run targets the failures.
+    member_status: dict[str, str] = Field(default_factory=dict)
+    # role -> the failure detail for a "failed" member (leak-safe str of the dispatch error)
+    member_errors: dict[str, str] = Field(default_factory=dict)
 
 
 def _resolve_over(over: str, state: dict[str, Any], results: dict[str, Any]) -> list[Any]:
@@ -129,6 +138,10 @@ async def run_team(
     results: dict[str, Any] = dict(done)  # reuse already-completed members (resume), never re-run
     envelopes: list[HandoffEnvelope] = []
     skipped: list[str] = []
+    # ADR-042 (#551): per-member terminal status (role -> succeeded|failed|blocked|skipped) + the
+    # failure detail for failed members. Seeded members (``done``) are recorded succeeded as run.
+    member_status: dict[str, str] = {}
+    member_errors: dict[str, str] = {}
     # team-level termination (ADR-035): a wall-clock deadline for the whole DAG run. max_rounds /
     # convergence apply to the cyclic/B2 path, not this single-pass DAG; max_wall_seconds binds.
     _max_wall = (
@@ -146,20 +159,35 @@ async def run_team(
 
     async def run_member(role: str) -> None:
         if role in done:  # already executed in a prior drive — reuse, do not dispatch again
+            member_status[role] = "succeeded"  # a seeded member already delivered (resume/re-run)
             return
         member = by_role[role]
         if member.kind == "human":
             # a blocking gate — never dispatched; by the time we run it, it is an approved decision
             results[role] = {"gate": role, "decision": gates.get(role)}
+            member_status[role] = "succeeded"  # an approved gate delivered its decision
             return
         if predicate is not None and not predicate(member, results):
             skipped.append(role)
             results[role] = None
+            member_status[role] = "skipped"
             return
         if member.run_if is not None and not _eval_run_if(member.run_if, results):
             # declarative conditional dispatch (ADR-035): a prior output did not satisfy the test
             skipped.append(role)
             results[role] = None
+            member_status[role] = "skipped"
+            return
+        # ADR-042 (#551) non-aborting failure: a member whose upstream dependency FAILED (or is
+        # itself BLOCKED by an upstream failure) cannot honour its inbound contract — it is BLOCKED,
+        # never dispatched, and recorded (not raised). Deps are in EARLIER topological stages, so
+        # their terminal status is already known here; BLOCKED propagates transitively down the DAG.
+        blocked_on = next(
+            (d for d in member.depends_on if member_status.get(d) in ("failed", "blocked")), None
+        )
+        if blocked_on is not None:
+            results[role] = None
+            member_status[role] = "blocked"
             return
         inbound: list[HandoffEnvelope] = []
         for dep in member.depends_on:
@@ -172,29 +200,40 @@ async def run_team(
                 env = env.model_copy(update={"source_layer": _floor_tier})
             inbound.append(env)
             envelopes.append(env)
-        if member.fan_out is not None:
-            fan = member.fan_out
-            items = _resolve_over(fan.over, state, results)
-            outputs = await _gather_capped(
-                [dispatch(member, inbound, item) for item in items], fan.max_parallel
-            )
-            if fan.reduce == "synthesize":
-                # ADR-035 B3: an LLM-SYNTHESIS pass merges the N outputs into one (not a
-                # deterministic concat; EURail: 14 batches -> 1 ledger) — the member is dispatched
-                # once more over all N outputs, through dispatch (the harness/LLM).
-                syn_item = {"synthesize": outputs, "instruction": fan.synthesize_prompt or ""}
-                results[role] = await dispatch(member, inbound, syn_item)
-            else:
-                # MERGE the fan-out outputs via the DETERMINISTIC reducer (ADR-035 B3).
-                results[role] = aggregate_reduce(
-                    outputs,
-                    strategy=fan.reduce,
-                    field=fan.reduce_field,
-                    on=fan.reduce_key,
-                    key=fan.reduce_key,
+        try:
+            if member.fan_out is not None:
+                fan = member.fan_out
+                items = _resolve_over(fan.over, state, results)
+                outputs = await _gather_capped(
+                    [dispatch(member, inbound, item) for item in items], fan.max_parallel
                 )
-        else:
-            results[role] = await dispatch(member, inbound, None)
+                if fan.reduce == "synthesize":
+                    # ADR-035 B3: an LLM-SYNTHESIS pass merges the N outputs into one (not a
+                    # deterministic concat; EURail: 14 batches -> 1 ledger) — the member is
+                    # dispatched once more over all N outputs, through dispatch (the harness/LLM).
+                    syn_item = {"synthesize": outputs, "instruction": fan.synthesize_prompt or ""}
+                    results[role] = await dispatch(member, inbound, syn_item)
+                else:
+                    # MERGE the fan-out outputs via the DETERMINISTIC reducer (ADR-035 B3).
+                    results[role] = aggregate_reduce(
+                        outputs,
+                        strategy=fan.reduce,
+                        field=fan.reduce_field,
+                        on=fan.reduce_key,
+                        key=fan.reduce_key,
+                    )
+            else:
+                results[role] = await dispatch(member, inbound, None)
+        except Exception as exc:  # noqa: BLE001 — ADR-042: record FAILED, never abort the team DAG
+            # The member's harness dispatch failed (a transient-exhausted FAILED, a budget/iteration
+            # escalation, or a hard error). Record it FAILED + the leak-safe detail; do NOT re-raise
+            # — the stage's other (independent) members and the next stage still run. The whole run
+            # is then "failed" (not SUCCEEDED) and the failed+blocked members are re-runnable.
+            results[role] = None
+            member_status[role] = "failed"
+            member_errors[role] = str(exc)[:2000] or type(exc).__name__
+            return
+        member_status[role] = "succeeded"
 
     # Stage fan-out cap (#543): bound how many members dispatch concurrently so a wide stage cannot
     # self-throttle the shared BYOM key. Wraps the run_member calls (NOT the inner fan_out dispatch,
@@ -216,6 +255,8 @@ async def run_team(
                 stages=stages,
                 status="paused",
                 paused_at=undecided,
+                member_status=member_status,
+                member_errors=member_errors,
             )
         rejected = [g for g in stage_gates if gates.get(g) == "reject"]
         if rejected:  # the author rejected — halt; downstream does not run
@@ -226,6 +267,8 @@ async def run_team(
                 stages=stages,
                 status="rejected",
                 paused_at=rejected,
+                member_status=member_status,
+                member_errors=member_errors,
             )
         barrier = asyncio.gather(*(_bounded(role) for role in stage))  # the fan-in barrier (capped)
         if _deadline is not None:  # enforce the team wall-clock deadline across the barrier
@@ -240,8 +283,21 @@ async def run_team(
         else:
             await barrier
 
+    # ADR-042 verdict: SUCCEEDED ("completed") iff EVERY member delivered — any FAILED or BLOCKED
+    # member makes the run "failed" (→ FAILED), re-runnable by re-driving the failed+blocked members
+    # with the succeeded ones seeded via ``completed``. A skipped (conditional) member is a declared
+    # no-op, not a failure, so it does not block SUCCEEDED.
+    final_status = (
+        "failed" if any(s in ("failed", "blocked") for s in member_status.values()) else "completed"
+    )
     return TeamRunResult(
-        results=results, envelopes=envelopes, skipped=skipped, stages=stages, status="completed"
+        results=results,
+        envelopes=envelopes,
+        skipped=skipped,
+        stages=stages,
+        status=final_status,
+        member_status=member_status,
+        member_errors=member_errors,
     )
 
 
