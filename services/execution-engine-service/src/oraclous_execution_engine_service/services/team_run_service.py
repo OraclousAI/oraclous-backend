@@ -18,6 +18,7 @@ import asyncio
 import contextlib
 import json
 import os
+import re
 import uuid
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -35,7 +36,8 @@ from oraclous_ohm.gate_battery import (
     is_battery_reference,
     resolve_battery,
 )
-from oraclous_ohm.manifest import OHMManifest
+from oraclous_ohm.manifest import OHMLoop, OHMManifest
+from oraclous_ohm.orchestrate import DoneCheckFn
 from oraclous_ohm.parse import load_ohm
 
 from oraclous_execution_engine_service.core.rls import org_scope
@@ -44,10 +46,20 @@ from oraclous_execution_engine_service.repositories.maintenance_repository impor
     EngineMaintenanceRepository,
 )
 from oraclous_execution_engine_service.repositories.team_run_repository import TeamRunRepository
-from oraclous_execution_engine_service.services.evaluate_client import EvaluateClient
+from oraclous_execution_engine_service.services.artifacts_client import (
+    ArtifactsClient,
+    ArtifactsClientError,
+)
+from oraclous_execution_engine_service.services.evaluate_client import (
+    EvaluateClient,
+    EvaluateClientError,
+)
 from oraclous_execution_engine_service.services.graph_client import GraphClient, GraphClientError
 from oraclous_execution_engine_service.services.harness_client import HarnessClient
-from oraclous_execution_engine_service.services.team_run import run_team_harness
+from oraclous_execution_engine_service.services.team_run import (
+    make_loop_coordinator,
+    run_team_hybrid,
+)
 
 # orchestrator status -> persisted team-run state. ADR-042 (#551): "failed" (one or more members
 # did not deliver — the non-aborting failure path now records per-member status instead of raising)
@@ -175,6 +187,38 @@ def _grade_target(team: OHMManifest, results: dict[str, Any]) -> str:
     return json.dumps(chosen, default=str, sort_keys=True)
 
 
+_CONVERGENCE_RE = re.compile(r"\s*evaluator\s*(>=|<=|==|>|<)\s*([0-9]*\.?[0-9]+)\s*\Z")
+
+
+def _parse_convergence(expr: str) -> tuple[str, float]:
+    """Parse a loop convergence threshold ``"evaluator>=0.8"`` → ``(">=", 0.8)``. Raises
+    ``ValueError`` on a present-but-malformed expr — the caller (only invoked for a NON-empty expr)
+    fail-closes that to not-converged, so a typo'd threshold never silently passes on coverage
+    alone. An ABSENT threshold is handled by the caller (skip the evaluator gate), not here."""
+    m = _CONVERGENCE_RE.match(expr)
+    if m is None:
+        raise ValueError(f"unparseable convergence threshold: {expr!r}")
+    return m.group(1), float(m.group(2))
+
+
+def _cmp(score: float, op: str, floor: float) -> bool:
+    """Apply a parsed convergence comparator (fail-closed: an unknown op is False)."""
+    return {
+        ">=": score >= floor,
+        "<=": score <= floor,
+        "==": score == floor,
+        ">": score > floor,
+        "<": score < floor,
+    }.get(op, False)
+
+
+def _loop_grade_target(loop: OHMLoop, results: dict[str, Any]) -> str:
+    """Reduce a loop's per-member results to ONE string to grade — a deterministic JSON of the loop
+    members' outputs (never empty; the coverage floor already guaranteed each produced)."""
+    chosen = {r: results.get(r) for r in loop.members}
+    return json.dumps(chosen, default=str, sort_keys=True)
+
+
 class TeamRunService:
     def __init__(
         self,
@@ -184,6 +228,7 @@ class TeamRunService:
         enqueue: EnqueueFn | None = None,
         evaluate: EvaluateClient | None = None,
         graphs: GraphClient | None = None,
+        artifacts: ArtifactsClient | None = None,
     ) -> None:
         # The drive runs on the WORKER (like jobs/round-tables): the request path (create/advance)
         # needs `enqueue` (hand the QUEUED run to the broker) but NOT a harness; the worker `drive`
@@ -197,6 +242,7 @@ class TeamRunService:
         self._enqueue = enqueue
         self._evaluate = evaluate
         self._graphs = graphs
+        self._artifacts = artifacts
 
     def _org(self, principal: Principal) -> uuid.UUID:
         if principal.organisation_id is None:  # fail-closed tenancy (ADR-006)
@@ -450,6 +496,65 @@ class TeamRunService:
                 "reason": f"grader unavailable ({type(exc).__name__})",
             }
 
+    def _make_loop_done_check(
+        self, team: OHMManifest, run_id: uuid.UUID, graph_id: str | None, loop: OHMLoop
+    ) -> DoneCheckFn:
+        """The CODED authority a loop must satisfy to converge (ADR-043 #552) — the team can NEVER
+        satisfy its own done-check (the coordinator only routes; THIS decides). Three coded gates,
+        each fail-closed: (1) COVERAGE — every loop member produced a non-None output; (2) LANDED
+        ARTIFACTS — the work actually persisted on the bound graph (not merely claimed); (3) the
+        separate-evaluator GRADE clears the declared convergence threshold. An absent threshold
+        leaves coverage+artifacts as the floor; a malformed one never converges."""
+
+        async def done_check(results: dict[str, Any]) -> bool:
+            # 1. coverage floor — a failed loop member is results[role]=None, so it fails here
+            if not all(results.get(r) is not None for r in loop.members):
+                return False
+            # 2. landed artifacts on the bound graph — the loop's output is actually persisted
+            if graph_id is not None and self._artifacts is not None:
+                try:
+                    arts = await self._artifacts.list_artifacts(graph_id)
+                except ArtifactsClientError:
+                    return False  # inconclusive read → not-yet-converged (fail-closed)
+                if len(arts) < 1:
+                    return False
+            # 3. separate-evaluator grade vs the convergence threshold (if declared)
+            conv = team.orchestration.termination.convergence if team.orchestration else None
+            if conv and conv.strip():
+                try:
+                    op, floor = _parse_convergence(conv)
+                except ValueError:
+                    return False  # present-but-malformed → fail-closed (never silently passes)
+                criteria = (team.orchestration.success_criteria or "").strip()
+                if criteria:  # grade only against a real prose rubric
+                    if self._evaluate is None:
+                        return False  # a threshold declared but no judge wired → cannot confirm
+                    ev_model = team.evaluator_model()
+                    judge_credential_id = (
+                        str(ev_model.config.get("credential_id"))
+                        if ev_model and ev_model.config.get("credential_id")
+                        else None
+                    )
+                    judge_model = ev_model.binding if ev_model else None
+                    try:
+                        verdict = await self._evaluate.evaluate(
+                            target_ref=f"{run_id}/loop",
+                            target_output=_loop_grade_target(loop, results),
+                            success_criteria=criteria,
+                            judge_credential_id=judge_credential_id,
+                            judge_model=judge_model,
+                        )
+                    except (
+                        EvaluateClientError
+                    ):  # unreachable / rejected → not-converged (fail-closed)
+                        return False
+                    score = _verdict_score(verdict)
+                    if score is None or not _cmp(score, op, floor):
+                        return False
+            return True
+
+        return done_check
+
     async def advance(
         self, team_run_id: uuid.UUID, principal: Principal, gate_decisions: Mapping[str, str]
     ) -> EngineTeamRun:
@@ -551,10 +656,23 @@ class TeamRunService:
         # every attempt of a re-run member (it is not a double-count of the same work).
         cost_deltas: list[int] = []
         prior_cost = int(row.cost_tokens or 0)
+        # ADR-043 #552: a team with genuine loops drives the conductor — the BYOM coordinator (picks
+        # the next loop member) + the CODED done-check (coverage + landed-artifacts + evaluator)
+        # are wired ONLY for a loop team; a purely acyclic team runs the unchanged single-pass DAG.
+        has_loops = bool(team.orchestration and team.orchestration.loops)
+        coordinate = make_loop_coordinator(harness, team) if has_loops else None
+
+        def done_check_for(loop: OHMLoop) -> DoneCheckFn:
+            return self._make_loop_done_check(team, row.id, row.graph_id, loop)
+
         try:
-            result = await run_team_harness(
+            result = await run_team_hybrid(
                 team,
                 harness,
+                coordinate=coordinate,
+                done_check_for=done_check_for if has_loops else None,
+                # the live team-pooled spend (skeleton + every loop) for the loop cost bound
+                cost_so_far=lambda: prior_cost + sum(cost_deltas),
                 sub_harnesses=dict(row.sub_harnesses),
                 gate_decisions=dict(row.gate_decisions),
                 completed=completed,

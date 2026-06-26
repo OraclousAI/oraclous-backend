@@ -23,6 +23,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from oraclous_ohm.aggregate import aggregate_reduce
+from oraclous_ohm.dag import topological_stages
 from oraclous_ohm.envelope import HandoffEnvelope, build_handoff
 from oraclous_ohm.errors import OHMError
 from oraclous_ohm.manifest import OHMLoop, OHMManifest, OHMMember, OHMOrchestration, OHMRunIf
@@ -124,6 +125,7 @@ async def run_team(
     predicate: PredicateFn | None = None,
     gate_decisions: dict[str, str] | None = None,
     completed: dict[str, Any] | None = None,
+    members: list[OHMMember] | None = None,
 ) -> TeamRunResult:
     """Execute a Team Harness member DAG stage by stage, a real fan-in barrier between stages.
 
@@ -135,12 +137,17 @@ async def run_team(
     human gate): those members are NOT dispatched again — their cached output is reused (so inbound
     hand-offs still thread downstream), which makes ``advance`` idempotent over a member's side
     effects instead of re-executing the whole DAG.
+
+    ``members`` overrides the member set the DAG is built over — the hybrid driver (ADR-043 #552)
+    passes the acyclic skeleton + one condensed node per loop, so ``run_team`` schedules the loops
+    at their topological position. ``None`` ⇒ ``manifest.members`` (existing callers unchanged).
     """
     state = state or {}
     gates = gate_decisions or {}
     done = completed or {}
-    by_role = {m.role: m for m in manifest.members}
-    stages = manifest.execution_stages()  # topological_stages — fail-closed on cycle/unknown/dup
+    _members = members if members is not None else manifest.members
+    by_role = {m.role: m for m in _members}
+    stages = topological_stages(_members)  # fail-closed on cycle/unknown/dup
     results: dict[str, Any] = dict(done)  # reuse already-completed members (resume), never re-run
     envelopes: list[HandoffEnvelope] = []
     skipped: list[str] = []

@@ -35,6 +35,7 @@ from oraclous_execution_engine_service.repositories.roundtable_repository import
 )
 from oraclous_execution_engine_service.repositories.schedule_repository import ScheduleRepository
 from oraclous_execution_engine_service.repositories.team_run_repository import TeamRunRepository
+from oraclous_execution_engine_service.services.artifacts_client import ArtifactsClient
 from oraclous_execution_engine_service.services.evaluate_client import EvaluateClient
 from oraclous_execution_engine_service.services.harness_client import HarnessClient
 from oraclous_execution_engine_service.services.job_service import JobService
@@ -324,13 +325,19 @@ async def _drive_team_run_async(run_id_s: str, org_id_s: str, user_id_s: str) ->
             headers=headers,
             timeout=settings.evaluate_request_timeout,
         )
+        # ADR-043 #552: the coded loop done-check reads the graph's LANDED artifacts (org-scoped by
+        # the same downstream headers) to confirm a loop's work persisted before it can converge.
+        artifacts = ArtifactsClient(settings.knowledge_graph_url, headers=headers)
         try:
-            service = TeamRunService(team_runs=team_runs, harness=harness, evaluate=evaluate)
+            service = TeamRunService(
+                team_runs=team_runs, harness=harness, evaluate=evaluate, artifacts=artifacts
+            )
             result = await service.drive(run_id, principal)
             return {"team_run_id": run_id_s, "state": result.state}
         finally:
             await harness.aclose()
             await evaluate.aclose()
+            await artifacts.aclose()
             await team_runs.close()
 
 
