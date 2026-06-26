@@ -18,12 +18,13 @@ import uuid
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from oraclous_ohm.dag import topological_stages
-from oraclous_ohm.errors import OHMDagError, OHMError
+from oraclous_ohm.dag import strongly_connected_components
+from oraclous_ohm.errors import OHMError
 from oraclous_ohm.import_._flags import FlagSeverity, ImportFlag
 from oraclous_ohm.import_.handoff import HandoffSpec
 from oraclous_ohm.import_.schedules import ScheduledJob
 from oraclous_ohm.manifest import (
+    OHMLoop,
     OHMManifest,
     OHMMember,
     OHMMetadata,
@@ -87,44 +88,68 @@ def assemble_team(
         if to in roles and to != frm
     ]
 
-    # would applying them keep the DAG acyclic? (test on a trial copy)
-    trial = {r: list(by_role[r].depends_on) for r in roles}
+    # ADR-043 #552: isolate each GENUINE loop as a Tarjan strongly-connected component instead of
+    # demoting the WHOLE handoff graph to a routing string at the first cycle (the pre-ADR-043
+    # behaviour — a single back-edge among N agents flipped the entire team to depends_on=[] / run-
+    # once). Build the combined directed graph — a handoff X->Y is an edge X->Y; a structural
+    # depends_on (D in r.depends_on) is an edge D->r — and compute its SCCs. An SCC of >=2 members
+    # (or a single node with a self-edge) is a real loop the conductor runs as a bounded coordinator
+    # seam; every other node is the acyclic skeleton that still runs on run_team.
+    graph: dict[str, set[str]] = {r: set() for r in roles}
     for frm, to in edges:
-        if frm not in trial[to]:
-            trial[to].append(frm)
-    trial_members = [
-        OHMMember(
-            role=r,
-            kind=by_role[r].kind,
-            manifest_ref=by_role[r].manifest_ref,
-            human_role=by_role[r].human_role,
-            depends_on=trial[r],
-        )
-        for r in roles
+        graph[frm].add(to)
+    for r in roles:
+        for dep in by_role[r].depends_on:
+            if dep in roles:
+                graph[dep].add(r)
+    sccs = strongly_connected_components(graph)
+    scc_of = {role: i for i, scc in enumerate(sccs) for role in scc}
+    loop_sccs = [
+        scc for scc in sccs if len(scc) >= 2 or (len(scc) == 1 and scc[0] in graph[scc[0]])
     ]
-    cyclic = False
-    try:
-        topological_stages(trial_members)
-    except OHMDagError:
-        cyclic = True
+    loop_roles = {role for scc in loop_sccs for role in scc}
 
-    if cyclic:
-        # standing/scheduled team — do NOT force a DAG; record handoffs as routing hints
-        routing = "; ".join(f"{frm}->{to}" for frm, to in edges)
-        orchestration = orchestration or OHMOrchestration()
-        orchestration.style = (orchestration.style + f"\nHandoff routing: {routing}").strip()
-        flag(
-            "F-CYCLIC-ROUTING",
-            "confirm",
-            f"handoff graph is cyclic ({len(edges)} edges) — a standing/scheduled team; "
-            "handoffs recorded as routing, not depends_on",
+    # an intra-loop structural depends_on would make the run_team skeleton cyclic — the coordinator
+    # routes within the loop, so strip it (the loop seam carries it).
+    for r in loop_roles:
+        by_role[r].depends_on = [d for d in by_role[r].depends_on if scc_of.get(d) != scc_of[r]]
+
+    # inter-SCC handoff edges become depends_on (the acyclic skeleton); intra-loop handoff edges are
+    # carried by the loop seam, not depends_on (else the member DAG would be cyclic).
+    inter_scc_edges = [(frm, to) for frm, to in edges if scc_of[frm] != scc_of[to]]
+    for frm, to in inter_scc_edges:
+        if frm not in by_role[to].depends_on:
+            by_role[to].depends_on.append(frm)
+
+    # each genuine loop becomes an OHMOrchestration loop seam, preserving each member's next_task so
+    # the bounded coordinator (#552 step 2) re-dispatches the next member with a concrete objective.
+    loops = [
+        OHMLoop(
+            members=scc,
+            routing={
+                role: handoffs[role].next_task
+                for role in scc
+                if role in handoffs and handoffs[role].next_task
+            },
         )
-    else:
-        for frm, to in edges:
-            if frm not in by_role[to].depends_on:
-                by_role[to].depends_on.append(frm)
-        if edges:
-            flag("F-HANDOFF-EDGES", "info", f"{len(edges)} handoff depends_on edge(s) derived")
+        for scc in loop_sccs
+    ]
+    cyclic = bool(loops)
+    # the conductor always carries an orchestration brief — its ``loops`` is the (possibly empty)
+    # set of isolated coordinator seams; a purely acyclic team has loops=[] and runs on run_team.
+    orchestration = orchestration or OHMOrchestration()
+    orchestration.loops = loops
+    if loops:
+        flag(
+            "F-LOOP-SCC",
+            "info",
+            f"{len(loops)} loop seam(s) isolated as coordinator seams ({len(loop_roles)} members); "
+            "the acyclic remainder runs on run_team",
+        )
+    if inter_scc_edges:
+        flag(
+            "F-HANDOFF-EDGES", "info", f"{len(inter_scc_edges)} handoff depends_on edge(s) derived"
+        )
 
     # 3. conditional dispatch
     for frm, spec in handoffs.items():

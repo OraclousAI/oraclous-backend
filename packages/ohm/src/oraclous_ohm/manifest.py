@@ -204,6 +204,21 @@ class OHMGateBattery(BaseModel):
     floor: Literal["and", "precedence"] = "and"
 
 
+class OHMLoop(BaseModel):
+    """A strongly-connected component of the handoff graph — a GENUINE cycle (ADR-043 #552) the
+    conductor runs as a bounded coordinator seam, while the acyclic remainder runs on ``run_team``.
+
+    ``members`` are the SCC's roles (the loop); ``routing`` preserves each member's ``## Handoff``
+    next_task — the per-edge routing intent the bounded coordinator uses to re-dispatch the next
+    member with a concrete objective. The intra-loop edges are NOT ``depends_on`` (they would make
+    the member DAG cyclic); the loop carries them so the skeleton stays acyclic."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    members: list[str] = Field(min_length=1)
+    routing: dict[str, str] = Field(default_factory=dict)  # role -> its ## Handoff next_task
+
+
 class OHMOrchestration(BaseModel):
     """The coordinator's brief — routing CHOICE is prose; mechanics/budgets/gates stay coded."""
 
@@ -214,6 +229,9 @@ class OHMOrchestration(BaseModel):
     style: str = ""
     success_criteria: str = ""
     termination: OHMTermination = Field(default_factory=OHMTermination)
+    # ADR-043 #552: the genuine loops (Tarjan SCCs) isolated at import — each runs the conductor's
+    # bounded coordinator seam; an empty list means a purely acyclic team (runs all on run_team).
+    loops: list[OHMLoop] = Field(default_factory=list)
 
 
 class OHMTaskBoard(BaseModel):
