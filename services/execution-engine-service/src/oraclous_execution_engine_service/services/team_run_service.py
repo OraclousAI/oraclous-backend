@@ -329,7 +329,24 @@ class TeamRunService:
         if row is None:
             raise TeamRunError("team run not found", 404)
         team = self._load_team(row.manifest)
-        return await self._drive(row, team, org, completed=dict(row.results))
+        return await self._drive(row, team, org, completed=self._completed_for_resume(row))
+
+    @staticmethod
+    def _completed_for_resume(row: EngineTeamRun) -> dict[str, Any]:
+        """Which members to SEED on a (re-)drive so they are not re-dispatched (G-D). ADR-042
+        (#551): seed only the members whose terminal status is "succeeded" — so a re-run re-runs the
+        FAILED + BLOCKED members (their results are None, never a real output) while the succeeded
+        ones are reused. Back-compat: an in-flight PAUSED run created before member_status existed
+        carries an empty member_status; fall back to all results so its gate-resume still reuses the
+        pre-gate members (which are the only ones with a result on a PAUSED row)."""
+        member_status = row.member_status or {}
+        if not member_status:
+            return dict(row.results or {})  # pre-ADR-042 resume semantics (in-flight PAUSED rows)
+        return {
+            role: row.results[role]
+            for role, status in member_status.items()
+            if status == "succeeded" and role in (row.results or {})
+        }
 
     async def get(self, team_run_id: uuid.UUID, principal: Principal) -> EngineTeamRun:
         org = self._org(principal)
@@ -446,6 +463,42 @@ class TeamRunService:
         if self._enqueue is not None:
             self._enqueue(team_run_id, org, principal.principal_id)
         return claimed  # QUEUED — the worker drives the resume
+
+    async def rerun(self, team_run_id: uuid.UUID, principal: Principal) -> EngineTeamRun:
+        """ADR-042 (#551): RE-RUN a FAILED run from the durable team state — re-drive only the
+        FAILED + BLOCKED members (keeping the SUCCEEDED ones, which are NOT re-run), until every
+        member delivers and the run is SUCCEEDED. Transitions FAILED→QUEUED + re-enqueues the
+        worker, whose ``drive`` seeds the succeeded members via ``_completed_for_resume`` so only
+        the failures re-dispatch. 409 if the run is not FAILED or has nothing re-runnable (no failed
+        member to recover — a no-op). Org-scoped: a cross-org id is a 404 (via ``get``)."""
+        org = self._org(principal)
+        row = await self.get(team_run_id, principal)
+        if row.state != "FAILED":
+            raise TeamRunError(
+                f"team run is {row.state}, not FAILED — cannot re-run",
+                409,
+                error_type="not_failed",
+            )
+        rerunnable = [s for s in (row.member_status or {}).values() if s in ("failed", "blocked")]
+        if not rerunnable:  # a FAILED run with no recorded member failure (e.g. a hard drive crash)
+            raise TeamRunError(
+                "team run has no failed or blocked members to re-run",
+                409,
+                error_type="nothing_to_rerun",
+            )
+        with org_scope(org):  # CAS FAILED→QUEUED so a concurrent re-run does not double-drive
+            claimed, applied = await self._team_runs.transition(
+                team_run_id,
+                org,
+                new_state="QUEUED",
+                allowed_from=frozenset({"FAILED"}),
+                error_message=None,  # clear the prior failure summary; the re-drive records afresh
+            )
+        if not applied or claimed is None:  # lost the race (already re-queued) — return current
+            return await self.get(team_run_id, principal)
+        if self._enqueue is not None:
+            self._enqueue(team_run_id, org, principal.principal_id)
+        return claimed  # QUEUED — the worker re-drives the failed+blocked members
 
     async def _drive(
         self,

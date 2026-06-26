@@ -133,3 +133,21 @@ async def advance_team_run(
     except TeamRunError as exc:
         raise _http(exc) from exc
     return TeamRunOut.model_validate(row)
+
+
+@router.post(
+    "/team-runs/{team_run_id}/rerun",
+    response_model=TeamRunOut,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def rerun_team_run(
+    team_run_id: uuid.UUID, principal: PrincipalDep, service: TeamRunServiceDep
+) -> TeamRunOut:
+    """ADR-042 (#551): re-run a FAILED team run — re-drive only its FAILED + BLOCKED members (the
+    SUCCEEDED ones are kept, not re-run), so the run can reach SUCCEEDED with every member. 202:
+    re-queued + handed to the worker; poll GET for state. 409 if not FAILED / nothing to re-run."""
+    try:
+        row = await service.rerun(team_run_id, principal)
+    except TeamRunError as exc:
+        raise _http(exc) from exc
+    return TeamRunOut.model_validate(row)

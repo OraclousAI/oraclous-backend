@@ -200,3 +200,31 @@ async def test_advance_team_run_returns_202() -> None:
         )
     assert resp.status_code == 202  # advance re-queues; the worker drives the resume
     assert resp.json()["state"] == "QUEUED"
+
+
+async def test_rerun_team_run_returns_202_queued() -> None:
+    # ADR-042 (#551): POST .../rerun re-queues a FAILED run so the worker re-drives its failures.
+    seen: dict[str, Any] = {}
+
+    class FakeService:
+        async def rerun(self, run_id: uuid.UUID, principal: Principal) -> EngineTeamRun:
+            seen["run_id"] = run_id
+            return _queued_row({"kind": "team"})
+
+    run_id = uuid.uuid4()
+    async with await _client(FakeService()) as c:
+        resp = await c.post(f"/v1/engine/team-runs/{run_id}/rerun")
+    assert resp.status_code == 202
+    assert resp.json()["state"] == "QUEUED"
+    assert seen["run_id"] == run_id
+
+
+async def test_rerun_team_run_maps_409_when_not_failed() -> None:
+    # a non-FAILED run → the service raises TeamRunError(409); the route maps it to a 409.
+    class FakeService:
+        async def rerun(self, run_id: uuid.UUID, principal: Principal) -> EngineTeamRun:
+            raise TeamRunError("team run is SUCCEEDED, not FAILED — cannot re-run", 409)
+
+    async with await _client(FakeService()) as c:
+        resp = await c.post(f"/v1/engine/team-runs/{uuid.uuid4()}/rerun")
+    assert resp.status_code == 409

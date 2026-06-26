@@ -658,6 +658,64 @@ async def test_member_failure_persists_per_member_status_and_keeps_independent_o
     assert "b blew up" in (row.error_message or "")  # the failed member's detail is surfaced
 
 
+async def test_rerun_redispatches_only_the_failed_member_and_reaches_succeeded() -> None:
+    # ADR-042 (#551): first drive — 'b' fails (a transient that has cleared by the re-run), 'a'
+    # succeeds. rerun() re-drives ONLY 'b' (now succeeds) and KEEPS 'a' (never re-dispatched), so
+    # the run reaches SUCCEEDED with every member — the re-run-from-the-durable-team-state path.
+    class _FlakyHarness:
+        def __init__(self) -> None:
+            self.a_calls = 0
+            self.b_attempts = 0
+
+        async def execute(self, **kw: Any) -> dict[str, Any]:
+            if "do b" in kw.get("input_text", ""):
+                self.b_attempts += 1
+                if self.b_attempts == 1:  # fails the FIRST time, succeeds on the re-run
+                    return {"status": "FAILED", "output": None, "error_message": "b throttled"}
+                return {"status": "SUCCEEDED", "output": "b-ok"}
+            self.a_calls += 1
+            return {"status": "SUCCEEDED", "output": "a-ok"}
+
+    repo = FakeTeamRunRepo()
+    harness = _FlakyHarness()
+    svc, _ = _svc(repo, harness)
+    row = await _run(
+        svc,
+        _principal(),
+        manifest=_team([_agent("a"), _agent("b")]),
+        sub_harnesses={},
+        gate_decisions={},
+    )
+    assert row.state == "FAILED" and row.member_status == {"a": "succeeded", "b": "failed"}
+    assert harness.a_calls == 1
+
+    requeued = await svc.rerun(row.id, _principal())  # FAILED → QUEUED
+    assert requeued.state == "QUEUED"
+    final = await svc.drive(row.id, _principal())  # the worker re-drives only the failures
+    assert final.state == "SUCCEEDED"  # every member delivered on the re-run
+    assert final.member_status == {"a": "succeeded", "b": "succeeded"}
+    assert harness.a_calls == 1  # 'a' was NOT re-dispatched (its success is reused)
+    assert harness.b_attempts == 2  # 'b' re-dispatched exactly once on the re-run
+    assert final.error_message is None  # the prior failure summary is cleared on a clean re-run
+
+
+async def test_rerun_rejects_a_non_failed_run() -> None:
+    # only a FAILED run is re-runnable; a SUCCEEDED (or QUEUED/RUNNING) run → 409.
+    class _OkHarness:
+        async def execute(self, **kw: Any) -> dict[str, Any]:
+            return {"status": "SUCCEEDED", "output": "ok"}
+
+    repo = FakeTeamRunRepo()
+    svc, _ = _svc(repo, _OkHarness())
+    row = await _run(
+        svc, _principal(), manifest=_team([_agent("a")]), sub_harnesses={}, gate_decisions={}
+    )
+    assert row.state == "SUCCEEDED"
+    with pytest.raises(TeamRunError) as ei:
+        await svc.rerun(row.id, _principal())
+    assert ei.value.status_code == 409
+
+
 async def test_reap_stale_fails_stranded_running_team_runs() -> None:
     # G-C: the reaper FAILs a run stuck RUNNING past the lease (a driver that died mid-drive).
     repo = FakeTeamRunRepo()
