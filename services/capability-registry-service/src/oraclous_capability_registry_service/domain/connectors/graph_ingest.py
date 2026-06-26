@@ -65,10 +65,14 @@ class GraphIngestConnector(InternalTool):
     async def _execute_internal(
         self, input_data: dict[str, Any], context: ExecutionContext
     ) -> ExecutionResult:
-        # graph substrate (#524): the per-run bound graph (instance config) is the fallback, so the
-        # model never has to invent a UUID; an explicit tool-call graph_id still wins. Either way
-        # KGS RLS scopes it to the caller's org (a cross-org graph_id surfaces as the KGS 4xx).
-        graph_id = input_data.get("graph_id") or context.configuration.get("graph_id")
+        # graph substrate (#524/#543): when the run BINDS a graph (instance config), it is
+        # AUTHORITATIVE. The tool schema exposes ``graph_id``, so an LLM member hallucinates a
+        # non-UUID (e.g. a path/filename) that 422/404s the KGS and silently drops its write; the
+        # bound graph MUST win so the member's output lands on the team graph. A tool-call graph_id
+        # applies only when NO graph is bound (a single-agent caller targeting a specific graph).
+        # KGS RLS still org-scopes it (a cross-org graph_id surfaces as the KGS's own 4xx).
+        bound_graph_id = context.configuration.get("graph_id")
+        graph_id = bound_graph_id or input_data.get("graph_id")
         content = input_data.get("content")
         if not isinstance(graph_id, str) or not graph_id.strip():
             return ExecutionResult(
