@@ -194,18 +194,24 @@ async def run_team(
             results[role] = None
             member_status[role] = "skipped"
             return
-        inbound: list[HandoffEnvelope] = []
-        for dep in member.depends_on:
-            produced = results.get(dep)
-            if produced is None:
-                continue
-            payload = produced if isinstance(produced, dict) else {"output": produced}
-            env = build_handoff(by_role[dep], member, payload, objective_slice=member.subgoal or "")
-            if _floor_tier is not None:  # precedence declared → tag the hand-off's (clamped) tier
-                env = env.model_copy(update={"source_layer": _floor_tier})
-            inbound.append(env)
-            envelopes.append(env)
         try:
+            # Build the inbound hand-offs INSIDE the try (ADR-042): build_handoff fail-closes
+            # (raises OHMHandoffError) when an upstream payload violates a typed output contract —
+            # that is a per-member failure, NOT a reason to abort the team. Outside the try it would
+            # escape run_member → cancel the gather siblings → re-raise → all-or-nothing team abort.
+            inbound: list[HandoffEnvelope] = []
+            for dep in member.depends_on:
+                produced = results.get(dep)
+                if produced is None:
+                    continue
+                payload = produced if isinstance(produced, dict) else {"output": produced}
+                env = build_handoff(
+                    by_role[dep], member, payload, objective_slice=member.subgoal or ""
+                )
+                if _floor_tier is not None:  # precedence declared → tag the (clamped) source tier
+                    env = env.model_copy(update={"source_layer": _floor_tier})
+                inbound.append(env)
+                envelopes.append(env)
             if member.fan_out is not None:
                 fan = member.fan_out
                 items = _resolve_over(fan.over, state, results)
@@ -230,10 +236,11 @@ async def run_team(
             else:
                 results[role] = await dispatch(member, inbound, None)
         except Exception as exc:  # noqa: BLE001 — ADR-042: record FAILED, never abort the team DAG
-            # The member's harness dispatch failed (a transient-exhausted FAILED, a budget/iteration
-            # escalation, or a hard error). Record it FAILED + the leak-safe detail; do NOT re-raise
-            # — the stage's other (independent) members and the next stage still run. The whole run
-            # is then "failed" (not SUCCEEDED) and the failed+blocked members are re-runnable.
+            # The member's hand-off validation (build_handoff) OR its harness dispatch failed (a
+            # hand-off-schema violation, a transient-exhausted FAILED, a budget escalation, or a
+            # hard error). Record it FAILED + the leak-safe detail; do NOT re-raise — the stage's
+            # other (independent) members + the next stage still run. The run is then "failed" (not
+            # SUCCEEDED) and the failed+blocked members are re-runnable.
             results[role] = None
             member_status[role] = "failed"
             member_errors[role] = str(exc)[:2000] or type(exc).__name__
@@ -250,14 +257,23 @@ async def run_team(
             await run_member(role)
 
     for stage in stages:
-        # ADR-042 (#551): a human gate whose upstream FAILED/BLOCKED is NOT a real decision point —
-        # exclude it from the pause/reject check so a failed producer no longer surfaces as a
-        # healthy PAUSED run; run_member then records it BLOCKED (and the run resolves to "failed").
+        # A human gate whose own upstream FAILED/BLOCKED is NOT a real decision point — exclude it
+        # from the pause/reject check so a failed producer never surfaces as a healthy PAUSED run;
+        # run_member then records it BLOCKED (and the run resolves to "failed").
         stage_gates = [
             r for r in stage if by_role[r].kind == "human" and not _blocked_by_upstream(r)
         ]
+        # ADR-042 (#551): if a member already FAILED/BLOCKED in ANY branch, prefer the "failed"
+        # verdict over PAUSING/REJECTING — a pending gate in a PARALLEL branch must not mask the
+        # failure as a healthy PAUSED run (where rerun's FAILED-only guard would leave it
+        # unrecoverable until the gate resolves). The run stops at the gate either way; reporting
+        # "failed" makes the failed member re-runnable (the re-run re-drives it, then the run
+        # reaches the gate and PAUSES normally). A gate with no recorded failure pauses as before.
+        already_failed = any(s in ("failed", "blocked") for s in member_status.values())
         undecided = [g for g in stage_gates if gates.get(g) is None]
-        if undecided:  # block: pause the run; downstream depends_on members do not run
+        if (
+            undecided and not already_failed
+        ):  # block: pause; downstream depends_on members do not run
             return TeamRunResult(
                 results=results,
                 envelopes=envelopes,
@@ -269,7 +285,7 @@ async def run_team(
                 member_errors=member_errors,
             )
         rejected = [g for g in stage_gates if gates.get(g) == "reject"]
-        if rejected:  # the author rejected — halt; downstream does not run
+        if rejected and not already_failed:  # the author rejected — halt; downstream does not run
             return TeamRunResult(
                 results=results,
                 envelopes=envelopes,
@@ -280,6 +296,8 @@ async def run_team(
                 member_status=member_status,
                 member_errors=member_errors,
             )
+        if (undecided or rejected) and already_failed:
+            break  # a recorded failure outranks the gate → fall through to the "failed" verdict
         barrier = asyncio.gather(*(_bounded(role) for role in stage))  # the fan-in barrier (capped)
         if _deadline is not None:  # enforce the team wall-clock deadline across the barrier
             remaining = _deadline - time.monotonic()

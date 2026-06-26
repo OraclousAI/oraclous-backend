@@ -325,3 +325,39 @@ async def test_fan_out_member_failure_is_recorded_not_aborted() -> None:
     assert res.member_status == {"fanner": "failed", "peer": "succeeded"}
     assert res.status == "failed"
     assert res.results["peer"] == {"out": "peer"}  # the independent peer still produced
+
+
+async def test_handoff_schema_failure_records_member_failed_not_aborts_team() -> None:
+    # ADR-042 (#551) BLOCKING fix: a hand-off output-schema violation (build_handoff fail-closed) is
+    # a PER-MEMBER failure, not a team abort. Producer 'p' declares outputs_schema requiring "key"
+    # but returns a payload missing it; consumer 'c's inbound build raises OHMHandoffError → 'c' is
+    # recorded FAILED, the INDEPENDENT sibling 's' still produces, and the team is "failed"
+    # (re-runnable) — NOT aborted (which, pre-fix, would cancel 's' via the gather).
+    producer = OHMMember(
+        role="p", kind="agent", manifest_ref="org:x/p@1", outputs_schema={"required": ["key"]}
+    )
+    consumer = OHMMember(role="c", kind="agent", manifest_ref="org:x/c@1", depends_on=["p"])
+
+    async def dispatch(member: OHMMember, envs: list[HandoffEnvelope], item: Any) -> dict:
+        if member.role == "p":
+            return {"wrong": "no key here"}  # violates p's outputs_schema (missing "key")
+        return {"out": member.role}
+
+    res = await run_team(_team([producer, consumer, _m("s")]), dispatch)
+    assert res.status == "failed"  # recorded, not an exception / team abort
+    assert res.member_status["s"] == "succeeded"  # the independent sibling still produced
+    assert res.results["s"] == {"out": "s"}
+    assert res.member_status["c"] == "failed"  # the hand-off-validation failure recorded on c
+
+
+async def test_a_failed_member_in_a_parallel_branch_outranks_a_pending_gate() -> None:
+    # ADR-042 (#551) SHOULD-FIX: member 'a' fails in one branch; an undecided human gate 'g' sits in
+    # a PARALLEL branch (depends on 'b', not 'a'). The run must resolve to "failed" (re-runnable) —
+    # "paused" — a pending gate must not mask a failure as a healthy PAUSED run (where rerun's
+    # FAILED-only guard would leave the failure unrecoverable until the gate is decided).
+    dispatch, _ = _failing_dispatch("a")
+    team = _team([_m("a"), _m("b"), _human("g", ["b"])])  # g (stage 2) depends on b, not a
+    res = await run_team(team, dispatch, gate_decisions={})  # the gate is undecided
+    assert res.status == "failed"  # NOT "paused" — the recorded failure outranks the pending gate
+    assert res.member_status["a"] == "failed"
+    assert res.paused_at == []  # the run did not pause on the gate
