@@ -10,7 +10,7 @@ import uuid
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from oraclous_execution_engine_service.models.enums import (
     EngineJobState,
@@ -317,6 +317,16 @@ class TeamRunOut(BaseModel):
     # the flow-evaluation verdict (#477) — PRODUCED + STORED at the gate, surfaced read-side here;
     # the run state is never branched on it (consuming it is E8). NULL until graded.
     verdict: dict[str, Any] | None = None
+    # ADR-042 (#551): per-member terminal status — role -> "succeeded"|"failed"|"blocked"|"skipped".
+    # A run is SUCCEEDED only when EVERY member is "succeeded"; on a FAILED run this is how a caller
+    # sees which members to re-run (POST .../rerun re-drives the failed+blocked, keeping succeeded).
+    member_status: dict[str, str] = Field(default_factory=dict)
+
+    @field_validator("member_status", mode="before")
+    @classmethod
+    def _coerce_member_status(cls, v: Any) -> Any:
+        # a row not yet driven (QUEUED) carries NULL/None before the first drive records statuses
+        return v or {}
 
 
 class TeamRunTreeOut(BaseModel):

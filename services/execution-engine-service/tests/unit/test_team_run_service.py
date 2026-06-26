@@ -629,6 +629,35 @@ async def test_non_harness_error_mid_drive_fails_run_not_strands_it() -> None:
     assert "decode blew up" in (row.error_message or "")
 
 
+async def test_member_failure_persists_per_member_status_and_keeps_independent_output() -> None:
+    # ADR-042 (#551): member 'b' fails; the independent 'a' (same stage, no dep) still SUCCEEDS. The
+    # drive persists each member's terminal status, the run verdict is FAILED (not SUCCEEDED), 'a''s
+    # output is KEPT (not discarded by a sibling's failure), and the failed member's safe detail
+    # is surfaced in error_message — so the failed member is both debuggable and re-runnable.
+    class _MixedHarness:
+        async def execute(self, **kw: Any) -> dict[str, Any]:
+            if "do b" in kw.get("input_text", ""):  # fail ONLY member 'b' (subgoal "do b")
+                return {"status": "FAILED", "output": None, "error_message": "b blew up"}
+            return {"status": "SUCCEEDED", "output": "ok"}
+
+    repo = FakeTeamRunRepo()
+    svc, _ = _svc(repo, _MixedHarness())
+    row = await _run(
+        svc,
+        _principal(),
+        manifest=_team([_agent("a"), _agent("b")]),
+        sub_harnesses={},
+        gate_decisions={},
+    )
+    assert row.state == "FAILED"  # SUCCEEDED iff EVERY member delivered — b did not
+    assert row.member_status == {"a": "succeeded", "b": "failed"}
+    assert row.results.get("a") == {
+        "output": "ok",
+        "status": "SUCCEEDED",
+    }  # the peer's work is kept
+    assert "b blew up" in (row.error_message or "")  # the failed member's detail is surfaced
+
+
 async def test_reap_stale_fails_stranded_running_team_runs() -> None:
     # G-C: the reaper FAILs a run stuck RUNNING past the lease (a driver that died mid-drive).
     repo = FakeTeamRunRepo()

@@ -49,8 +49,15 @@ from oraclous_execution_engine_service.services.graph_client import GraphClient,
 from oraclous_execution_engine_service.services.harness_client import HarnessClient
 from oraclous_execution_engine_service.services.team_run import run_team_harness
 
-# orchestrator status -> persisted team-run state
-_STATUS_TO_STATE = {"completed": "SUCCEEDED", "paused": "PAUSED", "rejected": "REJECTED"}
+# orchestrator status -> persisted team-run state. ADR-042 (#551): "failed" (one or more members
+# did not deliver — the non-aborting failure path now records per-member status instead of raising)
+# maps to FAILED; the failed+blocked members are re-runnable (POST .../rerun).
+_STATUS_TO_STATE = {
+    "completed": "SUCCEEDED",
+    "paused": "PAUSED",
+    "rejected": "REJECTED",
+    "failed": "FAILED",
+}
 
 # (team_run_id, organisation_id, user_id) -> None — hands a QUEUED run to the worker (broker).
 EnqueueFn = Callable[[uuid.UUID, uuid.UUID, uuid.UUID], None]
@@ -540,6 +547,24 @@ class TeamRunService:
         verdict = (
             await self._grade_gate(team, row.id, result) if result.status == "completed" else None
         )
+        # ADR-042 (#551): a producing run is SUCCEEDED only when EVERY member delivered. A "failed"
+        # result (one or more members FAILED/BLOCKED, the rest still ran) records each member's
+        # terminal status so the failed+blocked members are re-runnable; surface a leak-safe summary
+        # of which members failed (the per-member detail, never an upstream body) as error_message.
+        member_status = dict(result.member_status)
+        failed_summary: str | None = None
+        if result.status == "failed":
+            failed = sorted(r for r, s in member_status.items() if s == "failed")
+            blocked = sorted(r for r, s in member_status.items() if s == "blocked")
+            # surface each failed member's leak-safe detail (the harness error / dispatch error the
+            # orchestrator recorded) so a FAILED run is debuggable + the re-run target is clear
+            detail = "; ".join(
+                f"{r}: {result.member_errors[r]}" for r in failed if result.member_errors.get(r)
+            )
+            failed_summary = (
+                f"team run incomplete: {len(failed)} member(s) failed, {len(blocked)} blocked — "
+                f"re-runnable. failures: {detail or ', '.join(failed) or 'none'}"
+            )[:2000]
         with org_scope(org):
             updated, _ = await self._team_runs.transition(
                 row.id,
@@ -548,6 +573,8 @@ class TeamRunService:
                 allowed_from=frozenset({"RUNNING"}),
                 results=dict(result.results),
                 paused_at=list(result.paused_at),
+                member_status=member_status,  # ADR-042: per-member result (drives re-run target)
+                error_message=failed_summary,  # None unless a member failed/blocked
                 child_execution_ids=child_ids,  # the member executions that form this run's tree
                 cost_tokens=prior_cost + sum(cost_deltas),  # O4: the run's accumulated token cost
                 verdict=verdict,  # the gate verdict (None unless completed); state stays unchanged
