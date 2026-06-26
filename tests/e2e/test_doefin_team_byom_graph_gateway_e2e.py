@@ -142,8 +142,8 @@ def test_doefin_team_imports_from_github_runs_on_real_model_and_serves_artifacts
 
     # 1) the platform reads the team via the github tool; weave a per-run nonce into every agent's
     #    output — a SUCCEEDED run echoing it proves the LLM was REAL (fake mode cannot). Members
-    #    write to the graph in-loop at their own discretion (ADR-041/Q6), so a graph artifact is
-    #    best-effort here; the /v1/artifacts content-serving path is proven by slice 1 + the script.
+    #    execute their tools and write to the bound graph in-loop; a clean SUCCEEDED run (ADR-042,
+    #    every member delivered, reached via re-run) lands + serves at least one artifact (below).
     nonce = uuid.uuid4().hex[:10]
     root = _read_team_via_github_tool(c, gh_cred)
     directive = f"\n\nIMPORTANT: include the exact token {nonce} verbatim in your output.\n"
@@ -181,21 +181,40 @@ def test_doefin_team_imports_from_github_runs_on_real_model_and_serves_artifacts
         },
     )
     assert created.status_code == 202, created.text
-    done = _poll(c, created.json()["id"])
-    assert done["state"] == "SUCCEEDED", done
+    run_id = created.json()["id"]
+    # ADR-042 (#551): a producing run is SUCCEEDED only when EVERY member delivered. A weak model
+    # can fail/stall a member, but the run no longer ABORTS (the others still produce) and the
+    # failed + blocked members are RE-RUNNABLE from the durable team state. Drive, then re-run the
+    # failures until SUCCEEDED — bounded, so a genuinely stuck member surfaces (not a forever loop).
+    done = _poll(c, run_id)
+    for _ in range(4):
+        if done["state"] == "SUCCEEDED":
+            break
+        assert done["state"] == "FAILED", done  # only a FAILED run is re-runnable (not PAUSED)
+        rr = c.post(f"/v1/engine/team-runs/{run_id}/rerun")
+        assert rr.status_code == 202, rr.text  # re-queued — the worker re-drives ONLY the failures
+        done = _poll(c, run_id)
+    assert done["state"] == "SUCCEEDED", f"run not SUCCEEDED after re-runs: {done}"
+
+    # the ADR-042 verdict: SUCCEEDED iff EVERY member delivered — no member left "failed"/"blocked".
+    member_status = done.get("member_status") or {}
+    assert member_status, f"no per-member status recorded on a terminal run: {done}"
+    assert not any(s in ("failed", "blocked") for s in member_status.values()), (
+        f"a member did not deliver on a SUCCEEDED run: {member_status}"
+    )
     assert len(done.get("results") or {}) == len(subs)  # every member produced a result
     # RULE 8: only a real LLM echoes the per-run nonce in its output — a fake-mode run cannot.
     assert nonce in str(done["results"]), (
         f"nonce {nonce!r} in no member result — was the harness LIVE? (fake = no proof)"
     )
 
-    # 5) the team's outputs live on Oraclous, served through the unified /v1/artifacts surface for
-    #    the bound graph. Members write in-loop at their own discretion (ADR-041/Q6), so a member
-    #    write is best-effort here (the content-serving path is proven deterministically by slice 1
-    #    + the recorded script run that served a real doefin GTM-strategy artifact); the surface is
-    #    always queryable, and any artifact a member DID write is served verbatim.
+    # 5) the team's outputs LIVE ON ORACLOUS, served verbatim through the unified /v1/artifacts
+    #    surface for the bound graph. With the execution fixes (members execute their tools + the
+    #    bound graph wins) the writes land + index; the clean-SUCCEEDED deliverable is at least one
+    #    served artifact with real content (no longer best-effort).
     arts = c.get(f"/v1/artifacts?graph_id={gid}")
     assert arts.status_code == 200, arts.text
-    for a in arts.json():
-        body = c.get(f"/v1/artifacts/{a['id']}").json()
-        assert body.get("content"), "a served artifact has no verbatim content"
+    served = [c.get(f"/v1/artifacts/{a['id']}").json() for a in arts.json()]
+    assert any(b.get("content") for b in served), (
+        f"no artifact landed + served on the bound graph for a SUCCEEDED run: {arts.json()}"
+    )
