@@ -22,7 +22,7 @@ import re
 import uuid
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -217,6 +217,32 @@ def _loop_grade_target(loop: OHMLoop, results: dict[str, Any]) -> str:
     members' outputs (never empty; the coverage floor already guaranteed each produced)."""
     chosen = {r: results.get(r) for r in loop.members}
     return json.dumps(chosen, default=str, sort_keys=True)
+
+
+def _pre_run_artifact_count(artifacts: list[dict[str, Any]], run_created_at: datetime) -> int:
+    """The RUN-SCOPED landed-artifacts baseline (CTO fast-follow): the count of artifacts that
+    existed on the bound graph BEFORE this run was created. Keyed off ``run_created_at`` (the run's
+    creation time, set once at create), NOT the current count — so it is IMMUTABLE across drives and
+    an ADR-042 re-run is never wrongly blocked by its OWN prior drive's artifacts (which carry a
+    created_at at/after the run). The coded done-check then requires NEW artifacts past this, so a
+    warm / adopted graph's pre-existing artifacts cannot vacuously satisfy convergence. An artifact
+    with a missing/unparseable timestamp is treated as this run's (not baseline) — safe for the
+    common fresh-per-run graph (baseline 0)."""
+    ref = run_created_at if run_created_at.tzinfo else run_created_at.replace(tzinfo=UTC)
+    count = 0
+    for artifact in artifacts:
+        raw = artifact.get("created_at")
+        if not isinstance(raw, str):
+            continue
+        try:
+            created = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        if created.tzinfo is None:
+            created = created.replace(tzinfo=UTC)
+        if created < ref:
+            count += 1
+    return count
 
 
 class TeamRunService:
@@ -497,26 +523,34 @@ class TeamRunService:
             }
 
     def _make_loop_done_check(
-        self, team: OHMManifest, run_id: uuid.UUID, graph_id: str | None, loop: OHMLoop
+        self,
+        team: OHMManifest,
+        run_id: uuid.UUID,
+        graph_id: str | None,
+        loop: OHMLoop,
+        artifacts_baseline: int = 0,
     ) -> DoneCheckFn:
         """The CODED authority a loop must satisfy to converge (ADR-043 #552) — the team can NEVER
         satisfy its own done-check (the coordinator only routes; THIS decides). Three coded gates,
         each fail-closed: (1) COVERAGE — every loop member produced a non-None output; (2) LANDED
         ARTIFACTS — the work actually persisted on the bound graph (not merely claimed); (3) the
         separate-evaluator GRADE clears the declared convergence threshold. An absent threshold
-        leaves coverage+artifacts as the floor; a malformed one never converges."""
+        leaves coverage+artifacts as the floor; a malformed one never converges. The artifacts gate
+        is RUN-scoped: ``artifacts_baseline`` is the graph's count BEFORE this run, so the gate
+        requires NEW artifacts past it (a warm/adopted graph's own artifacts can't satisfy it)."""
 
         async def done_check(results: dict[str, Any]) -> bool:
             # 1. coverage floor — a failed loop member is results[role]=None, so it fails here
             if not all(results.get(r) is not None for r in loop.members):
                 return False
-            # 2. landed artifacts on the bound graph — the loop's output is actually persisted
+            # 2. landed artifacts on the bound graph — THIS run's output actually persisted (run-
+            # scoped: require growth past the pre-run baseline, not a graph-scoped non-empty count)
             if graph_id is not None and self._artifacts is not None:
                 try:
                     arts = await self._artifacts.list_artifacts(graph_id)
                 except ArtifactsClientError:
                     return False  # inconclusive read → not-yet-converged (fail-closed)
-                if len(arts) < 1:
+                if len(arts) <= artifacts_baseline:
                     return False
             # 3. separate-evaluator grade vs the convergence threshold (if declared)
             conv = team.orchestration.termination.convergence if team.orchestration else None
@@ -525,32 +559,35 @@ class TeamRunService:
                     op, floor = _parse_convergence(conv)
                 except ValueError:
                     return False  # present-but-malformed → fail-closed (never silently passes)
+                # a declared threshold with NO prose rubric can never be graded → NEVER converge
+                # (fail-closed defense-in-depth; the OHMOrchestration validator rejects this combo
+                # at load, so this is unreachable via a loaded manifest — but never fall through to
+                # True on a declared-but-ungradable threshold).
                 criteria = (team.orchestration.success_criteria or "").strip()
-                if criteria:  # grade only against a real prose rubric
-                    if self._evaluate is None:
-                        return False  # a threshold declared but no judge wired → cannot confirm
-                    ev_model = team.evaluator_model()
-                    judge_credential_id = (
-                        str(ev_model.config.get("credential_id"))
-                        if ev_model and ev_model.config.get("credential_id")
-                        else None
+                if not criteria:
+                    return False
+                if self._evaluate is None:
+                    return False  # a threshold declared but no judge wired → cannot confirm
+                ev_model = team.evaluator_model()
+                judge_credential_id = (
+                    str(ev_model.config.get("credential_id"))
+                    if ev_model and ev_model.config.get("credential_id")
+                    else None
+                )
+                judge_model = ev_model.binding if ev_model else None
+                try:
+                    verdict = await self._evaluate.evaluate(
+                        target_ref=f"{run_id}/loop",
+                        target_output=_loop_grade_target(loop, results),
+                        success_criteria=criteria,
+                        judge_credential_id=judge_credential_id,
+                        judge_model=judge_model,
                     )
-                    judge_model = ev_model.binding if ev_model else None
-                    try:
-                        verdict = await self._evaluate.evaluate(
-                            target_ref=f"{run_id}/loop",
-                            target_output=_loop_grade_target(loop, results),
-                            success_criteria=criteria,
-                            judge_credential_id=judge_credential_id,
-                            judge_model=judge_model,
-                        )
-                    except (
-                        EvaluateClientError
-                    ):  # unreachable / rejected → not-converged (fail-closed)
-                        return False
-                    score = _verdict_score(verdict)
-                    if score is None or not _cmp(score, op, floor):
-                        return False
+                except EvaluateClientError:  # unreachable / rejected → not-converged (fail-closed)
+                    return False
+                score = _verdict_score(verdict)
+                if score is None or not _cmp(score, op, floor):
+                    return False
             return True
 
         return done_check
@@ -661,9 +698,21 @@ class TeamRunService:
         # are wired ONLY for a loop team; a purely acyclic team runs the unchanged single-pass DAG.
         has_loops = bool(team.orchestration and team.orchestration.loops)
         coordinate = make_loop_coordinator(harness, team) if has_loops else None
+        # run-scoped landed-artifacts gate (CTO fast-follow): the artifacts that existed on the
+        # graph BEFORE this run was CREATED (keyed off row.created_at, so it is IMMUTABLE across an
+        # ADR-042 re-run — a resumed loop is never blocked by its own prior drive's artifacts). The
+        # coded done-check then requires NEW artifacts past it (a warm/adopted graph's pre-existing
+        # artifacts can't vacuously satisfy convergence). Fail-soft to 0 (fresh-per-run graph).
+        artifacts_baseline = 0
+        if has_loops and row.graph_id is not None and self._artifacts is not None:
+            with contextlib.suppress(ArtifactsClientError):
+                arts = await self._artifacts.list_artifacts(row.graph_id)
+                artifacts_baseline = _pre_run_artifact_count(arts, row.created_at)
 
         def done_check_for(loop: OHMLoop) -> DoneCheckFn:
-            return self._make_loop_done_check(team, row.id, row.graph_id, loop)
+            return self._make_loop_done_check(
+                team, row.id, row.graph_id, loop, artifacts_baseline=artifacts_baseline
+            )
 
         try:
             result = await run_team_hybrid(
