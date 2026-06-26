@@ -343,13 +343,17 @@ async def run_team_hybrid(
         loop = loops[i]
         # seed the loop with any members already delivered in a prior drive (resume / re-run)
         seed = {r: completed[r] for r in loop.members if completed and r in completed}
-        # PR-C: resume the round-index + the ORIGINAL wall-clock start from the prior checkpoint. An
-        # epoch (time.time) origin survives the process restart across a long human pause, so the
-        # wall-clock bound measures real elapsed time (a resume can't reset it). clock=time.time
-        # pairs with the epoch started_at (the seam compares _clock() - started).
+        # PR-C: resume the round-index + the ORIGINAL wall-clock start ONLY for a PAUSED loop (a
+        # mid-loop HITL suspension — continue where it left off; the epoch started_at survives the
+        # process restart across a long pause so the wall-clock measures real elapsed time). A loop
+        # that halted at a BOUND (max_rounds / wall / cost / no_progress) is a spent attempt — an
+        # ADR-042 re-run must RESTART it (round 0, fresh wall-clock), not resume the spent round.
         cp = in_loop_state.get(str(i), {})
-        resume_round = int(cp.get("round") or 0)
-        started = float(cp["started_at"]) if cp.get("started_at") is not None else time.time()
+        if cp.get("status") == "paused":
+            resume_round = int(cp.get("round") or 0)
+            started = float(cp["started_at"]) if cp.get("started_at") is not None else time.time()
+        else:
+            resume_round, started = 0, time.time()
         seam = await run_loop_seam(
             loop,
             by_role,
@@ -427,8 +431,13 @@ async def run_team_hybrid(
 # router's, so no runtime output is ever re-emitted into a model prompt or a log.
 
 
-def _render_coordinator_prompt(loop: OHMLoop, results: dict[str, Any], rounds_left: int) -> str:
-    """The coordinator's input — loop structure + a per-member produced flag (NO raw outputs)."""
+def _render_coordinator_prompt(
+    loop: OHMLoop, results: dict[str, Any], rounds_left: int, members: list[str] | None = None
+) -> str:
+    """The coordinator's input — loop structure + a per-member produced flag (NO raw outputs).
+    ``members`` (default = every loop member) is the WORK members the router may pick — a per-round
+    HITL gate (kind:human) is excluded (the seam handles it), so the router never routes to it."""
+    roles = members if members is not None else list(loop.members)
     lines = [
         "You are the COORDINATOR of a team loop. Pick the SINGLE next member to run so the loop",
         "makes progress toward its goal. You do NOT decide when the loop is done and you do NOT do",
@@ -437,7 +446,7 @@ def _render_coordinator_prompt(loop: OHMLoop, results: dict[str, Any], rounds_le
         f"Rounds left before the loop is force-stopped: {rounds_left}.",
         "Members of this loop (role — its handoff intent — has it produced yet?):",
     ]
-    for role in loop.members:
+    for role in roles:
         intent = loop.routing.get(role, "") or "(no stated intent)"
         produced = "produced" if results.get(role) is not None else "not yet produced"
         lines.append(f"  - {role} — {intent} — {produced}")
@@ -503,16 +512,20 @@ def make_loop_coordinator(harness: _Harness, team: OHMManifest) -> LoopCoordinat
     the next loop member. Picks-only (``capability_ceiling=[]``), leak-safe (structure not content),
     fail-closed (an unreachable/garbled router yields ``[]`` → the coded done-check rules)."""
     sub = _coordinator_subharness(team)
+    by_role = {m.role: m for m in team.members}
 
     async def coordinate(loop: OHMLoop, results: dict[str, Any], rounds_left: int) -> list[str]:
+        # PR-C: route ONLY among work members — a kind:human per-round gate is a structural pause
+        # (the seam pauses/renders it), never a coordinator pick, so it can't waste a round.
+        work = [r for r in loop.members if not (by_role.get(r) and by_role[r].kind == "human")]
         try:
             out = await harness.execute(
-                input_text=_render_coordinator_prompt(loop, results, rounds_left),
+                input_text=_render_coordinator_prompt(loop, results, rounds_left, members=work),
                 manifest_inline=sub,
                 capability_ceiling=[],  # the router is granted NO capability
             )
         except HarnessClientError:
             return []  # router unreachable → give up this round; the coded done-check decides
-        return _parse_next_roles(out.get("output"), allowed=set(loop.members))
+        return _parse_next_roles(out.get("output"), allowed=set(work))
 
     return coordinate
