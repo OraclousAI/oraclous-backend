@@ -14,6 +14,7 @@ stage + ``fan_out``), and ``conditional`` (a skip predicate) are the three patte
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import time
 from collections.abc import Awaitable, Callable
@@ -24,7 +25,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from oraclous_ohm.aggregate import aggregate_reduce
 from oraclous_ohm.envelope import HandoffEnvelope, build_handoff
 from oraclous_ohm.errors import OHMError
-from oraclous_ohm.manifest import OHMManifest, OHMMember, OHMOrchestration, OHMRunIf
+from oraclous_ohm.manifest import OHMLoop, OHMManifest, OHMMember, OHMOrchestration, OHMRunIf
 from oraclous_ohm.precedence_resolution import clamp_member_source
 
 # Dispatch one member (+ optional fan-out item) given its inbound hand-offs -> output payload.
@@ -396,3 +397,147 @@ async def run_team_coordinated(
         await asyncio.gather(*(run_one(role) for role in next_roles))  # a coordinator-chosen stage
 
     return TeamRunResult(results=results, envelopes=envelopes, stages=[], status="completed")
+
+
+# ── ADR-043 #552: the bounded conductor seam for ONE loop SCC ──────────────────────────────────
+# A genuine loop (a Tarjan SCC isolated at import — see import_/assemble.py + the loops field)
+# runs round-by-round through a bounded LLM-coordinator that ONLY PICKS the next member; every limit
+# + the done-check is CODED. The two load-bearing invariants: (1) the team never satisfies its own
+# done-check — a round converges only when the CODED ``done_check`` confirms (the coordinator's "I'm
+# done" never finishes the run on its own); (2) four always-on runaway bounds (max rounds / wall /
+# cost / no-progress), any one halting with a SAVED PARTIAL result — never an infinite loop, never a
+# hard abort (#551 non-abort). ``dispatch``/``coordinate``/``done_check`` are INJECTED so the engine
+# supplies the real BYOM coordinator + the real coverage-floor/landed-artifacts/evaluator grade.
+
+# Coded loop done-check: given the loop's results so far, returns True iff DONE. INJECTED — the
+# engine wires the real coverage-floor (produced-output + landed-artifacts) + separate-evaluator
+# grade. The model NEVER decides done (ADR-043 invariant).
+DoneCheckFn = Callable[[dict[str, Any]], Awaitable[bool]]
+# The coordinator picks the next loop member(s) to run, given (loop, results-so-far, rounds-left);
+# returns [] when it BELIEVES the goal is met (still confirmed by the coded done-check).
+LoopCoordinateFn = Callable[["OHMLoop", dict[str, Any], int], Awaitable[list[str]]]
+
+#: the terminal status of a loop seam — converged, or halted at one of the four runaway bounds.
+LoopSeamStatus = Literal["converged", "max_rounds", "wall_time", "cost_budget", "no_progress"]
+
+
+class LoopSeamResult(BaseModel):
+    """The outcome of running ONE loop SCC through the bounded conductor seam (ADR-043 #552)."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True, extra="ignore")
+
+    results: dict[str, Any] = Field(default_factory=dict)  # role -> latest output (loop state)
+    member_status: dict[str, str] = Field(default_factory=dict)  # role -> succeeded | failed
+    member_errors: dict[str, str] = Field(default_factory=dict)  # role -> leak-safe failure detail
+    envelopes: list[HandoffEnvelope] = Field(default_factory=list)
+    rounds: int = 0
+    status: LoopSeamStatus = "max_rounds"
+
+
+def _loop_inbound(
+    loop: OHMLoop,
+    member: OHMMember,
+    results: dict[str, Any],
+    by_role: dict[str, OHMMember],
+    envelopes: list[HandoffEnvelope],
+) -> list[HandoffEnvelope]:
+    """The hand-offs INTO ``member`` this round — every OTHER loop member's latest output, threaded
+    with that member's ## Handoff next_task (the loop ``routing``) as the objective slice."""
+    inbound: list[HandoffEnvelope] = []
+    for other in loop.members:
+        if other == member.role:
+            continue
+        produced = results.get(other)
+        if produced is None or other not in by_role:
+            continue
+        payload = produced if isinstance(produced, dict) else {"output": produced}
+        env = build_handoff(
+            by_role[other],
+            member,
+            payload,
+            objective_slice=loop.routing.get(other, "") or member.subgoal or "",
+        )
+        inbound.append(env)
+        envelopes.append(env)
+    return inbound
+
+
+def _progress_signature(results: dict[str, Any], member_status: dict[str, str]) -> str:
+    """A stable signature of the loop's observable state — used to detect a no-progress round (one
+    where neither the results nor any member status changed)."""
+    return json.dumps(
+        {"r": results, "s": sorted(member_status.items())}, sort_keys=True, default=str
+    )
+
+
+async def run_loop_seam(
+    loop: OHMLoop,
+    by_role: dict[str, OHMMember],
+    dispatch: DispatchFn,
+    coordinate: LoopCoordinateFn,
+    done_check: DoneCheckFn,
+    *,
+    max_rounds: int,
+    max_wall_seconds: float | None = None,
+    max_cost: int | None = None,
+    cost_so_far: Callable[[], int] | None = None,
+    clock: Callable[[], float] | None = None,
+    seed_results: dict[str, Any] | None = None,
+) -> LoopSeamResult:
+    """Run ONE loop SCC round-by-round under coded governance (ADR-043 #552); see module note."""
+    _clock = clock or time.monotonic
+    _cost = cost_so_far or (lambda: 0)
+    loop_roles = set(loop.members)
+    results: dict[str, Any] = dict(seed_results or {})
+    member_status: dict[str, str] = {}
+    member_errors: dict[str, str] = {}
+    envelopes: list[HandoffEnvelope] = []
+    started = _clock()
+    rounds = 0
+    last_signature: str | None = None
+
+    def _result(status: LoopSeamStatus) -> LoopSeamResult:
+        return LoopSeamResult(
+            results=results,
+            member_status=member_status,
+            member_errors=member_errors,
+            envelopes=envelopes,
+            rounds=rounds,
+            status=status,
+        )
+
+    while rounds < max_rounds:
+        # bounds are checked BEFORE dispatching the round → halt-with-partial, never abort
+        if max_wall_seconds is not None and _clock() - started > max_wall_seconds:
+            return _result("wall_time")
+        if max_cost is not None and _cost() > max_cost:
+            return _result("cost_budget")
+
+        next_roles = await coordinate(loop, dict(results), max_rounds - rounds)
+        for role in next_roles:  # fail-closed: route ONLY to declared loop members
+            if role not in loop_roles:
+                raise OHMError(f"loop coordinator routed to non-loop member {role!r}")
+        if not next_roles:
+            # the coordinator believes the goal is met — the CODED check decides, not the model.
+            return _result("converged" if await done_check(results) else "no_progress")
+
+        rounds += 1
+        for role in next_roles:
+            member = by_role[role]
+            inbound = _loop_inbound(loop, member, results, by_role, envelopes)
+            try:
+                results[role] = await dispatch(member, inbound, None)
+                member_status[role] = "succeeded"
+            except Exception as exc:  # noqa: BLE001 — #551 non-abort: record, never raise out of loop
+                results.setdefault(role, None)
+                member_status[role] = "failed"
+                member_errors[role] = str(exc)[:2000] or type(exc).__name__
+
+        if await done_check(results):  # the coded done-check (coverage-floor + evaluator) confirms
+            return _result("converged")
+        signature = _progress_signature(results, member_status)  # no-progress: nothing changed
+        if signature == last_signature:
+            return _result("no_progress")
+        last_signature = signature
+
+    return _result("max_rounds")
