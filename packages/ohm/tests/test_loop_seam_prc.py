@@ -124,8 +124,11 @@ async def test_resume_with_gate_decided_proceeds_and_converges() -> None:
 async def test_resume_from_round_continues_the_round_counter() -> None:
     # resuming at round 3 of a max-5 loop may only run 2 more rounds (the cap accounts for the
     # already-spent rounds — a resume cannot buy a fresh full round budget).
+    tick = {"n": 0}
+
     async def dispatch(member: OHMMember, envs: list[HandoffEnvelope], item: Any) -> dict:
-        return {"out": member.role, "n": len(item or [])}
+        tick["n"] += 1
+        return {"out": member.role, "n": tick["n"]}  # changing output → not a no-progress stall
 
     rounds_seen: list[int] = []
 
