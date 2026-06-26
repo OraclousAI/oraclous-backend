@@ -319,6 +319,21 @@ class OHMManifest(BaseModel):
 
         return topological_stages(self.members)
 
+    def loop_roles(self) -> set[str]:
+        """The roles that belong to a GENUINE loop (ADR-043 #552) — the union of every
+        ``orchestration.loops`` SCC's members. Empty for a purely acyclic team. These run the
+        bounded conductor seam, NOT the acyclic ``run_team`` skeleton."""
+        if self.orchestration is None:
+            return set()
+        return {role for loop in self.orchestration.loops for role in loop.members}
+
+    def skeleton_members(self) -> list[OHMMember]:
+        """The acyclic skeleton — every member NOT in a loop SCC. The hybrid driver runs these on
+        ``run_team`` (each loop is interleaved as a single condensed node); a member in no loop is a
+        normal single-shot DAG node. Equal to ``members`` for a purely acyclic team."""
+        loop = self.loop_roles()
+        return [m for m in self.members if m.role not in loop]
+
     def capability_by_binding(self, binding: str) -> OHMCapability | None:
         return next((c for c in self.capabilities if c.binding == binding), None)
 
