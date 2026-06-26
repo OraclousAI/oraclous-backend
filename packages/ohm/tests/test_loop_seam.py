@@ -160,7 +160,7 @@ async def test_cost_budget_bound_halts_with_a_saved_partial() -> None:
 
     async def dispatch(member: OHMMember, envs: list[HandoffEnvelope], item: Any) -> dict:
         spent["tokens"] += 100
-        return {"out": member.role}
+        return {"out": member.role, "spent": spent["tokens"]}  # changes each round → has progress
 
     async def coordinate(loop: OHMLoop, results: dict[str, Any], rounds_left: int) -> list[str]:
         return ["a"]
