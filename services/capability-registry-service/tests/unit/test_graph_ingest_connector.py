@@ -111,6 +111,23 @@ async def test_source_type_and_recipe_are_forwarded() -> None:
     assert seen["body"]["recipe_id"] == "rcp_x"
 
 
+async def test_unsupported_source_type_normalizes_to_text() -> None:
+    """An agent (LLM) may set an arbitrary source_type (e.g. 'automated'); the strict KGS extractor
+    rejects unknown types and the ingest job FAILS (stored, not indexed). The connector normalizes
+    an unrecognized type to the free-text 'text' path so an agent write actually indexes (#543)."""
+    seen: dict = {}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        seen["body"] = json.loads(req.content)
+        return httpx.Response(202, json=_job())
+
+    res = await _connector(handler).execute(
+        {"graph_id": _GRAPH, "content": "# report", "source_type": "automated"}, _ctx()
+    )
+    assert res.success, res.error_message
+    assert seen["body"]["source_type"] == "text"  # normalized from the unsupported 'automated'
+
+
 async def test_dev_mode_forwards_a_bearer_not_principal_headers(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

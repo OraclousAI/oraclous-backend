@@ -30,6 +30,9 @@ from oraclous_capability_registry_service.domain.executors.base import (
 
 _TIMEOUT_S = 30.0
 _INGEST_PATH = "/internal/v1/ingest"
+# the source_types the KGS extractor accepts; an agent-supplied value outside this set defaults to
+# "text" (the free-text path) so an agent write always indexes instead of failing extraction (#543).
+_KGS_SOURCE_TYPES = frozenset({"text", "md", "markdown", "csv", "json", "code", "pdf"})
 
 
 class GraphIngestConnector(InternalTool):
@@ -62,10 +65,14 @@ class GraphIngestConnector(InternalTool):
     async def _execute_internal(
         self, input_data: dict[str, Any], context: ExecutionContext
     ) -> ExecutionResult:
-        # graph substrate (#524): the per-run bound graph (instance config) is the fallback, so the
-        # model never has to invent a UUID; an explicit tool-call graph_id still wins. Either way
-        # KGS RLS scopes it to the caller's org (a cross-org graph_id surfaces as the KGS 4xx).
-        graph_id = input_data.get("graph_id") or context.configuration.get("graph_id")
+        # graph substrate (#524/#543): when the run BINDS a graph (instance config), it is
+        # AUTHORITATIVE. The tool schema exposes ``graph_id``, so an LLM member hallucinates a
+        # non-UUID (e.g. a path/filename) that 422/404s the KGS and silently drops its write; the
+        # bound graph MUST win so the member's output lands on the team graph. A tool-call graph_id
+        # applies only when NO graph is bound (a single-agent caller targeting a specific graph).
+        # KGS RLS still org-scopes it (a cross-org graph_id surfaces as the KGS's own 4xx).
+        bound_graph_id = context.configuration.get("graph_id")
+        graph_id = bound_graph_id or input_data.get("graph_id")
         content = input_data.get("content")
         if not isinstance(graph_id, str) or not graph_id.strip():
             return ExecutionResult(
@@ -81,8 +88,15 @@ class GraphIngestConnector(InternalTool):
             )
         # The org is NEVER taken from the body (ORG001); it is forwarded from the execution context.
         body: dict[str, Any] = {"graph_id": graph_id, "content": content}
+        # Normalize the source_type: an agent (LLM) may set an arbitrary value (e.g. "automated"),
+        # but the KGS extractor is strict and rejects unknown types (the ingest job then FAILS, so
+        # the artifact is stored-but-not-indexed). Agent writes are text/markdown — default an
+        # unrecognized type to the free-text "text" path so the write actually indexes (#543). An
+        # absent type is left to the KGS default (also "text").
         source_type = input_data.get("source_type")
         if source_type is not None:
+            if not isinstance(source_type, str) or source_type.lower() not in _KGS_SOURCE_TYPES:
+                source_type = "text"
             body["source_type"] = source_type
         recipe_id = input_data.get("recipe_id")
         if recipe_id is not None:

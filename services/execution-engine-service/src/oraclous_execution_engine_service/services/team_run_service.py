@@ -49,8 +49,15 @@ from oraclous_execution_engine_service.services.graph_client import GraphClient,
 from oraclous_execution_engine_service.services.harness_client import HarnessClient
 from oraclous_execution_engine_service.services.team_run import run_team_harness
 
-# orchestrator status -> persisted team-run state
-_STATUS_TO_STATE = {"completed": "SUCCEEDED", "paused": "PAUSED", "rejected": "REJECTED"}
+# orchestrator status -> persisted team-run state. ADR-042 (#551): "failed" (one or more members
+# did not deliver — the non-aborting failure path now records per-member status instead of raising)
+# maps to FAILED; the failed+blocked members are re-runnable (POST .../rerun).
+_STATUS_TO_STATE = {
+    "completed": "SUCCEEDED",
+    "paused": "PAUSED",
+    "rejected": "REJECTED",
+    "failed": "FAILED",
+}
 
 # (team_run_id, organisation_id, user_id) -> None — hands a QUEUED run to the worker (broker).
 EnqueueFn = Callable[[uuid.UUID, uuid.UUID, uuid.UUID], None]
@@ -133,10 +140,21 @@ def _member_completion_progress(row: EngineTeamRun) -> int:
     completion; no members → 100 only once SUCCEEDED."""
     members = row.manifest.get("members", []) if isinstance(row.manifest, dict) else []
     total = len(members)
+    # ADR-042 (#551): count DELIVERED members, NOT len(results). The non-aborting failure path now
+    # populates results[role]=None for a failed/blocked member, so len(results) would count it as
+    # complete and report a FAILED run at ~100%. Base completion on per-member status (succeeded,
+    # plus a declared-no-op "skipped"); fall back to len(results) only for pre-ADR-042 rows with no
+    # recorded member_status (mirrors the _completed_for_resume back-compat).
+    ms = row.member_status or {}
+    delivered = (
+        sum(1 for s in ms.values() if s in ("succeeded", "skipped"))
+        if ms
+        else len(row.results or {})
+    )
     completion = (
         (100 if row.state == "SUCCEEDED" else 0)
         if total == 0
-        else min(100, round(100 * len(row.results or {}) / total))
+        else min(100, round(100 * delivered / total))
     )
     score = _verdict_score(row.verdict)
     if score is None:
@@ -322,7 +340,24 @@ class TeamRunService:
         if row is None:
             raise TeamRunError("team run not found", 404)
         team = self._load_team(row.manifest)
-        return await self._drive(row, team, org, completed=dict(row.results))
+        return await self._drive(row, team, org, completed=self._completed_for_resume(row))
+
+    @staticmethod
+    def _completed_for_resume(row: EngineTeamRun) -> dict[str, Any]:
+        """Which members to SEED on a (re-)drive so they are not re-dispatched (G-D). ADR-042
+        (#551): seed only the members whose terminal status is "succeeded" — so a re-run re-runs the
+        FAILED + BLOCKED members (their results are None, never a real output) while the succeeded
+        ones are reused. Back-compat: an in-flight PAUSED run created before member_status existed
+        carries an empty member_status; fall back to all results so its gate-resume still reuses the
+        pre-gate members (which are the only ones with a result on a PAUSED row)."""
+        member_status = row.member_status or {}
+        if not member_status:
+            return dict(row.results or {})  # pre-ADR-042 resume semantics (in-flight PAUSED rows)
+        return {
+            role: row.results[role]
+            for role, status in member_status.items()
+            if status == "succeeded" and role in (row.results or {})
+        }
 
     async def get(self, team_run_id: uuid.UUID, principal: Principal) -> EngineTeamRun:
         org = self._org(principal)
@@ -440,6 +475,42 @@ class TeamRunService:
             self._enqueue(team_run_id, org, principal.principal_id)
         return claimed  # QUEUED — the worker drives the resume
 
+    async def rerun(self, team_run_id: uuid.UUID, principal: Principal) -> EngineTeamRun:
+        """ADR-042 (#551): RE-RUN a FAILED run from the durable team state — re-drive only the
+        FAILED + BLOCKED members (keeping the SUCCEEDED ones, which are NOT re-run), until every
+        member delivers and the run is SUCCEEDED. Transitions FAILED→QUEUED + re-enqueues the
+        worker, whose ``drive`` seeds the succeeded members via ``_completed_for_resume`` so only
+        the failures re-dispatch. 409 if the run is not FAILED or has nothing re-runnable (no failed
+        member to recover — a no-op). Org-scoped: a cross-org id is a 404 (via ``get``)."""
+        org = self._org(principal)
+        row = await self.get(team_run_id, principal)
+        if row.state != "FAILED":
+            raise TeamRunError(
+                f"team run is {row.state}, not FAILED — cannot re-run",
+                409,
+                error_type="not_failed",
+            )
+        rerunnable = [s for s in (row.member_status or {}).values() if s in ("failed", "blocked")]
+        if not rerunnable:  # a FAILED run with no recorded member failure (e.g. a hard drive crash)
+            raise TeamRunError(
+                "team run has no failed or blocked members to re-run",
+                409,
+                error_type="nothing_to_rerun",
+            )
+        with org_scope(org):  # CAS FAILED→QUEUED so a concurrent re-run does not double-drive
+            claimed, applied = await self._team_runs.transition(
+                team_run_id,
+                org,
+                new_state="QUEUED",
+                allowed_from=frozenset({"FAILED"}),
+                error_message=None,  # clear the prior failure summary; the re-drive records afresh
+            )
+        if not applied or claimed is None:  # lost the race (already re-queued) — return current
+            return await self.get(team_run_id, principal)
+        if self._enqueue is not None:
+            self._enqueue(team_run_id, org, principal.principal_id)
+        return claimed  # QUEUED — the worker re-drives the failed+blocked members
+
     async def _drive(
         self,
         row: EngineTeamRun,
@@ -474,7 +545,10 @@ class TeamRunService:
         # (`or []` — a freshly-built / pre-migration row may carry NULL before the DB default fires)
         child_ids: list[str] = list(row.child_execution_ids or [])
         # O4 metering (#472): this drive's per-member token costs, summed onto the prior cost on
-        # resume (only the not-yet-completed members re-dispatch, so their cost is counted once).
+        # resume (succeeded members are not re-dispatched, so their cost is counted once). NB on an
+        # ADR-042 re-run a FAILED member's first-attempt tokens are already in prior_cost and its
+        # re-dispatch adds more — both are REAL spend, so the accumulated total intentionally counts
+        # every attempt of a re-run member (it is not a double-count of the same work).
         cost_deltas: list[int] = []
         prior_cost = int(row.cost_tokens or 0)
         try:
@@ -504,7 +578,11 @@ class TeamRunService:
             )
         except Exception as exc:  # noqa: BLE001 — never strand the run in RUNNING (G-C); fail closed
             # ANY in-process drive error (harness failure, decode, network, bug) -> FAILED, not a
-            # stuck RUNNING row. Return the FAILED row to the caller.
+            # stuck RUNNING row. Return the FAILED row to the caller. NB this path does NOT record
+            # per-member member_status (it stays {}), so the run is NOT re-runnable (rerun → 409
+            # nothing_to_rerun). That is intentional for a TEAM-level hard fail — most notably a
+            # max_wall_seconds timeout (OHMError from run_team): re-running the same DAG would just
+            # time out again, so the recovery is a fresh POST, not a per-member re-drive (ADR-042).
             with org_scope(org):
                 updated, _ = await self._team_runs.transition(
                     row.id,
@@ -540,6 +618,24 @@ class TeamRunService:
         verdict = (
             await self._grade_gate(team, row.id, result) if result.status == "completed" else None
         )
+        # ADR-042 (#551): a producing run is SUCCEEDED only when EVERY member delivered. A "failed"
+        # result (one or more members FAILED/BLOCKED, the rest still ran) records each member's
+        # terminal status so the failed+blocked members are re-runnable; surface a leak-safe summary
+        # of which members failed (the per-member detail, never an upstream body) as error_message.
+        member_status = dict(result.member_status)
+        failed_summary: str | None = None
+        if result.status == "failed":
+            failed = sorted(r for r, s in member_status.items() if s == "failed")
+            blocked = sorted(r for r, s in member_status.items() if s == "blocked")
+            # surface each failed member's leak-safe detail (the harness error / dispatch error the
+            # orchestrator recorded) so a FAILED run is debuggable + the re-run target is clear
+            detail = "; ".join(
+                f"{r}: {result.member_errors[r]}" for r in failed if result.member_errors.get(r)
+            )
+            failed_summary = (
+                f"team run incomplete: {len(failed)} member(s) failed, {len(blocked)} blocked — "
+                f"re-runnable. failures: {detail or ', '.join(failed) or 'none'}"
+            )[:2000]
         with org_scope(org):
             updated, _ = await self._team_runs.transition(
                 row.id,
@@ -548,6 +644,8 @@ class TeamRunService:
                 allowed_from=frozenset({"RUNNING"}),
                 results=dict(result.results),
                 paused_at=list(result.paused_at),
+                member_status=member_status,  # ADR-042: per-member result (drives re-run target)
+                error_message=failed_summary,  # None unless a member failed/blocked
                 child_execution_ids=child_ids,  # the member executions that form this run's tree
                 cost_tokens=prior_cost + sum(cost_deltas),  # O4: the run's accumulated token cost
                 verdict=verdict,  # the gate verdict (None unless completed); state stays unchanged

@@ -22,7 +22,10 @@ checkpoint: the assistant turn is stored redacted (``last_text``), like every to
 
 from __future__ import annotations
 
+import asyncio
 import json
+import os
+import random
 import re
 import time
 from collections.abc import Awaitable, Callable
@@ -37,6 +40,33 @@ from oraclous_harness_runtime_service.models.enums import HarnessStatus, StepKin
 Dispatch = Callable[[ToolSpec, dict[str, Any]], Awaitable[dict[str, Any]]]
 
 _REDACTED = "[REDACTED]"
+
+# Transient-LLM-error retry (ADR-042 #551): a producing team fans many members at ONE shared BYOM
+# key, so a random member hits a rate-limit (429) / timeout / 5xx — transient, not a real failure.
+# Retry such a call a bounded number of times with exponential backoff + full jitter BEFORE the run
+# fails; a PERMANENT error (auth / model-not-found / bad-request) is NOT retried (fails fast). The
+# transient/permanent split is the LLM client's (LLMClientError.transient). Env-overridable.
+_LLM_MAX_RETRIES = max(0, int(os.environ.get("HARNESS_LLM_MAX_RETRIES") or "4"))
+_LLM_RETRY_BASE_S = max(0.0, float(os.environ.get("HARNESS_LLM_RETRY_BASE_SECONDS") or "0.5"))
+_LLM_RETRY_MAX_S = max(0.0, float(os.environ.get("HARNESS_LLM_RETRY_MAX_SECONDS") or "8.0"))
+# indirected so a unit test can substitute a no-op sleep (deterministic, fast)
+_async_sleep = asyncio.sleep
+
+
+def _is_transient(exc: BaseException) -> bool:
+    """An LLM-call error a bounded retry may recover (the client marks it ``transient``)."""
+    return bool(getattr(exc, "transient", False))
+
+
+def _retry_delay(attempt: int, retry_after: float | None = None) -> float:
+    """Exponential backoff with FULL jitter for retry ``attempt`` (0-based), capped. Honours a
+    server ``Retry-After`` hint (429/503) when present — wait at least that long, but still capped
+    at ``_LLM_RETRY_MAX_S`` so a large hint cannot blow the wall-time budget (ADR-042 #551)."""
+    ceiling = min(_LLM_RETRY_MAX_S, _LLM_RETRY_BASE_S * (2**attempt))
+    backoff = random.uniform(0, ceiling)  # noqa: S311 — jitter, not security-sensitive
+    if retry_after is not None:
+        return max(min(retry_after, _LLM_RETRY_MAX_S), backoff)
+    return backoff
 
 
 @dataclass(frozen=True, slots=True)
@@ -89,6 +119,19 @@ def _redact(text: str, patterns: list[re.Pattern[str]]) -> str:
     return text
 
 
+# Completion contract (#543): a member that HAS tools but answers on turn one without calling any of
+# them has likely emitted a plan/handoff instead of doing the work (the imported-conductor-agent
+# stub). Nudge it ONCE to actually use its tools before the loop accepts the answer. Bounded to a
+# single nudge so a legitimately tool-less reasoning member still terminates.
+_TOOL_USE_NUDGE = (
+    "You replied without calling any tool. You are executing inside Oraclous now — there is no "
+    "human to act on a handoff or a proposed next step. If your objective requires producing or "
+    "saving any output, you MUST call your tools to do it now (your Write tool persists your "
+    "result to the team graph; your Read tool gathers context). Do the work and call the tool — "
+    "do not only describe it. If you genuinely have no action to take, state that explicitly."
+)
+
+
 async def run_tool_use_loop(
     *,
     llm: LLMClient,
@@ -128,6 +171,11 @@ async def run_tool_use_loop(
     output_used = 0
     steps: list[LoopStep] = []
     last_text = ""
+    nudged = False  # completion contract (#543): one-time "use your tools" re-prompt — see below
+    # Gate the nudge to PRODUCING members — those with a graph-ingest ("ingest") tool that are meant
+    # to persist output. A reasoning/retrieval-only member that legitimately answers without a tool
+    # is never re-prompted (so the completion contract can't add a spurious turn to it).
+    produces = any(s.operation == "ingest" for s in tool_specs)
     started = time.monotonic()
 
     def _over_wall_time() -> bool:
@@ -249,13 +297,42 @@ async def run_tool_use_loop(
         if escalation is not None:
             return escalation
 
+    async def _complete_with_retry(iteration: int) -> Any:
+        """Call the model, retrying ONLY transient errors (backoff+jitter, bounded). Raises the
+        last exception when retries are exhausted, the error is permanent, or the wall-time budget
+        is spent — so a retry storm can never run past max_wall_time_seconds (ADR-042 #551)."""
+        attempt = 0
+        while True:
+            try:
+                return await llm.complete(messages=messages, system=system, tools=tool_specs)
+            except Exception as exc:  # noqa: BLE001
+                # do NOT retry past the wall-time budget — otherwise N retries (each up to the LLM
+                # timeout) + their backoff could run several× past max_wall_time_seconds.
+                if attempt >= _LLM_MAX_RETRIES or not _is_transient(exc) or _over_wall_time():
+                    raise
+                steps.append(
+                    LoopStep(
+                        len(steps), StepKind.LLM, "primary", "retry", _truncate(f"transient: {exc}")
+                    )
+                )
+                await _async_sleep(_retry_delay(attempt, getattr(exc, "retry_after", None)))
+                if (
+                    _over_wall_time()
+                ):  # the backoff itself may cross the deadline — stop, don't retry
+                    raise
+                attempt += 1
+
     for iteration in range(resume_iteration + 1, policy.max_iterations + 1):
         if _over_wall_time():
             return _escalate("budget", "wall_time", "wall-time budget exhausted", iteration)
 
+        # ADR-042 (#551): a TRANSIENT provider error (rate-limit / timeout / 5xx / overloaded) is
+        # retried with backoff+jitter before the run fails — so one member hitting the shared BYOM
+        # key's throttle does not spuriously fail the team. A PERMANENT error (auth / model-not-
+        # found / bad-request) is not retried; an exhausted transient or a permanent error → FAILED.
         try:
-            resp = await llm.complete(messages=messages, system=system, tools=tool_specs)
-        except Exception as exc:  # noqa: BLE001 — an LLM-call failure is a hard fail for the run
+            resp = await _complete_with_retry(iteration)
+        except Exception as exc:  # noqa: BLE001 — transient exhausted, or a permanent error → FAILED
             steps.append(
                 LoopStep(len(steps), StepKind.LLM, "primary", "error", _truncate(str(exc)))
             )
@@ -282,6 +359,16 @@ async def run_tool_use_loop(
             steps.append(
                 LoopStep(len(steps), StepKind.LLM, "primary", "answer", _truncate(last_text))
             )
+            # Completion contract (#543): if this tool-capable member answered without ever calling
+            # a tool, nudge it ONCE to actually use its tools before accepting. Turns an imported
+            # conductor-agent's handoff stub into a real tool-using turn; one-shot so a genuinely
+            # tool-less reasoning member still terminates on the next pass.
+            if not nudged and produces and tool_calls_made == 0:
+                nudged = True
+                messages.append({"role": "assistant", "content": last_text})
+                messages.append({"role": "user", "content": _TOOL_USE_NUDGE})
+                steps.append(LoopStep(len(steps), StepKind.LLM, "primary", "nudge", "use-tools"))
+                continue
             return LoopResult(
                 HarnessStatus.SUCCEEDED,
                 last_text,

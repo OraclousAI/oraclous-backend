@@ -73,3 +73,9 @@ class EngineTeamRun(BaseModel):
     # run STATE is never branched on it (consuming it = re-dispatch = E8, out of scope). NULL until
     # graded; a fail-closed verdict (pass=false) is stored if the judge is unreachable/unconfigured.
     verdict: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    # ── per-member terminal status (ADR-042 / #551; additive) ──────────────────────────────────
+    # role -> "succeeded" | "failed" | "blocked" | "skipped" (the orchestrator's per-member result).
+    # A team run is SUCCEEDED only when EVERY member delivered; a FAILED run carries the failed +
+    # blocked members here, and the re-run re-drives exactly those (seeding the succeeded ones via
+    # ``completed``). Empty until the first drive records it.
+    member_status: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)

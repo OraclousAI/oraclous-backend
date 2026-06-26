@@ -629,6 +629,181 @@ async def test_non_harness_error_mid_drive_fails_run_not_strands_it() -> None:
     assert "decode blew up" in (row.error_message or "")
 
 
+async def test_member_failure_persists_per_member_status_and_keeps_independent_output() -> None:
+    # ADR-042 (#551): member 'b' fails; the independent 'a' (same stage, no dep) still SUCCEEDS. The
+    # drive persists each member's terminal status, the run verdict is FAILED (not SUCCEEDED), 'a''s
+    # output is KEPT (not discarded by a sibling's failure), and the failed member's safe detail
+    # is surfaced in error_message — so the failed member is both debuggable and re-runnable.
+    class _MixedHarness:
+        async def execute(self, **kw: Any) -> dict[str, Any]:
+            if "do b" in kw.get("input_text", ""):  # fail ONLY member 'b' (subgoal "do b")
+                return {"status": "FAILED", "output": None, "error_message": "b blew up"}
+            return {"status": "SUCCEEDED", "output": "ok"}
+
+    repo = FakeTeamRunRepo()
+    svc, _ = _svc(repo, _MixedHarness())
+    row = await _run(
+        svc,
+        _principal(),
+        manifest=_team([_agent("a"), _agent("b")]),
+        sub_harnesses={},
+        gate_decisions={},
+    )
+    assert row.state == "FAILED"  # SUCCEEDED iff EVERY member delivered — b did not
+    assert row.member_status == {"a": "succeeded", "b": "failed"}
+    assert row.results.get("a") == {
+        "output": "ok",
+        "status": "SUCCEEDED",
+    }  # the peer's work is kept
+    assert "b blew up" in (row.error_message or "")  # the failed member's detail is surfaced
+
+
+async def test_rerun_redispatches_only_the_failed_member_and_reaches_succeeded() -> None:
+    # ADR-042 (#551): first drive — 'b' fails (a transient that has cleared by the re-run), 'a'
+    # succeeds. rerun() re-drives ONLY 'b' (now succeeds) and KEEPS 'a' (never re-dispatched), so
+    # the run reaches SUCCEEDED with every member — the re-run-from-the-durable-team-state path.
+    class _FlakyHarness:
+        def __init__(self) -> None:
+            self.a_calls = 0
+            self.b_attempts = 0
+
+        async def execute(self, **kw: Any) -> dict[str, Any]:
+            if "do b" in kw.get("input_text", ""):
+                self.b_attempts += 1
+                if self.b_attempts == 1:  # fails the FIRST time, succeeds on the re-run
+                    return {
+                        "status": "FAILED",
+                        "output": None,
+                        "error_message": "b throttled",
+                        "total_tokens": 100,
+                    }
+                return {"status": "SUCCEEDED", "output": "b-ok", "total_tokens": 100}
+            self.a_calls += 1
+            return {"status": "SUCCEEDED", "output": "a-ok", "total_tokens": 100}
+
+    repo = FakeTeamRunRepo()
+    harness = _FlakyHarness()
+    svc, _ = _svc(repo, harness)
+    row = await _run(
+        svc,
+        _principal(),
+        manifest=_team([_agent("a"), _agent("b")]),
+        sub_harnesses={},
+        gate_decisions={},
+    )
+    assert row.state == "FAILED" and row.member_status == {"a": "succeeded", "b": "failed"}
+    assert harness.a_calls == 1
+
+    requeued = await svc.rerun(row.id, _principal())  # FAILED → QUEUED
+    assert requeued.state == "QUEUED"
+    final = await svc.drive(row.id, _principal())  # the worker re-drives only the failures
+    assert final.state == "SUCCEEDED"  # every member delivered on the re-run
+    assert final.member_status == {"a": "succeeded", "b": "succeeded"}
+    assert harness.a_calls == 1  # 'a' was NOT re-dispatched (its success is reused)
+    assert harness.b_attempts == 2  # 'b' re-dispatched exactly once on the re-run
+    assert final.error_message is None  # the prior failure summary is cleared on a clean re-run
+    # O4 cost (#472) accumulates every REAL attempt: a once (100) + b's failed attempt (100, counted
+    # before the fail-closed check) + b's re-run (100) = 300 — every real attempt, not a dup.
+    assert final.cost_tokens == 300
+
+
+async def test_rerun_rejects_a_non_failed_run() -> None:
+    # only a FAILED run is re-runnable; a SUCCEEDED (or QUEUED/RUNNING) run → 409.
+    class _OkHarness:
+        async def execute(self, **kw: Any) -> dict[str, Any]:
+            return {"status": "SUCCEEDED", "output": "ok"}
+
+    repo = FakeTeamRunRepo()
+    svc, _ = _svc(repo, _OkHarness())
+    row = await _run(
+        svc, _principal(), manifest=_team([_agent("a")]), sub_harnesses={}, gate_decisions={}
+    )
+    assert row.state == "SUCCEEDED"
+    with pytest.raises(TeamRunError) as ei:
+        await svc.rerun(row.id, _principal())
+    assert ei.value.status_code == 409
+
+
+async def test_rerun_409_when_failed_run_has_no_failed_or_blocked_members() -> None:
+    # ADR-042 (#551): a FAILED run with NO recorded member failure (e.g. a hard mid-drive crash /
+    # reaped run, member_status left {}) has nothing to recover → rerun is a 409 nothing_to_rerun.
+    repo = FakeTeamRunRepo()
+    svc, _ = _svc(repo, FakeHarness())
+    crashed = EngineTeamRun(
+        id=uuid.uuid4(),
+        organisation_id=_ORG,
+        user_id=_USER,
+        manifest=_team([_agent("a")]),
+        sub_harnesses={},
+        gate_decisions={},
+        state="FAILED",
+        results={},
+        paused_at=[],
+        member_status={},  # no per-member failure recorded (the run crashed before recording)
+    )
+    repo.rows[crashed.id] = crashed
+    with pytest.raises(TeamRunError) as ei:
+        await svc.rerun(crashed.id, _principal())
+    assert ei.value.status_code == 409
+    assert ei.value.error_type == "nothing_to_rerun"
+
+
+async def test_failed_run_reports_true_progress_not_inflated_to_100() -> None:
+    # ADR-042 (#551): a failed/blocked member now populates results[role]=None, so progress must be
+    # computed from member_status (delivered), NOT len(results) — else a FAILED run reports ~100%.
+    class _MixedHarness:
+        async def execute(self, **kw: Any) -> dict[str, Any]:
+            if "do b" in kw.get("input_text", ""):
+                return {"status": "FAILED", "output": None, "error_message": "boom"}
+            return {"status": "SUCCEEDED", "output": "ok"}
+
+    repo = FakeTeamRunRepo()
+    svc, _ = _svc(repo, _MixedHarness())
+    row = await _run(
+        svc,
+        _principal(),
+        manifest=_team([_agent("a"), _agent("b")]),
+        sub_harnesses={},
+        gate_decisions={},
+    )
+    assert row.state == "FAILED" and row.member_status == {"a": "succeeded", "b": "failed"}
+    status = await svc.status(row.id, _principal())
+    assert status.state == "FAILED"
+    assert status.healthy is False
+    assert status.progress == 50  # 1 of 2 members delivered — NOT 100 (the inflated len(results))
+
+
+async def test_back_compat_resume_of_a_pre_member_status_paused_run_does_not_re_dispatch() -> None:
+    # ADR-042 (#551) back-compat: a PAUSED run created BEFORE the member_status column existed has
+    # member_status={} but real pre-gate results. _completed_for_resume falls back to all-results
+    # so its gate-resume still REUSES the pre-gate member (G-D, no double-exec), not re-dispatch.
+    harness = FakeHarness()
+    repo = FakeTeamRunRepo()
+    svc, enq = _svc(repo, harness)
+    paused = EngineTeamRun(
+        id=uuid.uuid4(),
+        organisation_id=_ORG,
+        user_id=_USER,
+        manifest=_team([_agent("a"), _human("gate", ["a"]), _agent("writer", ["gate"])]),
+        sub_harnesses={},
+        gate_decisions={},
+        state="PAUSED",
+        results={
+            "a": {"output": "a-done", "status": "SUCCEEDED"}
+        },  # the pre-gate member already ran
+        paused_at=["gate"],
+        member_status={},  # the pre-ADR-042 row: no per-member status recorded
+    )
+    repo.rows[paused.id] = paused
+    await svc.advance(paused.id, _principal(), {"gate": "approve"})  # decide the gate → QUEUED
+    final = await svc.drive(paused.id, _principal())
+    assert final.state == "SUCCEEDED"
+    # 'a' was seeded from the durable results (back-compat fallback) and NOT re-dispatched; only the
+    # gate-downstream 'writer' ran on the resume.
+    assert not any("do a" in i for i in harness.inputs)
+    assert any("do writer" in i for i in harness.inputs)
+
+
 async def test_reap_stale_fails_stranded_running_team_runs() -> None:
     # G-C: the reaper FAILs a run stuck RUNNING past the lease (a driver that died mid-drive).
     repo = FakeTeamRunRepo()

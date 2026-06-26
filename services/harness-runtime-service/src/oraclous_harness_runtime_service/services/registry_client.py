@@ -55,9 +55,10 @@ class RegistryClient:
 
     async def _json(self, resp: httpx.Response) -> dict[str, Any]:
         if resp.status_code // 100 != 2:
+            # leak-safe: surface the method/path + coarse status, never the upstream body (it may
+            # echo customer input/output) — CLAUDE.md §11 / the ADR-042 leak class.
             raise RegistryError(
-                f"{resp.request.method} {resp.request.url.path} → "
-                f"{resp.status_code}: {resp.text[:300]}"
+                f"{resp.request.method} {resp.request.url.path} → {resp.status_code}"
             )
         return resp.json()
 

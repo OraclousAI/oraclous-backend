@@ -48,5 +48,6 @@ class BrokerClient:
         if resp.status_code == 404:
             raise BrokerError(f"credential {credential_id} not found")
         if resp.status_code // 100 != 2:
-            raise BrokerError(f"resolve-credential → {resp.status_code}: {resp.text[:200]}")
+            # leak-safe: never echo the upstream body — coarse status only (CLAUDE.md §11)
+            raise BrokerError(f"resolve-credential → {resp.status_code}")
         return resp.json().get("credential") or {}

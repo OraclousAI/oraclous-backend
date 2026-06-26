@@ -15,11 +15,17 @@ from oraclous_harness_runtime_service.domain.llm.base import (
     ToolCall,
     ToolSpec,
 )
+from oraclous_harness_runtime_service.domain.llm.openai_compatible import LLMClientError
+from oraclous_harness_runtime_service.domain.loop import tool_use
 from oraclous_harness_runtime_service.domain.loop.tool_use import run_tool_use_loop
 from oraclous_harness_runtime_service.domain.policy import PolicyEnvelope
 from oraclous_harness_runtime_service.models.enums import HarnessStatus, StepKind
 
 pytestmark = [pytest.mark.unit, pytest.mark.tool_dispatch]
+
+
+async def _no_sleep(_seconds: float) -> None:
+    """A no-op stand-in for asyncio.sleep so retry tests are deterministic + fast."""
 
 
 def _env(
@@ -478,3 +484,113 @@ async def test_checkpoint_messages_never_persist_a_secret() -> None:
     assert cp is not None
     blob = json.dumps(cp.messages)
     assert "SECRET123" not in blob and "[REDACTED]" in blob
+
+
+# ── ADR-042 (#551) — transient-only LLM retry (rate-limit / timeout / 5xx) ────────────────────
+
+
+class _FlakyLLM:
+    """Raises a TRANSIENT error ``fail_n`` times, then answers — models a 429 throttle clearing."""
+
+    protocol_shape = "fake"
+
+    def __init__(self, fail_n: int) -> None:
+        self.calls = 0
+        self._fail_n = fail_n
+
+    async def complete(self, *, messages, system, tools):  # noqa: ANN001, ANN202
+        self.calls += 1
+        if self.calls <= self._fail_n:
+            raise LLMClientError("LLM call → 429: rate limited", status_code=429, transient=True)
+        return LLMResponse(text="done")
+
+
+async def test_transient_llm_error_is_retried_then_succeeds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(tool_use, "_async_sleep", _no_sleep)  # deterministic + fast
+    llm = _FlakyLLM(fail_n=2)
+    result = await run_tool_use_loop(
+        llm=llm,
+        system="",
+        user_input="go",
+        tool_specs=[_SPEC],
+        dispatch=_ok_dispatch,
+        policy=_env(),
+    )
+    assert result.status is HarnessStatus.SUCCEEDED  # the throttle cleared on retry
+    assert llm.calls == 3  # 2 transient failures + 1 success
+    assert sum(1 for s in result.steps if s.status == "retry") == 2  # both retries are traced
+
+
+async def test_permanent_llm_error_fails_fast_without_retry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(tool_use, "_async_sleep", _no_sleep)
+
+    class _AuthFailLLM:
+        protocol_shape = "fake"
+        calls = 0
+
+        async def complete(self, *, messages, system, tools):  # noqa: ANN001, ANN202
+            type(self).calls += 1
+            raise LLMClientError("LLM call → 401: bad key", status_code=401, transient=False)
+
+    llm = _AuthFailLLM()
+    result = await run_tool_use_loop(
+        llm=llm,
+        system="",
+        user_input="go",
+        tool_specs=[_SPEC],
+        dispatch=_ok_dispatch,
+        policy=_env(),
+    )
+    assert result.status is HarnessStatus.FAILED
+    assert llm.calls == 1  # a permanent error is NOT retried (fail fast)
+    assert not any(s.status == "retry" for s in result.steps)
+
+
+async def test_transient_retries_are_bounded_then_fail(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(tool_use, "_async_sleep", _no_sleep)
+    llm = _FlakyLLM(fail_n=999)  # never clears
+    result = await run_tool_use_loop(
+        llm=llm,
+        system="",
+        user_input="go",
+        tool_specs=[_SPEC],
+        dispatch=_ok_dispatch,
+        policy=_env(),
+    )
+    assert result.status is HarnessStatus.FAILED  # retries exhausted → FAILED, not infinite
+    assert llm.calls == tool_use._LLM_MAX_RETRIES + 1  # the initial try + the bounded retries
+
+
+def test_retry_delay_honors_a_retry_after_hint_capped() -> None:
+    # ADR-042 (#551): a server Retry-After hint is honoured (wait at least that long) but CAPPED at
+    # _LLM_RETRY_MAX_S so a large hint can't blow the wall-time budget; no hint → pure backoff.
+    assert tool_use._retry_delay(0, retry_after=5.0) >= 5.0  # honoured
+    assert tool_use._retry_delay(0, retry_after=1000.0) <= tool_use._LLM_RETRY_MAX_S  # capped
+    assert tool_use._retry_delay(0, None) <= tool_use._LLM_RETRY_BASE_S  # backoff only, bounded
+
+
+async def test_transient_retry_respects_the_wall_time_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # ADR-042 (#551): a retry storm must NOT run past max_wall_time_seconds. A clock that is within
+    # budget until the first attempt, then past it, must stop the retry after ONE attempt — without
+    # the wall-time guard the loop would burn all _LLM_MAX_RETRIES (each up to the LLM timeout).
+    monkeypatch.setattr(tool_use, "_async_sleep", _no_sleep)
+    llm = _FlakyLLM(fail_n=999)  # always transient
+    monkeypatch.setattr(
+        tool_use.time, "monotonic", lambda: 0.0 if llm.calls == 0 else 100.0
+    )  # 0 at start + the first wall check; 100 (past the 1s budget) once an attempt has run
+    result = await run_tool_use_loop(
+        llm=llm,
+        system="",
+        user_input="go",
+        tool_specs=[_SPEC],
+        dispatch=_ok_dispatch,
+        policy=_env(max_wall=1),
+    )
+    assert result.status is HarnessStatus.FAILED
+    assert llm.calls == 1  # the wall-time budget stopped the retry after the first attempt

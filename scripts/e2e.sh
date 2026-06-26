@@ -8,6 +8,7 @@
 #   scripts/e2e.sh --byom     # BYOM real-LLM run: harness -> LIVE, -m byom (needs OPENROUTER_API_KEY)
 #   scripts/e2e.sh --oauth    # OAuth login: bring up a real dex OIDC provider, -m oauth
 #   scripts/e2e.sh --github   # real-github.com deliver-back O7 proof (#542), -m github (deploy/.env PAT)
+#   scripts/e2e.sh --doefin   # #543 DoefinGPT use-case proof: github-tool import + real OpenRouter + /v1/artifacts
 #   scripts/e2e.sh --all      # deterministic (fake) THEN BYOM (live), restoring fake at the end
 #
 # Two LLM modes are mutually exclusive in one stack: the deterministic team-run asserts scripted
@@ -103,10 +104,27 @@ run_github() {  # the real-github.com keyed O7 proof (#542) — human-gated, des
   uv run pytest tests/e2e -m github -v -p no:cacheprovider && _banner "real-github O7 (#542)"
 }
 
+run_doefin() {  # the #543 DoefinGPT real-model use-case proof (import via github tool + real OpenRouter)
+  local pat repo ork
+  pat=$(grep -E '^GITHUB_IMPORT_PAT=' deploy/.env 2>/dev/null | head -1 | cut -d= -f2-)
+  repo=$(grep -E '^GITHUB_IMPORT_REPO=' deploy/.env 2>/dev/null | head -1 | cut -d= -f2-)
+  ork=$(grep -E '^OPENROUTER_API_KEY=' deploy/.env 2>/dev/null | head -1 | cut -d= -f2-)
+  export GITHUB_IMPORT_PAT="${GITHUB_IMPORT_PAT:-$pat}"
+  export GITHUB_IMPORT_REPO="${GITHUB_IMPORT_REPO:-$repo}"
+  export OPENROUTER_API_KEY="${OPENROUTER_API_KEY:-$ork}"
+  : "${GITHUB_IMPORT_PAT:?set GITHUB_IMPORT_PAT in deploy/.env for --doefin}"
+  : "${GITHUB_IMPORT_REPO:?set GITHUB_IMPORT_REPO in deploy/.env for --doefin}"
+  : "${OPENROUTER_API_KEY:?set OPENROUTER_API_KEY (the BYOM model key) in deploy/.env for --doefin}"
+  _recreate_harness live  # RULE 8: real model, never fake
+  echo ">> DoefinGPT real-model use-case e2e (#543): import via github tool → real OpenRouter → /v1/artifacts…"
+  uv run pytest tests/e2e -m "byom and github" -v -p no:cacheprovider && _banner "DoefinGPT real-model (#543)"
+}
+
 case "$MODE" in
   --byom)   run_byom ;;
   --oauth)  run_oauth ;;
   --github) run_github ;;
+  --doefin) run_doefin ;;
   --all)    run_deterministic; run_byom; _recreate_harness fake ;;  # leave the stack deterministic
   *)        run_deterministic ;;
 esac

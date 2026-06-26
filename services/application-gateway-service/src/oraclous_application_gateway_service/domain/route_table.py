@@ -24,6 +24,9 @@ _ROUTES: tuple[tuple[str, str], ...] = (
     # — the HITL SAME_AS_CANDIDATE approve/reject mutation, #279 — both live under /api/v1/graphs)
     ("/api/v1/graphs", "KNOWLEDGE_GRAPH_URL"),
     ("/api/v1/recipes", "KNOWLEDGE_GRAPH_URL"),
+    # the unified artifact read/serve surface (#543, ADR-041): a team's outputs live on Oraclous
+    # (graph-indexed) and are served here through ONE endpoint, list + fetch-content, org-scoped.
+    ("/v1/artifacts", "KNOWLEDGE_GRAPH_URL"),
     # knowledge-retriever (/v1/graph also carries POST /v1/graph/{id}/evaluate — the RAGAS-style
     # retrieval-quality evaluation endpoint, #331; and /v1/federated/* — the cross-graph federated
     # reads, #330/ADR-026: the retriever enumerates the caller's accessible set itself; the gateway

@@ -1,8 +1,9 @@
 """Team-run bridge (#419 wiring): run_team driven by the real harness-execution path.
 
 Pure unit with a fake harness client — proves each member becomes a harness call, typed hand-offs
-thread into the harness input, a member failure fails closed, an inline sub-harness is passed, and a
-human gate pauses the run through the bridge. (The durable persistence is a later wiring step.)
+thread into the harness input, a member failure is RECORDED (ADR-042 non-aborting: it does not abort
+the team, the verdict is "failed"), an inline sub-harness is passed, and a human gate pauses the run
+through the bridge. (The durable persistence is a later wiring step.)
 """
 
 from __future__ import annotations
@@ -96,13 +97,18 @@ async def test_each_member_runs_as_a_harness_call_with_threaded_handoff() -> Non
     )  # b got a's typed hand-off, not a blob
 
 
-async def test_member_harness_failure_fails_closed() -> None:
+async def test_member_harness_failure_is_recorded_not_aborted() -> None:
+    # ADR-042 (#551): a member whose harness does not SUCCEED no longer ABORTS the team run (it used
+    # to raise out of run_team_harness). The failure is RECORDED — the member is "failed" and the
+    # team verdict is "failed" (→ FAILED) — so independent members still run and the failed member
+    # is re-runnable. A single-member team that fails returns a "failed" result, not a raise.
     class _Failing:
         async def execute(self, **kw: Any) -> dict[str, Any]:
             return {"status": "FAILED", "output": None}
 
-    with pytest.raises(Exception):  # noqa: B017,PT011 — a member that doesn't SUCCEED fails the run
-        await run_team_harness(_team([_m("a")]), _Failing())
+    res = await run_team_harness(_team([_m("a")]), _Failing())
+    assert res.status == "failed"
+    assert res.member_status == {"a": "failed"}
 
 
 async def test_inline_subharness_is_passed_when_provided() -> None:

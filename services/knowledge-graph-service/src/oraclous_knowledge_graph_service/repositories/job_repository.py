@@ -87,6 +87,12 @@ class IngestionJobRepository:
         row = await self._fetch(job_id)
         return _to_record(row) if row else None
 
+    async def get_source_content(self, job_id: uuid.UUID) -> str | None:
+        """The verbatim ingested content of one artifact (org-scoped via ``_fetch``) — what
+        ``/v1/artifacts/{id}`` serves; None if the row is absent / has no stored content (#543)."""
+        row = await self._fetch(job_id)
+        return row.source_content if row else None
+
     async def list_for_graph(
         self, graph_id: uuid.UUID, *, exclude_source_types: tuple[str, ...] = ()
     ) -> list[IngestionJobRecord]:
