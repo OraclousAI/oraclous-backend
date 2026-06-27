@@ -109,3 +109,13 @@ def test_clamp_is_a_noop_when_under_the_pool() -> None:
     budget = OHMBudget(max_tokens_total=8_000_000, max_tokens_per_member=300_000)
     max_tokens, _ = resolve_member_caps(member, budget)
     assert max_tokens == 400_000  # well under the pool → the member's value stands
+
+
+def test_member_override_binds_standalone_with_no_team_budget() -> None:
+    # the case the #583 review doubted: a member's OWN cap is enforced even with NO team budget
+    # block. Both deployed proofs (member max_tokens, budget=None) bit — this locks the resolution
+    # that drives them, so the "member cap without a budget is a no-op" reading can't creep back.
+    from oraclous_ohm.manifest import OHMMember, resolve_member_caps
+
+    member = OHMMember(role="fact-checker", kind="agent", manifest_ref="org:x/a@1", max_tokens=80)
+    assert resolve_member_caps(member, None) == (80, None)
