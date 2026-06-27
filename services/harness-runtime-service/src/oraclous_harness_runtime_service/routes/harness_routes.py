@@ -68,6 +68,8 @@ async def execute_harness(
             team_id=body.team_id,
             precedence_order=body.precedence_order,
             graph_authoritative=body.graph_authoritative,
+            max_tokens=body.max_tokens,
+            max_tool_calls=body.max_tool_calls,
         )
     except OHMError as exc:
         raise HTTPException(

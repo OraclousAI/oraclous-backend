@@ -226,6 +226,8 @@ def get_harness_service(
         llm_timeout=settings.llm_request_timeout,
         llm_allow_private=settings.allow_private_llm_targets,
         max_iterations=settings.max_iterations,
+        max_tokens_per_member_ceiling=settings.max_tokens_per_member_ceiling,
+        max_tool_calls_per_member_ceiling=settings.max_tool_calls_per_member_ceiling,
         memory=memory,
         memory_reader=memory_reader,
     )

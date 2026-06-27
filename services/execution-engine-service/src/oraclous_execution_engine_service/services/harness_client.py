@@ -113,6 +113,8 @@ class HarnessClient:
         team_id: str | None = None,
         precedence_order: list[str] | None = None,
         graph_authoritative: bool = False,
+        max_tokens: int | None = None,
+        max_tool_calls: int | None = None,
         timeout: float | None = None,  # noqa: ASYNC109 — forwarded to httpx, not an asyncio cancel
     ) -> dict[str, Any]:
         """Run a harness to completion/escalation and return its ``HarnessExecutionOut`` JSON.
@@ -153,6 +155,12 @@ class HarnessClient:
             body["precedence_order"] = precedence_order
         if graph_authoritative:
             body["graph_authoritative"] = graph_authoritative
+        # #576: the member's user-set runtime SAFETY CAP (resolved + clamped engine-side) so the
+        # harness enforces the user's budget for this member, not the hardcoded policy tier.
+        if max_tokens is not None:
+            body["max_tokens"] = max_tokens
+        if max_tool_calls is not None:
+            body["max_tool_calls"] = max_tool_calls
         kwargs: dict[str, Any] = {"json": body}
         if timeout is not None:
             kwargs["timeout"] = timeout

@@ -110,11 +110,18 @@ def _is_hitl_pause(result: LoopResult) -> bool:
     )
 
 
-def _cursor(checkpoint: LoopCheckpoint) -> dict[str, int]:
+def _cursor(
+    checkpoint: LoopCheckpoint,
+    member_max_tokens: int | None = None,
+    member_max_tool_calls: int | None = None,
+) -> dict[str, int | None]:
     return {
         "iteration": checkpoint.iteration,
         "tool_calls_made": checkpoint.tool_calls_made,
         "tokens_used": checkpoint.tokens_used,
+        # #576: persist the member's per-member cap so resume re-applies it (None when unset).
+        "member_max_tokens": member_max_tokens,
+        "member_max_tool_calls": member_max_tool_calls,
     }
 
 
@@ -170,6 +177,8 @@ class HarnessExecutionService:
         llm_timeout: float,
         llm_allow_private: bool,
         max_iterations: int,
+        max_tokens_per_member_ceiling: int | None = None,
+        max_tool_calls_per_member_ceiling: int | None = None,
         memory: MemoryWriter | None = None,
         memory_reader: MemoryReader | None = None,
     ) -> None:
@@ -187,6 +196,10 @@ class HarnessExecutionService:
         self._llm_timeout = llm_timeout
         self._llm_allow_private = llm_allow_private
         self._max_iterations = max_iterations
+        # #576: OPTIONAL deployment ceiling on a per-member cap (default None → OFF; the user owns
+        # the budget). A configurable safety backstop, NOT the old unraisable policy tier.
+        self._max_tokens_per_member_ceiling = max_tokens_per_member_ceiling
+        self._max_tool_calls_per_member_ceiling = max_tool_calls_per_member_ceiling
         # The post-run memory hook (#332 / ADR-027 §5). None when HARNESS_MEMORY_WRITES is off
         # (the code default) — flag off means ZERO memory calls, not a no-op writer.
         self._memory = memory
@@ -209,6 +222,8 @@ class HarnessExecutionService:
         team_id: str | None = None,
         precedence_order: list[str] | None = None,
         graph_authoritative: bool = False,
+        max_tokens: int | None = None,
+        max_tool_calls: int | None = None,
     ) -> HarnessExecution:
         # Fail-closed tenancy (ADR-006/T1-M1): org is the principal's ONLY, never the manifest's.
         if principal.organisation_id is None:
@@ -246,6 +261,8 @@ class HarnessExecutionService:
             graph_id=graph_id,
             precedence_order=precedence_order,
             graph_authoritative=graph_authoritative,
+            member_max_tokens=max_tokens,
+            member_max_tool_calls=max_tool_calls,
         )
         execution_id = uuid.uuid4()
         resource = f"harness_execution:{execution_id}"
@@ -291,7 +308,9 @@ class HarnessExecutionService:
                 resume_messages=cp.messages,
                 pending_tool_calls=cp.pending_tool_calls,
                 approved_tool_call_id=cp.approved_tool_call_id,
-                resume_cursor=_cursor(cp),
+                # #576: persist the member's per-member cap in the cursor (JSONB, no migration) so
+                # resume re-applies the user's budget rather than reverting to the policy tier.
+                resume_cursor=_cursor(cp, max_tokens, max_tool_calls),
                 redact_patterns=cp.redact_patterns,
             )
             if steps and steps[-1]["kind"] == StepKind.GATE.value:
@@ -504,8 +523,18 @@ class HarnessExecutionService:
             document, self._trust, require=self._require_signature or policy.require_signature
         )
         enforce_load_policy(manifest, policy)
-        envelope, tool_specs, dispatch, llm = await self._build_runnable(manifest, policy, org_id)
         cursor = checkpoint.resume_cursor
+        # #576: restore the member's per-member cap from the checkpoint so resume keeps the user's
+        # budget. Without it, resume reverts to the policy tier and a heavy member already past it
+        # would re-escalate immediately — the exact bug #576 fixes. Old checkpoints lack the keys
+        # → None → the tier (a pre-#576 paused run is unchanged).
+        envelope, tool_specs, dispatch, llm = await self._build_runnable(
+            manifest,
+            policy,
+            org_id,
+            member_max_tokens=cursor.get("member_max_tokens"),
+            member_max_tool_calls=cursor.get("member_max_tool_calls"),
+        )
         resume_state = LoopCheckpoint(
             messages=checkpoint.resume_messages,
             pending_tool_calls=checkpoint.pending_tool_calls,
@@ -543,7 +572,11 @@ class HarnessExecutionService:
                 resume_messages=new_cp.messages,
                 pending_tool_calls=new_cp.pending_tool_calls,
                 approved_tool_call_id=new_cp.approved_tool_call_id,
-                resume_cursor=_cursor(new_cp),
+                # #576: carry the cap forward across a CHAINED gate so the second pause/resume keeps
+                # it too (a heavy member can cross more than one HITL gate).
+                resume_cursor=_cursor(
+                    new_cp, cursor.get("member_max_tokens"), cursor.get("member_max_tool_calls")
+                ),
                 redact_patterns=new_cp.redact_patterns,
             )
             if new_steps and new_steps[-1]["kind"] == StepKind.GATE.value:
@@ -672,6 +705,8 @@ class HarnessExecutionService:
         graph_id: str | None = None,
         precedence_order: list[str] | None = None,
         graph_authoritative: bool = False,
+        member_max_tokens: int | None = None,
+        member_max_tool_calls: int | None = None,
     ) -> tuple[Any, list[ToolSpec], Any, LLMClient]:
         """Resolve + materialise the manifest's capabilities, build the dispatch + the LLM + the
         runtime envelope. Shared by execute() and resume() so a resume sets up identically.
@@ -683,6 +718,10 @@ class HarnessExecutionService:
             policy,
             hard_max_iterations=self._max_iterations,
             external_ceiling=external_ceiling,
+            member_max_tokens=member_max_tokens,
+            member_max_tool_calls=member_max_tool_calls,
+            max_tokens_ceiling=self._max_tokens_per_member_ceiling,
+            max_tool_calls_ceiling=self._max_tool_calls_per_member_ceiling,
         )
         instance_by_binding, tool_specs = await self._materialise(
             manifest,

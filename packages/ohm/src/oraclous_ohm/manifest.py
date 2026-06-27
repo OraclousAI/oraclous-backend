@@ -148,6 +148,12 @@ class OHMMember(BaseModel):
     outputs_schema: dict[str, Any] = Field(default_factory=dict)  # typed output contract
     human_role: str | None = None  # REQUIRED for kind: human
     schedule: str | None = None  # cron expr for a scheduled standing-team member (ADR-034 §6)
+    # #576: the per-member runtime SAFETY CAP — a user-set override of the policy tier for THIS
+    # member's loop. It is NOT a per-member budget surface (ADR-031's rejected Alternative C): it is
+    # a sub-ceiling, always clamped <= the team-pooled total, so no single member is granted more
+    # than the whole pool. Unset → the team default / policy tier applies (back-compat).
+    max_tokens: int | None = Field(default=None, ge=1)
+    max_tool_calls: int | None = Field(default=None, ge=1)
 
     @model_validator(mode="after")
     def _human_requires_role(self) -> OHMMember:
@@ -283,6 +289,38 @@ class OHMBudget(BaseModel):
     max_sub_runs: int | None = Field(default=None, ge=1)
     max_usd_total: float | None = Field(default=None, gt=0)
     ttl_seconds: int | None = Field(default=None, ge=1)
+    # #576: team-wide per-member SAFETY-CAP defaults. NOT a per-member budget surface (ADR-031's
+    # rejected Alternative C) — they are per-member sub-ceilings, each clamped <= the pooled total
+    # above, never a replacement for it. A member's own max_tokens/max_tool_calls overrides these.
+    max_tokens_per_member: int | None = Field(default=None, ge=1)
+    max_tool_calls_per_member: int | None = Field(default=None, ge=1)
+
+
+def resolve_member_caps(
+    member: OHMMember, budget: OHMBudget | None
+) -> tuple[int | None, int | None]:
+    """Resolve a member's effective runtime SAFETY CAP (#576) from the team manifest.
+
+    Precedence: the member's own ``max_tokens``/``max_tool_calls`` override > the team-wide
+    ``budget.max_*_per_member`` default > ``None`` (the harness then keeps the policy tier). The
+    resolved cap is a SUB-ceiling, always clamped to ``<=`` the team-pooled ``max_*_total``: NO
+    SINGLE member can be granted more than the whole team's pool. (The pool's AGGREGATE enforcement
+    across members / a dynamic fan-out is separate engine-side work — ADR-031 design D3 — that this
+    function neither adds nor changes; the keystone's single-ceiling claim rests on D3, not here.)
+    ``None`` budget → ``(None, None)``.
+    """
+    per_member_tokens = budget.max_tokens_per_member if budget is not None else None
+    per_member_calls = budget.max_tool_calls_per_member if budget is not None else None
+    max_tokens = member.max_tokens if member.max_tokens is not None else per_member_tokens
+    max_tool_calls = (
+        member.max_tool_calls if member.max_tool_calls is not None else per_member_calls
+    )
+    if budget is not None:
+        if max_tokens is not None and budget.max_tokens_total is not None:
+            max_tokens = min(max_tokens, budget.max_tokens_total)
+        if max_tool_calls is not None and budget.max_tool_calls_total is not None:
+            max_tool_calls = min(max_tool_calls, budget.max_tool_calls_total)
+    return max_tokens, max_tool_calls
 
 
 class OHMPrecedence(BaseModel):

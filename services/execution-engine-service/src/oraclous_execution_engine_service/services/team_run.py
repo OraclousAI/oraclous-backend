@@ -20,7 +20,13 @@ from typing import Any, Protocol
 
 from oraclous_ohm.envelope import HandoffEnvelope
 from oraclous_ohm.errors import OHMError
-from oraclous_ohm.manifest import OHMLoop, OHMManifest, OHMMember
+from oraclous_ohm.manifest import (
+    OHMBudget,
+    OHMLoop,
+    OHMManifest,
+    OHMMember,
+    resolve_member_caps,
+)
 from oraclous_ohm.orchestrate import (
     Diagnostic,
     DispatchFn,
@@ -54,6 +60,8 @@ class _Harness(Protocol):
         team_id: str | None = ...,
         precedence_order: list[str] | None = ...,
         graph_authoritative: bool = ...,
+        max_tokens: int | None = ...,
+        max_tool_calls: int | None = ...,
     ) -> dict[str, Any]: ...
 
 
@@ -103,6 +111,7 @@ def make_harness_dispatch(
     team_id: str | None = None,
     precedence_order: list[str] | None = None,
     graph_authoritative: bool = False,
+    budget: OHMBudget | None = None,
 ) -> DispatchFn:
     """Build a ``run_team`` dispatch that runs each member as a real harness execution.
 
@@ -114,6 +123,16 @@ def make_harness_dispatch(
 
     async def dispatch(member: OHMMember, envelopes: list[HandoffEnvelope], fan_item: Any) -> Any:
         sub = sub_harnesses.get(member.role)
+        # #576: the member's user-set runtime SAFETY CAP (member override > team-wide default,
+        # clamped <= the team-pooled total). Sent ONLY when the team declared a budget — a budget-
+        # less team calls the harness exactly as before (the policy tier stands), a zero-change
+        # additive path. The harness applies the cap as the per-member token / tool-call ceiling.
+        member_max_tokens, member_max_tool_calls = resolve_member_caps(member, budget)
+        caps: dict[str, int] = {}
+        if member_max_tokens is not None:
+            caps["max_tokens"] = member_max_tokens
+        if member_max_tool_calls is not None:
+            caps["max_tool_calls"] = member_max_tool_calls
         result = await harness.execute(
             input_text=render_member_input(member, envelopes, fan_item),
             manifest_inline=sub,
@@ -122,6 +141,7 @@ def make_harness_dispatch(
             # harness fail-closed for BOTH the inline AND the manifest_ref path, so a registered
             # manifest_ref harness can never exceed what the member declared (red-team G-A).
             capability_ceiling=list(member.tools),
+            **caps,
             parent_execution_id=parent_execution_id,
             trace_id=trace_id,
             # file-native blackboard (#518): the trusted per-run working tree every member's file
@@ -198,6 +218,7 @@ async def run_team_harness(
         team_id=team_id,
         precedence_order=precedence_order,
         graph_authoritative=graph_authoritative,
+        budget=manifest.budget,  # #576: per-member caps resolve from the team budget + members
     )
     return await run_team(manifest, dispatch, gate_decisions=gate_decisions, completed=completed)
 
@@ -326,6 +347,7 @@ async def run_team_hybrid(
         team_id=team_id,
         precedence_order=precedence_order,
         graph_authoritative=graph_authoritative,
+        budget=manifest.budget,  # #576: per-member caps resolve from the team budget + members
     )
     termination = manifest.orchestration.termination if manifest.orchestration else None
     max_rounds = (termination.max_rounds if termination else None) or _DEFAULT_MAX_ROUNDS
