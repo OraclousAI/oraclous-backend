@@ -126,6 +126,7 @@ class MemoryWriter:
         tool_errors: list[str] | None = None,
         rounds: int = 0,
         can_auto_apply: bool = False,
+        record_pattern: bool = True,
     ) -> None:
         """ONE episodic memory per completed run: agent, task, result status, key tool usage.
 
@@ -137,9 +138,17 @@ class MemoryWriter:
         error → ``repetitive_failures``, an over-long run → ``velocity_anomaly``) is recorded so a
         future run recalls a LESSON, not a bare outcome. ``can_auto_apply`` carries the harness's
         ``consciousness.permissions`` posture — ``False`` under ``never_auto_apply`` (advisory-only;
-        a recalled lesson biases a turn but a human must approve any behaviour change)."""
-        pattern = classify_consciousness_pattern(
-            status=status, tool_names=tool_names, tool_errors=tool_errors or [], rounds=rounds
+        a recalled lesson biases a turn but a human must approve any behaviour change).
+
+        ``record_pattern`` is the consciousness GATE: True (the harness declared
+        ``consciousness.permissions``) → classify + record the lesson; False → a bare run-outcome
+        (no consciousness — the opt-in default for a harness without the posture)."""
+        pattern = (
+            classify_consciousness_pattern(
+                status=status, tool_names=tool_names, tool_errors=tool_errors or [], rounds=rounds
+            )
+            if record_pattern
+            else None
         )
         tools = ", ".join(dict.fromkeys(tool_names)) or "none"
         lesson = f"Lesson ({pattern}): " if pattern else ""
@@ -158,8 +167,13 @@ class MemoryWriter:
                 "agent_id": harness_id,
                 "session_id": str(execution_id),
                 "event_type": "harness_run",
-                "consciousness_pattern": pattern,
-                "can_auto_apply": can_auto_apply,
+                # #554: the consciousness props ride ONLY a consciousness write (record_pattern);
+                # a bare run-outcome (no posture) stays byte-identical to the legacy memory.
+                **(
+                    {"consciousness_pattern": pattern, "can_auto_apply": can_auto_apply}
+                    if record_pattern
+                    else {}
+                ),
                 **({"graph_id": graph_id} if graph_id else {}),
                 **({"team_id": team_id} if team_id else {}),
             }

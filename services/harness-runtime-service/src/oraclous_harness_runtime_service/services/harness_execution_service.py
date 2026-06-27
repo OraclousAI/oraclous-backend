@@ -142,6 +142,16 @@ def _tool_step_names(steps: list[LoopStep]) -> list[str]:
         return []
 
 
+def _tool_step_errors(steps: list[LoopStep]) -> list[str]:
+    """The names of TOOL steps that ERRORED (#554) — fed to the consciousness classifier so a
+    recurring in-run failure (the same tool erroring twice) surfaces as ``repetitive_failures``.
+    Fail-soft: a future shape change must never raise into the run path (best-effort)."""
+    try:
+        return [s.name for s in steps if s.kind is StepKind.TOOL and s.status == "error" and s.name]
+    except Exception:  # noqa: BLE001 — fail-soft: the hook never hurts a run
+        return []
+
+
 class HarnessExecutionService:
     def __init__(
         self,
@@ -345,6 +355,12 @@ class HarnessExecutionService:
                 # to the manifest graph context only when the run carries no binding (legacy).
                 graph_id=graph_id or _manifest_graph_context(manifest),
                 team_id=team_id,
+                # #554: thread the run's tool errors + rounds for the within-run classifier,
+                # and read the consciousness.permissions posture (set → enrich; never-apply)
+                tool_errors=_tool_step_errors(result.steps),
+                rounds=result.iterations,
+                record_pattern=manifest.governance.consciousness_permissions is not None,
+                can_auto_apply=False,
             )
         except Exception:  # noqa: BLE001 — the run is done; the memory hook can never undo it
             logger.warning("post-run memory hook failed; run unaffected")
@@ -579,6 +595,10 @@ class HarnessExecutionService:
                 execution_id=execution.id,
                 graph_id=_manifest_graph_context(manifest),
                 human_feedback=decision_reason,
+                tool_errors=_tool_step_errors(result.steps),  # #554: see the leaf-run hook above
+                rounds=result.iterations,
+                record_pattern=manifest.governance.consciousness_permissions is not None,
+                can_auto_apply=False,
             )
         except Exception:  # noqa: BLE001 — the run is done; the memory hook can never undo it
             logger.warning("post-run memory hook failed; run unaffected")
@@ -597,6 +617,10 @@ class HarnessExecutionService:
         graph_id: str | None,
         team_id: str | None = None,
         human_feedback: str | None = None,
+        tool_errors: list[str] | None = None,
+        rounds: int = 0,
+        record_pattern: bool = False,
+        can_auto_apply: bool = False,
     ) -> None:
         """The flag-gated, fail-soft post-run memory hook (#332 / ADR-027 §5).
 
@@ -620,6 +644,10 @@ class HarnessExecutionService:
                 execution_id=execution_id,
                 graph_id=graph_id,
                 team_id=team_id,
+                tool_errors=tool_errors,
+                rounds=rounds,
+                record_pattern=record_pattern,
+                can_auto_apply=can_auto_apply,
             )
             if human_feedback and human_feedback.strip():
                 self._memory.schedule_human_feedback(
