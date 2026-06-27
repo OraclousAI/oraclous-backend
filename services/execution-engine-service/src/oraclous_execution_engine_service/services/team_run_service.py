@@ -58,6 +58,7 @@ from oraclous_execution_engine_service.services.graph_client import GraphClient,
 from oraclous_execution_engine_service.services.harness_client import HarnessClient
 from oraclous_execution_engine_service.services.team_run import (
     make_loop_coordinator,
+    make_recalibration_coordinator,
     run_team_hybrid,
 )
 
@@ -529,6 +530,7 @@ class TeamRunService:
         graph_id: str | None,
         loop: OHMLoop,
         artifacts_baseline: int = 0,
+        diag: dict[str, Any] | None = None,
     ) -> DoneCheckFn:
         """The CODED authority a loop must satisfy to converge (ADR-043 #552) — the team can NEVER
         satisfy its own done-check (the coordinator only routes; THIS decides). Three coded gates,
@@ -540,6 +542,8 @@ class TeamRunService:
         requires NEW artifacts past it (a warm/adopted graph's own artifacts can't satisfy it)."""
 
         async def done_check(results: dict[str, Any]) -> bool:
+            if diag is not None:  # #553: a FRESH diagnosis each round — never a stale key from a
+                diag.clear()  # prior round (the gates below write conditionally + early-return)
             # 1. coverage floor — a failed loop member is results[role]=None, so it fails here
             if not all(results.get(r) is not None for r in loop.members):
                 return False
@@ -549,8 +553,13 @@ class TeamRunService:
                 try:
                     arts = await self._artifacts.list_artifacts(graph_id)
                 except ArtifactsClientError:
+                    if diag is not None:  # #553: feed the stall diagnosis (inconclusive read)
+                        diag["artifacts_ok"] = False
                     return False  # inconclusive read → not-yet-converged (fail-closed)
-                if len(arts) <= artifacts_baseline:
+                landed = len(arts) > artifacts_baseline
+                if diag is not None:  # #553: WHICH gate failed → the recalibration Diagnostic
+                    diag["artifacts_ok"] = landed
+                if not landed:
                     return False
             # 3. separate-evaluator grade vs the convergence threshold (if declared)
             conv = team.orchestration.termination.convergence if team.orchestration else None
@@ -586,6 +595,9 @@ class TeamRunService:
                 except EvaluateClientError:  # unreachable / rejected → not-converged (fail-closed)
                     return False
                 score = _verdict_score(verdict)
+                if diag is not None:  # #553: the scalar grade vs floor → recalibration Diagnostic
+                    diag["evaluator_score"] = score
+                    diag["evaluator_floor"] = floor
                 if score is None or not _cmp(score, op, floor):
                     return False
             return True
@@ -698,6 +710,10 @@ class TeamRunService:
         # are wired ONLY for a loop team; a purely acyclic team runs the unchanged single-pass DAG.
         has_loops = bool(team.orchestration and team.orchestration.loops)
         coordinate = make_loop_coordinator(harness, team) if has_loops else None
+        # ADR-043 #553: on a loop STALL the conductor runs ONE bounded recalibration before halt —
+        # a BYOM directive turn that picks a tactic from the closed set over the CODED diagnosis (it
+        # never self-grades). None for an acyclic team → the seam is byte-unchanged (#552).
+        recalibrate = make_recalibration_coordinator(harness, team) if has_loops else None
         # run-scoped landed-artifacts gate (CTO fast-follow): the artifacts that existed on the
         # graph BEFORE this run was CREATED (keyed off row.created_at, so it is IMMUTABLE across an
         # ADR-042 re-run — a resumed loop is never blocked by its own prior drive's artifacts). The
@@ -709,9 +725,9 @@ class TeamRunService:
                 arts = await self._artifacts.list_artifacts(row.graph_id)
                 artifacts_baseline = _pre_run_artifact_count(arts, row.created_at)
 
-        def done_check_for(loop: OHMLoop) -> DoneCheckFn:
+        def done_check_for(loop: OHMLoop, diag: dict[str, Any]) -> DoneCheckFn:
             return self._make_loop_done_check(
-                team, row.id, row.graph_id, loop, artifacts_baseline=artifacts_baseline
+                team, row.id, row.graph_id, loop, artifacts_baseline=artifacts_baseline, diag=diag
             )
 
         try:
@@ -720,6 +736,7 @@ class TeamRunService:
                 harness,
                 coordinate=coordinate,
                 done_check_for=done_check_for if has_loops else None,
+                recalibrate=recalibrate,
                 # the live team-pooled spend (skeleton + every loop) for the loop cost bound
                 cost_so_far=lambda: prior_cost + sum(cost_deltas),
                 sub_harnesses=dict(row.sub_harnesses),
