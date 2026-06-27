@@ -63,6 +63,14 @@ class OHMGovernance(BaseModel):
     # regexes redacted from tool results + the final answer before they leave the runtime (Section 6
     # output redaction). A runtime mechanism keyed off the OHM until the taxonomy parametrises it.
     redact_patterns: list[str] = Field(default_factory=list)
+    # ADR-043 #554 (Flow-6 Learn): the harness's consciousness posture. ``record`` writes
+    # observations only; ``suggest``/``propose`` escalate to a human (future HITL infra);
+    # ``never_auto_apply`` is the LOAD-BEARING default — no harness applies a learned behaviour
+    # change without human review. None = no consciousness. Runtime-enforced at execute-time
+    # (like policy_set_ref); the dangerous "auto_apply" is deliberately NOT expressible.
+    consciousness_permissions: (
+        Literal["record", "suggest", "propose", "never_auto_apply"] | None
+    ) = None
 
 
 class OHMActor(BaseModel):

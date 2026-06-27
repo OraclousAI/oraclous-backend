@@ -153,6 +153,12 @@ class MemoryService:
                 "event_type": req.event_type or "interaction",
                 "user_id": req.user_id or "",
             }
+            # #554: persist the consciousness pattern + gate as node props when present (a
+            # consciousness write) — so recall can filter by pattern + a gate enforcer reads it.
+            if req.consciousness_pattern is not None:
+                extra["consciousness_pattern"] = req.consciousness_pattern
+            if req.can_auto_apply is not None:
+                extra["can_auto_apply"] = req.can_auto_apply
         elif req.type is MemoryType.SEMANTIC:
             extra = {
                 "subject": req.subject or "",

@@ -78,6 +78,11 @@ class MemoryCreate(BaseModel):
     # Episodic-specific
     event_type: str | None = None
     user_id: str | None = None
+    # ADR-043 #554 (Flow-6 Learn): the run's CODED consciousness pattern (a closed token, e.g.
+    # "solution"/"repetitive_failures") + the never-auto-apply gate. Persisted as Memory node props
+    # (queryable recall + durable gating); absent on a non-consciousness write.
+    consciousness_pattern: str | None = None
+    can_auto_apply: bool | None = None
 
     # Procedural-specific
     category: str | None = None
