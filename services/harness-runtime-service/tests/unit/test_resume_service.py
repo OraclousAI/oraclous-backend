@@ -162,3 +162,18 @@ async def test_resume_denied_terminates_failed_with_reason() -> None:
     assert "human.reject" in prov.events and "harness.resume" in prov.events
     # the denial appends a GATE step to the existing trace, never re-runs the loop.
     assert execs.updated["steps"][-1]["status"] == "denied"
+
+
+def test_cursor_round_trips_the_member_cap_for_resume() -> None:
+    # #576 (review BLOCKER fix): the per-member cap is persisted in the checkpoint cursor (JSONB, no
+    # migration) so resume re-applies the user's budget instead of reverting to the policy tier —
+    # without which a heavy member already past the tier would re-escalate immediately.
+    # Unset → None → the tier (a pre-#576 paused run is unchanged).
+    from oraclous_harness_runtime_service.services.harness_execution_service import _cursor
+
+    cp = SimpleNamespace(iteration=3, tool_calls_made=2, tokens_used=250_000)
+    cur = _cursor(cp, 600_000, 90)
+    assert cur["member_max_tokens"] == 600_000 and cur["member_max_tool_calls"] == 90
+    assert cur["tokens_used"] == 250_000  # the existing cursor fields are preserved
+    bare = _cursor(cp)
+    assert bare["member_max_tokens"] is None and bare["member_max_tool_calls"] is None

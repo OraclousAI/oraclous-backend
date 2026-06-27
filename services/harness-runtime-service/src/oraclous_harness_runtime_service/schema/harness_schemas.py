@@ -56,6 +56,11 @@ class ExecuteHarnessRequest(BaseModel):
     # read canonical-first (#536). None/empty → no precedence applied (read unchanged).
     precedence_order: list[str] | None = None
     graph_authoritative: bool = False
+    # #576: the dispatching member's user-set runtime SAFETY CAP (resolved + clamped engine-side to
+    # <= the team-pooled total). The harness applies it as the per-member token / tool-call ceiling,
+    # overriding the policy tier. None → the policy tier stands (single-agent / no per-member cap).
+    max_tokens: int | None = Field(default=None, ge=1)
+    max_tool_calls: int | None = Field(default=None, ge=1)
 
     @model_validator(mode="after")
     def _exactly_one_manifest(self) -> ExecuteHarnessRequest:

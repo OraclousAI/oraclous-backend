@@ -88,6 +88,13 @@ class Settings(BaseSettings):
     # budget (policy set) is the real governance limit and binds within this cap.
     max_iterations: int = 25
 
+    # #576: OPTIONAL deployment ceilings on a user-set per-member SAFETY CAP. Default None → OFF:
+    # the user owns the per-member budget (a cap is clamped only by the team-pooled total, ADR-031).
+    # Set these to impose a deployment-wide backstop above which no per-member cap may be raised — a
+    # CONFIGURABLE safety floor, NOT the old unraisable 50k/100k/200k policy tier.
+    max_tokens_per_member_ceiling: int | None = None
+    max_tool_calls_per_member_ceiling: int | None = None
+
     # --- OHM signature trust store: signer-id → public-key PEM, via HARNESS_OHM_TRUST_KEYS (JSON).
     # Empty by default; a *required* signature comes from the policy set or the flag below. ---
     ohm_trust_keys: Annotated[dict[str, str], NoDecode] = {}

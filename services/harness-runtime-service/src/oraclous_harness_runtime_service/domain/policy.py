@@ -188,6 +188,10 @@ def build_envelope(
     *,
     hard_max_iterations: int,
     external_ceiling: frozenset[str] | None = None,
+    member_max_tokens: int | None = None,
+    member_max_tool_calls: int | None = None,
+    max_tokens_ceiling: int | None = None,
+    max_tool_calls_ceiling: int | None = None,
 ) -> PolicyEnvelope:
     """Build the effective runtime envelope. The iteration cap is a safety backstop derived from the
     policy's tool-call budget (so a stricter tier's smaller budget actually binds), bounded by the
@@ -209,15 +213,27 @@ def build_envelope(
     if external_ceiling is not None:  # cap by the member's tools[] — fail-closed, can only narrow
         ceiling = ceiling & external_ceiling
     redact = _validated_redact_patterns(manifest.governance.redact_patterns or [])
-    if policy.max_tool_calls is not None:
-        max_iterations = min(hard_max_iterations, policy.max_tool_calls + 1)
+    # #576: the per-member SAFETY CAP overrides the policy tier (user ownership — "picking from
+    # 50k/100k/200k isn't ownership"); the policy tier is only the fallback when the user set no
+    # member cap (back-compat). An OPTIONAL deployment ceiling (default None → OFF; the user owns
+    # the budget) clamps the override — a configurable backstop, not the old unraisable tier.
+    eff_max_tokens = member_max_tokens if member_max_tokens is not None else policy.max_tokens
+    if max_tokens_ceiling is not None and eff_max_tokens is not None:
+        eff_max_tokens = min(eff_max_tokens, max_tokens_ceiling)
+    eff_max_tool_calls = (
+        member_max_tool_calls if member_max_tool_calls is not None else policy.max_tool_calls
+    )
+    if max_tool_calls_ceiling is not None and eff_max_tool_calls is not None:
+        eff_max_tool_calls = min(eff_max_tool_calls, max_tool_calls_ceiling)
+    if eff_max_tool_calls is not None:
+        max_iterations = min(hard_max_iterations, eff_max_tool_calls + 1)
     else:
         max_iterations = hard_max_iterations
     return PolicyEnvelope(
         max_iterations=max_iterations,
-        max_tool_calls=policy.max_tool_calls,
+        max_tool_calls=eff_max_tool_calls,
         max_wall_time_seconds=policy.max_wall_time_seconds,
-        max_tokens=policy.max_tokens,
+        max_tokens=eff_max_tokens,
         gated_bindings=gated,
         tool_ceiling=ceiling,
         redact_patterns=redact,
