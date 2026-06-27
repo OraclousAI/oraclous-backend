@@ -286,3 +286,62 @@ async def test_run_team_hybrid_without_recalibrate_stalls_to_failed() -> None:
     )
     assert res.status == "failed"
     assert res.loop_state["0"]["recalibration_count"] == 0
+
+
+# ── adversarial-review hardening (pre-[impl] review) ────────────────────────────────────────────
+
+
+async def test_done_check_diag_resets_between_rounds() -> None:
+    # the shared diag dict is reused every round; it must be RESET each call so a stale key from a
+    # prior round (where a later gate ran) can't reach the Diagnostic of an early-returning round.
+    from oraclous_execution_engine_service.services.team_run_service import TeamRunService
+
+    loop = OHMLoop(members=["writer", "critic"], routing={})
+    team = _team([_m("writer"), _m("critic")], [loop], success_criteria="an accurate draft")
+    team.orchestration.termination.convergence = "evaluator>=0.8"
+    svc = TeamRunService(team_runs=object(), evaluate=_Evaluate(0.4), artifacts=_Artifacts(1))
+    diag: dict[str, Any] = {}
+    done = svc._make_loop_done_check(team, uuid.uuid4(), str(uuid.uuid4()), loop, diag=diag)
+    # round 1: all produced → the evaluator runs, writing evaluator_score into diag
+    await done({"writer": {"out": "d"}, "critic": {"out": "r"}})
+    assert diag.get("evaluator_score") == 0.4
+    # round 2: a member failed (coverage gap) → early-return BEFORE the evaluator; diag must NOT
+    # still carry the prior round's grade
+    await done({"writer": {"out": "d"}, "critic": None})
+    assert "evaluator_score" not in diag  # reset — no stale grade leaks into this round's diagnosis
+
+
+async def test_parse_escalates_on_ambiguous_or_hedged() -> None:
+    # multiple distinct actions, or an explicit/hedged escalate, → escalate (never first-token-wins)
+    assert _parse("re-plan change-strategy writer", {"writer"}).action == "escalate"
+    assert _parse("re-plan or escalate", {"writer"}).action == "escalate"
+    assert _parse("escalate", {"writer"}).action == "escalate"
+    # a single clear action still parses
+    assert _parse("change-strategy writer", {"writer"}).action == "change-strategy"
+
+
+async def test_parse_excludes_action_token_from_targets() -> None:
+    # a member whose role equals an action token is dropped from targets (can't double as both)
+    d = _parse("re-plan re-plan critic", {"re-plan", "critic"})
+    assert d.action == "re-plan"
+    assert d.member_targets == ["critic"]  # the "re-plan" role token excluded; only critic retried
+
+
+async def test_team_run_out_surfaces_loop_state() -> None:
+    # the conductor checkpoint (incl. recalibration_count) is surfaced read-side (operator + e2e)
+    from oraclous_execution_engine_service.schema.engine_schemas import TeamRunOut
+
+    class _Row:
+        id = uuid.uuid4()
+        organisation_id = uuid.uuid4()
+        state = "FAILED"
+        results: dict[str, Any] = {}
+        paused_at: list[str] = []
+        error_message = "loop 0: no_progress"
+        created_at = None
+        verdict = None
+        member_status: dict[str, str] = {}
+        loop_state = {"0": {"round": 3, "status": "no_progress", "recalibration_count": 1}}
+
+    out = TeamRunOut.model_validate(_Row())
+    assert out.loop_state["0"]["recalibration_count"] == 1
