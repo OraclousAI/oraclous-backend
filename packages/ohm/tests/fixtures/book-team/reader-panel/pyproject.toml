@@ -1,0 +1,21 @@
+[project]
+name = "reader-panel"
+version = "0.1.0"
+description = "Synthetic reader panel for the Book Studio — a MiroFish-style wind tunnel for chapters."
+requires-python = ">=3.11"
+dependencies = [
+    "anthropic>=0.69",
+]
+
+[project.scripts]
+reader-panel = "reader_panel.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["reader_panel"]
+
+[dependency-groups]
+dev = ["pytest>=8"]
