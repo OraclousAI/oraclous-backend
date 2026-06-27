@@ -38,6 +38,10 @@ from typing import Any
 
 import httpx
 
+from oraclous_harness_runtime_service.domain.consciousness import (
+    classify_consciousness_pattern,
+)
+
 logger = logging.getLogger(__name__)
 
 _MEMORIES_PATH = "/internal/v1/memories"
@@ -119,14 +123,28 @@ class MemoryWriter:
         execution_id: uuid.UUID,
         graph_id: str | None,
         team_id: str | None = None,
+        tool_errors: list[str] | None = None,
+        rounds: int = 0,
+        can_auto_apply: bool = False,
     ) -> None:
         """ONE episodic memory per completed run: agent, task, result status, key tool usage.
 
         Team run (#513): ``team_id`` set → ``scope=team`` under the team identity, so concurrent
-        members + future runs of the team share the blackboard; else legacy ``scope=agent``."""
+        members + future runs of the team share the blackboard; else legacy ``scope=agent``.
+
+        Flow-6 Learn (#554): the run's CODED, within-run consciousness PATTERN
+        (``classify_consciousness_pattern`` — a SUCCESS → reusable ``solution``, a recurring in-run
+        error → ``repetitive_failures``, an over-long run → ``velocity_anomaly``) is recorded so a
+        future run recalls a LESSON, not a bare outcome. ``can_auto_apply`` carries the harness's
+        ``consciousness.permissions`` posture — ``False`` under ``never_auto_apply`` (advisory-only;
+        a recalled lesson biases a turn but a human must approve any behaviour change)."""
+        pattern = classify_consciousness_pattern(
+            status=status, tool_names=tool_names, tool_errors=tool_errors or [], rounds=rounds
+        )
         tools = ", ".join(dict.fromkeys(tool_names)) or "none"
+        lesson = f"Lesson ({pattern}): " if pattern else ""
         content = (
-            f"Agent '{harness_name}' run {status}. "
+            f"{lesson}Agent '{harness_name}' run {status}. "
             f"Task: {_clip(user_input, _INPUT_TRUNC)}. "
             f"Outcome: {_clip(output, _OUTPUT_TRUNC)}. "
             f"Tools used: {tools}."
@@ -140,6 +158,8 @@ class MemoryWriter:
                 "agent_id": harness_id,
                 "session_id": str(execution_id),
                 "event_type": "harness_run",
+                "consciousness_pattern": pattern,
+                "can_auto_apply": can_auto_apply,
                 **({"graph_id": graph_id} if graph_id else {}),
                 **({"team_id": team_id} if team_id else {}),
             }
