@@ -79,6 +79,15 @@ def assemble_team(
         target.schedule = job.cron
         flag("F-SCHEDULE-ATTACHED", "info", f"schedule {job.cron!r} ({job.id}) attached", job.agent)
 
+    # #577: carry each member's ## Handoff Next-task onto the producing member, so the acyclic
+    # dispatch can thread it as the consumer's objective_slice (mirrors the loop routing) — a
+    # consumer gets the producer's scoped per-edge task, not a static subgoal blurb. No next_task
+    # → unset (the consumer's own subgoal stands).
+    for frm, spec in handoffs.items():
+        target = by_role.get(frm)
+        if target is not None and spec.next_task:
+            target.handoff_objective = spec.next_task
+
     # 2. candidate handoff edges: X hands off to Y  =>  Y depends_on X
     edges = [
         (frm, to)

@@ -88,8 +88,18 @@ def render_member_input(
 ) -> str:
     """Render a member's objective + fan item + inbound typed hand-offs into the harness input."""
     parts: list[str] = []
-    if member.subgoal:
-        parts.append(f"Objective: {member.subgoal}")
+    # #577: the inbound handoff's objective_slice scopes THIS dispatch (the producer's ## Handoff
+    # Next-task — e.g. "Draft Chapter 04") and takes precedence over the member's static subgoal
+    # (e.g. "draft a chapter"); falls back to the subgoal when no inbound handoff carries one. This
+    # is what makes a consumer act on its per-edge objective instead of a generic blurb.
+    # Single-producer-per-consumer assumption: a FAN-IN consumer takes the FIRST inbound objective
+    # (depends_on order); per-producer objective composition is out of scope for this slice (the
+    # targeted pipeline artifacts — bitcoin's ## Handoff chain, the book charters — have one handoff
+    # producer per consumer). Every producer's PAYLOAD still reaches the member via the From-lines.
+    scoped = next((e.objective_slice for e in envelopes if e.objective_slice), "")
+    objective = scoped or member.subgoal
+    if objective:
+        parts.append(f"Objective: {objective}")
     if fan_item is not None:
         parts.append(f"Item: {json.dumps(fan_item, default=str)}")
     for env in envelopes:

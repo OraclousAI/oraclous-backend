@@ -149,6 +149,51 @@ def test_render_member_input_threads_envelopes() -> None:
     assert "Item:" in text
 
 
+def test_render_member_input_prefers_the_inbound_objective_slice() -> None:
+    # #577: the per-edge handoff objective_slice scopes the dispatch, overriding the subgoal — this
+    # is the consumer that makes the threaded objective actually bind (it was a dead field).
+    from oraclous_ohm.envelope import HandoffEnvelope
+
+    member = OHMMember(
+        role="writer", kind="agent", manifest_ref="org:x/writer@1", subgoal="draft a chapter"
+    )
+    env = HandoffEnvelope(
+        from_role="showrunner", to_role="writer", objective_slice="Draft Chapter 04"
+    )
+    text = render_member_input(member, [env])
+    assert "Objective: Draft Chapter 04" in text  # the producer's scoped per-edge objective leads
+    assert "draft a chapter" not in text  # NOT the static subgoal blurb (the "Chapter XX" symptom)
+
+
+def test_render_member_input_falls_back_to_subgoal_without_an_objective_slice() -> None:
+    member = OHMMember(
+        role="writer", kind="agent", manifest_ref="org:x/writer@1", subgoal="draft a chapter"
+    )
+    text = render_member_input(member, [])  # no inbound handoff
+    assert "Objective: draft a chapter" in text  # back-compat: the static subgoal stands
+
+
+def test_render_member_input_fan_in_takes_the_first_objective_and_keeps_all_payloads() -> None:
+    # #577 documented limitation: a FAN-IN consumer takes the FIRST inbound objective_slice (dep
+    # order) for its Objective line; per-producer objective composition is out of scope for this
+    # slice (the targeted pipeline artifacts have one handoff producer per consumer). EVERY
+    # producer's payload still reaches the member via the From-lines — a deliberate, tested choice.
+    from oraclous_ohm.envelope import HandoffEnvelope
+
+    member = OHMMember(
+        role="gamma", kind="agent", manifest_ref="org:x/gamma@1", subgoal="integrate"
+    )
+    e1 = HandoffEnvelope(
+        from_role="alpha", to_role="gamma", objective_slice="task A", payload={"a": 1}
+    )
+    e2 = HandoffEnvelope(
+        from_role="beta", to_role="gamma", objective_slice="task B", payload={"b": 2}
+    )
+    text = render_member_input(member, [e1, e2])
+    assert "Objective: task A" in text and "Objective: task B" not in text  # first inbound wins
+    assert "From alpha:" in text and "From beta:" in text  # both producers' payloads still reach it
+
+
 async def test_run_if_conditional_dispatch_is_honoured_through_the_team_run_bridge() -> None:
     # Connectedness: conditional dispatch reaches the team-run path — run_team_harness -> run_team
     # evaluates OHMMember.run_if from the manifest (reachable via POST /v1/engine/team-runs), not an
