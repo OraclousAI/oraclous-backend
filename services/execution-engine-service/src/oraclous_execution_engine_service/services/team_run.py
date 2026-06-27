@@ -124,9 +124,10 @@ def make_harness_dispatch(
     async def dispatch(member: OHMMember, envelopes: list[HandoffEnvelope], fan_item: Any) -> Any:
         sub = sub_harnesses.get(member.role)
         # #576: the member's user-set runtime SAFETY CAP (member override > team-wide default,
-        # clamped <= the team-pooled total). Sent ONLY when the team declared a budget — a budget-
-        # less team calls the harness exactly as before (the policy tier stands), a zero-change
-        # additive path. The harness applies the cap as the per-member token / tool-call ceiling.
+        # clamped <= the team-pooled total when a budget is present). Sent whenever a cap RESOLVES —
+        # a member's OWN max_tokens binds with no team budget; only a team with NEITHER a member cap
+        # nor a budget adds zero kwargs and runs unchanged (the tier stands). The harness applies
+        # the cap as the per-member token / tool-call ceiling.
         member_max_tokens, member_max_tool_calls = resolve_member_caps(member, budget)
         caps: dict[str, int] = {}
         if member_max_tokens is not None:

@@ -302,12 +302,16 @@ def resolve_member_caps(
     """Resolve a member's effective runtime SAFETY CAP (#576) from the team manifest.
 
     Precedence: the member's own ``max_tokens``/``max_tool_calls`` override > the team-wide
-    ``budget.max_*_per_member`` default > ``None`` (the harness then keeps the policy tier). The
-    resolved cap is a SUB-ceiling, always clamped to ``<=`` the team-pooled ``max_*_total``: NO
-    SINGLE member can be granted more than the whole team's pool. (The pool's AGGREGATE enforcement
-    across members / a dynamic fan-out is separate engine-side work — ADR-031 design D3 — that this
-    function neither adds nor changes; the keystone's single-ceiling claim rests on D3, not here.)
-    ``None`` budget → ``(None, None)``.
+    ``budget.max_*_per_member`` default > ``None`` (the harness then keeps the policy tier). A
+    member's OWN override binds STANDALONE — it needs no team ``budget`` block (a ``None`` budget
+    only skips the team-default and the pooled clamp, never the member's override). Only a member
+    with neither an override nor a budget yields ``(None, None)`` → the policy tier.
+
+    When a ``budget`` is present the resolved cap is a SUB-ceiling, clamped ``<=`` the team-pooled
+    ``max_*_total``: NO SINGLE member can be granted more than the whole team's pool. (The pool's
+    AGGREGATE enforcement across members / a dynamic fan-out is separate engine-side work — ADR-031
+    design D3 — that this function neither adds nor changes; the keystone's single-ceiling claim
+    rests on D3, not here.)
     """
     per_member_tokens = budget.max_tokens_per_member if budget is not None else None
     per_member_calls = budget.max_tool_calls_per_member if budget is not None else None
