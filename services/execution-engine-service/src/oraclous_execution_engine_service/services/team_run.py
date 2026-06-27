@@ -22,10 +22,13 @@ from oraclous_ohm.envelope import HandoffEnvelope
 from oraclous_ohm.errors import OHMError
 from oraclous_ohm.manifest import OHMLoop, OHMManifest, OHMMember
 from oraclous_ohm.orchestrate import (
+    Diagnostic,
     DispatchFn,
     DoneCheckFn,
     LoopCoordinateFn,
     LoopSeamResult,
+    RecalDirective,
+    RecalibrateFn,
     TeamRunResult,
     run_loop_seam,
     run_team,
@@ -261,7 +264,8 @@ async def run_team_hybrid(
     harness: _Harness,
     *,
     coordinate: LoopCoordinateFn | None = None,
-    done_check_for: Callable[[OHMLoop], DoneCheckFn] | None = None,
+    done_check_for: Callable[[OHMLoop, dict[str, Any]], DoneCheckFn] | None = None,
+    recalibrate: RecalibrateFn | None = None,
     cost_so_far: Callable[[], int] | None = None,
     sub_harnesses: dict[str, dict[str, Any]] | None = None,
     gate_decisions: dict[str, str] | None = None,
@@ -352,14 +356,23 @@ async def run_team_hybrid(
         if cp.get("status") == "paused":
             resume_round = int(cp.get("round") or 0)
             started = float(cp["started_at"]) if cp.get("started_at") is not None else time.time()
+            # #553: the recalibration COUNT survives a HITL pause/approve cycle so the cap holds
+            # across resume (a constant cap=1 is itself stable; only the spent count must persist).
+            # NB the anti-repeat DIGEST is intentionally NOT persisted: at cap=1 a 2nd recalibration
+            # (where the digest would be compared) never occurs — the cap halts first. If the cap is
+            # ever raised, also persist + thread ``resume_last_directive_digest`` here.
+            resume_recals = int(cp.get("recalibration_count") or 0)
         else:
-            resume_round, started = 0, time.time()
+            resume_round, started, resume_recals = 0, time.time(), 0
+        # #553: the coded done-check writes WHICH gate failed (artifacts / grade) into this shared
+        # side-channel; the seam reads it to build the (coded, external) recalibration Diagnostic.
+        done_check_diag: dict[str, Any] = {}
         seam = await run_loop_seam(
             loop,
             by_role,
             real_dispatch,
             coordinate,  # type: ignore[arg-type]  # narrowed non-None above
-            done_check_for(loop),  # type: ignore[misc]
+            done_check_for(loop, done_check_diag),  # type: ignore[misc]
             max_rounds=max_rounds,
             max_wall_seconds=max_wall,
             max_cost=max_cost,
@@ -369,12 +382,17 @@ async def run_team_hybrid(
             resume_from_round=resume_round,
             started_at=started,
             clock=time.time,
+            recalibrate=recalibrate,  # #553: None for a non-loop drive → the seam is byte-unchanged
+            recalibration_cap=_RECALIBRATION_CAP,
+            done_check_diag=done_check_diag,
+            resume_recalibrations_used=resume_recals,
         )
         loop_results[i] = seam
         out_loop_state[str(i)] = {
             "round": seam.rounds,
             "started_at": started,
             "status": seam.status,
+            "recalibration_count": seam.recalibrations_used,  # #553: persist for resume cap enforce
         }
         if seam.status == "paused":  # PR-C: a per-round HITL gate awaits a human decision
             paused_gates.extend(seam.paused_at)
@@ -529,3 +547,103 @@ def make_loop_coordinator(harness: _Harness, team: OHMManifest) -> LoopCoordinat
         return _parse_next_roles(out.get("output"), allowed=set(work))
 
     return coordinate
+
+
+# ── ADR-043 #553: bounded recalibration — the BYOM directive turn ──────────────────────────────
+# Engine default cap: ONE recovery attempt before halting (ADR-043: 1-2, max 3). A constant (no
+# manifest field), so the cap is stable across a HITL resume; only the recalibration COUNT persists.
+_RECALIBRATION_CAP = 1
+_RECAL_ACTIONS = ("re-plan", "re-frame-objective", "change-strategy", "re-scope-member", "escalate")
+
+
+def _recalibration_subharness(team: OHMManifest) -> dict[str, Any]:
+    """A tool-LESS single-agent harness for the recalibration turn — the model PICKS one tactic from
+    the closed set given a CODED diagnosis (it never diagnoses itself). Same BYOM model + zero
+    capabilities as the coordinator (ADR-008 / ADR-043 invariant)."""
+    doc = _coordinator_subharness(team)
+    doc["metadata"]["name"] = "loop-recalibrator"
+    doc["prompts"][0]["body"] = (
+        "You recalibrate a STALLED team loop. Given a coded diagnosis, reply with ONE action token "
+        "from the allowed set followed by the member roles to retry. Reply with nothing else."
+    )
+    return doc
+
+
+def _render_recalibration_prompt(loop: OHMLoop, diag: Diagnostic, work: list[str]) -> str:
+    """The recalibrator's input — the CODED, external diagnosis (NO raw member outputs) + the closed
+    action menu. Leak-safe: only role names + coverage/grade signals, never any produced content."""
+    lines = [
+        "A team loop has STALLED (it stopped making progress). Diagnosis (coded, external):",
+        f"  - stall kind: {diag.stall_kind}",
+        f"  - members not yet produced: {', '.join(diag.missing_members) or '(none)'}",
+        f"  - members that FAILED: {', '.join(diag.failed_members) or '(none)'}",
+    ]
+    if diag.artifacts_landed is not None:
+        lines.append(f"  - work persisted to the graph: {'yes' if diag.artifacts_landed else 'no'}")
+    if diag.evaluator_score is not None:
+        floor = diag.evaluator_floor if diag.evaluator_floor is not None else "?"
+        lines.append(f"  - evaluator grade: {diag.evaluator_score} (needs >= {floor})")
+    lines += [
+        "",
+        "Pick ONE recovery action from this CLOSED set:",
+        "  - re-plan — redo the approach, same objective",
+        "  - re-frame-objective — restate the goal more concretely",
+        "  - change-strategy — try a different method",
+        "  - re-scope-member — narrow a member's task",
+        "  - escalate — give up and ask a human (only when truly stuck)",
+        "",
+        "Members you may retry: " + (", ".join(work) or "(none)"),
+        "Reply with ONLY the action token then the roles to retry (space-separated).",
+        "Example: change-strategy " + (work[0] if work else "member"),
+    ]
+    return "\n".join(lines)
+
+
+def _parse_recalibration_output(output: Any, *, allowed: set[str]) -> RecalDirective:
+    """Parse the recalibrator's reply into ONE directive, FAIL-CLOSED: an unparseable / empty reply,
+    NO recognised action, an explicit ``escalate``, OR an AMBIGUOUS reply (two different actions) →
+    ``escalate`` (never a silent no-op retry, never first-token-wins over a hedged escalate). Only
+    declared work members survive as targets (a hallucinated outsider, and the matched action token
+    itself, are dropped). Never logs the model output."""
+    if not isinstance(output, str) or not output.strip():
+        return RecalDirective(action="escalate", reason="unparseable")
+    raw = [t.strip().strip("\"'`.") for t in output.replace(",", " ").split()]
+    # normalise each token to the canonical hyphenated form (models emit re_plan / RE-PLAN / …)
+    norm = [t.lower().replace("_", "-") for t in raw]
+    actions = list(dict.fromkeys(t for t in norm if t in _RECAL_ACTIONS))  # distinct, in order
+    # fail-closed: no action, an explicit escalate, OR ambiguity (>1 distinct action) → escalate
+    if not actions or "escalate" in actions or len(actions) > 1:
+        reason = "no_action" if not actions else "ambiguous_or_escalate"
+        return RecalDirective(action="escalate", reason=reason)
+    action = actions[0]
+    # targets = declared work members, EXCLUDING the matched action token (a role named like an
+    # action can't double as both — the collision the closed set would otherwise hide), de-duped
+    targets = list(
+        dict.fromkeys(r for r, n in zip(raw, norm, strict=True) if r in allowed and n != action)
+    )
+    return RecalDirective(action=action, reason="byom", member_targets=targets)  # type: ignore[arg-type]
+
+
+def make_recalibration_coordinator(harness: _Harness, team: OHMManifest) -> RecalibrateFn:
+    """Build the BYOM recalibrator (ADR-043 #553) — a bounded, tool-less model turn that, on a loop
+    stall, PICKS one tactic from the closed action set given a CODED diagnosis (it never diagnoses
+    itself; the model only chooses, the coded done-check still rules). Leak-safe (structure + coded
+    signals, never content), fail-closed (an unreachable/garbled router yields ``escalate`` or
+    ``None`` → halt-to-human, never a silent retry)."""
+    sub = _recalibration_subharness(team)
+    by_role = {m.role: m for m in team.members}
+
+    async def recalibrate(loop: OHMLoop, diag: Diagnostic) -> RecalDirective | None:
+        # retry only WORK members — a kind:human gate is re-rendered by the seam, never retried
+        work = [r for r in loop.members if not (by_role.get(r) and by_role[r].kind == "human")]
+        try:
+            out = await harness.execute(
+                input_text=_render_recalibration_prompt(loop, diag, work),
+                manifest_inline=sub,
+                capability_ceiling=[],  # the recalibrator is granted NO capability
+            )
+        except HarnessClientError:
+            return None  # router unreachable → halt fail-closed (no_progress), never a silent retry
+        return _parse_recalibration_output(out.get("output"), allowed=set(work))
+
+    return recalibrate
