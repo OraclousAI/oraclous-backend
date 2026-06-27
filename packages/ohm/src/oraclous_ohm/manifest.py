@@ -141,6 +141,12 @@ class OHMMember(BaseModel):
     manifest_ref: str | None = None  # the sub-harness OHM (kind: agent)
     tools: list[str] = Field(default_factory=list)  # capability ceiling (ADR-032); deny-by-default
     subgoal: str | None = None
+    # #577: the member's ## Handoff Next-task — the producer's scoped objective for its downstream.
+    # The acyclic dispatch threads it into each consumer's objective_slice (mirroring the loop's
+    # routing at orchestrate.py), so a consumer gets the producer's per-edge task, not a static
+    # subgoal blurb. Set by the importer from the parsed handoff; None → the consumer's own subgoal
+    # stands (back-compat).
+    handoff_objective: str | None = None
     depends_on: list[str] = Field(default_factory=list)  # member roles to wait on (fan-in barrier)
     fan_out: OHMFanOut | None = None
     run_if: OHMRunIf | None = None  # conditional dispatch: skip unless a prior output satisfies it

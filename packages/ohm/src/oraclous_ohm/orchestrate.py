@@ -222,7 +222,12 @@ async def run_team(
                     continue
                 payload = produced if isinstance(produced, dict) else {"output": produced}
                 env = build_handoff(
-                    by_role[dep], member, payload, objective_slice=member.subgoal or ""
+                    by_role[dep],
+                    member,
+                    payload,
+                    # #577: the producer's ## Handoff Next-task scopes the consumer's objective for
+                    # this edge (mirrors the loop routing); else the consumer's own subgoal.
+                    objective_slice=by_role[dep].handoff_objective or member.subgoal or "",
                 )
                 if _floor_tier is not None:  # precedence declared → tag the (clamped) source tier
                     env = env.model_copy(update={"source_layer": _floor_tier})
@@ -389,7 +394,13 @@ async def run_team_coordinated(
             if produced is None:
                 continue
             payload = produced if isinstance(produced, dict) else {"output": produced}
-            env = build_handoff(by_role[dep], member, payload, objective_slice=member.subgoal or "")
+            # #577: the producer's ## Handoff Next-task scopes the consumer's objective for the edge
+            env = build_handoff(
+                by_role[dep],
+                member,
+                payload,
+                objective_slice=by_role[dep].handoff_objective or member.subgoal or "",
+            )
             inbound.append(env)
             envelopes.append(env)
         results[role] = await dispatch(member, inbound, None)
