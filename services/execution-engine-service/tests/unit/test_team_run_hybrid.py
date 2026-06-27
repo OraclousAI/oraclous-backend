@@ -76,7 +76,7 @@ def _coordinate_until_all_produced():
     return coordinate
 
 
-def _done_when_all_produced(loop: OHMLoop):
+def _done_when_all_produced(loop: OHMLoop, diag: dict[str, Any] | None = None):
     async def done(results: dict[str, Any]) -> bool:
         return all(results.get(r) is not None for r in loop.members)
 
@@ -121,7 +121,7 @@ async def test_non_converged_loop_is_failed_re_runnable_and_blocks_downstream() 
     h = _FakeHarness()
     mf = _team([_m("w"), _m("c"), _m("publish", ["w"])], [_loop("w", "c")], max_rounds=2)
 
-    def never(loop: OHMLoop):
+    def never(loop: OHMLoop, diag: dict[str, Any] | None = None):
         async def done(results: dict[str, Any]) -> bool:
             return False
 

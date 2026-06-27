@@ -74,7 +74,7 @@ def _coord_until_all():
     return coordinate
 
 
-def _done_all(loop: OHMLoop):
+def _done_all(loop: OHMLoop, diag: dict[str, Any] | None = None):
     async def done(results: dict[str, Any]) -> bool:
         return all(results.get(r) is not None for r in loop.members if r != "gate")
 
