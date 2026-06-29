@@ -152,3 +152,69 @@ async def test_no_pool_ceiling_path_is_byte_for_byte_unchanged(budget: OHMBudget
     assert res.partial is False
     assert len(seen) == 5  # every fan-out item ran
     assert "budget_skipped" not in res.member_status.values()
+
+
+async def test_fan_out_sub_run_ceiling_is_exact_under_concurrency() -> None:
+    # review BLOCKER: the COUNT axis must be exact even when max_parallel > the headroom — the batch
+    # is clamped to the remaining sub-runs, so max_sub_runs=3 with max_parallel=4 admits 3, NOT 4.
+    seen: list[Any] = []
+
+    async def dispatch(member: OHMMember, envs: list[HandoffEnvelope], item: Any) -> dict:
+        seen.append(item)
+        return {"item": item}
+
+    members = [_m("w", fan_out=OHMFanOut(over="$.items", max_parallel=4))]
+    res = await run_team(
+        _team(members, budget=OHMBudget(max_sub_runs=3)),
+        dispatch,
+        state={"items": ["i1", "i2", "i3", "i4", "i5", "i6"]},
+    )
+    assert res.status == "cost_budget"
+    assert len(seen) == 3  # EXACT — the clamp prevents the max_parallel overshoot (was 4)
+
+
+async def test_token_ceiling_without_a_tally_fails_closed() -> None:
+    # review BLOCKER: a token ceiling with NO tally wired (cost_so_far=None) must FAIL-CLOSED — an
+    # unmeasurable ceiling is spent, never silent headroom (§3.5). Nothing should dispatch.
+    seen: list[str] = []
+
+    async def dispatch(member: OHMMember, envs: list[HandoffEnvelope], item: Any) -> dict:
+        seen.append(member.role)
+        return {"out": member.role}
+
+    members = [_m("a"), _m("b", depends_on=["a"])]
+    # NB: no cost_so_far passed — the token ceiling is unmeasurable
+    res = await run_team(_team(members, budget=OHMBudget(max_tokens_total=250)), dispatch)
+    assert res.status == "cost_budget"
+    assert len(seen) == 0  # fail-closed: the unmeasurable token ceiling halted everything
+
+
+async def test_a_member_failure_outranks_the_budget_halt() -> None:
+    # review SHOULD-FIX: a real member FAILURE must outrank the budget halt — else the failed member
+    # is masked as the non-re-runnable COST_BUDGET terminal and stranded (re-run needs FAILED).
+    # Staged deterministically: doomed fails in stage 1 (spent still 0, so it dispatches), 'a'
+    # exhausts in stage 2, victim is budget_skipped in stage 3 — so a FAILURE and a budget halt
+    # genuinely co-occur, and the verdict must be "failed".
+    spent = {"t": 0}
+
+    async def dispatch(member: OHMMember, envs: list[HandoffEnvelope], item: Any) -> dict:
+        if member.role == "doomed":
+            raise RuntimeError("boom")  # fails in stage 1 (costs nothing)
+        if member.role == "a":
+            spent["t"] += 200  # exhausts the pool in stage 2
+        return {"out": member.role}
+
+    members = [
+        _m("doomed"),  # stage 1 — fails
+        _m("seed"),  # stage 1 — a's clean upstream (so 'a' isn't blocked by doomed)
+        _m("a", depends_on=["seed"]),  # stage 2 — exhausts the pool
+        _m("victim", depends_on=["a"]),  # stage 3 — budget_skipped
+    ]
+    res = await run_team(
+        _team(members, budget=OHMBudget(max_tokens_total=150)),
+        dispatch,
+        cost_so_far=lambda: spent["t"],
+    )
+    assert res.status == "failed"  # the failure wins over the budget halt → re-runnable
+    assert res.member_status["doomed"] == "failed"
+    assert res.member_status.get("victim") == "budget_skipped"  # the pool still halted downstream

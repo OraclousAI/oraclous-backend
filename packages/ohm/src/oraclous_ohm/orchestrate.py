@@ -156,16 +156,20 @@ class _Pool:
             or self._max_usd is not None
         )
 
+    def remaining_sub_runs(self) -> int | None:
+        """Sub-run headroom (None = unbounded). Clamps a fan-out batch so the COUNT axis is EXACT —
+        the count is known before dispatch (unlike tokens), so it must never overshoot."""
+        return None if self._max_sub_runs is None else max(0, self._max_sub_runs - self.sub_runs)
+
     def would_exceed(self) -> bool:
-        """True iff admitting one MORE dispatch would cross a resolved ceiling (fail-closed)."""
+        """True iff admitting one MORE dispatch would cross a resolved ceiling (FAIL-CLOSED)."""
         if self._max_sub_runs is not None and self.sub_runs >= self._max_sub_runs:
             return True
-        if (
-            self._max_tokens is not None
-            and self._cost_so_far is not None
-            and self._cost_so_far() >= self._max_tokens
-        ):
-            return True
+        if self._max_tokens is not None:
+            # fail-closed: an unmeasurable token ceiling (no tally wired) is SPENT, not headroom —
+            # never silently leave max_tokens_total unenforced (CLAUDE.md §3.5).
+            if self._cost_so_far is None or self._cost_so_far() >= self._max_tokens:
+                return True
         if self._max_usd is not None and self.usd >= self._max_usd:
             return True
         return False
@@ -190,7 +194,11 @@ async def _admit_fan_out(
     while i < len(items):
         if pool.would_exceed():
             return outputs, True
-        batch = items[i : i + cap]
+        # clamp the batch to the sub-run headroom so the COUNT axis never overshoots (the count is
+        # known before dispatch); the token axis still soft-overshoots within a batch by design.
+        rem = pool.remaining_sub_runs()
+        batch_cap = cap if rem is None else min(cap, rem)
+        batch = items[i : i + batch_cap]
         pool.sub_runs += len(batch)  # counted at admission — the sub-run axis is exact
         outputs.extend(await _gather_capped([run_item(it) for it in batch], cap))
         i += len(batch)
@@ -459,7 +467,11 @@ async def run_team(
     # member makes the run "failed" (→ FAILED), re-runnable by re-driving the failed+blocked members
     # with the succeeded ones seeded via ``completed``. A skipped (conditional) member is a declared
     # no-op, not a failure, so it does not block SUCCEEDED.
-    if budget_exhausted:  # #585: the pooled ceiling halted the run — a flagged partial, fail-closed
+    has_failure = any(s in ("failed", "blocked") for s in member_status.values())
+    # #585: a real member FAILURE outranks the budget halt (mirrors the gate-vs-failure precedence
+    # above) — else a failed member would be masked as the healthy/non-re-runnable COST_BUDGET and
+    # stranded (re-run needs FAILED). A budget halt on an otherwise-clean run is the partial.
+    if budget_exhausted and not has_failure:
         return TeamRunResult(
             results=results,
             envelopes=envelopes,
@@ -470,9 +482,7 @@ async def run_team(
             member_errors=member_errors,
             partial=True,
         )
-    final_status = (
-        "failed" if any(s in ("failed", "blocked") for s in member_status.values()) else "completed"
-    )
+    final_status = "failed" if has_failure else "completed"
     return TeamRunResult(
         results=results,
         envelopes=envelopes,
