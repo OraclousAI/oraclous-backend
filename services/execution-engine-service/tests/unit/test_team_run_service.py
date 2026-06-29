@@ -42,6 +42,7 @@ class FakeTeamRunRepo:
         gate_decisions: dict[str, Any],
         workspace_root: str | None = None,
         graph_id: str | None = None,
+        inputs: dict[str, Any] | None = None,
     ) -> EngineTeamRun:
         row = EngineTeamRun(
             id=uuid.uuid4(),
@@ -55,6 +56,7 @@ class FakeTeamRunRepo:
             paused_at=[],
             workspace_root=workspace_root,
             graph_id=graph_id,
+            inputs=inputs,
         )
         self.rows[row.id] = row
         return row
@@ -250,6 +252,43 @@ async def test_create_enqueues_a_queued_run_without_driving() -> None:
     assert row.state == "QUEUED"  # the request returns immediately; the worker drives
     assert enqueued == [row.id]  # the run was handed to the worker
     assert harness.inputs == []  # nothing executed on the request path
+
+
+def test_create_team_run_request_carries_inputs() -> None:
+    # #599: the request schema accepts the user-seeded `inputs` dict and defaults it to None.
+    from oraclous_execution_engine_service.schema.engine_schemas import CreateTeamRunRequest
+
+    seeded = {"items": ["a", "b"]}
+    req = CreateTeamRunRequest(manifest={"k": "v"}, inputs=seeded)
+    assert req.inputs == seeded  # the field round-trips
+    assert CreateTeamRunRequest(manifest={"k": "v"}).inputs is None  # optional, defaults None
+
+
+async def test_create_threads_user_seeded_inputs_to_the_repo(monkeypatch: Any) -> None:
+    # #599: the per-run `inputs` (user-seeded team state for a fan_out.over: "$.<key>") flows from
+    # the request → service.create → repo.create → the persisted row, so the worker's run_team can
+    # resolve a fan-out's seeded list. Assert the repo received it AND the row carries it.
+    repo, harness = FakeTeamRunRepo(), FakeHarness()
+    captured: dict[str, Any] = {}
+    orig_create = repo.create
+
+    async def _capturing_create(**kwargs: Any) -> EngineTeamRun:
+        captured.update(kwargs)
+        return await orig_create(**kwargs)
+
+    monkeypatch.setattr(repo, "create", _capturing_create)
+    svc, _ = _svc(repo, harness)
+    seeded = {"items": ["i1", "i2", "i3"]}
+
+    row = await svc.create(
+        _principal(),
+        manifest=_team([_agent("w")]),
+        sub_harnesses={},
+        gate_decisions={},
+        inputs=seeded,
+    )
+    assert captured["inputs"] == seeded  # the repo create received the seeded state
+    assert repo.rows[row.id].inputs == seeded  # and the persisted row carries it
 
 
 async def test_worker_drive_runs_the_team_through_the_harness_and_persists() -> None:

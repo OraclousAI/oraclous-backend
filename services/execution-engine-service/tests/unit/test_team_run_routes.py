@@ -63,6 +63,7 @@ async def test_post_team_run_returns_202_queued_and_calls_create() -> None:
             gate_decisions: dict,
             workspace_root: str | None = None,
             graph_id: str | None = None,
+            inputs: dict | None = None,  # #599: user-seeded state for a fan_out.over
         ) -> EngineTeamRun:
             self.created.append(manifest)
             return _queued_row(manifest)

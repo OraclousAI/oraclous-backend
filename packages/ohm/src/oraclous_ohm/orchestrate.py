@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import time
 from collections.abc import Awaitable, Callable
 from typing import Any, Literal
@@ -81,9 +82,33 @@ class TeamRunResult(BaseModel):
 
 
 def _resolve_over(over: str, state: dict[str, Any], results: dict[str, Any]) -> list[Any]:
-    """Resolve a ``fan_out.over`` path — supported shape is ``$.<key>`` into state or results."""
+    """Resolve a ``fan_out.over`` path — ``$.<key>`` into a user-seeded ``state`` value OR an
+    upstream producer's output (#599). ``state`` wins over a same-named producer (checked first). A
+    user input is a BARE list. A producer's dispatch result is WRAPPED (``{"output": <out>, ...}``);
+    its ``output`` is the member's REAL harness output — a STRING for an LLM member (an outliner
+    emitting ``["Ch1","Ch2"]``), so a string is parsed for an embedded JSON array. A non-list /
+    non-JSON value yields ``[]`` (fail-soft — a misconfigured ``over`` never errors, no items)."""
     key = over[2:] if over.startswith("$.") else over
-    value = state.get(key, results.get(key))
+    if key in state:
+        value: Any = state[key]  # user-seeded input (a bare list)
+    else:
+        produced = results.get(key)  # an upstream producer's wrapped dispatch result
+        # #599: unwrap the producer's `output` so a list output drives a downstream fan_out.over
+        value = (
+            produced["output"] if isinstance(produced, dict) and "output" in produced else produced
+        )
+    if isinstance(value, str):
+        # #599: a producer member's real harness output is TEXT — parse an embedded JSON array out
+        # of it (the model is instructed to emit one), so a REAL member that emits a list (the
+        # outliner → chapter-writers case) drives a downstream fan_out.over without a fake.
+        match = re.search(r"\[.*\]", value, re.DOTALL)
+        if match is not None:
+            try:
+                parsed = json.loads(match.group(0))
+                if isinstance(parsed, list):
+                    value = parsed
+            except ValueError:
+                pass
     return list(value) if isinstance(value, (list, tuple)) else []
 
 

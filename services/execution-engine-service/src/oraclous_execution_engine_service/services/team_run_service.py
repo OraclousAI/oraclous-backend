@@ -380,6 +380,7 @@ class TeamRunService:
         gate_decisions: Mapping[str, str],
         workspace_root: str | None = None,
         graph_id: str | None = None,
+        inputs: dict[str, Any] | None = None,
     ) -> EngineTeamRun:
         """Request path: validate + persist a QUEUED run + hand it to the worker (202). The drive
         runs on the worker so a large team (30 agents) never blocks/times out the HTTP request."""
@@ -403,6 +404,7 @@ class TeamRunService:
                 gate_decisions=dict(gate_decisions),
                 workspace_root=workspace_root,
                 graph_id=graph_id,
+                inputs=inputs,
             )
         if self._enqueue is not None:
             self._enqueue(row.id, org, principal.principal_id)
@@ -759,6 +761,7 @@ class TeamRunService:
                 on_cost=cost_deltas.append,
                 workspace_root=row.workspace_root,  # file-native (#518): the run's working tree
                 graph_id=row.graph_id,  # graph substrate (#524): the run's bound graph
+                inputs=row.inputs,  # #599: user-seeded state for a member's fan_out.over: "$.<key>"
                 # Hierarchy of Truth (#538/#514): the team's declared precedence, read off the
                 # MANIFEST (no persisted column — rides off `team`), bound onto each retriever
                 # instance so a member's in-loop retrieval is auto-ranked.

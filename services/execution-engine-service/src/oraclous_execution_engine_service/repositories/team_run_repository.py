@@ -39,6 +39,7 @@ class TeamRunRepository:
         gate_decisions: dict[str, Any],
         workspace_root: str | None = None,
         graph_id: str | None = None,
+        inputs: dict[str, Any] | None = None,
     ) -> EngineTeamRun:
         row = EngineTeamRun(
             id=uuid.uuid4(),
@@ -52,6 +53,7 @@ class TeamRunRepository:
             paused_at=[],
             workspace_root=workspace_root,
             graph_id=graph_id,
+            inputs=inputs,
         )
         async with self._session() as session:
             async with session.begin():

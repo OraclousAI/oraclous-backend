@@ -215,6 +215,7 @@ async def run_team_harness(
     cost_so_far: Callable[[], int] | None = None,
     workspace_root: str | None = None,
     graph_id: str | None = None,
+    inputs: dict[str, Any] | None = None,
     precedence_order: list[str] | None = None,
     graph_authoritative: bool = False,
 ) -> TeamRunResult:
@@ -256,6 +257,7 @@ async def run_team_harness(
     return await run_team(
         manifest,
         dispatch,
+        state=inputs,  # #599: user-seeded state for a member's fan_out.over: "$.<key>"
         gate_decisions=gate_decisions,
         completed=completed,
         cost_so_far=pooled_cost,
@@ -337,6 +339,7 @@ async def run_team_hybrid(
     on_cost: Callable[[int], None] | None = None,
     workspace_root: str | None = None,
     graph_id: str | None = None,
+    inputs: dict[str, Any] | None = None,
     precedence_order: list[str] | None = None,
     graph_authoritative: bool = False,
 ) -> TeamRunResult:
@@ -367,6 +370,7 @@ async def run_team_hybrid(
             cost_so_far=cost_so_far,  # #585: the engine's pooled tally (incl. prior_cost on resume)
             workspace_root=workspace_root,
             graph_id=graph_id,
+            inputs=inputs,  # #599: user-seeded state for a fan_out.over: "$.<key>"
             precedence_order=precedence_order,
             graph_authoritative=graph_authoritative,
         )
@@ -465,6 +469,7 @@ async def run_team_hybrid(
     skeleton = await run_team(
         manifest,
         hybrid_dispatch,
+        state=inputs,  # #599: user-seeded state for a skeleton member's fan_out.over: "$.<key>"
         gate_decisions=gate_decisions,
         completed=completed,
         members=condensed,
