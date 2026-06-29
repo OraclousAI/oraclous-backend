@@ -59,16 +59,23 @@ class TeamRunResult(BaseModel):
     # delivered; if any member FAILED or was BLOCKED by an upstream failure it is "failed" (→
     # FAILED), with the failed/blocked members re-runnable (re-drive with the succeeded members
     # seeded via ``completed``). One member failing no longer aborts the team (see ``run_member``).
-    status: Literal["completed", "paused", "rejected", "failed"] = "completed"
+    # #585 (ADR-031 §D3): "cost_budget" is the GOVERNED budget-halt terminal (the team-pooled
+    # ceiling was hit before all members/items dispatched) — distinct from "failed" (a member
+    # error, ADR-042). It maps engine-side to a halted/COST_BUDGET terminal, NOT FAILED.
+    status: Literal["completed", "paused", "rejected", "failed", "cost_budget"] = "completed"
     paused_at: list[str] = Field(default_factory=list)  # the human gate role(s) the run blocks on
-    # ADR-042 per-member terminal status — role -> "succeeded"|"failed"|"blocked"|"skipped". The
-    # team verdict derives from it (SUCCEEDED iff none failed/blocked); re-run targets the failures.
+    # ADR-042 per-member terminal status — role -> "succeeded"|"failed"|"blocked"|"skipped"|
+    # "budget_skipped". The team verdict derives from it (SUCCEEDED iff none failed/blocked); re-run
+    # targets the failures. "budget_skipped" (#585) = un-attempted-by-budget, NOT a member fault.
     member_status: dict[str, str] = Field(default_factory=dict)
     # role -> the failure detail for a "failed" member (leak-safe str of the dispatch error)
     member_errors: dict[str, str] = Field(default_factory=dict)
     # PR-C (ADR-043 #552): per-loop checkpoint — "<loop_index>" -> {round, started_at, status}. The
     # hybrid driver sets it so the engine can persist it + resume a loop at a round boundary.
     loop_state: dict[str, Any] = Field(default_factory=dict)
+    # #585: True iff the run halted on the team-pooled budget ceiling before every member/fan-out
+    # item ran — the run completed PARTIALLY, fail-closed, not in error.
+    partial: bool = False
 
 
 def _resolve_over(over: str, state: dict[str, Any], results: dict[str, Any]) -> list[Any]:
@@ -120,6 +127,84 @@ async def _gather_capped(coros: list[Awaitable[Any]], max_parallel: int) -> list
     return list(await asyncio.gather(*(bounded(c) for c in coros)))
 
 
+class _Pool:
+    """The per-run shared TEAM-POOLED budget tally (#585 / ADR-031 §D3). The token axis reads the
+    engine's live ``cost_so_far`` (Σ on_cost); the sub-run axis is counted at admission; USD binds
+    only when the harness surfaces it (token + sub_runs otherwise). Fail-closed: an ambiguous tally
+    counts as spent, never headroom."""
+
+    def __init__(
+        self,
+        *,
+        max_tokens: int | None,
+        max_sub_runs: int | None,
+        max_usd: float | None,
+        cost_so_far: Callable[[], int] | None,
+    ) -> None:
+        self._max_tokens = max_tokens
+        self._max_sub_runs = max_sub_runs
+        self._max_usd = max_usd
+        self._cost_so_far = cost_so_far
+        self.sub_runs = 0
+        self.usd = 0.0
+
+    def active(self) -> bool:
+        """Any pooled ceiling resolved? None on every axis → the #576 path is unchanged."""
+        return (
+            self._max_tokens is not None
+            or self._max_sub_runs is not None
+            or self._max_usd is not None
+        )
+
+    def remaining_sub_runs(self) -> int | None:
+        """Sub-run headroom (None = unbounded). Clamps a fan-out batch so the COUNT axis is EXACT —
+        the count is known before dispatch (unlike tokens), so it must never overshoot."""
+        return None if self._max_sub_runs is None else max(0, self._max_sub_runs - self.sub_runs)
+
+    def would_exceed(self) -> bool:
+        """True iff admitting one MORE dispatch would cross a resolved ceiling (FAIL-CLOSED)."""
+        if self._max_sub_runs is not None and self.sub_runs >= self._max_sub_runs:
+            return True
+        if self._max_tokens is not None:
+            # fail-closed: an unmeasurable token ceiling (no tally wired) is SPENT, not headroom —
+            # never silently leave max_tokens_total unenforced (CLAUDE.md §3.5).
+            if self._cost_so_far is None or self._cost_so_far() >= self._max_tokens:
+                return True
+        if self._max_usd is not None and self.usd >= self._max_usd:
+            return True
+        return False
+
+
+async def _admit_fan_out(
+    items: list[Any],
+    run_item: Callable[[Any], Awaitable[Any]],
+    max_parallel: int,
+    pool: _Pool | None,
+) -> tuple[list[Any], bool]:
+    """Dispatch fan-out items in admission ORDER, checking the pooled ceiling BEFORE each batch of
+    up to ``max_parallel`` — so the running tally (updated as a batch completes) gates the NEXT
+    batch (a pure all-at-once gather reads ``cost_so_far()==0`` for every item). Stops admitting
+    once the pool is exhausted; the un-admitted items never run. Returns (outputs, budget_hit). With
+    no active pool it is the plain capped gather — the #576 path byte-for-byte unchanged."""
+    if pool is None or not pool.active():
+        return await _gather_capped([run_item(it) for it in items], max_parallel), False
+    cap = max(1, max_parallel)
+    outputs: list[Any] = []
+    i = 0
+    while i < len(items):
+        if pool.would_exceed():
+            return outputs, True
+        # clamp the batch to the sub-run headroom so the COUNT axis never overshoots (the count is
+        # known before dispatch); the token axis still soft-overshoots within a batch by design.
+        rem = pool.remaining_sub_runs()
+        batch_cap = cap if rem is None else min(cap, rem)
+        batch = items[i : i + batch_cap]
+        pool.sub_runs += len(batch)  # counted at admission — the sub-run axis is exact
+        outputs.extend(await _gather_capped([run_item(it) for it in batch], cap))
+        i += len(batch)
+    return outputs, False
+
+
 async def run_team(
     manifest: OHMManifest,
     dispatch: DispatchFn,
@@ -129,6 +214,7 @@ async def run_team(
     gate_decisions: dict[str, str] | None = None,
     completed: dict[str, Any] | None = None,
     members: list[OHMMember] | None = None,
+    cost_so_far: Callable[[], int] | None = None,
 ) -> TeamRunResult:
     """Execute a Team Harness member DAG stage by stage, a real fan-in barrier between stages.
 
@@ -172,6 +258,17 @@ async def run_team(
         if manifest.precedence is not None and manifest.precedence.order
         else None
     )
+    # #585 (ADR-031 §D3): the team-pooled budget gate, built ONCE + shared across every member +
+    # fan-out item (the tally is team-wide). ``budget_exhausted`` halts the run fail-closed. With no
+    # pooled ceiling resolved (no budget / all max_*_total None) the pool is inert — #576 unchanged.
+    _budget = manifest.budget
+    pool = _Pool(
+        max_tokens=_budget.max_tokens_total if _budget else None,
+        max_sub_runs=_budget.max_sub_runs if _budget else None,
+        max_usd=_budget.max_usd_total if _budget else None,
+        cost_so_far=cost_so_far,
+    )
+    budget_exhausted = False
 
     def _blocked_by_upstream(role: str) -> bool:
         """ADR-042 (#551): True when a member's upstream dependency FAILED or is itself BLOCKED — it
@@ -182,8 +279,14 @@ async def run_team(
         return any(member_status.get(d) in ("failed", "blocked") for d in by_role[role].depends_on)
 
     async def run_member(role: str) -> None:
+        nonlocal budget_exhausted
         if role in done:  # already executed in a prior drive — reuse, do not dispatch again
             member_status[role] = "succeeded"  # a seeded member already delivered (resume/re-run)
+            return
+        if (
+            budget_exhausted
+        ):  # #585: a prior dispatch hit the pooled ceiling — halt, dispatch no more
+            member_status[role] = "budget_skipped"
             return
         member = by_role[role]
         # ADR-042 non-aborting failure: a member (agent OR human gate) blocked by an upstream
@@ -236,13 +339,30 @@ async def run_team(
             if member.fan_out is not None:
                 fan = member.fan_out
                 items = _resolve_over(fan.over, state, results)
-                outputs = await _gather_capped(
-                    [dispatch(member, inbound, item) for item in items], fan.max_parallel
+                # #585: sequential-admission — the pooled ceiling gates each batch, so a runaway
+                # `over` halts after the pool is spent, not after spawning every sub-run.
+                outputs, fan_hit = await _admit_fan_out(
+                    items, lambda it: dispatch(member, inbound, it), fan.max_parallel, pool
                 )
+                if (
+                    fan_hit
+                ):  # halted mid-fan-out — surface the raw partial, skip the extra reduce pass
+                    budget_exhausted = True
+                    member_status[role] = "budget_skipped"
+                    results[role] = outputs
+                    return
                 if fan.reduce == "synthesize":
                     # ADR-035 B3: an LLM-SYNTHESIS pass merges the N outputs into one (not a
                     # deterministic concat; EURail: 14 batches -> 1 ledger) — the member is
                     # dispatched once more over all N outputs, through dispatch (the harness/LLM).
+                    # #585: the synthesize is ANOTHER dispatch — gate it; if the pool is now spent,
+                    # surface the raw partial rather than burn more (what the ceiling protects).
+                    if pool.would_exceed():
+                        budget_exhausted = True
+                        member_status[role] = "budget_skipped"
+                        results[role] = outputs
+                        return
+                    pool.sub_runs += 1
                     syn_item = {"synthesize": outputs, "instruction": fan.synthesize_prompt or ""}
                     results[role] = await dispatch(member, inbound, syn_item)
                 else:
@@ -255,6 +375,13 @@ async def run_team(
                         key=fan.reduce_key,
                     )
             else:
+                # #585: the pre-dispatch pooled ceiling gate for a single (non-fan-out) member —
+                # multi-member team halts before the member that would cross the team total.
+                if pool.would_exceed():
+                    budget_exhausted = True
+                    member_status[role] = "budget_skipped"
+                    return
+                pool.sub_runs += 1
                 results[role] = await dispatch(member, inbound, None)
         except Exception as exc:  # noqa: BLE001 — ADR-042: record FAILED, never abort the team DAG
             # The member's hand-off validation (build_handoff) OR its harness dispatch failed (a
@@ -278,6 +405,10 @@ async def run_team(
             await run_member(role)
 
     for stage in stages:
+        if (
+            budget_exhausted
+        ):  # #585: a prior stage hit the pooled ceiling — halt (budget wins gates)
+            break
         # A human gate whose own upstream FAILED/BLOCKED is NOT a real decision point — exclude it
         # from the pause/reject check so a failed producer never surfaces as a healthy PAUSED run;
         # run_member then records it BLOCKED (and the run resolves to "failed").
@@ -336,9 +467,22 @@ async def run_team(
     # member makes the run "failed" (→ FAILED), re-runnable by re-driving the failed+blocked members
     # with the succeeded ones seeded via ``completed``. A skipped (conditional) member is a declared
     # no-op, not a failure, so it does not block SUCCEEDED.
-    final_status = (
-        "failed" if any(s in ("failed", "blocked") for s in member_status.values()) else "completed"
-    )
+    has_failure = any(s in ("failed", "blocked") for s in member_status.values())
+    # #585: a real member FAILURE outranks the budget halt (mirrors the gate-vs-failure precedence
+    # above) — else a failed member would be masked as the healthy/non-re-runnable COST_BUDGET and
+    # stranded (re-run needs FAILED). A budget halt on an otherwise-clean run is the partial.
+    if budget_exhausted and not has_failure:
+        return TeamRunResult(
+            results=results,
+            envelopes=envelopes,
+            skipped=skipped,
+            stages=stages,
+            status="cost_budget",
+            member_status=member_status,
+            member_errors=member_errors,
+            partial=True,
+        )
+    final_status = "failed" if has_failure else "completed"
     return TeamRunResult(
         results=results,
         envelopes=envelopes,

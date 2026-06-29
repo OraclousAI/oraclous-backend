@@ -315,6 +315,9 @@ class OHMBudget(BaseModel):
     max_tokens_total: int | None = Field(default=None, ge=1)
     max_tool_calls_total: int | None = Field(default=None, ge=1)
     max_sub_runs: int | None = Field(default=None, ge=1)
+    # #585: the run-level pooled gate enforces max_tokens_total + max_sub_runs. max_usd_total is NOT
+    # yet enforced — no harness surfaces a USD figure, so it is a recorded-but-inert ceiling (set
+    # max_tokens_total / max_sub_runs for enforcement); wiring it needs a USD-surfacing harness.
     max_usd_total: float | None = Field(default=None, gt=0)
     ttl_seconds: int | None = Field(default=None, ge=1)
     # #576: team-wide per-member SAFETY-CAP defaults. NOT a per-member budget surface (ADR-031's

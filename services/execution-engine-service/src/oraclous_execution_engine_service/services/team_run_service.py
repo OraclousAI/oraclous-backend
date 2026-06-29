@@ -70,6 +70,9 @@ _STATUS_TO_STATE = {
     "paused": "PAUSED",
     "rejected": "REJECTED",
     "failed": "FAILED",
+    # #585 (ADR-031 §D3): a pooled-budget halt is a GOVERNED terminal, NOT FAILED — a controlled
+    # halt (like the max_wall deadline), healthy, whose "budget_skipped" members are un-attempted.
+    "cost_budget": "COST_BUDGET",
 }
 
 # (team_run_id, organisation_id, user_id) -> None — hands a QUEUED run to the worker (broker).

@@ -203,6 +203,7 @@ async def run_team_harness(
     parent_execution_id: uuid.UUID | None = None,
     on_child: Callable[[str], None] | None = None,
     on_cost: Callable[[int], None] | None = None,
+    cost_so_far: Callable[[], int] | None = None,
     workspace_root: str | None = None,
     graph_id: str | None = None,
     precedence_order: list[str] | None = None,
@@ -217,13 +218,25 @@ async def run_team_harness(
     # team-scope blackboard (#513): the STABLE team identity is the team-manifest id — derived here
     # (not a separate binding) + threaded to every member so they share one team-scope memory.
     team_id = str(manifest.metadata.id)
+    # #585: the running pooled tally feeds run_team's pre-dispatch pooled ceiling gate (ADR-031 D3).
+    # Prefer the CALLER's cost_so_far (the engine's tally — it includes prior_cost across a resume,
+    # so a resumed run cannot re-spend past the ceiling); else build it from THIS drive's on_cost
+    # (the direct/unit path). The caller's on_cost (the DB cost_tokens accumulator) still fires.
+    cost_deltas: list[int] = []
+
+    def _on_cost(tokens: int) -> None:
+        cost_deltas.append(tokens)
+        if on_cost is not None:
+            on_cost(tokens)
+
+    pooled_cost = cost_so_far if cost_so_far is not None else (lambda: sum(cost_deltas))
     dispatch = make_harness_dispatch(
         harness,
         sub_harnesses or {},
         trace_id=trace_id,
         parent_execution_id=parent_execution_id,
         on_child=on_child,
-        on_cost=on_cost,
+        on_cost=_on_cost,
         workspace_root=workspace_root,
         graph_id=graph_id,
         team_id=team_id,
@@ -231,7 +244,13 @@ async def run_team_harness(
         graph_authoritative=graph_authoritative,
         budget=manifest.budget,  # #576: per-member caps resolve from the team budget + members
     )
-    return await run_team(manifest, dispatch, gate_decisions=gate_decisions, completed=completed)
+    return await run_team(
+        manifest,
+        dispatch,
+        gate_decisions=gate_decisions,
+        completed=completed,
+        cost_so_far=pooled_cost,
+    )
 
 
 # A genuine loop (ADR-043 #552) is interleaved into the acyclic skeleton as ONE condensed node under
@@ -336,6 +355,7 @@ async def run_team_hybrid(
             parent_execution_id=parent_execution_id,
             on_child=on_child,
             on_cost=on_cost,
+            cost_so_far=cost_so_far,  # #585: the engine's pooled tally (incl. prior_cost on resume)
             workspace_root=workspace_root,
             graph_id=graph_id,
             precedence_order=precedence_order,
@@ -439,6 +459,7 @@ async def run_team_hybrid(
         gate_decisions=gate_decisions,
         completed=completed,
         members=condensed,
+        cost_so_far=cost_so_far,  # #585: the pooled token gate binds the skeleton members too
     )
 
     # merge each loop's real-member results into the team result; the synthetic node is internal
