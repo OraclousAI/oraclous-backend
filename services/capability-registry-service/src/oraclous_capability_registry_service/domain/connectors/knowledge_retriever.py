@@ -141,8 +141,16 @@ class KnowledgeRetrieverConnector(InternalTool):
                 error_message="the knowledge retriever returned a malformed body",
                 error_type="RETRIEVER_BAD_RESPONSE",
             )
+        # #580 (ADR-021 degrade-not-crash): an empty result is DATA-ABSENCE, not an error — the
+        # graph simply has nothing for this query (a fresh/empty graph, the #440 case). Flag it so
+        # the harness degrades the member to a flagged PARTIAL (+ alert) instead of looping on the
+        # empty result to the iteration cap and hard-failing. A genuine retriever failure stays
+        # success=False (RETRIEVER_*) and still hard-blocks — only success-with-no-hits is flagged.
+        data: dict[str, Any] = {"hits": hits}
+        if not hits:
+            data["data_absent"] = True
         return ExecutionResult(
             success=True,
-            data={"hits": hits},
+            data=data,
             metadata={"mode": mode, "hit_count": len(hits)},
         )

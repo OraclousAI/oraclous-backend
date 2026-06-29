@@ -27,6 +27,7 @@ class EngineJobState(enum.StrEnum):
     QUEUED = "QUEUED"  # accepted, not yet running
     RUNNING = "RUNNING"  # the worker is executing the harness
     SUCCEEDED = "SUCCEEDED"  # terminal — the harness completed
+    PARTIAL = "PARTIAL"  # terminal — completed degraded (#580: proceeded without retrieval data)
     FAILED = "FAILED"  # terminal — the harness failed (after retries)
     ESCALATED = "ESCALATED"  # wait state — paused for a human (resolved by complete/approve/cancel)
     TIMED_OUT = "TIMED_OUT"  # terminal — exceeded the declared wall-clock budget

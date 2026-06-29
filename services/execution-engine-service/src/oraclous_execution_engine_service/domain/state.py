@@ -12,6 +12,7 @@ from oraclous_execution_engine_service.models.enums import EngineJobState
 TERMINAL: frozenset[EngineJobState] = frozenset(
     {
         EngineJobState.SUCCEEDED,
+        EngineJobState.PARTIAL,  # #580: completed-degraded — terminal like SUCCEEDED, never retried
         EngineJobState.FAILED,
         EngineJobState.TIMED_OUT,
         EngineJobState.CANCELLED,
@@ -26,6 +27,7 @@ _ALLOWED: dict[EngineJobState, frozenset[EngineJobState]] = {
     EngineJobState.RUNNING: frozenset(
         {
             EngineJobState.SUCCEEDED,
+            EngineJobState.PARTIAL,  # #580: a degrade-completed run (proceeded without data)
             EngineJobState.FAILED,
             EngineJobState.ESCALATED,
             EngineJobState.TIMED_OUT,
@@ -36,6 +38,7 @@ _ALLOWED: dict[EngineJobState, frozenset[EngineJobState]] = {
     EngineJobState.ESCALATED: frozenset(
         {
             EngineJobState.SUCCEEDED,
+            EngineJobState.PARTIAL,  # #580: a resumed run may complete degraded
             EngineJobState.FAILED,
             EngineJobState.CANCELLED,
             EngineJobState.QUEUED,
@@ -45,6 +48,7 @@ _ALLOWED: dict[EngineJobState, frozenset[EngineJobState]] = {
     EngineJobState.FAILED: frozenset({EngineJobState.QUEUED}),
     EngineJobState.TIMED_OUT: frozenset({EngineJobState.QUEUED}),
     EngineJobState.SUCCEEDED: frozenset(),
+    EngineJobState.PARTIAL: frozenset(),  # #580: terminal — completed-degraded, not retried
     EngineJobState.CANCELLED: frozenset(),
 }
 
