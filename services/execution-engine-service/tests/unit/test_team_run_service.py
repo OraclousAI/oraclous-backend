@@ -871,3 +871,24 @@ async def test_cancellation_mid_drive_marks_failed_then_propagates() -> None:
     with pytest.raises(asyncio.CancelledError):
         await svc.drive(row.id, _principal())
     assert repo.rows[row.id].state == "FAILED"  # marked FAILED before propagation, not stranded
+
+
+def test_completed_for_resume_seeds_partial_members_so_they_are_not_redispatched() -> None:
+    # #587 (review SHOULD-FIX): a "partial" (degraded) member is terminal/done — seeded on re-run so
+    # it is NOT re-dispatched (no token re-spend, no side-effect re-fire), like a succeeded member.
+    from oraclous_execution_engine_service.services.team_run_service import TeamRunService
+
+    row = EngineTeamRun(
+        id=uuid.uuid4(),
+        organisation_id=_ORG,
+        user_id=_USER,
+        manifest={},
+        sub_harnesses={},
+        gate_decisions={},
+        state="FAILED",
+        results={"a": {"output": "ok"}, "b": {"output": "best-effort"}, "c": None},
+        member_status={"a": "succeeded", "b": "partial", "c": "failed"},
+        paused_at=[],
+    )
+    seeded = TeamRunService._completed_for_resume(row)
+    assert set(seeded) == {"a", "b"}  # succeeded + partial reused; the failed member 'c' re-runs

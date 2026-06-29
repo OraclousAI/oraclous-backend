@@ -31,7 +31,7 @@ class CheckpointRepository:
         resume_messages: list[dict[str, Any]],
         pending_tool_calls: list[dict[str, Any]],
         approved_tool_call_id: str,
-        resume_cursor: dict[str, int | None],  # #576: also carries the member cap (None when unset)
+        resume_cursor: dict[str, Any],  # #576 caps + #587 on_exhaustion (JSONB; None when unset)
         redact_patterns: list[str],
     ) -> HarnessCheckpoint:
         row = HarnessCheckpoint(

@@ -12,6 +12,9 @@ class HarnessStatus(enum.StrEnum):
     FAILED = "FAILED"
     # the loop hit a gate (budget/HITL/iteration cap) without a final answer — slice 3+.
     ESCALATED = "ESCALATED"
+    # #587: a budget gate under on_exhaustion=degrade — the loop FINISHED with its best-effort
+    # last_text (a flagged partial, not a crash and not a resumable pause). #580 reuses this.
+    PARTIAL = "PARTIAL"
 
 
 class StepKind(enum.StrEnum):

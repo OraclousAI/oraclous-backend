@@ -70,6 +70,7 @@ async def execute_harness(
             graph_authoritative=body.graph_authoritative,
             max_tokens=body.max_tokens,
             max_tool_calls=body.max_tool_calls,
+            on_exhaustion=body.on_exhaustion,
         )
     except OHMError as exc:
         raise HTTPException(

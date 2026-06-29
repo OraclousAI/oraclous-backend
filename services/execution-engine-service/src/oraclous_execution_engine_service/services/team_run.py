@@ -26,6 +26,7 @@ from oraclous_ohm.manifest import (
     OHMManifest,
     OHMMember,
     resolve_member_caps,
+    resolve_member_on_exhaustion,
 )
 from oraclous_ohm.orchestrate import (
     Diagnostic,
@@ -139,11 +140,16 @@ def make_harness_dispatch(
         # nor a budget adds zero kwargs and runs unchanged (the tier stands). The harness applies
         # the cap as the per-member token / tool-call ceiling.
         member_max_tokens, member_max_tool_calls = resolve_member_caps(member, budget)
-        caps: dict[str, int] = {}
+        caps: dict[str, Any] = {}
         if member_max_tokens is not None:
             caps["max_tokens"] = member_max_tokens
         if member_max_tool_calls is not None:
             caps["max_tool_calls"] = member_max_tool_calls
+        # #587: the member's resolved on_exhaustion (member-over-team) rides to the harness like the
+        # caps. Sent ONLY for the explicit "degrade" — "escalate" is the harness default, so an
+        # unchanged team adds zero kwargs (the #576 send-only-when-set pattern; back-compat).
+        if resolve_member_on_exhaustion(member, budget) == "degrade":
+            caps["on_exhaustion"] = "degrade"
         result = await harness.execute(
             input_text=render_member_input(member, envelopes, fan_item),
             manifest_inline=sub,
@@ -181,7 +187,10 @@ def make_harness_dispatch(
         # O4 metering (#472): accumulate this member's RAW token cost (0 if the harness omitted it)
         if on_cost is not None:
             on_cost(int(result.get("total_tokens") or 0))
-        if status != "SUCCEEDED":  # fail-closed — surface the REAL harness error, not a bare status
+        # #587: PARTIAL (on_exhaustion=degrade) is a GOVERNED graceful exhaustion — a flagged
+        # partial member result, NOT a failure. It must NOT raise (only a genuine FAILED does); the
+        # orchestrator records it "partial" and the team is not cascade-failed by a degrade.
+        if status not in ("SUCCEEDED", "PARTIAL"):  # fail-closed — surface the REAL harness error
             detail = result.get("error_message") or result.get("error_type")
             raise HarnessClientError(
                 f"member {member.role!r} harness did not succeed: {status}"

@@ -182,6 +182,10 @@ class OHMMember(BaseModel):
     # than the whole pool. Unset → the team default / policy tier applies (back-compat).
     max_tokens: int | None = Field(default=None, ge=1)
     max_tool_calls: int | None = Field(default=None, ge=1)
+    # #587: user-configurable budget-exhaustion behaviour — escalate (pause/fail for a human) or
+    # degrade (finish with the best-effort last text, a flagged partial). None → inherit the team
+    # budget default, else the hard default escalate (back-compat).
+    on_exhaustion: Literal["escalate", "degrade"] | None = None
 
     @model_validator(mode="after")
     def _human_requires_role(self) -> OHMMember:
@@ -325,6 +329,10 @@ class OHMBudget(BaseModel):
     # above, never a replacement for it. A member's own max_tokens/max_tool_calls overrides these.
     max_tokens_per_member: int | None = Field(default=None, ge=1)
     max_tool_calls_per_member: int | None = Field(default=None, ge=1)
+    # #587: the team default for budget exhaustion — escalate (pause/fail for a human) or degrade
+    # (finish with the best-effort last text, a flagged partial). A member's own on_exhaustion
+    # overrides this; default escalate keeps every pre-#587 manifest behaving exactly as today.
+    on_exhaustion: Literal["escalate", "degrade"] = "escalate"
 
 
 def resolve_member_caps(
@@ -356,6 +364,17 @@ def resolve_member_caps(
         if max_tool_calls is not None and budget.max_tool_calls_total is not None:
             max_tool_calls = min(max_tool_calls, budget.max_tool_calls_total)
     return max_tokens, max_tool_calls
+
+
+def resolve_member_on_exhaustion(
+    member: OHMMember, budget: OHMBudget | None
+) -> Literal["escalate", "degrade"]:
+    """#587: resolve the budget-exhaustion behaviour member-over-team-over-hard-default. A SEPARATE
+    resolver from ``resolve_member_caps`` (which keeps its 2-tuple) — the member's own choice wins,
+    else the team budget default, else the hard default ``escalate`` (back-compat)."""
+    if member.on_exhaustion is not None:
+        return member.on_exhaustion
+    return budget.on_exhaustion if budget is not None else "escalate"
 
 
 class OHMPrecedence(BaseModel):
