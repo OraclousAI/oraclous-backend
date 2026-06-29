@@ -79,7 +79,7 @@ def _is_orchestrator_dir(root: Path) -> bool:
 
     try:
         return has_prose_pipeline(skill_md.read_text(encoding="utf-8"))
-    except OSError:
+    except (OSError, UnicodeError):  # a non-UTF-8 SKILL.md → not an orchestrator dir, fail-closed
         return False
 
 

@@ -59,6 +59,23 @@ def test_driver_is_staged_on_the_sub_harness_runtime_with_the_real_contract() ->
     assert driver.entry_point == "reader_panel.cli:main"  # [project.scripts] RHS
     assert driver.package_path == "reader-panel"  # the team-root sibling package
     assert "ANTHROPIC_API_KEY" in driver.env  # the SKILL.md Setup env (runtime-injected)
+    # the deferred-venv staging contract (recorded, not run) — the full set the runtime needs
+    assert driver.python_version == "3.12"  # the SKILL.md `uv venv --python 3.12`
+    assert driver.requires_python == ">=3.11"  # the pyproject `requires-python`
+    assert driver.setup_cmd is not None  # the recorded (not executed) setup template
+
+
+def test_two_drivers_on_one_agent_keep_the_first_and_flag_multiple() -> None:
+    # the >1-driver guard (keep-FIRST ordering is load-bearing): a second driver skill is dropped
+    # and a blocking F-SKILL-DRIVER-MULTIPLE is raised — never silently last-wins. (reader-panel
+    # listed twice yields two driver resolutions, which is what the guard keys off.)
+    m = map_agent_to_member(
+        _agent(["reader-panel", "reader-panel"]), owner_organization_id=_ORG, skills_root=_SKILLS
+    )
+    assert "F-SKILL-DRIVER-MULTIPLE" in {f.code for f in m.flags}
+    assert m.sub_harness is not None
+    assert m.sub_harness.runtime.driver is not None  # exactly the FIRST driver stays staged
+    assert m.sub_harness.runtime.driver.command_name == "reader-panel"
 
 
 def test_driver_skill_is_not_inlined_into_the_prompt() -> None:

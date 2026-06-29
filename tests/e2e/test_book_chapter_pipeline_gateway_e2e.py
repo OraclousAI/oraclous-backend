@@ -21,7 +21,6 @@ import os
 import pathlib
 import re
 import shutil
-import tempfile
 import time
 import uuid
 from collections.abc import Callable
@@ -105,10 +104,11 @@ def _run(c: httpx.Client, doc: dict, subs: dict, name: str) -> dict:
     return _poll(c, created.json()["id"])
 
 
-def _write_driver_team() -> pathlib.Path:
+def _write_driver_team(base: pathlib.Path) -> pathlib.Path:
     """A real agent-team referencing the reader-panel uv-CLI skill (slice-3), built from the REAL
-    fixture skill + uv package so the driver detection runs against the genuine pyproject."""
-    root = pathlib.Path(tempfile.mkdtemp())
+    fixture skill + uv package so the driver detection runs against the genuine pyproject. Built
+    under ``base`` (the test's tmp_path) so pytest cleans it up — no leaked temp dirs."""
+    root = base / "driver-team"
     shutil.copytree(
         _FIX / ".claude" / "skills" / "reader-panel", root / ".claude/skills/reader-panel"
     )
@@ -155,12 +155,18 @@ def test_book_chapter_pipeline_pauses_at_the_author_gate(
     # the deployed engine ran the pre-gate agents and HALTED at the first author gate — not past it.
     assert done["state"] == "PAUSED", f"the chapter pipeline must pause at the author gate — {done}"
     assert "gate-a" in done["paused_at"], f"must pause at gate-a, paused_at={done.get('paused_at')}"
+    results = done.get("results") or {}
+    assert "book-calibrate" in results  # the pre-gate stage ran
+    assert (
+        "chapter-architect" not in results
+    )  # but the run HALTED at the gate — no post-gate member
 
 
 @requires_byom
 def test_skill_driver_manifest_imports_and_runs_through_the_gateway(
     register: Callable[..., dict],
     gateway_client: Callable[[str], httpx.Client],
+    tmp_path: pathlib.Path,
 ) -> None:
     from oraclous_ohm.import_.setup import import_setup
 
@@ -170,7 +176,9 @@ def test_skill_driver_manifest_imports_and_runs_through_the_gateway(
 
     # slice-3: the agent referencing the reader-panel uv-CLI skill imports with the CLI staged.
     imported = import_setup(
-        _write_driver_team(), owner_organization_id=uuid.UUID(user["org_id"]), name="book-driver"
+        _write_driver_team(tmp_path),
+        owner_organization_id=uuid.UUID(user["org_id"]),
+        name="book-driver",
     )
     driver = imported.sub_harnesses["panel-runner"]["runtime"]["driver"]
     assert driver is not None  # the staged CLI contract rode through import_setup → the run seam

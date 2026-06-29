@@ -89,6 +89,23 @@ def test_block_on_critical_is_flagged_and_deferred() -> None:
     assert "F-PROSE-BLOCK" in _codes(_plan())
 
 
+def test_prose_path_preserves_the_orchestrator_signal_for_o8() -> None:
+    # regression guard: the orchestrator→prose delegation MERGES the orchestrator-path signal onto
+    # the prose plan, so the O8 dry-run still sees the `--mode` surface. Reverting that merge to
+    # `return plan` drops conditional_modes + these flags on the prose path (ADR-034 §7).
+    plan = _plan()
+    assert plan.conditional_modes == [
+        "--full",
+        "--graph",
+    ]  # the subcommand modes survive delegation
+    assert {
+        "F-MODE-FULL",
+        "F-MODE-GRAPH",
+        "F-MEDIUM-INFERRED",
+        "F-TERMINATION-ABSENT",
+    } <= _codes(plan)
+
+
 def test_import_setup_reaches_the_chapter_pipeline_end_to_end() -> None:
     # the production seam (a slice-1-style wiring guard): import_setup on a prose-coordinator dir
     # (no modules/) must REACH the prose adapter, not dead-end on F-NO-SETUP. The other tests call
@@ -105,6 +122,19 @@ def test_import_setup_reaches_the_chapter_pipeline_end_to_end() -> None:
     assert _CHAPTER_AGENTS <= set(
         res.sub_harnesses
     )  # runnable bodies came through (import->run seam)
+
+
+def test_non_utf8_skill_md_fails_closed_not_crash(tmp_path: Path) -> None:
+    # finding-1 regression: _is_orchestrator_dir now READS the SKILL.md for prose detection; a
+    # non-UTF-8 file must degrade to "not an orchestrator dir" (F-NO-SETUP), NOT crash import_setup
+    # with an uncaught UnicodeDecodeError (which is a UnicodeError, not an OSError).
+    from oraclous_ohm.import_.setup import import_setup
+
+    d = tmp_path / "weird-skill"
+    d.mkdir()
+    (d / "SKILL.md").write_bytes(b"\xff\xfe not valid utf-8 \x80\x81")
+    res = import_setup(d, owner_organization_id=_ORG)  # must not raise
+    assert res.manifest is None  # nothing importable — fail-closed, not a crash
 
 
 def test_parser_skips_prose_lines_and_attaches_a_bare_gate(tmp_path: object) -> None:  # noqa: ARG001
