@@ -30,6 +30,9 @@ from oraclous_capability_registry_service.domain.connectors.knowledge_retriever 
 from oraclous_capability_registry_service.domain.connectors.library_group import (
     LibraryGroupExecutor,
 )
+from oraclous_capability_registry_service.domain.connectors.manifest_validate import (
+    ManifestValidateConnector,
+)
 from oraclous_capability_registry_service.domain.connectors.mcp import McpToolExecutor
 from oraclous_capability_registry_service.domain.connectors.mysql import MySQLReader
 from oraclous_capability_registry_service.domain.connectors.notion import NotionReader
@@ -69,6 +72,7 @@ from oraclous_capability_registry_service.domain.plugins.builtin import (
     GrepToolPlugin,
     KnowledgeRetrieverPlugin,
     LibraryGroupPlugin,
+    ManifestValidatePlugin,
     MySQLReaderPlugin,
     NotionReaderPlugin,
     PostgreSQLReaderPlugin,
@@ -100,6 +104,7 @@ _EXECUTORS: dict[str, type[BaseToolExecutor]] = {
     FindSimilarPlugin.plugin_id(): FindSimilarConnector,
     GraphIngestPlugin.plugin_id(): GraphIngestConnector,
     RecallMemoryPlugin.plugin_id(): RecallMemoryConnector,
+    ManifestValidatePlugin.plugin_id(): ManifestValidateConnector,
     FederatedSearchPlugin.plugin_id(): FederatedSearchConnector,
     WebResearchPlugin.plugin_id(): WebResearchConnector,
     ScriptIngestionPlugin.plugin_id(): ScriptIngestionConnector,
