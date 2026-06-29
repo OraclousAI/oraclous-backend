@@ -1,3 +1,5 @@
+extend-exclude = ["**/tests/fixtures/**"]
+
 # Ruff config for the oraclous-backend monorepo.
 # Lifted from the legacy ruff-pre-commit setup; the ruff version is pinned in
 # pyproject.toml dev dependencies and in the pre-commit config (story 0b).
