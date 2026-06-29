@@ -56,7 +56,16 @@ class ManifestValidateConnector(InternalTool):
         # use the public descriptor() contract (metadata.name) — discover() is typed to the base
         registered = [str(p.descriptor()["metadata"]["name"]) for p in plugin_registry.discover()]
         catalog = [*passed, *registered]
-        verdict = validate_draft(draft, catalog, owner_organization_id=context.organisation_id)
+        try:
+            verdict = validate_draft(draft, catalog, owner_organization_id=context.organisation_id)
+        except Exception:  # noqa: BLE001 — FAIL CLOSED: any internal failure is a BLOCK, never a
+            # result the reviewer could read as "not blocked" (validate_draft should never raise,
+            # but the gate must never green-light a draft it could not actually validate).
+            verdict = {
+                "would_block": True,
+                "blocking": ["F-VALIDATOR-ERROR: the draft could not be validated"],
+                "report": "GO: BLOCKED — the validator failed; fail-closed.",
+            }
         # the TOOL CALL succeeded (the validation RAN) even when the draft is blocked — would_block
         # is part of the result the reviewer reads to decide re-draft vs emit, NOT a tool failure.
         return ExecutionResult(

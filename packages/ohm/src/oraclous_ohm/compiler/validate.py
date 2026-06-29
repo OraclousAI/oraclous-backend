@@ -27,26 +27,50 @@ def _slug(text: str) -> str:
 
 
 def _tool_slug(text: str) -> str:
-    """Normalise a tool name OR a full ref to one bare slug, so the catalog and the draft compare
-    identically: ``core/web-research@1.0.0`` and ``web-research`` both → ``web-research`` (a drafter
-    that writes the surveyed REF must match the surveyed NAME, and vice-versa — else a legitimate
-    surveyed tool is falsely blocked F-CAPABILITY-MISSING)."""
-    return _slug(text.split("/")[-1].split("@")[0])
+    """Normalise a tool NAME or a capability REF to one canonical slug so the catalog and the draft
+    compare identically — WITHOUT letting a bogus namespace masquerade as a surveyed bare tool.
+
+    We drop a trailing ``@version`` and ONLY the canonical ``core/`` built-in namespace. If a ``/``
+    still remains the identifier is NON-canonical (a foreign namespace or a nested path); we prefix
+    it with a ``ns--`` marker that a bare slug can never contain (``_slug`` collapses runs of ``-``
+    to one), so it can NEVER collapse to a bare surveyed slug — even when the namespace is
+    punctuation/emoji that ``_slug`` would otherwise erase entirely (``😈/web-research`` and
+    ``.../web-research`` would both bare-slug to ``web-research`` and slip the gate). Thus
+    ``core/web-research@1.0.0`` and ``web-research`` both → ``web-research`` (a drafter that writes
+    the surveyed ref still matches the surveyed name), but ``evil/web-research`` → ``ns--…`` and
+    ``core/web-search@1.0.0`` → ``web-search`` — neither matches a ``web-research`` catalog."""
+    s = text.strip().lower().split("@", 1)[0]
+    if s.startswith("core/"):
+        s = s[len("core/") :]
+    if "/" in s:
+        # non-canonical (foreign namespace / nested path): slug EACH segment and keep them ALL,
+        # joined by ``--`` under an ``ns--`` marker, so it can neither collapse to a bare surveyed
+        # slug NOR to a *different* foreign namespace. If ANY segment slugs to empty — a namespace
+        # or name that ``_slug`` erases (``./x``, ``/x``, ``😈/x``, ``core//x``) — the identifier is
+        # degenerate: return ``""`` so it is DROPPED from the catalog and BLOCKS as a draft, never
+        # collapsing two distinct erasing-namespace forms onto one slug.
+        parts = [_slug(seg) for seg in s.split("/")]
+        if not all(parts):
+            return ""
+        return "ns--" + "--".join(parts)
+    return _slug(s)
 
 
 def _catalog_slugs(catalog: Any) -> set[str]:
     """The set of SURVEYED tool identifiers (slugged) the drafter is allowed to draw from. Accepts a
-    list of bare names/refs OR of dicts ({name|binding|ref}) — whatever the survey tool returned."""
+    list of bare names/refs OR of dicts ({name|binding|ref}) — whatever the survey tool returned. An
+    entry that slugs to EMPTY is dropped (never a wildcard ``""`` that would let an empty-slug
+    drafted tool slip through)."""
     out: set[str] = set()
     items = catalog.get("tools", catalog) if isinstance(catalog, dict) else catalog
     for it in items if isinstance(items, list) else []:
-        if isinstance(it, str):
-            out.add(_tool_slug(it))
-        elif isinstance(it, dict):
-            for key in ("binding", "name", "ref"):
-                val = it.get(key)
-                if isinstance(val, str) and val:
-                    out.add(_tool_slug(val))
+        candidates = [it] if isinstance(it, str) else []
+        if isinstance(it, dict):
+            candidates = [it[k] for k in ("binding", "name", "ref") if isinstance(it.get(k), str)]
+        for val in candidates:
+            slug = _tool_slug(val)
+            if slug:  # drop empties so "" is never a wildcard match (MEDIUM hardening)
+                out.add(slug)
     return out
 
 
@@ -109,7 +133,8 @@ def validate_draft(
     flags: list[ImportFlag] = []
     for m in members:
         for tool in m.tools:
-            if _tool_slug(tool) not in allowed:
+            slug = _tool_slug(tool)
+            if not slug or slug not in allowed:  # an empty-slug tool ("@", "/") also fails closed
                 flags.append(
                     ImportFlag(
                         code="F-CAPABILITY-MISSING",
