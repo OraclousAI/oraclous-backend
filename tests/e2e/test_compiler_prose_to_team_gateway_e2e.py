@@ -127,9 +127,42 @@ def test_a_prose_objective_compiles_to_a_runnable_team(
         "compiled-from-prose", members, owner_organization_id=org, shape="compiled"
     )
     assert report.report.would_block is False, f"the compiled team is runnable — {report.report}"
-    assert (
-        report.manifest is not None and load_ohm(report.manifest.model_dump(mode="json")).is_team()
+    assert report.manifest is not None
+    compiled_manifest = report.manifest
+    assert load_ohm(compiled_manifest.model_dump(mode="json")).is_team()
+
+    # CTO #3 — "a manifest that itself RUNS": the compiled manifest is POSTed as its OWN team-run
+    # and reaches SUCCEEDED. We synthesise a reasoning-only sub-harness per compiled member (its
+    # sub-goal as the body, tools=[] — the gate already proved the declared tool ceilings resolve)
+    # so the compiled TEAM ORCHESTRATION (members + the depends_on DAG + hand-offs) runs end-to-end.
+    from oraclous_ohm.import_.mapping import build_subharness
+
+    compiled_subs = {
+        m.role: build_subharness(
+            m.role,
+            owner_organization_id=org,
+            body=(
+                m.subgoal or f"You are the {m.role}. Complete your part of the objective, reply."
+            ),
+            tools=[],
+        ).model_dump(mode="json")
+        for m in compiled_manifest.members
+    }
+    cdoc = compiled_manifest.model_dump(mode="json")
+    cdoc["models"] = [_model(cred)]
+    cgid = c.post("/api/v1/graphs", json={"name": "compiled-team-run"}).json()["id"]
+    ccreated = c.post(
+        "/v1/engine/team-runs",
+        json={
+            "manifest": cdoc,
+            "sub_harnesses": _bind(compiled_subs, cred),
+            "gate_decisions": {},
+            "graph_id": cgid,
+        },
     )
+    assert ccreated.status_code == 202, ccreated.text
+    crow = _poll(c, ccreated.json()["id"])
+    assert crow["state"] == "SUCCEEDED", f"the compiled manifest must itself run — {crow}"
 
 
 def test_the_capability_absence_gate_blocks_on_the_deployed_registry(

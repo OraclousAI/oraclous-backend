@@ -47,6 +47,26 @@ def test_the_budget_is_the_three_layer_shape() -> None:
     assert b.max_tokens_per_member == 60_000 and b.max_tokens_per_member <= b.max_tokens_total
 
 
+def test_the_reviewer_repair_loop_is_hard_bounded_to_n_attempts() -> None:
+    # CTO decision A / decision-3: the reviewer's in-harness validate→FIX→validate loop is bounded.
+    # Each attempt is one manifest-validate call, so the bound is HARD-enforced by capping the
+    # reviewer's max_tool_calls at _REPAIR_ATTEMPTS + 1 (the initial validate + at most N fixes) —
+    # resolve_member_caps → the harness halts the loop at the cap regardless of the prompt. So a
+    # persistently-blocked draft fail-closes after exactly N attempts; a draft needing ≤N repairs
+    # converges within the cap.
+    from oraclous_ohm.compiler.team import _REPAIR_ATTEMPTS, _REVIEWER_VALIDATE_CALLS
+
+    assert _REPAIR_ATTEMPTS == 2  # default 2 (CTO: default 2 / max 3)
+    assert _REVIEWER_VALIDATE_CALLS == _REPAIR_ATTEMPTS + 1 == 3
+    manifest, _ = build_compiler_team(_ORG)
+    by = {m.role: m for m in manifest.members}
+    assert by["reviewer"].max_tool_calls == _REVIEWER_VALIDATE_CALLS  # the harness halts here
+    # only the reviewer is tool-call-bounded; the others are reasoning-only (no tools, no loop)
+    assert all(
+        by[r].max_tool_calls is None for r in ("planner", "capability-surveyor", "manifest-drafter")
+    )
+
+
 def test_the_objective_and_catalog_are_seeded_into_the_subgoals() -> None:
     # slice-1: the prose objective → the planner's subgoal; the catalog → the surveyor's. No engine
     # wiring — both render as the member's harness Objective: line (team_run._render_input).
