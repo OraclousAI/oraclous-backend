@@ -22,9 +22,9 @@ from oraclous_ohm.import_.mapping import Substrate, map_agent_to_member, slugify
 from oraclous_ohm.import_.orchestrator import adapt_orchestrator_skill
 from oraclous_ohm.import_.parse import discover_agents, parse_agent_file
 from oraclous_ohm.import_.precedence import parse_precedence
-from oraclous_ohm.import_.schedules import parse_cron
+from oraclous_ohm.import_.schedules import ScheduledJob, parse_cron
 from oraclous_ohm.import_.skills import resolve_skill
-from oraclous_ohm.manifest import OHMManifest, OHMMember
+from oraclous_ohm.manifest import OHMManifest, OHMMember, OHMOrchestration, OHMPrecedence
 
 
 class ImportReport(BaseModel):
@@ -120,6 +120,75 @@ def _build_report(
         blocking=[f"{f.code}: {f.message}" for f in by_sev["blocking"]],
         confirm_count=len(by_sev["confirm"]),
         info_count=len(by_sev["info"]),
+    )
+
+
+def assemble_and_report(
+    name: str,
+    members: list[OHMMember],
+    *,
+    owner_organization_id: uuid.UUID,
+    shape: str,
+    handoffs: dict[str, HandoffSpec] | None = None,
+    schedules: list[ScheduledJob] | None = None,
+    orchestration: OHMOrchestration | None = None,
+    precedence: OHMPrecedence | None = None,
+    sub_harnesses: dict[str, dict] | None = None,
+    extra_flags: list[ImportFlag] | None = None,
+) -> ImportResult:
+    """SOURCE-AGNOSTIC dry-run (#593, ADR-047 "one validator, two on-ramps"): assemble a team from
+    already-built ``members`` (+ ``orchestration``/``handoffs``/``schedules``) through the SAME
+    ``assemble_team`` + ``ImportReport`` path the filesystem importer uses — so the E10 prose
+    compiler's reviewer member validates its drafted manifest IDENTICALLY to ``import_setup``, with
+    NO second validator. ``extra_flags`` (the caller's surveyor/drafter ``ImportFlag``s, e.g. an
+    ``F-CAPABILITY-MISSING`` for a hallucinated tool) fold into the same severity buckets, so a
+    blocking flag drives ``would_block`` on the prose path exactly as on the import path. ``shape``
+    records which on-ramp produced the team (``"compiled"`` for the compiler; ``"agent-team"`` /
+    ``"orchestrator"`` / ``"none"`` for the importer). No filesystem access — importable in-process
+    by a service/sub-harness."""
+    flags = list(extra_flags or [])
+    if not members:
+        # fail-closed (ADR §3.5): a caller that supplies NO members (a drafter that produced
+        # nothing, or an empty .claude/agents dir) gets a BLOCKING report, never a pydantic crash —
+        # mirrors F-NO-SETUP. assemble_team on [] would raise (entrypoint="" min_length=1).
+        flags.append(
+            ImportFlag(
+                code="F-NO-MEMBERS",
+                severity="blocking",
+                member_role="",
+                message="no members to assemble",
+            )
+        )
+        return ImportResult(
+            manifest=None,
+            report=_build_report(name, shape, None, flags),
+            flags=flags,
+            sub_harnesses=sub_harnesses or {},
+        )
+    assembly = assemble_team(
+        name,
+        members,
+        owner_organization_id=owner_organization_id,
+        handoffs=handoffs or {},
+        schedules=schedules or [],
+        orchestration=orchestration,
+    )
+    flags.extend(assembly.flags)
+    if precedence is not None:  # the source's declared Hierarchy-of-Truth ordering (provenance)
+        assembly.manifest.precedence = precedence
+        flags.append(
+            ImportFlag(
+                code="F-PRECEDENCE",
+                severity="info",
+                member_role="",
+                message=f"hierarchy-of-truth -> {' > '.join(precedence.order)}",
+            )
+        )
+    return ImportResult(
+        manifest=assembly.manifest,
+        report=_build_report(name, shape, assembly, flags),
+        flags=flags,
+        sub_harnesses=sub_harnesses or {},
     )
 
 
@@ -254,34 +323,20 @@ def import_setup(
 
     cron_files = sorted(root.glob("**/cron.yaml"))
     schedules = parse_cron(cron_files[0]) if cron_files else []
-
-    assembly = assemble_team(
+    # #593: the filesystem front door + the prose compiler converge here — the SAME assemble+report
+    # path (one validator, two on-ramps). item 9 (A-NEW-3): the source's declared Hierarchy-of-Truth
+    # ordering is carried onto the manifest as provenance (graph-vs-file ENFORCEMENT is E6).
+    return assemble_and_report(
         team_name,
         members,
         owner_organization_id=owner_organization_id,
+        shape=shape,
         handoffs=handoffs,
         schedules=schedules,
         orchestration=orchestration,
-    )
-    flags.extend(assembly.flags)
-    # item 9 (A-NEW-3): capture the source's declared Hierarchy-of-Truth ordering onto the manifest
-    # (carried through the run as provenance; graph-vs-file ENFORCEMENT is E6). None if undeclared.
-    precedence = parse_precedence(root)
-    if precedence is not None:
-        assembly.manifest.precedence = precedence
-        flags.append(
-            ImportFlag(
-                code="F-PRECEDENCE",
-                severity="info",
-                member_role="",
-                message=f"hierarchy-of-truth -> {' > '.join(precedence.order)}",
-            )
-        )
-    return ImportResult(
-        manifest=assembly.manifest,
-        report=_build_report(team_name, shape, assembly, flags),
-        flags=flags,
+        precedence=parse_precedence(root),
         sub_harnesses=sub_harnesses,
+        extra_flags=flags,
     )
 
 
