@@ -26,6 +26,14 @@ def _slug(text: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", text.strip().lower()).strip("-")
 
 
+def _tool_slug(text: str) -> str:
+    """Normalise a tool name OR a full ref to one bare slug, so the catalog and the draft compare
+    identically: ``core/web-research@1.0.0`` and ``web-research`` both → ``web-research`` (a drafter
+    that writes the surveyed REF must match the surveyed NAME, and vice-versa — else a legitimate
+    surveyed tool is falsely blocked F-CAPABILITY-MISSING)."""
+    return _slug(text.split("/")[-1].split("@")[0])
+
+
 def _catalog_slugs(catalog: Any) -> set[str]:
     """The set of SURVEYED tool identifiers (slugged) the drafter is allowed to draw from. Accepts a
     list of bare names/refs OR of dicts ({name|binding|ref}) — whatever the survey tool returned."""
@@ -33,13 +41,12 @@ def _catalog_slugs(catalog: Any) -> set[str]:
     items = catalog.get("tools", catalog) if isinstance(catalog, dict) else catalog
     for it in items if isinstance(items, list) else []:
         if isinstance(it, str):
-            out.add(_slug(it))
+            out.add(_tool_slug(it))
         elif isinstance(it, dict):
             for key in ("binding", "name", "ref"):
                 val = it.get(key)
                 if isinstance(val, str) and val:
-                    # a ref like "org:x/web-research@1" → its tail slug "web-research"
-                    out.add(_slug(val.split("/")[-1].split("@")[0]))
+                    out.add(_tool_slug(val))
     return out
 
 
@@ -102,7 +109,7 @@ def validate_draft(
     flags: list[ImportFlag] = []
     for m in members:
         for tool in m.tools:
-            if _slug(tool) not in allowed:
+            if _tool_slug(tool) not in allowed:
                 flags.append(
                     ImportFlag(
                         code="F-CAPABILITY-MISSING",

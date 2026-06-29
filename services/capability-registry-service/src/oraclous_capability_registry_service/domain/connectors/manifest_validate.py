@@ -39,7 +39,23 @@ class ManifestValidateConnector(InternalTool):
                 error_message="'draft' is required",
                 error_type="INVALID_INPUT",
             )
-        catalog = input_data.get("catalog") or []
+        # THE DETERMINISTIC REGISTRY-DIFF (ADR-047): a tool is "available" iff it is REGISTERED. We
+        # source the allowed set from the live plugin registry (the seeded built-ins) and UNION it
+        # with whatever catalog the reviewer relayed — so a legitimately registered tool is
+        # never falsely blocked when the reviewer (an LLM) does not relay the surveyed catalog
+        # verbatim. The gate is a CODED diff against reality, not the model's relay; a hallucinated
+        # tool that is neither surveyed NOR registered still blocks F-CAPABILITY-MISSING (ADR-032).
+        from oraclous_capability_registry_service.domain.plugins import plugin_registry
+
+        relayed = input_data.get("catalog")
+        passed = (
+            relayed.get("tools", [])
+            if isinstance(relayed, dict)
+            else (relayed if isinstance(relayed, list) else [])
+        )
+        # use the public descriptor() contract (metadata.name) — discover() is typed to the base
+        registered = [str(p.descriptor()["metadata"]["name"]) for p in plugin_registry.discover()]
+        catalog = [*passed, *registered]
         verdict = validate_draft(draft, catalog, owner_organization_id=context.organisation_id)
         # the TOOL CALL succeeded (the validation RAN) even when the draft is blocked — would_block
         # is part of the result the reviewer reads to decide re-draft vs emit, NOT a tool failure.
