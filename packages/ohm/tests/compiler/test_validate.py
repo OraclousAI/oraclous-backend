@@ -52,6 +52,15 @@ def test_an_empty_draft_fails_closed_no_members() -> None:
     assert any("F-NO-MEMBERS" in b for b in v["blocking"])
 
 
+def test_a_tool_written_as_a_full_ref_matches_the_surveyed_name() -> None:
+    # the drafter may write the surveyed REF (core/web-search@1.0.0) instead of the bare name; both
+    # normalise to the same slug, so a legitimate surveyed tool is NOT falsely blocked (the deployed
+    # run caught this — gpt-4o-mini drafted the full ref).
+    catalog = {"tools": [{"name": "web-search", "ref": "core/web-search@1.0.0"}]}
+    v = validate_draft(_draft("core/web-search@1.0.0"), catalog, owner_organization_id=_ORG)
+    assert v["would_block"] is False
+
+
 def test_prose_wrapped_json_is_peeled_not_misblocked() -> None:
     # a REAL drafter LLM wraps the JSON in prose / a ```json fence — it must still parse (#599)
     draft = (

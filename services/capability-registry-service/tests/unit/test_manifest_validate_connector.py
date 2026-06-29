@@ -68,6 +68,16 @@ async def test_a_hallucinated_tool_blocks_fail_closed() -> None:
     assert any("F-CAPABILITY-MISSING" in b for b in res.data["blocking"])
 
 
+async def test_a_registered_builtin_passes_without_a_relayed_catalog() -> None:
+    # THE DETERMINISTIC REGISTRY-DIFF: even when the reviewer relays NO catalog, a tool that IS a
+    # registered built-in (web-research) is allowed — the gate diffs against the live registry, not
+    # the model's relay (the deployed run showed the LLM does not reliably relay the catalog).
+    ex = ManifestValidateConnector({"id": "x"})
+    res = await ex.execute({"draft": _draft("web-research")}, _ctx())
+    assert res.success is True
+    assert res.data["would_block"] is False
+
+
 async def test_a_missing_draft_is_rejected_before_validating() -> None:
     ex = ManifestValidateConnector({"id": "x"})
     res = await ex.execute({"catalog": ["web-search"]}, _ctx())
