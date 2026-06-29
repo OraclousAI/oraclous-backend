@@ -116,7 +116,7 @@ def try_resolve_skill(name: str, skills_root: str | Path) -> ResolvedSkill | Non
         return None
     try:
         text = skill_md.read_text(encoding="utf-8")
-    except OSError as exc:
+    except (OSError, UnicodeError) as exc:  # incl. a non-UTF-8 SKILL.md
         raise OHMImportError(f"cannot read skill {name!r}: {exc}") from exc
     front, body = split_frontmatter(text)  # raises OHMImportError on a malformed file
     skill_name = str(front.get("name") or name)
