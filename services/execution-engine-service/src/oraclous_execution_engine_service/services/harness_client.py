@@ -115,6 +115,7 @@ class HarnessClient:
         graph_authoritative: bool = False,
         max_tokens: int | None = None,
         max_tool_calls: int | None = None,
+        on_exhaustion: str | None = None,  # #587: "degrade" → the loop finishes PARTIAL at a gate
         timeout: float | None = None,  # noqa: ASYNC109 — forwarded to httpx, not an asyncio cancel
     ) -> dict[str, Any]:
         """Run a harness to completion/escalation and return its ``HarnessExecutionOut`` JSON.
@@ -161,6 +162,10 @@ class HarnessClient:
             body["max_tokens"] = max_tokens
         if max_tool_calls is not None:
             body["max_tool_calls"] = max_tool_calls
+        # #587: the member's budget-exhaustion behaviour (degrade → flagged PARTIAL); omitted ⇒ the
+        # harness default escalate (back-compat — an unchanged member adds zero keys).
+        if on_exhaustion is not None:
+            body["on_exhaustion"] = on_exhaustion
         kwargs: dict[str, Any] = {"json": body}
         if timeout is not None:
             kwargs["timeout"] = timeout

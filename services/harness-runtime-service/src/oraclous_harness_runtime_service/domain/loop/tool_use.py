@@ -204,6 +204,29 @@ async def run_tool_use_loop(
             checkpoint=checkpoint,
         )
 
+    def _degrade(name: str, reason: str, message: str, iterations: int) -> LoopResult:
+        # #587: on_exhaustion=degrade — FINISH with the best-effort last_text as a flagged PARTIAL
+        # (typed reason), never a resumable checkpoint. The single degrade primitive #580 reuses.
+        steps.append(LoopStep(len(steps), StepKind.GATE, name, reason, message))
+        return LoopResult(
+            status=HarnessStatus.PARTIAL,
+            output=last_text or None,
+            steps=steps,
+            iterations=iterations,
+            total_tokens=tokens_used,
+            input_tokens=input_used,
+            output_tokens=output_used,
+            error_type=reason,
+            error_message=message,
+            checkpoint=None,
+        )
+
+    def _budget_gate(name: str, reason: str, message: str, iterations: int) -> LoopResult:
+        # #587: a BUDGET gate honours on_exhaustion — escalate (today) or degrade (PARTIAL). A HITL
+        # pause is NOT routed here (it always _escalate-with-checkpoint); only budget breaches.
+        gate = _escalate if policy.on_exhaustion == "escalate" else _degrade
+        return gate(name, reason, message, iterations)
+
     async def _run_tool_calls(
         tool_calls: list[dict[str, Any]], iteration: int, approved_id: str | None
     ) -> LoopResult | None:
@@ -214,7 +237,7 @@ async def run_tool_use_loop(
             spec = by_name.get(tc["name"])
             # Coded governance — enforced BEFORE any dispatch, regardless of what the prose said.
             if _over_wall_time():
-                return _escalate("budget", "wall_time", "wall-time budget exhausted", iteration)
+                return _budget_gate("budget", "wall_time", "wall-time budget exhausted", iteration)
             # Capability-absence ceiling (ADR-035 §5) — upstream of policy; fail-closed DENY of any
             # binding outside the acting member's tools[] BEFORE the gate/budget/dispatch. No path
             # widens the ceiling; an out-of-ceiling call never reaches a side effect.
@@ -262,7 +285,7 @@ async def run_tool_use_loop(
                     checkpoint=checkpoint,
                 )
             if policy.max_tool_calls is not None and tool_calls_made >= policy.max_tool_calls:
-                return _escalate(
+                return _budget_gate(
                     "budget", "tool_call_budget", "tool-call budget exhausted", iteration
                 )
 
@@ -324,7 +347,7 @@ async def run_tool_use_loop(
 
     for iteration in range(resume_iteration + 1, policy.max_iterations + 1):
         if _over_wall_time():
-            return _escalate("budget", "wall_time", "wall-time budget exhausted", iteration)
+            return _budget_gate("budget", "wall_time", "wall-time budget exhausted", iteration)
 
         # ADR-042 (#551): a TRANSIENT provider error (rate-limit / timeout / 5xx / overloaded) is
         # retried with backoff+jitter before the run fails — so one member hitting the shared BYOM
@@ -353,7 +376,7 @@ async def run_tool_use_loop(
         last_text = _redact(resp.text, redactors)
         # token budget (S3 PolicyEnvelope.max_tokens, now enforceable with real usage from S4).
         if policy.max_tokens is not None and tokens_used > policy.max_tokens:
-            return _escalate("budget", "token_budget", "token budget exhausted", iteration)
+            return _budget_gate("budget", "token_budget", "token budget exhausted", iteration)
 
         if not resp.tool_calls:
             steps.append(
@@ -399,7 +422,7 @@ async def run_tool_use_loop(
         if escalation is not None:
             return escalation
 
-    # iteration cap reached without a final answer → escalate.
-    return _escalate(
+    # iteration cap reached without a final answer → escalate or degrade (#587).
+    return _budget_gate(
         "budget", "iteration_cap", "tool-use loop did not converge", policy.max_iterations
     )

@@ -16,6 +16,7 @@ from __future__ import annotations
 import fnmatch
 import re
 from dataclasses import dataclass, field
+from typing import Literal
 
 from oraclous_ohm.errors import OHMGovernanceError
 from oraclous_ohm.manifest import OHMManifest
@@ -50,6 +51,10 @@ class PolicyEnvelope:
     # so no orchestrator/coordinator path can hand the member a capability it never declared.
     tool_ceiling: frozenset[str] = field(default_factory=frozenset)
     redact_patterns: tuple[str, ...] = ()
+    # #587: what the tool-use loop does when a budget gate trips — "escalate" (pause/fail for a
+    # human, today's behaviour) or "degrade" (finish with the best-effort last_text, a flagged
+    # PARTIAL). Default "escalate" so an envelope built the old way is byte-for-byte unchanged.
+    on_exhaustion: Literal["escalate", "degrade"] = "escalate"
 
 
 # Built-in catalogue (Structured Governance Taxonomy v1.0 §2). The single source until a policy
@@ -192,6 +197,7 @@ def build_envelope(
     member_max_tool_calls: int | None = None,
     max_tokens_ceiling: int | None = None,
     max_tool_calls_ceiling: int | None = None,
+    member_on_exhaustion: Literal["escalate", "degrade"] | None = None,
 ) -> PolicyEnvelope:
     """Build the effective runtime envelope. The iteration cap is a safety backstop derived from the
     policy's tool-call budget (so a stricter tier's smaller budget actually binds), bounded by the
@@ -237,4 +243,5 @@ def build_envelope(
         gated_bindings=gated,
         tool_ceiling=ceiling,
         redact_patterns=redact,
+        on_exhaustion=member_on_exhaustion or "escalate",  # #587: degrade vs escalate at a gate
     )

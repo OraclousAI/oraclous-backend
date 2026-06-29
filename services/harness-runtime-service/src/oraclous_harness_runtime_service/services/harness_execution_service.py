@@ -17,7 +17,7 @@ from __future__ import annotations
 import logging
 import uuid
 from collections.abc import Awaitable, Callable
-from typing import Any
+from typing import Any, Literal
 
 import yaml
 from oraclous_governance import Principal
@@ -65,7 +65,13 @@ _RESERVED_CONFIG_KEYS = ("credential_mappings", "capability_id")
 
 # Run states that count as a COMPLETED run for the post-run memory hook (#332 / ADR-027 §5) — an
 # ESCALATED pause (HITL / human assignment) is not a completed run, so no memory is written for it.
-_MEMORY_TERMINAL_STATUSES = (HarnessStatus.SUCCEEDED.value, HarnessStatus.FAILED.value)
+# #587: a PARTIAL (degrade) run FINISHED with best-effort output (checkpoint=None), so it grounds
+# memory like SUCCEEDED/FAILED — the learning signal from a degraded run is not dropped.
+_MEMORY_TERMINAL_STATUSES = (
+    HarnessStatus.SUCCEEDED.value,
+    HarnessStatus.FAILED.value,
+    HarnessStatus.PARTIAL.value,
+)
 
 
 class HarnessExecutionError(Exception):
@@ -114,7 +120,8 @@ def _cursor(
     checkpoint: LoopCheckpoint,
     member_max_tokens: int | None = None,
     member_max_tool_calls: int | None = None,
-) -> dict[str, int | None]:
+    member_on_exhaustion: str | None = None,
+) -> dict[str, int | str | None]:
     return {
         "iteration": checkpoint.iteration,
         "tool_calls_made": checkpoint.tool_calls_made,
@@ -122,6 +129,8 @@ def _cursor(
         # #576: persist the member's per-member cap so resume re-applies it (None when unset).
         "member_max_tokens": member_max_tokens,
         "member_max_tool_calls": member_max_tool_calls,
+        # #587: persist on_exhaustion so a resumed (escalated) run re-applies the choice.
+        "member_on_exhaustion": member_on_exhaustion,
     }
 
 
@@ -224,6 +233,7 @@ class HarnessExecutionService:
         graph_authoritative: bool = False,
         max_tokens: int | None = None,
         max_tool_calls: int | None = None,
+        on_exhaustion: Literal["escalate", "degrade"] | None = None,
     ) -> HarnessExecution:
         # Fail-closed tenancy (ADR-006/T1-M1): org is the principal's ONLY, never the manifest's.
         if principal.organisation_id is None:
@@ -263,6 +273,7 @@ class HarnessExecutionService:
             graph_authoritative=graph_authoritative,
             member_max_tokens=max_tokens,
             member_max_tool_calls=max_tool_calls,
+            member_on_exhaustion=on_exhaustion,
         )
         execution_id = uuid.uuid4()
         resource = f"harness_execution:{execution_id}"
@@ -310,7 +321,7 @@ class HarnessExecutionService:
                 approved_tool_call_id=cp.approved_tool_call_id,
                 # #576: persist the member's per-member cap in the cursor (JSONB, no migration) so
                 # resume re-applies the user's budget rather than reverting to the policy tier.
-                resume_cursor=_cursor(cp, max_tokens, max_tool_calls),
+                resume_cursor=_cursor(cp, max_tokens, max_tool_calls, on_exhaustion),
                 redact_patterns=cp.redact_patterns,
             )
             if steps and steps[-1]["kind"] == StepKind.GATE.value:
@@ -534,6 +545,7 @@ class HarnessExecutionService:
             org_id,
             member_max_tokens=cursor.get("member_max_tokens"),
             member_max_tool_calls=cursor.get("member_max_tool_calls"),
+            member_on_exhaustion=cursor.get("member_on_exhaustion"),  # #587: re-apply on resume
         )
         resume_state = LoopCheckpoint(
             messages=checkpoint.resume_messages,
@@ -575,7 +587,10 @@ class HarnessExecutionService:
                 # #576: carry the cap forward across a CHAINED gate so the second pause/resume keeps
                 # it too (a heavy member can cross more than one HITL gate).
                 resume_cursor=_cursor(
-                    new_cp, cursor.get("member_max_tokens"), cursor.get("member_max_tool_calls")
+                    new_cp,
+                    cursor.get("member_max_tokens"),
+                    cursor.get("member_max_tool_calls"),
+                    cursor.get("member_on_exhaustion"),
                 ),
                 redact_patterns=new_cp.redact_patterns,
             )
@@ -707,6 +722,7 @@ class HarnessExecutionService:
         graph_authoritative: bool = False,
         member_max_tokens: int | None = None,
         member_max_tool_calls: int | None = None,
+        member_on_exhaustion: Literal["escalate", "degrade"] | None = None,
     ) -> tuple[Any, list[ToolSpec], Any, LLMClient]:
         """Resolve + materialise the manifest's capabilities, build the dispatch + the LLM + the
         runtime envelope. Shared by execute() and resume() so a resume sets up identically.
@@ -722,6 +738,7 @@ class HarnessExecutionService:
             member_max_tool_calls=member_max_tool_calls,
             max_tokens_ceiling=self._max_tokens_per_member_ceiling,
             max_tool_calls_ceiling=self._max_tool_calls_per_member_ceiling,
+            member_on_exhaustion=member_on_exhaustion,  # #587: degrade vs escalate at a budget gate
         )
         instance_by_binding, tool_specs = await self._materialise(
             manifest,

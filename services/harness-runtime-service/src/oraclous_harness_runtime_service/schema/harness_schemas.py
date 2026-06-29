@@ -61,6 +61,9 @@ class ExecuteHarnessRequest(BaseModel):
     # overriding the policy tier. None → the policy tier stands (single-agent / no per-member cap).
     max_tokens: int | None = Field(default=None, ge=1)
     max_tool_calls: int | None = Field(default=None, ge=1)
+    # #587: the member's budget-exhaustion behaviour — "degrade" finishes a budget-gated loop with a
+    # flagged PARTIAL; None ⇒ the harness default "escalate" (back-compat).
+    on_exhaustion: Literal["escalate", "degrade"] | None = Field(default=None)
 
     @model_validator(mode="after")
     def _exactly_one_manifest(self) -> ExecuteHarnessRequest:
