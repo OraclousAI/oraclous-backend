@@ -93,6 +93,17 @@ async def test_mode_selects_the_endpoint(mode: str) -> None:
     assert res.success and seen["path"] == f"/v1/search/{mode}"
 
 
+async def test_empty_result_is_flagged_data_absent() -> None:
+    # #580 (ADR-021): an empty result is DATA-ABSENCE, not an error — flagged `data_absent` so the
+    # harness degrades the member (PARTIAL + alert) instead of looping on empty to a hard fail. The
+    # call still SUCCEEDS (success=True); a populated result carries no flag (asserted above).
+    ex = _connector(lambda _r: httpx.Response(200, json=[]))
+    res = await ex.execute({"graph_id": _GRAPH, "query": "q"}, _ctx())
+    assert res.success
+    assert res.data == {"hits": [], "data_absent": True}
+    assert res.metadata == {"mode": "semantic", "hit_count": 0}
+
+
 async def test_top_k_is_forwarded() -> None:
     seen: dict = {}
 

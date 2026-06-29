@@ -23,7 +23,17 @@ def test_sources_for_is_the_inverse_allowed_set() -> None:
 def test_terminal_states() -> None:
     assert is_terminal(S.SUCCEEDED) and is_terminal(S.FAILED)
     assert is_terminal(S.TIMED_OUT) and is_terminal(S.CANCELLED)
+    assert is_terminal(S.PARTIAL)  # #580: completed-degraded is terminal like SUCCEEDED
     assert not is_terminal(S.QUEUED) and not is_terminal(S.RUNNING) and not is_terminal(S.ESCALATED)
+
+
+def test_partial_is_a_completed_degraded_terminal() -> None:
+    # #580: a run that proceeded without retrieval data completes PARTIAL — reachable from RUNNING
+    # (and a resumed ESCALATED), terminal (never retried/re-queued like FAILED).
+    assert can_transition(S.RUNNING, S.PARTIAL)
+    assert can_transition(S.ESCALATED, S.PARTIAL)
+    assert not can_transition(S.PARTIAL, S.QUEUED)  # terminal — not retried
+    assert not can_transition(S.PARTIAL, S.RUNNING)
 
 
 def test_happy_path_transitions() -> None:
