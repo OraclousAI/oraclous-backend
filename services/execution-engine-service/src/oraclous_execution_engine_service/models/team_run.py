@@ -55,6 +55,9 @@ class EngineTeamRun(BaseModel):
     # the SAME graph to the remaining members. Validated org-scoped at create (must belong to the
     # caller's org via KGS); NULL → the model supplies graph_id per call / KGS org-default graph.
     graph_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # #599: user-seeded team state for fan_out.over — a member's fan_out.over: "$.<key>" resolves a
+    # provided list (threaded to run_team's ``state``). Trusted per-run input; NULL → no seeded.
+    inputs: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
     # ── run-tree correlation (ADR-037 Decision 3 / #471; additive, nullable) ──────────────────
     # root_execution_id is this run's tree root = the trace_id threaded to every member harness run
     # (minted = this run's id on first drive; STABLE across resume — read-if-NULL). The list

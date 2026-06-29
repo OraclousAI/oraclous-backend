@@ -81,9 +81,19 @@ class TeamRunResult(BaseModel):
 
 
 def _resolve_over(over: str, state: dict[str, Any], results: dict[str, Any]) -> list[Any]:
-    """Resolve a ``fan_out.over`` path — supported shape is ``$.<key>`` into state or results."""
+    """Resolve a ``fan_out.over`` path — ``$.<key>`` into either a user-seeded ``state`` value OR an
+    upstream producer's output (#599). A user input is a BARE list; a producer's dispatch result is
+    WRAPPED (``{"output": <list>, "status": ...}``), so the producer branch UNWRAPS ``output`` —
+    making a member that emits a list drive a downstream ``fan_out.over: "$.<that-member>"``."""
     key = over[2:] if over.startswith("$.") else over
-    value = state.get(key, results.get(key))
+    if key in state:
+        value = state[key]  # user-seeded input (a bare list)
+    else:
+        produced = results.get(key)  # an upstream producer's wrapped dispatch result
+        # #599: unwrap the producer's `output` so a list output drives a downstream fan_out.over
+        value = (
+            produced["output"] if isinstance(produced, dict) and "output" in produced else produced
+        )
     return list(value) if isinstance(value, (list, tuple)) else []
 
 

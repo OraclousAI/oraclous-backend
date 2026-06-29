@@ -296,6 +296,8 @@ class CreateTeamRunRequest(BaseModel):
     # per-run input — validated org-scoped at create (must belong to the caller's org via KGS);
     # None → the model supplies a graph_id per call / the KGS org-default graph.
     graph_id: str | None = None
+    # #599: user-seeded team state — a fan_out.over: "$.<key>" resolves a provided list.
+    inputs: dict[str, Any] | None = None
 
 
 class AdvanceTeamRunRequest(BaseModel):
