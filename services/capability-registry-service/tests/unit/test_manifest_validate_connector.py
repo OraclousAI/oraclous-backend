@@ -85,6 +85,21 @@ async def test_a_missing_draft_is_rejected_before_validating() -> None:
     assert res.error_type == "INVALID_INPUT"
 
 
+async def test_a_validator_failure_fails_closed_to_blocked(monkeypatch: pytest.MonkeyPatch) -> None:
+    # FAIL CLOSED: if the validator itself raises, the connector returns would_block True — never a
+    # verdict the reviewer (an LLM) could read as "not blocked" and emit an unvalidated team.
+    import oraclous_ohm.compiler as compiler_mod
+
+    def _boom(*_a: object, **_k: object) -> dict:
+        raise RuntimeError("validator exploded")
+
+    monkeypatch.setattr(compiler_mod, "validate_draft", _boom)
+    ex = ManifestValidateConnector({"id": "x"})
+    res = await ex.execute({"draft": _draft("web-search")}, _ctx())
+    assert res.success is True
+    assert res.data["would_block"] is True
+
+
 def test_the_connector_is_registered_with_a_resolving_executor() -> None:
     desc = ManifestValidatePlugin.descriptor()
     assert ManifestValidatePlugin.NAME == "Manifest Validate"  # slug → manifest-validate

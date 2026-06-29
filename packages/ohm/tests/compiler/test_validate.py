@@ -61,6 +61,72 @@ def test_a_tool_written_as_a_full_ref_matches_the_surveyed_name() -> None:
     assert v["would_block"] is False
 
 
+@pytest.mark.parametrize(
+    "bogus",
+    [
+        "evil/web-search",  # ascii-alnum namespace
+        "😈/web-search",  # emoji namespace — _slug would erase it and collapse to 'web-search'
+        ".../web-search",  # pure-punctuation namespace
+        "___/web-search",  # underscores
+        "中文/web-search",  # CJK namespace
+        "ｃｏｒｅ/web-search",  # fullwidth 'core' — NOT the canonical ascii 'core/'
+        "core//web-search",  # malformed double-slash
+        "core/web-search/x",  # nested path
+    ],
+)
+def test_a_bogus_namespace_tool_cannot_masquerade_as_a_surveyed_tool(bogus: str) -> None:
+    # SECURITY: only the canonical ascii 'core/' namespace is stripped — NO other '/'-bearing form
+    # may collapse to the surveyed bare slug and slip past the gate, however the namespace slugifies
+    # (incl. emoji/punct/CJK that a bare _slug would erase entirely). Every variant blocks.
+    catalog = {"tools": [{"name": "web-search", "ref": "core/web-search@1.0.0"}]}
+    v = validate_draft(_draft(bogus), catalog, owner_organization_id=_ORG)
+    assert v["would_block"] is True, f"{bogus!r} masqueraded as the surveyed web-search"
+    assert any("F-CAPABILITY-MISSING" in b for b in v["blocking"])
+
+
+def test_a_full_ref_with_the_wrong_slug_is_blocked() -> None:
+    # core/web-search@1.0.0 must NOT match a 'web-research' catalog — a different slug is a miss.
+    v = validate_draft(
+        _draft("core/web-search@1.0.0"), ["web-research"], owner_organization_id=_ORG
+    )
+    assert v["would_block"] is True
+
+
+def test_an_empty_slug_tool_and_catalog_entry_both_fail_closed() -> None:
+    # MEDIUM: an empty-slug catalog entry ('') must NOT become a wildcard, and an empty-slug drafted
+    # tool ('@', '/') must itself block — never a silent pass through "" == "".
+    v = validate_draft(_draft("@"), ["", "web-search"], owner_organization_id=_ORG)
+    assert v["would_block"] is True
+    assert any("F-CAPABILITY-MISSING" in b for b in v["blocking"])
+
+
+def test_two_distinct_erasing_namespaces_do_not_collide() -> None:
+    # SECURITY (2nd review round): an erasing-namespace catalog entry ('./web-research', e.g. from a
+    # poisoned relayed catalog) must NOT admit a DIFFERENT erasing-namespace drafted tool
+    # ('/web-research') — both are degenerate and fail closed, never collapsing onto one slug.
+    v = validate_draft(
+        _draft("/web-research"), {"tools": [{"name": "./web-research"}]}, owner_organization_id=_ORG
+    )
+    assert v["would_block"] is True
+
+
+def test_a_legit_foreign_namespace_matches_only_its_own_form() -> None:
+    # a non-core namespaced tool matches the SAME form (a/web-research ↔ a/web-research) but a
+    # distinct namespace stays distinct (b/web-research would NOT match) — identity preserved.
+    assert (
+        validate_draft(_draft("a/web-research"), ["a/web-research"], owner_organization_id=_ORG)[
+            "would_block"
+        ]
+        is False
+    )
+    assert (
+        validate_draft(_draft("b/web-research"), ["a/web-research"], owner_organization_id=_ORG)[
+            "would_block"
+        ]
+        is True
+    )
+
+
 def test_prose_wrapped_json_is_peeled_not_misblocked() -> None:
     # a REAL drafter LLM wraps the JSON in prose / a ```json fence — it must still parse (#599)
     draft = (
