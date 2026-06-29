@@ -163,7 +163,9 @@ def _member_completion_progress(row: EngineTeamRun) -> int:
     # recorded member_status (mirrors the _completed_for_resume back-compat).
     ms = row.member_status or {}
     delivered = (
-        sum(1 for s in ms.values() if s in ("succeeded", "skipped"))
+        # #587: a "partial" (degraded) member DELIVERED its best-effort output (downstream consumed
+        # it) — count it delivered, like succeeded/skipped; else a SUCCEEDED degrade run is <100%.
+        sum(1 for s in ms.values() if s in ("succeeded", "skipped", "partial"))
         if ms
         else len(row.results or {})
     )
@@ -421,18 +423,20 @@ class TeamRunService:
     @staticmethod
     def _completed_for_resume(row: EngineTeamRun) -> dict[str, Any]:
         """Which members to SEED on a (re-)drive so they are not re-dispatched (G-D). ADR-042
-        (#551): seed only the members whose terminal status is "succeeded" — so a re-run re-runs the
-        FAILED + BLOCKED members (their results are None, never a real output) while the succeeded
-        ones are reused. Back-compat: an in-flight PAUSED run created before member_status existed
-        carries an empty member_status; fall back to all results so its gate-resume still reuses the
-        pre-gate members (which are the only ones with a result on a PAUSED row)."""
+        (#551): seed the members whose terminal status is "succeeded" OR "partial" — so a re-run
+        re-runs the FAILED + BLOCKED members (their results are None, never a real output) while the
+        succeeded ones AND the #587 DEGRADED ("partial") members (which FINISHED with best-effort
+        output, terminal/done) are reused — never re-dispatched (no token re-spend, no side-effect
+        re-fire). Back-compat: an in-flight PAUSED run created before member_status existed carries
+        an empty member_status; fall back to all results so its gate-resume reuses the pre-gate
+        members (which are the only ones with a result on a PAUSED row)."""
         member_status = row.member_status or {}
         if not member_status:
             return dict(row.results or {})  # pre-ADR-042 resume semantics (in-flight PAUSED rows)
         return {
             role: row.results[role]
             for role, status in member_status.items()
-            if status == "succeeded" and role in (row.results or {})
+            if status in ("succeeded", "partial") and role in (row.results or {})
         }
 
     async def get(self, team_run_id: uuid.UUID, principal: Principal) -> EngineTeamRun:

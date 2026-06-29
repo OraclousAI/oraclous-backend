@@ -16,7 +16,7 @@ from typing import Any
 
 import pytest
 from oraclous_ohm.envelope import HandoffEnvelope
-from oraclous_ohm.manifest import OHMManifest, OHMMember, OHMMetadata, OHMRuntime
+from oraclous_ohm.manifest import OHMFanOut, OHMManifest, OHMMember, OHMMetadata, OHMRuntime
 from oraclous_ohm.orchestrate import run_team
 
 pytestmark = pytest.mark.unit
@@ -57,6 +57,26 @@ async def test_partial_member_does_not_cascade_fail_the_team() -> None:
     res = await run_team(_team([_m("a")]), dispatch)
     assert res.member_status["a"] == "partial"
     assert res.status == "completed"  # a degraded member does NOT make the run failed
+
+
+async def test_fan_out_with_a_degraded_item_is_recorded_partial() -> None:
+    # #587 (review SHOULD-FIX): a deterministic reduce STRIPS the per-item status, so a fan-out
+    # member with a degraded sub-dispatch must STILL be recorded "partial", not "succeeded".
+    async def dispatch(member: OHMMember, envs: list[HandoffEnvelope], item: Any) -> dict:
+        status = "PARTIAL" if item == "b" else "SUCCEEDED"  # one of three items degrades
+        return {"output": f"out-{item}", "status": status}
+
+    fan = OHMMember(
+        role="w",
+        kind="agent",
+        manifest_ref="org:x/w@1",
+        fan_out=OHMFanOut(over="$.items", max_parallel=2, reduce="concat"),
+    )
+    res = await run_team(_team([fan]), dispatch, state={"items": ["a", "b", "c"]})
+    assert (
+        res.member_status["w"] == "partial"
+    )  # a degraded sub-run makes the fan-out member partial
+    assert res.status == "completed"  # still not a failure
 
 
 async def test_a_real_failure_still_outranks_a_partial() -> None:

@@ -65,8 +65,10 @@ class TeamRunResult(BaseModel):
     status: Literal["completed", "paused", "rejected", "failed", "cost_budget"] = "completed"
     paused_at: list[str] = Field(default_factory=list)  # the human gate role(s) the run blocks on
     # ADR-042 per-member terminal status — role -> "succeeded"|"failed"|"blocked"|"skipped"|
-    # "budget_skipped". The team verdict derives from it (SUCCEEDED iff none failed/blocked); re-run
-    # targets the failures. "budget_skipped" (#585) = un-attempted-by-budget, NOT a member fault.
+    # "budget_skipped"|"partial". The team verdict derives from it (SUCCEEDED iff none failed/
+    # blocked); re-run targets the failures. "budget_skipped" (#585) = un-attempted-by-budget;
+    # "partial" (#587) = a degraded member (its loop exhausted under on_exhaustion=degrade) — both
+    # NOT a member fault, so neither makes the team "failed".
     member_status: dict[str, str] = Field(default_factory=dict)
     # role -> the failure detail for a "failed" member (leak-safe str of the dispatch error)
     member_errors: dict[str, str] = Field(default_factory=dict)
@@ -374,6 +376,15 @@ async def run_team(
                         on=fan.reduce_key,
                         key=fan.reduce_key,
                     )
+                # #587: a deterministic reduce STRIPS the per-item status, so the single-dispatch
+                # check below can't see a degraded sub-run — a fan-out member is "partial" if ANY
+                # sub-dispatch (a fan-out item OR the synthesize pass) degraded.
+                reduced = results[role]
+                degraded = (
+                    isinstance(reduced, dict) and reduced.get("status") == "PARTIAL"
+                ) or any(isinstance(o, dict) and o.get("status") == "PARTIAL" for o in outputs)
+                member_status[role] = "partial" if degraded else "succeeded"
+                return
             else:
                 # #585: the pre-dispatch pooled ceiling gate for a single (non-fan-out) member —
                 # multi-member team halts before the member that would cross the team total.
@@ -393,7 +404,14 @@ async def run_team(
             member_status[role] = "failed"
             member_errors[role] = str(exc)[:2000] or type(exc).__name__
             return
-        member_status[role] = "succeeded"
+        # #587: a DEGRADED member (its loop exhausted a budget under on_exhaustion=degrade) returns
+        # a PARTIAL dispatch payload — record it "partial" (a 6th terminal), NOT "succeeded". It's a
+        # governed graceful exhaustion: downstream still runs, and it is NOT a failure (has_failure
+        # below excludes it), so the team verdict is not made "failed" by a degrade.
+        out = results.get(role)
+        member_status[role] = (
+            "partial" if isinstance(out, dict) and out.get("status") == "PARTIAL" else "succeeded"
+        )
 
     # Stage fan-out cap (#543): bound how many members dispatch concurrently so a wide stage cannot
     # self-throttle the shared BYOM key. Wraps the run_member calls (NOT the inner fan_out dispatch,
@@ -467,6 +485,14 @@ async def run_team(
     # member makes the run "failed" (→ FAILED), re-runnable by re-driving the failed+blocked members
     # with the succeeded ones seeded via ``completed``. A skipped (conditional) member is a declared
     # no-op, not a failure, so it does not block SUCCEEDED.
+    if budget_exhausted:
+        # #585 (folded with #587): the stage loop BREAKS at a budget halt, so later-stage members
+        # were never visited — backfill them "budget_skipped" so member_status carries EVERY member
+        # (ADR-042 contract + re-run targeting), not just the breaking stage. setdefault keeps any
+        # already recorded (succeeded / partial / failed).
+        for stage in stages:
+            for role in stage:
+                member_status.setdefault(role, "budget_skipped")
     has_failure = any(s in ("failed", "blocked") for s in member_status.values())
     # #585: a real member FAILURE outranks the budget halt (mirrors the gate-vs-failure precedence
     # above) — else a failed member would be masked as the healthy/non-re-runnable COST_BUDGET and
@@ -838,8 +864,15 @@ async def run_loop_seam(
                 continue
             inbound = _loop_inbound(loop, member, results, by_role, envelopes)
             try:
-                results[role] = await dispatch(member, inbound, None)
-                member_status[role] = "succeeded"
+                out = await dispatch(member, inbound, None)
+                results[role] = out
+                # #587: mirror the DAG path — a DEGRADED loop member (PARTIAL) is "partial", not
+                # "succeeded" (the same degrade-capable dispatch feeds this path).
+                member_status[role] = (
+                    "partial"
+                    if isinstance(out, dict) and out.get("status") == "PARTIAL"
+                    else "succeeded"
+                )
             except Exception as exc:  # noqa: BLE001 — #551 non-abort: record, never raise out of loop
                 results.setdefault(role, None)
                 member_status[role] = "failed"
