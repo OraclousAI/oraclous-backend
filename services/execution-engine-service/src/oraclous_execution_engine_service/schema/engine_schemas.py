@@ -326,6 +326,10 @@ class TeamRunOut(BaseModel):
     # see a loop's conductor activity — how many rounds it ran + how many bounded recalibrations it
     # spent. Additive + diagnostic; the run state never branches on it. Empty for an acyclic team.
     loop_state: dict[str, Any] = Field(default_factory=dict)
+    # #585 (ADR-031 §D3): True when the run halted PARTIALLY on the team-pooled budget ceiling —
+    # derived from the governed COST_BUDGET terminal (a budget halt is always partial), so a caller
+    # (and the deployed e2e) can branch on the flag without string-matching the state.
+    partial: bool = False
 
     @field_validator("member_status", "loop_state", mode="before")
     @classmethod
@@ -334,6 +338,12 @@ class TeamRunOut(BaseModel):
         # so a QUEUED run is {} not None. This only coerces None from a Python-constructed/unflushed
         # row (e.g. the route unit tests) or a hypothetical pre-migration NULL — fail-soft.
         return v or {}
+
+    @model_validator(mode="after")
+    def _derive_partial(self) -> TeamRunOut:
+        if self.state == "COST_BUDGET":  # #585: a pooled-budget halt is always a partial run
+            self.partial = True
+        return self
 
 
 class TeamRunTreeOut(BaseModel):
