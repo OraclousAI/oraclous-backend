@@ -17,6 +17,7 @@ from oraclous_execution_engine_service.services.team_run import (
     run_team_harness,
 )
 from oraclous_ohm.manifest import (
+    OHMBudget,
     OHMManifest,
     OHMMember,
     OHMMetadata,
@@ -210,3 +211,55 @@ async def test_run_if_conditional_dispatch_is_honoured_through_the_team_run_brid
     assert "instrument" in res.skipped  # conditionally skipped on research's status
     assert len(harness.calls) == 1  # only research ran; instrument never dispatched
     assert all(c["ref"] != "org:x/instrument@1" for c in harness.calls)
+
+
+class _TokenHarness:
+    """A fake harness returning a fixed RAW token cost per call, so the running pooled tally (fed by
+    on_cost) can cross a team ceiling mid-run — the #585 pooled-budget pre-dispatch gate."""
+
+    def __init__(self, tokens_per_call: int) -> None:
+        self.tokens = tokens_per_call
+        self.calls = 0
+
+    async def execute(self, **kwargs: Any) -> dict[str, Any]:
+        self.calls += 1
+        return {
+            "id": str(uuid.uuid4()),
+            "status": "SUCCEEDED",
+            "output": "ran",
+            "total_tokens": self.tokens,
+        }
+
+
+def _budget_team(members: list[OHMMember], budget: OHMBudget) -> OHMManifest:
+    return OHMManifest(
+        ohm_version="1.1",
+        metadata=OHMMetadata(id=uuid.uuid4(), name="t", owner_organization_id=_ORG, kind="team"),
+        members=members,
+        budget=budget,
+        runtime=OHMRuntime(entrypoint=members[0].role),
+    )
+
+
+async def test_run_team_harness_halts_a_multi_member_run_at_the_pooled_token_ceiling() -> None:
+    # #585 the PRODUCTION dispatch factory (make_harness_dispatch) gates EVERY member on the pooled
+    # 100 tokens/member, max_tokens_total=250 → after ~2-3 members the running tally crosses 250 and
+    # the next member is never dispatched. A flagged partial halt (cost_budget), not failed.
+    harness = _TokenHarness(tokens_per_call=100)
+    members = [_m("a"), _m("b", ["a"]), _m("c", ["b"]), _m("d", ["c"]), _m("e", ["d"])]
+    res = await run_team_harness(_budget_team(members, OHMBudget(max_tokens_total=250)), harness)
+    assert res.status == "cost_budget"  # the governed budget-halt terminal, NOT "failed"
+    assert res.partial is True
+    assert harness.calls < 5  # halted before the last member(s) — fewer dispatches than members
+    assert any(v == "budget_skipped" for v in res.member_status.values())  # not a member error
+
+
+async def test_run_team_harness_no_pool_ceiling_runs_every_member_unchanged() -> None:
+    # the #576 invariant at the engine seam: no pooled ceiling → identical to today (every member
+    # runs, completed, not partial). Locks that the new gate is inert when max_*_total is unset.
+    harness = _TokenHarness(tokens_per_call=100)
+    members = [_m("a"), _m("b", ["a"]), _m("c", ["b"])]
+    res = await run_team_harness(_budget_team(members, OHMBudget()), harness)
+    assert res.status == "completed"
+    assert res.partial is False
+    assert harness.calls == 3  # every member dispatched
