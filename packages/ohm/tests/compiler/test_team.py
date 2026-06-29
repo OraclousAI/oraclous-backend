@@ -45,3 +45,15 @@ def test_the_budget_is_the_three_layer_shape() -> None:
     assert b is not None
     assert b.max_tokens_total == 200_000 and b.max_sub_runs == 20  # the team pool (enforced axes)
     assert b.max_tokens_per_member == 60_000 and b.max_tokens_per_member <= b.max_tokens_total
+
+
+def test_the_objective_and_catalog_are_seeded_into_the_subgoals() -> None:
+    # slice-1: the prose objective → the planner's subgoal; the catalog → the surveyor's. No engine
+    # wiring — both render as the member's harness Objective: line (team_run._render_input).
+    manifest, _ = build_compiler_team(
+        _ORG, objective="Summarise the week's AI news into a digest.", catalog=["web-search"]
+    )
+    by = {m.role: m for m in manifest.members}
+    assert by["planner"].subgoal == "Summarise the week's AI news into a digest."
+    assert by["capability-surveyor"].subgoal is not None
+    assert "web-search" in by["capability-surveyor"].subgoal  # the seeded catalog is in the subgoal
