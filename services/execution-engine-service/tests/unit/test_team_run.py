@@ -263,3 +263,42 @@ async def test_run_team_harness_no_pool_ceiling_runs_every_member_unchanged() ->
     assert res.status == "completed"
     assert res.partial is False
     assert harness.calls == 3  # every member dispatched
+
+
+class _RecordingHarness:
+    """Records every execute() kwarg + succeeds — to assert what the dispatch threads (#587)."""
+
+    def __init__(self) -> None:
+        self.kwargs: list[dict[str, Any]] = []
+
+    async def execute(self, **kw: Any) -> dict[str, Any]:
+        self.kwargs.append(kw)
+        return {"id": str(uuid.uuid4()), "status": "SUCCEEDED", "output": "ok", "total_tokens": 0}
+
+
+async def test_dispatch_threads_on_exhaustion_to_the_harness() -> None:
+    # #587: a member's resolved on_exhaustion rides to harness.execute exactly like the #576 caps.
+    harness = _RecordingHarness()
+    member = OHMMember(role="a", kind="agent", manifest_ref="org:x/a@1", on_exhaustion="degrade")
+    await run_team_harness(_team([member]), harness)
+    assert harness.kwargs[0].get("on_exhaustion") == "degrade"
+
+
+class _PartialHarness:
+    """A member whose loop DEGRADED — a flagged PARTIAL (best-effort output), not a fault."""
+
+    async def execute(self, **kw: Any) -> dict[str, Any]:
+        return {
+            "id": str(uuid.uuid4()),
+            "status": "PARTIAL",
+            "output": "best-effort",
+            "total_tokens": 50,
+        }
+
+
+async def test_run_team_harness_partial_member_does_not_fail_the_team() -> None:
+    # #587: a PARTIAL member (on_exhaustion=degrade) is recorded "partial" and does NOT make the
+    # team failed — the dispatch must NOT raise on PARTIAL (only FAILED raises); the team completes.
+    res = await run_team_harness(_team([_m("a")]), _PartialHarness())
+    assert res.member_status["a"] == "partial"
+    assert res.status == "completed"
