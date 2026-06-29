@@ -13,6 +13,8 @@ def test_known_statuses() -> None:
     assert map_harness_status("SUCCEEDED") is S.SUCCEEDED
     assert map_harness_status("FAILED") is S.FAILED
     assert map_harness_status("ESCALATED") is S.ESCALATED
+    # #580/#587: a degrade-completed run is a real terminal, NOT the fail-closed default.
+    assert map_harness_status("PARTIAL") is S.PARTIAL
 
 
 def test_unknown_status_fails_closed() -> None:

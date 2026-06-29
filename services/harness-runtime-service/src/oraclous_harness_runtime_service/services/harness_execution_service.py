@@ -27,6 +27,7 @@ from oraclous_ohm.parse import load_ohm
 from oraclous_ohm.references import resolve_capabilities
 from oraclous_ohm.signatures import TrustStore, verify_signatures
 from oraclous_substrate import ProvenanceCollector, ProvenanceRecord
+from oraclous_telemetry import Severity, alert
 
 from oraclous_harness_runtime_service.domain.llm.base import LLMClient, ToolSpec
 from oraclous_harness_runtime_service.domain.llm.egress import (
@@ -304,6 +305,19 @@ class HarnessExecutionService:
             )
         finally:
             await self._aclose_llm(llm)
+
+        # #580 (ADR-021 never-silently): a retrieval reported data-absence and the member degraded
+        # to PARTIAL — surface a structured degradation alert (not just a quiet PARTIAL result), so
+        # an operator sees a from-scratch/empty-graph run proceeding without its expected data.
+        if result.status is HarnessStatus.PARTIAL and result.error_type == "empty_retrieval":
+            alert(
+                Severity.WARNING,
+                "retrieval.empty",
+                "harness-runtime",
+                "a member proceeded without retrieval data (data-absence) and was flagged PARTIAL",
+                execution_id=str(execution_id),
+                harness=str(manifest.metadata.id),
+            )
 
         # A mid-loop HITL pause parks a resumable checkpoint; its id goes into the GATE step detail
         # (the engine correlates on the execution id, not this — it's for traceability, like a human

@@ -131,6 +131,15 @@ _TOOL_USE_NUDGE = (
     "do not only describe it. If you genuinely have no action to take, state that explicitly."
 )
 
+# #580 (ADR-021 degrade-not-crash): a retrieval that returns no data is data-absence, not an error.
+# Feed the model this note (instead of letting it loop on the empty result) so it proceeds with what
+# it has and STOPS retrying — the run is then flagged PARTIAL at the terminal (never silently).
+_EMPTY_RETRIEVAL_NOTE = (
+    "No data was found for this query — the graph returned nothing. This is NOT an error: "
+    "proceed with what you already have and complete your objective as best you can. Do not keep "
+    "retrying the same retrieval; there is no data there to find."
+)
+
 
 async def run_tool_use_loop(
     *,
@@ -172,6 +181,12 @@ async def run_tool_use_loop(
     steps: list[LoopStep] = []
     last_text = ""
     nudged = False  # completion contract (#543): one-time "use your tools" re-prompt — see below
+    # #580: set when a retrieval reports data-absence (an empty result it flagged). A run that
+    # completes after this degrades to a flagged PARTIAL (never a silent SUCCEEDED) — ADR-021.
+    # Intentionally NOT carried across a HITL resume (a fresh nonlocal): an empty-retrieval-then-
+    # paused run that resumes to completion reports SUCCEEDED — acceptable (degrade-not-crash; the
+    # model still saw the "no data" note), a known minor fidelity gap, never a cascade.
+    retrieval_empty = False
     # Gate the nudge to PRODUCING members — those with a graph-ingest ("ingest") tool that are meant
     # to persist output. A reasoning/retrieval-only member that legitimately answers without a tool
     # is never re-prompted (so the completion contract can't add a spurious turn to it).
@@ -224,6 +239,14 @@ async def run_tool_use_loop(
     def _budget_gate(name: str, reason: str, message: str, iterations: int) -> LoopResult:
         # #587: a BUDGET gate honours on_exhaustion — escalate (today) or degrade (PARTIAL). A HITL
         # pause is NOT routed here (it always _escalate-with-checkpoint); only budget breaches.
+        # #580: a member that ran out of ITERATIONS while blocked by a data-absent retrieval churned
+        # on missing data — degrade (PARTIAL) regardless of on_exhaustion, so a from-scratch/empty-
+        # graph member never hard-fails the team on missing data (ADR-021). A token/wall/tool-call
+        # overrun is real work, NOT data-absence churn → it still honours on_exhaustion (escalate).
+        if retrieval_empty and reason == "iteration_cap":
+            return _degrade(
+                "dependency", "empty_retrieval", "did not converge on missing data", iterations
+            )
         gate = _escalate if policy.on_exhaustion == "escalate" else _degrade
         return gate(name, reason, message, iterations)
 
@@ -232,7 +255,7 @@ async def run_tool_use_loop(
     ) -> LoopResult | None:
         """Dispatch a turn's tool calls. Returns an escalation LoopResult (pause/budget) or None to
         continue. ``approved_id`` (resume only) bypasses the HITL gate for exactly that one call."""
-        nonlocal tool_calls_made
+        nonlocal tool_calls_made, retrieval_empty
         for i, tc in enumerate(tool_calls):
             spec = by_name.get(tc["name"])
             # Coded governance — enforced BEFORE any dispatch, regardless of what the prose said.
@@ -299,6 +322,13 @@ async def run_tool_use_loop(
                 tool_calls_made += 1
                 try:
                     result = await dispatch(spec, tc["args"])
+                    # #580: a retrieval that found nothing flags `data_absent` — a RESERVED result
+                    # key set ONLY by the knowledge-retriever connector on an empty result (no other
+                    # tool may emit it). Strip the private flag, swap in a clear proceed-note so the
+                    # model stops looping on empty, and mark the run to degrade (ADR-021).
+                    if isinstance(result, dict) and result.pop("data_absent", False):
+                        retrieval_empty = True
+                        result["note"] = _EMPTY_RETRIEVAL_NOTE
                     content = _redact(json.dumps(result, default=str), redactors)
                     status = "ok"
                 except Exception as exc:  # noqa: BLE001 — feed the error back so the model can adapt
@@ -392,6 +422,16 @@ async def run_tool_use_loop(
                 messages.append({"role": "user", "content": _TOOL_USE_NUDGE})
                 steps.append(LoopStep(len(steps), StepKind.LLM, "primary", "nudge", "use-tools"))
                 continue
+            if retrieval_empty:
+                # #580: the member completed, but a retrieval reported data-absence — degrade to a
+                # flagged PARTIAL (never a silent SUCCEEDED) via #587's _degrade, so the data gap
+                # surfaces (ADR-021 never-silently). Non-cascading: the team still completes.
+                return _degrade(
+                    "dependency",
+                    "empty_retrieval",
+                    "retrieval returned no data; the member proceeded with what was available",
+                    iteration,
+                )
             return LoopResult(
                 HarnessStatus.SUCCEEDED,
                 last_text,
