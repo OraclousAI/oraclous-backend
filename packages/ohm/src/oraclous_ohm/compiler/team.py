@@ -32,6 +32,15 @@ from oraclous_ohm.manifest import (
 #: the reviewer's validate capability — the registered ``manifest-validate`` connector (slice-1).
 _VALIDATE_TOOL = "manifest-validate"
 
+#: the bounded in-harness repair loop (CTO decision A / decision-3): the reviewer fixes a blocked
+#: draft and re-validates at most ``_REPAIR_ATTEMPTS`` times (default 2 / max 3). Each attempt is
+#: one ``manifest-validate`` tool call, so the loop is HARD-bounded by capping the reviewer member's
+#: ``max_tool_calls`` at ``_REPAIR_ATTEMPTS + 1`` (the initial validate + N fixes) — the harness
+#: halts the loop at the cap, independent of whether the model honours the prompt. After the cap it
+#: fails closed with a gap report (no team JSON).
+_REPAIR_ATTEMPTS = 2
+_REVIEWER_VALIDATE_CALLS = _REPAIR_ATTEMPTS + 1
+
 
 def build_compiler_team(
     owner_organization_id: uuid.UUID,
@@ -83,8 +92,10 @@ def build_compiler_team(
             kind="agent",
             manifest_ref="org:compiler/reviewer@1",
             tools=[_VALIDATE_TOOL],  # the in-harness repair loop calls validate via this capability
-            # sees the draft (drafter) AND the catalog (surveyor) — both needed for the diff
+            # sees the draft (drafter) AND the catalog (surveyor) — both needed to diff AND to fix
             depends_on=["manifest-drafter", "capability-surveyor"],
+            # HARD bound on the validate→fix→validate loop: initial validate + at most N fixes
+            max_tool_calls=_REVIEWER_VALIDATE_CALLS,
         ),
     ]
     manifest = OHMManifest(

@@ -4,7 +4,10 @@ Authored as module constants (shipped with the package, importable in-process). 
 ``body=`` of ``build_subharness`` for one member of the compiler Team Harness: planner →
 capability-surveyor → manifest-drafter → reviewer. The reviewer's verdict is a CODED
 ``would_block`` from the shared validator (``validate_draft``), never a model self-certification
-(ADR-043 invariant); the bound on its re-drafts is the loop conductor's, not the prompt's.
+(ADR-043 invariant); it runs a BOUNDED in-harness repair loop (validate → FIX the named
+members/tools → re-validate, at most two fix attempts), then fails closed with a gap report. The
+bound is HARD-enforced by the reviewer member's ``max_tool_calls`` cap (the harness halts the
+loop), not merely the prompt — see ``team.build_compiler_team``.
 """
 
 from __future__ import annotations
@@ -44,12 +47,18 @@ DRAFTER_PROMPT = (
 )
 
 REVIEWER_PROMPT = (
-    "You are the REVIEWER. Take the MANIFEST-DRAFTER's drafted JSON team and validate it with your "
-    "`manifest-validate` tool (it runs the same dry-run the importer uses and returns a CODED "
-    "`would_block` verdict plus the blocking reasons). You do NOT judge the team yourself — the "
-    "tool's verdict is the truth.\n"
-    "- If would_block is FALSE: reply with ONLY the validated team JSON (the drafter's manifest), "
-    "verbatim — this is the finished, runnable Team Harness.\n"
-    "- If would_block is TRUE: reply with the blocking reasons as a concise gap report so the "
-    "drafter can re-draft (fix the named members/tools). Do NOT emit a team JSON while blocked."
+    "You are the REVIEWER — and the FIXER. You receive the MANIFEST-DRAFTER's drafted JSON team. "
+    "Run this BOUNDED repair loop using your `manifest-validate` tool (it runs the same dry-run "
+    "the importer uses and returns a CODED `would_block` verdict + the blocking reasons — that "
+    "is the truth; you NEVER judge the team yourself):\n"
+    "1. Call `manifest-validate` on the CURRENT team JSON.\n"
+    "2. If `would_block` is FALSE → reply with ONLY that team JSON, verbatim. It is the finished, "
+    "runnable Team Harness. STOP.\n"
+    "3. If `would_block` is TRUE → FIX the team YOURSELF: edit exactly the members/tools the "
+    "blocking reasons name — drop or replace any unsurveyed/hallucinated tool with one from the "
+    "surveyor's catalog (omit the tool entirely if none fits), and repair the named member — then "
+    "return to step 1 with the FIXED JSON.\n"
+    "Repeat steps 1–3 at most TWICE (two fix attempts). If it is STILL blocked after the second "
+    "fix, reply with the final blocking reasons as a concise gap report and NO team JSON — fail "
+    "closed. Your `manifest-validate` calls are hard-capped by the harness, never loop past it."
 )
