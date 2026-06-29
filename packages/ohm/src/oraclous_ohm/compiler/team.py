@@ -1,0 +1,115 @@
+"""#594 (ADR-047 decision 2) — build the Harness Compiler AS an OHM v1.1 Team Harness.
+
+Four members in a LINEAR ACYCLIC chain — planner → capability-surveyor → manifest-drafter →
+reviewer (four sequential ``execution_stages()``). NO team-level loop / no engine done-check: the
+repair loop is the REVIEWER's own in-harness tool-use loop (CTO decision A) — its single dispatch
+iterates validate→fix→validate via the ``manifest-validate`` tool (#593 ``would_block``), bounded by
+its iteration cap + the #585 pool. The drafter depends on BOTH the surveyor (the tool catalog) and
+the planner (the DAG sketch) so it sees both upstream outputs; the chain stays acyclic.
+"""
+
+from __future__ import annotations
+
+import json
+import uuid
+from typing import Any
+
+from oraclous_ohm.compiler.prompts import (
+    DRAFTER_PROMPT,
+    PLANNER_PROMPT,
+    REVIEWER_PROMPT,
+    SURVEYOR_PROMPT,
+)
+from oraclous_ohm.import_.mapping import build_subharness
+from oraclous_ohm.manifest import (
+    OHMBudget,
+    OHMManifest,
+    OHMMember,
+    OHMMetadata,
+    OHMRuntime,
+)
+
+#: the reviewer's validate capability — the registered ``manifest-validate`` connector (slice-1).
+_VALIDATE_TOOL = "manifest-validate"
+
+
+def build_compiler_team(
+    owner_organization_id: uuid.UUID,
+    *,
+    objective: str = "",
+    catalog: list[Any] | None = None,
+    name: str = "harness-compiler",
+) -> tuple[OHMManifest, dict[str, dict]]:
+    """Return the compiler Team Harness manifest + its four member sub-harnesses (ready to POST to
+    ``/v1/engine/team-runs``). The model is bound by the caller (BYOM).
+
+    Slice-1 seeds the run deterministically by BAKING two values into the member sub-goals at build
+    time (a member's sub-goal renders as its harness ``Objective:`` line — team_run._render_input —
+    so no engine wiring is needed): the prose ``objective`` becomes the PLANNER's sub-goal, and the
+    surveyed ``catalog`` (the tool ceiling) becomes the SURVEYOR's. The reviewer ``depends_on`` BOTH
+    the drafter (the draft to validate) and the surveyor (the catalog to diff against); the chain
+    stays acyclic (planner→surveyor→drafter→reviewer). A live survey connector is a fast-follow.
+    """
+    surveyor_goal = (
+        f"The surveyed capability catalog (the ONLY tools a member may use): {json.dumps(catalog)}"
+        if catalog
+        else None
+    )
+    members = [
+        OHMMember(
+            role="planner",
+            kind="agent",
+            manifest_ref="org:compiler/planner@1",
+            tools=[],
+            subgoal=objective or None,  # the prose objective IS the planner's task (seeded)
+        ),
+        OHMMember(
+            role="capability-surveyor",
+            kind="agent",
+            manifest_ref="org:compiler/surveyor@1",
+            tools=[],
+            depends_on=["planner"],
+            subgoal=surveyor_goal,  # the seeded catalog IS the surveyor's task (deterministic)
+        ),
+        OHMMember(
+            role="manifest-drafter",
+            kind="agent",
+            manifest_ref="org:compiler/drafter@1",
+            tools=[],
+            depends_on=["capability-surveyor", "planner"],
+        ),
+        OHMMember(
+            role="reviewer",
+            kind="agent",
+            manifest_ref="org:compiler/reviewer@1",
+            tools=[_VALIDATE_TOOL],  # the in-harness repair loop calls validate via this capability
+            # sees the draft (drafter) AND the catalog (surveyor) — both needed for the diff
+            depends_on=["manifest-drafter", "capability-surveyor"],
+        ),
+    ]
+    manifest = OHMManifest(
+        ohm_version="1.1",
+        metadata=OHMMetadata(
+            id=uuid.uuid4(),
+            name=name,
+            owner_organization_id=owner_organization_id,
+            kind="team",
+        ),
+        members=members,
+        runtime=OHMRuntime(entrypoint="planner"),
+        # the 3-layer budget: a team pool + a per-member safety cap (each <= the pool).
+        budget=OHMBudget(max_tokens_total=200_000, max_sub_runs=20, max_tokens_per_member=60_000),
+    )
+
+    def _sub(role: str, body: str, tools: list[str]) -> dict:
+        return build_subharness(
+            role, owner_organization_id=owner_organization_id, body=body, tools=tools
+        ).model_dump(mode="json")
+
+    sub_harnesses = {
+        "planner": _sub("planner", PLANNER_PROMPT, []),
+        "capability-surveyor": _sub("capability-surveyor", SURVEYOR_PROMPT, []),
+        "manifest-drafter": _sub("manifest-drafter", DRAFTER_PROMPT, []),
+        "reviewer": _sub("reviewer", REVIEWER_PROMPT, [_VALIDATE_TOOL]),
+    }
+    return manifest, sub_harnesses
