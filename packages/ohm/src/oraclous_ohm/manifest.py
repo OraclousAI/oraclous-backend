@@ -84,12 +84,34 @@ class OHMActor(BaseModel):
     human_role: str | None = None  # for human actors: the workspace role to assign the task to
 
 
+class OHMSkillDriver(BaseModel):
+    """#577 slice-3 — the staging contract for a skill backed by an external CLI package (a uv
+    package, not prose). RECORDED from the pyproject + SKILL.md; executes NOTHING (the venv +
+    dispatch is the harness-runtime's job). ``None`` on a runtime → not a skill-driver."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    kind: Literal["python-cli"] = "python-cli"  # extensible (node-cli, … later)
+    package_path: str  # the package dir, relative to the team/skills root (e.g. "reader-panel")
+    entry_point: str  # the [project.scripts] target, e.g. "reader_panel.cli:main"
+    command_name: str  # the [project.scripts] name, e.g. "reader-panel"
+    python_version: str | None = (
+        None  # the pinned interpreter from the SKILL.md setup (e.g. "3.12")
+    )
+    requires_python: str | None = None  # the pyproject constraint (e.g. ">=3.11")
+    env: dict[str, str] = Field(default_factory=dict)  # required env vars; values runtime-injected
+    setup_cmd: str | None = None  # the setup template (recorded, NOT run)
+    source: str = ""  # the pyproject path the driver was read from
+
+
 class OHMRuntime(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     entrypoint: str = Field(min_length=1)  # a capability binding (no actors) OR an actor role
     budget: dict[str, Any] = Field(default_factory=dict)
     observability_tags: dict[str, str] = Field(default_factory=dict)
+    # #577 slice-3: a staged external-CLI skill-driver (recorded at import; the runtime runs it).
+    driver: OHMSkillDriver | None = None
 
 
 # ── OHM v1.1 team blocks (ADR-031; additive) ───────────────────────────────────────────────

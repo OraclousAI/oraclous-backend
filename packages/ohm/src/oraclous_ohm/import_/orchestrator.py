@@ -115,6 +115,28 @@ def adapt_orchestrator_skill(
         else []
     )
     if not wave_dirs:
+        # #577 slice-2: no modules/ layout, but a PROSE coordinator (a `chapter` pipeline) is the
+        # book-studio shape — delegate to the prose adapter rather than dead-end. The wave/modules
+        # path stays the live route whenever a modules/ layout exists (filesystem wins over prose).
+        from oraclous_ohm.import_.prose_coordinator import (
+            adapt_prose_coordinator_skill,
+            has_prose_pipeline,
+        )
+
+        if has_prose_pipeline(resolved.body):
+            plan = adapt_prose_coordinator_skill(
+                resolved, owner_organization_id=owner_organization_id, skills_root=skills_root
+            )
+            # preserve the orchestrator-path signal the prose adapter never sees (ADR-034 §7 O8):
+            # the --mode flags + conditional_modes, the inferred medium + absent-termination flag,
+            # and the richer orchestration (style/success_criteria from the skill's sections).
+            return plan.model_copy(
+                update={
+                    "orchestration": orchestration,
+                    "flags": flags + plan.flags,
+                    "conditional_modes": modes,
+                }
+            )
         flag("F-ORCH-UNSTRUCTURED", "blocking", "no modules/<wave>/ layout; cannot derive members")
         return OrchestratorPlan(
             orchestration=orchestration, members=[], flags=flags, conditional_modes=modes

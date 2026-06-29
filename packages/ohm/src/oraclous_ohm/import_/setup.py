@@ -66,7 +66,21 @@ class ImportResult(BaseModel):
 
 
 def _is_orchestrator_dir(root: Path) -> bool:
-    return (root / "SKILL.md").is_file() and (root / "modules").is_dir()
+    skill_md = root / "SKILL.md"
+    if not skill_md.is_file():
+        return False
+    if (root / "modules").is_dir():
+        return True
+    # #577 slice-2: a prose coordinator (a numbered `chapter` pipeline, no modules/<wave>/ layout —
+    # the book-studio shape) is ALSO an orchestrator dir. Without this, import_setup (the production
+    # entry) dead-ends on F-NO-SETUP for a prose coordinator and never reaches the prose adapter
+    # adapt_orchestrator_skill delegates to — the pipeline would only build in a direct call.
+    from oraclous_ohm.import_.prose_coordinator import has_prose_pipeline
+
+    try:
+        return has_prose_pipeline(skill_md.read_text(encoding="utf-8"))
+    except OSError:
+        return False
 
 
 def _build_report(
