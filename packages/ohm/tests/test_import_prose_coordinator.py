@@ -87,3 +87,42 @@ def test_parallel_pair_shares_one_topological_stage() -> None:
 def test_block_on_critical_is_flagged_and_deferred() -> None:
     # step 8 `book-integrity … BLOCK on CRITICAL` is surfaced; the runtime skip-guard is deferred.
     assert "F-PROSE-BLOCK" in _codes(_plan())
+
+
+def test_import_setup_reaches_the_chapter_pipeline_end_to_end() -> None:
+    # the production seam (a slice-1-style wiring guard): import_setup on a prose-coordinator dir
+    # (no modules/) must REACH the prose adapter, not dead-end on F-NO-SETUP. The other tests call
+    # adapt_orchestrator_skill directly, which would mask a missing import_setup hook.
+    from oraclous_ohm.import_.setup import import_setup
+
+    res = import_setup(_SKILLS / "book-studio", owner_organization_id=_ORG)
+    assert res.report.shape == "orchestrator"  # detected as importable, not F-NO-SETUP
+    assert res.manifest is not None
+    roles = {m.role for m in res.manifest.members}
+    assert _CHAPTER_AGENTS <= roles  # all 10+ chapter agents present
+    assert {"gate-a", "gate-b", "gate-c"} <= roles  # the human gates wired in
+    assert not res.report.blocking
+    assert _CHAPTER_AGENTS <= set(
+        res.sub_harnesses
+    )  # runnable bodies came through (import->run seam)
+
+
+def test_parser_skips_prose_lines_and_attaches_a_bare_gate(tmp_path: object) -> None:  # noqa: ARG001
+    # review NIT-2 robustness: a numbered line with no `→` is prose (no junk member); a bare GATE
+    # line attaches to the PREVIOUS stage instead of being dropped.
+    from oraclous_ohm.import_.prose_coordinator import adapt_prose_coordinator_skill
+    from oraclous_ohm.import_.skills import ResolvedSkill
+
+    body = (
+        "### `chapter <CH-NN>` — pipeline\n```\n"
+        "1. alpha → does a thing\n"
+        "2. the author reviews the work and decides\n"  # prose, no arrow → mints no member
+        "3. ──▶ GATE A\n"  # a bare gate line → attaches to the previous stage (alpha)
+        "4. beta → next\n```\n"
+    )
+    resolved = ResolvedSkill(name="x", kind="orchestrator", skill_name="x", body=body)
+    plan = adapt_prose_coordinator_skill(resolved, owner_organization_id=_ORG, skills_root=_SKILLS)
+    by = {m.role: m for m in plan.members}
+    assert "the" not in by and "author" not in by  # the prose line minted no agent
+    assert by["gate-a"].kind == "human" and by["gate-a"].depends_on == ["alpha"]  # bare gate → prev
+    assert by["beta"].depends_on == ["gate-a"]  # the next step waits on the gate

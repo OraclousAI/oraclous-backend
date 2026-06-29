@@ -29,6 +29,7 @@ from oraclous_ohm.manifest import (
     OHMModel,
     OHMPrompt,
     OHMRuntime,
+    OHMSkillDriver,
 )
 
 # PROVISIONAL — no checked-in model registry exists (confirmed by grounding). Every use raises
@@ -106,6 +107,7 @@ def build_subharness(
     description: str | None = None,
     source: str = "<import>",
     substrate: Substrate = "graph",
+    driver: OHMSkillDriver | None = None,
 ) -> OHMManifest:
     """Build a loadable sub-harness via the actors path (entrypoint -> a 'primary' agent actor).
 
@@ -132,7 +134,7 @@ def build_subharness(
         models=[model] if model else [],
         prompts=prompts,
         actors=[OHMActor(role="primary", kind="agent")],
-        runtime=OHMRuntime(entrypoint="primary"),
+        runtime=OHMRuntime(entrypoint="primary", driver=driver),  # #577 slice-3: staged CLI driver
     )
 
 
@@ -229,8 +231,11 @@ def map_agent_to_member(
                 f"model {agent.model!r} not a known tier; verbatim",
             )
 
-    # resolve + inline leaf skills (#406); orchestrator/missing skills are flagged, never inlined
+    # resolve + inline leaf skills (#406); orchestrator/missing skills are flagged, never inlined.
+    # #577 slice-3: a driver skill (an external CLI package) is STAGED on the sub-harness runtime,
+    # never inlined as prose — at most one per agent.
     leaves: list[ResolvedSkill] = []
+    driver: OHMSkillDriver | None = None
     if skills_root is not None:
         for skill in agent.skills:
             try:
@@ -240,6 +245,21 @@ def map_agent_to_member(
                 continue
             if resolved is None:
                 flag("F-SKILL-MISSING", "blocking", f"skill {skill!r} not found under skills_root")
+            elif resolved.kind == "driver" and resolved.driver is not None:
+                if driver is not None:
+                    flag(
+                        "F-SKILL-DRIVER-MULTIPLE",
+                        "blocking",
+                        f"agent has >1 driver; {skill!r} dropped",
+                    )
+                else:
+                    driver = resolved.driver
+                    flag(
+                        "F-SKILL-DRIVER",
+                        "confirm",
+                        f"skill {skill!r} is a {driver.kind} driver (entry {driver.entry_point}); "
+                        f"staged on runtime.driver, not inlined",
+                    )
             elif resolved.kind == "orchestrator":
                 sig = ", ".join(resolved.orchestrator_signals)
                 flag(
@@ -269,6 +289,7 @@ def map_agent_to_member(
         body=effective_body,
         tools=tools,
         model=model,
+        driver=driver,
         description=(agent.description or None),
         source=agent.source,
         substrate=substrate,
