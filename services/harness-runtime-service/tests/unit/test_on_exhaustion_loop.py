@@ -71,12 +71,13 @@ def _env(on_exhaustion: str | None = None, **caps: Any) -> PolicyEnvelope:
     return PolicyEnvelope(**kw)
 
 
-# the 4 budget breach sites + their typed reason
+# the 4 budget breach sites + their typed reason + the best-effort last_text the degrade surfaces
+# (None for wall_time: max_wall=0 trips at the loop head, BEFORE any LLM text is produced).
 _SITES = [
-    (_LoopingLLM(), {"max_tool_calls": 1}, "tool_call_budget"),
-    (_TokenLLM(150), {"max_tokens": 100}, "token_budget"),
-    (_LoopingLLM(), {"max_iterations": 3}, "iteration_cap"),
-    (_LoopingLLM(), {"max_wall": 0}, "wall_time"),
+    (_LoopingLLM(), {"max_tool_calls": 1}, "tool_call_budget", "best-effort progress"),
+    (_TokenLLM(150), {"max_tokens": 100}, "token_budget", "best-effort progress"),
+    (_LoopingLLM(), {"max_iterations": 3}, "iteration_cap", "best-effort progress"),
+    (_LoopingLLM(), {"max_wall": 0}, "wall_time", None),
 ]
 
 
@@ -90,8 +91,10 @@ def test_harness_status_has_partial() -> None:
     )
 
 
-@pytest.mark.parametrize("llm, caps, reason", _SITES)
-async def test_breach_site_degrades_to_partial(llm: Any, caps: dict, reason: str) -> None:
+@pytest.mark.parametrize("llm, caps, reason, expected_output", _SITES)
+async def test_breach_site_degrades_to_partial(
+    llm: Any, caps: dict, reason: str, expected_output: str | None
+) -> None:
     result = await run_tool_use_loop(
         llm=llm,
         system="",
@@ -103,11 +106,13 @@ async def test_breach_site_degrades_to_partial(llm: Any, caps: dict, reason: str
     assert result.status is HarnessStatus.PARTIAL  # degrade → a flagged partial, not a crash/pause
     assert result.error_type == reason  # the typed breach reason is preserved
     assert result.checkpoint is None  # degrade FINISHES — never a resumable HITL checkpoint
-    assert result.output == "best-effort progress"  # the best-effort last_text is surfaced
+    assert result.output == expected_output  # best-effort last_text (None if it trips pre-text)
 
 
-@pytest.mark.parametrize("llm, caps, reason", _SITES)
-async def test_breach_site_escalates_by_default(llm: Any, caps: dict, reason: str) -> None:
+@pytest.mark.parametrize("llm, caps, reason, expected_output", _SITES)
+async def test_breach_site_escalates_by_default(
+    llm: Any, caps: dict, reason: str, expected_output: str | None
+) -> None:
     # the default (no on_exhaustion) escalates EXACTLY as today — back-compat for every manifest.
     result = await run_tool_use_loop(
         llm=llm,
