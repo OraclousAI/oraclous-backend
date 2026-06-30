@@ -21,12 +21,17 @@ dependencies = [
     # policy applier (oraclous_substrate.schema.postgres.enable_rls_on).
     "oraclous-substrate",
     "oraclous-telemetry",
+    # #594 (ADR-047): the manifest-validate connector wraps the ohm compiler validator
+    # (oraclous_ohm.compiler.validate_draft → assemble_and_report). ohm is the shared kernel; a
+    # registry → ohm import is allowed (only ohm → services is forbidden by the import contract).
+    "oraclous-ohm",
 ]
 
 [tool.uv.sources]
 oraclous-governance = { workspace = true }
 oraclous-substrate = { workspace = true }
 oraclous-telemetry = { workspace = true }
+oraclous-ohm = { workspace = true }
 
 [build-system]
 requires = ["hatchling"]
