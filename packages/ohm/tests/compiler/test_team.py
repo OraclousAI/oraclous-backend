@@ -54,10 +54,17 @@ def test_the_reviewer_repair_loop_is_hard_bounded_to_n_attempts() -> None:
     # resolve_member_caps → the harness halts the loop at the cap regardless of the prompt. So a
     # persistently-blocked draft fail-closes after exactly N attempts; a draft needing ≤N repairs
     # converges within the cap.
-    from oraclous_ohm.compiler.team import _REPAIR_ATTEMPTS, _REVIEWER_VALIDATE_CALLS
+    from oraclous_ohm.compiler.team import (
+        _REPAIR_ATTEMPTS,
+        _REVIEWER_OVERCHECK_SLACK,
+        _REVIEWER_VALIDATE_CALLS,
+    )
 
-    assert _REPAIR_ATTEMPTS == 2  # default 2 (CTO: default 2 / max 3)
-    assert _REVIEWER_VALIDATE_CALLS == _REPAIR_ATTEMPTS + 1 == 3
+    assert _REPAIR_ATTEMPTS == 2  # default 2 fixes (CTO: default 2 / max 3)
+    # #596: the HARD cap is the repair budget PLUS weak-model over-check slack — still bounded (no
+    # runaway), but a clean compile no longer degrades because the model re-checked a passing draft.
+    assert _REVIEWER_VALIDATE_CALLS == _REPAIR_ATTEMPTS + 1 + _REVIEWER_OVERCHECK_SLACK
+    assert _REVIEWER_VALIDATE_CALLS > _REPAIR_ATTEMPTS + 1  # carries explicit over-check slack
     manifest, _ = build_compiler_team(_ORG)
     by = {m.role: m for m in manifest.members}
     assert by["reviewer"].max_tool_calls == _REVIEWER_VALIDATE_CALLS  # the harness halts here
@@ -74,6 +81,30 @@ def test_the_objective_and_catalog_are_seeded_into_the_subgoals() -> None:
         _ORG, objective="Summarise the week's AI news into a digest.", catalog=["web-search"]
     )
     by = {m.role: m for m in manifest.members}
-    assert by["planner"].subgoal == "Summarise the week's AI news into a digest."
+    # the objective LEADS the planner's subgoal (followed by the seed topology shapes, #596)
+    assert by["planner"].subgoal and by["planner"].subgoal.startswith(
+        "Summarise the week's AI news into a digest."
+    )
     assert by["capability-surveyor"].subgoal is not None
     assert "web-search" in by["capability-surveyor"].subgoal  # the seeded catalog is in the subgoal
+
+
+def test_the_drafter_is_seeded_to_emit_the_governance_policy() -> None:
+    # #596: the drafter's subgoal seeds the governed-by-default policy template so the compiled team
+    # carries governance (a known policy_set_ref) + the 3-layer budget.
+    from oraclous_ohm.seeds import DEFAULT_POLICY_SET_REF
+
+    manifest, _ = build_compiler_team(_ORG)
+    drafter = {m.role: m for m in manifest.members}["manifest-drafter"]
+    assert drafter.subgoal and DEFAULT_POLICY_SET_REF in drafter.subgoal
+    assert "max_tokens_per_member" in drafter.subgoal  # the 3-layer budget is seeded
+
+
+def test_the_planner_composes_from_the_seed_reference_topologies() -> None:
+    # #596 DoD item 3 (CTO blocker fix): the planner's subgoal seeds the reference topology shape
+    # names so it COMPOSES FROM them (never a frozen pipeline); the prose objective leads.
+    manifest, _ = build_compiler_team(_ORG, objective="summarise the week's news")
+    planner = {m.role: m for m in manifest.members}["planner"]
+    assert planner.subgoal and "summarise the week's news" in planner.subgoal
+    for shape in ("fan-out-fan-in", "standing-team", "gated-pipeline"):
+        assert shape in planner.subgoal, f"the seed shape {shape!r} is seeded into the planner"
