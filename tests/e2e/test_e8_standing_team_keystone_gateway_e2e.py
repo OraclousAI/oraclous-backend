@@ -6,11 +6,18 @@ instead of cold-respawning an empty substrate (the failure the North-Star Lock �
 
 No fakes, all through the gateway ``:8006`` with real OpenRouter BYOM: register → store a BYOM
 credential → create + seed a graph G with a unique marker → register a team schedule bound to G →
-fire window N → fire window N+1 (a later minute) → assert BOTH runs are bound to the SAME graph G
-(the keystone binding, read off the run rows) and the seeded marker still lives in G (the substrate
-persisted, not wiped); plus the same-window idempotency, the per-cadence cost accrual, and the
-two-level termination (the schedule stays enabled while each run settles terminal). Auto-skips
-without the BYOM key / a reachable gateway.
+fire across two cron windows → assert EVERY run binds the SAME graph G (the keystone, read off the
+run rows) and the seeded marker still lives in G (the substrate persisted, not wiped).
+
+Beat-tolerant by construction (not by luck): with the partial-unique idempotency key per (org,
+window), every fire in one window dedupes to AT MOST one run — so Celery Beat's own autonomous
+``* * * * *`` fires never break the assertions, they *strengthen* them (Beat's runs also bind G).
+The proofs are therefore SUPERSET-safe: ``len(runs) >= 2`` proves ≥2 windows fired across the cron
+boundary (same-window fires collapse to one); ``all(r.graph_id == G)`` proves the persistent binding
+holds for every fire whatever its source; the same-window pair proves dedupe (≤1 new run); the
+per-cadence accrual is asserted > 0 AND bounded by the runs' real settled cost (the per-drive delta,
+not fabricated/cumulative); and the schedule stays ``enabled`` (the unbounded lifecycle; each run is
+bounded by the #585 budget/wall, not a new limiter). Auto-skips without the BYOM key / a gateway.
 """
 
 from __future__ import annotations
@@ -125,6 +132,20 @@ def _poll_run(c: httpx.Client, run_id: str, tries: int = 120) -> dict:
     raise AssertionError(f"team-run {run_id} never settled (last: {row.get('state')})")
 
 
+def _wait_new_run(c: httpx.Client, sched_id: str, before: set[str], tries: int = 40) -> list[dict]:
+    """Wait until the run set grows beyond ``before`` (a NEW window fired), Beat-tolerant: returns
+    as soon as ≥1 id appears that was not present before — never asserts an exact count."""
+    runs: list[dict] = []
+    for _ in range(tries):
+        runs = _team_runs(c, sched_id)
+        if {r["id"] for r in runs} - before:
+            return runs
+        time.sleep(1)
+    raise AssertionError(
+        f"schedule {sched_id} fired no NEW run in the next window (still {before})"
+    )
+
+
 def _schedule(c: httpx.Client, sched_id: str) -> dict:
     return next(s for s in c.get("/v1/engine/schedules").json()["schedules"] if s["id"] == sched_id)
 
@@ -184,35 +205,51 @@ def test_standing_team_fire_n_plus_1_reads_fire_n_persistent_graph(
     )
     assert bad.status_code in (400, 422), bad.text
 
-    # ── FIRE WINDOW N ──────────────────────────────────────────────────────────────────────────
+    # ── IDEMPOTENCY (same window): two back-to-back fires collapse to AT MOST one run ───────────
+    # Done FIRST, before any long agent poll, so the ≤1 assertion can't race a Beat-fired later
+    # window. Beat-immune: a Beat tick landing in this same window also dedupes on the same key.
+    before_n = {r["id"] for r in _team_runs(c, sched_id)}
     c.post(f"/v1/engine/schedules/{sched_id}/fire-now").raise_for_status()
-    runs_n = _wait_runs(c, sched_id, 1)
-    run_n = runs_n[0]
-    assert run_n["graph_id"] == graph_id, f"run N must bind the persistent graph — {run_n}"
-    _poll_run(c, run_n["id"])
-
-    # ── FIRE WINDOW N+1 (a later minute — cross the cron boundary) ──────────────────────────────
-    time.sleep(60 - datetime.now(UTC).second + 2)  # into the next minute → a NEW window
     c.post(f"/v1/engine/schedules/{sched_id}/fire-now").raise_for_status()
-    runs_2 = _wait_runs(c, sched_id, 2)
-    run_ids = {r["id"] for r in runs_2}
-    assert run_n["id"] in run_ids and len(run_ids) == 2, f"window N+1 must add a NEW run — {runs_2}"
-    # THE KEYSTONE: BOTH fires are bound to the SAME persistent graph — not a cold-respawned
-    assert all(r["graph_id"] == graph_id for r in runs_2), (
-        f"both runs bind the SAME graph — {runs_2}"
+    runs_n = _wait_runs(c, sched_id, len(before_n) + 1)
+    new_in_window = {r["id"] for r in runs_n} - before_n
+    assert len(new_in_window) <= 1, (
+        f"same-window dedupe: ≥2 fires in one window → ≤1 run — {runs_n}"
     )
-    for r in runs_2:
+    assert all(r["graph_id"] == graph_id for r in runs_n), f"window-N runs bind G — {runs_n}"
+
+    # ── FIRE WINDOW N+1 (cross the cron minute boundary → a NEW window) ─────────────────────────
+    time.sleep(60 - datetime.now(UTC).second + 2)  # into the next minute
+    before_2 = {r["id"] for r in _team_runs(c, sched_id)}
+    c.post(f"/v1/engine/schedules/{sched_id}/fire-now").raise_for_status()
+    _wait_new_run(c, sched_id, before_2)  # a NEW window's run appeared
+
+    # ── THE KEYSTONE ───────────────────────────────────────────────────────────────────────────
+    # ≥2 runs ⇒ ≥2 windows fired across the boundary (same-window fires collapse to one); and EVERY
+    # run — the fire-now's AND any Beat-fired — binds the SAME persistent graph G. That is the
+    # standing-team binding: run N+1 is NOT a cold-respawn onto an empty substrate.
+    all_runs = _team_runs(c, sched_id)
+    assert len(all_runs) >= 2, f"≥2 windows must have fired across the cron boundary — {all_runs}"
+    assert all(r["graph_id"] == graph_id for r in all_runs), (
+        f"EVERY run binds the SAME persistent graph G — {all_runs}"
+    )
+    # poll a representative few terminal (don't block on Beat's tail, which keeps accruing runs)
+    for r in all_runs[:3]:
         _poll_run(c, r["id"])
 
-    # the seeded marker doc STILL lives in G after N+1 — the substrate persisted, never wiped
+    # the seeded marker doc STILL lives in G after the later window — substrate persisted, unwiped
     docs = c.get(f"/api/v1/graphs/{graph_id}/documents").json()
     assert len(docs) >= 1, f"the seeded graph workspace persisted across fires — {docs}"
 
-    # ── IDEMPOTENCY: a duplicate same-window fire does NOT create a third run ───────────────────
-    c.post(f"/v1/engine/schedules/{sched_id}/fire-now").raise_for_status()
-    assert len(_team_runs(c, sched_id)) == 2, "a same-window re-fire must not double-fire"
-
-    # ── PER-CADENCE ACCRUAL + TWO-LEVEL TERMINATION ────────────────────────────────────────────
+    # ── PER-CADENCE ACCRUAL (real + bounded) + TWO-LEVEL TERMINATION ────────────────────────────
+    # Read the schedule's accrual FIRST, then the per-run costs (the LIST row carries cost_tokens),
+    # so the cost basis is read >= the accrual basis — making the upper bound race-free.
     sched = _schedule(c, sched_id)
-    assert sched["recurring_cost_tokens"] > 0, f"the per-cadence accrual climbed — {sched}"
-    assert sched["enabled"] is True, "the standing-team LIFECYCLE persists across fires"
+    total_cost = sum(int(r.get("cost_tokens") or 0) for r in _team_runs(c, sched_id))
+    accrued = int(sched["recurring_cost_tokens"])
+    assert accrued > 0, f"the per-cadence accrual climbed off REAL settled runs — {sched}"
+    # bounded by the runs' actual settled cost: the per-DRIVE delta, never fabricated or cumulative
+    assert accrued <= total_cost, f"accrual {accrued} must be bounded by run cost {total_cost}"
+    assert sched["enabled"] is True, (
+        "the standing-team LIFECYCLE persists (unbounded; runs bounded by #585)"
+    )

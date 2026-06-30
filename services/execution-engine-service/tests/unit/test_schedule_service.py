@@ -231,6 +231,16 @@ class _FakeMaintenance:
         return await self._srepo.list_enabled_cron(limit=limit)
 
 
+class _FakeGraphs:
+    """#601: the KGS existence check register uses to fail-close a cross-org/non-existent graph."""
+
+    def __init__(self, exists: bool = True) -> None:
+        self._exists = exists
+
+    async def graph_exists(self, graph_id: str) -> bool:
+        return self._exists
+
+
 def _svc(
     srepo: _FakeSchedRepo,
     jrepo: _FakeJobRepo,
@@ -238,6 +248,7 @@ def _svc(
     enqueue_adopted_tool=None,  # noqa: ANN001
     enqueue_team_run=None,  # noqa: ANN001
     team_runs: _FakeTeamRunRepo | None = None,
+    graphs: _FakeGraphs | None = None,
 ) -> tuple[ScheduleService, _FakeProv]:
     prov = _FakeProv()
     svc = ScheduleService(
@@ -248,6 +259,7 @@ def _svc(
         enqueue_adopted_tool=enqueue_adopted_tool,
         enqueue_team_run=enqueue_team_run,
         team_runs=team_runs,  # type: ignore[arg-type]
+        graphs=graphs,  # type: ignore[arg-type]
         maintenance=_FakeMaintenance(srepo),  # type: ignore[arg-type]
     )
     return svc, prov
@@ -519,7 +531,7 @@ async def test_fire_now_missing_schedule_raises() -> None:
 
 async def test_register_team_valid() -> None:
     srepo, jrepo = _FakeSchedRepo(), _FakeJobRepo()
-    svc, _ = _svc(srepo, jrepo)
+    svc, _ = _svc(srepo, jrepo, graphs=_FakeGraphs(exists=True))
     row = await svc.register(
         _principal(),
         type="cron",
@@ -531,6 +543,21 @@ async def test_register_team_valid() -> None:
         graph_id="graph-1",
     )
     assert row.target_kind == "team" and row.graph_id == "graph-1" and row.instance_id is None
+
+
+async def test_register_team_rejects_a_nonexistent_or_cross_org_graph() -> None:
+    # fail-fast (mirrors the request path): a graph the org does not own → rejected at register.
+    svc, _ = _svc(_FakeSchedRepo(), _FakeJobRepo(), graphs=_FakeGraphs(exists=False))
+    with pytest.raises(ScheduleError, match="graph_id does not exist"):
+        await svc.register(
+            _principal(),
+            type="cron",
+            target_kind="team",
+            manifest_inline={"members": []},
+            input_text="t",
+            cron="* * * * *",
+            graph_id="ghost",
+        )
 
 
 async def test_register_team_requires_graph_id() -> None:
