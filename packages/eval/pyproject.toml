@@ -6,7 +6,15 @@ requires-python = "==3.12.*"
 dependencies = [
     "pydantic>=2.0,<3.0",
     "openai>=1.40,<2.0",
+    # #597 (E10 eval-set): the compiler eval-set guardrails (Layer-1) reuse the importer's
+    # validator (assemble_and_report) and the named gate battery (Layer-2) reuses run_battery —
+    # both live in oraclous-ohm. eval depends on the manifest core it evaluates (acyclic; ohm never
+    # imports eval). KRS already pulls both, so this adds no new transitive cost.
+    "oraclous-ohm",
 ]
+
+[tool.uv.sources]
+oraclous-ohm = { workspace = true }
 
 [build-system]
 requires = ["hatchling"]
