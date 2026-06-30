@@ -8,7 +8,28 @@ the surveyed catalog and runs the SAME ``assemble_and_report`` dry-run the impor
 validator, two on-ramps. It returns a CODED ``would_block`` verdict (#594), never a model opinion.
 """
 
+from oraclous_ohm.compiler.refine import (
+    AddDependsOn,
+    AddMember,
+    ChangeKind,
+    RefineOp,
+    RefineResult,
+    SetFanOut,
+    apply_refine,
+    parse_op,
+)
 from oraclous_ohm.compiler.team import build_compiler_team
 from oraclous_ohm.compiler.validate import validate_draft
 
-__all__ = ["build_compiler_team", "validate_draft"]
+__all__ = [
+    "AddDependsOn",
+    "AddMember",
+    "ChangeKind",
+    "RefineOp",
+    "RefineResult",
+    "SetFanOut",
+    "apply_refine",
+    "build_compiler_team",
+    "parse_op",
+    "validate_draft",
+]
