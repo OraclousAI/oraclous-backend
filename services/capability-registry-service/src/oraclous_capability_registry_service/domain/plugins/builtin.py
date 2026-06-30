@@ -718,6 +718,61 @@ class ManifestValidatePlugin(_ConnectorToolPlugin):
 
 
 @plugin_registry.register
+class ManifestRefinePlugin(_ConnectorToolPlugin):
+    """Compiler NL-refine applier (#595 / ADR-047 §4) — opted into as ``core/manifest-refine@1``.
+    Applies ONE typed structural op (add_member/set_fan_out/change_kind/add_depends_on) to the
+    supplied manifest via ohm ``apply_refine`` and re-validates through the SAME dry-run — preserve-
+    the-rest holds (the manifest flows in deterministically, never re-emitted by the model); a
+    cyclic / capability-escalating / schema-breaking delta is rejected. First-party, in-process;
+    keyless; no net."""
+
+    NAME = "Manifest Refine"  # slug ``manifest-refine`` MUST match the ref's name slug
+    CATEGORY = "EXECUTION"
+    DESCRIPTION = (
+        "Apply a typed NL-refine op to an OHM Team Harness and re-validate through the importer's "
+        "dry-run — returns the patched manifest (preserve-the-rest) or a coded gap report. "
+        "First-party and org-scoped; no credential required."
+    )
+    TYPE = "INTERNAL"
+    TAGS = ["compiler", "refine", "manifest", "ohm"]
+    CAPABILITIES = [
+        {
+            "name": "refine_manifest",
+            "description": "Apply one typed structural op to a team manifest, re-validated.",
+            "parameters": {"manifest": "object", "edit_op": "object", "catalog": "array"},
+        },
+    ]
+    CREDENTIAL_REQUIREMENTS: list[dict] = []  # first-party: pure in-process apply, keyless
+    INPUT_SCHEMA = {
+        "type": "object",
+        "required": ["manifest", "edit_op"],
+        "properties": {
+            "manifest": {
+                "type": ["object", "string"],
+                "description": "the OHM v1.1 Team Harness to edit (flows in deterministically)",
+            },
+            "edit_op": {
+                "type": ["object", "string"],
+                "description": "ONE typed refine op (add_member/set_fan_out/change_kind/...)",
+            },
+            "catalog": {
+                "type": ["array", "object"],
+                "description": "the surveyed tool catalog (the ceiling a refine may draw from)",
+            },
+        },
+    }
+    OUTPUT_SCHEMA = {
+        "type": "object",
+        "properties": {
+            "would_block": {"type": "boolean"},
+            "applied": {"type": "boolean"},
+            "blocking": {"type": "array", "items": {"type": "string"}},
+            "manifest": {"type": ["object", "null"]},
+        },
+    }
+
+
+@plugin_registry.register
 class ReadToolPlugin(_ConnectorToolPlugin):
     """Standard agent toolset (#440 / #507) — ``Read``, bound ``core/read@1``. Reads a UTF-8 text
     file from the per-org sandbox workspace. ``NAME`` slugifies to exactly ``read`` so the
