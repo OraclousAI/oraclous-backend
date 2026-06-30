@@ -28,10 +28,22 @@ from oraclous_ohm.manifest import (
     OHMMetadata,
     OHMRuntime,
 )
-from oraclous_ohm.seeds import seed_policy_template
+from oraclous_ohm.seeds import seed_policy_template, seed_reference_topologies
 
 #: the reviewer's validate capability — the registered ``manifest-validate`` connector (slice-1).
 _VALIDATE_TOOL = "manifest-validate"
+
+
+def _planner_topology_subgoal(objective: str) -> str:
+    """#596: the planner COMPOSES FROM the seed reference topology shapes (ADR-047 §5, DoD item 3) —
+    their names + shapes are seeded into its sub-goal so it ADAPTS the closest one, never a frozen
+    pipeline. The prose objective leads; the reference shapes follow as composables."""
+    shapes = [{"name": t.name, "shape": t.description} for t in seed_reference_topologies()]
+    guidance = (
+        "Reference team shapes you may COMPOSE FROM (adapt the closest, never copy verbatim): "
+        f"{json.dumps(shapes)}"
+    )
+    return f"{objective}\n\n{guidance}" if objective else guidance
 
 
 def _drafter_governance_subgoal() -> str:
@@ -87,7 +99,11 @@ def build_compiler_team(
             kind="agent",
             manifest_ref="org:compiler/planner@1",
             tools=[],
-            subgoal=objective or None,  # the prose objective IS the planner's task (seeded)
+            # the prose objective + the seed reference topology shapes to compose from (#596 DoD 3).
+            # NOTE: this rides the static sub-goal (the harness Objective: line); an inbound #577
+            # objective_slice would shadow it, but the planner is the entrypoint (no inbound
+            # producer), so that cannot happen here.
+            subgoal=_planner_topology_subgoal(objective),
         ),
         OHMMember(
             role="capability-surveyor",
@@ -103,7 +119,10 @@ def build_compiler_team(
             manifest_ref="org:compiler/drafter@1",
             tools=[],
             depends_on=["capability-surveyor", "planner"],
-            subgoal=_drafter_governance_subgoal(),  # #596: emit the seed governance + budget
+            # #596: emit the seed governance + budget. NOTE: this rides the static sub-goal; the
+            # compiler's surveyor/planner emit NO ## Handoff objective_slice (#577), so nothing
+            # shadows it — but if handoff wiring is ever added upstream, guard this governance seed.
+            subgoal=_drafter_governance_subgoal(),
         ),
         OHMMember(
             role="reviewer",

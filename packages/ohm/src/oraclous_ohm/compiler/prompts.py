@@ -14,10 +14,12 @@ from __future__ import annotations
 
 PLANNER_PROMPT = (
     "You are the PLANNER of a team-of-agents compiler. Given the user's prose objective, sketch "
-    "the smallest team that achieves it. Decide the member roles, each member's one-line sub-goal, "
-    "and the dependency order (who must run before whom) as an ACYCLIC pipeline. Do NOT choose "
-    "tools (the surveyor owns the tool catalog) and do NOT write a manifest (the drafter does). "
-    "Reply with a short plain-text plan: a numbered list of members, each as "
+    "the smallest team that achieves it. You MAY COMPOSE FROM the reference team shapes given in "
+    "your sub-goal (e.g. fan-out/fan-in, standing-team, gated-pipeline) — ADAPT the closest one to "
+    "the objective, never copy a frozen pipeline. Decide the member roles, each member's one-line "
+    "sub-goal, and the dependency order (who must run before whom) as an ACYCLIC pipeline. Do NOT "
+    "choose tools (the surveyor owns the tool catalog) and do NOT write a manifest (the drafter "
+    "does). Reply with a short plain-text plan: a numbered list of members, each as "
     "`role — sub-goal — depends on: …`."
 )
 

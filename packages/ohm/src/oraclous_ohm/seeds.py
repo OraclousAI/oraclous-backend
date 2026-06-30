@@ -12,6 +12,7 @@ the importer's report-not-clobber shape (``ImportReport`` / ``would_block`` / ``
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -147,8 +148,10 @@ def seed_policy_template() -> PolicyTemplate:
         governance=OHMGovernance(
             policy_set_ref=DEFAULT_POLICY_SET_REF,
             redact_patterns=[
-                r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b",  # email
-                r"\b(?:\d[ -]*?){13,16}\b",  # card-like number
+                # BOUNDED quantifiers (no unbounded ``+``) so the redact pass over attacker-shaped
+                # tool output can't catastrophically backtrack (ReDoS); the limits fit real values.
+                r"\b[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9.-]{1,255}\.[A-Za-z]{2,24}\b",  # email
+                r"\b(?:\d[ -]?){13,16}\b",  # card-like number (bounded, single optional separator)
             ],
         ),
         budget=OHMBudget(
@@ -236,13 +239,25 @@ def survey_catalog(inventory: CapabilityInventory, registered: list[str]) -> lis
     return sorted(seed | live)
 
 
-def _slug(ref: str) -> str:
-    """Normalise a registry NAME or ref to its bare slug ('Web Research'/'core/web-research@1' →
-    'web-research')."""
-    tail = ref.strip().split("/")[-1].split("@")[0]
-    import re
+def _basic_slug(text: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", text.strip().lower()).strip("-")
 
-    return re.sub(r"[^a-z0-9]+", "-", tail.lower()).strip("-")
+
+def _slug(ref: str) -> str:
+    """Normalise a registry NAME or ref to its bare slug — ALIGNED with
+    ``compiler.validate._tool_slug`` (#594 hardening; kept inline, NOT imported, to avoid a
+    compiler↔seeds import cycle). Strip a trailing ``@version`` and ONLY a leading canonical
+    ``core/`` namespace; a remaining ``/`` marks a FOREIGN namespace and is encoded ``ns--…`` (an
+    empty segment → ``""``), so ``evil/web-research`` can NEVER collapse to the bare surveyed
+    ``web-research`` (the exact masquerade #594 closed).
+    ``'Web Research'`` / ``'core/web-research@1'`` both → ``web-research``."""
+    s = ref.strip().lower().split("@", 1)[0]
+    if s.startswith("core/"):
+        s = s[len("core/") :]
+    if "/" in s:
+        parts = [_basic_slug(seg) for seg in s.split("/")]
+        return "ns--" + "--".join(parts) if all(parts) else ""
+    return _basic_slug(s)
 
 
 # --------------------------------------------------------------------------
