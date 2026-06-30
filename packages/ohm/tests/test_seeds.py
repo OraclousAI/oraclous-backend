@@ -160,3 +160,14 @@ def test_diff_accept_adds_a_new_default_seed_without_touching_existing() -> None
     merged, diff = bootstrap_seed(existing, s)
     assert dropped in diff.added  # the new default archetype is added
     assert not diff.user_modified  # nothing the user edited
+
+
+def test_slug_does_not_collapse_a_foreign_namespace() -> None:
+    # CTO security note: seeds._slug must align with compiler.validate._tool_slug (#594) — a foreign
+    # namespace must NOT collapse to a bare surveyed slug.
+    from oraclous_ohm.seeds import _slug
+
+    assert _slug("Web Research") == "web-research"
+    assert _slug("core/web-research@1.0.0") == "web-research"
+    assert _slug("evil/web-research") != "web-research"  # no namespace collapse (masquerade closed)
+    assert _slug("😈/web-research") != "web-research"

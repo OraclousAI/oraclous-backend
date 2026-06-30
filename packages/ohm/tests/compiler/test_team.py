@@ -74,7 +74,10 @@ def test_the_objective_and_catalog_are_seeded_into_the_subgoals() -> None:
         _ORG, objective="Summarise the week's AI news into a digest.", catalog=["web-search"]
     )
     by = {m.role: m for m in manifest.members}
-    assert by["planner"].subgoal == "Summarise the week's AI news into a digest."
+    # the objective LEADS the planner's subgoal (followed by the seed topology shapes, #596)
+    assert by["planner"].subgoal and by["planner"].subgoal.startswith(
+        "Summarise the week's AI news into a digest."
+    )
     assert by["capability-surveyor"].subgoal is not None
     assert "web-search" in by["capability-surveyor"].subgoal  # the seeded catalog is in the subgoal
 
@@ -88,3 +91,13 @@ def test_the_drafter_is_seeded_to_emit_the_governance_policy() -> None:
     drafter = {m.role: m for m in manifest.members}["manifest-drafter"]
     assert drafter.subgoal and DEFAULT_POLICY_SET_REF in drafter.subgoal
     assert "max_tokens_per_member" in drafter.subgoal  # the 3-layer budget is seeded
+
+
+def test_the_planner_composes_from_the_seed_reference_topologies() -> None:
+    # #596 DoD item 3 (CTO blocker fix): the planner's subgoal seeds the reference topology shape
+    # names so it COMPOSES FROM them (never a frozen pipeline); the prose objective leads.
+    manifest, _ = build_compiler_team(_ORG, objective="summarise the week's news")
+    planner = {m.role: m for m in manifest.members}["planner"]
+    assert planner.subgoal and "summarise the week's news" in planner.subgoal
+    for shape in ("fan-out-fan-in", "standing-team", "gated-pipeline"):
+        assert shape in planner.subgoal, f"the seed shape {shape!r} is seeded into the planner"
