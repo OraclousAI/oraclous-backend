@@ -65,3 +65,65 @@ def test_adopted_tool_run_with_a_manifest_is_rejected() -> None:
             manifest_ref="h",
             input="scheduled",
         )
+
+
+# ── #598 — the L3 per-period budget cap shape (edge 422; the service re-validates as the gate) ──
+def _team_kw() -> dict:
+    return dict(
+        cron="* * * * *", target_kind="team", manifest={"members": []}, graph_id="g", input="x"
+    )
+
+
+def test_team_with_a_valid_period_cap_is_valid() -> None:
+    req = RegisterScheduleRequest(**_team_kw(), budget_period="daily", budget_allowance_tokens=5000)
+    assert req.budget_period is not None and req.budget_period.value == "daily"
+    assert req.budget_allowance_tokens == 5000
+
+
+def test_team_with_no_budget_is_valid_cap_off() -> None:
+    req = RegisterScheduleRequest(**_team_kw())
+    assert req.budget_period is None and req.budget_allowance_tokens is None
+
+
+def test_period_without_allowance_is_rejected() -> None:
+    with pytest.raises(ValidationError):
+        RegisterScheduleRequest(**_team_kw(), budget_period="daily")
+
+
+def test_allowance_without_period_is_rejected() -> None:
+    with pytest.raises(ValidationError):
+        RegisterScheduleRequest(**_team_kw(), budget_allowance_tokens=100)
+
+
+def test_nonpositive_allowance_is_rejected() -> None:
+    with pytest.raises(ValidationError):  # Field(gt=0)
+        RegisterScheduleRequest(**_team_kw(), budget_period="daily", budget_allowance_tokens=0)
+
+
+def test_unknown_period_is_rejected() -> None:
+    with pytest.raises(ValidationError):  # BudgetPeriod enum
+        RegisterScheduleRequest(**_team_kw(), budget_period="hourly", budget_allowance_tokens=100)
+
+
+def test_period_cap_on_a_harness_job_is_rejected() -> None:
+    with pytest.raises(ValidationError):  # the cap is team-only
+        RegisterScheduleRequest(
+            cron="* * * * *",
+            manifest_ref="h",
+            input="go",
+            budget_period="daily",
+            budget_allowance_tokens=100,
+        )
+
+
+def test_period_cap_on_a_manual_team_is_rejected() -> None:
+    with pytest.raises(ValidationError):  # the cap needs a recurring (cron) cadence
+        RegisterScheduleRequest(
+            type="manual",
+            target_kind="team",
+            manifest={"members": []},
+            graph_id="g",
+            input="x",
+            budget_period="daily",
+            budget_allowance_tokens=100,
+        )
