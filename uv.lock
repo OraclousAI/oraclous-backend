@@ -1285,12 +1285,14 @@ version = "0.0.0"
 source = { editable = "packages/eval" }
 dependencies = [
     { name = "openai" },
+    { name = "oraclous-ohm" },
     { name = "pydantic" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "openai", specifier = ">=1.40,<2.0" },
+    { name = "oraclous-ohm", editable = "packages/ohm" },
     { name = "pydantic", specifier = ">=2.0,<3.0" },
 ]
 
