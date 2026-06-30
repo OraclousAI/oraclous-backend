@@ -149,18 +149,23 @@ def get_job_service(
 def get_schedule_service(
     schedules: Annotated[ScheduleRepository, Depends(get_schedule_repository)],
     jobs: Annotated[JobRepository, Depends(get_job_repository)],
+    team_runs: Annotated[TeamRunRepository, Depends(get_team_run_repository)],
+    graphs: Annotated[GraphClient, Depends(get_graph_client)],
     provenance: Annotated[ProvenanceCollector, Depends(get_provenance)],
 ) -> ScheduleService:
     # the request path registers/lists/deletes AND fires-now (#489): fire-now reuses the Beat fire
-    # branch, so it needs BOTH enqueue callbacks (harness-job queue + adopted-tool registry
-    # dispatch) — without enqueue_adopted_tool the adopted_tool_run branch would create the dedupe
-    # row + advance the cursor but never dispatch (a green-but-hollow no-op).
+    # branch, so it needs ALL enqueue callbacks (harness-job + adopted-tool + #601 team-run)
+    # — without enqueue_team_run/team_runs the team branch would create the dedupe row + advance the
+    # cursor but never dispatch (a green-but-hollow no-op).
     return ScheduleService(
         schedules=schedules,
         jobs=jobs,
         provenance=provenance,
         enqueue=enqueue_job,
         enqueue_adopted_tool=enqueue_adopted_tool,
+        enqueue_team_run=enqueue_team_run,
+        team_runs=team_runs,
+        graphs=graphs,
     )
 
 

@@ -13,7 +13,7 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import Boolean, DateTime, String, Text
+from sqlalchemy import BigInteger, Boolean, DateTime, String, Text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -43,5 +43,13 @@ class EngineSchedule(BaseModel):
     target_kind: Mapped[str] = mapped_column(String(16), nullable=False, default="harness_job")
     # the curated/adopted capability-registry instance to execute (adopted_tool_run only)
     instance_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
-    # the input payload forwarded to the instance /execute (adopted_tool_run only)
+    # the input payload forwarded to the instance /execute (adopted_tool_run only); for a ``team``
+    # schedule it carries the team-run spec — ``{"sub_harnesses": …, "gate_decisions": …}``.
     input_data: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    # #601 (team only): the persistent graph workspace the standing team's runs read+write across
+    # fires — the binding that makes run N+1 see the state run N wrote (ADR-048 dec. 2 / ADR-040).
+    graph_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # #601: per-cadence cost ACCRUAL — RAW tokens summed across the sequence of fires (NOT the
+    # run-level pool #585, which resets every run). The accumulator #598's per-period cap reads.
+    # BigInteger (int8): a lifetime accumulator on a truly-standing team would overflow int4.
+    recurring_cost_tokens: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)

@@ -63,6 +63,27 @@ def _adopted_schedule(*, cron: str | None, last_fired: datetime | None = None) -
     )
 
 
+def _team_schedule(
+    *, cron: str | None, last_fired: datetime | None = None, graph_id: str | None = "graph-1"
+) -> EngineSchedule:
+    return EngineSchedule(
+        id=uuid.uuid4(),
+        organisation_id=_ORG,
+        user_id=_USER,
+        type="cron",
+        cron=cron,
+        manifest_inline={"members": []},  # an inline team manifest (validated downstream)
+        manifest_ref=None,
+        input_text="standing team",
+        enabled=True,
+        last_fired_at=last_fired,
+        target_kind="team",
+        instance_id=None,
+        input_data={"sub_harnesses": {}, "gate_decisions": {}},
+        graph_id=graph_id,
+    )
+
+
 class _FakeSchedRepo:
     def __init__(self, rows: list[EngineSchedule] | None = None) -> None:
         self.rows = rows or []
@@ -145,6 +166,51 @@ class _FakeJobRepo:
         ]
 
 
+class _FakeTeamRunRepo:
+    """#601: the create-before-enqueue dedupe ledger for scheduled team fires — mirrors the real
+    partial unique (org, idempotency_key): a duplicate same-window create returns None."""
+
+    def __init__(self) -> None:
+        self.team_created: list[str] = []
+        self.team_seen: set[str] = set()
+        self.team_rows: list[SimpleNamespace] = []
+
+    async def create_scheduled(  # noqa: ANN202
+        self,
+        *,
+        organisation_id: uuid.UUID,
+        user_id: uuid.UUID,
+        manifest: dict,
+        sub_harnesses: dict,
+        gate_decisions: dict,
+        graph_id: str | None,
+        schedule_id: uuid.UUID,
+        idempotency_key: str,
+    ):
+        if idempotency_key in self.team_seen:  # the partial (org, idempotency_key) unique
+            return None
+        self.team_seen.add(idempotency_key)
+        self.team_created.append(idempotency_key)
+        row = SimpleNamespace(
+            id=uuid.uuid4(),
+            organisation_id=organisation_id,
+            schedule_id=schedule_id,
+            graph_id=graph_id,
+            idempotency_key=idempotency_key,
+        )
+        self.team_rows.append(row)
+        return row
+
+    async def list_for_schedule(  # noqa: ANN202
+        self, schedule_id: uuid.UUID, organisation_id: uuid.UUID, *, limit: int = 100
+    ):
+        return [
+            r
+            for r in self.team_rows
+            if r.schedule_id == schedule_id and r.organisation_id == organisation_id
+        ]
+
+
 class _FakeProv:
     def __init__(self) -> None:
         self.events: list[str] = []
@@ -165,9 +231,25 @@ class _FakeMaintenance:
         return await self._srepo.list_enabled_cron(limit=limit)
 
 
+class _FakeGraphs:
+    """#601: the KGS existence check register uses to fail-close a cross-org/non-existent graph."""
+
+    def __init__(self, exists: bool = True) -> None:
+        self._exists = exists
+
+    async def graph_exists(self, graph_id: str) -> bool:
+        return self._exists
+
+
 def _svc(
-    srepo: _FakeSchedRepo, jrepo: _FakeJobRepo, enqueue=None, enqueue_adopted_tool=None
-) -> tuple[ScheduleService, _FakeProv]:  # noqa: ANN001
+    srepo: _FakeSchedRepo,
+    jrepo: _FakeJobRepo,
+    enqueue=None,  # noqa: ANN001
+    enqueue_adopted_tool=None,  # noqa: ANN001
+    enqueue_team_run=None,  # noqa: ANN001
+    team_runs: _FakeTeamRunRepo | None = None,
+    graphs: _FakeGraphs | None = None,
+) -> tuple[ScheduleService, _FakeProv]:
     prov = _FakeProv()
     svc = ScheduleService(
         schedules=srepo,  # type: ignore[arg-type]
@@ -175,6 +257,9 @@ def _svc(
         provenance=prov,  # type: ignore[arg-type]
         enqueue=enqueue,
         enqueue_adopted_tool=enqueue_adopted_tool,
+        enqueue_team_run=enqueue_team_run,
+        team_runs=team_runs,  # type: ignore[arg-type]
+        graphs=graphs,  # type: ignore[arg-type]
         maintenance=_FakeMaintenance(srepo),  # type: ignore[arg-type]
     )
     return svc, prov
@@ -439,3 +524,138 @@ async def test_fire_now_missing_schedule_raises() -> None:
     svc, _ = _svc(_FakeSchedRepo(), _FakeJobRepo(), enqueue_adopted_tool=lambda *a: None)
     with pytest.raises(ScheduleError):
         await svc.fire_now(uuid.uuid4(), _principal())
+
+
+# ── #601: standing-team (target_kind="team") register + fire branch ───────────────────────────
+
+
+async def test_register_team_valid() -> None:
+    srepo, jrepo = _FakeSchedRepo(), _FakeJobRepo()
+    svc, _ = _svc(srepo, jrepo, graphs=_FakeGraphs(exists=True))
+    row = await svc.register(
+        _principal(),
+        type="cron",
+        target_kind="team",
+        manifest_inline={"members": []},
+        input_text="standing team",
+        cron="* * * * *",
+        input_data={"sub_harnesses": {}, "gate_decisions": {}},
+        graph_id="graph-1",
+    )
+    assert row.target_kind == "team" and row.graph_id == "graph-1" and row.instance_id is None
+
+
+async def test_register_team_rejects_a_nonexistent_or_cross_org_graph() -> None:
+    # fail-fast (mirrors the request path): a graph the org does not own → rejected at register.
+    svc, _ = _svc(_FakeSchedRepo(), _FakeJobRepo(), graphs=_FakeGraphs(exists=False))
+    with pytest.raises(ScheduleError, match="graph_id does not exist"):
+        await svc.register(
+            _principal(),
+            type="cron",
+            target_kind="team",
+            manifest_inline={"members": []},
+            input_text="t",
+            cron="* * * * *",
+            graph_id="ghost",
+        )
+
+
+async def test_register_team_requires_graph_id() -> None:
+    svc, _ = _svc(_FakeSchedRepo(), _FakeJobRepo())
+    with pytest.raises(ScheduleError, match="graph_id"):
+        await svc.register(
+            _principal(),
+            type="cron",
+            target_kind="team",
+            manifest_inline={"members": []},
+            input_text="t",
+            cron="* * * * *",
+            graph_id=None,
+        )
+
+
+async def test_register_team_requires_inline_manifest() -> None:
+    svc, _ = _svc(_FakeSchedRepo(), _FakeJobRepo())
+    with pytest.raises(ScheduleError, match="inline team manifest"):
+        await svc.register(
+            _principal(),
+            type="cron",
+            target_kind="team",
+            input_text="t",
+            cron="* * * * *",
+            graph_id="graph-1",
+        )
+
+
+async def test_register_team_forbids_instance_id() -> None:
+    svc, _ = _svc(_FakeSchedRepo(), _FakeJobRepo())
+    with pytest.raises(ScheduleError, match="instance_id"):
+        await svc.register(
+            _principal(),
+            type="cron",
+            target_kind="team",
+            manifest_inline={"members": []},
+            input_text="t",
+            cron="* * * * *",
+            instance_id=_INSTANCE,
+            graph_id="graph-1",
+        )
+
+
+async def test_fire_due_team_run_creates_row_before_dispatch() -> None:
+    srepo = _FakeSchedRepo([_team_schedule(cron="* * * * *")])
+    jrepo, trepo = _FakeJobRepo(), _FakeTeamRunRepo()
+    dispatches: list[tuple[uuid.UUID, uuid.UUID, uuid.UUID]] = []
+    svc, prov = _svc(
+        srepo,
+        jrepo,
+        enqueue_team_run=lambda run, o, u: dispatches.append((run, o, u)),
+        team_runs=trepo,
+    )
+    fired = await svc.fire_due(_NOW)
+    assert fired == 1 and len(trepo.team_created) == 1 and len(dispatches) == 1
+    _run, org, user = dispatches[0]
+    assert org == _ORG and user == _USER  # the schedule-OWNER principal (no SYSTEM actor)
+    assert "engine.schedule.fire" in prov.events
+    assert srepo.rows[0].last_fired_at == _PREV  # cursor advanced
+    # the created run is bound to the schedule's persistent graph workspace (the keystone binding)
+    assert trepo.team_rows[0].graph_id == "graph-1"
+
+
+async def test_fire_team_run_without_callback_is_a_hollow_noop() -> None:
+    # the DI guard: if enqueue_team_run is NOT injected, the team branch creates the dedupe row +
+    # advances the cursor but NEVER dispatches (mirrors the adopted-tool hollow-noop guard).
+    srepo = _FakeSchedRepo([_team_schedule(cron="* * * * *")])
+    jrepo, trepo = _FakeJobRepo(), _FakeTeamRunRepo()
+    svc, _ = _svc(srepo, jrepo, enqueue_team_run=None, team_runs=trepo)
+    fired = await svc.fire_due(_NOW)
+    assert fired == 0  # nothing dispatched
+    assert len(trepo.team_created) == 1  # but the dedupe row WAS written
+    assert srepo.rows[0].last_fired_at == _PREV  # and the cursor advanced
+
+
+async def test_team_run_fire_is_idempotent_on_org_key() -> None:
+    # the partial unique (org, idempotency_key=schedule:window): a duplicate same-window create
+    # returns None → no second dispatch (create-before-enqueue dedupe).
+    srepo = _FakeSchedRepo([_team_schedule(cron="* * * * *")])
+    jrepo, trepo = _FakeJobRepo(), _FakeTeamRunRepo()
+    dispatches: list[uuid.UUID] = []
+    svc, _ = _svc(
+        srepo, jrepo, enqueue_team_run=lambda r, o, u: dispatches.append(r), team_runs=trepo
+    )
+    await svc.fire_due(_NOW)
+    srepo.rows[0].last_fired_at = None  # force a re-attempt of the SAME window → the create dedupes
+    await svc.fire_due(_NOW)
+    assert len(trepo.team_created) == 1 and len(dispatches) == 1  # exactly one run + one dispatch
+
+
+async def test_list_team_runs_returns_the_schedules_runs_with_their_graph_binding() -> None:
+    sched = _team_schedule(cron="* * * * *")
+    srepo, jrepo, trepo = _FakeSchedRepo([sched]), _FakeJobRepo(), _FakeTeamRunRepo()
+    svc, _ = _svc(srepo, jrepo, enqueue_team_run=lambda *a: None, team_runs=trepo)
+    await svc.fire_due(_NOW)
+    runs = await svc.list_team_runs(sched.id, _principal())
+    assert len(runs) == 1
+    assert runs[0].schedule_id == sched.id and runs[0].graph_id == "graph-1"
+    # org-scoped: another org sees nothing
+    assert await svc.list_team_runs(sched.id, _principal(org=uuid.uuid4())) == []

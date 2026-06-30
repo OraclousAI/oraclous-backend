@@ -13,6 +13,7 @@ from typing import cast
 
 from sqlalchemy import CursorResult, select
 from sqlalchemy import delete as sa_delete
+from sqlalchemy import update as sa_update
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
@@ -50,6 +51,7 @@ class ScheduleRepository:
         target_kind: str = "harness_job",
         instance_id: uuid.UUID | None = None,
         input_data: dict | None = None,
+        graph_id: str | None = None,
     ) -> EngineSchedule:
         row = EngineSchedule(
             id=uuid.uuid4(),
@@ -64,6 +66,7 @@ class ScheduleRepository:
             target_kind=target_kind,
             instance_id=instance_id,
             input_data=input_data,
+            graph_id=graph_id,  # #601: the standing team's persistent graph workspace (team only)
         )
         async with self._session() as session:
             async with session.begin():
@@ -133,3 +136,23 @@ class ScheduleRepository:
                 ).scalar_one_or_none()
                 if row is not None:
                     row.last_fired_at = fired_at
+
+    async def accrue_recurring_cost(
+        self, schedule_id: uuid.UUID, organisation_id: uuid.UUID, delta: int
+    ) -> None:
+        """#601: ATOMICALLY add a settled team-run's RAW cost to the schedule's per-cadence
+        accumulator (the accumulator #598's per-period cap reads). An IN-DB increment (not a
+        read-modify-write), so two concurrent fire-settles never lose an update. Org-scoped — run
+        under ``org_scope(organisation_id)`` so the org-bound engine's GUC admits the UPDATE."""
+        if delta <= 0:  # a 0-cost (or degraded) run has nothing to accrue
+            return
+        async with self._session() as session:
+            async with session.begin():
+                await session.execute(
+                    sa_update(EngineSchedule)
+                    .where(
+                        EngineSchedule.id == schedule_id,
+                        EngineSchedule.organisation_id == organisation_id,
+                    )
+                    .values(recurring_cost_tokens=EngineSchedule.recurring_cost_tokens + delta)
+                )

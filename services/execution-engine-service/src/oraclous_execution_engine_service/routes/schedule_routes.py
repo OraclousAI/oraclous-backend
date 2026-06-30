@@ -14,6 +14,8 @@ from oraclous_execution_engine_service.schema.engine_schemas import (
     AdoptedToolRunListResponse,
     AdoptedToolRunOut,
     RegisterScheduleRequest,
+    ScheduledTeamRunListResponse,
+    ScheduledTeamRunOut,
     ScheduleListResponse,
     ScheduleOut,
 )
@@ -37,6 +39,7 @@ async def register_schedule(
             cron=body.cron,
             instance_id=body.instance_id,
             input_data=body.input_data,
+            graph_id=body.graph_id,  # #601: a team schedule's persistent graph workspace
         )
     except ScheduleError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
@@ -71,6 +74,18 @@ async def list_schedule_runs(
     rows = await service.list_adopted_runs(schedule_id, principal)
     out = [AdoptedToolRunOut.model_validate(r) for r in rows]
     return AdoptedToolRunListResponse(runs=out, total=len(out))
+
+
+@router.get("/schedules/{schedule_id}/team-runs", response_model=ScheduledTeamRunListResponse)
+async def list_schedule_team_runs(
+    schedule_id: uuid.UUID, principal: PrincipalDep, service: ScheduleServiceDep
+) -> ScheduledTeamRunListResponse:
+    """#601: the team-runs a standing-team schedule produced (org-scoped, newest-first) — the
+    readable, gateway-only proof it fired + the PERSISTENT graph each run is bound to (the keystone:
+    fire N and N+1 carry the SAME graph_id). Another tenant's schedule yields nothing."""
+    rows = await service.list_team_runs(schedule_id, principal)
+    out = [ScheduledTeamRunOut.model_validate(r) for r in rows]
+    return ScheduledTeamRunListResponse(runs=out, total=len(out))
 
 
 @router.get("/schedules", response_model=ScheduleListResponse)

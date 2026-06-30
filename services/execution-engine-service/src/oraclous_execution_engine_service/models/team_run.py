@@ -18,7 +18,7 @@ mapper configuration, so they must be real types.
 import uuid
 from typing import Any
 
-from sqlalchemy import Integer, String, Text
+from sqlalchemy import Index, Integer, String, Text, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -88,3 +88,22 @@ class EngineTeamRun(BaseModel):
     # at a ROUND boundary (the round counter + the ORIGINAL wall-clock start survive a HITL pause /
     # crash, instead of restarting the loop). Empty for an acyclic team or until a loop runs.
     loop_state: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    # ── #601 standing-team binding (additive, nullable) ───────────────────────────────────────
+    # The schedule that FIRED this run (a standing team) — so its settled ``cost_tokens`` accrues
+    # back into the schedule's per-cadence accumulator; NULL for a direct (request-path) team-run.
+    schedule_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    # The at-least-once dedupe key for a scheduled fire — ``f"{schedule_id}:{window}"``. A PARTIAL
+    # unique (org, idempotency_key) WHERE NOT NULL makes the create-before-enqueue fire idempotent
+    # (a duplicate Beat tick / fire-now in the same window gets None) WITHOUT constraining direct
+    # team-runs (which leave it NULL).
+    idempotency_key: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
+    __table_args__ = (
+        Index(
+            "uq_engine_team_runs_org_idempotency",
+            "organisation_id",
+            "idempotency_key",
+            unique=True,
+            postgresql_where=text("idempotency_key IS NOT NULL"),
+        ),
+    )

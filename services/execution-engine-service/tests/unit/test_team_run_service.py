@@ -931,3 +931,37 @@ def test_completed_for_resume_seeds_partial_members_so_they_are_not_redispatched
     )
     seeded = TeamRunService._completed_for_resume(row)
     assert set(seeded) == {"a", "b"}  # succeeded + partial reused; the failed member 'c' re-runs
+
+
+# ── #601: per-cadence cost accrual (a scheduled run's settled cost → its schedule) ────────────────
+
+
+class _FakeSchedAccrual:
+    def __init__(self) -> None:
+        self.accrued: list[tuple[uuid.UUID, uuid.UUID, int]] = []
+
+    async def accrue_recurring_cost(
+        self, schedule_id: uuid.UUID, organisation_id: uuid.UUID, delta: int
+    ) -> None:
+        self.accrued.append((schedule_id, organisation_id, delta))
+
+
+async def test_scheduled_run_accrues_its_cost_into_the_schedule() -> None:
+    from types import SimpleNamespace
+
+    sched = _FakeSchedAccrual()
+    svc = TeamRunService(team_runs=FakeTeamRunRepo(), schedules=sched)  # type: ignore[arg-type]
+    sid = uuid.uuid4()
+    row = SimpleNamespace(id=uuid.uuid4(), organisation_id=_ORG, schedule_id=sid)
+    await svc._accrue_schedule_cost(row, _ORG, 1234)  # type: ignore[arg-type]
+    assert sched.accrued == [(sid, _ORG, 1234)]  # the THIS-DRIVE delta accrued into the schedule
+
+
+async def test_non_scheduled_run_accrues_nothing() -> None:
+    from types import SimpleNamespace
+
+    sched = _FakeSchedAccrual()
+    svc = TeamRunService(team_runs=FakeTeamRunRepo(), schedules=sched)  # type: ignore[arg-type]
+    row = SimpleNamespace(id=uuid.uuid4(), organisation_id=_ORG, schedule_id=None)
+    await svc._accrue_schedule_cost(row, _ORG, 1234)  # type: ignore[arg-type]
+    assert sched.accrued == []  # a direct (request-path) run carries no schedule_id → no accrual

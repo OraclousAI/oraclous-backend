@@ -22,11 +22,14 @@ from oraclous_execution_engine_service.core.rls import org_scope
 from oraclous_execution_engine_service.models.adopted_tool_run import AdoptedToolRun
 from oraclous_execution_engine_service.models.enums import ScheduleType, TargetKind
 from oraclous_execution_engine_service.models.schedule import EngineSchedule
+from oraclous_execution_engine_service.models.team_run import EngineTeamRun
 from oraclous_execution_engine_service.repositories.job_repository import JobRepository
 from oraclous_execution_engine_service.repositories.maintenance_repository import (
     EngineMaintenanceRepository,
 )
 from oraclous_execution_engine_service.repositories.schedule_repository import ScheduleRepository
+from oraclous_execution_engine_service.repositories.team_run_repository import TeamRunRepository
+from oraclous_execution_engine_service.services.graph_client import GraphClient, GraphClientError
 from oraclous_execution_engine_service.services.job_service import EnqueueFn
 
 # An adopted-tool dispatch hand-off: (run_id, instance_id, input_data, organisation_id, user_id) →
@@ -35,6 +38,10 @@ from oraclous_execution_engine_service.services.job_service import EnqueueFn
 # harness EnqueueFn) so a slow/down registry never blocks the cross-org Beat sweep. None on a path
 # that should not dispatch (tests / mis-wire).
 AdoptedToolEnqueueFn = Callable[[uuid.UUID, uuid.UUID, dict[str, Any], uuid.UUID, uuid.UUID], None]
+# #601: a standing-team dispatch hand-off: (run_id, organisation_id, user_id) → drive the team-run
+# worker. Same 3-UUID shape as the harness ``EnqueueFn`` (the team-run carries its own manifest +
+# graph binding, so no extra payload). Injected like the others; None on a non-dispatch path.
+TeamRunEnqueueFn = Callable[[uuid.UUID, uuid.UUID, uuid.UUID], None]
 
 
 class ScheduleError(Exception):
@@ -50,12 +57,25 @@ class ScheduleService:
         provenance: ProvenanceCollector,
         enqueue: EnqueueFn | None = None,
         enqueue_adopted_tool: AdoptedToolEnqueueFn | None = None,
+        enqueue_team_run: TeamRunEnqueueFn | None = None,
+        team_runs: TeamRunRepository | None = None,
+        graphs: GraphClient | None = None,
         maintenance: EngineMaintenanceRepository | None = None,
     ) -> None:
         self._schedules = schedules
         self._jobs = jobs
         self._provenance = provenance
         self._enqueue = enqueue
+        # #601: the request-path KGS client — register fail-closes a team schedule bound to a
+        # cross-org / non-existent graph_id (mirrors TeamRunService.create's check). None on the
+        # Beat path (register is request-path only); then KGS RLS stays the authoritative scope.
+        self._graphs = graphs
+        # #601: the standing-team dispatch callback + the team-run repo (the team branch's
+        # create-before-enqueue home). Like `_enqueue_adopted_tool`: both injected on the Beat
+        # path AND the fire-now request path; None means the team branch creates the dedupe row +
+        # advances the cursor but never dispatches — a mis-wire the DI must avoid (test-guarded).
+        self._enqueue_team_run = enqueue_team_run
+        self._team_runs = team_runs
         # The adopted-tool dispatch callback (#489). Parallel to `_enqueue`: injected on the Beat
         # path AND the fire-now request path; None means the adopted_tool_run branch cannot dispatch
         # (so it would create the dedupe row + advance the cursor but never fire — a mis-wire the
@@ -79,6 +99,7 @@ class ScheduleService:
         cron: str | None = None,
         instance_id: uuid.UUID | None = None,
         input_data: dict | None = None,
+        graph_id: str | None = None,
     ) -> EngineSchedule:
         org_id = self._require_org(principal)
         # The manifest-exclusivity rule is CONDITIONAL on target_kind (#489): harness_job keeps the
@@ -93,6 +114,22 @@ class ScheduleService:
                 raise ScheduleError("an adopted_tool_run schedule takes no manifest/manifest_ref")
             if instance_id is None:
                 raise ScheduleError("an adopted_tool_run schedule requires instance_id")
+        elif target_kind == TargetKind.TEAM.value:
+            # #601: a standing team carries an INLINE team manifest + a PERSISTENT graph workspace;
+            # input_data carries the team-run spec ({sub_harnesses, gate_decisions}). instance_id is
+            # adopted-tool-only. (manifest_ref resolution at fire time would need a registry client
+            # here — out of scope; a standing team's manifest is stored inline.)
+            if manifest_inline is None:
+                raise ScheduleError("a team schedule requires an inline team manifest")
+            if manifest_ref is not None:
+                raise ScheduleError("a team schedule takes manifest_inline, not manifest_ref")
+            if instance_id is not None:
+                raise ScheduleError("instance_id is only for target_kind adopted_tool_run")
+            if not graph_id:
+                raise ScheduleError("a team schedule requires a graph_id (the graph workspace)")
+            # fail-fast: the bound graph must exist in the caller's org (mirrors the request path),
+            # so a cross-org / non-existent binding is rejected at register, not silently per fire.
+            await self._validate_graph_id(org_id, graph_id)
         else:
             raise ScheduleError(f"unknown target_kind {target_kind!r}")
         if type == ScheduleType.CRON.value and (not cron or not croniter.is_valid(cron)):
@@ -112,6 +149,7 @@ class ScheduleService:
                 target_kind=target_kind,
                 instance_id=instance_id,
                 input_data=input_data,
+                graph_id=graph_id,
             )
             await self._emit(
                 org_id, principal.principal_id, row.id, "engine.schedule.register", type
@@ -169,6 +207,8 @@ class ScheduleService:
         key = f"{sched.id}:{prev.isoformat()}"
         if sched.target_kind == TargetKind.ADOPTED_TOOL_RUN.value:
             fired = await self._fire_adopted_tool(sched, key)
+        elif sched.target_kind == TargetKind.TEAM.value:
+            fired = await self._fire_team_run(sched, key)
         else:  # harness_job (the default; old rows read here)
             fired = await self._fire_harness_job(sched, key)
         # advance the cursor regardless (a duplicate-window create returned None but IS fired).
@@ -222,6 +262,34 @@ class ScheduleService:
             return 1
         return 0
 
+    async def _fire_team_run(self, sched: EngineSchedule, key: str) -> int:
+        # #601 (mirrors _fire_adopted_tool): create the standing team's run
+        # — the EngineTeamRun is written with (org, idempotency_key) BEFORE dispatch, so a duplicate
+        # same-window tick / fire-now gets None and is skipped (NO second run). The run is bound to
+        # the schedule's PERSISTENT graph_id, so run N+1 reads the state run N wrote (ADR-048
+        # decision 2 / ADR-040), and carries schedule_id so its settled cost accrues back into the
+        # schedule's per-cadence accumulator. The fire acts as the schedule OWNER (sched.user_id).
+        if self._team_runs is None:  # defensive: the team branch needs the team-run repo
+            return 0
+        spec = sched.input_data or {}
+        run = await self._team_runs.create_scheduled(
+            organisation_id=sched.organisation_id,
+            user_id=sched.user_id,
+            manifest=sched.manifest_inline or {},
+            sub_harnesses=spec.get("sub_harnesses") or {},
+            gate_decisions=spec.get("gate_decisions") or {},
+            graph_id=sched.graph_id,
+            schedule_id=sched.id,
+            idempotency_key=key,
+        )
+        if run is not None and self._enqueue_team_run is not None:
+            self._enqueue_team_run(run.id, sched.organisation_id, sched.user_id)
+            await self._emit(
+                sched.organisation_id, sched.user_id, sched.id, "engine.schedule.fire", key
+            )
+            return 1
+        return 0
+
     async def fire_now(self, schedule_id: uuid.UUID, principal: Principal) -> EngineSchedule:
         """Manual fire of a schedule's CURRENT window without waiting for a Beat tick (#489). Reuses
         the SAME branch + idempotency + cursor logic as the Beat path (``_fire_one``), so a second
@@ -247,6 +315,33 @@ class ScheduleService:
         org_id = self._require_org(principal)
         with org_scope(org_id):
             return await self._jobs.list_adopted_runs_for_schedule(schedule_id, org_id)
+
+    async def list_team_runs(
+        self, schedule_id: uuid.UUID, principal: Principal
+    ) -> list[EngineTeamRun]:
+        """#601: the team-runs a standing-team schedule produced (org-scoped, newest-first) — the
+        readable proof it fired + the persistent graph each run is bound to (the keystone)."""
+        org_id = self._require_org(principal)
+        if self._team_runs is None:
+            return []
+        with org_scope(org_id):
+            return await self._team_runs.list_for_schedule(schedule_id, org_id)
+
+    async def _validate_graph_id(self, organisation_id: uuid.UUID, graph_id: str) -> None:
+        """#601 (mirrors TeamRunService): the bound graph_id MUST exist in the caller's org. The KGS
+        GET is org-scoped by the engine's downstream headers, so a graph the org does not own → a
+        clear 4xx at register, not a confusing mid-fire member failure. With no graphs client wired
+        (the Beat path) the check is skipped (KGS RLS stays the authoritative scope)."""
+        if self._graphs is None:
+            return
+        try:
+            exists = await self._graphs.graph_exists(graph_id)
+        except GraphClientError as exc:  # KGS unreachable / inconclusive — fail closed (not admit)
+            raise ScheduleError(
+                "could not validate graph_id (knowledge-graph unreachable)"
+            ) from exc
+        if not exists:
+            raise ScheduleError("graph_id does not exist in your organisation")
 
     @staticmethod
     def _require_org(principal: Principal) -> uuid.UUID:
