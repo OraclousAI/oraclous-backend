@@ -54,10 +54,17 @@ def test_the_reviewer_repair_loop_is_hard_bounded_to_n_attempts() -> None:
     # resolve_member_caps → the harness halts the loop at the cap regardless of the prompt. So a
     # persistently-blocked draft fail-closes after exactly N attempts; a draft needing ≤N repairs
     # converges within the cap.
-    from oraclous_ohm.compiler.team import _REPAIR_ATTEMPTS, _REVIEWER_VALIDATE_CALLS
+    from oraclous_ohm.compiler.team import (
+        _REPAIR_ATTEMPTS,
+        _REVIEWER_OVERCHECK_SLACK,
+        _REVIEWER_VALIDATE_CALLS,
+    )
 
-    assert _REPAIR_ATTEMPTS == 2  # default 2 (CTO: default 2 / max 3)
-    assert _REVIEWER_VALIDATE_CALLS == _REPAIR_ATTEMPTS + 1 == 3
+    assert _REPAIR_ATTEMPTS == 2  # default 2 fixes (CTO: default 2 / max 3)
+    # #596: the HARD cap is the repair budget PLUS weak-model over-check slack — still bounded (no
+    # runaway), but a clean compile no longer degrades because the model re-checked a passing draft.
+    assert _REVIEWER_VALIDATE_CALLS == _REPAIR_ATTEMPTS + 1 + _REVIEWER_OVERCHECK_SLACK
+    assert _REVIEWER_VALIDATE_CALLS > _REPAIR_ATTEMPTS + 1  # carries explicit over-check slack
     manifest, _ = build_compiler_team(_ORG)
     by = {m.role: m for m in manifest.members}
     assert by["reviewer"].max_tool_calls == _REVIEWER_VALIDATE_CALLS  # the harness halts here
