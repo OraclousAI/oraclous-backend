@@ -201,6 +201,15 @@ class _FakeTeamRunRepo:
         self.team_rows.append(row)
         return row
 
+    async def list_for_schedule(  # noqa: ANN202
+        self, schedule_id: uuid.UUID, organisation_id: uuid.UUID, *, limit: int = 100
+    ):
+        return [
+            r
+            for r in self.team_rows
+            if r.schedule_id == schedule_id and r.organisation_id == organisation_id
+        ]
+
 
 class _FakeProv:
     def __init__(self) -> None:
@@ -611,3 +620,15 @@ async def test_team_run_fire_is_idempotent_on_org_key() -> None:
     srepo.rows[0].last_fired_at = None  # force a re-attempt of the SAME window → the create dedupes
     await svc.fire_due(_NOW)
     assert len(trepo.team_created) == 1 and len(dispatches) == 1  # exactly one run + one dispatch
+
+
+async def test_list_team_runs_returns_the_schedules_runs_with_their_graph_binding() -> None:
+    sched = _team_schedule(cron="* * * * *")
+    srepo, jrepo, trepo = _FakeSchedRepo([sched]), _FakeJobRepo(), _FakeTeamRunRepo()
+    svc, _ = _svc(srepo, jrepo, enqueue_team_run=lambda *a: None, team_runs=trepo)
+    await svc.fire_due(_NOW)
+    runs = await svc.list_team_runs(sched.id, _principal())
+    assert len(runs) == 1
+    assert runs[0].schedule_id == sched.id and runs[0].graph_id == "graph-1"
+    # org-scoped: another org sees nothing
+    assert await svc.list_team_runs(sched.id, _principal(org=uuid.uuid4())) == []

@@ -206,6 +206,25 @@ class AdoptedToolRunListResponse(BaseModel):
     total: int
 
 
+class ScheduledTeamRunOut(BaseModel):
+    """#601: one team-run a standing-team schedule produced — the readable proof a fire created a
+    run BOUND to the schedule's persistent ``graph_id`` (the keystone), with its state + cost."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    schedule_id: uuid.UUID | None
+    graph_id: str | None
+    state: str
+    cost_tokens: int
+    created_at: datetime | None
+
+
+class ScheduledTeamRunListResponse(BaseModel):
+    runs: list[ScheduledTeamRunOut]
+    total: int
+
+
 class ActivityEvent(BaseModel):
     """One provenance/audit event in the org's activity feed (read-only projection of
     ``engine_provenance``). Org-scoped to the caller — never another tenant's row."""

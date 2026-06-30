@@ -22,6 +22,7 @@ from oraclous_execution_engine_service.core.rls import org_scope
 from oraclous_execution_engine_service.models.adopted_tool_run import AdoptedToolRun
 from oraclous_execution_engine_service.models.enums import ScheduleType, TargetKind
 from oraclous_execution_engine_service.models.schedule import EngineSchedule
+from oraclous_execution_engine_service.models.team_run import EngineTeamRun
 from oraclous_execution_engine_service.repositories.job_repository import JobRepository
 from oraclous_execution_engine_service.repositories.maintenance_repository import (
     EngineMaintenanceRepository,
@@ -305,6 +306,17 @@ class ScheduleService:
         org_id = self._require_org(principal)
         with org_scope(org_id):
             return await self._jobs.list_adopted_runs_for_schedule(schedule_id, org_id)
+
+    async def list_team_runs(
+        self, schedule_id: uuid.UUID, principal: Principal
+    ) -> list[EngineTeamRun]:
+        """#601: the team-runs a standing-team schedule produced (org-scoped, newest-first) — the
+        readable proof it fired + the persistent graph each run is bound to (the keystone)."""
+        org_id = self._require_org(principal)
+        if self._team_runs is None:
+            return []
+        with org_scope(org_id):
+            return await self._team_runs.list_for_schedule(schedule_id, org_id)
 
     @staticmethod
     def _require_org(principal: Principal) -> uuid.UUID:

@@ -112,6 +112,23 @@ class TeamRunRepository:
             )
             return result.scalar_one_or_none()
 
+    async def list_for_schedule(
+        self, schedule_id: uuid.UUID, organisation_id: uuid.UUID, *, limit: int = 100
+    ) -> list[EngineTeamRun]:
+        """#601: the team-runs a standing-team schedule produced (org-scoped, newest-first) — the
+        readable proof a schedule fired + the persistent graph each run is bound to."""
+        async with self._session() as session:
+            result = await session.execute(
+                select(EngineTeamRun)
+                .where(
+                    EngineTeamRun.schedule_id == schedule_id,
+                    EngineTeamRun.organisation_id == organisation_id,
+                )
+                .order_by(EngineTeamRun.created_at.desc())
+                .limit(limit)
+            )
+            return list(result.scalars().all())
+
     async def transition(
         self,
         team_run_id: uuid.UUID,
