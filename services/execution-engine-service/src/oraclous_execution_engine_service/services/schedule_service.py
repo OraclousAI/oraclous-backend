@@ -278,12 +278,22 @@ class ScheduleService:
         exhausted (and pauses the fleet). No-op (always True) when no cap is set — then the
         #585/#601 team fire path is byte-for-byte unchanged.
 
-        Two steps, both keyed off the FIRE wall-clock ``now``: (1) if the window rolled since the
+        Three steps, all keyed off the FIRE wall-clock ``now``: (0) IN-FLIGHT GUARD — if a prior
+        fire's run for this schedule has not settled yet (its cost has not accrued), SKIP this fire
+        without pausing or resetting, so the cap is always checked against CURRENT settled spend and
+        can never be overrun by dispatched-but-unsettled runs (ADR-048 dec 4b: 'does not silently
+        overrun'); this serialises a BUDGETED standing team's runs (also the right semantics — they
+        share one graph workspace) and, by deferring the reset while a run straddles the boundary,
+        keeps the straddling run's cost in the window it ran in. (1) if the window rolled since the
         stored anchor, zero the in-window accrual + advance the anchor (reset-at-boundary); (2) if
         the (post-reset) accrual >= allowance, disable+budget-pause the schedule and skip the fire
         (pause-the-fleet, surfaced via provenance — never a silent overrun)."""
         if sched.budget_period is None or sched.budget_allowance_tokens is None:
             return True
+        if self._team_runs is not None and await self._team_runs.has_active_for_schedule(
+            sched.id, sched.organisation_id
+        ):
+            return False  # a prior run is still in-flight — wait for it to settle + accrue
         accrued = sched.recurring_cost_tokens
         cur = _window_start(now, sched.budget_period)
         if sched.budget_window_start is None or cur > sched.budget_window_start:
