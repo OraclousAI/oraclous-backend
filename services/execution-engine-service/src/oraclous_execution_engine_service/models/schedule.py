@@ -52,4 +52,20 @@ class EngineSchedule(BaseModel):
     # #601: per-cadence cost ACCRUAL — RAW tokens summed across the sequence of fires (NOT the
     # run-level pool #585, which resets every run). The accumulator #598's per-period cap reads.
     # BigInteger (int8): a lifetime accumulator on a truly-standing team would overflow int4.
+    # #598 reinterprets this as the CURRENT-WINDOW accrual when ``budget_period`` is set (reset to 0
+    # at the window boundary); with no period set it stays the #601 lifetime accumulator (no reset).
     recurring_cost_tokens: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    # #598 (ADR-044 L3 / ADR-048 dec 4b — team only): the schedule-level recurring per-period cap.
+    # All NULL => cap OFF (default; old rows + non-budgeted teams take the #585/#601 path byte-for-
+    # byte). budget_period ∈ {daily,weekly,monthly}; budget_allowance_tokens is the per-window token
+    # ceiling the accrual is checked against; budget_window_start anchors the current window (the
+    # boundary math compares now to start+period to detect a roll → reset). String(16) for headroom.
+    budget_period: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    budget_allowance_tokens: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    budget_window_start: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    # True when L3 paused the fleet (enabled=False BY the budget cap) — distinct from a manual
+    # disable, so the boundary re-enable sweep only resumes budget-paused schedules, never a row the
+    # user disabled by hand.
+    budget_paused: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)

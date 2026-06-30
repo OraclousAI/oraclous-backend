@@ -163,8 +163,12 @@ async def _fire_schedules_async() -> dict[str, int]:
             team_runs=team_runs,
             maintenance=maintenance,
         )
-        fired = await service.fire_due(datetime.now(UTC))
-        return {"fired": fired}
+        now = datetime.now(UTC)
+        # #598: resume L3-paused standing teams whose period window has rolled FIRST, so a just-
+        # resumed schedule re-enters the enabled-cron set + fires its new window in this same tick.
+        resumed = await service.resume_budget_paused(now)
+        fired = await service.fire_due(now)
+        return {"fired": fired, "resumed": resumed}
     finally:
         await schedules.close()
         await jobs.close()

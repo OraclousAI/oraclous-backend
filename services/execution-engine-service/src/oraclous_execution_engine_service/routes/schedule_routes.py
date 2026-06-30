@@ -40,6 +40,9 @@ async def register_schedule(
             instance_id=body.instance_id,
             input_data=body.input_data,
             graph_id=body.graph_id,  # #601: a team schedule's persistent graph workspace
+            # #598: the L3 per-period cap (team-only; None/None => OFF). budget_period is the enum.
+            budget_period=body.budget_period.value if body.budget_period else None,
+            budget_allowance_tokens=body.budget_allowance_tokens,
         )
     except ScheduleError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc

@@ -22,6 +22,16 @@ class TargetKind(enum.StrEnum):
     TEAM = "team"  # #601: a standing-team team-run bound to a persistent graph workspace
 
 
+class BudgetPeriod(enum.StrEnum):
+    """#598 (ADR-044 L3 / ADR-048 dec 4b): the recurring-budget WINDOW a standing team's per-period
+    cap accrues over and resets at. User-chosen; a plain String column (no PG enum) so a future
+    value needs no DB migration, matching ``ScheduleType``/``TargetKind``."""
+
+    DAILY = "daily"  # the UTC day [00:00, next 00:00)
+    WEEKLY = "weekly"  # the ISO week [Monday 00:00 UTC, next Monday)
+    MONTHLY = "monthly"  # the calendar month [day-1 00:00 UTC, next month)
+
+
 class EngineJobState(enum.StrEnum):
     """The durable state of an engine job (the checkpoint state machine around a harness run)."""
 
