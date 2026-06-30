@@ -63,12 +63,16 @@ def _drafter_governance_subgoal() -> str:
 
 #: the bounded in-harness repair loop (CTO decision A / decision-3): the reviewer fixes a blocked
 #: draft and re-validates at most ``_REPAIR_ATTEMPTS`` times (default 2 / max 3). Each attempt is
-#: one ``manifest-validate`` tool call, so the loop is HARD-bounded by capping the reviewer member's
-#: ``max_tool_calls`` at ``_REPAIR_ATTEMPTS + 1`` (the initial validate + N fixes) — the harness
-#: halts the loop at the cap, independent of whether the model honours the prompt. After the cap it
-#: fails closed with a gap report (no team JSON).
+#: one ``manifest-validate`` tool call.
 _REPAIR_ATTEMPTS = 2
-_REVIEWER_VALIDATE_CALLS = _REPAIR_ATTEMPTS + 1
+#: #596: the HARD ``max_tool_calls`` cap is the repair budget (initial validate + N fixes) PLUS
+#: explicit slack for a WEAK BYOM model (e.g. gpt-4o-mini) benignly RE-VALIDATING a draft that
+#: already passed ``would_block=False`` — observed on the deployed stack: the model re-checks a
+#: clean team and, with only ``N+1`` slots, hits the cap and the compile degrades on that caution
+#: alone. The slack keeps the loop HARD-bounded (no runaway) while a clean compile finishes;
+#: the bound still fail-closes a persistently-blocked draft. (Cap raised from N+1=3; CTO-flagged.)
+_REVIEWER_OVERCHECK_SLACK = 5
+_REVIEWER_VALIDATE_CALLS = _REPAIR_ATTEMPTS + 1 + _REVIEWER_OVERCHECK_SLACK
 
 
 def build_compiler_team(
@@ -133,6 +137,10 @@ def build_compiler_team(
             depends_on=["manifest-drafter", "capability-surveyor"],
             # HARD bound on the validate→fix→validate loop: initial validate + at most N fixes
             max_tool_calls=_REVIEWER_VALIDATE_CALLS,
+            # #596: DEGRADE (not escalate) on exhausting that bound — a richer plan can make the
+            # reviewer over-validate past the cap; a compile must finish with a best-effort partial
+            # (#587 degrade), NEVER fail the whole compile because the model double-checked.
+            on_exhaustion="degrade",
         ),
     ]
     manifest = OHMManifest(

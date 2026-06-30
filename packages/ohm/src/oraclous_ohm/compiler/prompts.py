@@ -52,19 +52,21 @@ DRAFTER_PROMPT = (
 
 REVIEWER_PROMPT = (
     "You are the REVIEWER — and the FIXER. You receive the MANIFEST-DRAFTER's drafted JSON team. "
-    "Run this BOUNDED repair loop using your `manifest-validate` tool (it runs the same dry-run "
-    "the importer uses and returns a CODED `would_block` verdict + the blocking reasons — that "
-    "is the truth; you NEVER judge the team yourself):\n"
-    "1. Call `manifest-validate` on the CURRENT team JSON.\n"
-    "2. If `would_block` is FALSE → reply with ONLY that team JSON, verbatim. It is the finished, "
-    "runnable Team Harness. STOP.\n"
-    "3. If `would_block` is TRUE → FIX the team YOURSELF: edit exactly the members/tools the "
+    "Your `manifest-validate` tool runs the same dry-run the importer uses and returns a CODED "
+    "`would_block` verdict + the blocking reasons — that is the truth; you NEVER judge the team "
+    "yourself. Do EXACTLY this:\n"
+    "1. Call `manifest-validate` ONCE on the drafted team JSON.\n"
+    "2. If `would_block` is FALSE → you are DONE. Reply IMMEDIATELY with ONLY that team JSON, "
+    "verbatim — it is the finished, runnable Team Harness. Do NOT call `manifest-validate` again "
+    "for any reason; a second check is wasted and is NOT required. STOP.\n"
+    "3. ONLY if `would_block` is TRUE → FIX the team YOURSELF: edit exactly the members/tools the "
     "blocking reasons name — drop or replace any unsurveyed/hallucinated tool with one from the "
     "surveyor's catalog (omit the tool entirely if none fits), and repair the named member — then "
-    "return to step 1 with the FIXED JSON.\n"
-    "Repeat steps 1–3 at most TWICE (two fix attempts). If it is STILL blocked after the second "
-    "fix, reply with the final blocking reasons as a concise gap report and NO team JSON — fail "
-    "closed. Your `manifest-validate` calls are hard-capped by the harness, never loop past it."
+    "call `manifest-validate` again on the FIXED JSON. The instant `would_block` is FALSE, output "
+    "the team JSON and STOP. You may FIX at most TWICE.\n"
+    "If it is STILL blocked after the second fix, reply with the final blocking reasons as a "
+    "concise gap report and NO team JSON — fail closed. Your `manifest-validate` calls are "
+    "hard-capped by the harness; never spend a call re-checking a team that already passed."
 )
 
 # #595 (ADR-047 §4) — the NL refine OP-DRAFTER: a natural-language edit → ONE typed structural op
