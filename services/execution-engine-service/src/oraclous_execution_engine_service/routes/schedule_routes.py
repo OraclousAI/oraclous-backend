@@ -37,6 +37,7 @@ async def register_schedule(
             cron=body.cron,
             instance_id=body.instance_id,
             input_data=body.input_data,
+            graph_id=body.graph_id,  # #601: a team schedule's persistent graph workspace
         )
     except ScheduleError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc

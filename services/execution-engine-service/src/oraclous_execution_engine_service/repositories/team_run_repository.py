@@ -9,6 +9,7 @@ from datetime import datetime
 from typing import Any
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
@@ -60,6 +61,46 @@ class TeamRunRepository:
                 session.add(row)
             await session.refresh(row)
             return row
+
+    async def create_scheduled(
+        self,
+        *,
+        organisation_id: uuid.UUID,
+        user_id: uuid.UUID,
+        manifest: dict[str, Any],
+        sub_harnesses: dict[str, Any],
+        gate_decisions: dict[str, Any],
+        graph_id: str | None,
+        schedule_id: uuid.UUID,
+        idempotency_key: str,
+    ) -> EngineTeamRun | None:
+        """#601: create a QUEUED team-run for a standing-team schedule fire, idempotent on
+        ``(org, idempotency_key)`` via the partial unique. Returns ``None`` on a duplicate
+        same-window fire (IntegrityError) — the create-BEFORE-enqueue dedupe (mirrors
+        ``create_adopted_tool_run``). Bound to the schedule's persistent ``graph_id`` + carrying
+        ``schedule_id`` so the worker accrues the settled cost back into the schedule."""
+        row = EngineTeamRun(
+            id=uuid.uuid4(),
+            organisation_id=organisation_id,
+            user_id=user_id,
+            manifest=manifest,
+            sub_harnesses=sub_harnesses,
+            gate_decisions=gate_decisions,
+            state="QUEUED",
+            results={},
+            paused_at=[],
+            graph_id=graph_id,
+            schedule_id=schedule_id,
+            idempotency_key=idempotency_key,
+        )
+        try:
+            async with self._session() as session:
+                async with session.begin():
+                    session.add(row)
+                await session.refresh(row)
+                return row
+        except IntegrityError:
+            return None
 
     async def get(self, team_run_id: uuid.UUID, organisation_id: uuid.UUID) -> EngineTeamRun | None:
         async with self._session() as session:

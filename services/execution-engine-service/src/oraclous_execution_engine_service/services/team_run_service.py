@@ -45,6 +45,7 @@ from oraclous_execution_engine_service.models.team_run import EngineTeamRun
 from oraclous_execution_engine_service.repositories.maintenance_repository import (
     EngineMaintenanceRepository,
 )
+from oraclous_execution_engine_service.repositories.schedule_repository import ScheduleRepository
 from oraclous_execution_engine_service.repositories.team_run_repository import TeamRunRepository
 from oraclous_execution_engine_service.services.artifacts_client import (
     ArtifactsClient,
@@ -261,6 +262,7 @@ class TeamRunService:
         evaluate: EvaluateClient | None = None,
         graphs: GraphClient | None = None,
         artifacts: ArtifactsClient | None = None,
+        schedules: ScheduleRepository | None = None,
     ) -> None:
         # The drive runs on the WORKER (like jobs/round-tables): the request path (create/advance)
         # needs `enqueue` (hand the QUEUED run to the broker) but NOT a harness; the worker `drive`
@@ -275,6 +277,10 @@ class TeamRunService:
         self._evaluate = evaluate
         self._graphs = graphs
         self._artifacts = artifacts
+        # #601: the worker drive accrues a SCHEDULED run's settled cost into its schedule's
+        # per-cadence accumulator (the #598 cap reads it). None on the request path (create/advance
+        # never settle cost) — a non-scheduled run accrues nothing.
+        self._schedules = schedules
 
     def _org(self, principal: Principal) -> uuid.UUID:
         if principal.organisation_id is None:  # fail-closed tenancy (ADR-006)
@@ -791,6 +797,9 @@ class TeamRunService:
                     child_execution_ids=child_ids,  # record what was dispatched before the failure
                     cost_tokens=prior_cost + sum(cost_deltas),  # ...and what it cost
                 )
+            await self._accrue_schedule_cost(
+                row, org, sum(cost_deltas)
+            )  # #601: cost even on FAILED
             return updated or claimed
         except BaseException as exc:
             # NOT a normal error — task cancellation (ASGI client disconnect / worker SIGTERM) or
@@ -849,7 +858,17 @@ class TeamRunService:
                 verdict=verdict,  # the gate verdict (None unless completed); state stays unchanged
                 loop_state=dict(result.loop_state),  # PR-C: the per-loop checkpoint (resume cursor)
             )
+        await self._accrue_schedule_cost(row, org, sum(cost_deltas))  # #601: per-cadence accrual
         return updated or claimed
+
+    async def _accrue_schedule_cost(self, row: EngineTeamRun, org: uuid.UUID, delta: int) -> None:
+        """#601: accrue THIS DRIVE's RAW-token cost (the delta, NOT the cumulative ``cost_tokens``)
+        into the originating schedule's per-cadence accumulator, so a resume past a pause never
+        double-counts. No-op for a direct (non-scheduled) run or when no schedule repo is wired."""
+        if row.schedule_id is None or self._schedules is None:
+            return
+        with org_scope(org):
+            await self._schedules.accrue_recurring_cost(row.schedule_id, org, delta)
 
     async def reap_stale(
         self, maintenance: EngineMaintenanceRepository, *, older_than: datetime

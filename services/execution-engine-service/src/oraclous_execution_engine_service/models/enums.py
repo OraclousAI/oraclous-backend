@@ -19,6 +19,7 @@ class TargetKind(enum.StrEnum):
 
     HARNESS_JOB = "harness_job"  # the original path: enqueue a durable harness engine_job
     ADOPTED_TOOL_RUN = "adopted_tool_run"  # enqueue a capability-registry instance /execute
+    TEAM = "team"  # #601: a standing-team team-run bound to a persistent graph workspace
 
 
 class EngineJobState(enum.StrEnum):

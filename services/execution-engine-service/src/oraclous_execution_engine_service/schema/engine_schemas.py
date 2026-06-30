@@ -133,22 +133,34 @@ class RegisterScheduleRequest(BaseModel):
     manifest_ref: str | None = Field(default=None, max_length=512)
     instance_id: uuid.UUID | None = None
     input_data: dict[str, Any] | None = None
+    # #601 (team only): the persistent graph workspace the standing team's runs read+write
+    graph_id: str | None = Field(default=None, max_length=512)
     input: str = Field(min_length=1)
 
     @model_validator(mode="after")
     def _target_kind_shape(self) -> RegisterScheduleRequest:
         # The exactly-one-manifest rule is CONDITIONAL on target_kind (#489): harness_job keeps it;
-        # adopted_tool_run forbids both manifests and requires an instance_id.
+        # adopted_tool_run forbids both manifests + requires an instance_id; team (#601) requires an
+        # inline manifest + a graph_id.
         if self.target_kind == TargetKind.HARNESS_JOB:
             if (self.manifest is None) == (self.manifest_ref is None):
                 raise ValueError("supply exactly one of 'manifest' (inline) or 'manifest_ref'")
             if self.instance_id is not None:
                 raise ValueError("'instance_id' is only for target_kind 'adopted_tool_run'")
-        else:  # adopted_tool_run
+        elif self.target_kind == TargetKind.ADOPTED_TOOL_RUN:
             if self.manifest is not None or self.manifest_ref is not None:
                 raise ValueError("an 'adopted_tool_run' schedule takes no manifest/manifest_ref")
             if self.instance_id is None:
                 raise ValueError("an 'adopted_tool_run' schedule requires 'instance_id'")
+        else:  # team (#601): an inline team manifest + a persistent graph workspace
+            if self.manifest is None:
+                raise ValueError("a 'team' schedule requires an inline 'manifest'")
+            if self.manifest_ref is not None:
+                raise ValueError("a 'team' schedule takes 'manifest', not 'manifest_ref'")
+            if self.instance_id is not None:
+                raise ValueError("'instance_id' is only for target_kind 'adopted_tool_run'")
+            if not self.graph_id:
+                raise ValueError("a 'team' schedule requires a 'graph_id'")
         return self
 
 
@@ -166,6 +178,9 @@ class ScheduleOut(BaseModel):
     enabled: bool
     last_fired_at: datetime | None
     created_at: datetime | None
+    # #601: the team schedule's bound graph workspace + the per-cadence cost accumulator
+    graph_id: str | None = None
+    recurring_cost_tokens: int = 0
 
 
 class ScheduleListResponse(BaseModel):

@@ -151,6 +151,7 @@ async def _fire_schedules_async() -> dict[str, int]:
     jobs = JobRepository(settings.database_url, worker_pool=True)
     sink = PostgresProvenanceSink(settings.database_url, worker_pool=True)
     maintenance = EngineMaintenanceRepository(settings.maintenance_url)
+    team_runs = TeamRunRepository(settings.database_url, worker_pool=True)
     try:
         service = ScheduleService(
             schedules=schedules,
@@ -158,6 +159,8 @@ async def _fire_schedules_async() -> dict[str, int]:
             provenance=ProvenanceCollector(sink),
             enqueue=enqueue_job,
             enqueue_adopted_tool=enqueue_adopted_tool,
+            enqueue_team_run=enqueue_team_run,  # #601: the standing-team fire branch dispatch
+            team_runs=team_runs,
             maintenance=maintenance,
         )
         fired = await service.fire_due(datetime.now(UTC))
@@ -167,6 +170,7 @@ async def _fire_schedules_async() -> dict[str, int]:
         await jobs.close()
         await sink.close()
         await maintenance.close()
+        await team_runs.close()
 
 
 @celery_app.task(bind=True, name="engine.drive_roundtable")
@@ -328,9 +332,16 @@ async def _drive_team_run_async(run_id_s: str, org_id_s: str, user_id_s: str) ->
         # ADR-043 #552: the coded loop done-check reads the graph's LANDED artifacts (org-scoped by
         # the same downstream headers) to confirm a loop's work persisted before it can converge.
         artifacts = ArtifactsClient(settings.knowledge_graph_url, headers=headers)
+        # #601: a SCHEDULED team-run's settled cost accrues into its schedule's per-cadence
+        # accumulator (the #598 cap reads it) — the worker drive is where cost settles.
+        schedules = ScheduleRepository(settings.database_url, worker_pool=True)
         try:
             service = TeamRunService(
-                team_runs=team_runs, harness=harness, evaluate=evaluate, artifacts=artifacts
+                team_runs=team_runs,
+                harness=harness,
+                evaluate=evaluate,
+                artifacts=artifacts,
+                schedules=schedules,
             )
             result = await service.drive(run_id, principal)
             return {"team_run_id": run_id_s, "state": result.state}
@@ -339,6 +350,7 @@ async def _drive_team_run_async(run_id_s: str, org_id_s: str, user_id_s: str) ->
             await evaluate.aclose()
             await artifacts.aclose()
             await team_runs.close()
+            await schedules.close()
 
 
 def enqueue_team_run(run_id: uuid.UUID, organisation_id: uuid.UUID, user_id: uuid.UUID) -> None:
