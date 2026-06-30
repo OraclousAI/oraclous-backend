@@ -41,6 +41,17 @@ class _FakeJudge:
         return "fake"
 
 
+class _ErroringJudge:
+    """An ``EvalJudge`` whose calls RAISE — the evaluator fail-softs each dimension to null, so the
+    Verdict has empty ``metrics_computed`` (a judge outage, NOT a real low score)."""
+
+    async def complete_json(self, *, system: str, user: str) -> str:
+        raise RuntimeError("judge unreachable")
+
+    async def complete_text(self, *, system: str, user: str) -> str:
+        raise RuntimeError("judge unreachable")
+
+
 def _good_manifest() -> dict[str, object]:
     return {
         "members": [
@@ -213,6 +224,75 @@ def test_dimension_rotation_debiases_order() -> None:
 def test_an_empty_judge_panel_is_rejected() -> None:
     with pytest.raises(ValueError, match="at least one judge"):
         EvalSetRunner(_manifest(_one_objective(), ShipBar()), judges=[], compile=_compile_good(""))
+
+
+async def test_a_judge_outage_is_inconclusive_not_a_fabricated_low_score() -> None:
+    # the whole panel errors → each Verdict fail-softs to 0.0 with empty metrics_computed. That MUST
+    # NOT read as "the team is terrible" (escalate) — it is a judge OUTAGE → inconclusive, and the
+    # fabricated 0.0s must never enter the median/variance (else variance 0.0 slips the ceiling).
+    runner = EvalSetRunner(
+        _manifest(_one_objective(), ShipBar(n_samples=3, k_pass=2)),
+        judges=[_ErroringJudge(), _ErroringJudge()],
+        compile=_compile_returning(_good_manifest()),
+        run=_run_fn,
+        owner_organization_id=_ORG,
+    )
+    result = await runner.run()
+    obj = result.objectives[0]
+    assert obj.passed is False and obj.recommendation == "inconclusive"
+    assert all(s.unevaluable and s.judge_unavailable for s in obj.samples)
+    assert all(s.plan is not None and s.plan.judges_scored == 0 for s in obj.samples)
+
+
+async def test_a_partial_judge_outage_excludes_the_errored_judge() -> None:
+    # one real judge + one erroring judge in a 2-panel: below a strict majority → judge_unavailable,
+    # and the errored judge's 0.0 is excluded (judges_scored == 1, not 2).
+    runner = EvalSetRunner(
+        _manifest(_one_objective(), ShipBar(n_samples=3, k_pass=2)),
+        judges=[_FakeJudge(0.9), _ErroringJudge()],
+        compile=_compile_returning(_good_manifest()),
+        run=_run_fn,
+        owner_organization_id=_ORG,
+    )
+    result = await runner.run()
+    obj = result.objectives[0]
+    assert obj.recommendation == "inconclusive"
+    assert all(s.plan is not None and s.plan.judges_scored == 1 for s in obj.samples)
+    assert all(s.plan and s.plan.judge_scores == [0.9] for s in obj.samples)  # the 0.0 is excluded
+
+
+async def test_a_raising_compile_errors_the_sample_without_aborting_the_sweep() -> None:
+    async def _boom(_prose: str):
+        raise RuntimeError("the gateway is down")
+
+    runner = EvalSetRunner(
+        _manifest(_one_objective(), ShipBar(n_samples=3, k_pass=2)),
+        judges=[_FakeJudge(0.9)],
+        compile=_boom,
+        run=_run_fn,
+        owner_organization_id=_ORG,
+    )
+    result = await runner.run()  # must NOT raise — one bad sample never kills the run
+    obj = result.objectives[0]
+    assert all(s.errored and s.error_reason == "RuntimeError" for s in obj.samples)
+    assert obj.passed is False and obj.recommendation == "inconclusive"
+
+
+async def test_a_raising_run_errors_the_sample_after_the_plan_scored() -> None:
+    async def _boom(_manifest: dict[str, object]) -> str:
+        raise RuntimeError("the run failed")
+
+    runner = EvalSetRunner(
+        _manifest(_one_objective(), ShipBar(n_samples=3, k_pass=2)),
+        judges=[_FakeJudge(0.9)],
+        compile=_compile_returning(_good_manifest()),
+        run=_boom,
+        owner_organization_id=_ORG,
+    )
+    result = await runner.run()
+    obj = result.objectives[0]
+    assert all(s.errored and s.plan is not None for s in obj.samples)  # plan scored, run errored
+    assert obj.recommendation == "inconclusive"
 
 
 def test_the_reference_eval_set_is_recorded_data() -> None:

@@ -183,11 +183,14 @@ def test_the_ship_bar_runner_samples_and_judges_real_compiles_through_the_gatewa
     assert len(obj.samples) == 3
     assert all(not s.blocked_by_guardrails for s in obj.samples), "live compiles pass Layer-1"
     assert all(s.plan is not None for s in obj.samples), "the real judge scored every sample"
-    # the real panel produced two VALID scores per sample (de-biased), and the ship-bar verdict is
-    # internally consistent — the runner machinery ran end-to-end on real LLM scores.
-    for s in obj.samples:
-        assert s.plan is not None and len(s.plan.judge_scores) == 2
-        assert all(0.0 <= sc <= 1.0 for sc in s.plan.judge_scores), "real, valid judge scores"
+    # the REAL panel engaged — the runner ran the 2-judge panel, a MAJORITY of the (sample × judge)
+    # scorings produced a real score, and a strictly-positive score exists. An all-zero fail-soft
+    # outage (the review finding) yields judges_scored 0 everywhere and no positive score — this
+    # distinguishes a live judge run from a dead panel, while tolerating a transient single hiccup.
+    assert all(s.plan is not None and s.plan.judges_total == 2 for s in obj.samples)
+    total_scored = sum(s.plan.judges_scored for s in obj.samples if s.plan)
+    assert total_scored >= 3, f"the real panel scored ({total_scored}/6 sample×judge scorings)"
+    assert any(sc > 0.0 for s in obj.samples if s.plan for sc in s.plan.judge_scores)
     assert obj.recommendation in {"ship", "revise", "escalate", "inconclusive"}
     assert 0.0 <= obj.median_score <= 1.0
     assert obj.consensus_ratio == round(obj.pass_count / 3, 4)

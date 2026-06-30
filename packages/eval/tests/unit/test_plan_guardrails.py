@@ -126,6 +126,34 @@ def test_a_member_cap_equal_to_the_pool_is_allowed() -> None:
     assert report.passed is True
 
 
+def test_a_budget_per_member_default_above_the_pool_blocks() -> None:
+    # the budget-level per-member DEFAULT (not just a member's own cap) above the pool slips the
+    # naive check — every defaulted member would resolve above the team total.
+    draft = _draft(
+        [_member("a", [], tools=["write"])],
+        budget={"max_tokens_total": 1_000_000, "max_tokens_per_member": 9_000_000},
+    )
+    report = _run(draft)
+    assert report.would_block is True
+    assert any("F-CAP-OVER-POOL" in b and "per_member" in b for b in report.blocking)
+
+
+def test_a_present_but_invalid_budget_blocks_not_silently_skipped() -> None:
+    # an invalid budget must BLOCK — never silently disable the stricter cap guardrail (GO: ready).
+    draft = _draft([_member("a", [], tools=["write"])], budget={"max_tokens_total": "lots"})
+    report = _run(draft)
+    assert report.would_block is True
+    assert any("budget" in b.lower() for b in report.blocking)
+
+
+def test_a_malformed_orchestration_blocks_even_without_a_catalog() -> None:
+    # the no-catalog branch must validate orchestration too (it used to drop it entirely).
+    draft = {"members": [_member("a", [], tools=[])], "orchestration": {"loops": "not-a-list"}}
+    report = run_plan_guardrails(draft, owner_organization_id=_ORG, catalog=None)
+    assert report.would_block is True
+    assert any("orchestration" in b.lower() for b in report.blocking)
+
+
 def test_a_human_member_without_a_role_blocks_schema() -> None:
     report = _run(_draft([_member("a", []), {"role": "h", "kind": "human", "depends_on": ["a"]}]))
     assert report.would_block is True
