@@ -13,7 +13,7 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import Boolean, DateTime, Integer, String, Text
+from sqlalchemy import BigInteger, Boolean, DateTime, String, Text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -51,4 +51,5 @@ class EngineSchedule(BaseModel):
     graph_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     # #601: per-cadence cost ACCRUAL — RAW tokens summed across the sequence of fires (NOT the
     # run-level pool #585, which resets every run). The accumulator #598's per-period cap reads.
-    recurring_cost_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # BigInteger (int8): a lifetime accumulator on a truly-standing team would overflow int4.
+    recurring_cost_tokens: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)

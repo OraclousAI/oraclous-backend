@@ -34,7 +34,8 @@ def upgrade() -> None:
     op.add_column("engine_schedules", sa.Column("graph_id", sa.Text(), nullable=True))
     op.add_column(
         "engine_schedules",
-        sa.Column("recurring_cost_tokens", sa.Integer(), nullable=False, server_default="0"),
+        # BigInteger (int8): a lifetime accumulator on a truly-standing team would overflow int4.
+        sa.Column("recurring_cost_tokens", sa.BigInteger(), nullable=False, server_default="0"),
     )
     op.add_column(
         "engine_team_runs",

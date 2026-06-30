@@ -864,10 +864,14 @@ class TeamRunService:
     async def _accrue_schedule_cost(self, row: EngineTeamRun, org: uuid.UUID, delta: int) -> None:
         """#601: accrue THIS DRIVE's RAW-token cost (the delta, NOT the cumulative ``cost_tokens``)
         into the originating schedule's per-cadence accumulator, so a resume past a pause never
-        double-counts. No-op for a direct (non-scheduled) run or when no schedule repo is wired."""
+        double-counts. No-op for a direct (non-scheduled) run or when no schedule repo is wired.
+
+        BEST-EFFORT: the run is ALREADY settled terminal at the call site — a transient accrual
+        failure must not error the worker task (the retry could not re-accrue; the under-count is a
+        bounded read-side inaccuracy, not a correctness hazard). So it is suppressed."""
         if row.schedule_id is None or self._schedules is None:
             return
-        with org_scope(org):
+        with contextlib.suppress(Exception), org_scope(org):
             await self._schedules.accrue_recurring_cost(row.schedule_id, org, delta)
 
     async def reap_stale(

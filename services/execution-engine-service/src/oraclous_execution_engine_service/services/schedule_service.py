@@ -29,6 +29,7 @@ from oraclous_execution_engine_service.repositories.maintenance_repository impor
 )
 from oraclous_execution_engine_service.repositories.schedule_repository import ScheduleRepository
 from oraclous_execution_engine_service.repositories.team_run_repository import TeamRunRepository
+from oraclous_execution_engine_service.services.graph_client import GraphClient, GraphClientError
 from oraclous_execution_engine_service.services.job_service import EnqueueFn
 
 # An adopted-tool dispatch hand-off: (run_id, instance_id, input_data, organisation_id, user_id) →
@@ -58,12 +59,17 @@ class ScheduleService:
         enqueue_adopted_tool: AdoptedToolEnqueueFn | None = None,
         enqueue_team_run: TeamRunEnqueueFn | None = None,
         team_runs: TeamRunRepository | None = None,
+        graphs: GraphClient | None = None,
         maintenance: EngineMaintenanceRepository | None = None,
     ) -> None:
         self._schedules = schedules
         self._jobs = jobs
         self._provenance = provenance
         self._enqueue = enqueue
+        # #601: the request-path KGS client — register fail-closes a team schedule bound to a
+        # cross-org / non-existent graph_id (mirrors TeamRunService.create's check). None on the
+        # Beat path (register is request-path only); then KGS RLS stays the authoritative scope.
+        self._graphs = graphs
         # #601: the standing-team dispatch callback + the team-run repo (the team branch's
         # create-before-enqueue home). Like `_enqueue_adopted_tool`: both injected on the Beat
         # path AND the fire-now request path; None means the team branch creates the dedupe row +
@@ -121,6 +127,9 @@ class ScheduleService:
                 raise ScheduleError("instance_id is only for target_kind adopted_tool_run")
             if not graph_id:
                 raise ScheduleError("a team schedule requires a graph_id (the graph workspace)")
+            # fail-fast: the bound graph must exist in the caller's org (mirrors the request path),
+            # so a cross-org / non-existent binding is rejected at register, not silently per fire.
+            await self._validate_graph_id(org_id, graph_id)
         else:
             raise ScheduleError(f"unknown target_kind {target_kind!r}")
         if type == ScheduleType.CRON.value and (not cron or not croniter.is_valid(cron)):
@@ -317,6 +326,22 @@ class ScheduleService:
             return []
         with org_scope(org_id):
             return await self._team_runs.list_for_schedule(schedule_id, org_id)
+
+    async def _validate_graph_id(self, organisation_id: uuid.UUID, graph_id: str) -> None:
+        """#601 (mirrors TeamRunService): the bound graph_id MUST exist in the caller's org. The KGS
+        GET is org-scoped by the engine's downstream headers, so a graph the org does not own → a
+        clear 4xx at register, not a confusing mid-fire member failure. With no graphs client wired
+        (the Beat path) the check is skipped (KGS RLS stays the authoritative scope)."""
+        if self._graphs is None:
+            return
+        try:
+            exists = await self._graphs.graph_exists(graph_id)
+        except GraphClientError as exc:  # KGS unreachable / inconclusive — fail closed (not admit)
+            raise ScheduleError(
+                "could not validate graph_id (knowledge-graph unreachable)"
+            ) from exc
+        if not exists:
+            raise ScheduleError("graph_id does not exist in your organisation")
 
     @staticmethod
     def _require_org(principal: Principal) -> uuid.UUID:
