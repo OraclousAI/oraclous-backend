@@ -77,3 +77,14 @@ def test_the_objective_and_catalog_are_seeded_into_the_subgoals() -> None:
     assert by["planner"].subgoal == "Summarise the week's AI news into a digest."
     assert by["capability-surveyor"].subgoal is not None
     assert "web-search" in by["capability-surveyor"].subgoal  # the seeded catalog is in the subgoal
+
+
+def test_the_drafter_is_seeded_to_emit_the_governance_policy() -> None:
+    # #596: the drafter's subgoal seeds the governed-by-default policy template so the compiled team
+    # carries governance (a known policy_set_ref) + the 3-layer budget.
+    from oraclous_ohm.seeds import DEFAULT_POLICY_SET_REF
+
+    manifest, _ = build_compiler_team(_ORG)
+    drafter = {m.role: m for m in manifest.members}["manifest-drafter"]
+    assert drafter.subgoal and DEFAULT_POLICY_SET_REF in drafter.subgoal
+    assert "max_tokens_per_member" in drafter.subgoal  # the 3-layer budget is seeded
