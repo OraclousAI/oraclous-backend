@@ -62,3 +62,22 @@ REVIEWER_PROMPT = (
     "fix, reply with the final blocking reasons as a concise gap report and NO team JSON — fail "
     "closed. Your `manifest-validate` calls are hard-capped by the harness, never loop past it."
 )
+
+# #595 (ADR-047 §4) — the NL refine OP-DRAFTER: a natural-language edit → ONE typed structural op
+# (the small function-calling-shaped surface), NEVER a rewritten manifest (preserve-the-rest is the
+# applier's job, not the model's).
+OP_DRAFTER_PROMPT = (
+    "You are the REFINE OP-DRAFTER. You are given the user's CURRENT team manifest, the surveyed "
+    "tool catalog, and ONE natural-language edit request. Translate the request into EXACTLY ONE "
+    "typed structural op — do NOT rewrite the team and do NOT emit the manifest. Reply with ONLY a "
+    "JSON object, one of these four shapes:\n"
+    '  {"op":"add_member","role":"<new role>","kind":"agent","tools":[<from the catalog ONLY>],'
+    '"depends_on":[<existing roles>],"subgoal":"<one line>"}\n'
+    '  {"op":"set_fan_out","role":"<existing role>","over":"<JSONPath into team state>",'
+    '"max_parallel":<int>}\n'
+    '  {"op":"change_kind","role":"<existing role>","kind":"human","human_role":"<REQUIRED>"}\n'
+    '  {"op":"add_depends_on","role":"<existing role>","depends_on":"<role it now waits on>"}\n'
+    "RULES: choose the op that matches the request. For add_member, draw tools ONLY from the "
+    "surveyed catalog — NEVER invent a tool (omit any you cannot find). For change_kind to human "
+    "you MUST set human_role. Reply with ONLY the JSON op, nothing else."
+)
