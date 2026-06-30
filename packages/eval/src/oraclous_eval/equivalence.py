@@ -120,7 +120,16 @@ def build_report_editor_battery(
     the defaults are a coherent JSON-ledger scaffold the unit tests exercise. ``floor="and"`` means
     every applicable gate must pass — the strict equivalence bar EURail's spec mandates."""
     fields = list(required_fields or [])
-    forbidden = list(forbidden_markers or ["TODO", "DISPUTED", "needs-source", "PLACEHOLDER"])
+    # ``is not None`` (consistent with quality_rubrics), so passing ``[]`` genuinely DISABLES the
+    # forbidden-marker gate rather than falling back to the default. NOTE for the M4 EURail config:
+    # the real EURail ledger uses "DISPUTED" as a LEGITIMATE evidence label, so the reviewer MUST
+    # pass an explicit forbidden_markers set WITHOUT "DISPUTED" — the generic default below would
+    # false-positive on the real ledger.
+    forbidden = list(
+        forbidden_markers
+        if forbidden_markers is not None
+        else ["TODO", "DISPUTED", "needs-source", "PLACEHOLDER"]
+    )
     rubrics = list(quality_rubrics if quality_rubrics is not None else _DEFAULT_QUALITY_RUBRICS)
 
     deterministic = [

@@ -247,23 +247,29 @@ def run_plan_guardrails(
         blocking.append(f"F-DAG-INVALID: {exc}")
 
     # capability-absence + assembly — the shared validator (one validator, two on-ramps). Both
-    # branches validate the orchestration identically (the no-catalog branch used to drop it).
-    if catalog is not None:
-        shared = validate_draft(
-            data, catalog, owner_organization_id=owner_organization_id, name="eval-plan"
-        )
-        shared_block, shared_reasons = shared["would_block"], list(shared["blocking"])
-    else:
-        orchestration, orch_reasons = _parse_orchestration(data.get("orchestration"))
-        result = assemble_and_report(
-            "eval-plan",
-            members,
-            owner_organization_id=owner_organization_id,
-            shape="compiled",
-            orchestration=orchestration,
-        )
-        shared_block = result.report.would_block or bool(orch_reasons)
-        shared_reasons = list(result.report.blocking) + orch_reasons
+    # branches validate the orchestration identically (the no-catalog branch used to drop it). The
+    # whole call is wrapped fail-closed: a validator crash BLOCKS, never a hallucinated GO (the
+    # "fail-closed throughout" contract).
+    try:
+        if catalog is not None:
+            shared = validate_draft(
+                data, catalog, owner_organization_id=owner_organization_id, name="eval-plan"
+            )
+            shared_block, shared_reasons = shared["would_block"], list(shared["blocking"])
+        else:
+            orchestration, orch_reasons = _parse_orchestration(data.get("orchestration"))
+            result = assemble_and_report(
+                "eval-plan",
+                members,
+                owner_organization_id=owner_organization_id,
+                shape="compiled",
+                orchestration=orchestration,
+            )
+            shared_block = result.report.would_block or bool(orch_reasons)
+            shared_reasons = list(result.report.blocking) + orch_reasons
+    except Exception as exc:  # noqa: BLE001 — fail-closed: a validator crash BLOCKS, never a GO
+        shared_block = True
+        shared_reasons = [f"F-VALIDATOR-ERROR: the shared validator failed ({type(exc).__name__})"]
     checks.append(
         GuardrailCheck(
             name="capability_absence",

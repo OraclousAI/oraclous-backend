@@ -214,12 +214,17 @@ class EvalSetRunner:
                 rubric=rotated, target_output=output, evaluated=evaluated
             )
             verdicts.append(v)
-        # EXCLUDE judges that produced NO real dimension score: an error/timeout/malformed-response
-        # fail-softs to score 0.0 with an EMPTY metrics_computed (ADR-037 evaluator), which is
-        # indistinguishable from a real low score. Letting that 0.0 enter the median would fabricate
-        # a confident low verdict — and a full outage's identical 0.0s would yield variance 0.0,
-        # silently slipping the variance ceiling. So we aggregate over the available judges only.
-        available = [v for v in verdicts if v.metrics_computed]
+        # A judge is AVAILABLE only if it scored EVERY rubric dimension. The evaluator fail-softs
+        # PER-DIMENSION: an error/timeout/malformed-response — OR the 25s deadline, a mundane
+        # production condition — nulls THAT dimension but keeps the rest, re-weighting over
+        # only the survivors (metrics_computed stays NON-EMPTY). A partial evaluation is NOT a real
+        # verdict: counting it would SHIP a compiler with a criterion never evaluated (a dropped
+        # MAJOR dim) or false-FAIL a good one (a dropped CRITICAL dim). So a dropped dimension drops
+        # the whole judge → the strict-majority `judge_unavailable` trips → inconclusive. (A WHOLE
+        # outage's empty metrics_computed is the len==0 case, also excluded.) The rotated rubric has
+        # the same dimension count as the original `rubric` in scope.
+        expected_dims = len(rubric.dimensions)
+        available = [v for v in verdicts if len(v.metrics_computed) == expected_dims]
         if not available:
             return DebiasedScore(
                 median_score=0.0,
