@@ -52,6 +52,35 @@ class _ErroringJudge:
         raise RuntimeError("judge unreachable")
 
 
+class _DimDropJudge:
+    """Scores every dimension EXCEPT the one whose criterion prompt contains ``drop`` — a
+    PER-DIMENSION outage (a deadline/error on one criterion). The evaluator nulls that dimension and
+    re-weights over the survivors, so ``metrics_computed`` stays non-empty (the trap the fix shuts).
+    """
+
+    def __init__(self, drop: str, score: float = 0.85) -> None:
+        self._drop, self._score = drop, score
+
+    async def complete_json(self, *, system: str, user: str) -> str:
+        if self._drop in user:  # the evaluator sends "CRITERION:\n{dim.prompt}\n..." as `user`
+            raise RuntimeError("dimension deadline")
+        return json.dumps({"score": self._score, "reason": "fake"})
+
+    async def complete_text(self, *, system: str, user: str) -> str:
+        return "fake"
+
+
+def _two_dim_objective() -> Objective:
+    rubric = Rubric(
+        pass_threshold=0.6,
+        dimensions=[
+            Dimension(name="crit", prompt="CRITMARKER score it", severity="critical"),
+            Dimension(name="maj", prompt="MAJMARKER score it", severity="major"),
+        ],
+    )
+    return Objective(id="obj", prose="x", plan_rubric=rubric, run_rubric=None)
+
+
 def _good_manifest() -> dict[str, object]:
     return {
         "members": [
@@ -259,6 +288,62 @@ async def test_a_partial_judge_outage_excludes_the_errored_judge() -> None:
     assert obj.recommendation == "inconclusive"
     assert all(s.plan is not None and s.plan.judges_scored == 1 for s in obj.samples)
     assert all(s.plan and s.plan.judge_scores == [0.9] for s in obj.samples)  # the 0.0 is excluded
+
+
+async def test_a_per_dimension_major_outage_is_inconclusive_not_ship() -> None:
+    # CTO blocker: every judge errors on the MAJOR dimension but scores the critical → the evaluator
+    # re-weights over the survivor (metrics_computed non-empty). A partial evaluation must NOT count
+    # as a real verdict, else the objective SHIPs with a criterion never evaluated.
+    runner = EvalSetRunner(
+        EvalSetManifest(
+            name="t", objectives=[_two_dim_objective()], ship_bar=ShipBar(n_samples=3, k_pass=2)
+        ),
+        judges=[_DimDropJudge("MAJMARKER"), _DimDropJudge("MAJMARKER")],
+        compile=_compile_returning(_good_manifest()),
+        run=None,
+        owner_organization_id=_ORG,
+    )
+    result = await runner.run()
+    obj = result.objectives[0]
+    assert obj.passed is False and obj.recommendation == "inconclusive"  # NOT ship
+    assert all(s.judge_unavailable for s in obj.samples)
+    assert all(s.plan is not None and s.plan.judges_scored == 0 for s in obj.samples)
+
+
+async def test_a_per_dimension_critical_outage_is_inconclusive_not_escalate() -> None:
+    # the symmetric false-FAIL: the CRITICAL dimension errors on every judge → without the fix
+    # has_critical=True → escalate on a possibly-GOOD compiler. With the fix → inconclusive.
+    runner = EvalSetRunner(
+        EvalSetManifest(
+            name="t", objectives=[_two_dim_objective()], ship_bar=ShipBar(n_samples=3, k_pass=2)
+        ),
+        judges=[_DimDropJudge("CRITMARKER"), _DimDropJudge("CRITMARKER")],
+        compile=_compile_returning(_good_manifest()),
+        run=None,
+        owner_organization_id=_ORG,
+    )
+    result = await runner.run()
+    obj = result.objectives[0]
+    assert obj.recommendation == "inconclusive"  # NOT escalate
+    assert all(s.judge_unavailable for s in obj.samples)
+
+
+async def test_a_full_panel_scoring_every_dimension_stays_available() -> None:
+    # the fix must NOT over-trip: a healthy panel scoring BOTH dims is available (judges_scored
+    # == 2), not falsely judge-unavailable.
+    runner = EvalSetRunner(
+        EvalSetManifest(
+            name="t", objectives=[_two_dim_objective()], ship_bar=ShipBar(n_samples=3, k_pass=2)
+        ),
+        judges=[_FakeJudge(0.9), _FakeJudge(0.85)],
+        compile=_compile_returning(_good_manifest()),
+        run=None,
+        owner_organization_id=_ORG,
+    )
+    result = await runner.run()
+    obj = result.objectives[0]
+    assert obj.passed is True and obj.recommendation == "ship"
+    assert all(s.plan is not None and s.plan.judges_scored == 2 for s in obj.samples)
 
 
 async def test_a_raising_compile_errors_the_sample_without_aborting_the_sweep() -> None:

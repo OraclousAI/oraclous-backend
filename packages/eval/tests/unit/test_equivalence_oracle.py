@@ -113,6 +113,19 @@ async def test_a_low_editorial_score_fails_an_evaluator_gate() -> None:
     assert not verdict.battery.passed
 
 
+async def test_passing_empty_forbidden_markers_disables_that_gate() -> None:
+    # is-not-none (CTO note): [] genuinely DISABLES the no-forbidden gate (vs falling back to the
+    # default) — so the M4 EURail config can omit "DISPUTED" (a legit EURail evidence label).
+    battery = build_report_editor_battery(min_records=792, forbidden_markers=[])
+    verdict = await ledger_equivalence(
+        _ledger(879, marker="DISPUTED"),  # DISPUTED trips the default, but the gate is disabled
+        baseline_band=_BAND,
+        battery=battery,
+        evaluate=_fake_eval(0.95),
+    )
+    assert verdict.passed is True
+
+
 def test_count_ledger_records_json_and_lines() -> None:
     assert count_ledger_records(_ledger(42)) == 42
     assert count_ledger_records("a\n\nb\nc") == 3  # non-blank lines when not a JSON array
