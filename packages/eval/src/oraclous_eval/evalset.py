@@ -99,10 +99,21 @@ class DebiasedScore(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     median_score: float
-    variance: float  # population std of the judges' scores — the disagreement signal
-    consensus: float  # fraction of judges that returned pass
+    variance: float  # population std of the AVAILABLE judges' scores — the disagreement signal
+    consensus: float  # fraction of AVAILABLE judges that returned pass
     passed: bool
-    judge_scores: list[float] = Field(default_factory=list)
+    judge_scores: list[float] = Field(default_factory=list)  # only judges that really scored
+    judges_scored: int = 0  # judges that produced ≥1 real dimension score (not a fail-soft 0.0)
+    judges_total: int = 0
+
+    @property
+    def judge_unavailable(self) -> bool:
+        """A judge error/timeout fail-softs to a 0.0 Verdict (ADR-037 evaluator) that is
+        indistinguishable from a real low score. When fewer than a STRICT MAJORITY of the panel
+        produced a real score, this aggregate is NOT a verdict — an outage must not masquerade as a
+        confident low score (the 'never silent ship' axis). Excluded judges are kept off the median
+        and variance, so a full outage cannot fabricate variance 0.0 and slip the ceiling."""
+        return self.judges_scored * 2 <= self.judges_total
 
 
 class SampleVerdict(BaseModel):
@@ -112,6 +123,8 @@ class SampleVerdict(BaseModel):
     passed: bool
     blocked_by_guardrails: bool = False
     guardrail_reasons: list[str] = Field(default_factory=list)
+    errored: bool = False  # the injected compile/run RAISED — infra, not a clean negative verdict
+    error_reason: str = ""  # a coarse label (the exception TYPE) — never customer text (ADR-037 H5)
     plan: DebiasedScore | None = None
     run: DebiasedScore | None = None
 
@@ -124,6 +137,16 @@ class SampleVerdict(BaseModel):
         if self.plan is not None:
             return self.plan.median_score
         return 0.0
+
+    @property
+    def judge_unavailable(self) -> bool:
+        return any(d.judge_unavailable for d in (self.plan, self.run) if d is not None)
+
+    @property
+    def unevaluable(self) -> bool:
+        """Could NOT be confidently evaluated — an infra error or a judge outage. (A guardrail block
+        is NOT unevaluable: it is a real, confident negative — the team is structurally broken.)"""
+        return self.errored or self.judge_unavailable
 
 
 class ShipBarVerdict(BaseModel):
@@ -191,10 +214,26 @@ class EvalSetRunner:
                 rubric=rotated, target_output=output, evaluated=evaluated
             )
             verdicts.append(v)
-        scores = [v.score for v in verdicts]
+        # EXCLUDE judges that produced NO real dimension score: an error/timeout/malformed-response
+        # fail-softs to score 0.0 with an EMPTY metrics_computed (ADR-037 evaluator), which is
+        # indistinguishable from a real low score. Letting that 0.0 enter the median would fabricate
+        # a confident low verdict — and a full outage's identical 0.0s would yield variance 0.0,
+        # silently slipping the variance ceiling. So we aggregate over the available judges only.
+        available = [v for v in verdicts if v.metrics_computed]
+        if not available:
+            return DebiasedScore(
+                median_score=0.0,
+                variance=0.0,
+                consensus=0.0,
+                passed=False,
+                judge_scores=[],
+                judges_scored=0,
+                judges_total=len(verdicts),
+            )
+        scores = [v.score for v in available]
         median = statistics.median(scores)
         variance = statistics.pstdev(scores) if len(scores) > 1 else 0.0
-        consensus = sum(1 for v in verdicts if v.passed) / len(verdicts)
+        consensus = sum(1 for v in available if v.passed) / len(available)
         # fail-closed: a passing sample needs BOTH a score floor AND a judge majority.
         passed = median >= rubric.pass_threshold and consensus >= 0.5
         return DebiasedScore(
@@ -203,10 +242,18 @@ class EvalSetRunner:
             consensus=round(consensus, 4),
             passed=passed,
             judge_scores=[round(s, 4) for s in scores],
+            judges_scored=len(available),
+            judges_total=len(verdicts),
         )
 
     async def _score_sample(self, objective: Objective, index: int) -> SampleVerdict:
-        plan = await self._compile(objective.prose)
+        # the injected compile is infra: a raised error fails THIS sample, never the whole sweep.
+        try:
+            plan = await self._compile(objective.prose)
+        except Exception as exc:  # noqa: BLE001 — generator/infra failure → an errored sample
+            return SampleVerdict(
+                index=index, passed=False, errored=True, error_reason=type(exc).__name__
+            )
         # Layer-1 deterministic guardrails FIRST — a structurally-broken team never reaches a judge.
         guard = run_plan_guardrails(
             plan.manifest, owner_organization_id=self._org, catalog=plan.catalog
@@ -222,16 +269,28 @@ class EvalSetRunner:
         plan_score = await self._debias_score(
             objective.plan_rubric, json.dumps(plan.manifest), f"{objective.id}#plan/{index}"
         )
-        if not plan_score.passed:
+        if plan_score.judge_unavailable or not plan_score.passed:
+            # a degraded panel is NOT a pass and NOT a run-trigger — never spend a run on it.
             return SampleVerdict(index=index, passed=False, plan=plan_score)
         # run-outcome: only if the objective declares one AND a run callback is wired.
         run_score: DebiasedScore | None = None
         if objective.run_rubric is not None and self._run is not None:
-            deliverable = await self._run(plan.manifest)
+            try:
+                deliverable = await self._run(plan.manifest)
+            except Exception as exc:  # noqa: BLE001 — run/infra failure → an errored sample
+                return SampleVerdict(
+                    index=index,
+                    passed=False,
+                    errored=True,
+                    error_reason=type(exc).__name__,
+                    plan=plan_score,
+                )
             run_score = await self._debias_score(
                 objective.run_rubric, deliverable, f"{objective.id}#run/{index}"
             )
-        passed = plan_score.passed and (run_score is None or run_score.passed)
+        passed = plan_score.passed and (
+            run_score is None or (run_score.passed and not run_score.judge_unavailable)
+        )
         return SampleVerdict(index=index, passed=passed, plan=plan_score, run=run_score)
 
     async def run_objective(self, objective: Objective) -> ShipBarVerdict:
@@ -246,13 +305,19 @@ class EvalSetRunner:
         scored = [s.run if s.run is not None else s.plan for s in samples]
         present = [d for d in scored if d is not None]
         variance = max((d.variance for d in present), default=0.0)
+        # samples we could NOT confidently evaluate (an infra error or a judge outage) — these never
+        # let an objective SHIP, and they make the call inconclusive, not a confident verdict.
+        unevaluable = sum(1 for s in samples if s.unevaluable)
         passed = (
             pass_count >= bar.k_pass
             and median_score >= bar.min_score
             and variance <= bar.max_variance
+            and unevaluable == 0
         )
         if passed:
             recommendation: Literal["ship", "revise", "escalate", "inconclusive"] = "ship"
+        elif unevaluable > 0:
+            recommendation = "inconclusive"  # a compile/run error or a judge outage — not a verdict
         elif variance > bar.max_variance:
             recommendation = "inconclusive"  # the panel disagreed too much to call it
         elif pass_count == 0:

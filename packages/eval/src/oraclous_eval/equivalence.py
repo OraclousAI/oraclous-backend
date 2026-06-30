@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import math
 from collections.abc import Sequence
+from typing import Literal
 
 from oraclous_ohm.gate_battery import (
     EvaluatorInvoke,
@@ -82,9 +83,11 @@ class EquivalenceVerdict(BaseModel):
     reasons: list[str] = Field(default_factory=list)
 
 
+_Severity = Literal["CRITICAL", "MAJOR", "MINOR"]
+
 # the default report-editor quality rubrics (name, rubric, severity) — the evaluator gates. The
 # reviewer swaps in EURail's real editorial rubrics; these are a representative scaffold.
-_DEFAULT_QUALITY_RUBRICS: tuple[tuple[str, str, str], ...] = (
+_DEFAULT_QUALITY_RUBRICS: tuple[tuple[str, str, _Severity], ...] = (
     (
         "completeness",
         "Every record present in the source ledger is reproduced in the deliverable.",
@@ -107,7 +110,7 @@ def build_report_editor_battery(
     forbidden_markers: Sequence[str] | None = None,
     min_citation_ratio: float = 0.0,
     min_length: int = 1,
-    quality_rubrics: Sequence[tuple[str, str, str]] | None = None,
+    quality_rubrics: Sequence[tuple[str, str, _Severity]] | None = None,
     evaluator_threshold: float = 0.7,
     name: str = "eurail-report-editor",
 ) -> OHMGateBattery:
@@ -169,7 +172,7 @@ def build_report_editor_battery(
             kind="evaluator",
             rubric=rubric,
             params={"threshold": evaluator_threshold},
-            severity=sev,  # type: ignore[arg-type]
+            severity=sev,
         )
         for (rname, rubric, sev) in rubrics
     ]

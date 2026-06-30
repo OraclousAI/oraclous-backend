@@ -32,7 +32,7 @@ from oraclous_ohm.compiler.validate import validate_draft
 from oraclous_ohm.dag import topological_stages
 from oraclous_ohm.errors import OHMCapabilityError, OHMDagError
 from oraclous_ohm.import_ import assemble_and_report
-from oraclous_ohm.manifest import OHMBudget, OHMMember
+from oraclous_ohm.manifest import OHMBudget, OHMMember, OHMOrchestration
 from oraclous_ohm.parse import load_ohm
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -105,16 +105,49 @@ def _parse_budget(raw_budget: Any) -> OHMBudget | None:
         return None
     try:
         return OHMBudget.model_validate(raw_budget)
-    except Exception:  # noqa: BLE001 — a malformed budget is reported by the shared validator
+    except Exception:  # noqa: BLE001 — a malformed budget BLOCKS (the caller flags it, never skips)
         return None
+
+
+def _parse_orchestration(raw_orch: Any) -> tuple[OHMOrchestration | None, list[str]]:
+    """Parse a draft orchestration fail-closed, mirroring ``validate_draft`` so BOTH the catalog and
+    no-catalog on-ramps validate it identically (a malformed orchestration BLOCKS, never slips)."""
+    if not isinstance(raw_orch, dict):
+        return None, []
+    try:
+        return OHMOrchestration.model_validate(raw_orch), []
+    except Exception:  # noqa: BLE001 — a malformed orchestration is a plan defect, fail-closed
+        return None, ["F-DRAFT-INVALID: the draft orchestration failed schema validation"]
 
 
 def _cap_within_pool(members: list[OHMMember], budget: OHMBudget | None) -> list[str]:
     """STRICTER than the runtime clamp (ADR-031): a member DECLARING a cap above the team pool is
-    a malformed plan. (The runtime would silently ``min(cap, total)`` — the eval-set blocks it.)"""
+    a malformed plan. (The runtime would silently ``min(cap, total)`` — the eval-set blocks it.)
+    Checks BOTH each member's own cap AND the budget-level per-member DEFAULT against the pool — a
+    default above the pool grants every member-without-its-own-cap more than the whole team."""
     if budget is None:
         return []
     out: list[str] = []
+    # the team-wide per-member DEFAULT must itself sit within the pool (else every defaulted member
+    # would resolve above it — the runtime clamps each, but the plan is still malformed).
+    if (
+        budget.max_tokens_total is not None
+        and budget.max_tokens_per_member is not None
+        and budget.max_tokens_per_member > budget.max_tokens_total
+    ):
+        out.append(
+            f"F-CAP-OVER-POOL: budget.max_tokens_per_member {budget.max_tokens_per_member} "
+            f"exceeds the team pool {budget.max_tokens_total}"
+        )
+    if (
+        budget.max_tool_calls_total is not None
+        and budget.max_tool_calls_per_member is not None
+        and budget.max_tool_calls_per_member > budget.max_tool_calls_total
+    ):
+        out.append(
+            f"F-CAP-OVER-POOL: budget.max_tool_calls_per_member {budget.max_tool_calls_per_member} "
+            f"exceeds the team pool {budget.max_tool_calls_total}"
+        )
     for m in members:
         if (
             budget.max_tokens_total is not None
@@ -213,17 +246,24 @@ def run_plan_guardrails(
         checks.append(GuardrailCheck(name="dag_acyclic", passed=False, detail=str(exc)))
         blocking.append(f"F-DAG-INVALID: {exc}")
 
-    # capability-absence + assembly — the shared validator (one validator, two on-ramps).
+    # capability-absence + assembly — the shared validator (one validator, two on-ramps). Both
+    # branches validate the orchestration identically (the no-catalog branch used to drop it).
     if catalog is not None:
         shared = validate_draft(
             data, catalog, owner_organization_id=owner_organization_id, name="eval-plan"
         )
         shared_block, shared_reasons = shared["would_block"], list(shared["blocking"])
     else:
+        orchestration, orch_reasons = _parse_orchestration(data.get("orchestration"))
         result = assemble_and_report(
-            "eval-plan", members, owner_organization_id=owner_organization_id, shape="compiled"
+            "eval-plan",
+            members,
+            owner_organization_id=owner_organization_id,
+            shape="compiled",
+            orchestration=orchestration,
         )
-        shared_block, shared_reasons = result.report.would_block, list(result.report.blocking)
+        shared_block = result.report.would_block or bool(orch_reasons)
+        shared_reasons = list(result.report.blocking) + orch_reasons
     checks.append(
         GuardrailCheck(
             name="capability_absence",
@@ -234,9 +274,14 @@ def run_plan_guardrails(
     if shared_block:
         blocking.extend(shared_reasons)
 
-    # per-agent-cap ≤ team-pool — STRICTER than the runtime clamp.
-    budget = _parse_budget(data.get("budget"))
+    # per-agent-cap ≤ team-pool — STRICTER than the runtime clamp. A present-but-INVALID budget must
+    # BLOCK (never silently disable this stricter check and report GO: ready) — distinguish it from
+    # a genuinely absent budget.
+    raw_budget = data.get("budget")
+    budget = _parse_budget(raw_budget)
     cap_reasons = _cap_within_pool(members, budget)
+    if raw_budget is not None and budget is None:
+        cap_reasons.append("F-DRAFT-INVALID: the draft budget failed schema validation")
     checks.append(
         GuardrailCheck(
             name="cap_within_pool",
