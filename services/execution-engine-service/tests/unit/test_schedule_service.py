@@ -3,14 +3,16 @@
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
+from oraclous_execution_engine_service.models.enums import BudgetPeriod
 from oraclous_execution_engine_service.models.schedule import EngineSchedule
 from oraclous_execution_engine_service.services.schedule_service import (
     ScheduleError,
     ScheduleService,
+    _window_start,
 )
 from oraclous_governance import Principal, PrincipalType
 
@@ -64,7 +66,16 @@ def _adopted_schedule(*, cron: str | None, last_fired: datetime | None = None) -
 
 
 def _team_schedule(
-    *, cron: str | None, last_fired: datetime | None = None, graph_id: str | None = "graph-1"
+    *,
+    cron: str | None,
+    last_fired: datetime | None = None,
+    graph_id: str | None = "graph-1",
+    budget_period: str | None = None,
+    budget_allowance_tokens: int | None = None,
+    budget_window_start: datetime | None = None,
+    recurring_cost_tokens: int = 0,
+    budget_paused: bool = False,
+    enabled: bool = True,
 ) -> EngineSchedule:
     return EngineSchedule(
         id=uuid.uuid4(),
@@ -75,12 +86,18 @@ def _team_schedule(
         manifest_inline={"members": []},  # an inline team manifest (validated downstream)
         manifest_ref=None,
         input_text="standing team",
-        enabled=True,
+        enabled=enabled,
         last_fired_at=last_fired,
         target_kind="team",
         instance_id=None,
         input_data={"sub_harnesses": {}, "gate_decisions": {}},
         graph_id=graph_id,
+        # #598: the L3 per-period cap state (all default-OFF unless a test sets it)
+        budget_period=budget_period,
+        budget_allowance_tokens=budget_allowance_tokens,
+        budget_window_start=budget_window_start,
+        recurring_cost_tokens=recurring_cost_tokens,
+        budget_paused=budget_paused,
     )
 
 
@@ -114,11 +131,32 @@ class _FakeSchedRepo:
             if r.id == schedule_id:
                 r.last_fired_at = fired_at
 
+    # ── #598 L3 per-period budget ───────────────────────────────────────────────────────────────
+    async def list_budget_paused(self, *, limit: int = 500) -> list[EngineSchedule]:
+        return [r for r in self.rows if getattr(r, "budget_paused", False)]
+
+    async def reset_window(
+        self, schedule_id: uuid.UUID, org: uuid.UUID, new_window_start: datetime
+    ) -> None:
+        for r in self.rows:
+            if r.id == schedule_id and r.organisation_id == org:
+                r.recurring_cost_tokens = 0
+                r.budget_window_start = new_window_start
+                r.budget_paused = False
+                r.enabled = True
+
+    async def pause_budget(self, schedule_id: uuid.UUID, org: uuid.UUID) -> None:
+        for r in self.rows:
+            if r.id == schedule_id and r.organisation_id == org:
+                r.enabled = False
+                r.budget_paused = True
+
 
 class _FakeJobRepo:
     def __init__(self) -> None:
         self.created: list[str] = []
         self.seen: set[str] = set()
+        self.scheduled_rows: list[SimpleNamespace] = []  # the QUEUED harness jobs a fire created
         # adopted-tool-run idempotency ledger (#489): the (org, key) unique row
         self.adopted_created: list[str] = []
         self.adopted_seen: set[str] = set()
@@ -129,7 +167,26 @@ class _FakeJobRepo:
             return None
         self.seen.add(idempotency_key)
         self.created.append(idempotency_key)
-        return SimpleNamespace(id=uuid.uuid4())
+        row = SimpleNamespace(id=uuid.uuid4(), state="QUEUED", error_type=None)
+        self.scheduled_rows.append(row)
+        return row
+
+    async def transition(  # noqa: ANN202
+        self,
+        job_id: uuid.UUID,
+        organisation_id: uuid.UUID,
+        *,
+        new_state: str,
+        allowed_from: frozenset[str],
+        **fields: object,
+    ):
+        for r in self.scheduled_rows:
+            if r.id == job_id and r.state in allowed_from:
+                r.state = new_state
+                for k, v in fields.items():
+                    setattr(r, k, v)
+                return r, True
+        return None, False
 
     async def create_adopted_tool_run(  # noqa: ANN202
         self, *, organisation_id: uuid.UUID, schedule_id: uuid.UUID, idempotency_key: str
@@ -197,9 +254,32 @@ class _FakeTeamRunRepo:
             schedule_id=schedule_id,
             graph_id=graph_id,
             idempotency_key=idempotency_key,
+            state="QUEUED",
+            error_message=None,
         )
         self.team_rows.append(row)
         return row
+
+    async def transition(  # noqa: ANN202
+        self,
+        team_run_id: uuid.UUID,
+        organisation_id: uuid.UUID,
+        *,
+        new_state: str,
+        allowed_from: frozenset[str],
+        **fields: object,
+    ):
+        for r in self.team_rows:
+            if (
+                r.id == team_run_id
+                and r.organisation_id == organisation_id
+                and r.state in allowed_from
+            ):
+                r.state = new_state
+                for k, v in fields.items():
+                    setattr(r, k, v)
+                return r, True
+        return None, False
 
     async def list_for_schedule(  # noqa: ANN202
         self, schedule_id: uuid.UUID, organisation_id: uuid.UUID, *, limit: int = 100
@@ -209,6 +289,17 @@ class _FakeTeamRunRepo:
             for r in self.team_rows
             if r.schedule_id == schedule_id and r.organisation_id == organisation_id
         ]
+
+    async def has_active_for_schedule(
+        self, schedule_id: uuid.UUID, organisation_id: uuid.UUID
+    ) -> bool:
+        # #598 in-flight guard: only NON-TERMINAL rows count (a FAILED/settled run is not active).
+        return any(
+            getattr(r, "schedule_id", None) == schedule_id
+            and getattr(r, "organisation_id", None) == organisation_id
+            and getattr(r, "state", "QUEUED") in {"QUEUED", "RUNNING", "PAUSED"}
+            for r in self.team_rows
+        )
 
 
 class _FakeProv:
@@ -229,6 +320,9 @@ class _FakeMaintenance:
 
     async def list_enabled_cron(self, *, limit: int = 500) -> list[EngineSchedule]:
         return await self._srepo.list_enabled_cron(limit=limit)
+
+    async def list_budget_paused(self, *, limit: int = 500) -> list[EngineSchedule]:
+        return await self._srepo.list_budget_paused(limit=limit)
 
 
 class _FakeGraphs:
@@ -659,3 +753,272 @@ async def test_list_team_runs_returns_the_schedules_runs_with_their_graph_bindin
     assert runs[0].schedule_id == sched.id and runs[0].graph_id == "graph-1"
     # org-scoped: another org sees nothing
     assert await svc.list_team_runs(sched.id, _principal(org=uuid.uuid4())) == []
+
+
+# ── #598 — L3 per-period budget cap ─────────────────────────────────────────────────────────────
+def _team_manifest_kw() -> dict:
+    # the register kwargs a valid team schedule needs (mirrors the #601 team-register tests)
+    return dict(
+        type="cron",
+        target_kind="team",
+        manifest_inline={"members": []},
+        input_text="standing team",
+        cron="* * * * *",
+        input_data={"sub_harnesses": {}, "gate_decisions": {}},
+        graph_id="graph-1",
+    )
+
+
+# window math — an independent UTC CALENDAR boundary, NOT a naive 24h/7d/30d delta
+def test_window_start_daily_is_utc_midnight() -> None:
+    now = datetime(2026, 6, 7, 13, 45, 9, tzinfo=UTC)  # a Sunday
+    assert _window_start(now, BudgetPeriod.DAILY.value) == datetime(2026, 6, 7, tzinfo=UTC)
+
+
+def test_window_start_weekly_is_iso_monday_midnight() -> None:
+    now = datetime(2026, 6, 7, 13, 45, tzinfo=UTC)  # Sun 2026-06-07 → ISO week started Mon 06-01
+    assert _window_start(now, BudgetPeriod.WEEKLY.value) == datetime(2026, 6, 1, tzinfo=UTC)
+
+
+def test_window_start_monthly_is_calendar_month_start() -> None:
+    now = datetime(2026, 6, 30, 23, 59, tzinfo=UTC)  # month-end, variable length — not now-30d
+    assert _window_start(now, BudgetPeriod.MONTHLY.value) == datetime(2026, 6, 1, tzinfo=UTC)
+
+
+# register validation — fail-closed, team-only, recurring-only, all-or-nothing
+async def test_register_team_with_a_valid_period_cap_stamps_the_window_anchor() -> None:
+    srepo = _FakeSchedRepo()
+    svc, _ = _svc(srepo, _FakeJobRepo(), graphs=_FakeGraphs())
+    row = await svc.register(
+        _principal(), **_team_manifest_kw(), budget_period="daily", budget_allowance_tokens=5000
+    )
+    assert row.budget_period == "daily" and row.budget_allowance_tokens == 5000
+    # window 1 is anchored at register so the first fire's boundary math has a reference
+    assert row.budget_window_start == _window_start(row.budget_window_start, "daily")
+
+
+async def test_register_rejects_a_period_without_an_allowance() -> None:
+    svc, _ = _svc(_FakeSchedRepo(), _FakeJobRepo(), graphs=_FakeGraphs())
+    with pytest.raises(ScheduleError, match="BOTH"):
+        await svc.register(_principal(), **_team_manifest_kw(), budget_period="daily")
+
+
+async def test_register_rejects_an_allowance_without_a_period() -> None:
+    svc, _ = _svc(_FakeSchedRepo(), _FakeJobRepo(), graphs=_FakeGraphs())
+    with pytest.raises(ScheduleError, match="BOTH"):
+        await svc.register(_principal(), **_team_manifest_kw(), budget_allowance_tokens=100)
+
+
+async def test_register_rejects_a_nonpositive_allowance() -> None:
+    svc, _ = _svc(_FakeSchedRepo(), _FakeJobRepo(), graphs=_FakeGraphs())
+    with pytest.raises(ScheduleError, match="> 0"):
+        await svc.register(
+            _principal(), **_team_manifest_kw(), budget_period="daily", budget_allowance_tokens=0
+        )
+
+
+async def test_register_rejects_an_unknown_period() -> None:
+    svc, _ = _svc(_FakeSchedRepo(), _FakeJobRepo(), graphs=_FakeGraphs())
+    with pytest.raises(ScheduleError, match="daily, weekly, monthly"):
+        await svc.register(
+            _principal(),
+            **_team_manifest_kw(),
+            budget_period="hourly",
+            budget_allowance_tokens=100,
+        )
+
+
+async def test_register_rejects_a_period_cap_on_a_nonteam_schedule() -> None:
+    svc, _ = _svc(_FakeSchedRepo(), _FakeJobRepo())
+    with pytest.raises(ScheduleError, match="only for a team schedule"):
+        await svc.register(
+            _principal(),
+            type="cron",
+            target_kind="harness_job",
+            manifest_ref="h",
+            input_text="go",
+            cron="* * * * *",
+            budget_period="daily",
+            budget_allowance_tokens=100,
+        )
+
+
+# the fire-time pre-flight — reset-at-boundary, pause-on-breach, default-OFF
+async def test_team_under_allowance_in_window_fires() -> None:
+    sched = _team_schedule(
+        cron="* * * * *",
+        budget_period="daily",
+        budget_allowance_tokens=10_000,
+        budget_window_start=_window_start(_NOW, "daily"),  # current window
+        recurring_cost_tokens=5_000,  # under the allowance
+    )
+    srepo, jrepo, trepo = _FakeSchedRepo([sched]), _FakeJobRepo(), _FakeTeamRunRepo()
+    svc, _ = _svc(srepo, jrepo, enqueue_team_run=lambda *a: None, team_runs=trepo)
+    fired = await svc.fire_due(_NOW)
+    assert fired == 1 and len(trepo.team_created) == 1  # a run was created — not skipped
+    assert sched.enabled is True and sched.budget_paused is False  # not paused
+
+
+async def test_team_at_or_over_allowance_pauses_the_fleet_and_skips_the_fire() -> None:
+    sched = _team_schedule(
+        cron="* * * * *",
+        budget_period="daily",
+        budget_allowance_tokens=10_000,
+        budget_window_start=_window_start(_NOW, "daily"),  # NOT rolled
+        recurring_cost_tokens=10_000,  # exactly at the allowance → exhausted
+    )
+    srepo, jrepo, trepo = _FakeSchedRepo([sched]), _FakeJobRepo(), _FakeTeamRunRepo()
+    svc, prov = _svc(srepo, jrepo, enqueue_team_run=lambda *a: None, team_runs=trepo)
+    fired = await svc.fire_due(_NOW)
+    assert fired == 0 and len(trepo.team_created) == 0  # the fire was SKIPPED
+    assert sched.enabled is False and sched.budget_paused is True  # the fleet is paused
+    assert "engine.schedule.budget_pause" in prov.events  # surfaced, never silent
+    assert sched.last_fired_at is None  # cursor NOT advanced → the window re-fires on resume
+
+
+async def test_budgeted_team_with_an_in_flight_run_skips_the_fire_no_overrun() -> None:
+    # the in-flight guard (ADR-048 4b 'does not silently overrun'): while a prior fire's run is
+    # un-settled (its cost not yet accrued), a budgeted standing team does NOT fire the next window,
+    # so the cap is always checked against CURRENT settled spend, never overrun by in-flight runs.
+    sched = _team_schedule(
+        cron="* * * * *",
+        budget_period="daily",
+        budget_allowance_tokens=10_000,
+        budget_window_start=_window_start(_NOW, "daily"),
+        recurring_cost_tokens=0,  # under the allowance — would fire if not for the in-flight run
+    )
+    srepo, jrepo, trepo = _FakeSchedRepo([sched]), _FakeJobRepo(), _FakeTeamRunRepo()
+    # a prior fire's run is still active (un-settled) for this schedule
+    trepo.team_rows.append(SimpleNamespace(schedule_id=sched.id, organisation_id=_ORG))
+    svc, _ = _svc(srepo, jrepo, enqueue_team_run=lambda *a: None, team_runs=trepo)
+    fired = await svc.fire_due(_NOW)
+    assert fired == 0 and len(trepo.team_created) == 0  # the fire was skipped (no second run)
+    assert sched.enabled is True and sched.budget_paused is False  # NOT paused — just deferred
+
+
+async def test_team_enqueue_failure_fails_the_run_not_phantom_queued_and_unwedges() -> None:
+    # a broker outage on the hand-off must FAIL the just-created QUEUED run, not leave it
+    # phantom-QUEUED — else the in-flight guard reads it as active FOREVER and wedges the budgeted
+    # standing team silently (CTO #620 blocker). After the failure the schedule still fires next.
+    sched = _team_schedule(
+        cron="* * * * *",
+        budget_period="daily",
+        budget_allowance_tokens=10_000,
+        budget_window_start=_window_start(_NOW, "daily"),
+        recurring_cost_tokens=0,
+    )
+    srepo, jrepo, trepo = _FakeSchedRepo([sched]), _FakeJobRepo(), _FakeTeamRunRepo()
+    calls = {"n": 0}
+
+    def flaky(*_a: object) -> None:
+        calls["n"] += 1
+        if calls["n"] == 1:  # the first hand-off fails (broker down); the second works
+            raise RuntimeError("broker down")
+
+    svc, _ = _svc(srepo, jrepo, enqueue_team_run=flaky, team_runs=trepo)
+    # window N: the fire creates the run, the enqueue raises, the run is FAILED (fire_due swallows)
+    await svc.fire_due(_NOW)
+    assert len(trepo.team_rows) == 1 and trepo.team_rows[0].state == "FAILED"  # not phantom-QUEUED
+    assert trepo.team_rows[0].error_message == "enqueue_failed"
+    assert not await trepo.has_active_for_schedule(sched.id, _ORG)  # the guard no longer sees it
+    # window N+1 (a later minute): NOT wedged — the budgeted schedule fires again
+    fired = await svc.fire_due(_NOW + timedelta(minutes=1))
+    assert fired == 1 and calls["n"] == 2  # the second hand-off worked → the next window fired
+
+
+async def test_harness_enqueue_failure_fails_the_job_not_phantom_queued() -> None:
+    # the same compensation on the harness fire branch (the precedent job_service uses): a broker
+    # fault fails the scheduled job QUEUED→FAILED rather than orphaning it as a phantom-QUEUED row.
+    sched = _schedule(cron="* * * * *")
+    srepo, jrepo = _FakeSchedRepo([sched]), _FakeJobRepo()
+
+    def boom(*_a: object) -> None:
+        raise RuntimeError("broker down")
+
+    svc, _ = _svc(srepo, jrepo, enqueue=boom)
+    await svc.fire_due(_NOW)
+    assert len(jrepo.scheduled_rows) == 1 and jrepo.scheduled_rows[0].state == "FAILED"
+    assert jrepo.scheduled_rows[0].error_type == "enqueue_failed"
+
+
+async def test_team_window_rolled_resets_the_accrual_then_fires() -> None:
+    yesterday = _window_start(_NOW, "daily") - timedelta(days=1)
+    sched = _team_schedule(
+        cron="* * * * *",
+        budget_period="daily",
+        budget_allowance_tokens=10_000,
+        budget_window_start=yesterday,  # a PRIOR window → the window has rolled
+        recurring_cost_tokens=999_999,  # last window's spend was way over — must NOT block today
+    )
+    srepo, jrepo, trepo = _FakeSchedRepo([sched]), _FakeJobRepo(), _FakeTeamRunRepo()
+    svc, _ = _svc(srepo, jrepo, enqueue_team_run=lambda *a: None, team_runs=trepo)
+    fired = await svc.fire_due(_NOW)
+    assert fired == 1 and len(trepo.team_created) == 1  # reset → fires
+    assert sched.recurring_cost_tokens == 0  # the in-window accrual zeroed at the boundary
+    assert sched.budget_window_start == _window_start(_NOW, "daily")  # anchor advanced
+
+
+async def test_team_without_a_period_cap_never_touches_the_budget_path() -> None:
+    # default-OFF: a non-budgeted team fires the #601 path unchanged (no reset/pause), even with a
+    # huge stale recurring_cost_tokens (which is the #601 lifetime accumulator, not a window cap).
+    sched = _team_schedule(cron="* * * * *", recurring_cost_tokens=10**9)
+    srepo, jrepo, trepo = _FakeSchedRepo([sched]), _FakeJobRepo(), _FakeTeamRunRepo()
+    svc, prov = _svc(srepo, jrepo, enqueue_team_run=lambda *a: None, team_runs=trepo)
+    fired = await svc.fire_due(_NOW)
+    assert fired == 1 and len(trepo.team_created) == 1  # fires regardless of the lifetime total
+    assert sched.enabled is True and "engine.schedule.budget_pause" not in prov.events
+
+
+# the boundary re-enable sweep — a disabled, budget-paused schedule resumes once its window rolls
+async def test_resume_sweep_reenables_a_budget_paused_schedule_whose_window_rolled() -> None:
+    yesterday = _window_start(_NOW, "daily") - timedelta(days=1)
+    sched = _team_schedule(
+        cron="* * * * *",
+        enabled=False,
+        budget_paused=True,
+        budget_period="daily",
+        budget_allowance_tokens=10_000,
+        budget_window_start=yesterday,  # paused last window; today is a new window
+        recurring_cost_tokens=10_000,
+    )
+    srepo = _FakeSchedRepo([sched])
+    svc, prov = _svc(srepo, _FakeJobRepo())
+    resumed = await svc.resume_budget_paused(_NOW)
+    assert resumed == 1
+    assert sched.enabled is True and sched.budget_paused is False  # back in the enabled-cron set
+    assert sched.recurring_cost_tokens == 0  # the new window starts clean
+    assert "engine.schedule.budget_resume" in prov.events
+
+
+async def test_resume_sweep_leaves_a_paused_schedule_whose_window_has_not_rolled() -> None:
+    sched = _team_schedule(
+        cron="* * * * *",
+        enabled=False,
+        budget_paused=True,
+        budget_period="daily",
+        budget_allowance_tokens=10_000,
+        budget_window_start=_window_start(_NOW, "daily"),  # SAME window — still exhausted
+        recurring_cost_tokens=10_000,
+    )
+    srepo = _FakeSchedRepo([sched])
+    svc, _ = _svc(srepo, _FakeJobRepo())
+    resumed = await svc.resume_budget_paused(_NOW)
+    assert resumed == 0
+    assert sched.enabled is False and sched.budget_paused is True  # stays paused until the boundary
+
+
+async def test_resume_sweep_never_touches_a_manually_disabled_schedule() -> None:
+    # a hand-disabled schedule (enabled=False, budget_paused=False) is invisible to the sweep — it
+    # only ever resumes BUDGET-paused rows, so a manual disable is never silently re-enabled.
+    sched = _team_schedule(
+        cron="* * * * *",
+        enabled=False,
+        budget_paused=False,
+        budget_period="daily",
+        budget_allowance_tokens=10_000,
+        budget_window_start=_window_start(_NOW, "daily") - timedelta(days=2),
+    )
+    srepo = _FakeSchedRepo([sched])
+    svc, _ = _svc(srepo, _FakeJobRepo())
+    resumed = await svc.resume_budget_paused(_NOW)
+    assert resumed == 0 and sched.enabled is False  # left disabled

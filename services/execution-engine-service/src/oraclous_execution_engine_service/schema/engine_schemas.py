@@ -13,6 +13,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from oraclous_execution_engine_service.models.enums import (
+    BudgetPeriod,
     EngineJobState,
     ScheduleType,
     TargetKind,
@@ -135,6 +136,11 @@ class RegisterScheduleRequest(BaseModel):
     input_data: dict[str, Any] | None = None
     # #601 (team only): the persistent graph workspace the standing team's runs read+write
     graph_id: str | None = Field(default=None, max_length=512)
+    # #598 (team only): the L3 schedule-level recurring per-period cap. Both set => active; both
+    # unset => OFF (the default). A period with no allowance (or vice versa) is a no-op/fail-open
+    # cap, rejected below. Token-only this slice (USD defers to a pricing seam, ADR-009).
+    budget_period: BudgetPeriod | None = None
+    budget_allowance_tokens: int | None = Field(default=None, gt=0)
     input: str = Field(min_length=1)
 
     @model_validator(mode="after")
@@ -161,6 +167,16 @@ class RegisterScheduleRequest(BaseModel):
                 raise ValueError("'instance_id' is only for target_kind 'adopted_tool_run'")
             if not self.graph_id:
                 raise ValueError("a 'team' schedule requires a 'graph_id'")
+        # #598: the L3 cap is team-only, recurring, and all-or-nothing (fail-closed). The service
+        # re-validates (the authoritative gate); this surfaces a clean 422 at the edge.
+        if (self.budget_period is None) != (self.budget_allowance_tokens is None):
+            raise ValueError(
+                "a per-period budget needs BOTH 'budget_period' and 'budget_allowance_tokens'"
+            )
+        if self.budget_period is not None and (
+            self.target_kind != TargetKind.TEAM or self.type != ScheduleType.CRON
+        ):
+            raise ValueError("a per-period budget cap is only for a recurring (cron) team schedule")
         return self
 
 
@@ -178,9 +194,17 @@ class ScheduleOut(BaseModel):
     enabled: bool
     last_fired_at: datetime | None
     created_at: datetime | None
-    # #601: the team schedule's bound graph workspace + the per-cadence cost accumulator
+    # #601: the team schedule's bound graph workspace + the per-cadence cost accumulator (which #598
+    # reinterprets as the CURRENT-WINDOW spend when a period cap is set).
     graph_id: str | None = None
     recurring_cost_tokens: int = 0
+    # #598 (ADR-048 dec 4b O4 surface): the L3 per-period cap + its pause state, so a caller sees
+    # the window spend, the ceiling, and WHY a team is disabled (budget_paused True = paused by the
+    # cap, not a manual disable; resumes at the next window boundary).
+    budget_period: str | None = None
+    budget_allowance_tokens: int | None = None
+    budget_window_start: datetime | None = None
+    budget_paused: bool = False
 
 
 class ScheduleListResponse(BaseModel):

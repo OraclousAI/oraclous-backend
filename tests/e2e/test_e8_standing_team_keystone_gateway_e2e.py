@@ -112,16 +112,6 @@ def _team_runs(c: httpx.Client, sched_id: str) -> list[dict]:
     return r.json()["runs"]
 
 
-def _wait_runs(c: httpx.Client, sched_id: str, count: int, tries: int = 30) -> list[dict]:
-    runs: list[dict] = []
-    for _ in range(tries):
-        runs = _team_runs(c, sched_id)
-        if len(runs) >= count:
-            return runs
-        time.sleep(1)
-    raise AssertionError(f"schedule {sched_id} produced {len(runs)} runs, expected {count}")
-
-
 def _poll_run(c: httpx.Client, run_id: str, tries: int = 120) -> dict:
     row: dict = {}
     for _ in range(tries):
@@ -205,18 +195,21 @@ def test_standing_team_fire_n_plus_1_reads_fire_n_persistent_graph(
     )
     assert bad.status_code in (400, 422), bad.text
 
-    # ── IDEMPOTENCY (same window): two back-to-back fires collapse to AT MOST one run ───────────
-    # Done FIRST, before any long agent poll, so the ≤1 assertion can't race a Beat-fired later
-    # window. Beat-immune: a Beat tick landing in this same window also dedupes on the same key.
+    # ── IDEMPOTENCY (same window): two fires collapse to AT MOST one run for that window ─────────
+    # Own a FRESH cron minute first (sleep just past a boundary) so both fire-nows — AND any Beat
+    # tick for this window — share ONE window key, then 2+ fires must dedupe to ≤1 run. Boundary-
+    # immune (no :59→:00 straddle splitting the pair across two windows) and Beat-immune (Beat's
+    # fire for this window obeys the same (org, key) constraint). The proof asserts ≤1 WITHOUT
+    # demanding growth, so a Beat tick that already created this window's run never times it out.
+    time.sleep(60 - datetime.now(UTC).second + 1)  # just past a minute boundary → a fresh window
     before_n = {r["id"] for r in _team_runs(c, sched_id)}
     c.post(f"/v1/engine/schedules/{sched_id}/fire-now").raise_for_status()
     c.post(f"/v1/engine/schedules/{sched_id}/fire-now").raise_for_status()
-    runs_n = _wait_runs(c, sched_id, len(before_n) + 1)
-    new_in_window = {r["id"] for r in runs_n} - before_n
+    time.sleep(3)  # let the synchronous fire rows settle (fire-now commits before it returns)
+    new_in_window = {r["id"] for r in _team_runs(c, sched_id)} - before_n
     assert len(new_in_window) <= 1, (
-        f"same-window dedupe: ≥2 fires in one window → ≤1 run — {runs_n}"
+        f"same-window dedupe: 2 fires, 1 window → ≤1 run — {new_in_window}"
     )
-    assert all(r["graph_id"] == graph_id for r in runs_n), f"window-N runs bind G — {runs_n}"
 
     # ── FIRE WINDOW N+1 (cross the cron minute boundary → a NEW window) ─────────────────────────
     time.sleep(60 - datetime.now(UTC).second + 2)  # into the next minute

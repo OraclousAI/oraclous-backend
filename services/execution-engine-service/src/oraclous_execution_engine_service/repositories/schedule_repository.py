@@ -52,6 +52,9 @@ class ScheduleRepository:
         instance_id: uuid.UUID | None = None,
         input_data: dict | None = None,
         graph_id: str | None = None,
+        budget_period: str | None = None,
+        budget_allowance_tokens: int | None = None,
+        budget_window_start: datetime | None = None,
     ) -> EngineSchedule:
         row = EngineSchedule(
             id=uuid.uuid4(),
@@ -67,6 +70,10 @@ class ScheduleRepository:
             instance_id=instance_id,
             input_data=input_data,
             graph_id=graph_id,  # #601: the standing team's persistent graph workspace (team only)
+            # #598: the L3 per-period cap (all NULL => OFF). budget_window_start anchors window 1.
+            budget_period=budget_period,
+            budget_allowance_tokens=budget_allowance_tokens,
+            budget_window_start=budget_window_start,
         )
         async with self._session() as session:
             async with session.begin():
@@ -126,6 +133,17 @@ class ScheduleRepository:
             )
             return list(result.scalars().all())
 
+    async def list_budget_paused(self, *, limit: int = 500) -> list[EngineSchedule]:
+        """#598 system sweep (Celery Beat): all schedules L3 paused on a per-period breach, across
+        orgs. A paused (enabled=False) schedule is invisible to ``list_enabled_cron``, so the fire
+        path can never resume it — this read feeds the boundary re-enable sweep. ``budget_paused``
+        (not just enabled=False) so a MANUALLY disabled schedule is never auto-resumed."""
+        async with self._session() as session:
+            result = await session.execute(
+                select(EngineSchedule).where(EngineSchedule.budget_paused.is_(True)).limit(limit)
+            )
+            return list(result.scalars().all())
+
     async def set_last_fired(self, schedule_id: uuid.UUID, fired_at: datetime) -> None:
         async with self._session() as session:
             async with session.begin():
@@ -155,4 +173,43 @@ class ScheduleRepository:
                         EngineSchedule.organisation_id == organisation_id,
                     )
                     .values(recurring_cost_tokens=EngineSchedule.recurring_cost_tokens + delta)
+                )
+
+    async def reset_window(
+        self, schedule_id: uuid.UUID, organisation_id: uuid.UUID, new_window_start: datetime
+    ) -> None:
+        """#598: roll the per-period budget window — zero the in-window accrual, advance the anchor,
+        clear the budget-pause, and re-enable. Used BOTH by the fire-path pre-flight (the schedule
+        is already enabled, so enabled=True is a no-op) AND by the boundary-resume sweep (which
+        flips a budget-paused schedule back to enabled). One atomic UPDATE; org-scoped — run under
+        ``org_scope(organisation_id)`` so the org-bound engine's GUC admits it."""
+        async with self._session() as session:
+            async with session.begin():
+                await session.execute(
+                    sa_update(EngineSchedule)
+                    .where(
+                        EngineSchedule.id == schedule_id,
+                        EngineSchedule.organisation_id == organisation_id,
+                    )
+                    .values(
+                        recurring_cost_tokens=0,
+                        budget_window_start=new_window_start,
+                        budget_paused=False,
+                        enabled=True,
+                    )
+                )
+
+    async def pause_budget(self, schedule_id: uuid.UUID, organisation_id: uuid.UUID) -> None:
+        """#598: pause the standing fleet on a per-period breach — disable the schedule (the
+        existing cron ``enabled`` pause, ADR-048 dec 4b) + mark it budget-paused so the sweep (and
+        only the sweep, never a manual disable) auto-resumes it. Atomic + org-scoped."""
+        async with self._session() as session:
+            async with session.begin():
+                await session.execute(
+                    sa_update(EngineSchedule)
+                    .where(
+                        EngineSchedule.id == schedule_id,
+                        EngineSchedule.organisation_id == organisation_id,
+                    )
+                    .values(enabled=False, budget_paused=True)
                 )

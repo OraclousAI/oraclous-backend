@@ -85,3 +85,8 @@ class EngineMaintenanceRepository:
     async def list_enabled_cron(self, *, limit: int = 500) -> list[EngineSchedule]:
         """All enabled cron schedules — across ALL orgs (Beat's read)."""
         return await self._schedules.list_enabled_cron(limit=limit)
+
+    async def list_budget_paused(self, *, limit: int = 500) -> list[EngineSchedule]:
+        """#598: schedules L3 paused on a per-period breach — across ALL orgs (the boundary-resume
+        sweep's read; a disabled schedule is invisible to ``list_enabled_cron``)."""
+        return await self._schedules.list_budget_paused(limit=limit)

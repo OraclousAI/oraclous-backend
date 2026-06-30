@@ -8,13 +8,18 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
 from oraclous_execution_engine_service.core.rls import install_org_guc_guard
 from oraclous_execution_engine_service.models.team_run import EngineTeamRun
+
+# #598: the non-terminal team-run states — a run in one of these has NOT yet accrued its final cost.
+# The L3 per-period budget guard serialises a budgeted standing team on this set (see
+# ScheduleService._budget_preflight), so the cap is never overrun by dispatched-but-unsettled runs.
+_ACTIVE_TEAM_RUN_STATES = frozenset({"QUEUED", "RUNNING", "PAUSED"})
 
 
 class TeamRunRepository:
@@ -128,6 +133,26 @@ class TeamRunRepository:
                 .limit(limit)
             )
             return list(result.scalars().all())
+
+    async def has_active_for_schedule(
+        self, schedule_id: uuid.UUID, organisation_id: uuid.UUID
+    ) -> bool:
+        """#598: True if the schedule has a non-terminal (QUEUED/RUNNING/PAUSED) team-run — a fire
+        whose cost has NOT yet accrued. The L3 budget pre-flight serialises a BUDGETED standing team
+        on this: it never fires the next window while a prior run is in-flight, so the per-period
+        cap is checked against CURRENT settled spend and can never be overrun by dispatched-but-
+        unsettled runs (ADR-048 dec 4b: 'does not silently overrun'). Org-scoped."""
+        async with self._session() as session:
+            result = await session.execute(
+                select(func.count())
+                .select_from(EngineTeamRun)
+                .where(
+                    EngineTeamRun.schedule_id == schedule_id,
+                    EngineTeamRun.organisation_id == organisation_id,
+                    EngineTeamRun.state.in_(_ACTIVE_TEAM_RUN_STATES),
+                )
+            )
+            return (result.scalar_one() or 0) > 0
 
     async def transition(
         self,
