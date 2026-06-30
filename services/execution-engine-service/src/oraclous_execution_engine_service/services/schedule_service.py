@@ -20,7 +20,12 @@ from oraclous_substrate import ProvenanceCollector, ProvenanceRecord
 
 from oraclous_execution_engine_service.core.rls import org_scope
 from oraclous_execution_engine_service.models.adopted_tool_run import AdoptedToolRun
-from oraclous_execution_engine_service.models.enums import BudgetPeriod, ScheduleType, TargetKind
+from oraclous_execution_engine_service.models.enums import (
+    BudgetPeriod,
+    EngineJobState,
+    ScheduleType,
+    TargetKind,
+)
 from oraclous_execution_engine_service.models.schedule import EngineSchedule
 from oraclous_execution_engine_service.models.team_run import EngineTeamRun
 from oraclous_execution_engine_service.repositories.job_repository import JobRepository
@@ -352,7 +357,21 @@ class ScheduleService:
             idempotency_key=key,
         )
         if job is not None and self._enqueue is not None:
-            self._enqueue(job.id, sched.organisation_id, sched.user_id)
+            # The QUEUED row is durable BEFORE the (fallible) broker hand-off — so a broker fault
+            # fails the row instead of orphaning it as a phantom QUEUED job (mirrors job_service's
+            # submit-path compensation; the cursor is not advanced on the raise, so the window
+            # re-fires and the now-FAILED row's key dedupes the re-create).
+            try:
+                self._enqueue(job.id, sched.organisation_id, sched.user_id)
+            except Exception:
+                await self._jobs.transition(
+                    job.id,
+                    sched.organisation_id,
+                    new_state=EngineJobState.FAILED.value,
+                    allowed_from=frozenset({EngineJobState.QUEUED.value}),
+                    error_type="enqueue_failed",
+                )
+                raise
             await self._emit(
                 sched.organisation_id, sched.user_id, sched.id, "engine.schedule.fire", key
             )
@@ -409,7 +428,21 @@ class ScheduleService:
             idempotency_key=key,
         )
         if run is not None and self._enqueue_team_run is not None:
-            self._enqueue_team_run(run.id, sched.organisation_id, sched.user_id)
+            # The QUEUED row is durable BEFORE the (fallible) broker hand-off. If the publish raises
+            # fail the row QUEUED→FAILED — otherwise it stays phantom-QUEUED, and the #598 in-flight
+            # guard (has_active_for_schedule counts QUEUED) would read it as active FOREVER, wedging
+            # the budgeted standing team with no surfaced event. Mirrors job_service compensation.
+            try:
+                self._enqueue_team_run(run.id, sched.organisation_id, sched.user_id)
+            except Exception:
+                await self._team_runs.transition(
+                    run.id,
+                    sched.organisation_id,
+                    new_state="FAILED",
+                    allowed_from=frozenset({"QUEUED"}),
+                    error_message="enqueue_failed",
+                )
+                raise
             await self._emit(
                 sched.organisation_id, sched.user_id, sched.id, "engine.schedule.fire", key
             )

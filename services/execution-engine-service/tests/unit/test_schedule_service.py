@@ -156,6 +156,7 @@ class _FakeJobRepo:
     def __init__(self) -> None:
         self.created: list[str] = []
         self.seen: set[str] = set()
+        self.scheduled_rows: list[SimpleNamespace] = []  # the QUEUED harness jobs a fire created
         # adopted-tool-run idempotency ledger (#489): the (org, key) unique row
         self.adopted_created: list[str] = []
         self.adopted_seen: set[str] = set()
@@ -166,7 +167,26 @@ class _FakeJobRepo:
             return None
         self.seen.add(idempotency_key)
         self.created.append(idempotency_key)
-        return SimpleNamespace(id=uuid.uuid4())
+        row = SimpleNamespace(id=uuid.uuid4(), state="QUEUED", error_type=None)
+        self.scheduled_rows.append(row)
+        return row
+
+    async def transition(  # noqa: ANN202
+        self,
+        job_id: uuid.UUID,
+        organisation_id: uuid.UUID,
+        *,
+        new_state: str,
+        allowed_from: frozenset[str],
+        **fields: object,
+    ):
+        for r in self.scheduled_rows:
+            if r.id == job_id and r.state in allowed_from:
+                r.state = new_state
+                for k, v in fields.items():
+                    setattr(r, k, v)
+                return r, True
+        return None, False
 
     async def create_adopted_tool_run(  # noqa: ANN202
         self, *, organisation_id: uuid.UUID, schedule_id: uuid.UUID, idempotency_key: str
@@ -234,9 +254,32 @@ class _FakeTeamRunRepo:
             schedule_id=schedule_id,
             graph_id=graph_id,
             idempotency_key=idempotency_key,
+            state="QUEUED",
+            error_message=None,
         )
         self.team_rows.append(row)
         return row
+
+    async def transition(  # noqa: ANN202
+        self,
+        team_run_id: uuid.UUID,
+        organisation_id: uuid.UUID,
+        *,
+        new_state: str,
+        allowed_from: frozenset[str],
+        **fields: object,
+    ):
+        for r in self.team_rows:
+            if (
+                r.id == team_run_id
+                and r.organisation_id == organisation_id
+                and r.state in allowed_from
+            ):
+                r.state = new_state
+                for k, v in fields.items():
+                    setattr(r, k, v)
+                return r, True
+        return None, False
 
     async def list_for_schedule(  # noqa: ANN202
         self, schedule_id: uuid.UUID, organisation_id: uuid.UUID, *, limit: int = 100
@@ -250,10 +293,11 @@ class _FakeTeamRunRepo:
     async def has_active_for_schedule(
         self, schedule_id: uuid.UUID, organisation_id: uuid.UUID
     ) -> bool:
-        # #598 in-flight guard: the fake has no state machine, so any created row counts as active.
+        # #598 in-flight guard: only NON-TERMINAL rows count (a FAILED/settled run is not active).
         return any(
             getattr(r, "schedule_id", None) == schedule_id
             and getattr(r, "organisation_id", None) == organisation_id
+            and getattr(r, "state", "QUEUED") in {"QUEUED", "RUNNING", "PAUSED"}
             for r in self.team_rows
         )
 
@@ -850,6 +894,51 @@ async def test_budgeted_team_with_an_in_flight_run_skips_the_fire_no_overrun() -
     fired = await svc.fire_due(_NOW)
     assert fired == 0 and len(trepo.team_created) == 0  # the fire was skipped (no second run)
     assert sched.enabled is True and sched.budget_paused is False  # NOT paused — just deferred
+
+
+async def test_team_enqueue_failure_fails_the_run_not_phantom_queued_and_unwedges() -> None:
+    # a broker outage on the hand-off must FAIL the just-created QUEUED run, not leave it
+    # phantom-QUEUED — else the in-flight guard reads it as active FOREVER and wedges the budgeted
+    # standing team silently (CTO #620 blocker). After the failure the schedule still fires next.
+    sched = _team_schedule(
+        cron="* * * * *",
+        budget_period="daily",
+        budget_allowance_tokens=10_000,
+        budget_window_start=_window_start(_NOW, "daily"),
+        recurring_cost_tokens=0,
+    )
+    srepo, jrepo, trepo = _FakeSchedRepo([sched]), _FakeJobRepo(), _FakeTeamRunRepo()
+    calls = {"n": 0}
+
+    def flaky(*_a: object) -> None:
+        calls["n"] += 1
+        if calls["n"] == 1:  # the first hand-off fails (broker down); the second works
+            raise RuntimeError("broker down")
+
+    svc, _ = _svc(srepo, jrepo, enqueue_team_run=flaky, team_runs=trepo)
+    # window N: the fire creates the run, the enqueue raises, the run is FAILED (fire_due swallows)
+    await svc.fire_due(_NOW)
+    assert len(trepo.team_rows) == 1 and trepo.team_rows[0].state == "FAILED"  # not phantom-QUEUED
+    assert trepo.team_rows[0].error_message == "enqueue_failed"
+    assert not await trepo.has_active_for_schedule(sched.id, _ORG)  # the guard no longer sees it
+    # window N+1 (a later minute): NOT wedged — the budgeted schedule fires again
+    fired = await svc.fire_due(_NOW + timedelta(minutes=1))
+    assert fired == 1 and calls["n"] == 2  # the second hand-off worked → the next window fired
+
+
+async def test_harness_enqueue_failure_fails_the_job_not_phantom_queued() -> None:
+    # the same compensation on the harness fire branch (the precedent job_service uses): a broker
+    # fault fails the scheduled job QUEUED→FAILED rather than orphaning it as a phantom-QUEUED row.
+    sched = _schedule(cron="* * * * *")
+    srepo, jrepo = _FakeSchedRepo([sched]), _FakeJobRepo()
+
+    def boom(*_a: object) -> None:
+        raise RuntimeError("broker down")
+
+    svc, _ = _svc(srepo, jrepo, enqueue=boom)
+    await svc.fire_due(_NOW)
+    assert len(jrepo.scheduled_rows) == 1 and jrepo.scheduled_rows[0].state == "FAILED"
+    assert jrepo.scheduled_rows[0].error_type == "enqueue_failed"
 
 
 async def test_team_window_rolled_resets_the_accrual_then_fires() -> None:
