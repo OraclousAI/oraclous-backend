@@ -28,9 +28,26 @@ from oraclous_ohm.manifest import (
     OHMMetadata,
     OHMRuntime,
 )
+from oraclous_ohm.seeds import seed_policy_template
 
 #: the reviewer's validate capability — the registered ``manifest-validate`` connector (slice-1).
 _VALIDATE_TOOL = "manifest-validate"
+
+
+def _drafter_governance_subgoal() -> str:
+    """#596: the drafter's sub-goal seeds the GOVERNED-BY-DEFAULT policy template — it must emit the
+    seed ``governance`` (a KNOWN policy_set_ref + redact_patterns) + the 3-layer ``budget`` VERBATIM
+    on the compiled team, so a fresh org's compiled team ships governed (ADR-047 §5)."""
+    p = seed_policy_template()
+    seed = {
+        "governance": p.governance.model_dump(mode="json", exclude_none=True),
+        "budget": p.budget.model_dump(mode="json", exclude_none=True),
+    }
+    return (
+        "GOVERNED-BY-DEFAULT: emit this seed policy VERBATIM as the team's `governance` and "
+        f"`budget` (do not invent values): {json.dumps(seed)}"
+    )
+
 
 #: the bounded in-harness repair loop (CTO decision A / decision-3): the reviewer fixes a blocked
 #: draft and re-validates at most ``_REPAIR_ATTEMPTS`` times (default 2 / max 3). Each attempt is
@@ -86,6 +103,7 @@ def build_compiler_team(
             manifest_ref="org:compiler/drafter@1",
             tools=[],
             depends_on=["capability-surveyor", "planner"],
+            subgoal=_drafter_governance_subgoal(),  # #596: emit the seed governance + budget
         ),
         OHMMember(
             role="reviewer",

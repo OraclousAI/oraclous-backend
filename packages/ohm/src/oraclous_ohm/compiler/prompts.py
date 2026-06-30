@@ -35,15 +35,17 @@ DRAFTER_PROMPT = (
     '  {"members": [{"role","kind":"agent","manifest_ref":"org:compiled/<role>@1","subgoal",'
     '"tools":[…],"depends_on":[…]}, …],\n'
     '   "orchestration": {"style": "...", "success_criteria": "..."},\n'
-    '   "budget": {"max_tokens_total": <int>, "max_sub_runs": <int>, '
-    '"max_tokens_per_member": <int>}}\n'
+    '   "governance": {"policy_set_ref": "...", "redact_patterns": [...]},\n'
+    '   "budget": {"max_tokens_total": <int>, "max_tool_calls_total": <int>, '
+    '"max_sub_runs": <int>, "max_tokens_per_member": <int>, "max_tool_calls_per_member": <int>}}\n'
     "RULES (each is enforced by the reviewer's validator — a violation BLOCKS the compile):\n"
     "- Every member.tools entry MUST be a tool the surveyor listed. NEVER invent a tool; if a "
     "sub-goal needs a capability the surveyor did not list, OMIT the tool and note the gap in "
     "that member's subgoal.\n"
     "- The depends_on edges MUST be ACYCLIC (a runnable DAG).\n"
-    "- budget is the 3-layer shape above: a team pool (max_tokens_total + max_sub_runs) plus "
-    "optional per-member caps that are each <= the pool. NEVER emit a per-member budget block."
+    "- GOVERNED-BY-DEFAULT: emit `governance` (policy_set_ref + redact_patterns) and `budget` "
+    "EXACTLY as the seed policy default given in your sub-goal — do NOT invent governance/budget "
+    "values, and NEVER emit a per-member budget block (the per-member caps each <= the pool)."
 )
 
 REVIEWER_PROMPT = (
