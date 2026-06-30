@@ -247,6 +247,16 @@ class _FakeTeamRunRepo:
             if r.schedule_id == schedule_id and r.organisation_id == organisation_id
         ]
 
+    async def has_active_for_schedule(
+        self, schedule_id: uuid.UUID, organisation_id: uuid.UUID
+    ) -> bool:
+        # #598 in-flight guard: the fake has no state machine, so any created row counts as active.
+        return any(
+            getattr(r, "schedule_id", None) == schedule_id
+            and getattr(r, "organisation_id", None) == organisation_id
+            for r in self.team_rows
+        )
+
 
 class _FakeProv:
     def __init__(self) -> None:
@@ -820,6 +830,26 @@ async def test_team_at_or_over_allowance_pauses_the_fleet_and_skips_the_fire() -
     assert sched.enabled is False and sched.budget_paused is True  # the fleet is paused
     assert "engine.schedule.budget_pause" in prov.events  # surfaced, never silent
     assert sched.last_fired_at is None  # cursor NOT advanced → the window re-fires on resume
+
+
+async def test_budgeted_team_with_an_in_flight_run_skips_the_fire_no_overrun() -> None:
+    # the in-flight guard (ADR-048 4b 'does not silently overrun'): while a prior fire's run is
+    # un-settled (its cost not yet accrued), a budgeted standing team does NOT fire the next window,
+    # so the cap is always checked against CURRENT settled spend, never overrun by in-flight runs.
+    sched = _team_schedule(
+        cron="* * * * *",
+        budget_period="daily",
+        budget_allowance_tokens=10_000,
+        budget_window_start=_window_start(_NOW, "daily"),
+        recurring_cost_tokens=0,  # under the allowance — would fire if not for the in-flight run
+    )
+    srepo, jrepo, trepo = _FakeSchedRepo([sched]), _FakeJobRepo(), _FakeTeamRunRepo()
+    # a prior fire's run is still active (un-settled) for this schedule
+    trepo.team_rows.append(SimpleNamespace(schedule_id=sched.id, organisation_id=_ORG))
+    svc, _ = _svc(srepo, jrepo, enqueue_team_run=lambda *a: None, team_runs=trepo)
+    fired = await svc.fire_due(_NOW)
+    assert fired == 0 and len(trepo.team_created) == 0  # the fire was skipped (no second run)
+    assert sched.enabled is True and sched.budget_paused is False  # NOT paused — just deferred
 
 
 async def test_team_window_rolled_resets_the_accrual_then_fires() -> None:

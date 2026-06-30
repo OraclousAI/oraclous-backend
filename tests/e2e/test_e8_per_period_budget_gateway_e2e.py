@@ -149,6 +149,14 @@ def test_per_period_budget_pauses_the_standing_fleet_and_skips_the_next_fire(
     register: Callable[..., dict],
     gateway_client: Callable[[str], httpx.Client],
 ) -> None:
+    # the cap-trip proof needs window N and window N+1 in the SAME daily window; if the multi-minute
+    # register→N+1 sequence straddles UTC midnight the day rolls and the N+1 fire RESETS instead of
+    # pausing (a false RED). The boundary roll itself is unit-proven over a controllable clock, so
+    # near midnight we simply skip this live leg rather than flake.
+    now_utc = datetime.now(UTC)
+    if now_utc.hour == 23 and now_utc.minute >= 50:  # noqa: PLR2004
+        pytest.skip("within ~10min of UTC midnight: the daily window could roll mid-test")
+
     user = register(f"budget{uuid.uuid4().hex[:10]} u")
     c = gateway_client(user["token"])
     cred = _cred(c, user)
