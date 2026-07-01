@@ -16,9 +16,16 @@ from typing import Any
 
 from croniter import croniter
 from oraclous_governance import Principal
+from oraclous_ohm.errors import OHMError
+from oraclous_ohm.parse import load_ohm
 from oraclous_substrate import ProvenanceCollector, ProvenanceRecord
 
 from oraclous_execution_engine_service.core.rls import org_scope
+from oraclous_execution_engine_service.domain.schedule_cost import (
+    ScheduleCostProjection,
+    apply_scheduled_scan_default,
+    project_schedule_cost,
+)
 from oraclous_execution_engine_service.models.adopted_tool_run import AdoptedToolRun
 from oraclous_execution_engine_service.models.enums import (
     BudgetPeriod,
@@ -185,6 +192,40 @@ class ScheduleService:
                 org_id, principal.principal_id, row.id, "engine.schedule.register", type
             )
         return row
+
+    def preflight(
+        self,
+        principal: Principal,
+        *,
+        manifest: dict[str, Any],
+        cron: str,
+        input_data: dict[str, Any] | None,
+        expected_in: int,
+        expected_out: int,
+    ) -> ScheduleCostProjection:
+        """#603 dec-4(a): a READ-ONLY cadence-aware cost projection over an INLINE team manifest
+        at a proposed ``cron`` — the "~$X/day at this cadence" BEFORE GO. Creates/enables NOTHING
+        (no DB write, so no ``org_scope`` needed — it prices the submitted manifest, holds no org
+        data). Applies the SAME dec-4(c) scan-tier default a real fire would, so the projection
+        matches what will actually run. Bad manifest/cron → ``ScheduleError`` (route maps 422).
+        """
+        self._require_org(principal)  # an authenticated org principal is required (fail-closed)
+        try:
+            team = load_ohm(manifest)
+        except OHMError as exc:
+            raise ScheduleError(f"invalid team manifest: {exc}") from exc
+        if not team.is_team():
+            raise ScheduleError("manifest is not a Team Harness (metadata.kind must be 'team')")
+        if not team.members:
+            raise ScheduleError("a team manifest must declare at least one member")
+        sub_harnesses = (input_data or {}).get("sub_harnesses") or {}
+        _manifest, sub_harnesses = apply_scheduled_scan_default(manifest, sub_harnesses)
+        try:
+            return project_schedule_cost(
+                team, sub_harnesses, cron, expected_in=expected_in, expected_out=expected_out
+            )
+        except ValueError as exc:  # an invalid cron surfaces from fires_per_day
+            raise ScheduleError(str(exc)) from exc
 
     @staticmethod
     def _validate_budget(
@@ -417,11 +458,17 @@ class ScheduleService:
         if self._team_runs is None:  # defensive: the team branch needs the team-run repo
             return 0
         spec = sched.input_data or {}
+        # #603 dec-4(c): a SCHEDULED team fire applies the cheaper scan-tier default to any AGENT
+        # member whose model is UNSET (declared-binding-always-wins). Per-fire only — the STORED
+        # schedule manifest is untouched, so a direct TeamRunService.create is unaffected.
+        manifest, sub_harnesses = apply_scheduled_scan_default(
+            sched.manifest_inline or {}, spec.get("sub_harnesses") or {}
+        )
         run = await self._team_runs.create_scheduled(
             organisation_id=sched.organisation_id,
             user_id=sched.user_id,
-            manifest=sched.manifest_inline or {},
-            sub_harnesses=spec.get("sub_harnesses") or {},
+            manifest=manifest,
+            sub_harnesses=sub_harnesses,
             gate_decisions=spec.get("gate_decisions") or {},
             graph_id=sched.graph_id,
             schedule_id=sched.id,

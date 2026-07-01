@@ -13,6 +13,9 @@ from oraclous_execution_engine_service.core.dependencies import PrincipalDep, Sc
 from oraclous_execution_engine_service.schema.engine_schemas import (
     AdoptedToolRunListResponse,
     AdoptedToolRunOut,
+    MemberCostOut,
+    PreflightCostResponse,
+    PreflightScheduleRequest,
     RegisterScheduleRequest,
     ScheduledTeamRunListResponse,
     ScheduledTeamRunOut,
@@ -47,6 +50,47 @@ async def register_schedule(
     except ScheduleError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     return ScheduleOut.model_validate(row)
+
+
+@router.post("/schedules/preflight", response_model=PreflightCostResponse)
+async def preflight_schedule(
+    body: PreflightScheduleRequest, principal: PrincipalDep, service: ScheduleServiceDep
+) -> PreflightCostResponse:
+    """#603 dec-4(a): a cadence-aware cost pre-flight — "~$X/day at this cadence" for a proposed
+    standing team, BEFORE GO. READ-ONLY: creates/enables NOTHING. 401 without an org; 422 on a bad
+    manifest / cron. Unpriced members are surfaced (never fabricated $0)."""
+    if principal.organisation_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="no organisation scope"
+        )
+    try:
+        proj = service.preflight(
+            principal,
+            manifest=body.manifest,
+            cron=body.cron,
+            input_data=body.input_data,
+            expected_in=body.expected_input_tokens,
+            expected_out=body.expected_output_tokens,
+        )
+    except ScheduleError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        ) from exc
+    return PreflightCostResponse(
+        cadence_fires_per_day=proj.cadence_fires_per_day,
+        fleet_usd_per_day=proj.fleet_usd_per_day,
+        per_member=[
+            MemberCostOut(
+                role=m.role,
+                binding=m.binding,
+                priced=m.priced,
+                usd_per_fire=m.usd_per_fire,
+                usd_per_day=m.usd_per_day,
+            )
+            for m in proj.per_member
+        ],
+        unpriced_members=proj.unpriced_members,
+    )
 
 
 @router.post(
