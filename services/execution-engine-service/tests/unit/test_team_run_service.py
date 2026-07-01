@@ -131,10 +131,16 @@ class FakeEvaluate:
     """A stand-in EvaluateClient (#477): records each call, returns a scripted Verdict or raises."""
 
     def __init__(
-        self, *, score: float = 0.8, passed: bool = True, raise_exc: Exception | None = None
+        self,
+        *,
+        score: float = 0.8,
+        passed: bool = True,
+        raise_exc: Exception | None = None,
+        recommended_action: str | None = None,  # #604: override the derived action (revise/reject…)
     ) -> None:
         self.calls: list[dict[str, Any]] = []
         self._score, self._passed, self._raise = score, passed, raise_exc
+        self._action = recommended_action
 
     async def evaluate(
         self,
@@ -161,7 +167,7 @@ class FakeEvaluate:
         return {
             "pass": self._passed,
             "score": self._score,
-            "recommended_action": "accept" if self._passed else "escalate_human",
+            "recommended_action": self._action or ("accept" if self._passed else "escalate_human"),
         }
 
     async def aclose(self) -> None:  # pragma: no cover - parity with the real client
@@ -417,25 +423,23 @@ async def test_status_progress_is_partial_when_paused_at_a_gate() -> None:  # #4
     assert st.progress == 33  # 1 of 3 members done before the gate → goal-attainment 33%
 
 
-async def test_gate_stores_verdict_on_succeeded_row_without_branching_state() -> (
-    None
-):  # #477 E8 guard
-    """The HARD E4/E8 boundary (ADR-037 line 116): the gate PRODUCES + STORES the verdict, but a
-    FAILING verdict must NOT branch the state machine and must NOT enqueue anything — consuming the
-    verdict (re-dispatch) is E8. A reviewer rejects any wiring that does otherwise."""
+async def test_gate_below_threshold_escalate_verdict_is_consumed_pauses_for_hitl() -> None:  # #604
+    """E8 (#604, ADR-048 dec 5): the E4/E8 boundary MOVED — the settled verdict is now CONSUMED. A
+    below-threshold verdict whose recommended_action is escalate_human PAUSES the run for HITL (with
+    the verdict-escalation sentinel), NOT a blind stay-SUCCEEDED (the pre-E8 deferral this test used
+    to guard). It does NOT re-dispatch (escalate ≠ re_task), so nothing new is enqueued."""
     repo, harness = FakeTeamRunRepo(), FakeHarness()
-    evaluate = FakeEvaluate(
-        score=0.2, passed=False
-    )  # a FAILING verdict, recommended_action escalate
+    evaluate = FakeEvaluate(score=0.2, passed=False)  # a real FAILING verdict → escalate_human
     svc, enqueued = _svc(repo, harness, evaluate=evaluate)
     manifest = _team([_agent("a"), _agent("b", ["a"])], success_criteria="the result is correct")
     row = await _run(svc, _principal(), manifest=manifest, sub_harnesses={}, gate_decisions={})
-    # the verdict is produced + stored on the row...
+    # the verdict is produced + stored, and the run is CONSUMED — escalated to PAUSED for a human
     assert row.verdict is not None and row.verdict["pass"] is False
     assert evaluate.calls and evaluate.calls[0]["success_criteria"] == "the result is correct"
-    # ...the run STATE is NOT branched on it (a failing verdict still SUCCEEDS)...
-    assert row.state == "SUCCEEDED"
-    # ...and NOTHING was enqueued off the verdict (only the create's enqueue — the drive added none)
+    assert row.state == "PAUSED"  # #604: escalate_human → HITL, not a silent SUCCEEDED
+    assert row.paused_at == ["__verdict_escalation__"]  # the sentinel (distinct from a member gate)
+    assert row.escalation_kind == "verdict"  # the CONTROL marker advance() keys off (review F1)
+    # escalate does NOT re-dispatch (only the create's enqueue — no re_task enqueue)
     assert enqueued == [row.id]
 
 
@@ -1094,3 +1098,153 @@ async def test_non_refresh_run_is_default_off() -> None:
     assert row.seed_from_run_id is None
     assert row.refresh_delta is None
     assert "_refresh_seed" not in (row.inputs or {})
+
+
+# ── #604 closed-loop verdict-consumption (ADR-048 decision 5) ──────────────────────────────
+async def test_re_task_re_dispatches_the_sink_with_a_revised_objective_not_a_blind_rerun() -> None:
+    # a below-threshold `revise` verdict on a SUCCEEDED run → re-dispatch: the SINK member is forced
+    # to re-run (its output was below threshold), the objective carries a revision directive (so the
+    # task DIFFERS — never a blind identical re-run), and the run goes QUEUED (drawing the pool).
+    repo, harness = FakeTeamRunRepo(), FakeHarness()
+    evaluate = FakeEvaluate(passed=False, score=0.5, recommended_action="revise")
+    svc, enqueued = _svc(repo, harness, evaluate=evaluate)
+    manifest = _team([_agent("a"), _agent("b", ["a"])], success_criteria="the result is correct")
+    row = await _run(svc, _principal(), manifest=manifest, sub_harnesses={}, gate_decisions={})
+    assert row.state == "QUEUED"  # re-dispatched, not left SUCCEEDED (consumed the verdict)
+    assert row.re_dispatch_count == 1  # the loop counter bumped (the MAX-ceiling basis)
+    assert row.member_status.get("b") == "re_task"  # the SINK is forced to re-run
+    assert row.member_status.get("a") == "succeeded"  # the upstream member is reused (not re-run)
+    sink = next(m for m in row.manifest["members"] if m["role"] == "b")
+    assert "Re-task attempt 1" in (sink.get("subgoal") or "")  # objective DIFFERS (revision)
+    assert enqueued == [row.id, row.id]  # the create's enqueue + the re_task enqueue
+
+
+async def test_reject_verdict_escalates_to_hitl_and_never_re_dispatches() -> None:
+    repo, harness = FakeTeamRunRepo(), FakeHarness()
+    evaluate = FakeEvaluate(passed=False, recommended_action="reject")  # HITL-class (ADR-037 Dec 4)
+    svc, enqueued = _svc(repo, harness, evaluate=evaluate)
+    manifest = _team([_agent("a")], success_criteria="is correct")
+    row = await _run(svc, _principal(), manifest=manifest, sub_harnesses={}, gate_decisions={})
+    assert row.state == "PAUSED" and row.paused_at == ["__verdict_escalation__"]
+    assert enqueued == [row.id]  # reject NEVER autonomously re-dispatches (no re_task enqueue)
+
+
+async def test_max_re_dispatches_ceiling_escalates_instead_of_re_tasking() -> None:
+    repo, harness = FakeTeamRunRepo(), FakeHarness()
+    evaluate = FakeEvaluate(passed=False, score=0.5, recommended_action="revise")
+    svc, enqueued = _svc(repo, harness, evaluate=evaluate)
+    manifest = _team([_agent("a")], success_criteria="is correct")
+    created = await svc.create(_principal(), manifest=manifest, sub_harnesses={}, gate_decisions={})
+    repo.rows[created.id].re_dispatch_count = 3  # already at the ceiling
+    row = await svc.drive(created.id, _principal())
+    assert row.state == "PAUSED"  # a closed loop MUST terminate — escalate at the ceiling
+    assert row.paused_at == ["__verdict_escalation__"]
+    assert enqueued == [created.id]  # no further re_task enqueue
+
+
+async def test_advance_of_a_verdict_escalation_re_tasks_never_blindly_re_drives() -> None:
+    # the Q3 guard: a human advancing a VERDICT-escalation must NOT blindly re-drive the seeded-
+    # complete run (a no-op re-grade) — it re-tasks the faulted members with a FRESH loop counter.
+    repo, harness = FakeTeamRunRepo(), FakeHarness()
+    evaluate = FakeEvaluate(passed=False, recommended_action="reject")
+    svc, enqueued = _svc(repo, harness, evaluate=evaluate)
+    manifest = _team([_agent("a"), _agent("b", ["a"])], success_criteria="is correct")
+    row = await _run(svc, _principal(), manifest=manifest, sub_harnesses={}, gate_decisions={})
+    assert row.state == "PAUSED" and row.paused_at == ["__verdict_escalation__"]
+    repo.rows[row.id].re_dispatch_count = 2  # a prior autonomous history
+    advanced = await svc.advance(row.id, _principal(), {})
+    assert advanced.state == "QUEUED"  # re-dispatched (NOT a blind seeded re-drive)
+    assert advanced.member_status.get("b") == "re_task"  # the sink forced to re-run
+    assert advanced.re_dispatch_count == 0  # a fresh human attempt — the livelock counter resets
+    assert advanced.paused_at == []  # the escalation sentinel cleared
+    assert row.id in enqueued
+
+
+async def test_re_task_enqueue_failure_fails_the_run_not_phantom_queued() -> None:
+    # a broker fault on the re_task hand-off must FAIL the run, not orphan it QUEUED (#620).
+    repo, harness = FakeTeamRunRepo(), FakeHarness()
+    evaluate = FakeEvaluate(passed=False, score=0.5, recommended_action="revise")
+    calls = {"n": 0}
+
+    def flaky(_rid: uuid.UUID, _org: uuid.UUID, _user: uuid.UUID) -> None:
+        calls["n"] += 1
+        if calls["n"] >= 2:  # the create's enqueue works; the re_task hand-off (the 2nd) fails
+            raise RuntimeError("broker down")
+
+    svc = TeamRunService(team_runs=repo, harness=harness, enqueue=flaky, evaluate=evaluate)
+    manifest = _team([_agent("a")], success_criteria="is correct")
+    created = await svc.create(_principal(), manifest=manifest, sub_harnesses={}, gate_decisions={})
+    with pytest.raises(RuntimeError):
+        await svc.drive(created.id, _principal())
+    assert repo.rows[created.id].state == "FAILED"  # compensated QUEUED→FAILED, not phantom-QUEUED
+    assert repo.rows[created.id].error_message == "re_dispatch enqueue failed"
+
+
+async def test_a_member_named_the_sentinel_cannot_hijack_the_verdict_escalation_resume() -> None:
+    # review F1-sentinel: a NORMAL human gate whose member role happens to be the escalation
+    # sentinel must advance through the ordinary gate path — the Q3 re-task guard keys off
+    # ``escalation_kind`` (NULL here), NOT ``paused_at``, so a tenant-named member cannot hijack it.
+    repo, harness = FakeTeamRunRepo(), FakeHarness()
+    svc, enqueued = _svc(repo, harness)
+    created = await svc.create(
+        _principal(),
+        manifest=_team([_agent("a")]),
+        sub_harnesses={},
+        gate_decisions={},
+    )
+    row = repo.rows[created.id]
+    row.state = "PAUSED"  # a normal mid-drive gate paused ON a member literally named the sentinel
+    row.paused_at = ["__verdict_escalation__"]
+    row.escalation_kind = (
+        None  # a real gate is NOT a verdict escalation — the discriminator is NULL
+    )
+    advanced = await svc.advance(created.id, _principal(), {"__verdict_escalation__": "approve"})
+    assert advanced.state == "QUEUED"  # the ordinary gate advance, NOT a re-task hijack
+    assert advanced.gate_decisions == {"__verdict_escalation__": "approve"}  # the decision recorded
+    assert advanced.re_dispatch_count in (0, None)  # never went through the re_task counter
+    assert created.id in enqueued
+
+
+async def test_re_task_revision_reaches_a_handoff_driven_sink_not_just_its_subgoal() -> None:
+    # review F1-team_run: a sink RENDERS its objective from its producer's ``handoff_objective``
+    # (objective_slice takes precedence over the sink's static subgoal). The revision directive must
+    # therefore land on the producer's handoff_objective too, or the re-run is a blind identical.
+    repo, harness = FakeTeamRunRepo(), FakeHarness()
+    evaluate = FakeEvaluate(passed=False, score=0.5, recommended_action="revise")
+    svc, _ = _svc(repo, harness, evaluate=evaluate)
+    producer = {**_agent("a"), "handoff_objective": "Draft chapter 4"}
+    sink = _agent("b", ["a"])  # nothing depends on b → the sink; b renders a's handoff_objective
+    manifest = _team([producer, sink], success_criteria="the result is correct")
+    row = await _run(svc, _principal(), manifest=manifest, sub_harnesses={}, gate_decisions={})
+    assert (
+        row.state == "QUEUED" and row.member_status.get("b") == "re_task"
+    )  # the sink re-dispatched
+    prod = next(m for m in row.manifest["members"] if m["role"] == "a")
+    # the revision landed on the producer's handoff_objective → it reaches the sink's rendered input
+    assert "Re-task attempt 1" in prod["handoff_objective"]
+    assert prod["handoff_objective"].startswith(
+        "Draft chapter 4"
+    )  # the original objective preserved
+
+
+async def test_resume_verdict_escalation_enqueue_failure_fails_the_run_not_phantom_queued() -> None:
+    # review F1-org_scope: the human-resume compensation runs under org_scope, so a broker fault
+    # FAILS the run (not a silent RLS no-op leaving it phantom-QUEUED). Proven with the fake repo's
+    # CAS semantics; the RLS-real path is the same transition wrapped in the same org_scope.
+    repo, harness = FakeTeamRunRepo(), FakeHarness()
+    evaluate = FakeEvaluate(passed=False, recommended_action="reject")  # → escalate → PAUSED
+    calls = {"n": 0}
+
+    def flaky(_rid: uuid.UUID, _org: uuid.UUID, _user: uuid.UUID) -> None:
+        calls["n"] += 1
+        if calls["n"] >= 2:  # create's enqueue works; the human-resume re_task hand-off fails
+            raise RuntimeError("broker down")
+
+    svc = TeamRunService(team_runs=repo, harness=harness, enqueue=flaky, evaluate=evaluate)
+    manifest = _team([_agent("a"), _agent("b", ["a"])], success_criteria="is correct")
+    row = await _run(svc, _principal(), manifest=manifest, sub_harnesses={}, gate_decisions={})
+    assert row.state == "PAUSED" and row.escalation_kind == "verdict"
+    with pytest.raises(RuntimeError):
+        await svc.advance(row.id, _principal(), {})
+    assert repo.rows[row.id].state == "FAILED"  # compensated, not phantom-QUEUED
+    assert repo.rows[row.id].error_message == "re_dispatch enqueue failed"
