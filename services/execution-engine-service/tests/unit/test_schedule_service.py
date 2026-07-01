@@ -76,6 +76,8 @@ def _team_schedule(
     recurring_cost_tokens: int = 0,
     budget_paused: bool = False,
     enabled: bool = True,
+    manifest_inline: dict | None = None,
+    input_data: dict | None = None,
 ) -> EngineSchedule:
     return EngineSchedule(
         id=uuid.uuid4(),
@@ -83,14 +85,15 @@ def _team_schedule(
         user_id=_USER,
         type="cron",
         cron=cron,
-        manifest_inline={"members": []},  # an inline team manifest (validated downstream)
+        manifest_inline=manifest_inline
+        or {"members": []},  # inline team manifest (validated later)
         manifest_ref=None,
         input_text="standing team",
         enabled=enabled,
         last_fired_at=last_fired,
         target_kind="team",
         instance_id=None,
-        input_data={"sub_harnesses": {}, "gate_decisions": {}},
+        input_data=input_data or {"sub_harnesses": {}, "gate_decisions": {}},
         graph_id=graph_id,
         # #598: the L3 per-period cap state (all default-OFF unless a test sets it)
         budget_period=budget_period,
@@ -256,6 +259,8 @@ class _FakeTeamRunRepo:
             idempotency_key=idempotency_key,
             state="QUEUED",
             error_message=None,
+            manifest=manifest,  # #603: assert the 4(c) scan-tier default was applied at fire time
+            sub_harnesses=sub_harnesses,
         )
         self.team_rows.append(row)
         return row
@@ -548,6 +553,79 @@ async def test_fire_due_adopted_tool_creates_row_before_dispatch() -> None:
     assert "engine.schedule.fire" in prov.events
     # NO harness engine_job was created for an adopted-tool fire
     assert jrepo.created == []
+
+
+async def test_fire_team_applies_the_cheaper_scan_tier_default_to_an_unset_member() -> None:
+    # #603 dec-4(c): a scheduled team fire stamps the cheaper scan default onto an AGENT member
+    # whose model is UNSET, while a member that DECLARES a binding is left as-is (declared-wins).
+    manifest = {
+        "ohm_version": "1.1",
+        "metadata": {
+            "id": str(uuid.uuid4()),
+            "name": "t",
+            "owner_organization_id": str(_ORG),
+            "kind": "team",
+        },
+        "members": [
+            {
+                "role": "unset",
+                "kind": "agent",
+                "manifest_ref": "x/u@1",
+                "subgoal": "s",
+                "depends_on": [],
+                "tools": [],
+            },
+            {
+                "role": "declared",
+                "kind": "agent",
+                "manifest_ref": "x/d@1",
+                "subgoal": "s",
+                "depends_on": [],
+                "tools": [],
+            },
+        ],
+        "runtime": {"entrypoint": "unset"},
+    }
+    bare = {
+        "ohm_version": "1.0",
+        "metadata": {"id": str(uuid.uuid4()), "name": "s", "owner_organization_id": str(_ORG)},
+        "prompts": [{"role": "primary", "source": "inline", "body": "go"}],
+        "actors": [{"role": "primary", "kind": "agent"}],
+        "runtime": {"entrypoint": "primary"},
+    }
+    declared_sub = {
+        **bare,
+        "metadata": {"id": str(uuid.uuid4()), "name": "d", "owner_organization_id": str(_ORG)},
+        "models": [
+            {
+                "role": "primary",
+                "binding": "openrouter/openai/gpt-4o",
+                "protocol_shape": "openai-compatible",
+            }
+        ],
+    }
+    sched = _team_schedule(
+        cron="* * * * *",
+        last_fired=None,
+        manifest_inline=manifest,
+        input_data={
+            "sub_harnesses": {"unset": bare, "declared": declared_sub},
+            "gate_decisions": {},
+        },
+    )
+    srepo = _FakeSchedRepo([sched])
+    team_runs = _FakeTeamRunRepo()
+    svc, _ = _svc(srepo, _FakeJobRepo(), enqueue_team_run=lambda *a: None, team_runs=team_runs)
+
+    fired = await svc.fire_due(_NOW)
+    assert fired == 1 and len(team_runs.team_rows) == 1
+    fired_subs = team_runs.team_rows[0].sub_harnesses
+
+    def _binding(sub: dict) -> str | None:
+        return next((m.get("binding") for m in (sub.get("models") or []) if m.get("binding")), None)
+
+    assert _binding(fired_subs["unset"]) == "openrouter/google/gemini-1.5-flash"  # scan default
+    assert _binding(fired_subs["declared"]) == "openrouter/openai/gpt-4o"  # declared, untouched
 
 
 async def test_fire_now_twice_same_window_dispatches_exactly_once() -> None:

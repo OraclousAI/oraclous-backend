@@ -12,6 +12,10 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from oraclous_execution_engine_service.domain.schedule_cost import (
+    DEFAULT_EXPECTED_INPUT_TOKENS,
+    DEFAULT_EXPECTED_OUTPUT_TOKENS,
+)
 from oraclous_execution_engine_service.models.enums import (
     BudgetPeriod,
     EngineJobState,
@@ -181,6 +185,41 @@ class RegisterScheduleRequest(BaseModel):
         ):
             raise ValueError("a per-period budget cap is only for a recurring (cron) team schedule")
         return self
+
+
+class PreflightScheduleRequest(BaseModel):
+    """#603 dec-4(a): a cadence-aware cost pre-flight — "~$X/day at this cadence" BEFORE GO. Prices
+    an INLINE team manifest at a proposed ``cron`` without creating/enabling anything. Its
+    ``input_data`` carries the per-member ``sub_harnesses`` (as a schedule's does) so each model
+    binding is read the same way it will fire. Tokens default to a rough per-agent turn estimate."""
+
+    manifest: dict[str, Any]
+    cron: str = Field(min_length=1, max_length=128)
+    input_data: dict[str, Any] | None = None
+    expected_input_tokens: int = Field(default=DEFAULT_EXPECTED_INPUT_TOKENS, ge=1)
+    expected_output_tokens: int = Field(default=DEFAULT_EXPECTED_OUTPUT_TOKENS, ge=1)
+
+
+class MemberCostOut(BaseModel):
+    """One member's projected recurring cost. ``priced`` false (+ null usd) when its binding is
+    unset/unknown — reported unpriced, NEVER a fabricated $0."""
+
+    role: str
+    binding: str | None
+    priced: bool
+    usd_per_fire: float | None
+    usd_per_day: float | None
+
+
+class PreflightCostResponse(BaseModel):
+    """The forward "~$X/day at this cadence" projection. ``fleet_usd_per_day`` sums ONLY priced
+    members; ``unpriced_members`` names the rest so a partial total is never read as "free"."""
+
+    currency: str = "USD"
+    cadence_fires_per_day: float
+    fleet_usd_per_day: float
+    per_member: list[MemberCostOut]
+    unpriced_members: list[str]
 
 
 class ScheduleOut(BaseModel):
