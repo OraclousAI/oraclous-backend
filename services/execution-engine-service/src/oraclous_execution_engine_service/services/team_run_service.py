@@ -423,10 +423,17 @@ class TeamRunService:
                 error_type="invalid_seed_run",
             )
         seed_team = self._load_team(seed_row.manifest)
-        seed_records = _refresh_records(seed_team, seed_row.results) or []
+        seed_records = _refresh_records(seed_team, seed_row.results)
         return {
             **(inputs or {}),
-            REFRESH_SEED_KEY: {"records": seed_records, "id_field": "id"},
+            REFRESH_SEED_KEY: {
+                # a seed whose deliverable is NOT a record-set parses to None → thread [] but flag
+                # it, so the delta at settle never treats an UNPARSEABLE seed as a genuinely-empty
+                # one (which would misreport every fresh record as spuriously ``added``).
+                "records": seed_records or [],
+                "id_field": "id",
+                "seed_records_parsed": seed_records is not None,
+            },
         }
 
     def _refresh_delta(
@@ -448,6 +455,9 @@ class TeamRunService:
             }
         delta = compute_delta(seed_records, fresh, id_field=id_field)
         delta["seed_from_run_id"] = str(row.seed_from_run_id)
+        # surface an UNPARSEABLE seed (records default []): every fresh record then reads ``added``,
+        # so the consumer can tell that from a genuinely-empty prior ledger (never silent).
+        delta["seed_records_parsed"] = seed_meta.get("seed_records_parsed", True)
         return delta
 
     async def create(

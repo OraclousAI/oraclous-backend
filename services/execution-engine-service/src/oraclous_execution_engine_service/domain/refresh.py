@@ -23,10 +23,28 @@ The two distinctions that carry the contract (Lock O3 — "never silently worse"
 
 from __future__ import annotations
 
+import hashlib
 import json
+import re
 from typing import Any
 
-from oraclous_ohm.canonical import content_hash
+# an LLM member often wraps its JSON deliverable in a ```json … ``` markdown fence; strip it so the
+# ledger still parses (the fence is transport, not evidence).
+_FENCE_RE = re.compile(r"^\s*```(?:json)?\s*(.*?)\s*```\s*$", re.DOTALL | re.IGNORECASE)
+
+
+def _record_hash(evidence: dict[str, Any]) -> str:
+    """SHA-256 of the record's canonical evidence JSON (sorted keys). A LOCAL hash — deliberately
+    NOT ``oraclous_ohm.canonical.content_hash``, which strips a top-level ``signatures`` key (built
+    for SIGNED OHM documents) and would silently exclude an arbitrary record field named
+    ``signatures`` from the fingerprint — a false-``unchanged`` soundness hole (Lock O3). This
+    hashes the WHOLE evidence dict; the only exclusion is ``refresh_status`` (dropped elsewhere)."""
+    return hashlib.sha256(
+        json.dumps(
+            evidence, sort_keys=True, separators=(",", ":"), ensure_ascii=False, default=str
+        ).encode("utf-8")
+    ).hexdigest()
+
 
 # the reserved key under which the seed records ride into the run's ``inputs`` (the #599 state
 # seam), so the producing member can carry-forward unchanged records (the cost lever).
@@ -51,8 +69,12 @@ def parse_records(deliverable: Any) -> list[dict[str, Any]] | None:  # noqa: ANN
     if isinstance(deliverable, list):
         parsed: Any = deliverable
     elif isinstance(deliverable, str):
+        text = deliverable.strip()
+        fenced = _FENCE_RE.match(text)  # unwrap a ```json … ``` markdown fence if present
+        if fenced:
+            text = fenced.group(1).strip()
         try:
-            parsed = json.loads(deliverable)
+            parsed = json.loads(text)
         except (json.JSONDecodeError, TypeError):
             return None
     else:
@@ -69,8 +91,10 @@ def _identity(record: dict[str, Any], id_field: str) -> str:
     false unchanged)."""
     val = record.get(id_field)
     if isinstance(val, (str, int, float, bool)):
-        return f"{id_field}={val}"
-    return f"@{content_hash(_evidence(record))}"
+        # type-qualify: a str "1.0", a float 1.0 and an int 1 are DISTINCT records, never one key
+        # (an un-typed key would collide them and silently drop one as a false removed/unchanged).
+        return f"{id_field}={type(val).__name__}:{val!r}"
+    return f"@{_record_hash(_evidence(record))}"
 
 
 def _evidence(record: dict[str, Any]) -> dict[str, Any]:
@@ -82,7 +106,7 @@ def _evidence(record: dict[str, Any]) -> dict[str, Any]:
 def _fingerprint(record: dict[str, Any]) -> str:
     """Evidence fingerprint = SHA-256 of the record's canonical evidence content (ADR-048 §3: a
     content/evidence hash, NOT a timestamp)."""
-    return content_hash(_evidence(record))
+    return _record_hash(_evidence(record))
 
 
 def _claims_skip(record: dict[str, Any]) -> bool:
@@ -102,14 +126,25 @@ def compute_delta(
     changed: same id, fingerprint MOVED. unchanged: same id, fingerprint MATCH, AND the fresh record
     explicitly claims a skip (carried forward, producer not re-run). re_confirmed: same id, fp
     MATCH, WITHOUT a skip claim (re-examined, still true) — the fail-open default so an uncertain
-    record is never falsely credited as skipped (Lock O3). Returns the full 5-way delta + counts +
-    ``skipped`` (the unchanged count — the cost-saving signal)."""
+    record is never falsely credited as skipped (Lock O3). A DUPLICATE fresh id (a member emitting
+    the same identity twice — e.g. a carried skip-copy AND a re-derived copy) fails CLOSED to
+    ``changed`` and is NEVER credited a skip, so emit-order can never smuggle a moved record through
+    as ``unchanged``. Returns the full 5-way delta + counts + ``skipped`` (the unchanged count — the
+    cost-saving signal) + the duplicate-id counts (a lossy-input signal, never silent)."""
+    # keep first per seed id (a seed dup is the prior run's shape; note it, don't drop ``removed``)
     seed_by_id: dict[str, dict[str, Any]] = {}
+    seed_dupes = 0
     for r in seed_records:
-        seed_by_id.setdefault(_identity(r, id_field), r)
-    fresh_by_id: dict[str, dict[str, Any]] = {}
+        rid = _identity(r, id_field)
+        if rid in seed_by_id:
+            seed_dupes += 1
+        else:
+            seed_by_id[rid] = r
+    # GROUP fresh by identity (do not collapse with setdefault) so a duplicate id is detected, not
+    # silently dropped — a dropped changed-copy would masquerade as an unchanged skip (Lock O3).
+    fresh_groups: dict[str, list[dict[str, Any]]] = {}
     for r in fresh_records:
-        fresh_by_id.setdefault(_identity(r, id_field), r)
+        fresh_groups.setdefault(_identity(r, id_field), []).append(r)
 
     out: dict[str, list[dict[str, Any]]] = {
         ADDED: [],
@@ -118,9 +153,12 @@ def compute_delta(
         UNCHANGED: [],
         RE_CONFIRMED: [],
     }
-    for rid, fresh in fresh_by_id.items():
+    for rid, group in fresh_groups.items():
+        fresh = group[0]
         seed = seed_by_id.get(rid)
-        if seed is None:
+        if len(group) > 1:
+            out[CHANGED].append(fresh)  # duplicate id → fail CLOSED to changed, never a skip
+        elif seed is None:
             out[ADDED].append(fresh)
         elif _fingerprint(fresh) != _fingerprint(seed):
             out[CHANGED].append(fresh)  # evidence moved → re-derived to a different value
@@ -129,7 +167,7 @@ def compute_delta(
         else:
             out[RE_CONFIRMED].append(fresh)  # fp match, no skip claim → re-examined, still true
     for rid, seed in seed_by_id.items():
-        if rid not in fresh_by_id:
+        if rid not in fresh_groups:
             out[REMOVED].append(seed)
 
     counts = {k: len(v) for k, v in out.items()}
@@ -138,4 +176,6 @@ def compute_delta(
         "counts": counts,
         "skipped": counts[UNCHANGED],  # records whose producer was NOT re-run (the cost win)
         "id_field": id_field,
+        "duplicate_fresh_ids": sum(1 for g in fresh_groups.values() if len(g) > 1),
+        "duplicate_seed_ids": seed_dupes,
     }
