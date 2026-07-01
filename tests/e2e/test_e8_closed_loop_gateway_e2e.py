@@ -79,32 +79,32 @@ def _worker_studio(root: Path) -> None:
     )
 
 
-def _body(root: Path, cred: str, org: uuid.UUID, severity: str) -> dict:
+def _body(root: Path, cred: str, org: uuid.UUID, severity: str, n_checks: int = 1) -> dict:
     _worker_studio(root)
     imported = import_setup(root, owner_organization_id=org, name="cl", substrate="file")
     assert imported.manifest is not None
     manifest = imported.manifest.model_dump(mode="json")
     # a DETERMINISTIC battery gate the output cannot clear (a coded predicate, no judge). floor and
     # → any failing check blocks; MAJOR → block → re_task, CRITICAL → escalate_human.
+    # ``n_checks`` > 1 makes a LARGE battery: every distinctly-named check fails, so the failing-
+    # shape fingerprint spans N dims. At 15 checks the RAW shape JSON would exceed VARCHAR(256) and
+    # overflow the ``last_verdict_fingerprint`` CAS write → drop the re-dispatch. The bounded
+    # 64-char digest (CTO review #622) must let this re_task on the LIVE stack. (CRITICAL uses 1.)
+    checks = [
+        {
+            "name": f"must-contain-{i:02d}-a-reasonably-descriptive-check-name",
+            "kind": "deterministic",
+            "check_ref": "core/check/contains-all",
+            "params": {"terms": [_IMPOSSIBLE]},
+            "severity": severity,
+        }
+        for i in range(n_checks)
+    ]
     manifest["orchestration"] = {
         **(manifest.get("orchestration") or {}),
         "success_criteria": "battery:gate",
     }
-    manifest["batteries"] = {
-        "gate": {
-            "name": "gate",
-            "floor": "and",
-            "checks": [
-                {
-                    "name": "must-contain",
-                    "kind": "deterministic",
-                    "check_ref": "core/check/contains-all",
-                    "params": {"terms": [_IMPOSSIBLE]},
-                    "severity": severity,
-                }
-            ],
-        }
-    }
+    manifest["batteries"] = {"gate": {"name": "gate", "floor": "and", "checks": checks}}
     sub_harnesses = {
         role: {**dict(sub), "models": [_byom_model(cred)]}
         for role, sub in imported.sub_harnesses.items()
@@ -112,7 +112,10 @@ def _body(root: Path, cred: str, org: uuid.UUID, severity: str) -> dict:
     return {"manifest": manifest, "sub_harnesses": sub_harnesses, "gate_decisions": {}}
 
 
-def _poll(c: httpx.Client, run_id: str, until: set[str], tries: int = 90) -> dict:
+def _poll(c: httpx.Client, run_id: str, until: set[str], tries: int = 180) -> dict:
+    # a re_task loop runs MULTIPLE real-BYOM drives (settle → re_task re-dispatch → re-drive →
+    # livelock → escalate) plus queue wait, so it needs a generous window (~6 min) — the terminal
+    # PAUSED is deterministic, only its arrival time varies with BYOM latency + worker load.
     row: dict = {}
     for _ in range(tries):
         row = c.get(f"/v1/engine/team-runs/{run_id}").json()
@@ -133,7 +136,10 @@ def test_below_threshold_re_task_re_dispatches_then_escalates_on_the_bound(
     cred = _cred(c, user)
     org = uuid.UUID(user["org_id"])
 
-    created = c.post("/v1/engine/team-runs", json=_body(tmp_path, cred, org, "MAJOR"))
+    # a LARGE 15-check battery: the failing-shape fingerprint would exceed VARCHAR(256) as raw JSON
+    # and overflow the re_task CAS write (silently dropping the re-dispatch) — the bounded 64-char
+    # digest (CTO review #622) must let it re_task on the LIVE stack, not overflow + drop.
+    created = c.post("/v1/engine/team-runs", json=_body(tmp_path, cred, org, "MAJOR", n_checks=15))
     assert created.status_code == 202, created.text
     run_id = created.json()["id"]
 

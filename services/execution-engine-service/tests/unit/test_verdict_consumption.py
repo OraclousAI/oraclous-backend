@@ -162,6 +162,29 @@ def test_fingerprint_distinguishes_failing_shape_under_both_verdict_schemas() ->
     assert vc.verdict_fingerprint(prose_x) != vc.verdict_fingerprint(prose_y)
 
 
+def test_fingerprint_is_bounded_width_for_a_large_battery_never_overflows_the_column() -> None:
+    # CTO review #622: the persisted ``last_verdict_fingerprint`` is VARCHAR(256); the raw shape
+    # grows with the failing-check count (a 15-check battery ≈ 300 chars) → OVERFLOW → Postgres
+    # rejects the ``_re_task`` CAS write → the re-dispatch is silently dropped (fail-closed). The
+    # digest bounds it to 64 chars for ANY battery size, so the CAS write can never overflow.
+    big = {
+        "passed": False,
+        "recommended_action": "block",
+        "failures": [
+            {"name": f"check-{i:02d}-a-reasonably-long-descriptive-name"} for i in range(25)
+        ],
+    }
+    fp = vc.verdict_fingerprint(big)
+    assert len(fp) == 64 and fp == fp.lower() and all(ch in "0123456789abcdef" for ch in fp)
+    assert len(fp) <= 256  # fits the column with margin, regardless of check count
+    # a 25-check verdict still re_tasks (the persisted key is bounded — no silent drop)
+    assert _decide(big) == vc.RE_TASK
+    # the digest is stable + still discriminates shape (different failing checks → different key)
+    assert vc.verdict_fingerprint(big) == vc.verdict_fingerprint(big)
+    other = {"failures": [{"name": f"other-{i}"} for i in range(25)]}
+    assert vc.verdict_fingerprint(big) != vc.verdict_fingerprint(other)
+
+
 def test_next_loop_state_bumps_count_and_records_the_basis() -> None:
     v = {"pass": False, "recommended_action": "revise", "score": 0.5}
     st = vc.next_loop_state(v, 1)
