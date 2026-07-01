@@ -120,3 +120,44 @@ def test_a_custom_id_field_keys_the_records() -> None:
     fresh = [{"route": "PAR-LON", "price": 12}]  # same route id, changed price
     d = compute_delta(seed, fresh, id_field="route")
     assert d["counts"]["changed"] == 1 and d["id_field"] == "route"
+
+
+def test_parse_records_unwraps_a_markdown_json_fence() -> None:
+    # LLM members often fence their JSON deliverable — the ledger must still parse
+    fenced = '```json\n[{"id": "1"}, {"id": "2"}]\n```'
+    assert parse_records(fenced) == [{"id": "1"}, {"id": "2"}]
+    assert parse_records('```\n[{"id": "a"}]\n```') == [{"id": "a"}]
+
+
+# ── review fixes: the fingerprint/identity soundness holes (Lock O3 — never silently worse) ───────
+def test_a_signatures_field_change_is_changed_not_a_false_unchanged() -> None:
+    # REFRESH-02 (HIGH): OHM's content_hash strips a top-level ``signatures`` key; a record field
+    # named ``signatures`` MUST still be part of the evidence fingerprint, else a change confined to
+    # it reads as a false unchanged (the local _record_hash excludes ONLY refresh_status).
+    seed = [{"id": "a", "value": "x", "signatures": "A"}]
+    fresh = [{"id": "a", "value": "x", "signatures": "B", REFRESH_STATUS_FIELD: "unchanged"}]
+    d = compute_delta(seed, fresh)
+    assert d["counts"]["changed"] == 1 and d["counts"]["unchanged"] == 0, d
+    assert {r["id"] for r in d["changed"]} == {"a"}
+
+
+def test_a_duplicate_fresh_id_fails_closed_to_changed_never_a_skip() -> None:
+    # REFRESH-01 (MED): a member emitting the same id twice (a carried skip-copy + a re-derived one)
+    # must NEVER be credited unchanged — the moved copy could be smuggled through as a skip. Fail
+    # CLOSED to changed + surface the duplicate.
+    seed = [{"id": "1", "value": "x"}]
+    fresh = [
+        {"id": "1", "value": "x", REFRESH_STATUS_FIELD: "unchanged"},  # skip-copy first
+        {"id": "1", "value": "MOVED"},  # the real change, previously dropped
+    ]
+    d = compute_delta(seed, fresh)
+    assert d["counts"]["unchanged"] == 0, d  # never a false skip
+    assert d["counts"]["changed"] == 1 and d["duplicate_fresh_ids"] == 1, d
+
+
+def test_distinct_typed_ids_do_not_collide() -> None:
+    # REFRESH-03 (LOW): a str "1" and an int 1 are DISTINCT records — an un-typed key would collide
+    # them and silently drop one. Both must be classified (here: both added against an empty seed).
+    d = compute_delta([], [{"id": "1", "value": "s"}, {"id": 1, "value": "i"}])
+    assert d["counts"]["added"] == 2, d
+    assert d["duplicate_fresh_ids"] == 0, d
