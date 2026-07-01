@@ -43,6 +43,7 @@ from oraclous_execution_engine_service.repositories.schedule_repository import S
 from oraclous_execution_engine_service.repositories.team_run_repository import TeamRunRepository
 from oraclous_execution_engine_service.services.graph_client import GraphClient, GraphClientError
 from oraclous_execution_engine_service.services.job_service import EnqueueFn
+from oraclous_execution_engine_service.services.team_run_service import thread_refresh_seed
 
 # An adopted-tool dispatch hand-off: (run_id, instance_id, input_data, organisation_id, user_id) →
 # fire the registry-execute worker task. ``run_id`` is the engine_adopted_tool_runs row id, so the
@@ -448,6 +449,28 @@ class ScheduleService:
             return 1
         return 0
 
+    async def _recurring_refresh_seed(
+        self, sched: EngineSchedule, base_inputs: dict[str, Any] | None
+    ) -> tuple[uuid.UUID | None, dict[str, Any] | None]:
+        """#544: seed a standing team's recurring refresh from its last SUCCEEDED fire — thread that
+        run's producing-member records into ``inputs`` (the shared ``thread_refresh_seed``) so this
+        fire carries them forward and settle emits the #602 5-way delta. Returns
+        ``(seed_from_run_id, inputs)``. FAIL-OPEN: a missing / non-SUCCEEDED / unloadable seed
+        yields a COLD build ``(None, base_inputs)`` — a Beat tick must never hard-fail on it.
+        The stamp records only SUCCEEDED runs; the SUCCEEDED re-check here is defense-in-depth."""
+        seed_id = sched.last_settled_team_run_id
+        if seed_id is None or self._team_runs is None:
+            return None, base_inputs
+        try:
+            with org_scope(sched.organisation_id):
+                seed_row = await self._team_runs.get(seed_id, sched.organisation_id)
+            if seed_row is None or seed_row.state != "SUCCEEDED":
+                return None, base_inputs
+            seeded = thread_refresh_seed(load_ohm(seed_row.manifest), seed_row.results, base_inputs)
+            return seed_id, seeded
+        except Exception:  # any load/parse/DB error → cold build (never hard-fail a Beat fire)
+            return None, base_inputs
+
     async def _fire_team_run(self, sched: EngineSchedule, key: str) -> int:
         # #601 (mirrors _fire_adopted_tool): create the standing team's run
         # — the EngineTeamRun is written with (org, idempotency_key) BEFORE dispatch, so a duplicate
@@ -464,6 +487,10 @@ class ScheduleService:
         manifest, sub_harnesses = apply_scheduled_scan_default(
             sched.manifest_inline or {}, spec.get("sub_harnesses") or {}
         )
+        # #544: seed this fire from the schedule's last SUCCEEDED fire — a recurring refresh carries
+        # forward the prior fire's records (the #602 5-way delta on a cron). Fail-open to a cold
+        # build (a Beat tick must never hard-fail on a bad/stale seed).
+        seed_from, inputs = await self._recurring_refresh_seed(sched, spec.get("inputs"))
         run = await self._team_runs.create_scheduled(
             organisation_id=sched.organisation_id,
             user_id=sched.user_id,
@@ -473,6 +500,8 @@ class ScheduleService:
             graph_id=sched.graph_id,
             schedule_id=sched.id,
             idempotency_key=key,
+            seed_from_run_id=seed_from,
+            inputs=inputs,
         )
         if run is not None and self._enqueue_team_run is not None:
             # The QUEUED row is durable BEFORE the (fallible) broker hand-off. If the publish raises

@@ -175,6 +175,25 @@ class ScheduleRepository:
                     .values(recurring_cost_tokens=EngineSchedule.recurring_cost_tokens + delta)
                 )
 
+    async def set_last_settled_run(
+        self, schedule_id: uuid.UUID, organisation_id: uuid.UUID, run_id: uuid.UUID
+    ) -> None:
+        """#544: stamp the schedule's most recent SUCCEEDED team-run — the SEED for the NEXT fire (a
+        recurring refresh carries forward the prior fire's records). One org-scoped in-DB UPDATE
+        (mirrors ``accrue_recurring_cost``); run under ``org_scope(organisation_id)`` so the org
+        engine's GUC admits it. Called best-effort at settle for a SUCCEEDED scheduled fire only — a
+        FAILED/PAUSED fire never overwrites the last good seed."""
+        async with self._session() as session:
+            async with session.begin():
+                await session.execute(
+                    sa_update(EngineSchedule)
+                    .where(
+                        EngineSchedule.id == schedule_id,
+                        EngineSchedule.organisation_id == organisation_id,
+                    )
+                    .values(last_settled_team_run_id=run_id)
+                )
+
     async def reset_window(
         self, schedule_id: uuid.UUID, organisation_id: uuid.UUID, new_window_start: datetime
     ) -> None:

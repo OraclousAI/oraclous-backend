@@ -945,11 +945,17 @@ def test_completed_for_resume_seeds_partial_members_so_they_are_not_redispatched
 class _FakeSchedAccrual:
     def __init__(self) -> None:
         self.accrued: list[tuple[uuid.UUID, uuid.UUID, int]] = []
+        self.seeded: list[tuple[uuid.UUID, uuid.UUID, uuid.UUID]] = []  # #544 stamp calls
 
     async def accrue_recurring_cost(
         self, schedule_id: uuid.UUID, organisation_id: uuid.UUID, delta: int
     ) -> None:
         self.accrued.append((schedule_id, organisation_id, delta))
+
+    async def set_last_settled_run(
+        self, schedule_id: uuid.UUID, organisation_id: uuid.UUID, run_id: uuid.UUID
+    ) -> None:
+        self.seeded.append((schedule_id, organisation_id, run_id))
 
 
 async def test_scheduled_run_accrues_its_cost_into_the_schedule() -> None:
@@ -971,6 +977,29 @@ async def test_non_scheduled_run_accrues_nothing() -> None:
     row = SimpleNamespace(id=uuid.uuid4(), organisation_id=_ORG, schedule_id=None)
     await svc._accrue_schedule_cost(row, _ORG, 1234)  # type: ignore[arg-type]
     assert sched.accrued == []  # a direct (request-path) run carries no schedule_id → no accrual
+
+
+async def test_stamp_schedule_seed_records_a_scheduled_run_as_the_next_seed() -> None:
+    # #544: a scheduled fire stamps itself as the schedule's seed for the NEXT fire (the run id).
+    from types import SimpleNamespace
+
+    sched = _FakeSchedAccrual()
+    svc = TeamRunService(team_runs=FakeTeamRunRepo(), schedules=sched)  # type: ignore[arg-type]
+    sid, rid = uuid.uuid4(), uuid.uuid4()
+    row = SimpleNamespace(id=rid, organisation_id=_ORG, schedule_id=sid)
+    await svc._stamp_schedule_seed(row, _ORG)  # type: ignore[arg-type]
+    assert sched.seeded == [(sid, _ORG, rid)]
+
+
+async def test_stamp_schedule_seed_noop_for_a_direct_run() -> None:
+    # a direct (request-path) run carries no schedule_id → nothing to seed.
+    from types import SimpleNamespace
+
+    sched = _FakeSchedAccrual()
+    svc = TeamRunService(team_runs=FakeTeamRunRepo(), schedules=sched)  # type: ignore[arg-type]
+    row = SimpleNamespace(id=uuid.uuid4(), organisation_id=_ORG, schedule_id=None)
+    await svc._stamp_schedule_seed(row, _ORG)  # type: ignore[arg-type]
+    assert sched.seeded == []
 
 
 # ── #602 seeded-refresh: validation + seed-thread + settle delta + default-OFF ──────────────────
