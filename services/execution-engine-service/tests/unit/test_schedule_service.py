@@ -7,6 +7,7 @@ from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
+from oraclous_execution_engine_service.domain.refresh import REFRESH_SEED_KEY
 from oraclous_execution_engine_service.models.enums import BudgetPeriod
 from oraclous_execution_engine_service.models.schedule import EngineSchedule
 from oraclous_execution_engine_service.services.schedule_service import (
@@ -246,6 +247,8 @@ class _FakeTeamRunRepo:
         graph_id: str | None,
         schedule_id: uuid.UUID,
         idempotency_key: str,
+        seed_from_run_id: uuid.UUID | None = None,  # #544 seeded-refresh-on-a-schedule
+        inputs: dict | None = None,
     ):
         if idempotency_key in self.team_seen:  # the partial (org, idempotency_key) unique
             return None
@@ -261,6 +264,8 @@ class _FakeTeamRunRepo:
             error_message=None,
             manifest=manifest,  # #603: assert the 4(c) scan-tier default was applied at fire time
             sub_harnesses=sub_harnesses,
+            seed_from_run_id=seed_from_run_id,  # #544: assert the fire seeds from the prior run
+            inputs=inputs,
         )
         self.team_rows.append(row)
         return row
@@ -305,6 +310,35 @@ class _FakeTeamRunRepo:
             and getattr(r, "state", "QUEUED") in {"QUEUED", "RUNNING", "PAUSED"}
             for r in self.team_rows
         )
+
+    async def get(self, team_run_id: uuid.UUID, organisation_id: uuid.UUID):  # noqa: ANN202
+        # #544: the seed lookup for a recurring-refresh fire (the schedule's prior settled run).
+        return next(
+            (
+                r
+                for r in self.team_rows
+                if r.id == team_run_id and r.organisation_id == organisation_id
+            ),
+            None,
+        )
+
+    def seed_prior_run(  # noqa: ANN202
+        self, *, org: uuid.UUID, manifest: dict, results: dict, state: str = "SUCCEEDED"
+    ):
+        """#544 test helper: register a prior fire the next fire can seed from."""
+        row = SimpleNamespace(
+            id=uuid.uuid4(),
+            organisation_id=org,
+            schedule_id=None,
+            graph_id=None,
+            idempotency_key=None,
+            state=state,
+            error_message=None,
+            manifest=manifest,
+            results=results,
+        )
+        self.team_rows.append(row)
+        return row
 
 
 class _FakeProv:
@@ -626,6 +660,91 @@ async def test_fire_team_applies_the_cheaper_scan_tier_default_to_an_unset_membe
 
     assert _binding(fired_subs["unset"]) == "openrouter/google/gemini-1.5-flash"  # scan default
     assert _binding(fired_subs["declared"]) == "openrouter/openai/gpt-4o"  # declared, untouched
+
+
+# ── #544 seeded-refresh-on-a-schedule ───────────────────────────────────────────────────────────
+_SEED_TEAM = {
+    "ohm_version": "1.1",
+    "metadata": {
+        "id": str(uuid.uuid4()),
+        "name": "ledger",
+        "owner_organization_id": str(_ORG),
+        "kind": "team",
+    },
+    "members": [
+        {
+            "role": "producer",
+            "kind": "agent",
+            "manifest_ref": "x/p@1",
+            "subgoal": "s",
+            "depends_on": [],
+            "tools": [],
+        }
+    ],
+    "runtime": {"entrypoint": "producer"},
+}
+_SEED_RESULTS = {"producer": {"output": [{"id": "1", "v": "a"}, {"id": "2", "v": "b"}]}}
+
+
+def _team_schedule_with_seed(seed_run_id: uuid.UUID | None) -> EngineSchedule:
+    sched = _team_schedule(cron="* * * * *", last_fired=None, manifest_inline=_SEED_TEAM)
+    sched.last_settled_team_run_id = seed_run_id
+    return sched
+
+
+async def test_fire_team_seeds_the_fire_from_the_last_settled_run() -> None:
+    # #544: a standing team's fire seeds from its last SUCCEEDED fire — the created run carries
+    # seed_from_run_id + the prior run's records threaded under _refresh_seed (#602 delta basis).
+    team_runs = _FakeTeamRunRepo()
+    prior = team_runs.seed_prior_run(org=_ORG, manifest=_SEED_TEAM, results=_SEED_RESULTS)
+    sched = _team_schedule_with_seed(prior.id)
+    svc, _ = _svc(
+        _FakeSchedRepo([sched]),
+        _FakeJobRepo(),
+        enqueue_team_run=lambda *a: None,
+        team_runs=team_runs,
+    )
+    fired = await svc.fire_due(_NOW)
+    assert fired == 1
+    created = next(r for r in team_runs.team_rows if r.schedule_id == sched.id)
+    assert created.seed_from_run_id == prior.id  # seeded from the prior fire
+    seed = (created.inputs or {}).get(REFRESH_SEED_KEY)
+    assert seed is not None and [r["id"] for r in seed["records"]] == ["1", "2"]  # records carried
+
+
+async def test_fire_team_first_fire_is_cold_no_seed() -> None:
+    # the FIRST fire (no prior run) is a cold build — seed_from_run_id NULL, no seeded inputs.
+    team_runs = _FakeTeamRunRepo()
+    sched = _team_schedule_with_seed(None)
+    svc, _ = _svc(
+        _FakeSchedRepo([sched]),
+        _FakeJobRepo(),
+        enqueue_team_run=lambda *a: None,
+        team_runs=team_runs,
+    )
+    await svc.fire_due(_NOW)
+    created = next(r for r in team_runs.team_rows if r.schedule_id == sched.id)
+    assert created.seed_from_run_id is None
+    assert (created.inputs or {}).get(REFRESH_SEED_KEY) is None
+
+
+async def test_fire_team_fails_open_to_cold_on_a_non_succeeded_seed() -> None:
+    # a Beat tick must NEVER hard-fail: a stamped seed that is somehow not SUCCEEDED → a cold build.
+    team_runs = _FakeTeamRunRepo()
+    bad = team_runs.seed_prior_run(
+        org=_ORG, manifest=_SEED_TEAM, results=_SEED_RESULTS, state="FAILED"
+    )
+    sched = _team_schedule_with_seed(bad.id)
+    svc, _ = _svc(
+        _FakeSchedRepo([sched]),
+        _FakeJobRepo(),
+        enqueue_team_run=lambda *a: None,
+        team_runs=team_runs,
+    )
+    fired = await svc.fire_due(_NOW)
+    assert fired == 1  # still fired (cold), not raised
+    created = next(r for r in team_runs.team_rows if r.schedule_id == sched.id)
+    assert created.seed_from_run_id is None  # fell open to cold
 
 
 async def test_fire_now_twice_same_window_dispatches_exactly_once() -> None:
