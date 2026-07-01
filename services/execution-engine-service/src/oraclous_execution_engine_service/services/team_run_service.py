@@ -287,6 +287,28 @@ def _refresh_records(team: OHMManifest, results: dict[str, Any]) -> list[dict[st
     return parse_records(out)
 
 
+def thread_refresh_seed(
+    seed_team: OHMManifest, seed_results: dict[str, Any], inputs: dict[str, Any] | None
+) -> dict[str, Any]:
+    """#602/#544: thread a prior SUCCEEDED run's producing-member records into ``inputs`` under the
+    reserved ``_refresh_seed`` key (the #599 state seam), so the producing member carries forward
+    unchanged records (the cost lever) and settle computes the 5-way delta against them. The shared
+    threading both the request path (``_seed_refresh``) and the scheduled recurring-refresh path
+    (``schedule_service._fire_team_run``) reuse — each caller owns the seed-run VALIDATION (request
+    path → 422; a Beat fire → fail-open to a cold build). A seed whose deliverable is not records
+    parses to None → thread ``[]`` but flag it, so the delta never treats an UNPARSEABLE seed as a
+    genuinely-empty one (which would misreport every fresh record as spuriously ``added``)."""
+    seed_records = _refresh_records(seed_team, seed_results)
+    return {
+        **(inputs or {}),
+        REFRESH_SEED_KEY: {
+            "records": seed_records or [],
+            "id_field": "id",
+            "seed_records_parsed": seed_records is not None,
+        },
+    }
+
+
 _CONVERGENCE_RE = re.compile(r"\s*evaluator\s*(>=|<=|==|>|<)\s*([0-9]*\.?[0-9]+)\s*\Z")
 
 
@@ -495,19 +517,7 @@ class TeamRunService:
                 422,
                 error_type="invalid_seed_run",
             )
-        seed_team = self._load_team(seed_row.manifest)
-        seed_records = _refresh_records(seed_team, seed_row.results)
-        return {
-            **(inputs or {}),
-            REFRESH_SEED_KEY: {
-                # a seed whose deliverable is NOT a record-set parses to None → thread [] but flag
-                # it, so the delta at settle never treats an UNPARSEABLE seed as a genuinely-empty
-                # one (which would misreport every fresh record as spuriously ``added``).
-                "records": seed_records or [],
-                "id_field": "id",
-                "seed_records_parsed": seed_records is not None,
-            },
-        }
+        return thread_refresh_seed(self._load_team(seed_row.manifest), seed_row.results, inputs)
 
     def _refresh_delta(
         self, team: OHMManifest, row: EngineTeamRun, result: TeamRunResult
@@ -1200,6 +1210,11 @@ class TeamRunService:
                 loop_state=dict(result.loop_state),  # PR-C: the per-loop checkpoint (resume cursor)
             )
         await self._accrue_schedule_cost(row, org, sum(cost_deltas))  # #601: per-cadence accrual
+        # #544: a SUCCEEDED scheduled fire becomes the SEED for the next fire (a recurring refresh
+        # carries forward its records). Only a completed run — a FAILED/PAUSED/COST_BUDGET never
+        # overwrites the last good seed. Best-effort like the accrual.
+        if result.status == "completed":
+            await self._stamp_schedule_seed(row, org)
         # #604 closed-loop verdict-consumption (ADR-048 dec 5): branch the just-settled run on its
         # stored verdict — STORE_ONLY (unchanged) / RE_TASK (re-dispatch faulted members) / ESCALATE
         # (PAUSED for HITL). No-op unless a completed run graded below threshold with a re-task/
@@ -1218,6 +1233,17 @@ class TeamRunService:
             return
         with contextlib.suppress(Exception), org_scope(org):
             await self._schedules.accrue_recurring_cost(row.schedule_id, org, delta)
+
+    async def _stamp_schedule_seed(self, row: EngineTeamRun, org: uuid.UUID) -> None:
+        """#544: stamp this SUCCEEDED scheduled fire as the schedule's seed for the NEXT fire (a
+        recurring refresh carries forward its records — the #602 seeded-refresh delta on a cron).
+        No-op for a direct (non-scheduled) run or when no schedule repo is wired. BEST-EFFORT
+        (suppressed): the run is already settled terminal; a stamp failure just re-seeds from the
+        older run next fire — a bounded staleness, never a correctness hazard."""
+        if row.schedule_id is None or self._schedules is None:
+            return
+        with contextlib.suppress(Exception), org_scope(org):
+            await self._schedules.set_last_settled_run(row.schedule_id, org, row.id)
 
     async def reap_stale(
         self, maintenance: EngineMaintenanceRepository, *, older_than: datetime

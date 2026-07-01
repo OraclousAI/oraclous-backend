@@ -80,12 +80,19 @@ class TeamRunRepository:
         graph_id: str | None,
         schedule_id: uuid.UUID,
         idempotency_key: str,
+        seed_from_run_id: uuid.UUID | None = None,
+        inputs: dict[str, Any] | None = None,
     ) -> EngineTeamRun | None:
         """#601: create a QUEUED team-run for a standing-team schedule fire, idempotent on
         ``(org, idempotency_key)`` via the partial unique. Returns ``None`` on a duplicate
         same-window fire (IntegrityError) — the create-BEFORE-enqueue dedupe (mirrors
         ``create_adopted_tool_run``). Bound to the schedule's persistent ``graph_id`` + carrying
-        ``schedule_id`` so the worker accrues the settled cost back into the schedule."""
+        ``schedule_id`` so the worker accrues the settled cost back into the schedule.
+
+        #544: ``seed_from_run_id`` + ``inputs`` (carrying the seed records under ``_refresh_seed``)
+        seed a recurring refresh from the schedule's prior SUCCEEDED fire — so the producing member
+        carries forward unchanged records and settle emits the #602 5-way delta. NULL/None on the
+        first fire (a cold build) and on a non-refresh standing team (byte-identical to #601)."""
         row = EngineTeamRun(
             id=uuid.uuid4(),
             organisation_id=organisation_id,
@@ -99,6 +106,8 @@ class TeamRunRepository:
             graph_id=graph_id,
             schedule_id=schedule_id,
             idempotency_key=idempotency_key,
+            seed_from_run_id=seed_from_run_id,
+            inputs=inputs,
         )
         try:
             async with self._session() as session:

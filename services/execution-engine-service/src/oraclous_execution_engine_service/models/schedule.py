@@ -69,3 +69,11 @@ class EngineSchedule(BaseModel):
     # disable, so the boundary re-enable sweep only resumes budget-paused schedules, never a row the
     # user disabled by hand.
     budget_paused: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # #544 (team only): the schedule's most recent SUCCEEDED team-run — the SEED for the NEXT fire,
+    # so a standing team's recurring refresh carries forward the prior fire's records (the #602
+    # seeded-refresh delta on a cron) instead of a cold rebuild each tick. Distinct from
+    # ``last_fired_at`` (a window timestamp): this is a run-id. NULL on a schedule that has never
+    # settled a SUCCEEDED fire (the first fire is cold) and on non-team schedules.
+    last_settled_team_run_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), nullable=True
+    )
