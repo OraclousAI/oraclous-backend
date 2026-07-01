@@ -36,6 +36,7 @@ it would be an unreachable dead path (CTO-confirmed). It is a deferred opt-in.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from typing import Any
 
@@ -79,14 +80,21 @@ def verdict_score(verdict: Any) -> float | None:  # noqa: ANN401
 
 
 def verdict_fingerprint(verdict: Any) -> str:  # noqa: ANN401
-    """The livelock recurrence key — the below-threshold SHAPE (which dimensions/checks failed),
-    NOT the score. The score is deliberately EXCLUDED: it is the IMPROVEMENT measure, compared
-    separately by ``_improved`` against ``livelock_epsilon``. Folding the score into the key (as a
-    rounded bucket) would let a sub-epsilon score jitter (0.50→0.51, below the 0.02 epsilon) mint a
-    FRESH key every re-dispatch — the fingerprint-equality guard would never match and the epsilon
-    check would be unreachable, so a stuck run would burn the whole re-dispatch budget instead of
-    escalating (review VC-1). The SAME failing shape recurring with no meaningful score gain is a
-    stuck loop, whatever the score jitter."""
+    """The livelock recurrence key — a FIXED-WIDTH (64-char SHA-256 hex) digest of the failure SHAPE
+    (which dimensions/checks failed), NOT the score. The score is deliberately EXCLUDED: it is the
+    IMPROVEMENT measure, compared separately by ``_improved`` against ``livelock_epsilon``. Folding
+    the score into the key (as a rounded bucket) would let a sub-epsilon score jitter (0.50 -> 0.51,
+    below the 0.02 epsilon) mint a FRESH key every re-dispatch: the equality guard never matches and
+    the epsilon check is unreachable, so a stuck run burns the whole budget instead of escalating
+    (review VC-1). The SAME failing shape recurring with no meaningful score gain is a
+    stuck loop, whatever the score jitter.
+
+    HASHED to a bounded 64 chars: the raw shape JSON grows with the failing-check count (a 15-check
+    battery is ~300 chars) and is persisted to ``last_verdict_fingerprint`` VARCHAR(256) — an
+    overflow makes Postgres REJECT the ``_re_task`` CAS write (StringDataRightTruncation, not a
+    truncation), which SILENTLY DROPS the re-dispatch (the run stays SUCCEEDED, un-consumed) for a
+    large battery. The comparison is equality-only, so a stable digest is exactly equivalent and
+    bounds the column for ANY battery size (CTO review #622)."""
     # Read the failing-check id under EITHER schema's key: a battery ``OHMCheckVerdict`` keys it
     # ``name``, a prose ``Verdict`` failure keys it ``dimension`` (``check`` kept as a defensive
     # fallback). Missing ``name`` would collapse every battery verdict to one empty-dims key and
@@ -107,7 +115,8 @@ def verdict_fingerprint(verdict: Any) -> str:  # noqa: ANN401
                 for c in checks
                 if isinstance(c, dict) and not c.get("passed")
             ]
-    return json.dumps({"dims": sorted(set(dims))}, sort_keys=True)
+    shape = json.dumps({"dims": sorted(set(dims))}, sort_keys=True)
+    return hashlib.sha256(shape.encode("utf-8")).hexdigest()  # bounded 64 chars — see the docstring
 
 
 def _improved(score: float | None, last_score: float | None, epsilon: float) -> bool:

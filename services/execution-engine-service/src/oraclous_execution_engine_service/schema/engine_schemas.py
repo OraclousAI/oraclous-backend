@@ -30,7 +30,7 @@ class SubmitJobRequest(BaseModel):
     (``manifest``) or a registered reference (``manifest_ref``). ``input`` is the goal."""
 
     manifest: dict[str, Any] | None = None
-    manifest_ref: str | None = None
+    manifest_ref: str | None = Field(default=None, max_length=512)
     input: str = Field(min_length=1)
     max_retries: int = Field(default=0, ge=0, le=10)
     timeout_seconds: int | None = Field(default=None, ge=1)
@@ -49,7 +49,7 @@ class EngineEventRequest(BaseModel):
     only. The org is taken from the gateway-asserted principal, NEVER this body (ADR-006)."""
 
     manifest: dict[str, Any] | None = None
-    manifest_ref: str | None = None
+    manifest_ref: str | None = Field(default=None, max_length=512)
     input: str = Field(min_length=1)
     idempotency_key: str = Field(min_length=1, max_length=255)
     event_type: str | None = None
@@ -128,7 +128,10 @@ class RegisterScheduleRequest(BaseModel):
     instance) + optional ``input_data``, and NO manifest."""
 
     type: ScheduleType = ScheduleType.CRON
-    cron: str | None = None
+    # bound to the EngineSchedule.cron VARCHAR(128) — a valid-but-long cron (a comma-enumerated
+    # minute field passes croniter.is_valid at >128 chars) would else overflow the column INSERT
+    # (StringDataRightTruncation) → a 500 instead of a clean 422 (CTO review #622 sibling-sweep).
+    cron: str | None = Field(default=None, max_length=128)
     target_kind: TargetKind = TargetKind.HARNESS_JOB
     manifest: dict[str, Any] | None = None
     manifest_ref: str | None = Field(default=None, max_length=512)
