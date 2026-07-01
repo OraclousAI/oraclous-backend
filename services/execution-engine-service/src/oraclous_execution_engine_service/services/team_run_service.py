@@ -41,6 +41,7 @@ from oraclous_ohm.orchestrate import DoneCheckFn, TeamRunResult
 from oraclous_ohm.parse import load_ohm
 
 from oraclous_execution_engine_service.core.rls import org_scope
+from oraclous_execution_engine_service.domain import verdict_consumption as vc
 from oraclous_execution_engine_service.domain.refresh import (
     REFRESH_SEED_KEY,
     compute_delta,
@@ -83,6 +84,22 @@ _STATUS_TO_STATE = {
 
 # (team_run_id, organisation_id, user_id) -> None — hands a QUEUED run to the worker (broker).
 EnqueueFn = Callable[[uuid.UUID, uuid.UUID, uuid.UUID], None]
+
+# #604 closed-loop verdict-consumption (ADR-048 dec 5). The bounds that make the loop TERMINATE
+# (three independent, fail-closed guards — a closed loop MUST end): the re-dispatch ceiling,
+# the livelock score-improvement epsilon, and the #585 pool (COST_BUDGET, decided in the domain).
+_MAX_RE_DISPATCHES = 3
+_LIVELOCK_EPSILON = 0.02
+# the member_status marker that FORCES a member to re-run on a re_task (it is not "succeeded"/
+# "partial", so ``_completed_for_resume`` does NOT seed it → the member re-dispatches).
+_RE_TASK_MARKER = "re_task"
+# the sentinel role stamped in ``paused_at`` when a settled run is ESCALATED on its verdict — a
+# human-readable marker on the surface (distinguishable from a mid-drive gate role). The CONTROL
+# decision (does ``advance`` re-task vs record a gate?) keys off ``escalation_kind`` below, NOT this
+# member-role list — so a tenant that names a member the sentinel cannot hijack the resume path.
+_VERDICT_ESCALATION_ROLE = "__verdict_escalation__"
+# the ``escalation_kind`` value that marks a verdict-escalation PAUSE (the Q3 resume discriminator).
+_VERDICT_ESCALATION_KIND = "verdict"
 
 
 class TeamRunError(Exception):
@@ -152,6 +169,62 @@ def _verdict_score(verdict: Any) -> float | None:
         passed = sum(1 for c in checks if isinstance(c, dict) and c.get("passed"))
         return passed / len(checks)
     return None
+
+
+def _sink_roles(team: OHMManifest, results: dict[str, Any]) -> set[str]:
+    """#604: the deliverable-producer (sink) members — those nothing depends on, present in
+    ``results``. re_task forces these to re-run so a SUCCEEDED-but-below-threshold run regenerates
+    output. (Mirrors #602's sink identification.)"""
+    depended = {d for m in team.members for d in m.depends_on}
+    return {m.role for m in team.members if m.role not in depended and m.role in results}
+
+
+def _verdict_reason(verdict: Any) -> str | None:  # noqa: ANN401
+    """The grader's leak-safe reason (a quality assessment of the output, not the output itself),
+    truncated — carried into the re_task revision directive so the member has feedback."""
+    if isinstance(verdict, dict) and isinstance(verdict.get("reason"), str):
+        return verdict["reason"][:200]
+    return None
+
+
+def _revise_manifest(
+    manifest: dict[str, Any], faulted: set[str], reason: str | None, attempt: int
+) -> dict[str, Any]:
+    """#604: append a bounded revision directive to each faulted member's subgoal in a COPY of the
+    manifest, so the re-dispatched task DIFFERS from the prior (never a blind re-run). Deep
+    copy via a JSON round-trip (the manifest is JSONB); bounded by MAX_RE_DISPATCHES so the subgoal
+    cannot grow unboundedly."""
+    revised: dict[str, Any] = json.loads(json.dumps(manifest, default=str))
+    note = (
+        f" [Re-task attempt {attempt}] The prior output was graded BELOW the success threshold"
+        + (f": {reason}" if reason else "")
+        + ". Revise your output to address this."
+    )
+    members = revised.get("members", [])
+    for member in members:
+        if isinstance(member, dict) and member.get("role") in faulted:
+            member["subgoal"] = (member.get("subgoal") or "") + note
+    # review F1-team_run: a faulted member RENDERS its objective from an upstream producer's
+    # ``handoff_objective`` (``render_member_input``'s ``objective_slice`` takes PRECEDENCE over the
+    # member's static subgoal in a ## Handoff pipeline). So the subgoal note alone never reaches the
+    # harness input for a handoff-driven sink — a blind identical re-run. Also append the note to
+    # the (non-empty) ``handoff_objective`` of every producer feeding a faulted member, so it lands
+    # in the sink's rendered input (the empty-handoff path the subgoal note already covers; on the
+    # non-empty path this closes the override gap).
+    faulted_deps = {
+        dep
+        for member in members
+        if isinstance(member, dict) and member.get("role") in faulted
+        for dep in (member.get("depends_on") or [])
+    }
+    for member in members:
+        if (
+            isinstance(member, dict)
+            and member.get("role") in faulted_deps
+            and member.get("handoff_objective")
+        ):
+            member["handoff_objective"] = member["handoff_objective"] + note
+    return revised
 
 
 def _member_completion_progress(row: EngineTeamRun) -> int:
@@ -560,6 +633,165 @@ class TeamRunService:
             cost_tokens=int(row.cost_tokens or 0),
         )
 
+    # ── #604 closed-loop verdict-consumption (ADR-048 decision 5) ─────────────────────────────────
+    async def _consume_verdict(
+        self, row: EngineTeamRun, team: OHMManifest, org: uuid.UUID
+    ) -> EngineTeamRun:
+        """Branch a just-settled run on its STORED verdict — STORE_ONLY (unchanged), RE_TASK
+        (autonomous re-dispatch of the faulted members, revised objective), or ESCALATE (PAUSED
+        for HITL). Fail-closed decision (``domain.verdict_consumption``). Runs POST-settle in the
+        worker ``_drive`` so the verdict + member_status are durable before any re-dispatch."""
+        action = vc.decide_action(
+            row.verdict,
+            run_state=row.state,
+            re_dispatch_count=int(row.re_dispatch_count or 0),
+            last_verdict_score=row.last_verdict_score,
+            last_verdict_fingerprint=row.last_verdict_fingerprint,
+            max_re_dispatches=_MAX_RE_DISPATCHES,
+            livelock_epsilon=_LIVELOCK_EPSILON,
+        )
+        if action == vc.RE_TASK:
+            return await self._re_task(row, team, org)
+        if action == vc.ESCALATE:
+            return await self._escalate_verdict(row, org)
+        return row  # STORE_ONLY — the run cleared (or has no gate); unchanged
+
+    async def _re_task(
+        self, row: EngineTeamRun, team: OHMManifest, org: uuid.UUID
+    ) -> EngineTeamRun:
+        """#604 re_task: CAS the settled terminal → QUEUED + re-enqueue the faulted members with a
+        REVISED objective (never a blind identical re-run), drawing the ACCUMULATING #585 pool (the
+        persisted ``cost_tokens`` is never reset, so the pool bounds the loop). Compensates the
+        re-dispatch enqueue QUEUED→FAILED on a broker fault (the #620 phantom-QUEUED class — a
+        re-dispatch orphan would be worse)."""
+        faulted = self._faulted_roles(row, team)
+        if not faulted:
+            # review F2: nothing to re-run (a degenerate/cyclic manifest with no sink in results). A
+            # re-drive would seed every member complete and re-settle with the IDENTICAL verdict,
+            # burning one drive + its tokens before the livelock guard halts it. Escalate now
+            # (fail-closed — the same terminal the bound would reach, without the wasted re-drive).
+            return await self._escalate_verdict(row, org)
+        count = int(row.re_dispatch_count or 0)
+        manifest = _revise_manifest(row.manifest, faulted, _verdict_reason(row.verdict), count + 1)
+        member_status = {
+            role: (_RE_TASK_MARKER if role in faulted else status)
+            for role, status in (row.member_status or {}).items()
+        }
+        for role in faulted:  # a faulted role with no prior status still force-re-runs
+            member_status.setdefault(role, _RE_TASK_MARKER)
+        loop = vc.next_loop_state(row.verdict, count)
+        with org_scope(org):  # CAS terminal→QUEUED (single-driver; a redelivered settle is a no-op)
+            claimed, applied = await self._team_runs.transition(
+                row.id,
+                org,
+                new_state="QUEUED",
+                # only a SUCCEEDED run carries a below-threshold verdict (the sole re_task trigger);
+                # FAILED is defensive. NOT COST_BUDGET — decide_action STORE_ONLYs a pool-exhausted
+                # run, so re_task-ing into an empty pool is unreachable, and refused if it isn't.
+                allowed_from=frozenset({"SUCCEEDED", "FAILED"}),
+                manifest=manifest,  # the revised objective(s) on the faulted members
+                member_status=member_status,  # faulted → _RE_TASK_MARKER (force re-run)
+                error_message=None,
+                re_dispatch_count=loop["re_dispatch_count"],
+                last_verdict_score=loop["last_verdict_score"],
+                last_verdict_fingerprint=loop["last_verdict_fingerprint"],
+            )
+        if not applied or claimed is None:
+            return row
+        if self._enqueue is not None:
+            try:
+                self._enqueue(row.id, org, row.user_id)
+            except Exception:
+                # review F1-org_scope: the compensation MUST bind the org-GUC — under the RLS
+                # backstop (ADR-030) an unscoped UPDATE fail-closes to a silent no-op, leaving the
+                # run phantom-QUEUED (the exact #620 wedge this compensation exists to prevent).
+                with org_scope(org):
+                    await self._team_runs.transition(
+                        row.id,
+                        org,
+                        new_state="FAILED",
+                        allowed_from=frozenset({"QUEUED"}),
+                        error_message="re_dispatch enqueue failed",
+                    )
+                raise
+        return claimed
+
+    async def _escalate_verdict(self, row: EngineTeamRun, org: uuid.UUID) -> EngineTeamRun:
+        """#604 escalate: PAUSE a settled below-threshold run for HITL. ``escalation_kind``=verdict
+        is the CONTROL marker ``advance`` keys off to re-task (never a blind re-drive of the seeded
+        run — Q3); the ``paused_at`` sentinel is a human-readable surface marker only. NO enqueue —
+        a human resumes via ``advance``."""
+        with org_scope(org):
+            claimed, applied = await self._team_runs.transition(
+                row.id,
+                org,
+                new_state="PAUSED",
+                allowed_from=frozenset({"SUCCEEDED", "FAILED"}),
+                paused_at=[_VERDICT_ESCALATION_ROLE],
+                escalation_kind=_VERDICT_ESCALATION_KIND,
+            )
+        return claimed if applied and claimed is not None else row
+
+    def _faulted_roles(self, row: EngineTeamRun, team: OHMManifest) -> set[str]:
+        """The members re_task forces to re-run: the FAILED/BLOCKED members (member_status) PLUS the
+        SINK (deliverable-producer) member(s) — so a SUCCEEDED-but-below-threshold run (all members
+        'succeeded') still REGENERATES its output instead of re-seeding everything complete (a no-op
+        spin the pool would drain)."""
+        failed = {r for r, s in (row.member_status or {}).items() if s in ("failed", "blocked")}
+        return failed | _sink_roles(team, row.results or {})
+
+    async def _resume_verdict_escalation(
+        self, row: EngineTeamRun, org: uuid.UUID, principal: Principal
+    ) -> EngineTeamRun:
+        """#604 Q3: a human advancing a VERDICT-escalated PAUSED run re-tasks the faulted members
+        a FRESH loop counter (a human-initiated attempt) — NEVER a blind re-drive of the seeded-
+        run. PAUSED→QUEUED + re-enqueue (the shipped resume path), compensated on a fault."""
+        team = self._load_team(row.manifest)
+        faulted = self._faulted_roles(row, team)
+        if (
+            not faulted
+        ):  # review F2 (symmetry): nothing to re-run — leave it PAUSED (a no-op advance)
+            return row
+        manifest = _revise_manifest(row.manifest, faulted, "a human re-opened the run", 1)
+        member_status = {
+            role: (_RE_TASK_MARKER if role in faulted else status)
+            for role, status in (row.member_status or {}).items()
+        }
+        for role in faulted:
+            member_status.setdefault(role, _RE_TASK_MARKER)
+        with org_scope(org):
+            claimed, applied = await self._team_runs.transition(
+                row.id,
+                org,
+                new_state="QUEUED",
+                allowed_from=frozenset({"PAUSED"}),
+                manifest=manifest,
+                member_status=member_status,
+                paused_at=[],  # clear the escalation sentinel
+                escalation_kind=None,  # clear the verdict-escalation control marker
+                re_dispatch_count=0,  # a fresh human attempt (the livelock counter resets)
+                last_verdict_score=None,
+                last_verdict_fingerprint=None,
+            )
+        if not applied or claimed is None:
+            return await self.get(row.id, principal)
+        if self._enqueue is not None:
+            try:
+                self._enqueue(row.id, org, principal.principal_id)
+            except Exception:
+                # review F1-org_scope: bind the org-GUC or the RLS backstop no-ops the compensation
+                # and leaves the resume phantom-QUEUED (#620).
+                with org_scope(org):
+                    await self._team_runs.transition(
+                        row.id,
+                        org,
+                        new_state="FAILED",
+                        allowed_from=frozenset({"QUEUED"}),
+                        error_message="re_dispatch enqueue failed",
+                    )
+                raise
+        return claimed
+
     async def _grade_gate(
         self, team: OHMManifest, run_id: uuid.UUID, result: Any
     ) -> dict[str, Any] | None:
@@ -623,6 +855,11 @@ class TeamRunService:
                 "score": 0.0,
                 "recommended_action": "escalate_human",
                 "reason": f"grader unavailable ({type(exc).__name__})",
+                # #604: a grader OUTAGE is NOT a real below-threshold grade — the run's success is
+                # independent of the grader being reachable, so verdict-consumption must NOT branch
+                # on it (no escalate/re-dispatch on a transient grader blip). The marker tells
+                # ``decide_action`` to STORE_ONLY (the run stays SUCCEEDED, the contract at :819).
+                "grader_unavailable": True,
             }
 
     def _make_loop_done_check(
@@ -716,6 +953,14 @@ class TeamRunService:
         row = await self.get(team_run_id, principal)
         if row.state != "PAUSED":
             raise TeamRunError(f"team run is {row.state}, not PAUSED — cannot advance", 409)
+        # #604 Q3 guard: a run PAUSED on a VERDICT escalation must NEVER be blindly re-driven — its
+        # members are seeded-complete, so a plain resume re-grades the identical output and re-
+        # escalates. A human resume goes THROUGH verdict-consumption: force the faulted members to
+        # re-run with a fresh loop counter (a human-initiated re_task). The discriminator is the
+        # dedicated ``escalation_kind`` column, NOT ``paused_at`` list-equality — so a tenant that
+        # names a member the sentinel role cannot hijack this path (review F1-sentinel).
+        if row.escalation_kind == _VERDICT_ESCALATION_KIND:
+            return await self._resume_verdict_escalation(row, org, principal)
         merged = {**row.gate_decisions, **gate_decisions}
         with org_scope(org):
             claimed, applied = await self._team_runs.transition(
@@ -955,7 +1200,11 @@ class TeamRunService:
                 loop_state=dict(result.loop_state),  # PR-C: the per-loop checkpoint (resume cursor)
             )
         await self._accrue_schedule_cost(row, org, sum(cost_deltas))  # #601: per-cadence accrual
-        return updated or claimed
+        # #604 closed-loop verdict-consumption (ADR-048 dec 5): branch the just-settled run on its
+        # stored verdict — STORE_ONLY (unchanged) / RE_TASK (re-dispatch faulted members) / ESCALATE
+        # (PAUSED for HITL). No-op unless a completed run graded below threshold with a re-task/
+        # escalate action; the #585 pool + livelock + MAX ceiling bound the loop (fail-closed).
+        return await self._consume_verdict(updated or claimed, team, org)
 
     async def _accrue_schedule_cost(self, row: EngineTeamRun, org: uuid.UUID, delta: int) -> None:
         """#601: accrue THIS DRIVE's RAW-token cost (the delta, NOT the cumulative ``cost_tokens``)

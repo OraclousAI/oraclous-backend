@@ -18,7 +18,7 @@ mapper configuration, so they must be real types.
 import uuid
 from typing import Any
 
-from sqlalchemy import Index, Integer, String, Text, text
+from sqlalchemy import Float, Index, Integer, String, Text, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -99,6 +99,20 @@ class EngineTeamRun(BaseModel):
     # at a ROUND boundary (the round counter + the ORIGINAL wall-clock start survive a HITL pause /
     # crash, instead of restarting the loop). Empty for an acyclic team or until a loop runs.
     loop_state: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    # ── #604 closed-loop verdict-consumption (ADR-048 dec 5; additive) ─────────────────────────
+    # The CROSS-re-dispatch loop state (distinct from loop_state, the #552/#553 WITHIN-run round
+    # checkpoint): how many times the settled verdict re-dispatched this run (re_task), + the prior
+    # verdict's score + fingerprint — the livelock basis (same below-threshold shape recurring with
+    # no score gain → escalate). 0/NULL on a run that never re-dispatched.
+    re_dispatch_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_verdict_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    last_verdict_fingerprint: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    # The CONTROL discriminator for a verdict-escalation PAUSE — "verdict" when a settled below-
+    # threshold run was escalated for HITL (``advance`` re-tasks it, never a blind re-drive), NULL
+    # for a normal mid-drive human gate. A DEDICATED column (not an overloaded ``paused_at`` member-
+    # role) so a tenant that names a member the escalation sentinel can never hijack the resume path
+    # (review F1-sentinel). NULL on every pre-#604 / non-escalated run.
+    escalation_kind: Mapped[str | None] = mapped_column(String(32), nullable=True)
     # ── #601 standing-team binding (additive, nullable) ───────────────────────────────────────
     # The schedule that FIRED this run (a standing team) — so its settled ``cost_tokens`` accrues
     # back into the schedule's per-cadence accumulator; NULL for a direct (request-path) team-run.

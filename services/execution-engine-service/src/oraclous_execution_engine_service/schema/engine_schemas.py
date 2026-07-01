@@ -30,7 +30,7 @@ class SubmitJobRequest(BaseModel):
     (``manifest``) or a registered reference (``manifest_ref``). ``input`` is the goal."""
 
     manifest: dict[str, Any] | None = None
-    manifest_ref: str | None = None
+    manifest_ref: str | None = Field(default=None, max_length=512)
     input: str = Field(min_length=1)
     max_retries: int = Field(default=0, ge=0, le=10)
     timeout_seconds: int | None = Field(default=None, ge=1)
@@ -49,7 +49,7 @@ class EngineEventRequest(BaseModel):
     only. The org is taken from the gateway-asserted principal, NEVER this body (ADR-006)."""
 
     manifest: dict[str, Any] | None = None
-    manifest_ref: str | None = None
+    manifest_ref: str | None = Field(default=None, max_length=512)
     input: str = Field(min_length=1)
     idempotency_key: str = Field(min_length=1, max_length=255)
     event_type: str | None = None
@@ -128,7 +128,10 @@ class RegisterScheduleRequest(BaseModel):
     instance) + optional ``input_data``, and NO manifest."""
 
     type: ScheduleType = ScheduleType.CRON
-    cron: str | None = None
+    # bound to the EngineSchedule.cron VARCHAR(128) — a valid-but-long cron (a comma-enumerated
+    # minute field passes croniter.is_valid at >128 chars) would else overflow the column INSERT
+    # (StringDataRightTruncation) → a 500 instead of a clean 422 (CTO review #622 sibling-sweep).
+    cron: str | None = Field(default=None, max_length=128)
     target_kind: TargetKind = TargetKind.HARNESS_JOB
     manifest: dict[str, Any] | None = None
     manifest_ref: str | None = Field(default=None, max_length=512)
@@ -379,9 +382,13 @@ class TeamRunOut(BaseModel):
     paused_at: list[str]
     error_message: str | None
     created_at: datetime | None
-    # the flow-evaluation verdict (#477) — PRODUCED + STORED at the gate, surfaced read-side here;
-    # the run state is never branched on it (consuming it is E8). NULL until graded.
+    # the flow-evaluation verdict (#477) — PRODUCED + STORED at the gate, surfaced read-side here.
+    # #604 (ADR-048 dec 5): at settle the run is now BRANCHED on it — a below-threshold verdict
+    # re_task-re-dispatches or escalates (PAUSED) via the closed loop. NULL until graded.
     verdict: dict[str, Any] | None = None
+    # #604: how many times the closed loop re-dispatched (re_task) this run — surfaced so a caller
+    # (and the e2e) sees the run was re-dispatched, not blindly re-run; 0 on a normal/first settle.
+    re_dispatch_count: int = 0
     # #602 (seeded-refresh, ADR-048 dec 3): the first-class 5-way what-changed delta — per-record
     # {added, removed, changed, unchanged, re_confirmed} + counts — computed at settle by comparing
     # this run's records to the seed run's. NULL on a non-refresh run; the refresh's contract.
@@ -408,6 +415,13 @@ class TeamRunOut(BaseModel):
         # so a QUEUED run is {} not None. This only coerces None from a Python-constructed/unflushed
         # row (e.g. the route unit tests) or a hypothetical pre-migration NULL — fail-soft.
         return v or {}
+
+    @field_validator("re_dispatch_count", mode="before")
+    @classmethod
+    def _coerce_re_dispatch_count(cls, v: Any) -> Any:
+        # A real flushed row holds 0 (the migration 0018 server_default '0'); this coerces None from
+        # a Python-constructed/unflushed row (e.g. the route unit tests) — else int-validation 500s.
+        return v or 0
 
     @model_validator(mode="after")
     def _derive_partial(self) -> TeamRunOut:
