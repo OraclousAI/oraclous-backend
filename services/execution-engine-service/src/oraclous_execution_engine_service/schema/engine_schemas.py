@@ -356,6 +356,11 @@ class CreateTeamRunRequest(BaseModel):
     graph_id: str | None = None
     # #599: user-seeded team state — a fan_out.over: "$.<key>" resolves a provided list.
     inputs: dict[str, Any] | None = None
+    # #602 (seeded-refresh, ADR-048 dec 3): the NAMED prior run whose stored output seeds this run.
+    # Its records are threaded in as state so the producing member carries-forward unchanged ones,
+    # and at settle the engine emits a first-class 5-way what-changed delta. Validated org-scoped +
+    # SUCCEEDED-only at create (fail-fast 422); None → a normal (non-refresh) run.
+    seed_from_run_id: uuid.UUID | None = None
 
 
 class AdvanceTeamRunRequest(BaseModel):
@@ -377,6 +382,10 @@ class TeamRunOut(BaseModel):
     # the flow-evaluation verdict (#477) — PRODUCED + STORED at the gate, surfaced read-side here;
     # the run state is never branched on it (consuming it is E8). NULL until graded.
     verdict: dict[str, Any] | None = None
+    # #602 (seeded-refresh, ADR-048 dec 3): the first-class 5-way what-changed delta — per-record
+    # {added, removed, changed, unchanged, re_confirmed} + counts — computed at settle by comparing
+    # this run's records to the seed run's. NULL on a non-refresh run; the refresh's contract.
+    refresh_delta: dict[str, Any] | None = None
     # ADR-042 (#551): per-member terminal status — role -> "succeeded"|"failed"|"blocked"|"skipped"|
     # "budget_skipped" (#585, un-attempted by the pooled budget)|"partial" (#587, degraded).
     # A run is SUCCEEDED only when EVERY member is "succeeded"; on a FAILED run this is how a caller

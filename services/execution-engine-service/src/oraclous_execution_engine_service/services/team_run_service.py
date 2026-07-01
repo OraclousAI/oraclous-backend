@@ -37,10 +37,15 @@ from oraclous_ohm.gate_battery import (
     resolve_battery,
 )
 from oraclous_ohm.manifest import OHMLoop, OHMManifest
-from oraclous_ohm.orchestrate import DoneCheckFn
+from oraclous_ohm.orchestrate import DoneCheckFn, TeamRunResult
 from oraclous_ohm.parse import load_ohm
 
 from oraclous_execution_engine_service.core.rls import org_scope
+from oraclous_execution_engine_service.domain.refresh import (
+    REFRESH_SEED_KEY,
+    compute_delta,
+    parse_records,
+)
 from oraclous_execution_engine_service.models.team_run import EngineTeamRun
 from oraclous_execution_engine_service.repositories.maintenance_repository import (
     EngineMaintenanceRepository,
@@ -192,6 +197,21 @@ def _grade_target(team: OHMManifest, results: dict[str, Any]) -> str:
         return out if isinstance(out, str) else json.dumps(out, default=str, sort_keys=True)
     chosen = {r: results[r] for r in (sinks or list(results))}
     return json.dumps(chosen, default=str, sort_keys=True)
+
+
+def _refresh_records(team: OHMManifest, results: dict[str, Any]) -> list[dict[str, Any]] | None:
+    """#602: the producing (sink) member's deliverable parsed into records for the 5-way delta. A
+    single sink → its output UNWRAPPED (the engine wraps a member's dispatch result as
+    ``{"output": <raw>, ...}``) → parsed as a JSON record array. Multiple/no sinks, or a deliverable
+    that is not a JSON record-set → None (no per-record delta)."""
+    depended = {d for m in team.members for d in m.depends_on}
+    sinks = [m.role for m in team.members if m.role not in depended and m.role in results]
+    if len(sinks) != 1:
+        return None
+    out: Any = results.get(sinks[0])
+    if isinstance(out, dict) and "output" in out:  # unwrap the producer's wrapped dispatch result
+        out = out["output"]
+    return parse_records(out)
 
 
 _CONVERGENCE_RE = re.compile(r"\s*evaluator\s*(>=|<=|==|>|<)\s*([0-9]*\.?[0-9]+)\s*\Z")
@@ -377,6 +397,59 @@ class TeamRunService:
                 error_type="invalid_graph_id",
             )
 
+    async def _seed_refresh(
+        self,
+        organisation_id: uuid.UUID,
+        seed_from_run_id: uuid.UUID,
+        inputs: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        """#602: validate the named seed run (fail-fast 422) + thread its records into ``inputs``
+        under the reserved ``_refresh_seed`` key (the #599 state seam), so the producing member can
+        carry-forward unchanged records (the cost lever) and settle can compute the delta against
+        them. The seed run must belong to the caller's org (a cross-org id → 422, never a tenant
+        leak) and be SUCCEEDED (a partial/failed prior has an incomplete ledger to refresh from)."""
+        with org_scope(organisation_id):
+            seed_row = await self._team_runs.get(seed_from_run_id, organisation_id)
+        if seed_row is None:
+            raise TeamRunError(
+                "seed_from_run_id does not name a run in your organisation",
+                422,
+                error_type="invalid_seed_run",
+            )
+        if seed_row.state != "SUCCEEDED":
+            raise TeamRunError(
+                f"seed_from_run_id must be a SUCCEEDED run (is {seed_row.state})",
+                422,
+                error_type="invalid_seed_run",
+            )
+        seed_team = self._load_team(seed_row.manifest)
+        seed_records = _refresh_records(seed_team, seed_row.results) or []
+        return {
+            **(inputs or {}),
+            REFRESH_SEED_KEY: {"records": seed_records, "id_field": "id"},
+        }
+
+    def _refresh_delta(
+        self, team: OHMManifest, row: EngineTeamRun, result: TeamRunResult
+    ) -> dict[str, Any]:
+        """#602: the first-class 5-way what-changed delta, computed at settle comparing this run's
+        records to the seed run's (threaded at create under ``_refresh_seed``). Only called for a
+        completed refresh run. A deliverable that is not a JSON record-set yields an explicit note,
+        never a false empty delta."""
+        seed_meta = (row.inputs or {}).get(REFRESH_SEED_KEY) or {}
+        seed_records = seed_meta.get("records") or []
+        id_field = seed_meta.get("id_field") or "id"
+        fresh = _refresh_records(team, result.results)
+        if fresh is None:
+            return {
+                "seed_from_run_id": str(row.seed_from_run_id),
+                "records_parsed": False,
+                "note": "the refresh deliverable is not a JSON record-set; no per-record delta",
+            }
+        delta = compute_delta(seed_records, fresh, id_field=id_field)
+        delta["seed_from_run_id"] = str(row.seed_from_run_id)
+        return delta
+
     async def create(
         self,
         principal: Principal,
@@ -387,6 +460,7 @@ class TeamRunService:
         workspace_root: str | None = None,
         graph_id: str | None = None,
         inputs: dict[str, Any] | None = None,
+        seed_from_run_id: uuid.UUID | None = None,
     ) -> EngineTeamRun:
         """Request path: validate + persist a QUEUED run + hand it to the worker (202). The drive
         runs on the worker so a large team (30 agents) never blocks/times out the HTTP request."""
@@ -401,6 +475,8 @@ class TeamRunService:
             graph_id is not None
         ):  # graph substrate (#524): org-scoped, fail-fast 422 (cross-org graph rejected here)
             await self._validate_graph_id(org, graph_id)
+        if seed_from_run_id is not None:  # #602 seeded-refresh: fail-fast 422 + thread the seed in
+            inputs = await self._seed_refresh(org, seed_from_run_id, inputs)
         with org_scope(org):  # bind the org-GUC so the RLS-backstopped INSERT is admitted (ADR-030)
             row = await self._team_runs.create(
                 organisation_id=org,
@@ -411,6 +487,7 @@ class TeamRunService:
                 workspace_root=workspace_root,
                 graph_id=graph_id,
                 inputs=inputs,
+                seed_from_run_id=seed_from_run_id,
             )
         if self._enqueue is not None:
             self._enqueue(row.id, org, principal.principal_id)
@@ -825,6 +902,14 @@ class TeamRunService:
         verdict = (
             await self._grade_gate(team, row.id, result) if result.status == "completed" else None
         )
+        # #602 seeded-refresh: the first-class 5-way delta, beside the verdict (None on a normal
+        # run — default-OFF — or a non-completed run). Gated on seed_from_run_id so a normal run is
+        # unchanged.
+        refresh_delta = (
+            self._refresh_delta(team, row, result)
+            if row.seed_from_run_id is not None and result.status == "completed"
+            else None
+        )
         # ADR-042 (#551): a producing run is SUCCEEDED only when EVERY member delivered. A "failed"
         # result (one or more members FAILED/BLOCKED, the rest still ran) records each member's
         # terminal status so the failed+blocked members are re-runnable; surface a leak-safe summary
@@ -856,6 +941,7 @@ class TeamRunService:
                 child_execution_ids=child_ids,  # the member executions that form this run's tree
                 cost_tokens=prior_cost + sum(cost_deltas),  # O4: the run's accumulated token cost
                 verdict=verdict,  # the gate verdict (None unless completed); state stays unchanged
+                refresh_delta=refresh_delta,  # #602: the 5-way delta (None on a non-refresh run)
                 loop_state=dict(result.loop_state),  # PR-C: the per-loop checkpoint (resume cursor)
             )
         await self._accrue_schedule_cost(row, org, sum(cost_deltas))  # #601: per-cadence accrual

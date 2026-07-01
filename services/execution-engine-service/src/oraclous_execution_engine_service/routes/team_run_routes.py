@@ -59,6 +59,7 @@ async def create_team_run(
             workspace_root=body.workspace_root,
             graph_id=body.graph_id,
             inputs=body.inputs,
+            seed_from_run_id=body.seed_from_run_id,  # #602: refresh from a named prior run
         )
     except TeamRunError as exc:
         raise _http(exc) from exc
