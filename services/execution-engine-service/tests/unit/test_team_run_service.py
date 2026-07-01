@@ -43,6 +43,7 @@ class FakeTeamRunRepo:
         workspace_root: str | None = None,
         graph_id: str | None = None,
         inputs: dict[str, Any] | None = None,
+        seed_from_run_id: uuid.UUID | None = None,
     ) -> EngineTeamRun:
         row = EngineTeamRun(
             id=uuid.uuid4(),
@@ -57,6 +58,7 @@ class FakeTeamRunRepo:
             workspace_root=workspace_root,
             graph_id=graph_id,
             inputs=inputs,
+            seed_from_run_id=seed_from_run_id,
         )
         self.rows[row.id] = row
         return row
@@ -965,3 +967,130 @@ async def test_non_scheduled_run_accrues_nothing() -> None:
     row = SimpleNamespace(id=uuid.uuid4(), organisation_id=_ORG, schedule_id=None)
     await svc._accrue_schedule_cost(row, _ORG, 1234)  # type: ignore[arg-type]
     assert sched.accrued == []  # a direct (request-path) run carries no schedule_id → no accrual
+
+
+# ── #602 seeded-refresh: validation + seed-thread + settle delta + default-OFF ──────────────────
+_MANIFEST = _team([_agent("reporter")])
+_SEED_LEDGER = '[{"id": "1", "v": "x"}, {"id": "2", "v": "y"}, {"id": "3", "v": "z"}]'
+# fresh vs seed: id 1 carried-forward (skip marker), id 2 changed, id 3 removed, id 4 added
+_FRESH_LEDGER = (
+    '[{"id": "1", "v": "x", "refresh_status": "unchanged"}, '
+    '{"id": "2", "v": "Y-NEW"}, '
+    '{"id": "4", "v": "new"}]'
+)
+
+
+class _LedgerHarness:
+    """A harness whose sink member emits a fixed JSON-array ledger — the deliverable to diff."""
+
+    def __init__(self, ledger_json: str) -> None:
+        self._ledger = ledger_json
+        self.inputs: list[str] = []
+
+    async def execute(self, *, input_text: str, **_kw: Any) -> dict[str, Any]:
+        self.inputs.append(input_text)
+        return {
+            "id": str(uuid.uuid4()),
+            "status": "SUCCEEDED",
+            "output": self._ledger,
+            "total_tokens": 100,
+        }
+
+
+def _succeeded_seed(
+    repo: FakeTeamRunRepo, ledger_json: str, *, org: uuid.UUID = _ORG, state: str = "SUCCEEDED"
+) -> EngineTeamRun:
+    row = EngineTeamRun(
+        id=uuid.uuid4(),
+        organisation_id=org,
+        user_id=_USER,
+        manifest=_MANIFEST,
+        sub_harnesses={},
+        gate_decisions={},
+        state=state,
+        results={"reporter": ledger_json},
+        paused_at=[],
+    )
+    repo.rows[row.id] = row
+    return row
+
+
+async def _create_refresh(svc: TeamRunService, seed_id: uuid.UUID) -> EngineTeamRun:
+    return await svc.create(
+        _principal(),
+        manifest=_MANIFEST,
+        sub_harnesses={},
+        gate_decisions={},
+        seed_from_run_id=seed_id,
+    )
+
+
+async def test_create_rejects_a_missing_seed_run() -> None:
+    svc, _ = _svc(FakeTeamRunRepo(), FakeHarness())
+    with pytest.raises(TeamRunError) as exc:
+        await _create_refresh(svc, uuid.uuid4())
+    assert exc.value.status_code == 422 and exc.value.error_type == "invalid_seed_run"
+
+
+async def test_create_rejects_a_cross_org_seed_run() -> None:
+    # a seed run belonging to ANOTHER org is invisible to the org-scoped get → 422, never a leak
+    repo = FakeTeamRunRepo()
+    seed = _succeeded_seed(repo, _SEED_LEDGER, org=uuid.uuid4())
+    svc, _ = _svc(repo, FakeHarness())
+    with pytest.raises(TeamRunError) as exc:
+        await _create_refresh(svc, seed.id)
+    assert exc.value.status_code == 422 and exc.value.error_type == "invalid_seed_run"
+
+
+async def test_create_rejects_a_non_succeeded_seed_run() -> None:
+    repo = FakeTeamRunRepo()
+    seed = _succeeded_seed(repo, _SEED_LEDGER, state="FAILED")
+    svc, _ = _svc(repo, FakeHarness())
+    with pytest.raises(TeamRunError) as exc:
+        await _create_refresh(svc, seed.id)
+    assert exc.value.status_code == 422 and exc.value.error_type == "invalid_seed_run"
+
+
+async def test_create_threads_the_seed_records_into_inputs() -> None:
+    repo = FakeTeamRunRepo()
+    seed = _succeeded_seed(repo, _SEED_LEDGER)
+    svc, _ = _svc(repo, FakeHarness())
+    row = await _create_refresh(svc, seed.id)
+    assert row.seed_from_run_id == seed.id
+    seeded = (row.inputs or {}).get("_refresh_seed")
+    assert seeded is not None and [r["id"] for r in seeded["records"]] == ["1", "2", "3"]
+
+
+async def test_refresh_run_settles_with_a_5way_delta() -> None:
+    repo = FakeTeamRunRepo()
+    seed = _succeeded_seed(repo, _SEED_LEDGER)
+    svc, _ = _svc(repo, _LedgerHarness(_FRESH_LEDGER))
+    row = await _run(
+        svc,
+        _principal(),
+        manifest=_MANIFEST,
+        sub_harnesses={},
+        gate_decisions={},
+        seed_from_run_id=seed.id,
+    )
+    d = row.refresh_delta
+    assert d is not None and d["seed_from_run_id"] == str(seed.id)
+    assert d["counts"] == {
+        "added": 1,
+        "removed": 1,
+        "changed": 1,
+        "unchanged": 1,
+        "re_confirmed": 0,
+    }
+    assert d["added"][0]["id"] == "4" and d["removed"][0]["id"] == "3"
+    assert d["unchanged"][0]["id"] == "1" and d["skipped"] == 1
+
+
+async def test_non_refresh_run_is_default_off() -> None:
+    # a run with no seed: no delta, and its inputs are never touched by the refresh path
+    repo = FakeTeamRunRepo()
+    svc, _ = _svc(repo, _LedgerHarness(_FRESH_LEDGER))
+    row = await _run(svc, _principal(), manifest=_MANIFEST, sub_harnesses={}, gate_decisions={})
+    assert row.seed_from_run_id is None
+    assert row.refresh_delta is None
+    assert "_refresh_seed" not in (row.inputs or {})

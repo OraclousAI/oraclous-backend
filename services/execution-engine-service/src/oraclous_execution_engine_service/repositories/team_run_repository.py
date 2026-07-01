@@ -46,6 +46,7 @@ class TeamRunRepository:
         workspace_root: str | None = None,
         graph_id: str | None = None,
         inputs: dict[str, Any] | None = None,
+        seed_from_run_id: uuid.UUID | None = None,
     ) -> EngineTeamRun:
         row = EngineTeamRun(
             id=uuid.uuid4(),
@@ -60,6 +61,7 @@ class TeamRunRepository:
             workspace_root=workspace_root,
             graph_id=graph_id,
             inputs=inputs,
+            seed_from_run_id=seed_from_run_id,  # #602: the named prior run this run refreshes from
         )
         async with self._session() as session:
             async with session.begin():

@@ -57,7 +57,12 @@ class EngineTeamRun(BaseModel):
     graph_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     # #599: user-seeded team state for fan_out.over — a member's fan_out.over: "$.<key>" resolves a
     # provided list (threaded to run_team's ``state``). Trusted per-run input; NULL → no seeded.
+    # #602 also rides the seed records under the reserved ``_refresh_seed`` key (the cost lever).
     inputs: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    # #602 (seeded-refresh, ADR-048 dec 3; additive, nullable): the NAMED prior run this refreshes
+    # from — its stored ``results`` are the typed seed. Validated org-scoped + SUCCEEDED-only at
+    # create (fail-fast 422). NULL → a normal (non-refresh) run: the seed/delta path is a no-op.
+    seed_from_run_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
     # ── run-tree correlation (ADR-037 Decision 3 / #471; additive, nullable) ──────────────────
     # root_execution_id is this run's tree root = the trace_id threaded to every member harness run
     # (minted = this run's id on first drive; STABLE across resume — read-if-NULL). The list
@@ -76,6 +81,12 @@ class EngineTeamRun(BaseModel):
     # run STATE is never branched on it (consuming it = re-dispatch = E8, out of scope). NULL until
     # graded; a fail-closed verdict (pass=false) is stored if the judge is unreachable/unconfigured.
     verdict: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    # ── seeded-refresh 5-way delta (#602, ADR-048 dec 3; additive, nullable) ──────────────────────
+    # The first-class what-changed delta (the refresh's contract, not a side effect): per-record
+    # {added, removed, changed, unchanged, re_confirmed} + counts, computed engine-side at settle by
+    # comparing this run's records to the seed run's (identity + evidence fingerprint). NULL on a
+    # non-refresh run (seed_from_run_id NULL); surfaced read-side on TeamRunOut beside the verdict.
+    refresh_delta: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
     # ── per-member terminal status (ADR-042 / #551; additive) ──────────────────────────────────
     # role -> "succeeded"|"failed"|"blocked"|"skipped"|"budget_skipped" (#585)|"partial" (#587) —
     # the orchestrator's per-member result.
