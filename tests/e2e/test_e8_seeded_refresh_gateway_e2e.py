@@ -178,6 +178,8 @@ def test_seeded_refresh_emits_a_5way_what_changed_delta(
     assert counts["unchanged"] == 1 and counts["re_confirmed"] == 1, counts
     # the skip (cost) signal: exactly the fingerprint-match + marked record is credited skipped.
     assert delta.get("skipped") == 1, f"the carry-forward/skip signal — {delta}"
-    # real BYOM work happened on both runs (a cost signal, not a fabricated fraction)
-    assert int(seed_row.get("cost_tokens") or 0) > 0
-    assert int(refresh_row.get("cost_tokens") or 0) > 0
+    # real BYOM work happened on both runs (a cost signal, not a fabricated fraction). cost_tokens
+    # is on the O4 status surface, not the team-run detail DTO.
+    seed_cost = c.get(f"/v1/engine/team-runs/{seed_id}/status").json()["cost"]["tokens"]
+    refresh_cost = c.get(f"/v1/engine/team-runs/{refresh_id}/status").json()["cost"]["tokens"]
+    assert int(seed_cost or 0) > 0 and int(refresh_cost or 0) > 0, (seed_cost, refresh_cost)
