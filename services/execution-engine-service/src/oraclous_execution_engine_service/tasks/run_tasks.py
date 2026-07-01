@@ -346,6 +346,11 @@ async def _drive_team_run_async(run_id_s: str, org_id_s: str, user_id_s: str) ->
                 evaluate=evaluate,
                 artifacts=artifacts,
                 schedules=schedules,
+                # #604: the settle-time closed-loop branch RE-DISPATCHES (re_task) from inside the
+                # worker drive — so the worker's service needs the enqueue callback (it was omitted;
+                # the request path had it, the worker did not). Without it a re_task advances the
+                # loop state + CAS→QUEUED but never re-drive — a stuck QUEUED run.
+                enqueue=enqueue_team_run,
             )
             result = await service.drive(run_id, principal)
             return {"team_run_id": run_id_s, "state": result.state}
