@@ -80,6 +80,24 @@ async def proxy(
                     status_code=409,
                     needs_credential=needs_credential,
                 )
+        # 405 (#579): a wrong-method guess on a proxied resource (e.g. POST /…/documents expecting
+        # to add content) otherwise returns a bare, unactionable METHOD_NOT_ALLOWED. Surface the
+        # upstream ``Allow`` header (safe, standard HTTP — the methods this resource supports; NOT
+        # the body, so §3 rule 8 holds) + a CURATED pointer to the published contract, which now
+        # lists the content-ingestion endpoints (#579 Ask 1). Route-appropriate (Allow reflects the
+        # actual resource) without the gateway knowing the route or relaying upstream detail.
+        if upstream.status_code == 405:
+            allow = upstream.headers.get("allow")
+            return gateway_error(
+                request,
+                code=ErrorCode.METHOD_NOT_ALLOWED,
+                status_code=405,
+                message=(
+                    "That method is not allowed on this resource. See the published API contract "
+                    "at /v1/openapi.json for the methods and endpoints it supports."
+                ),
+                headers={"Allow": allow} if allow else None,
+            )
         return gateway_error(
             request, code=status_to_code(upstream.status_code), status_code=upstream.status_code
         )

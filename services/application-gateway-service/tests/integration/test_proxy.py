@@ -81,6 +81,15 @@ async def _string422(request):  # noqa: ANN001 — a free-string 422 (cannot be 
     return JSONResponse({"detail": "boom on db-1.internal 10.0.0.5"}, status_code=422)
 
 
+async def _method405(request):  # noqa: ANN001 — an upstream 405 (Allow + a leaky detail body)
+    # mirrors KGS POST /documents 405: an Allow header + a detail body the gateway must NOT relay.
+    return JSONResponse(
+        {"detail": "POST not supported; use /upload on db-1.internal 10.0.0.5"},
+        status_code=405,
+        headers={"Allow": "GET"},
+    )
+
+
 _UPSTREAM_APP = Starlette(
     routes=[
         Route("/v1/search", _search, methods=["GET"]),
@@ -89,6 +98,7 @@ _UPSTREAM_APP = Starlette(
         Route("/v1/graph/big/subgraph", _big, methods=["GET"]),
         Route("/api/v1/tools/weak", _struct422, methods=["POST"]),
         Route("/api/v1/tools/stringerr", _string422, methods=["POST"]),
+        Route("/api/v1/graphs/g/documents", _method405, methods=["POST"]),
     ]
 )
 
@@ -158,6 +168,21 @@ async def test_422_structured_surfaces_leak_safe_details(client: AsyncClient) ->
     assert "not a valid email" not in r.text and "db-1.svc.cluster.local" not in r.text
     # the §3 forbidden-substring scanner finds nothing in the surfaced body (no email/DNS/IP leak)
     assert scan_forbidden(r.text) == []
+
+
+async def test_405_surfaces_allow_and_a_contract_pointer_without_leaking_the_body(
+    client: AsyncClient,
+) -> None:
+    # #579: a wrong-method guess (POST a GET-only resource) returns an ACTIONABLE 405 — the upstream
+    # Allow header + a curated pointer to the published contract — but the upstream detail body
+    # (which here carries an internal host/IP) is NEVER relayed (§3 rule 8).
+    r = await client.post("/api/v1/graphs/g/documents", headers=_auth())
+    assert r.status_code == 405
+    env = r.json()["error"]
+    assert env["code"] == "METHOD_NOT_ALLOWED"
+    assert "/v1/openapi.json" in env["message"]  # points to the discoverability surface
+    assert r.headers.get("allow") == "GET"  # the safe, standard method-list header is surfaced
+    assert "db-1.internal" not in r.text and "/upload" not in r.text  # upstream body NOT relayed
 
 
 async def test_422_string_detail_falls_back_to_canonical(client: AsyncClient) -> None:

@@ -53,9 +53,16 @@ def test_ingest_paths_are_published_and_post_documents_is_a_helpful_405(
     assert docs.status_code == 200, docs.text
     assert docs.json() == []
 
-    # (3) #579 Ask 2 — POSTing to /documents to "add" content returns a HELPFUL 405 (through the
-    #     gateway proxy) that names the real ingest surfaces, not a bare "Method Not Allowed".
+    # (3) #579 Ask 2 — POSTing to /documents to "add" content returns an ACTIONABLE 405 through the
+    #     gateway: the `Allow` header (GET is the method here) + a curated pointer to the published
+    #     contract fetched above (which lists /upload, /ingest, …). The gateway never relays the
+    #     upstream body (§3 rule 8), so the hint arrives via the Allow header + the contract — the
+    #     discoverability loop closes and a wrong-method guess self-corrects.
     bad = c.post(f"/api/v1/graphs/{graph_id}/documents", json={})
     assert bad.status_code == 405, bad.text
-    body = bad.text
-    assert "/upload" in body and "/ingest" in body, f"405 gave no ingest hint: {body}"
+    env = bad.json()["error"]
+    assert env["code"] == "METHOD_NOT_ALLOWED"
+    assert "/v1/openapi.json" in env["message"]  # points to the discoverability surface
+    assert bad.headers.get("allow") == "GET"  # the safe method-list header is surfaced
+    # and the surface it points to actually carries the ingest endpoints (loop closed, from step 1).
+    assert "/api/v1/graphs/{graphId}/upload" in published
