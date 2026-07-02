@@ -187,9 +187,7 @@ class WebResearchConnector(InternalTool):
                 # connect can't re-resolve to an internal target (DNS-rebinding TOCTOU closed).
                 target, host_headers, extensions = pinned_request(current, pinned_ip)
                 try:
-                    resp = await client.get(
-                        target, headers=host_headers, extensions=extensions
-                    )
+                    resp = await client.get(target, headers=host_headers, extensions=extensions)
                 except httpx.HTTPError:
                     return ExecutionResult(
                         success=False,

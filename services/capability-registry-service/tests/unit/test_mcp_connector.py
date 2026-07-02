@@ -222,7 +222,7 @@ async def test_tools_call_parses_an_sse_framed_response() -> None:
     # a real hosted MCP server SSE-frames the response; the executor must parse the data: frame.
     def call(_req: httpx.Request) -> httpx.Response:
         sse = (
-            'event: message\n'
+            "event: message\n"
             'data: {"jsonrpc":"2.0","id":2,"result":'
             '{"content":[{"type":"text","text":"sse-ok"}]}}\n\n'
         )

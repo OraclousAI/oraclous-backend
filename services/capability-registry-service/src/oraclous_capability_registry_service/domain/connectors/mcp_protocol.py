@@ -67,8 +67,9 @@ def _parse_message(resp: httpx.Response) -> dict[str, Any]:
     try:
         body = resp.json()
     except ValueError as exc:
-        raise McpProtocolError("the MCP server returned a non-JSON body", code="MCP_BAD_RESPONSE") \
-            from exc
+        raise McpProtocolError(
+            "the MCP server returned a non-JSON body", code="MCP_BAD_RESPONSE"
+        ) from exc
     if not isinstance(body, dict):
         raise McpProtocolError("the MCP server returned a malformed body", code="MCP_BAD_RESPONSE")
     return body
@@ -76,9 +77,7 @@ def _parse_message(resp: httpx.Response) -> dict[str, Any]:
 
 def _require_ok(resp: httpx.Response) -> None:
     if resp.status_code not in (200, 202):  # 202 = an accepted notification (no body)
-        raise McpProtocolError(
-            f"the MCP server returned {resp.status_code}", code="MCP_HTTP_ERROR"
-        )
+        raise McpProtocolError(f"the MCP server returned {resp.status_code}", code="MCP_HTTP_ERROR")
 
 
 class McpSession:
