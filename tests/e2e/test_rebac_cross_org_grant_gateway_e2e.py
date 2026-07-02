@@ -40,8 +40,8 @@ def _federated_search(client: httpx.Client, graph_id: str) -> httpx.Response:
 def test_a_cross_org_read_is_denied_until_granted_then_admitted(
     register: Callable[..., dict], gateway_client: Callable[[str], httpx.Client]
 ) -> None:
-    owner = register("Org A Owner")  # org A
-    grantee = register("Org B User")  # a different org → org B
+    owner = register(f"A{uuid.uuid4().hex[:8]} Owner")  # org A (unique first token — #531)
+    grantee = register(f"B{uuid.uuid4().hex[:8]} User")  # a different org → org B
     assert owner["org_id"] != grantee["org_id"], (
         "registration must place the two users in distinct orgs"
     )
@@ -84,14 +84,29 @@ def test_a_cross_org_read_is_denied_until_granted_then_admitted(
     # The granted foreign graph is now part of the resolved fan-out scope.
     assert graph_id in after.text, "the granted graph should appear in the federated response scope"
 
+    # (5) #464: a grant whose grantee_user is NOT a member of the named grantee_org is rejected 422
+    #     (GRANTEE_NOT_IN_ORG) — verified against the REAL auth OrgMemberRepository. Here: name org
+    #     A's OWNER org as the grantee org but org B's user as the grantee — that user is not in
+    #     org A → not a member → no edge written. (Proves the real check, not dev-org-for-all.)
+    bad = owner_c.post(
+        f"/api/v1/graphs/{graph_id}/grants",
+        json={
+            "grantee_organisation_id": owner["org_id"],  # org A
+            "grantee_user_id": grantee["user_id"],  # an org B user — NOT a member of org A
+            "level": "read",
+        },
+    )
+    assert bad.status_code == 422, f"a non-member grantee must be rejected 422, got {bad.text}"
+    assert "GRANTEE_NOT_IN_ORG" in bad.text
+
 
 def test_only_the_owner_can_share_a_graph(
     register: Callable[..., dict], gateway_client: Callable[[str], httpx.Client]
 ) -> None:
     """The grant is owner-gated: a non-owner (another org's user) cannot share a graph it does not
     own — the endpoint 404s (no leak that the graph exists), so a grant can never be self-issued."""
-    owner = register("Org A Owner")
-    outsider = register("Org B User")
+    owner = register(f"A{uuid.uuid4().hex[:8]} Owner")
+    outsider = register(f"B{uuid.uuid4().hex[:8]} User")
     owner_c = gateway_client(owner["token"])
     outsider_c = gateway_client(outsider["token"])
 
@@ -144,9 +159,9 @@ def test_a_granted_foreign_graph_returns_the_owner_org_rows(
     (not empty). Deny before grant; after the grant the grantee reads org A's actual ingested row;
     a third, ungranted org never can. The deny→grant→read flip across one grant call is the proof
     the per-branch owner-org binding is gated on a fail-closed ReBAC grant."""
-    owner = register("Org A Owner")
-    grantee = register("Org B User")
-    outsider = register("Org C User")  # never granted — isolation control
+    owner = register(f"A{uuid.uuid4().hex[:8]} Owner")
+    grantee = register(f"B{uuid.uuid4().hex[:8]} User")
+    outsider = register(f"C{uuid.uuid4().hex[:8]} User")  # never granted — isolation control
     owner_c = gateway_client(owner["token"])
     grantee_c = gateway_client(grantee["token"])
     outsider_c = gateway_client(outsider["token"])
