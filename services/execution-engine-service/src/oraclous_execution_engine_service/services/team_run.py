@@ -95,12 +95,14 @@ EXECUTION_DIRECTIVE = (
 REFRESH_CARRY_FORWARD_DIRECTIVE = (
     "This is a REFRESH run. Below are the records YOU produced on the prior run. For every record "
     "whose underlying evidence is UNCHANGED since then, CARRY IT FORWARD: re-emit it "
-    'byte-identical to the prior version and add the field "refresh_status": "unchanged" — do NOT '
-    "re-derive it (this is the point of a refresh: skip the work for records that have not "
-    "changed). Only re-derive a record whose evidence has genuinely CHANGED (emit the new version "
-    "WITHOUT the marker), drop records that no longer apply, and add genuinely new ones. The "
-    "engine independently verifies each carried record's fingerprint against the prior run, so a "
-    "carried-forward record MUST be identical to its prior evidence or it is classified as changed."
+    'byte-identical to the prior version and add the field "refresh_status": "unchanged". For a '
+    "carried-forward record you do NOT need to re-derive, re-analyse, re-research, or re-explain "
+    "anything — emit it DIRECTLY; skipping that work is the whole point of a refresh, so keep your "
+    "output minimal (do not repeat prior analysis/prose for unchanged records). Only re-derive a "
+    "record whose evidence has genuinely CHANGED (emit the new version WITHOUT the marker), drop "
+    "records that no longer apply, and add genuinely new ones. The engine independently verifies "
+    "each carried record's fingerprint against the prior run, so a carried-forward record MUST be "
+    "identical to its prior evidence or it is classified as changed."
 )
 
 

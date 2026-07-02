@@ -39,15 +39,17 @@ requires_byom = pytest.mark.skipif(_OR_KEY is None, reason="OPENROUTER_API_KEY u
 _TERMINAL = {"SUCCEEDED", "FAILED", "PARTIAL", "REJECTED", "COST_BUDGET"}
 _ITEMS = ["alpha", "bravo", "charlie", "delta", "echo", "foxtrot"]
 
-# The analyst REASONS per item (the expensive derivation a refresh skips), then emits a small ledger
-# inside a ```json fence. The records are tiny ({id, verdict}) so the seed input to the refresh is
-# cheap and the reasoning dominates the cold cost — so carrying forward is materially cheaper.
+# The analyst writes a VERBOSE per-item analysis (the expensive derivation), then emits a TINY
+# ledger in a ```json fence. The records are tiny ({id, verdict}) so the seed the refresh injects
+# is cheap, while the analysis dominates the cold cost — a refresh that carries forward (skipping
+# the analysis) is reliably, materially cheaper. The long analysis is the skippable work, not it.
 _ANALYST_BODY = (
     "You are a diligent analyst reviewing these items: " + ", ".join(_ITEMS) + ". "
-    "For EACH item, write a thorough 3-4 sentence analysis explaining your reasoning about it. "
-    "AFTER you have analysed all of them, output the final ledger as a JSON array where each "
-    'element is EXACTLY {"id": "<item>", "verdict": "reviewed"} — one per item — inside a single '
-    "```json ... ``` code fence at the very end of your reply."
+    "For EACH item, you MUST first write a detailed analysis of AT LEAST 70 words explaining your "
+    "reasoning and evidence before deciding — do not be terse, be thorough. AFTER you have written "
+    "all six analyses, output the final ledger as a JSON array where each element is EXACTLY "
+    '{"id": "<item>", "verdict": "reviewed"} — one per item — inside a single ```json ... ``` code '
+    "fence at the very end of your reply."
 )
 
 
