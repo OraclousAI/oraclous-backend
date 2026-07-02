@@ -309,7 +309,9 @@ async def _run_adopted_tool_async(
                 lease_seconds=settings.adopted_dispatch_lease_seconds,
             )
             if not claimed:
-                return {"run_id": run_id_s, "deduped": True}  # another copy holds the dispatch
+                # another copy holds the dispatch — short-circuit (execution_id: None for a uniform
+                # result shape with the other branches; the result is unread, fire-and-forget).
+                return {"run_id": run_id_s, "execution_id": None, "deduped": True}
             result = await registry.execute(instance_id, input_data)
             execution_id = result.get("id")
             if execution_id is not None:

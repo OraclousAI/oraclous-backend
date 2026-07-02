@@ -93,7 +93,10 @@ class Settings(BaseSettings):
     # a rejected/unreachable dispatch left it unstamped. It re-fires a row OLDER than this lease (so
     # an in-flight dispatch, which stamps in seconds, isn't re-fired early) but YOUNGER than the
     # recovery bound below (so a permanently-rejected instance can't re-fire forever). Lease ≈ one
-    # reaper tick; the worker's execution_id short-circuit keeps a re-fire from double-executing.
+    # reaper tick; the worker's atomic dispatch CLAIM keeps a re-fire from double-executing. This
+    # lease is ALSO the claim's staleness horizon, so it MUST exceed the max single-dispatch time
+    # (capability_registry_request_timeout, 30s) — else a genuinely in-flight execute could age past
+    # the claim + be re-fired concurrently, reopening the double-execute. Holds ~10x with defaults.
     adopted_dispatch_lease_seconds: int = 300
     adopted_recovery_max_age_seconds: int = 21600  # give up after 6h — bound the re-fire loop
     # Celery Beat cadences (S5): fire due cron schedules every minute; sweep stranded RUNNING jobs.
