@@ -441,6 +441,10 @@ class TeamRunOut(BaseModel):
     # A run is SUCCEEDED only when EVERY member is "succeeded"; on a FAILED run this is how a caller
     # sees which members to re-run (POST .../rerun re-drives the failed+blocked, keeping succeeded).
     member_status: dict[str, str] = Field(default_factory=dict)
+    # ADR-046 (#578): role -> how many times this human gate was REVISED. Surfaced read-side so a
+    # caller (and the deployed e2e) sees a run was revised + on which gate; the revision loop
+    # fail-closes to terminal REJECTED once a gate exceeds max_revisions. Empty until a gate revised.
+    revision_rounds: dict[str, int] = Field(default_factory=dict)
     # ADR-043 (#552 PR-C + #553): per-loop conductor checkpoint, "<loop_index>" -> {round,
     # started_at, status, recalibration_count}. Surfaced read-side so an operator (and the e2e) can
     # see a loop's conductor activity — how many rounds it ran + how many bounded recalibrations it
@@ -451,7 +455,7 @@ class TeamRunOut(BaseModel):
     # (and the deployed e2e) can branch on the flag without string-matching the state.
     partial: bool = False
 
-    @field_validator("member_status", "loop_state", mode="before")
+    @field_validator("member_status", "loop_state", "revision_rounds", mode="before")
     @classmethod
     def _coerce_member_status(cls, v: Any) -> Any:
         # A real flushed row already holds {} (the column default + migration 0012 server_default),
