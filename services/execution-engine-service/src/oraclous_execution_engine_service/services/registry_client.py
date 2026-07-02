@@ -87,3 +87,20 @@ class RegistryClient:
             raise RegistryRejected(resp.status_code, _render_detail(resp.text))
         out: dict[str, Any] = resp.json()
         return out
+
+    async def instance_exists(self, instance_id: uuid.UUID) -> bool:
+        """True iff a configured instance with this id exists in the CALLER's organisation (the
+        registry is org-scoped by the downstream headers). #501-#5: register validates an
+        ``adopted_tool_run`` schedule's ``instance_id`` early for a clean 4xx (cross-org already
+        fails closed at execute). A 404 — the instance does not exist OR belongs to another org —
+        False (the caller rejects fail-fast). Unreachable raises ``RegistryClientError``
+        (inconclusive → the caller fails closed rather than admit an unvalidated instance)."""
+        try:
+            resp = await self._client.get(f"/api/v1/instances/{instance_id}")
+        except httpx.HTTPError as exc:  # registry unreachable — inconclusive, fail closed
+            raise RegistryClientError(f"registry unreachable: {type(exc).__name__}") from exc
+        if resp.status_code == httpx.codes.NOT_FOUND:  # not in the caller's org → reject
+            return False
+        if resp.status_code // 100 != 2:  # any other non-2xx — inconclusive, fail closed
+            raise RegistryClientError(f"registry → {resp.status_code}")
+        return True

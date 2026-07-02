@@ -7,6 +7,7 @@ from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
+from kombu.exceptions import OperationalError  # #501-#4: the broker-publish failure fire_now maps
 from oraclous_execution_engine_service.domain.refresh import REFRESH_SEED_KEY
 from oraclous_execution_engine_service.models.enums import BudgetPeriod
 from oraclous_execution_engine_service.models.schedule import EngineSchedule
@@ -130,9 +131,12 @@ class _FakeSchedRepo:
     async def list_enabled_cron(self, *, limit: int = 500) -> list[EngineSchedule]:
         return [r for r in self.rows if r.type == "cron" and r.enabled]
 
-    async def set_last_fired(self, schedule_id: uuid.UUID, fired_at: datetime) -> None:
+    async def set_last_fired(
+        self, schedule_id: uuid.UUID, organisation_id: uuid.UUID, fired_at: datetime
+    ) -> None:
+        # #501-#6: mirror the real app-layer org predicate (both id AND org must match).
         for r in self.rows:
-            if r.id == schedule_id:
+            if r.id == schedule_id and r.organisation_id == organisation_id:
                 r.last_fired_at = fired_at
 
     # ── #598 L3 per-period budget ───────────────────────────────────────────────────────────────
@@ -356,12 +360,21 @@ class _FakeMaintenance:
 
     def __init__(self, srepo: _FakeSchedRepo) -> None:
         self._srepo = srepo
+        # #501-#2: the lost-window reaper reads unstamped adopted rows here (cross-org); a test sets
+        # this list, then calls reap_lost_adopted_windows and asserts the re-fire.
+        self.stale_adopted: list[SimpleNamespace] = []
 
     async def list_enabled_cron(self, *, limit: int = 500) -> list[EngineSchedule]:
         return await self._srepo.list_enabled_cron(limit=limit)
 
     async def list_budget_paused(self, *, limit: int = 500) -> list[EngineSchedule]:
         return await self._srepo.list_budget_paused(limit=limit)
+
+    async def list_stale_adopted_runs(
+        self, older_than: datetime, younger_than: datetime, *, limit: int = 100
+    ) -> list[SimpleNamespace]:
+        # #501-#2: mirror the real bounded window (older_than < created_at < younger_than).
+        return [r for r in self.stale_adopted if younger_than < r.created_at < older_than][:limit]
 
 
 class _FakeGraphs:
@@ -374,6 +387,17 @@ class _FakeGraphs:
         return self._exists
 
 
+class _FakeRegistry:
+    """#501-#5: the registry existence check register uses to fail-close a cross-org/non-existent
+    adopted-tool instance_id (mirrors _FakeGraphs)."""
+
+    def __init__(self, exists: bool = True) -> None:
+        self._exists = exists
+
+    async def instance_exists(self, instance_id: uuid.UUID) -> bool:
+        return self._exists
+
+
 def _svc(
     srepo: _FakeSchedRepo,
     jrepo: _FakeJobRepo,
@@ -382,6 +406,8 @@ def _svc(
     enqueue_team_run=None,  # noqa: ANN001
     team_runs: _FakeTeamRunRepo | None = None,
     graphs: _FakeGraphs | None = None,
+    registry: _FakeRegistry | None = None,
+    maintenance: _FakeMaintenance | None = None,
 ) -> tuple[ScheduleService, _FakeProv]:
     prov = _FakeProv()
     svc = ScheduleService(
@@ -393,7 +419,8 @@ def _svc(
         enqueue_team_run=enqueue_team_run,
         team_runs=team_runs,  # type: ignore[arg-type]
         graphs=graphs,  # type: ignore[arg-type]
-        maintenance=_FakeMaintenance(srepo),  # type: ignore[arg-type]
+        registry=registry,  # type: ignore[arg-type]
+        maintenance=maintenance or _FakeMaintenance(srepo),  # type: ignore[arg-type]
     )
     return svc, prov
 
@@ -815,6 +842,163 @@ async def test_fire_now_missing_schedule_raises() -> None:
     svc, _ = _svc(_FakeSchedRepo(), _FakeJobRepo(), enqueue_adopted_tool=lambda *a: None)
     with pytest.raises(ScheduleError):
         await svc.fire_now(uuid.uuid4(), _principal())
+
+
+# ── #501-#5: register validates an adopted_tool_run instance_id against the caller's org ──────
+async def test_register_adopted_tool_run_rejects_a_cross_org_or_missing_instance() -> None:
+    # the registry GET is org-scoped by the downstream headers, so an instance the org does not own
+    # returns exists=False → a clean 4xx at REGISTER (not a confusing mid-fire dispatch rejection).
+    svc, _ = _svc(_FakeSchedRepo(), _FakeJobRepo(), registry=_FakeRegistry(exists=False))
+    with pytest.raises(ScheduleError, match="instance_id does not exist"):
+        await svc.register(
+            _principal(),
+            type="cron",
+            target_kind="adopted_tool_run",
+            input_text="scheduled",
+            cron="* * * * *",
+            instance_id=_INSTANCE,
+        )
+
+
+async def test_register_adopted_tool_run_accepts_an_instance_in_the_callers_org() -> None:
+    # the positive: with the registry confirming the instance exists in the org, register succeeds.
+    srepo = _FakeSchedRepo()
+    svc, _ = _svc(srepo, _FakeJobRepo(), registry=_FakeRegistry(exists=True))
+    row = await svc.register(
+        _principal(),
+        type="cron",
+        target_kind="adopted_tool_run",
+        input_text="scheduled",
+        cron="* * * * *",
+        instance_id=_INSTANCE,
+    )
+    assert row.instance_id == _INSTANCE and row in srepo.rows
+
+
+# ── #501-#3: fire_now on a MANUAL schedule (no cron) fires — it is not a silent no-op ─────────
+async def test_fire_now_on_a_manual_schedule_fires_and_is_not_a_noop() -> None:
+    # a MANUAL schedule has no cron; the old _fire_one returned 0 when sched.cron was empty, so
+    # fire_now silently did nothing (contradicting its "allowed on manual" contract). Now the window
+    # is the fire wall-clock (truncated to the second) → the fire actually dispatches.
+    sched = _adopted_schedule(cron=None, last_fired=None)  # manual: no cron expression
+    srepo = _FakeSchedRepo([sched])
+    jrepo = _FakeJobRepo()
+    dispatches: list = []
+    svc, prov = _svc(
+        srepo, jrepo, enqueue_adopted_tool=lambda run, inst, data, o, u: dispatches.append(inst)
+    )
+    row = await svc.fire_now(sched.id, _principal())
+    assert dispatches == [_INSTANCE]  # the manual fire queued exactly one dispatch (NOT a no-op)
+    assert len(jrepo.adopted_created) == 1  # the dedupe row was written
+    assert row.last_fired_at is not None  # the cursor advanced to the manual window
+    assert "engine.schedule.fire" in prov.events
+
+
+# ── #501-#4: fire_now maps a broker-publish failure to a clean ScheduleError (not a raw 500) ──
+async def test_fire_now_maps_a_broker_publish_failure_to_a_clean_error() -> None:
+    def _boom(*_a: object) -> None:  # the broker is down: .delay() raises OperationalError
+        raise OperationalError("broker unreachable")
+
+    sched = _adopted_schedule(cron="* * * * *", last_fired=None)
+    srepo = _FakeSchedRepo([sched])
+    svc, _ = _svc(srepo, _FakeJobRepo(), enqueue_adopted_tool=_boom)
+    with pytest.raises(ScheduleError, match="dispatch queue unavailable"):
+        await svc.fire_now(sched.id, _principal())
+
+
+# ── #501-#2: the lost-window reaper re-fires an unstamped adopted-tool-run past the lease ─────
+def _lost_adopted_row(sched: EngineSchedule, *, execution_id, created_at):  # noqa: ANN001, ANN202
+    return SimpleNamespace(
+        id=uuid.uuid4(),
+        organisation_id=sched.organisation_id,
+        schedule_id=sched.id,
+        execution_id=execution_id,
+        created_at=created_at,
+    )
+
+
+async def test_reap_lost_adopted_windows_refires_an_unstamped_row() -> None:
+    sched = _adopted_schedule(cron="* * * * *", last_fired=None)
+    srepo = _FakeSchedRepo([sched])
+    maint = _FakeMaintenance(srepo)
+    lost = _lost_adopted_row(sched, execution_id=None, created_at=_NOW - timedelta(minutes=10))
+    maint.stale_adopted = [lost]
+    dispatches: list = []
+    svc, _ = _svc(
+        srepo,
+        _FakeJobRepo(),
+        enqueue_adopted_tool=lambda run, inst, data, o, u: dispatches.append(
+            (run, inst, data, o, u)
+        ),
+        maintenance=maint,
+    )
+    n = await svc.reap_lost_adopted_windows(
+        maint, older_than=_NOW - timedelta(minutes=5), younger_than=_NOW - timedelta(hours=6)
+    )
+    assert n == 1
+    # re-fired the SAME run_id (so the worker's execution_id short-circuit keeps it exactly-once),
+    # with the schedule's instance_id + input_data + org + owner (the row carries none of these).
+    assert dispatches == [
+        (lost.id, sched.instance_id, sched.input_data, sched.organisation_id, sched.user_id)
+    ]
+
+
+async def test_reap_lost_adopted_windows_skips_a_stamped_row() -> None:
+    # a row that DID stamp an execution_id is not a lost window — the maintenance read (execution_id
+    # IS NULL) never returns it, so it is never re-fired. Simulate that: the stale list is empty.
+    sched = _adopted_schedule(cron="* * * * *", last_fired=None)
+    srepo = _FakeSchedRepo([sched])
+    maint = _FakeMaintenance(srepo)
+    maint.stale_adopted = []  # a stamped row is excluded by list_stale_adopted_runs' WHERE
+    dispatches: list = []
+    svc, _ = _svc(
+        srepo,
+        _FakeJobRepo(),
+        enqueue_adopted_tool=lambda *a: dispatches.append(a),
+        maintenance=maint,
+    )
+    n = await svc.reap_lost_adopted_windows(
+        maint, older_than=_NOW, younger_than=_NOW - timedelta(hours=6)
+    )
+    assert n == 0 and dispatches == []
+
+
+async def test_reap_lost_adopted_windows_skips_when_the_schedule_is_gone() -> None:
+    # the schedule was deleted (or is not an adopted-tool schedule) — nothing to re-fire from.
+    sched = _adopted_schedule(cron="* * * * *", last_fired=None)
+    srepo = _FakeSchedRepo([])  # schedule NOT in the store
+    maint = _FakeMaintenance(srepo)
+    maint.stale_adopted = [
+        _lost_adopted_row(sched, execution_id=None, created_at=_NOW - timedelta(minutes=10))
+    ]
+    dispatches: list = []
+    svc, _ = _svc(
+        srepo,
+        _FakeJobRepo(),
+        enqueue_adopted_tool=lambda *a: dispatches.append(a),
+        maintenance=maint,
+    )
+    n = await svc.reap_lost_adopted_windows(
+        maint, older_than=_NOW - timedelta(minutes=5), younger_than=_NOW - timedelta(hours=6)
+    )
+    assert n == 0 and dispatches == []
+
+
+async def test_reap_lost_adopted_windows_is_a_noop_without_a_dispatch_callback() -> None:
+    # no enqueue callback wired (a mis-wire) → the reaper re-fires nothing (never silently drops).
+    sched = _adopted_schedule(cron="* * * * *", last_fired=None)
+    srepo = _FakeSchedRepo([sched])
+    maint = _FakeMaintenance(srepo)
+    maint.stale_adopted = [
+        _lost_adopted_row(sched, execution_id=None, created_at=_NOW - timedelta(minutes=10))
+    ]
+    svc, _ = _svc(srepo, _FakeJobRepo(), enqueue_adopted_tool=None, maintenance=maint)
+    assert (
+        await svc.reap_lost_adopted_windows(
+            maint, older_than=_NOW - timedelta(minutes=5), younger_than=_NOW - timedelta(hours=6)
+        )
+        == 0
+    )
 
 
 # ── #601: standing-team (target_kind="team") register + fire branch ───────────────────────────

@@ -15,6 +15,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from croniter import croniter
+from kombu.exceptions import OperationalError  # broker-publish failure (the .delay() hand-off)
 from oraclous_governance import Principal
 from oraclous_ohm.errors import OHMError
 from oraclous_ohm.parse import load_ohm
@@ -43,6 +44,10 @@ from oraclous_execution_engine_service.repositories.schedule_repository import S
 from oraclous_execution_engine_service.repositories.team_run_repository import TeamRunRepository
 from oraclous_execution_engine_service.services.graph_client import GraphClient, GraphClientError
 from oraclous_execution_engine_service.services.job_service import EnqueueFn
+from oraclous_execution_engine_service.services.registry_client import (
+    RegistryClient,
+    RegistryClientError,
+)
 from oraclous_execution_engine_service.services.team_run_service import thread_refresh_seed
 
 # An adopted-tool dispatch hand-off: (run_id, instance_id, input_data, organisation_id, user_id) →
@@ -88,6 +93,7 @@ class ScheduleService:
         enqueue_team_run: TeamRunEnqueueFn | None = None,
         team_runs: TeamRunRepository | None = None,
         graphs: GraphClient | None = None,
+        registry: RegistryClient | None = None,
         maintenance: EngineMaintenanceRepository | None = None,
     ) -> None:
         self._schedules = schedules
@@ -98,6 +104,10 @@ class ScheduleService:
         # cross-org / non-existent graph_id (mirrors TeamRunService.create's check). None on the
         # Beat path (register is request-path only); then KGS RLS stays the authoritative scope.
         self._graphs = graphs
+        # #501-#5: the request-path registry client — register fail-closes an adopted_tool_run
+        # schedule whose instance_id is cross-org / non-existent (mirrors _graphs). None on the
+        # Beat/reaper path; then the registry's own execute-time org-scoping is the scope.
+        self._registry = registry
         # #601: the standing-team dispatch callback + the team-run repo (the team branch's
         # create-before-enqueue home). Like `_enqueue_adopted_tool`: both injected on the Beat
         # path AND the fire-now request path; None means the team branch creates the dedupe row +
@@ -144,6 +154,9 @@ class ScheduleService:
                 raise ScheduleError("an adopted_tool_run schedule takes no manifest/manifest_ref")
             if instance_id is None:
                 raise ScheduleError("an adopted_tool_run schedule requires instance_id")
+            # fail-fast: the instance must exist in the caller's org (cross-org already fails closed
+            # at execute — validate early for a clean 4xx, not a confusing mid-fire reject).
+            await self._validate_instance_id(instance_id)
         elif target_kind == TargetKind.TEAM.value:
             # #601: a standing team carries an INLINE team manifest + a PERSISTENT graph workspace;
             # input_data carries the team-run spec ({sub_harnesses, gate_decisions}). instance_id is
@@ -294,15 +307,23 @@ class ScheduleService:
         return fired
 
     async def _fire_one(self, sched: EngineSchedule, now: datetime) -> int:
-        # is_valid can pass for an impossible date (e.g. Feb 30) on which get_prev raises — the
-        # surrounding try in fire_due isolates that so it never stalls the other orgs' schedules.
-        if not sched.cron or not croniter.is_valid(sched.cron):
-            return 0
-        prev = croniter(sched.cron, now).get_prev(datetime)  # most recent window strictly < now
-        # defensive: keep the comparison aware-vs-aware across croniter versions.
-        prev = prev if prev.tzinfo else prev.replace(tzinfo=UTC)
-        if sched.last_fired_at is not None and sched.last_fired_at >= prev:
-            return 0  # already fired this window
+        if not sched.cron:
+            # #501: a MANUAL schedule (no cron) has no Beat window — a fire-now IS its trigger (Beat
+            # never reaches here: list_enabled_cron is cron-only). The window is the fire wall-clock
+            # truncated to the second, so a rapid double fire-now dedupes on the same (org, key) row
+            # but genuinely-distinct fires each run — instead of the old silent no-op that
+            # contradicted fire_now's "allowed on manual" contract.
+            prev = now.replace(microsecond=0)
+        else:
+            # is_valid can pass for an impossible date (e.g. Feb 30) on which get_prev raises — the
+            # surrounding try in fire_due isolates that so it never stalls other orgs' schedules.
+            if not croniter.is_valid(sched.cron):
+                return 0
+            prev = croniter(sched.cron, now).get_prev(datetime)  # most recent window strictly < now
+            # defensive: keep the comparison aware-vs-aware across croniter versions.
+            prev = prev if prev.tzinfo else prev.replace(tzinfo=UTC)
+            if sched.last_fired_at is not None and sched.last_fired_at >= prev:
+                return 0  # already fired this window
         key = f"{sched.id}:{prev.isoformat()}"
         if sched.target_kind == TargetKind.ADOPTED_TOOL_RUN.value:
             fired = await self._fire_adopted_tool(sched, key)
@@ -316,7 +337,7 @@ class ScheduleService:
         else:  # harness_job (the default; old rows read here)
             fired = await self._fire_harness_job(sched, key)
         # advance the cursor regardless (a duplicate-window create returned None but IS fired).
-        await self._schedules.set_last_fired(sched.id, prev)
+        await self._schedules.set_last_fired(sched.id, sched.organisation_id, prev)
         return fired
 
     async def _budget_preflight(self, sched: EngineSchedule, now: datetime) -> bool:
@@ -449,6 +470,46 @@ class ScheduleService:
             return 1
         return 0
 
+    async def reap_lost_adopted_windows(
+        self,
+        maintenance: EngineMaintenanceRepository,
+        *,
+        older_than: datetime,
+        younger_than: datetime,
+    ) -> int:
+        """#501: re-enqueue adopted-tool fires whose ``(org, key)`` dedupe row committed but whose
+        registry dispatch never stamped an execution_id — the LOST-WINDOW recovery. Because the row
+        is written transactionally BEFORE the dispatch (``_fire_adopted_tool``), a ``.delay()``
+        that raised, or a rejected/unreachable registry, leaves a stranded unstamped row that would
+        otherwise NEVER fire — the schedule silently skips that window.
+
+        Cross-org ENUMERATION on the maintenance reader over an ``older_than < created_at <
+        younger_than`` window (past the dispatch lease so an in-flight dispatch that stamps in secs
+        is never re-fired, but not so ancient a permanently-rejected instance loops forever). Each
+        re-fire is ORG-BOUND (``org_scope(run.org)``) and dispatches the SAME ``run_id``, so the
+        worker's execution_id short-circuit keeps at-least-once from becoming double-execute. The
+        adopted-run row carries no instance_id/input_data, so the re-fire reads them from the sched
+        (a deleted / non-adopted schedule → skip: nothing to re-fire). Returns the count re-fired.
+        No-op when no dispatch callback is wired (tests / mis-wire)."""
+        if self._enqueue_adopted_tool is None:
+            return 0
+        stale = await maintenance.list_stale_adopted_runs(older_than, younger_than)
+        re_enqueued = 0
+        for run in stale:
+            with org_scope(run.organisation_id):
+                sched = await self._schedules.get(run.schedule_id, run.organisation_id)
+            if sched is None or sched.instance_id is None:
+                continue  # schedule deleted / not an adopted-tool schedule — nothing to re-fire
+            self._enqueue_adopted_tool(
+                run.id,
+                sched.instance_id,
+                sched.input_data or {},
+                run.organisation_id,
+                sched.user_id,
+            )
+            re_enqueued += 1
+        return re_enqueued
+
     async def _recurring_refresh_seed(
         self, sched: EngineSchedule, base_inputs: dict[str, Any] | None
     ) -> tuple[uuid.UUID | None, dict[str, Any] | None]:
@@ -536,7 +597,16 @@ class ScheduleService:
             sched = await self._schedules.get(schedule_id, org_id)
             if sched is None:
                 raise ScheduleError("schedule not found")
-            await self._fire_one(sched, datetime.now(UTC))
+            try:
+                await self._fire_one(sched, datetime.now(UTC))
+            except OperationalError as exc:
+                # #501-#4: the broker is down, so the .delay() dispatch hand-off failed AFTER the
+                # (org, key) dedupe row committed — surface a clean 4xx/5xx, not a raw 500. The fire
+                # IS durably recorded (the row), so the lost-window reaper re-fires it once the
+                # broker recovers; the caller just learns the immediate dispatch couldn't be queued.
+                raise ScheduleError(
+                    "dispatch queue unavailable; the fire is recorded and will be retried"
+                ) from exc
             refreshed = await self._schedules.get(schedule_id, org_id)
             if refreshed is None:  # pragma: no cover — deleted mid-fire; treat as not-found
                 raise ScheduleError("schedule not found")
@@ -577,6 +647,23 @@ class ScheduleService:
             ) from exc
         if not exists:
             raise ScheduleError("graph_id does not exist in your organisation")
+
+    async def _validate_instance_id(self, instance_id: uuid.UUID) -> None:
+        """#501-#5 (mirrors _validate_graph_id): the adopted_tool_run instance_id MUST exist in the
+        caller's org. The registry GET is org-scoped by the downstream headers, so an instance the
+        org does not own → a clear 4xx at register, not a confusing mid-fire reject. With no
+        registry client wired (the Beat/reaper path) the check is skipped — the registry's own
+        org-scoping at execute stays the authoritative boundary."""
+        if self._registry is None:
+            return
+        try:
+            exists = await self._registry.instance_exists(instance_id)
+        except RegistryClientError as exc:  # registry unreachable / inconclusive — fail closed
+            raise ScheduleError(
+                "could not validate instance_id (capability-registry unreachable)"
+            ) from exc
+        if not exists:
+            raise ScheduleError("instance_id does not exist in your organisation")
 
     @staticmethod
     def _require_org(principal: Principal) -> uuid.UUID:

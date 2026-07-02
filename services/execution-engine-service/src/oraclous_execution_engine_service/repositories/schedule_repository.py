@@ -144,12 +144,21 @@ class ScheduleRepository:
             )
             return list(result.scalars().all())
 
-    async def set_last_fired(self, schedule_id: uuid.UUID, fired_at: datetime) -> None:
+    async def set_last_fired(
+        self, schedule_id: uuid.UUID, organisation_id: uuid.UUID, fired_at: datetime
+    ) -> None:
+        """Advance the fire cursor. #501-#6: the ``organisation_id`` predicate is app-layer
+        defense-in-depth over the RLS backstop — the cross-org Beat sweep advances each cursor under
+        ``org_scope(sched.org)``, so the WHERE also pins the row's own org (never rely on RLS alone
+        for isolation; ADR-006 every write parameterised by organisation_id)."""
         async with self._session() as session:
             async with session.begin():
                 row = (
                     await session.execute(
-                        select(EngineSchedule).where(EngineSchedule.id == schedule_id)
+                        select(EngineSchedule).where(
+                            EngineSchedule.id == schedule_id,
+                            EngineSchedule.organisation_id == organisation_id,
+                        )
                     )
                 ).scalar_one_or_none()
                 if row is not None:

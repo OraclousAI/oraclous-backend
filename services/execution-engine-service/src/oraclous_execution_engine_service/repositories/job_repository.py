@@ -130,6 +130,22 @@ class JobRepository:
         except IntegrityError:
             return None
 
+    async def get_adopted_run(
+        self, run_id: uuid.UUID, organisation_id: uuid.UUID
+    ) -> AdoptedToolRun | None:
+        """#501: read an adopted-tool-run row (org-scoped). The worker's exactly-once REDELIVERY
+        GUARD reads ``execution_id`` to short-circuit a re-dispatch — ``task_acks_late`` redelivers
+        the task if a worker dies AFTER the registry dispatch succeeded but BEFORE the ack, and this
+        adopted path (unlike the harness QUEUED→RUNNING CAS) has no other guard vs a 2nd run."""
+        async with self._session() as session:
+            result = await session.execute(
+                select(AdoptedToolRun).where(
+                    AdoptedToolRun.id == run_id,
+                    AdoptedToolRun.organisation_id == organisation_id,
+                )
+            )
+            return result.scalar_one_or_none()
+
     async def set_adopted_execution_id(
         self, run_id: uuid.UUID, organisation_id: uuid.UUID, execution_id: uuid.UUID
     ) -> None:
@@ -243,6 +259,27 @@ class JobRepository:
                 .where(
                     EngineJob.state == EngineJobState.RUNNING.value,
                     EngineJob.updated_at < older_than,
+                )
+                .limit(limit)
+            )
+            return list(result.scalars().all())
+
+    async def list_stale_adopted_runs(
+        self, older_than: datetime, younger_than: datetime, *, limit: int = 100
+    ) -> list[AdoptedToolRun]:
+        """#501: adopted-tool-run rows whose registry dispatch never stamped an execution_id — the
+        LOST-WINDOW recovery targets. ``created_at < older_than`` (past the dispatch lease, so an
+        in-flight dispatch that stamps in seconds is never re-fired) AND ``created_at > younger``
+        (bounded age, so a permanently-rejected instance can't re-fire forever). Cross-org on the
+        MAINTENANCE engine (install_guard=False), like list_stale_running; each re-fire is then
+        settled under its own org (ADR-006 carve-out — no row crosses a tenant boundary)."""
+        async with self._session() as session:
+            result = await session.execute(
+                select(AdoptedToolRun)
+                .where(
+                    AdoptedToolRun.execution_id.is_(None),
+                    AdoptedToolRun.created_at < older_than,
+                    AdoptedToolRun.created_at > younger_than,
                 )
                 .limit(limit)
             )

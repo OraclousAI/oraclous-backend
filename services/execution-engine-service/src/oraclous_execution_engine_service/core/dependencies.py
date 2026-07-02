@@ -37,6 +37,7 @@ from oraclous_execution_engine_service.services.activity_service import Activity
 from oraclous_execution_engine_service.services.graph_client import GraphClient
 from oraclous_execution_engine_service.services.harness_client import HarnessClient
 from oraclous_execution_engine_service.services.job_service import JobService
+from oraclous_execution_engine_service.services.registry_client import RegistryClient
 from oraclous_execution_engine_service.services.roundtable_service import RoundtableService
 from oraclous_execution_engine_service.services.schedule_service import ScheduleService
 from oraclous_execution_engine_service.services.task_service import TaskService
@@ -151,12 +152,14 @@ def get_schedule_service(
     jobs: Annotated[JobRepository, Depends(get_job_repository)],
     team_runs: Annotated[TeamRunRepository, Depends(get_team_run_repository)],
     graphs: Annotated[GraphClient, Depends(get_graph_client)],
+    registry: Annotated[RegistryClient, Depends(get_registry_client)],
     provenance: Annotated[ProvenanceCollector, Depends(get_provenance)],
 ) -> ScheduleService:
     # the request path registers/lists/deletes AND fires-now (#489): fire-now reuses the Beat fire
     # branch, so it needs ALL enqueue callbacks (harness-job + adopted-tool + #601 team-run)
     # — without enqueue_team_run/team_runs the team branch would create the dedupe row + advance the
-    # cursor but never dispatch (a green-but-hollow no-op).
+    # cursor but never dispatch (a green-but-hollow no-op). `registry` is the #501-#5 request-path
+    # instance_id existence check for an adopted_tool_run schedule (cross-org instance → clean 4xx).
     return ScheduleService(
         schedules=schedules,
         jobs=jobs,
@@ -166,6 +169,7 @@ def get_schedule_service(
         enqueue_team_run=enqueue_team_run,
         team_runs=team_runs,
         graphs=graphs,
+        registry=registry,
     )
 
 
@@ -233,6 +237,23 @@ async def get_graph_client(
         settings.knowledge_graph_url,
         headers=build_downstream_headers(principal, settings),
         timeout=settings.knowledge_graph_request_timeout,
+    )
+    try:
+        yield client
+    finally:
+        await client.aclose()
+
+
+async def get_registry_client(
+    principal: Annotated[Principal, Depends(get_principal)],
+) -> AsyncIterator[RegistryClient]:
+    # #501-#5: register validates an adopted_tool_run schedule's instance_id org-scoped — forward
+    # the caller's identity so the registry scopes the GET to the same tenant (cross-org → 404).
+    settings = get_settings()
+    client = RegistryClient(
+        settings.capability_registry_url,
+        headers=build_downstream_headers(principal, settings),
+        timeout=settings.capability_registry_request_timeout,
     )
     try:
         yield client
