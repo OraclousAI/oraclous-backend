@@ -40,6 +40,35 @@ def test_every_error_response_refs_the_envelope_schema() -> None:
         assert ref == "#/components/schemas/ErrorEnvelope", name
 
 
+def test_kgs_ingest_paths_are_published() -> None:
+    # #579: the KGS ingest surfaces (proxied under /api/v1/graphs) are now discoverable in the
+    # published contract — a user can find how to LOAD content, not only graph CRUD/resolution.
+    spec, _ = load_contract("")
+    paths = spec["paths"]
+    for p, method in [
+        ("/api/v1/graphs/{graphId}/ingest", "post"),
+        ("/api/v1/graphs/{graphId}/batch-ingest", "post"),
+        ("/api/v1/graphs/{graphId}/upload", "post"),
+        ("/api/v1/graphs/{graphId}/ingest-sql", "post"),
+        ("/api/v1/graphs/{graphId}/documents", "get"),
+        ("/api/v1/graphs/{graphId}/jobs/{jobId}", "get"),
+    ]:
+        assert p in paths and method in paths[p], f"{method.upper()} {p} not published"
+    # the ingest request bodies are defined (not free-form) so the shape is discoverable too.
+    schemas = set(spec["components"]["schemas"])
+    ingest_schemas = {
+        "IngestTextRequest",
+        "BatchIngestRequest",
+        "BatchIngestItem",
+        "SqlIngestRequest",
+    }
+    assert ingest_schemas <= schemas
+    # the multipart upload declares its file part.
+    upload = paths["/api/v1/graphs/{graphId}/upload"]["post"]["requestBody"]["content"]
+    assert "multipart/form-data" in upload
+    assert "file" in upload["multipart/form-data"]["schema"]["properties"]
+
+
 def test_no_internal_plane_disclosed() -> None:
     # the published contract is a deliberate disclosure surface — it must never expose an
     # /internal/* operation (the platform-internal plane is never edge-routed).

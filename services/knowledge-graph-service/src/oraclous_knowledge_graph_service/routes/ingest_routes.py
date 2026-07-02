@@ -209,3 +209,20 @@ async def list_documents(
     except GraphNotFound:
         raise _GRAPH_NOT_FOUND from None
     return [JobResponse.of(j) for j in jobs]
+
+
+@router.post("/documents", include_in_schema=False)
+async def documents_post_not_allowed(graph_id: uuid.UUID) -> None:
+    """#579: /documents is the READ-only ingest-job list — a user POSTing here to *add* content
+    otherwise hits a bare 405 with no hint. Return a HELPFUL 405 (with an `Allow: GET` header)
+    naming the real ingest surfaces, so the mistake self-corrects. Not a create surface, so it's
+    kept out of the service's own auto-spec (the gateway contract publishes only GET /documents)."""
+    raise HTTPException(
+        status_code=status.HTTP_405_METHOD_NOT_ALLOWED,
+        detail=(
+            "POST is not supported on /documents (it is the GET ingest-job list). To add content, "
+            "use POST /api/v1/graphs/{graph_id}/upload (a file), POST /ingest (inline text), "
+            "/batch-ingest (a folder), or /ingest-sql (a relational source)."
+        ),
+        headers={"Allow": "GET"},
+    )
