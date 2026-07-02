@@ -11,13 +11,17 @@ from __future__ import annotations
 import uuid
 
 import pytest
-from oraclous_ohm.dag import topological_stages
+from oraclous_ohm.dag import revision_invalidation_set, topological_stages
 from oraclous_ohm.errors import OHMDagError
 from oraclous_ohm.manifest import OHMManifest, OHMMember
 
 
 def _m(role: str, deps: list[str] | None = None) -> OHMMember:
     return OHMMember(role=role, kind="agent", manifest_ref="org:x/a@1", depends_on=deps or [])
+
+
+def _gate(role: str, deps: list[str] | None = None) -> OHMMember:
+    return OHMMember(role=role, kind="human", human_role="author", depends_on=deps or [])
 
 
 def test_linear_chain_orders_by_dependency() -> None:
@@ -37,6 +41,50 @@ def test_diamond_dag() -> None:
 
 def test_single_member() -> None:
     assert topological_stages([_m("only")]) == [["only"]]
+
+
+# ── ADR-046 (#578): the invalidation set a `revise` re-runs (the gate's producer sub-tree) ──
+
+
+def test_invalidation_of_a_simple_chain_is_the_direct_producer() -> None:
+    # a → gate. Revising the gate re-runs only its producer.
+    members = [_m("a"), _gate("gate", ["a"]), _m("c", ["gate"])]
+    assert revision_invalidation_set(members, "gate", {}) == {"a"}
+
+
+def test_invalidation_is_the_transitive_upstream_closure() -> None:
+    # root → mid → gate: revising the gate re-runs the whole upstream chain feeding it.
+    members = [_m("root"), _m("mid", ["root"]), _gate("gate", ["mid"])]
+    assert revision_invalidation_set(members, "gate", {}) == {"root", "mid"}
+
+
+def test_invalidation_of_a_diamond_covers_both_arms() -> None:
+    members = [_m("a"), _m("b", ["a"]), _m("c", ["a"]), _gate("gate", ["b", "c"])]
+    assert revision_invalidation_set(members, "gate", {}) == {"a", "b", "c"}
+
+
+def test_invalidation_stops_at_an_approved_upstream_gate() -> None:
+    # a → gate1(APPROVED) → b → gate2. Revising gate2 re-runs only 'b' — gate1 is sealed and 'a'
+    # (behind it) is untouched (ADR-046 §2/§5: bounded by the nearest upstream approved gate).
+    members = [_m("a"), _gate("gate1", ["a"]), _m("b", ["gate1"]), _gate("gate2", ["b"])]
+    inv = revision_invalidation_set(members, "gate2", {"gate1": "approve"})
+    assert inv == {"b"}
+    assert "a" not in inv and "gate1" not in inv  # sealed behind the approved gate
+
+
+def test_invalidation_excludes_sibling_branches() -> None:
+    # two independent branches feed nothing in common; revising gate-x never touches branch-y.
+    members = [
+        _m("x1"),
+        _gate("gate-x", ["x1"]),
+        _m("y1"),
+        _gate("gate-y", ["y1"]),
+    ]
+    assert revision_invalidation_set(members, "gate-x", {}) == {"x1"}  # y1 untouched
+
+
+def test_invalidation_of_an_unknown_gate_is_empty() -> None:
+    assert revision_invalidation_set([_m("a")], "nope", {}) == set()
 
 
 def test_empty_members() -> None:

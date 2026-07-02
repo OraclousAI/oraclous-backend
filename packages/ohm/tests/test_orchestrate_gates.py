@@ -86,3 +86,75 @@ async def test_approved_gate_threads_its_decision_downstream() -> None:
     c_envs = next(envs for role, envs in captured if role == "c")
     assert "gate-b" in c_envs  # c received the gate's decision as a hand-off
     assert c_envs["gate-b"]["decision"] == "approve"
+
+
+# ── ADR-046 (#578): the third gate verb — `revise` re-pauses; back-compat GateDecision shape ──────
+
+
+async def test_revise_gate_re_pauses_and_does_not_cross_to_downstream() -> None:
+    # a `revise` decision (GateDecision-shaped dict) re-pauses at the SAME gate — the run does NOT
+    # cross to downstream (that only happens on approve). The service re-runs the producer sub-tree
+    # (via the `completed` re-seed) between drives; run_team just re-pauses so the human re-decides.
+    res = await run_team(
+        _gated_team(),
+        _dispatch,
+        gate_decisions={"gate-b": {"decision": "revise", "feedback": "redo it"}},
+    )
+    assert res.status == "paused"
+    assert res.paused_at == ["gate-b"]
+    assert "c" not in res.results  # downstream still blocked — revise never crosses the gate
+
+
+async def test_revise_re_runs_the_producer_when_excluded_from_the_completed_seed() -> None:
+    # the service inverts the resume seed to `results − invalidation_set`, so the gate's producer is
+    # NOT seeded and re-dispatches; everything else seeded is reused. Here 'a' (the producer) is
+    # left out of `completed`, so it re-runs; the run then re-pauses at the revised gate.
+    ran: list[str] = []
+
+    async def dispatch(member: OHMMember, envs: list[HandoffEnvelope], item: Any) -> dict:
+        ran.append(member.role)
+        return {"ran": member.role}
+
+    res = await run_team(
+        _gated_team(),
+        dispatch,
+        gate_decisions={"gate-b": {"decision": "revise", "feedback": "redo"}},
+        completed={},  # 'a' excluded → re-dispatches (the invalidation re-seed)
+    )
+    assert "a" in ran  # the producer re-ran with the revision in play
+    assert "c" not in ran  # downstream never dispatched (still behind the re-paused gate)
+    assert res.status == "paused" and res.paused_at == ["gate-b"]
+
+
+async def test_seeded_producer_is_not_re_dispatched_on_revise() -> None:
+    # a producer that IS in `completed` (outside the invalidation set) is reused, not re-dispatched:
+    # the scoped re-run only touches the invalidated slice (ADR-046 §5, siblings/sealed untouched).
+    ran: list[str] = []
+
+    async def dispatch(member: OHMMember, envs: list[HandoffEnvelope], item: Any) -> dict:
+        ran.append(member.role)
+        return {"ran": member.role}
+
+    res = await run_team(
+        _gated_team(),
+        dispatch,
+        gate_decisions={"gate-b": {"decision": "revise"}},
+        completed={"a": {"ran": "a"}},  # 'a' seeded → reused, not re-run
+    )
+    assert "a" not in ran  # reused from the seed, not re-dispatched
+    assert res.status == "paused" and res.paused_at == ["gate-b"]
+
+
+async def test_gate_decision_object_shape_is_back_compatible_for_approve_and_reject() -> None:
+    # the widened gate value accepts a GateDecision-shaped dict for approve/reject too, identically
+    # to the v1 bare string (gate_verb normalizes both) — additive, never breaking.
+    approved = await run_team(
+        _gated_team(), _dispatch, gate_decisions={"gate-b": {"decision": "approve"}}
+    )
+    assert approved.status == "completed" and approved.results["c"] == {"ran": "c"}
+    assert approved.results["gate-b"]["decision"] == "approve"  # normalized to the verb
+
+    rejected = await run_team(
+        _gated_team(), _dispatch, gate_decisions={"gate-b": {"decision": "reject"}}
+    )
+    assert rejected.status == "rejected" and "c" not in rejected.results
