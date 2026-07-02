@@ -496,18 +496,21 @@ class ScheduleService:
         stale = await maintenance.list_stale_adopted_runs(older_than, younger_than)
         re_enqueued = 0
         for run in stale:
-            with org_scope(run.organisation_id):
-                sched = await self._schedules.get(run.schedule_id, run.organisation_id)
-            if sched is None or sched.instance_id is None:
-                continue  # schedule deleted / not an adopted-tool schedule — nothing to re-fire
-            self._enqueue_adopted_tool(
-                run.id,
-                sched.instance_id,
-                sched.input_data or {},
-                run.organisation_id,
-                sched.user_id,
-            )
-            re_enqueued += 1
+            try:  # one bad row must NOT abort the sweep (mirrors fire_due / resume_budget_paused)
+                with org_scope(run.organisation_id):
+                    sched = await self._schedules.get(run.schedule_id, run.organisation_id)
+                if sched is None or sched.instance_id is None:
+                    continue  # schedule deleted / not an adopted-tool schedule — nothing to re-fire
+                self._enqueue_adopted_tool(
+                    run.id,
+                    sched.instance_id,
+                    sched.input_data or {},
+                    run.organisation_id,
+                    sched.user_id,
+                )
+                re_enqueued += 1
+            except Exception:  # noqa: BLE001, S112 — best-effort sweep; skip this row, continue
+                continue
         return re_enqueued
 
     async def _recurring_refresh_seed(
@@ -600,12 +603,14 @@ class ScheduleService:
             try:
                 await self._fire_one(sched, datetime.now(UTC))
             except OperationalError as exc:
-                # #501-#4: the broker is down, so the .delay() dispatch hand-off failed AFTER the
-                # (org, key) dedupe row committed — surface a clean 4xx/5xx, not a raw 500. The fire
-                # IS durably recorded (the row), so the lost-window reaper re-fires it once the
-                # broker recovers; the caller just learns the immediate dispatch couldn't be queued.
+                # #501-#4: the broker is down, so the .delay() dispatch hand-off failed — surface a
+                # clean 4xx/5xx, not a raw 500. (Recovery differs by kind: an adopted-tool row
+                # survives unstamped for the lost-window reaper; a harness/team row is compensated
+                # to FAILED and re-fires on its next cron window — so the message promises neither,
+                # only that the dispatch could not be queued and the caller should retry.)
                 raise ScheduleError(
-                    "dispatch queue unavailable; the fire is recorded and will be retried"
+                    "dispatch queue unavailable (broker unreachable); the fire was not queued — "
+                    "please retry"
                 ) from exc
             refreshed = await self._schedules.get(schedule_id, org_id)
             if refreshed is None:  # pragma: no cover — deleted mid-fire; treat as not-found

@@ -287,9 +287,8 @@ async def _run_adopted_tool_async(
         )
         try:
             # #501 (exactly-once): task_acks_late redelivers this task if a worker dies AFTER the
-            # registry dispatch succeeded but BEFORE the ack. Unlike the harness path (a QUEUED→
-            # RUNNING CAS), the adopted path has no other guard — so short-circuit a redelivery
-            # whose run already stamped an execution_id; the tool never runs twice (a dup draft).
+            # registry dispatch succeeded but BEFORE the ack — short-circuit a redelivery whose run
+            # already stamped an execution_id (the cheap read, before any claim/execute).
             existing = await jobs.get_adopted_run(run_id, org_id)
             if existing is not None and existing.execution_id is not None:
                 return {
@@ -297,6 +296,20 @@ async def _run_adopted_tool_async(
                     "execution_id": str(existing.execution_id),
                     "deduped": True,
                 }
+            # #501-#1: the ATOMIC CLAIM — the lost-window reaper (#2) can enqueue a SECOND, separate
+            # copy of this run while the original is still queued, so under queue backlog two copies
+            # can run CONCURRENTLY on the 2-slot worker. The read above is not atomic against that;
+            # the claim is. Exactly one concurrent copy wins the conditional UPDATE and executes —
+            # losers short-circuit here, so the non-idempotent registry /execute runs once. A claim
+            # that crashes before stamping ages past the lease → re-claimable → reaper recovers.
+            claimed = await jobs.claim_adopted_dispatch(
+                run_id,
+                org_id,
+                now=datetime.now(UTC),
+                lease_seconds=settings.adopted_dispatch_lease_seconds,
+            )
+            if not claimed:
+                return {"run_id": run_id_s, "deduped": True}  # another copy holds the dispatch
             result = await registry.execute(instance_id, input_data)
             execution_id = result.get("id")
             if execution_id is not None:

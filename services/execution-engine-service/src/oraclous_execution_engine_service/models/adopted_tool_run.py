@@ -18,8 +18,9 @@ mapper configuration, so they must be real types.
 """
 
 import uuid
+from datetime import datetime
 
-from sqlalchemy import String
+from sqlalchemy import DateTime, String
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -38,3 +39,9 @@ class AdoptedToolRun(BaseModel):
     idempotency_key: Mapped[str] = mapped_column(String(255), nullable=False)
     # the registry ExecutionOut.id, stamped by the worker AFTER it dispatches (nullable until then).
     execution_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    # #501-#1: the atomic dispatch CLAIM. The worker stamps this via a conditional UPDATE before
+    # calling registry /execute, so exactly one of N concurrent copies of the same run (the original
+    # message + a lost-window-reaper re-fire + a redelivery) proceeds — the others short-circuit. A
+    # claim that never stamps execution_id (a crash mid-execute) ages past the lease and becomes
+    # re-claimable, so the reaper still recovers it. NULL until the first claim (today's behaviour).
+    dispatched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
