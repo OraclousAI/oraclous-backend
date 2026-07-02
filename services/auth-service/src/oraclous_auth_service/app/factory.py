@@ -30,9 +30,8 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError
 from oraclous_telemetry import evaluate_readiness, install_telemetry, instrument_app
 from pydantic import BaseModel
-from sqlalchemy.ext.asyncio import AsyncSession
 
-from oraclous_auth_service.core.dependencies import get_session
+from oraclous_auth_service.core.dependencies import get_org_member_repository
 from oraclous_auth_service.core.jwt_handler import (
     create_agent_token,
     create_service_account_token,
@@ -426,7 +425,8 @@ def create_app(
     # --- GET /internal/v1/orgs/{org}/members/{user} (#464) ---------------
     # Internal-key-gated grantee-membership check (NO caller-membership gate — a service-to-service
     # lookup KGS's cross-org grant path calls before writing an edge, ADR-017 + ADR-036-G2). Backed
-    # by OrgMemberRepository; a session comes from the app-state sessionmaker via get_session.
+    # by OrgMemberRepository, injected via get_org_member_repository so this app-factory never
+    # touches a raw DB-driver session (repositories are the only DB seam — STR004).
 
     @app.get(
         "/internal/v1/orgs/{organisation_id}/members/{user_id}",
@@ -436,11 +436,9 @@ def create_app(
     async def check_org_membership(
         organisation_id: str,
         user_id: str,
-        session: AsyncSession = Depends(get_session),  # noqa: B008 — FastAPI Depends() idiom
+        members: OrgMemberRepository = Depends(get_org_member_repository),  # noqa: B008 — DI idiom
     ) -> _MembershipResponse:
-        member = await OrgMemberRepository(session).get(
-            organisation_id=organisation_id, user_id=user_id
-        )
+        member = await members.get(organisation_id=organisation_id, user_id=user_id)
         return _MembershipResponse(is_member=member is not None)
 
     # --- GET /me ---------------------------------------------------------
