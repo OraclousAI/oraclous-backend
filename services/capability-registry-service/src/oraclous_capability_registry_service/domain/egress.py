@@ -153,11 +153,15 @@ def pinned_request(url: str, pinned_ip: str) -> tuple[httpx.URL, dict[str, str],
     only). Mirrors the KGS pinned-IP dial (``sql_connector`` host=pinned_ip, name for SNI)."""
     original = httpx.URL(url)
     host = original.host
+    # an IPv6 literal must be bracketed in the Host header (RFC 3986) — httpx.URL.host strips the
+    # brackets, so a bare "::1:8080" would be ambiguous; re-bracket before appending any port (L6).
+    host_label = f"[{host}]" if ":" in host else host
     # the Host header carries the original name; include the port only when it was explicit/non-
     # default (httpx omits a default 80/443), so it matches what a normal request would send.
     default_port = 443 if original.scheme == "https" else 80
     port = original.port
-    host_header = f"{host}:{port}" if port is not None and port != default_port else host
+    explicit_port = port is not None and port != default_port
+    host_header = f"{host_label}:{port}" if explicit_port else host_label
     headers = {"Host": host_header}
     extensions: dict[str, Any] = {"sni_hostname": host} if original.scheme == "https" else {}
     return original.copy_with(host=pinned_ip), headers, extensions

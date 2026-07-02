@@ -137,3 +137,12 @@ def test_pinned_request_sends_no_sni_extension_for_plain_http() -> None:
     assert url.host == "93.184.216.34"
     assert headers["Host"] == "api.partner.io"  # default port → no :port suffix (as httpx sends)
     assert ext == {}
+
+
+def test_pinned_request_brackets_an_ipv6_literal_host_in_the_host_header() -> None:
+    # #492 review L6: an IPv6-literal host must be bracketed in the Host header (RFC 3986) — a bare
+    # "2606:...:8443" would be ambiguous. (Public v6 literal so it clears the guard when pinned.)
+    v6 = "2606:2800:220:1:248:1893:25c8:1946"
+    url, headers, ext = pinned_request(f"https://[{v6}]:8443/mcp", "::1")
+    assert headers["Host"] == f"[{v6}]:8443"
+    assert ext == {"sni_hostname": v6}
