@@ -97,8 +97,9 @@ def get_binding_service(
 
 def get_mcp_import_service(
     repo: Annotated[CapabilityRepository, Depends(get_capability_repository)],
+    broker: Annotated[CredentialBrokerPort, Depends(get_credential_broker)],
 ) -> McpImportService:
-    return McpImportService(capabilities=repo)
+    return McpImportService(capabilities=repo, broker=broker)  # #541: broker resolves credential_id
 
 
 def get_instance_manager(

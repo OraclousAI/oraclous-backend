@@ -26,9 +26,33 @@ def _ctx(credentials: dict | None = None) -> ExecutionContext:
     )
 
 
+def _streamable(
+    call_handler: Callable[[httpx.Request], httpx.Response],
+    *,
+    session_id: str | None = "sess-1",
+) -> Callable[[httpx.Request], httpx.Response]:
+    """Wrap a ``tools/call`` handler into a full Streamable-HTTP server (#541): ``initialize`` →
+    Mcp-Session-Id + result, ``notifications/initialized`` → 202, everything else → the handler."""
+
+    def routed(req: httpx.Request) -> httpx.Response:
+        method = json.loads(req.content).get("method") if req.content else None
+        if method == "initialize":
+            headers = {"mcp-session-id": session_id} if session_id else {}
+            return httpx.Response(
+                200,
+                headers=headers,
+                json={"jsonrpc": "2.0", "id": 1, "result": {"capabilities": {}}},
+            )
+        if method == "notifications/initialized":
+            return httpx.Response(202)
+        return call_handler(req)
+
+    return routed
+
+
 def _executor(spec: dict, handler: Callable[[httpx.Request], httpx.Response]) -> McpToolExecutor:
     ex = McpToolExecutor({"id": "x", "spec": spec})
-    ex.transport = httpx.MockTransport(handler)
+    ex.transport = httpx.MockTransport(_streamable(handler))
     return ex
 
 
@@ -189,3 +213,78 @@ async def test_mcp_refuses_when_the_guard_pins_nothing(monkeypatch: pytest.Monke
     res = await ex.execute({}, _ctx())
     assert not res.success and res.error_type == "EGRESS_BLOCKED"
     assert called["n"] == 0  # never reached the network
+
+
+# ── #541: the full Streamable-HTTP protocol (initialize → session → SSE tools/call) ──
+
+
+async def test_tools_call_parses_an_sse_framed_response() -> None:
+    # a real hosted MCP server SSE-frames the response; the executor must parse the data: frame.
+    def call(_req: httpx.Request) -> httpx.Response:
+        sse = (
+            'event: message\n'
+            'data: {"jsonrpc":"2.0","id":2,"result":'
+            '{"content":[{"type":"text","text":"sse-ok"}]}}\n\n'
+        )
+        return httpx.Response(200, headers={"content-type": "text/event-stream"}, content=sse)
+
+    ex = _executor({"type": "mcp", "server_url": _URL, "tool_name": "t"}, call)
+    res = await ex.execute({}, _ctx())
+    assert res.success and res.data == {"content": [{"type": "text", "text": "sse-ok"}]}
+
+
+async def test_the_session_id_is_echoed_on_the_tools_call() -> None:
+    seen: dict = {}
+
+    def call(req: httpx.Request) -> httpx.Response:
+        seen["session"] = req.headers.get("mcp-session-id")
+        return httpx.Response(200, json={"jsonrpc": "2.0", "id": 2, "result": {"content": []}})
+
+    ex = McpToolExecutor({"id": "x", "spec": {"type": "mcp", "server_url": _URL, "tool_name": "t"}})
+    ex.transport = httpx.MockTransport(_streamable(call, session_id="the-session-42"))
+    res = await ex.execute({}, _ctx())
+    assert res.success
+    assert seen["session"] == "the-session-42"  # the handshake's session id rides the tools/call
+
+
+async def test_a_sessionless_server_still_works() -> None:
+    # a server that returns no Mcp-Session-Id (stateless) is still callable — no header sent.
+    def call(req: httpx.Request) -> httpx.Response:
+        assert req.headers.get("mcp-session-id") is None
+        return httpx.Response(200, json={"jsonrpc": "2.0", "id": 2, "result": {"content": []}})
+
+    ex = McpToolExecutor({"id": "x", "spec": {"type": "mcp", "server_url": _URL, "tool_name": "t"}})
+    ex.transport = httpx.MockTransport(_streamable(call, session_id=None))
+    res = await ex.execute({}, _ctx())
+    assert res.success
+
+
+async def test_a_rejected_initialize_is_a_clean_handshake_error() -> None:
+    def routed(req: httpx.Request) -> httpx.Response:
+        # the server rejects the handshake itself — a clean MCP_HANDSHAKE_ERROR, never a leak.
+        return httpx.Response(200, json={"error": {"code": -32600, "message": "SECRET refuse"}})
+
+    ex = McpToolExecutor({"id": "x", "spec": {"type": "mcp", "server_url": _URL, "tool_name": "t"}})
+    ex.transport = httpx.MockTransport(routed)
+    res = await ex.execute({}, _ctx())
+    assert not res.success and res.error_type == "MCP_HANDSHAKE_ERROR"
+    assert "SECRET" not in (res.error_message or "")
+
+
+async def test_the_bearer_is_sent_on_the_handshake_and_the_call() -> None:
+    seen: list[str | None] = []
+
+    def routed(req: httpx.Request) -> httpx.Response:
+        seen.append(req.headers.get("authorization"))
+        method = json.loads(req.content).get("method")
+        if method == "initialize":
+            return httpx.Response(200, headers={"mcp-session-id": "s"}, json={"result": {}})
+        if method == "notifications/initialized":
+            return httpx.Response(202)
+        return httpx.Response(200, json={"result": {"content": []}})
+
+    ex = McpToolExecutor({"id": "x", "spec": {"type": "mcp", "server_url": _URL, "tool_name": "t"}})
+    ex.transport = httpx.MockTransport(routed)
+    res = await ex.execute({}, _ctx({"api_key": {"api_key": "tok-9"}}))
+    assert res.success
+    assert all(a == "Bearer tok-9" for a in seen)  # the bearer rides EVERY request, incl. init

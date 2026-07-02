@@ -142,3 +142,83 @@ def test_status_for_forces_pending_for_any_mcp_descriptor() -> None:
     # a non-MCP descriptor keeps the requested status (built-ins / first-party stay active)
     assert status_for({"spec": {"type": "database"}}, "active") == "active"
     assert status_for({}, "active") == "active"
+
+
+# ── #541: auth'd import (credential_id → broker Bearer) + Streamable-HTTP session/SSE ─────────────
+
+from oraclous_capability_registry_service.services.credential_client import (  # noqa: E402
+    CredentialResolutionError,
+    ResolvedCredential,
+)
+
+
+class _FakeBroker:
+    def __init__(
+        self, *, api_key: str | None = "imp-tok", raise_exc: Exception | None = None
+    ) -> None:
+        self._api_key = api_key
+        self._raise = raise_exc
+        self.seen: dict = {}
+
+    async def resolve(self, *, organisation_id, user_id, requirement, credential_id=None):  # noqa: ANN001, ANN202
+        self.seen = {"credential_id": credential_id, "org": organisation_id, "user": user_id}
+        if self._raise is not None:
+            raise self._raise
+        return ResolvedCredential(credential_type="api_key", payload={"api_key": self._api_key})
+
+    async def aclose(self) -> None:  # pragma: no cover
+        return None
+
+
+async def test_import_with_a_credential_resolves_a_bearer_and_records_it() -> None:
+    caps, broker = _FakeCaps(), _FakeBroker(api_key="pat-42")
+    seen: dict = {}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        seen.setdefault("auth", req.headers.get("authorization"))  # first (initialize) auth header
+        return httpx.Response(200, json={"result": {"tools": [{"name": "do_a"}]}})
+
+    svc = McpImportService(capabilities=caps, broker=broker, transport=httpx.MockTransport(handler))
+    org, user = uuid.uuid4(), uuid.uuid4()
+    created = await svc.import_server(
+        organisation_id=org, server_url=_PUB, label="gh", user_id=user, credential_id="cred-1"
+    )
+    assert seen["auth"] == "Bearer pat-42"  # the broker key rides the handshake + discovery
+    assert broker.seen["credential_id"] == "cred-1"
+    assert created[0].descriptor["spec"]["credential_id"] == "cred-1"  # invoke path can re-resolve
+
+
+async def test_import_fails_closed_when_the_credential_is_unresolvable() -> None:
+    caps = _FakeCaps()
+    broker = _FakeBroker(raise_exc=CredentialResolutionError("no", error_code="not_found"))
+    svc = McpImportService(
+        capabilities=caps,
+        broker=broker,
+        transport=httpx.MockTransport(
+            lambda _r: httpx.Response(200, json={"result": {"tools": []}})
+        ),
+    )
+    with pytest.raises(McpImportError):  # fail-closed — never an anonymous fallback
+        await svc.import_server(
+            organisation_id=uuid.uuid4(),
+            server_url=_PUB,
+            label="x",
+            user_id=uuid.uuid4(),
+            credential_id="cred-x",
+        )
+    assert caps.created == []  # no descriptors created on a fail-closed resolution
+
+
+async def test_import_parses_an_sse_framed_tools_list() -> None:
+    def handler(req: httpx.Request) -> httpx.Response:
+        import json as _json
+
+        if _json.loads(req.content).get("method") == "tools/list":
+            sse = 'data: {"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"sse_tool"}]}}\n\n'
+            return httpx.Response(200, headers={"content-type": "text/event-stream"}, content=sse)
+        return httpx.Response(200, json={"result": {}})
+
+    created = await _svc(_FakeCaps(), handler).import_server(
+        organisation_id=uuid.uuid4(), server_url=_PUB, label="acme"
+    )
+    assert len(created) == 1 and created[0].descriptor["spec"]["tool_name"] == "sse_tool"

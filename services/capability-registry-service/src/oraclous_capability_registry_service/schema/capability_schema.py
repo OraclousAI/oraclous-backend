@@ -64,6 +64,9 @@ class ImportMcpRequest(BaseModel):
 
     server_url: str = Field(min_length=1)
     label: str = Field(min_length=1, max_length=64)  # a prefix for the imported tool names
+    # #541: an optional broker credential id → a Bearer carried through the handshake + discovery,
+    # so a HOSTED MCP server that 401s an anonymous tools/list is importable (fail-closed if bad).
+    credential_id: str | None = None
 
 
 class ImportMcpResponse(BaseModel):
