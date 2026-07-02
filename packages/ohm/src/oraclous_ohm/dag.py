@@ -9,7 +9,10 @@ CLOSED — a duplicate role, a ``depends_on`` edge to an unknown member, or a de
 
 from __future__ import annotations
 
+from typing import Any
+
 from oraclous_ohm.errors import OHMDagError
+from oraclous_ohm.gate import gate_verb
 from oraclous_ohm.manifest import OHMMember
 
 
@@ -49,6 +52,51 @@ def topological_stages(members: list[OHMMember]) -> list[list[str]]:
         done |= set(ready)
         remaining -= set(ready)
     return stages
+
+
+def revision_invalidation_set(
+    members: list[OHMMember], gate_role: str, gate_decisions: dict[str, Any]
+) -> set[str]:
+    """The producer sub-tree to RE-RUN when the human gate ``gate_role`` is REVISED (ADR-046 §2/§5).
+
+    = the transitive upstream closure of the gate's ``depends_on``, MINUS everything SEALED behind
+    an approved gate — an earlier approved gate, and every member upstream of it, is untouched. A
+    member sealed behind an approved gate on ONE path is sealed even if it is ALSO reachable here
+    via a non-sealed arm (a diamond) — the approval blessed it, so it is never re-run. Sibling
+    branches (members not upstream of this gate) are never included. Pure + I/O-free; the caller
+    inverts the resume seed to ``results − this_set`` so exactly these members re-dispatch.
+
+    ``gate_decisions`` maps a role to its (possibly bare-string) decision; a member is a SEALED
+    boundary iff it is a ``kind: human`` member whose ``gate_verb`` is ``"approve"``.
+    """
+    by_role = {m.role: m for m in members}
+    if gate_role not in by_role:
+        return set()
+    # SEALED = every approved human gate + ALL its transitive ancestors (everything behind an
+    # approved gate). Computed as a full closure FIRST, so a member reachable via a non-sealed arm
+    # is still excluded if it lies behind an approved gate on any path (the diamond case).
+    sealed: set[str] = set()
+    frontier = [
+        r
+        for r, m in by_role.items()
+        if m.kind == "human" and gate_verb(gate_decisions.get(r)) == "approve"
+    ]
+    while frontier:
+        role = frontier.pop()
+        if role in sealed or role not in by_role:
+            continue
+        sealed.add(role)
+        frontier.extend(by_role[role].depends_on)
+    # the revised gate's upstream closure, minus the sealed set (never re-run a sealed member).
+    invalidation: set[str] = set()
+    frontier = [d for d in by_role[gate_role].depends_on if d in by_role]
+    while frontier:
+        role = frontier.pop()
+        if role == gate_role or role in invalidation or role in sealed:
+            continue
+        invalidation.add(role)
+        frontier.extend(d for d in by_role[role].depends_on if d in by_role)
+    return invalidation
 
 
 def strongly_connected_components(graph: dict[str, set[str]]) -> list[list[str]]:

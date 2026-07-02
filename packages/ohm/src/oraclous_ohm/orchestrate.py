@@ -27,6 +27,7 @@ from oraclous_ohm.aggregate import aggregate_reduce
 from oraclous_ohm.dag import topological_stages
 from oraclous_ohm.envelope import HandoffEnvelope, build_handoff
 from oraclous_ohm.errors import OHMError
+from oraclous_ohm.gate import gate_verb
 from oraclous_ohm.manifest import OHMLoop, OHMManifest, OHMMember, OHMOrchestration, OHMRunIf
 from oraclous_ohm.precedence_resolution import clamp_member_source
 
@@ -238,7 +239,7 @@ async def run_team(
     *,
     state: dict[str, Any] | None = None,
     predicate: PredicateFn | None = None,
-    gate_decisions: dict[str, str] | None = None,
+    gate_decisions: dict[str, Any] | None = None,
     completed: dict[str, Any] | None = None,
     members: list[OHMMember] | None = None,
     cost_so_far: Callable[[], int] | None = None,
@@ -325,8 +326,10 @@ async def run_team(
             member_status[role] = "blocked"
             return
         if member.kind == "human":
-            # a blocking gate — never dispatched; by the time we run it, it is an approved decision
-            results[role] = {"gate": role, "decision": gates.get(role)}
+            # a blocking gate — never dispatched; by the time we run it, it is an APPROVED decision
+            # (an undecided or `revise` gate re-pauses in the stage loop below, before this branch).
+            # Record the normalized verb (a v1 bare string OR an ADR-046 GateDecision-shaped value).
+            results[role] = {"gate": role, "decision": gate_verb(gates.get(role))}
             member_status[role] = "succeeded"  # an approved gate delivered its decision
             return
         if predicate is not None and not predicate(member, results):
@@ -465,9 +468,15 @@ async def run_team(
         # "failed" makes the failed member re-runnable (the re-run re-drives it, then the run
         # reaches the gate and PAUSES normally). A gate with no recorded failure pauses as before.
         already_failed = any(s in ("failed", "blocked") for s in member_status.values())
-        undecided = [g for g in stage_gates if gates.get(g) is None]
+        # A gate PAUSES the run when it is undecided (no decision yet) OR REVISE (ADR-046 §2, #578):
+        # a `revise` re-pauses at the SAME gate after its invalidated producer sub-tree re-runs (the
+        # service re-seeds ``completed = results − invalidation_set`` + threads the human's feedback
+        # into those producers), so the human sees the fresh output and approves or revises again.
+        # An ``approve`` falls through to run_member's human branch (crosses the gate); ``reject``
+        # terminates below. ``gate_verb`` normalizes a bare string OR a GateDecision-shaped dict.
+        pause_at = [g for g in stage_gates if gate_verb(gates.get(g)) in (None, "revise")]
         if (
-            undecided and not already_failed
+            pause_at and not already_failed
         ):  # block: pause; downstream depends_on members do not run
             return TeamRunResult(
                 results=results,
@@ -475,11 +484,11 @@ async def run_team(
                 skipped=skipped,
                 stages=stages,
                 status="paused",
-                paused_at=undecided,
+                paused_at=pause_at,
                 member_status=member_status,
                 member_errors=member_errors,
             )
-        rejected = [g for g in stage_gates if gates.get(g) == "reject"]
+        rejected = [g for g in stage_gates if gate_verb(gates.get(g)) == "reject"]
         if rejected and not already_failed:  # the author rejected — halt; downstream does not run
             return TeamRunResult(
                 results=results,
@@ -491,7 +500,7 @@ async def run_team(
                 member_status=member_status,
                 member_errors=member_errors,
             )
-        if (undecided or rejected) and already_failed:
+        if (pause_at or rejected) and already_failed:
             break  # a recorded failure outranks the gate → fall through to the "failed" verdict
         barrier = asyncio.gather(*(_bounded(role) for role in stage))  # the fan-in barrier (capped)
         if _deadline is not None:  # enforce the team wall-clock deadline across the barrier

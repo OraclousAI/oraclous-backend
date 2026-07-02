@@ -202,6 +202,10 @@ class OHMTermination(BaseModel):
     max_wall_seconds: int | None = Field(default=None, ge=1)
     max_rounds: int | None = Field(default=None, ge=1)  # ADR-043: at least one conductor round
     convergence: str | None = None  # e.g. "evaluator>=0.8"
+    # ADR-046 (#578): how many times a human gate may be REVISED before the loop fail-closes to
+    # terminal REJECTED. None → the engine default (3). Bounds the revision loop (the pooled
+    # OHMBudget is the outer bound regardless).
+    max_revisions: int | None = Field(default=None, ge=1)
 
 
 class OHMGateCheck(BaseModel):

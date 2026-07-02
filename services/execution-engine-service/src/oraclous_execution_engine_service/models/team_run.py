@@ -37,8 +37,14 @@ class EngineTeamRun(BaseModel):
     manifest: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
     # role -> the generated single-agent sub-harness OHM for that member (passed inline to harness)
     sub_harnesses: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
-    # role -> "approve" | "reject" for each human gate that has been decided (seeded + via advance)
+    # role -> the decided gate VERB ("approve" | "reject", + ADR-046 #578: "revise"). The wire/DTO
+    # accepts a full GateDecision (feedback / edited_payload) but only the verb persists here — a
+    # revise's feedback is threaded into the manifest at advance time — so the stored shape stays a
+    # bare string, v1-compatible + migration-free (gate_verb tolerates either).
     gate_decisions: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    # ADR-046 (#578): role -> how many times this human gate has been REVISED — the bound the loop
+    # fail-closes on (> max_revisions → terminal REJECTED). Additive; empty until a gate is revised.
+    revision_rounds: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
     state: Mapped[str] = mapped_column(String(16), nullable=False, default="QUEUED")
     # role -> the member's output (the orchestrator's per-member results)
     results: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)

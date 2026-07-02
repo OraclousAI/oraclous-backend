@@ -28,7 +28,9 @@ from typing import Any
 
 from oraclous_governance import Principal
 from oraclous_ohm.capabilities import assert_subharness_within_ceiling
+from oraclous_ohm.dag import revision_invalidation_set
 from oraclous_ohm.errors import OHMCapabilityError, OHMError
+from oraclous_ohm.gate import GateDecision, gate_verb
 from oraclous_ohm.gate_battery import (
     OHMGateCheck,
     UnknownBattery,
@@ -187,19 +189,15 @@ def _verdict_reason(verdict: Any) -> str | None:  # noqa: ANN401
     return None
 
 
-def _revise_manifest(
-    manifest: dict[str, Any], faulted: set[str], reason: str | None, attempt: int
+def _append_revision_directive(
+    manifest: dict[str, Any], faulted: set[str], note: str
 ) -> dict[str, Any]:
-    """#604: append a bounded revision directive to each faulted member's subgoal in a COPY of the
-    manifest, so the re-dispatched task DIFFERS from the prior (never a blind re-run). Deep
-    copy via a JSON round-trip (the manifest is JSONB); bounded by MAX_RE_DISPATCHES so the subgoal
-    cannot grow unboundedly."""
+    """Append a revision ``note`` to each faulted member's subgoal (+ the ``handoff_objective`` of
+    every producer feeding a faulted member, so a hand-off-rendered sink sees it too) in a DEEP COPY
+    of the manifest — the re-dispatched task DIFFERS from the prior (never a blind re-run). Deep-
+    copied via a JSON round-trip (the manifest is JSONB). Shared by the #604 verdict re_task and the
+    ADR-046 (#578) human revise; the caller supplies the (bounded) ``note`` phrasing."""
     revised: dict[str, Any] = json.loads(json.dumps(manifest, default=str))
-    note = (
-        f" [Re-task attempt {attempt}] The prior output was graded BELOW the success threshold"
-        + (f": {reason}" if reason else "")
-        + ". Revise your output to address this."
-    )
     members = revised.get("members", [])
     for member in members:
         if isinstance(member, dict) and member.get("role") in faulted:
@@ -225,6 +223,58 @@ def _revise_manifest(
         ):
             member["handoff_objective"] = member["handoff_objective"] + note
     return revised
+
+
+def _revise_manifest(
+    manifest: dict[str, Any], faulted: set[str], reason: str | None, attempt: int
+) -> dict[str, Any]:
+    """#604: the VERDICT re_task directive — the prior output graded below threshold. Bounded by
+    MAX_RE_DISPATCHES (attempt) so the subgoal cannot grow unboundedly."""
+    note = (
+        f" [Re-task attempt {attempt}] The prior output was graded BELOW the success threshold"
+        + (f": {reason}" if reason else "")
+        + ". Revise your output to address this."
+    )
+    return _append_revision_directive(manifest, faulted, note)
+
+
+def _human_revision_note(feedback: str, revision_round: int) -> str:
+    """ADR-046 (#578): the HUMAN revise directive threaded into the invalidated producers — the
+    reviewer's own words (bounded so repeated revisions can't grow the subgoal unboundedly; the
+    max_revisions cap bounds the count). A data-only directive, never a tool/capability change."""
+    trimmed = feedback.strip()[:500]
+    return (
+        f" [Revision {revision_round}] A human reviewer sent this back for revision"
+        + (f": {trimmed}" if trimmed else "")
+        + ". Revise your output to address this feedback."
+    )
+
+
+def _decisions_to_jsonb(decisions: Mapping[str, Any]) -> dict[str, str]:
+    """Normalize a gate-decision map (``GateDecision`` | a v1 bare string | a persisted value) to
+    the JSONB shape stored on ``gate_decisions`` — the bare VERB per gate (``approve`` | ``revise``
+    | ``reject``). The verb is all ``run_team`` needs (re-pause / cross / terminate); a ``revise``'s
+    ``feedback`` + ``edited_payload`` are consumed at advance time (threaded into the manifest /
+    seeded into results), NOT persisted here — so the stored shape stays a bare string, identical to
+    v1 (fully back-compatible; existing rows + tests unchanged)."""
+    out: dict[str, str] = {}
+    for role, decision in decisions.items():
+        verb = gate_verb(decision)
+        if verb is not None:
+            out[role] = verb
+    return out
+
+
+# ADR-046 (#578): the default cap on how many times a human gate may be REVISED before the run
+# fail-closes to terminal REJECTED (a team may override via OHMTermination.max_revisions). The
+# pooled #585 OHMBudget is the outer bound regardless.
+_MAX_REVISIONS_DEFAULT = 3
+
+
+def _resolve_max_revisions(team: OHMManifest) -> int:
+    term = team.orchestration.termination if team.orchestration else None
+    configured = term.max_revisions if term is not None else None
+    return int(configured) if configured else _MAX_REVISIONS_DEFAULT
 
 
 def _member_completion_progress(row: EngineTeamRun) -> int:
@@ -549,7 +599,7 @@ class TeamRunService:
         *,
         manifest: dict,
         sub_harnesses: dict[str, dict],
-        gate_decisions: Mapping[str, str],
+        gate_decisions: Mapping[str, GateDecision],
         workspace_root: str | None = None,
         graph_id: str | None = None,
         inputs: dict[str, Any] | None = None,
@@ -576,7 +626,7 @@ class TeamRunService:
                 user_id=principal.principal_id,
                 manifest=manifest,
                 sub_harnesses=sub_harnesses,
-                gate_decisions=dict(gate_decisions),
+                gate_decisions=_decisions_to_jsonb(gate_decisions),
                 workspace_root=workspace_root,
                 graph_id=graph_id,
                 inputs=inputs,
@@ -954,11 +1004,16 @@ class TeamRunService:
         return done_check
 
     async def advance(
-        self, team_run_id: uuid.UUID, principal: Principal, gate_decisions: Mapping[str, str]
+        self,
+        team_run_id: uuid.UUID,
+        principal: Principal,
+        gate_decisions: Mapping[str, GateDecision],
     ) -> EngineTeamRun:
         """Request path: record a human gate decision on a PAUSED run, return it to QUEUED, and
         re-enqueue the worker to drive past the now-decided gate (202). The worker re-uses the
-        persisted results (G-D), so completed members are not re-executed on resume."""
+        persisted results (G-D), so completed members are not re-executed on resume. ADR-046 (#578):
+        a ``revise`` decision routes to ``_advance_revision`` (re-run the invalidated producer
+        sub-tree with feedback, re-pause); approve/reject are the unchanged cross/terminate path."""
         org = self._org(principal)
         row = await self.get(team_run_id, principal)
         if row.state != "PAUSED":
@@ -971,7 +1026,15 @@ class TeamRunService:
         # names a member the sentinel role cannot hijack this path (review F1-sentinel).
         if row.escalation_kind == _VERDICT_ESCALATION_KIND:
             return await self._resume_verdict_escalation(row, org, principal)
-        merged = {**row.gate_decisions, **gate_decisions}
+        # normalize once (the DTO already parses GateDecision, but a direct/test caller may pass a
+        # bare string or a persisted dict) so the revise branch + the persist share one shape.
+        decisions = {
+            role: (d if isinstance(d, GateDecision) else GateDecision.model_validate(d))
+            for role, d in gate_decisions.items()
+        }
+        if any(d.decision == "revise" for d in decisions.values()):
+            return await self._advance_revision(row, org, principal, decisions)
+        merged = {**row.gate_decisions, **_decisions_to_jsonb(decisions)}
         with org_scope(org):
             claimed, applied = await self._team_runs.transition(
                 team_run_id,
@@ -985,6 +1048,110 @@ class TeamRunService:
         if self._enqueue is not None:
             self._enqueue(team_run_id, org, principal.principal_id)
         return claimed  # QUEUED — the worker drives the resume
+
+    async def _advance_revision(
+        self,
+        row: EngineTeamRun,
+        org: uuid.UUID,
+        principal: Principal,
+        decisions: dict[str, GateDecision],
+    ) -> EngineTeamRun:
+        """ADR-046 (#578): apply one or more ``revise`` decisions to a PAUSED run. For each revised
+        gate: bound by ``max_revisions`` (fail-close the whole run to terminal REJECTED past it);
+        compute the invalidation set (the gate's producer sub-tree up to the nearest approved gate);
+        mark those members to re-run (the #604 ``_RE_TASK_MARKER`` — excluded from the resume seed,
+        so exactly they re-dispatch) with the human's feedback threaded into their subgoal (reusing
+        the #604 ``_append_revision_directive``). ``edited_payload`` short-circuits: seed the edited
+        value as the gate's producer result instead of re-running. Then CAS PAUSED→QUEUED — the
+        worker re-drives, and ``run_team`` re-pauses at the still-``revise`` gate with the fresh
+        output (approve/reject in the mixed advance are persisted alongside, unchanged)."""
+        team = self._load_team(row.manifest)
+        max_revisions = _resolve_max_revisions(team)
+        rounds = {role: int(count) for role, count in (row.revision_rounds or {}).items()}
+        merged = {**row.gate_decisions, **_decisions_to_jsonb(decisions)}
+        invalidation: set[str] = set()
+        manifest = row.manifest
+        edited_seeds: dict[str, Any] = {}
+        for role, gd in decisions.items():
+            if gd.decision != "revise":
+                continue  # approve/reject in a mixed advance ride along in ``merged``, unchanged
+            rounds[role] = rounds.get(role, 0) + 1
+            if rounds[role] > max_revisions:  # §4 bound — fail-closed, the whole run is REJECTED
+                return await self._reject_revisions_exhausted(row, org, role, max_revisions)
+            gate = team.member_by_role(role)
+            if gd.edited_payload is not None and gate is not None and len(gate.depends_on) == 1:
+                # override (§3): the human supplies the deliverable verbatim — seed it as the gate's
+                # SOLE producer's result (do not re-run) and re-pause to confirm. Scoped to a
+                # single-producer gate: with >1 producer the one edit can't disambiguate WHICH
+                # deliverable it replaces, so that falls through to a normal feedback re-run below
+                # (never clobber a sibling producer's real output with the edit).
+                edited_seeds[gate.depends_on[0]] = gd.edited_payload
+            else:
+                slice_ = revision_invalidation_set(team.members, role, merged)
+                invalidation |= slice_
+                manifest = _append_revision_directive(
+                    manifest, slice_, _human_revision_note(gd.feedback, rounds[role])
+                )
+        # a producer the human EDITED wins over a re-run: if it also fell in another gate's
+        # invalidation set, keep the verbatim edit (don't re-dispatch it away, §3).
+        invalidation -= set(edited_seeds)
+        # mark the invalidation set to re-run (excluded from the resume seed); the rest is reused
+        member_status = {
+            role: (_RE_TASK_MARKER if role in invalidation else status)
+            for role, status in (row.member_status or {}).items()
+        }
+        for role in invalidation:
+            member_status.setdefault(role, _RE_TASK_MARKER)
+        results = {**(row.results or {}), **edited_seeds}
+        with org_scope(org):
+            claimed, applied = await self._team_runs.transition(
+                row.id,
+                org,
+                new_state="QUEUED",
+                allowed_from=frozenset({"PAUSED"}),
+                gate_decisions=merged,  # keeps the "revise" verb so run_team re-pauses at the gate
+                revision_rounds=rounds,
+                member_status=member_status,
+                results=results,
+                manifest=manifest,  # the feedback threaded into the invalidated producers' subgoal
+            )
+        if not applied or claimed is None:  # lost the race — return current
+            return await self.get(row.id, principal)
+        if self._enqueue is not None:
+            try:
+                self._enqueue(row.id, org, principal.principal_id)
+            except Exception:
+                # review F1-org_scope (mirrors #604): bind the org-GUC or the RLS backstop no-ops
+                # the compensation and leaves the resume phantom-QUEUED (#620).
+                with org_scope(org):
+                    await self._team_runs.transition(
+                        row.id,
+                        org,
+                        new_state="FAILED",
+                        allowed_from=frozenset({"QUEUED"}),
+                        error_message="re_dispatch enqueue failed",
+                    )
+                raise
+        return claimed
+
+    async def _reject_revisions_exhausted(
+        self, row: EngineTeamRun, org: uuid.UUID, gate_role: str, max_revisions: int
+    ) -> EngineTeamRun:
+        """ADR-046 §4: the revision loop is bounded — once a gate is revised MORE than
+        ``max_revisions`` times, fail-close the run to terminal REJECTED (never an unbounded human
+        loop). CAS PAUSED→REJECTED with a leak-safe exhaustion message."""
+        with org_scope(org):
+            claimed, applied = await self._team_runs.transition(
+                row.id,
+                org,
+                new_state="REJECTED",
+                allowed_from=frozenset({"PAUSED"}),
+                error_message=(
+                    f"revision limit reached on gate '{gate_role}': more than {max_revisions} "
+                    "revisions requested — run rejected"
+                )[:2000],
+            )
+        return claimed if applied and claimed is not None else row
 
     async def rerun(self, team_run_id: uuid.UUID, principal: Principal) -> EngineTeamRun:
         """ADR-042 (#551): RE-RUN a FAILED run from the durable team state — re-drive only the

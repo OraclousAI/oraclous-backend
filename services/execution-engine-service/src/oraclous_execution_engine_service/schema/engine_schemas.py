@@ -10,6 +10,7 @@ import uuid
 from datetime import datetime
 from typing import Any, Literal
 
+from oraclous_ohm.gate import GateDecision
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from oraclous_execution_engine_service.domain.schedule_cost import (
@@ -381,12 +382,13 @@ class CreateTeamRunRequest(BaseModel):
     ``sub_harnesses`` maps each member ``role`` to its generated single-agent sub-harness OHM (run
     inline by the harness);
     a role without one falls back to the member's ``manifest_ref``. ``gate_decisions`` pre-seeds any
-    human-gate decisions (role → ``approve`` | ``reject``) for a run that should not pause.
+    human-gate decisions (role → a ``GateDecision`` — ``approve`` | ``revise`` | ``reject``, ADR-046
+    / #578; a v1 bare ``approve``/``reject`` string still parses) for a run that should not pause.
     """
 
     manifest: dict[str, Any]
     sub_harnesses: dict[str, dict[str, Any]] = Field(default_factory=dict)
-    gate_decisions: dict[str, Literal["approve", "reject"]] = Field(default_factory=dict)
+    gate_decisions: dict[str, GateDecision] = Field(default_factory=dict)
     # file-native blackboard (#518): the team's real working tree, threaded to every member's file
     # tools so they read/write it in place. Trusted per-run input — validated org-scoped at create
     # (must resolve under WORKSPACES_ROOT/<org>); None → the default per-org scratch sandbox.
@@ -406,9 +408,11 @@ class CreateTeamRunRequest(BaseModel):
 
 
 class AdvanceTeamRunRequest(BaseModel):
-    """Advance a PAUSED team run past its human gate(s): role → ``approve`` | ``reject``."""
+    """Advance a PAUSED team run: role → a ``GateDecision`` (``approve`` | ``revise`` | ``reject``,
+    ADR-046 / #578). ``revise`` re-runs the gate's producer sub-tree with ``feedback`` (or seeds
+    ``edited_payload``) and re-pauses. A v1 bare ``"approve"``/``"reject"`` string still parses."""
 
-    gate_decisions: dict[str, Literal["approve", "reject"]] = Field(min_length=1)
+    gate_decisions: dict[str, GateDecision] = Field(min_length=1)
 
 
 class TeamRunOut(BaseModel):
@@ -437,6 +441,10 @@ class TeamRunOut(BaseModel):
     # A run is SUCCEEDED only when EVERY member is "succeeded"; on a FAILED run this is how a caller
     # sees which members to re-run (POST .../rerun re-drives the failed+blocked, keeping succeeded).
     member_status: dict[str, str] = Field(default_factory=dict)
+    # ADR-046 (#578): role -> how many times this human gate was REVISED. Surfaced read-side so a
+    # caller (and the deployed e2e) sees a run was revised + on which gate; the revision loop
+    # fail-closes to terminal REJECTED once a gate exceeds max_revisions. Empty until a revise.
+    revision_rounds: dict[str, int] = Field(default_factory=dict)
     # ADR-043 (#552 PR-C + #553): per-loop conductor checkpoint, "<loop_index>" -> {round,
     # started_at, status, recalibration_count}. Surfaced read-side so an operator (and the e2e) can
     # see a loop's conductor activity — how many rounds it ran + how many bounded recalibrations it
@@ -447,7 +455,7 @@ class TeamRunOut(BaseModel):
     # (and the deployed e2e) can branch on the flag without string-matching the state.
     partial: bool = False
 
-    @field_validator("member_status", "loop_state", mode="before")
+    @field_validator("member_status", "loop_state", "revision_rounds", mode="before")
     @classmethod
     def _coerce_member_status(cls, v: Any) -> Any:
         # A real flushed row already holds {} (the column default + migration 0012 server_default),
