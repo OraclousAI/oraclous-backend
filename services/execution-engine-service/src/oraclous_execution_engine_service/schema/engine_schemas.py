@@ -443,7 +443,7 @@ class TeamRunOut(BaseModel):
     member_status: dict[str, str] = Field(default_factory=dict)
     # ADR-046 (#578): role -> how many times this human gate was REVISED. Surfaced read-side so a
     # caller (and the deployed e2e) sees a run was revised + on which gate; the revision loop
-    # fail-closes to terminal REJECTED once a gate exceeds max_revisions. Empty until a gate revised.
+    # fail-closes to terminal REJECTED once a gate exceeds max_revisions. Empty until a revise.
     revision_rounds: dict[str, int] = Field(default_factory=dict)
     # ADR-043 (#552 PR-C + #553): per-loop conductor checkpoint, "<loop_index>" -> {round,
     # started_at, status, recalibration_count}. Surfaced read-side so an operator (and the e2e) can

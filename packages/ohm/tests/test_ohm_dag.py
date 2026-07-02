@@ -87,6 +87,23 @@ def test_invalidation_of_an_unknown_gate_is_empty() -> None:
     assert revision_invalidation_set([_m("a")], "nope", {}) == set()
 
 
+def test_invalidation_seals_a_member_behind_an_approved_gate_even_on_a_diamond_arm() -> None:
+    # source → gateA(APPROVED) → b ─┐
+    # source ───────────────→ c ────┴→ gate-final.  Revising gate-final must NOT re-run `source`
+    # (it is sealed behind the approved gateA) even though it is reachable via the non-sealed `c`
+    # arm — the approval blessed it. Only the members between the seal and gate-final run: {b, c}.
+    members = [
+        _m("source"),
+        _gate("gateA", ["source"]),
+        _m("b", ["gateA"]),
+        _m("c", ["source"]),
+        _gate("gate-final", ["b", "c"]),
+    ]
+    inv = revision_invalidation_set(members, "gate-final", {"gateA": "approve"})
+    assert inv == {"b", "c"}
+    assert "source" not in inv  # sealed behind the approved gate, even on the c arm
+
+
 def test_empty_members() -> None:
     assert topological_stages([]) == []
 

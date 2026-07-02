@@ -1078,18 +1078,23 @@ class TeamRunService:
             rounds[role] = rounds.get(role, 0) + 1
             if rounds[role] > max_revisions:  # §4 bound — fail-closed, the whole run is REJECTED
                 return await self._reject_revisions_exhausted(row, org, role, max_revisions)
-            if gd.edited_payload is not None:
-                # override (§3): seed the edited value verbatim as the gate's DIRECT producer(s)
-                # result — do not re-run — and re-pause for the human to confirm.
-                gate = team.member_by_role(role)
-                for producer in gate.depends_on if gate else []:
-                    edited_seeds[producer] = gd.edited_payload
+            gate = team.member_by_role(role)
+            if gd.edited_payload is not None and gate is not None and len(gate.depends_on) == 1:
+                # override (§3): the human supplies the deliverable verbatim — seed it as the gate's
+                # SOLE producer's result (do not re-run) and re-pause to confirm. Scoped to a
+                # single-producer gate: with >1 producer the one edit can't disambiguate WHICH
+                # deliverable it replaces, so that falls through to a normal feedback re-run below
+                # (never clobber a sibling producer's real output with the edit).
+                edited_seeds[gate.depends_on[0]] = gd.edited_payload
             else:
                 slice_ = revision_invalidation_set(team.members, role, merged)
                 invalidation |= slice_
                 manifest = _append_revision_directive(
                     manifest, slice_, _human_revision_note(gd.feedback, rounds[role])
                 )
+        # a producer the human EDITED wins over a re-run: if it also fell in another gate's
+        # invalidation set, keep the verbatim edit (don't re-dispatch it away, §3).
+        invalidation -= set(edited_seeds)
         # mark the invalidation set to re-run (excluded from the resume seed); the rest is reused
         member_status = {
             role: (_RE_TASK_MARKER if role in invalidation else status)

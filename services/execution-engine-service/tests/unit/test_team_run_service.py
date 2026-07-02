@@ -730,6 +730,53 @@ async def test_revise_with_edited_payload_seeds_the_producer_result_without_re_r
     assert len(harness.inputs) == 1  # the producer was NOT re-dispatched (override, not re-run)
 
 
+async def test_edited_payload_on_a_multi_producer_gate_re_runs_instead_of_clobbering() -> None:
+    # a gate with TWO producers + a single edited_payload can't disambiguate WHICH deliverable the
+    # edit replaces — so it must NOT overwrite both producers' outputs. It falls through to a normal
+    # re-run of the invalidated slice; neither real output is clobbered by the edit.
+    repo, harness = FakeTeamRunRepo(), FakeHarness()
+    svc, _ = _svc(repo, harness)
+    manifest = _team([_agent("p1"), _agent("p2"), _human("g", ["p1", "p2"])])
+    paused = await _run(svc, _principal(), manifest=manifest, sub_harnesses={}, gate_decisions={})
+    p1_before, p2_before = paused.results["p1"], paused.results["p2"]
+
+    await svc.advance(
+        paused.id, _principal(), {"g": {"decision": "revise", "edited_payload": {"x": "edit"}}}
+    )
+    revised = await svc.drive(paused.id, _principal())
+
+    assert revised.state == "PAUSED"
+    assert revised.results["p1"] != {"x": "edit"}  # NOT clobbered by the ambiguous edit
+    assert revised.results["p2"] != {"x": "edit"}
+    assert revised.results["p1"] != p1_before  # both re-ran (fresh output) instead
+    assert revised.results["p2"] != p2_before
+
+
+async def test_mixed_advance_edit_wins_over_a_re_run_of_the_same_producer() -> None:
+    # two PARALLEL gates both depend on `shared`, so both pause together. Advance
+    # {gateA: revise+edited_payload→shared, gateB: revise} — gateB's invalidation set includes
+    # `shared`, but the human EDITED it via gateA, so the edit must WIN: `shared` is not re-run.
+    repo, harness = FakeTeamRunRepo(), FakeHarness()
+    svc, _ = _svc(repo, harness)
+    manifest = _team([_agent("shared"), _human("gateA", ["shared"]), _human("gateB", ["shared"])])
+    paused = await _run(svc, _principal(), manifest=manifest, sub_harnesses={}, gate_decisions={})
+    assert "gateA" in paused.paused_at and "gateB" in paused.paused_at
+    assert _ran_count(harness, "do shared") == 1  # shared ran once in the initial drive
+
+    await svc.advance(
+        next(iter(repo.rows)),
+        _principal(),
+        {
+            "gateA": {"decision": "revise", "edited_payload": {"x": "human edit"}},
+            "gateB": {"decision": "revise", "feedback": "redo"},
+        },
+    )
+    revised = await svc.drive(next(iter(repo.rows)), _principal())
+
+    assert revised.results["shared"] == {"x": "human edit"}  # the edit won; not re-run away
+    assert _ran_count(harness, "do shared") == 1  # NOT re-dispatched (still just the initial run)
+
+
 async def test_advance_rejects_a_non_paused_run() -> None:
     repo, harness = FakeTeamRunRepo(), FakeHarness()
     svc, _ = _svc(repo, harness)
