@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import uuid
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
 
 import httpx
 import pytest
@@ -158,9 +158,8 @@ async def test_a_malformed_non_dict_body_is_a_clean_bad_response(body: object) -
 
 
 async def test_an_oversized_body_is_rejected_fail_closed(monkeypatch: pytest.MonkeyPatch) -> None:
-    # #541 review M3: a hostile server declaring a huge Content-Length must be rejected before the
-    # body is parsed — it must NOT be read into memory (OOM). We assert on the declared-length gate:
-    # a small real body but a lying multi-GB Content-Length header is a clean MCP_BAD_RESPONSE.
+    # #541 review M3: an oversized body (here a declared Content-Length over the cap) is a clean
+    # MCP_BAD_RESPONSE — the streaming byte-budget read aborts before the whole body is buffered.
     from oraclous_capability_registry_service.domain.connectors import mcp_protocol
 
     monkeypatch.setattr(mcp_protocol, "_MAX_BODY_BYTES", 1024)  # shrink the cap for a cheap test
@@ -170,6 +169,28 @@ async def test_an_oversized_body_is_rejected_fail_closed(monkeypatch: pytest.Mon
         {"type": "mcp", "server_url": _URL, "tool_name": "t"},
         lambda _r: httpx.Response(200, json=huge),
     )
+    res = await ex.execute({}, _ctx())
+    assert not res.success and res.error_type == "MCP_BAD_RESPONSE"
+
+
+async def test_a_chunked_undeclared_oversized_body_is_aborted_during_the_read(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # #541 review M3 (the real memory bound): a hostile server that omits Content-Length (chunked)
+    # and streams past the cap must be aborted DURING the streaming read — never fully buffered. A
+    # post-read len() cap could not prevent this OOM; the byte-budget in _post can.
+    from oraclous_capability_registry_service.domain.connectors import mcp_protocol
+
+    monkeypatch.setattr(mcp_protocol, "_MAX_BODY_BYTES", 1024)
+
+    async def _chunks() -> AsyncIterator[bytes]:
+        for _ in range(8):
+            yield b"x" * 512  # 8 * 512 = 4096 bytes, an async stream → no Content-Length (chunked)
+
+    def handler(_req: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, headers={"content-type": "application/json"}, content=_chunks())
+
+    ex = _executor({"type": "mcp", "server_url": _URL, "tool_name": "t"}, handler)
     res = await ex.execute({}, _ctx())
     assert not res.success and res.error_type == "MCP_BAD_RESPONSE"
 

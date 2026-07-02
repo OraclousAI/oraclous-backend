@@ -51,8 +51,10 @@ class McpProtocolError(Exception):
 
 
 def _guard_body_size(resp: httpx.Response) -> None:
-    """Fail-closed if the server's declared or actual body exceeds the cap — an oversized body is a
-    hostile/broken server, never a real MCP message (review M3)."""
+    """Fail-closed backstop if a body exceeds the cap (review M3). The PRIMARY memory bound is the
+    streaming byte-budget read in ``McpSession._post`` (which aborts a chunked/undeclared oversized
+    body DURING the read); this stays as a cheap secondary check so ``_parse_message`` is safe even
+    if ever handed a fully-buffered Response (a declared over-cap content-length is rejected)."""
     declared = resp.headers.get("content-length")
     if declared is not None:
         try:
@@ -62,7 +64,7 @@ def _guard_body_size(resp: httpx.Response) -> None:
             raise McpProtocolError(
                 "the MCP server sent a malformed content-length", code="MCP_BAD_RESPONSE"
             ) from None
-    if len(resp.content) > _MAX_BODY_BYTES:  # backstop for a chunked/undeclared body
+    if len(resp.content) > _MAX_BODY_BYTES:  # secondary backstop for a fully-buffered body
         raise McpProtocolError("the MCP server body is too large", code="MCP_BAD_RESPONSE")
 
 
@@ -129,17 +131,43 @@ class McpSession:
 
     async def _post(self, payload: dict[str, Any], *, with_session: bool) -> httpx.Response:
         target, _h, extensions = pinned_request(self._url, self._pinned_ip)
+        request = self._client.build_request(
+            "POST",
+            target,
+            json=payload,
+            headers=self._headers(with_session=with_session),
+            extensions=extensions,
+        )
         try:
-            return await self._client.post(
-                target,
-                json=payload,
-                headers=self._headers(with_session=with_session),
-                extensions=extensions,
-            )
+            resp = await self._client.send(request, stream=True)
         except httpx.HTTPError as exc:
             raise McpProtocolError(
                 "the MCP server could not be reached", code="MCP_UNREACHABLE"
             ) from exc
+        # Read the body STREAMING with a byte budget and abort the moment it exceeds the cap, so a
+        # hostile/broken server sending a chunked/undeclared multi-GB body is rejected DURING the
+        # read — never fully buffered into memory (review M3: a post-read len() cap cannot prevent
+        # the OOM it exists to prevent). Rebuild a normal Response from the capped bytes so the
+        # status/header/JSON/SSE parsers below work unchanged.
+        try:
+            chunks: list[bytes] = []
+            total = 0
+            async for chunk in resp.aiter_bytes():
+                total += len(chunk)
+                if total > _MAX_BODY_BYTES:
+                    raise McpProtocolError(
+                        "the MCP server body is too large", code="MCP_BAD_RESPONSE"
+                    )
+                chunks.append(chunk)
+        except httpx.HTTPError as exc:
+            raise McpProtocolError(
+                "the MCP server could not be reached", code="MCP_UNREACHABLE"
+            ) from exc
+        finally:
+            await resp.aclose()
+        return httpx.Response(
+            resp.status_code, headers=resp.headers, content=b"".join(chunks), request=request
+        )
 
     def _next_id(self) -> int:
         self._id += 1
