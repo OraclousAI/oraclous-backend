@@ -54,11 +54,19 @@ def test_parse_records_extracts_a_json_fence_embedded_after_prose_reasoning() ->
     assert out == [{"id": "a", "v": 1}, {"id": "b", "v": 2}]
 
 
-def test_parse_records_takes_the_first_fenced_record_array_when_several_blocks() -> None:
+def test_parse_records_takes_the_last_fenced_record_array_the_ledger_at_the_end() -> None:
+    # #602 review Finding 1: the ledger is emitted "at the very end", after any illustrative example
+    # fence — the LAST record array wins, so an earlier example never smuggles a wrong delta.
     out = parse_records(
-        'prose ```json\n{"not": "an array"}\n``` more ```\n[{"id": "z"}]\n``` tail'
+        'For example ```json\n[{"id": "EXAMPLE"}]\n``` — now my real output:\n'
+        '```json\n[{"id": "alpha"}, {"id": "bravo"}]\n```'
     )
-    assert out == [{"id": "z"}]  # skips the non-array block, takes the first record array
+    assert out == [{"id": "alpha"}, {"id": "bravo"}]  # the final ledger, not the EXAMPLE
+
+
+def test_parse_records_skips_non_array_fences_and_takes_the_last_record_array() -> None:
+    out = parse_records('```json\n{"not": "an array"}\n``` then ```\n[{"id": "z"}]\n```')
+    assert out == [{"id": "z"}]  # the non-array block is skipped; the record array wins
 
 
 def test_parse_records_returns_none_when_no_fenced_or_whole_json_array() -> None:

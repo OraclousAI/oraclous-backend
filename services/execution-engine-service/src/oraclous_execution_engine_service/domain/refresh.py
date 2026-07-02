@@ -96,13 +96,16 @@ def parse_records(deliverable: Any) -> list[dict[str, Any]] | None:  # noqa: ANN
     direct = _loads_record_list(whole.group(1).strip() if whole else text)
     if direct is not None:
         return direct
-    # the member reasoned in prose then emitted the ledger in a ```json fence — extract the FIRST
-    # fenced block that parses to a record array (#602: derive-then-emit / carry-forward output).
+    # the member reasoned in prose then emitted the ledger in a ```json fence — take the LAST fenced
+    # block that parses to a record array. The ledger is emitted "at the very end" (after any
+    # illustrative example / per-item fences the model may show first), so the last one is the real
+    # deliverable; an earlier example fence must never win (#602 derive-then-emit / carry-forward).
+    last: list[dict[str, Any]] | None = None
     for m in _EMBEDDED_FENCE_RE.finditer(text):
         block = _loads_record_list(m.group(1).strip())
         if block is not None:
-            return block
-    return None
+            last = block
+    return last
 
 
 def _identity(record: dict[str, Any], id_field: str) -> str:

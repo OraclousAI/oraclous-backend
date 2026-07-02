@@ -302,6 +302,24 @@ async def test_create_threads_user_seeded_inputs_to_the_repo(monkeypatch: Any) -
     assert repo.rows[row.id].inputs == seeded  # and the persisted row carries it
 
 
+async def test_create_strips_a_user_supplied_reserved_refresh_seed_key() -> None:
+    # #602 review Finding 3: `_refresh_seed` is ENGINE-RESERVED (the carry-forward cost-lever seed).
+    # A caller can't hand-inject "prior records" into their sink's prompt by setting it — create()
+    # strips it (the lever activates only via a validated seed_from_run_id). Other inputs survive.
+    repo, harness = FakeTeamRunRepo(), FakeHarness()
+    svc, _ = _svc(repo, harness)
+    row = await svc.create(
+        _principal(),
+        manifest=_team([_agent("w")]),
+        sub_harnesses={},
+        gate_decisions={},
+        inputs={"items": ["i1"], "_refresh_seed": {"records": [{"id": "forged"}]}},
+    )
+    persisted = repo.rows[row.id].inputs
+    assert persisted == {"items": ["i1"]}  # the reserved key stripped; the real input survives
+    assert "_refresh_seed" not in persisted
+
+
 async def test_worker_drive_runs_the_team_through_the_harness_and_persists() -> None:
     repo, harness = FakeTeamRunRepo(), FakeHarness()
     svc, _ = _svc(repo, harness)

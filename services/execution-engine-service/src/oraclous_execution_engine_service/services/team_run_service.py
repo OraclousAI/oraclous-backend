@@ -620,6 +620,12 @@ class TeamRunService:
             graph_id is not None
         ):  # graph substrate (#524): org-scoped, fail-fast 422 (cross-org graph rejected here)
             await self._validate_graph_id(org, graph_id)
+        # #602 review Finding 3: the ``_refresh_seed`` key is ENGINE-RESERVED (the carry-forward
+        # cost-lever seed). Strip any user-supplied one from raw inputs so the lever activates ONLY
+        # via a validated ``seed_from_run_id`` — a caller can't inject arbitrary "prior records"
+        # into their sink's prompt by hand-setting the reserved key. ``_seed_refresh`` sets it.
+        if inputs is not None and REFRESH_SEED_KEY in inputs:
+            inputs = {k: v for k, v in inputs.items() if k != REFRESH_SEED_KEY}
         if seed_from_run_id is not None:  # #602 seeded-refresh: fail-fast 422 + thread the seed in
             inputs = await self._seed_refresh(org, seed_from_run_id, inputs)
         with org_scope(org):  # bind the org-GUC so the RLS-backstopped INSERT is admitted (ADR-030)
