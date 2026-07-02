@@ -34,6 +34,9 @@ PROTOCOL_VERSION = "2025-03-26"
 _ACCEPT = "application/json, text/event-stream"
 _CLIENT_INFO = {"name": "oraclous-registry", "version": "1.0"}
 _SESSION_HEADER = "mcp-session-id"
+# a hostile/broken MCP server must not OOM the importer with an unbounded body (review M3); a real
+# tools/list is kilobytes. Reject anything past this cap fail-closed, before parsing.
+_MAX_BODY_BYTES = 4 * 1024 * 1024
 
 
 class McpProtocolError(Exception):
@@ -47,10 +50,27 @@ class McpProtocolError(Exception):
         self.rpc_code = rpc_code
 
 
+def _guard_body_size(resp: httpx.Response) -> None:
+    """Fail-closed if the server's declared or actual body exceeds the cap — an oversized body is a
+    hostile/broken server, never a real MCP message (review M3)."""
+    declared = resp.headers.get("content-length")
+    if declared is not None:
+        try:
+            if int(declared) > _MAX_BODY_BYTES:
+                raise McpProtocolError("the MCP server body is too large", code="MCP_BAD_RESPONSE")
+        except ValueError:  # a non-numeric content-length is itself malformed → fail-closed
+            raise McpProtocolError(
+                "the MCP server sent a malformed content-length", code="MCP_BAD_RESPONSE"
+            ) from None
+    if len(resp.content) > _MAX_BODY_BYTES:  # backstop for a chunked/undeclared body
+        raise McpProtocolError("the MCP server body is too large", code="MCP_BAD_RESPONSE")
+
+
 def _parse_message(resp: httpx.Response) -> dict[str, Any]:
     """Parse a Streamable-HTTP response body into the JSON-RPC message — a single JSON object OR the
     first SSE ``data:`` frame that carries a JSON-RPC ``result``/``error``. Fail-closed on anything
     that is not a JSON-RPC object (a hostile server can send any bytes)."""
+    _guard_body_size(resp)
     ctype = resp.headers.get("content-type", "").lower()
     if "text/event-stream" in ctype:
         for raw in resp.text.splitlines():

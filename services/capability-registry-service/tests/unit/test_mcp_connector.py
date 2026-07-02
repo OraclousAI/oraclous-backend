@@ -157,6 +157,23 @@ async def test_a_malformed_non_dict_body_is_a_clean_bad_response(body: object) -
     assert "has no attribute" not in (res.error_message or "")  # no leaked AttributeError text
 
 
+async def test_an_oversized_body_is_rejected_fail_closed(monkeypatch: pytest.MonkeyPatch) -> None:
+    # #541 review M3: a hostile server declaring a huge Content-Length must be rejected before the
+    # body is parsed — it must NOT be read into memory (OOM). We assert on the declared-length gate:
+    # a small real body but a lying multi-GB Content-Length header is a clean MCP_BAD_RESPONSE.
+    from oraclous_capability_registry_service.domain.connectors import mcp_protocol
+
+    monkeypatch.setattr(mcp_protocol, "_MAX_BODY_BYTES", 1024)  # shrink the cap for a cheap test
+    big_text = "x" * 4096  # a body larger than the (shrunk) cap
+    huge = {"jsonrpc": "2.0", "id": 1, "result": {"content": [{"type": "text", "text": big_text}]}}
+    ex = _executor(
+        {"type": "mcp", "server_url": _URL, "tool_name": "t"},
+        lambda _r: httpx.Response(200, json=huge),
+    )
+    res = await ex.execute({}, _ctx())
+    assert not res.success and res.error_type == "MCP_BAD_RESPONSE"
+
+
 # ── #492: the connector DIALS the pinned vetted IP (closes the DNS-rebinding TOCTOU) ──────────────
 
 
