@@ -180,3 +180,21 @@ def test_details_from_errors_empty_returns_none() -> None:
     # nothing safe extractable -> None, so the caller falls back to a generic detail
     assert details_from_errors([]) is None
     assert details_from_errors([{"loc": [], "type": ""}]) is None
+
+
+def test_kgs_grantee_not_in_org_422_surfaces_the_machine_token() -> None:
+    # #464 cross-service contract: KGS emits the non-member-grant rejection as a FastAPI
+    # field-error LIST so this extractor surfaces the GRANTEE_NOT_IN_ORG token at the edge. A dict
+    # `detail` degrades to a generic MALFORMED_REQUEST, losing the reason (the deployed e2e proved).
+    raw = _raw(
+        [
+            {
+                "loc": ["body", "grantee_user_id"],
+                "type": "grantee_not_in_org",
+                "msg": "grantee user is not a member of the grantee organisation",
+            }
+        ]
+    )
+    out = extract_validation_details(raw)
+    assert out is not None
+    assert out[0].field == "grantee_user_id" and out[0].issue == "GRANTEE_NOT_IN_ORG"

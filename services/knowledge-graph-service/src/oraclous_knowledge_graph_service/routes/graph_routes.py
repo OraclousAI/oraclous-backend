@@ -117,13 +117,21 @@ async def grant_graph_read(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="graph not found"
         ) from None
-    except GranteeNotInOrg:  # #464: the grantee is not a member of the grantee org — reject
+    except GranteeNotInOrg:  # #464: the grantee is not a member of the grantee org — reject.
+        # Shape the 422 as the FastAPI field-error LIST so the gateway's leak-safe passthrough
+        # (`extract_validation_details`) surfaces the machine token: `type` -> the `issue`
+        # (GRANTEE_NOT_IN_ORG) and `loc` -> the `field` (grantee_user_id). A dict `detail` is NOT
+        # extractable at the edge — it degrades to a generic MALFORMED_REQUEST, losing the reason
+        # (proven by the deployed gateway e2e). `msg` is for a KGS-direct caller; the edge drops it.
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail={
-                "error_type": "GRANTEE_NOT_IN_ORG",
-                "message": "grantee user is not a member of the grantee organisation",
-            },
+            detail=[
+                {
+                    "loc": ["body", "grantee_user_id"],
+                    "type": "grantee_not_in_org",
+                    "msg": "grantee user is not a member of the grantee organisation",
+                }
+            ],
         ) from None
     except AuthServiceUnavailable:  # #464 fail-closed: never grant a cross-org edge un-validated
         raise HTTPException(
