@@ -341,9 +341,11 @@ def thread_refresh_seed(
     seed_team: OHMManifest, seed_results: dict[str, Any], inputs: dict[str, Any] | None
 ) -> dict[str, Any]:
     """#602/#544: thread a prior SUCCEEDED run's producing-member records into ``inputs`` under the
-    reserved ``_refresh_seed`` key (the #599 state seam), so the producing member carries forward
-    unchanged records (the cost lever) and settle computes the 5-way delta against them. The shared
-    threading both the request path (``_seed_refresh``) and the scheduled recurring-refresh path
+    reserved ``_refresh_seed`` key (the #599 state seam). At dispatch ``refresh_dispatch_args``
+    renders these into the SINK member's harness input with the carry-forward directive (the cost
+    lever — the member skips re-deriving unchanged records); at settle they are the baseline the
+    5-way delta is computed against. The shared threading both the request path (``_seed_refresh``)
+    and the scheduled recurring-refresh path
     (``schedule_service._fire_team_run``) reuse — each caller owns the seed-run VALIDATION (request
     path → 422; a Beat fire → fail-open to a cold build). A seed whose deliverable is not records
     parses to None → thread ``[]`` but flag it, so the delta never treats an UNPARSEABLE seed as a
@@ -549,10 +551,10 @@ class TeamRunService:
         inputs: dict[str, Any] | None,
     ) -> dict[str, Any]:
         """#602: validate the named seed run (fail-fast 422) + thread its records into ``inputs``
-        under the reserved ``_refresh_seed`` key (the #599 state seam), so the producing member can
-        carry-forward unchanged records (the cost lever) and settle can compute the delta against
-        them. The seed run must belong to the caller's org (a cross-org id → 422, never a tenant
-        leak) and be SUCCEEDED (a partial/failed prior has an incomplete ledger to refresh from)."""
+        under the reserved ``_refresh_seed`` key (the #599 state seam); at dispatch the sink member
+        receives them to carry-forward unchanged records (the cost lever) and at settle they are the
+        delta baseline. The seed run must belong to the caller's org (a cross-org id → 422, never a
+        tenant leak) and be SUCCEEDED (a partial/failed prior has an incomplete ledger)."""
         with org_scope(organisation_id):
             seed_row = await self._team_runs.get(seed_from_run_id, organisation_id)
         if seed_row is None:

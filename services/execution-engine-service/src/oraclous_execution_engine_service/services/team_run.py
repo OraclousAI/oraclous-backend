@@ -41,6 +41,7 @@ from oraclous_ohm.orchestrate import (
     run_team,
 )
 
+from oraclous_execution_engine_service.domain.refresh import REFRESH_SEED_KEY
 from oraclous_execution_engine_service.services.harness_client import HarnessClientError
 
 
@@ -84,10 +85,38 @@ EXECUTION_DIRECTIVE = (
 )
 
 
+# #602 (ADR-048 §3) — the seeded-refresh COST LEVER. When a run is seeded from a prior run
+# (``seed_from_run_id``), the producing (sink) member receives ITS OWN prior records here, with this
+# directive to carry forward the unchanged ones instead of re-deriving them (the token saving). The
+# engine stays authoritative: at settle ``compute_delta`` credits ``unchanged`` ONLY when the fresh
+# record's evidence fingerprint MATCHES the seed AND it carries the ``refresh_status: unchanged``
+# marker — a mismatch is ``changed`` regardless of the marker, so a member can never smuggle a moved
+# record through as skipped. Carrying forward is thus a genuine cost lever, never a soundness hole.
+REFRESH_CARRY_FORWARD_DIRECTIVE = (
+    "This is a REFRESH run. Below are the records YOU produced on the prior run. For every record "
+    "whose underlying evidence is UNCHANGED since then, CARRY IT FORWARD: re-emit it "
+    'byte-identical to the prior version and add the field "refresh_status": "unchanged" — do NOT '
+    "re-derive it (this is the point of a refresh: skip the work for records that have not "
+    "changed). Only re-derive a record whose evidence has genuinely CHANGED (emit the new version "
+    "WITHOUT the marker), drop records that no longer apply, and add genuinely new ones. The "
+    "engine independently verifies each carried record's fingerprint against the prior run, so a "
+    "carried-forward record MUST be identical to its prior evidence or it is classified as changed."
+)
+
+
 def render_member_input(
-    member: OHMMember, envelopes: list[HandoffEnvelope], fan_item: Any = None
+    member: OHMMember,
+    envelopes: list[HandoffEnvelope],
+    fan_item: Any = None,
+    *,
+    refresh_records: list[dict[str, Any]] | None = None,
 ) -> str:
-    """Render a member's objective + fan item + inbound typed hand-offs into the harness input."""
+    """Render a member's objective + fan item + inbound typed hand-offs into the harness input.
+
+    ``refresh_records`` (#602): the producing (sink) member's OWN records from the seed run,
+    rendered with the carry-forward directive so the member can skip re-deriving unchanged records
+    (the cost lever). Only passed to the sink member of a seeded refresh; ``None`` on every normal
+    dispatch, so a non-refresh run's input is byte-for-byte unchanged (default-OFF)."""
     parts: list[str] = []
     # #577: the inbound handoff's objective_slice scopes THIS dispatch (the producer's ## Handoff
     # Next-task — e.g. "Draft Chapter 04") and takes precedence over the member's static subgoal
@@ -105,8 +134,35 @@ def render_member_input(
         parts.append(f"Item: {json.dumps(fan_item, default=str)}")
     for env in envelopes:
         parts.append(f"From {env.from_role}: {json.dumps(env.payload, default=str)}")
+    if (
+        refresh_records is not None
+    ):  # #602 cost lever — the sink member's prior records to carry fwd
+        parts.append(REFRESH_CARRY_FORWARD_DIRECTIVE)
+        parts.append(f"Your prior records ({len(refresh_records)}):\n{json.dumps(refresh_records)}")
     parts.append(EXECUTION_DIRECTIVE)
     return "\n\n".join(parts)
+
+
+def refresh_dispatch_args(
+    manifest: OHMManifest, inputs: dict[str, Any] | None
+) -> tuple[list[dict[str, Any]] | None, str | None]:
+    """#602 cost lever: the ``(seed_records, sink_role)`` to thread into the sink member's dispatch
+    on a seeded refresh, or ``(None, None)`` for a normal run (default-OFF). The seed rides
+    ``inputs["_refresh_seed"]`` (threaded at create by ``thread_refresh_seed``); the sink is the
+    single producing member (no other member depends on it — the same member whose deliverable the
+    settle-time delta parses). A non-refresh run, an empty/unparseable seed, or a team with no
+    single sink threads nothing, so its dispatch is byte-for-byte unchanged."""
+    seed = (inputs or {}).get(REFRESH_SEED_KEY)
+    if not isinstance(seed, dict):
+        return None, None
+    records = seed.get("records")
+    if not isinstance(records, list) or not records:  # unparseable/empty seed → no carry-forward
+        return None, None
+    depended = {d for m in manifest.members for d in m.depends_on}
+    sinks = [m.role for m in manifest.members if m.role not in depended]
+    if len(sinks) != 1:  # only a single-sink producer carries forward (the settle delta's shape)
+        return None, None
+    return [r for r in records if isinstance(r, dict)], sinks[0]
 
 
 def make_harness_dispatch(
@@ -123,6 +179,8 @@ def make_harness_dispatch(
     precedence_order: list[str] | None = None,
     graph_authoritative: bool = False,
     budget: OHMBudget | None = None,
+    refresh_seed_records: list[dict[str, Any]] | None = None,
+    refresh_sink_role: str | None = None,
 ) -> DispatchFn:
     """Build a ``run_team`` dispatch that runs each member as a real harness execution.
 
@@ -151,7 +209,16 @@ def make_harness_dispatch(
         if resolve_member_on_exhaustion(member, budget) == "degrade":
             caps["on_exhaustion"] = "degrade"
         result = await harness.execute(
-            input_text=render_member_input(member, envelopes, fan_item),
+            input_text=render_member_input(
+                member,
+                envelopes,
+                fan_item,
+                # #602 cost lever: only the SINK member of a seeded refresh receives its prior
+                # records + the carry-forward directive; every other dispatch is unchanged.
+                refresh_records=(
+                    refresh_seed_records if member.role == refresh_sink_role else None
+                ),
+            ),
             manifest_inline=sub,
             manifest_ref=(member.manifest_ref if sub is None else None),
             # the member's tools[] is the authoritative ceiling (ADR-032/035 §5) — it caps the
@@ -240,6 +307,7 @@ async def run_team_harness(
             on_cost(tokens)
 
     pooled_cost = cost_so_far if cost_so_far is not None else (lambda: sum(cost_deltas))
+    refresh_records, refresh_sink = refresh_dispatch_args(manifest, inputs)  # #602 cost lever
     dispatch = make_harness_dispatch(
         harness,
         sub_harnesses or {},
@@ -253,6 +321,8 @@ async def run_team_harness(
         precedence_order=precedence_order,
         graph_authoritative=graph_authoritative,
         budget=manifest.budget,  # #576: per-member caps resolve from the team budget + members
+        refresh_seed_records=refresh_records,  # #602: the sink's prior records (refresh only)
+        refresh_sink_role=refresh_sink,
     )
     return await run_team(
         manifest,
@@ -379,6 +449,7 @@ async def run_team_hybrid(
 
     by_role = {m.role: m for m in manifest.members}
     team_id = str(manifest.metadata.id)
+    refresh_records, refresh_sink = refresh_dispatch_args(manifest, inputs)  # #602 cost lever
     real_dispatch = make_harness_dispatch(
         harness,
         sub_harnesses or {},
@@ -392,6 +463,8 @@ async def run_team_hybrid(
         precedence_order=precedence_order,
         graph_authoritative=graph_authoritative,
         budget=manifest.budget,  # #576: per-member caps resolve from the team budget + members
+        refresh_seed_records=refresh_records,  # #602: the sink's prior records (refresh only)
+        refresh_sink_role=refresh_sink,
     )
     termination = manifest.orchestration.termination if manifest.orchestration else None
     max_rounds = (termination.max_rounds if termination else None) or _DEFAULT_MAX_ROUNDS
