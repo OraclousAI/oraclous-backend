@@ -12,7 +12,10 @@ import uuid
 from typing import Any
 
 import pytest
+from oraclous_execution_engine_service.domain.refresh import REFRESH_SEED_KEY
 from oraclous_execution_engine_service.services.team_run import (
+    REFRESH_CARRY_FORWARD_DIRECTIVE,
+    refresh_dispatch_args,
     render_member_input,
     run_team_harness,
 )
@@ -172,6 +175,60 @@ def test_render_member_input_falls_back_to_subgoal_without_an_objective_slice() 
     )
     text = render_member_input(member, [])  # no inbound handoff
     assert "Objective: draft a chapter" in text  # back-compat: the static subgoal stands
+
+
+# ── #602 cost lever: the sink member receives its prior records to carry forward ──────────────────
+
+
+def test_render_member_input_without_refresh_records_is_unchanged_default_off() -> None:
+    # a normal (non-refresh) dispatch: no carry-forward directive, no prior-records block.
+    text = render_member_input(_m("reporter"), [])
+    assert "REFRESH run" not in text
+    assert "prior records" not in text.lower()
+
+
+def test_render_member_input_renders_the_prior_records_and_carry_forward_directive() -> None:
+    prior = [{"id": "a", "v": 1}, {"id": "b", "v": 2}]
+    text = render_member_input(_m("reporter"), [], refresh_records=prior)
+    assert REFRESH_CARRY_FORWARD_DIRECTIVE in text  # the member is told to carry forward
+    assert '"refresh_status": "unchanged"' in text  # the exact marker to emit
+    assert '"id": "a"' in text and '"id": "b"' in text  # its actual prior records are present
+    assert "Your prior records (2)" in text
+
+
+def test_refresh_dispatch_args_targets_the_single_sink_of_a_seeded_refresh() -> None:
+    # source -> reporter (the sink). A seeded refresh threads the seed records to the sink only.
+    team = _team([_m("source"), _m("reporter", ["source"])])
+    inputs = {REFRESH_SEED_KEY: {"records": [{"id": "a"}], "seed_records_parsed": True}}
+    records, sink = refresh_dispatch_args(team, inputs)
+    assert sink == "reporter" and records == [{"id": "a"}]
+
+
+def test_refresh_dispatch_args_is_off_for_a_non_refresh_or_empty_or_multi_sink() -> None:
+    team = _team([_m("source"), _m("reporter", ["source"])])
+    assert refresh_dispatch_args(team, None) == (None, None)  # not a refresh
+    assert refresh_dispatch_args(team, {}) == (None, None)  # no seed key
+    empty = {REFRESH_SEED_KEY: {"records": [], "seed_records_parsed": False}}
+    assert refresh_dispatch_args(team, empty) == (None, None)  # unparseable/empty seed → no lever
+    two_sinks = _team([_m("a"), _m("b")])  # two independent sinks → ambiguous, no carry-forward
+    seed = {REFRESH_SEED_KEY: {"records": [{"id": "x"}], "seed_records_parsed": True}}
+    assert refresh_dispatch_args(two_sinks, seed) == (None, None)
+
+
+def test_refresh_dispatch_args_suppresses_carry_forward_for_a_fan_out_sink() -> None:
+    # #602 review Finding 1: a fan_out sink would re-render the seed per fan-item (inverting the
+    # saving) — the lever is suppressed for it (the delta still computes at settle).
+    from oraclous_ohm.manifest import OHMFanOut
+
+    fan_sink = OHMMember(
+        role="reporter",
+        kind="agent",
+        manifest_ref="org:x/reporter@1",
+        fan_out=OHMFanOut(over="$.items"),
+    )
+    team = _team([fan_sink])
+    seed = {REFRESH_SEED_KEY: {"records": [{"id": "a"}], "seed_records_parsed": True}}
+    assert refresh_dispatch_args(team, seed) == (None, None)
 
 
 def test_render_member_input_fan_in_takes_the_first_objective_and_keeps_all_payloads() -> None:

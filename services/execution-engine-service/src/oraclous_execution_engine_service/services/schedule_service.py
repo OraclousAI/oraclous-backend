@@ -48,7 +48,10 @@ from oraclous_execution_engine_service.services.registry_client import (
     RegistryClient,
     RegistryClientError,
 )
-from oraclous_execution_engine_service.services.team_run_service import thread_refresh_seed
+from oraclous_execution_engine_service.services.team_run_service import (
+    strip_reserved_refresh_seed,
+    thread_refresh_seed,
+)
 
 # An adopted-tool dispatch hand-off: (run_id, instance_id, input_data, organisation_id, user_id) →
 # fire the registry-execute worker task. ``run_id`` is the engine_adopted_tool_runs row id, so the
@@ -522,6 +525,10 @@ class ScheduleService:
         ``(seed_from_run_id, inputs)``. FAIL-OPEN: a missing / non-SUCCEEDED / unloadable seed
         yields a COLD build ``(None, base_inputs)`` — a Beat tick must never hard-fail on it.
         The stamp records only SUCCEEDED runs; the SUCCEEDED re-check here is defense-in-depth."""
+        # #602 review Finding 3: strip a user-supplied reserved _refresh_seed from the schedule's
+        # inputs (self-injection guard) — the lever seed comes ONLY from the last SUCCEEDED fire,
+        # never hand-set in the schedule spec. Applies to the cold-fire return + the threaded path.
+        base_inputs = strip_reserved_refresh_seed(base_inputs)
         seed_id = sched.last_settled_team_run_id
         if seed_id is None or self._team_runs is None:
             return None, base_inputs

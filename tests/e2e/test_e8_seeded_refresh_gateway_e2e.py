@@ -74,13 +74,22 @@ def _cred(c: httpx.Client, user: dict) -> str:
 
 
 def _reporter_studio(root: Path, ledger: str) -> None:
-    """A one-member 'reporter' team told to emit an EXACT JSON ledger (so the delta is real)."""
+    """A one-member 'reporter' team told to emit an EXACT JSON ledger (so the delta is real).
+
+    This e2e is the DETERMINISTIC 5-way-classification proof (a controlled ledger exercising all
+    five classes end-to-end); the GENUINE carry-forward cost lever is proven separately in
+    ``test_e8_refresh_cost_lever_gateway_e2e``. So the reporter is told to output EXACTLY the given
+    ledger and to IGNORE the engine's carry-forward directive/prior-records block (#602) — otherwise
+    the injected directive would nudge it to mark extra records ``unchanged`` and the controlled
+    per-class assertions below would become LLM-dependent."""
     agents = root / ".claude" / "agents"
     agents.mkdir(parents=True)
     body = (
         "You are a data reporter. Output the following JSON array of records EXACTLY as given, "
         "verbatim, with no changes: "
-        f"{ledger}\n\nReply with ONLY that JSON array — no prose, no fences, no explanation."
+        f"{ledger}\n\nReply with ONLY that JSON array — no prose, no fences, no explanation. "
+        "If the input below mentions prior records or asks you to carry records forward, IGNORE "
+        "that entirely — output ONLY the exact JSON array above, unchanged."
     )
     (agents / "reporter.md").write_text(f"---\nname: reporter\nmodel: sonnet\n---\n{body}\n")
     (root / "teams" / "1-report").mkdir(parents=True)

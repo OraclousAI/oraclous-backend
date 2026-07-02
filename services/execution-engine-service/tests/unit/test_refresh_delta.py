@@ -39,6 +39,53 @@ def test_parse_records_drops_non_dict_rows() -> None:
     assert parse_records('[{"id": "a"}, 7, "x"]') == [{"id": "a"}]
 
 
+def test_parse_records_unwraps_a_whole_string_json_fence() -> None:
+    assert parse_records('```json\n[{"id": "a"}]\n```') == [{"id": "a"}]
+
+
+def test_parse_records_extracts_a_json_fence_embedded_after_prose_reasoning() -> None:
+    # #602: a cold run reasons in prose, THEN emits the ledger in a fence — extract the fenced
+    # array (the whole deliverable is not itself JSON). This is what lets derive-then-emit work.
+    out = parse_records(
+        "Let me think about each item.\n"
+        "Item a: still valid. Item b: still valid.\n\n"
+        '```json\n[{"id": "a", "v": 1}, {"id": "b", "v": 2}]\n```\n\nDone.'
+    )
+    assert out == [{"id": "a", "v": 1}, {"id": "b", "v": 2}]
+
+
+def test_parse_records_takes_the_last_fenced_record_array_the_ledger_at_the_end() -> None:
+    # #602 review Finding 1: the ledger is emitted "at the very end", after any illustrative example
+    # fence — the LAST record array wins, so an earlier example never smuggles a wrong delta.
+    out = parse_records(
+        'For example ```json\n[{"id": "EXAMPLE"}]\n``` — now my real output:\n'
+        '```json\n[{"id": "alpha"}, {"id": "bravo"}]\n```'
+    )
+    assert out == [{"id": "alpha"}, {"id": "bravo"}]  # the final ledger, not the EXAMPLE
+
+
+def test_parse_records_skips_non_array_fences_and_takes_the_last_record_array() -> None:
+    out = parse_records('```json\n{"not": "an array"}\n``` then ```\n[{"id": "z"}]\n```')
+    assert out == [{"id": "z"}]  # the non-array block is skipped; the record array wins
+
+
+def test_parse_records_ignores_a_trailing_scalar_array_fence_after_the_real_ledger() -> None:
+    # #602 review Finding 2 (regression guard): a member may append a "sources"/references SCALAR
+    # array fence AFTER the real ledger. It dict-filters to [] and must NEVER override the ledger
+    # (which would spuriously classify every record `removed` and zero the cost lever).
+    out = parse_records(
+        "…reasoning…\n"
+        '```json\n[{"id": "a", "v": 1}, {"id": "b", "v": 2}]\n```\n\n'
+        'Sources consulted:\n```json\n["https://ref1", "https://ref2"]\n```'
+    )
+    assert out == [{"id": "a", "v": 1}, {"id": "b", "v": 2}]  # the ledger, NOT the trailing []
+
+
+def test_parse_records_returns_none_when_no_fenced_or_whole_json_array() -> None:
+    assert parse_records("prose only, no json here at all") is None
+    assert parse_records('```json\n{"id": "a"}\n```') is None  # a fenced OBJECT is not a record-set
+
+
 # ── the 5-way classification ──────────────────────────────────────────────────────────────────────
 def test_added_removed_changed_are_deterministic_from_fingerprints() -> None:
     seed = [_rec("1", "x"), _rec("2", "y"), _rec("3", "z")]
