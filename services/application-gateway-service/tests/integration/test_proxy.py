@@ -170,19 +170,22 @@ async def test_422_structured_surfaces_leak_safe_details(client: AsyncClient) ->
     assert scan_forbidden(r.text) == []
 
 
-async def test_405_surfaces_allow_and_a_contract_pointer_without_leaking_the_body(
+async def test_405_on_documents_surfaces_the_authored_hint_and_allow_without_leaking_the_body(
     client: AsyncClient,
 ) -> None:
-    # #579: a wrong-method guess (POST a GET-only resource) returns an ACTIONABLE 405 — the upstream
-    # Allow header + a curated pointer to the published contract — but the upstream detail body
-    # (which here carries an internal host/IP) is NEVER relayed (§3 rule 8).
+    # #579 Decision 3: a wrong-method guess (POST a GET-only /documents) returns an ACTIONABLE 405 —
+    # the gateway-AUTHORED hint (a constant naming upload/ingest) in `message` + the safe upstream
+    # `Allow` header. The upstream detail BODY (an internal host/IP here) is NEVER relayed (§3 rule
+    # 8): the leak check targets the actual internal tokens, NOT the public route name `/upload`
+    # (which legitimately appears in the gateway's own constant hint).
     r = await client.post("/api/v1/graphs/g/documents", headers=_auth())
     assert r.status_code == 405
     env = r.json()["error"]
     assert env["code"] == "METHOD_NOT_ALLOWED"
-    assert "/v1/openapi.json" in env["message"]  # points to the discoverability surface
+    assert "upload" in env["message"] and "ingest" in env["message"]  # the authored hint
     assert r.headers.get("allow") == "GET"  # the safe, standard method-list header is surfaced
-    assert "db-1.internal" not in r.text and "/upload" not in r.text  # upstream body NOT relayed
+    assert "db-1.internal" not in r.text and "10.0.0.5" not in r.text  # upstream body NOT relayed
+    assert set(env) <= {"code", "message", "requestId", "retryable"}  # envelope stays closed
 
 
 async def test_422_string_detail_falls_back_to_canonical(client: AsyncClient) -> None:
