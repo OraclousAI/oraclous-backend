@@ -25,7 +25,7 @@ from oraclous_capability_registry_service.domain.delivery import (
     content_hash,
     delivery_key,
 )
-from oraclous_capability_registry_service.domain.egress import egress_allowed
+from oraclous_capability_registry_service.domain.egress import egress_allowed, pinned_request
 from oraclous_capability_registry_service.domain.executors.base import (
     ExecutionContext,
     ExecutionResult,
@@ -90,7 +90,12 @@ class GitHubSinkConnector(InternalTool):
         head_branch = input_data.get("head_branch") or base_branch
         forge = context.configuration.get("forge", "github")
         base_url = str(context.configuration.get("base_url") or _GITHUB_BASE).rstrip("/")
-        if not await egress_allowed(base_url):
+        # #492 (ADR-025 §1): vet + PIN the forge host ONCE, then dial the resolved IP for the whole
+        # multi-call sequence — connecting by hostname would let httpx re-resolve at connect time
+        # and re-open the DNS-rebinding TOCTOU on this (tenant-configurable base_url) deliver-back
+        # path, exactly as it is closed on the mcp/web_research/generic_rest connectors.
+        pinned_ip = await egress_allowed(base_url)
+        if not pinned_ip:
             return ExecutionResult(
                 success=False,
                 error_message="the forge URL is not an allowed target",
@@ -125,12 +130,22 @@ class GitHubSinkConnector(InternalTool):
         redeliver = bool(stored)
         content_by_path = {f["path"]: str(f["content"]) for f in files}
         headers = {"Authorization": f"token {token}", "Accept": "application/vnd.github+json"}
+        # dial the pinned IP (base_url host swapped) while every request keeps the original Host +
+        # TLS SNI = the forge hostname — a request event hook applies both to EVERY call in the
+        # multi-step Contents sequence, so no call site re-resolves the name (#492 pinning).
+        pinned_base, host_headers, sni_ext = pinned_request(base_url, pinned_ip)
+
+        async def _pin(request: httpx.Request) -> None:
+            request.headers["Host"] = host_headers["Host"]
+            request.extensions.update(sni_ext)
+
         async with httpx.AsyncClient(
-            base_url=base_url,
+            base_url=str(pinned_base),
             headers=headers,
             timeout=_TIMEOUT_S,
             transport=self.transport,
             follow_redirects=False,
+            event_hooks={"request": [_pin]},
         ) as client:
             if not redeliver:
                 conflict = await self._ensure_branch(client, forge, repo, base_branch, head_branch)
