@@ -13,8 +13,11 @@ from typing import Any
 
 import pytest
 from oraclous_execution_engine_service.models.team_run import EngineTeamRun
+from oraclous_execution_engine_service.schema.engine_schemas import AdvanceTeamRunRequest
 from oraclous_execution_engine_service.services.team_run_service import TeamRunError, TeamRunService
 from oraclous_governance import Principal, PrincipalType
+from oraclous_ohm.gate import GateDecision
+from pydantic import ValidationError
 
 pytestmark = pytest.mark.unit
 
@@ -581,6 +584,190 @@ async def test_advance_then_worker_drive_resumes_past_the_gate() -> None:
     assert resumed.state == "SUCCEEDED"
     assert "writer" in resumed.results  # the gate opened and the writer finally ran
     assert repo.rows[paused.id].gate_decisions == {"approval": "approve"}  # decision persisted
+
+
+# ── ADR-046 (#578): the human-gate revise (reject → revision → re-invoke) loop ────────────────────
+
+
+def test_advance_dto_parses_bare_strings_full_objects_and_rejects_unknown_verbs() -> None:
+    # back-compat: a v1 bare "approve"/"reject" string parses to a GateDecision; the full three-verb
+    # object parses; an unknown verb is a 422 at the wire boundary.
+    from_bare = AdvanceTeamRunRequest.model_validate({"gate_decisions": {"g": "approve"}})
+    assert from_bare.gate_decisions["g"] == GateDecision(decision="approve")
+    full = AdvanceTeamRunRequest.model_validate(
+        {"gate_decisions": {"g": {"decision": "revise", "feedback": "redo"}}}
+    )
+    assert full.gate_decisions["g"].decision == "revise"
+    assert full.gate_decisions["g"].feedback == "redo"
+    with pytest.raises(ValidationError):
+        AdvanceTeamRunRequest.model_validate({"gate_decisions": {"g": "maybe"}})
+    with pytest.raises(ValidationError):  # advance requires at least one decision
+        AdvanceTeamRunRequest.model_validate({"gate_decisions": {}})
+
+
+def _producer_subgoal(row: EngineTeamRun, role: str) -> str:
+    return next(m["subgoal"] for m in row.manifest["members"] if m["role"] == role)
+
+
+async def test_revise_re_runs_the_producer_with_feedback_and_re_pauses() -> None:
+    repo, harness = FakeTeamRunRepo(), FakeHarness()
+    svc, _ = _svc(repo, harness)
+    manifest = _team([_agent("researcher"), _human("approval", ["researcher"])])
+    paused = await _run(svc, _principal(), manifest=manifest, sub_harnesses={}, gate_decisions={})
+    assert paused.state == "PAUSED" and len(harness.inputs) == 1  # researcher ran once
+
+    await svc.advance(
+        paused.id, _principal(), {"approval": {"decision": "revise", "feedback": "use the bible"}}
+    )
+    revised = await svc.drive(paused.id, _principal())
+
+    assert revised.state == "PAUSED"  # re-pauses at the SAME gate (never crosses on revise)
+    assert revised.paused_at == ["approval"]
+    assert len(harness.inputs) == 2  # the researcher (the gate's producer) re-ran
+    assert revised.revision_rounds == {"approval": 1}  # the round counter incremented + persisted
+    assert "use the bible" in _producer_subgoal(revised, "researcher")  # feedback threaded in
+
+
+async def test_revise_then_approve_completes_with_the_fresh_output() -> None:
+    repo, harness = FakeTeamRunRepo(), FakeHarness()
+    svc, _ = _svc(repo, harness)
+    manifest = _team(
+        [_agent("researcher"), _human("approval", ["researcher"]), _agent("writer", ["approval"])]
+    )
+    paused = await _run(svc, _principal(), manifest=manifest, sub_harnesses={}, gate_decisions={})
+
+    await svc.advance(paused.id, _principal(), {"approval": GateDecision(decision="revise")})
+    await svc.drive(paused.id, _principal())  # re-pauses with the fresh researcher output
+    await svc.advance(paused.id, _principal(), {"approval": "approve"})
+    done = await svc.drive(paused.id, _principal())
+
+    assert done.state == "SUCCEEDED"
+    assert "writer" in done.results  # the gate opened after the revision and the writer ran
+
+
+def _ran_count(harness: FakeHarness, subgoal: str) -> int:
+    # the harness wraps a member's subgoal into a fuller input_text — count by substring.
+    return sum(1 for i in harness.inputs if subgoal in i)
+
+
+async def test_revise_only_re_runs_the_invalidated_slice_not_a_sealed_upstream_gate() -> None:
+    # a → gate1 → b → gate2. Approve gate1, then REVISE gate2: only 'b' re-runs; 'a' is sealed
+    # behind the approved gate1 and is NOT re-dispatched (ADR-046 §2/§5).
+    repo, harness = FakeTeamRunRepo(), FakeHarness()
+    svc, _ = _svc(repo, harness)
+    manifest = _team(
+        [_agent("a"), _human("gate1", ["a"]), _agent("b", ["gate1"]), _human("gate2", ["b"])]
+    )
+    await _run(svc, _principal(), manifest=manifest, sub_harnesses={}, gate_decisions={})
+    run_id = next(iter(repo.rows))
+    await svc.advance(run_id, _principal(), {"gate1": "approve"})
+    await svc.drive(run_id, _principal())  # b runs; pauses at gate2
+    assert _ran_count(harness, "do a") == 1 and _ran_count(harness, "do b") == 1
+
+    await svc.advance(run_id, _principal(), {"gate2": {"decision": "revise", "feedback": "redo b"}})
+    revised = await svc.drive(run_id, _principal())
+
+    assert revised.state == "PAUSED" and revised.paused_at == ["gate2"]
+    # 'a' did NOT re-run (sealed behind approved gate1); 'b' re-ran with the feedback.
+    assert _ran_count(harness, "do a") == 1  # unchanged — sealed upstream
+    assert _ran_count(harness, "do b") == 2  # b re-dispatched
+    assert "redo b" in _producer_subgoal(revised, "b")
+    assert "redo b" not in _producer_subgoal(revised, "a")  # 'a' subgoal untouched
+
+
+async def test_revise_beyond_max_revisions_fail_closes_to_rejected() -> None:
+    repo, harness = FakeTeamRunRepo(), FakeHarness()
+    svc, _ = _svc(repo, harness)
+    manifest = _team([_agent("researcher"), _human("approval", ["researcher"])])
+    await _run(svc, _principal(), manifest=manifest, sub_harnesses={}, gate_decisions={})
+    run_id = next(iter(repo.rows))
+
+    # default max_revisions = 3 → the first 3 revises re-pause; the 4th fail-closes to REJECTED.
+    for _ in range(3):
+        r = await svc.advance(run_id, _principal(), {"approval": {"decision": "revise"}})
+        assert r.state == "QUEUED"
+        paused = await svc.drive(run_id, _principal())
+        assert paused.state == "PAUSED"
+    rejected = await svc.advance(run_id, _principal(), {"approval": {"decision": "revise"}})
+
+    assert rejected.state == "REJECTED"  # bounded — the 4th revise fail-closes
+    assert "revision limit" in (rejected.error_message or "")
+    assert repo.rows[run_id].revision_rounds == {"approval": 3}  # never persisted the 4th
+
+
+async def test_configured_max_revisions_bounds_the_loop() -> None:
+    repo, harness = FakeTeamRunRepo(), FakeHarness()
+    svc, _ = _svc(repo, harness)
+    manifest = _team([_agent("researcher"), _human("approval", ["researcher"])])
+    manifest["orchestration"] = {"termination": {"max_revisions": 1}}  # tighter than the default
+    await _run(svc, _principal(), manifest=manifest, sub_harnesses={}, gate_decisions={})
+    run_id = next(iter(repo.rows))
+
+    first = await svc.advance(run_id, _principal(), {"approval": {"decision": "revise"}})
+    assert first.state == "QUEUED"  # revision 1 allowed
+    await svc.drive(run_id, _principal())
+    second = await svc.advance(run_id, _principal(), {"approval": {"decision": "revise"}})
+    assert second.state == "REJECTED"  # revision 2 exceeds max_revisions=1
+
+
+async def test_revise_with_edited_payload_seeds_the_producer_result_without_re_running() -> None:
+    repo, harness = FakeTeamRunRepo(), FakeHarness()
+    svc, _ = _svc(repo, harness)
+    manifest = _team([_agent("researcher"), _human("approval", ["researcher"])])
+    paused = await _run(svc, _principal(), manifest=manifest, sub_harnesses={}, gate_decisions={})
+    assert len(harness.inputs) == 1  # researcher ran once
+
+    edited = {"output": "the human's own corrected text"}
+    await svc.advance(
+        paused.id,
+        _principal(),
+        {"approval": {"decision": "revise", "edited_payload": edited}},
+    )
+    revised = await svc.drive(paused.id, _principal())
+
+    assert revised.state == "PAUSED" and revised.paused_at == ["approval"]  # re-pause to confirm
+    assert revised.results["researcher"] == edited  # the edit was seeded verbatim
+    assert len(harness.inputs) == 1  # the producer was NOT re-dispatched (override, not re-run)
+
+
+async def test_advance_rejects_a_non_paused_run() -> None:
+    repo, harness = FakeTeamRunRepo(), FakeHarness()
+    svc, _ = _svc(repo, harness)
+    manifest = _team([_agent("researcher")])
+    done = await _run(svc, _principal(), manifest=manifest, sub_harnesses={}, gate_decisions={})
+    assert done.state == "SUCCEEDED"
+    with pytest.raises(TeamRunError):  # revise on a non-PAUSED run is a 409, like approve/reject
+        await svc.advance(done.id, _principal(), {"approval": {"decision": "revise"}})
+
+
+async def test_revise_is_data_only_and_never_widens_producer_tools() -> None:
+    # ADR-046 §3 / ADR-032: the revision is a data directive (subgoal feedback) — it must NOT grant
+    # the producer new capabilities. The producer's ``tools`` are unchanged by a revise.
+    repo, harness = FakeTeamRunRepo(), FakeHarness()
+    svc, _ = _svc(repo, harness)
+    manifest = _team([_agent("researcher", tools=["core/search@1"]), _human("g", ["researcher"])])
+    paused = await _run(svc, _principal(), manifest=manifest, sub_harnesses={}, gate_decisions={})
+
+    await svc.advance(paused.id, _principal(), {"g": {"decision": "revise", "feedback": "redo"}})
+    revised = await svc.drive(paused.id, _principal())
+
+    producer = next(m for m in revised.manifest["members"] if m["role"] == "researcher")
+    assert producer["tools"] == ["core/search@1"]  # unchanged — data-only, no capability widening
+
+
+async def test_duplicate_advance_while_already_queued_is_a_no_op_race_loser() -> None:
+    # idempotent advance: once a revise moves the run PAUSED→QUEUED, a second advance on the same
+    # round finds it no longer PAUSED — a 409 (never a double-increment of revision_rounds).
+    repo, harness = FakeTeamRunRepo(), FakeHarness()
+    svc, _ = _svc(repo, harness)
+    manifest = _team([_agent("researcher"), _human("g", ["researcher"])])
+    paused = await _run(svc, _principal(), manifest=manifest, sub_harnesses={}, gate_decisions={})
+
+    first = await svc.advance(paused.id, _principal(), {"g": {"decision": "revise"}})
+    assert first.state == "QUEUED" and repo.rows[paused.id].revision_rounds == {"g": 1}
+    with pytest.raises(TeamRunError):  # the run is QUEUED now, not PAUSED — the duplicate is a 409
+        await svc.advance(paused.id, _principal(), {"g": {"decision": "revise"}})
+    assert repo.rows[paused.id].revision_rounds == {"g": 1}  # NOT double-incremented
 
 
 async def test_a_rejected_gate_halts_the_run() -> None:

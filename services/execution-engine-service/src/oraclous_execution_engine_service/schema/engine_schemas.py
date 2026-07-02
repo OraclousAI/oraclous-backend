@@ -10,6 +10,7 @@ import uuid
 from datetime import datetime
 from typing import Any, Literal
 
+from oraclous_ohm.gate import GateDecision
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from oraclous_execution_engine_service.domain.schedule_cost import (
@@ -381,12 +382,13 @@ class CreateTeamRunRequest(BaseModel):
     ``sub_harnesses`` maps each member ``role`` to its generated single-agent sub-harness OHM (run
     inline by the harness);
     a role without one falls back to the member's ``manifest_ref``. ``gate_decisions`` pre-seeds any
-    human-gate decisions (role → ``approve`` | ``reject``) for a run that should not pause.
+    human-gate decisions (role → a ``GateDecision`` — ``approve`` | ``revise`` | ``reject``, ADR-046
+    / #578; a v1 bare ``approve``/``reject`` string still parses) for a run that should not pause.
     """
 
     manifest: dict[str, Any]
     sub_harnesses: dict[str, dict[str, Any]] = Field(default_factory=dict)
-    gate_decisions: dict[str, Literal["approve", "reject"]] = Field(default_factory=dict)
+    gate_decisions: dict[str, GateDecision] = Field(default_factory=dict)
     # file-native blackboard (#518): the team's real working tree, threaded to every member's file
     # tools so they read/write it in place. Trusted per-run input — validated org-scoped at create
     # (must resolve under WORKSPACES_ROOT/<org>); None → the default per-org scratch sandbox.
@@ -406,9 +408,11 @@ class CreateTeamRunRequest(BaseModel):
 
 
 class AdvanceTeamRunRequest(BaseModel):
-    """Advance a PAUSED team run past its human gate(s): role → ``approve`` | ``reject``."""
+    """Advance a PAUSED team run: role → a ``GateDecision`` (``approve`` | ``revise`` | ``reject``,
+    ADR-046 / #578). ``revise`` re-runs the gate's producer sub-tree with ``feedback`` (or seeds
+    ``edited_payload``) and re-pauses. A v1 bare ``"approve"``/``"reject"`` string still parses."""
 
-    gate_decisions: dict[str, Literal["approve", "reject"]] = Field(min_length=1)
+    gate_decisions: dict[str, GateDecision] = Field(min_length=1)
 
 
 class TeamRunOut(BaseModel):
