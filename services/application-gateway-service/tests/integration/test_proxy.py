@@ -81,6 +81,15 @@ async def _string422(request):  # noqa: ANN001 — a free-string 422 (cannot be 
     return JSONResponse({"detail": "boom on db-1.internal 10.0.0.5"}, status_code=422)
 
 
+async def _method405(request):  # noqa: ANN001 — an upstream 405 (Allow + a leaky detail body)
+    # mirrors KGS POST /documents 405: an Allow header + a detail body the gateway must NOT relay.
+    return JSONResponse(
+        {"detail": "POST not supported; use /upload on db-1.internal 10.0.0.5"},
+        status_code=405,
+        headers={"Allow": "GET"},
+    )
+
+
 _UPSTREAM_APP = Starlette(
     routes=[
         Route("/v1/search", _search, methods=["GET"]),
@@ -89,6 +98,7 @@ _UPSTREAM_APP = Starlette(
         Route("/v1/graph/big/subgraph", _big, methods=["GET"]),
         Route("/api/v1/tools/weak", _struct422, methods=["POST"]),
         Route("/api/v1/tools/stringerr", _string422, methods=["POST"]),
+        Route("/api/v1/graphs/g/documents", _method405, methods=["POST"]),
     ]
 )
 
@@ -158,6 +168,24 @@ async def test_422_structured_surfaces_leak_safe_details(client: AsyncClient) ->
     assert "not a valid email" not in r.text and "db-1.svc.cluster.local" not in r.text
     # the §3 forbidden-substring scanner finds nothing in the surfaced body (no email/DNS/IP leak)
     assert scan_forbidden(r.text) == []
+
+
+async def test_405_on_documents_surfaces_the_authored_hint_and_allow_without_leaking_the_body(
+    client: AsyncClient,
+) -> None:
+    # #579 Decision 3: a wrong-method guess (POST a GET-only /documents) returns an ACTIONABLE 405 —
+    # the gateway-AUTHORED hint (a constant naming upload/ingest) in `message` + the safe upstream
+    # `Allow` header. The upstream detail BODY (an internal host/IP here) is NEVER relayed (§3 rule
+    # 8): the leak check targets the actual internal tokens, NOT the public route name `/upload`
+    # (which legitimately appears in the gateway's own constant hint).
+    r = await client.post("/api/v1/graphs/g/documents", headers=_auth())
+    assert r.status_code == 405
+    env = r.json()["error"]
+    assert env["code"] == "METHOD_NOT_ALLOWED"
+    assert "upload" in env["message"] and "ingest" in env["message"]  # the authored hint
+    assert r.headers.get("allow") == "GET"  # the safe, standard method-list header is surfaced
+    assert "db-1.internal" not in r.text and "10.0.0.5" not in r.text  # upstream body NOT relayed
+    assert set(env) <= {"code", "message", "requestId", "retryable"}  # envelope stays closed
 
 
 async def test_422_string_detail_falls_back_to_canonical(client: AsyncClient) -> None:

@@ -20,6 +20,7 @@ from oraclous_errors import ErrorCode, status_to_code
 from starlette.responses import Response
 
 from oraclous_application_gateway_service.core.dependencies import EdgePrincipalDep, ProxyServiceDep
+from oraclous_application_gateway_service.domain.method_hint import suggest_method_hint
 from oraclous_application_gateway_service.domain.validation_passthrough import (
     extract_needs_credential,
     extract_validation_details,
@@ -80,6 +81,20 @@ async def proxy(
                     status_code=409,
                     needs_credential=needs_credential,
                 )
+        # 405 (#579): a wrong-method guess on a proxied resource (e.g. POST /…/documents expecting
+        # to add content) otherwise returns a bare, unactionable METHOD_NOT_ALLOWED. Ride a curated,
+        # gateway-AUTHORED hint (a constant naming the right verb/route — NOT the upstream body, so
+        # §3 rule 8 holds) in the ``message`` field, plus the safe upstream ``Allow`` header. No
+        # match → message=None → the canonical generic 405 message (no regression for other 405s).
+        if upstream.status_code == 405:
+            allow = upstream.headers.get("allow")
+            return gateway_error(
+                request,
+                code=ErrorCode.METHOD_NOT_ALLOWED,
+                status_code=405,
+                message=suggest_method_hint(request.method, request.url.path),
+                headers={"Allow": allow} if allow else None,
+            )
         return gateway_error(
             request, code=status_to_code(upstream.status_code), status_code=upstream.status_code
         )

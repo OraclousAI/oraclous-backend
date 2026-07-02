@@ -131,6 +131,17 @@ async def test_get_missing_job_is_404(client) -> None:
     assert resp.status_code == 404
 
 
+async def test_post_documents_returns_a_helpful_405(client) -> None:
+    # #579: /documents is the READ-only ingest-job list; a user POSTing here to *add* content gets a
+    # HELPFUL 405 (Allow: GET + a pointer to the real ingest surfaces), not a bare "Method Not
+    # Allowed". Method-level, so no ownership/service call is involved.
+    resp = await client.post(f"/api/v1/graphs/{uuid.uuid4()}/documents", json={}, headers=_AUTH)
+    assert resp.status_code == 405, resp.text
+    assert resp.headers.get("allow") == "GET"
+    detail = resp.json()["detail"]
+    assert "/upload" in detail and "/ingest" in detail  # names the real ingest surfaces
+
+
 async def test_upload_text_returns_202(client) -> None:
     files = {"file": ("a.txt", b"hello\n\nworld", "text/plain")}
     resp = await client.post(f"/api/v1/graphs/{uuid.uuid4()}/upload", files=files, headers=_AUTH)

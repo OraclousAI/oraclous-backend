@@ -216,6 +216,136 @@ paths:
       responses:
         "200": { $ref: "#/components/responses/UpstreamJson" }
         "401": { $ref: "#/components/responses/Unauthenticated" }
+  /api/v1/graphs/{graphId}/ingest:
+    post:
+      tags: [knowledge-graph]
+      summary: Ingest inline text/structured content into a graph (async job).
+      description: >-
+        Land inline content in the path graph (#307). Returns 202 with the ingest job — poll it via
+        GET /api/v1/graphs/{graphId}/jobs/{jobId}; the graph's landed documents are listed by
+        GET /api/v1/graphs/{graphId}/documents. `organisation_id` is never a body field (bound from
+        the principal).
+      operationId: ingestText
+      x-stability: stable
+      parameters:
+        - { name: graphId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/IngestTextRequest" }
+      responses:
+        "202": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+  /api/v1/graphs/{graphId}/batch-ingest:
+    post:
+      tags: [knowledge-graph]
+      summary: Batch-ingest a folder/repo of content — one async job per item.
+      description: >-
+        Land a FOLDER/REPO of content in one call (#522). Returns 202 with one ingest job per item
+        (poll each via GET /api/v1/graphs/{graphId}/jobs/{jobId}); a re-ingest of the same per-item
+        `path` REPLACES (a recurring refresh re-lands a clean tree). An empty batch is a 422.
+      operationId: batchIngest
+      x-stability: stable
+      parameters:
+        - { name: graphId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BatchIngestRequest" }
+      responses:
+        "202": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+  /api/v1/graphs/{graphId}/upload:
+    post:
+      tags: [knowledge-graph]
+      summary: Upload a file to ingest into a graph (async job).
+      description: >-
+        Upload a document FILE (multipart/form-data) into the path graph (#307) — the source type is
+        inferred from the filename. Returns 202 with the ingest job (poll via
+        GET /api/v1/graphs/{graphId}/jobs/{jobId}).
+      operationId: uploadDocument
+      x-stability: stable
+      parameters:
+        - { name: graphId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file: { type: string, format: binary }
+                recipe_id: { type: string, nullable: true }
+      responses:
+        "202": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+  /api/v1/graphs/{graphId}/ingest-sql:
+    post:
+      tags: [knowledge-graph]
+      summary: Ingest a relational (SQL) source into a graph (synchronous).
+      description: >-
+        Introspect a relational source (via a broker `credential_id`, never a raw connection string)
+        and project it into the path graph (#307). Synchronous — returns the introspection + written
+        graph counts. A bad/unreachable credential or non-identifier schema is a 422; a missing graph
+        a 404.
+      operationId: ingestSql
+      x-stability: stable
+      parameters:
+        - { name: graphId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SqlIngestRequest" }
+      responses:
+        "200": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+  /api/v1/graphs/{graphId}/documents:
+    get:
+      tags: [knowledge-graph]
+      summary: List a graph's ingested documents (the ingest-job list).
+      description: >-
+        The processed-document / ingest-job list for the graph (#522) — index/search-INDEPENDENT (a
+        path here means its content is in the graph regardless of search timing). This endpoint is
+        READ-only; to ADD content POST is not supported here — a POST returns a helpful 405 pointing
+        to the ingest surfaces: POST /upload (a file), POST /ingest (inline text), /batch-ingest, or
+        /ingest-sql.
+      operationId: listDocuments
+      x-stability: stable
+      parameters:
+        - { name: graphId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /api/v1/graphs/{graphId}/jobs/{jobId}:
+    get:
+      tags: [knowledge-graph]
+      summary: Read an ingest job's status (poll the async ingest).
+      description: >-
+        The status of an ingest job created by /ingest, /batch-ingest, or /upload (#307) — poll until
+        `status` is SUCCEEDED/FAILED. Carries progress + extracted entity/relationship counts.
+      operationId: getIngestJob
+      x-stability: stable
+      parameters:
+        - { name: graphId, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: jobId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/NotFound" }
   /api/v1/graphs/{graphId}/resolution/{candidateId}/approve:
     post:
       tags: [knowledge-graph]
@@ -1491,6 +1621,61 @@ components:
         target_graph_id: { type: string, format: uuid }
         candidate_threshold: { type: number, minimum: 0.5, maximum: 1, default: 0.85 }
         limit: { type: integer, minimum: 1, maximum: 500, default: 100 }
+    IngestTextRequest:
+      type: object
+      description: >-
+        Ingest inline content into the path graph as an async job (#307). A plain `text` body lands
+        as Document/Chunk nodes; a structured `source_type` (md|csv|json|…) routes to the recipe
+        engine (a stored `recipe_id`, else a default is synthesised). The temporal fields are a
+        passthrough for structured sources. `organisation_id` is never a body field.
+      required: [content]
+      properties:
+        content: { type: string, minLength: 1 }
+        filename: { type: string, nullable: true }
+        source_type: { type: string, default: text }
+        recipe_id: { type: string, nullable: true }
+        valid_from: { type: string, nullable: true }
+        valid_to: { type: string, nullable: true }
+        event_time: { type: string, nullable: true }
+    BatchIngestItem:
+      type: object
+      description: >-
+        One file in a folder/repo batch ingest (#522). `path` is the document identity — a re-ingest
+        of the same path REPLACES (a refresh is idempotent).
+      required: [path, content]
+      properties:
+        path: { type: string, minLength: 1 }
+        content: { type: string, minLength: 1 }
+        source_type: { type: string, default: text }
+        recipe_id: { type: string, nullable: true }
+    BatchIngestRequest:
+      type: object
+      description: >-
+        Land a FOLDER/REPO of content in one call (#522) — one async ingest job per item (poll each
+        via GET /api/v1/graphs/{graphId}/jobs/{jobId}). At least one item (an empty batch is a 422).
+      required: [items]
+      properties:
+        items:
+          type: array
+          minItems: 1
+          items: { $ref: "#/components/schemas/BatchIngestItem" }
+    SqlIngestRequest:
+      type: object
+      description: >-
+        Ingest a relational (SQL) source into the path graph (#307). The connection secret is NEVER
+        in the body — only the broker `credential_id` (a stored connection string the broker
+        resolves). `sync_mode` is a full snapshot or schema-only; `schema_name` must be a strict SQL
+        identifier. Synchronous — returns the introspection + projected-graph summary.
+      required: [credential_id]
+      properties:
+        credential_id: { type: string, minLength: 1 }
+        sync_mode: { type: string, enum: [full_snapshot, schema_only], default: full_snapshot }
+        schema_name:
+          type: string
+          nullable: true
+          maxLength: 128
+          pattern: "^[A-Za-z_][A-Za-z0-9_$]*$"
+        recipe_id: { type: string, nullable: true }
     FederatedSearchRequest:
       type: object
       description: >-
