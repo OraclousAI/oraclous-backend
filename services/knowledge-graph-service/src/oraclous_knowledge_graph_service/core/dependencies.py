@@ -49,6 +49,7 @@ from oraclous_knowledge_graph_service.repositories.memory_repository import Memo
 from oraclous_knowledge_graph_service.repositories.recipe_repository import RecipeRepository
 from oraclous_knowledge_graph_service.repositories.resolution_repository import ResolutionRepository
 from oraclous_knowledge_graph_service.services.analytics_service import AnalyticsService
+from oraclous_knowledge_graph_service.services.auth_client import make_auth_client
 from oraclous_knowledge_graph_service.services.community_summarizer import make_summarizer
 from oraclous_knowledge_graph_service.services.credential_client import make_credential_broker
 from oraclous_knowledge_graph_service.services.dry_run_service import DryRunService
@@ -158,14 +159,22 @@ def get_graph_service(
     return GraphService(GraphRepository(session), write_repo)
 
 
-def get_grant_service(
+async def get_grant_service(
     request: Request,
     graphs: Annotated[GraphService, Depends(get_graph_service)],
-) -> GraphGrantService:
+) -> AsyncIterator[GraphGrantService]:
     """The cross-org graph-grant service (#446 — the ReBAC gate). Uses the async Neo4j driver opened
-    in lifespan for the ReBAC engine; None when the substrate is unconfigured (the route 503s)."""
+    in lifespan for the ReBAC engine; None when the substrate is unconfigured (route 503s). #464:
+    an auth-membership client (fake in dev/CI, real otherwise) verifies the grantee ∈ grantee-org
+    before the edge is written — built + closed per request, like the credential broker."""
     async_driver = getattr(request.app.state, "neo4j_async_driver", None)
-    return GraphGrantService(graphs=graphs, engine=ReBACEngine(), async_driver=async_driver)
+    auth = make_auth_client(get_settings())
+    try:
+        yield GraphGrantService(
+            graphs=graphs, engine=ReBACEngine(), async_driver=async_driver, auth=auth
+        )
+    finally:
+        await auth.aclose()
 
 
 def get_neo4j_driver(request: Request) -> Driver:

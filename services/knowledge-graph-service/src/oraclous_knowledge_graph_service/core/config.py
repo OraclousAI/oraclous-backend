@@ -98,6 +98,11 @@ class Settings(BaseSettings):
     # The DSN the FAKE broker returns (only read in fake mode). Defaults to this service's own
     # Postgres so a dev SQL ingest has a live DB to read; override per test/deployment.
     credential_broker_fake_dsn: str = "postgresql://oraclous:oraclous@postgres:5432/oraclous"
+    # #464: the auth-service the cross-org grant verifies grantee membership against. `fake` (dev/CI
+    # default): a key-free checker (the unit-test seam / no-membership by default). `real`: GET
+    # /internal/v1/orgs/{org}/members/{user} with X-Internal-Key. Fail-closed on any error (→ 503).
+    auth_client_mode: Literal["fake", "real"] = "fake"
+    auth_service_url: str | None = None
     # TCP egress guard (#307, Option B; ADR-025 §1). Defaults FALSE — the SECURE multi-tenant
     # posture: a SQL ingest is BLOCKED from a private/loopback/RFC-1918/ULA/internal/single-label DB
     # host, so a tenant cannot pivot the ingest into the internal network. `allow_private` is the

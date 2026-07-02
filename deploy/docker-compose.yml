@@ -42,6 +42,9 @@ x-kgs-env: &kgs-env
   KGS_AUTH_MODE: "${KGS_AUTH_MODE:-dev}"
   KGS_DEV_BEARER: "dev-token"
   KGS_INTERNAL_SERVICE_KEY: "${INTERNAL_SERVICE_KEY:-dev-internal-key}"
+  # #464: verify the grantee ∈ grantee-org against the REAL auth-service before a cross-org grant.
+  KGS_AUTH_CLIENT_MODE: "${KGS_AUTH_CLIENT_MODE:-real}"
+  KGS_AUTH_SERVICE_URL: "http://auth-service:8000"
   KGS_JWT_SECRET: "${AUTH_JWT_SECRET:-dev-jwt-secret}"
   KGS_DATABASE_URL: "postgresql+asyncpg://oraclous:oraclous@postgres:5432/oraclous"
   KGS_NEO4J_URI: "bolt://neo4j:7687"

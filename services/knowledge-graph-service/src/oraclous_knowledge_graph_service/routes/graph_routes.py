@@ -23,7 +23,11 @@ from oraclous_knowledge_graph_service.schema.graph_schemas import (
     GraphResponse,
     UpdateGraphRequest,
 )
-from oraclous_knowledge_graph_service.services.grant_service import GrantUnavailable
+from oraclous_knowledge_graph_service.services.auth_client import AuthServiceUnavailable
+from oraclous_knowledge_graph_service.services.grant_service import (
+    GranteeNotInOrg,
+    GrantUnavailable,
+)
 from oraclous_knowledge_graph_service.services.graph_service import (
     GraphNotFound,
     ReservedGraphName,
@@ -112,6 +116,19 @@ async def grant_graph_read(
     except GraphNotFound:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="graph not found"
+        ) from None
+    except GranteeNotInOrg:  # #464: the grantee is not a member of the grantee org — reject
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                "error_type": "GRANTEE_NOT_IN_ORG",
+                "message": "grantee user is not a member of the grantee organisation",
+            },
+        ) from None
+    except AuthServiceUnavailable:  # #464 fail-closed: never grant a cross-org edge un-validated
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="grantee membership could not be verified",
         ) from None
     except GrantUnavailable:
         raise HTTPException(
