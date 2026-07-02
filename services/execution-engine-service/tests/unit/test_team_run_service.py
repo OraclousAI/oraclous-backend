@@ -1002,6 +1002,53 @@ async def test_stamp_schedule_seed_noop_for_a_direct_run() -> None:
     assert sched.seeded == []
 
 
+# ── #625: seed-stamp gates on the FINAL post-verdict state (no seed-clobber) ─────────────────────
+async def _drive_scheduled(
+    evaluate: Any, *, success_criteria: str | None = None
+) -> tuple[EngineTeamRun, _FakeSchedAccrual, uuid.UUID, uuid.UUID]:
+    """Drive a SCHEDULED team fire (schedule_id set) end to end → (final_row, sched, sid, rid).
+    The stamp gate (#625) fires at settle AFTER verdict-consumption."""
+    repo, harness = FakeTeamRunRepo(), FakeHarness()
+    sched = _FakeSchedAccrual()
+    svc = TeamRunService(
+        team_runs=repo,
+        harness=harness,
+        enqueue=lambda *_a: None,
+        evaluate=evaluate,
+        schedules=sched,  # type: ignore[arg-type]
+    )
+    manifest = _team([_agent("a")], success_criteria=success_criteria)
+    created = await svc.create(_principal(), manifest=manifest, sub_harnesses={}, gate_decisions={})
+    sid = uuid.uuid4()
+    repo.rows[created.id].schedule_id = sid  # make it a standing-team scheduled fire
+    row = await svc.drive(created.id, _principal())
+    return row, sched, sid, created.id
+
+
+async def test_scheduled_fire_with_no_gate_stamps_the_seed() -> None:
+    # STORE_ONLY (no success_criteria → no verdict) → terminally SUCCEEDED → a valid seed.
+    row, sched, sid, rid = await _drive_scheduled(FakeEvaluate())
+    assert row.state == "SUCCEEDED"
+    assert sched.seeded == [(sid, _ORG, rid)]
+
+
+async def test_scheduled_fire_that_re_tasks_does_not_clobber_the_seed() -> None:
+    # #625: a below-threshold fire that verdict-consumption RE_TASKs (SUCCEEDED→QUEUED) must not
+    # stamp — stamping on the pre-verdict SUCCEEDED would clobber the schedule's prior GOOD seed.
+    evaluate = FakeEvaluate(passed=False, score=0.5, recommended_action="revise")  # → re_task
+    row, sched, _sid, _rid = await _drive_scheduled(evaluate, success_criteria="is correct")
+    assert row.state == "QUEUED"  # re_tasked by verdict-consumption
+    assert sched.seeded == []  # the final state is not SUCCEEDED → not a seed
+
+
+async def test_scheduled_fire_that_escalates_does_not_clobber_the_seed() -> None:
+    # #625: a HITL-escalated below-threshold fire (SUCCEEDED→PAUSED) must NOT stamp either.
+    evaluate = FakeEvaluate(passed=False, recommended_action="reject")  # → escalate → PAUSED
+    row, sched, _sid, _rid = await _drive_scheduled(evaluate, success_criteria="is correct")
+    assert row.state == "PAUSED"
+    assert sched.seeded == []
+
+
 # ── #602 seeded-refresh: validation + seed-thread + settle delta + default-OFF ──────────────────
 _MANIFEST = _team([_agent("reporter")])
 _SEED_LEDGER = '[{"id": "1", "v": "x"}, {"id": "2", "v": "y"}, {"id": "3", "v": "z"}]'

@@ -1210,16 +1210,19 @@ class TeamRunService:
                 loop_state=dict(result.loop_state),  # PR-C: the per-loop checkpoint (resume cursor)
             )
         await self._accrue_schedule_cost(row, org, sum(cost_deltas))  # #601: per-cadence accrual
-        # #544: a SUCCEEDED scheduled fire becomes the SEED for the next fire (a recurring refresh
-        # carries forward its records). Only a completed run — a FAILED/PAUSED/COST_BUDGET never
-        # overwrites the last good seed. Best-effort like the accrual.
-        if result.status == "completed":
-            await self._stamp_schedule_seed(row, org)
         # #604 closed-loop verdict-consumption (ADR-048 dec 5): branch the just-settled run on its
         # stored verdict — STORE_ONLY (unchanged) / RE_TASK (re-dispatch faulted members) / ESCALATE
         # (PAUSED for HITL). No-op unless a completed run graded below threshold with a re-task/
         # escalate action; the #585 pool + livelock + MAX ceiling bound the loop (fail-closed).
-        return await self._consume_verdict(updated or claimed, team, org)
+        consumed = await self._consume_verdict(updated or claimed, team, org)
+        # #544/#625: a SUCCEEDED scheduled fire becomes the SEED for the next refresh — but
+        # stamp on the FINAL POST-VERDICT state, AFTER _consume_verdict. A completed-but-below-
+        # threshold fire that verdict-consumption RE_TASKs (→QUEUED) or ESCALATEs (→PAUSED) must NOT
+        # clobber the schedule's prior GOOD seed; only a run STILL SUCCEEDED (STORE_ONLY — a
+        # passing/absent gate) is a valid seed. Best-effort like the accrual.
+        if consumed is not None and consumed.state == "SUCCEEDED":
+            await self._stamp_schedule_seed(row, org)
+        return consumed
 
     async def _accrue_schedule_cost(self, row: EngineTeamRun, org: uuid.UUID, delta: int) -> None:
         """#601: accrue THIS DRIVE's RAW-token cost (the delta, NOT the cumulative ``cost_tokens``)
