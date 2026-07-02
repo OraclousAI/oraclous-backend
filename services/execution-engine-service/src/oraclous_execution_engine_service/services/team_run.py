@@ -150,8 +150,8 @@ def refresh_dispatch_args(
     on a seeded refresh, or ``(None, None)`` for a normal run (default-OFF). The seed rides
     ``inputs["_refresh_seed"]`` (threaded at create by ``thread_refresh_seed``); the sink is the
     single producing member (no other member depends on it — the same member whose deliverable the
-    settle-time delta parses). A non-refresh run, an empty/unparseable seed, or a team with no
-    single sink threads nothing, so its dispatch is byte-for-byte unchanged."""
+    settle-time delta parses). A non-refresh run, an empty/unparseable seed, a team with no single
+    sink, or a ``fan_out`` sink threads nothing, so its dispatch is byte-for-byte unchanged."""
     seed = (inputs or {}).get(REFRESH_SEED_KEY)
     if not isinstance(seed, dict):
         return None, None
@@ -159,10 +159,15 @@ def refresh_dispatch_args(
     if not isinstance(records, list) or not records:  # unparseable/empty seed → no carry-forward
         return None, None
     depended = {d for m in manifest.members for d in m.depends_on}
-    sinks = [m.role for m in manifest.members if m.role not in depended]
+    sinks = [m for m in manifest.members if m.role not in depended]
     if len(sinks) != 1:  # only a single-sink producer carries forward (the settle delta's shape)
         return None, None
-    return [r for r in records if isinstance(r, dict)], sinks[0]
+    # #602 review Finding 1: never carry-forward into a fan_out sink — the seed would be re-rendered
+    # per fan-item (multiplying the input cost), which can INVERT the saving. A fan-out refresh
+    # re-derives (the delta still computes at settle); the lever targets a plain single producer.
+    if sinks[0].fan_out is not None:
+        return None, None
+    return [r for r in records if isinstance(r, dict)], sinks[0].role
 
 
 def make_harness_dispatch(

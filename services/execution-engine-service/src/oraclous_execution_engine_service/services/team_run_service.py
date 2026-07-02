@@ -352,13 +352,24 @@ def thread_refresh_seed(
     genuinely-empty one (which would misreport every fresh record as spuriously ``added``)."""
     seed_records = _refresh_records(seed_team, seed_results)
     return {
-        **(inputs or {}),
+        **(strip_reserved_refresh_seed(inputs) or {}),
         REFRESH_SEED_KEY: {
             "records": seed_records or [],
             "id_field": "id",
             "seed_records_parsed": seed_records is not None,
         },
     }
+
+
+def strip_reserved_refresh_seed(inputs: dict[str, Any] | None) -> dict[str, Any] | None:
+    """#602 review Finding 3: drop the ENGINE-RESERVED ``_refresh_seed`` key from user-supplied
+    inputs on EVERY on-ramp (the request path ``create`` + the schedule path
+    ``_recurring_refresh_seed``), so the carry-forward cost-lever seed is set ONLY by the engine —
+    from a validated ``seed_from_run_id`` / the last SUCCEEDED fire — never hand-injected by a
+    caller into their own sink's prompt. No-op when the key is absent (the common case)."""
+    if inputs is not None and REFRESH_SEED_KEY in inputs:
+        return {k: v for k, v in inputs.items() if k != REFRESH_SEED_KEY}
+    return inputs
 
 
 _CONVERGENCE_RE = re.compile(r"\s*evaluator\s*(>=|<=|==|>|<)\s*([0-9]*\.?[0-9]+)\s*\Z")
@@ -620,12 +631,10 @@ class TeamRunService:
             graph_id is not None
         ):  # graph substrate (#524): org-scoped, fail-fast 422 (cross-org graph rejected here)
             await self._validate_graph_id(org, graph_id)
-        # #602 review Finding 3: the ``_refresh_seed`` key is ENGINE-RESERVED (the carry-forward
-        # cost-lever seed). Strip any user-supplied one from raw inputs so the lever activates ONLY
-        # via a validated ``seed_from_run_id`` — a caller can't inject arbitrary "prior records"
-        # into their sink's prompt by hand-setting the reserved key. ``_seed_refresh`` sets it.
-        if inputs is not None and REFRESH_SEED_KEY in inputs:
-            inputs = {k: v for k, v in inputs.items() if k != REFRESH_SEED_KEY}
+        # #602 review Finding 3: strip any user-supplied ENGINE-RESERVED ``_refresh_seed`` key — the
+        # carry-forward cost-lever seed activates ONLY via a validated ``seed_from_run_id`` below,
+        # never a hand-set key (shared with the schedule on-ramp).
+        inputs = strip_reserved_refresh_seed(inputs)
         if seed_from_run_id is not None:  # #602 seeded-refresh: fail-fast 422 + thread the seed in
             inputs = await self._seed_refresh(org, seed_from_run_id, inputs)
         with org_scope(org):  # bind the org-GUC so the RLS-backstopped INSERT is admitted (ADR-030)

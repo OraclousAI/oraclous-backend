@@ -97,13 +97,15 @@ def parse_records(deliverable: Any) -> list[dict[str, Any]] | None:  # noqa: ANN
     if direct is not None:
         return direct
     # the member reasoned in prose then emitted the ledger in a ```json fence — take the LAST fenced
-    # block that parses to a record array. The ledger is emitted "at the very end" (after any
+    # block that is a NON-EMPTY record array. The ledger is emitted "at the very end" (after any
     # illustrative example / per-item fences the model may show first), so the last one is the real
-    # deliverable; an earlier example fence must never win (#602 derive-then-emit / carry-forward).
+    # deliverable. ``if block`` (non-empty), NOT ``is not None`` (#602 review Finding 2): a TRAILING
+    # non-object array a member may append after the ledger (e.g. a "sources" list of url strings)
+    # dict-filters to ``[]`` — it must NEVER override the real ledger and zero the delta/cost-lever.
     last: list[dict[str, Any]] | None = None
     for m in _EMBEDDED_FENCE_RE.finditer(text):
         block = _loads_record_list(m.group(1).strip())
-        if block is not None:
+        if block:  # a non-empty record array only; a trailing scalar fence (→ []) can never win
             last = block
     return last
 

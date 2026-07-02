@@ -69,6 +69,18 @@ def test_parse_records_skips_non_array_fences_and_takes_the_last_record_array() 
     assert out == [{"id": "z"}]  # the non-array block is skipped; the record array wins
 
 
+def test_parse_records_ignores_a_trailing_scalar_array_fence_after_the_real_ledger() -> None:
+    # #602 review Finding 2 (regression guard): a member may append a "sources"/references SCALAR
+    # array fence AFTER the real ledger. It dict-filters to [] and must NEVER override the ledger
+    # (which would spuriously classify every record `removed` and zero the cost lever).
+    out = parse_records(
+        "…reasoning…\n"
+        '```json\n[{"id": "a", "v": 1}, {"id": "b", "v": 2}]\n```\n\n'
+        'Sources consulted:\n```json\n["https://ref1", "https://ref2"]\n```'
+    )
+    assert out == [{"id": "a", "v": 1}, {"id": "b", "v": 2}]  # the ledger, NOT the trailing []
+
+
 def test_parse_records_returns_none_when_no_fenced_or_whole_json_array() -> None:
     assert parse_records("prose only, no json here at all") is None
     assert parse_records('```json\n{"id": "a"}\n```') is None  # a fenced OBJECT is not a record-set

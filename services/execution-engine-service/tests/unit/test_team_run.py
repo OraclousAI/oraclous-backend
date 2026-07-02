@@ -215,6 +215,22 @@ def test_refresh_dispatch_args_is_off_for_a_non_refresh_or_empty_or_multi_sink()
     assert refresh_dispatch_args(two_sinks, seed) == (None, None)
 
 
+def test_refresh_dispatch_args_suppresses_carry_forward_for_a_fan_out_sink() -> None:
+    # #602 review Finding 1: a fan_out sink would re-render the seed per fan-item (inverting the
+    # saving) — the lever is suppressed for it (the delta still computes at settle).
+    from oraclous_ohm.manifest import OHMFanOut
+
+    fan_sink = OHMMember(
+        role="reporter",
+        kind="agent",
+        manifest_ref="org:x/reporter@1",
+        fan_out=OHMFanOut(over="$.items"),
+    )
+    team = _team([fan_sink])
+    seed = {REFRESH_SEED_KEY: {"records": [{"id": "a"}], "seed_records_parsed": True}}
+    assert refresh_dispatch_args(team, seed) == (None, None)
+
+
 def test_render_member_input_fan_in_takes_the_first_objective_and_keeps_all_payloads() -> None:
     # #577 documented limitation: a FAN-IN consumer takes the FIRST inbound objective_slice (dep
     # order) for its Objective line; per-producer objective composition is out of scope for this
