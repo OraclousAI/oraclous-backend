@@ -41,6 +41,7 @@ _PROXIED_OUT_OF_SCOPE = {
     "listExecutions",
     "listJobs",
     "listTasks",
+    "listDocuments",  # #579: a KGS-proxied ingest-job list — bounding is KGS's job, not the edge
 }
 
 
