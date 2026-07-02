@@ -31,6 +31,11 @@ from typing import Any
 # an LLM member often wraps its JSON deliverable in a ```json … ``` markdown fence; strip it so the
 # ledger still parses (the fence is transport, not evidence).
 _FENCE_RE = re.compile(r"^\s*```(?:json)?\s*(.*?)\s*```\s*$", re.DOTALL | re.IGNORECASE)
+# … and often reasons in PROSE first, then emits the ledger in a ```json … ``` block partway
+# through (#602 carry-forward-vs-derive: a refresh echoes tersely, a cold run reasons then emits).
+# When the whole deliverable is not itself parseable, extract the first fenced block that IS a
+# record array. The classification is unchanged — this only makes record EXTRACTION robust to prose.
+_EMBEDDED_FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL | re.IGNORECASE)
 
 
 def _record_hash(evidence: dict[str, Any]) -> str:
@@ -61,28 +66,43 @@ UNCHANGED = "unchanged"
 RE_CONFIRMED = "re_confirmed"
 
 
+def _record_list(parsed: Any) -> list[dict[str, Any]] | None:  # noqa: ANN401
+    # keep only dict rows — a scalar/array row has no stable identity + cannot be fingerprinted
+    if not isinstance(parsed, list):
+        return None
+    return [r for r in parsed if isinstance(r, dict)]
+
+
+def _loads_record_list(text: str) -> list[dict[str, Any]] | None:
+    try:
+        return _record_list(json.loads(text))
+    except (json.JSONDecodeError, TypeError):
+        return None
+
+
 def parse_records(deliverable: Any) -> list[dict[str, Any]] | None:  # noqa: ANN401
     """Parse a producing member's deliverable into a list of record dicts, or ``None`` when the
     deliverable is not a JSON array of objects (then there is no per-record delta to compute — the
     caller records an empty/absent delta rather than a false one). Mirrors the shipped
     ``count_ledger_records`` json.loads model so the delta + the eval oracle agree on "a record"."""
     if isinstance(deliverable, list):
-        parsed: Any = deliverable
-    elif isinstance(deliverable, str):
-        text = deliverable.strip()
-        fenced = _FENCE_RE.match(text)  # unwrap a ```json … ``` markdown fence if present
-        if fenced:
-            text = fenced.group(1).strip()
-        try:
-            parsed = json.loads(text)
-        except (json.JSONDecodeError, TypeError):
-            return None
-    else:
+        return _record_list(deliverable)
+    if not isinstance(deliverable, str):
         return None
-    if not isinstance(parsed, list):
-        return None
-    # keep only dict rows — a scalar/array row has no stable identity + cannot be fingerprinted
-    return [r for r in parsed if isinstance(r, dict)]
+    text = deliverable.strip()
+    whole = _FENCE_RE.match(
+        text
+    )  # the whole deliverable IS (a fenced) JSON array — the strict path
+    direct = _loads_record_list(whole.group(1).strip() if whole else text)
+    if direct is not None:
+        return direct
+    # the member reasoned in prose then emitted the ledger in a ```json fence — extract the FIRST
+    # fenced block that parses to a record array (#602: derive-then-emit / carry-forward output).
+    for m in _EMBEDDED_FENCE_RE.finditer(text):
+        block = _loads_record_list(m.group(1).strip())
+        if block is not None:
+            return block
+    return None
 
 
 def _identity(record: dict[str, Any], id_field: str) -> str:

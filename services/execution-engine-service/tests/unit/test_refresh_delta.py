@@ -39,6 +39,33 @@ def test_parse_records_drops_non_dict_rows() -> None:
     assert parse_records('[{"id": "a"}, 7, "x"]') == [{"id": "a"}]
 
 
+def test_parse_records_unwraps_a_whole_string_json_fence() -> None:
+    assert parse_records('```json\n[{"id": "a"}]\n```') == [{"id": "a"}]
+
+
+def test_parse_records_extracts_a_json_fence_embedded_after_prose_reasoning() -> None:
+    # #602: a cold run reasons in prose, THEN emits the ledger in a fence — extract the fenced
+    # array (the whole deliverable is not itself JSON). This is what lets derive-then-emit work.
+    out = parse_records(
+        "Let me think about each item.\n"
+        "Item a: still valid. Item b: still valid.\n\n"
+        '```json\n[{"id": "a", "v": 1}, {"id": "b", "v": 2}]\n```\n\nDone.'
+    )
+    assert out == [{"id": "a", "v": 1}, {"id": "b", "v": 2}]
+
+
+def test_parse_records_takes_the_first_fenced_record_array_when_several_blocks() -> None:
+    out = parse_records(
+        'prose ```json\n{"not": "an array"}\n``` more ```\n[{"id": "z"}]\n``` tail'
+    )
+    assert out == [{"id": "z"}]  # skips the non-array block, takes the first record array
+
+
+def test_parse_records_returns_none_when_no_fenced_or_whole_json_array() -> None:
+    assert parse_records("prose only, no json here at all") is None
+    assert parse_records('```json\n{"id": "a"}\n```') is None  # a fenced OBJECT is not a record-set
+
+
 # ── the 5-way classification ──────────────────────────────────────────────────────────────────────
 def test_added_removed_changed_are_deterministic_from_fingerprints() -> None:
     seed = [_rec("1", "x"), _rec("2", "y"), _rec("3", "z")]
