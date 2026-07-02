@@ -65,6 +65,8 @@ async def test_real_auth_client_returns_is_member_and_fails_closed_on_errors() -
             return httpx.Response(200, json={"is_member": False})
         if req.url.path.endswith("/members/boom"):
             return httpx.Response(500, text="db down")
+        if req.url.path.endswith("/members/garbled"):
+            return httpx.Response(200, text="not json")  # a malformed 200 (review M2)
         raise httpx.ConnectError("unreachable")
 
     client = RealAuthClient(
@@ -76,6 +78,8 @@ async def test_real_auth_client_returns_is_member_and_fails_closed_on_errors() -
         await client.verify_membership(organisation_id="o", user_id="boom")
     with pytest.raises(AuthServiceUnavailable):  # a transport error is fail-closed
         await client.verify_membership(organisation_id="o", user_id="unreachable")
+    with pytest.raises(AuthServiceUnavailable):  # a malformed 200 body is fail-closed, not a 500
+        await client.verify_membership(organisation_id="o", user_id="garbled")
 
 
 async def test_grant_read_rejects_a_grantee_who_is_not_in_the_grantee_org() -> None:

@@ -82,7 +82,12 @@ class RealAuthClient:
             raise AuthServiceUnavailable(
                 f"auth-service membership check returned {resp.status_code}"
             )
-        return bool(resp.json().get("is_member"))
+        try:  # a malformed 200 body is fail-closed (a clean 503), never an uncaught 500 (review M2)
+            payload = resp.json()
+            is_member = payload.get("is_member") if isinstance(payload, dict) else None
+        except ValueError as exc:
+            raise AuthServiceUnavailable("auth-service returned a malformed body") from exc
+        return bool(is_member)
 
     async def aclose(self) -> None:
         await self._client.aclose()
