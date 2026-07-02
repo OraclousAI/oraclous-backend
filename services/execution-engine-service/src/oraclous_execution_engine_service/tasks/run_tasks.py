@@ -103,11 +103,13 @@ async def _reap_async() -> dict[str, int]:
     jobs = JobRepository(settings.database_url, worker_pool=True)
     roundtables = RoundtableRepository(settings.database_url, worker_pool=True)
     team_runs = TeamRunRepository(settings.database_url, worker_pool=True)
+    schedules = ScheduleRepository(settings.database_url, worker_pool=True)
     sink = PostgresProvenanceSink(settings.database_url, worker_pool=True)
     maintenance = EngineMaintenanceRepository(settings.maintenance_url)
     try:
         collector = ProvenanceCollector(sink)
-        older_than = datetime.now(UTC) - timedelta(seconds=settings.running_lease_seconds)
+        now = datetime.now(UTC)
+        older_than = now - timedelta(seconds=settings.running_lease_seconds)
         reaped = await JobService(
             jobs=jobs, provenance=collector, enqueue=enqueue_job, maintenance=maintenance
         ).reap_stale(older_than=older_than)
@@ -122,15 +124,32 @@ async def _reap_async() -> dict[str, int]:
         tr_reaped = await TeamRunService(team_runs=team_runs).reap_stale(
             maintenance, older_than=older_than
         )
+        # #501: re-fire adopted-tool windows whose dedupe row committed but whose dispatch never
+        # stamped an execution_id (a lost window: the .delay() raised, or a rejected/unreachable
+        # registry). Its OWN short lease (a dispatch stamps in seconds — NOT the 65-min RUNNING one)
+        # bounded below by a max age (so a permanently-rejected instance can't loop forever); the
+        # worker's execution_id short-circuit keeps the at-least-once re-fire from double-executing.
+        adopted_reaped = await ScheduleService(
+            schedules=schedules,
+            jobs=jobs,
+            provenance=collector,
+            enqueue_adopted_tool=enqueue_adopted_tool,
+        ).reap_lost_adopted_windows(
+            maintenance,
+            older_than=now - timedelta(seconds=settings.adopted_dispatch_lease_seconds),
+            younger_than=now - timedelta(seconds=settings.adopted_recovery_max_age_seconds),
+        )
         return {
             "reaped": reaped,
             "roundtables_reaped": rt_reaped,
             "team_runs_reaped": tr_reaped,
+            "adopted_reaped": adopted_reaped,
         }
     finally:
         await jobs.close()
         await roundtables.close()
         await team_runs.close()
+        await schedules.close()
         await sink.close()
         await maintenance.close()
 
@@ -267,6 +286,32 @@ async def _run_adopted_tool_async(
             timeout=settings.capability_registry_request_timeout,
         )
         try:
+            # #501 (exactly-once): task_acks_late redelivers this task if a worker dies AFTER the
+            # registry dispatch succeeded but BEFORE the ack — short-circuit a redelivery whose run
+            # already stamped an execution_id (the cheap read, before any claim/execute).
+            existing = await jobs.get_adopted_run(run_id, org_id)
+            if existing is not None and existing.execution_id is not None:
+                return {
+                    "run_id": run_id_s,
+                    "execution_id": str(existing.execution_id),
+                    "deduped": True,
+                }
+            # #501-#1: the ATOMIC CLAIM — the lost-window reaper (#2) can enqueue a SECOND, separate
+            # copy of this run while the original is still queued, so under queue backlog two copies
+            # can run CONCURRENTLY on the 2-slot worker. The read above is not atomic against that;
+            # the claim is. Exactly one concurrent copy wins the conditional UPDATE and executes —
+            # losers short-circuit here, so the non-idempotent registry /execute runs once. A claim
+            # that crashes before stamping ages past the lease → re-claimable → reaper recovers.
+            claimed = await jobs.claim_adopted_dispatch(
+                run_id,
+                org_id,
+                now=datetime.now(UTC),
+                lease_seconds=settings.adopted_dispatch_lease_seconds,
+            )
+            if not claimed:
+                # another copy holds the dispatch — short-circuit (execution_id: None for a uniform
+                # result shape with the other branches; the result is unread, fire-and-forget).
+                return {"run_id": run_id_s, "execution_id": None, "deduped": True}
             result = await registry.execute(instance_id, input_data)
             execution_id = result.get("id")
             if execution_id is not None:

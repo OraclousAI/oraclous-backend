@@ -7,10 +7,11 @@ resolved ``organisation_id`` and reads filter on it, so a tenant never reads ano
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
+from sqlalchemy import update as sa_update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
@@ -130,6 +131,60 @@ class JobRepository:
         except IntegrityError:
             return None
 
+    async def get_adopted_run(
+        self, run_id: uuid.UUID, organisation_id: uuid.UUID
+    ) -> AdoptedToolRun | None:
+        """#501: read an adopted-tool-run row (org-scoped). The worker's exactly-once REDELIVERY
+        GUARD reads ``execution_id`` to short-circuit a re-dispatch — ``task_acks_late`` redelivers
+        the task if a worker dies AFTER the registry dispatch succeeded but BEFORE the ack, and this
+        adopted path (unlike the harness QUEUED→RUNNING CAS) has no other guard vs a 2nd run."""
+        async with self._session() as session:
+            result = await session.execute(
+                select(AdoptedToolRun).where(
+                    AdoptedToolRun.id == run_id,
+                    AdoptedToolRun.organisation_id == organisation_id,
+                )
+            )
+            return result.scalar_one_or_none()
+
+    async def claim_adopted_dispatch(
+        self,
+        run_id: uuid.UUID,
+        organisation_id: uuid.UUID,
+        *,
+        now: datetime,
+        lease_seconds: int,
+    ) -> bool:
+        """#501-#1: ATOMICALLY claim an adopted-tool dispatch — the exactly-once gate against
+        CONCURRENT copies of one run (the original broker message + a lost-window reaper re-fire + a
+        redelivery). A single conditional UPDATE stamps ``dispatched_at`` iff the run is unstamped
+        AND unclaimed (or the claim aged past the lease — a crash mid-execute is re-claimable, so
+        the reaper still recovers it). Postgres serialises concurrent UPDATEs on the row + re-checks
+        the WHERE against the committed version, so EXACTLY ONE caller matches a row + proceeds to
+        execute; the losers get rowcount 0 and short-circuit. Org-scoped (ADR-006)."""
+        stale_before = now - timedelta(seconds=lease_seconds)
+        async with self._session() as session:
+            async with session.begin():
+                # RETURNING the id (not rowcount): the CAS matched a row iff a row comes back — the
+                # one caller whose UPDATE matched won the claim; concurrent losers get None.
+                claimed = (
+                    await session.execute(
+                        sa_update(AdoptedToolRun)
+                        .where(
+                            AdoptedToolRun.id == run_id,
+                            AdoptedToolRun.organisation_id == organisation_id,
+                            AdoptedToolRun.execution_id.is_(None),
+                            or_(
+                                AdoptedToolRun.dispatched_at.is_(None),
+                                AdoptedToolRun.dispatched_at < stale_before,
+                            ),
+                        )
+                        .values(dispatched_at=now)
+                        .returning(AdoptedToolRun.id)
+                    )
+                ).scalar_one_or_none()
+            return claimed is not None
+
     async def set_adopted_execution_id(
         self, run_id: uuid.UUID, organisation_id: uuid.UUID, execution_id: uuid.UUID
     ) -> None:
@@ -243,6 +298,33 @@ class JobRepository:
                 .where(
                     EngineJob.state == EngineJobState.RUNNING.value,
                     EngineJob.updated_at < older_than,
+                )
+                .limit(limit)
+            )
+            return list(result.scalars().all())
+
+    async def list_stale_adopted_runs(
+        self, older_than: datetime, younger_than: datetime, *, limit: int = 100
+    ) -> list[AdoptedToolRun]:
+        """#501: adopted-tool-run rows whose registry dispatch never stamped an execution_id — the
+        LOST-WINDOW recovery targets. ``created_at < older_than`` (past the dispatch lease, so an
+        in-flight dispatch that stamps in seconds is never re-fired) AND ``created_at > younger``
+        (bounded age, so a permanently-rejected instance can't re-fire forever). Also skips a row
+        whose dispatch is CLAIMED within the lease (``dispatched_at`` fresh) — #501-#1: don't refire
+        an in-flight-claimed dispatch (the claim would reject the re-fire anyway; this avoids the
+        wasted message), while a STALE claim (a crash mid-execute) is re-fired. Cross-org on the
+        MAINTENANCE engine (install_guard=False); each re-fire is settled under its own org."""
+        async with self._session() as session:
+            result = await session.execute(
+                select(AdoptedToolRun)
+                .where(
+                    AdoptedToolRun.execution_id.is_(None),
+                    AdoptedToolRun.created_at < older_than,
+                    AdoptedToolRun.created_at > younger_than,
+                    or_(
+                        AdoptedToolRun.dispatched_at.is_(None),
+                        AdoptedToolRun.dispatched_at < older_than,
+                    ),
                 )
                 .limit(limit)
             )

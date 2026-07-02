@@ -84,3 +84,42 @@ async def test_transport_error_becomes_client_error() -> None:
 
     with pytest.raises(RegistryClientError):
         await _client(handler).execute(_INSTANCE, {})
+
+
+# ── instance_exists (#501-#5: register-time org-scoped existence check) ───────────────────────────
+async def test_instance_exists_true_on_2xx_and_gets_the_instance() -> None:
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["path"], captured["method"] = request.url.path, request.method
+        return httpx.Response(200, json={"id": str(_INSTANCE), "status": "READY"})
+
+    assert await _client(handler).instance_exists(_INSTANCE) is True
+    assert captured["path"] == f"/api/v1/instances/{_INSTANCE}"  # GET the instance, org-scoped
+    assert captured["method"] == "GET"
+
+
+async def test_instance_exists_false_on_404() -> None:
+    # 404 — the instance does not exist OR belongs to another org (registry is org-scoped) → reject.
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(404, text="not found")
+
+    assert await _client(handler).instance_exists(_INSTANCE) is False
+
+
+async def test_instance_exists_raises_on_unreachable() -> None:
+    # registry down → inconclusive → RegistryClientError (register fails CLOSED, admits nothing).
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("connection refused")
+
+    with pytest.raises(RegistryClientError):
+        await _client(handler).instance_exists(_INSTANCE)
+
+
+async def test_instance_exists_raises_on_5xx() -> None:
+    # any other non-2xx is inconclusive too → fail closed rather than admit an unvalidated instance.
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(503, text="registry unavailable")
+
+    with pytest.raises(RegistryClientError):
+        await _client(handler).instance_exists(_INSTANCE)

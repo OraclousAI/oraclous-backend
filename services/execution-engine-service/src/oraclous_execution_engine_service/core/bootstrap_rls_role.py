@@ -31,8 +31,9 @@ from oraclous_substrate.access_async import provision_app_role
 
 from oraclous_execution_engine_service.core.config import get_settings
 
-# The four org-scoped engine tables RLS is enabled on (0004_enable_rls). The runtime role needs DML
-# on exactly these (no sequences — all PKs are client-generated UUIDs).
+# The six org-scoped engine tables RLS is enabled on (0004_enable_rls + the later team-run/
+# adopted-tool-run additions). The runtime role needs DML on exactly these (no sequences — all PKs
+# are client-generated UUIDs). #501-#10: keep this count in sync with the tuple below when it grows.
 _RLS_TABLES = (
     "engine_jobs",
     "engine_schedules",

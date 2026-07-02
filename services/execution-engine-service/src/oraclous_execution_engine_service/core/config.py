@@ -88,6 +88,17 @@ class Settings(BaseSettings):
     # the reaper times out a job stuck RUNNING longer than this (worker/DB blip after RUNNING). Set
     # ABOVE the Celery hard limit (3600s) so a healthy long run is never falsely reaped.
     running_lease_seconds: int = 3900
+    # #501: the adopted-tool lost-window reaper re-fires a schedule fire whose (org, key) dedupe row
+    # committed but whose registry dispatch never stamped an execution_id — the .delay() raised, or
+    # a rejected/unreachable dispatch left it unstamped. It re-fires a row OLDER than this lease (so
+    # an in-flight dispatch, which stamps in seconds, isn't re-fired early) but YOUNGER than the
+    # recovery bound below (so a permanently-rejected instance can't re-fire forever). Lease ≈ one
+    # reaper tick; the worker's atomic dispatch CLAIM keeps a re-fire from double-executing. This
+    # lease is ALSO the claim's staleness horizon, so it MUST exceed the max single-dispatch time
+    # (capability_registry_request_timeout, 30s) — else a genuinely in-flight execute could age past
+    # the claim + be re-fired concurrently, reopening the double-execute. Holds ~10x with defaults.
+    adopted_dispatch_lease_seconds: int = 300
+    adopted_recovery_max_age_seconds: int = 21600  # give up after 6h — bound the re-fire loop
     # Celery Beat cadences (S5): fire due cron schedules every minute; sweep stranded RUNNING jobs.
     schedule_tick_seconds: float = 60.0
     reaper_tick_seconds: float = 300.0

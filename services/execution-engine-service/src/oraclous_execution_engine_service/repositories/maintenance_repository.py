@@ -30,6 +30,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
+from oraclous_execution_engine_service.models.adopted_tool_run import AdoptedToolRun
 from oraclous_execution_engine_service.models.job import EngineJob
 from oraclous_execution_engine_service.models.roundtable import EngineRoundtable
 from oraclous_execution_engine_service.models.schedule import EngineSchedule
@@ -81,6 +82,13 @@ class EngineMaintenanceRepository:
     ) -> list[EngineTeamRun]:
         """RUNNING team runs whose driver died mid-drive — across ALL orgs (the reaper's read)."""
         return await self._team_runs.list_stale_running(older_than, limit=limit)
+
+    async def list_stale_adopted_runs(
+        self, older_than: datetime, younger_than: datetime, *, limit: int = 100
+    ) -> list[AdoptedToolRun]:
+        """#501: adopted-tool fires whose registry dispatch never stamped an execution_id past the
+        lease (a lost window) — across ALL orgs (the reaper's read; each re-fire org-bound)."""
+        return await self._jobs.list_stale_adopted_runs(older_than, younger_than, limit=limit)
 
     async def list_enabled_cron(self, *, limit: int = 500) -> list[EngineSchedule]:
         """All enabled cron schedules — across ALL orgs (Beat's read)."""
