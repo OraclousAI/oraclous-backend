@@ -2,12 +2,15 @@
 
 An imported external MCP server URL is attacker-influenced; before the registry calls it we reject
 any URL that targets our own infrastructure. ``is_public_url`` is a PURE structural gate (scheme +
-literal-IP classification + hostname denylist + single-label-host block); the executor ADDITIONALLY
-resolves the hostname and re-checks each resolved IP with ``is_private_ip`` (catching a public
-hostname that points inward). KNOWN LIMITATIONS (same recorded follow-on — connect to the
-resolved+vetted IP, not the hostname): a DNS-rebinding TOCTOU between the resolve-check and the
-connect; and a dotted alternate-radix host (e.g. ``0177.0.0.1``) whose safety rests on the resolver
-NOT octal-decoding it (glibc/macOS do not — it lands on a public IP, not localhost).
+literal-IP classification + hostname denylist + single-label-host block); ``egress_allowed``
+ADDITIONALLY resolves the hostname, re-checks each resolved IP, and — #492 (ADR-025 §1) — RETURNS
+the vetted IP so the caller connects to THAT pinned IP via ``pinned_request`` (Host header + TLS SNI
+kept as the original hostname), per redirect hop. Connecting to the vetted IP closes the
+DNS-rebinding TOCTOU (a low-TTL name answering public to the guard + private/IMDS to httpx's
+independent connect-time re-resolve) — the same pin-the-resolved-IP mitigation the KGS raw-TCP path
+already ships (``tcp_egress.validate_db_host`` → ``DbConnParams.pinned_ip``). REMAINING LIMIT: a
+dotted alternate-radix host (e.g. ``0177.0.0.1``) whose safety rests on the resolver NOT
+octal-decoding it (glibc/macOS do not — it lands on a public IP, not localhost).
 """
 
 from __future__ import annotations
@@ -16,7 +19,10 @@ import asyncio
 import ipaddress
 import os
 import socket
+from typing import Any
 from urllib.parse import urlparse
+
+import httpx
 
 _BLOCKED_HOSTNAMES = frozenset({"localhost", "metadata", "metadata.google.internal"})
 _BLOCKED_SUFFIXES = (".internal", ".local", ".localhost", ".cluster.local")
@@ -103,10 +109,15 @@ def _resolved_ip_ok(ip_str: str, *, allow_private: bool) -> bool:
     return True
 
 
-async def egress_allowed(url: str, *, allow_private: bool | None = None) -> bool:
-    """The full egress gate (the shared SSRF check for every outbound call — invoke AND import):
+async def egress_allowed(url: str, *, allow_private: bool | None = None) -> str | None:
+    """The full egress gate (the shared SSRF check for every outbound call — invoke AND import).
+    Returns the VETTED IP to CONNECT TO (#492 / ADR-025 §1), or ``None`` when the URL is blocked.
+
     ``is_public_url`` (pure) PLUS, for a hostname, an async DNS resolve re-checking EVERY resolved
-    IP, so a public name pointing inward is blocked. Fail-closed on an unresolvable host.
+    IP, so a public name pointing inward is blocked — fail-closed on an unresolvable host. For a
+    literal-IP host it returns that IP; for a hostname it returns the first vetted resolved address
+    (IPv4 preferred, so the pin is broadly dialable). The caller MUST dial the returned IP via
+    ``pinned_request`` — connecting by hostname would re-resolve and re-open the rebinding TOCTOU.
 
     ``allow_private`` defaults to the service-wide ``CAPABILITY_REGISTRY_ALLOW_PRIVATE_EGRESS`` env
     knob (None → read it) so callers (e.g. the github-sink) need not thread it; IMDS stays blocked.
@@ -114,18 +125,39 @@ async def egress_allowed(url: str, *, allow_private: bool | None = None) -> bool
     if allow_private is None:
         allow_private = _env_allow_private()
     if not is_public_url(url, allow_private=allow_private):
-        return False
+        return None
     host = urlparse(url).hostname or ""
     try:
         ipaddress.ip_address(host)  # a literal-IP host was already cleared by is_public_url
     except ValueError:
         pass
     else:
-        return True
+        return host  # dial the literal IP itself (no DNS, nothing to rebind)
     try:
         infos = await asyncio.get_running_loop().getaddrinfo(host, None, type=socket.SOCK_STREAM)
     except (socket.gaierror, OSError):
-        return False
-    return bool(infos) and all(
-        _resolved_ip_ok(info[4][0], allow_private=allow_private) for info in infos
-    )
+        return None
+    resolved = [info[4][0] for info in infos]
+    # fail-closed: EVERY resolved address must be safe (a dual answer can't smuggle one private IP
+    # past the guard). Then pin ONE vetted address — prefer IPv4 (a v6-only pin may be undialable).
+    if not resolved or not all(_resolved_ip_ok(ip, allow_private=allow_private) for ip in resolved):
+        return None
+    return next((ip for ip in resolved if ":" not in ip), resolved[0])
+
+
+def pinned_request(url: str, pinned_ip: str) -> tuple[httpx.URL, dict[str, str], dict[str, Any]]:
+    """#492: build the (URL, headers, extensions) to CONNECT to ``pinned_ip`` while the request
+    targets the original hostname. Swap the URL host to the vetted IP (so httpx dials THAT, no
+    re-resolution), set the ``Host`` header to the original ``host[:port]`` (routing/vhosts), and
+    pass ``sni_hostname`` so TLS SNI + certificate validation still target the real name (https
+    only). Mirrors the KGS pinned-IP dial (``sql_connector`` host=pinned_ip, name for SNI)."""
+    original = httpx.URL(url)
+    host = original.host
+    # the Host header carries the original name; include the port only when it was explicit/non-
+    # default (httpx omits a default 80/443), so it matches what a normal request would send.
+    default_port = 443 if original.scheme == "https" else 80
+    port = original.port
+    host_header = f"{host}:{port}" if port is not None and port != default_port else host
+    headers = {"Host": host_header}
+    extensions: dict[str, Any] = {"sni_hostname": host} if original.scheme == "https" else {}
+    return original.copy_with(host=pinned_ip), headers, extensions

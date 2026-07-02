@@ -20,7 +20,7 @@ from oraclous_capability_registry_service.domain.connectors.source_providers imp
     SourceProviderError,
     get_source_provider,
 )
-from oraclous_capability_registry_service.domain.egress import egress_allowed
+from oraclous_capability_registry_service.domain.egress import egress_allowed, pinned_request
 from oraclous_capability_registry_service.domain.executors.base import (
     ExecutionContext,
     ExecutionResult,
@@ -75,14 +75,17 @@ class GenericRestConnector(InternalTool):
         ) as client:
             for _ in range(_MAX_REDIRECTS + 1):
                 # Screen every hop through the shared SSRF egress gate BEFORE requesting it.
-                if not await egress_allowed(current):
+                pinned_ip = await egress_allowed(current)
+                if pinned_ip is None:
                     return ExecutionResult(
                         success=False,
                         error_message="the source URL is not an allowed public target",
                         error_type="UNSAFE_URL",
                     )
+                # #492: dial the vetted PINNED IP (Host + TLS SNI kept as the name), per hop.
+                target, host_headers, extensions = pinned_request(current, pinned_ip)
                 try:
-                    resp = await client.get(current)
+                    resp = await client.get(target, headers=host_headers, extensions=extensions)
                 except httpx.HTTPError:
                     return ExecutionResult(
                         success=False,

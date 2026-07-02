@@ -6,6 +6,8 @@ JSON-RPC-2.0-over-HTTP subset. Two security controls wrap each call:
 
 * **SSRF egress guard** — ``is_public_url`` (pure) PLUS an async DNS resolve that re-checks every
   resolved IP, so neither a literal internal IP nor a public hostname pointing inward is reached.
+  #492: the guard RETURNS the vetted IP and the call CONNECTS to that pinned IP (Host + TLS SNI kept
+  as the name), closing the DNS-rebinding TOCTOU.
 * **Broker-held auth** — an optional ``api_key`` credential (resolved by the broker into the
   execution context, never stored here) is sent as a Bearer to the external server.
 
@@ -19,7 +21,7 @@ from typing import Any
 
 import httpx
 
-from oraclous_capability_registry_service.domain.egress import egress_allowed
+from oraclous_capability_registry_service.domain.egress import egress_allowed, pinned_request
 from oraclous_capability_registry_service.domain.executors.base import (
     ExecutionContext,
     ExecutionResult,
@@ -45,7 +47,8 @@ class McpToolExecutor(InternalTool):
                 error_message="an mcp tool descriptor needs spec.server_url + spec.tool_name",
                 error_type="INVALID_SPEC",
             )
-        if not await egress_allowed(server_url):
+        pinned_ip = await egress_allowed(server_url)
+        if pinned_ip is None:
             return ExecutionResult(
                 success=False,
                 error_message="the MCP server URL is not an allowed external target",
@@ -64,13 +67,17 @@ class McpToolExecutor(InternalTool):
                 "arguments": input_data,  # InternalTool already validated this is a JSON object
             },
         }
+        # #492: connect to the vetted PINNED IP (not the hostname httpx would re-resolve), keeping
+        # the Host header + TLS SNI as the original name — closes the DNS-rebinding TOCTOU.
+        target, host_headers, extensions = pinned_request(server_url, pinned_ip)
+        headers.update(host_headers)
         try:
             # follow_redirects=False (httpx's default, made explicit): a 302 → an internal URL would
             # bypass the egress guard, so a redirect is treated as a non-200 error, never followed.
             async with httpx.AsyncClient(
                 timeout=_TIMEOUT_S, transport=self.transport, follow_redirects=False
             ) as client:
-                resp = await client.post(server_url, json=rpc, headers=headers)
+                resp = await client.post(target, json=rpc, headers=headers, extensions=extensions)
         except httpx.HTTPError:
             return ExecutionResult(
                 success=False,

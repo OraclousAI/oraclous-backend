@@ -131,3 +131,61 @@ async def test_a_malformed_non_dict_body_is_a_clean_bad_response(body: object) -
     res = await ex.execute({}, _ctx())
     assert not res.success and res.error_type == "MCP_BAD_RESPONSE"
     assert "has no attribute" not in (res.error_message or "")  # no leaked AttributeError text
+
+
+# ── #492: the connector DIALS the pinned vetted IP (closes the DNS-rebinding TOCTOU) ──────────────
+
+
+async def test_mcp_dials_the_pinned_ip_and_preserves_host_and_sni(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # a hostname server_url: the guard resolves+vets ONE IP; the connector must connect to THAT IP
+    # (not re-resolve the name), preserving the Host header + TLS SNI = the original hostname.
+    from oraclous_capability_registry_service.domain import egress as egress_mod
+
+    async def fake_egress(url: str, **_kw: object) -> str | None:
+        return "93.184.216.34"  # the pinned vetted IP for mcp.example.com
+
+    monkeypatch.setattr(egress_mod, "egress_allowed", fake_egress)
+    monkeypatch.setattr(
+        "oraclous_capability_registry_service.domain.connectors.mcp.egress_allowed", fake_egress
+    )
+    seen: dict = {}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        seen["host"] = req.url.host
+        seen["host_header"] = req.headers.get("host")
+        seen["sni"] = req.extensions.get("sni_hostname")
+        return httpx.Response(200, json={"result": {"content": [{"type": "text", "text": "ok"}]}})
+
+    ex = _executor(
+        {"type": "mcp", "server_url": "https://mcp.example.com/rpc", "tool_name": "t"}, handler
+    )
+    res = await ex.execute({}, _ctx())
+    assert res.success
+    assert seen["host"] == "93.184.216.34"  # dialed the PINNED IP, not re-resolved the name
+    assert seen["host_header"] == "mcp.example.com"  # original host preserved for routing
+    assert seen["sni"] == "mcp.example.com"  # TLS SNI targets the real name (cert validation)
+
+
+async def test_mcp_refuses_when_the_guard_pins_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
+    # egress_allowed → None (a rebinding host resolving inward): no call is made, EGRESS_BLOCKED.
+    called = {"n": 0}
+
+    async def fake_egress(url: str, **_kw: object) -> str | None:
+        return None
+
+    monkeypatch.setattr(
+        "oraclous_capability_registry_service.domain.connectors.mcp.egress_allowed", fake_egress
+    )
+
+    def handler(_req: httpx.Request) -> httpx.Response:
+        called["n"] += 1
+        return httpx.Response(200)
+
+    ex = _executor(
+        {"type": "mcp", "server_url": "https://rebind.example.com/rpc", "tool_name": "t"}, handler
+    )
+    res = await ex.execute({}, _ctx())
+    assert not res.success and res.error_type == "EGRESS_BLOCKED"
+    assert called["n"] == 0  # never reached the network

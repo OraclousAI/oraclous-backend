@@ -198,6 +198,38 @@ async def test_invalid_operation_is_rejected() -> None:
     assert not res.success and res.error_type == "INVALID_OPERATION"
 
 
+async def test_fetch_dials_the_pinned_ip_with_host_and_sni_across_a_redirect_hop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # #492 TOCTOU: a hostname fetch + a hostname redirect must each connect to the guard's PINNED IP
+    # (not re-resolve), preserving Host/SNI = the original name — on EVERY hop.
+    pins = {"a.example.com": "93.184.216.34", "b.example.com": "198.51.100.7"}
+
+    async def fake_egress(url: str, **_kw: object) -> str | None:
+        from urllib.parse import urlparse
+
+        return pins.get(urlparse(url).hostname or "")
+
+    monkeypatch.setattr(
+        "oraclous_capability_registry_service.domain.connectors.web_research.egress_allowed",
+        fake_egress,
+    )
+    seen: list[tuple[str, str | None, object]] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        seen.append((req.url.host, req.headers.get("host"), req.extensions.get("sni_hostname")))
+        if req.headers.get("host") == "a.example.com":
+            return httpx.Response(302, headers={"location": "https://b.example.com/next"})
+        return httpx.Response(200, text="final")
+
+    ex = _connector(handler)
+    res = await ex.execute({"operation": "fetch", "url": "https://a.example.com/start"}, _ctx())
+    assert res.success and res.data["content"] == "final"
+    # hop 1 dialed a's pinned IP; hop 2 dialed b's pinned IP — each with Host/SNI = its real name
+    assert seen[0] == ("93.184.216.34", "a.example.com", "a.example.com")
+    assert seen[1] == ("198.51.100.7", "b.example.com", "b.example.com")
+
+
 # --- redirect handling + body caps ---------------------------------------------------------------
 
 
