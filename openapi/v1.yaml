@@ -802,6 +802,22 @@ paths:
       responses:
         "200": { $ref: "#/components/responses/UpstreamJson" }
         "401": { $ref: "#/components/responses/Unauthenticated" }
+    post:
+      tags: [capabilities]
+      summary: >-
+        Register a capability descriptor of any kind (tool/skill/agent/harness/human_role) —
+        the generic sibling of POST /api/v1/tools; org-scoped from the principal.
+      operationId: registerCapability
+      x-stability: provisional
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RegisterCapabilityRequest" }
+      responses:
+        "201": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
   /api/v1/capabilities/match:
     post:
       tags: [capabilities]
@@ -1556,6 +1572,957 @@ paths:
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "403": { $ref: "#/components/responses/Unauthorized" }
 
+  /api/v1/tools/{toolId}/reject:
+    post:
+      tags: [capabilities]
+      summary: >-
+        Reject an imported MCP tool (ADMIN) — pending_approval → rejected, a terminal
+        non-executable status retained as an audit record; only a still-pending tool can be
+        rejected (an already-active or unknown / cross-org id is a 404 — mask).
+      operationId: rejectTool
+      x-stability: provisional
+      parameters:
+        - { name: toolId, in: path, required: true, schema: { type: string } }
+      responses:
+        "204": { description: Rejected — the tool is terminally non-executable. }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /credentials/:
+    post:
+      tags: [credentials]
+      summary: Store a credential (KMS-sealed at rest); the secret is never echoed back.
+      description: >-
+        Store a new personal credential via the broker. The secret material in `credential` is
+        KMS-sealed at rest and never returned on this surface — responses are metadata only
+        (runtime resolution is an internal-only path). `organisation_id` is never a body field
+        and the body `user_id` is ignored: the owner is bound from the authenticated principal.
+      operationId: storeCredential
+      x-stability: provisional
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/StoreCredentialRequest" }
+      responses:
+        "201": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+  /credentials/retrieve/:
+    post:
+      tags: [credentials]
+      summary: List the caller's stored credentials (metadata only — secrets are never echoed back).
+      description: >-
+        The authenticated user's own credential roster, optionally filtered by `tool_id`. The body
+        `user_id` is required by the schema but ignored — the roster is always the authenticated
+        principal's (org+user scoped). Decrypted secrets are never returned here (KMS-sealed).
+      operationId: retrieveCredentials
+      x-stability: provisional
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RetrieveCredentialsRequest" }
+      responses:
+        "200": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+  /credentials/available-data-sources:
+    get:
+      tags: [credentials]
+      summary: The catalogue data sources unlocked by the caller's connected providers.
+      operationId: credentialAvailableDataSources
+      x-stability: provisional
+      responses:
+        "200": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+  /credentials/{credentialId}:
+    get:
+      tags: [credentials]
+      summary: Read one credential's metadata (the KMS-sealed secret is never echoed back).
+      description: >-
+        Metadata only (id, name, provider, tool, type). A cross-org, cross-user, or unknown id is
+        an indistinguishable 404 (fail-closed mask).
+      operationId: getCredential
+      x-stability: provisional
+      parameters:
+        - { name: credentialId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    put:
+      tags: [credentials]
+      summary: Update a credential's metadata and optionally rotate its secret (never echoed back).
+      description: >-
+        The body `id` must equal the path `credentialId` (a mismatch is rejected with 400). Omit
+        `credential` to PRESERVE the stored secret (metadata-only rename); set it to ROTATE the
+        secret (KMS-sealed at rest). Responses are metadata only; a cross-org, cross-user, or
+        unknown id is an indistinguishable 404.
+      operationId: updateCredential
+      x-stability: provisional
+      parameters:
+        - { name: credentialId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/UpdateCredentialRequest" }
+      responses:
+        "200": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+    delete:
+      tags: [credentials]
+      summary: Delete a stored credential (removes the KMS-sealed secret with it).
+      description: >-
+        Deletes the credential and its sealed secret. A cross-org, cross-user, or unknown id is an
+        indistinguishable 404.
+      operationId: deleteCredential
+      x-stability: provisional
+      parameters:
+        - { name: credentialId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "204": { description: No content. }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /v1/auth/validate:
+    get:
+      tags: [auth]
+      summary: Validate the bearer token; returns the verified principal claims (sub, principal_type, organisation_id).
+      operationId: authValidate
+      x-stability: provisional
+      responses:
+        "200": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+  /v1/auth/change-password:
+    post:
+      tags: [auth]
+      summary: Set a new password for the authenticated user (the bearer identifies the account).
+      operationId: authChangePassword
+      x-stability: provisional
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ChangePasswordRequest" }
+      responses:
+        "204": { description: No content. }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+  /v1/orgs:
+    post:
+      tags: [auth]
+      summary: Create an organisation; the caller becomes its owner member.
+      operationId: createOrg
+      x-stability: provisional
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateOrgRequest" }
+      responses:
+        "201": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+    get:
+      tags: [auth]
+      summary: List the organisations the caller is a member of.
+      operationId: listOrgs
+      x-stability: provisional
+      responses:
+        "200": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+  /v1/orgs/{orgId}:
+    get:
+      tags: [auth]
+      summary: An organisation the caller belongs to (non-membership is masked as 404).
+      operationId: getOrg
+      x-stability: provisional
+      parameters:
+        - { name: orgId, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    patch:
+      tags: [auth]
+      summary: Update the organisation's name/description/logo (admin or owner only).
+      operationId: updateOrg
+      x-stability: provisional
+      parameters:
+        - { name: orgId, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/UpdateOrgRequest" }
+      responses:
+        "200": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+  /v1/orgs/{orgId}/members:
+    get:
+      tags: [auth]
+      summary: The organisation's member roster (any member may view; non-membership is masked as 404).
+      operationId: listOrgMembers
+      x-stability: provisional
+      parameters:
+        - { name: orgId, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /v1/orgs/{orgId}/members/{userId}:
+    patch:
+      tags: [auth]
+      summary: Change a member's role (admin+; the actor must strictly outrank the target — the owner is immutable).
+      operationId: updateOrgMemberRole
+      x-stability: provisional
+      parameters:
+        - { name: orgId, in: path, required: true, schema: { type: string } }
+        - { name: userId, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/UpdateMemberRoleRequest" }
+      responses:
+        "200": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+    delete:
+      tags: [auth]
+      summary: Remove a member from the organisation (admin+; the actor must strictly outrank the target — the owner cannot be removed).
+      operationId: removeOrgMember
+      x-stability: provisional
+      parameters:
+        - { name: orgId, in: path, required: true, schema: { type: string } }
+        - { name: userId, in: path, required: true, schema: { type: string } }
+      responses:
+        "204": { description: No content. }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /v1/orgs/{orgId}/invitations:
+    post:
+      tags: [auth]
+      summary: Invite an email into the organisation (admin+) — the raw invitation token is returned ONCE.
+      operationId: createOrgInvitation
+      x-stability: provisional
+      parameters:
+        - { name: orgId, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateInvitationRequest" }
+      responses:
+        "201": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+    get:
+      tags: [auth]
+      summary: List the organisation's invitations (admin+); tokens are never included.
+      operationId: listOrgInvitations
+      x-stability: provisional
+      parameters:
+        - { name: orgId, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /v1/invitations/peek:
+    post:
+      tags: [auth]
+      summary: Preview a pending invitation by its raw token (org, email, role) without accepting it; rate-limited on the token prefix.
+      operationId: peekInvitation
+      x-stability: provisional
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PeekInvitationRequest" }
+      responses:
+        "200": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+  /v1/invitations/accept:
+    post:
+      tags: [auth]
+      summary: Accept a pending invitation by its raw token; the authenticated caller joins the org at the invited role (idempotent if already a member). Rate-limited on the token prefix.
+      operationId: acceptInvitation
+      x-stability: provisional
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AcceptInvitationRequest" }
+      responses:
+        "200": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+  /oauth/{provider}/login:
+    get:
+      tags: [auth]
+      summary: Begin a social login (public) — returns the provider authorize URL (PKCE challenge embedded).
+      operationId: oauthLogin
+      security: []
+      x-stability: provisional
+      parameters:
+        - { name: provider, in: path, required: true, schema: { type: string } }
+        - { name: redirect_uri, in: query, required: true, schema: { type: string } }
+      responses:
+        "200": { $ref: "#/components/responses/UpstreamJson" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+        "5XX": { $ref: "#/components/responses/Upstream5xx" }
+  /oauth/{provider}/callback:
+    get:
+      tags: [auth]
+      summary: Complete a social login (public) — exchanges the provider code and returns the app's token pair in the body, never the URL.
+      operationId: oauthCallback
+      security: []
+      x-stability: provisional
+      parameters:
+        - { name: provider, in: path, required: true, schema: { type: string } }
+        - { name: code, in: query, required: true, schema: { type: string } }
+        - { name: state, in: query, required: true, schema: { type: string } }
+      responses:
+        "200": { $ref: "#/components/responses/UpstreamJson" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+        "5XX": { $ref: "#/components/responses/Upstream5xx" }
+  /oauth/{provider}/connect:
+    post:
+      tags: [auth]
+      summary: Begin a provider connect for the authenticated caller — returns the authorize URL requesting the given tool scopes (no session change).
+      operationId: oauthConnectBegin
+      x-stability: provisional
+      parameters:
+        - { name: provider, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ConnectBeginRequest" }
+      responses:
+        "200": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+        "5XX": { $ref: "#/components/responses/Upstream5xx" }
+  /oauth/{provider}/connect/complete:
+    post:
+      tags: [auth]
+      summary: Complete a provider connect — exchanges the code and lands the provider token as a resolvable broker credential for the authenticated caller (org/user from the bearer, never the body).
+      operationId: oauthConnectComplete
+      x-stability: provisional
+      parameters:
+        - { name: provider, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ConnectCompleteRequest" }
+      responses:
+        "200": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+        "5XX": { $ref: "#/components/responses/Upstream5xx" }
+  /api/v1/graphs/{graphId}:
+    get:
+      tags: [knowledge-graph]
+      summary: Read one knowledge graph (owner-scoped; an unknown / cross-org id is a 404 — mask).
+      operationId: getGraph
+      x-stability: provisional
+      parameters:
+        - { name: graphId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    patch:
+      tags: [knowledge-graph]
+      summary: Update a graph's name and/or description (owner-scoped; omitted fields are unchanged).
+      operationId: updateGraph
+      x-stability: provisional
+      parameters:
+        - { name: graphId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/UpdateGraphRequest" }
+      responses:
+        "200": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+    delete:
+      tags: [knowledge-graph]
+      summary: Delete a knowledge graph (owner-scoped).
+      operationId: deleteGraph
+      x-stability: provisional
+      parameters:
+        - { name: graphId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "204": { description: Deleted. }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /api/v1/graphs/{graphId}/ontology:
+    get:
+      tags: [knowledge-graph]
+      summary: Read a graph's label ontology (labels + the optional typed layer + extraction hints).
+      operationId: getGraphOntology
+      x-stability: provisional
+      parameters:
+        - { name: graphId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    put:
+      tags: [knowledge-graph]
+      summary: Set a graph's label ontology — labels-only or typed (entity/relationship types + hints).
+      operationId: setGraphOntology
+      x-stability: provisional
+      parameters:
+        - { name: graphId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/OntologyRequest" }
+      responses:
+        "200": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+  /api/v1/graphs/{graphId}/communities:
+    get:
+      tags: [knowledge-graph]
+      summary: List a graph's detected communities, optionally filtered by level and kind.
+      description: >-
+        `kind` defaults to `entity` (the kind registry is service-defined); an unknown kind is
+        rejected with a 400 (MALFORMED_REQUEST at the edge). `level` filters the hierarchy level.
+      operationId: listCommunities
+      x-stability: provisional
+      parameters:
+        - { name: graphId, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: level, in: query, required: false, schema: { type: integer } }
+        - { name: kind, in: query, required: false, schema: { type: string, default: entity } }
+      responses:
+        "200": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /api/v1/graphs/{graphId}/communities/detect:
+    post:
+      tags: [knowledge-graph]
+      summary: Detect communities — a tiny graph runs inline (200 + result); larger ones enqueue a job (202).
+      description: >-
+        The status code carries the sync/async signal: a tiny graph is detected INLINE and the
+        result returned with 200; a larger graph enqueues a background job and returns
+        `{job_id, status}` with 202 (poll GET .../communities/status). GDS unavailable → 503.
+      operationId: detectCommunities
+      x-stability: provisional
+      parameters:
+        - { name: graphId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/DetectCommunitiesRequest" }
+      responses:
+        "200": { $ref: "#/components/responses/UpstreamJson" }
+        "202": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+        "5XX": { $ref: "#/components/responses/Upstream5xx" }
+  /api/v1/graphs/{graphId}/communities/status:
+    get:
+      tags: [knowledge-graph]
+      summary: The graph's community-detection status.
+      operationId: communitiesStatus
+      x-stability: provisional
+      parameters:
+        - { name: graphId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /api/v1/graphs/{graphId}/communities/{communityId}:
+    get:
+      tags: [knowledge-graph]
+      summary: Read one community and its member nodes.
+      operationId: getCommunity
+      x-stability: provisional
+      parameters:
+        - { name: graphId, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: communityId, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /api/v1/graphs/{graphId}/communities/summarize:
+    post:
+      tags: [knowledge-graph]
+      summary: LLM-summarise a graph's communities (resumes over un-summarised ones; force=true redoes all).
+      description: >-
+        By default only un-summarised communities are processed (a re-run resumes without
+        re-billing); `force=true` re-summarises all. A run whose candidate count exceeds the
+        inline cap returns `status="deferred"` so the caller can route async. No request body.
+        Summarisation LLM unavailable → 503.
+      operationId: summarizeCommunities
+      x-stability: provisional
+      parameters:
+        - { name: graphId, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: level, in: query, required: false, schema: { type: integer } }
+        - { name: force, in: query, required: false, schema: { type: boolean, default: false } }
+      responses:
+        "200": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "5XX": { $ref: "#/components/responses/Upstream5xx" }
+  /api/v1/graphs/{graphId}/analytics:
+    get:
+      tags: [knowledge-graph]
+      summary: Graph statistics — the in-DB GDS analytics rollup for one graph.
+      operationId: graphAnalytics
+      x-stability: provisional
+      parameters:
+        - { name: graphId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /api/v1/recipes/templates:
+    get:
+      tags: [knowledge-graph]
+      summary: The built-in, author-ready recipe templates (the evidence/conflicts pair).
+      operationId: listRecipeTemplates
+      x-stability: provisional
+      responses:
+        "200": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+  /api/v1/recipes/dry-run:
+    post:
+      tags: [knowledge-graph]
+      summary: Preview a recipe projection over a sample with NO graph writes (authoring aid).
+      operationId: dryRunRecipe
+      x-stability: provisional
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RecipeDryRunRequest" }
+      responses:
+        "200": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+  /api/v1/recipes/{recipeId}:
+    get:
+      tags: [knowledge-graph]
+      summary: Read one stored recipe document (org-scoped).
+      operationId: getRecipe
+      x-stability: provisional
+      parameters:
+        - { name: recipeId, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /api/v1/recipes/{recipeId}/promote:
+    post:
+      tags: [knowledge-graph]
+      summary: Promote a draft recipe to the runnable promoted state (in place, idempotent).
+      operationId: promoteRecipe
+      x-stability: provisional
+      parameters:
+        - { name: recipeId, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /v1/artifacts:
+    get:
+      tags: [knowledge-graph]
+      summary: List a graph's artifacts (its ingested documents), filterable by filename query and source type.
+      description: >-
+        The unified artifact read/serve surface (#543 / ADR-041), served by the
+        knowledge-graph-service. Org-scoped via graph ownership — an unknown / cross-org
+        `graph_id` is a 404. `q` filters by filename substring; `source_type` by the ingest
+        source type. Rich semantic query stays the retriever's /v1/search over the same graph.
+      operationId: listArtifacts
+      x-stability: provisional
+      parameters:
+        - { name: graph_id, in: query, required: true, schema: { type: string, format: uuid } }
+        - { name: q, in: query, required: false, schema: { type: string } }
+        - { name: source_type, in: query, required: false, schema: { type: string } }
+      responses:
+        "200": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /v1/artifacts/{artifactId}:
+    get:
+      tags: [knowledge-graph]
+      summary: Fetch one artifact's metadata plus its verbatim content.
+      operationId: getArtifact
+      x-stability: provisional
+      parameters:
+        - { name: artifactId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /v1/graph/{graphId}/subgraph:
+    get:
+      tags: [knowledge-retriever]
+      summary: A bounded {nodes, edges} slice of the graph for visualisation.
+      operationId: graphSubgraph
+      x-stability: provisional
+      parameters:
+        - { name: graphId, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: limit, in: query, required: false, schema: { type: integer, minimum: 1, maximum: 1000, default: 250 } }
+      responses:
+        "200": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+  /v1/graph/{graphId}/neighbors/{nodeId}:
+    get:
+      tags: [knowledge-retriever]
+      summary: The 1-hop neighbourhood of a node, as the uniform NodeResult envelope.
+      operationId: graphNeighbors
+      x-stability: provisional
+      parameters:
+        - { name: graphId, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: nodeId, in: path, required: true, schema: { type: string } }
+        - { name: top_k, in: query, required: false, schema: { type: integer, minimum: 1, maximum: 200, default: 25 } }
+      responses:
+        "200": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+  /v1/engine/team-runs:
+    post:
+      tags: [engine]
+      summary: Run an OHM v1.1 Team Harness (202 — validated, persisted QUEUED and driven async by the worker; poll GET for state).
+      operationId: createTeamRun
+      x-stability: provisional
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateTeamRunRequest" }
+      responses:
+        "202": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+  /v1/engine/team-runs/{teamRunId}:
+    get:
+      tags: [engine]
+      summary: Read a team run (state, per-role results, member_status, verdict, revision_rounds, refresh_delta).
+      operationId: getTeamRun
+      x-stability: provisional
+      parameters:
+        - { name: teamRunId, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /v1/engine/team-runs/{teamRunId}/tree:
+    get:
+      tags: [engine]
+      summary: The run-tree — the root plus the member harness execution ids this team run dispatched (org-scoped; a cross-org id is a 404).
+      operationId: getTeamRunTree
+      x-stability: provisional
+      parameters:
+        - { name: teamRunId, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /v1/engine/team-runs/{teamRunId}/status:
+    get:
+      tags: [engine]
+      summary: One-glance team-run status — healthy, progress, last outcome and token cost, without full-trace machinery.
+      operationId: getTeamRunStatus
+      x-stability: provisional
+      parameters:
+        - { name: teamRunId, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /v1/engine/team-runs/{teamRunId}/advance:
+    post:
+      tags: [engine]
+      summary: Record human-gate decisions on a PAUSED team run and re-drive past the gate (202; revise re-runs the producer sub-tree and re-pauses; 409 if not PAUSED).
+      operationId: advanceTeamRun
+      x-stability: provisional
+      parameters:
+        - { name: teamRunId, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AdvanceTeamRunRequest" }
+      responses:
+        "202": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+  /v1/engine/team-runs/{teamRunId}/rerun:
+    post:
+      tags: [engine]
+      summary: Re-run a FAILED team run — re-drives only its FAILED and BLOCKED members, keeping SUCCEEDED ones (202; 409 if not FAILED or nothing to re-run).
+      operationId: rerunTeamRun
+      x-stability: provisional
+      parameters:
+        - { name: teamRunId, in: path, required: true, schema: { type: string } }
+      responses:
+        "202": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+  /v1/engine/schedules/preflight:
+    post:
+      tags: [engine]
+      summary: Cadence-aware cost pre-flight for a proposed standing team ("~$X/day at this cadence") — read-only, creates and enables nothing.
+      operationId: preflightSchedule
+      x-stability: provisional
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/JsonObject" }
+      responses:
+        "200": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+  /v1/engine/schedules/{scheduleId}:
+    delete:
+      tags: [engine]
+      summary: Delete a schedule (org-scoped; another tenant's schedule is a 404).
+      operationId: deleteSchedule
+      x-stability: provisional
+      parameters:
+        - { name: scheduleId, in: path, required: true, schema: { type: string } }
+      responses:
+        "204": { description: No content. }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /v1/engine/schedules/{scheduleId}/fire-now:
+    post:
+      tags: [engine]
+      summary: Fire the schedule's CURRENT window now (202; reuses the Beat fire path, so a second same-window call is a deduped no-op).
+      operationId: fireScheduleNow
+      x-stability: provisional
+      parameters:
+        - { name: scheduleId, in: path, required: true, schema: { type: string } }
+      responses:
+        "202": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /v1/engine/schedules/{scheduleId}/runs:
+    get:
+      tags: [engine]
+      summary: The adopted-tool-run rows a schedule produced, with their stamped registry execution ids (org-scoped; another tenant's schedule yields nothing).
+      operationId: listScheduleRuns
+      x-stability: provisional
+      parameters:
+        - { name: scheduleId, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+  /v1/engine/schedules/{scheduleId}/team-runs:
+    get:
+      tags: [engine]
+      summary: The team runs a standing-team schedule produced, newest-first, each bound to the schedule's persistent graph_id (org-scoped).
+      operationId: listScheduleTeamRuns
+      x-stability: provisional
+      parameters:
+        - { name: scheduleId, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+  /v1/engine/tasks/{jobId}/complete:
+    post:
+      tags: [engine]
+      summary: Submit the human's output for an ESCALATED task — completes the harness assignment and flips the parked run and the job to SUCCEEDED.
+      operationId: completeTask
+      x-stability: provisional
+      parameters:
+        - { name: jobId, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/JsonObject" }
+      responses:
+        "200": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+  /v1/engine/tasks/{jobId}/approve:
+    post:
+      tags: [engine]
+      summary: "Resolve a mid-loop HITL approval task: decision APPROVED resumes the harness loop (the gated tool runs), DENIED terminates the run FAILED."
+      operationId: approveTask
+      x-stability: provisional
+      parameters:
+        - { name: jobId, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/JsonObject" }
+      responses:
+        "200": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+  /v1/engine/roundtables/{roundtableId}:
+    get:
+      tags: [engine]
+      summary: Read a round-table (state, current turn, transcript, final output).
+      operationId: getRoundtable
+      x-stability: provisional
+      parameters:
+        - { name: roundtableId, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /v1/engine/roundtables/{roundtableId}/respond:
+    post:
+      tags: [engine]
+      summary: Submit the human's turn to a paused round-table — appended to the transcript, then the driver resumes (409 if it is not awaiting a human turn).
+      operationId: respondRoundtable
+      x-stability: provisional
+      parameters:
+        - { name: roundtableId, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/JsonObject" }
+      responses:
+        "200": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+  /v1/engine/activity:
+    get:
+      tags: [engine]
+      summary: The organisation's most-recent provenance events, newest-first and limit-capped (org-scoped to the caller only).
+      operationId: listActivity
+      x-stability: provisional
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          description: Maximum events to return.
+          schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+      responses:
+        "200": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+  /v1/engine/usage:
+    get:
+      tags: [engine]
+      summary: The organisation's RAW per-action usage counts (ADR-009 — counts, never a price), optionally bounded by a since window.
+      operationId: getUsage
+      x-stability: provisional
+      parameters:
+        - name: since
+          in: query
+          required: false
+          description: ISO8601 timestamp; window lower-bound (UTC). Omit for all-time.
+          schema: { type: string, format: date-time }
+      responses:
+        "200": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+  /v1/engine/events:
+    post:
+      tags: [engine]
+      summary: Fire a signature-verified webhook event into a durable job (202) — idempotent on the delivery key, so a re-delivered event is a deduped no-op.
+      operationId: fireEngineEvent
+      x-stability: provisional
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/JsonObject" }
+      responses:
+        "202": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+  /v1/harnesses/executions/{executionId}:
+    get:
+      tags: [harness]
+      summary: Read one harness execution (org-scoped; a cross-org id is a 404).
+      operationId: getHarnessExecution
+      x-stability: provisional
+      parameters:
+        - { name: executionId, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /v1/harnesses/assignments:
+    get:
+      tags: [harness]
+      summary: "The human task board: the organisation's PENDING human-actor assignments."
+      operationId: listAssignments
+      x-stability: provisional
+      responses:
+        "200": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+  /v1/harnesses/assignments/{assignmentId}/claim:
+    post:
+      tags: [harness]
+      summary: A human takes a PENDING assignment (PENDING → CLAIMED); driven by the execution-engine task board.
+      operationId: claimAssignment
+      x-stability: provisional
+      parameters:
+        - { name: assignmentId, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /v1/harnesses/assignments/{assignmentId}/complete:
+    post:
+      tags: [harness]
+      summary: The human submits their output (→ COMPLETED); the parked run flips ESCALATED → SUCCEEDED.
+      operationId: completeAssignment
+      x-stability: provisional
+      parameters:
+        - { name: assignmentId, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/JsonObject" }
+      responses:
+        "200": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
 components:
   securitySchemes:
     bearerAuth:
@@ -1935,6 +2902,275 @@ components:
                   maxLength: 48
                   pattern: "^[A-Za-z0-9][A-Za-z0-9_.-]*$"
                   description: The provider the credential is for, e.g. web_search. Never a value.
+    RegisterCapabilityRequest:
+      type: object
+      description: >-
+        Register a capability descriptor of any kind — the generic sibling of POST /api/v1/tools
+        (which is fixed to kind=tool). `descriptor` is the OHM manifest JSONB; `descriptor_id`
+        optionally pins a deterministic id (omitted → server-generated). Non-tool kinds are
+        accepted by the registry but interpreted by the harness-runtime, not executed here.
+      additionalProperties: true
+      required: [descriptor]
+      properties:
+        kind:
+          type: string
+          enum: [tool, skill, agent, harness, human_role]
+          default: tool
+        descriptor:
+          type: object
+          additionalProperties: true
+        descriptor_id:
+          type: string
+          format: uuid
+    StoreCredentialRequest:
+      type: object
+      description: >-
+        Store a personal credential via the broker. `credential` carries the secret material —
+        KMS-sealed at rest and never echoed back (responses are metadata only). `user_id` is
+        required by the schema but IGNORED: the owner is bound from the authenticated principal;
+        `organisation_id` is never a body field.
+      required: [tool_id, user_id, provider, cred_type, credential]
+      additionalProperties: true
+      properties:
+        tool_id: { type: string, format: uuid }
+        user_id: { type: string, format: uuid }
+        name: { type: string, nullable: true }
+        provider: { type: string }
+        cred_type: { type: string, enum: [oauth, api_key, raw] }
+        credential: { type: object, additionalProperties: true }
+    RetrieveCredentialsRequest:
+      type: object
+      description: >-
+        List the caller's credential roster. `user_id` is required by the schema but ignored — the
+        roster is always the authenticated principal's own. `tool_id` optionally filters to the
+        credentials bound to one tool.
+      required: [user_id]
+      additionalProperties: true
+      properties:
+        user_id: { type: string, format: uuid }
+        tool_id: { type: string, format: uuid, nullable: true }
+    UpdateCredentialRequest:
+      type: object
+      description: >-
+        Full metadata update for a stored credential. `id` must equal the path `credentialId`
+        (a mismatch is rejected with 400). Omit `credential` to PRESERVE the stored secret
+        (metadata-only rename); set it to ROTATE the secret. Secrets are KMS-sealed and never
+        echoed back.
+      required: [id, provider, user_id, tool_id, cred_type]
+      additionalProperties: true
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string, nullable: true }
+        provider: { type: string }
+        user_id: { type: string, format: uuid }
+        tool_id: { type: string, format: uuid }
+        cred_type: { type: string, enum: [oauth, api_key, raw] }
+        credential: { type: object, additionalProperties: true, nullable: true }
+    ChangePasswordRequest:
+      type: object
+      description: The new password for the authenticated account (the bearer identifies the user).
+      required: [new_password]
+      additionalProperties: true
+      properties:
+        new_password: { type: string, minLength: 8, maxLength: 72 }
+    CreateOrgRequest:
+      type: object
+      description: Create an organisation; the slug is derived server-side and the caller becomes owner.
+      required: [name]
+      additionalProperties: true
+      properties:
+        name: { type: string, minLength: 1, maxLength: 255 }
+    UpdateOrgRequest:
+      type: object
+      description: Partial organisation update (admin+) — omitted fields are left unchanged.
+      additionalProperties: true
+      properties:
+        name: { type: string, nullable: true, minLength: 1, maxLength: 255 }
+        description: { type: string, nullable: true, maxLength: 2000 }
+        logo_url: { type: string, nullable: true, maxLength: 512 }
+    UpdateMemberRoleRequest:
+      type: object
+      description: The member's new role. The owner role is immutable and never assignable here.
+      required: [role]
+      additionalProperties: true
+      properties:
+        role: { type: string, enum: [admin, member] }
+    CreateInvitationRequest:
+      type: object
+      description: >-
+        Invite an email into the org (admin+). A new invitation supersedes any prior pending one for
+        the same email; `subgraph_grants` optionally names what the invitee will be granted on accept.
+      required: [email]
+      additionalProperties: true
+      properties:
+        email: { type: string, minLength: 3, maxLength: 320 }
+        role: { type: string, enum: [member, admin], default: member }
+        subgraph_grants: { type: object, nullable: true, additionalProperties: true }
+    PeekInvitationRequest:
+      type: object
+      description: The raw invitation token (returned once at create) to preview.
+      required: [token]
+      additionalProperties: true
+      properties:
+        token: { type: string, minLength: 1 }
+    AcceptInvitationRequest:
+      type: object
+      description: The raw invitation token (returned once at create) to accept as the authenticated caller.
+      required: [token]
+      additionalProperties: true
+      properties:
+        token: { type: string, minLength: 1 }
+    ConnectBeginRequest:
+      type: object
+      description: >-
+        Begin a provider connect: the FE callback URL the provider redirects to, plus the (tool)
+        scopes to request. The caller is bound at /connect/complete, never here.
+      required: [redirect_uri]
+      additionalProperties: true
+      properties:
+        redirect_uri: { type: string }
+        scopes:
+          type: array
+          default: []
+          items: { type: string }
+    ConnectCompleteRequest:
+      type: object
+      description: >-
+        Complete a provider connect: the code + state from the provider redirect. The user/org are
+        taken from the bearer, never the body.
+      required: [code, state]
+      additionalProperties: true
+      properties:
+        code: { type: string }
+        state: { type: string }
+    UpdateGraphRequest:
+      type: object
+      description: >-
+        Patch a graph's mutable fields — both optional; an omitted field is left unchanged.
+      additionalProperties: true
+      properties:
+        name: { type: string, minLength: 1, maxLength: 255, nullable: true }
+        description: { type: string, nullable: true }
+    OntologyRequest:
+      type: object
+      description: >-
+        A graph's label ontology. A legacy labels-only client sends `allowed_labels` + `mode`;
+        the optional TYPED layer (`entity_types`/`relationship_types`) drives free-text
+        hard-schema extraction, and `domain`/`density`/`focus`/`ignore` are soft extraction
+        hints. `allowed_labels` is derived from `entity_types` when those are supplied.
+      required: [mode]
+      additionalProperties: true
+      properties:
+        mode: { type: string, enum: [open, strict, coerce] }
+        allowed_labels:
+          type: array
+          items: { type: string }
+        entity_types:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+            required: [name]
+            properties:
+              name: { type: string }
+              description: { type: string, nullable: true }
+              properties:
+                type: array
+                items: { type: string }
+        relationship_types:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+            required: [name]
+            properties:
+              name: { type: string }
+              source: { type: string, nullable: true }
+              target: { type: string, nullable: true }
+        domain: { type: string, nullable: true }
+        density: { type: string, enum: [sparse, balanced, dense], nullable: true }
+        focus:
+          type: array
+          items: { type: string }
+        ignore:
+          type: array
+          items: { type: string }
+    DetectCommunitiesRequest:
+      type: object
+      description: >-
+        Community-detection knobs — both optional (sensible defaults; `{}` is valid).
+        `force_rebuild` re-runs detection even when results already exist.
+      additionalProperties: true
+      properties:
+        min_entities: { type: integer, minimum: 0, nullable: true }
+        force_rebuild: { type: boolean, default: false }
+    RecipeDryRunRequest:
+      type: object
+      description: >-
+        Preview a recipe projection over a small sample with NO graph writes (authoring aid).
+        Either `recipe` or `ontology` (or both) may be supplied; with neither, a default recipe
+        is synthesised from the sample shape and the projection runs unconstrained.
+      required: [sample]
+      additionalProperties: true
+      properties:
+        sample: { type: string, minLength: 1, description: A small CSV/JSON sample to project. }
+        source_type: { type: string, default: json }
+        recipe: { type: object, nullable: true, additionalProperties: true }
+        ontology: { type: object, nullable: true, additionalProperties: true }
+    GateDecision:
+      type: object
+      description: >-
+        A human's decision on one gate (ADR-046): `approve` accepts the output and resumes past the
+        gate; `revise` re-runs the gate's producer sub-tree with `feedback` threaded in (or seeds
+        `edited_payload` verbatim as the producer's result) then re-pauses at the SAME gate for a
+        fresh decision; `reject` kills the run definitively (terminal REJECTED). `feedback` and
+        `edited_payload` are ignored for approve/reject. Back-compat — a bare "approve"/"reject"
+        string is also accepted in place of the object; unknown keys are rejected.
+      required: [decision]
+      additionalProperties: false
+      properties:
+        decision: { type: string, enum: [approve, revise, reject] }
+        feedback: { type: string, default: "" }
+        edited_payload: { type: object, nullable: true, additionalProperties: true }
+    CreateTeamRunRequest:
+      type: object
+      description: >-
+        Run an OHM v1.1 Team Harness. `manifest` is the Team Harness OHM (metadata.kind == "team"
+        with members); `sub_harnesses` maps each member role to its generated single-agent
+        sub-harness OHM (a role without one falls back to the member's manifest_ref);
+        `gate_decisions` pre-seeds human-gate decisions for a run that should not pause.
+        `workspace_root` (the team's file blackboard) and `graph_id` (the team's bound graph) are
+        validated org-scoped at create; `inputs` seeds team state a `fan_out.over: "$.<key>"`
+        resolves; `seed_from_run_id` names a prior SUCCEEDED run of the caller's org whose stored
+        output seeds this run (seeded refresh — the run then settles with a first-class
+        what-changed `refresh_delta`).
+      required: [manifest]
+      additionalProperties: true
+      properties:
+        manifest: { type: object, additionalProperties: true }
+        sub_harnesses:
+          type: object
+          additionalProperties: { type: object }
+        gate_decisions:
+          type: object
+          additionalProperties: { $ref: "#/components/schemas/GateDecision" }
+        workspace_root: { type: string, nullable: true }
+        graph_id: { type: string, nullable: true }
+        inputs: { type: object, nullable: true, additionalProperties: true }
+        seed_from_run_id: { type: string, format: uuid, nullable: true }
+    AdvanceTeamRunRequest:
+      type: object
+      description: >-
+        Advance a PAUSED team run — at least one entry mapping a gate's member role to its
+        GateDecision (approve | revise | reject). `revise` re-runs the gate's producer sub-tree
+        with feedback (or seeds `edited_payload`) and re-pauses at the same gate.
+      required: [gate_decisions]
+      additionalProperties: true
+      properties:
+        gate_decisions:
+          type: object
+          minProperties: 1
+          additionalProperties: { $ref: "#/components/schemas/GateDecision" }
   responses:
     UpstreamJson:
       description: Success — a JSON body produced and owned by the upstream service, streamed through unchanged.
