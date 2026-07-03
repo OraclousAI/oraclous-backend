@@ -444,24 +444,55 @@ async def test_status_progress_is_partial_when_paused_at_a_gate() -> None:  # #4
     assert st.progress == 33  # 1 of 3 members done before the gate → goal-attainment 33%
 
 
-async def test_gate_below_threshold_escalate_verdict_is_consumed_pauses_for_hitl() -> None:  # #604
-    """E8 (#604, ADR-048 dec 5): the E4/E8 boundary MOVED — the settled verdict is now CONSUMED. A
-    below-threshold verdict whose recommended_action is escalate_human PAUSES the run for HITL (with
-    the verdict-escalation sentinel), NOT a blind stay-SUCCEEDED (the pre-E8 deferral this test used
-    to guard). It does NOT re-dispatch (escalate ≠ re_task), so nothing new is enqueued."""
+async def test_scored_battery_below_threshold_verdict_is_consumed_pauses_for_hitl() -> None:
+    """#604 escalation, gated on SCORED by the #636 ruling: only a DECLARED battery that resolved
+    and was judged is escalation-grade. A CRITICAL failing battery check PAUSES the run for HITL
+    (with the verdict-escalation sentinel). It does NOT re-dispatch (escalate ≠ re_task), so
+    nothing new is enqueued."""
     repo, harness = FakeTeamRunRepo(), FakeHarness()
-    evaluate = FakeEvaluate(score=0.2, passed=False)  # a real FAILING verdict → escalate_human
+    evaluate = FakeEvaluate(score=0.2, passed=False)  # the check's judge grade — below threshold
     svc, enqueued = _svc(repo, harness, evaluate=evaluate)
-    manifest = _team([_agent("a"), _agent("b", ["a"])], success_criteria="the result is correct")
+    manifest = _team([_agent("a"), _agent("b", ["a"])], success_criteria="battery:gate")
+    manifest["batteries"] = {
+        "gate": {
+            "name": "gate",
+            "floor": "and",
+            "checks": [
+                {
+                    "name": "correct",
+                    "kind": "evaluator",
+                    "rubric": "the result is correct",
+                    "severity": "CRITICAL",
+                }
+            ],
+        }
+    }
     row = await _run(svc, _principal(), manifest=manifest, sub_harnesses={}, gate_decisions={})
-    # the verdict is produced + stored, and the run is CONSUMED — escalated to PAUSED for a human
-    assert row.verdict is not None and row.verdict["pass"] is False
-    assert evaluate.calls and evaluate.calls[0]["success_criteria"] == "the result is correct"
+    # the battery verdict is produced + stored, marked SCORED, and CONSUMED — PAUSED for a human
+    assert row.verdict is not None and row.verdict["passed"] is False
+    assert row.verdict["scored"] is True  # #636: the escalation-grade marker at emission
+    assert evaluate.calls  # the check's rubric really went to the judge
     assert row.state == "PAUSED"  # #604: escalate_human → HITL, not a silent SUCCEEDED
     assert row.paused_at == ["__verdict_escalation__"]  # the sentinel (distinct from a member gate)
     assert row.escalation_kind == "verdict"  # the CONTROL marker advance() keys off (review F1)
     # escalate does NOT re-dispatch (only the create's enqueue — no re_task enqueue)
     assert enqueued == [row.id]
+
+
+async def test_prose_below_threshold_verdict_is_advisory_run_still_succeeds() -> None:
+    """#636 (CTO ruling), the other side of the pin: a BARE PROSE success_criteria grade is
+    ADVISORY — the verdict is produced + stored (marked scored=False at emission) and the run
+    SUCCEEDS (#477 contract holds), never a pause/re-dispatch, whatever the judge scored."""
+    repo, harness = FakeTeamRunRepo(), FakeHarness()
+    evaluate = FakeEvaluate(score=0.2, passed=False)  # a real below-threshold prose grade
+    svc, enqueued = _svc(repo, harness, evaluate=evaluate)
+    manifest = _team([_agent("a"), _agent("b", ["a"])], success_criteria="the result is correct")
+    row = await _run(svc, _principal(), manifest=manifest, sub_harnesses={}, gate_decisions={})
+    assert row.verdict is not None and row.verdict["pass"] is False  # produced + stored (#477)
+    assert row.verdict["scored"] is False  # #636: advisory — not escalation-grade
+    assert row.state == "SUCCEEDED"  # the run is NOT branched on an advisory grade
+    assert row.escalation_kind is None and row.paused_at == []
+    assert enqueued == [row.id]  # no re_task enqueue either
 
 
 async def test_gate_eval_failure_is_fail_closed_and_run_still_succeeds() -> None:  # #477
@@ -1256,10 +1287,11 @@ async def test_stamp_schedule_seed_noop_for_a_direct_run() -> None:
 
 # ── #625: seed-stamp gates on the FINAL post-verdict state (no seed-clobber) ─────────────────────
 async def _drive_scheduled(
-    evaluate: Any, *, success_criteria: str | None = None
+    evaluate: Any, *, success_criteria: str | None = None, battery_severity: str | None = None
 ) -> tuple[EngineTeamRun, _FakeSchedAccrual, uuid.UUID, uuid.UUID]:
     """Drive a SCHEDULED team fire (schedule_id set) end to end → (final_row, sched, sid, rid).
-    The stamp gate (#625) fires at settle AFTER verdict-consumption."""
+    The stamp gate (#625) fires at settle AFTER verdict-consumption. ``battery_severity`` gates
+    through the SCORED battery (#636 — bare prose criteria are advisory and never branch)."""
     repo, harness = FakeTeamRunRepo(), FakeHarness()
     sched = _FakeSchedAccrual()
     svc = TeamRunService(
@@ -1270,6 +1302,8 @@ async def _drive_scheduled(
         schedules=sched,  # type: ignore[arg-type]
     )
     manifest = _team([_agent("a")], success_criteria=success_criteria)
+    if battery_severity is not None:
+        manifest = _add_battery(manifest, battery_severity)
     created = await svc.create(_principal(), manifest=manifest, sub_harnesses={}, gate_decisions={})
     sid = uuid.uuid4()
     repo.rows[created.id].schedule_id = sid  # make it a standing-team scheduled fire
@@ -1287,16 +1321,20 @@ async def test_scheduled_fire_with_no_gate_stamps_the_seed() -> None:
 async def test_scheduled_fire_that_re_tasks_does_not_clobber_the_seed() -> None:
     # #625: a below-threshold fire that verdict-consumption RE_TASKs (SUCCEEDED→QUEUED) must not
     # stamp — stamping on the pre-verdict SUCCEEDED would clobber the schedule's prior GOOD seed.
-    evaluate = FakeEvaluate(passed=False, score=0.5, recommended_action="revise")  # → re_task
-    row, sched, _sid, _rid = await _drive_scheduled(evaluate, success_criteria="is correct")
+    evaluate = FakeEvaluate(passed=False, score=0.2)  # MAJOR battery fail → block → re_task
+    row, sched, _sid, _rid = await _drive_scheduled(
+        evaluate, success_criteria="battery:gate", battery_severity="MAJOR"
+    )
     assert row.state == "QUEUED"  # re_tasked by verdict-consumption
     assert sched.seeded == []  # the final state is not SUCCEEDED → not a seed
 
 
 async def test_scheduled_fire_that_escalates_does_not_clobber_the_seed() -> None:
     # #625: a HITL-escalated below-threshold fire (SUCCEEDED→PAUSED) must NOT stamp either.
-    evaluate = FakeEvaluate(passed=False, recommended_action="reject")  # → escalate → PAUSED
-    row, sched, _sid, _rid = await _drive_scheduled(evaluate, success_criteria="is correct")
+    evaluate = FakeEvaluate(passed=False, score=0.2)  # CRITICAL battery fail → escalate → PAUSED
+    row, sched, _sid, _rid = await _drive_scheduled(
+        evaluate, success_criteria="battery:gate", battery_severity="CRITICAL"
+    )
     assert row.state == "PAUSED"
     assert sched.seeded == []
 
@@ -1428,15 +1466,38 @@ async def test_non_refresh_run_is_default_off() -> None:
     assert "_refresh_seed" not in (row.inputs or {})
 
 
+def _add_battery(manifest: dict[str, Any], severity: str = "MAJOR") -> dict[str, Any]:
+    """#636: consumption tests drive the SCORED battery gate (bare prose criteria are advisory
+    now). One evaluator check whose judge grade FakeEvaluate scripts: MAJOR failing → action
+    "block" (the RE_TASK class), CRITICAL failing → "escalate_human" (the ESCALATE class)."""
+    manifest["batteries"] = {
+        "gate": {
+            "name": "gate",
+            "floor": "and",
+            "checks": [
+                {
+                    "name": "correct",
+                    "kind": "evaluator",
+                    "rubric": "the result is correct",
+                    "severity": severity,
+                }
+            ],
+        }
+    }
+    return manifest
+
+
 # ── #604 closed-loop verdict-consumption (ADR-048 decision 5) ──────────────────────────────
 async def test_re_task_re_dispatches_the_sink_with_a_revised_objective_not_a_blind_rerun() -> None:
     # a below-threshold `revise` verdict on a SUCCEEDED run → re-dispatch: the SINK member is forced
     # to re-run (its output was below threshold), the objective carries a revision directive (so the
     # task DIFFERS — never a blind identical re-run), and the run goes QUEUED (drawing the pool).
     repo, harness = FakeTeamRunRepo(), FakeHarness()
-    evaluate = FakeEvaluate(passed=False, score=0.5, recommended_action="revise")
+    evaluate = FakeEvaluate(passed=False, score=0.2)  # the check grades below threshold
     svc, enqueued = _svc(repo, harness, evaluate=evaluate)
-    manifest = _team([_agent("a"), _agent("b", ["a"])], success_criteria="the result is correct")
+    manifest = _add_battery(
+        _team([_agent("a"), _agent("b", ["a"])], success_criteria="battery:gate"), "MAJOR"
+    )
     row = await _run(svc, _principal(), manifest=manifest, sub_harnesses={}, gate_decisions={})
     assert row.state == "QUEUED"  # re-dispatched, not left SUCCEEDED (consumed the verdict)
     assert row.re_dispatch_count == 1  # the loop counter bumped (the MAX-ceiling basis)
@@ -1447,11 +1508,11 @@ async def test_re_task_re_dispatches_the_sink_with_a_revised_objective_not_a_bli
     assert enqueued == [row.id, row.id]  # the create's enqueue + the re_task enqueue
 
 
-async def test_reject_verdict_escalates_to_hitl_and_never_re_dispatches() -> None:
+async def test_critical_battery_verdict_escalates_to_hitl_and_never_re_dispatches() -> None:
     repo, harness = FakeTeamRunRepo(), FakeHarness()
-    evaluate = FakeEvaluate(passed=False, recommended_action="reject")  # HITL-class (ADR-037 Dec 4)
+    evaluate = FakeEvaluate(passed=False, score=0.2)  # CRITICAL failing → HITL (ADR-037 Dec 4)
     svc, enqueued = _svc(repo, harness, evaluate=evaluate)
-    manifest = _team([_agent("a")], success_criteria="is correct")
+    manifest = _add_battery(_team([_agent("a")], success_criteria="battery:gate"), "CRITICAL")
     row = await _run(svc, _principal(), manifest=manifest, sub_harnesses={}, gate_decisions={})
     assert row.state == "PAUSED" and row.paused_at == ["__verdict_escalation__"]
     assert enqueued == [row.id]  # reject NEVER autonomously re-dispatches (no re_task enqueue)
@@ -1459,9 +1520,9 @@ async def test_reject_verdict_escalates_to_hitl_and_never_re_dispatches() -> Non
 
 async def test_max_re_dispatches_ceiling_escalates_instead_of_re_tasking() -> None:
     repo, harness = FakeTeamRunRepo(), FakeHarness()
-    evaluate = FakeEvaluate(passed=False, score=0.5, recommended_action="revise")
+    evaluate = FakeEvaluate(passed=False, score=0.2)
     svc, enqueued = _svc(repo, harness, evaluate=evaluate)
-    manifest = _team([_agent("a")], success_criteria="is correct")
+    manifest = _add_battery(_team([_agent("a")], success_criteria="battery:gate"), "MAJOR")
     created = await svc.create(_principal(), manifest=manifest, sub_harnesses={}, gate_decisions={})
     repo.rows[created.id].re_dispatch_count = 3  # already at the ceiling
     row = await svc.drive(created.id, _principal())
@@ -1474,9 +1535,11 @@ async def test_advance_of_a_verdict_escalation_re_tasks_never_blindly_re_drives(
     # the Q3 guard: a human advancing a VERDICT-escalation must NOT blindly re-drive the seeded-
     # complete run (a no-op re-grade) — it re-tasks the faulted members with a FRESH loop counter.
     repo, harness = FakeTeamRunRepo(), FakeHarness()
-    evaluate = FakeEvaluate(passed=False, recommended_action="reject")
+    evaluate = FakeEvaluate(passed=False, score=0.2)
     svc, enqueued = _svc(repo, harness, evaluate=evaluate)
-    manifest = _team([_agent("a"), _agent("b", ["a"])], success_criteria="is correct")
+    manifest = _add_battery(
+        _team([_agent("a"), _agent("b", ["a"])], success_criteria="battery:gate"), "CRITICAL"
+    )
     row = await _run(svc, _principal(), manifest=manifest, sub_harnesses={}, gate_decisions={})
     assert row.state == "PAUSED" and row.paused_at == ["__verdict_escalation__"]
     repo.rows[row.id].re_dispatch_count = 2  # a prior autonomous history
@@ -1491,7 +1554,7 @@ async def test_advance_of_a_verdict_escalation_re_tasks_never_blindly_re_drives(
 async def test_re_task_enqueue_failure_fails_the_run_not_phantom_queued() -> None:
     # a broker fault on the re_task hand-off must FAIL the run, not orphan it QUEUED (#620).
     repo, harness = FakeTeamRunRepo(), FakeHarness()
-    evaluate = FakeEvaluate(passed=False, score=0.5, recommended_action="revise")
+    evaluate = FakeEvaluate(passed=False, score=0.2)
     calls = {"n": 0}
 
     def flaky(_rid: uuid.UUID, _org: uuid.UUID, _user: uuid.UUID) -> None:
@@ -1500,7 +1563,7 @@ async def test_re_task_enqueue_failure_fails_the_run_not_phantom_queued() -> Non
             raise RuntimeError("broker down")
 
     svc = TeamRunService(team_runs=repo, harness=harness, enqueue=flaky, evaluate=evaluate)
-    manifest = _team([_agent("a")], success_criteria="is correct")
+    manifest = _add_battery(_team([_agent("a")], success_criteria="battery:gate"), "MAJOR")
     created = await svc.create(_principal(), manifest=manifest, sub_harnesses={}, gate_decisions={})
     with pytest.raises(RuntimeError):
         await svc.drive(created.id, _principal())
@@ -1538,11 +1601,11 @@ async def test_re_task_revision_reaches_a_handoff_driven_sink_not_just_its_subgo
     # (objective_slice takes precedence over the sink's static subgoal). The revision directive must
     # therefore land on the producer's handoff_objective too, or the re-run is a blind identical.
     repo, harness = FakeTeamRunRepo(), FakeHarness()
-    evaluate = FakeEvaluate(passed=False, score=0.5, recommended_action="revise")
+    evaluate = FakeEvaluate(passed=False, score=0.2)
     svc, _ = _svc(repo, harness, evaluate=evaluate)
     producer = {**_agent("a"), "handoff_objective": "Draft chapter 4"}
     sink = _agent("b", ["a"])  # nothing depends on b → the sink; b renders a's handoff_objective
-    manifest = _team([producer, sink], success_criteria="the result is correct")
+    manifest = _add_battery(_team([producer, sink], success_criteria="battery:gate"), "MAJOR")
     row = await _run(svc, _principal(), manifest=manifest, sub_harnesses={}, gate_decisions={})
     assert (
         row.state == "QUEUED" and row.member_status.get("b") == "re_task"
@@ -1560,7 +1623,7 @@ async def test_resume_verdict_escalation_enqueue_failure_fails_the_run_not_phant
     # FAILS the run (not a silent RLS no-op leaving it phantom-QUEUED). Proven with the fake repo's
     # CAS semantics; the RLS-real path is the same transition wrapped in the same org_scope.
     repo, harness = FakeTeamRunRepo(), FakeHarness()
-    evaluate = FakeEvaluate(passed=False, recommended_action="reject")  # → escalate → PAUSED
+    evaluate = FakeEvaluate(passed=False, score=0.2)  # CRITICAL failing → escalate → PAUSED
     calls = {"n": 0}
 
     def flaky(_rid: uuid.UUID, _org: uuid.UUID, _user: uuid.UUID) -> None:
@@ -1569,7 +1632,9 @@ async def test_resume_verdict_escalation_enqueue_failure_fails_the_run_not_phant
             raise RuntimeError("broker down")
 
     svc = TeamRunService(team_runs=repo, harness=harness, enqueue=flaky, evaluate=evaluate)
-    manifest = _team([_agent("a"), _agent("b", ["a"])], success_criteria="is correct")
+    manifest = _add_battery(
+        _team([_agent("a"), _agent("b", ["a"])], success_criteria="battery:gate"), "CRITICAL"
+    )
     row = await _run(svc, _principal(), manifest=manifest, sub_harnesses={}, gate_decisions={})
     assert row.state == "PAUSED" and row.escalation_kind == "verdict"
     with pytest.raises(RuntimeError):

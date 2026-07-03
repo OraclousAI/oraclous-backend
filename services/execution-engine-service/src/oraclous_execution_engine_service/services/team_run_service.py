@@ -947,14 +947,22 @@ class TeamRunService:
                 battery_verdict = await evaluate_gate(
                     team, grade_target, evaluate=_invoke, gate="success_criteria"
                 )
-                return battery_verdict.model_dump() if battery_verdict is not None else None
-            return await self._evaluate.evaluate(
+                if battery_verdict is None:
+                    return None
+                # #636 (CTO ruling): a DECLARED battery that resolved and was judged is the
+                # escalation-grade gate — mark it SCORED so #604 consumption may branch on it.
+                return {**battery_verdict.model_dump(), "scored": True}
+            prose_verdict = await self._evaluate.evaluate(
                 target_ref=str(run_id),
                 target_output=grade_target,
                 success_criteria=success_criteria,
                 judge_credential_id=judge_credential_id,
                 judge_model=judge_model,
             )
+            # #636 (CTO ruling): bare prose success_criteria are ADVISORY — the verdict is
+            # produced + stored and the run SUCCEEDS (#477), but it is not escalation-grade
+            # (scored=False → decide_action STORE_ONLYs; a declared battery is the opt-in).
+            return {**prose_verdict, "scored": False}
         except Exception as exc:  # noqa: BLE001 — ANY grader-side failure fails CLOSED, never strands
             # The grade runs OUTSIDE _drive's try/except, so an escaping error would fail the Celery
             # task and strand the run RUNNING. The contract (docstring) is absolute: a grader error
@@ -971,6 +979,9 @@ class TeamRunService:
                 # on it (no escalate/re-dispatch on a transient grader blip). The marker tells
                 # ``decide_action`` to STORE_ONLY (the run stays SUCCEEDED, the contract at :819).
                 "grader_unavailable": True,
+                # #636: unscored by definition — the judge never produced a grade (belt+braces
+                # with grader_unavailable; either marker alone STORE_ONLYs).
+                "scored": False,
             }
 
     def _make_loop_done_check(

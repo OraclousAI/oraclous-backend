@@ -55,6 +55,41 @@ def test_a_grader_outage_verdict_is_store_only_never_escalates() -> None:
 
 
 # ── the escalate branch (HITL) ────────────────────────────────────────────────────────────────────
+def test_an_unscored_prose_verdict_is_store_only_even_below_threshold() -> None:
+    # #636 (CTO ruling): a bare prose success_criteria grade is ADVISORY — produced + stored,
+    # the run SUCCEEDS (#477); it is never escalation-grade, whatever its action says.
+    prose = {
+        "pass": False,
+        "score": 0.0,
+        "recommended_action": "escalate_human",
+        "failures": [{"dimension": "success_criteria", "reason": "below threshold"}],
+        "scored": False,
+    }
+    assert _decide(prose) == vc.STORE_ONLY
+    # ...and it never re-tasks either — unscored means STORE_ONLY, not a softer branch
+    assert _decide({**prose, "recommended_action": "revise"}) == vc.STORE_ONLY
+
+
+def test_a_scored_battery_verdict_still_branches() -> None:
+    # #636 both-sides pin: a DECLARED battery that resolved and was judged (scored=True at
+    # emission) keeps the full #604 consumption — escalate/re_task exactly as before.
+    battery = {
+        "passed": False,
+        "check_verdicts": [{"name": "gate", "passed": False}],
+        "failures": [{"name": "gate", "reason": "below threshold (0.9)"}],
+        "recommended_action": "escalate_human",
+        "scored": True,
+    }
+    assert _decide(battery) == vc.ESCALATE
+    assert _decide({**battery, "recommended_action": "retry"}) == vc.RE_TASK
+
+
+def test_a_marker_less_verdict_keeps_the_prior_behaviour() -> None:
+    # stored verdicts predating the #636 marker consume exactly as before (no silent flip)
+    legacy = {"pass": False, "recommended_action": "escalate_human"}
+    assert _decide(legacy) == vc.ESCALATE
+
+
 def test_escalate_human_and_reject_escalate() -> None:
     assert _decide({"pass": False, "recommended_action": "escalate_human"}) == vc.ESCALATE
     # reject is a HITL-class verdict — escalates, NEVER an autonomous re-dispatch (ADR-037 Dec 4)
