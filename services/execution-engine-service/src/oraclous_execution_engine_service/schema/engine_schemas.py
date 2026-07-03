@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from enum import StrEnum
 from typing import Any, Literal
 
 from oraclous_ohm.gate import GateDecision
@@ -475,6 +476,76 @@ class TeamRunOut(BaseModel):
         if self.state == "COST_BUDGET":  # #585: a pooled-budget halt is always a partial run
             self.partial = True
         return self
+
+
+class TeamRunStateFilter(StrEnum):
+    """#633: the team-run states a LIST query may filter on (repeatable; an unknown value is a 422,
+    enforced natively by FastAPI at the route). Mirrors the EngineTeamRun state machine — the
+    transient states, terminal SUCCEEDED/FAILED, the #578 REJECTED gate terminal, and the #585
+    COST_BUDGET governed pooled-budget halt."""
+
+    QUEUED = "QUEUED"
+    RUNNING = "RUNNING"
+    SUCCEEDED = "SUCCEEDED"
+    PAUSED = "PAUSED"
+    REJECTED = "REJECTED"
+    FAILED = "FAILED"
+    COST_BUDGET = "COST_BUDGET"
+
+
+class TeamRunListItem(BaseModel):
+    """#633: ONE row of the org-scoped team-run LIST — a runs-table row, NOT the full readout. It
+    NEVER carries ``results``/``manifest``/``sub_harnesses`` (the repo projects only these columns,
+    digging ``team_name`` out of ``manifest.metadata.name`` at query time so the manifest is never
+    loaded). ``paused_at`` is the gate role(s) a PAUSED run waits on — what the Approvals inbox
+    renders as "waiting on ⟨gate⟩". ``partial`` mirrors ``TeamRunOut`` (a #585 COST_BUDGET halt is
+    always partial) so a caller branches on the flag, not the state string."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    state: str
+    team_name: str | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+    paused_at: list[str] = Field(default_factory=list)
+    member_status: dict[str, str] = Field(default_factory=dict)
+    partial: bool = False
+    schedule_id: uuid.UUID | None = None
+    cost_tokens: int = 0
+
+    # A real flushed row holds [] / {} / 0 (the column server_defaults); these only coerce a None
+    # from a hypothetical pre-migration NULL — fail-soft, never a validation 500 (as TeamRunOut).
+    @field_validator("paused_at", mode="before")
+    @classmethod
+    def _coerce_paused_at(cls, v: Any) -> Any:
+        return v if v is not None else []
+
+    @field_validator("member_status", mode="before")
+    @classmethod
+    def _coerce_member_status(cls, v: Any) -> Any:
+        return v if v is not None else {}
+
+    @field_validator("cost_tokens", mode="before")
+    @classmethod
+    def _coerce_cost_tokens(cls, v: Any) -> Any:
+        return v if v is not None else 0
+
+    @model_validator(mode="after")
+    def _derive_partial(self) -> TeamRunListItem:
+        # #585: a pooled-budget halt is always partial (mirrors TeamRunOut._derive_partial).
+        if self.state == "COST_BUDGET":
+            self.partial = True
+        return self
+
+
+class TeamRunListOut(BaseModel):
+    """#633: one page of the org's team runs + the FULL matching ``total`` (NOT the page length),
+    so a runs table can paginate ("showing 1–50 of ``total``"). Mirrors the engine's
+    ``{<key>: [...], total}`` list wire convention (as ``{jobs, total}`` / ``{runs, total}`` do)."""
+
+    team_runs: list[TeamRunListItem]
+    total: int
 
 
 class TeamRunTreeOut(BaseModel):

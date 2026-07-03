@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import uuid
+from collections.abc import Sequence
 from datetime import datetime
 from typing import Any
 
@@ -144,6 +145,50 @@ class TeamRunRepository:
                 .limit(limit)
             )
             return list(result.scalars().all())
+
+    async def list_for_org(
+        self,
+        organisation_id: uuid.UUID,
+        *,
+        states: Sequence[str] | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> tuple[list[dict[str, Any]], int]:
+        """#633: the org's team runs — newest-first (``created_at DESC`` + an ``id`` tiebreaker so
+        paging is stable when two runs share a timestamp), optionally filtered to ``states``,
+        paginated. Returns ``(page_rows, total)`` where ``total`` is the FULL matching count
+        (ignoring ``limit``/``offset``) so a runs table can paginate. Org-scoped (ADR-006) +
+        RLS-backstopped (ADR-030). Projects ONLY the list-row columns — never
+        ``manifest``/``results``/``sub_harnesses`` — digging ``team_name`` out of
+        ``manifest -> 'metadata' -> 'name'`` at query time, so a large manifest is never loaded."""
+        conditions = [EngineTeamRun.organisation_id == organisation_id]
+        if states:
+            conditions.append(EngineTeamRun.state.in_(list(states)))
+        async with self._session() as session:
+            page = await session.execute(
+                select(
+                    EngineTeamRun.id,
+                    EngineTeamRun.state,
+                    EngineTeamRun.manifest["metadata"]["name"].astext.label("team_name"),
+                    EngineTeamRun.created_at,
+                    EngineTeamRun.updated_at,
+                    EngineTeamRun.paused_at,
+                    EngineTeamRun.member_status,
+                    EngineTeamRun.schedule_id,
+                    EngineTeamRun.cost_tokens,
+                )
+                .where(*conditions)
+                .order_by(EngineTeamRun.created_at.desc(), EngineTeamRun.id.desc())
+                .limit(limit)
+                .offset(offset)
+            )
+            rows = [dict(r._mapping) for r in page.all()]
+            total = (
+                await session.execute(
+                    select(func.count()).select_from(EngineTeamRun).where(*conditions)
+                )
+            ).scalar_one()
+        return rows, int(total or 0)
 
     async def has_active_for_schedule(
         self, schedule_id: uuid.UUID, organisation_id: uuid.UUID

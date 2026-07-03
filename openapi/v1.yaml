@@ -2209,6 +2209,44 @@ paths:
         "200": { $ref: "#/components/responses/UpstreamJson" }
         "401": { $ref: "#/components/responses/Unauthenticated" }
   /v1/engine/team-runs:
+    get:
+      tags: [engine]
+      summary: List the org's team runs, newest-first, filterable by state (repeatable) and paginated (org-scoped; a cross-org run is invisible, never a 403).
+      operationId: listTeamRuns
+      x-stability: provisional
+      parameters:
+        - name: state
+          in: query
+          required: false
+          description: >-
+            Filter to team runs in these states (repeatable, e.g. `?state=PAUSED&state=RUNNING`).
+            An unknown value is a 422. Omitted → every state.
+          schema:
+            type: array
+            items:
+              type: string
+              enum: [QUEUED, RUNNING, SUCCEEDED, PAUSED, REJECTED, FAILED, COST_BUDGET]
+          style: form
+          explode: true
+        - name: limit
+          in: query
+          required: false
+          description: >-
+            Maximum team runs to return (WP-10 pagination). OPTIONAL; defaults to 50 and is CLAMPED
+            server-side to a hard maximum of 200, so no single read is unbounded.
+          schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+        - name: offset
+          in: query
+          required: false
+          description: >-
+            Team runs to skip before collecting the page (WP-10 pagination). OPTIONAL; defaults to 0.
+            Paired with the deterministic `created_at DESC` ordering so paging is repeatable.
+          schema: { type: integer, minimum: 0, default: 0 }
+      responses:
+        "200": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
     post:
       tags: [engine]
       summary: Run an OHM v1.1 Team Harness (202 — validated, persisted QUEUED and driven async by the worker; poll GET for state).
