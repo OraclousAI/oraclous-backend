@@ -28,6 +28,9 @@ from oraclous_execution_engine_service.repositories.roundtable_repository import
     RoundtableRepository,
 )
 from oraclous_execution_engine_service.repositories.schedule_repository import ScheduleRepository
+from oraclous_execution_engine_service.repositories.team_draft_repository import (
+    TeamDraftRepository,
+)
 from oraclous_execution_engine_service.repositories.team_run_repository import TeamRunRepository
 
 
@@ -62,6 +65,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     schedule_repo: ScheduleRepository | None = None
     roundtable_repo: RoundtableRepository | None = None
     team_run_repo: TeamRunRepository | None = None
+    team_draft_repo: TeamDraftRepository | None = None
     provenance_repo: ProvenanceRepository | None = None
     sink: PostgresProvenanceSink | None = None
     try:
@@ -69,12 +73,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         schedule_repo = ScheduleRepository(settings.database_url)
         roundtable_repo = RoundtableRepository(settings.database_url)
         team_run_repo = TeamRunRepository(settings.database_url)
+        team_draft_repo = TeamDraftRepository(settings.database_url)
         provenance_repo = ProvenanceRepository(settings.database_url)
         sink = PostgresProvenanceSink(settings.database_url)
         app.state.job_repository = job_repo
         app.state.schedule_repository = schedule_repo
         app.state.roundtable_repository = roundtable_repo
         app.state.team_run_repository = team_run_repo
+        app.state.team_draft_repository = team_draft_repo
         app.state.provenance_repository = provenance_repo
         app.state.provenance = ProvenanceCollector(sink)
     except Exception as exc:  # noqa: BLE001 — degrade: data routes 503, /health reflects it
@@ -82,6 +88,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         app.state.schedule_repository = None
         app.state.roundtable_repository = None
         app.state.team_run_repository = None
+        app.state.team_draft_repository = None
         app.state.provenance_repository = None
         app.state.provenance = None
         alert(
@@ -108,6 +115,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             await roundtable_repo.close()
         if team_run_repo is not None:
             await team_run_repo.close()
+        if team_draft_repo is not None:
+            await team_draft_repo.close()
         if provenance_repo is not None:
             await provenance_repo.close()
         if sink is not None:

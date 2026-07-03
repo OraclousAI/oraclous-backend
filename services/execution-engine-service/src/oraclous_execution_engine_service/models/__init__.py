@@ -8,6 +8,7 @@ from oraclous_execution_engine_service.models.job import EngineJob
 from oraclous_execution_engine_service.models.provenance import EngineProvenanceEvent
 from oraclous_execution_engine_service.models.roundtable import EngineRoundtable
 from oraclous_execution_engine_service.models.schedule import EngineSchedule
+from oraclous_execution_engine_service.models.team_draft import EngineTeamDraft
 from oraclous_execution_engine_service.models.team_run import EngineTeamRun
 
 __all__ = [
@@ -17,5 +18,6 @@ __all__ = [
     "EngineProvenanceEvent",
     "EngineRoundtable",
     "EngineSchedule",
+    "EngineTeamDraft",
     "EngineTeamRun",
 ]

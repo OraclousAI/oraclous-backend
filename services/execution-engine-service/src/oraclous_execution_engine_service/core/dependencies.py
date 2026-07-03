@@ -32,6 +32,9 @@ from oraclous_execution_engine_service.repositories.roundtable_repository import
     RoundtableRepository,
 )
 from oraclous_execution_engine_service.repositories.schedule_repository import ScheduleRepository
+from oraclous_execution_engine_service.repositories.team_draft_repository import (
+    TeamDraftRepository,
+)
 from oraclous_execution_engine_service.repositories.team_run_repository import TeamRunRepository
 from oraclous_execution_engine_service.services.activity_service import ActivityService
 from oraclous_execution_engine_service.services.graph_client import GraphClient
@@ -41,6 +44,7 @@ from oraclous_execution_engine_service.services.registry_client import RegistryC
 from oraclous_execution_engine_service.services.roundtable_service import RoundtableService
 from oraclous_execution_engine_service.services.schedule_service import ScheduleService
 from oraclous_execution_engine_service.services.task_service import TaskService
+from oraclous_execution_engine_service.services.team_draft_service import TeamDraftService
 from oraclous_execution_engine_service.services.team_run_service import TeamRunService
 from oraclous_execution_engine_service.tasks.run_tasks import (
     enqueue_adopted_tool,
@@ -271,6 +275,23 @@ def get_team_run_service(
     return TeamRunService(team_runs=team_runs, enqueue=enqueue_team_run, graphs=graphs)
 
 
+def get_team_draft_repository(request: Request) -> TeamDraftRepository:
+    repo = getattr(request.app.state, "team_draft_repository", None)
+    if repo is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="engine store unavailable (DATABASE_URL not reachable)",
+        )
+    return repo
+
+
+def get_team_draft_service(
+    drafts: Annotated[TeamDraftRepository, Depends(get_team_draft_repository)],
+) -> TeamDraftService:
+    # #635: the draft store — org-scoped persistence + the shared validator's verdict on writes.
+    return TeamDraftService(drafts=drafts)
+
+
 PrincipalDep = Annotated[Principal, Depends(get_principal)]
 JobRepositoryDep = Annotated[JobRepository, Depends(get_job_repository)]
 JobServiceDep = Annotated[JobService, Depends(get_job_service)]
@@ -279,3 +300,4 @@ TaskServiceDep = Annotated[TaskService, Depends(get_task_service)]
 ScheduleServiceDep = Annotated[ScheduleService, Depends(get_schedule_service)]
 RoundtableServiceDep = Annotated[RoundtableService, Depends(get_roundtable_service)]
 TeamRunServiceDep = Annotated[TeamRunService, Depends(get_team_run_service)]
+TeamDraftServiceDep = Annotated[TeamDraftService, Depends(get_team_draft_service)]

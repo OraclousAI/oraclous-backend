@@ -583,3 +583,78 @@ class TeamRunStatusOut(BaseModel):
     last_run_at: datetime | None
     last_outcome: str
     cost: TeamRunCost
+
+
+# ── #635 (C-1): team drafts + the compiler on-ramp ───────────────────────────────────────────────
+
+
+class CreateTeamDraftRequest(BaseModel):
+    """Persist a team DRAFT (#635) — the compile → review → refine loop's editable home. The
+    ``manifest`` must be a valid OHM v1.1 Team Harness (the same inbound gate a run applies);
+    ``sub_harnesses`` maps member roles to their single-agent sub-harness OHMs (what GO passes
+    inline). The response embeds the shared validator's verdict alongside the stored draft."""
+
+    name: str = Field(min_length=1, max_length=256)
+    manifest: dict[str, Any]
+    sub_harnesses: dict[str, dict[str, Any]] = Field(default_factory=dict)
+
+
+class TeamDraftOut(BaseModel):
+    """One stored team draft — the full editable document (manifest + sub_harnesses + version)."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    organisation_id: uuid.UUID
+    name: str
+    manifest: dict[str, Any]
+    sub_harnesses: dict[str, Any] = Field(default_factory=dict)
+    version: int = 1
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+    @field_validator("sub_harnesses", mode="before")
+    @classmethod
+    def _coerce_sub_harnesses(cls, v: Any) -> Any:
+        return v if v is not None else {}
+
+
+class TeamDraftEnvelope(BaseModel):
+    """A draft read/write response: the draft PLUS the shared validator's verdict (#593 — one
+    validator for import, compile and refine), so the console's validation strip reads
+    ``would_block``/``blocking`` for free on every store round-trip. ``report`` is the RENDERED
+    dry-run report (the same string the ``core/manifest-validate@1`` tool returns — one validator,
+    one shape)."""
+
+    draft: TeamDraftOut
+    would_block: bool
+    blocking: list[str] = Field(default_factory=list)
+    report: str = ""
+
+
+class TeamDraftListItem(BaseModel):
+    """ONE row of the org-scoped draft LIST — a table row, NOT the document: never carries
+    ``manifest``/``sub_harnesses`` (the repo projects only these columns, digging
+    ``member_count`` out of ``manifest.members`` at query time)."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    name: str
+    version: int = 1
+    member_count: int = 0
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+    @field_validator("member_count", mode="before")
+    @classmethod
+    def _coerce_member_count(cls, v: Any) -> Any:
+        return v if v is not None else 0
+
+
+class TeamDraftListOut(BaseModel):
+    """One page of the org's team drafts + the FULL matching ``total`` (NOT the page length) —
+    the engine's ``{<key>: [...], total}`` list wire convention, born bounded (WP-10)."""
+
+    team_drafts: list[TeamDraftListItem]
+    total: int

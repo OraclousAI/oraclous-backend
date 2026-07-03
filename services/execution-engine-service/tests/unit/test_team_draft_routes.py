@@ -1,0 +1,139 @@
+"""Team-draft routes (#635) — unit, fake services via dependency_overrides, no DB.
+
+Pins the edge contract: the ``{draft, would_block, blocking, report}`` write envelope, the
+``{team_drafts, total}`` list shape with a LEAN row, limit/offset forwarding, the structured 422
+(leak-safe machine token) and 404 mappings, and DELETE 204.
+"""
+
+from __future__ import annotations
+
+import uuid
+from typing import Any
+
+import pytest
+from httpx import ASGITransport, AsyncClient
+from oraclous_execution_engine_service.app.factory import create_app
+from oraclous_execution_engine_service.core.dependencies import (
+    get_principal,
+    get_team_draft_service,
+)
+from oraclous_execution_engine_service.services.team_draft_service import DraftVerdict
+from oraclous_execution_engine_service.services.team_run_service import TeamRunError
+from oraclous_governance import Principal, PrincipalType
+
+pytestmark = pytest.mark.unit
+
+_ORG = uuid.uuid4()
+_USER = uuid.uuid4()
+
+
+class _Row:
+    def __init__(self, version: int = 1) -> None:
+        self.id = uuid.uuid4()
+        self.organisation_id = _ORG
+        self.user_id = _USER
+        self.name = "draft"
+        self.manifest = {"metadata": {"kind": "team"}, "members": []}
+        self.sub_harnesses = {}
+        self.version = version
+        self.created_at = None
+        self.updated_at = None
+
+
+def _verdict(would_block: bool = False, blocking: list[str] | None = None) -> DraftVerdict:
+    return DraftVerdict(would_block=would_block, blocking=blocking or [], report="rendered dry-run")
+
+
+def _client(draft_service: Any = None) -> AsyncClient:
+    app = create_app()  # construction only — lifespan (DB bind) is not triggered by ASGITransport
+    if draft_service is not None:
+        app.dependency_overrides[get_team_draft_service] = lambda: draft_service
+    app.dependency_overrides[get_principal] = lambda: Principal(
+        principal_id=_USER, principal_type=PrincipalType.USER, organisation_id=_ORG
+    )
+    return AsyncClient(transport=ASGITransport(app=app), base_url="http://engine.test")
+
+
+async def test_create_returns_201_with_the_draft_plus_verdict_envelope() -> None:
+    row = _Row()
+
+    class _Svc:
+        async def create(self, principal: Principal, **kw: Any) -> tuple[_Row, DraftVerdict]:
+            return row, _verdict(would_block=True, blocking=["F-CAPABILITY-MISSING: x"])
+
+    async with _client(_Svc()) as c:
+        resp = await c.post(
+            "/v1/engine/team-drafts",
+            json={"name": "d", "manifest": {"metadata": {"kind": "team"}}},
+        )
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    assert body["draft"]["id"] == str(row.id) and body["draft"]["version"] == 1
+    assert body["would_block"] is True
+    assert body["blocking"] == ["F-CAPABILITY-MISSING: x"]
+    assert body["report"] == "rendered dry-run"
+
+
+async def test_list_returns_team_drafts_total_and_forwards_pagination() -> None:
+    calls: list[dict[str, int]] = []
+
+    class _Svc:
+        async def list_for_org(
+            self, principal: Principal, *, limit: int = 50, offset: int = 0
+        ) -> tuple[list[dict[str, Any]], int]:
+            calls.append({"limit": limit, "offset": offset})
+            return [
+                {
+                    "id": uuid.uuid4(),
+                    "name": "d1",
+                    "version": 3,
+                    "member_count": 4,
+                    "created_at": None,
+                    "updated_at": None,
+                }
+            ], 9
+
+    async with _client(_Svc()) as c:
+        body = (await c.get("/v1/engine/team-drafts?limit=2&offset=5")).json()
+    assert calls == [{"limit": 2, "offset": 5}]
+    assert body["total"] == 9 and len(body["team_drafts"]) == 1
+    item = body["team_drafts"][0]
+    assert item["version"] == 3 and item["member_count"] == 4
+    # a table row, NOT the document — the heavy fields never appear
+    for forbidden in ("manifest", "sub_harnesses"):
+        assert forbidden not in item
+
+
+async def test_team_run_error_maps_to_its_status_not_a_500() -> None:
+    class _Svc:
+        async def get(self, draft_id: uuid.UUID, principal: Principal) -> Any:
+            raise TeamRunError("team draft not found", 404)
+
+    async with _client(_Svc()) as c:
+        resp = await c.get(f"/v1/engine/team-drafts/{uuid.uuid4()}")
+    assert resp.status_code == 404
+    assert resp.json()["detail"] == "team draft not found"
+
+
+async def test_422_carries_the_leak_safe_machine_token() -> None:
+    class _Svc:
+        async def create(self, principal: Principal, **kw: Any) -> Any:
+            raise TeamRunError("manifest is not a Team Harness", 422, error_type="not_a_team")
+
+    async with _client(_Svc()) as c:
+        resp = await c.post(
+            "/v1/engine/team-drafts", json={"name": "d", "manifest": {"kind": "nope"}}
+        )
+    assert resp.status_code == 422
+    detail = resp.json()["detail"]
+    assert detail[0]["type"] == "not_a_team"  # the #483 structured shape
+
+
+async def test_delete_returns_204() -> None:
+    class _Svc:
+        async def delete(self, draft_id: uuid.UUID, principal: Principal) -> None:
+            return None
+
+    async with _client(_Svc()) as c:
+        resp = await c.delete(f"/v1/engine/team-drafts/{uuid.uuid4()}")
+    assert resp.status_code == 204 and resp.content == b""
