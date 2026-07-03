@@ -42,6 +42,19 @@ _PROXIED_OUT_OF_SCOPE = {
     "listJobs",
     "listTasks",
     "listDocuments",  # #579: a KGS-proxied ingest-job list — bounding is KGS's job, not the edge
+    # #505: the 2026-07-03 contract fill published the remaining live upstream-proxied
+    # collections (auth-service, KGS, KRS, engine, harness). Same class as the entries above:
+    # bounding each is the owning service's job, not a gateway edge change.
+    "listOrgs",
+    "listOrgMembers",
+    "listOrgInvitations",
+    "listCommunities",
+    "listRecipeTemplates",
+    "listArtifacts",
+    "listActivity",
+    "listScheduleRuns",
+    "listScheduleTeamRuns",
+    "listAssignments",
 }
 
 
