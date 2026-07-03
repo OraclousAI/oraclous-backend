@@ -4,7 +4,7 @@ The #635 draft store end-to-end on the substrate it ships on: the REAL ``TeamDra
 ``TeamDraftRepository`` on the NOSUPERUSER ``oraclous_app`` org-bound engine (the GUC guard
 installed by default), wired exactly as ``get_team_draft_service`` wires it in deployment. Proven
 HERE: a draft PERSISTS with its validator verdict, READS BACK under the request-bound org,
-version-bumps on replace, and is ISOLATED across orgs by the RLS policy on
+version-bumps on replace/refine, and is ISOLATED across orgs by the RLS policy on
 ``engine_team_drafts`` (a second org sees ZERO drafts; a cross-org read/replace/delete is a 404).
 """
 
@@ -103,9 +103,17 @@ async def test_draft_persists_reads_back_and_version_bumps_on_org_bound_engine(
     )
     assert replaced.version == 2 and replaced.name == "draft-a2"
 
+    outcome = await team_draft_service.refine(
+        row.id,
+        _principal(ORG_A, USER_A),
+        edit_op={"op": "add_member", "role": "fact-checker", "depends_on": ["researcher"]},
+    )
+    assert outcome.applied is True and outcome.row.version == 3
+    assert "fact-checker" in outcome.row.sub_harnesses  # synthesized + persisted
+
     rows, total = await team_draft_service.list_for_org(_principal(ORG_A, USER_A))
     assert total == 1 and rows[0]["name"] == "draft-a2"
-    assert rows[0]["member_count"] == 1  # dug out of manifest.members at query time
+    assert rows[0]["member_count"] == 2  # researcher + fact-checker, dug at query time
     assert "manifest" not in rows[0]  # the list row is LEAN
 
 
@@ -129,7 +137,7 @@ async def test_cross_org_read_replace_delete_are_404(
         manifest=_team(ORG_A, ["researcher"]),
         sub_harnesses={},
     )
-    for attempt in ("get", "replace", "delete"):
+    for attempt in ("get", "replace", "delete", "refine"):
         with pytest.raises(TeamRunError) as exc:
             if attempt == "get":
                 await team_draft_service.get(row.id, _principal(ORG_B, USER_B))
@@ -141,8 +149,14 @@ async def test_cross_org_read_replace_delete_are_404(
                     manifest=_team(ORG_B, ["x"]),
                     sub_harnesses={},
                 )
-            else:
+            elif attempt == "delete":
                 await team_draft_service.delete(row.id, _principal(ORG_B, USER_B))
+            else:
+                await team_draft_service.refine(
+                    row.id,
+                    _principal(ORG_B, USER_B),
+                    edit_op={"op": "add_member", "role": "y"},
+                )
         assert exc.value.status_code == 404  # invisible, never a 403
 
     # org A's draft is untouched by every cross-org attempt

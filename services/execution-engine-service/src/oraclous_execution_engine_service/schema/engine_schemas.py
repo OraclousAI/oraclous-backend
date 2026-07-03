@@ -608,6 +608,37 @@ class TeamDraftFromRunRequest(BaseModel):
     name: str | None = Field(default=None, max_length=256)
 
 
+class RefineTeamDraftRequest(BaseModel):
+    """Apply ONE typed refine op (#595 vocabulary: add_member | set_fan_out | change_kind |
+    add_depends_on) to a draft via ``apply_refine`` — preserve-the-rest guaranteed server-side. A
+    blocked op (e.g. an unsurveyed tool) returns ``applied: false`` with the draft untouched.
+    ``dry_run`` validates without persisting (the preview path refine-nl hands back to)."""
+
+    edit_op: dict[str, Any]
+    dry_run: bool = False
+
+
+class RefineTeamDraftNlRequest(BaseModel):
+    """NL refine (#595): EITHER an ``instruction`` (+ the caller's BYOM ``models[]`` — the
+    op-drafter is a real LLM member) to draft a new op, OR an ``op_drafter_run_id`` from a prior
+    202 to collect a still-driving draft. ``dry_run`` returns the typed op + verdict WITHOUT
+    applying, so the console can preview the structural change before ``refine`` applies it."""
+
+    instruction: str | None = Field(default=None, min_length=1, max_length=4000)
+    models: list[dict[str, Any]] = Field(default_factory=list)
+    op_drafter_run_id: uuid.UUID | None = None
+    dry_run: bool = False
+
+    @model_validator(mode="after")
+    def _one_of_instruction_or_run(self) -> RefineTeamDraftNlRequest:
+        if (self.instruction is None) == (self.op_drafter_run_id is None):
+            raise ValueError(
+                "supply exactly one of 'instruction' (draft a new op) or"
+                " 'op_drafter_run_id' (collect a prior draft)"
+            )
+        return self
+
+
 class TeamDraftOut(BaseModel):
     """One stored team draft — the full editable document (manifest + sub_harnesses + version)."""
 
@@ -667,6 +698,29 @@ class TeamDraftListOut(BaseModel):
 
     team_drafts: list[TeamDraftListItem]
     total: int
+
+
+class RefineTeamDraftOut(BaseModel):
+    """A refine's outcome: the typed ``op`` that was applied (or rejected — returned so the
+    console can render the structural preview), ``applied`` (false = the draft is untouched:
+    blocked op OR dry_run), the shared validator's verdict, and the (possibly unchanged) draft.
+    ``op_drafter_run_id`` is set on the NL path so the drafter run stays auditable."""
+
+    op: dict[str, Any]
+    applied: bool
+    would_block: bool
+    blocking: list[str] = Field(default_factory=list)
+    report: str = ""
+    draft: TeamDraftOut
+    op_drafter_run_id: uuid.UUID | None = None
+
+
+class RefineTeamDraftNlPendingOut(BaseModel):
+    """refine-nl's 202 body: the op-drafter run is still driving — re-call refine-nl with this
+    ``op_drafter_run_id`` to collect (or watch the run via the team-run reads)."""
+
+    op_drafter_run_id: uuid.UUID
+    status: str = "running"
 
 
 class CreateCompilerRunRequest(BaseModel):

@@ -1,9 +1,11 @@
 """Team-draft routes (routes layer) — parse → ONE service call → HTTP map. #635 (C-1).
 
-The draft store's HTTP surface: CRUD, every write embedding the shared validator's verdict. GO
-stays ``POST /v1/engine/team-runs`` with the draft's documents — a draft never executes. NOTE:
-the two static collection paths (``/team-drafts`` and ``/team-drafts/from-run``) are registered
-BEFORE ``/team-drafts/{team_draft_id}`` so neither is captured as an id.
+The compile → review → refine loop's HTTP surface: the draft store (CRUD, every write embedding
+the shared validator's verdict), draft-from-run (peel a SUCCEEDED compiler run's reviewer JSON
+into a draft), and refine / refine-nl (ONE typed op, applied server-side with preserve-the-rest
+guaranteed). GO stays ``POST /v1/engine/team-runs`` with the draft's documents — a draft never
+executes. NOTE: the two static collection paths (``/team-drafts`` and ``/team-drafts/from-run``)
+are registered BEFORE ``/team-drafts/{team_draft_id}`` so neither is captured as an id.
 """
 
 from __future__ import annotations
@@ -12,6 +14,7 @@ import uuid
 from typing import Annotated
 
 from fastapi import APIRouter, HTTPException, Query, Response, status
+from fastapi.responses import JSONResponse
 
 from oraclous_execution_engine_service.core.dependencies import (
     PrincipalDep,
@@ -19,13 +22,21 @@ from oraclous_execution_engine_service.core.dependencies import (
 )
 from oraclous_execution_engine_service.schema.engine_schemas import (
     CreateTeamDraftRequest,
+    RefineTeamDraftNlPendingOut,
+    RefineTeamDraftNlRequest,
+    RefineTeamDraftOut,
+    RefineTeamDraftRequest,
     TeamDraftEnvelope,
     TeamDraftFromRunRequest,
     TeamDraftListItem,
     TeamDraftListOut,
     TeamDraftOut,
 )
-from oraclous_execution_engine_service.services.team_draft_service import DraftVerdict
+from oraclous_execution_engine_service.services.team_draft_service import (
+    DraftVerdict,
+    PendingOpDraft,
+    RefineOutcome,
+)
 from oraclous_execution_engine_service.services.team_run_service import TeamRunError
 
 router = APIRouter(prefix="/v1/engine", tags=["engine-team-drafts"])
@@ -48,6 +59,18 @@ def _envelope(row: object, verdict: DraftVerdict) -> TeamDraftEnvelope:
         would_block=verdict.would_block,
         blocking=verdict.blocking,
         report=verdict.report,
+    )
+
+
+def _refine_out(outcome: RefineOutcome) -> RefineTeamDraftOut:
+    return RefineTeamDraftOut(
+        op=outcome.op,
+        applied=outcome.applied,
+        would_block=outcome.verdict.would_block,
+        blocking=outcome.verdict.blocking,
+        report=outcome.verdict.report,
+        draft=TeamDraftOut.model_validate(outcome.row),
+        op_drafter_run_id=outcome.op_drafter_run_id,
     )
 
 
@@ -144,3 +167,62 @@ async def delete_team_draft(
     except TeamRunError as exc:
         raise _http(exc) from exc
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.post("/team-drafts/{team_draft_id}/refine", response_model=RefineTeamDraftOut)
+async def refine_team_draft(
+    team_draft_id: uuid.UUID,
+    body: RefineTeamDraftRequest,
+    principal: PrincipalDep,
+    service: TeamDraftServiceDep,
+) -> RefineTeamDraftOut:
+    """Apply ONE typed op (``apply_refine``, preserve-the-rest guaranteed) + re-validate +
+    version-bump. A blocked op → ``applied: false``, draft untouched. ``dry_run`` previews."""
+    try:
+        outcome = await service.refine(
+            team_draft_id, principal, edit_op=body.edit_op, dry_run=body.dry_run
+        )
+    except TeamRunError as exc:
+        raise _http(exc) from exc
+    return _refine_out(outcome)
+
+
+@router.post(
+    "/team-drafts/{team_draft_id}/refine-nl",
+    response_model=RefineTeamDraftOut,
+    responses={
+        202: {
+            "model": RefineTeamDraftNlPendingOut,
+            "description": "The op-drafter run is still driving — re-call with its"
+            " op_drafter_run_id to collect.",
+        }
+    },
+)
+async def refine_team_draft_nl(
+    team_draft_id: uuid.UUID,
+    body: RefineTeamDraftNlRequest,
+    principal: PrincipalDep,
+    service: TeamDraftServiceDep,
+) -> RefineTeamDraftOut | JSONResponse:
+    """NL refine (#595): the op-drafter (a one-member team run, the caller's BYOM models bound)
+    turns the instruction into ONE typed op, then the same apply path as ``refine``. Polls the
+    drafter only up to a budget under the gateway's upstream read timeout — a slower draft
+    returns 202 + ``op_drafter_run_id``; re-call with that id to collect. ``dry_run`` returns
+    the op + verdict without applying."""
+    try:
+        outcome = await service.refine_nl(
+            team_draft_id,
+            principal,
+            instruction=body.instruction,
+            models=body.models,
+            op_drafter_run_id=body.op_drafter_run_id,
+            dry_run=body.dry_run,
+        )
+    except TeamRunError as exc:
+        raise _http(exc) from exc
+    if isinstance(outcome, PendingOpDraft):
+        pending = RefineTeamDraftNlPendingOut(op_drafter_run_id=outcome.op_drafter_run_id)
+        return JSONResponse(
+            status_code=status.HTTP_202_ACCEPTED, content=pending.model_dump(mode="json")
+        )
+    return _refine_out(outcome)

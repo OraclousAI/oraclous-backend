@@ -48,6 +48,12 @@ class Settings(BaseSettings):
     # the row's own org bound (org_scope), so only the cross-org READ uses this engine.
     maintenance_database_url: str | None = None
 
+    # --- #635 refine-nl: the op-drafter is a real LLM team-run the request path polls. The
+    # budget stays UNDER the gateway's upstream read timeout (30s) so a slow draft returns a
+    # clean 202 + op_drafter_run_id (collected on a follow-up call), never a gateway 504. ---
+    refine_nl_poll_seconds: float = 25.0
+    refine_nl_poll_interval_seconds: float = 2.0
+
     # --- Postgres RLS backstop (ADR-030 / #353) ---
     # When true, the service asserts at startup (web lifespan) AND the worker asserts at
     # worker_process_init that the ORG-BOUND runtime DB role is NOSUPERUSER/NOBYPASSRLS (a bypassing

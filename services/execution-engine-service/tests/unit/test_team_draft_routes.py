@@ -1,8 +1,9 @@
-"""Team-draft routes (#635) — unit, fake services via dependency_overrides, no DB.
+"""Team-draft + compiler-run routes (#635) — unit, fake services via dependency_overrides, no DB.
 
 Pins the edge contract: the ``{draft, would_block, blocking, report}`` write envelope, the
-``{team_drafts, total}`` list shape with a LEAN row, limit/offset forwarding, the structured 422
-(leak-safe machine token) and 404 mappings, and DELETE 204.
+``{team_drafts, total}`` list shape with a LEAN row, limit/offset forwarding, the static
+``/team-drafts/from-run`` path NOT being captured as an id, the structured 422 (leak-safe machine
+token) and 404 mappings, DELETE 204, refine-nl's 200-vs-202 split, and the compiler-run 202.
 """
 
 from __future__ import annotations
@@ -18,7 +19,11 @@ from oraclous_execution_engine_service.core.dependencies import (
     get_principal,
     get_team_draft_service,
 )
-from oraclous_execution_engine_service.services.team_draft_service import DraftVerdict
+from oraclous_execution_engine_service.services.team_draft_service import (
+    DraftVerdict,
+    PendingOpDraft,
+    RefineOutcome,
+)
 from oraclous_execution_engine_service.services.team_run_service import TeamRunError
 from oraclous_governance import Principal, PrincipalType
 
@@ -137,16 +142,18 @@ async def test_team_run_error_maps_to_its_status_not_a_500() -> None:
 
 async def test_422_carries_the_leak_safe_machine_token() -> None:
     class _Svc:
-        async def create(self, principal: Principal, **kw: Any) -> Any:
-            raise TeamRunError("manifest is not a Team Harness", 422, error_type="not_a_team")
+        async def create_from_run(self, principal: Principal, **kw: Any) -> Any:
+            raise TeamRunError(
+                "only a SUCCEEDED run can seed a draft", 422, error_type="run_not_succeeded"
+            )
 
     async with _client(_Svc()) as c:
         resp = await c.post(
-            "/v1/engine/team-drafts", json={"name": "d", "manifest": {"kind": "nope"}}
+            "/v1/engine/team-drafts/from-run", json={"team_run_id": str(uuid.uuid4())}
         )
     assert resp.status_code == 422
     detail = resp.json()["detail"]
-    assert detail[0]["type"] == "not_a_team"  # the #483 structured shape
+    assert detail[0]["type"] == "run_not_succeeded"  # the #483 structured shape
 
 
 async def test_delete_returns_204() -> None:
@@ -157,6 +164,61 @@ async def test_delete_returns_204() -> None:
     async with _client(_Svc()) as c:
         resp = await c.delete(f"/v1/engine/team-drafts/{uuid.uuid4()}")
     assert resp.status_code == 204 and resp.content == b""
+
+
+async def test_refine_returns_the_op_applied_verdict_draft_shape() -> None:
+    row = _Row(version=2)
+
+    class _Svc:
+        async def refine(
+            self,
+            draft_id: uuid.UUID,
+            principal: Principal,
+            *,
+            edit_op: dict[str, Any],
+            dry_run: bool = False,
+        ) -> RefineOutcome:
+            return RefineOutcome(row=row, verdict=_verdict(), applied=True, op=edit_op)
+
+    async with _client(_Svc()) as c:
+        resp = await c.post(
+            f"/v1/engine/team-drafts/{uuid.uuid4()}/refine",
+            json={"edit_op": {"op": "add_member", "role": "x"}},
+        )
+    body = resp.json()
+    assert resp.status_code == 200
+    assert body["applied"] is True and body["op"] == {"op": "add_member", "role": "x"}
+    assert body["draft"]["version"] == 2
+
+
+async def test_refine_nl_pending_returns_202_with_the_run_id() -> None:
+    run_id = uuid.uuid4()
+
+    class _Svc:
+        async def refine_nl(self, draft_id: uuid.UUID, principal: Principal, **kw: Any) -> Any:
+            return PendingOpDraft(run_id)
+
+    async with _client(_Svc()) as c:
+        resp = await c.post(
+            f"/v1/engine/team-drafts/{uuid.uuid4()}/refine-nl",
+            json={"instruction": "add a fact-checker", "models": [{"role": "primary"}]},
+        )
+    assert resp.status_code == 202
+    assert resp.json() == {"op_drafter_run_id": str(run_id), "status": "running"}
+
+
+async def test_refine_nl_requires_exactly_one_of_instruction_or_run_id() -> None:
+    async with _client(object()) as c:
+        both = await c.post(
+            f"/v1/engine/team-drafts/{uuid.uuid4()}/refine-nl",
+            json={
+                "instruction": "x",
+                "op_drafter_run_id": str(uuid.uuid4()),
+                "models": [{}],
+            },
+        )
+        neither = await c.post(f"/v1/engine/team-drafts/{uuid.uuid4()}/refine-nl", json={})
+    assert both.status_code == 422 and neither.status_code == 422
 
 
 async def test_compiler_run_returns_202_with_the_queued_run() -> None:

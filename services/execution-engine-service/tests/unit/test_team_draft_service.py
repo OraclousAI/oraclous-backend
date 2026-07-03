@@ -1,8 +1,10 @@
 """TeamDraftService (#635) — unit, fake repositories, no DB.
 
-Pins the store's service contract (the shared-validator verdict on every write, the
-born-bounded list clamp, version semantics, the fail-closed org/404 edges) and the from-run
-peel — each ineligible shape a curated 422, NOTHING persisted.
+Pins the service contract of the draft loop: the shared-validator verdict embedded on every
+write, the born-bounded list clamp, the from-run peel (each ineligible shape a curated 422,
+NOTHING persisted), refine's preserve-the-rest apply vs blocked-op untouched, and refine-nl's
+draft → peel → apply path including the 202-pending budget. The op-drafter run is faked at the
+``TeamRunService`` seam (create/get) — the REAL LLM path is the gateway e2e's job.
 """
 
 from __future__ import annotations
@@ -11,7 +13,11 @@ import uuid
 from typing import Any
 
 import pytest
-from oraclous_execution_engine_service.services.team_draft_service import TeamDraftService
+from oraclous_execution_engine_service.services.team_draft_service import (
+    PendingOpDraft,
+    RefineOutcome,
+    TeamDraftService,
+)
 from oraclous_execution_engine_service.services.team_run_service import TeamRunError
 from oraclous_governance import Principal, PrincipalType
 
@@ -119,10 +125,17 @@ class _FakeDraftRepo:
 
 
 class _RunRow:
-    def __init__(self, state: str, results: dict[str, Any] | None = None) -> None:
+    def __init__(
+        self,
+        state: str,
+        results: dict[str, Any] | None = None,
+        manifest: dict[str, Any] | None = None,
+    ) -> None:
         self.id = uuid.uuid4()
         self.state = state
         self.results = results or {}
+        # the collect token's identity check reads the run's manifest name
+        self.manifest = manifest or {"metadata": {"name": "refine-op-drafter"}}
 
 
 class _FakeTeamRuns:
@@ -132,8 +145,13 @@ class _FakeTeamRuns:
         self.runs: dict[uuid.UUID, _RunRow] = {}
         self.created: list[dict[str, Any]] = []
 
-    def seed(self, state: str, results: dict[str, Any] | None = None) -> _RunRow:
-        row = _RunRow(state, results)
+    def seed(
+        self,
+        state: str,
+        results: dict[str, Any] | None = None,
+        manifest: dict[str, Any] | None = None,
+    ) -> _RunRow:
+        row = _RunRow(state, results, manifest)
         self.runs[row.id] = row
         return row
 
@@ -166,6 +184,8 @@ def _service(
     svc = TeamDraftService(
         drafts=repo,  # type: ignore[arg-type] — the seam is duck-typed in unit tests
         team_runs=team_runs,  # type: ignore[arg-type]
+        refine_nl_poll_seconds=0.2,
+        refine_nl_poll_interval_seconds=0.01,
     )
     return svc, repo, team_runs
 
@@ -307,3 +327,190 @@ async def test_from_run_ineligible_shapes_are_curated_422s(
         await svc.create_from_run(_principal(), team_run_id=run.id)
     assert exc.value.status_code == 422
     assert not repo.rows  # NOTHING persisted on any ineligible shape
+
+
+# ── refine: typed op, preserve-the-rest vs blocked-untouched ─────────────────
+
+
+async def test_refine_applies_a_valid_op_and_bumps_version() -> None:
+    svc, _repo, _ = _service()
+    row, _ = await svc.create(
+        _principal(), name="d", manifest=_team([_member("a")]), sub_harnesses={}
+    )
+    outcome = await svc.refine(
+        row.id,
+        _principal(),
+        edit_op={"op": "add_member", "role": "fact-checker", "depends_on": ["a"]},
+    )
+    assert isinstance(outcome, RefineOutcome)
+    assert outcome.applied is True and outcome.verdict.would_block is False
+    assert outcome.row.version == 2
+    roles = [m["role"] for m in outcome.row.manifest["members"]]
+    assert roles == ["a", "fact-checker"]  # preserve-the-rest: 'a' untouched, in place
+    assert "fact-checker" in outcome.row.sub_harnesses  # synthesized for the new member
+
+
+async def test_refine_blocked_op_leaves_the_draft_untouched() -> None:
+    svc, _repo, _ = _service()
+    row, _ = await svc.create(
+        _principal(), name="d", manifest=_team([_member("a")]), sub_harnesses={}
+    )
+    outcome = await svc.refine(
+        row.id,
+        _principal(),
+        edit_op={"op": "add_member", "role": "rogue", "tools": ["not-surveyed-anywhere"]},
+    )
+    assert outcome.applied is False and outcome.verdict.would_block is True
+    assert outcome.row.version == 1  # untouched
+    assert [m["role"] for m in outcome.row.manifest["members"]] == ["a"]
+
+
+async def test_refine_dry_run_validates_without_persisting() -> None:
+    svc, _repo, _ = _service()
+    row, _ = await svc.create(
+        _principal(), name="d", manifest=_team([_member("a")]), sub_harnesses={}
+    )
+    outcome = await svc.refine(
+        row.id,
+        _principal(),
+        edit_op={"op": "add_member", "role": "b", "depends_on": ["a"]},
+        dry_run=True,
+    )
+    assert outcome.applied is False and outcome.verdict.would_block is False
+    assert outcome.row.version == 1  # previewed, not persisted
+
+
+async def test_refine_malformed_op_is_a_422() -> None:
+    svc, _repo, _ = _service()
+    row, _ = await svc.create(
+        _principal(), name="d", manifest=_team([_member("a")]), sub_harnesses={}
+    )
+    with pytest.raises(TeamRunError) as exc:
+        await svc.refine(row.id, _principal(), edit_op={"op": "explode_the_team"})
+    assert exc.value.status_code == 422
+
+
+# ── refine-nl: draft (op-drafter run) → peel → same apply path ───────────────
+
+
+async def test_refine_nl_drafts_an_op_through_the_team_run_path_and_applies_it() -> None:
+    svc, _repo, team_runs = _service()
+    row, _ = await svc.create(
+        _principal(),
+        name="d",
+        manifest=_team([_member("a"), _member("b", ["a"])]),
+        sub_harnesses={},
+    )
+    # remove b's dep so the drafted add_depends_on op applies cleanly
+    outcome = await svc.refine_nl(
+        row.id,
+        _principal(),
+        instruction="make b depend on a",
+        models=[
+            {
+                "role": "primary",
+                "binding": "openrouter/x",
+                "protocol_shape": "openai-compatible",
+                "config": {"credential_id": "c1"},
+            }
+        ],
+    )
+    assert isinstance(outcome, RefineOutcome)
+    # the op-drafter was submitted through the SAME create path, models bound on doc + sub
+    submitted = team_runs.created[0]
+    assert submitted["manifest"]["models"][0]["config"]["credential_id"] == "c1"
+    assert submitted["sub_harnesses"]["op-drafter"]["models"][0]["binding"] == "openrouter/x"
+    # the drafter's subgoal carries the CURRENT manifest + the surveyed catalog + the edit ask
+    subgoal = submitted["manifest"]["members"][0]["subgoal"]
+    assert "CURRENT TEAM MANIFEST" in subgoal and "make b depend on a" in subgoal
+    assert outcome.op == {"op": "add_depends_on", "role": "b", "depends_on": "a"}
+    assert outcome.op_drafter_run_id is not None
+
+
+async def test_refine_nl_missing_models_is_a_422() -> None:
+    svc, _repo, _ = _service()
+    row, _ = await svc.create(
+        _principal(), name="d", manifest=_team([_member("a")]), sub_harnesses={}
+    )
+    with pytest.raises(TeamRunError) as exc:
+        await svc.refine_nl(row.id, _principal(), instruction="add a member", models=[])
+    assert exc.value.status_code == 422
+
+
+async def test_refine_nl_returns_pending_when_the_drafter_outruns_the_budget() -> None:
+    svc, _repo, team_runs = _service()
+    row, _ = await svc.create(
+        _principal(), name="d", manifest=_team([_member("a")]), sub_harnesses={}
+    )
+    still_running = team_runs.seed("RUNNING")
+    outcome = await svc.refine_nl(row.id, _principal(), op_drafter_run_id=still_running.id)
+    assert isinstance(outcome, PendingOpDraft)
+    assert outcome.op_drafter_run_id == still_running.id
+
+
+async def test_refine_nl_collects_a_settled_drafter_run_by_id() -> None:
+    svc, _repo, team_runs = _service()
+    row, _ = await svc.create(
+        _principal(),
+        name="d",
+        manifest=_team([_member("a"), _member("b")]),
+        sub_harnesses={},
+    )
+    settled = team_runs.seed(
+        "SUCCEEDED",
+        {"op-drafter": {"output": '{"op": "add_depends_on", "role": "b", "depends_on": "a"}'}},
+    )
+    outcome = await svc.refine_nl(row.id, _principal(), op_drafter_run_id=settled.id, dry_run=True)
+    assert isinstance(outcome, RefineOutcome)
+    assert outcome.applied is False  # dry_run previews
+    assert outcome.verdict.would_block is False
+    assert outcome.row.version == 1
+
+
+async def test_refine_nl_failed_drafter_run_is_a_422() -> None:
+    svc, _repo, team_runs = _service()
+    row, _ = await svc.create(
+        _principal(), name="d", manifest=_team([_member("a")]), sub_harnesses={}
+    )
+    failed = team_runs.seed("FAILED")
+    with pytest.raises(TeamRunError) as exc:
+        await svc.refine_nl(row.id, _principal(), op_drafter_run_id=failed.id)
+    assert exc.value.status_code == 422
+
+
+async def test_refine_nl_collect_rejects_a_non_op_drafter_run() -> None:
+    # fail-closed on run identity: an arbitrary same-org run id (e.g. a compiler run) is a
+    # curated 422 on the FIRST read — never a burned poll budget + a misleading peel error.
+    svc, _repo, team_runs = _service()
+    row, _ = await svc.create(
+        _principal(), name="d", manifest=_team([_member("a")]), sub_harnesses={}
+    )
+    imposter = team_runs.seed("RUNNING", manifest={"metadata": {"name": "harness-compiler"}})
+    with pytest.raises(TeamRunError) as exc:
+        await svc.refine_nl(row.id, _principal(), op_drafter_run_id=imposter.id)
+    assert exc.value.status_code == 422
+    assert exc.value.error_type == "not_an_op_drafter_run"
+
+
+async def test_refine_nl_applies_to_the_current_document_not_a_pre_poll_snapshot() -> None:
+    # a concurrent PUT landing while the drafter runs must NOT be clobbered by a stale apply
+    svc, repo, team_runs = _service()
+    row, _ = await svc.create(
+        _principal(), name="d", manifest=_team([_member("a"), _member("b")]), sub_harnesses={}
+    )
+    settled = team_runs.seed(
+        "SUCCEEDED",
+        {"op-drafter": {"output": '{"op": "add_depends_on", "role": "b", "depends_on": "a"}'}},
+    )
+    # simulate the concurrent edit: rename via PUT before the collect call applies the op
+    await svc.replace(
+        row.id,
+        _principal(),
+        name="renamed-mid-poll",
+        manifest=_team([_member("a"), _member("b")]),
+        sub_harnesses={},
+    )
+    outcome = await svc.refine_nl(row.id, _principal(), op_drafter_run_id=settled.id)
+    assert isinstance(outcome, RefineOutcome) and outcome.applied is True
+    assert outcome.row.name == "renamed-mid-poll"  # the mid-poll edit survives
+    assert outcome.row.version == 3  # v1 create → v2 PUT → v3 refine apply
