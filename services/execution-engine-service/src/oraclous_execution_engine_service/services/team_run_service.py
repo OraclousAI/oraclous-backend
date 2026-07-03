@@ -20,7 +20,7 @@ import json
 import os
 import re
 import uuid
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -83,6 +83,10 @@ _STATUS_TO_STATE = {
     # halt (like the max_wall deadline), healthy, whose "budget_skipped" members are un-attempted.
     "cost_budget": "COST_BUDGET",
 }
+
+# #633: the org-scoped team-run LIST page bounds — server-side, so no single read is unbounded.
+_DEFAULT_LIST_LIMIT = 50
+_MAX_LIST_LIMIT = 200
 
 # (team_run_id, organisation_id, user_id) -> None — hands a QUEUED run to the worker (broker).
 EnqueueFn = Callable[[uuid.UUID, uuid.UUID, uuid.UUID], None]
@@ -709,6 +713,29 @@ class TeamRunService:
             last_outcome=row.state,
             cost_tokens=int(row.cost_tokens or 0),
         )
+
+    async def list_for_org(
+        self,
+        principal: Principal,
+        *,
+        states: Sequence[str] | None = None,
+        limit: int = _DEFAULT_LIST_LIMIT,
+        offset: int = 0,
+    ) -> tuple[list[dict[str, Any]], int]:
+        """#633: the org's team runs (newest-first), optionally filtered to ``states``, paginated —
+        the org-scoped LIST behind the Runs page (J6) + the Approvals inbox (J7, ``state=PAUSED``).
+        Org from the authenticated principal ONLY (``_org`` — a principal with no org is a 403); the
+        repo read binds the org-GUC (``org_scope``) so the RLS backstop scopes it to this tenant (a
+        cross-org run is INVISIBLE, never a 403). Bounds are clamped server-side — ``limit`` into
+        ``[1, 200]`` (default 50), ``offset`` to ``>= 0`` — so no single read is unbounded. Returns
+        ``(page_rows, total)`` where ``total`` is the FULL matching count (for pagination)."""
+        org = self._org(principal)
+        bounded_limit = max(1, min(int(limit), _MAX_LIST_LIMIT))
+        bounded_offset = max(0, int(offset))
+        with org_scope(org):
+            return await self._team_runs.list_for_org(
+                org, states=states, limit=bounded_limit, offset=bounded_offset
+            )
 
     # ── #604 closed-loop verdict-consumption (ADR-048 decision 5) ─────────────────────────────────
     async def _consume_verdict(

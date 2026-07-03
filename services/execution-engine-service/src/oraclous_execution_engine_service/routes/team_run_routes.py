@@ -12,15 +12,19 @@ run and re-drives past it.
 from __future__ import annotations
 
 import uuid
+from typing import Annotated
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, Query, status
 
 from oraclous_execution_engine_service.core.dependencies import PrincipalDep, TeamRunServiceDep
 from oraclous_execution_engine_service.schema.engine_schemas import (
     AdvanceTeamRunRequest,
     CreateTeamRunRequest,
     TeamRunCost,
+    TeamRunListItem,
+    TeamRunListOut,
     TeamRunOut,
+    TeamRunStateFilter,
     TeamRunStatusOut,
     TeamRunTreeOut,
 )
@@ -64,6 +68,29 @@ async def create_team_run(
     except TeamRunError as exc:
         raise _http(exc) from exc
     return TeamRunOut.model_validate(row)
+
+
+@router.get("/team-runs", response_model=TeamRunListOut)
+async def list_team_runs(
+    principal: PrincipalDep,
+    service: TeamRunServiceDep,
+    state: Annotated[list[TeamRunStateFilter] | None, Query()] = None,
+    limit: Annotated[int, Query()] = 50,
+    offset: Annotated[int, Query()] = 0,
+) -> TeamRunListOut:
+    """#633: the org's team runs, newest-first, filterable by ``state`` (repeatable — an unknown
+    value is a 422, enforced natively by the enum) and paginated (``limit`` default 50 / max 200,
+    ``offset`` default 0 — both clamped server-side). REGISTERED BEFORE ``/team-runs/{team_run_id}``
+    so the bare collection path is never captured as an id. Org-scoped from the gateway-asserted
+    principal: a cross-org run is invisible (absent from the page), never a 403."""
+    states = [s.value for s in state] if state else None
+    try:
+        rows, total = await service.list_for_org(
+            principal, states=states, limit=limit, offset=offset
+        )
+    except TeamRunError as exc:  # e.g. a principal with no org → the contracted 403, not a 500
+        raise _http(exc) from exc
+    return TeamRunListOut(team_runs=[TeamRunListItem.model_validate(r) for r in rows], total=total)
 
 
 @router.get("/team-runs/{team_run_id}", response_model=TeamRunOut)
