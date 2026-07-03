@@ -209,14 +209,58 @@ async def test_an_unsafe_repo_base_is_egress_blocked(monkeypatch: pytest.MonkeyP
     """The sink takes an attacker-influenceable host surface → the egress SSRF gate guards it."""
     import oraclous_capability_registry_service.domain.connectors.github_sink as sink_mod
 
-    async def _deny(_url: str) -> bool:
-        return False
+    async def _deny(_url: str) -> str | None:  # #492: egress_allowed returns the pinned IP or None
+        return None
 
     monkeypatch.setattr(sink_mod, "egress_allowed", _deny, raising=False)
     res = await _sink(lambda _r: httpx.Response(200, json={})).execute(
         _deliver([{"path": "a.md", "content": "x"}]), _ctx()
     )
     assert not res.success and res.error_type == "UNSAFE_URL"
+
+
+async def test_the_sink_dials_the_pinned_ip_and_preserves_host_and_sni(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # #492 (review HIGH): the deliver-back connector must CONNECT to the resolved+vetted IP while
+    # the Host header + TLS SNI stay the forge hostname — so a low-TTL rebind cannot re-point the
+    # dial at an internal host between the vet and the connect. Every request in the multi-call
+    # sequence must hit the pinned IP (never re-resolve the name).
+    import oraclous_capability_registry_service.domain.connectors.github_sink as sink_mod
+
+    async def _pin(_url: str) -> str | None:
+        return "93.184.216.34"  # the pinned vetted IP for the forge hostname
+
+    monkeypatch.setattr(sink_mod, "egress_allowed", _pin, raising=False)
+    dialed: list[tuple[str, str | None, str | None]] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        dialed.append((req.url.host, req.headers.get("host"), req.extensions.get("sni_hostname")))
+        p, m = req.url.path, req.method
+        if m == "POST" and p.endswith("/git/refs"):
+            return httpx.Response(201, json={"ref": "refs/heads/deliver"})
+        if m == "GET" and "/git/ref/heads/" in p:
+            return httpx.Response(200, json={"object": {"sha": "basesha"}})
+        if m == "GET" and "/contents/" in p:
+            return httpx.Response(404, json={"message": "Not Found"})
+        if m in ("PUT", "POST") and "/contents/" in p:
+            return httpx.Response(201, json={"commit": {"sha": "c"}})
+        if m == "POST" and p.endswith("/pulls"):
+            return httpx.Response(201, json={"html_url": "https://forge/pr/1"})
+        return httpx.Response(404, json={"message": "not found"})
+
+    ctx = _ctx()
+    ctx.configuration["base_url"] = "https://forge.example.com"  # a hostname → must be pinned
+    res = await _sink(handler).execute(_deliver([{"path": "a.md", "content": "x"}]), ctx)
+    assert res.success, res.error_message
+    assert dialed, "the connector made no forge call"
+    # EVERY call dialed the pinned IP; Host + SNI stayed the original forge hostname
+    for host, host_header, sni in dialed:
+        assert host == "93.184.216.34", (
+            f"a call re-resolved the name instead of the pinned IP: {host}"
+        )
+        assert host_header == "forge.example.com"
+        assert sni == "forge.example.com"
 
 
 async def test_an_oversized_file_is_rejected() -> None:

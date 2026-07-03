@@ -1,12 +1,14 @@
-"""MCP import/discovery (services layer, R6 MCP-import).
+"""MCP import/discovery (services layer, R6 MCP-import; #541).
 
-Register an EXTERNAL MCP server: egress-check the URL, call its ``tools/list`` over the hand-built
-JSON-RPC subset the executor uses, and store each discovered tool as a ``kind=tool, spec.type=mcp``
-descriptor in ``pending_approval`` — a supply-chain HITL gate, so an imported tool is NOT
-executable until an org admin approves it (see ``approve``) and an admin can decline an untrusted
-tool (see ``reject`` → terminal ``rejected``). The raw MCP/transport error is never
-surfaced (a generic ``McpImportError``). Auth'd external servers (import under a broker credential)
-are a recorded follow-on; this imports no-auth servers.
+Register an EXTERNAL MCP server: egress-check + PIN the URL (#492), complete the Streamable-HTTP
+handshake (initialize → Mcp-Session-Id → notifications/initialized), call ``tools/list`` WITHIN the
+session (SSE-framed responses parsed), and store each discovered tool as a ``kind=tool,
+spec.type=mcp`` descriptor in ``pending_approval`` — a supply-chain HITL gate: an imported tool is
+NOT executable until an org admin approves it (see ``approve``); an admin can decline it (see
+``reject`` → terminal ``rejected``). #541: an optional ``credential_id`` is resolved via the broker
+into a Bearer carried through the handshake + discovery, so a HOSTED server that 401s an anonymous
+``tools/list`` is importable. The raw MCP/transport error is never surfaced (a generic
+``McpImportError``). Stdio/local-subprocess transport stays parked (ADR-038 — cloud-first).
 """
 
 from __future__ import annotations
@@ -16,11 +18,19 @@ from typing import Any
 
 import httpx
 
+from oraclous_capability_registry_service.domain.connectors.mcp_protocol import (
+    McpProtocolError,
+    McpSession,
+)
 from oraclous_capability_registry_service.domain.egress import egress_allowed
 from oraclous_capability_registry_service.models.capability_descriptor import CapabilityDescriptor
 from oraclous_capability_registry_service.models.enums import DescriptorKind
 from oraclous_capability_registry_service.repositories.capability_repository import (
     CapabilityRepository,
+)
+from oraclous_capability_registry_service.services.credential_client import (
+    CredentialBrokerPort,
+    CredentialResolutionError,
 )
 
 _TIMEOUT_S = 30.0
@@ -44,31 +54,47 @@ class McpImportService:
         self,
         *,
         capabilities: CapabilityRepository,
+        broker: CredentialBrokerPort | None = None,  # #541: resolves credential_id → Bearer
         transport: httpx.AsyncBaseTransport | None = None,  # injectable for tests
     ) -> None:
         self._caps = capabilities
+        self._broker = broker
         self._transport = transport
 
     async def import_server(
-        self, *, organisation_id: uuid.UUID, server_url: str, label: str
+        self,
+        *,
+        organisation_id: uuid.UUID,
+        server_url: str,
+        label: str,
+        user_id: uuid.UUID | None = None,
+        credential_id: str | None = None,
     ) -> list[CapabilityDescriptor]:
-        """Discover the server's tools and register each as a pending_approval mcp descriptor."""
-        if not await egress_allowed(server_url):
+        """Discover the server's tools and register each as a pending_approval mcp descriptor. #541:
+        when ``credential_id`` is given it is resolved (via the broker) into a Bearer carried
+        through the handshake + discovery; a resolution failure is FAIL-CLOSED (McpImportError — no
+        descriptors created), never an anonymous fallback that could import the wrong server."""
+        pinned_ip = await egress_allowed(server_url)  # #492: vet + PIN once, dial the IP below
+        if pinned_ip is None:
             raise McpEgressBlocked("the MCP server URL is not an allowed external target")
-        tools = await self._list_tools(server_url)
+        bearer = await self._resolve_bearer(organisation_id, user_id, credential_id)
+        tools = await self._list_tools(server_url, pinned_ip, bearer)
         created: list[CapabilityDescriptor] = []
         for tool in tools[:_MAX_TOOLS]:
             name = tool.get("name") if isinstance(tool, dict) else None
             if not isinstance(name, str) or not name:
                 continue
             name = name[:255]  # bound a hostile server's tool name before it lands in the JSONB
+            spec: dict[str, Any] = {"type": "mcp", "server_url": server_url, "tool_name": name}
+            if credential_id:  # #541: the invoke path resolves this Bearer via the broker too
+                spec["credential_id"] = credential_id
             descriptor = {
                 "kind": "tool",
                 "metadata": {
                     "name": f"{label}/{name}",
                     "description": str(tool.get("description") or "")[:500],
                 },
-                "spec": {"type": "mcp", "server_url": server_url, "tool_name": name},
+                "spec": spec,
             }
             row = await self._caps.create(
                 organisation_id=organisation_id,
@@ -98,23 +124,45 @@ class McpImportService:
             status=REJECTED,
         )
 
-    async def _list_tools(self, server_url: str) -> list[dict[str, Any]]:
-        rpc = {"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}}
-        headers = {"content-type": "application/json", "accept": "application/json"}
+    async def _resolve_bearer(
+        self, organisation_id: uuid.UUID, user_id: uuid.UUID | None, credential_id: str | None
+    ) -> str | None:
+        """#541: resolve ``credential_id`` → a Bearer via the broker (auth'd import). FAIL-CLOSED
+        — a requested-but-unresolvable credential raises (no anonymous fallback). None when no
+        credential was requested (an anonymous import of a public server)."""
+        if not credential_id:
+            return None
+        if self._broker is None or user_id is None:
+            raise McpImportError("an auth'd MCP import requires a configured credential broker")
+        try:
+            resolved = await self._broker.resolve(
+                organisation_id=organisation_id,
+                user_id=user_id,
+                requirement={"type": "api_key"},
+                credential_id=credential_id,
+            )
+        except CredentialResolutionError as exc:
+            raise McpImportError("the import credential could not be resolved") from exc
+        api_key = resolved.payload.get("api_key") if resolved.payload else None
+        if not api_key:
+            raise McpImportError("the import credential is not an api_key")
+        return str(api_key)
+
+    async def _list_tools(
+        self, server_url: str, pinned_ip: str, bearer: str | None
+    ) -> list[dict[str, Any]]:
+        """#541: handshake the Streamable-HTTP session (initialize → session id) and call
+        ``tools/list`` within it, dialing the #492 pinned IP + carrying the optional Bearer."""
         try:
             async with httpx.AsyncClient(
                 timeout=_TIMEOUT_S, transport=self._transport, follow_redirects=False
             ) as client:
-                resp = await client.post(server_url, json=rpc, headers=headers)
-        except httpx.HTTPError as exc:
-            raise McpImportError("the MCP server could not be reached") from exc
-        if resp.status_code != 200:
-            raise McpImportError(f"the MCP server returned {resp.status_code}")
-        try:
-            body = resp.json()
-        except ValueError as exc:
-            raise McpImportError("the MCP server returned a non-JSON body") from exc
-        if not isinstance(body, dict) or not isinstance(body.get("result"), dict):
-            raise McpImportError("the MCP server returned a malformed tools/list result")
-        tools = body["result"].get("tools")
+                session = McpSession(
+                    client, server_url=server_url, pinned_ip=pinned_ip, bearer=bearer
+                )
+                await session.initialize()
+                result = await session.call("tools/list", {})
+        except McpProtocolError as exc:
+            raise McpImportError("the MCP server could not be discovered") from exc
+        tools = result.get("tools")
         return tools if isinstance(tools, list) else []

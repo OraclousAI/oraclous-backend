@@ -50,6 +50,14 @@ async def get_session(request: Request) -> AsyncIterator[AsyncSession]:
         yield session
 
 
+def get_org_member_repository(
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> OrgMemberRepository:
+    # #464: the internal membership endpoint depends on the repo (not a raw AsyncSession) so the
+    # route/app-factory never imports a DB driver type — repositories are the only DB seam (STR004).
+    return OrgMemberRepository(session)
+
+
 def get_org_service(session: Annotated[AsyncSession, Depends(get_session)]) -> OrgService:
     return OrgService(
         organisations=OrganisationRepository(session),

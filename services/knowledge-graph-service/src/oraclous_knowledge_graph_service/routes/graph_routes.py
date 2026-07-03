@@ -23,7 +23,11 @@ from oraclous_knowledge_graph_service.schema.graph_schemas import (
     GraphResponse,
     UpdateGraphRequest,
 )
-from oraclous_knowledge_graph_service.services.grant_service import GrantUnavailable
+from oraclous_knowledge_graph_service.services.auth_client import AuthServiceUnavailable
+from oraclous_knowledge_graph_service.services.grant_service import (
+    GranteeNotInOrg,
+    GrantUnavailable,
+)
 from oraclous_knowledge_graph_service.services.graph_service import (
     GraphNotFound,
     ReservedGraphName,
@@ -112,6 +116,27 @@ async def grant_graph_read(
     except GraphNotFound:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="graph not found"
+        ) from None
+    except GranteeNotInOrg:  # #464: the grantee is not a member of the grantee org — reject.
+        # Shape the 422 as the FastAPI field-error LIST so the gateway's leak-safe passthrough
+        # (`extract_validation_details`) surfaces the machine token: `type` -> the `issue`
+        # (GRANTEE_NOT_IN_ORG) and `loc` -> the `field` (grantee_user_id). A dict `detail` is NOT
+        # extractable at the edge — it degrades to a generic MALFORMED_REQUEST, losing the reason
+        # (proven by the deployed gateway e2e). `msg` is for a KGS-direct caller; the edge drops it.
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=[
+                {
+                    "loc": ["body", "grantee_user_id"],
+                    "type": "grantee_not_in_org",
+                    "msg": "grantee user is not a member of the grantee organisation",
+                }
+            ],
+        ) from None
+    except AuthServiceUnavailable:  # #464 fail-closed: never grant a cross-org edge un-validated
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="grantee membership could not be verified",
         ) from None
     except GrantUnavailable:
         raise HTTPException(

@@ -70,7 +70,11 @@ async def import_mcp_server(
     URL is SSRF-egress-checked; the tools are not executable until approved."""
     try:
         created = await svc.import_server(
-            organisation_id=admin.organisation_id, server_url=body.server_url, label=body.label
+            organisation_id=admin.organisation_id,
+            server_url=body.server_url,
+            label=body.label,
+            user_id=admin.principal_id,  # #541: for the broker credential resolution
+            credential_id=body.credential_id,
         )
     except McpEgressBlocked as exc:
         raise HTTPException(

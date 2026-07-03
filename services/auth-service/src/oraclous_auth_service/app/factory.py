@@ -31,6 +31,7 @@ from jose import JWTError
 from oraclous_telemetry import evaluate_readiness, install_telemetry, instrument_app
 from pydantic import BaseModel
 
+from oraclous_auth_service.core.dependencies import get_org_member_repository
 from oraclous_auth_service.core.jwt_handler import (
     create_agent_token,
     create_service_account_token,
@@ -40,6 +41,7 @@ from oraclous_auth_service.core.rate_limiter import (
     enforce_agent_credential_prefix_rate_limit,
 )
 from oraclous_auth_service.domain.passwords import PasswordPolicyError
+from oraclous_auth_service.repositories.org_member_repository import OrgMemberRepository
 from oraclous_auth_service.routes.auth_routes import router as auth_router
 from oraclous_auth_service.routes.invitation_routes import org_router as invitation_org_router
 from oraclous_auth_service.routes.invitation_routes import token_router as invitation_token_router
@@ -253,6 +255,12 @@ class _RevokeResponse(BaseModel):
     revoked_count: int
 
 
+class _MembershipResponse(BaseModel):
+    """#464: the internal grantee-membership check result (Interface-Contract; ADR-017/036)."""
+
+    is_member: bool
+
+
 class _MeResponse(BaseModel):
     id: str
     principal_type: str
@@ -413,6 +421,25 @@ def create_app(
         repo: AgentRepositoryPort = request.app.state.agent_repository
         count = await repo.revoke_agent(agent_id)
         return _RevokeResponse(revoked_count=count)
+
+    # --- GET /internal/v1/orgs/{org}/members/{user} (#464) ---------------
+    # Internal-key-gated grantee-membership check (NO caller-membership gate — a service-to-service
+    # lookup KGS's cross-org grant path calls before writing an edge, ADR-017 + ADR-036-G2). Backed
+    # by OrgMemberRepository, injected via get_org_member_repository so this app-factory never
+    # touches a raw DB-driver session (repositories are the only DB seam — STR004).
+
+    @app.get(
+        "/internal/v1/orgs/{organisation_id}/members/{user_id}",
+        response_model=_MembershipResponse,
+        dependencies=[Depends(verify_internal_key)],
+    )
+    async def check_org_membership(
+        organisation_id: str,
+        user_id: str,
+        members: OrgMemberRepository = Depends(get_org_member_repository),  # noqa: B008 — DI idiom
+    ) -> _MembershipResponse:
+        member = await members.get(organisation_id=organisation_id, user_id=user_id)
+        return _MembershipResponse(is_member=member is not None)
 
     # --- GET /me ---------------------------------------------------------
 

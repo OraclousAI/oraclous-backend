@@ -23,10 +23,13 @@ pytestmark = pytest.mark.unit
 _MODULE = "oraclous_capability_registry_service.domain.connectors.generic_rest.egress_allowed"
 
 
+_PINNED_IP = "93.184.216.34"  # the vetted IP egress_allowed pins (the connector dials THIS, #492)
+
+
 @pytest.fixture
 def _allow_egress(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
-    async def _ok(_url: str) -> bool:
-        return True
+    async def _ok(_url: str, **_kw: object) -> str:
+        return _PINNED_IP  # #492: egress_allowed returns the vetted IP to connect to (not a bool)
 
     monkeypatch.setattr(_MODULE, _ok)
     yield
@@ -52,7 +55,9 @@ async def test_mempool_tip_height_parses_to_an_int() -> None:
     seen: dict = {}
 
     def handler(req: httpx.Request) -> httpx.Response:
-        seen["url"] = str(req.url)
+        seen["host"] = req.url.host
+        seen["path"] = req.url.path
+        seen["host_header"] = req.headers.get("host")
         return httpx.Response(200, text="850123")
 
     res = await _connector(handler).execute(
@@ -60,7 +65,10 @@ async def test_mempool_tip_height_parses_to_an_int() -> None:
     )
     assert res.success and res.data == {"block_height": 850123}
     assert res.metadata == {"source_id": "mempool", "endpoint": "tip_height"}
-    assert seen["url"] == "https://mempool.space/api/blocks/tip/height"
+    # #492: dialed the PINNED IP; the path is intact + the Host header carries the real name.
+    assert seen["host"] == _PINNED_IP
+    assert seen["path"] == "/api/blocks/tip/height"
+    assert seen["host_header"] == "mempool.space"
 
 
 @pytest.mark.usefixtures("_allow_egress")
@@ -94,8 +102,8 @@ async def test_missing_source_id_is_rejected() -> None:
 
 
 async def test_unsafe_url_is_refused_before_the_network(monkeypatch: pytest.MonkeyPatch) -> None:
-    async def _deny(_url: str) -> bool:
-        return False
+    async def _deny(_url: str, **_kw: object) -> None:
+        return None  # #492: egress_allowed returns None to BLOCK (no IP to pin)
 
     monkeypatch.setattr(_MODULE, _deny)
     called = {"n": 0}

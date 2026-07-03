@@ -12,11 +12,11 @@ Security posture: ``fetch``/``read`` are an SSRF surface (an agent could aim the
 service or the cloud metadata endpoint), so every URL — and every redirect hop — is screened by the
 shared :func:`egress_allowed` gate (the same one the MCP connector uses) **before** any request:
 http(s)-only, a hostname denylist (``localhost``/``metadata``/``*.internal``/single-label), and a
-literal-IP + resolved-IP private/loopback/link-local check. Its documented residual (a DNS-rebinding
-TOCTOU between the resolve-check and the connect) is the codebase-wide recorded follow-on, accepted
-equally here. Bodies are size-capped. No-leak throughout: a missing key, a provider error, a blocked
-URL, or an upstream 4xx is a structured failure that never echoes an upstream body. ``transport`` is
-an injectable test seam.
+literal-IP + resolved-IP private/loopback/link-local check. #492: the gate RETURNS the vetted IP and
+each hop CONNECTS to that pinned IP (Host + TLS SNI kept as the name via :func:`pinned_request`), so
+the connect can't re-resolve to an internal target — the DNS-rebinding TOCTOU is closed. Bodies are
+size-capped. No-leak throughout: a missing key, a provider error, a blocked URL, or an upstream 4xx
+is a structured failure that never echoes an upstream body. ``transport`` is an injectable seam.
 """
 
 from __future__ import annotations
@@ -33,7 +33,7 @@ from oraclous_capability_registry_service.domain.connectors.search_providers imp
     clamp_max_results,
     get_search_provider,
 )
-from oraclous_capability_registry_service.domain.egress import egress_allowed
+from oraclous_capability_registry_service.domain.egress import egress_allowed, pinned_request
 from oraclous_capability_registry_service.domain.executors.base import (
     ExecutionContext,
     ExecutionResult,
@@ -176,14 +176,18 @@ class WebResearchConnector(InternalTool):
             for _ in range(_MAX_REDIRECTS + 1):
                 # Screen every hop through the shared SSRF egress gate BEFORE requesting it; manual
                 # redirects keep a 3xx from steering the fetch onto an internal/metadata target.
-                if not await egress_allowed(current):
+                pinned_ip = await egress_allowed(current)
+                if pinned_ip is None:
                     return ExecutionResult(
                         success=False,
                         error_message="the URL is not an allowed public target",
                         error_type="UNSAFE_URL",
                     )
+                # #492: dial the vetted PINNED IP (Host + TLS SNI kept as the name), per hop — the
+                # connect can't re-resolve to an internal target (DNS-rebinding TOCTOU closed).
+                target, host_headers, extensions = pinned_request(current, pinned_ip)
                 try:
-                    resp = await client.get(current)
+                    resp = await client.get(target, headers=host_headers, extensions=extensions)
                 except httpx.HTTPError:
                     return ExecutionResult(
                         success=False,
