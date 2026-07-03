@@ -2335,6 +2335,162 @@ paths:
         "403": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/NotFound" }
         "409": { $ref: "#/components/responses/Conflict" }
+  /v1/engine/team-drafts:
+    get:
+      tags: [engine]
+      summary: List the org's team drafts, newest-first, paginated (org-scoped; a cross-org draft is invisible, never a 403).
+      operationId: listTeamDrafts
+      x-stability: provisional
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          description: >-
+            Maximum drafts to return (WP-10 pagination). OPTIONAL; defaults to 50 and is CLAMPED
+            server-side to a hard maximum of 200, so no single read is unbounded.
+          schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+        - name: offset
+          in: query
+          required: false
+          description: >-
+            Drafts to skip before collecting the page (WP-10 pagination). OPTIONAL; defaults to 0.
+            Paired with the deterministic `created_at DESC` ordering so paging is repeatable.
+          schema: { type: integer, minimum: 0, default: 0 }
+      responses:
+        "200": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+    post:
+      tags: [engine]
+      summary: Persist a team draft (201) — the compile → review → refine loop's editable home; every write response embeds the shared validator's verdict ({would_block, blocking, report}).
+      operationId: createTeamDraft
+      x-stability: provisional
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateTeamDraftRequest" }
+      responses:
+        "201": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+  /v1/engine/team-drafts/from-run:
+    post:
+      tags: [engine]
+      summary: Seed a draft from a SUCCEEDED compiler run (201) — the engine peels the reviewer's compiled JSON, validates it through the shared importer seam, and synthesizes per-member sub-harnesses; an ineligible run is a curated 422, nothing persisted.
+      operationId: createTeamDraftFromRun
+      x-stability: provisional
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/TeamDraftFromRunRequest" }
+      responses:
+        "201": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+  /v1/engine/team-drafts/{teamDraftId}:
+    get:
+      tags: [engine]
+      summary: Read a team draft (the full editable document + the shared validator's verdict).
+      operationId: getTeamDraft
+      x-stability: provisional
+      parameters:
+        - { name: teamDraftId, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    put:
+      tags: [engine]
+      summary: Full-replace a team draft (version bumps — the client's concurrent-edit signal); the response embeds the shared validator's verdict.
+      operationId: replaceTeamDraft
+      x-stability: provisional
+      parameters:
+        - { name: teamDraftId, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateTeamDraftRequest" }
+      responses:
+        "200": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+    delete:
+      tags: [engine]
+      summary: Delete a team draft (204; org-scoped — another tenant's draft is a 404).
+      operationId: deleteTeamDraft
+      x-stability: provisional
+      parameters:
+        - { name: teamDraftId, in: path, required: true, schema: { type: string } }
+      responses:
+        "204": { description: Deleted. }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /v1/engine/team-drafts/{teamDraftId}/refine:
+    post:
+      tags: [engine]
+      summary: Apply ONE typed refine op (add_member | set_fan_out | change_kind | add_depends_on) server-side — preserve-the-rest guaranteed, re-validated, version-bumped; a blocked op returns applied:false with the draft untouched.
+      operationId: refineTeamDraft
+      x-stability: provisional
+      parameters:
+        - { name: teamDraftId, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RefineTeamDraftRequest" }
+      responses:
+        "200": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+  /v1/engine/team-drafts/{teamDraftId}/refine-nl:
+    post:
+      tags: [engine]
+      summary: NL refine — the op-drafter (a one-member team run, the caller's BYOM models bound) turns the instruction into ONE typed op, then the same apply path; dry_run previews without applying. Polls the drafter under the gateway read timeout — a slower draft returns 202 + op_drafter_run_id (re-call with it to collect).
+      operationId: refineTeamDraftNl
+      x-stability: provisional
+      parameters:
+        - { name: teamDraftId, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RefineTeamDraftNlRequest" }
+      responses:
+        "200": { $ref: "#/components/responses/UpstreamJson" }
+        "202": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+  /v1/engine/compiler-runs:
+    post:
+      tags: [engine]
+      summary: The Describe door (202) — a prose objective compiles into a team; the engine assembles the harness-compiler team with the seeded catalog, binds the caller's BYOM models, and submits it as a NORMAL team run (poll /v1/engine/team-runs/{id}, then seed a draft via team-drafts/from-run).
+      operationId: createCompilerRun
+      x-stability: provisional
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateCompilerRunRequest" }
+      responses:
+        "202": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
   /v1/engine/schedules/preflight:
     post:
       tags: [engine]
@@ -3170,6 +3326,84 @@ components:
         decision: { type: string, enum: [approve, revise, reject] }
         feedback: { type: string, default: "" }
         edited_payload: { type: object, nullable: true, additionalProperties: true }
+    CreateTeamDraftRequest:
+      type: object
+      description: >-
+        Persist (POST) or full-replace (PUT) a team DRAFT — the compile → review → refine loop's
+        editable home (#635). `manifest` must be a valid OHM v1.1 Team Harness (the same inbound
+        gate a run applies); `sub_harnesses` maps member roles to their single-agent sub-harness
+        OHMs (what GO later passes inline to /v1/engine/team-runs). The response embeds the shared
+        validator's verdict ({would_block, blocking[], report}) alongside the stored draft.
+      required: [name, manifest]
+      additionalProperties: true
+      properties:
+        name: { type: string, minLength: 1, maxLength: 256 }
+        manifest: { type: object, additionalProperties: true }
+        sub_harnesses:
+          type: object
+          additionalProperties: { type: object }
+    TeamDraftFromRunRequest:
+      type: object
+      description: >-
+        Seed a draft from a SUCCEEDED compiler run: the run's reviewer member emitted the compiled
+        team JSON; the engine peels it, validates it through the SAME importer seam
+        (assemble_and_report), and synthesizes a reasoning-only sub-harness per member. An
+        ineligible or unparseable run is a curated 422 — nothing persisted.
+      required: [team_run_id]
+      additionalProperties: true
+      properties:
+        team_run_id: { type: string, format: uuid }
+        name: { type: string, maxLength: 256, nullable: true }
+    RefineTeamDraftRequest:
+      type: object
+      description: >-
+        Apply ONE typed refine op (the #595 vocabulary — add_member | set_fan_out | change_kind |
+        add_depends_on, discriminated on `op`) via apply_refine: preserve-the-rest guaranteed
+        server-side, re-validated with the shared seam, version-bumped. A blocked op (e.g. an
+        unsurveyed tool) returns applied:false with the draft untouched. `dry_run` validates
+        without persisting.
+      required: [edit_op]
+      additionalProperties: true
+      properties:
+        edit_op: { type: object, additionalProperties: true }
+        dry_run: { type: boolean, default: false }
+    RefineTeamDraftNlRequest:
+      type: object
+      description: >-
+        NL refine: EITHER `instruction` (+ the caller's BYOM `models[]` — the op-drafter is a real
+        LLM member) to draft a new typed op, OR `op_drafter_run_id` from a prior 202 to collect a
+        still-driving draft. `dry_run: true` returns the typed op + verdict WITHOUT applying, so
+        the console previews the structural change and then applies it via /refine.
+      additionalProperties: true
+      properties:
+        instruction: { type: string, minLength: 1, maxLength: 4000, nullable: true }
+        models:
+          type: array
+          items: { type: object, additionalProperties: true }
+        op_drafter_run_id: { type: string, format: uuid, nullable: true }
+        dry_run: { type: boolean, default: false }
+    CreateCompilerRunRequest:
+      type: object
+      description: >-
+        The Describe door (journey J1): a prose `objective` (+ optional inputs / constraints /
+        success_criteria, folded into the planner's brief server-side) and the caller's BYOM
+        `models[]` (OHM model bindings; the credential_id rides in each entry's `config` — the
+        compiler's members are real LLM agents). The engine assembles the harness-compiler team
+        with the seeded capability catalog and submits it through the SAME team-run path — the 202
+        body is a normal team run; poll /v1/engine/team-runs/{id} and then seed a draft via
+        /v1/engine/team-drafts/from-run.
+      required: [objective, models]
+      additionalProperties: true
+      properties:
+        objective: { type: string, minLength: 1, maxLength: 8000 }
+        inputs: { type: object, nullable: true, additionalProperties: true }
+        constraints: { type: string, maxLength: 4000, nullable: true }
+        success_criteria: { type: string, maxLength: 4000, nullable: true }
+        models:
+          type: array
+          minItems: 1
+          items: { type: object, additionalProperties: true }
+        graph_id: { type: string, maxLength: 512, nullable: true }
     CreateTeamRunRequest:
       type: object
       description: >-

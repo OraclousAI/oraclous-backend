@@ -124,6 +124,43 @@ class TeamRunError(Exception):
         self.error_type = error_type
 
 
+def load_team_manifest(document: dict) -> OHMManifest:
+    """The one inbound Team-Harness gate (422-shaped): schema + version + entrypoint + acyclic DAG
+    via ``load_ohm``, the team/member checks, and the #479 battery fail-fast. Shared by the run
+    create path and the #635 draft store, so a draft admits exactly what a run would."""
+    try:
+        manifest = load_ohm(document)
+    except OHMError as exc:  # malformed / invalid OHM is a 422, not a 500
+        raise TeamRunError(
+            f"invalid OHM manifest: {exc}", 422, error_type="invalid_manifest"
+        ) from exc
+    if not manifest.is_team():
+        raise TeamRunError(
+            "manifest is not a Team Harness (metadata.kind must be 'team')",
+            422,
+            error_type="not_a_team",
+        )
+    if not manifest.members:
+        raise TeamRunError(
+            "a Team Harness must declare at least one member", 422, error_type="no_members"
+        )
+    # fail-fast (#479): a `battery:<name>` success_criteria must name a DECLARED battery —
+    # resolve now so an undeclared one is a 422 at create, not an UnknownBattery that strands
+    # the run at grade time. (The gate uses success_criteria for the single-pass DAG.)
+    if manifest.orchestration is not None and is_battery_reference(
+        manifest.orchestration.success_criteria
+    ):
+        try:
+            resolve_battery(manifest, manifest.orchestration.success_criteria)
+        except UnknownBattery as exc:
+            raise TeamRunError(
+                f"success_criteria references an undeclared battery: {exc}",
+                422,
+                error_type="undeclared_battery",
+            ) from exc
+    return manifest
+
+
 #: operator-configured org-scoped workspaces root (MUST match the capability-registry sandbox guard,
 #: #517). A team's ``workspace_root`` is validated fail-fast at create against ``<root>/<org>`` so a
 #: bad root is a clear 422 here, not a confusing mid-run member failure (defense-in-depth: the
@@ -470,37 +507,7 @@ class TeamRunService:
         return principal.organisation_id
 
     def _load_team(self, document: dict) -> OHMManifest:
-        try:
-            manifest = load_ohm(document)
-        except OHMError as exc:  # malformed / invalid OHM is a 422, not a 500
-            raise TeamRunError(
-                f"invalid OHM manifest: {exc}", 422, error_type="invalid_manifest"
-            ) from exc
-        if not manifest.is_team():
-            raise TeamRunError(
-                "manifest is not a Team Harness (metadata.kind must be 'team')",
-                422,
-                error_type="not_a_team",
-            )
-        if not manifest.members:
-            raise TeamRunError(
-                "a Team Harness must declare at least one member", 422, error_type="no_members"
-            )
-        # fail-fast (#479): a `battery:<name>` success_criteria must name a DECLARED battery —
-        # resolve now so an undeclared one is a 422 at create, not an UnknownBattery that strands
-        # the run at grade time. (The gate uses success_criteria for the single-pass DAG.)
-        if manifest.orchestration is not None and is_battery_reference(
-            manifest.orchestration.success_criteria
-        ):
-            try:
-                resolve_battery(manifest, manifest.orchestration.success_criteria)
-            except UnknownBattery as exc:
-                raise TeamRunError(
-                    f"success_criteria references an undeclared battery: {exc}",
-                    422,
-                    error_type="undeclared_battery",
-                ) from exc
-        return manifest
+        return load_team_manifest(document)
 
     def _enforce_member_ceilings(
         self, team: OHMManifest, sub_harnesses: Mapping[str, dict]
@@ -940,14 +947,22 @@ class TeamRunService:
                 battery_verdict = await evaluate_gate(
                     team, grade_target, evaluate=_invoke, gate="success_criteria"
                 )
-                return battery_verdict.model_dump() if battery_verdict is not None else None
-            return await self._evaluate.evaluate(
+                if battery_verdict is None:
+                    return None
+                # #636 (CTO ruling): a DECLARED battery that resolved and was judged is the
+                # escalation-grade gate — mark it SCORED so #604 consumption may branch on it.
+                return {**battery_verdict.model_dump(), "scored": True}
+            prose_verdict = await self._evaluate.evaluate(
                 target_ref=str(run_id),
                 target_output=grade_target,
                 success_criteria=success_criteria,
                 judge_credential_id=judge_credential_id,
                 judge_model=judge_model,
             )
+            # #636 (CTO ruling): bare prose success_criteria are ADVISORY — the verdict is
+            # produced + stored and the run SUCCEEDS (#477), but it is not escalation-grade
+            # (scored=False → decide_action STORE_ONLYs; a declared battery is the opt-in).
+            return {**prose_verdict, "scored": False}
         except Exception as exc:  # noqa: BLE001 — ANY grader-side failure fails CLOSED, never strands
             # The grade runs OUTSIDE _drive's try/except, so an escaping error would fail the Celery
             # task and strand the run RUNNING. The contract (docstring) is absolute: a grader error
@@ -964,6 +979,9 @@ class TeamRunService:
                 # on it (no escalate/re-dispatch on a transient grader blip). The marker tells
                 # ``decide_action`` to STORE_ONLY (the run stays SUCCEEDED, the contract at :819).
                 "grader_unavailable": True,
+                # #636: unscored by definition — the judge never produced a grade (belt+braces
+                # with grader_unavailable; either marker alone STORE_ONLYs).
+                "scored": False,
             }
 
     def _make_loop_done_check(

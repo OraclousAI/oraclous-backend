@@ -36,6 +36,7 @@ RLS_TABLES = (
     "engine_roundtables",
     "engine_provenance",
     "engine_team_runs",
+    "engine_team_drafts",
 )
 
 

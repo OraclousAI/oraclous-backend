@@ -17,7 +17,9 @@ precedence**:
    ``COST_BUDGET`` run carries no graded verdict anyway). Checked FIRST so it is authoritative even
    for the (structurally-impossible) dict-verdict case — a defensive guard against re-dispatching
    into an empty pool.
-2. no gate / unparseable verdict → STORE_ONLY (nothing to consume — the common no-criteria run).
+2. no gate / unparseable verdict → STORE_ONLY (nothing to consume — the common no-criteria run);
+   likewise a verdict marked ``scored: False`` at emission (#636 — bare prose criteria are
+   advisory per #477; only a resolved, judged DECLARED battery is escalation-grade).
 3. the gate PASSED → STORE_ONLY (terminal; unchanged behaviour).
 4. a CRITICAL floor failure (battery ``blocking_severity``) → ESCALATE (ADR-037 line 116, regardless
    of the recommended_action).
@@ -152,6 +154,13 @@ def decide_action(
         return (
             STORE_ONLY  # a grader OUTAGE is not a real grade — never branch (run stays SUCCEEDED)
         )
+    if verdict.get("scored") is False:
+        # #636 (CTO ruling): the verdict was not escalation-grade SCORED — a bare prose
+        # success_criteria grade (advisory by the #477 contract: produced + stored, the run
+        # SUCCEEDS) or a fail-closed emission. Only a DECLARED battery that resolved and was
+        # judged (scored=True at emission) may branch a settled run; a marker-less dict keeps
+        # the prior behaviour (stored battery verdicts predating the marker).
+        return STORE_ONLY
     if verdict_passed(verdict):
         return STORE_ONLY
     if verdict.get("blocking_severity") == "CRITICAL":
