@@ -66,11 +66,11 @@ def _team(org: uuid.UUID, roles: list[str]) -> dict[str, Any]:
 async def team_draft_service(engine_dsns) -> AsyncIterator[TeamDraftService]:  # noqa: ANN001
     """The REAL request-path TeamDraftService on the org-bound ``oraclous_app`` engine — the
     service binds the org per request via ``org_scope`` (the repo's GUC guard then sets the RLS
-    GUC)."""
+    GUC). The store paths never touch team runs, so the run seam is a bare stub here."""
     _owner_async_dsn, app_async_dsn = engine_dsns
     repo = TeamDraftRepository(app_async_dsn)
     try:
-        yield TeamDraftService(drafts=repo)
+        yield TeamDraftService(drafts=repo, team_runs=object())  # type: ignore[arg-type]
     finally:
         await repo.close()
 

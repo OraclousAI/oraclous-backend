@@ -599,6 +599,15 @@ class CreateTeamDraftRequest(BaseModel):
     sub_harnesses: dict[str, dict[str, Any]] = Field(default_factory=dict)
 
 
+class TeamDraftFromRunRequest(BaseModel):
+    """Seed a draft from a SUCCEEDED compiler run (#635): the run's reviewer member emitted the
+    compiled team JSON; the engine peels it, validates it through the SAME importer seam, and
+    synthesizes a reasoning-only sub-harness per member. An ineligible run is a curated 422."""
+
+    team_run_id: uuid.UUID
+    name: str | None = Field(default=None, max_length=256)
+
+
 class TeamDraftOut(BaseModel):
     """One stored team draft — the full editable document (manifest + sub_harnesses + version)."""
 

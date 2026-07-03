@@ -2,8 +2,8 @@
 
 The draft store's HTTP surface: CRUD, every write embedding the shared validator's verdict. GO
 stays ``POST /v1/engine/team-runs`` with the draft's documents — a draft never executes. NOTE:
-the collection path is registered BEFORE ``/team-drafts/{team_draft_id}`` so it is never
-captured as an id.
+the two static collection paths (``/team-drafts`` and ``/team-drafts/from-run``) are registered
+BEFORE ``/team-drafts/{team_draft_id}`` so neither is captured as an id.
 """
 
 from __future__ import annotations
@@ -20,6 +20,7 @@ from oraclous_execution_engine_service.core.dependencies import (
 from oraclous_execution_engine_service.schema.engine_schemas import (
     CreateTeamDraftRequest,
     TeamDraftEnvelope,
+    TeamDraftFromRunRequest,
     TeamDraftListItem,
     TeamDraftListOut,
     TeamDraftOut,
@@ -80,6 +81,25 @@ async def list_team_drafts(
     return TeamDraftListOut(
         team_drafts=[TeamDraftListItem.model_validate(r) for r in rows], total=total
     )
+
+
+@router.post(
+    "/team-drafts/from-run",
+    response_model=TeamDraftEnvelope,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_team_draft_from_run(
+    body: TeamDraftFromRunRequest, principal: PrincipalDep, service: TeamDraftServiceDep
+) -> TeamDraftEnvelope:
+    """Peel a SUCCEEDED (compiler) run's reviewer JSON into a stored draft (#635 concern 3).
+    Ineligible/unparseable runs are a curated 422 — nothing persisted."""
+    try:
+        row, verdict = await service.create_from_run(
+            principal, team_run_id=body.team_run_id, name=body.name
+        )
+    except TeamRunError as exc:
+        raise _http(exc) from exc
+    return _envelope(row, verdict)
 
 
 @router.get("/team-drafts/{team_draft_id}", response_model=TeamDraftEnvelope)

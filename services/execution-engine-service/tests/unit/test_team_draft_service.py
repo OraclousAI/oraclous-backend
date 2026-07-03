@@ -1,7 +1,8 @@
 """TeamDraftService (#635) — unit, fake repositories, no DB.
 
-Pins the store's service contract: the shared-validator verdict embedded on every write, the
-born-bounded list clamp, version semantics, and the fail-closed org/404 edges.
+Pins the store's service contract (the shared-validator verdict on every write, the
+born-bounded list clamp, version semantics, the fail-closed org/404 edges) and the from-run
+peel — each ineligible shape a curated 422, NOTHING persisted.
 """
 
 from __future__ import annotations
@@ -117,17 +118,63 @@ class _FakeDraftRepo:
         return True
 
 
-def _service(repo: _FakeDraftRepo | None = None) -> tuple[TeamDraftService, _FakeDraftRepo]:
+class _RunRow:
+    def __init__(self, state: str, results: dict[str, Any] | None = None) -> None:
+        self.id = uuid.uuid4()
+        self.state = state
+        self.results = results or {}
+
+
+class _FakeTeamRuns:
+    """The TeamRunService seam refine-nl/from-run consume: create (submit) + get (poll/read)."""
+
+    def __init__(self) -> None:
+        self.runs: dict[uuid.UUID, _RunRow] = {}
+        self.created: list[dict[str, Any]] = []
+
+    def seed(self, state: str, results: dict[str, Any] | None = None) -> _RunRow:
+        row = _RunRow(state, results)
+        self.runs[row.id] = row
+        return row
+
+    async def create(self, principal: Principal, **kw: Any) -> _RunRow:
+        self.created.append(kw)
+        row = _RunRow(
+            "SUCCEEDED",
+            {
+                "op-drafter": {
+                    "output": '{"op": "add_depends_on", "role": "b", "depends_on": "a"}',
+                    "status": "SUCCEEDED",
+                }
+            },
+        )
+        self.runs[row.id] = row
+        return row
+
+    async def get(self, run_id: uuid.UUID, principal: Principal) -> _RunRow:
+        row = self.runs.get(run_id)
+        if row is None:
+            raise TeamRunError("team run not found", 404)
+        return row
+
+
+def _service(
+    repo: _FakeDraftRepo | None = None, team_runs: _FakeTeamRuns | None = None
+) -> tuple[TeamDraftService, _FakeDraftRepo, _FakeTeamRuns]:
     repo = repo or _FakeDraftRepo()
-    svc = TeamDraftService(drafts=repo)  # type: ignore[arg-type] — duck-typed seam in unit tests
-    return svc, repo
+    team_runs = team_runs or _FakeTeamRuns()
+    svc = TeamDraftService(
+        drafts=repo,  # type: ignore[arg-type] — the seam is duck-typed in unit tests
+        team_runs=team_runs,  # type: ignore[arg-type]
+    )
+    return svc, repo, team_runs
 
 
 # ── the store: verdict on every write, clamp, 403 ────────────────────────────
 
 
 async def test_create_embeds_the_shared_validator_verdict() -> None:
-    svc, _repo = _service()
+    svc, _repo, _ = _service()
     row, verdict = await svc.create(
         _principal(),
         name="d",
@@ -142,7 +189,7 @@ async def test_create_embeds_the_shared_validator_verdict() -> None:
 
 async def test_create_with_an_unsurveyed_tool_still_persists_but_blocks() -> None:
     # a draft may be SAVED blocked — the loop iterates until the strip is green; the verdict says so
-    svc, repo = _service()
+    svc, repo, _ = _service()
     row, verdict = await svc.create(
         _principal(),
         name="d",
@@ -155,7 +202,7 @@ async def test_create_with_an_unsurveyed_tool_still_persists_but_blocks() -> Non
 
 
 async def test_create_rejects_a_non_team_manifest_as_422() -> None:
-    svc, repo = _service()
+    svc, repo, _ = _service()
     doc = _team([_member("a")])
     doc["metadata"]["kind"] = "agent"
     with pytest.raises(TeamRunError) as exc:
@@ -165,7 +212,7 @@ async def test_create_rejects_a_non_team_manifest_as_422() -> None:
 
 
 async def test_no_org_principal_is_a_403() -> None:
-    svc, _repo = _service()
+    svc, _repo, _ = _service()
     with pytest.raises(TeamRunError) as exc:
         await svc.create(
             _principal(org=None), name="d", manifest=_team([_member("a")]), sub_harnesses={}
@@ -174,7 +221,7 @@ async def test_no_org_principal_is_a_403() -> None:
 
 
 async def test_list_clamps_limit_and_offset_server_side() -> None:
-    svc, repo = _service()
+    svc, repo, _ = _service()
     await svc.list_for_org(_principal(), limit=9999, offset=-5)
     await svc.list_for_org(_principal(), limit=0, offset=3)
     assert repo.list_calls == [
@@ -184,7 +231,7 @@ async def test_list_clamps_limit_and_offset_server_side() -> None:
 
 
 async def test_replace_bumps_version_and_revalidates() -> None:
-    svc, _repo = _service()
+    svc, _repo, _ = _service()
     row, _ = await svc.create(
         _principal(), name="d", manifest=_team([_member("a")]), sub_harnesses={}
     )
@@ -200,7 +247,7 @@ async def test_replace_bumps_version_and_revalidates() -> None:
 
 
 async def test_get_replace_delete_404_on_a_missing_draft() -> None:
-    svc, _repo = _service()
+    svc, _repo, _ = _service()
     missing = uuid.uuid4()
     for coro in (
         svc.get(missing, _principal()),
@@ -212,3 +259,51 @@ async def test_get_replace_delete_404_on_a_missing_draft() -> None:
         with pytest.raises(TeamRunError) as exc:
             await coro
         assert exc.value.status_code == 404
+
+
+# ── from-run: the peel, each failure a curated 422 (nothing persisted) ───────
+
+
+def _reviewer_results(payload: str) -> dict[str, Any]:
+    return {"reviewer": {"output": payload, "status": "SUCCEEDED"}}
+
+
+async def test_from_run_peels_validates_and_persists_with_sub_harnesses() -> None:
+    svc, repo, team_runs = _service()
+    compiled = (
+        'Here is the team:\n{"members": ['
+        '{"role": "researcher", "kind": "agent", "subgoal": "research"},'
+        '{"role": "writer", "kind": "agent", "subgoal": "write", "depends_on": ["researcher"]}'
+        "]}"
+    )
+    run = team_runs.seed("SUCCEEDED", _reviewer_results(compiled))
+    row, verdict = await svc.create_from_run(_principal(), team_run_id=run.id, name="from-prose")
+    assert verdict.would_block is False
+    assert row.name == "from-prose" and row.id in repo.rows
+    manifest = row.manifest
+    assert {m["role"] for m in manifest["members"]} == {"researcher", "writer"}
+    # per-member reasoning-only sub-harnesses were synthesized server-side (the e2e's old
+    # client-side step) — so the draft is GO-able as stored
+    assert set(row.sub_harnesses) == {"researcher", "writer"}
+    assert row.sub_harnesses["researcher"]["metadata"]["kind"] == "agent"
+
+
+@pytest.mark.parametrize(
+    ("state", "results"),
+    [
+        ("FAILED", {}),  # not SUCCEEDED
+        ("SUCCEEDED", {}),  # no reviewer output at all
+        ("SUCCEEDED", _reviewer_results("no json here")),  # nothing to peel
+        ("SUCCEEDED", _reviewer_results('{"members": []}')),  # empty members
+        ("SUCCEEDED", _reviewer_results('{"members": [{"kind": "agent"}]}')),  # invalid member
+    ],
+)
+async def test_from_run_ineligible_shapes_are_curated_422s(
+    state: str, results: dict[str, Any]
+) -> None:
+    svc, repo, team_runs = _service()
+    run = team_runs.seed(state, results)
+    with pytest.raises(TeamRunError) as exc:
+        await svc.create_from_run(_principal(), team_run_id=run.id)
+    assert exc.value.status_code == 422
+    assert not repo.rows  # NOTHING persisted on any ineligible shape

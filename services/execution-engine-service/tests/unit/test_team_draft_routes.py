@@ -107,6 +107,23 @@ async def test_list_returns_team_drafts_total_and_forwards_pagination() -> None:
         assert forbidden not in item
 
 
+async def test_from_run_is_not_captured_as_a_draft_id() -> None:
+    seen: list[uuid.UUID] = []
+
+    class _Svc:
+        async def create_from_run(
+            self, principal: Principal, *, team_run_id: uuid.UUID, name: str | None = None
+        ) -> tuple[_Row, DraftVerdict]:
+            seen.append(team_run_id)
+            return _Row(), _verdict()
+
+    run_id = uuid.uuid4()
+    async with _client(_Svc()) as c:
+        resp = await c.post("/v1/engine/team-drafts/from-run", json={"team_run_id": str(run_id)})
+    assert resp.status_code == 201, resp.text  # not a 422 uuid-parse of "from-run"
+    assert seen == [run_id]
+
+
 async def test_team_run_error_maps_to_its_status_not_a_500() -> None:
     class _Svc:
         async def get(self, draft_id: uuid.UUID, principal: Principal) -> Any:

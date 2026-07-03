@@ -288,9 +288,11 @@ def get_team_draft_repository(request: Request) -> TeamDraftRepository:
 
 def get_team_draft_service(
     drafts: Annotated[TeamDraftRepository, Depends(get_team_draft_repository)],
+    team_runs: Annotated[TeamRunService, Depends(get_team_run_service)],
 ) -> TeamDraftService:
-    # #635: the draft store — org-scoped persistence + the shared validator's verdict on writes.
-    return TeamDraftService(drafts=drafts)
+    # #635: the draft store + from-run. `team_runs` is the SAME create/read path a client uses
+    # (from-run reads through it) — no second runtime seam.
+    return TeamDraftService(drafts=drafts, team_runs=team_runs)
 
 
 def get_compiler_run_service(
