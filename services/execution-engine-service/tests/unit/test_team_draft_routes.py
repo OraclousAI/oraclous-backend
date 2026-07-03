@@ -14,6 +14,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 from oraclous_execution_engine_service.app.factory import create_app
 from oraclous_execution_engine_service.core.dependencies import (
+    get_compiler_run_service,
     get_principal,
     get_team_draft_service,
 )
@@ -44,10 +45,12 @@ def _verdict(would_block: bool = False, blocking: list[str] | None = None) -> Dr
     return DraftVerdict(would_block=would_block, blocking=blocking or [], report="rendered dry-run")
 
 
-def _client(draft_service: Any = None) -> AsyncClient:
+def _client(draft_service: Any = None, compiler_service: Any = None) -> AsyncClient:
     app = create_app()  # construction only — lifespan (DB bind) is not triggered by ASGITransport
     if draft_service is not None:
         app.dependency_overrides[get_team_draft_service] = lambda: draft_service
+    if compiler_service is not None:
+        app.dependency_overrides[get_compiler_run_service] = lambda: compiler_service
     app.dependency_overrides[get_principal] = lambda: Principal(
         principal_id=_USER, principal_type=PrincipalType.USER, organisation_id=_ORG
     )
@@ -137,3 +140,47 @@ async def test_delete_returns_204() -> None:
     async with _client(_Svc()) as c:
         resp = await c.delete(f"/v1/engine/team-drafts/{uuid.uuid4()}")
     assert resp.status_code == 204 and resp.content == b""
+
+
+async def test_compiler_run_returns_202_with_the_queued_run() -> None:
+    captured: list[dict[str, Any]] = []
+
+    class _Run:
+        id = uuid.uuid4()
+        organisation_id = _ORG
+        state = "QUEUED"
+        results: dict[str, Any] = {}
+        paused_at: list[str] = []
+        error_message = None
+        created_at = None
+        verdict = None
+        re_dispatch_count = 0
+        refresh_delta = None
+        member_status: dict[str, str] = {}
+        revision_rounds: dict[str, int] = {}
+        loop_state: dict[str, Any] = {}
+
+    class _Svc:
+        async def create(self, principal: Principal, **kw: Any) -> _Run:
+            captured.append(kw)
+            return _Run()
+
+    async with _client(compiler_service=_Svc()) as c:
+        resp = await c.post(
+            "/v1/engine/compiler-runs",
+            json={
+                "objective": "build a digest team",
+                "models": [{"role": "primary", "binding": "openrouter/x"}],
+                "graph_id": "g-1",
+            },
+        )
+    assert resp.status_code == 202, resp.text
+    assert resp.json()["state"] == "QUEUED"
+    assert captured[0]["objective"] == "build a digest team"
+    assert captured[0]["graph_id"] == "g-1"
+
+
+async def test_compiler_run_requires_models() -> None:
+    async with _client(compiler_service=object()) as c:
+        resp = await c.post("/v1/engine/compiler-runs", json={"objective": "x", "models": []})
+    assert resp.status_code == 422  # min_length=1 at the schema edge

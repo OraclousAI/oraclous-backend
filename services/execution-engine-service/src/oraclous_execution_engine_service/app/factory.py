@@ -8,6 +8,7 @@ from oraclous_telemetry import install_telemetry, instrument_app
 from oraclous_execution_engine_service.core.lifespan import lifespan
 from oraclous_execution_engine_service.routes import (
     activity_routes,
+    compiler_run_routes,
     health_routes,
     job_routes,
     roundtable_routes,
@@ -29,5 +30,6 @@ def create_app() -> FastAPI:
     app.include_router(roundtable_routes.router)
     app.include_router(team_run_routes.router)
     app.include_router(team_draft_routes.router)
+    app.include_router(compiler_run_routes.router)
     app.include_router(activity_routes.router)
     return app

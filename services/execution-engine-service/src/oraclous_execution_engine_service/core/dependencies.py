@@ -37,6 +37,7 @@ from oraclous_execution_engine_service.repositories.team_draft_repository import
 )
 from oraclous_execution_engine_service.repositories.team_run_repository import TeamRunRepository
 from oraclous_execution_engine_service.services.activity_service import ActivityService
+from oraclous_execution_engine_service.services.compiler_run_service import CompilerRunService
 from oraclous_execution_engine_service.services.graph_client import GraphClient
 from oraclous_execution_engine_service.services.harness_client import HarnessClient
 from oraclous_execution_engine_service.services.job_service import JobService
@@ -292,6 +293,13 @@ def get_team_draft_service(
     return TeamDraftService(drafts=drafts)
 
 
+def get_compiler_run_service(
+    team_runs: Annotated[TeamRunService, Depends(get_team_run_service)],
+) -> CompilerRunService:
+    # #635: the Describe door — assembles the compiler team and submits through the SAME path.
+    return CompilerRunService(team_runs=team_runs)
+
+
 PrincipalDep = Annotated[Principal, Depends(get_principal)]
 JobRepositoryDep = Annotated[JobRepository, Depends(get_job_repository)]
 JobServiceDep = Annotated[JobService, Depends(get_job_service)]
@@ -301,3 +309,4 @@ ScheduleServiceDep = Annotated[ScheduleService, Depends(get_schedule_service)]
 RoundtableServiceDep = Annotated[RoundtableService, Depends(get_roundtable_service)]
 TeamRunServiceDep = Annotated[TeamRunService, Depends(get_team_run_service)]
 TeamDraftServiceDep = Annotated[TeamDraftService, Depends(get_team_draft_service)]
+CompilerRunServiceDep = Annotated[CompilerRunService, Depends(get_compiler_run_service)]

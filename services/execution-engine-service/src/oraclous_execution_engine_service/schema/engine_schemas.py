@@ -658,3 +658,19 @@ class TeamDraftListOut(BaseModel):
 
     team_drafts: list[TeamDraftListItem]
     total: int
+
+
+class CreateCompilerRunRequest(BaseModel):
+    """The Describe door (#635, C-1(a) / journey J1): a prose objective (+ the optional
+    inputs/constraints/success-criteria fields, folded into the planner's brief server-side) and
+    the caller's BYOM ``models[]`` (OHM model bindings; ``config.credential_id`` inside — the
+    compiler's members are real LLM agents). The engine assembles the harness-compiler team with
+    the #596 seeded catalog and submits it through the SAME team-run path → 202: poll the
+    standard ``/v1/engine/team-runs/{id}`` reads, then seed a draft via ``team-drafts/from-run``."""
+
+    objective: str = Field(min_length=1, max_length=8000)
+    inputs: dict[str, Any] | None = None
+    constraints: str | None = Field(default=None, max_length=4000)
+    success_criteria: str | None = Field(default=None, max_length=4000)
+    models: list[dict[str, Any]] = Field(min_length=1)
+    graph_id: str | None = Field(default=None, max_length=512)
