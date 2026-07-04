@@ -112,16 +112,25 @@ async def list_team_drafts(
     status_code=status.HTTP_201_CREATED,
 )
 async def create_team_draft_from_run(
-    body: TeamDraftFromRunRequest, principal: PrincipalDep, service: TeamDraftServiceDep
+    body: TeamDraftFromRunRequest,
+    principal: PrincipalDep,
+    service: TeamDraftServiceDep,
+    response: Response,
 ) -> TeamDraftEnvelope:
     """Peel a SUCCEEDED (compiler) run's reviewer JSON into a stored draft (#635 concern 3).
-    Ineligible/unparseable runs are a curated 422 — nothing persisted."""
+    Ineligible/unparseable runs are a curated 422 — nothing persisted.
+
+    #638 idempotency: ONE draft per ``(org, team_run_id)`` — **201 Created** on the first call,
+    **200 OK** returning the SAME (existing) draft on a repeat (a reload / second tab on
+    ``?compile=<runId>``, or a concurrent from-run that lost the race). A client can key off the
+    status; the body is the identical envelope either way, so re-POSTing is always safe."""
     try:
-        row, verdict = await service.create_from_run(
+        row, verdict, created = await service.create_from_run(
             principal, team_run_id=body.team_run_id, name=body.name
         )
     except TeamRunError as exc:
         raise _http(exc) from exc
+    response.status_code = status.HTTP_201_CREATED if created else status.HTTP_200_OK
     return _envelope(row, verdict)
 
 

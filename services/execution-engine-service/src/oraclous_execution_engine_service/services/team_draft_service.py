@@ -38,15 +38,16 @@ from oraclous_ohm.import_.mapping import build_subharness
 from oraclous_ohm.manifest import OHMManifest, OHMMember, OHMMetadata, OHMRuntime
 
 from oraclous_execution_engine_service.core.rls import org_scope
-from oraclous_execution_engine_service.domain.compiler_onramp import draft_catalog
 from oraclous_execution_engine_service.models.team_draft import EngineTeamDraft
 from oraclous_execution_engine_service.models.team_run import EngineTeamRun
 from oraclous_execution_engine_service.repositories.team_draft_repository import (
     TeamDraftRepository,
 )
 from oraclous_execution_engine_service.services.compiler_run_service import (
+    surveyed_catalog,
     validate_model_bindings,
 )
+from oraclous_execution_engine_service.services.registry_client import RegistryClient
 from oraclous_execution_engine_service.services.team_run_service import (
     TeamRunError,
     TeamRunService,
@@ -128,13 +129,20 @@ class TeamDraftService:
         *,
         drafts: TeamDraftRepository,
         team_runs: TeamRunService,
+        registry: RegistryClient | None = None,
         refine_nl_poll_seconds: float = 25.0,
         refine_nl_poll_interval_seconds: float = 2.0,
     ) -> None:
         self._drafts = drafts
         self._team_runs = team_runs
+        self._registry = registry  # #638: live-registry union into the surveyed draft catalog
         self._poll_budget = refine_nl_poll_seconds
         self._poll_interval = refine_nl_poll_interval_seconds
+
+    async def _catalog(self) -> list[str]:
+        """#638: the surveyed catalog for the caller's org — seed inventory ∪ the live registry
+        (degrades to seed-only on a registry outage). One seam behind validate/from-run/refine."""
+        return await surveyed_catalog(self._registry)
 
     # ── shared helpers ────────────────────────────────────────────────────────
 
@@ -147,13 +155,14 @@ class TeamDraftService:
         # the same inbound gate the run path applies (schema + version + entrypoint + acyclic DAG)
         return load_team_manifest(document)
 
-    def _verdict(self, manifest_doc: dict[str, Any], manifest: OHMManifest) -> DraftVerdict:
+    async def _verdict(self, manifest_doc: dict[str, Any], manifest: OHMManifest) -> DraftVerdict:
         """Run the SHARED validator over the draft (ADR-047/#593 — the SAME ``validate_draft``
         the reviewer/registry tool runs: the capability-absence gate against the surveyed catalog
-        + the assemble dry-run), so the store's verdict and the validator tool's agree."""
+        + the assemble dry-run), so the store's verdict and the validator tool's agree. #638: the
+        catalog now unions the org's LIVE registry, so a deployed connector validates admissible."""
         verdict = validate_draft(
             manifest_doc,
-            draft_catalog(),
+            await self._catalog(),
             owner_organization_id=manifest.metadata.owner_organization_id,
             name=manifest.metadata.name,
         )
@@ -199,7 +208,7 @@ class TeamDraftService:
     ) -> tuple[EngineTeamDraft, DraftVerdict]:
         org = self._org(principal)
         team = self._load_team(manifest)
-        verdict = self._verdict(manifest, team)
+        verdict = await self._verdict(manifest, team)
         with org_scope(org):
             row = await self._drafts.create(
                 organisation_id=org,
@@ -215,7 +224,7 @@ class TeamDraftService:
     ) -> tuple[EngineTeamDraft, DraftVerdict]:
         org = self._org(principal)
         row = await self._get_or_404(draft_id, org)
-        return row, self._verdict(row.manifest, self._load_team(row.manifest))
+        return row, await self._verdict(row.manifest, self._load_team(row.manifest))
 
     async def list_for_org(
         self, principal: Principal, *, limit: int = 50, offset: int = 0
@@ -237,7 +246,7 @@ class TeamDraftService:
     ) -> tuple[EngineTeamDraft, DraftVerdict]:
         org = self._org(principal)
         team = self._load_team(manifest)
-        verdict = self._verdict(manifest, team)
+        verdict = await self._verdict(manifest, team)
         with org_scope(org):
             row = await self._drafts.replace(
                 draft_id, org, name=name, manifest=manifest, sub_harnesses=sub_harnesses
@@ -261,11 +270,23 @@ class TeamDraftService:
         *,
         team_run_id: uuid.UUID,
         name: str | None = None,
-    ) -> tuple[EngineTeamDraft, DraftVerdict]:
+    ) -> tuple[EngineTeamDraft, DraftVerdict, bool]:
         """Peel the compiler reviewer's compiled JSON out of a SUCCEEDED run, validate it through
         the SAME seam the importer uses, synthesize per-member sub-harnesses, persist. An
-        ineligible/unparseable run is a curated 422 — nothing persisted."""
+        ineligible/unparseable run is a curated 422 — nothing persisted.
+
+        #638 idempotency: ONE draft per ``(org, team_run_id)``. Returns ``(row, verdict, created)``
+        — ``created`` is False (→ the route 200s) when the draft already existed (a reload / second
+        tab on ``?compile=<runId>``, or a concurrent from-run that won the partial-unique race), so
+        the client never duplicates the draft. The existing draft is returned AS-IS (its current
+        manifest, even if since refined)."""
         org = self._org(principal)
+        # fast-path: a draft already peeled from this run → return it (idempotent, current manifest)
+        with org_scope(org):
+            existing = await self._drafts.get_by_team_run(org, team_run_id)
+        if existing is not None:
+            verdict = await self._verdict(existing.manifest, self._load_team(existing.manifest))
+            return existing, verdict, False
         run = await self._team_runs.get(team_run_id, principal)  # org-scoped; 404 cross-org
         if run.state != "SUCCEEDED":
             raise TeamRunError(
@@ -296,8 +317,11 @@ class TeamDraftService:
             ) from exc
         draft_name = (name or "").strip() or f"compiled-{uuid.uuid4().hex[:8]}"
         # the SAME gate the reviewer runs (capability-absence vs the surveyed catalog + the
-        # assemble dry-run) — a blocked compile is a curated 422, nothing persisted
-        gate = validate_draft(compiled, draft_catalog(), owner_organization_id=org, name=draft_name)
+        # assemble dry-run) — a blocked compile is a curated 422, nothing persisted. #638: the
+        # catalog now unions the org's LIVE registry (a deployed connector is admissible).
+        gate = validate_draft(
+            compiled, await self._catalog(), owner_organization_id=org, name=draft_name
+        )
         if gate.get("would_block"):
             raise TeamRunError(
                 "the compiled team is not runnable: "
@@ -316,14 +340,17 @@ class TeamDraftService:
             )
         subs = self._synthesize_subs(result.manifest, org)
         with org_scope(org):
-            row = await self._drafts.create(
+            row, created = await self._drafts.create_from_run(
                 organisation_id=org,
                 user_id=principal.principal_id,
                 name=draft_name,
                 manifest=result.manifest.model_dump(mode="json"),
                 sub_harnesses=subs,
+                team_run_id=team_run_id,
             )
-        return row, DraftVerdict.from_validate(gate)
+        if not created:  # lost the partial-unique race — return the winner's draft + its verdict
+            return row, await self._verdict(row.manifest, self._load_team(row.manifest)), False
+        return row, DraftVerdict.from_validate(gate), True
 
     @staticmethod
     def _peel_json(raw: Any, *, who: str, error_type: str) -> dict[str, Any]:
@@ -384,7 +411,9 @@ class TeamDraftService:
                 422,
                 error_type="invalid_edit_op",
             ) from exc
-        result = apply_refine(manifest, op, catalog=draft_catalog(), owner_organization_id=org)
+        result = apply_refine(
+            manifest, op, catalog=await self._catalog(), owner_organization_id=org
+        )
         verdict = DraftVerdict.from_result(result)
         if result.manifest is None or dry_run:
             return RefineOutcome(
@@ -474,7 +503,7 @@ class TeamDraftService:
     ) -> EngineTeamRun:
         subgoal = (
             f"CURRENT TEAM MANIFEST:\n{json.dumps(manifest)}\n\n"
-            f"SURVEYED CATALOG: {json.dumps(draft_catalog())}\n\n"
+            f"SURVEYED CATALOG: {json.dumps(await self._catalog())}\n\n"
             f"EDIT REQUEST: {instruction}"
         )
         team = OHMManifest(

@@ -123,3 +123,34 @@ async def test_instance_exists_raises_on_5xx() -> None:
 
     with pytest.raises(RegistryClientError):
         await _client(handler).instance_exists(_INSTANCE)
+
+
+# ── list_capabilities (#638: the live-registry union into the surveyed draft catalog) ─────────────
+async def test_list_capabilities_returns_the_org_capability_names() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/api/v1/capabilities"
+        return httpx.Response(
+            200,
+            json={
+                "capabilities": [
+                    {"id": str(uuid.uuid4()), "name": "GitHub Sink"},
+                    {"id": str(uuid.uuid4()), "name": "Web Research"},
+                    {"id": str(uuid.uuid4()), "name": None},  # a nameless row is skipped
+                ],
+                "total": 3,
+            },
+        )
+
+    names = await _client(handler).list_capabilities()
+    assert names == ["GitHub Sink", "Web Research"]  # RAW names — survey_catalog slugs them
+
+
+async def test_list_capabilities_raises_on_unreachable_and_non_2xx() -> None:
+    # the CALLER owns the degrade — the client raises like its siblings so a blip is never silent.
+    def down(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("connection refused")
+
+    with pytest.raises(RegistryClientError):
+        await _client(down).list_capabilities()
+    with pytest.raises(RegistryRejected):
+        await _client(lambda _r: httpx.Response(503, text="down")).list_capabilities()

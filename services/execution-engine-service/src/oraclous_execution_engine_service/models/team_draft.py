@@ -15,7 +15,7 @@ mapper configuration, so they must be real types.
 import uuid
 from typing import Any
 
-from sqlalchemy import Integer, String
+from sqlalchemy import Index, Integer, String, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -39,3 +39,18 @@ class EngineTeamDraft(BaseModel):
     sub_harnesses: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
     # bumped on every write (replace / applied refine) — the client's concurrent-edit signal
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    # #638: the SUCCEEDED compiler run this draft was peeled from (from-run), else NULL for a
+    # directly-created/replaced draft. A PARTIAL unique (org, team_run_id) WHERE NOT NULL makes
+    # from-run idempotent — one draft per (org, run), a reload / second tab returns the existing one
+    # — WITHOUT constraining direct drafts (which leave it NULL). Mirrors the team-run idem key.
+    team_run_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+
+    __table_args__ = (
+        Index(
+            "uq_engine_team_drafts_org_team_run",
+            "organisation_id",
+            "team_run_id",
+            unique=True,
+            postgresql_where=text("team_run_id IS NOT NULL"),
+        ),
+    )
