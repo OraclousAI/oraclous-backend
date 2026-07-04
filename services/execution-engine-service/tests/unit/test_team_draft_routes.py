@@ -118,15 +118,32 @@ async def test_from_run_is_not_captured_as_a_draft_id() -> None:
     class _Svc:
         async def create_from_run(
             self, principal: Principal, *, team_run_id: uuid.UUID, name: str | None = None
-        ) -> tuple[_Row, DraftVerdict]:
+        ) -> tuple[_Row, DraftVerdict, bool]:
             seen.append(team_run_id)
-            return _Row(), _verdict()
+            return _Row(), _verdict(), True  # created → 201
 
     run_id = uuid.uuid4()
     async with _client(_Svc()) as c:
         resp = await c.post("/v1/engine/team-drafts/from-run", json={"team_run_id": str(run_id)})
     assert resp.status_code == 201, resp.text  # not a 422 uuid-parse of "from-run"
     assert seen == [run_id]
+
+
+async def test_from_run_idempotent_repeat_is_a_200_not_a_201() -> None:
+    # #638: when the draft already existed (created=False), the route returns 200 with the SAME
+    # envelope — a client keys off the status; re-POSTing ?compile=<runId> is always safe.
+    class _Svc:
+        async def create_from_run(
+            self, principal: Principal, *, team_run_id: uuid.UUID, name: str | None = None
+        ) -> tuple[_Row, DraftVerdict, bool]:
+            return _Row(), _verdict(), False  # existing → 200
+
+    async with _client(_Svc()) as c:
+        resp = await c.post(
+            "/v1/engine/team-drafts/from-run", json={"team_run_id": str(uuid.uuid4())}
+        )
+    assert resp.status_code == 200, resp.text
+    assert "draft" in resp.json()  # the identical envelope shape
 
 
 async def test_team_run_error_maps_to_its_status_not_a_500() -> None:

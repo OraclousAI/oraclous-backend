@@ -2265,7 +2265,7 @@ paths:
   /v1/engine/team-runs/{teamRunId}:
     get:
       tags: [engine]
-      summary: Read a team run (state, per-role results, member_status, verdict, revision_rounds, refresh_delta).
+      summary: Read a team run (state, per-role results, member_status, verdict, revision_rounds, refresh_delta, plus the bound graph_id and team_name for the Results tab — #638).
       operationId: getTeamRun
       x-stability: provisional
       parameters:
@@ -2379,7 +2379,7 @@ paths:
   /v1/engine/team-drafts/from-run:
     post:
       tags: [engine]
-      summary: Seed a draft from a SUCCEEDED compiler run (201) — the engine peels the reviewer's compiled JSON, validates it through the shared importer seam, and synthesizes per-member sub-harnesses; an ineligible run is a curated 422, nothing persisted.
+      summary: Seed a draft from a SUCCEEDED compiler run — the engine peels the reviewer's compiled JSON, validates it through the shared importer seam, and synthesizes per-member sub-harnesses; an ineligible run is a curated 422, nothing persisted. IDEMPOTENT per (org, team_run_id) — #638 — 201 on the first call, 200 returning the SAME draft on a repeat (a reload / second tab on ?compile=<runId>); the envelope is identical either way, so re-POSTing is safe.
       operationId: createTeamDraftFromRun
       x-stability: provisional
       requestBody:
@@ -2388,6 +2388,7 @@ paths:
           application/json:
             schema: { $ref: "#/components/schemas/TeamDraftFromRunRequest" }
       responses:
+        "200": { $ref: "#/components/responses/UpstreamJson" }
         "201": { $ref: "#/components/responses/UpstreamJson" }
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "403": { $ref: "#/components/responses/Unauthorized" }

@@ -67,6 +67,7 @@ class _Row:
         self.manifest = kw["manifest"]
         self.sub_harnesses = kw.get("sub_harnesses", {})
         self.version = kw.get("version", 1)
+        self.team_run_id = kw.get("team_run_id")  # #638: set only on a from-run draft
         self.created_at = None
         self.updated_at = None
 
@@ -86,6 +87,23 @@ class _FakeDraftRepo:
         if row is None or row.organisation_id != organisation_id:
             return None
         return row
+
+    async def get_by_team_run(
+        self, organisation_id: uuid.UUID, team_run_id: uuid.UUID
+    ) -> _Row | None:
+        for row in self.rows.values():
+            if row.organisation_id == organisation_id and row.team_run_id == team_run_id:
+                return row
+        return None
+
+    async def create_from_run(self, **kw: Any) -> tuple[_Row, bool]:
+        # #638: idempotent — return the existing (org, team_run_id) draft if one exists, else insert
+        existing = await self.get_by_team_run(kw["organisation_id"], kw["team_run_id"])
+        if existing is not None:
+            return existing, False
+        row = _Row(**kw)
+        self.rows[row.id] = row
+        return row, True
 
     async def list_for_org(
         self, organisation_id: uuid.UUID, *, limit: int = 50, offset: int = 0
@@ -297,15 +315,32 @@ async def test_from_run_peels_validates_and_persists_with_sub_harnesses() -> Non
         "]}"
     )
     run = team_runs.seed("SUCCEEDED", _reviewer_results(compiled))
-    row, verdict = await svc.create_from_run(_principal(), team_run_id=run.id, name="from-prose")
+    row, verdict, created = await svc.create_from_run(
+        _principal(), team_run_id=run.id, name="from-prose"
+    )
+    assert created is True  # #638: a first from-run mints the draft (→ the route 201s)
     assert verdict.would_block is False
     assert row.name == "from-prose" and row.id in repo.rows
+    assert row.team_run_id == run.id  # #638: the source run is stamped for idempotency
     manifest = row.manifest
     assert {m["role"] for m in manifest["members"]} == {"researcher", "writer"}
     # per-member reasoning-only sub-harnesses were synthesized server-side (the e2e's old
     # client-side step) — so the draft is GO-able as stored
     assert set(row.sub_harnesses) == {"researcher", "writer"}
     assert row.sub_harnesses["researcher"]["metadata"]["kind"] == "agent"
+
+
+async def test_from_run_is_idempotent_per_org_and_run() -> None:
+    # #638: a second from-run for the SAME run returns the SAME draft (created=False → the route
+    # 200s), never a duplicate — a reload / second tab on ?compile=<runId> is safe.
+    svc, repo, team_runs = _service()
+    compiled = '{"members": [{"role": "researcher", "kind": "agent", "subgoal": "research"}]}'
+    run = team_runs.seed("SUCCEEDED", _reviewer_results(compiled))
+    first, _v1, c1 = await svc.create_from_run(_principal(), team_run_id=run.id)
+    second, _v2, c2 = await svc.create_from_run(_principal(), team_run_id=run.id)
+    assert c1 is True and c2 is False  # first mints, second returns the existing
+    assert second.id == first.id  # ONE draft, same id
+    assert len(repo.rows) == 1
 
 
 @pytest.mark.parametrize(

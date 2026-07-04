@@ -238,6 +238,83 @@ def test_drafts_are_org_isolated_through_the_gateway(
     assert ca.get(f"/v1/engine/team-drafts/{draft_id}").status_code == 200  # A keeps its draft
 
 
+def test_refine_with_a_live_registry_tool_applies_through_the_gateway(
+    register: Callable[..., dict], gateway_client: Callable[[str], httpx.Client]
+) -> None:
+    """#638 concern 1: a DEPLOYED connector (``github-sink``) is unioned from the live registry into
+    the surveyed catalog, so ``add_member`` with ``tools:['github-sink']`` APPLIES (validates,
+    version bumps) — while a genuinely unregistered tool still rejects F-CAPABILITY-MISSING (the
+    capability-absence gate stays fail-closed). This is the blocker: it is what stands between run
+    results and clean-delta PRs delivered into the user's own repo."""
+    user = register(f"union{uuid.uuid4().hex[:10]} u")
+    c = gateway_client(user["token"])
+    org = user["org_id"]
+    draft = c.post(
+        "/v1/engine/team-drafts",
+        json={
+            "name": "delivery team",
+            "manifest": _team(org, [_agent("researcher")]),
+            "sub_harnesses": {},
+        },
+    ).json()["draft"]
+
+    # the live-registry tool is ADMITTED by the union → the op applies + the version bumps
+    applied = c.post(
+        f"/v1/engine/team-drafts/{draft['id']}/refine",
+        json={
+            "edit_op": {
+                "op": "add_member",
+                "role": "publisher",
+                "depends_on": ["researcher"],
+                "tools": ["github-sink"],
+            }
+        },
+    )
+    assert applied.status_code == 200, applied.text
+    outcome = applied.json()
+    assert outcome["applied"] is True, f"github-sink must be admitted via the live union: {outcome}"
+    assert outcome["would_block"] is False and outcome["draft"]["version"] == 2
+    assert "publisher" in [m["role"] for m in outcome["draft"]["manifest"]["members"]]
+
+    # control: a genuinely unregistered tool STILL rejects — the union did not open the gate wide
+    blocked = c.post(
+        f"/v1/engine/team-drafts/{draft['id']}/refine",
+        json={"edit_op": {"op": "add_member", "role": "rogue", "tools": ["not-a-real-connector"]}},
+    )
+    verdict = blocked.json()
+    assert verdict["applied"] is False and verdict["would_block"] is True
+    assert any("F-CAPABILITY-MISSING" in b for b in verdict["blocking"])
+
+
+def test_team_run_read_carries_graph_id_and_team_name_through_the_gateway(
+    register: Callable[..., dict], gateway_client: Callable[[str], httpx.Client]
+) -> None:
+    """#638 concern 2: GET /v1/engine/team-runs/{id} carries the bound ``graph_id`` (the Results
+    tab's workspace) and ``team_name`` (dug from the stored manifest) — additive, non-breaking; the
+    raw manifest is never serialized."""
+    user = register(f"ctx{uuid.uuid4().hex[:10]} u")
+    c = gateway_client(user["token"])
+    org = user["org_id"]
+    gid = c.post("/api/v1/graphs", json={"name": "results-workspace"}).json()["id"]
+
+    # a gate-only team pauses immediately (keyless), bound to the graph — enough to read the context
+    gate = {"role": "author-gate", "kind": "human", "human_role": "author"}
+    created = c.post(
+        "/v1/engine/team-runs",
+        json={
+            "manifest": _team(org, [gate]),
+            "sub_harnesses": {},
+            "gate_decisions": {},
+            "graph_id": gid,
+        },
+    )
+    assert created.status_code == 202, created.text
+    read = c.get(f"/v1/engine/team-runs/{created.json()['id']}").json()
+    assert read["graph_id"] == gid  # the bound graph the Results tab reads artifacts from
+    assert read["team_name"] == "draft-loop-team"  # dug from manifest.metadata.name
+    assert "manifest" not in read  # the raw manifest is never carried on the read
+
+
 # ── the full loop (real BYOM LLM through the gateway — rule 8) ────────────────
 
 
@@ -292,6 +369,16 @@ def test_the_whole_loop_compile_draft_refine_go_through_the_gateway(
     assert set(draft["sub_harnesses"]) >= {
         m["role"] for m in draft["manifest"]["members"] if m["kind"] == "agent"
     }
+
+    # 2b) #638 concern 3 — from-run is IDEMPOTENT: a second call for the same run returns the SAME
+    # draft with a 200 (a reload / second tab on ?compile=<runId> never duplicates the draft)
+    again = c.post(
+        "/v1/engine/team-drafts/from-run",
+        json={"team_run_id": run["id"], "name": "compiled digest team"},
+    )
+    assert again.status_code == 200, again.text
+    assert again.json()["draft"]["id"] == draft["id"]  # ONE draft, same id
+    assert c.get("/v1/engine/team-drafts").json()["total"] == 1  # exactly one row for this org
 
     # 3) the draft reads back whole
     assert c.get(f"/v1/engine/team-drafts/{draft['id']}").status_code == 200

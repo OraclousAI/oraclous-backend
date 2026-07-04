@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any, cast
 from sqlalchemy import cast as sa_cast
 from sqlalchemy import delete, func, literal, select, update
 from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
@@ -66,6 +67,60 @@ class TeamDraftRepository:
                 )
             )
             return result.scalar_one_or_none()
+
+    async def get_by_team_run(
+        self, organisation_id: uuid.UUID, team_run_id: uuid.UUID
+    ) -> EngineTeamDraft | None:
+        """#638: the draft (if any) already peeled from this run — the from-run idempotency
+        fast-path (a reload / second tab returns the existing draft, its CURRENT manifest even if
+        since refined). Org-scoped (ADR-006) + RLS-backstopped (ADR-030)."""
+        async with self._session() as session:
+            result = await session.execute(
+                select(EngineTeamDraft).where(
+                    EngineTeamDraft.organisation_id == organisation_id,
+                    EngineTeamDraft.team_run_id == team_run_id,
+                )
+            )
+            return result.scalar_one_or_none()
+
+    async def create_from_run(
+        self,
+        *,
+        organisation_id: uuid.UUID,
+        user_id: uuid.UUID,
+        name: str,
+        manifest: dict[str, Any],
+        sub_harnesses: dict[str, Any],
+        team_run_id: uuid.UUID,
+    ) -> tuple[EngineTeamDraft, bool]:
+        """#638: idempotent create for from-run — one draft per ``(organisation_id, team_run_id)``.
+        Returns ``(row, created)``: ``(new, True)`` on a fresh insert; ``(existing, False)`` when a
+        concurrent from-run for the SAME run won the partial-unique race, so two concurrent calls
+        yield ONE row and the loser returns the winner's committed draft. Mirrors the team-run
+        ``create_scheduled`` dedupe (try/IntegrityError). Org-scoped + RLS-backstopped."""
+        row = EngineTeamDraft(
+            id=uuid.uuid4(),
+            organisation_id=organisation_id,
+            user_id=user_id,
+            name=name,
+            manifest=manifest,
+            sub_harnesses=sub_harnesses,
+            version=1,
+            team_run_id=team_run_id,
+        )
+        try:
+            async with self._session() as session:
+                async with session.begin():
+                    session.add(row)
+                await session.refresh(row)
+                return row, True
+        except IntegrityError:
+            # the partial unique fired — a concurrent from-run inserted first; return the winner
+            # (a fresh session/tx reads the committed row). None is a genuine anomaly → re-raise.
+            existing = await self.get_by_team_run(organisation_id, team_run_id)
+            if existing is None:
+                raise
+            return existing, False
 
     async def list_for_org(
         self,
