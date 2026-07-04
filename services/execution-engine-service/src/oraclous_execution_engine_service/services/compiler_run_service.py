@@ -22,15 +22,37 @@ from oraclous_execution_engine_service.domain.compiler_onramp import (
     draft_catalog,
 )
 from oraclous_execution_engine_service.models.team_run import EngineTeamRun
+from oraclous_execution_engine_service.services.registry_client import (
+    RegistryClient,
+    RegistryClientError,
+)
 from oraclous_execution_engine_service.services.team_run_service import (
     TeamRunError,
     TeamRunService,
 )
 
 
+async def surveyed_catalog(registry: RegistryClient | None) -> list[str]:
+    """The surveyed draft catalog for the caller's org (#638): the #596 seed inventory UNIONed with
+    the org's LIVE registry capability names. A registry outage — or no client wired (the unit
+    path) — degrades to seed-only: strictly fail-closed (a live tool is never admitted un-surveyed;
+    an unregistered tool always rejects). One seam, every catalog consumer (the compiler survey,
+    the assemble/refine validation, the op-drafter survey text)."""
+    registered: list[str] = []
+    if registry is not None:
+        try:
+            registered = await registry.list_capabilities()
+        except RegistryClientError:  # unreachable / non-2xx → seed-only, never fail-open
+            registered = []
+    return draft_catalog(registered)
+
+
 class CompilerRunService:
-    def __init__(self, *, team_runs: TeamRunService) -> None:
+    def __init__(
+        self, *, team_runs: TeamRunService, registry: RegistryClient | None = None
+    ) -> None:
         self._team_runs = team_runs
+        self._registry = registry  # #638: live-registry union into the compiler survey catalog
 
     async def create(
         self,
@@ -53,7 +75,8 @@ class CompilerRunService:
             constraints=constraints,
             success_criteria=success_criteria,
         )
-        manifest, subs = build_compiler_team(org, objective=composed, catalog=draft_catalog())
+        catalog = await surveyed_catalog(self._registry)  # #638: seed ∪ live registry (org-scoped)
+        manifest, subs = build_compiler_team(org, objective=composed, catalog=catalog)
         doc = manifest.model_dump(mode="json")
         doc["models"] = bound_models
         bound_subs = {role: {**sub, "models": bound_models} for role, sub in subs.items()}

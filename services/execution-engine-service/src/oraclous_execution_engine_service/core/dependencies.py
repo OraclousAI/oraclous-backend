@@ -289,13 +289,17 @@ def get_team_draft_repository(request: Request) -> TeamDraftRepository:
 def get_team_draft_service(
     drafts: Annotated[TeamDraftRepository, Depends(get_team_draft_repository)],
     team_runs: Annotated[TeamRunService, Depends(get_team_run_service)],
+    registry: Annotated[RegistryClient, Depends(get_registry_client)],
 ) -> TeamDraftService:
     # #635: the draft store + refine loop. `team_runs` is the SAME create/read path a client uses
     # (the op-drafter submits through it; from-run reads through it) — no second runtime seam.
+    # #638: `registry` (org-scoped by the caller's downstream headers) unions the org's LIVE
+    # capabilities into the surveyed catalog, so a deployed connector is admissible to compile.
     settings = get_settings()
     return TeamDraftService(
         drafts=drafts,
         team_runs=team_runs,
+        registry=registry,
         refine_nl_poll_seconds=settings.refine_nl_poll_seconds,
         refine_nl_poll_interval_seconds=settings.refine_nl_poll_interval_seconds,
     )
@@ -303,9 +307,11 @@ def get_team_draft_service(
 
 def get_compiler_run_service(
     team_runs: Annotated[TeamRunService, Depends(get_team_run_service)],
+    registry: Annotated[RegistryClient, Depends(get_registry_client)],
 ) -> CompilerRunService:
     # #635: the Describe door — assembles the compiler team and submits through the SAME path.
-    return CompilerRunService(team_runs=team_runs)
+    # #638: `registry` unions the org's LIVE capabilities into the compiler-survey catalog.
+    return CompilerRunService(team_runs=team_runs, registry=registry)
 
 
 PrincipalDep = Annotated[Principal, Depends(get_principal)]

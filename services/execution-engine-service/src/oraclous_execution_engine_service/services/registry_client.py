@@ -88,6 +88,27 @@ class RegistryClient:
         out: dict[str, Any] = resp.json()
         return out
 
+    async def list_capabilities(self) -> list[str]:
+        """The CALLER's org's registered capability NAMES (the registry is org-scoped by the
+        downstream headers): ``GET /api/v1/capabilities`` → ``{capabilities:[{name,…}], total}``.
+
+        #638: unioned into the surveyed draft catalog so a deployed connector (e.g. ``GitHub Sink``
+        → slug ``github-sink``) is admissible to compile/refine, not only the #596 seed inventory.
+        The names are returned RAW — ``survey_catalog``/``_slug`` normalise each to its bare slug.
+        Raises like the sibling calls (``RegistryClientError`` unreachable / ``RegistryRejected``
+        non-2xx) so the CALLER owns the degrade policy (seed-only on failure — never fail-open)."""
+        try:
+            resp = await self._client.get("/api/v1/capabilities")
+        except httpx.HTTPError as exc:  # registry unreachable — clean failure, not a 500
+            raise RegistryClientError(f"registry unreachable: {type(exc).__name__}") from exc
+        if resp.status_code // 100 != 2:  # reachable but rejected — not unreachable
+            raise RegistryRejected(resp.status_code, _render_detail(resp.text))
+        body = resp.json()
+        caps = body.get("capabilities") if isinstance(body, dict) else None
+        if not isinstance(caps, list):
+            return []
+        return [c["name"] for c in caps if isinstance(c, dict) and c.get("name")]
+
     async def instance_exists(self, instance_id: uuid.UUID) -> bool:
         """True iff a configured instance with this id exists in the CALLER's organisation (the
         registry is org-scoped by the downstream headers). #501-#5: register validates an
