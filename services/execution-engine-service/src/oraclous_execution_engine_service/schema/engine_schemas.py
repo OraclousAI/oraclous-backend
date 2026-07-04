@@ -455,6 +455,16 @@ class TeamRunOut(BaseModel):
     # derived from the governed COST_BUDGET terminal (a budget halt is always partial), so a caller
     # (and the deployed e2e) can branch on the flag without string-matching the state.
     partial: bool = False
+    # #638: read-side context the console needs (oraclous-frontend#180). ``graph_id`` is the run's
+    # bound graph (the Results tab reads artifacts from that workspace) — a direct column, so
+    # from_attributes fills it. ``team_name`` is dug from the stored manifest.metadata.name below
+    # (like the #634 list row) — additive, non-breaking.
+    graph_id: str | None = None
+    team_name: str | None = None
+    # the source for ``team_name`` (metadata.name is not itself a TeamRunOut field). Loaded from the
+    # row via from_attributes, read by the validator below, then EXCLUDED from the response — the
+    # detail read never carries the raw manifest (leanness + no accidental leak).
+    manifest: dict[str, Any] | None = Field(default=None, exclude=True, repr=False)
 
     @field_validator("member_status", "loop_state", "revision_rounds", mode="before")
     @classmethod
@@ -475,6 +485,9 @@ class TeamRunOut(BaseModel):
     def _derive_partial(self) -> TeamRunOut:
         if self.state == "COST_BUDGET":  # #585: a pooled-budget halt is always a partial run
             self.partial = True
+        # #638: dig the team name from the stored manifest (metadata.name) so every read carries it.
+        if self.team_name is None and isinstance(self.manifest, dict):
+            self.team_name = ((self.manifest.get("metadata") or {}).get("name")) or None
         return self
 
 
