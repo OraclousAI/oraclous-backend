@@ -25,6 +25,7 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
+import pytest
 from oraclous_ohm.envelope import HandoffEnvelope
 from oraclous_ohm.manifest import (
     OHMManifest,
@@ -33,6 +34,8 @@ from oraclous_ohm.manifest import (
     OHMRuntime,
 )
 from oraclous_ohm.orchestrate import run_team
+
+pytestmark = pytest.mark.unit
 
 _ORG = uuid.UUID("87654321-4321-8765-4321-876543210000")
 
