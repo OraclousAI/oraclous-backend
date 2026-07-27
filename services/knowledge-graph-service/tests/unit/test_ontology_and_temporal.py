@@ -36,6 +36,38 @@ def test_resolve_coerce_near_and_far() -> None:
     assert resolve_label(onto, "Zzz") == (None, False)  # far -> rejected
 
 
+# --- #650: an EMPTY allow-list must fail CLOSED for strict/coerce (§3.5) ------
+# RED until the [impl] lands: today `not ontology.allowed_labels` is a passthrough, so a strict
+# ontology with no labels silently degrades to open — the exact case a reject-the-unexpected
+# control must deny. Only mode="open" (or no ontology at all) may pass a label through.
+def test_resolve_strict_empty_allowlist_denies_every_label() -> None:
+    onto = Ontology((), "strict")
+    assert resolve_label(onto, "Anything") == (None, False)  # denied, not kept
+    assert resolve_label(onto, "Employee") == (None, False)  # no list = nothing is allowed
+
+
+def test_resolve_coerce_empty_allowlist_denies_every_label() -> None:
+    # coerce with nothing to coerce ONTO has no valid target — deny, never passthrough.
+    onto = Ontology((), "coerce")
+    assert resolve_label(onto, "Anything") == (None, False)
+
+
+def test_resolve_open_empty_allowlist_still_passes_through() -> None:
+    # regression guard: open stays passthrough regardless of the (empty) list.
+    assert resolve_label(Ontology((), "open"), "Anything") == ("Anything", False)
+
+
+def test_engine_strict_empty_allowlist_writes_nothing() -> None:
+    # #650 at the projection seam: a strict-no-labels ontology reaching the engine drops every
+    # node (counted as violations), instead of keeping every label the source invents.
+    rep, recipe = _csv_recipe()
+    writer = _FakeWriter()
+    result = get_recipe_engine().execute(recipe, rep, writer, ontology=Ontology((), "strict"))
+    assert result.nodes_written == 0
+    assert result.ontology_violations == 2
+    assert writer.nodes == []  # nothing written
+
+
 # --- Slice B: typed ontology shape (back-compat + round-trip) -----------------
 def test_ontology_of_parses_legacy_labels_only_shape() -> None:
     onto = Ontology.of({"allowed_labels": ["Person", "Org"], "mode": "strict"})
