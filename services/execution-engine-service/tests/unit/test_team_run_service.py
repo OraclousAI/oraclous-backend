@@ -1641,3 +1641,93 @@ async def test_resume_verdict_escalation_enqueue_failure_fails_the_run_not_phant
         await svc.advance(row.id, _principal(), {})
     assert repo.rows[row.id].state == "FAILED"  # compensated, not phantom-QUEUED
     assert repo.rows[row.id].error_message == "re_dispatch enqueue failed"
+
+
+# ── #642: grounded status + the persisted grounding_score ────────────────────────────────────
+# RED until the [impl] lands (migration 0024 adds the nullable grounding_score column; _drive
+# computes it at finalize from the per-member grounding counts the orchestrator surfaces).
+
+
+class _GroundedTeamHarness:
+    """Every member really called a tool and cited it (ok step + a claim pointing at it)."""
+
+    async def execute(self, **kw: Any) -> dict[str, Any]:
+        import json as _json
+
+        return {
+            "id": str(uuid.uuid4()),
+            "status": "SUCCEEDED",
+            "output": _json.dumps(
+                {
+                    "summary": "grounded",
+                    "driving_signals": [
+                        {"signal": "tables", "value": "a,b", "source_tool_call_id": "c1"}
+                    ],
+                }
+            ),
+            "steps": [
+                {
+                    "index": 1,
+                    "kind": "tool",
+                    "name": "pg.list_tables",
+                    "status": "ok",
+                    "tool_call_id": "c1",
+                }
+            ],
+            "total_tokens": 10,
+        }
+
+
+class _UngroundedTeamHarness:
+    """Run 1fe1bcb5's shape: the harness turn 'succeeded' but nothing was ever grounded."""
+
+    async def execute(self, **kw: Any) -> dict[str, Any]:
+        return {
+            "id": str(uuid.uuid4()),
+            "status": "SUCCEEDED",
+            "output": '{"tool":"github","action":"list_commits","args":{}}',
+            "steps": [],
+            "total_tokens": 10,
+        }
+
+
+async def test_grounded_run_persists_a_full_grounding_score() -> None:
+    repo = FakeTeamRunRepo()
+    svc, _ = _svc(repo, _GroundedTeamHarness())
+    row = await _run(
+        svc,
+        _principal(),
+        manifest=_team([_agent("collector", tools=["pg"])]),
+        sub_harnesses={},
+        gate_decisions={},
+    )
+    assert row.state == "SUCCEEDED"
+    assert row.grounding_score == 1.0  # 1/1 claims carried a valid, ok-status receipt
+
+
+async def test_regression_run_1fe1bcb5_ungrounded_run_is_failed_with_zero_score() -> None:
+    # Before #642 this exact shape billed 3,099 real tokens as a green SUCCEEDED run.
+    repo = FakeTeamRunRepo()
+    svc, _ = _svc(repo, _UngroundedTeamHarness())
+    row = await _run(
+        svc,
+        _principal(),
+        manifest=_team([_agent("analyzer", tools=["github"])]),
+        sub_harnesses={},
+        gate_decisions={},
+    )
+    assert row.state == "FAILED"  # not SUCCEEDED — zero grounded evidence
+    assert row.member_status == {"analyzer": "failed"}
+    assert row.grounding_score == 0.0
+
+
+async def test_no_tool_members_leave_grounding_score_unset() -> None:
+    # A team of pure-reasoning members has no claims to grade — score is None, not 1.0 or 0.0,
+    # and the prior status semantics hold unchanged.
+    repo, harness = FakeTeamRunRepo(), FakeHarness()
+    svc, _ = _svc(repo, harness)
+    row = await _run(
+        svc, _principal(), manifest=_team([_agent("a")]), sub_harnesses={}, gate_decisions={}
+    )
+    assert row.state == "SUCCEEDED"
+    assert row.grounding_score is None

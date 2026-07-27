@@ -8,6 +8,7 @@ through the bridge. (The durable persistence is a later wiring step.)
 
 from __future__ import annotations
 
+import json
 import uuid
 from typing import Any
 
@@ -359,3 +360,103 @@ async def test_run_team_harness_partial_member_does_not_fail_the_team() -> None:
     res = await run_team_harness(_team([_m("a")]), _PartialHarness())
     assert res.member_status["a"] == "partial"
     assert res.status == "completed"
+
+
+# --- #641/#642: grounding through the bridge --------------------------------------------------
+# The harness JSON now carries the durable step trace (with tool_call_id, #641 harness side); the
+# bridge must thread the tool steps + the member's driving_signals up to the orchestrator so a
+# TOOL-DECLARING member is graded strictly: succeeded only with ≥1 ok call AND every claim backed.
+# RED until the [impl] lands. Zero-tools members ride the existing path (proven by the tests above,
+# whose fakes return no "steps" key at all).
+class _GroundedHarness:
+    """A member that really called its tool and cited it: ok step + a claim pointing at it."""
+
+    async def execute(self, **kw: Any) -> dict[str, Any]:
+        return {
+            "id": str(uuid.uuid4()),
+            "status": "SUCCEEDED",
+            "output": json.dumps(
+                {
+                    "summary": "two tables found",
+                    "driving_signals": [
+                        {"signal": "tables", "value": "a,b", "source_tool_call_id": "c1"}
+                    ],
+                }
+            ),
+            "steps": [
+                {
+                    "index": 1,
+                    "kind": "tool",
+                    "name": "pg.list_tables",
+                    "status": "ok",
+                    "tool_call_id": "c1",
+                }
+            ],
+            "total_tokens": 10,
+        }
+
+
+class _UnknownToolHarness:
+    """Run 1fe1bcb5's collector shape: the member's ONLY call errored (unknown_tool)."""
+
+    async def execute(self, **kw: Any) -> dict[str, Any]:
+        return {
+            "id": str(uuid.uuid4()),
+            "status": "SUCCEEDED",
+            "output": "found 12 commits",
+            "steps": [
+                {
+                    "index": 1,
+                    "kind": "tool",
+                    "name": "github.list_commits",
+                    "status": "error",
+                    "tool_call_id": "c1",
+                    "detail": '{"error":"unknown_tool"}',
+                }
+            ],
+            "total_tokens": 10,
+        }
+
+
+class _PlanAsAnswerHarness:
+    """Run 8303ea8c's shape: the 'answer' is an echoed JSON tool-call plan; nothing dispatched."""
+
+    async def execute(self, **kw: Any) -> dict[str, Any]:
+        return {
+            "id": str(uuid.uuid4()),
+            "status": "SUCCEEDED",
+            "output": '{"tool":"github","action":"list_commits","args":{}}',
+            "steps": [],
+            "total_tokens": 10,
+        }
+
+
+async def test_grounded_tool_member_succeeds_through_the_bridge() -> None:
+    res = await run_team_harness(_team([_m("collector", tools=["pg"])]), _GroundedHarness())
+    assert res.member_status == {"collector": "succeeded"}
+    assert res.status == "completed"
+
+
+async def test_regression_run_1fe1bcb5_unknown_tool_member_fails_the_run() -> None:
+    res = await run_team_harness(_team([_m("collector", tools=["github"])]), _UnknownToolHarness())
+    assert res.member_status == {"collector": "failed"}
+    assert res.status == "failed"  # a green pill may no longer mean "an LLM turn completed"
+
+
+async def test_regression_run_8303ea8c_plan_as_answer_member_fails_the_run() -> None:
+    res = await run_team_harness(_team([_m("analyzer", tools=["github"])]), _PlanAsAnswerHarness())
+    assert res.member_status == {"analyzer": "failed"}
+    assert res.status == "failed"
+
+
+async def test_tool_declaring_member_is_asked_for_driving_signals() -> None:
+    # The contract is two-sided: the validator demands receipts, so the member's INPUT must tell
+    # it to cite them — a tool-declaring member's rendered input names driving_signals; a
+    # zero-tools member's input is unchanged (no new obligation on pure-reasoning stages).
+    tooled = _FakeHarness()
+    await run_team_harness(_team([_m("a", tools=["pg"])]), tooled)
+    assert "driving_signals" in tooled.calls[0]["input"]  # declares tools → must cite receipts
+
+    plain = _FakeHarness()
+    await run_team_harness(_team([_m("b")]), plain)
+    assert "driving_signals" not in plain.calls[0]["input"]  # pure-reasoning → no new obligation
