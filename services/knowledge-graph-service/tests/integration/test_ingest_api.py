@@ -283,6 +283,74 @@ async def test_ingest_sql_draft_recipe_is_409(app, async_client) -> None:
     assert "promote" in resp.json()["detail"]
 
 
+async def test_ingest_sql_loads_and_passes_the_graph_ontology(app, async_client) -> None:
+    # #654 (RED until the [impl] lands): the free-text path enforces a graph's ontology; the SQL
+    # route never even loads it, so Strict/Coerce is a silent no-op for database imports (live
+    # repro: a Strict graph gained `Employees` nodes from a table name). The route must fetch the
+    # graph's ontology and hand the PARSED domain Ontology to SqlIngestionService.ingest.
+    from oraclous_knowledge_graph_service.core.dependencies import get_ontology_service
+
+    class _RecordingSql(_FakeSqlIngestionService):
+        def __init__(self) -> None:
+            super().__init__()
+            self.kwargs: dict = {}
+
+        async def ingest(self, **kw):
+            self.kwargs = kw
+            return self.result
+
+    class _FakeOntologyService:
+        async def get(self, *, user_id, graph_id):  # noqa: ARG002 — owner gate faked
+            return {"allowed_labels": ["Employee", "Manager", "Team"], "mode": "strict"}
+
+    sql = _RecordingSql()
+    app.dependency_overrides[get_graph_service] = lambda: _FakeGraphService()
+    app.dependency_overrides[get_sql_ingestion_service] = lambda: sql
+    app.dependency_overrides[get_recipe_service] = lambda: _FakeRecipeService()
+    app.dependency_overrides[get_ontology_service] = lambda: _FakeOntologyService()
+    resp = await async_client.post(
+        f"/api/v1/graphs/{uuid.uuid4()}/ingest-sql", json={"credential_id": "c"}, headers=_AUTH
+    )
+    app.dependency_overrides.clear()
+    assert resp.status_code == 200, resp.text
+    onto = sql.kwargs.get("ontology")
+    assert onto is not None, "ingest_sql never passed the graph's ontology to the SQL service"
+    assert onto.mode == "strict"
+    assert "Employee" in onto.allowed_labels
+
+
+async def test_ingest_sql_open_ontology_passes_none_or_open(app, async_client) -> None:
+    # #654 guard: a graph with no configured ontology (the service's open default) must not
+    # break SQL ingest — the route passes None or an open ontology; either is passthrough.
+    from oraclous_knowledge_graph_service.core.dependencies import get_ontology_service
+
+    class _RecordingSql(_FakeSqlIngestionService):
+        def __init__(self) -> None:
+            super().__init__()
+            self.kwargs: dict = {}
+
+        async def ingest(self, **kw):
+            self.kwargs = kw
+            return self.result
+
+    class _OpenOntologyService:
+        async def get(self, *, user_id, graph_id):  # noqa: ARG002
+            return {"allowed_labels": [], "mode": "open"}
+
+    sql = _RecordingSql()
+    app.dependency_overrides[get_graph_service] = lambda: _FakeGraphService()
+    app.dependency_overrides[get_sql_ingestion_service] = lambda: sql
+    app.dependency_overrides[get_recipe_service] = lambda: _FakeRecipeService()
+    app.dependency_overrides[get_ontology_service] = lambda: _OpenOntologyService()
+    resp = await async_client.post(
+        f"/api/v1/graphs/{uuid.uuid4()}/ingest-sql", json={"credential_id": "c"}, headers=_AUTH
+    )
+    app.dependency_overrides.clear()
+    assert resp.status_code == 200, resp.text
+    onto = sql.kwargs.get("ontology")
+    assert onto is None or onto.mode == "open"  # never a strict surprise on an unconfigured graph
+
+
 async def test_ingest_sql_promoted_recipe_runs(app, async_client) -> None:
     # A promoted recipe is runnable — the guard lets it through to the (faked) ingest.
     _wire_ingest(app, {"id": "rcp_ok", "status": "promoted"})
