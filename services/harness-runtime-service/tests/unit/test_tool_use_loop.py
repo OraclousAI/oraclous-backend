@@ -594,3 +594,54 @@ async def test_transient_retry_respects_the_wall_time_budget(
     )
     assert result.status is HarnessStatus.FAILED
     assert llm.calls == 1  # the wall-time budget stopped the retry after the first attempt
+
+
+# --- #641: the LLM's tool_call_id must survive into the durable step trace --------------------
+# RED until the [impl] adds ``LoopStep.tool_call_id``. Today ``tc["id"]`` is used for the
+# in-transcript tool message and then DROPPED when the LoopStep is built — so nothing durable can
+# link a member's claim back to the tool call that (supposedly) produced it. Every step-creation
+# site stamps the id: the ok dispatch, the errored dispatch, and the ceiling-denied refusal.
+async def test_ok_tool_step_carries_the_tool_call_id() -> None:
+    result = await run_tool_use_loop(
+        llm=_ScriptedLLM(),  # emits ToolCall(id="c1", ...)
+        system="",
+        user_input="go",
+        tool_specs=[_SPEC],
+        dispatch=_ok_dispatch,
+        policy=_env(),
+    )
+    tool_steps = [s for s in result.steps if s.kind is StepKind.TOOL]
+    assert tool_steps, "expected at least one tool step"
+    assert all(getattr(s, "tool_call_id", None) == "c1" for s in tool_steps)
+
+
+async def test_errored_tool_step_carries_the_tool_call_id() -> None:
+    # A failed call still gets its id — #642's grading must be able to tell "this claim points at
+    # a call that ERRORED" apart from "this claim points at nothing".
+    result = await run_tool_use_loop(
+        llm=_ScriptedLLM(),
+        system="",
+        user_input="go",
+        tool_specs=[_SPEC],
+        dispatch=_boom_dispatch,
+        policy=_env(),
+    )
+    errored = [s for s in result.steps if s.kind is StepKind.TOOL and s.status == "error"]
+    assert errored and all(getattr(s, "tool_call_id", None) == "c1" for s in errored)
+
+
+async def test_ceiling_denied_step_carries_the_tool_call_id() -> None:
+    result = await run_tool_use_loop(
+        llm=_ScriptedLLM(),
+        system="",
+        user_input="go",
+        tool_specs=[_SPEC],
+        dispatch=_ok_dispatch,
+        policy=_env(ceiling=frozenset({"read"})),  # "pg" denied
+    )
+    denied = [
+        s
+        for s in result.steps
+        if s.kind is StepKind.TOOL and "capability_denied" in (s.detail or "")
+    ]
+    assert denied and all(getattr(s, "tool_call_id", None) == "c1" for s in denied)

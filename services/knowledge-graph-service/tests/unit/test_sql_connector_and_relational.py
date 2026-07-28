@@ -228,6 +228,46 @@ def test_relational_projection_rows_entities_and_fk_edges() -> None:
     assert writer.nodes[emp10]["props"]["name"] == "Ada"
 
 
+def test_relational_projection_strict_ontology_drops_off_ontology_tables() -> None:
+    # #654 regression: the live repro wrote `Employees` nodes (verbatim from the table name) into a
+    # Strict graph allowing only `Employee`. When the ontology IS passed to the engine, strict must
+    # drop both table-derived labels ("Departments"/"Employees" are off-ontology) — proving the
+    # enforcement seam works for SQL-shaped input, so the route only has to wire it in.
+    snap = _employee_dept_snapshot()
+    rows = {
+        "departments": [{"id": 1, "name": "Engineering"}],
+        "employees": [{"id": 10, "name": "Ada", "dept_id": 1}],
+    }
+    rep = decompose_relational(snap, rows, ExtractionMode.FULL)
+    recipe = build_default_relational_recipe(snap)
+    writer = _StatefulWriter()
+    from oraclous_knowledge_graph_service.domain.ontology import Ontology
+
+    result = get_recipe_engine().execute(
+        recipe, rep, writer, ontology=Ontology(("Employee", "Manager", "Team"), "strict")
+    )
+    assert writer.nodes == {}  # no off-ontology node survives a strict graph
+    assert result.ontology_violations >= 2  # both row-derived labels denied
+
+
+def test_relational_projection_coerce_ontology_remaps_table_labels() -> None:
+    # #654 regression: coerce remaps the SQL-derived plural table label onto the near-match
+    # allowed singular ("Employees" -> "Employee"), same as the free-text path.
+    snap = _employee_dept_snapshot()
+    rows = {"employees": [{"id": 10, "name": "Ada", "dept_id": None}]}
+    rep = decompose_relational(snap, rows, ExtractionMode.FULL)
+    recipe = build_default_relational_recipe(snap)
+    writer = _StatefulWriter()
+    from oraclous_knowledge_graph_service.domain.ontology import Ontology
+
+    result = get_recipe_engine().execute(
+        recipe, rep, writer, ontology=Ontology(("Employee", "Department"), "coerce")
+    )
+    assert "Employee" in writer.labels()  # remapped, not dropped
+    assert "Employees" not in writer.labels()
+    assert result.ontology_coercions >= 1
+
+
 def test_schema_only_emits_no_records() -> None:
     snap = _employee_dept_snapshot()
     rep = decompose_relational(snap, {}, ExtractionMode.SAMPLE)

@@ -359,6 +359,32 @@ def test_enforce_ontology_strict_drops_off_type_entity_and_its_edges() -> None:
     assert out.coercions == 0
 
 
+def test_enforce_ontology_strict_empty_allowlist_drops_everything() -> None:
+    # #650 (RED until the [impl] lands): strict + an EMPTY allow-list currently passes every
+    # entity through (fail-open); it must drop them all (fail-closed, §3.5) — same rule as
+    # resolve_label. The incident relationship goes with the dropped nodes.
+    from oraclous_knowledge_graph_service.domain.ontology import Ontology
+    from oraclous_knowledge_graph_service.services.ingestion_service import enforce_ontology
+
+    g = _entity_graph("Person", "Company")
+    out = enforce_ontology(g, Ontology((), "strict"))
+    assert out.graph.nodes == []  # every entity dropped — nothing is allowed
+    assert out.graph.relationships == []
+    assert out.violations == 2
+    assert out.coercions == 0
+
+
+def test_enforce_ontology_open_empty_allowlist_still_passes() -> None:
+    # regression guard for #650: open stays passthrough even with no labels configured.
+    from oraclous_knowledge_graph_service.domain.ontology import Ontology
+    from oraclous_knowledge_graph_service.services.ingestion_service import enforce_ontology
+
+    g = _entity_graph("Person", "Company")
+    out = enforce_ontology(g, Ontology((), "open"))
+    assert out.graph is g
+    assert out.violations == 0 and out.coercions == 0
+
+
 def test_enforce_ontology_coerce_remaps_near_match() -> None:
     from oraclous_knowledge_graph_service.domain.ontology import Ontology
     from oraclous_knowledge_graph_service.services.ingestion_service import enforce_ontology
