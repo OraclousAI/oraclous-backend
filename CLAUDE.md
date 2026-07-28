@@ -274,7 +274,6 @@ This discipline is enforced by skill rules through R6. From R7 onward it is addi
 The repo holds the 8 services above under `services/<service>/`, each layered `routes → services → domain → repositories → core`; shared packages live under `packages/`. New work conforms to this shape; deviations require an ADR.
 <!-- #665 stage 1: a ~48-line annotated directory tree lived here. It was stale (missing tools/, scripts/, deploy/observability drift) and fully derivable from ls; deleted rather than moved, per the /doctor guidance that derivable layouts do not belong in CLAUDE.md. -->
 
-
 ### 6.1 `packages/` is shared infrastructure
 
 Code in `packages/` is consumed by multiple services. Adding a new package requires `solution-architect` approval (via the coordinator).
