@@ -9,6 +9,7 @@ draft → peel → apply path including the 202-pending budget. The op-drafter r
 
 from __future__ import annotations
 
+import json
 import uuid
 from typing import Any
 
@@ -20,6 +21,10 @@ from oraclous_execution_engine_service.services.team_draft_service import (
 )
 from oraclous_execution_engine_service.services.team_run_service import TeamRunError
 from oraclous_governance import Principal, PrincipalType
+from oraclous_ohm.capabilities import assert_subharness_within_ceiling
+from oraclous_ohm.errors import OHMCapabilityError
+from oraclous_ohm.parse import load_ohm
+from oraclous_ohm.references import resolve_capabilities
 
 pytestmark = pytest.mark.unit
 
@@ -549,3 +554,218 @@ async def test_refine_nl_applies_to_the_current_document_not_a_pre_poll_snapshot
     assert isinstance(outcome, RefineOutcome) and outcome.applied is True
     assert outcome.row.name == "renamed-mid-poll"  # the mid-poll edit survives
     assert outcome.row.version == 3  # v1 create → v2 PUT → v3 refine apply
+
+
+# ── #659: a compiled member's declared tools must reach its sub-harness ──────
+#
+# ``build_subharness`` maps each ``tools`` entry to an ``OHMCapability``, and the harness builds
+# the model's toolset from ``capabilities[]`` ALONE (``resolve_capabilities``). A member's
+# ``tools[]`` is only the deny-by-default CEILING (``oraclous_ohm.capabilities``) — it grants
+# nothing. So a synthesized sub-harness with an empty capability set hands the model no tools at
+# all, and the ceiling check passes trivially because an empty grant is inside any ceiling.
+#
+# Every test below is RED until the [impl] for #659 lands, EXCEPT the tool-less case (AC3), which
+# is a guard: the reasoning-only path must keep working after the fix.
+
+#: in the #596 seed inventory, so a draft declaring it validates green on the seed-only unit path
+_GRANTED_TOOL = "webfetch"
+_OTHER_TOOL = "websearch"
+
+
+def _compiled_members(members: list[dict[str, Any]]) -> str:
+    """The reviewer's compiled JSON, the shape ``create_from_run`` peels."""
+    return json.dumps({"members": members})
+
+
+def _bindings(sub_doc: dict[str, Any]) -> list[str]:
+    """The tool names a synthesized sub-harness actually grants its model."""
+    return [c["binding"] for c in sub_doc.get("capabilities", [])]
+
+
+def _members_by_role(manifest: dict[str, Any]) -> dict[str, Any]:
+    from oraclous_ohm.manifest import OHMMember
+
+    return {m["role"]: OHMMember(**m) for m in manifest["members"]}
+
+
+async def _from_run(svc: TeamDraftService, team_runs: _FakeTeamRuns, members: list[dict]) -> Any:
+    run = team_runs.seed("SUCCEEDED", _reviewer_results(_compiled_members(members)))
+    row, _verdict, _created = await svc.create_from_run(_principal(), team_run_id=run.id)
+    return row
+
+
+async def test_from_run_grants_each_member_its_declared_tools_as_capabilities() -> None:
+    # AC1: a compiled member's declared tools[] populate its sub-harness capabilities[].
+    svc, _repo, team_runs = _service()
+    row = await _from_run(
+        svc,
+        team_runs,
+        [
+            {
+                "role": "reader",
+                "kind": "agent",
+                "subgoal": "fetch the diff",
+                "tools": [_GRANTED_TOOL],
+            },
+            {
+                "role": "writer",
+                "kind": "agent",
+                "subgoal": "write the review",
+                "depends_on": ["reader"],
+            },
+        ],
+    )
+    assert _bindings(row.sub_harnesses["reader"]) == [_GRANTED_TOOL]
+    # the ref is the one build_subharness synthesizes for a non-file tool (core/<slug>@1)
+    assert row.sub_harnesses["reader"]["capabilities"][0]["ref"] == f"core/{_GRANTED_TOOL}@1"
+    # a member that declared nothing is granted nothing — the grant tracks the declaration
+    assert _bindings(row.sub_harnesses["writer"]) == []
+
+
+async def test_a_tool_less_member_still_builds_a_loadable_reasoning_only_sub_harness() -> None:
+    # AC3 (guard, green today): build_subharness documents a tool-less agent as valid — the actor
+    # entrypoint loads without capabilities. The fix must not break the pure-reasoning stage.
+    svc, _repo, team_runs = _service()
+    row = await _from_run(
+        svc,
+        team_runs,
+        [{"role": "thinker", "kind": "agent", "subgoal": "reason about it"}],
+    )
+    sub = row.sub_harnesses["thinker"]
+    assert _bindings(sub) == []
+    loaded = load_ohm(sub)
+    assert loaded.runtime.entrypoint == "primary" and loaded.capabilities == []
+
+
+async def test_the_synthesized_grant_stays_within_the_member_ceiling() -> None:
+    # AC2: the grant the draft synthesizes is non-empty AND within the member's declared ceiling —
+    # so the draft is GO-able as stored through the run path's fail-closed check
+    # (``_enforce_member_ceilings`` → ``assert_subharness_within_ceiling``).
+    svc, _repo, team_runs = _service()
+    row = await _from_run(
+        svc,
+        team_runs,
+        [
+            {
+                "role": "reader",
+                "kind": "agent",
+                "subgoal": "fetch the diff",
+                "tools": [_GRANTED_TOOL, _OTHER_TOOL],
+            }
+        ],
+    )
+    by_role = _members_by_role(row.manifest)
+    assert _bindings(row.sub_harnesses["reader"])  # granted something, not an empty set
+    for role, sub_doc in row.sub_harnesses.items():
+        assert_subharness_within_ceiling(by_role[role], load_ohm(sub_doc))
+
+
+async def test_a_sub_harness_widened_past_the_member_ceiling_is_still_rejected() -> None:
+    # AC2: the ceiling still bites. Granting the declared tools must not turn the ceiling check
+    # into a rubber stamp — a sub-harness carrying a capability the member never declared is
+    # still refused (the same guard team_run_service applies before a run is queued).
+    svc, _repo, team_runs = _service()
+    row = await _from_run(
+        svc,
+        team_runs,
+        [
+            {
+                "role": "reader",
+                "kind": "agent",
+                "subgoal": "fetch the diff",
+                "tools": [_GRANTED_TOOL],
+            }
+        ],
+    )
+    widened = dict(row.sub_harnesses["reader"])
+    widened["capabilities"] = [
+        *widened.get("capabilities", []),
+        {"ref": f"core/{_OTHER_TOOL}@1", "binding": _OTHER_TOOL},  # outside the ceiling
+    ]
+    reader = _members_by_role(row.manifest)["reader"]
+    with pytest.raises(OHMCapabilityError):
+        assert_subharness_within_ceiling(reader, load_ohm(widened))
+
+
+async def test_a_granted_tool_resolves_into_a_dispatchable_capability() -> None:
+    # AC4, at the seam the runtime uses: harness_execution_service builds the model's toolset by
+    # resolving capabilities[] — an empty capability set resolves to an empty toolset, which is
+    # why run 0fc1f7f1 recorded zero kind:"tool" steps. The wire-level tool step on a real run is
+    # the deployed-stack proof, and belongs to the [impl] PR.
+    svc, _repo, team_runs = _service()
+    row = await _from_run(
+        svc,
+        team_runs,
+        [
+            {
+                "role": "reader",
+                "kind": "agent",
+                "subgoal": "fetch the diff",
+                "tools": [_GRANTED_TOOL],
+            }
+        ],
+    )
+    asked: list[str] = []
+
+    async def _resolve(ref: str, explicit_id: str | None) -> dict[str, Any]:
+        asked.append(ref)
+        return {"id": str(uuid.uuid4()), "descriptor": {"operations": [{"name": "fetch"}]}}
+
+    resolved = await resolve_capabilities(load_ohm(row.sub_harnesses["reader"]), _resolve)
+    assert set(resolved) == {_GRANTED_TOOL}  # the member is dispatchable, not tool-less
+    assert asked == [f"core/{_GRANTED_TOOL}@1"]
+
+
+async def test_run_0fc1f7f1_shape_does_not_compile_to_an_empty_capability_set() -> None:
+    # Regression for the observed run: a 9-member PR-review team where the reader declared its
+    # tools, every member SUCCEEDED, and nobody made a single tool call. (The real run also
+    # declared `github-reader`, a LIVE-registry capability; the unit path surveys the seed
+    # inventory only, so this pins the seeded half of that member's declaration.)
+    svc, _repo, team_runs = _service()
+    reviewers = [
+        {
+            "role": f"reviewer-{i}",
+            "kind": "agent",
+            "subgoal": f"review aspect {i}",
+            "depends_on": ["reader"],
+        }
+        for i in range(8)
+    ]
+    row = await _from_run(
+        svc,
+        team_runs,
+        [
+            {
+                "role": "reader",
+                "kind": "agent",
+                "subgoal": "fetch the pull request diff",
+                "tools": [_GRANTED_TOOL],
+            },
+            *reviewers,
+        ],
+    )
+    assert len(row.sub_harnesses) == 9
+    granted = {role: _bindings(sub) for role, sub in row.sub_harnesses.items()}
+    assert granted["reader"] == [_GRANTED_TOOL]
+    assert any(granted.values()), "every compiled member was dispatched with an empty toolset"
+
+
+async def test_refine_add_member_with_a_tool_grants_it_as_a_capability() -> None:
+    # AC1 on the other synthesis path: refine's add_member goes through the same
+    # ``_synthesize_subs`` seam, so a member added mid-loop must be granted its tools too.
+    svc, _repo, _ = _service()
+    row, _ = await svc.create(
+        _principal(), name="d", manifest=_team([_member("a")]), sub_harnesses={}
+    )
+    outcome = await svc.refine(
+        row.id,
+        _principal(),
+        edit_op={
+            "op": "add_member",
+            "role": "fact-checker",
+            "depends_on": ["a"],
+            "tools": [_OTHER_TOOL],
+        },
+    )
+    assert outcome.applied is True and outcome.verdict.would_block is False
+    assert _bindings(outcome.row.sub_harnesses["fact-checker"]) == [_OTHER_TOOL]
