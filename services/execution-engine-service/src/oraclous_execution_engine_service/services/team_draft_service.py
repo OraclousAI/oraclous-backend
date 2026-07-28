@@ -181,9 +181,19 @@ class TeamDraftService:
         org: uuid.UUID,
         existing: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """A reasoning-only sub-harness per member that lacks one (the #594 e2e's client-side
-        step, moved server-side): its sub-goal as the body, ``tools=[]`` — the validator already
-        proved the declared tool ceilings resolve. Existing sub-harnesses are kept verbatim."""
+        """A sub-harness per member that lacks one (the #594 e2e's client-side step, moved
+        server-side): its sub-goal as the body, and its DECLARED tools as the grant.
+
+        #659: the member's ``tools[]`` is only the deny-by-default CEILING — it grants nothing. The
+        harness builds the model's toolset from the sub-harness ``capabilities[]`` alone, so
+        synthesizing with ``tools=[]`` dispatched every compiled member with an empty toolset (run
+        ``0fc1f7f1``: nine members, zero tool calls) while the ceiling check passed trivially,
+        because an empty grant is inside any ceiling. For a SYNTHESIZED sub-harness the only
+        sensible grant is exactly what the member declared, so the grant is the ceiling — and stays
+        within it by construction. A hand-authored or imported sub-harness may still narrow below
+        the ceiling; existing sub-harnesses are kept verbatim. A tool-less member still yields a
+        loadable reasoning-only sub-harness (``build_subharness`` documents the empty case).
+        """
         subs = dict(existing or {})
         for m in manifest.members:
             if m.role in subs or m.kind != "agent":
@@ -192,7 +202,7 @@ class TeamDraftService:
                 m.role,
                 owner_organization_id=org,
                 body=(m.subgoal or f"You are the {m.role}. Complete your part of the objective."),
-                tools=[],
+                tools=list(m.tools),
             ).model_dump(mode="json")
         return subs
 
