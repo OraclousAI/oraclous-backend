@@ -391,8 +391,6 @@ The previous Oraclous backend codebase is available **read-only** at:
 It is a **git worktree pinned to the `develop` branch** of the previous backend repository. `develop` is the most current branch of that codebase.
 
 For the lift-vs-rewrite rubric and how to honour a `Lift`/`Reshape`/`Extract`/`Greenfield` lift-tag, use the `legacy-lift-and-reshape` skill.
-<!-- #665 stage 1: former 12.1-12.2 (migration-not-rewrite default, the four lift-tags, the flag-to-product-planner rule) moved verbatim into .claude/skills/legacy-lift-and-reshape. It is a multi-step decision procedure, which the memory docs route to a skill; the 12.3 prohibitions stayed here. -->
-
 
 ### 12.3 Rules for the legacy reference
 
@@ -429,5 +427,3 @@ When you find a gap in this file — something an agent needed and couldn't find
 ## 15. Resuming after a context reset
 
 Lost prior session context mid-task? Use the `resume-after-context-reset` skill for the recovery procedure.
-<!-- #665 stage 1: the 8-step recovery checklist moved verbatim into .claude/skills/resume-after-context-reset. It is only needed after a context loss, so it loads on invocation instead of every session. -->
-
