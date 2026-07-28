@@ -75,8 +75,6 @@ Canonical residency map: [Session topology and persona residency](https://oraclo
 **The `oraclous-knowledge` git repository is canonical.** It is the single source of truth for architecture, ADRs, governance, and engineering process. **Confluence is now a read-only mirror** of that knowledge base — consult it for convenience, but when it disagrees with `oraclous-knowledge` or with shipped reality, the knowledge repo wins. When this file disagrees with the canonical knowledge base, the knowledge base wins; open a `docs-writer` issue to reconcile this file.
 
 This file summarises the backend invariants and points at the knowledge base for everything that evolves. The pages an agent in this repo consults most often are indexed in [`docs/knowledge-links.md`](docs/knowledge-links.md).
-<!-- #665 stage 1: the 17-row per-page URL table that lived here moved verbatim to docs/knowledge-links.md. It is a lookup index, not a rule — read on demand there instead of loading every session. -->
-
 
 The master board for all work is **GitHub Issues + PRs**, not any of the above. Work is organised as Goals (releases) → Projects (epics) → Issues; agents pick up issues by assignee/label, driven via the `gh` CLI. Your work is whatever is assigned to you on GitHub (see §5).
 
