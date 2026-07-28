@@ -95,8 +95,10 @@ GROUNDING_DIRECTIVE = (
     "Every factual claim in your output must be BACKED BY A TOOL CALL YOU ACTUALLY MADE. Alongside "
     "your substantive output, emit a JSON object with a `driving_signals` array: one entry per "
     'claim, each {"signal": <what you claim>, "value": <the value>, "source_tool_call_id": <the id '
-    "of YOUR tool call that produced it>}. A claim with no source_tool_call_id, or one citing a "
-    "call that failed or that you did not make, is treated as ungrounded and FAILS your step."
+    "of YOUR tool call that produced it>}. Copy that id VERBATIM from the "
+    "`[receipt: source_tool_call_id=...]` line at the end of the tool result you used — never "
+    "invent one and never use the tool's name. A claim with no source_tool_call_id, or one citing "
+    "a call that failed or that you did not make, is ungrounded and FAILS your step."
 )
 
 

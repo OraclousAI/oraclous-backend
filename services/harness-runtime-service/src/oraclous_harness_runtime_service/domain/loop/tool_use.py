@@ -341,8 +341,18 @@ async def run_tool_use_loop(
                         json.dumps({"error": type(exc).__name__, "detail": str(exc)}), redactors
                     )
                     status = "error"
+            # #642: show the receipt id INSIDE the tool result the model reads. The provider's
+            # `tool_call_id` field is transport metadata the model never sees, so a member asked to
+            # cite its receipts could only guess — real models cited the tool NAME, a chunk id, or
+            # "1", and were failed for it despite having really made the call. The visible receipt
+            # line is what makes the grounding contract satisfiable rather than a trap.
             messages.append(
-                {"role": "tool", "tool_call_id": tc["id"], "name": tc["name"], "content": content}
+                {
+                    "role": "tool",
+                    "tool_call_id": tc["id"],
+                    "name": tc["name"],
+                    "content": f"{content}\n[receipt: source_tool_call_id={tc['id']}]",
+                }
             )
             steps.append(
                 LoopStep(
