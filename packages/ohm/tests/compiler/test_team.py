@@ -108,3 +108,24 @@ def test_the_planner_composes_from_the_seed_reference_topologies() -> None:
     assert planner.subgoal and "summarise the week's news" in planner.subgoal
     for shape in ("fan-out-fan-in", "standing-team", "gated-pipeline"):
         assert shape in planner.subgoal, f"the seed shape {shape!r} is seeded into the planner"
+
+
+# ── the reviewer prompt must not fight the run's grounding directive ─────────
+
+
+def test_reviewer_prompt_asks_for_the_grounding_receipt_alongside_the_team() -> None:
+    """The reviewer declares ``manifest-validate``, so the engine appends GROUNDING_DIRECTIVE to
+    its input and grades it on a ``driving_signals`` receipt (#642). This prompt used to answer
+    that with "Reply IMMEDIATELY with ONLY that team JSON ... STOP", i.e. two instructions the
+    model cannot both obey — so it satisfied one at random and compiles failed on a coin flip
+    (run ``afc3b2c4``: 3 ok manifest-validate calls, a valid manifest, no receipt -> the member
+    failed for unbacked claims; run ``8097a667``: receipt present -> the draft peel choked on it).
+    Both instructions have to be satisfiable at once.
+    """
+    from oraclous_ohm.compiler.prompts import REVIEWER_PROMPT
+
+    assert "driving_signals" in REVIEWER_PROMPT
+    # the receipt is additive to the team JSON, never a replacement for it
+    assert "BOTH required" in REVIEWER_PROMPT
+    # and the exclusive phrasing that forbade it must not come back
+    assert "ONLY that team JSON" not in REVIEWER_PROMPT
