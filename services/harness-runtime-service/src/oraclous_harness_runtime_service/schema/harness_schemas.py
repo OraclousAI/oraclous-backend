@@ -83,6 +83,9 @@ class StepOut(BaseModel):
     name: str  # the model role for an llm step; the capability binding for a tool step
     status: str  # "ok" | "error" (tool) / "answer" | "tool_calls" (llm)
     detail: str | None = None
+    # #641: the LLM's id for the tool call this step records — the receipt a member's claim cites.
+    # None for an LLM/gate step AND for traces persisted before #641 (back-compat, no migration).
+    tool_call_id: str | None = None
 
 
 class HarnessExecutionOut(BaseModel):

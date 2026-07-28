@@ -76,6 +76,10 @@ class LoopStep:
     name: str
     status: str
     detail: str | None = None
+    # #641: the LLM's own id for the tool call this step records (None for an LLM/gate step). It is
+    # what makes a member's later claim resolvable back to the call that produced it — without it
+    # nothing durable links a driving_signal to a dispatch that actually ran.
+    tool_call_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -285,6 +289,7 @@ async def run_tool_use_loop(
                         f"{spec.binding}.{spec.operation}",
                         "error",
                         _truncate(content),
+                        tool_call_id=tc["id"],
                     )
                 )
                 continue
@@ -339,7 +344,16 @@ async def run_tool_use_loop(
             messages.append(
                 {"role": "tool", "tool_call_id": tc["id"], "name": tc["name"], "content": content}
             )
-            steps.append(LoopStep(len(steps), StepKind.TOOL, step_name, status, _truncate(content)))
+            steps.append(
+                LoopStep(
+                    len(steps),
+                    StepKind.TOOL,
+                    step_name,
+                    status,
+                    _truncate(content),
+                    tool_call_id=tc["id"],
+                )
+            )
         return None
 
     # Resume: finish the paused turn (the approved gated call + any remaining), then continue.
