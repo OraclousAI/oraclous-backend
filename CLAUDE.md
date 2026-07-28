@@ -291,55 +291,6 @@ This discipline is enforced by skill rules through R6. From R7 onward it is addi
 
 The repo holds the 8 services above under `services/<service>/`, each layered `routes → services → domain → repositories → core`; shared packages live under `packages/`. New work conforms to this shape; deviations require an ADR.
 
-```
-oraclous-backend/
-├── CLAUDE.md                       # this file
-├── README.md                       # human-facing onboarding (operator perspective)
-├── pyproject.toml                  # monorepo root; uv workspace config
-├── uv.lock
-├── .python-version
-├── .editorconfig
-├── .gitignore
-├── ruff.toml
-├── pytest.ini                      # markers: unit, integration, security,
-│                                   # isolation, byom, organization_isolation
-├── .githooks/
-│   └── commit-msg                  # enforces commit policy (§4.5); wired via core.hooksPath
-├── .github/
-│   ├── workflows/
-│   │   ├── ci.yml                  # quality (ruff + collect), tests, type-check on every PR
-│   │   ├── security.yml            # security-marked test gate
-│   │   └── release.yml             # image build + push on tag
-│   └── CODEOWNERS                  # routes review requests
-├── deploy/
-│   ├── docker-compose.yml          # local self-hosted stack
-│   ├── helm/                       # cloud-hosted production charts
-│   └── observability/              # logging, metrics, traces configs
-├── packages/                       # shared libraries
-│   ├── ohm/                        #   OHM types and validators
-│   ├── substrate/                  #   ReBAC client, provenance collector
-│   ├── governance/                 #   organisation_id propagation utilities
-│   ├── provenance/                 #   telemetry, errors, logging
-│   ├── rebac/
-│   ├── telemetry/
-│   └── errors/
-├── services/                       # one directory per service
-│   ├── auth-service/               #   Each service has:
-│   ├── credential-broker-service/  #     - src/<service_name>/
-│   ├── knowledge-graph-service/    #     - Dockerfile
-│   ├── knowledge-retriever-service/#     - pyproject.toml
-│   ├── capability-registry-service/#     - README.md (operator-facing)
-│   ├── harness-runtime-service/    #     - tests/
-│   ├── execution-engine-service/
-│   └── application-gateway-service/
-└── tests/                          # cross-service integration tests
-    ├── integration/
-    ├── security/
-    ├── isolation/
-    ├── byom/
-    └── organization_isolation/
-```
-
 ### 6.1 `packages/` is shared infrastructure
 
 Code in `packages/` is consumed by multiple services. Adding a new package requires `solution-architect` approval (via the coordinator).
