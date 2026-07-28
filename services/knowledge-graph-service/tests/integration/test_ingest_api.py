@@ -14,6 +14,7 @@ import pytest
 from oraclous_knowledge_graph_service.core.dependencies import (
     get_graph_service,
     get_job_service,
+    get_ontology_service,
     get_recipe_service,
     get_sql_ingestion_service,
 )
@@ -198,6 +199,13 @@ class _FakeSqlIngestionService:
         return self.result
 
 
+class _UnconfiguredOntologyService:
+    """A graph with no ontology set — the service's open default (#654 wiring; no DB in this app)."""
+
+    async def get(self, *, user_id, graph_id):  # noqa: ARG002 — owner gate faked
+        return {"allowed_labels": [], "mode": "open"}
+
+
 @pytest.fixture
 def sql_client(app, async_client):
     graphs = _FakeGraphService()
@@ -205,6 +213,7 @@ def sql_client(app, async_client):
     app.dependency_overrides[get_graph_service] = lambda: graphs
     app.dependency_overrides[get_sql_ingestion_service] = lambda: sql
     app.dependency_overrides[get_recipe_service] = lambda: _FakeRecipeService()
+    app.dependency_overrides[get_ontology_service] = lambda: _UnconfiguredOntologyService()
     yield async_client, graphs, sql
     app.dependency_overrides.clear()
 
@@ -268,6 +277,7 @@ def _wire_ingest(app, recipe: dict) -> None:
     app.dependency_overrides[get_graph_service] = lambda: _FakeGraphService()
     app.dependency_overrides[get_sql_ingestion_service] = lambda: _FakeSqlIngestionService()
     app.dependency_overrides[get_recipe_service] = lambda: _FakeRecipeService(recipe=recipe)
+    app.dependency_overrides[get_ontology_service] = lambda: _UnconfiguredOntologyService()
 
 
 async def test_ingest_sql_draft_recipe_is_409(app, async_client) -> None:
