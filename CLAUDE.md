@@ -283,18 +283,7 @@ A service owns its own code, tests, Dockerfile, and operator-facing README. Cros
 
 ## 7. Services
 
-Eight backend services from [04. Services Reference](https://oraclous.atlassian.net/wiki/spaces/OP/pages/786433) *(read-only mirror)*. Consult the service's reference page before touching its directory.
-
-| Service | Layer | Reference (read-only mirror) | Target shape in |
-| --- | --- | --- | --- |
-| `auth-service` | Substrate | [Page 622756](https://oraclous.atlassian.net/wiki/spaces/OP/pages/622756) | R1 |
-| `credential-broker-service` | Substrate | [Page 753812](https://oraclous.atlassian.net/wiki/spaces/OP/pages/753812) | R1 |
-| `knowledge-graph-service` | Substrate | [Page 753832](https://oraclous.atlassian.net/wiki/spaces/OP/pages/753832) | R3 |
-| `knowledge-retriever-service` | Substrate | [Page 622776](https://oraclous.atlassian.net/wiki/spaces/OP/pages/622776) | R3 |
-| `capability-registry-service` | Capability Registry | [Page 884757](https://oraclous.atlassian.net/wiki/spaces/OP/pages/884757) | R2 |
-| `harness-runtime-service` | Harness Runtime | [Page 688350](https://oraclous.atlassian.net/wiki/spaces/OP/pages/688350) | R4 |
-| `execution-engine-service` | Harness Runtime | [Page 884777](https://oraclous.atlassian.net/wiki/spaces/OP/pages/884777) | R5 |
-| `application-gateway-service` | Application Gateway | [Page 131124](https://oraclous.atlassian.net/wiki/spaces/OP/pages/131124) | R6 |
+Eight backend services from [04. Services Reference](https://oraclous.atlassian.net/wiki/spaces/OP/pages/786433) *(read-only mirror)*. Each service directory carries its own `services/<service>/CLAUDE.md` naming its layer, target shape, and reference page — it loads automatically when you work in that directory. Consult the service's reference page before touching its directory.
 
 Some services exist in legacy form at `/Users/reza/workspace/OraclousAI/legacy-reference/old-backend/` (worktree pinned to `develop`). Read [Section 8 — Consolidation and Migration Plan](https://oraclous.atlassian.net/wiki/spaces/OP/pages/688329) before touching any service to understand which migration phase you are in.
 
