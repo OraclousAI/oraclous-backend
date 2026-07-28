@@ -90,10 +90,12 @@ class Settings(BaseSettings):
 
     # --- SQL relational ingest (#307) ---
     # The credential broker the SQL ingest resolves a stored `connection_string` from by id.
-    # `fake` (dev/CI default): a deterministic, key-free broker that returns
-    # `credential_broker_fake_dsn` for any id — so the SQL-ingest path reaches a real end-to-end
-    # test without the broker. `real`: POST /internal/resolve-credential with X-Internal-Key.
-    credential_broker_mode: Literal["fake", "real"] = "fake"
+    # `real` (the DEFAULT, #653): POST /internal/resolve-credential with X-Internal-Key — an
+    # unconfigured deploy then FAIL-CLOSES (a loud CredentialResolutionError → 422 at ingest time).
+    # `fake` is an EXPLICIT dev/CI opt-in only: a deterministic, key-free broker that IGNORES the
+    # caller's `credential_id` and returns `credential_broker_fake_dsn` — as a silent default it
+    # swapped a real user's credential for the platform's OWN Postgres (§3.5; mirrors #295 for CRS).
+    credential_broker_mode: Literal["fake", "real"] = "real"
     credential_broker_base_url: str | None = None
     # The DSN the FAKE broker returns (only read in fake mode). Defaults to this service's own
     # Postgres so a dev SQL ingest has a live DB to read; override per test/deployment.
