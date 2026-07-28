@@ -152,9 +152,9 @@ class Ontology:
 def resolve_label(ontology: Ontology | None, label: str) -> tuple[str | None, bool]:
     """Return (resolved_label_or_None, was_coerced). None => the node is rejected.
 
-    #650: only "no ontology at all" and mode="open" are passthrough. A strict/coerce ontology with
-    an EMPTY allow-list denies every label — the empty list is the exact case a reject-the-unexpected
-    control must deny, and treating it as passthrough silently degraded strict to open (§3.5).
+    #650: only "no ontology at all" and mode="open" are passthrough. A strict/coerce ontology
+    with an EMPTY allow-list denies every label — the empty list is the exact case a
+    reject-the-unexpected control must deny, and passthrough silently degraded strict to open.
     """
     if ontology is None or ontology.mode == "open":
         return label, False

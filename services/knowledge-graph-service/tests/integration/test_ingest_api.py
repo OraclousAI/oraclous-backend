@@ -200,7 +200,7 @@ class _FakeSqlIngestionService:
 
 
 class _UnconfiguredOntologyService:
-    """A graph with no ontology set — the service's open default (#654 wiring; no DB in this app)."""
+    """A graph with no ontology set — the service's open default (#654; no DB in this app)."""
 
     async def get(self, *, user_id, graph_id):  # noqa: ARG002 — owner gate faked
         return {"allowed_labels": [], "mode": "open"}

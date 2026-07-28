@@ -163,9 +163,9 @@ async def ingest_sql(
                 status_code=status.HTTP_409_CONFLICT,
                 detail=f"recipe {body.recipe_id!r} is a draft; promote it before ingesting",
             )
-    # #654: the graph's ontology gates the SQL path exactly like the free-text one. Without this the
-    # route never loaded it, so Strict/Coerce was a silent no-op for database imports (a Strict graph
-    # gained `Employees` nodes verbatim from a table name). The engine enforces it at projection.
+    # #654: the graph's ontology gates the SQL path exactly like the free-text one. The route never
+    # loaded it, so Strict/Coerce was a silent no-op for database imports (a Strict graph gained
+    # `Employees` nodes verbatim from a table name). The engine enforces it at projection time.
     ontology = Ontology.of(await ontologies.get(user_id=user_id, graph_id=graph_id))
     try:
         result = await sql_service.ingest(

@@ -25,7 +25,12 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from oraclous_ohm.aggregate import aggregate_reduce
 from oraclous_ohm.dag import topological_stages
-from oraclous_ohm.envelope import HandoffEnvelope, build_handoff
+from oraclous_ohm.envelope import (
+    HandoffEnvelope,
+    build_handoff,
+    grounding_counts,
+    validate_grounding,
+)
 from oraclous_ohm.errors import OHMError
 from oraclous_ohm.gate import gate_verb
 from oraclous_ohm.manifest import OHMLoop, OHMManifest, OHMMember, OHMOrchestration, OHMRunIf
@@ -74,6 +79,10 @@ class TeamRunResult(BaseModel):
     member_status: dict[str, str] = Field(default_factory=dict)
     # role -> the failure detail for a "failed" member (leak-safe str of the dispatch error)
     member_errors: dict[str, str] = Field(default_factory=dict)
+    # #642: role -> {"grounded": int, "total": int} for every TOOL-DECLARING member, so the engine
+    # can persist a run-level grounding score. A zero-tools member makes no claims and gets no
+    # bucket — an all-reasoning team has no score, which is not the same as a score of zero.
+    member_grounding: dict[str, dict[str, int]] = Field(default_factory=dict)
     # PR-C (ADR-043 #552): per-loop checkpoint — "<loop_index>" -> {round, started_at, status}. The
     # hybrid driver sets it so the engine can persist it + resume a loop at a round boundary.
     loop_state: dict[str, Any] = Field(default_factory=dict)
@@ -272,6 +281,7 @@ async def run_team(
     # failure detail for failed members. Seeded members (``done``) are recorded succeeded as run.
     member_status: dict[str, str] = {}
     member_errors: dict[str, str] = {}
+    member_grounding: dict[str, dict[str, int]] = {}  # #642: per tool-declaring member (claims)
     # team-level termination (ADR-035): a wall-clock deadline for the whole DAG run. max_rounds /
     # convergence apply to the cyclic/B2 path, not this single-pass DAG; max_wall_seconds binds.
     _max_wall = (
@@ -305,6 +315,37 @@ async def run_team(
         to a human GATE too (a gate with a failed upstream is unproducible input — BLOCK, never
         PAUSE the run on it)."""
         return any(member_status.get(d) in ("failed", "blocked") for d in by_role[role].depends_on)
+
+    def _grade_grounding(role: str) -> None:
+        """#642: grade a TOOL-DECLARING member on its receipts, after it dispatched successfully.
+
+        A member that declared tools claims to have USED them, so "the LLM turn finished" is not
+        evidence it did (run ``1fe1bcb5`` billed 3,099 tokens for an echoed tool-call plan and an
+        ``unknown_tool``-only member, both green). The grade is strict by decision — succeeded only
+        when every ``driving_signal`` resolves to an ``ok`` tool step of the member's OWN trace,
+        else ``failed``, which keeps the member re-runnable through the existing rerun path. A
+        zero-tools (pure-reasoning) member makes no claims and is not graded.
+        """
+        out = results.get(role)
+        parts = out if isinstance(out, list) else [out]  # a fan-out member grades over every item
+        steps: list[dict[str, Any]] = []
+        signals: list[dict[str, Any]] = []
+        for part in parts:
+            if isinstance(part, dict):
+                # The trace is TRANSPORT for this grade, not part of the member's output: consume it
+                # so the persisted results (and every downstream hand-off payload) stay lean and a
+                # member's stored output is byte-for-byte what it was before #642.
+                steps.extend(part.pop("steps", None) or [])
+                signals.extend(part.pop("driving_signals", None) or [])
+        member = by_role[role]
+        if not member.tools or member_status.get(role) not in ("succeeded", "partial"):
+            return
+        grounded, total = grounding_counts(signals, steps)
+        member_grounding[role] = {"grounded": grounded, "total": total}
+        errors = validate_grounding(signals, steps)
+        if errors:
+            member_status[role] = "failed"
+            member_errors[role] = f"grounding: {'; '.join(errors)}"[:2000]
 
     async def run_member(role: str) -> None:
         nonlocal budget_exhausted
@@ -412,6 +453,7 @@ async def run_team(
                     isinstance(reduced, dict) and reduced.get("status") == "PARTIAL"
                 ) or any(isinstance(o, dict) and o.get("status") == "PARTIAL" for o in outputs)
                 member_status[role] = "partial" if degraded else "succeeded"
+                _grade_grounding(role)  # #642: a tool-declaring fan-out member needs receipts too
                 return
             else:
                 # #585: the pre-dispatch pooled ceiling gate for a single (non-fan-out) member —
@@ -440,6 +482,7 @@ async def run_team(
         member_status[role] = (
             "partial" if isinstance(out, dict) and out.get("status") == "PARTIAL" else "succeeded"
         )
+        _grade_grounding(role)  # #642: claims need receipts before this member counts as delivered
 
     # Stage fan-out cap (#543): bound how many members dispatch concurrently so a wide stage cannot
     # self-throttle the shared BYOM key. Wraps the run_member calls (NOT the inner fan_out dispatch,
@@ -487,6 +530,7 @@ async def run_team(
                 paused_at=pause_at,
                 member_status=member_status,
                 member_errors=member_errors,
+                member_grounding=member_grounding,
             )
         rejected = [g for g in stage_gates if gate_verb(gates.get(g)) == "reject"]
         if rejected and not already_failed:  # the author rejected — halt; downstream does not run
@@ -499,6 +543,7 @@ async def run_team(
                 paused_at=rejected,
                 member_status=member_status,
                 member_errors=member_errors,
+                member_grounding=member_grounding,
             )
         if (pause_at or rejected) and already_failed:
             break  # a recorded failure outranks the gate → fall through to the "failed" verdict
@@ -540,6 +585,7 @@ async def run_team(
             status="cost_budget",
             member_status=member_status,
             member_errors=member_errors,
+            member_grounding=member_grounding,
             partial=True,
         )
     final_status = "failed" if has_failure else "completed"
@@ -551,6 +597,7 @@ async def run_team(
         status=final_status,
         member_status=member_status,
         member_errors=member_errors,
+        member_grounding=member_grounding,
     )
 
 

@@ -114,7 +114,7 @@ class RealCredentialBroker:
 
 
 def make_credential_broker(settings) -> CredentialBrokerPort:
-    """Build the broker from config: real (the default) or fake (an explicit dev/CI opt-in, #653)."""
+    """Build the broker from config: real (the default) or fake (explicit dev/CI opt-in, #653)."""
     if settings.credential_broker_mode == "fake":
         return FakeCredentialBroker(default_dsn=settings.credential_broker_fake_dsn)
     if not settings.credential_broker_base_url or not settings.internal_service_key:

@@ -13,6 +13,7 @@ survives across requests) is the next wiring step on a team-run model + the task
 from __future__ import annotations
 
 import json
+import re
 import time
 import uuid
 from collections.abc import Callable
@@ -85,6 +86,20 @@ EXECUTION_DIRECTIVE = (
 )
 
 
+# #642 — the OTHER half of the grounding contract. ``validate_grounding`` demands that every claim
+# cite the tool call that produced it, so a member that DECLARED tools must be told to emit those
+# citations; grading a member against a rule it was never given would be unfair (and would fail
+# every honest run). Sent only to tool-declaring members — a pure-reasoning stage makes no claims
+# and carries no new obligation, so its input is byte-for-byte unchanged.
+GROUNDING_DIRECTIVE = (
+    "Every factual claim in your output must be BACKED BY A TOOL CALL YOU ACTUALLY MADE. Alongside "
+    "your substantive output, emit a JSON object with a `driving_signals` array: one entry per "
+    'claim, each {"signal": <what you claim>, "value": <the value>, "source_tool_call_id": <the id '
+    "of YOUR tool call that produced it>}. A claim with no source_tool_call_id, or one citing a "
+    "call that failed or that you did not make, is treated as ungrounded and FAILS your step."
+)
+
+
 # #602 (ADR-048 §3) — the seeded-refresh COST LEVER. When a run is seeded from a prior run
 # (``seed_from_run_id``), the producing (sink) member receives ITS OWN prior records here, with this
 # directive to carry forward the unchanged ones instead of re-deriving them (the token saving). The
@@ -142,7 +157,39 @@ def render_member_input(
         parts.append(REFRESH_CARRY_FORWARD_DIRECTIVE)
         parts.append(f"Your prior records ({len(refresh_records)}):\n{json.dumps(refresh_records)}")
     parts.append(EXECUTION_DIRECTIVE)
+    if member.tools:  # #642: a member that declared tools is graded on receipts — ask for them
+        parts.append(GROUNDING_DIRECTIVE)
     return "\n\n".join(parts)
+
+
+def parse_driving_signals(output: Any) -> list[dict[str, Any]]:
+    """#642: the member's claims, out of its real harness output (text, or an already-parsed dict).
+
+    A member emits its ``driving_signals`` inside its answer (the GROUNDING_DIRECTIVE asks for a
+    JSON object), so they are extracted here rather than assumed to arrive structured. Fail-soft:
+    unparseable output yields no claims, which the strict grade then treats as ungrounded — the
+    fail-CLOSED direction.
+    """
+    if isinstance(output, dict):
+        raw = output.get("driving_signals")
+        return [s for s in raw if isinstance(s, dict)] if isinstance(raw, list) else []
+    if not isinstance(output, str) or "driving_signals" not in output:
+        return []
+    candidates: list[str] = []
+    match = re.search(r"\{.*\}", output, re.DOTALL)  # the widest embedded JSON object
+    if match is not None:
+        candidates.append(match.group(0))
+    array = re.search(r'"driving_signals"\s*:\s*(\[.*?\])', output, re.DOTALL)
+    if array is not None:
+        candidates.append('{"driving_signals": ' + array.group(1) + "}")
+    for candidate in candidates:
+        try:
+            parsed = json.loads(candidate)
+        except ValueError:
+            continue
+        if isinstance(parsed, dict) and isinstance(parsed.get("driving_signals"), list):
+            return [s for s in parsed["driving_signals"] if isinstance(s, dict)]
+    return []
 
 
 def refresh_dispatch_args(
@@ -270,7 +317,23 @@ def make_harness_dispatch(
                 f"member {member.role!r} harness did not succeed: {status}"
                 + (f" — {detail}" if detail else "")
             )
-        return {"output": result.get("output"), "status": status}
+        # #642: thread the member's durable step trace (with #641's tool_call_ids) and the claims it
+        # made up to the orchestrator, which grades a tool-declaring member on whether each claim
+        # resolves to an ok call of its own. A harness response with no `steps` key predates #641
+        # and reports no trace — it is threaded as an empty one, so an unproven claim never passes.
+        # A harness that reports its claims structurally is taken at its word; otherwise they are
+        # parsed out of the member's own answer, where the directive asked it to put them.
+        reported = result.get("driving_signals")
+        return {
+            "output": result.get("output"),
+            "status": status,
+            "steps": result.get("steps") or [],
+            "driving_signals": (
+                [s for s in reported if isinstance(s, dict)]
+                if isinstance(reported, list)
+                else parse_driving_signals(result.get("output"))
+            ),
+        }
 
     return dispatch
 
