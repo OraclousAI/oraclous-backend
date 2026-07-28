@@ -164,6 +164,9 @@ class _RunRow:
 class _FakeTeamRuns:
     """The TeamRunService seam refine-nl/from-run consume: create (submit) + get (poll/read)."""
 
+    #: what the faked op-drafter member answers — overridable so a test can append a #641 receipt
+    op_drafter_output = '{"op": "add_depends_on", "role": "b", "depends_on": "a"}'
+
     def __init__(self) -> None:
         self.runs: dict[uuid.UUID, _RunRow] = {}
         self.created: list[dict[str, Any]] = []
@@ -182,12 +185,7 @@ class _FakeTeamRuns:
         self.created.append(kw)
         row = _RunRow(
             "SUCCEEDED",
-            {
-                "op-drafter": {
-                    "output": '{"op": "add_depends_on", "role": "b", "depends_on": "a"}',
-                    "status": "SUCCEEDED",
-                }
-            },
+            {"op-drafter": {"output": self.op_drafter_output, "status": "SUCCEEDED"}},
         )
         self.runs[row.id] = row
         return row
@@ -769,3 +767,82 @@ async def test_refine_add_member_with_a_tool_grants_it_as_a_capability() -> None
     )
     assert outcome.applied is True and outcome.verdict.would_block is False
     assert _bindings(outcome.row.sub_harnesses["fact-checker"]) == [_OTHER_TOOL]
+
+
+# ── the peel vs #641's trailing grounding receipt (regression) ───────────────
+#
+# #641 makes a member append its grounding receipt AFTER its answer. The peel used to take the
+# greedy ``\{.*\}`` span, which then ran from the answer's first brace to the RECEIPT's last one
+# — swallowing the closing fence in between — and json.loads raised `Extra data`. Reproduced live
+# on compile run 8097a667 (gpt-4o-mini, HARNESS_LLM_MODE=live): the compiler SUCCEEDED, the
+# reviewer emitted a valid 6-member manifest, and from-run 422'd with nothing persisted.
+
+_RECEIPT = (
+    '{"driving_signals":[{"signal":"the team manifest does not block","value":false,'
+    '"source_tool_call_id":"call_9siInPftXCypVTJFOwA1kUmA"}]}'
+)
+_COMPILED = (
+    '{"members": ['
+    '{"role": "researcher", "kind": "agent", "subgoal": "research"},'
+    '{"role": "writer", "kind": "agent", "subgoal": "write", "depends_on": ["researcher"]}'
+    "]}"
+)
+
+
+async def test_from_run_peels_the_answer_when_a_grounding_receipt_follows_a_fenced_block() -> None:
+    # the exact shape run 8097a667 produced: ```json <manifest> ``` then the receipt
+    svc, repo, team_runs = _service()
+    run = team_runs.seed("SUCCEEDED", _reviewer_results(f"```json\n{_COMPILED}\n```\n{_RECEIPT}"))
+    row, verdict, created = await svc.create_from_run(_principal(), team_run_id=run.id)
+    assert created is True
+    assert verdict.would_block is False
+    assert {m["role"] for m in row.manifest["members"]} == {"researcher", "writer"}
+    # the receipt is the member's provenance, never part of the compiled team
+    assert "driving_signals" not in row.manifest
+
+
+async def test_from_run_peels_the_answer_when_a_receipt_follows_an_unfenced_object() -> None:
+    # same regression without the fence — the first complete object is still the answer
+    svc, _repo, team_runs = _service()
+    run = team_runs.seed(
+        "SUCCEEDED", _reviewer_results(f"Here is the team:\n{_COMPILED}\n{_RECEIPT}")
+    )
+    row, _verdict, _created = await svc.create_from_run(_principal(), team_run_id=run.id)
+    assert {m["role"] for m in row.manifest["members"]} == {"researcher", "writer"}
+
+
+async def test_from_run_still_422s_when_the_answer_itself_is_malformed() -> None:
+    # the receipt must not rescue a broken answer — a curated 422, nothing persisted
+    svc, repo, team_runs = _service()
+    run = team_runs.seed("SUCCEEDED", _reviewer_results(f'{{"members": [ BROKEN\n{_RECEIPT}'))
+    with pytest.raises(TeamRunError) as exc:
+        await svc.create_from_run(_principal(), team_run_id=run.id)
+    assert exc.value.status_code == 422
+    assert repo.rows == {}
+
+
+async def test_refine_nl_peels_the_op_when_a_grounding_receipt_follows() -> None:
+    # _peel_json has TWO callers; the op-drafter breaks identically once its member emits a receipt
+    svc, _repo, team_runs = _service()
+    team_runs.op_drafter_output = (
+        f'```json\n{{"op": "add_depends_on", "role": "b", "depends_on": "a"}}\n```\n{_RECEIPT}'
+    )
+    row, _ = await svc.create(
+        _principal(), name="d", manifest=_team([_member("a"), _member("b")]), sub_harnesses={}
+    )
+    outcome = await svc.refine_nl(
+        row.id,
+        _principal(),
+        instruction="make b depend on a",
+        models=[
+            {
+                "role": "primary",
+                "binding": "openrouter/x",
+                "protocol_shape": "openai-compatible",
+                "config": {"credential_id": "c1"},
+            }
+        ],
+    )
+    assert isinstance(outcome, RefineOutcome)
+    assert outcome.applied is True
+    assert outcome.op["op"] == "add_depends_on"
