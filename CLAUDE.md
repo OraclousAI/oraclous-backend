@@ -285,8 +285,6 @@ A service owns its own code, tests, Dockerfile, and operator-facing README. Cros
 ## 7. Services
 
 Eight backend services from [04. Services Reference](https://oraclous.atlassian.net/wiki/spaces/OP/pages/786433) *(read-only mirror)*. Each service directory carries its own `services/<service>/CLAUDE.md` naming its layer, target shape, and reference page — it loads automatically when you work in that directory. Consult the service's reference page before touching its directory.
-<!-- #665 stage 1: the 8-row service/layer/reference/target-shape table moved into per-service CLAUDE.md files (one row each), which load only when an agent works inside that service directory. No cell was dropped. -->
-
 
 Some services exist in legacy form at `/Users/reza/workspace/OraclousAI/legacy-reference/old-backend/` (worktree pinned to `develop`). Read [Section 8 — Consolidation and Migration Plan](https://oraclous.atlassian.net/wiki/spaces/OP/pages/688329) before touching any service to understand which migration phase you are in.
 
