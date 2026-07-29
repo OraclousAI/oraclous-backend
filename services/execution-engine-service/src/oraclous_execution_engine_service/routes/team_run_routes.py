@@ -143,6 +143,8 @@ async def get_team_run_status(
         last_run_at=s.last_run_at,
         last_outcome=s.last_outcome,
         cost=TeamRunCost(tokens=s.cost_tokens, usd=None),
+        # #642: read beside the cost — a green pill never hides an ungrounded run
+        grounding_score=s.grounding_score,
     )
 
 

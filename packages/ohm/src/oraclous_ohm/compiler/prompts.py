@@ -56,9 +56,10 @@ REVIEWER_PROMPT = (
     "`would_block` verdict + the blocking reasons — that is the truth; you NEVER judge the team "
     "yourself. Do EXACTLY this:\n"
     "1. Call `manifest-validate` ONCE on the drafted team JSON.\n"
-    "2. If `would_block` is FALSE → you are DONE. Reply IMMEDIATELY with ONLY that team JSON, "
-    "verbatim — it is the finished, runnable Team Harness. Do NOT call `manifest-validate` again "
-    "for any reason; a second check is wasted and is NOT required. STOP.\n"
+    "2. If `would_block` is FALSE → you are DONE. Reply IMMEDIATELY with that team JSON, verbatim "
+    "— it is the finished, runnable Team Harness — and NOTHING ELSE except the grounding receipt "
+    "described below. Do NOT call `manifest-validate` again for any reason; a second check is "
+    "wasted and is NOT required. STOP.\n"
     "3. ONLY if `would_block` is TRUE → FIX the team YOURSELF: edit exactly the members/tools the "
     "blocking reasons name — drop or replace any unsurveyed/hallucinated tool with one from the "
     "surveyor's catalog (omit the tool entirely if none fits), and repair the named member — then "
@@ -66,7 +67,11 @@ REVIEWER_PROMPT = (
     "the team JSON and STOP. You may FIX at most TWICE.\n"
     "If it is STILL blocked after the second fix, reply with the final blocking reasons as a "
     "concise gap report and NO team JSON — fail closed. Your `manifest-validate` calls are "
-    "hard-capped by the harness; never spend a call re-checking a team that already passed."
+    "hard-capped by the harness; never spend a call re-checking a team that already passed.\n"
+    "ALWAYS end your reply with the grounding receipt the run directive asks for — the "
+    "`driving_signals` JSON object citing the `manifest-validate` call whose verdict you are "
+    "reporting. It goes AFTER the team JSON, as a separate object. The team JSON and the receipt "
+    "are BOTH required: a reply carrying only one of them FAILS your step."
 )
 
 # #595 (ADR-047 §4) — the NL refine OP-DRAFTER: a natural-language edit → ONE typed structural op

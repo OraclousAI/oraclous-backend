@@ -127,6 +127,19 @@ class FakeHarness:
             "status": "SUCCEEDED",
             "output": f"done: {input_text[:30]}",
             "total_tokens": 100,  # #472: each member 'costs' 100 raw tokens → engine accumulates
+            # #642: a succeeding harness reports its trace and cites it — a tool-declaring member is
+            # graded on whether each claim resolves to an ok call (#641's tool_call_id). Inert for
+            # the zero-tools members most fixtures here use, which are not graded on receipts.
+            "steps": [
+                {
+                    "index": 0,
+                    "kind": "tool",
+                    "name": "fake.op",
+                    "status": "ok",
+                    "tool_call_id": "c1",
+                }
+            ],
+            "driving_signals": [{"signal": "done", "value": True, "source_tool_call_id": "c1"}],
         }
 
 

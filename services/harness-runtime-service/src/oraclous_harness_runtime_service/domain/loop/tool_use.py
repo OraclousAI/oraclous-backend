@@ -76,6 +76,10 @@ class LoopStep:
     name: str
     status: str
     detail: str | None = None
+    # #641: the LLM's own id for the tool call this step records (None for an LLM/gate step). It is
+    # what makes a member's later claim resolvable back to the call that produced it — without it
+    # nothing durable links a driving_signal to a dispatch that actually ran.
+    tool_call_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -285,6 +289,7 @@ async def run_tool_use_loop(
                         f"{spec.binding}.{spec.operation}",
                         "error",
                         _truncate(content),
+                        tool_call_id=tc["id"],
                     )
                 )
                 continue
@@ -336,10 +341,29 @@ async def run_tool_use_loop(
                         json.dumps({"error": type(exc).__name__, "detail": str(exc)}), redactors
                     )
                     status = "error"
+            # #642: show the receipt id INSIDE the tool result the model reads. The provider's
+            # `tool_call_id` field is transport metadata the model never sees, so a member asked to
+            # cite its receipts could only guess — real models cited the tool NAME, a chunk id, or
+            # "1", and were failed for it despite having really made the call. The visible receipt
+            # line is what makes the grounding contract satisfiable rather than a trap.
             messages.append(
-                {"role": "tool", "tool_call_id": tc["id"], "name": tc["name"], "content": content}
+                {
+                    "role": "tool",
+                    "tool_call_id": tc["id"],
+                    "name": tc["name"],
+                    "content": f"{content}\n[receipt: source_tool_call_id={tc['id']}]",
+                }
             )
-            steps.append(LoopStep(len(steps), StepKind.TOOL, step_name, status, _truncate(content)))
+            steps.append(
+                LoopStep(
+                    len(steps),
+                    StepKind.TOOL,
+                    step_name,
+                    status,
+                    _truncate(content),
+                    tool_call_id=tc["id"],
+                )
+            )
         return None
 
     # Resume: finish the paused turn (the approved gated call + any remaining), then continue.

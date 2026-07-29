@@ -9,6 +9,8 @@ answer summarising it. This proves the loop; the real protocol-shape clients lan
 
 from __future__ import annotations
 
+import json
+
 from oraclous_harness_runtime_service.domain.llm.base import (
     LLMResponse,
     Message,
@@ -36,8 +38,24 @@ class FakeLLMClient:
         # Otherwise answer, summarising what was observed (or that nothing was available).
         if observed:
             last = observed[-1]
+            # #642: a compliant model CITES the call its claim came from, so the fake does too —
+            # otherwise the deterministic seam could never produce a grounded tool-declaring member
+            # and every fake-LLM team run would fail the grounding grade. The citation names the
+            # call this answer actually observed; the engine parses it out of the answer text.
+            signals = {
+                "driving_signals": [
+                    {
+                        "signal": "tool_result",
+                        "value": str(last.get("content"))[:200],
+                        "source_tool_call_id": last.get("tool_call_id"),
+                    }
+                ]
+            }
             return LLMResponse(
-                text=f"Completed. Observed tool result: {str(last.get('content'))[:500]}",
+                text=(
+                    f"Completed. Observed tool result: {str(last.get('content'))[:500]}\n"
+                    f"{json.dumps(signals)}"
+                ),
                 tool_calls=[],
             )
         return LLMResponse(text="No tools were available; nothing to do.", tool_calls=[])

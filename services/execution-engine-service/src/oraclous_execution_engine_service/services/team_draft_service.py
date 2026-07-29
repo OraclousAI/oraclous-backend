@@ -60,6 +60,39 @@ _TERMINAL_RUN_STATES = frozenset({"SUCCEEDED", "FAILED", "REJECTED", "COST_BUDGE
 _OP_DRAFTER_ROLE = "op-drafter"
 #: the op-drafter team's manifest name — the collect token's fail-closed identity check
 _OP_DRAFTER_TEAM_NAME = "refine-op-drafter"
+#: a fenced ``` / ```json block — the shape the compiler prompts ask a member to answer in
+_FENCED_JSON = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.DOTALL)
+
+
+def _first_json_object(text: str) -> dict[str, Any] | None:
+    """The member's OWN answer object, or None if nothing in ``text`` decodes.
+
+    A member's answer is no longer the only JSON in its output: #641 appends a grounding receipt
+    (``{"driving_signals": [...]}``) AFTER the answer, so the greedy ``\\{.*\\}`` span this used
+    to run swallowed the answer, the closing fence and the receipt together and failed to parse
+    (`Extra data`). Prefer the fenced block the prompts ask for; otherwise take the FIRST complete
+    object, which is the answer — the receipt is always appended after it.
+    """
+    decoder = json.JSONDecoder()
+    fenced = _FENCED_JSON.search(text)
+    if fenced is not None:
+        try:
+            parsed = json.loads(fenced.group(1))
+        except json.JSONDecodeError:
+            parsed = None  # a malformed fence falls through to the scan below
+        if isinstance(parsed, dict):
+            return parsed
+    idx = text.find("{")
+    while idx != -1:
+        try:
+            parsed, _end = decoder.raw_decode(text, idx)
+        except json.JSONDecodeError:
+            idx = text.find("{", idx + 1)
+            continue
+        if isinstance(parsed, dict):
+            return parsed
+        idx = text.find("{", idx + 1)
+    return None
 
 
 class DraftVerdict:
@@ -181,9 +214,19 @@ class TeamDraftService:
         org: uuid.UUID,
         existing: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """A reasoning-only sub-harness per member that lacks one (the #594 e2e's client-side
-        step, moved server-side): its sub-goal as the body, ``tools=[]`` — the validator already
-        proved the declared tool ceilings resolve. Existing sub-harnesses are kept verbatim."""
+        """A sub-harness per member that lacks one (the #594 e2e's client-side step, moved
+        server-side): its sub-goal as the body, and its DECLARED tools as the grant.
+
+        #659: the member's ``tools[]`` is only the deny-by-default CEILING — it grants nothing. The
+        harness builds the model's toolset from the sub-harness ``capabilities[]`` alone, so
+        synthesizing with ``tools=[]`` dispatched every compiled member with an empty toolset (run
+        ``0fc1f7f1``: nine members, zero tool calls) while the ceiling check passed trivially,
+        because an empty grant is inside any ceiling. For a SYNTHESIZED sub-harness the only
+        sensible grant is exactly what the member declared, so the grant is the ceiling — and stays
+        within it by construction. A hand-authored or imported sub-harness may still narrow below
+        the ceiling; existing sub-harnesses are kept verbatim. A tool-less member still yields a
+        loadable reasoning-only sub-harness (``build_subharness`` documents the empty case).
+        """
         subs = dict(existing or {})
         for m in manifest.members:
             if m.role in subs or m.kind != "agent":
@@ -192,7 +235,7 @@ class TeamDraftService:
                 m.role,
                 owner_organization_id=org,
                 body=(m.subgoal or f"You are the {m.role}. Complete your part of the objective."),
-                tools=[],
+                tools=list(m.tools),
             ).model_dump(mode="json")
         return subs
 
@@ -355,24 +398,18 @@ class TeamDraftService:
     @staticmethod
     def _peel_json(raw: Any, *, who: str, error_type: str) -> dict[str, Any]:
         """A member result is ``{"output": <text>, "status": ...}``; older shapes return the text
-        directly. The JSON object is peeled out of the surrounding prose (the same regex the e2e
-        proved) — anything else is a curated 422, never a 500."""
+        directly. The member's answer object is peeled out of the surrounding prose (and out of a
+        trailing #641 grounding receipt) — anything else is a curated 422, never a 500."""
         if raw is None:
             raise TeamRunError(f"{who} produced no output", 422, error_type=error_type)
         text = raw.get("output") if isinstance(raw, dict) else raw
         if not isinstance(text, str) or not text.strip():
             raise TeamRunError(f"{who} produced no text output", 422, error_type=error_type)
-        match = re.search(r"\{.*\}", text, re.DOTALL)
-        if match is None:
+        if "{" not in text:
             raise TeamRunError(f"{who} emitted no JSON object", 422, error_type=error_type)
-        try:
-            parsed = json.loads(match.group(0))
-        except json.JSONDecodeError as exc:
-            raise TeamRunError(f"{who} emitted malformed JSON", 422, error_type=error_type) from exc
-        if not isinstance(parsed, dict):
-            raise TeamRunError(
-                f"{who} emitted a non-object JSON payload", 422, error_type=error_type
-            )
+        parsed = _first_json_object(text)
+        if parsed is None:
+            raise TeamRunError(f"{who} emitted malformed JSON", 422, error_type=error_type)
         return parsed
 
     # ── concern 4: refine (typed op) + refine-nl (op-drafter) ────────────────

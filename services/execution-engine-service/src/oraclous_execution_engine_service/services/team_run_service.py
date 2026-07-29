@@ -197,6 +197,7 @@ class TeamRunStatus:
     last_run_at: datetime | None
     last_outcome: str
     cost_tokens: int
+    grounding_score: float | None = None  # #642: claims-with-receipts, read beside the cost
 
 
 def _verdict_score(verdict: Any) -> float | None:
@@ -719,6 +720,7 @@ class TeamRunService:
             last_run_at=row.created_at,
             last_outcome=row.state,
             cost_tokens=int(row.cost_tokens or 0),
+            grounding_score=row.grounding_score,
         )
 
     async def list_for_org(
@@ -1409,6 +1411,14 @@ class TeamRunService:
         # terminal status so the failed+blocked members are re-runnable; surface a leak-safe summary
         # of which members failed (the per-member detail, never an upstream body) as error_message.
         member_status = dict(result.member_status)
+        # #642: the run-level grounding score — Σ grounded / Σ total across members that DECLARED
+        # tools. None when no member declared any (a pure-reasoning team makes no claims, so it has
+        # no score; that is not the same as scoring zero).
+        buckets = list(result.member_grounding.values())
+        total_claims = sum(b.get("total", 0) for b in buckets)
+        grounding_score = (
+            sum(b.get("grounded", 0) for b in buckets) / total_claims if total_claims else None
+        )
         failed_summary: str | None = None
         if result.status == "failed":
             failed = sorted(r for r, s in member_status.items() if s == "failed")
@@ -1434,6 +1444,7 @@ class TeamRunService:
                 error_message=failed_summary,  # None unless a member failed/blocked
                 child_execution_ids=child_ids,  # the member executions that form this run's tree
                 cost_tokens=prior_cost + sum(cost_deltas),  # O4: the run's accumulated token cost
+                grounding_score=grounding_score,  # #642: claims-with-receipts, beside the cost
                 verdict=verdict,  # the gate verdict (None unless completed); state stays unchanged
                 refresh_delta=refresh_delta,  # #602: the 5-way delta (None on a non-refresh run)
                 loop_state=dict(result.loop_state),  # PR-C: the per-loop checkpoint (resume cursor)

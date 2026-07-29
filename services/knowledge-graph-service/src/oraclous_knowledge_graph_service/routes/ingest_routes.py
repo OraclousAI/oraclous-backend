@@ -14,11 +14,13 @@ from fastapi import APIRouter, File, Form, HTTPException, UploadFile, status
 from oraclous_knowledge_graph_service.core.dependencies import (
     GraphServiceDep,
     JobServiceDep,
+    OntologyServiceDep,
     RecipeServiceDep,
     SqlIngestionServiceDep,
     UserIdDep,
 )
 from oraclous_knowledge_graph_service.domain.connectors.sql_connector import DbSyncMode
+from oraclous_knowledge_graph_service.domain.ontology import Ontology
 from oraclous_knowledge_graph_service.schema.ingest_schemas import (
     BatchIngestRequest,
     BatchIngestResponse,
@@ -122,6 +124,7 @@ async def ingest_sql(
     sql_service: SqlIngestionServiceDep,
     graphs: GraphServiceDep,
     recipes: RecipeServiceDep,
+    ontologies: OntologyServiceDep,
     user_id: UserIdDep,
 ) -> SqlIngestResponse:
     """Relational (SQL) ingest (#307): resolve the connection_string by `credential_id`,
@@ -160,6 +163,10 @@ async def ingest_sql(
                 status_code=status.HTTP_409_CONFLICT,
                 detail=f"recipe {body.recipe_id!r} is a draft; promote it before ingesting",
             )
+    # #654: the graph's ontology gates the SQL path exactly like the free-text one. The route never
+    # loaded it, so Strict/Coerce was a silent no-op for database imports (a Strict graph gained
+    # `Employees` nodes verbatim from a table name). The engine enforces it at projection time.
+    ontology = Ontology.of(await ontologies.get(user_id=user_id, graph_id=graph_id))
     try:
         result = await sql_service.ingest(
             graph_id=str(graph_id),
@@ -167,6 +174,7 @@ async def ingest_sql(
             sync_mode=sync_mode,
             schema=body.schema_name,
             recipe=recipe,
+            ontology=ontology,
         )
     except SqlIngestionError as exc:
         # Credential / egress / connect / empty-schema failures are client-correctable inputs.
