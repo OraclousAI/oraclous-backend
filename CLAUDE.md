@@ -73,6 +73,8 @@ Canonical residency map: [Session topology and persona residency](https://oraclo
 **The `oraclous-knowledge` git repository is canonical.** It is the single source of truth for architecture, ADRs, governance, and engineering process. **Confluence is now a read-only mirror** of that knowledge base — consult it for convenience, but when it disagrees with `oraclous-knowledge` or with shipped reality, the knowledge repo wins. When this file disagrees with the canonical knowledge base, the knowledge base wins; open a `docs-writer` issue to reconcile this file.
 
 This file summarises the backend invariants and points at the knowledge base for everything that evolves. The pages an agent in this repo consults most often are indexed in [`docs/knowledge-links.md`](docs/knowledge-links.md).
+<!-- #665 stage 1: the 17-row per-page URL table that lived here moved verbatim to docs/knowledge-links.md. It is a lookup index, not a rule — read on demand there instead of loading every session. -->
+
 
 The master board for all work is **GitHub Issues + PRs**, not any of the above. Work is organised as Goals (releases) → Projects (epics) → Issues; agents pick up issues by assignee/label, driven via the `gh` CLI. Your work is whatever is assigned to you on GitHub (see §5).
 
@@ -270,6 +272,8 @@ This discipline is enforced by skill rules through R6. From R7 onward it is addi
 ## 6. Repository layout
 
 The repo holds the 8 services above under `services/<service>/`, each layered `routes → services → domain → repositories → core`; shared packages live under `packages/`. New work conforms to this shape; deviations require an ADR.
+<!-- #665 stage 1: a ~48-line annotated directory tree lived here. It was stale (missing tools/, scripts/, deploy/observability drift) and fully derivable from ls; deleted rather than moved, per the /doctor guidance that derivable layouts do not belong in CLAUDE.md. -->
+
 
 ### 6.1 `packages/` is shared infrastructure
 
@@ -284,6 +288,8 @@ A service owns its own code, tests, Dockerfile, and operator-facing README. Cros
 ## 7. Services
 
 Eight backend services from [04. Services Reference](https://oraclous.atlassian.net/wiki/spaces/OP/pages/786433) *(read-only mirror)*. Each service directory carries its own `services/<service>/CLAUDE.md` naming its layer, target shape, and reference page — it loads automatically when you work in that directory. Consult the service's reference page before touching its directory.
+<!-- #665 stage 1: the 8-row service/layer/reference/target-shape table moved into per-service CLAUDE.md files (one row each), which load only when an agent works inside that service directory. No cell was dropped. -->
+
 
 Some services exist in legacy form at `/Users/reza/workspace/OraclousAI/legacy-reference/old-backend/` (worktree pinned to `develop`). Read [Section 8 — Consolidation and Migration Plan](https://oraclous.atlassian.net/wiki/spaces/OP/pages/688329) before touching any service to understand which migration phase you are in.
 
@@ -383,6 +389,8 @@ The previous Oraclous backend codebase is available **read-only** at:
 It is a **git worktree pinned to the `develop` branch** of the previous backend repository. `develop` is the most current branch of that codebase.
 
 For the lift-vs-rewrite rubric and how to honour a `Lift`/`Reshape`/`Extract`/`Greenfield` lift-tag, use the `legacy-lift-and-reshape` skill.
+<!-- #665 stage 1: former 12.1-12.2 (migration-not-rewrite default, the four lift-tags, the flag-to-product-planner rule) moved verbatim into .claude/skills/legacy-lift-and-reshape. It is a multi-step decision procedure, which the memory docs route to a skill; the 12.3 prohibitions stayed here. -->
+
 
 ### 12.3 Rules for the legacy reference
 
@@ -419,3 +427,5 @@ When you find a gap in this file — something an agent needed and couldn't find
 ## 15. Resuming after a context reset
 
 Lost prior session context mid-task? Use the `resume-after-context-reset` skill for the recovery procedure.
+<!-- #665 stage 1: the 8-step recovery checklist moved verbatim into .claude/skills/resume-after-context-reset. It is only needed after a context loss, so it loads on invocation instead of every session. -->
+
