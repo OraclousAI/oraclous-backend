@@ -72,27 +72,9 @@ Canonical residency map: [Session topology and persona residency](https://oraclo
 
 **The `oraclous-knowledge` git repository is canonical.** It is the single source of truth for architecture, ADRs, governance, and engineering process. **Confluence is now a read-only mirror** of that knowledge base — consult it for convenience, but when it disagrees with `oraclous-knowledge` or with shipped reality, the knowledge repo wins. When this file disagrees with the canonical knowledge base, the knowledge base wins; open a `docs-writer` issue to reconcile this file.
 
-This file summarises the backend invariants and points at the knowledge base for everything that evolves. The pages an agent in this repo consults most often (linked here to their read-only Confluence mirror):
+This file summarises the backend invariants and points at the knowledge base for everything that evolves. The pages an agent in this repo consults most often are indexed in [`docs/knowledge-links.md`](docs/knowledge-links.md).
+<!-- #665 stage 1: the 17-row per-page URL table that lived here moved verbatim to docs/knowledge-links.md. It is a lookup index, not a rule — read on demand there instead of loading every session. -->
 
-| Need | Page (read-only mirror) |
-| --- | --- |
-| Architecture overview | [Platform Architecture v1.1](https://oraclous.atlassian.net/wiki/spaces/OP/pages/753707) |
-| Layer model | [Section 3 — Layered Architecture](https://oraclous.atlassian.net/wiki/spaces/OP/pages/65967) |
-| Manifest format (narrative) | [Section 4 — Manifest Format Specification](https://oraclous.atlassian.net/wiki/spaces/OP/pages/425993) |
-| Manifest format (spec) | [OHM v1.0 Standalone Specification](https://oraclous.atlassian.net/wiki/spaces/OP/pages/393501) |
-| Flows | [Section 5 — Flows](https://oraclous.atlassian.net/wiki/spaces/OP/pages/426016) |
-| Governance | [Section 6 — Governance Model](https://oraclous.atlassian.net/wiki/spaces/OP/pages/720900) + [Structured Governance Taxonomy](https://oraclous.atlassian.net/wiki/spaces/OP/pages/688439) |
-| Security threats | [Section 6.5 — Security Threats and Mitigations](https://oraclous.atlassian.net/wiki/spaces/OP/pages/851990) + [Structured Threat Catalogue](https://oraclous.atlassian.net/wiki/spaces/OP/pages/983129) |
-| Portability | [Section 7 — Portability Story](https://oraclous.atlassian.net/wiki/spaces/OP/pages/753728) |
-| Migration plan | [Section 8 — Consolidation and Migration Plan](https://oraclous.atlassian.net/wiki/spaces/OP/pages/688329) |
-| Releases (current + planned) | [09. Releases](https://oraclous.atlassian.net/wiki/spaces/OP/pages/164160) |
-| ADRs | [02. ADRs](https://oraclous.atlassian.net/wiki/spaces/OP/pages/589826) |
-| Per-service reference | See **§7 Services** below |
-| Test strategy | [Test Strategy](https://oraclous.atlassian.net/wiki/spaces/OP/pages/720940) |
-| Code style | [Code Style Guide](https://oraclous.atlassian.net/wiki/spaces/OP/pages/426037) |
-| Git workflow | [Git Workflow](https://oraclous.atlassian.net/wiki/spaces/OP/pages/131103) |
-| PR conventions | [PR Conventions](https://oraclous.atlassian.net/wiki/spaces/OP/pages/393465) |
-| Definition of Done | [Definition of Done](https://oraclous.atlassian.net/wiki/spaces/OP/pages/66010) |
 
 The master board for all work is **GitHub Issues + PRs**, not any of the above. Work is organised as Goals (releases) → Projects (epics) → Issues; agents pick up issues by assignee/label, driven via the `gh` CLI. Your work is whatever is assigned to you on GitHub (see §5).
 
@@ -290,55 +272,8 @@ This discipline is enforced by skill rules through R6. From R7 onward it is addi
 ## 6. Repository layout
 
 The repo holds the 8 services above under `services/<service>/`, each layered `routes → services → domain → repositories → core`; shared packages live under `packages/`. New work conforms to this shape; deviations require an ADR.
+<!-- #665 stage 1: a ~48-line annotated directory tree lived here. It was stale (missing tools/, scripts/, deploy/observability drift) and fully derivable from ls; deleted rather than moved, per the /doctor guidance that derivable layouts do not belong in CLAUDE.md. -->
 
-```
-oraclous-backend/
-├── CLAUDE.md                       # this file
-├── README.md                       # human-facing onboarding (operator perspective)
-├── pyproject.toml                  # monorepo root; uv workspace config
-├── uv.lock
-├── .python-version
-├── .editorconfig
-├── .gitignore
-├── ruff.toml
-├── pytest.ini                      # markers: unit, integration, security,
-│                                   # isolation, byom, organization_isolation
-├── .githooks/
-│   └── commit-msg                  # enforces commit policy (§4.5); wired via core.hooksPath
-├── .github/
-│   ├── workflows/
-│   │   ├── ci.yml                  # quality (ruff + collect), tests, type-check on every PR
-│   │   ├── security.yml            # security-marked test gate
-│   │   └── release.yml             # image build + push on tag
-│   └── CODEOWNERS                  # routes review requests
-├── deploy/
-│   ├── docker-compose.yml          # local self-hosted stack
-│   ├── helm/                       # cloud-hosted production charts
-│   └── observability/              # logging, metrics, traces configs
-├── packages/                       # shared libraries
-│   ├── ohm/                        #   OHM types and validators
-│   ├── substrate/                  #   ReBAC client, provenance collector
-│   ├── governance/                 #   organisation_id propagation utilities
-│   ├── provenance/                 #   telemetry, errors, logging
-│   ├── rebac/
-│   ├── telemetry/
-│   └── errors/
-├── services/                       # one directory per service
-│   ├── auth-service/               #   Each service has:
-│   ├── credential-broker-service/  #     - src/<service_name>/
-│   ├── knowledge-graph-service/    #     - Dockerfile
-│   ├── knowledge-retriever-service/#     - pyproject.toml
-│   ├── capability-registry-service/#     - README.md (operator-facing)
-│   ├── harness-runtime-service/    #     - tests/
-│   ├── execution-engine-service/
-│   └── application-gateway-service/
-└── tests/                          # cross-service integration tests
-    ├── integration/
-    ├── security/
-    ├── isolation/
-    ├── byom/
-    └── organization_isolation/
-```
 
 ### 6.1 `packages/` is shared infrastructure
 
@@ -352,18 +287,9 @@ A service owns its own code, tests, Dockerfile, and operator-facing README. Cros
 
 ## 7. Services
 
-Eight backend services from [04. Services Reference](https://oraclous.atlassian.net/wiki/spaces/OP/pages/786433) *(read-only mirror)*. Consult the service's reference page before touching its directory.
+Eight backend services from [04. Services Reference](https://oraclous.atlassian.net/wiki/spaces/OP/pages/786433) *(read-only mirror)*. Each service directory carries its own `services/<service>/CLAUDE.md` naming its layer, target shape, and reference page — it loads automatically when you work in that directory. Consult the service's reference page before touching its directory.
+<!-- #665 stage 1: the 8-row service/layer/reference/target-shape table moved into per-service CLAUDE.md files (one row each), which load only when an agent works inside that service directory. No cell was dropped. -->
 
-| Service | Layer | Reference (read-only mirror) | Target shape in |
-| --- | --- | --- | --- |
-| `auth-service` | Substrate | [Page 622756](https://oraclous.atlassian.net/wiki/spaces/OP/pages/622756) | R1 |
-| `credential-broker-service` | Substrate | [Page 753812](https://oraclous.atlassian.net/wiki/spaces/OP/pages/753812) | R1 |
-| `knowledge-graph-service` | Substrate | [Page 753832](https://oraclous.atlassian.net/wiki/spaces/OP/pages/753832) | R3 |
-| `knowledge-retriever-service` | Substrate | [Page 622776](https://oraclous.atlassian.net/wiki/spaces/OP/pages/622776) | R3 |
-| `capability-registry-service` | Capability Registry | [Page 884757](https://oraclous.atlassian.net/wiki/spaces/OP/pages/884757) | R2 |
-| `harness-runtime-service` | Harness Runtime | [Page 688350](https://oraclous.atlassian.net/wiki/spaces/OP/pages/688350) | R4 |
-| `execution-engine-service` | Harness Runtime | [Page 884777](https://oraclous.atlassian.net/wiki/spaces/OP/pages/884777) | R5 |
-| `application-gateway-service` | Application Gateway | [Page 131124](https://oraclous.atlassian.net/wiki/spaces/OP/pages/131124) | R6 |
 
 Some services exist in legacy form at `/Users/reza/workspace/OraclousAI/legacy-reference/old-backend/` (worktree pinned to `develop`). Read [Section 8 — Consolidation and Migration Plan](https://oraclous.atlassian.net/wiki/spaces/OP/pages/688329) before touching any service to understand which migration phase you are in.
 
@@ -462,22 +388,9 @@ The previous Oraclous backend codebase is available **read-only** at:
 
 It is a **git worktree pinned to the `develop` branch** of the previous backend repository. `develop` is the most current branch of that codebase.
 
-### 12.1 This is a migration, not a rewrite
+For the lift-vs-rewrite rubric and how to honour a `Lift`/`Reshape`/`Extract`/`Greenfield` lift-tag, use the `legacy-lift-and-reshape` skill.
+<!-- #665 stage 1: former 12.1-12.2 (migration-not-rewrite default, the four lift-tags, the flag-to-product-planner rule) moved verbatim into .claude/skills/legacy-lift-and-reshape. It is a multi-step decision procedure, which the memory docs route to a skill; the 12.3 prohibitions stayed here. -->
 
-Most existing backend services are production-grade and correctly factored (`auth-service`, `credential-broker-service`) or sprawling-but-salvageable (`knowledge-graph-builder`). The default for backend work is **lift-and-reshape against the four-layer model** — populate the new repo from the legacy service, then refactor under TDD to the target layer and conventions. **Greenfield is the exception, not the default**, applying only to genuinely new surfaces (the application gateway, the metering subsystem) that have no clean legacy precursor.
-
-> The legacy codebase is always at minimum the **behavioural specification** — even when its code is not reusable. New code passes when it does what the legacy did, plus the architectural invariants. "Start from scratch" must be justified, not assumed.
-
-### 12.2 The lift-vs-rewrite rubric
-
-You do not decide lift-vs-rewrite yourself per file. The verdict is decided once per deliverable in the release page's **Migration source map** (see [09. Releases](https://oraclous.atlassian.net/wiki/spaces/OP/pages/164160) Section 7) and arrives in your story brief as a **lift-tag**: `Lift`, `Reshape`, `Extract`, or `Greenfield`, with the specific legacy source path named. Your job is to honour the tag:
-
-- **Lift** — start from the named legacy code, light refactor only.
-- **Reshape** — start from the named legacy logic, refit it to the target layer boundary and conventions (organisation_id, OHM, ReBAC, fail-closed), keep the logic.
-- **Extract** — lift the behaviour out of a larger legacy service into its target service.
-- **Greenfield** — no usable legacy precursor; write fresh against the architecture. The legacy may still be the spec of what *not* to do.
-
-If a story brief lacks a lift-tag for code that you believe has a legacy precursor, that is a planning gap — flag it to `product-planner` (via the coordinator) rather than silently choosing greenfield.
 
 ### 12.3 Rules for the legacy reference
 
@@ -513,15 +426,6 @@ When you find a gap in this file — something an agent needed and couldn't find
 
 ## 15. Resuming after a context reset
 
-If you are resuming work mid-task and have lost prior session context:
+Lost prior session context mid-task? Use the `resume-after-context-reset` skill for the recovery procedure.
+<!-- #665 stage 1: the 8-step recovery checklist moved verbatim into .claude/skills/resume-after-context-reset. It is only needed after a context loss, so it loads on invocation instead of every session. -->
 
-1. Read this file.
-2. Read your own skill page from [Agent Skills Catalogue](https://oraclous.atlassian.net/wiki/spaces/OP/pages/753852) *(read-only mirror)*.
-3. Read **`FUCK_CLAUDE_FUCK_PAPERCLIP.md`** — the canonical rules; where it and this file diverge, that file wins.
-4. Look at GitHub: the issue assigned to you that is in progress is yours.
-5. Read that issue's comments; the last `[agent:NAME]` comment with an action trailer tells you where you are.
-6. Read the linked tests PR (if at Implementation stage) or the brief (if at Tests Authoring).
-7. Before any push, run the mandatory local pre-push gate (§4.7).
-8. Continue.
-
-If the trail is broken or contradictory, escalate to the human via the `escalate_to_human` operation in §5.4.
