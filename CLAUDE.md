@@ -37,6 +37,8 @@ The rules that bite most in this repo. Canonical: `FUCK_CLAUDE_FUCK_PAPERCLIP.md
 - **Canonical service architecture (R3.5).** Every service follows the layered structure `routes → services → domain → repositories → core` (package root `src/oraclous_<svc>_service/`). **No business logic, no DB drivers, and no non-`BaseModel` class defs in `routes/`; repositories are the ONLY DB/Neo4j/Redis access.** Enforced by `tools/lint/check_service_structure.py` + `check_no_stubs.py` + the root `pyproject.toml` `[tool.importlinter]` contracts (CI `lint` + pre-push). Standard: `oraclous-knowledge/engineering/service-architecture-standard.md`.
 - **Hardened per-service DoD (R3.5).** A SERVICE is done only by 8 gates: structure + **not-hollow** (`check_no_stubs` zero findings; flip `tools/lint/service_status.yaml`) + runs (`docker compose up` healthy) + real endpoints (integration vs real substrate) + **smoke vs real substrate** (`smoke.sh`, the `r3_5_gate` CI job) + **Reza sign-off** (`needs-human`). A stub never passes done.
 - **R3.5 delivery.** Active release: rebuild every service real, **per service**, in **≤6 coarse vertical slices** (no micro-tickets). Spec = legacy `develop@84152635` (`git show develop:<path>`; never write `legacy-reference`). The `oraclous-core-service` salvage-then-delete completed — the directory is gone from the repo. Old R4–R8 roadmap discarded.
+<!-- #665 stage 2: this bullet said oraclous-core-service = "salvage-then-delete (human-gated)", i.e. still pending. The directory is measurably absent from the tree, so the bullet now records the completed state instead of the stale plan. -->
+
 - **KB currency.** If you change `oraclous-knowledge`, keep the docs current and refresh graphify in the same change.
 - Full text: `FUCK_CLAUDE_FUCK_PAPERCLIP.md` + `oraclous-knowledge/engineering/`.
 
@@ -213,6 +215,8 @@ uv run pytest --collect-only
 ```
 
 It catches function-local-import violations (§4.1) before they redden CI for every open PR. A push that fails these checks is the implementer's own responsibility to fix before re-pushing — it does **not** become a separate `[fix]` issue. Bypassing the hook (`git push --no-verify`) is a violation except for the one-time hook-bootstrap commit.
+<!-- #665 stage 2: this section used to instruct hand-running ruff check + ruff format --check before every push and named a CI "quality" job that does not exist. The wired .githooks/pre-push hook runs those checks (and more) mechanically, and the real CI job is named lint — the prose now describes only what the hook does not cover. -->
+
 
 ### 4.8 Workspace discipline
 
@@ -343,6 +347,8 @@ A story is **done** when, and only when (Definition of Done, impl/infra):
 - **CI workflow files** (`.github/workflows/*`) → `devops-implementer` (via the coordinator); never edit them from an application-code PR.
 - A push that fails the **local pre-push gate** (§4.7) is the implementer's own fix before re-pushing — never a separate `[fix]` issue.
 - **Type gate (WP-7, A6 — ratchet COMPLETE, #366).** CI's `lint` job and the pre-push hook run `uv run mypy services packages`, error-free across `packages/*` and **every** service; there is no lenient set. New code lands typed; never reintroduce an `ignore_errors` override. No bare `# type: ignore` (always a `[error-code]`).
+<!-- #665 stage 2: the paragraph here described six services as mypy-lenient via ignore_errors overrides and gave the tighten-one-service procedure. The ratchet finished in #366 — pyproject.toml has no override blocks left — so the procedure text was measured false and deleted, not moved. -->
+
 
 ### 10.1 Rebasing
 
