@@ -15,8 +15,9 @@ reject() {
     echo "  Reason: $reason" >&2
     echo "" >&2
     echo "  Commit policy:" >&2
-    echo "    Format:   [#<issue>] [area] <imperative>   (e.g. [#445] [impl] add ...)" >&2
-    echo "    Allowed:  [#<issue>] GitHub refs, [agent:NAME] / [area] prefixes" >&2
+    echo "    Format:   [#<issue>] [agent:NAME] <imperative>   (e.g. [#445] [agent:backend-implementer] add ...)" >&2
+    echo "    Required: first line starts with [#<issue>] ref(s) + at least one [agent:NAME] / [area] tag" >&2
+    echo "    Exempt:   Merge/Revert/fixup!/squash! machinery commits" >&2
     echo "    Forbidden: Co-Authored-By (any variant), Generated with/by," >&2
     echo "               claude.ai, anthropic, robot emoji (🤖)" >&2
     echo "" >&2
@@ -45,6 +46,18 @@ if echo "$COMMIT_MSG" | grep -qiE "claude\.ai"; then
 fi
 if echo "$COMMIT_MSG" | grep -qiE "anthropic"; then
     reject "Anthropic attribution"
+fi
+
+# Format assertion: the first line must start with one or more [#<issue>] refs
+# followed by at least one bracketed tag ([agent:NAME] and/or [area]) and a subject.
+# Merge/revert/fixup machinery commits are exempt from the FORMAT check only —
+# the forbidden-content checks above already ran on them.
+FIRST_LINE=$(printf '%s\n' "$COMMIT_MSG" | head -1)
+case "$FIRST_LINE" in
+    Merge\ *|Revert\ *|fixup!*|squash!*) exit 0 ;;
+esac
+if ! printf '%s\n' "$FIRST_LINE" | grep -qE '^(\[#[0-9]+\])+ (\[[A-Za-z][A-Za-z0-9:_-]*\] )+\S'; then
+    reject "first line does not match the commit format: [#<issue>] [agent:NAME] <imperative>"
 fi
 
 exit 0
