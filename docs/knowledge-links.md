@@ -22,5 +22,6 @@ The `oraclous-knowledge` git repository is canonical (see `CLAUDE.md` §2). The 
 | PR conventions | [PR Conventions](https://oraclous.atlassian.net/wiki/spaces/OP/pages/393465) |
 | Definition of Done | [Definition of Done](https://oraclous.atlassian.net/wiki/spaces/OP/pages/66010) |
 | Session topology / persona residency | [Session topology and persona residency](https://oraclous.atlassian.net/wiki/spaces/OP/pages/1736705) |
+| Cross-cutting agreement (Contract issues) | [Cross-cutting agreement protocol](https://oraclous.atlassian.net/wiki/spaces/OP/pages/1245185) |
 | Agent skill definitions | [Agent Skills Catalogue](https://oraclous.atlassian.net/wiki/spaces/OP/pages/753852) |
 | Services reference (index) | [04. Services Reference](https://oraclous.atlassian.net/wiki/spaces/OP/pages/786433) |
