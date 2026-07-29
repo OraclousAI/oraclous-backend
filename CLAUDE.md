@@ -16,7 +16,7 @@ The canonical rules for this repo are **`FUCK_CLAUDE_FUCK_PAPERCLIP.md`** (repo 
 
 Key provisions every agent observes:
 
-- **Pre-push gate is an enforced hook.** This repo ships `.githooks/pre-push` (`core.hooksPath=.githooks`); a push that fails is **blocked locally**. The hook mirrors the static checks of the **CI `lint` job** (ruff check/format, mypy, import-contracts, and the guardrail suite: org-scoping, labels-schema, test-import hygiene, neo4j write-role, contract checksums, service structure, no-hollow, RLS coverage/binding, dep-imports, seam-wiring) plus `pytest --collect-only` — not a subset (see §4.7).
+- **Pre-push gate is an enforced hook.** This repo ships `.githooks/pre-push` (`core.hooksPath=.githooks`); a push that fails is **blocked locally**. The hook mirrors the static checks of the **CI `lint` job** (ruff check/format, mypy, import-contracts, and the guardrail suite: org-scoping, labels-schema, test-import hygiene, neo4j write-role, contract checksums, service structure, no-hollow, RLS coverage/binding, dep-imports, seam-wiring) — not a subset (see §4.7).
 - **Review depth + server-side gate.** High-severity changes get the full gate; low-severity get a light ≥1-reviewer gate; when in doubt, treat as High (see §8). `main` is protected by a **GitHub ruleset** (public repo, no admin bypass): required CI checks + a non-author approving review + up-to-date base. The CTO merges via `oraclous-knowledge/operations/gated_merge.sh`.
 - **Workspace discipline.** Per-run git worktrees are currently OFF; every writer shares one checkout, so writer runs serialize and always end clean (see §4.8).
 - **Run-completion.** A run may only end by reassigning the issue to a named next owner, creating an assigned child issue, or escalating with a specific question — never "done, nothing assigned" (see §5.4). A brief is not done until at least one child implementation issue exists.
@@ -165,7 +165,7 @@ Every issue that touches code follows the test-first flow:
 
 The implementer **never** modifies tests to make them pass. If a test is wrong, that is a discovery: flag it to `test-author` with the specific reason and propose a corrected test.
 
-**Import not-yet-built intra-repo seams function-locally.** A `[tests]` PR lands tests for a seam (`oraclous_*`) before its `[impl]` exists. If those tests import the not-yet-built seam at *module level*, `pytest` aborts collection (exit 2) for the **whole** run — reddening every open PR's unit/integration/security gate until the `[impl]` lands. Instead, import the seam **inside the test or fixture** (function-locally): the module collects cleanly and the test fails at *runtime* with `ModuleNotFoundError` — RED-by-design, on its own marker only, never masking other suites. Never convert a missing intra-repo seam into a *skip* (`pytest.importorskip("oraclous_…")` or `try/except ImportError → pytest.skip`): a skip turns missing coverage green, and for a `security`-marked test that hides an unverified threat behind a green gate. A missing intra-repo seam must hard-fail, never skip. Enforced by the `check_test_imports` guardrail (TST001/TST002) in CI; the rule self-clears once the `[impl]` lands. The pre-push hook's `pytest --collect-only` check (§4.7) catches collection breakage before it ever reaches CI. (security-architect coverage-safety concurrence.)
+**Import not-yet-built intra-repo seams function-locally.** A `[tests]` PR lands tests for a seam (`oraclous_*`) before its `[impl]` exists. If those tests import the not-yet-built seam at *module level*, `pytest` aborts collection (exit 2) for the **whole** run — reddening every open PR's unit/integration/security gate until the `[impl]` lands. Instead, import the seam **inside the test or fixture** (function-locally): the module collects cleanly and the test fails at *runtime* with `ModuleNotFoundError` — RED-by-design, on its own marker only, never masking other suites. Never convert a missing intra-repo seam into a *skip* (`pytest.importorskip("oraclous_…")` or `try/except ImportError → pytest.skip`): a skip turns missing coverage green, and for a `security`-marked test that hides an unverified threat behind a green gate. A missing intra-repo seam must hard-fail, never skip. Enforced by the `check_test_imports` guardrail (TST001/TST002) in CI; the rule self-clears once the `[impl]` lands. The mandatory pre-push `pytest --collect-only` (§4.7) catches function-local-import violations before they ever reach CI. (security-architect coverage-safety concurrence.)
 
 Reference: [ADR-010 — Test-Driven Development with Test-Author Agent](https://oraclous.atlassian.net/wiki/spaces/OP/pages/557078).
 
@@ -208,11 +208,13 @@ Prototype or exploratory work that does not follow TDD is a **spike** and must b
 
 ### 4.7 Mandatory local pre-push gate
 
-<!-- #665 stage 2: this section used to instruct hand-running ruff check + ruff format --check before every push and named a CI "quality" job that does not exist; the wired .githooks/pre-push hook runs those checks mechanically, and the real CI job is named lint. -->
-<!-- #665 stage 3: `pytest --collect-only` moved INTO the hook (proven to block before this
-     prose was trimmed), so the old "additionally run it by hand" instruction is gone —
-     the hook now enforces what this section used to ask for. -->
-The wired `.githooks/pre-push` hook runs the CI `lint` job's static checks (ruff check/format, mypy, import contracts, and the full guardrail suite) **plus `uv run pytest --collect-only`** on every push and **blocks** a failing one. A push that fails is the implementer's own responsibility to fix before re-pushing — it does **not** become a separate `[fix]` issue. Bypassing the hook (`git push --no-verify`) is a violation except for the one-time hook-bootstrap commit.
+The wired `.githooks/pre-push` hook runs the CI `lint` job's static checks (ruff check/format, mypy, import contracts, and the full guardrail suite) on every push and **blocks** a failing one. The hook does **not** run `pytest --collect-only`, so before any push additionally run:
+
+```
+uv run pytest --collect-only
+```
+
+It catches function-local-import violations (§4.1) before they redden CI for every open PR. A push that fails these checks is the implementer's own responsibility to fix before re-pushing — it does **not** become a separate `[fix]` issue. Bypassing the hook (`git push --no-verify`) is a violation except for the one-time hook-bootstrap commit.
 
 ### 4.8 Workspace discipline
 
