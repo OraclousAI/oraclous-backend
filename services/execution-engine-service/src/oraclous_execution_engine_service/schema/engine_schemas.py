@@ -461,6 +461,10 @@ class TeamRunOut(BaseModel):
     # (like the #634 list row) — additive, non-breaking.
     graph_id: str | None = None
     team_name: str | None = None
+    # #642: the share of this run's claims that carried a valid receipt (Σ grounded / Σ total across
+    # its tool-declaring members). None when the team declares no tools — nothing to ground — and on
+    # pre-#642 rows. Read beside the cost so a green run can't hide an ungrounded one.
+    grounding_score: float | None = None
     # the source for ``team_name`` (metadata.name is not itself a TeamRunOut field). Loaded from the
     # row via from_attributes, read by the validator below, then EXCLUDED from the response — the
     # detail read never carries the raw manifest (leanness + no accidental leak).
@@ -596,6 +600,9 @@ class TeamRunStatusOut(BaseModel):
     last_run_at: datetime | None
     last_outcome: str
     cost: TeamRunCost
+    # #642: shown next to the cost on purpose — "3,099 tokens billed" and "zero claims grounded"
+    # belong in the same glance. None when the team declares no tools, or on a pre-#642 run.
+    grounding_score: float | None = None
 
 
 # ── #635 (C-1): team drafts + the compiler on-ramp ───────────────────────────────────────────────

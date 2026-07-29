@@ -66,7 +66,24 @@ class _FakeHarness:
                 "workspace_root": workspace_root,
             }
         )
-        return {"id": str(uuid.uuid4()), "status": "SUCCEEDED", "output": "ran"}
+        # #642: a succeeding harness reports a real trace and cites it — the step's tool_call_id
+        # (#641) is what a tool-declaring member's claim resolves against. A zero-tools member is
+        # not graded on it, so this is inert for every pure-reasoning fixture below.
+        return {
+            "id": str(uuid.uuid4()),
+            "status": "SUCCEEDED",
+            "output": "ran",
+            "steps": [
+                {
+                    "index": 0,
+                    "kind": "tool",
+                    "name": "fake.op",
+                    "status": "ok",
+                    "tool_call_id": "c1",
+                }
+            ],
+            "driving_signals": [{"signal": "ran", "value": True, "source_tool_call_id": "c1"}],
+        }
 
 
 def _m(role: str, deps: list[str] | None = None, tools: list[str] | None = None) -> OHMMember:

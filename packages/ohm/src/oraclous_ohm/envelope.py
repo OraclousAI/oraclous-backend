@@ -50,6 +50,59 @@ def validate_payload(payload: dict[str, Any], outputs_schema: dict[str, Any]) ->
     return errors
 
 
+def _ok_tool_call_ids(tool_steps: list[dict[str, Any]] | None) -> set[str]:
+    """The tool_call_ids of the member's OWN steps that actually ran and succeeded (#641)."""
+    ids: set[str] = set()
+    for step in tool_steps or []:
+        if not isinstance(step, dict):
+            continue
+        if step.get("kind") != "tool" or step.get("status") != "ok":
+            continue
+        call_id = step.get("tool_call_id")
+        if isinstance(call_id, str) and call_id:
+            ids.add(call_id)
+    return ids
+
+
+def grounding_counts(
+    driving_signals: list[dict[str, Any]] | None, tool_steps: list[dict[str, Any]] | None
+) -> tuple[int, int]:
+    """``(grounded, total)`` claims for a tool-declaring member (#642).
+
+    ``total`` is at least 1 even with no claims at all: a member that declared tools and cited
+    nothing has exactly one unbacked obligation, so it scores 0/1 rather than a vacuous 1/1.
+    """
+    ok_ids = _ok_tool_call_ids(tool_steps)
+    signals = [s for s in (driving_signals or []) if isinstance(s, dict)]
+    grounded = sum(1 for s in signals if s.get("source_tool_call_id") in ok_ids)
+    return grounded, max(1, len(signals))
+
+
+def validate_grounding(
+    driving_signals: list[dict[str, Any]] | None, tool_steps: list[dict[str, Any]] | None
+) -> list[str]:
+    """Return the grounding errors of a member's claims (empty list = every claim has a receipt).
+
+    A claim is grounded only when its ``source_tool_call_id`` resolves to a ``status == "ok"`` tool
+    step in the member's OWN trace (#641). Fail-closed on every weaker shape: no claims at all, a
+    missing/null source id, an id that resolves to nothing, and an id that points at a call that
+    ERRORED (run ``1fe1bcb5``'s collector cited an ``unknown_tool`` failure as its evidence).
+    """
+    signals = [s for s in (driving_signals or []) if isinstance(s, dict)]
+    if not signals:
+        return ["no driving_signals: the member made claims nothing backs"]
+    ok_ids = _ok_tool_call_ids(tool_steps)
+    errors: list[str] = []
+    for signal in signals:
+        name = signal.get("signal") or "<unnamed>"
+        call_id = signal.get("source_tool_call_id")
+        if not isinstance(call_id, str) or not call_id:
+            errors.append(f"claim {name!r} carries no source_tool_call_id")
+        elif call_id not in ok_ids:
+            errors.append(f"claim {name!r} cites {call_id!r}, which is no ok tool call of its own")
+    return errors
+
+
 def build_handoff(
     from_member: OHMMember,
     to_member: OHMMember,

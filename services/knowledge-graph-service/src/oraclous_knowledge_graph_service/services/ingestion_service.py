@@ -59,8 +59,11 @@ def enforce_ontology(entity_graph: Neo4jGraph, ontology: Ontology | None) -> _En
       dropped node (so no dangling edge survives). Counts each drop as a violation.
     - coerce: remap a near-match label to its allowed form (counted as a coercion); a too-far label
       is dropped (counted as a violation), like strict.
+
+    #650: an EMPTY allow-list under strict/coerce is NOT passthrough — it denies every entity (the
+    drop loop below does that via `resolve_label`), so a label-less strict ontology fails closed.
     """
-    if ontology is None or ontology.mode == "open" or not ontology.allowed_labels:
+    if ontology is None or ontology.mode == "open":
         return _Enforced(entity_graph, 0, 0)
 
     kept_nodes = []

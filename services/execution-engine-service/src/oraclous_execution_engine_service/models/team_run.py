@@ -81,6 +81,12 @@ class EngineTeamRun(BaseModel):
     # from each dispatch response — the harness's existing metering, ADR-009 raw counts, never a
     # price). Read by the O4 light-status surface; usd is priced read-time, never persisted here.
     cost_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # ── grounding score (#642; additive, nullable) ─────────────────────────────────────────────
+    # The share of this run's claims that carried a valid receipt: Σ grounded / Σ total across the
+    # TOOL-DECLARING members (a pure-reasoning team makes no claims, so it stays NULL rather than
+    # scoring 1.0 or 0.0). Surfaced beside cost, so a green run can never hide "3,099 tokens billed,
+    # zero claims grounded". NULL on every pre-#642 row.
+    grounding_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     # ── flow-evaluation verdict (ADR-037 / #477; additive, nullable) ──────────────────────────
     # The typed Verdict / OHMBatteryVerdict (model_dump) from grading the completed run at the gate
     # — pass/score/recommended_action/failures. PRODUCED + STORED here, surfaced read-side; the

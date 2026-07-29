@@ -278,6 +278,10 @@ services:
         KGS_EXTRACTOR_MAX_CONCURRENCY: "10"
         # Multi-tenant prod posture: block private/loopback/internal DB egress for SQL-ingest.
         KGS_SQL_INGEST_ALLOW_PRIVATE_EGRESS: "false"
+        # #653: fail-closed real broker — never the fake in prod (it would ignore the caller's
+        # credential_id and hand back the platform's own DB DSN). Declared, not inherited.
+        KGS_CREDENTIAL_BROKER_MODE: "real"
+        KGS_CREDENTIAL_BROKER_BASE_URL: "http://credential-broker-service:8000"
       neo4j:
         role: "kgsWriter"
         uriEnv: "KGS_NEO4J_URI"
@@ -324,6 +328,9 @@ services:
         KGS_EXTRACTOR_MODEL: "openai/gpt-4o-mini"
         KGS_EXTRACTOR_MAX_CONCURRENCY: "10"
         KGS_SQL_INGEST_ALLOW_PRIVATE_EGRESS: "false"
+        # #653: the worker resolves credentials on the async ingest path too — same real broker.
+        KGS_CREDENTIAL_BROKER_MODE: "real"
+        KGS_CREDENTIAL_BROKER_BASE_URL: "http://credential-broker-service:8000"
       neo4j:
         role: "kgsWriter"
         uriEnv: "KGS_NEO4J_URI"

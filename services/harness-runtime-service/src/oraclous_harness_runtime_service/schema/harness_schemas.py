@@ -11,7 +11,7 @@ import uuid
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, computed_field, model_validator
 
 from oraclous_harness_runtime_service.models.enums import HarnessStatus, StepKind
 
@@ -83,6 +83,9 @@ class StepOut(BaseModel):
     name: str  # the model role for an llm step; the capability binding for a tool step
     status: str  # "ok" | "error" (tool) / "answer" | "tool_calls" (llm)
     detail: str | None = None
+    # #641: the LLM's id for the tool call this step records — the receipt a member's claim cites.
+    # None for an LLM/gate step AND for traces persisted before #641 (back-compat, no migration).
+    tool_call_id: str | None = None
 
 
 class HarnessExecutionOut(BaseModel):
@@ -104,6 +107,27 @@ class HarnessExecutionOut(BaseModel):
     # run-tree correlation (#471): trace_id groups the tree; parent is the dispatching execution.
     trace_id: uuid.UUID | None = None
     parent_execution_id: uuid.UUID | None = None
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def driving_signals(self) -> list[dict[str, Any]]:
+        """#642 structural receipts: one grounded claim per ok tool step of this run's OWN trace.
+
+        Derived from the trace, never from the model — a model's self-written receipt is the least
+        trustworthy source for what it did, and whether it emits one at all is a coin flip (live
+        runs ``8097a667`` vs ``afc3b2c4``). The engine takes this list over anything parsed from
+        the answer, so the grounding grade is deterministic: tools ran ok ⇒ receipts exist;
+        no ok call (including a pre-#641 trace with no ids) ⇒ empty ⇒ the grade fails closed.
+        """
+        return [
+            {
+                "signal": f"tool {s.name} succeeded",
+                "value": True,
+                "source_tool_call_id": s.tool_call_id,
+            }
+            for s in self.steps
+            if s.kind is StepKind.TOOL and s.status == "ok" and s.tool_call_id
+        ]
 
 
 class ExecutionListResponse(BaseModel):

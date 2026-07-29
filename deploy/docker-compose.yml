@@ -73,6 +73,12 @@ x-kgs-env: &kgs-env
   # fake-broker path) OPTS IN by setting KGS_SQL_INGEST_ALLOW_PRIVATE_EGRESS=true in deploy/.env. The
   # link-local / cloud-metadata range stays blocked in EITHER mode.
   KGS_SQL_INGEST_ALLOW_PRIVATE_EGRESS: "${KGS_SQL_INGEST_ALLOW_PRIVATE_EGRESS:-false}"
+  # #653: the SQL-ingest credential broker. Pinned EXPLICITLY here (never inherited from a code
+  # default) — `real` resolves the caller's own credential_id through credential-broker-service;
+  # `fake` ignores it and hands back KGS_CREDENTIAL_BROKER_FAKE_DSN (this stack's own Postgres), so
+  # it is a deliberate dev/CI opt-in via deploy/.env, never the shipped posture.
+  KGS_CREDENTIAL_BROKER_MODE: "${KGS_CREDENTIAL_BROKER_MODE:-real}"
+  KGS_CREDENTIAL_BROKER_BASE_URL: "http://credential-broker-service:8000"
 
 services:
   neo4j:
