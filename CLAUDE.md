@@ -16,7 +16,7 @@ The canonical rules for this repo are **`FUCK_CLAUDE_FUCK_PAPERCLIP.md`** (repo 
 
 Key provisions every agent observes:
 
-- **Pre-push gate is an enforced hook.** This repo ships `.githooks/pre-push` (`core.hooksPath=.githooks`); a push that fails is **blocked locally**. The hook mirrors the **full CI `quality` job** (ruff check/format, mypy, import-contracts, org-scoping, labels-schema, test-import hygiene, neo4j write-role, contract checksums) — not a subset (see §4.7).
+- **Pre-push gate is an enforced hook.** This repo ships `.githooks/pre-push` (`core.hooksPath=.githooks`); a push that fails is **blocked locally**. The hook mirrors the static checks of the **CI `lint` job** (ruff check/format, mypy, import-contracts, and the guardrail suite: org-scoping, labels-schema, test-import hygiene, neo4j write-role, contract checksums, service structure, no-hollow, RLS coverage/binding, dep-imports, seam-wiring) — not a subset (see §4.7).
 - **Review depth + server-side gate.** High-severity changes get the full gate; low-severity get a light ≥1-reviewer gate; when in doubt, treat as High (see §8). `main` is protected by a **GitHub ruleset** (public repo, no admin bypass): required CI checks + a non-author approving review + up-to-date base. The CTO merges via `oraclous-knowledge/operations/gated_merge.sh`.
 - **Workspace discipline.** Per-run git worktrees are currently OFF; every writer shares one checkout, so writer runs serialize and always end clean (see §4.8).
 - **Run-completion.** A run may only end by reassigning the issue to a named next owner, creating an assigned child issue, or escalating with a specific question — never "done, nothing assigned" (see §5.4). A brief is not done until at least one child implementation issue exists.
@@ -27,7 +27,7 @@ Key provisions every agent observes:
 
 The rules that bite most in this repo. Canonical: `FUCK_CLAUDE_FUCK_PAPERCLIP.md` + this file.
 
-- **Commits + pre-push + no attribution.** Commit messages are `[#<issue>] [agent:NAME] msg`, one commit per concern. Never write `Co-Authored-By`, `Generated`, `claude`, or 🤖 in commits, PR bodies, or comments. The `pre-push` hook (mirroring the full CI `quality` job) and the `commit-msg` hook (commit format + no-attribution) are both wired via `core.hooksPath=.githooks` and block bad pushes/commits locally.
+- **Commits + pre-push + no attribution.** Commit messages are `[#<issue>] [agent:NAME] msg`, one commit per concern. Never write `Co-Authored-By`, `Generated`, `claude`, or 🤖 in commits, PR bodies, or comments. The `pre-push` hook (mirroring the CI `lint` job's static checks) and the `commit-msg` hook (commit format + no-attribution) are both wired via `core.hooksPath=.githooks` and block bad pushes/commits locally.
 - **PR-BUNDLING LAW (non-negotiable).** **Never ship a one-commit-per-PR stream.** "One commit per concern" means **multiple commits inside ONE PR**, NOT one PR per commit. Bundle related concerns into a single PR — CI (~6 min) + non-author review + redeploy run **once per PR**, so a separate PR per commit multiplies the cost. An issue with N sub-tasks ships as **one PR with N commits, never N PRs** (e.g. a mypy + OTel + Celery issue = one PR / three commits). Default to **fewer, bigger PRs**; the only exception is changes in different repos (which can't share a PR).
 - **Pre-open readiness.** Before OPENING a PR for review it must be pre-push-clean, CI-green, and rebased onto current `main` (not BEHIND). You own this; a reviewer never discovers red CI or a needed rebase.
 - **Branch-from-merged-tests.** An `[impl]` PR branches from / rebases onto the commit where its `[tests]` PR merged, before opening — this kills add/add conflicts and preserves ADR-010 two-PR independence.
@@ -163,7 +163,7 @@ Every issue that touches code follows the test-first flow:
 
 The implementer **never** modifies tests to make them pass. If a test is wrong, that is a discovery: flag it to `test-author` with the specific reason and propose a corrected test.
 
-**Import not-yet-built intra-repo seams function-locally.** A `[tests]` PR lands tests for a seam (`oraclous_*`) before its `[impl]` exists. If those tests import the not-yet-built seam at *module level*, `pytest` aborts collection (exit 2) for the **whole** run — reddening every open PR's quality/integration/security gate until the `[impl]` lands. Instead, import the seam **inside the test or fixture** (function-locally): the module collects cleanly and the test fails at *runtime* with `ModuleNotFoundError` — RED-by-design, on its own marker only, never masking other suites. Never convert a missing intra-repo seam into a *skip* (`pytest.importorskip("oraclous_…")` or `try/except ImportError → pytest.skip`): a skip turns missing coverage green, and for a `security`-marked test that hides an unverified threat behind a green gate. A missing intra-repo seam must hard-fail, never skip. Enforced by the `check_test_imports` guardrail (TST001/TST002) in CI; the rule self-clears once the `[impl]` lands. The mandatory pre-push `pytest --collect-only` (§4.7) catches function-local-import violations before they ever reach CI. (security-architect coverage-safety concurrence.)
+**Import not-yet-built intra-repo seams function-locally.** A `[tests]` PR lands tests for a seam (`oraclous_*`) before its `[impl]` exists. If those tests import the not-yet-built seam at *module level*, `pytest` aborts collection (exit 2) for the **whole** run — reddening every open PR's unit/integration/security gate until the `[impl]` lands. Instead, import the seam **inside the test or fixture** (function-locally): the module collects cleanly and the test fails at *runtime* with `ModuleNotFoundError` — RED-by-design, on its own marker only, never masking other suites. Never convert a missing intra-repo seam into a *skip* (`pytest.importorskip("oraclous_…")` or `try/except ImportError → pytest.skip`): a skip turns missing coverage green, and for a `security`-marked test that hides an unverified threat behind a green gate. A missing intra-repo seam must hard-fail, never skip. Enforced by the `check_test_imports` guardrail (TST001/TST002) in CI; the rule self-clears once the `[impl]` lands. The mandatory pre-push `pytest --collect-only` (§4.7) catches function-local-import violations before they ever reach CI. (security-architect coverage-safety concurrence.)
 
 Reference: [ADR-010 — Test-Driven Development with Test-Author Agent](https://oraclous.atlassian.net/wiki/spaces/OP/pages/557078).
 
@@ -206,13 +206,13 @@ Prototype or exploratory work that does not follow TDD is a **spike** and must b
 
 ### 4.7 Mandatory local pre-push gate
 
-Before **any** `git push`, run — locally — the same cheap checks CI's `quality` job runs, and push only if they are clean:
+The wired `.githooks/pre-push` hook runs the CI `lint` job's static checks (ruff check/format, mypy, import contracts, and the full guardrail suite) on every push and **blocks** a failing one. The hook does **not** run `pytest --collect-only`, so before any push additionally run:
 
 ```
-uv run ruff check . && uv run ruff format --check . && uv run pytest --collect-only
+uv run pytest --collect-only
 ```
 
-`pytest --collect-only` automatically catches function-local-import violations (§4.1) before they redden CI for every open PR. A push that fails these checks is the implementer's own responsibility to fix before re-pushing — it does **not** become a separate `[fix]` issue.
+It catches function-local-import violations (§4.1) before they redden CI for every open PR. A push that fails these checks is the implementer's own responsibility to fix before re-pushing — it does **not** become a separate `[fix]` issue. Bypassing the hook (`git push --no-verify`) is a violation except for the one-time hook-bootstrap commit.
 
 ### 4.8 Workspace discipline
 
@@ -321,7 +321,7 @@ Reference: [Definition of Done](https://oraclous.atlassian.net/wiki/spaces/OP/pa
 
 A story is **done** when, and only when (Definition of Done, impl/infra):
 
-1. **CI is green** — quality (ruff check + format-check + collect), unit, integration (via testcontainers/docker), and security-if-applicable all pass.
+1. **CI is green** — lint (ruff + mypy + import contracts + guardrails), unit, integration (via testcontainers/docker), and security-if-applicable all pass.
 1b. **Deployed-stack e2e proven** — the bound behaviour is demonstrated against the **deployed docker stack via its real HTTP API, through the application-gateway** (the DEPLOYED-STACK VERIFICATION LAW above; `FUCK_CLAUDE_FUCK_PAPERCLIP.md`), not testcontainers/mocks/DB-direct alone. CI-green alone never satisfies this.
 1c. **E2E run locally before the PR is opened, PASS pasted into the PR** (`scripts/e2e.sh --up`) — GitHub CI cannot run the deployed-stack e2e (no stack), so it runs locally pre-PR; the suite auto-skips when the gateway is down and a skip is **not** a pass (`FUCK_CLAUDE_FUCK_PAPERCLIP.md` rule 3).
 2. The `[tests]` PR and the `[impl]` PR are both **merged** — "PR opened" is not done.
