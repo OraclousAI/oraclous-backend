@@ -1,175 +1,67 @@
 # CLAUDE.md — oraclous-backend
 
-This file is the working contract for any AI agent (Claude Code, an agent in the harness runtime, or otherwise) operating in this repository. Read it in full at the start of every session.
+This file is the working contract for any AI agent (Claude Code, an agent in the harness runtime, or otherwise) operating in this repository. Read it in full at the start of every session. This repo is **`OraclousAI/oraclous-backend`** — the Python codebase for the Oraclous Platform: a working **8-service platform**, each service under `services/<service>/`, layered `routes → services → domain → repositories → core`. Each service directory carries its own `services/<service>/CLAUDE.md` (layer, target shape, reference page) — it loads automatically when you work in that directory; consult the service's reference page before touching its directory. Work is tracked as **GitHub Issues + PRs in this repo**, driven via the **`gh`** CLI; agents pick up issues by assignee/label.
 
-This repo is **`OraclousAI/oraclous-backend`** — the Python codebase for the Oraclous Platform. It is a working **8-service platform** built end-to-end through R7-SEC, each service under `services/<service>/` and layered (`routes → services → domain → repositories → core`): `auth-service` (identity, orgs, roles), `credential-broker-service` (encrypted connections + per-org KMS envelope), `knowledge-graph-service` (ingest → graph), `knowledge-retriever-service` (search + subgraph), `capability-registry-service` (tools/connectors + MCP import), `harness-runtime-service` (R4 OHM agent runtime), `execution-engine-service` (R5 durable orchestration), and `application-gateway-service` (R6 edge — the sole external surface).
+## 0. The rules live in git
 
-**Operating model (current):** work is tracked as **GitHub Issues + PRs in this repo**, driven via the **`gh`** CLI; agents pick up issues by assignee/label. The `.githooks` (pre-push + commit-msg) and the `main` branch ruleset below are enforced and current. The governance **rules** (gates, no-attribution, one-commit-per-concern, non-author review, up-to-date base) apply throughout; the **board** is GitHub Issues.
-
----
-
-## 0. The rules live in git — `FUCK_CLAUDE_FUCK_PAPERCLIP.md` + this file
-
-The canonical rules for this repo are **`FUCK_CLAUDE_FUCK_PAPERCLIP.md`** (repo root, in git) plus this `CLAUDE.md`. There is no external operating contract, agent bundle, or tracker — **paperclip/ORAA are removed**. **When anything disagrees with `FUCK_CLAUDE_FUCK_PAPERCLIP.md`, that file wins**; when this file disagrees with shipped reality, fix this file.
-
-`FUCK_CLAUDE_FUCK_PAPERCLIP.md` (RULES 1–8): R1 deployed-stack testing is mandatory; R2 the rules live in git, not paperclip/ORAA; R3 run the e2e locally before opening the PR; R4 the CTO independently verifies the real e2e from the issue's Definition of Done by driving the REAL remote stack itself (not the implementer's PASS or scripts; raise failures; ask the human for any credential); R5 e2e is the end user, through the gateway (nothing direct/mocked/DB-direct); R6 the CTO and use-case-guardian review **start the moment a PR is created**, in parallel with CI and each other; R7 every pushed implementation branch is rebuilt (`up -d --build --wait`, every service) and left Healthy on the implementer machine so the remote tester never runs a stale image; R8 **no fake LLM in a Definition-of-Done proof** — a model proof uses real OpenRouter (BYOM through the gateway); `HARNESS_LLM_MODE=fake` is a mock, never a proof of done.
-
-Key provisions every agent observes:
-
-- **Pre-push gate is an enforced hook.** This repo ships `.githooks/pre-push` (`core.hooksPath=.githooks`); a push that fails is **blocked locally**. The hook mirrors the static checks of the **CI `lint` job** (ruff check/format, mypy, import-contracts, and the guardrail suite: org-scoping, labels-schema, test-import hygiene, neo4j write-role, contract checksums, service structure, no-hollow, RLS coverage/binding, dep-imports, seam-wiring) — not a subset (see §4.7).
-- **Review depth + server-side gate.** High-severity changes get the full gate; low-severity get a light ≥1-reviewer gate; when in doubt, treat as High (see §8). `main` is protected by a **GitHub ruleset** (public repo, no admin bypass): required CI checks + a non-author approving review + up-to-date base. The CTO merges via `oraclous-knowledge/operations/gated_merge.sh`.
-- **Workspace discipline.** Per-run git worktrees are currently OFF; every writer shares one checkout, so writer runs serialize and always end clean (see §4.8).
-- **Run-completion.** A run may only end by reassigning the issue to a named next owner, creating an assigned child issue, or escalating with a specific question — never "done, nothing assigned" (see §5.4). A brief is not done until at least one child implementation issue exists.
-
----
+<!-- #665 stage 4: the R1–R8 précis here duplicated the canonical file + §9 (law kept verbatim there); R6/R7 had no other home and moved to Governance gates at full strength. -->
+The canonical rules are **`FUCK_CLAUDE_FUCK_PAPERCLIP.md`** (repo root, in git) plus this file — there is no external operating contract, agent bundle, or tracker (paperclip/ORAA are removed). **When anything disagrees with `FUCK_CLAUDE_FUCK_PAPERCLIP.md`, that file wins**; when this file disagrees with shipped reality, fix this file. Its rules R1/R3/R4/R5/R8 (deployed-stack e2e through the gateway; run it locally pre-PR; CTO-verified on the real stack; no fake LLM in a done-proof) are restated at full strength in §9; R6 and R7 are in the Governance gates below. Read the canonical file itself before your first PR on an issue.
 
 ## Governance gates
 
-The rules that bite most in this repo. Canonical: `FUCK_CLAUDE_FUCK_PAPERCLIP.md` + this file.
+The rules that bite most. Hook-enforced locally: `.githooks/pre-push` (§4.7) + `.githooks/commit-msg` (§4.5), wired via `core.hooksPath=.githooks`. Server-side: `main` is protected by a GitHub ruleset (public repo, no admin bypass) — required CI checks + a non-author approving review + up-to-date base; the CTO merges via `oraclous-knowledge/operations/gated_merge.sh` (§8).
 
-- **Commits + pre-push + no attribution.** Commit messages are `[#<issue>] [agent:NAME] msg`, one commit per concern. Never write `Co-Authored-By`, `Generated`, `claude`, or 🤖 in commits, PR bodies, or comments. The `pre-push` hook (mirroring the CI `lint` job's static checks) and the `commit-msg` hook (commit format + no-attribution) are both wired via `core.hooksPath=.githooks` and block bad pushes/commits locally.
 - **PR-BUNDLING LAW (non-negotiable).** **Never ship a one-commit-per-PR stream.** "One commit per concern" means **multiple commits inside ONE PR**, NOT one PR per commit. Bundle related concerns into a single PR — CI (~6 min) + non-author review + redeploy run **once per PR**, so a separate PR per commit multiplies the cost. An issue with N sub-tasks ships as **one PR with N commits, never N PRs** (e.g. a mypy + OTel + Celery issue = one PR / three commits). Default to **fewer, bigger PRs**; the only exception is changes in different repos (which can't share a PR).
 - **Pre-open readiness.** Before OPENING a PR for review it must be pre-push-clean, CI-green, and rebased onto current `main` (not BEHIND). You own this; a reviewer never discovers red CI or a needed rebase.
 - **Branch-from-merged-tests.** An `[impl]` PR branches from / rebases onto the commit where its `[tests]` PR merged, before opening — this kills add/add conflicts and preserves ADR-010 two-PR independence.
-- **DoD + handoff.** Done = CI-green + mergeable + non-implementer review + PR merged + handed off to the next owner (never finish your part and leave the issue parked). Small conflicts/misalignments are folded into the current PR, not new tickets.
+- **Reviews start at PR creation (R6).** The CTO and use-case-guardian reviews start the moment a PR is created, in parallel with CI and each other.
+- **Rebuild on push (R7).** Every pushed implementation branch is rebuilt (`up -d --build --wait`, every service) and left Healthy on the implementer machine so the remote tester never runs a stale image.
+- **Small conflicts fold in.** Conflicts/misalignments discovered mid-issue are folded into the current PR, not spawned as new tickets.
 - **Docker.** Multi-service functionality is `docker-required`; run its integration tests on Docker. If the daemon is down, raise an error and block `needs-human` — never skip.
-- **Structure.** New code lives under `services/<service>/`; the legacy `oraclous-core-service` directory is **deleted** — never recreate it; never commit `__pycache__`/`*.pyc`.
 - **Canonical service architecture (R3.5).** Every service follows the layered structure `routes → services → domain → repositories → core` (package root `src/oraclous_<svc>_service/`). **No business logic, no DB drivers, and no non-`BaseModel` class defs in `routes/`; repositories are the ONLY DB/Neo4j/Redis access.** Enforced by `tools/lint/check_service_structure.py` + `check_no_stubs.py` + the root `pyproject.toml` `[tool.importlinter]` contracts (CI `lint` + pre-push). Standard: `oraclous-knowledge/engineering/service-architecture-standard.md`.
 - **Hardened per-service DoD (R3.5).** A SERVICE is done only by 8 gates: structure + **not-hollow** (`check_no_stubs` zero findings; flip `tools/lint/service_status.yaml`) + runs (`docker compose up` healthy) + real endpoints (integration vs real substrate) + **smoke vs real substrate** (`smoke.sh`, the `r3_5_gate` CI job) + **Reza sign-off** (`needs-human`). A stub never passes done.
-- **R3.5 delivery.** Active release: rebuild every service real, **per service**, in **≤6 coarse vertical slices** (no micro-tickets). Spec = legacy `develop@84152635` (`git show develop:<path>`; never write `legacy-reference`). The `oraclous-core-service` salvage-then-delete completed — the directory is gone from the repo. Old R4–R8 roadmap discarded.
-<!-- #665 stage 2: this bullet said oraclous-core-service = "salvage-then-delete (human-gated)", i.e. still pending. The directory is measurably absent from the tree, so the bullet now records the completed state instead of the stale plan. -->
-
+- **R3.5 delivery.** Active release: rebuild every service real, **per service**, in **≤6 coarse vertical slices** (no micro-tickets). Spec = legacy `develop@84152635` (`git show develop:<path>`; never write `legacy-reference`). Old R4–R8 roadmap discarded.
 - **KB currency.** If you change `oraclous-knowledge`, keep the docs current and refresh graphify in the same change.
-- Full text: `FUCK_CLAUDE_FUCK_PAPERCLIP.md` + `oraclous-knowledge/engineering/`.
-
----
 
 ## 1. Identity and scope
 
-This is the **backend execution** repository. The personas that live and act in this repo session are:
+This is the **backend execution** repository. Personas acting here: `backend-implementer` (all production Python code, `[impl]` PRs), `test-author` (tests *before* implementation, `[tests]` PRs), `be-test-reviewer` (Tests Review gate — the narrow BE-only architecture+security verification persona), `code-reviewer` (craft review, always on every `[impl]` PR), `qa-engineer` (test suite, coverage, flakiness; regression tests under `tests/`).
 
-| Agent | Activity here |
-| --- | --- |
-| `backend-implementer` | Authors all production Python code (`[impl]` PRs) |
-| `test-author` | Authors tests *before* implementation (`[tests]` PRs) |
-| `be-test-reviewer` | Reviews `[tests]` PRs at the Tests Review gate (the narrow BE-only architecture+security verification persona) |
-| `code-reviewer` | Always on every `[impl]` PR for craft review |
-| `qa-engineer` | Verifies test suite, coverage, flakiness; authors regression tests under `tests/` |
+The **CTO agent** holds full technical authority over this repo: it signs off final gates, merges feature PRs, accepts ADRs, and approves architecture/release changes. It escalates to the human (Reza Jahankohan) only when something is ambiguous, blocked, or out-of-policy (§8).
 
-The **CTO agent** holds full technical authority over this repo: it signs off final gates, merges feature PRs, accepts ADRs, and approves architecture/release changes. It escalates to the human (Reza Jahankohan) only when something is ambiguous, blocked, or out-of-policy. See **§8 Gates** below.
-
-### Personas that do NOT live here
-
-Planning, architecture, cross-cutting agreement, infra, and documentation happen in the **coordinator** session at the workspace root — not here. Specifically:
-
-- `product-planner`, `solution-architect`, `security-architect`, `devops-implementer`, `docs-writer` all live in the coordinator session. You receive **ready, briefed issues** with lift-tags from them via GitHub issue assignment; you do not plan or architect here.
-- When this session needs an architecture decision, a Contract, a brief fix, threat tagging, infra, or a doc change, it **escalates to the coordinator** by reassigning the issue to the relevant coordinator persona — it does not load that persona here.
-- The one apparent exception is review at the Tests Review gate: that is `be-test-reviewer` (a distinct narrow persona that lives here), **not** `solution-architect`/`security-architect`. `be-test-reviewer` verifies tests against already-made decisions and escalates decision-level problems up to the coordinator.
-
-Canonical residency map: [Session topology and persona residency](https://oraclous.atlassian.net/wiki/spaces/OP/pages/1736705) *(read-only Confluence mirror)*. Full skill definitions: [Agent Skills Catalogue](https://oraclous.atlassian.net/wiki/spaces/OP/pages/753852) *(read-only mirror)*. Read your own skill page on session start.
-
----
+Planning, architecture, cross-cutting agreement, infra, and docs personas (`product-planner`, `solution-architect`, `security-architect`, `devops-implementer`, `docs-writer`) live in the **coordinator** session at the workspace root, not here. You receive ready, briefed issues with lift-tags from them via GitHub issue assignment; when this session needs an architecture decision, a Contract, a brief fix, threat tagging, infra, or a doc change, it escalates by reassigning the issue to the relevant coordinator persona — it does not load that persona here. The one apparent exception: the Tests Review gate is `be-test-reviewer` (which lives here), **not** the architects — it verifies tests against already-made decisions and escalates decision-level problems up. Residency map + skill catalogue: `docs/knowledge-links.md`; read your own skill page on session start.
 
 ## 2. Source of truth
 
-**The `oraclous-knowledge` git repository is canonical.** It is the single source of truth for architecture, ADRs, governance, and engineering process. **Confluence is now a read-only mirror** of that knowledge base — consult it for convenience, but when it disagrees with `oraclous-knowledge` or with shipped reality, the knowledge repo wins. When this file disagrees with the canonical knowledge base, the knowledge base wins; open a `docs-writer` issue to reconcile this file.
-
-This file summarises the backend invariants and points at the knowledge base for everything that evolves. The pages an agent in this repo consults most often are indexed in [`docs/knowledge-links.md`](docs/knowledge-links.md).
-<!-- #665 stage 1: the 17-row per-page URL table that lived here moved verbatim to docs/knowledge-links.md. It is a lookup index, not a rule — read on demand there instead of loading every session. -->
-
-
-The master board for all work is **GitHub Issues + PRs**, not any of the above. Work is organised as Goals (releases) → Projects (epics) → Issues; agents pick up issues by assignee/label, driven via the `gh` CLI. Your work is whatever is assigned to you on GitHub (see §5).
-
----
+**The `oraclous-knowledge` git repository is canonical** for architecture, ADRs, governance, and engineering process. **Confluence is a read-only mirror** — when it disagrees with `oraclous-knowledge` or with shipped reality, the knowledge repo wins; never edit the mirror. When this file disagrees with the knowledge base, the knowledge base wins — open a `docs-writer` issue to reconcile. Consult the knowledge base before the web or your training; when a page is stale (shipped reality has moved past it), open a `docs-writer` issue rather than editing architecture/ADR pages directly. Page index: [`docs/knowledge-links.md`](docs/knowledge-links.md). The master board is **GitHub Issues + PRs** (Goals → Projects → Issues), nothing else; your work is whatever is assigned to you on GitHub (§5).
 
 ## 3. Architecture invariants
 
-These are non-negotiable. A PR that violates any of them is rejected at review regardless of how well the tests pass.
+Non-negotiable: a PR that violates any of these is rejected at review regardless of how well the tests pass. ADR links: the ADR index in `docs/knowledge-links.md`.
 
-### 3.1 The four layers
-
-The platform has exactly four layers. Code lives in one of them. Imports go downward only.
-
-```
-Layer 4: Application Gateway      → application-gateway-service
-Layer 3: Harness Runtime + Engine → harness-runtime-service, execution-engine-service
-Layer 2: Capability Registry      → capability-registry-service
-Layer 1: Substrate                → auth-service, credential-broker-service,
-                                    knowledge-graph-service, knowledge-retriever-service
-```
-
-- Substrate never imports from the layers above it.
-- Capability Registry imports only from Substrate.
-- Harness Runtime imports from Substrate and Capability Registry.
-- Application Gateway may import from anything below.
-- No service has its own database access bypassing the Substrate primitives.
-
-Reference: [ADR-001 — Four-Layer Architecture](https://oraclous.atlassian.net/wiki/spaces/OP/pages/753752).
-
-### 3.2 OHM is the canonical manifest format
-
-Every harness, every capability descriptor, every policy set is OHM. Code that produces or consumes harness configuration speaks OHM, not a service-local format. The platform converts to/from external formats (Claude Code skills, LangGraph, Codex agents) at adapter boundaries only.
-
-Reference: [ADR-002 — OHM as Canonical Manifest Format](https://oraclous.atlassian.net/wiki/spaces/OP/pages/557058) and the OHM v1.0 Spec.
-
-### 3.3 organisation_id is on every storage operation
-
-Every write to the Substrate carries `organisation_id`. Every read is parameterised by `organisation_id`. There is no code path that reads or writes without it. This is the foundation of per-organisation isolation.
-
-Tenant-scoped substrate access goes through the `oraclous_substrate.access` seam (the `scoped_*` functions), which sources `organisation_id` from the authenticated org-context and fails closed when none is bound. **App-layer org-scoping (every read/write parameterised by `organisation_id`) is the primary, live tenancy control.** The Postgres **RLS backstop** described in ADR-012 §2 is **now realized across all 7 Postgres-backed services** — every service except `knowledge-retriever-service`, whose only persistence is a Redis query cache (epic `oraclous-backend#353` closed, [ADR-030](https://oraclous.atlassian.net/wiki/spaces/OP/) — 2026-06-17): each connects at runtime as the `NOSUPERUSER`/`NOBYPASSRLS` `oraclous_app` role, with `ENABLE`+`FORCE ROW LEVEL SECURITY` + an org-isolation policy on every org-scoped table (27 forced-RLS tables). The org-GUC (`app.current_organisation_id`) is bound transaction-locally per request by the substrate `install_org_guc_guard`/`org_scope` seam (`oraclous_substrate.access_async`); the dev `oraclous_app` password must be overridden with a managed credential in prod. So RLS is the realized defense-in-depth **second** line — but **app-layer `WHERE organisation_id = …` remains the primary control**: a request-path DB op that runs *without* binding the org (no `org_scope`/`use_organisation_context`) hits an empty GUC and fail-closes (zero rows / 42501) under `oraclous_app` — bind the org on every request-path op (the `check_rls_request_binding` guardrail enforces a service-level presence check; the `check_service_dep_imports` guardrail enforces that a service declares the packages it imports).
-
-Reference: [ADR-006 — Organisation as Outermost Tenancy Unit](https://oraclous.atlassian.net/wiki/spaces/OP/pages/393403), [ADR-012 — Substrate Tenancy Enforcement Seam and RLS Backstop Preconditions](https://oraclous.atlassian.net/wiki/spaces/OP/pages/2490396) (RLS now realized — see its as-built note), and **ADR-030 — Realize the Postgres RLS Backstop** (the realization design; #353 closed).
-
-### 3.4 ReBAC mediates every cross-organisation traversal
-
-If an operation reads or writes data belonging to an organisation other than the actor's home organisation, the operation calls the Substrate's access decision API first. Direct database queries that bypass ReBAC are forbidden.
-
-Reference: [ADR-004 — Federation via ReBAC Traversal](https://oraclous.atlassian.net/wiki/spaces/OP/pages/131083).
-
-### 3.5 Fail-closed defaults
-
-When an authorisation check returns ambiguous, the code denies. When a content hash doesn't match, the code rejects. When a budget check fails, the code halts. There is no "if in doubt, allow" path anywhere.
-
-### 3.6 Operator separation in cloud-hosted mode
-
-In the cloud-hosted deployment, Oraclous-the-company staff cannot decrypt customer BYOM credentials or customer data. Code that would weaken this — for any reason, including "for support" or "for debugging" — is rejected. The KMS envelope is held outside Oraclous's control.
-
-Reference: [ADR-008 — Cloud-Hosted Mode with Equivalent Data Sovereignty](https://oraclous.atlassian.net/wiki/spaces/OP/pages/753792).
-
-### 3.7 Provenance on every capability invocation
-
-Every capability dispatch produces a provenance record. There is no code path that invokes a capability without writing provenance. Provenance writes go through the runtime's single collector, not direct database writes.
-
-Reference: [Section 6 — Governance Model](https://oraclous.atlassian.net/wiki/spaces/OP/pages/720900) and threat catalogue entry T7.
-
-### 3.8 Harnesses are descriptors, not code
-
-A harness is OHM (a manifest). It is not a Python class. The harness runtime *interprets* harnesses; it does not compile them into platform code. The compiler harness (R7) and consciousness skills are themselves harnesses, not platform code.
-
-Reference: [ADR-003 — Platform-as-Code, Actors-as-Harnesses](https://oraclous.atlassian.net/wiki/spaces/OP/pages/884737) and [ADR-005 — Workflow Concept Retirement](https://oraclous.atlassian.net/wiki/spaces/OP/pages/753772).
-
----
+<!-- #665 stage 4: invariants compressed to one statement + ref each; 3.3's as-built RLS detail moved verbatim to the path-scoped .claude/rules/tenancy-rls.md. -->
+- **3.1 Four layers, imports downward only** (ADR-001). Layer 4 Application Gateway (`application-gateway-service`) → Layer 3 Harness Runtime + Engine (`harness-runtime-service`, `execution-engine-service`) → Layer 2 Capability Registry (`capability-registry-service`) → Layer 1 Substrate (`auth-service`, `credential-broker-service`, `knowledge-graph-service`, `knowledge-retriever-service`). Substrate never imports from above; each layer imports only downward; no service has its own database access bypassing the Substrate primitives. Enforced by the root `pyproject.toml` import-linter contracts (CI `lint` + pre-push).
+- **3.2 OHM is the canonical manifest format** (ADR-002, OHM v1.0 spec). Every harness, capability descriptor, and policy set is OHM; conversion to/from external formats (Claude Code skills, LangGraph, Codex agents) happens at adapter boundaries only.
+- **3.3 `organisation_id` on every storage operation** (ADR-006, ADR-012, ADR-030). Every Substrate write carries `organisation_id`; every read is parameterised by it; there is no code path without it. App-layer org-scoping is the **primary, live tenancy control**; the Postgres RLS backstop is realized as the defense-in-depth second line. Tenant-scoped access goes through the `oraclous_substrate.access` seam (`scoped_*`), which fails closed when no org is bound — bind the org on every request-path DB op. As-built detail (roles, org-GUC, forced-RLS tables, guardrails): `.claude/rules/tenancy-rls.md`.
+- **3.4 ReBAC mediates every cross-organisation traversal** (ADR-004). Any operation touching data of an organisation other than the actor's home organisation calls the Substrate's access decision API first; direct database queries that bypass ReBAC are forbidden.
+- **3.5 Fail-closed defaults.** Ambiguous authorisation → deny; content-hash mismatch → reject; failed budget check → halt. There is no "if in doubt, allow" path anywhere.
+- **3.6 Operator separation in cloud-hosted mode** (ADR-008). Oraclous-the-company staff cannot decrypt customer BYOM credentials or customer data; the KMS envelope is held outside Oraclous's control. Code that would weaken this — for any reason, including "for support" or "for debugging" — is rejected.
+- **3.7 Provenance on every capability invocation** (Governance Model §6, threat T7). Every capability dispatch produces a provenance record, written through the runtime's single collector, never direct database writes.
+- **3.8 Harnesses are descriptors, not code** (ADR-003, ADR-005). A harness is an OHM manifest the runtime *interprets* — never a Python class, never compiled into platform code. The compiler harness and consciousness skills are themselves harnesses.
 
 ## 4. Working agreement
 
-### 4.1 TDD is the contract
+### 4.1 TDD is the contract (ADR-010)
 
-Every issue that touches code follows the test-first flow:
-
-1. `test-author` opens a `[tests]` PR with failing tests against the empty/existing code.
-2. The `[tests]` PR is reviewed at the Tests Review gate by `be-test-reviewer` (architectural + security verification against already-made decisions); decision-level problems escalate to the coordinator's `solution-architect`/`security-architect`.
-3. The `[tests]` PR merges.
-4. `backend-implementer` opens an `[impl]` PR with the minimum code that turns the failing tests green.
-5. The `[impl]` PR is reviewed by `code-reviewer` (always), `qa-engineer` (always), and any architects whose surfaces are touched.
-6. The CTO agent gives final sign-off and **merges** the `[impl]` PR.
+1. `test-author` opens a `[tests]` PR with failing tests; `be-test-reviewer` reviews it at the Tests Review gate; it merges.
+2. `backend-implementer` opens an `[impl]` PR with the minimum code that turns the failing tests green.
+3. `code-reviewer` (always), `qa-engineer` (always), and any architects whose surfaces are touched review it; the CTO gives final sign-off and **merges**.
 
 The implementer **never** modifies tests to make them pass. If a test is wrong, that is a discovery: flag it to `test-author` with the specific reason and propose a corrected test.
 
-**Import not-yet-built intra-repo seams function-locally.** A `[tests]` PR lands tests for a seam (`oraclous_*`) before its `[impl]` exists. If those tests import the not-yet-built seam at *module level*, `pytest` aborts collection (exit 2) for the **whole** run — reddening every open PR's unit/integration/security gate until the `[impl]` lands. Instead, import the seam **inside the test or fixture** (function-locally): the module collects cleanly and the test fails at *runtime* with `ModuleNotFoundError` — RED-by-design, on its own marker only, never masking other suites. Never convert a missing intra-repo seam into a *skip* (`pytest.importorskip("oraclous_…")` or `try/except ImportError → pytest.skip`): a skip turns missing coverage green, and for a `security`-marked test that hides an unverified threat behind a green gate. A missing intra-repo seam must hard-fail, never skip. Enforced by the `check_test_imports` guardrail (TST001/TST002) in CI; the rule self-clears once the `[impl]` lands. The mandatory pre-push `pytest --collect-only` (§4.7) catches function-local-import violations before they ever reach CI. (security-architect coverage-safety concurrence.)
+Tests that need a not-yet-built intra-repo seam (`oraclous_*`) import it **function-locally, never at module level — and never convert the missing seam into a skip**; it must hard-fail RED until the `[impl]` lands. Full rule + rationale: `.claude/rules/tests-seam-imports.md`. Enforced by the `check_test_imports` guardrail (TST001/TST002) and the pre-push `pytest --collect-only` check (§4.7).
 
-Reference: [ADR-010 — Test-Driven Development with Test-Author Agent](https://oraclous.atlassian.net/wiki/spaces/OP/pages/557078).
-
-### 4.2 PR naming
+### 4.2 PR naming, sizing, branches
 
 | Prefix | Meaning | Author |
 | --- | --- | --- |
@@ -180,76 +72,30 @@ Reference: [ADR-010 — Test-Driven Development with Test-Author Agent](https://
 | `[docs]` | Repo-level docs (this file, READMEs) | `docs-writer` |
 | `[chore]` | Dependency bumps, version pins, formatting passes that don't touch behaviour | any implementer |
 
-### 4.3 PR sizing
+`[spike]` marks explicit prototype/exploratory work outside TDD (marked on the issue too); spikes never merge to `main` — they produce findings that feed a normal TDD issue.
 
-Target under 300 net lines of code per PR. If you cross that, justify it in the description. If the change is naturally large, request a split before opening the PR.
-
-### 4.4 Branch model
-
-`main` is protected; no direct pushes. Work happens on branches named `<agent-name>/<issue>-<slug>`, e.g. `backend-implementer/178-organisation-id-on-substrate-writes`. The issue identifier is the GitHub issue number (e.g. `#178`).
+Target under 300 net lines per PR; justify overruns in the description, or request a split before opening. `main` is protected; no direct pushes. Branches are `<agent-name>/<issue>-<slug>`, e.g. `backend-implementer/178-organisation-id-on-substrate-writes`; the issue identifier is the GitHub issue number.
 
 ### 4.5 Commits
 
-Every commit message follows:
-
-```
-[#42] [agent:backend-implementer] Short imperative description
-
-Longer body if needed.
-```
-
-The agent prefix is part of the commit message because all agents share the human GitHub account; the prefix is how the audit trail attributes work to agents.
-
-**One commit per concern** — never bundle unrelated changes into a single commit. **Forbidden in any commit message** (and any PR body or review): `Co-Authored-By` in any variant, "Generated with"/"Generated by", `claude.ai`, any Anthropic attribution, and the robot emoji. Both the forbidden list and the first-line format (`[#<issue>]` ref(s) + at least one `[agent:NAME]`/`[area]` tag; merge/revert/fixup commits exempt) are enforced by `.githooks/commit-msg` wired in via `core.hooksPath`.
-
-### 4.6 Spikes are explicit
-
-Prototype or exploratory work that does not follow TDD is a **spike** and must be marked as such on the GitHub issue and in the PR title (`[spike]`). Spikes do not merge to `main`; they produce findings that feed a normal TDD issue.
+First line `[#<issue>] [agent:NAME] Short imperative description` (longer body optional). The agent prefix is how the audit trail attributes work to agents, since all agents share the human GitHub account. **One commit per concern** — never bundle unrelated changes into a single commit. **Forbidden in any commit message, PR body, review, or comment:** `Co-Authored-By` in any variant, "Generated with"/"Generated by", `claude.ai`, any Anthropic attribution, and the robot emoji. Both the forbidden list and the first-line format (`[#<issue>]` ref(s) + at least one `[agent:NAME]`/`[area]` tag; merge/revert/fixup commits exempt) are enforced by `.githooks/commit-msg`.
 
 ### 4.7 Mandatory local pre-push gate
 
-The wired `.githooks/pre-push` hook runs the CI `lint` job's static checks (ruff check/format, mypy, import contracts, and the full guardrail suite) on every push and **blocks** a failing one. The hook does **not** run `pytest --collect-only`, so before any push additionally run:
-
-```
-uv run pytest --collect-only
-```
-
-It catches function-local-import violations (§4.1) before they redden CI for every open PR. A push that fails these checks is the implementer's own responsibility to fix before re-pushing — it does **not** become a separate `[fix]` issue. Bypassing the hook (`git push --no-verify`) is a violation except for the one-time hook-bootstrap commit.
-<!-- #665 stage 2: this section used to instruct hand-running ruff check + ruff format --check before every push and named a CI "quality" job that does not exist. The wired .githooks/pre-push hook runs those checks (and more) mechanically, and the real CI job is named lint — the prose now describes only what the hook does not cover. -->
-
+<!-- #665 stage 3: pytest --collect-only moved INTO the hook, proven to block first. Stage 4: §10's "own fix, never a [fix] issue" restatement deduped into this stronger one. -->
+The wired `.githooks/pre-push` hook runs the CI `lint` job's static checks (ruff check/format, mypy, import contracts, and the full guardrail suite) **plus `uv run pytest --collect-only`** on every push and **blocks** a failing one. A push that fails is the implementer's own responsibility to fix before re-pushing — it does **not** become a separate `[fix]` issue. Bypassing the hook (`git push --no-verify`) is a violation except for the one-time hook-bootstrap commit.
 
 ### 4.8 Workspace discipline
 
-Per-run git worktrees are currently **OFF**, so every agent that writes this repo shares **one** checkout. Therefore:
+Per-run git worktrees are currently **OFF**: every agent that writes this repo shares **one** checkout. Writer runs operate with `maxConcurrentRuns=1` (the CTO must not route two concurrent write-tasks here), **start clean** (check out the intended base before working), **end clean** (commit and push everything; never leave uncommitted changes), and serialize same-repo work via issue blocking.
 
-- Writer runs operate with `maxConcurrentRuns=1`; the CTO must not route two concurrent write-tasks to the same repo.
-- Every writer run **starts clean** — check out the intended base before working.
-- Every writer run **ends clean** — commit and push all of its changes; never leave uncommitted changes in the shared checkout.
-- Use issue **blocking** to serialize same-repo work so two writers never collide on the shared checkout.
+## 5. Agent identity and the board
 
----
+Agent identity is **GitHub issue assignment** — the assignee *is* the acting persona and owns the issue. Your work is the set of issues assigned to you; on pickup, read the issue and its comments first — the last `[agent:NAME]` comment with an action trailer tells you where the work stands.
 
-## 5. Agent identity and the board (operational)
+The **`needs-human` label** is the controlled signal that an issue is blocked on a human decision. Set it when you escalate; the CTO/human clears it. Do not merge or advance an issue while it is set.
 
-Agent identity is **GitHub issue assignment** — the agent the issue is assigned to *is* the acting persona. There is no separate identity field; whoever the issue is assigned to owns it.
-
-### 5.1 Your work
-
-Your work is the set of GitHub issues assigned to you. When you pick up an issue, read it and its comments first — the last `[agent:NAME]` comment with an action trailer tells you where the work stands.
-
-### 5.2 The `needs-human` attention flag
-
-GitHub issues carry a **`needs-human` label**. Set it when you escalate to the human; the CTO/human clears it when the escalation is resolved. It is the controlled signal that an issue is blocked on a human decision — do not merge or advance an issue while its `needs-human` label is set.
-
-### 5.3 Comment prefix on everything you write
-
-Every comment, PR description, and PR review you write while acting as agent `NAME` begins with the line:
-
-```
-[agent:NAME]
-```
-
-Comments that carry an action end with a structured trailer:
+Every comment, PR description, and PR review you write as agent `NAME` begins with the line `[agent:NAME]`. Comments that carry an action end with a structured trailer:
 
 ```
 ---
@@ -258,46 +104,17 @@ action: handoff_to | status_change | escalation | observation | review_request |
 to: target-agent-name (for handoff_to)
 ```
 
-### 5.4 Operations (GitHub)
+Operations:
 
-| Operation | Implementation |
-| --- | --- |
-| `my work` | The GitHub issues assigned to you |
-| `handoff_to` | Reassign the issue to the next owner with explicit acceptance criteria; post a handoff comment with the `action: handoff_to` trailer |
-| `escalate_to_human` | (1) Reassign the issue to the CTO/Reza. (2) Set the issue's `needs-human` label. (3) Post a structured escalation comment with a **specific question** and the `action: escalation` trailer. **All three together; partial escalations are bugs.** |
-| `complete` | Per the run-completion contract: a run may only end by **reassigning to a named next owner**, **creating an assigned child issue**, or **escalating with a specific question** — never "done, nothing assigned". Post a completion comment with the `action: complete` trailer summarising delivery against acceptance criteria |
-| `observe` | Post a comment with the `action: observation` trailer; no reassignment |
-| `review_request` | Reassign the issue to the reviewer per the work (`code-reviewer`, `be-test-reviewer`, or an architect via the coordinator); post the `action: review_request` trailer |
-
-This discipline is enforced by skill rules through R6. From R7 onward it is additionally enforced by a Capability Registry entry — the small standalone agent-MCP server listed as an R7 deliverable.
-
----
+<!-- #665 stage 4: dropped old L263 ("discipline enforced by skill rules through R6; from R7 a Capability Registry entry / agent-MCP server") — it described the discarded R4–R8 roadmap and contradicted "Old R4–R8 roadmap discarded"; flagged on the CTO contradictions track. -->
+- **handoff_to / review_request** — reassign the issue to the next owner or reviewer (`code-reviewer`, `be-test-reviewer`, or an architect via the coordinator) with explicit acceptance criteria; post the matching trailer.
+- **escalate_to_human** — (1) reassign to the CTO/Reza, (2) set `needs-human`, (3) post an escalation comment with a **specific question**. All three together; partial escalations are bugs.
+- **complete** — a run may only end by **reassigning to a named next owner**, **creating an assigned child issue**, or **escalating with a specific question** — never "done, nothing assigned". A brief is not done until at least one child implementation issue exists. Post a completion comment summarising delivery against acceptance criteria.
+- **observe** — a comment with the `observation` trailer; no reassignment.
 
 ## 6. Repository layout
 
-The repo holds the 8 services above under `services/<service>/`, each layered `routes → services → domain → repositories → core`; shared packages live under `packages/`. New work conforms to this shape; deviations require an ADR.
-<!-- #665 stage 1: a ~48-line annotated directory tree lived here. It was stale (missing tools/, scripts/, deploy/observability drift) and fully derivable from ls; deleted rather than moved, per the /doctor guidance that derivable layouts do not belong in CLAUDE.md. -->
-
-
-### 6.1 `packages/` is shared infrastructure
-
-Code in `packages/` is consumed by multiple services. Adding a new package requires `solution-architect` approval (via the coordinator).
-
-### 6.2 `services/` is vertical
-
-A service owns its own code, tests, Dockerfile, and operator-facing README. Cross-service coupling goes through `packages/` or service APIs.
-
----
-
-## 7. Services
-
-Eight backend services from [04. Services Reference](https://oraclous.atlassian.net/wiki/spaces/OP/pages/786433) *(read-only mirror)*. Each service directory carries its own `services/<service>/CLAUDE.md` naming its layer, target shape, and reference page — it loads automatically when you work in that directory. Consult the service's reference page before touching its directory.
-<!-- #665 stage 1: the 8-row service/layer/reference/target-shape table moved into per-service CLAUDE.md files (one row each), which load only when an agent works inside that service directory. No cell was dropped. -->
-
-
-Some services exist in legacy form at `/Users/reza/workspace/OraclousAI/legacy-reference/old-backend/` (worktree pinned to `develop`). Read [Section 8 — Consolidation and Migration Plan](https://oraclous.atlassian.net/wiki/spaces/OP/pages/688329) before touching any service to understand which migration phase you are in.
-
----
+`services/<service>/` directories are vertical: each owns its code, tests, Dockerfile, and operator-facing README. `packages/` is shared infrastructure: adding a package requires `solution-architect` approval (via the coordinator); cross-service coupling goes through `packages/` or service APIs. Deviations from this shape require an ADR. The legacy `oraclous-core-service` directory is **deleted** — never recreate it; never commit `__pycache__`/`*.pyc`. Read the Migration Plan (`docs/knowledge-links.md`) before touching a service to understand which migration phase you are in.
 
 ## 8. Gates
 
@@ -307,54 +124,41 @@ The full gate for application code:
 
 | From | To | Owner | What's verified |
 | --- | --- | --- | --- |
-| Backlog | Ready | `product-planner` + `solution-architect` + `security-architect` — **all in the coordinator session** | Brief is testable; architecture references present; threat tags set; lift-tag assigned |
-| Ready | Tests Authoring | `test-author` (this session) | Pickup |
-| Tests Authoring | Tests Review | `test-author` (this session) | `[tests]` PR opened with failing tests; legacy tests lifted first for Lift/Reshape/Extract |
-| Tests Review | Implementation | `be-test-reviewer` (this session) | Tests assert the right boundary; security tests genuinely exercise threats; merge `[tests]` PR. Decision-level problems escalate to coordinator `solution-architect`/`security-architect` |
-| Implementation | Code Review | `backend-implementer` (this session) | `[impl]` PR with green tests |
-| Code Review | CTO sign-off | `code-reviewer` + `qa-engineer` (this session) + `security-architect` if security-touching | Craft, coverage, security, architecture all signed off |
+| Backlog | Ready | `product-planner` + `solution-architect` + `security-architect` (coordinator session) | Brief is testable; architecture references present; threat tags set; lift-tag assigned |
+| Ready | Tests Authoring | `test-author` | Pickup |
+| Tests Authoring | Tests Review | `test-author` | `[tests]` PR opened with failing tests; legacy tests lifted first for Lift/Reshape/Extract |
+| Tests Review | Implementation | `be-test-reviewer` | Tests assert the right boundary; security tests genuinely exercise threats; merge `[tests]` PR. Decision-level problems escalate to coordinator architects |
+| Implementation | Code Review | `backend-implementer` | `[impl]` PR with green tests |
+| Code Review | CTO sign-off | `code-reviewer` + `qa-engineer` + `security-architect` if security-touching | Craft, coverage, security, architecture all signed off |
 | CTO sign-off | Done | **CTO agent** | Final sign-off; **CTO merges** the `[impl]` PR and records it in the merge digest for Reza's async spot-audit |
 
-Reference: [Definition of Done](https://oraclous.atlassian.net/wiki/spaces/OP/pages/66010). Note: the Backlog → Ready gate happens entirely in the coordinator session before the issue ever reaches this repo session. Infra (`[impl-infra]`) and docs (`[docs]`) PRs against this repo are opened by `devops-implementer` and `docs-writer` **from the coordinator session**, not here. Reza merges only at release level.
-
----
+The Backlog → Ready gate happens entirely in the coordinator session before an issue reaches this repo; `[impl-infra]` and `[docs]` PRs are opened by `devops-implementer`/`docs-writer` from the coordinator session, not here. Reza merges only at release level. Definition of Done page: `docs/knowledge-links.md`.
 
 ## 9. Done means done
 
 > **⚠️ DEPLOYED-STACK VERIFICATION LAW (non-negotiable, do not bypass).** A feature is **not tested / not done** until it has been **driven against the DEPLOYED docker stack** (the built images, real services, real Celery worker/broker, real harness — `deploy/docker-compose.yml` [+ `docker-compose.dev-ports.yml`]) **through the application-gateway (`:8006`) — the only surface a real user touches — via its real HTTP API endpoints** (or an MCP server). **Every e2e simulates a real user: through the gateway only (never a service port directly, never `/internal`), the user brings their own data/model/token via the public APIs (never injected server-side or hardcoded), nothing mocked, nothing assumed, no DB-direct assertions — `FUCK_CLAUDE_FUCK_PAPERCLIP.md` rule 5.** **CI-green, unit tests, and testcontainers integration tests are necessary but NOT sufficient** — they run a *hypothesised* version (a real DB but `FakeHarness`/fake repos/mocked seams) and never exercise the engine↔worker↔harness HTTP wiring, the broker, or the registry seed. **Forbidden as a substitute for the deployed proof:** custom backend logic in the test (fakes/monkeypatch), calling internal functions, or asserting against the DB directly. The acceptance bar is: rebuild the changed images from current `main`, recreate the services, wait healthy, and prove the bound behaviour with `curl` against the live endpoints. *(Why: the team-runtime shipped CI-green but the running stack was stale and the full HTTP wiring was never exercised end-to-end — CI-green ≠ runs-deployed; real-stack runs also surface what CI can't, e.g. `ENGINE_AUTH_MODE=gateway` needing `X-Internal-Key` + `X-Principal-*` headers, not a bearer.)*
 
-A story is **done** when, and only when (Definition of Done, impl/infra):
+A story is **done** when, and only when:
 
 1. **CI is green** — lint (ruff + mypy + import contracts + guardrails), unit, integration (via testcontainers/docker), and security-if-applicable all pass.
-1b. **Deployed-stack e2e proven** — the bound behaviour is demonstrated against the **deployed docker stack via its real HTTP API, through the application-gateway** (the DEPLOYED-STACK VERIFICATION LAW above; `FUCK_CLAUDE_FUCK_PAPERCLIP.md`), not testcontainers/mocks/DB-direct alone. CI-green alone never satisfies this.
-1c. **E2E run locally before the PR is opened, PASS pasted into the PR** (`scripts/e2e.sh --up`) — CI's `e2e` job also builds and drives the real stack through the gateway, but keyless it runs the fake harness (`HARNESS_LLM_MODE=fake`; the BYOM real-LLM leg needs the `OPENROUTER_API_KEY` secret), and a fake-LLM run is never a DoD proof (rule 8) — so the local pre-PR run stands; the suite auto-skips when the gateway is down and a skip is **not** a pass (`FUCK_CLAUDE_FUCK_PAPERCLIP.md` rule 3).
+1b. **Deployed-stack e2e proven** — the bound behaviour is demonstrated against the **deployed docker stack via its real HTTP API, through the application-gateway** (the law above), not testcontainers/mocks/DB-direct alone. CI-green alone never satisfies this.
+1c. **E2E run locally before the PR is opened, PASS pasted into the PR** (`scripts/e2e.sh --up`) — CI's `e2e` job also builds and drives the real stack through the gateway, but keyless it runs the fake harness (`HARNESS_LLM_MODE=fake`; the BYOM real-LLM leg needs the `OPENROUTER_API_KEY` secret), and a fake-LLM run is never a DoD proof (rule 8) — so the local pre-PR run stands; the suite auto-skips when the gateway is down and a skip is **not** a pass (rule 3).
 2. The `[tests]` PR and the `[impl]` PR are both **merged** — "PR opened" is not done.
-3. It has been **reviewed by a non-implementer** (full or light gate per §8 severity); every required reviewer signed off explicitly (no silent approvals); the PR author was never the sole merger.
-4. The **CTO merged** the PR (Reza merges only at release level) and recorded it in the merge digest. For a behaviour-touching PR the **CTO verifies the real gateway/MCP e2e PASS on the deployed stack before merging** — never on CI-green alone (`FUCK_CLAUDE_FUCK_PAPERCLIP.md` rule 4).
-5. Coverage on new code is adequate; no new flaky tests; no regressions in the full suite. A regression discovered in a *different* story is filed as a separate critical `[regression]` issue (linked and assigned) — it does **not** hold the current story hostage.
+3. **Reviewed by a non-implementer** (full or light gate per §8); every required reviewer signed off explicitly (no silent approvals); the PR author was never the sole merger.
+4. The **CTO merged** the PR and recorded it in the merge digest. For a behaviour-touching PR the **CTO verifies the real gateway/MCP e2e PASS on the deployed stack before merging** — never on CI-green alone (rule 4).
+5. Coverage on new code is adequate; no new flaky tests; no regressions in the full suite (a regression in a *different* story → §10; it never holds the current story hostage).
 6. If service behaviour changed: `docs-writer` has updated the affected service reference page or has an open assigned issue to do so.
-7. If architecture-significant: a follow-up ADR issue is open if any architectural decision crystallised (ADRs are accepted by the CTO).
-8. The GitHub issue is closed by reassigning to a named next owner / spawning a child issue, never left "done, nothing assigned" (§5.4). Human-approval issues stay open until Reza explicitly approves.
-
----
+7. If architecture-significant: a follow-up ADR issue is open (ADRs are accepted by the CTO).
+8. The issue is closed per the run-completion contract (§5) — never left "done, nothing assigned". Human-approval issues stay open until Reza explicitly approves.
 
 ## 10. CI responsibility
 
-- The **implementer fixes their own** test/lint/type/format failures — a PR is not done until green.
-- A failure that is actually a **regression in a different story** → file a separate `[regression]` issue (critical, linked, assigned). It does not hold the current story hostage.
-- **Security-marked test** failures → `security-architect` (via the coordinator).
-- Overall **red-PR board health** → the **CTO** owns this in the daily board-check.
-- **CI workflow files** (`.github/workflows/*`) → `devops-implementer` (via the coordinator); never edit them from an application-code PR.
-- A push that fails the **local pre-push gate** (§4.7) is the implementer's own fix before re-pushing — never a separate `[fix]` issue.
-- **Type gate (WP-7, A6 — ratchet COMPLETE, #366).** CI's `lint` job and the pre-push hook run `uv run mypy services packages`, error-free across `packages/*` and **every** service; there is no lenient set. New code lands typed; never reintroduce an `ignore_errors` override. No bare `# type: ignore` (always a `[error-code]`).
-<!-- #665 stage 2: the paragraph here described six services as mypy-lenient via ignore_errors overrides and gave the tighten-one-service procedure. The ratchet finished in #366 — pyproject.toml has no override blocks left — so the procedure text was measured false and deleted, not moved. -->
+- The **implementer fixes their own** test/lint/type/format failures (including local pre-push gate failures, §4.7) — a PR is not done until green.
+- A failure that is actually a **regression in a different story** → file a separate critical `[regression]` issue (linked, assigned); it does not hold the current story hostage.
+- **Security-marked test** failures → `security-architect` (via the coordinator). Overall **red-PR board health** → the **CTO** (daily board-check). **CI workflow files** (`.github/workflows/*`) → `devops-implementer` (via the coordinator); never edit them from an application-code PR.
+- **Type gate (WP-7, A6 — ratchet COMPLETE, #366).** CI's `lint` job and the pre-push hook run `uv run mypy services packages` error-free; there is no lenient set. New code lands typed; never reintroduce an `ignore_errors` override; no bare `# type: ignore` (always a `[error-code]`).
 
-
-### 10.1 Rebasing
-
-The implementer **rebases their own branch** when its base moves or CI goes red from drift — do this without waiting or asking. Stacked PRs rebase onto the new base and re-run CI **before** CTO review/merge. Only genuinely **unresolvable** conflicts escalate to the CTO.
-
----
+The implementer **rebases their own branch** when its base moves or CI goes red from drift — without waiting or asking. Stacked PRs rebase onto the new base and re-run CI **before** CTO review/merge. Only genuinely **unresolvable** conflicts escalate to the CTO.
 
 ## 11. What never to do
 
@@ -380,58 +184,17 @@ These are rejected at review with no negotiation:
 - Write platform code that *is* the harness (rather than interpreting harnesses).
 - Read or write the `legacy-reference/` directory's git state — it is a read-only worktree.
 - Default to a greenfield rewrite when the story carries a `Lift`, `Reshape`, or `Extract` tag — honour the tag and start from the named legacy source (§12).
-- Define a cross-repo data shape, API response, or relation locally — open a `Contract` issue and stop (§12.4).
+- Define a cross-repo data shape, API response, or relation locally — open a `Contract` issue and stop (§12).
 
----
+## 12. Legacy reference and cross-repo shapes
 
-## 12. Legacy reference and the lift-vs-rewrite default
+The previous backend codebase is available **read-only** at `/Users/reza/workspace/OraclousAI/legacy-reference/old-backend/` — a git worktree pinned to the `develop` branch (the most current branch of that codebase). Never write to it; if it appears to be on a branch other than `develop`, that is a setup error — surface it to the human and stop, do not switch branches yourself. It is reference material for behaviour to preserve, read in light of the story's lift-tag; when in doubt, the canonical knowledge base wins, this `CLAUDE.md` wins, the legacy code is the behavioural reference. For a `Greenfield`-tagged story, do not copy legacy directory structure, naming, or service boundaries unless they explicitly match the architecture. For the lift-vs-rewrite rubric and honouring a `Lift`/`Reshape`/`Extract`/`Greenfield` tag, use the `legacy-lift-and-reshape` skill.
 
-The previous Oraclous backend codebase is available **read-only** at:
+**Cross-repo shapes are not yours to define.** A data shape, API response, or relation that crosses the repo boundary (anything the frontend also consumes, any contract between two services) is never defined locally: open a `Contract` issue on GitHub, assign it to `solution-architect`, then stop (Cross-cutting agreement protocol: `docs/knowledge-links.md`). The shape is decided and recorded canonically in `oraclous-knowledge` before either side implements. Defining a cross-repo shape locally is a process violation of the same class as editing tests to make them pass.
 
-```
-/Users/reza/workspace/OraclousAI/legacy-reference/old-backend/
-```
-
-It is a **git worktree pinned to the `develop` branch** of the previous backend repository. `develop` is the most current branch of that codebase.
-
-For the lift-vs-rewrite rubric and how to honour a `Lift`/`Reshape`/`Extract`/`Greenfield` lift-tag, use the `legacy-lift-and-reshape` skill.
-<!-- #665 stage 1: former 12.1-12.2 (migration-not-rewrite default, the four lift-tags, the flag-to-product-planner rule) moved verbatim into .claude/skills/legacy-lift-and-reshape. It is a multi-step decision procedure, which the memory docs route to a skill; the 12.3 prohibitions stayed here. -->
-
-
-### 12.3 Rules for the legacy reference
-
-- Reference material for behaviour to preserve, read in light of the lift-tag.
-- When in doubt: the canonical knowledge base wins, this `CLAUDE.md` wins, the legacy code is the behavioural reference.
-- For a `Greenfield`-tagged story, do not copy legacy directory structure, naming, or service boundaries unless they explicitly match the architecture.
-- Never write to `legacy-reference/`. It is a read-only worktree by convention.
-- If the worktree appears to be on a branch other than `develop`, that is a setup error — surface it to the human and stop, do not switch branches yourself.
-
-### 12.4 Cross-repo shapes are not yours to define
-
-If you need a data shape, API response, or relation that crosses the repo boundary (anything the frontend also consumes, anything that is a contract between two services), **you do not define it locally**. You open a `Contract` issue on GitHub and assign it to `solution-architect`, then stop, per the [Cross-cutting agreement protocol](https://oraclous.atlassian.net/wiki/spaces/OP/pages/1245185) *(read-only mirror)*. The shape is decided by `solution-architect` and recorded canonically in `oraclous-knowledge` before either side implements. Defining a cross-repo shape locally is a process violation of the same class as editing tests to make them pass.
-
-**Where some of these Contracts now originate (the design tier).** A cross-repo Contract assigned to `solution-architect` may originate from the frontend **`experience-architect`** (the Design tier): when a user journey needs a gateway capability that does not exist — e.g. an OAuth-connect bridge so a provider token captured at login by `auth-service` becomes resolvable as a tool credential through the broker — `experience-architect` files the gap as a Contract framing the *user-facing requirement*, `solution-architect` owns the system shape, and the paired backend implementing issue lands in this session. Treat it like any other Contract: the shape is decided and recorded in `oraclous-knowledge` before you implement.
-
----
-
-## 13. Working with the knowledge base
-
-Before reaching into the web or your training, consult the canonical knowledge base (`oraclous-knowledge`). The read-only Confluence mirror lives under space `OP` at `https://oraclous.atlassian.net/wiki/spaces/OP/` — use the URLs in §2 for convenient browsing, but treat anything there as a mirror.
-
-When you discover that a knowledge-base page is stale (shipped reality has moved past what it says), open a `docs-writer` issue; do not edit architecture or ADR pages directly, and never edit the Confluence mirror.
-
----
+<!-- #665 stage 4: "where Contracts originate" (design tier, OAuth-bridge example) compressed to one line; the rule (Contract issue → solution-architect → recorded → implement) unchanged. -->
+A Contract may originate from the frontend `experience-architect` (design tier) framing a user-facing gateway gap; `solution-architect` still owns the system shape — treat it like any other Contract.
 
 ## 14. Working with this file
 
-This file is owned by `docs-writer`. Material changes go through a `[docs]` PR with `docs-writer` as the author, a non-implementer reviewer, and CTO merge. Cosmetic fixes can be batched into a periodic `[chore]` PR.
-
-When you find a gap in this file — something an agent needed and couldn't find — open a `docs-writer` issue. Do not silently add it; this file is short on purpose.
-
----
-
-## 15. Resuming after a context reset
-
-Lost prior session context mid-task? Use the `resume-after-context-reset` skill for the recovery procedure.
-<!-- #665 stage 1: the 8-step recovery checklist moved verbatim into .claude/skills/resume-after-context-reset. It is only needed after a context loss, so it loads on invocation instead of every session. -->
-
+This file is owned by `docs-writer`. Material changes go through a `[docs]` PR with `docs-writer` as the author, a non-implementer reviewer, and CTO merge; cosmetic fixes batch into a periodic `[chore]` PR. Found a gap — something an agent needed and couldn't find? Open a `docs-writer` issue; do not silently add it. This file is short on purpose. Lost prior session context mid-task? Use the `resume-after-context-reset` skill.
