@@ -49,8 +49,11 @@ from oraclous_execution_engine_service.services.registry_client import (
     RegistryClientError,
 )
 from oraclous_execution_engine_service.services.team_run_service import (
+    TeamRunError,
+    load_team_manifest,
     strip_reserved_refresh_seed,
     thread_refresh_seed,
+    validate_task_input,
 )
 
 # An adopted-tool dispatch hand-off: (run_id, instance_id, input_data, organisation_id, user_id) →
@@ -176,6 +179,19 @@ class ScheduleService:
             # fail-fast: the bound graph must exist in the caller's org (mirrors the request path),
             # so a cross-org / non-existent binding is rejected at register, not silently per fire.
             await self._validate_graph_id(org_id, graph_id)
+            # Contract §TASK (#674): a standing team whose manifest REQUIRES a run task must carry
+            # it in input_data.inputs at register — else every Beat fire runs taskless into the
+            # self-chosen-target failure, on a cron. A manifest that does not parse as a team keeps
+            # deferring to fire time (register's minimal-manifest contract is unchanged).
+            try:
+                team = load_team_manifest(manifest_inline)
+            except TeamRunError:
+                team = None
+            if team is not None:
+                try:
+                    validate_task_input(team, (input_data or {}).get("inputs"))
+                except TeamRunError as exc:
+                    raise ScheduleError(str(exc)) from exc
         else:
             raise ScheduleError(f"unknown target_kind {target_kind!r}")
         # #598 (L3 per-period cap, team-only): period + allowance are all-or-nothing + fail-closed —
