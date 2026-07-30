@@ -1009,6 +1009,7 @@ class HarnessExecutionService:
                 name = f"harness:{manifest.metadata.id}:{cap.binding}"
                 needed = _mapped_credential_types(item.get("descriptor") or {})
                 mappings = cap.config.get("credential_mappings") or {}
+                reused_mappings: dict[str, str] = {}  # a fresh create has nothing to preserve
                 prior = existing.get(name)
                 if (
                     prior is not None
@@ -1021,6 +1022,7 @@ class HarnessExecutionService:
                     )
                 ):
                     instance_id = uuid.UUID(str(prior["id"]))
+                    reused_mappings = prior.get("credential_mappings") or {}
                 elif needed and not all(t in mappings for t in needed):
                     # #663: a fresh mint could never be configured (creation takes no credentials
                     # and nothing here could bind them) — bind the org's configured instance.
@@ -1041,6 +1043,7 @@ class HarnessExecutionService:
                             "credential and configure the tool before running"
                         )
                     instance_id = uuid.UUID(str(sibling["id"]))
+                    reused_mappings = sibling.get("credential_mappings") or {}
                 else:
                     cap_config = {
                         k: v for k, v in cap.config.items() if k not in _RESERVED_CONFIG_KEYS
@@ -1071,7 +1074,12 @@ class HarnessExecutionService:
                     instance_id = uuid.UUID(str(instance["id"]))
                 instance_by_binding[cap.binding] = instance_id
                 if mappings:
-                    await self._registry.configure_credentials(instance_id, mappings)
+                    # configure-credentials REPLACES the whole map in the registry, so a reused
+                    # (already-configured) instance must receive the MERGE — the manifest's partial
+                    # mappings must never destroy the org instance's own coverage (#663 review).
+                    await self._registry.configure_credentials(
+                        instance_id, {**reused_mappings, **mappings}
+                    )
                 for spec in tool_specs_for(cap.binding, item.get("descriptor") or {}):
                     if (
                         spec.name in seen_tools
