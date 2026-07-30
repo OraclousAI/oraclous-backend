@@ -97,7 +97,9 @@ def _team(org: str, model_credential_id: str) -> tuple[dict, dict]:
                 "manifest_ref": "x/fetcher@1",
                 "subgoal": "list the repository's files",
                 "depends_on": [],
-                "tools": ["core/github-reader@1.0.0"],
+                # the member ceiling holds BINDING names (assert_subharness_within_ceiling compares
+                # sub-harness capability bindings against it), never registry refs
+                "tools": ["github-reader"],
             }
         ],
         "runtime": {"entrypoint": "fetcher"},
