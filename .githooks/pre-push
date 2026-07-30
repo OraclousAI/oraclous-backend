@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # .githooks/pre-push — ENFORCED local quality gate, enacted 2026-06-04.
 #
-# Mirrors CI's `quality` job exactly (the static checks) so lint/format/type/
-# import-contract/guardrail failures NEVER reach CI or a reviewer. A failing
+# Mirrors CI's `lint` job (the static checks) plus pytest collection, so lint/
+# format/type/import-contract/guardrail/collection failures NEVER reach CI or a
+# reviewer. A failing
 # push is BLOCKED here — it does not become a CI round-trip or a [fix] ticket.
 #
 # This is a mechanism, not a rule: it physically prevents red-quality pushes.
@@ -23,7 +24,7 @@ fail() {
   exit 1
 }
 
-echo "[pre-push] running local quality gate (mirrors CI 'quality' job)…" >&2
+echo "[pre-push] running local quality gate (mirrors CI 'lint' job + pytest collection)…" >&2
 uv lock --check                                                             || fail "uv.lock out of sync with pyproject (run: uv lock, then commit uv.lock) — #460"
 uv run ruff check .                                                          || fail "ruff lint (uv run ruff check .)"
 uv run ruff format --check .                                                 || fail "ruff format (run: uv run ruff format .)"
@@ -41,4 +42,8 @@ uv run python -m tools.lint.check_rls_coverage                              || f
 uv run python -m tools.lint.check_service_dep_imports services              || fail "service first-party-dependency guardrail (#375 class)"
 uv run python -m tools.lint.check_rls_request_binding                       || fail "RLS request-binding guardrail"
 uv run python -m tools.lint.check_seam_wired                                || fail "seam-wiring guardrail (#446 — a built control seam is unwired)"
+COLLECT_OUT=$(uv run pytest --collect-only -q 2>&1) || {
+  printf '%s\n' "$COLLECT_OUT" | tail -40 >&2
+  fail "pytest collection (uv run pytest --collect-only — a module-level import broke collection for the whole repo, §4.1)"
+}
 echo "[pre-push] ✅ quality gate passed." >&2
