@@ -64,6 +64,27 @@ logger = logging.getLogger(__name__)
 
 _RESERVED_CONFIG_KEYS = ("credential_mappings", "capability_id")
 
+# #663 — the credential types whose broker resolution READS an instance's credential_mappings.
+# oauth_token is deliberately absent: the broker resolves it per request from (org, user, provider,
+# scopes) and ignores mappings, so an OAuth-only capability needs no configured instance.
+_MAPPED_CREDENTIAL_TYPES = frozenset({"api_key", "connection_string", "username_password"})
+
+
+def _mapped_credential_types(descriptor: dict[str, Any]) -> list[str]:
+    """The descriptor's REQUIRED credential types that an instance must have mapped to dispatch
+    (mirrors the registry's ``required_credential_types``: ``required`` defaults to true; distinct,
+    order-stable), restricted to the mapping-load-bearing types above."""
+    requirements = (descriptor.get("spec") or {}).get("credential_requirements") or []
+    out: list[str] = []
+    for req in requirements:
+        if not isinstance(req, dict) or not req.get("required", True):
+            continue
+        cred_type = req.get("type")
+        if cred_type in _MAPPED_CREDENTIAL_TYPES and cred_type not in out:
+            out.append(cred_type)
+    return out
+
+
 # Run states that count as a COMPLETED run for the post-run memory hook (#332 / ADR-027 §5) — an
 # ESCALATED pause (HITL / human assignment) is not a completed run, so no memory is written for it.
 # #587: a PARTIAL (degrade) run FINISHED with best-effort output (checkpoint=None), so it grounds
@@ -966,18 +987,60 @@ class HarnessExecutionService:
         accumulate instances and a partial setup failure has a bounded, reusable footprint (the
         registry has no instance-delete endpoint to compensate-delete against). Tool names are
         ``<binding>__<operation>``; bindings are load-time-unique (parse), so they never collide.
+
+        #663 — a capability whose credential mapping is load-bearing (``api_key`` /
+        ``connection_string`` / ``username_password``; OAuth is broker-resolved per request and
+        exempt) never gets a fresh unconfigurable mint. When neither the deterministic instance nor
+        the manifest's ``credential_mappings`` can satisfy it, the run binds the org's own
+        configured instance of the same capability instead — the one the user set up in the
+        console — and fails fast (before any model tokens) when the org has none, naming the
+        binding and the missing types. A reused org instance keeps its own configuration: the
+        per-run keys below (workspace_root/graph_id/precedence) are read only by first-party
+        keyless connectors, which always take the mint path.
         """
         instance_by_binding: dict[str, uuid.UUID] = {}
         tool_specs: list[ToolSpec] = []
         seen_tools: set[str] = set()
         try:
-            existing = {i.get("name"): i for i in await self._registry.list_instances()}
+            rows = await self._registry.list_instances()
+            existing = {i.get("name"): i for i in rows}
             for cap in manifest.capabilities:
                 item = resolved[cap.binding]
                 name = f"harness:{manifest.metadata.id}:{cap.binding}"
+                needed = _mapped_credential_types(item.get("descriptor") or {})
+                mappings = cap.config.get("credential_mappings") or {}
                 prior = existing.get(name)
-                if prior is not None and str(prior.get("capability_id")) == str(item["id"]):
+                if (
+                    prior is not None
+                    and str(prior.get("capability_id")) == str(item["id"])
+                    # a pre-#663 junk prior (same name, unconfigurable) must not be re-selected —
+                    # unless the manifest's mappings will configure it right below
+                    and all(
+                        t in (prior.get("credential_mappings") or {}) or t in mappings
+                        for t in needed
+                    )
+                ):
                     instance_id = uuid.UUID(str(prior["id"]))
+                elif needed and not all(t in mappings for t in needed):
+                    # #663: a fresh mint could never be configured (creation takes no credentials
+                    # and nothing here could bind them) — bind the org's configured instance.
+                    sibling = next(
+                        (
+                            r
+                            for r in rows
+                            if str(r.get("capability_id")) == str(item["id"])
+                            and all(t in (r.get("credential_mappings") or {}) for t in needed)
+                        ),
+                        None,
+                    )
+                    if sibling is None:
+                        missing = [t for t in needed if t not in mappings]
+                        raise HarnessExecutionError(
+                            f"capability {cap.binding!r} requires credential types {missing} but "
+                            "the organisation has no configured instance of it — connect the "
+                            "credential and configure the tool before running"
+                        )
+                    instance_id = uuid.UUID(str(sibling["id"]))
                 else:
                     cap_config = {
                         k: v for k, v in cap.config.items() if k not in _RESERVED_CONFIG_KEYS
@@ -1007,7 +1070,6 @@ class HarnessExecutionService:
                     )
                     instance_id = uuid.UUID(str(instance["id"]))
                 instance_by_binding[cap.binding] = instance_id
-                mappings = cap.config.get("credential_mappings") or {}
                 if mappings:
                     await self._registry.configure_credentials(instance_id, mappings)
                 for spec in tool_specs_for(cap.binding, item.get("descriptor") or {}):
