@@ -252,3 +252,27 @@ def _async_return(value: Any) -> Any:  # noqa: ANN401
         return value
 
     return _coro()
+
+
+async def test_manifest_mappings_merge_into_a_reused_instances_credentials() -> None:
+    """Review finding (#679): configure-credentials is a WHOLESALE replacement in the registry, so
+    applying the manifest's (partial) mappings to a reused, already-configured instance must send
+    the MERGED map — else the org instance's own credential coverage is silently destroyed and the
+    next dispatch 409s on an instance the user had working."""
+    ready_id = str(uuid.uuid4())
+    registry = _Registry(
+        [
+            _row(
+                instance_id=ready_id,
+                name="github-reader",
+                required=["api_key"],
+                mappings={"api_key": "cred-org"},
+            )
+        ]
+    )
+    manifest = _manifest(config={"credential_mappings": {"webhook_secret": "cred-extra"}})
+    instance_by_binding, _ = await _service(registry)._materialise(manifest, _RESOLVED_KEYED)
+    assert instance_by_binding["github-reader"] == uuid.UUID(ready_id)
+    assert registry.configured == [
+        (uuid.UUID(ready_id), {"api_key": "cred-org", "webhook_secret": "cred-extra"})
+    ]  # merged — the reused instance keeps its own coverage, gains the manifest's additions
