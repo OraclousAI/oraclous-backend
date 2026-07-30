@@ -392,6 +392,19 @@ class OHMPrecedence(BaseModel):
     graph: Literal["authoritative", "derived"] = "derived"
 
 
+class OHMTaskInput(BaseModel):
+    """The per-run task a STANDING team expects at run time (Contract §TASK, #674) — distinct from
+    the compile-time planner inputs that bake into the manifest. The value rides
+    ``TeamRunCreate.inputs[key]`` and is delivered verbatim into every member's rendered input;
+    ``required`` makes a taskless create fail closed (422), never a self-chosen target."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    required: bool = False
+    description: str = ""
+    key: str = Field(default="task", min_length=1)
+
+
 class OHMManifest(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
@@ -411,6 +424,8 @@ class OHMManifest(BaseModel):
     task_board: OHMTaskBoard | None = None
     budget: OHMBudget | None = None
     precedence: OHMPrecedence | None = None
+    # Contract §TASK (#674): the per-run task this standing team expects (None → no run-time task).
+    task_input: OHMTaskInput | None = None
     schemas: dict[str, Any] = Field(default_factory=dict)
     # ADR-037 / E4 #470 — named gate batteries (a sibling of `schemas`; same record-once rule).
     # Referenced from orchestration.success_criteria / termination.convergence by a `battery:<name>`
