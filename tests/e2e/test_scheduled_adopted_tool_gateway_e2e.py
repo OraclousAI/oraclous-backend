@@ -22,6 +22,7 @@ Then: uv run pytest tests/e2e -m e2e   (auto-skips when the gateway is unreachab
 from __future__ import annotations
 
 import time
+import uuid
 from collections.abc import Callable
 
 import httpx
@@ -89,7 +90,7 @@ def test_a_scheduled_adopted_tool_fires_once_and_is_idempotent(
 ) -> None:
     """THE PROOF + the merge gate: fire-now runs the curated instance exactly once; a second
     same-window fire-now produces NO second registry execution (the idempotency row blocked it)."""
-    user = register("Sched Adopt")
+    user = register(f"schedadopt{uuid.uuid4().hex[:10]} user")
     c = gateway_client(user["token"])
 
     # 1-2. discover + instantiate the curated send-to-drafts sink (execute-ready, no credentials).
@@ -130,12 +131,12 @@ def test_a_scheduled_adopted_tool_run_is_org_isolated(
     register: Callable[..., dict], gateway_client: Callable[[str], httpx.Client]
 ) -> None:
     """Cross-tenant isolation through the gateway: user B cannot see / fire user A's schedule."""
-    a = gateway_client(register("Sched Owner A")["token"])
+    a = gateway_client(register(f"schedownera{uuid.uuid4().hex[:10]} user")["token"])
     cap = _sink_cap(a)
     iid = _instantiate(a, cap["id"])
     sched_id = _register_adopted_schedule(a, iid)
 
-    b = gateway_client(register("Sched Intruder B")["token"])
+    b = gateway_client(register(f"schedintruderb{uuid.uuid4().hex[:10]} user")["token"])
     # B cannot fire A's schedule (a cross-org id is a 404, never a leak)
     assert b.post(f"/v1/engine/schedules/{sched_id}/fire-now").status_code == 404
     # and B sees none of A's runs
