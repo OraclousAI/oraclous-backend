@@ -1403,3 +1403,68 @@ async def test_resume_sweep_never_touches_a_manually_disabled_schedule() -> None
     svc, _ = _svc(srepo, _FakeJobRepo())
     resumed = await svc.resume_budget_paused(_NOW)
     assert resumed == 0 and sched.enabled is False  # left disabled
+
+
+# ── Contract §TASK (#674): a required task binds the SCHEDULE on-ramp too ─────────────────────
+
+
+def _task_team_manifest() -> dict:
+    import uuid as _uuid
+
+    return {
+        "ohm_version": "1.1",
+        "metadata": {
+            "id": str(_uuid.uuid4()),
+            "name": "standing-review",
+            "owner_organization_id": str(_uuid.uuid4()),
+            "kind": "team",
+        },
+        "task_input": {"required": True, "description": "The PR URL to review"},
+        "members": [
+            {
+                "role": "solo",
+                "kind": "agent",
+                "manifest_ref": "x/solo@1",
+                "subgoal": "s",
+                "depends_on": [],
+                "tools": [],
+            }
+        ],
+        "runtime": {"entrypoint": "solo"},
+    }
+
+
+async def test_register_team_schedule_without_required_task_is_rejected() -> None:
+    """A standing team whose manifest requires a run task must carry it in the schedule's
+    input_data.inputs at REGISTER — else every Beat fire would run taskless and the members
+    would face the exact self-chosen-target failure #674 exists to prevent, on a cron."""
+    svc, _ = _svc(_FakeSchedRepo(), _FakeJobRepo(), graphs=_FakeGraphs(exists=True))
+    with pytest.raises(ScheduleError):
+        await svc.register(
+            _principal(),
+            type="cron",
+            target_kind="team",
+            manifest_inline=_task_team_manifest(),
+            input_text="standing team",
+            cron="* * * * *",
+            graph_id="g1",
+            input_data={"sub_harnesses": {}},
+        )
+
+
+async def test_register_team_schedule_with_the_task_registers() -> None:
+    svc, _ = _svc(_FakeSchedRepo(), _FakeJobRepo(), graphs=_FakeGraphs(exists=True))
+    row = await svc.register(
+        _principal(),
+        type="cron",
+        target_kind="team",
+        manifest_inline=_task_team_manifest(),
+        input_text="standing team",
+        cron="* * * * *",
+        graph_id="g1",
+        input_data={
+            "sub_harnesses": {},
+            "inputs": {"task": "Review https://github.com/a/b/pull/1"},
+        },
+    )
+    assert row.target_kind == "team"
