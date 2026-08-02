@@ -11,6 +11,7 @@ down (conftest) — a skip is not a pass.
 
 from __future__ import annotations
 
+import uuid
 from collections.abc import Callable
 
 import httpx
@@ -44,7 +45,7 @@ def test_curated_loader_runs_as_a_subprocess_and_output_lands_in_the_org_store(
     register: Callable[..., dict], gateway_client: Callable[[str], httpx.Client]
 ) -> None:
     """THE PROOF: dispatch a curated loader → real subprocess → output on the org Execution row."""
-    user = register("Script Ingest")
+    user = register(f"scriptingest{uuid.uuid4().hex[:10]} user")
     c = gateway_client(user["token"])
     cap = _script_ingestion_cap(c)
     iid = _instantiate(c, cap["id"])
@@ -69,7 +70,7 @@ def test_curated_loader_runs_as_a_subprocess_and_output_lands_in_the_org_store(
 def test_unknown_loader_fails_closed(
     register: Callable[..., dict], gateway_client: Callable[[str], httpx.Client]
 ) -> None:
-    user = register("Script Unknown")
+    user = register(f"scriptunknown{uuid.uuid4().hex[:10]} user")
     c = gateway_client(user["token"])
     cap = _script_ingestion_cap(c)
     iid = _instantiate(c, cap["id"])
@@ -84,7 +85,7 @@ def test_unknown_loader_fails_closed(
 def test_failing_loader_is_loader_failed_and_never_leaks_stderr(
     register: Callable[..., dict], gateway_client: Callable[[str], httpx.Client]
 ) -> None:
-    user = register("Script Fail")
+    user = register(f"scriptfail{uuid.uuid4().hex[:10]} user")
     c = gateway_client(user["token"])
     cap = _script_ingestion_cap(c)
     iid = _instantiate(c, cap["id"])

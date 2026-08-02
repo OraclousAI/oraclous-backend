@@ -10,6 +10,7 @@ stack, through the gateway (:8006), with a real validation error — no fakes, n
 
 from __future__ import annotations
 
+import uuid
 from collections.abc import Callable
 
 import httpx
@@ -23,7 +24,7 @@ def test_team_run_invalid_manifest_is_validation_failed_not_malformed(
 ) -> None:
     """A team-run create with an unparseable OHM manifest → VALIDATION_FAILED (field=body,
     issue=INVALID_MANIFEST), NOT MALFORMED_REQUEST — the #483 fix, through the gateway."""
-    c = gateway_client(register("Val Manifest")["token"])
+    c = gateway_client(register(f"valmanifest{uuid.uuid4().hex[:10]} user")["token"])
     resp = c.post(
         "/v1/engine/team-runs",
         json={"manifest": {}, "sub_harnesses": {}, "gate_decisions": {}},
@@ -43,7 +44,7 @@ def test_team_run_not_a_team_is_validation_failed(
     """A manifest that parses as OHM but isn't a Team Harness → VALIDATION_FAILED (NOT_A_TEAM).
     Uses a seeded curated capability's descriptor as a known-valid, non-team OHM — no external
     fixtures, and it gets past the parse, so it's a semantic 422, not a parse 422."""
-    c = gateway_client(register("Val NotTeam")["token"])
+    c = gateway_client(register(f"valnotteam{uuid.uuid4().hex[:10]} user")["token"])
     # a curated tool descriptor is valid OHM (kind=tool) but is not metadata.kind == "team"
     caps = c.get("/api/v1/capabilities").json()["capabilities"]
     assert caps, "no curated capabilities seeded"

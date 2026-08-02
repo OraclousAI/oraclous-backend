@@ -36,7 +36,7 @@ requires_byom_key = pytest.mark.skipif(
 def test_a_user_brings_their_own_model_token_and_runs_a_real_agent(
     register: Callable[..., dict], gateway_client: Callable[[str], httpx.Client]
 ) -> None:
-    user = register("BYOM User")
+    user = register(f"byomuser{uuid.uuid4().hex[:10]} user")
     c = gateway_client(user["token"])
 
     # 1) the user stores THEIR OWN model token via the real credential API (never server-side)

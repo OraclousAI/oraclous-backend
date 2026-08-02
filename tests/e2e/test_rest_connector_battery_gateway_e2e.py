@@ -11,6 +11,7 @@ mocked, no internal port, no DB-direct (rule 5). The package auto-skips when the
 
 from __future__ import annotations
 
+import uuid
 from collections.abc import Callable
 
 import httpx
@@ -50,7 +51,7 @@ def test_curated_sources_fetch_live_and_land_on_the_execution_row(
     register: Callable[..., dict], gateway_client: Callable[[str], httpx.Client]
 ) -> None:
     """THE PROOF: a keyless curated source is fetched LIVE over HTTPS through the gateway."""
-    user = register("REST Connector")
+    user = register(f"restconn{uuid.uuid4().hex[:10]} user")
     c = gateway_client(user["token"])
     cap = _rest_connector_cap(c)
     iid = _instantiate(c, cap["id"])
@@ -72,7 +73,7 @@ def test_curated_sources_fetch_live_and_land_on_the_execution_row(
 def test_unknown_source_fails_closed(
     register: Callable[..., dict], gateway_client: Callable[[str], httpx.Client]
 ) -> None:
-    user = register("REST Unknown")
+    user = register(f"restunknown{uuid.uuid4().hex[:10]} user")
     c = gateway_client(user["token"])
     cap = _rest_connector_cap(c)
     iid = _instantiate(c, cap["id"])
