@@ -34,7 +34,7 @@ def _store(c: httpx.Client, user_id: str, secret: str) -> httpx.Response:
 def test_a_user_stores_a_credential_and_the_secret_is_never_echoed(
     register: Callable[..., dict], gateway_client: Callable[[str], httpx.Client]
 ) -> None:
-    user = register("Cred Owner")
+    user = register(f"credowner{uuid.uuid4().hex[:10]} user")
     c = gateway_client(user["token"])
     secret = "sk-super-secret-" + uuid.uuid4().hex
 
@@ -55,11 +55,11 @@ def test_a_user_stores_a_credential_and_the_secret_is_never_echoed(
 def test_a_credential_is_org_isolated_through_the_gateway(
     register: Callable[..., dict], gateway_client: Callable[[str], httpx.Client]
 ) -> None:
-    owner = register("Cred A")
+    owner = register(f"creda{uuid.uuid4().hex[:10]} user")
     cid = _store(gateway_client(owner["token"]), owner["user_id"], "sk-" + uuid.uuid4().hex).json()[
         "id"
     ]
-    other = gateway_client(register("Cred B")["token"])
+    other = gateway_client(register(f"credb{uuid.uuid4().hex[:10]} user")["token"])
     assert other.get(f"/credentials/{cid}").status_code in (
         403,
         404,

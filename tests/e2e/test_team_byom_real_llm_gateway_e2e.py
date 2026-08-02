@@ -85,7 +85,7 @@ def test_a_team_of_agents_runs_on_the_users_own_model_through_the_gateway(
     register: Callable[..., dict],
     gateway_client: Callable[[str], httpx.Client],
 ) -> None:
-    user = register("Team BYOM User")
+    user = register(f"teambyomuser{uuid.uuid4().hex[:10]} user")
     c = gateway_client(user["token"])
 
     # 1) the user stores THEIR OWN model token via the real credential API (never server-side)

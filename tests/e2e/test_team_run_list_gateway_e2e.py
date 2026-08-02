@@ -91,7 +91,7 @@ def test_team_runs_are_listed_filtered_and_paginated_through_the_gateway(
     register: Callable[..., dict],
     gateway_client: Callable[[str], httpx.Client],
 ) -> None:
-    c = gateway_client(register("Runs Owner")["token"])
+    c = gateway_client(register(f"runsowner{uuid.uuid4().hex[:10]} user")["token"])
     paused_id, done_id = _seed_runs(c, tmp_path)
 
     # (1) the full list — both runs, newest-first, in the {team_runs, total} shape
@@ -131,10 +131,10 @@ def test_the_list_is_org_isolated_through_the_gateway(
     gateway_client: Callable[[str], httpx.Client],
 ) -> None:
     """User A's runs never appear in user B's list — RLS scopes the LIST to the request org."""
-    a = gateway_client(register("List Owner A")["token"])
+    a = gateway_client(register(f"listownera{uuid.uuid4().hex[:10]} user")["token"])
     paused_id, done_id = _seed_runs(a, tmp_path)
 
-    b = gateway_client(register("List Intruder B")["token"])
+    b = gateway_client(register(f"listintruderb{uuid.uuid4().hex[:10]} user")["token"])
     b_body = b.get("/v1/engine/team-runs").json()
     b_ids = {r["id"] for r in b_body["team_runs"]}
     assert paused_id not in b_ids and done_id not in b_ids  # B cannot see A's runs

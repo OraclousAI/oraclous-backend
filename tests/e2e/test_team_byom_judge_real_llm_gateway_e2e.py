@@ -83,7 +83,7 @@ def test_team_run_is_judged_by_the_users_own_model_through_the_gateway(
     register: Callable[..., dict],
     gateway_client: Callable[[str], httpx.Client],
 ) -> None:
-    user = register("Judge BYOM User")
+    user = register(f"judgebyomuser{uuid.uuid4().hex[:10]} user")
     c = gateway_client(user["token"])
 
     # 1) the user stores THEIR OWN OpenRouter key via the real credential API (never server-side)

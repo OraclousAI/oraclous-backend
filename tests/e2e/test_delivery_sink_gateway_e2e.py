@@ -9,6 +9,7 @@ The package auto-skips when the gateway is down (a skip is not a pass).
 
 from __future__ import annotations
 
+import uuid
 from collections.abc import Callable
 
 import httpx
@@ -48,7 +49,7 @@ def test_a_delivery_is_recorded_as_a_draft_on_the_org_row(
     register: Callable[..., dict], gateway_client: Callable[[str], httpx.Client]
 ) -> None:
     """THE PROOF: the sink records a DRAFT (never sent) that persists on the org Execution row."""
-    user = register("Delivery Sink")
+    user = register(f"deliverysink{uuid.uuid4().hex[:10]} user")
     c = gateway_client(user["token"])
     cap = _sink_cap(c)
     iid = _instantiate(c, cap["id"])
@@ -69,7 +70,7 @@ def test_a_delivery_is_recorded_as_a_draft_on_the_org_row(
 def test_an_invalid_channel_fails_closed(
     register: Callable[..., dict], gateway_client: Callable[[str], httpx.Client]
 ) -> None:
-    user = register("Delivery Invalid")
+    user = register(f"deliveryinvalid{uuid.uuid4().hex[:10]} user")
     c = gateway_client(user["token"])
     cap = _sink_cap(c)
     iid = _instantiate(c, cap["id"])

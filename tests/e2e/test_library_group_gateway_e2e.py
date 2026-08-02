@@ -9,6 +9,7 @@ operation fails closed. Real capability-registry; nothing mocked, no internal po
 
 from __future__ import annotations
 
+import uuid
 from collections.abc import Callable
 
 import httpx
@@ -43,7 +44,7 @@ def test_curated_library_operations_run_and_land_on_the_execution_row(
     register: Callable[..., dict], gateway_client: Callable[[str], httpx.Client]
 ) -> None:
     """THE PROOF: each curated op dispatches in-process; its output persists on the org row."""
-    user = register("Library Group")
+    user = register(f"librarygroup{uuid.uuid4().hex[:10]} user")
     c = gateway_client(user["token"])
     cap = _text_tools_cap(c)
     iid = _instantiate(c, cap["id"])
@@ -65,7 +66,7 @@ def test_curated_library_operations_run_and_land_on_the_execution_row(
 def test_unknown_operation_fails_closed(
     register: Callable[..., dict], gateway_client: Callable[[str], httpx.Client]
 ) -> None:
-    user = register("Library Unknown")
+    user = register(f"libraryunknown{uuid.uuid4().hex[:10]} user")
     c = gateway_client(user["token"])
     cap = _text_tools_cap(c)
     iid = _instantiate(c, cap["id"])
@@ -78,7 +79,7 @@ def test_oversized_text_is_capped_and_an_adversarial_input_is_fast(
 ) -> None:
     """#488 ReDoS hardening, proven through the gateway: the arg cap fail-closes an oversized text,
     and an adversarial-but-under-cap input returns promptly (the regex no longer backtracks)."""
-    user = register("Library ReDoS")
+    user = register(f"libraryredos{uuid.uuid4().hex[:10]} user")
     c = gateway_client(user["token"])
     cap = _text_tools_cap(c)
     iid = _instantiate(c, cap["id"])

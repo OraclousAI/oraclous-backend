@@ -8,6 +8,7 @@ mocked, nothing DB-direct; assertions are on what the user observes through the 
 
 from __future__ import annotations
 
+import uuid
 from collections.abc import Callable
 
 import httpx
@@ -19,7 +20,7 @@ pytestmark = [pytest.mark.e2e, pytest.mark.integration]
 def test_a_user_builds_a_knowledge_graph_and_retrieves_a_memory(
     register: Callable[..., dict], gateway_client: Callable[[str], httpx.Client]
 ) -> None:
-    c = gateway_client(register("KB Owner")["token"])
+    c = gateway_client(register(f"kbowner{uuid.uuid4().hex[:10]} user")["token"])
 
     # create a graph
     g = c.post("/api/v1/graphs", json={"name": "my-kb", "description": "facts"})
@@ -51,9 +52,9 @@ def test_a_knowledge_graph_is_org_isolated_through_the_gateway(
     register: Callable[..., dict], gateway_client: Callable[[str], httpx.Client]
 ) -> None:
     gid = (
-        gateway_client(register("KB A")["token"])
+        gateway_client(register(f"kba{uuid.uuid4().hex[:10]} user")["token"])
         .post("/api/v1/graphs", json={"name": "a", "description": "x"})
         .json()["id"]
     )
-    other = gateway_client(register("KB B")["token"])
+    other = gateway_client(register(f"kbb{uuid.uuid4().hex[:10]} user")["token"])
     assert other.get(f"/api/v1/graphs/{gid}").status_code == 404  # B cannot see A's graph
