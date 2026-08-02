@@ -60,7 +60,7 @@ def test_a_system_workspace_root_is_rejected_at_create_through_the_gateway(
     gateway_client: Callable[[str], httpx.Client],
     evil: str,
 ) -> None:
-    c = gateway_client(register("WS Validate")["token"])
+    c = gateway_client(register(f"wsvalidate{uuid.uuid4().hex[:10]} user")["token"])
     _one_member_team(tmp_path)
     resp = _post_run(c, tmp_path, evil)
     assert 400 <= resp.status_code < 500, resp.text  # rejected at create, not 202-accepted
@@ -72,7 +72,7 @@ def test_another_orgs_workspace_root_is_rejected_at_create_through_the_gateway(
     register: Callable[..., dict],
     gateway_client: Callable[[str], httpx.Client],
 ) -> None:
-    c = gateway_client(register("WS CrossOrg")["token"])
+    c = gateway_client(register(f"wscrossorg{uuid.uuid4().hex[:10]} user")["token"])
     _one_member_team(tmp_path)
     other = f"{_WORKSPACES_ROOT}/{uuid.uuid4()}/book"  # a different org's subtree
     resp = _post_run(c, tmp_path, other)
@@ -85,7 +85,7 @@ def test_a_valid_org_scoped_workspace_root_is_accepted_at_create(
     gateway_client: Callable[[str], httpx.Client],
 ) -> None:
     """The happy path: a tree under the org's own workspaces root is accepted (202)."""
-    user = register("WS Valid")
+    user = register(f"wsvalid{uuid.uuid4().hex[:10]} user")
     c = gateway_client(user["token"])
     _one_member_team(tmp_path)
     good = f"{_WORKSPACES_ROOT}/{user['org_id']}/book-{uuid.uuid4().hex[:8]}"
