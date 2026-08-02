@@ -161,6 +161,25 @@ def load_team_manifest(document: dict) -> OHMManifest:
     return manifest
 
 
+def validate_task_input(manifest: OHMManifest, inputs: dict[str, Any] | None) -> None:
+    """Contract §TASK (#674), fail-closed at create: a team whose manifest declares
+    ``task_input.required`` refuses to run without a non-empty string task under the declared key —
+    422 BEFORE the run is persisted or enqueued (no worker, no tokens), never a self-chosen target.
+    An optional or undeclared task_input admits a taskless create unchanged."""
+    declared = manifest.task_input
+    if declared is None or not declared.required:
+        return
+    value = (inputs or {}).get(declared.key)
+    if not isinstance(value, str) or not value.strip():
+        raise TeamRunError(
+            f"this team requires a run task: provide a non-empty string under "
+            f"inputs[{declared.key!r}]"
+            + (f" — {declared.description}" if declared.description else ""),
+            422,
+            error_type="missing_task_input",
+        )
+
+
 #: operator-configured org-scoped workspaces root (MUST match the capability-registry sandbox guard,
 #: #517). A team's ``workspace_root`` is validated fail-fast at create against ``<root>/<org>`` so a
 #: bad root is a clear 422 here, not a confusing mid-run member failure (defense-in-depth: the
@@ -635,6 +654,7 @@ class TeamRunService:
         org = self._org(principal)
         team = self._load_team(manifest)  # validate BEFORE persisting
         self._enforce_member_ceilings(team, sub_harnesses)  # ADR-032/035 §5 — fail-closed ceiling
+        validate_task_input(team, inputs)  # Contract §TASK (#674): required task missing → 422
         if (
             workspace_root is not None
         ):  # file-native (#518): org-scoped, fail-fast 422 (not mid-run)

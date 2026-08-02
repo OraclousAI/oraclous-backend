@@ -123,12 +123,29 @@ REFRESH_CARRY_FORWARD_DIRECTIVE = (
 )
 
 
+def resolve_run_task(manifest: OHMManifest, inputs: dict[str, Any] | None) -> str | None:
+    """Contract §TASK (#674): the run's task text, or ``None`` when there is none to deliver.
+
+    Only a manifest that DECLARES ``task_input`` consumes it — a stray ``inputs[key]`` on an
+    undeclared team is ignored (``inputs`` stays fan-out/refresh seed state, back-compat). A
+    declared-but-empty/non-string value resolves to ``None`` here; whether that is allowed is the
+    create gate's call (``validate_task_input`` fail-closes the ``required`` case at 422)."""
+    declared = manifest.task_input
+    if declared is None:
+        return None
+    value = (inputs or {}).get(declared.key)
+    if isinstance(value, str) and value.strip():
+        return value
+    return None
+
+
 def render_member_input(
     member: OHMMember,
     envelopes: list[HandoffEnvelope],
     fan_item: Any = None,
     *,
     refresh_records: list[dict[str, Any]] | None = None,
+    task: str | None = None,
 ) -> str:
     """Render a member's objective + fan item + inbound typed hand-offs into the harness input.
 
@@ -149,6 +166,11 @@ def render_member_input(
     objective = scoped or member.subgoal
     if objective:
         parts.append(f"Objective: {objective}")
+    # Contract §TASK (#674): the user's per-run task, VERBATIM, in every member's input — no member
+    # reconstructs the target from a hand-off (or worse, invents one). None → byte-identical
+    # rendering to a pre-#674 run (the #602 default-OFF discipline).
+    if task is not None:
+        parts.append(f"Task: {task}")
     if fan_item is not None:
         parts.append(f"Item: {json.dumps(fan_item, default=str)}")
     for env in envelopes:
@@ -237,6 +259,7 @@ def make_harness_dispatch(
     budget: OHMBudget | None = None,
     refresh_seed_records: list[dict[str, Any]] | None = None,
     refresh_sink_role: str | None = None,
+    task: str | None = None,
 ) -> DispatchFn:
     """Build a ``run_team`` dispatch that runs each member as a real harness execution.
 
@@ -274,6 +297,8 @@ def make_harness_dispatch(
                 refresh_records=(
                     refresh_seed_records if member.role == refresh_sink_role else None
                 ),
+                # Contract §TASK (#674): the run's task, delivered to EVERY member verbatim.
+                task=task,
             ),
             manifest_inline=sub,
             manifest_ref=(member.manifest_ref if sub is None else None),
@@ -395,6 +420,7 @@ async def run_team_harness(
         budget=manifest.budget,  # #576: per-member caps resolve from the team budget + members
         refresh_seed_records=refresh_records,  # #602: the sink's prior records (refresh only)
         refresh_sink_role=refresh_sink,
+        task=resolve_run_task(manifest, inputs),  # Contract §TASK (#674): to every member
     )
     return await run_team(
         manifest,
@@ -537,6 +563,7 @@ async def run_team_hybrid(
         budget=manifest.budget,  # #576: per-member caps resolve from the team budget + members
         refresh_seed_records=refresh_records,  # #602: the sink's prior records (refresh only)
         refresh_sink_role=refresh_sink,
+        task=resolve_run_task(manifest, inputs),  # Contract §TASK (#674): to every member
     )
     termination = manifest.orchestration.termination if manifest.orchestration else None
     max_rounds = (termination.max_rounds if termination else None) or _DEFAULT_MAX_ROUNDS
