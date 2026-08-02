@@ -84,7 +84,7 @@ def test_a_file_native_member_writes_bible_in_place_through_a_team_run(
     register: Callable[..., dict],
     gateway_client: Callable[[str], httpx.Client],
 ) -> None:
-    user = register("File-Native Team")
+    user = register(f"filenativeteam{uuid.uuid4().hex[:10]} user")
     c = gateway_client(user["token"])
 
     # the user stores THEIR OWN model key (never server-side)

@@ -7,6 +7,7 @@ capability-registry and credential-broker. A tool instance is org-isolated. Noth
 
 from __future__ import annotations
 
+import uuid
 from collections.abc import Callable
 
 import httpx
@@ -18,7 +19,7 @@ pytestmark = [pytest.mark.e2e, pytest.mark.integration]
 def test_a_user_discovers_a_capability_instantiates_it_and_attaches_a_credential(
     register: Callable[..., dict], gateway_client: Callable[[str], httpx.Client]
 ) -> None:
-    user = register("Cap User")
+    user = register(f"capuser{uuid.uuid4().hex[:10]} user")
     c = gateway_client(user["token"])
 
     # discover the seeded capabilities (the user sees the platform tools)
@@ -60,11 +61,11 @@ def test_a_user_discovers_a_capability_instantiates_it_and_attaches_a_credential
 def test_a_tool_instance_is_org_isolated_through_the_gateway(
     register: Callable[..., dict], gateway_client: Callable[[str], httpx.Client]
 ) -> None:
-    owner = gateway_client(register("Cap A")["token"])
+    owner = gateway_client(register(f"capa{uuid.uuid4().hex[:10]} user")["token"])
     cap_id = owner.get("/api/v1/capabilities").json()["capabilities"][0]["id"]
     iid = owner.post(
         "/api/v1/instances",
         json={"capability_id": cap_id, "name": "x", "configuration": {}, "settings": {}},
     ).json()["id"]
-    other = gateway_client(register("Cap B")["token"])
+    other = gateway_client(register(f"capb{uuid.uuid4().hex[:10]} user")["token"])
     assert other.get(f"/api/v1/instances/{iid}").status_code in (403, 404)

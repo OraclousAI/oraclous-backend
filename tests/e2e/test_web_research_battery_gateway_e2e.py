@@ -14,6 +14,7 @@ source is unset — a skip is NOT a pass (rule 3), so a green run here means it 
 from __future__ import annotations
 
 import os
+import uuid
 from collections.abc import Callable
 
 import httpx
@@ -71,7 +72,7 @@ def test_unconfigured_web_research_search_fails_closed(
     register: Callable[..., dict], gateway_client: Callable[[str], httpx.Client]
 ) -> None:
     """Key-gated: a search on an instance with no web-search key fails closed (no dispatch)."""
-    user = register("WR Unconfigured")
+    user = register(f"wrunconfigured{uuid.uuid4().hex[:10]} user")
     c = gateway_client(user["token"])
     cap = _web_research_cap(c)
     iid = _instantiate(c, cap["id"])
@@ -90,7 +91,7 @@ def test_web_research_search_returns_real_hits_with_byom_key(
     register: Callable[..., dict], gateway_client: Callable[[str], httpx.Client]
 ) -> None:
     """THE PROOF: a user brings their Tavily key via the gateway and search returns REAL hits."""
-    user = register("WR Searcher")
+    user = register(f"wrsearcher{uuid.uuid4().hex[:10]} user")
     c = gateway_client(user["token"])
     cap = _web_research_cap(c)
     iid = _instantiate(c, cap["id"])
@@ -115,7 +116,7 @@ def test_web_research_fetch_and_read_through_the_gateway(
     register: Callable[..., dict], gateway_client: Callable[[str], httpx.Client]
 ) -> None:
     """fetch + read run through the gateway on a key-mapped instance (keyless in the connector)."""
-    user = register("WR Reader")
+    user = register(f"wrreader{uuid.uuid4().hex[:10]} user")
     c = gateway_client(user["token"])
     cap = _web_research_cap(c)
     iid = _instantiate(c, cap["id"])
@@ -143,7 +144,7 @@ def test_web_research_blocks_ssrf_through_the_gateway(
     register: Callable[..., dict], gateway_client: Callable[[str], httpx.Client]
 ) -> None:
     """fetch refuses an internal/metadata target on the real stack (SSRF guard, fail-closed)."""
-    user = register("WR SSRF")
+    user = register(f"wrssrf{uuid.uuid4().hex[:10]} user")
     c = gateway_client(user["token"])
     cap = _web_research_cap(c)
     iid = _instantiate(c, cap["id"])
