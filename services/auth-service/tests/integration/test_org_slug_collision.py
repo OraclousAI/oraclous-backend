@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import pytest
 from httpx import AsyncClient
+from oraclous_auth_service.repositories.organisation_repository import OrganisationRepository
 
 pytestmark = pytest.mark.integration
 
@@ -57,6 +58,53 @@ async def test_signup_never_answers_4xx_because_a_name_is_taken(client: AsyncCli
     for i in range(_LADDER_CAPACITY + 1):
         status, body = await _register(client, f"dup{i}@ex.com", _SHARED_FIRST_NAME)
         assert status == 201, f"registration {i} was refused: {status} {body}"
+
+
+async def test_a_slug_taken_between_the_check_and_the_insert_still_registers(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The concurrent race, forced deterministically against the real index.
+
+    ``slug_exists`` then ``create`` is check-then-act, so a parallel registration can take the slug
+    in between; the repository docstring already calls the unique index "the race backstop". This
+    test makes the losing side's view deterministic: ``slug_exists`` answers "free" once for a slug
+    that is in fact held, so the insert reaches Postgres and the index rejects it.
+
+    It lives at the integration tier on purpose. Recovering here needs a SAVEPOINT
+    (``session.begin_nested()``) around the insert, because ``core/database.py`` gives one session
+    per request and a failed ``flush`` leaves it unusable until rollback — which would discard the
+    whole request. The plain ``except IntegrityError: retry`` that satisfies the unit suite's
+    in-memory repository raises ``PendingRollbackError`` against a real session, so only this test
+    can tell the two implementations apart.
+    """
+    status_first, first = await _register(client, "winner@ex.com", _SHARED_FIRST_NAME)
+    assert status_first == 201, first
+    held = await _slug_of(client, first["access_token"])
+
+    real_slug_exists = OrganisationRepository.slug_exists
+    lied = False
+
+    async def _free_once(self: OrganisationRepository, slug: str) -> bool:
+        """Answer "free" the first time ``held`` is checked, then tell the truth — the losing side
+        of a race clears the check, and by the time its insert lands the winner holds the slug."""
+        nonlocal lied
+        if slug == held and not lied:
+            lied = True
+            return False
+        return await real_slug_exists(self, slug)
+
+    monkeypatch.setattr(OrganisationRepository, "slug_exists", _free_once)
+
+    status_second, second = await _register(client, "loser@ex.com", _SHARED_FIRST_NAME)
+
+    assert lied, (
+        "the lie was never spent: resolution no longer asks before inserting, so this test models "
+        "nothing. Rewrite it to force the collision the new way — do not just delete it."
+    )
+    assert status_second == 201, f"the losing side of the race was not recovered: {second}"
+    slug_second = await _slug_of(client, second["access_token"])
+    assert slug_second != held, "the losing side must move to a free slug"
+    assert len(slug_second) <= 63, "a slug overflowed the String(63) column"
 
 
 async def test_the_first_two_registrations_keep_their_familiar_slugs(client: AsyncClient) -> None:
