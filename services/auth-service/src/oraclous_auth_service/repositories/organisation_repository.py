@@ -2,7 +2,8 @@
 
 Lookups are by id/slug; authorization (is the caller a member?) is enforced by the service via the
 membership repository, not here — this is a plain data accessor. The slug unique index is the
-race backstop; the service resolves a free slug via :meth:`slug_exists` before :meth:`create`.
+race backstop; the service resolves a free slug via :meth:`slug_exists` before :meth:`create`, and
+:meth:`create` reports a rejected slug in a form the service can retry (#676).
 """
 
 from __future__ import annotations
@@ -24,6 +25,15 @@ class OrganisationRepository:
     async def create(
         self, *, id: str | None = None, name: str, slug: str, owner_user_id: str
     ) -> Organisation:
+        """Insert an organisation, raising ``ConstraintViolation`` (``core/db_errors``) if the slug
+        unique index rejects it — with the session still usable, so the caller can pick another
+        candidate and try again (#676).
+
+        The insert runs inside a SAVEPOINT for exactly that reason. ``core/database`` yields one
+        session per request, so a bare failed ``flush`` poisons it: every later statement raises
+        ``PendingRollbackError`` until a full rollback discards the whole request. The savepoint
+        scopes the failure to this one insert instead.
+        """
         org = Organisation(
             id=id or str(uuid.uuid4()),
             name=name,
@@ -32,8 +42,12 @@ class OrganisationRepository:
             settings={},
             status="active",
         )
-        self._session.add(org)
+        # Settle earlier pending work before the savepoint opens, so rolling back undoes this
+        # insert and nothing else.
         await self._session.flush()
+        async with self._session.begin_nested():
+            self._session.add(org)
+            await self._session.flush()
         return org
 
     async def get_by_id(self, org_id: str) -> Organisation | None:

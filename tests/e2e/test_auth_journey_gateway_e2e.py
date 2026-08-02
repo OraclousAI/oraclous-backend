@@ -8,6 +8,7 @@ provider is involved, so this runs fully real on the deployed stack with nothing
 
 from __future__ import annotations
 
+import uuid
 from collections.abc import Callable
 
 import httpx
@@ -19,8 +20,9 @@ pytestmark = [pytest.mark.e2e, pytest.mark.integration]
 def test_owner_invites_a_second_user_who_accepts_and_joins_the_org(
     register: Callable[..., dict], gateway_client: Callable[[str], httpx.Client]
 ) -> None:
-    owner = register("Owner")
-    invitee = register("Invitee")  # a real second user, with their own org
+    owner = register(f"owner{uuid.uuid4().hex[:10]} user")
+    # a real second user, with their own org
+    invitee = register(f"invitee{uuid.uuid4().hex[:10]} user")
 
     o = gateway_client(owner["token"])
     assert o.get("/v1/auth/me").json()["org_role"] == "owner"
@@ -51,8 +53,8 @@ def test_owner_invites_a_second_user_who_accepts_and_joins_the_org(
 def test_a_user_cannot_read_another_orgs_members_through_the_gateway(
     register: Callable[..., dict], gateway_client: Callable[[str], httpx.Client]
 ) -> None:
-    org_a = register("Org A")
-    org_b = register("Org B")
+    org_a = register(f"orga{uuid.uuid4().hex[:10]} user")
+    org_b = register(f"orgb{uuid.uuid4().hex[:10]} user")
     b = gateway_client(org_b["token"])
     # B has no membership in A's org → the gateway must not expose A's roster
     assert b.get(f"/v1/orgs/{org_a['org_id']}/members").status_code in (403, 404)
@@ -61,7 +63,7 @@ def test_a_user_cannot_read_another_orgs_members_through_the_gateway(
 def test_login_is_required_no_anonymous_access_through_the_gateway(
     register: Callable[..., dict], gateway_url: str
 ) -> None:
-    user = register("Anon Check")
+    user = register(f"anoncheck{uuid.uuid4().hex[:10]} user")
     # a valid token reaches /me; a missing/garbage token is rejected at the edge
     ok = httpx.get(
         f"{gateway_url}/v1/auth/me",

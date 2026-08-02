@@ -30,7 +30,7 @@ def test_publish_an_agent_mint_a_key_and_enforce_the_public_plane(
     gateway_client: Callable[[str], httpx.Client],
     gateway_url: str,
 ) -> None:
-    c = gateway_client(register("Publisher")["token"])
+    c = gateway_client(register(f"publisher{uuid.uuid4().hex[:10]} user")["token"])
     slug = f"agent-{uuid.uuid4().hex[:8]}"
 
     pub = c.post(
@@ -58,7 +58,7 @@ def test_publish_an_agent_mint_a_key_and_enforce_the_public_plane(
 def test_an_integration_key_is_bound_to_its_own_agent_slug(
     register: Callable[..., dict], gateway_client: Callable[[str], httpx.Client]
 ) -> None:
-    c = gateway_client(register("Publisher2")["token"])
+    c = gateway_client(register(f"publisher2{uuid.uuid4().hex[:10]} user")["token"])
     a, b = f"a-{uuid.uuid4().hex[:8]}", f"b-{uuid.uuid4().hex[:8]}"
     for s in (a, b):
         c.post("/v1/agents", json={"slug": s, "bound_capability_ref": _REF})
@@ -73,10 +73,14 @@ def test_a_published_agent_is_org_isolated_through_the_gateway(
     register: Callable[..., dict], gateway_client: Callable[[str], httpx.Client]
 ) -> None:
     slug = f"iso-{uuid.uuid4().hex[:8]}"
-    gateway_client(register("Pub A")["token"]).post(
+    gateway_client(register(f"puba{uuid.uuid4().hex[:10]} user")["token"]).post(
         "/v1/agents", json={"slug": slug, "bound_capability_ref": _REF}
     )
-    others = gateway_client(register("Pub B")["token"]).get("/v1/agents").json()
+    others = (
+        gateway_client(register(f"pubb{uuid.uuid4().hex[:10]} user")["token"])
+        .get("/v1/agents")
+        .json()
+    )
     assert all(a["slug"] != slug for a in others)  # B's org does not see A's published agent
 
 
@@ -85,7 +89,7 @@ def test_invoking_a_non_harness_binding_returns_a_clear_error(
 ) -> None:
     """Invoke requires the binding to be a runnable (kind=harness) capability. Binding to anything
     else is a clear 422 'not runnable' — NOT the opaque 'could not be parsed' it used to surface."""
-    owner = gateway_client(register("Pub")["token"])
+    owner = gateway_client(register(f"pub{uuid.uuid4().hex[:10]} user")["token"])
     slug = f"bad-{uuid.uuid4().hex[:8]}"
     owner.post("/v1/agents", json={"slug": slug, "bound_capability_ref": "not-a-harness-ref"})
     key = owner.post("/v1/integration-keys", json={"bound_agent_slug": slug}).json()["key"]
@@ -103,7 +107,7 @@ def test_a_user_publishes_a_real_agent_and_invokes_it_with_their_model(
     registers a kind=harness capability whose OHM uses that model, publishes an agent bound to it,
     mints a key, and invokes it — getting a REAL OpenRouter completion (the per-run nonce echoed).
     Needs the LIVE harness (scripts/e2e.sh --byom)."""
-    user = register("Agent Publisher")
+    user = register(f"agentpublisher{uuid.uuid4().hex[:10]} user")
     c = gateway_client(user["token"])
     org = c.get("/v1/auth/me").json()["organisation_id"]
 

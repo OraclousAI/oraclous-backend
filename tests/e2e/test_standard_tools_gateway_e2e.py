@@ -11,6 +11,7 @@ Auto-skips when the gateway is down (conftest); a skip is not a pass.
 
 from __future__ import annotations
 
+import uuid
 from collections.abc import Callable
 
 import httpx
@@ -47,7 +48,7 @@ def test_standard_tools_resolve_and_dispatch_through_the_gateway(
     register: Callable[..., dict], gateway_client: Callable[[str], httpx.Client]
 ) -> None:
     """The agent toolset works end-to-end on the deployed stack, through the gateway."""
-    user = register("Std Tools")
+    user = register(f"stdtools{uuid.uuid4().hex[:10]} user")
     c = gateway_client(user["token"])
     path = "chapter1/notes.md"
 
@@ -83,14 +84,14 @@ def test_sandbox_is_org_isolated(
     register: Callable[..., dict], gateway_client: Callable[[str], httpx.Client]
 ) -> None:
     """A second org cannot read the first org's sandbox file (per-org confinement)."""
-    a = gateway_client(register("Sandbox A")["token"])
+    a = gateway_client(register(f"sandboxa{uuid.uuid4().hex[:10]} user")["token"])
     _run(
         c=a,
         instance_id=_instance(a, "Write"),
         input_data={"operation": "write", "path": "secret.txt", "content": "org-a-only"},
     )
 
-    b = gateway_client(register("Sandbox B")["token"])
+    b = gateway_client(register(f"sandboxb{uuid.uuid4().hex[:10]} user")["token"])
     rb = b.post(
         f"/api/v1/instances/{_instance(b, 'Read')}/execute",
         json={"input_data": {"operation": "read", "path": "secret.txt"}},
@@ -103,6 +104,6 @@ def test_webfetch_keyless_through_the_gateway(
     register: Callable[..., dict], gateway_client: Callable[[str], httpx.Client]
 ) -> None:
     """WebFetch (keyless, SSRF-guarded) fetches a real URL through the gateway."""
-    c = gateway_client(register("WebFetch")["token"])
+    c = gateway_client(register(f"webfetch{uuid.uuid4().hex[:10]} user")["token"])
     out = _run(c, _instance(c, "WebFetch"), {"operation": "fetch", "url": "https://example.com"})
     assert "Example Domain" in str(out.get("content") or out.get("text") or out), out
