@@ -55,7 +55,7 @@ def test_a_file_native_member_writes_bible_md_in_place_through_the_gateway(
     register: Callable[..., dict], gateway_client: Callable[[str], httpx.Client]
 ) -> None:
     """A Write bound to the org's tree lands bible/canon.md IN it, not the default scratch."""
-    user = register("File-Native")
+    user = register(f"filenative{uuid.uuid4().hex[:10]} user")
     c = gateway_client(user["token"])
     work_tree = f"{_WORKSPACES_ROOT}/{user['org_id']}/book-{uuid.uuid4().hex[:8]}"
 
@@ -79,7 +79,7 @@ def test_an_in_tree_escape_fails_closed_through_the_gateway(
     register: Callable[..., dict], gateway_client: Callable[[str], httpx.Client]
 ) -> None:
     """Within a valid working tree the ``..`` guard still rejects a traversal escape."""
-    user = register("File-Native Guard")
+    user = register(f"fnguard{uuid.uuid4().hex[:10]} user")
     c = gateway_client(user["token"])
     work_tree = f"{_WORKSPACES_ROOT}/{user['org_id']}/book-{uuid.uuid4().hex[:8]}"
     writer = _instance(c, "Write", {"working_dir": work_tree})
@@ -91,7 +91,7 @@ def test_a_system_working_dir_is_rejected_through_the_gateway(
     register: Callable[..., dict], gateway_client: Callable[[str], httpx.Client]
 ) -> None:
     """The flagged escape: ``working_dir="/"`` + read /proc/self/environ is REJECTED."""
-    c = gateway_client(register("File-Native SSRF")["token"])
+    c = gateway_client(register(f"fnssrf{uuid.uuid4().hex[:10]} user")["token"])
     reader = _instance(c, "Read", {"working_dir": "/"})
     out = _exec(c, reader, {"operation": "read", "path": "proc/self/environ"})
     assert out["status"] != "SUCCESS", out
@@ -102,7 +102,7 @@ def test_another_orgs_workspace_is_rejected_through_the_gateway(
     register: Callable[..., dict], gateway_client: Callable[[str], httpx.Client]
 ) -> None:
     """A working_dir under ANOTHER org's subtree is a cross-tenant escape — rejected."""
-    user = register("File-Native CrossOrg")
+    user = register(f"fncrossorg{uuid.uuid4().hex[:10]} user")
     c = gateway_client(user["token"])
     other_tree = f"{_WORKSPACES_ROOT}/{uuid.uuid4()}/book"  # a different org's path
     reader = _instance(c, "Read", {"working_dir": other_tree})

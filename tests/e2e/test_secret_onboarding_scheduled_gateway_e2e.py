@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import os
 import time
+import uuid
 from collections.abc import Callable
 
 import httpx
@@ -114,7 +115,7 @@ def test_a_scheduled_run_consumes_a_stored_secret_with_no_prompt(
 ) -> None:
     """THE O1 PROOF: paste a key once → a SCHEDULED keyed run resolves the per-org secret with no
     auth-prompt wall and returns REAL web hits. The secret never leaves the broker."""
-    user = register("O1 Onboarder")
+    user = register(f"o1onboarder{uuid.uuid4().hex[:10]} user")
     c = gateway_client(user["token"])
 
     # 1-4. discover + instantiate the keyed web-research tool, then paste the key ONCE and bind it.
@@ -149,7 +150,7 @@ def test_an_unconfigured_keyed_tool_returns_a_typed_needs_credential_at_the_edge
     credential-miss 409 into ``code=CREDENTIALS_REQUIRED`` carrying ``{requirement_id, provider}``
     (and NOTHING else: no dispatch, no secret, no login_url/host/internals). This is the end-to-end
     proof the registry→gateway normalisation surfaces the onboarding signal a FE can render."""
-    user = register("O1 NeedsCred")
+    user = register(f"o1needscred{uuid.uuid4().hex[:10]} user")
     c = gateway_client(user["token"])
     cap = _web_research_cap(c)
     iid = _instantiate(c, cap["id"])  # NB: no key stored / bound

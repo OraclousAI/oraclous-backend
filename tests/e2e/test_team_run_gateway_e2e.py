@@ -85,7 +85,7 @@ def test_book_studio_runs_through_the_gateway_with_a_blocking_gate(
     # precedence (item 9) was captured by the importer from the source's Hierarchy of Truth
     assert imported.report.precedence == ["rules", "bible", "outline/TOC.md", "drafts"]
 
-    c = gateway_client(register("Studio Owner")["token"])
+    c = gateway_client(register(f"studioowner{uuid.uuid4().hex[:10]} user")["token"])
     created = c.post("/v1/engine/team-runs", json=body)
     assert created.status_code == 202, created.text  # the worker drives it; request didn't block
     run_id = created.json()["id"]
@@ -128,7 +128,7 @@ def test_capability_ceiling_rejects_a_smuggled_send_through_the_gateway(
         "actors": [{"role": "primary", "kind": "agent"}],
         "runtime": {"entrypoint": "primary"},
     }
-    c = gateway_client(register("Ceiling Owner")["token"])
+    c = gateway_client(register(f"ceilingowner{uuid.uuid4().hex[:10]} user")["token"])
     resp = c.post(
         "/v1/engine/team-runs",
         json={
@@ -157,11 +157,11 @@ def test_a_team_run_is_org_isolated_across_users_through_the_gateway(
         "gate_decisions": {},
     }
     run_id = (
-        gateway_client(register("User A")["token"])
+        gateway_client(register(f"usera{uuid.uuid4().hex[:10]} user")["token"])
         .post("/v1/engine/team-runs", json=body)
         .json()["id"]
     )
-    b = gateway_client(register("User B")["token"])
+    b = gateway_client(register(f"userb{uuid.uuid4().hex[:10]} user")["token"])
     assert b.get(f"/v1/engine/team-runs/{run_id}").status_code == 404  # B cannot see A's run
 
 
@@ -184,7 +184,7 @@ def test_run_tree_is_reachable_and_org_isolated_through_the_gateway(  # ADR-037 
         "sub_harnesses": imported.sub_harnesses,
         "gate_decisions": {"gate-a": "approve"},
     }
-    a = gateway_client(register("Tree Owner")["token"])
+    a = gateway_client(register(f"treeowner{uuid.uuid4().hex[:10]} user")["token"])
     created = a.post("/v1/engine/team-runs", json=body)
     assert created.status_code == 202, created.text
     run_id = created.json()["id"]
@@ -199,7 +199,7 @@ def test_run_tree_is_reachable_and_org_isolated_through_the_gateway(  # ADR-037 
     # both members (researcher + writer) ran as real harness executions → recorded as children
     assert len(body_t["child_execution_ids"]) >= 2
 
-    b = gateway_client(register("Tree Intruder")["token"])
+    b = gateway_client(register(f"treeintruder{uuid.uuid4().hex[:10]} user")["token"])
     assert b.get(f"/v1/engine/team-runs/{run_id}/tree").status_code == 404  # B can't read A's tree
 
 
@@ -221,7 +221,7 @@ def test_o4_status_surface_through_the_gateway(  # ADR-037 D5 / #472
         "sub_harnesses": imported.sub_harnesses,
         "gate_decisions": {"gate-a": "approve"},  # pre-approve → drives straight to SUCCEEDED
     }
-    a = gateway_client(register("Status Owner")["token"])
+    a = gateway_client(register(f"statusowner{uuid.uuid4().hex[:10]} user")["token"])
     run_id = a.post("/v1/engine/team-runs", json=body).json()["id"]
     assert _poll(a, run_id, {"SUCCEEDED", "FAILED", "REJECTED"})["state"] == "SUCCEEDED"
 
@@ -235,7 +235,7 @@ def test_o4_status_surface_through_the_gateway(  # ADR-037 D5 / #472
         s["cost"]["tokens"] >= 0 and "usd" in s["cost"]
     )  # raw metering surfaced; usd priced later
 
-    b = gateway_client(register("Status Intruder")["token"])
+    b = gateway_client(register(f"statusintruder{uuid.uuid4().hex[:10]} user")["token"])
     assert b.get(f"/v1/engine/team-runs/{run_id}/status").status_code == 404  # B can't read A's
 
 
@@ -268,7 +268,7 @@ def test_flow_eval_gate_produces_a_verdict_without_branching_state(  # ADR-037 /
         "sub_harnesses": imported.sub_harnesses,
         "gate_decisions": {"gate-a": "approve"},  # pre-approve → drives straight to the gate
     }
-    a = gateway_client(register("Verdict Owner")["token"])
+    a = gateway_client(register(f"verdictowner{uuid.uuid4().hex[:10]} user")["token"])
     run_id = a.post("/v1/engine/team-runs", json=body).json()["id"]
     assert _poll(a, run_id, {"SUCCEEDED", "FAILED", "REJECTED"})["state"] == "SUCCEEDED"
 
@@ -294,7 +294,7 @@ def test_undeclared_battery_success_criteria_is_rejected_at_create(  # #479 fail
     orchestration = manifest.get("orchestration") or {}
     orchestration["success_criteria"] = "battery:does-not-exist"  # not in manifest.batteries
     manifest["orchestration"] = orchestration
-    a = gateway_client(register("Battery Typo")["token"])
+    a = gateway_client(register(f"batterytypo{uuid.uuid4().hex[:10]} user")["token"])
     resp = a.post(
         "/v1/engine/team-runs",
         json={"manifest": manifest, "sub_harnesses": imported.sub_harnesses, "gate_decisions": {}},
