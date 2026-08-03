@@ -161,3 +161,37 @@ def test_too_many_redact_patterns_rejected() -> None:
             resolve_policy_set(None),
             hard_max_iterations=25,
         )
+
+
+# ── #698 D4: the imported-MCP ref shape must pass the default policy set ──────────────────────────
+#
+# ``_registry_of`` takes everything before the FIRST "/" as the registry name. The documented ref
+# for an imported tool is ``org:<org-id>/<label>-<tool_name>``, so the registry reads as
+# ``org:<org-id>`` and matches the ``org:*`` glob that development-default allows. A ref that kept
+# the label as its own path segment (``org:<id>/<label>/<tool>``) reads the same registry — but it
+# is the shape that fails RESOLUTION (see test_registry_client.py), so both rules only agree on
+# the hyphenated form. Shape confirmation is tracked as a Contract on #699.
+
+_ORG_REF = "org:00000000-0000-0000-0000-0000000000aa/github-mcp-pull_request_read"
+
+
+def test_the_documented_mcp_ref_passes_development_default() -> None:
+    enforce_load_policy(_ohm(cap_ref=_ORG_REF), resolve_policy_set(None))  # no raise
+
+
+def test_the_documented_mcp_ref_passes_with_a_version_suffix() -> None:
+    enforce_load_policy(_ohm(cap_ref=f"{_ORG_REF}@1.0.0"), resolve_policy_set(None))  # no raise
+
+
+def test_an_imported_tool_ref_without_the_org_registry_is_refused() -> None:
+    """Fail-closed: a bare ``<label>-<tool>`` with no ``org:`` prefix reads its registry as the
+    label itself, which no policy set allows — an imported tool cannot dodge tenancy scoping."""
+    with pytest.raises(OHMGovernanceError):
+        enforce_load_policy(_ohm(cap_ref="github-mcp-pull_request_read"), resolve_policy_set(None))
+
+
+def test_the_documented_mcp_ref_is_still_refused_by_the_strict_set() -> None:
+    """production-strict allows the ``core`` registry only — an org-imported tool stays out."""
+    strict = resolve_policy_set("policy-set:production-strict@1.0.0")
+    with pytest.raises(OHMGovernanceError):
+        enforce_load_policy(_ohm(cap_ref=_ORG_REF), strict)
