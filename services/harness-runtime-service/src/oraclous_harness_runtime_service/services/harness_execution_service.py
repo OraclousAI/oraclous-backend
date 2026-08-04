@@ -74,7 +74,15 @@ def _mapped_credential_types(descriptor: dict[str, Any]) -> list[str]:
     """The descriptor's REQUIRED credential types that an instance must have mapped to dispatch
     (mirrors the registry's ``required_credential_types``: ``required`` defaults to true; distinct,
     order-stable), restricted to the mapping-load-bearing types above."""
-    requirements = (descriptor.get("spec") or {}).get("credential_requirements") or []
+    spec = descriptor.get("spec") or {}
+    # #698 D2 — an MCP import carries the key the org admin already chose for that server, and the
+    # registry resolves it at dispatch when the instance maps nothing. The #663 gate below exists
+    # because a fresh mint could never be configured; this one arrives configured, so demanding a
+    # separately configured instance would fail a run that is about to work. The requirement itself
+    # is not dropped: an unresolvable id is still a typed needs_credential at dispatch.
+    if spec.get("type") == "mcp" and spec.get("credential_id"):
+        return []
+    requirements = spec.get("credential_requirements") or []
     out: list[str] = []
     for req in requirements:
         if not isinstance(req, dict) or not req.get("required", True):
@@ -1080,7 +1088,22 @@ class HarnessExecutionService:
                     await self._registry.configure_credentials(
                         instance_id, {**reused_mappings, **mappings}
                     )
-                for spec in tool_specs_for(cap.binding, item.get("descriptor") or {}):
+                descriptor = item.get("descriptor") or {}
+                specs = tool_specs_for(cap.binding, descriptor)
+                # #698 AC6: a resolved kind=tool capability that yields no callable spec is a
+                # BROKEN binding, not an empty one. This is how the whole #698 chain stayed
+                # invisible — an imported MCP tool stored no operations, the model was handed an
+                # empty tool list, it invented an answer, and the step trace looked normal while
+                # the user paid for real tokens. Fail here, before the LLM is built. Scoped to an
+                # explicit kind=tool in the DESCRIPTOR: knowledge, graph and retriever bindings
+                # legitimately emit no ToolSpec, and DescriptorKind has no 'knowledge' member, so
+                # the registry row's own kind column cannot tell them apart.
+                if not specs and descriptor.get("kind") == "tool":
+                    raise HarnessExecutionError(
+                        f"capability {cap.binding!r} resolved to a tool that declares no callable "
+                        "operation — re-import it, or fix its descriptor, before running"
+                    )
+                for spec in specs:
                     if (
                         spec.name in seen_tools
                     ):  # de-dup duplicate operation names within a descriptor

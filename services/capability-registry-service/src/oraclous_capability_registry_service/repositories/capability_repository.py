@@ -23,11 +23,15 @@ from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.ext.asyncio import async_sessionmaker
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from oraclous_capability_registry_service.core.rls import build_rls_engine, org_scope
 from oraclous_capability_registry_service.domain.hashing import compute_content_hash
 from oraclous_capability_registry_service.domain.manifest import descriptor_name
+from oraclous_capability_registry_service.domain.mcp_descriptor_shape import (
+    is_mcp_descriptor,
+    resolution_slug,
+)
 from oraclous_capability_registry_service.models.base_model import Base
 from oraclous_capability_registry_service.models.capability_descriptor import CapabilityDescriptor
 from oraclous_capability_registry_service.models.enums import DescriptorKind
@@ -131,6 +135,12 @@ class CapabilityRepository:
         # platform catalogue).
         with org_scope(organisation_id):
             async with self._session() as session:
+                # #698 AC7: re-importing an MCP server refreshes its tools in place rather than
+                # duplicating them. See _reuse_mcp_row for why a duplicate is not merely untidy.
+                if is_mcp_descriptor(descriptor):
+                    reused = await self._reuse_mcp_row(session, row)
+                    if reused is not None:
+                        return reused
                 try:
                     async with session.begin():
                         session.add(row)
@@ -140,6 +150,56 @@ class CapabilityRepository:
                     ) from exc
                 await session.refresh(row)
                 return row
+
+    async def _reuse_mcp_row(
+        self, session: AsyncSession, row: CapabilityDescriptor
+    ) -> CapabilityDescriptor | None:
+        """Refresh an org's existing MCP tool in place, or return None if it has no such row yet.
+
+        A duplicate is not cosmetic. ``name`` carries no unique index, and the runtime resolves a
+        capability reference by taking the FIRST slug match out of an unordered listing — so two
+        rows sharing a name make resolution a coin flip between the live tool and the stale one,
+        and a tool descriptor with no callable operation is a hard load failure (AC6). An admin who
+        re-imports correctly would still be unable to run the tool.
+
+        The match is on the resolution SLUG, not the raw name, because that is what the runtime
+        compares. It is also what lets a re-import heal a legacy ``"<label>/<tool>"`` row: the old
+        and new names slugify identically, so the row is updated rather than shadowed by a second
+        one that resolution might lose to.
+
+        A changed descriptor re-enters the supply-chain HITL gate — ``status_for`` has already
+        forced ``pending_approval`` on the incoming row, so an admin re-approves a tool whose
+        definition moved. A byte-identical re-import changes nothing and leaves an approved tool
+        approved. The row id is preserved either way, so existing bindings keep pointing at it.
+        """
+        if not row.name:
+            return None
+        slug = resolution_slug(row.name)
+        found: CapabilityDescriptor | None = None
+        async with session.begin():
+            # Writes stay strict to the caller org (never a platform built-in), so this is a plain
+            # equality rather than the widened read filter.
+            result = await session.execute(
+                select(CapabilityDescriptor).where(
+                    CapabilityDescriptor.organisation_id == row.organisation_id,
+                    CapabilityDescriptor.kind == row.kind,
+                    CapabilityDescriptor.descriptor.contains({"spec": {"type": "mcp"}}),
+                )
+            )
+            for existing in result.scalars():
+                if resolution_slug(existing.name or "") != slug:
+                    continue
+                found = existing
+                if existing.content_hash != row.content_hash:
+                    existing.name = row.name
+                    existing.descriptor = row.descriptor
+                    existing.content_hash = row.content_hash
+                    existing.status = row.status
+                break
+        if found is None:
+            return None
+        await session.refresh(found)
+        return found
 
     async def set_status(
         self, *, descriptor_id: uuid.UUID, organisation_id: uuid.UUID, status: str

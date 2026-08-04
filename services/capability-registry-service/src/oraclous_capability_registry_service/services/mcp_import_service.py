@@ -23,6 +23,7 @@ from oraclous_capability_registry_service.domain.connectors.mcp_protocol import 
     McpSession,
 )
 from oraclous_capability_registry_service.domain.egress import egress_allowed
+from oraclous_capability_registry_service.domain.mcp_descriptor_shape import mcp_capability_name
 from oraclous_capability_registry_service.models.capability_descriptor import CapabilityDescriptor
 from oraclous_capability_registry_service.models.enums import DescriptorKind
 from oraclous_capability_registry_service.repositories.capability_repository import (
@@ -39,6 +40,26 @@ _MAX_TOOLS = 100  # bound a hostile server's tools/list (no runaway descriptor c
 PENDING = "pending_approval"
 ACTIVE = "active"
 REJECTED = "rejected"  # terminal: an admin declined an imported tool — never executable
+
+
+def _operation_for(tool: dict[str, Any], name: str) -> dict[str, Any]:
+    """One descriptor operation per discovered MCP tool (#698 D1).
+
+    One imported descriptor is exactly one MCP tool, so the operation name is the tool name and the
+    LLM-visible name stays ``<binding>__<operation>``. ``tools/list`` is UNTRUSTED: a schema that is
+    not a JSON object is replaced rather than stored, and the description is capped the same way the
+    descriptor's own is. A tool that declares no ``inputSchema`` is legal MCP and still gets an
+    operation — it degrades to an empty object schema, never to a missing capability, because a
+    missing capability is what makes the tool unreachable in the first place.
+    """
+    schema = tool.get("inputSchema")
+    return {
+        "name": name,
+        "description": str(tool.get("description") or "")[:500],
+        "parameters_schema": (
+            schema if isinstance(schema, dict) else {"type": "object", "properties": {}}
+        ),
+    }
 
 
 class McpImportError(Exception):
@@ -85,13 +106,34 @@ class McpImportService:
             if not isinstance(name, str) or not name:
                 continue
             name = name[:255]  # bound a hostile server's tool name before it lands in the JSONB
-            spec: dict[str, Any] = {"type": "mcp", "server_url": server_url, "tool_name": name}
+            spec: dict[str, Any] = {
+                "type": "mcp",
+                "server_url": server_url,
+                "tool_name": name,
+                # #698 D4: the source server, kept out of the name so an admin can still see and
+                # regroup an org's tools by where they came from.
+                "label": label,
+                # #698 D1: the discovered inputSchema IS the tool's contract. Stored as the
+                # descriptor's single operation, it becomes one LLM-callable ToolSpec via
+                # tool_specs_for; dropped, the descriptor declares no operations, the model is
+                # offered no tool at all, and the import succeeds with a dead tool behind it.
+                "capabilities": [_operation_for(tool, name)],
+            }
             if credential_id:  # #541: the invoke path resolves this Bearer via the broker too
                 spec["credential_id"] = credential_id
+                # #698 D2: ToolExecutionService only resolves credentials it finds DECLARED here,
+                # so recording the id alone left every call anonymous and a hosted server 401'd.
+                # A public server declares nothing, or every call to it would start fail-closing.
+                spec["credential_requirements"] = [
+                    {"type": "api_key", "provider": "mcp", "required": True}
+                ]
             descriptor = {
                 "kind": "tool",
                 "metadata": {
-                    "name": f"{label}/{name}",
+                    # #698 D4: NOT "<label>/<name>". A "/" here makes the descriptor unnameable —
+                    # the runtime's ref slug keeps the tail after the last "/" while its policy
+                    # check keeps the head before the first one, so no single ref satisfies both.
+                    "name": mcp_capability_name(label, name),
                     "description": str(tool.get("description") or "")[:500],
                 },
                 "spec": spec,
