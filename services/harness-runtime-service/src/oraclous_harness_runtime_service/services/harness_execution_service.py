@@ -74,7 +74,15 @@ def _mapped_credential_types(descriptor: dict[str, Any]) -> list[str]:
     """The descriptor's REQUIRED credential types that an instance must have mapped to dispatch
     (mirrors the registry's ``required_credential_types``: ``required`` defaults to true; distinct,
     order-stable), restricted to the mapping-load-bearing types above."""
-    requirements = (descriptor.get("spec") or {}).get("credential_requirements") or []
+    spec = descriptor.get("spec") or {}
+    # #698 D2 — an MCP import carries the key the org admin already chose for that server, and the
+    # registry resolves it at dispatch when the instance maps nothing. The #663 gate below exists
+    # because a fresh mint could never be configured; this one arrives configured, so demanding a
+    # separately configured instance would fail a run that is about to work. The requirement itself
+    # is not dropped: an unresolvable id is still a typed needs_credential at dispatch.
+    if spec.get("type") == "mcp" and spec.get("credential_id"):
+        return []
+    requirements = spec.get("credential_requirements") or []
     out: list[str] = []
     for req in requirements:
         if not isinstance(req, dict) or not req.get("required", True):
