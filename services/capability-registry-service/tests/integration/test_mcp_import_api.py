@@ -416,6 +416,40 @@ async def test_an_authd_import_carries_its_bearer_all_the_way_to_the_tools_call(
     assert seen["auth"].endswith("-api-key"), seen["auth"]
 
 
+async def test_a_second_import_of_the_same_server_leaves_no_duplicate_name(
+    client: AsyncClient,
+) -> None:
+    """AC7's other half — the one the measured data turned from optional into mandatory.
+
+    The 0008 migration is rename-only: no stored ``inputSchema`` survives on any of the 44 deployed
+    descriptors, so none of them can be made callable by migrating. Every one has to be RE-IMPORTED,
+    which makes this the live path rather than the alternative branch of AC7's "or".
+
+    A duplicate is not cosmetic. ``CapabilityRepository.create`` mints a fresh uuid per call, there
+    is no unique index on ``name``, and the runtime's ``resolve_capability`` takes the FIRST slug
+    match out of an unordered ``GET /api/v1/tools``. Two rows sharing a name therefore make
+    resolution a coin flip between the live row and the dead one — and AC6 turns the losing side
+    into a hard failure, so the admin re-imports correctly and still cannot run the tool.
+
+    The OUTCOME is pinned, not the mechanism. Reuse the row, supersede it, drop the stale one in
+    the migration, or refuse the second import — any of those passes. The assertion runs against
+    exactly what ``GET /api/v1/tools`` returns, because that is the list the runtime resolves
+    against; a stale row that the listing still shows is a stale row that can still win."""
+    for _ in range(2):
+        resp = await client.post(
+            "/api/v1/tools/import-mcp",
+            json={"server_url": _PUB_MCP, "label": "acme"},
+            headers=_auth(role="admin"),
+        )
+        assert resp.status_code in (201, 409), resp.text  # created, or refused as a duplicate
+
+    listed = (await client.get("/api/v1/tools", headers=_auth(role="admin"))).json()
+    names = [
+        t["name"] for t in listed["capabilities"] if t["descriptor"]["spec"].get("type") == "mcp"
+    ]
+    assert len(names) == len(set(names)), f"re-import left duplicate names: {sorted(names)}"
+
+
 async def test_a_pending_tool_is_still_not_executable(
     client: AsyncClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
