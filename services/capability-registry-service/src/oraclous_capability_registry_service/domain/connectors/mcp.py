@@ -37,6 +37,18 @@ from oraclous_capability_registry_service.domain.executors.base import (
 _TIMEOUT_S = 30.0
 
 
+def _arguments(input_data: dict[str, Any]) -> dict[str, Any]:
+    """The MCP ``arguments`` for a dispatch, with the registry's internal routing key removed.
+
+    #698 D3: the harness loop dispatches every tool call as ``{"operation": <op>, **args}`` — that
+    key selects the descriptor's operation and means nothing to a third-party server. Forwarded
+    verbatim it becomes an unexpected property, which a schema-validating server rejects outright.
+    The strip lives here rather than in the loop so every caller of the dispatch contract inherits
+    it, and it is deliberately SHALLOW: a nested ``operation`` is the tool's own argument.
+    """
+    return {k: v for k, v in input_data.items() if k != "operation"}
+
+
 class McpToolExecutor(InternalTool):
     #: injectable httpx transport for tests (None → real network)
     transport: httpx.AsyncBaseTransport | None = None
@@ -75,7 +87,7 @@ class McpToolExecutor(InternalTool):
                 )
                 await session.initialize()
                 result = await session.call(
-                    "tools/call", {"name": tool_name, "arguments": input_data}
+                    "tools/call", {"name": tool_name, "arguments": _arguments(input_data)}
                 )
         except McpProtocolError as exc:
             meta = {"code": exc.rpc_code} if exc.rpc_code is not None else {}
