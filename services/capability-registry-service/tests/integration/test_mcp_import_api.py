@@ -432,16 +432,19 @@ async def test_a_second_import_of_the_same_server_leaves_no_duplicate_name(
     into a hard failure, so the admin re-imports correctly and still cannot run the tool.
 
     The OUTCOME is pinned, not the mechanism. Reuse the row, supersede it, drop the stale one in
-    the migration, or refuse the second import — any of those passes. The assertion runs against
-    exactly what ``GET /api/v1/tools`` returns, because that is the list the runtime resolves
-    against; a stale row that the listing still shows is a stale row that can still win."""
-    for _ in range(2):
-        resp = await client.post(
-            "/api/v1/tools/import-mcp",
-            json={"server_url": _PUB_MCP, "label": "acme"},
-            headers=_auth(role="admin"),
-        )
-        assert resp.status_code in (201, 409), resp.text  # created, or refused as a duplicate
+    the migration, or refuse the second import — any of those passes. The second import's status is
+    left free on purpose: ``CapabilityConflictError`` has no HTTP mapping in this service today, so
+    naming a refusal code here would invent an interface rather than pin a behaviour. Only "not a
+    crash" is required of it.
+
+    The duplicate assertion runs against exactly what ``GET /api/v1/tools`` returns, because that is
+    the list the runtime resolves against — ``list_tools`` filters by nothing, so a stale row the
+    listing still shows is a stale row that can still win."""
+    body = {"server_url": _PUB_MCP, "label": "acme"}
+    first = await client.post("/api/v1/tools/import-mcp", json=body, headers=_auth(role="admin"))
+    assert first.status_code == 201, first.text  # the first import must land, or nothing is proven
+    second = await client.post("/api/v1/tools/import-mcp", json=body, headers=_auth(role="admin"))
+    assert second.status_code < 500, second.text  # created, or refused — the shape is the impl's
 
     listed = (await client.get("/api/v1/tools", headers=_auth(role="admin"))).json()
     names = [
