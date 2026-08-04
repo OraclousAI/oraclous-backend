@@ -78,7 +78,9 @@ class ReadFileConnector(InternalTool):
             return _bad("file is not valid UTF-8 text", error_type="NOT_TEXT")
         except OSError:
             return _bad("file could not be read", error_type="READ_FAILED")
-        return ExecutionResult(success=True, data={"content": content, "path": input_data["path"]})
+        return ExecutionResult(
+            success=True, data={"content": content, "path": input_data.get("path", "")}
+        )
 
 
 class WriteFileConnector(InternalTool):
@@ -105,7 +107,8 @@ class WriteFileConnector(InternalTool):
         except OSError:
             return _bad("file could not be written", error_type="WRITE_FAILED")
         return ExecutionResult(
-            success=True, data={"ok": True, "path": input_data["path"], "bytes": len(encoded)}
+            success=True,
+            data={"ok": True, "path": input_data.get("path", ""), "bytes": len(encoded)},
         )
 
 
@@ -146,7 +149,7 @@ class EditFileConnector(InternalTool):
         except OSError:
             return _bad("file could not be written", error_type="WRITE_FAILED")
         return ExecutionResult(
-            success=True, data={"ok": True, "path": input_data["path"], "replacements": 1}
+            success=True, data={"ok": True, "path": input_data.get("path", ""), "replacements": 1}
         )
 
 
