@@ -1080,7 +1080,22 @@ class HarnessExecutionService:
                     await self._registry.configure_credentials(
                         instance_id, {**reused_mappings, **mappings}
                     )
-                for spec in tool_specs_for(cap.binding, item.get("descriptor") or {}):
+                descriptor = item.get("descriptor") or {}
+                specs = tool_specs_for(cap.binding, descriptor)
+                # #698 AC6: a resolved kind=tool capability that yields no callable spec is a
+                # BROKEN binding, not an empty one. This is how the whole #698 chain stayed
+                # invisible — an imported MCP tool stored no operations, the model was handed an
+                # empty tool list, it invented an answer, and the step trace looked normal while
+                # the user paid for real tokens. Fail here, before the LLM is built. Scoped to an
+                # explicit kind=tool in the DESCRIPTOR: knowledge, graph and retriever bindings
+                # legitimately emit no ToolSpec, and DescriptorKind has no 'knowledge' member, so
+                # the registry row's own kind column cannot tell them apart.
+                if not specs and descriptor.get("kind") == "tool":
+                    raise HarnessExecutionError(
+                        f"capability {cap.binding!r} resolved to a tool that declares no callable "
+                        "operation — re-import it, or fix its descriptor, before running"
+                    )
+                for spec in specs:
                     if (
                         spec.name in seen_tools
                     ):  # de-dup duplicate operation names within a descriptor
