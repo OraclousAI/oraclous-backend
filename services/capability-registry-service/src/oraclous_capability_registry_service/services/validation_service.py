@@ -22,6 +22,7 @@ reconnected credential restores ``READY`` on the next check.
 
 from __future__ import annotations
 
+import logging
 import uuid
 
 from oraclous_capability_registry_service.domain.credentials import required_credentials
@@ -42,6 +43,8 @@ from oraclous_capability_registry_service.services.instance_manager import Insta
 #: all #692 AC1 asks for.
 _REFRESHABLE = (InstanceStatus.READY, InstanceStatus.CONFIGURATION_REQUIRED)
 
+logger = logging.getLogger(__name__)
+
 
 class ValidationService:
     def __init__(
@@ -49,7 +52,7 @@ class ValidationService:
         *,
         instances: InstanceRepository,
         capabilities: CapabilityRepository,
-        broker: CredentialBrokerPort,
+        broker: CredentialBrokerPort | None,
     ) -> None:
         self._instances = instances
         self._capabilities = capabilities
@@ -100,8 +103,9 @@ class ValidationService:
                     "message": f"map a credential for '{ctype}' to make this instance ready",
                 }
             )
+        unverified = False
         if descriptor is not None:
-            unresolvable = await self._unresolvable(
+            unresolvable, unverified = await self._unresolvable(
                 descriptor.descriptor,
                 mappings=mappings,
                 skip=set(missing),
@@ -130,9 +134,16 @@ class ValidationService:
                         "message": f"reconnect a working credential for '{ctype}'",
                     }
                 )
-        checks["credentials"] = (
-            "failed" if any(e["type"].startswith("CREDENTIAL_") for e in errors) else "passed"
-        )
+        if any(e["type"].startswith("CREDENTIAL_") for e in errors):
+            checks["credentials"] = "failed"
+        elif unverified:
+            # The broker itself could not be reached, so there is no answer either way. Saying
+            # "passed" would be the #692 lie again; raising a blocking error would flip every
+            # instance in the org to CONFIGURATION_REQUIRED over one upstream blip. A warning is
+            # the honest third answer, and it writes no status.
+            checks["credentials"] = "warning"
+        else:
+            checks["credentials"] = "passed"
 
         # 3. configuration present when the descriptor declares a config schema (warning-only)
         if descriptor is not None:
@@ -164,18 +175,35 @@ class ValidationService:
         skip: set[str],
         organisation_id: uuid.UUID,
         user_id: uuid.UUID,
-    ) -> list[tuple[str, str]]:
-        """``(credential_type, broker error code)`` for each requirement that will not resolve.
+    ) -> tuple[list[tuple[str, str]], bool]:
+        """``([(credential_type, broker error code)], the broker was unreachable)``.
 
         This is the same resolve the execution spine performs, so "Healthy" and "runs" can no longer
-        disagree. A requirement with no mapping at all is skipped: it is already reported as
-        CREDENTIAL_NOT_CONFIGURED, and resolving it would add a second error for one problem.
+        disagree. Three cases are kept apart:
+
+        * A requirement with no mapping at all is skipped — already reported as
+          CREDENTIAL_NOT_CONFIGURED, and resolving it would add a second error for one problem.
+        * An ``oauth_token`` requirement is skipped. The broker mints it at execute time from
+          (org, user, provider, scopes) and ignores ``credential_mappings``, so there is no stored
+          row to dangle — and minting a token as the side effect of a readiness GET would be a
+          side effect this endpoint has no business having.
+        * The broker being unreachable is NOT the same as the broker saying no. It returns the
+          second element instead of a failure, so a transient upstream cannot mass-downgrade the
+          org's instances.
         """
+        checkable = [
+            r
+            for r in required_credentials(descriptor)
+            if isinstance(r.get("type"), str)
+            and r["type"] not in skip
+            and r["type"] != "oauth_token"
+        ]
+        if self._broker is None:  # degraded startup: no broker bound → nothing can be verified
+            return [], bool(checkable)
         failures: list[tuple[str, str]] = []
-        for requirement in required_credentials(descriptor):
-            ctype = requirement.get("type")
-            if not isinstance(ctype, str) or ctype in skip:
-                continue
+        unreachable = False
+        for requirement in checkable:
+            ctype = str(requirement["type"])
             try:
                 await self._broker.resolve(
                     organisation_id=organisation_id,
@@ -185,7 +213,12 @@ class ValidationService:
                 )
             except CredentialResolutionError as exc:
                 failures.append((ctype, exc.error_code))
-        return failures
+            except Exception:  # noqa: BLE001 — transport/timeout: no answer, never a verdict
+                logger.warning(
+                    "credential-broker unreachable during readiness; credential check unverified"
+                )
+                unreachable = True
+        return failures, unreachable
 
     async def _refresh_status(
         self,
