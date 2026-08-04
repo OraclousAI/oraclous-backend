@@ -109,11 +109,21 @@ def get_instance_manager(
     return InstanceManager(instances=instances, capabilities=capabilities)
 
 
+def get_optional_credential_broker(request: Request) -> CredentialBrokerPort | None:
+    """The broker, or None on a degraded startup. Deliberately None-tolerant, mirroring the
+    delivery-state store: a missing broker must not 503 readiness for every instance in the org.
+    Readiness reports the credential check as ``warning`` in that case — never ``passed`` (#692)."""
+    broker: CredentialBrokerPort | None = getattr(request.app.state, "credential_broker", None)
+    return broker
+
+
 def get_validation_service(
     instances: Annotated[InstanceRepository, Depends(get_instance_repository)],
     capabilities: Annotated[CapabilityRepository, Depends(get_capability_repository)],
+    broker: Annotated[CredentialBrokerPort | None, Depends(get_optional_credential_broker)],
 ) -> ValidationService:
-    return ValidationService(instances=instances, capabilities=capabilities)
+    # #692: readiness RESOLVES the mapped credential rather than checking that a mapping exists.
+    return ValidationService(instances=instances, capabilities=capabilities, broker=broker)
 
 
 def get_execution_repository(request: Request) -> ExecutionRepository:

@@ -19,7 +19,16 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from oraclous_capability_registry_service.domain.executors.input_validation import validate_input
+
 _DEFAULT_TIMEOUT_S = 30.0
+
+#: Exception types whose message is derived from the caller's own data rather than written for a
+#: caller: ``str(KeyError("path"))`` is ``"'path'"``. Surfacing one names no argument and no
+#: expectation, so the caller cannot repair the call — and a KeyError's message is caller-supplied
+#: content that has no business being echoed back (#693). Their message is replaced; the exception
+#: type is still reported, so an operator reading a trace loses nothing.
+_UNCURATED_MESSAGE = (KeyError, IndexError, AttributeError, TypeError)
 
 
 class ExecutionContext(BaseModel):
@@ -64,6 +73,22 @@ class ExecutionResult(BaseModel):
     processing_time_ms: int | None = None
 
 
+def _safe_message(exc: Exception) -> str:
+    """The error detail for an unexpected tool failure — never a raw uncurated exception message.
+
+    #693 AC2: the caller of a tool is a model, and it acts on this string. ``'path'`` (a KeyError)
+    and ``list index out of range`` (an IndexError) tell it nothing it can fix, and the first is
+    caller-supplied data reflected back. Everything else keeps its message: our own exceptions are
+    written for a caller.
+    """
+    if isinstance(exc, _UNCURATED_MESSAGE):
+        return (
+            f"the tool failed while reading its arguments ({type(exc).__name__}) — check the call "
+            "against the tool's declared input schema"
+        )
+    return str(exc)
+
+
 class BaseToolExecutor(ABC):
     """Contract: execute a tool with input + a resolved execution context."""
 
@@ -82,6 +107,20 @@ class InternalTool(BaseToolExecutor):
 
     timeout_s: float = _DEFAULT_TIMEOUT_S
 
+    def _schema_problem(self, input_data: dict[str, Any], context: ExecutionContext) -> str | None:
+        """The call's first violation of the descriptor's declared ``input_schema``, else None.
+
+        #693: the schema was declared and never enforced, so a connector subscripting a declared
+        key turned a malformed call into a raw ``KeyError``. Enforcing it HERE binds the check to
+        every builtin connector — they are all ``InternalTool`` subclasses — rather than to the one
+        connector the bug was reported on. A descriptor with no schema (the unit-test construction
+        ``Connector({"id": "x"})``) validates nothing, exactly as before.
+        """
+        schema = (self.descriptor.get("spec") or {}).get("input_schema")
+        if not isinstance(schema, dict):
+            return None
+        return validate_input(schema, input_data, configuration=context.configuration)
+
     async def execute(self, input_data: Any, context: ExecutionContext) -> ExecutionResult:
         started = time.monotonic()
         try:
@@ -91,10 +130,18 @@ class InternalTool(BaseToolExecutor):
                     error_message="input must be a JSON object",
                     error_type="INVALID_INPUT",
                 )
-            result = await asyncio.wait_for(
-                self._execute_internal(input_data, context), timeout=self.timeout_s
-            )
-            result.credits_consumed = self.calculate_credits(input_data, result)
+            problem = self._schema_problem(input_data, context)
+            if problem is not None:
+                # Rejected BEFORE _execute_internal, so a malformed call never reaches a network
+                # call, a credential or a side effect.
+                result = ExecutionResult(
+                    success=False, error_message=problem, error_type="INVALID_INPUT"
+                )
+            else:
+                result = await asyncio.wait_for(
+                    self._execute_internal(input_data, context), timeout=self.timeout_s
+                )
+                result.credits_consumed = self.calculate_credits(input_data, result)
         except TimeoutError:
             result = ExecutionResult(
                 success=False,
@@ -103,7 +150,7 @@ class InternalTool(BaseToolExecutor):
             )
         except Exception as exc:  # noqa: BLE001 — map any tool failure to a structured result
             result = ExecutionResult(
-                success=False, error_message=str(exc), error_type=type(exc).__name__
+                success=False, error_message=_safe_message(exc), error_type=type(exc).__name__
             )
         result.processing_time_ms = int((time.monotonic() - started) * 1000)
         return result
