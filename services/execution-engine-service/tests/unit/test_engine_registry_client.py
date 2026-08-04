@@ -145,6 +145,50 @@ async def test_list_capabilities_returns_the_org_capability_names() -> None:
     assert names == ["GitHub Sink", "Web Research"]  # RAW names — survey_catalog slugs them
 
 
+async def test_list_capabilities_asks_the_registry_for_tools_only() -> None:
+    """#705 — the catalog the drafter is shown is a menu of TOOLS a member may take. A registered
+    harness row is not one, and offering it only earns a block from the gate."""
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["params"] = dict(request.url.params)
+        return httpx.Response(200, json={"capabilities": [], "total": 0})
+
+    await _client(handler).list_capabilities()
+    assert captured["params"].get("kind") == "tool"
+
+
+async def test_list_capabilities_drops_a_tool_the_org_has_not_approved() -> None:
+    """#705 — the menu must match the gate. The compile gate counts only ``active`` descriptors, so
+    offering the drafter a ``pending_approval`` tool hands it a choice that can only block."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "capabilities": [
+                    {"id": str(uuid.uuid4()), "name": "github-mcp-pull_request_read"},
+                    {
+                        "id": str(uuid.uuid4()),
+                        "name": "github-mcp-add_comment_to_pending_review",
+                        "status": "pending_approval",
+                    },
+                    {
+                        "id": str(uuid.uuid4()),
+                        "name": "github-mcp-delete_file",
+                        "status": "rejected",
+                    },
+                    {"id": str(uuid.uuid4()), "name": "Web Research", "status": "active"},
+                ],
+                "total": 4,
+            },
+        )
+
+    names = await _client(handler).list_capabilities()
+    # a row with no status at all is treated as active (an older registry payload)
+    assert names == ["github-mcp-pull_request_read", "Web Research"]
+
+
 async def test_list_capabilities_raises_on_unreachable_and_non_2xx() -> None:
     # the CALLER owns the degrade — the client raises like its siblings so a blip is never silent.
     def down(request: httpx.Request) -> httpx.Response:
