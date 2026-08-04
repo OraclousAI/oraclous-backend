@@ -41,6 +41,26 @@ ACTIVE = "active"
 REJECTED = "rejected"  # terminal: an admin declined an imported tool — never executable
 
 
+def _operation_for(tool: dict[str, Any], name: str) -> dict[str, Any]:
+    """One descriptor operation per discovered MCP tool (#698 D1).
+
+    One imported descriptor is exactly one MCP tool, so the operation name is the tool name and the
+    LLM-visible name stays ``<binding>__<operation>``. ``tools/list`` is UNTRUSTED: a schema that is
+    not a JSON object is replaced rather than stored, and the description is capped the same way the
+    descriptor's own is. A tool that declares no ``inputSchema`` is legal MCP and still gets an
+    operation — it degrades to an empty object schema, never to a missing capability, because a
+    missing capability is what makes the tool unreachable in the first place.
+    """
+    schema = tool.get("inputSchema")
+    return {
+        "name": name,
+        "description": str(tool.get("description") or "")[:500],
+        "parameters_schema": (
+            schema if isinstance(schema, dict) else {"type": "object", "properties": {}}
+        ),
+    }
+
+
 class McpImportError(Exception):
     """The external MCP server could not be reached / discovered (generic — no raw detail leaks)."""
 
@@ -85,7 +105,16 @@ class McpImportService:
             if not isinstance(name, str) or not name:
                 continue
             name = name[:255]  # bound a hostile server's tool name before it lands in the JSONB
-            spec: dict[str, Any] = {"type": "mcp", "server_url": server_url, "tool_name": name}
+            spec: dict[str, Any] = {
+                "type": "mcp",
+                "server_url": server_url,
+                "tool_name": name,
+                # #698 D1: the discovered inputSchema IS the tool's contract. Stored as the
+                # descriptor's single operation, it becomes one LLM-callable ToolSpec via
+                # tool_specs_for; dropped, the descriptor declares no operations, the model is
+                # offered no tool at all, and the import succeeds with a dead tool behind it.
+                "capabilities": [_operation_for(tool, name)],
+            }
             if credential_id:  # #541: the invoke path resolves this Bearer via the broker too
                 spec["credential_id"] = credential_id
             descriptor = {
