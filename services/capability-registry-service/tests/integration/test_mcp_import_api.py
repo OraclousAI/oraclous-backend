@@ -105,11 +105,16 @@ async def client(postgres_dsn: str, monkeypatch: pytest.MonkeyPatch) -> AsyncIte
     app.state.capability_repository = repo
     app.state.instance_repository = inst_repo
     app.state.execution_repository = exec_repo
-    app.state.credential_broker = FakeCredentialBroker(fake_db_dsn=_libpq_dsn(async_dsn))
+    broker = FakeCredentialBroker(fake_db_dsn=_libpq_dsn(async_dsn))
+    app.state.credential_broker = broker
 
-    # Inject the MockTransport into the import service so import-mcp never hits the network.
+    # Inject the MockTransport into the import service so import-mcp never hits the network. The
+    # SAME broker is wired here as on app.state: #698 D2 is about one credential surviving from
+    # import to execute, so both ends must resolve through one broker for that to be provable.
     def _mock_import_service() -> McpImportService:
-        return McpImportService(capabilities=repo, transport=httpx.MockTransport(_mcp_handler))
+        return McpImportService(
+            capabilities=repo, broker=broker, transport=httpx.MockTransport(_mcp_handler)
+        )
 
     app.dependency_overrides[get_mcp_import_service] = _mock_import_service
 
@@ -291,13 +296,12 @@ def _tools_call_stub(seen: dict) -> httpx.MockTransport:
     return httpx.MockTransport(handler)
 
 
-async def _import_and_approve(client: AsyncClient) -> dict:
+async def _import_and_approve(client: AsyncClient, *, credential_id: str | None = None) -> dict:
+    body: dict = {"server_url": _PUB_MCP, "label": "acme"}
+    if credential_id is not None:
+        body["credential_id"] = credential_id
     imported = (
-        await client.post(
-            "/api/v1/tools/import-mcp",
-            json={"server_url": _PUB_MCP, "label": "acme"},
-            headers=_auth(role="admin"),
-        )
+        await client.post("/api/v1/tools/import-mcp", json=body, headers=_auth(role="admin"))
     ).json()["imported"]
     tool = next(t for t in imported if t["name"].endswith("do_a"))
     approved = await client.post(f"/api/v1/tools/{tool['id']}/approve", headers=_auth(role="admin"))
@@ -367,6 +371,49 @@ async def test_an_approved_tool_executes_and_the_server_sees_clean_arguments(
     assert seen["params"]["name"] == "do_a"
     assert seen["params"]["arguments"] == {"owner": "acme"}
     assert "operation" not in seen["params"]["arguments"]
+
+
+async def test_an_authd_import_carries_its_bearer_all_the_way_to_the_tools_call(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """D2 end to end — the leg the unit tests only prove in halves.
+
+    ``test_mcp_credential_fallback`` proves the broker is ASKED with the import-time credential id,
+    and the connector unit tests prove a resolved ``api_key`` becomes a Bearer. Neither proves the
+    JOIN through the real service wiring, which is the whole of AC3: *an authenticated import
+    carries its Bearer at call time; a hosted server that needs auth returns data, not 401*.
+
+    The instance deliberately carries NO ``credential_mappings`` — that is a member's run, and the
+    import-time credential is the only thing that can authenticate it. An anonymous ``tools/call``
+    here is exactly the 401 seen on the deployed stack.
+
+    The provider string is left free on purpose: ``test_an_authd_import_declares_a_credential_
+    requirement`` only requires that a provider EXISTS, so this asserts the broker-resolved
+    ``api_key`` SHAPE (``fake-<provider>-api-key``) rather than pinning the provider itself."""
+    from oraclous_capability_registry_service.domain.connectors import mcp as mcp_mod
+
+    seen: dict = {}
+    monkeypatch.setattr(mcp_mod.McpToolExecutor, "transport", _tools_call_stub(seen))
+
+    tool = await _import_and_approve(client, credential_id="cred-chosen-at-import-time")
+    iid = (
+        await client.post(
+            "/api/v1/instances",
+            json={"capability_id": tool["id"], "name": "acme-do_a"},
+            headers=_auth(role="admin"),
+        )
+    ).json()["id"]
+
+    resp = await client.post(
+        f"/api/v1/instances/{iid}/execute",
+        json={"input_data": {"operation": "do_a", "owner": "acme"}},
+        headers=_auth(role="admin"),
+    )
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["status"] == "SUCCESS", resp.text
+    assert seen["auth"] is not None, "the tools/call went out ANONYMOUS — a hosted server 401s it"
+    assert seen["auth"].startswith("Bearer fake-"), seen["auth"]
+    assert seen["auth"].endswith("-api-key"), seen["auth"]
 
 
 async def test_a_pending_tool_is_still_not_executable(
