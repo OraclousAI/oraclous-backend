@@ -18,9 +18,50 @@ import httpx
 
 _NON_ALNUM = re.compile(r"[^a-z0-9]+")
 
+#: The shape a registry ``error_code`` may take. The registry is trusted, but this token is echoed
+#: into a string a MODEL reads, so it is accepted only as a bounded lowercase identifier — never as
+#: an arbitrary relay channel for whatever happened to land in that field (#483 / ADR-042).
+_CODE_TOKEN = re.compile(r"^[a-z0-9_]{1,64}$")
+
+#: What a registry code means, in words the calling member can act on. Owned HERE, not echoed from
+#: the upstream body: #692's member was told only "409" for a credential that no longer existed, so
+#: it could not tell "reconnect this tool" from "retry later" and simply repeated the call.
+_CODE_MEANINGS = {
+    "credential_not_found": (
+        "the credential connected to this tool no longer exists — it must be reconnected before "
+        "this tool can run"
+    ),
+    "credential_not_mapped": (
+        "no credential is connected to this tool — one must be connected before this tool can run"
+    ),
+    "pending_approval": "this tool is imported but not yet approved by an organisation admin",
+    "no_executor": "this tool has no runnable implementation in this deployment",
+}
+
 
 class RegistryError(Exception):
-    """A capability-registry call failed (non-2xx or transport error)."""
+    """A capability-registry call failed (non-2xx or transport error).
+
+    ``error_code`` is the registry's own typed code when it sent one — the single field allowed
+    across the leak boundary, because it comes from a closed vocabulary the registry generates and
+    never from customer content.
+    """
+
+    def __init__(self, message: str, *, error_code: str | None = None) -> None:
+        super().__init__(message)
+        self.error_code = error_code
+
+
+def _error_code(resp: httpx.Response) -> str | None:
+    """The registry's typed ``error_code``, if the body carries one in the accepted token shape."""
+    try:
+        body = resp.json()
+    except ValueError:  # a proxy's HTML error page, an empty body — nothing typed to read
+        return None
+    if not isinstance(body, dict):
+        return None
+    code = body.get("error_code")
+    return code if isinstance(code, str) and _CODE_TOKEN.match(code) else None
 
 
 def _slug(text: str) -> str:
@@ -56,10 +97,15 @@ class RegistryClient:
     async def _json(self, resp: httpx.Response) -> dict[str, Any]:
         if resp.status_code // 100 != 2:
             # leak-safe: surface the method/path + coarse status, never the upstream body (it may
-            # echo customer input/output) — CLAUDE.md §11 / the ADR-042 leak class.
-            raise RegistryError(
-                f"{resp.request.method} {resp.request.url.path} → {resp.status_code}"
-            )
+            # echo customer input/output) — CLAUDE.md §11 / the ADR-042 leak class. #692: the
+            # registry's typed error_code DOES cross, plus this service's own words for it — a bare
+            # status told the member nothing it could act on, so it repeated the failing call.
+            message = f"{resp.request.method} {resp.request.url.path} → {resp.status_code}"
+            code = _error_code(resp)
+            if code is not None:
+                meaning = _CODE_MEANINGS.get(code)
+                message = f"{message} ({code})" + (f": {meaning}" if meaning else "")
+            raise RegistryError(message, error_code=code)
         return resp.json()
 
     async def list_tools(self) -> list[dict[str, Any]]:
