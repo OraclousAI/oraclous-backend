@@ -96,9 +96,17 @@ class RegistryClient:
         → slug ``github-sink``) is admissible to compile/refine, not only the #596 seed inventory.
         The names are returned RAW — ``survey_catalog``/``_slug`` normalise each to its bare slug.
         Raises like the sibling calls (``RegistryClientError`` unreachable / ``RegistryRejected``
-        non-2xx) so the CALLER owns the degrade policy (seed-only on failure — never fail-open)."""
+        non-2xx) so the CALLER owns the degrade policy (seed-only on failure — never fail-open).
+
+        #705: this list is the MENU the drafter chooses from, and the compile gate now admits only
+        ``active`` TOOL descriptors. So the menu is filtered to match — ``kind=tool`` (a registered
+        harness row is not something a member can take as a tool) and ``active`` only (an imported
+        MCP tool the org has not approved is refused at dispatch, so offering it can only earn a
+        block). Before this, an org with 44 imported tools and 3 approved was shown all 44, and the
+        drafter duly picked an unapproved one. A row carrying no ``status`` at all is treated as
+        active — an older registry payload should not silently empty the menu."""
         try:
-            resp = await self._client.get("/api/v1/capabilities")
+            resp = await self._client.get("/api/v1/capabilities", params={"kind": "tool"})
         except httpx.HTTPError as exc:  # registry unreachable — clean failure, not a 500
             raise RegistryClientError(f"registry unreachable: {type(exc).__name__}") from exc
         if resp.status_code // 100 != 2:  # reachable but rejected — not unreachable
@@ -107,7 +115,11 @@ class RegistryClient:
         caps = body.get("capabilities") if isinstance(body, dict) else None
         if not isinstance(caps, list):
             return []
-        return [c["name"] for c in caps if isinstance(c, dict) and c.get("name")]
+        return [
+            c["name"]
+            for c in caps
+            if isinstance(c, dict) and c.get("name") and c.get("status", "active") == "active"
+        ]
 
     async def instance_exists(self, instance_id: uuid.UUID) -> bool:
         """True iff a configured instance with this id exists in the CALLER's organisation (the
