@@ -23,6 +23,7 @@ from oraclous_capability_registry_service.domain.connectors.mcp_protocol import 
     McpSession,
 )
 from oraclous_capability_registry_service.domain.egress import egress_allowed
+from oraclous_capability_registry_service.domain.mcp_descriptor_shape import mcp_capability_name
 from oraclous_capability_registry_service.models.capability_descriptor import CapabilityDescriptor
 from oraclous_capability_registry_service.models.enums import DescriptorKind
 from oraclous_capability_registry_service.repositories.capability_repository import (
@@ -109,6 +110,9 @@ class McpImportService:
                 "type": "mcp",
                 "server_url": server_url,
                 "tool_name": name,
+                # #698 D4: the source server, kept out of the name so an admin can still see and
+                # regroup an org's tools by where they came from.
+                "label": label,
                 # #698 D1: the discovered inputSchema IS the tool's contract. Stored as the
                 # descriptor's single operation, it becomes one LLM-callable ToolSpec via
                 # tool_specs_for; dropped, the descriptor declares no operations, the model is
@@ -126,7 +130,10 @@ class McpImportService:
             descriptor = {
                 "kind": "tool",
                 "metadata": {
-                    "name": f"{label}/{name}",
+                    # #698 D4: NOT "<label>/<name>". A "/" here makes the descriptor unnameable —
+                    # the runtime's ref slug keeps the tail after the last "/" while its policy
+                    # check keeps the head before the first one, so no single ref satisfies both.
+                    "name": mcp_capability_name(label, name),
                     "description": str(tool.get("description") or "")[:500],
                 },
                 "spec": spec,
