@@ -82,7 +82,12 @@ def _row(
 
 
 class _FakeCapabilityRepo:
-    """Stands in for ``CapabilityRepository`` — the org's registered descriptor rows."""
+    """Stands in for ``CapabilityRepository`` — the org's registered descriptor rows.
+
+    Both existing org-scoped read methods are offered, so these tests pin the gate's BEHAVIOUR and
+    leave the implementation free to filter the kind in the query (``list_by_kind``) or in the
+    connector (``list_by_org``). Neither needs a new repository method.
+    """
 
     def __init__(self, rows: list[SimpleNamespace], *, explode: bool = False) -> None:
         self._rows = rows
@@ -90,13 +95,17 @@ class _FakeCapabilityRepo:
         #: every org id the connector scoped a read to (the gate must use the CALLER's org)
         self.orgs: list[uuid.UUID] = []
 
-    async def list_by_kind(
-        self, organisation_id: uuid.UUID, kind: DescriptorKind
-    ) -> list[SimpleNamespace]:
+    async def list_by_org(self, organisation_id: uuid.UUID) -> list[SimpleNamespace]:
         self.orgs.append(organisation_id)
         if self._explode:
             raise RuntimeError("registry read failed")
-        return [r for r in self._rows if r.kind == kind]
+        return list(self._rows)
+
+    async def list_by_kind(
+        self, organisation_id: uuid.UUID, kind: DescriptorKind
+    ) -> list[SimpleNamespace]:
+        rows = await self.list_by_org(organisation_id)
+        return [r for r in rows if r.kind == kind]
 
 
 def _connector(repo: _FakeCapabilityRepo | None) -> ManifestValidateConnector:

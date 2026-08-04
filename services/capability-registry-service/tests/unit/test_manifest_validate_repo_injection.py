@@ -56,6 +56,9 @@ class _FakeCaps:
             organisation_id=_ORG, status="active", descriptor=ManifestValidatePlugin.descriptor()
         )
 
+    async def list_by_org(self, organisation_id: uuid.UUID) -> list[Any]:  # noqa: ARG002
+        return []
+
     async def list_by_kind(self, organisation_id: uuid.UUID, kind: Any) -> list[Any]:  # noqa: ARG002
         return []
 
