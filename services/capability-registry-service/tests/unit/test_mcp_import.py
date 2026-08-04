@@ -70,12 +70,12 @@ async def test_import_registers_discovered_tools_as_pending_approval() -> None:
         organisation_id=uuid.uuid4(), server_url=_PUB, label="acme"
     )
     assert len(created) == 2 and all(r.status == PENDING for r in created)
-    assert created[0].descriptor["spec"] == {
-        "type": "mcp",
-        "server_url": _PUB,
-        "tool_name": "do_a",
-    }
-    assert created[0].descriptor["metadata"]["name"] == "acme/do_a"
+    spec = created[0].descriptor["spec"]
+    assert spec["type"] == "mcp"
+    assert spec["server_url"] == _PUB
+    assert spec["tool_name"] == "do_a"
+    # #698 D4: no "/" in the stored name — see test_the_stored_name_carries_no_slash below.
+    assert created[0].descriptor["metadata"]["name"] == "acme-do_a"
 
 
 async def test_import_blocks_an_internal_url_before_any_call() -> None:
@@ -186,6 +186,157 @@ async def test_import_with_a_credential_resolves_a_bearer_and_records_it() -> No
     assert seen["auth"] == "Bearer pat-42"  # the broker key rides the handshake + discovery
     assert broker.seen["credential_id"] == "cred-1"
     assert created[0].descriptor["spec"]["credential_id"] == "cred-1"  # invoke path can re-resolve
+
+
+# ── #698 D1: the discovered inputSchema is STORED, or the model is offered no arguments ───────────
+#
+# The importer learns each tool's name, description and ``inputSchema`` from ``tools/list`` and
+# currently keeps only the name. With no ``spec.capabilities`` the runtime's ``tool_specs_for``
+# returns [] and the member is offered no tool at all — the import succeeds and the tool is dead.
+
+_INPUT_SCHEMA = {
+    "type": "object",
+    "properties": {"owner": {"type": "string"}, "pullNumber": {"type": "integer"}},
+    "required": ["owner", "pullNumber"],
+}
+
+
+def _tools_list(*tools: dict) -> object:
+    return lambda _r: httpx.Response(200, json={"result": {"tools": list(tools)}})
+
+
+async def test_the_discovered_input_schema_is_stored_as_an_operation() -> None:
+    caps = _FakeCaps()
+    handler = _tools_list(
+        {"name": "pull_request_read", "description": "Read a PR", "inputSchema": _INPUT_SCHEMA}
+    )
+    created = await _svc(caps, handler).import_server(
+        organisation_id=uuid.uuid4(), server_url=_PUB, label="github-mcp"
+    )
+    ops = created[0].descriptor["spec"]["capabilities"]
+    assert len(ops) == 1
+    assert ops[0]["name"] == "pull_request_read"
+    assert ops[0]["description"] == "Read a PR"
+    assert ops[0]["parameters_schema"] == _INPUT_SCHEMA  # verbatim — nesting/required intact
+
+
+async def test_a_tool_without_an_input_schema_still_declares_an_operation() -> None:
+    """No ``inputSchema`` is legal MCP. The operation must still exist, or the tool is unreachable
+    — it degrades to an empty object schema, never to a missing capability."""
+    created = await _svc(_FakeCaps(), _tools_list({"name": "ping"})).import_server(
+        organisation_id=uuid.uuid4(), server_url=_PUB, label="srv"
+    )
+    ops = created[0].descriptor["spec"]["capabilities"]
+    assert [o["name"] for o in ops] == ["ping"]
+    assert ops[0]["parameters_schema"] == {"type": "object", "properties": {}}
+
+
+@pytest.mark.parametrize("hostile", ["a string", [1, 2], 7, None])
+async def test_a_hostile_input_schema_is_replaced_not_stored(hostile: object) -> None:
+    """A non-dict ``inputSchema`` from an untrusted server never lands in the JSONB as-is."""
+    created = await _svc(
+        _FakeCaps(), _tools_list({"name": "t", "inputSchema": hostile})
+    ).import_server(organisation_id=uuid.uuid4(), server_url=_PUB, label="srv")
+    assert created[0].descriptor["spec"]["capabilities"][0]["parameters_schema"] == {
+        "type": "object",
+        "properties": {},
+    }
+
+
+async def test_a_hostile_description_is_capped_on_the_operation_too() -> None:
+    created = await _svc(
+        _FakeCaps(), _tools_list({"name": "t", "description": "D" * 5000})
+    ).import_server(organisation_id=uuid.uuid4(), server_url=_PUB, label="srv")
+    assert len(created[0].descriptor["spec"]["capabilities"][0]["description"]) <= 500
+
+
+# ── #698 D2: the import credential is DECLARED, so the invoke path can resolve it ─────────────────
+#
+# ``spec.credential_id`` is written at import and never read at execute time, so a hosted server
+# gets an anonymous ``tools/call`` and answers 401. The importer must additionally DECLARE the
+# requirement, because ``ToolExecutionService`` only resolves credentials it finds declared in
+# ``spec.credential_requirements``.
+
+
+async def test_an_authd_import_declares_a_credential_requirement() -> None:
+    caps, broker = _FakeCaps(), _FakeBroker()
+    svc = McpImportService(
+        capabilities=caps, broker=broker, transport=httpx.MockTransport(_tools_list({"name": "t"}))
+    )
+    created = await svc.import_server(
+        organisation_id=uuid.uuid4(),
+        server_url=_PUB,
+        label="gh",
+        user_id=uuid.uuid4(),
+        credential_id="cred-1",
+    )
+    reqs = created[0].descriptor["spec"]["credential_requirements"]
+    assert len(reqs) == 1
+    assert reqs[0]["type"] == "api_key"
+    assert reqs[0]["required"] is True
+    assert "provider" in reqs[0]  # the member must learn WHICH credential to onboard
+
+
+async def test_an_anonymous_import_declares_no_requirement() -> None:
+    """A public server needs no key. Declaring one anyway would fail-close every call to it."""
+    created = await _svc(_FakeCaps(), _tools_list({"name": "t"})).import_server(
+        organisation_id=uuid.uuid4(), server_url=_PUB, label="pub"
+    )
+    spec = created[0].descriptor["spec"]
+    assert "credential_requirements" not in spec or spec["credential_requirements"] == []
+    assert "credential_id" not in spec
+
+
+# ── #698 D4: a stored name that BOTH resolves and passes the policy set ───────────────────────────
+#
+# Two rules read the same ref and split it differently: ``_ref_slug`` keeps the tail after the LAST
+# "/", ``_registry_of`` keeps the head before the FIRST "/". A stored ``label/tool`` name makes
+# ``org:<id>/label/tool`` the only ref that could name it, and that ref resolves to the slug
+# "tool" — which matches nothing. Removing the "/" from the stored name satisfies both rules.
+# Shape confirmation is tracked as a Contract on #699.
+
+
+async def test_the_stored_name_carries_no_slash() -> None:
+    created = await _svc(_FakeCaps(), _tools_list({"name": "pull_request_read"})).import_server(
+        organisation_id=uuid.uuid4(), server_url=_PUB, label="github-mcp"
+    )
+    name = created[0].descriptor["metadata"]["name"]
+    assert "/" not in name
+    assert name == "github-mcp-pull_request_read"
+
+
+async def test_the_label_is_kept_separately_for_display_and_regrouping() -> None:
+    """Folding the label into the name loses which server a tool came from. ``spec.label`` keeps
+    it, so an admin can still see and regroup an org's tools by their source server."""
+    created = await _svc(_FakeCaps(), _tools_list({"name": "t"})).import_server(
+        organisation_id=uuid.uuid4(), server_url=_PUB, label="github-mcp"
+    )
+    assert created[0].descriptor["spec"]["label"] == "github-mcp"
+
+
+async def test_a_label_containing_a_slash_cannot_smuggle_one_into_the_name() -> None:
+    """The label is admin-supplied. A "/" in it would reintroduce exactly the defect D4 fixes."""
+    created = await _svc(_FakeCaps(), _tools_list({"name": "t"})).import_server(
+        organisation_id=uuid.uuid4(), server_url=_PUB, label="acme/prod"
+    )
+    assert "/" not in created[0].descriptor["metadata"]["name"]
+
+
+async def test_a_tool_name_containing_a_slash_cannot_smuggle_one_either() -> None:
+    """The tool name comes from an UNTRUSTED server — the same guard must apply to it."""
+    created = await _svc(_FakeCaps(), _tools_list({"name": "a/b"})).import_server(
+        organisation_id=uuid.uuid4(), server_url=_PUB, label="srv"
+    )
+    assert "/" not in created[0].descriptor["metadata"]["name"]
+
+
+async def test_the_stored_name_stays_within_the_column_width() -> None:
+    """``name`` is a String(255) column. A hostile 255-char tool name plus a label must not overflow
+    it — the row would be rejected at INSERT and the whole import would fail."""
+    created = await _svc(_FakeCaps(), _tools_list({"name": "z" * 300})).import_server(
+        organisation_id=uuid.uuid4(), server_url=_PUB, label="l" * 60
+    )
+    assert len(created[0].descriptor["metadata"]["name"]) <= 255
 
 
 async def test_import_fails_closed_when_the_credential_is_unresolvable() -> None:

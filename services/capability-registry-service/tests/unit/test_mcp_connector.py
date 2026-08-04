@@ -326,3 +326,62 @@ async def test_the_bearer_is_sent_on_the_handshake_and_the_call() -> None:
     res = await ex.execute({}, _ctx({"api_key": {"api_key": "tok-9"}}))
     assert res.success
     assert all(a == "Bearer tok-9" for a in seen)  # the bearer rides EVERY request, incl. init
+
+
+# ── #698 D3: the internal ``operation`` routing key never reaches the external server ─────────────
+#
+# The harness loop dispatches as ``{"operation": <op>, **args}`` — that key is the REGISTRY's
+# routing contract and means nothing to a third-party MCP server. Passing it straight into
+# ``arguments`` makes a schema-validating server reject the call for an unexpected property. The
+# strip belongs here, in the executor, so every future caller of the dispatch contract inherits it;
+# the loop keeps sending ``operation`` because the registry still needs it.
+
+
+def _capture_arguments(seen: dict) -> Callable[[httpx.Request], httpx.Response]:
+    def handler(req: httpx.Request) -> httpx.Response:
+        body = json.loads(req.content)
+        seen["params"] = body.get("params")
+        return httpx.Response(200, json={"jsonrpc": "2.0", "id": 2, "result": {"content": []}})
+
+    return handler
+
+
+async def test_the_operation_key_is_stripped_from_the_arguments() -> None:
+    seen: dict = {}
+    ex = _executor(
+        {"type": "mcp", "server_url": _URL, "tool_name": "pull_request_read"},
+        _capture_arguments(seen),
+    )
+    res = await ex.execute(
+        {"operation": "pull_request_read", "owner": "acme", "pullNumber": 1}, _ctx()
+    )
+    assert res.success
+    assert seen["params"]["arguments"] == {"owner": "acme", "pullNumber": 1}
+    assert "operation" not in seen["params"]["arguments"]
+
+
+async def test_the_tool_name_still_comes_from_the_spec_not_the_operation() -> None:
+    """Stripping the key must not change WHICH tool is called — ``spec.tool_name`` still wins."""
+    seen: dict = {}
+    ex = _executor(
+        {"type": "mcp", "server_url": _URL, "tool_name": "real_tool"}, _capture_arguments(seen)
+    )
+    await ex.execute({"operation": "something_else", "q": "x"}, _ctx())
+    assert seen["params"]["name"] == "real_tool"
+
+
+async def test_input_without_an_operation_key_is_passed_through_untouched() -> None:
+    """A direct registry call carries no ``operation``. The strip must not disturb that path."""
+    seen: dict = {}
+    ex = _executor({"type": "mcp", "server_url": _URL, "tool_name": "t"}, _capture_arguments(seen))
+    await ex.execute({"owner": "acme", "nested": {"operation": "keep-me"}}, _ctx())
+    assert seen["params"]["arguments"] == {"owner": "acme", "nested": {"operation": "keep-me"}}
+
+
+async def test_an_operation_only_input_sends_empty_arguments() -> None:
+    """A no-argument tool dispatches as ``{"operation": ...}`` alone — the server must receive an
+    empty object, never ``{"operation": ...}`` and never a missing ``arguments`` key."""
+    seen: dict = {}
+    ex = _executor({"type": "mcp", "server_url": _URL, "tool_name": "t"}, _capture_arguments(seen))
+    await ex.execute({"operation": "t"}, _ctx())
+    assert seen["params"]["arguments"] == {}
