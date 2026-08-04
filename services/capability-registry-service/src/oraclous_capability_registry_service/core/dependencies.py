@@ -112,8 +112,11 @@ def get_instance_manager(
 def get_validation_service(
     instances: Annotated[InstanceRepository, Depends(get_instance_repository)],
     capabilities: Annotated[CapabilityRepository, Depends(get_capability_repository)],
+    broker: Annotated[CredentialBrokerPort, Depends(get_credential_broker)],
 ) -> ValidationService:
-    return ValidationService(instances=instances, capabilities=capabilities)
+    # #692: readiness RESOLVES the mapped credential, so the broker is required — a health check
+    # that could silently skip the resolve is the fail-open this issue was filed on.
+    return ValidationService(instances=instances, capabilities=capabilities, broker=broker)
 
 
 def get_execution_repository(request: Request) -> ExecutionRepository:

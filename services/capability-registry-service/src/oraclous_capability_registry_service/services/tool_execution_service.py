@@ -13,6 +13,7 @@ import uuid
 from typing import Any, cast
 
 from oraclous_capability_registry_service.domain.connectors.github_sink import GitHubSinkConnector
+from oraclous_capability_registry_service.domain.credentials import required_credentials
 from oraclous_capability_registry_service.domain.errors import CapabilityNotFoundError
 from oraclous_capability_registry_service.domain.executors.base import ExecutionContext
 from oraclous_capability_registry_service.domain.executors.factory import (
@@ -58,15 +59,6 @@ def _capped(value: object, *, limit: int = 64) -> object:
     it here makes the token safe BY CONSTRUCTION (the gateway strips it today; the #502 FE Contract
     will relay it), independent of any downstream sanitiser (#483 envelope discipline)."""
     return value[:limit] if isinstance(value, str) else value
-
-
-def _credential_requirements(descriptor: dict[str, Any]) -> list[dict[str, Any]]:
-    spec = descriptor.get("spec") or {}
-    return [
-        r
-        for r in (spec.get("credential_requirements") or [])
-        if isinstance(r, dict) and r.get("required", True)
-    ]
 
 
 class ToolExecutionService:
@@ -120,7 +112,7 @@ class ToolExecutionService:
             )
 
         # Resolve every required credential via the broker seam (fail-closed; no execution on miss).
-        requirements = _credential_requirements(descriptor)
+        requirements = required_credentials(descriptor)
         mappings = dict(instance.credential_mappings or {})
         # #698 D2: an MCP import records the key the org admin deliberately chose for that server
         # (spec.credential_id, #541). A member's run never maps a credential onto the instance, so
