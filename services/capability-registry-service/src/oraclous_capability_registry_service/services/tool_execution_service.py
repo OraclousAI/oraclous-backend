@@ -122,6 +122,12 @@ class ToolExecutionService:
         # Resolve every required credential via the broker seam (fail-closed; no execution on miss).
         requirements = _credential_requirements(descriptor)
         mappings = dict(instance.credential_mappings or {})
+        # #698 D2: an MCP import records the key the org admin deliberately chose for that server
+        # (spec.credential_id, #541). A member's run never maps a credential onto the instance, so
+        # without this fallback the resolve went out with no id and the tools/call was anonymous —
+        # a 401 from any hosted server. An instance mapping still wins: this is a fallback only,
+        # and it is resolved under the CALLING org, so it can never reach another tenant's key.
+        import_credential_id = (descriptor.get("spec") or {}).get("credential_id")
         credentials: dict[str, Any] = {}
         credential_refs: list[dict[str, Any]] = []
         for req in requirements:
@@ -131,7 +137,8 @@ class ToolExecutionService:
                     user_id=user_id,
                     requirement=req,
                     # req["type"] is a str when present; a None miss is tolerated by the lookup.
-                    credential_id=mappings.get(cast("str", req.get("type"))),
+                    credential_id=mappings.get(cast("str", req.get("type")))
+                    or import_credential_id,
                 )
             except CredentialResolutionError as exc:
                 # O1 "no auth-prompt wall" (ADR-039): a satisfied requirement dispatches

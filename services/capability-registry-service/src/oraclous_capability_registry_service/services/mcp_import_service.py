@@ -117,6 +117,12 @@ class McpImportService:
             }
             if credential_id:  # #541: the invoke path resolves this Bearer via the broker too
                 spec["credential_id"] = credential_id
+                # #698 D2: ToolExecutionService only resolves credentials it finds DECLARED here,
+                # so recording the id alone left every call anonymous and a hosted server 401'd.
+                # A public server declares nothing, or every call to it would start fail-closing.
+                spec["credential_requirements"] = [
+                    {"type": "api_key", "provider": "mcp", "required": True}
+                ]
             descriptor = {
                 "kind": "tool",
                 "metadata": {
