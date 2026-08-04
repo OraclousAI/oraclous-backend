@@ -155,6 +155,7 @@ async def test_health_resolves_the_mapped_credential_through_the_broker() -> Non
     assert broker.calls[0]["organisation_id"] == _ORG  # org-scoped resolve, never cross-tenant
 
 
+@pytest.mark.security
 async def test_a_deleted_credential_reports_unhealthy_with_the_reason() -> None:
     report = await _report(_FakeInstances(status=InstanceStatus.READY), _DeletedCredentialBroker())
     assert report.is_ready is False

@@ -75,6 +75,7 @@ async def test_a_genuine_conflict_is_distinguishable_from_a_missing_credential()
     assert str(missing) != str(pending)
 
 
+@pytest.mark.security
 async def test_the_upstream_body_is_still_not_echoed() -> None:
     """Leak discipline holds: only the code crosses, never the free-text detail (it may quote the
     customer's own input or output — CLAUDE.md §11 / the ADR-042 leak class)."""
@@ -82,6 +83,7 @@ async def test_the_upstream_body_is_still_not_echoed() -> None:
     assert _CUSTOMER_TEXT not in str(exc)
 
 
+@pytest.mark.security
 @pytest.mark.parametrize(
     "hostile_code",
     [
