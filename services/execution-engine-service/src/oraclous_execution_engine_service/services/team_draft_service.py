@@ -45,6 +45,7 @@ from oraclous_execution_engine_service.repositories.team_draft_repository import
 )
 from oraclous_execution_engine_service.services.compiler_run_service import (
     surveyed_catalog,
+    surveyed_catalog_described,
     validate_model_bindings,
 )
 from oraclous_execution_engine_service.services.registry_client import RegistryClient
@@ -174,8 +175,15 @@ class TeamDraftService:
 
     async def _catalog(self) -> list[str]:
         """#638: the surveyed catalog for the caller's org — seed inventory ∪ the live registry
-        (degrades to seed-only on a registry outage). One seam behind validate/from-run/refine."""
+        (degrades to seed-only on a registry outage). One seam behind validate/from-run/refine.
+
+        Bare slugs, deliberately: every caller of this is a VALIDATOR (the capability-absence gate
+        diffs a draft's tools against it). The described view below is for prompts only."""
         return await surveyed_catalog(self._registry)
+
+    async def _described_catalog(self) -> list[dict[str, str]]:
+        """#713: the same catalog with each tool's description, for the text a MODEL reads."""
+        return await surveyed_catalog_described(self._registry)
 
     # ── shared helpers ────────────────────────────────────────────────────────
 
@@ -546,9 +554,11 @@ class TeamDraftService:
         instruction: str,
         models: list[dict[str, Any]],
     ) -> EngineTeamRun:
+        # #713: the op-drafter picks tools too (an `add_member` op names them), and it reads this
+        # text directly — no relay — so it gets the described catalog rather than bare slugs.
         subgoal = (
             f"CURRENT TEAM MANIFEST:\n{json.dumps(manifest)}\n\n"
-            f"SURVEYED CATALOG: {json.dumps(await self._catalog())}\n\n"
+            f"SURVEYED CATALOG: {json.dumps(await self._described_catalog())}\n\n"
             f"EDIT REQUEST: {instruction}"
         )
         team = OHMManifest(

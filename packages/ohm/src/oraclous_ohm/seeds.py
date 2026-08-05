@@ -239,6 +239,13 @@ def survey_catalog(inventory: CapabilityInventory, registered: list[str]) -> lis
     return sorted(seed | live)
 
 
+def catalog_slug(ref: str) -> str:
+    """The public name of the catalog's name→slug normalisation (``_slug``). #713: a caller pairing
+    a registry row's DESCRIPTION with its catalog entry has to slug the raw name exactly the way
+    ``survey_catalog`` did, or the two halves of the menu do not line up."""
+    return _slug(ref)
+
+
 def _basic_slug(text: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", text.strip().lower()).strip("-")
 
