@@ -198,3 +198,107 @@ async def test_list_capabilities_raises_on_unreachable_and_non_2xx() -> None:
         await _client(down).list_capabilities()
     with pytest.raises(RegistryRejected):
         await _client(lambda _r: httpx.Response(503, text="down")).list_capabilities()
+
+
+# ── list_capability_rows (#713: the menu says what each tool DOES, not only its name) ─────────────
+
+
+def _rows_handler(request: httpx.Request) -> httpx.Response:
+    return httpx.Response(
+        200,
+        json={
+            "capabilities": [
+                {
+                    "id": str(uuid.uuid4()),
+                    "name": "github-mcp-pull_request_read",
+                    "descriptor": {
+                        "kind": "tool",
+                        "metadata": {
+                            "name": "github-mcp-pull_request_read",
+                            "description": "Read a pull request: diff, files, commits, comments.",
+                        },
+                    },
+                },
+                {
+                    "id": str(uuid.uuid4()),
+                    "name": "Knowledge Retriever",
+                    "status": "active",
+                    "descriptor": {
+                        "kind": "tool",
+                        "metadata": {
+                            "name": "Knowledge Retriever",
+                            "description": "Search the org's indexed knowledge graph.",
+                        },
+                    },
+                },
+                {  # imported but not approved — the gate refuses it, so the menu must too (#705)
+                    "id": str(uuid.uuid4()),
+                    "name": "github-mcp-delete_file",
+                    "status": "pending_approval",
+                    "descriptor": {"metadata": {"description": "Delete a file."}},
+                },
+                {  # registered with no description — legal, and NOT something to invent text for
+                    "id": str(uuid.uuid4()),
+                    "name": "Web Research",
+                    "descriptor": {"kind": "tool", "metadata": {"name": "Web Research"}},
+                },
+                {"id": str(uuid.uuid4()), "name": None},  # a nameless row is still skipped
+            ],
+            "total": 5,
+        },
+    )
+
+
+async def test_list_capability_rows_carries_the_descriptor_description() -> None:
+    """#713 — ``knowledge-retriever`` was handed to a member whose job was reading an unmerged
+    pull request diff. Every descriptor row already carries ``descriptor.metadata.description``;
+    the drafter was choosing from a menu of slugs with no dish descriptions."""
+    rows = await _client(_rows_handler).list_capability_rows()
+    by_name = {r["name"]: r for r in rows}
+    assert by_name["github-mcp-pull_request_read"]["description"].startswith("Read a pull request")
+    assert (
+        by_name["Knowledge Retriever"]["description"] == "Search the org's indexed knowledge graph."
+    )
+
+
+async def test_list_capability_rows_keeps_a_row_with_no_description() -> None:
+    # a seed / first-party tool without a description is normal — keep the name, invent nothing.
+    rows = await _client(_rows_handler).list_capability_rows()
+    by_name = {r["name"]: r for r in rows}
+    assert by_name["Web Research"]["description"] == ""
+
+
+async def test_list_capability_rows_applies_the_same_filter_as_the_names() -> None:
+    """The rows ARE the menu, so they carry the #705 filter unchanged — ``kind=tool``, ``active``
+    only, a status-less row treated as active. A menu that drifts from the gate hands the drafter
+    choices that can only block."""
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["params"] = dict(request.url.params)
+        return _rows_handler(request)
+
+    rows = await _client(handler).list_capability_rows()
+    assert captured["params"].get("kind") == "tool"
+    assert [r["name"] for r in rows] == [
+        "github-mcp-pull_request_read",
+        "Knowledge Retriever",
+        "Web Research",
+    ]
+
+
+async def test_list_capabilities_still_returns_bare_names() -> None:
+    """The slug list feeds the VALIDATORS (the capability-absence gate). Descriptions are for the
+    prompt only, so this contract must not move underneath them."""
+    names = await _client(_rows_handler).list_capabilities()
+    assert names == ["github-mcp-pull_request_read", "Knowledge Retriever", "Web Research"]
+
+
+async def test_list_capability_rows_raises_on_unreachable_and_non_2xx() -> None:
+    def down(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("connection refused")
+
+    with pytest.raises(RegistryClientError):
+        await _client(down).list_capability_rows()
+    with pytest.raises(RegistryRejected):
+        await _client(lambda _r: httpx.Response(503, text="down")).list_capability_rows()
