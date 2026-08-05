@@ -13,6 +13,9 @@ import uuid
 from typing import Any, cast
 
 from oraclous_capability_registry_service.domain.connectors.github_sink import GitHubSinkConnector
+from oraclous_capability_registry_service.domain.connectors.manifest_validate import (
+    ManifestValidateConnector,
+)
 from oraclous_capability_registry_service.domain.credentials import required_credentials
 from oraclous_capability_registry_service.domain.errors import CapabilityNotFoundError
 from oraclous_capability_registry_service.domain.executors.base import ExecutionContext
@@ -191,6 +194,11 @@ class ToolExecutionService:
                 # the sink owns the clean-delta; the service owns the DB repo (keeps the executor a
                 # pure descriptor object, mirroring how executions/instances are service-held).
                 executor.delivery_repo = self._delivery_state
+            if isinstance(executor, ManifestValidateConnector):
+                # #705: the compile gate's allowed set is READ from the org's registry, never
+                # relayed by the reviewer LLM. Same shape as the sink above — the connector stays a
+                # domain object and the services layer owns the DB repo.
+                executor.capability_repo = self._capabilities
             result = await executor.execute(body.input_data, context)
         except NoExecutorError as exc:  # defensive — has_executor already gated this
             raise ExecutionNotReadyError(str(exc), error_code="no_executor") from exc
