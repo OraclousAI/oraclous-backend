@@ -42,12 +42,26 @@ _MAX_BODY_BYTES = 4 * 1024 * 1024
 class McpProtocolError(Exception):
     """The MCP server could not be handshaken / called — generic; no raw upstream detail leaks.
     ``code`` is the coarse error_type; ``rpc_code`` is the (safe, numeric) JSON-RPC error code when
-    the failure was a tool error, surfaced in metadata — never the raw upstream message."""
+    the failure was a tool error, surfaced in metadata — never the raw upstream message.
 
-    def __init__(self, message: str, *, code: str, rpc_code: int | None = None) -> None:
+    #715: ``status`` is the MCP server's own HTTP status when it answered with one, as a real
+    attribute rather than prose inside the message. A caller cannot tell a 401 from a 500 by parsing
+    a sentence, and every import failure collapsed into one 502 for exactly that reason. It stays
+    leak-safe: a number and a coarse code are the whole of the signal — never the upstream body.
+    ``None`` when nothing answered (unreachable, timeout), so an absent status is never guessed."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str,
+        rpc_code: int | None = None,
+        status: int | None = None,
+    ) -> None:
         super().__init__(message)
         self.code = code
         self.rpc_code = rpc_code
+        self.status = status
 
 
 def _guard_body_size(resp: httpx.Response) -> None:
@@ -99,7 +113,21 @@ def _parse_message(resp: httpx.Response) -> dict[str, Any]:
 
 def _require_ok(resp: httpx.Response) -> None:
     if resp.status_code not in (200, 202):  # 202 = an accepted notification (no body)
-        raise McpProtocolError(f"the MCP server returned {resp.status_code}", code="MCP_HTTP_ERROR")
+        raise McpProtocolError(
+            f"the MCP server returned {resp.status_code}",
+            code="MCP_HTTP_ERROR",
+            status=resp.status_code,  # #715: readable without parsing the message
+        )
+
+
+def _transport_error(exc: httpx.HTTPError) -> McpProtocolError:
+    """#715: a transport failure carries no upstream status, but it does carry a cause worth
+    keeping. A server that is up and slow and a host that is not there need different fixes from an
+    admin — one is worth retrying, the other needs the address corrected — so they get separate
+    codes instead of collapsing into one 'could not be reached'."""
+    if isinstance(exc, httpx.TimeoutException):
+        return McpProtocolError("the MCP server timed out", code="MCP_TIMEOUT")
+    return McpProtocolError("the MCP server could not be reached", code="MCP_UNREACHABLE")
 
 
 class McpSession:
@@ -141,9 +169,7 @@ class McpSession:
         try:
             resp = await self._client.send(request, stream=True)
         except httpx.HTTPError as exc:
-            raise McpProtocolError(
-                "the MCP server could not be reached", code="MCP_UNREACHABLE"
-            ) from exc
+            raise _transport_error(exc) from exc
         # Read the body STREAMING with a byte budget and abort the moment it exceeds the cap, so a
         # hostile/broken server sending a chunked/undeclared multi-GB body is rejected DURING the
         # read — never fully buffered into memory (review M3: a post-read len() cap cannot prevent
@@ -160,9 +186,7 @@ class McpSession:
                     )
                 chunks.append(chunk)
         except httpx.HTTPError as exc:
-            raise McpProtocolError(
-                "the MCP server could not be reached", code="MCP_UNREACHABLE"
-            ) from exc
+            raise _transport_error(exc) from exc
         finally:
             await resp.aclose()
         return httpx.Response(

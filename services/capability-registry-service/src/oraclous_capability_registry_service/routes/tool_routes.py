@@ -25,10 +25,6 @@ from oraclous_capability_registry_service.schema.capability_schema import (
     ImportMcpResponse,
     RegisterTool,
 )
-from oraclous_capability_registry_service.services.mcp_import_service import (
-    McpEgressBlocked,
-    McpImportError,
-)
 
 router = APIRouter(prefix="/api/v1/tools", tags=["tools"])
 
@@ -67,24 +63,20 @@ async def import_mcp_server(
     svc: McpImportServiceDep,
 ) -> ImportMcpResponse:
     """Discover an external MCP server's tools and register each as a PENDING_APPROVAL mcp tool. The
-    URL is SSRF-egress-checked; the tools are not executable until approved."""
-    try:
-        created = await svc.import_server(
-            organisation_id=admin.organisation_id,
-            server_url=body.server_url,
-            label=body.label,
-            user_id=admin.principal_id,  # #541: for the broker credential resolution
-            credential_id=body.credential_id,
-        )
-    except McpEgressBlocked as exc:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="the MCP server URL is not an allowed external target",
-        ) from exc
-    except McpImportError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY, detail="could not import from the MCP server"
-        ) from exc
+    URL is SSRF-egress-checked; the tools are not executable until approved.
+
+    #715: the ``McpImportError`` family is mapped to a status per cause by the app factory's
+    exception handlers, not flattened here into one 502. The handlers own it because the credential
+    refusal answers a TOP-LEVEL ``needs_credential`` token, which an ``HTTPException`` would nest
+    under ``detail`` where the gateway's extractor cannot see it.
+    """
+    created = await svc.import_server(
+        organisation_id=admin.organisation_id,
+        server_url=body.server_url,
+        label=body.label,
+        user_id=admin.principal_id,  # #541: for the broker credential resolution
+        credential_id=body.credential_id,
+    )
     return ImportMcpResponse(imported=[CapabilityOut.model_validate(r) for r in created])
 
 

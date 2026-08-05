@@ -63,11 +63,82 @@ def _operation_for(tool: dict[str, Any], name: str) -> dict[str, Any]:
 
 
 class McpImportError(Exception):
-    """The external MCP server could not be reached / discovered (generic — no raw detail leaks)."""
+    """The external MCP server could not be reached / discovered (generic — no raw detail leaks).
+
+    #715: carries the originating ``McpProtocolError.code`` and the MCP server's own HTTP status
+    when there was one. Both were being discarded at the re-raise, which is why a server that
+    answered 401 and a host that never answered arrived at the caller identically. The pair is the
+    whole of the added signal — a coarse code and a number, never the upstream body.
+    """
+
+    def __init__(self, message: str, *, code: str | None = None, status: int | None = None) -> None:
+        super().__init__(message)
+        self.code = code
+        self.status = status
 
 
 class McpEgressBlocked(McpImportError):
     """The requested server URL is not an allowed external target (SSRF guard) — a client error."""
+
+
+class McpServerRefusedAuth(McpImportError):
+    """The MCP server answered, and refused the request for authentication (401/403).
+
+    Not the platform being unavailable, and not the caller's Oraclous session being bad: the admin
+    needs to supply a credential for THIS server, or a better one. The reproduction case on #715 —
+    ``https://api.githubcopilot.com/mcp/`` answers promptly and refuses an anonymous ``tools/list``.
+    """
+
+
+class McpServerTimeout(McpImportError):
+    """The MCP server did not answer in time — worth retrying, unlike an unreachable host."""
+
+
+class McpCredentialError(McpImportError):
+    """The import credential is at fault, so the failure is OURS and not the MCP server's.
+
+    ``reason`` is a constant machine token naming which credential failure it was. It rides out as
+    the ``type`` of a field error on ``credential_id``, so the console can say whether the admin
+    should pick a different credential or re-create the one they picked.
+    """
+
+    reason = "credential_error"
+
+
+class McpCredentialUnresolvable(McpCredentialError):
+    """The broker could not resolve the supplied ``credential_id`` for this org and user."""
+
+    reason = "credential_unresolvable"
+
+
+class McpCredentialNotApiKey(McpCredentialError):
+    """The credential resolved, but carries no ``api_key`` — it cannot become a Bearer."""
+
+    reason = "credential_not_api_key"
+
+
+_AUTH_REFUSAL_STATUSES = (401, 403)
+
+
+def _discovery_failure(exc: McpProtocolError) -> McpImportError:
+    """#715: classify a protocol failure instead of flattening it.
+
+    The coarse code and the upstream status both survive onto the returned error, so a caller that
+    only knows the base type still learns the cause. The upstream MESSAGE is deliberately left
+    behind — a hostile server's body may name internal hosts, and ``McpProtocolError``'s contract is
+    that none of it crosses the boundary.
+    """
+    if exc.code == "MCP_TIMEOUT":
+        return McpServerTimeout("the MCP server timed out", code=exc.code, status=exc.status)
+    if exc.code == "MCP_HTTP_ERROR" and exc.status in _AUTH_REFUSAL_STATUSES:
+        return McpServerRefusedAuth(
+            "the MCP server refused the request for authentication",
+            code=exc.code,
+            status=exc.status,
+        )
+    return McpImportError(
+        "the MCP server could not be discovered", code=exc.code, status=exc.status
+    )
 
 
 class McpImportService:
@@ -175,7 +246,9 @@ class McpImportService:
         if not credential_id:
             return None
         if self._broker is None or user_id is None:
-            raise McpImportError("an auth'd MCP import requires a configured credential broker")
+            raise McpCredentialUnresolvable(
+                "an auth'd MCP import requires a configured credential broker"
+            )
         try:
             resolved = await self._broker.resolve(
                 organisation_id=organisation_id,
@@ -184,10 +257,10 @@ class McpImportService:
                 credential_id=credential_id,
             )
         except CredentialResolutionError as exc:
-            raise McpImportError("the import credential could not be resolved") from exc
+            raise McpCredentialUnresolvable("the import credential could not be resolved") from exc
         api_key = resolved.payload.get("api_key") if resolved.payload else None
         if not api_key:
-            raise McpImportError("the import credential is not an api_key")
+            raise McpCredentialNotApiKey("the import credential is not an api_key")
         return str(api_key)
 
     async def _list_tools(
@@ -205,6 +278,6 @@ class McpImportService:
                 await session.initialize()
                 result = await session.call("tools/list", {})
         except McpProtocolError as exc:
-            raise McpImportError("the MCP server could not be discovered") from exc
+            raise _discovery_failure(exc) from exc
         tools = result.get("tools")
         return tools if isinstance(tools, list) else []
