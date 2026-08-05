@@ -35,12 +35,20 @@ pytestmark = pytest.mark.e2e
 _HOSTED_MCP = "https://api.githubcopilot.com/mcp/"
 # Routable, public, and nothing listens on this port — an unreachable host, not a refusal.
 _DEAD_HOST = "http://93.184.216.34:9/mcp"
+# The registry gives an MCP server 30s of its own, so a dead host takes about that long to answer.
+# The shared client's 30s would trip first and turn the answer under test into a client-side
+# ReadTimeout, which asserts nothing about what the registry said.
+_SLOW = 90.0
 
 
-def _import(c: httpx.Client, url: str, *, credential_id: str | None = None) -> httpx.Response:
+def _import(
+    c: httpx.Client, url: str, *, credential_id: str | None = None, timeout: float | None = None
+) -> httpx.Response:
     body: dict = {"server_url": url, "label": "e2e-mcp"}
     if credential_id is not None:
         body["credential_id"] = credential_id
+    if timeout is not None:
+        return c.post("/api/v1/tools/import-mcp", json=body, timeout=timeout)
     return c.post("/api/v1/tools/import-mcp", json=body)
 
 
@@ -79,7 +87,7 @@ def test_an_unreachable_host_and_an_auth_refusal_carry_different_codes(
     user = register("MCP Import E2E")
     c = gateway_client(user["token"])
 
-    unreachable = _envelope(_import(c, _DEAD_HOST))
+    unreachable = _envelope(_import(c, _DEAD_HOST, timeout=_SLOW))
     assert unreachable["code"] in ("SERVICE_UNAVAILABLE", "GATEWAY_TIMEOUT"), unreachable
 
     refused = _import(c, _HOSTED_MCP)
