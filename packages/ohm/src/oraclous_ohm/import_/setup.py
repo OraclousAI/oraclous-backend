@@ -26,6 +26,8 @@ from oraclous_ohm.import_.precedence import parse_precedence
 from oraclous_ohm.import_.schedules import ScheduledJob, parse_cron
 from oraclous_ohm.import_.skills import resolve_skill
 from oraclous_ohm.manifest import (
+    OHMBudget,
+    OHMGovernance,
     OHMManifest,
     OHMMember,
     OHMOrchestration,
@@ -141,6 +143,8 @@ def assemble_and_report(
     orchestration: OHMOrchestration | None = None,
     precedence: OHMPrecedence | None = None,
     task_input: Any = None,
+    governance: Any = None,
+    budget: Any = None,
     sub_harnesses: dict[str, dict] | None = None,
     extra_flags: list[ImportFlag] | None = None,
 ) -> ImportResult:
@@ -162,7 +166,15 @@ def assemble_and_report(
     its first member invents one (run ``538ab1fa``). Untyped on the way in because the compiler
     on-ramp hands over a model-authored dict; an unparseable one is DROPPED rather than raised —
     ``validate_draft`` already blocks a malformed block upstream, and a dry-run must never turn a
-    bad draft into a crash."""
+    bad draft into a crash.
+
+    ``governance`` and ``budget`` ride the same thread, for the same reason and with the same
+    untyped/drop-on-junk discipline. Their absence was not theoretical: the #714 deployed-stack
+    proof reached GO, delivered the task, and still failed — the drafter had declared
+    ``max_tool_calls_per_member: 50``, the rebuild dropped it, and the first member re-read the
+    pull request's comments until it escalated at 219,124 tokens. Dropping ``governance`` was
+    quieter and worse: every compiled team shipped with no policy set and no redact patterns,
+    against #596's governed-by-default promise."""
     flags = list(extra_flags or [])
     if not members:
         # fail-closed (ADR §3.5): a caller that supplies NO members (a drafter that produced
@@ -196,6 +208,16 @@ def assemble_and_report(
             assembly.manifest.task_input = OHMTaskInput.model_validate(task_input)
         except ValidationError:
             pass  # a malformed block is the gate's to report; here it is simply not carried
+    if governance is not None:  # #596 governed-by-default: the policy set + redact patterns
+        try:
+            assembly.manifest.governance = OHMGovernance.model_validate(governance)
+        except ValidationError:
+            pass
+    if budget is not None:  # the 3-layer pool + per-member ceilings (the loop bound)
+        try:
+            assembly.manifest.budget = OHMBudget.model_validate(budget)
+        except ValidationError:
+            pass
     if precedence is not None:  # the source's declared Hierarchy-of-Truth ordering (provenance)
         assembly.manifest.precedence = precedence
         flags.append(

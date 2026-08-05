@@ -29,7 +29,13 @@ DEFAULT_POLICY_SET_REF = "policy-set:development-default@1.0.0"
 # (ADR-031's rejected Alternative C); nothing here precludes a future L3 period window (ADR-048/E8).
 _POOL_TOKENS = 500_000
 _POOL_TOOL_CALLS = 200
-_PER_MEMBER_TOKENS = 100_000  # <= _POOL_TOKENS
+#: raised from 100_000 (#714). Measured on the deployed stack: one member reading a real GitHub
+#: pull request through ``pull_request_read`` spends ~105k tokens — seven tool calls, no loop, the
+#: payload simply accumulates across turns. At 100k every compiled reviewer escalated a few
+#: thousand tokens short of finishing, so the governed-by-default ceiling was rejecting normal work
+#: rather than runaway work. The pool below is unchanged, so a 3-member team still cannot exceed
+#: 500k in total — this widens what ONE member may spend, not what a team may.
+_PER_MEMBER_TOKENS = 250_000  # <= _POOL_TOKENS
 _PER_MEMBER_TOOL_CALLS = 50  # <= _POOL_TOOL_CALLS
 
 
