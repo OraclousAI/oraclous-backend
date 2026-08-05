@@ -88,6 +88,49 @@ class RegistryClient:
         out: dict[str, Any] = resp.json()
         return out
 
+    async def list_capability_rows(self) -> list[dict[str, str]]:
+        """The CALLER's org's registered tools as ``[{"name": …, "description": …}]`` — the same
+        rows ``list_capabilities`` names, plus what each tool DOES.
+
+        #713: the drafter was choosing from a menu of slugs. In compiler run ``a3443e24`` it gave
+        ``knowledge-retriever`` — an index over the org's stored documents — to the member whose job
+        was reading an unmerged pull request diff, and that member finished ``partial`` in every
+        run. The gate cannot catch that (the tool is registered, active and first-party, so ADR-032
+        capability-absence has nothing to say) and should not try; fit-for-purpose is a different
+        question from existence. Every descriptor row already carries
+        ``descriptor.metadata.description``, so the menu could say so all along.
+
+        ``description`` is ``""`` when the row has none — a first-party/seed tool without one is
+        normal, and the renderer shows the name alone rather than inventing text. The filter is
+        exactly the one ``list_capabilities`` applies (#705: ``kind=tool``, ``active`` only, a
+        status-less row treated as active), because the menu and the gate must not drift."""
+        try:
+            resp = await self._client.get("/api/v1/capabilities", params={"kind": "tool"})
+        except httpx.HTTPError as exc:  # registry unreachable — clean failure, not a 500
+            raise RegistryClientError(f"registry unreachable: {type(exc).__name__}") from exc
+        if resp.status_code // 100 != 2:  # reachable but rejected — not unreachable
+            raise RegistryRejected(resp.status_code, _render_detail(resp.text))
+        body = resp.json()
+        caps = body.get("capabilities") if isinstance(body, dict) else None
+        if not isinstance(caps, list):
+            return []
+        rows: list[dict[str, str]] = []
+        for c in caps:
+            if not isinstance(c, dict) or not c.get("name"):
+                continue
+            if c.get("status", "active") != "active":
+                continue
+            descriptor = c.get("descriptor")
+            metadata = descriptor.get("metadata") if isinstance(descriptor, dict) else None
+            description = metadata.get("description") if isinstance(metadata, dict) else None
+            rows.append(
+                {
+                    "name": str(c["name"]),
+                    "description": str(description) if isinstance(description, str) else "",
+                }
+            )
+        return rows
+
     async def list_capabilities(self) -> list[str]:
         """The CALLER's org's registered capability NAMES (the registry is org-scoped by the
         downstream headers): ``GET /api/v1/capabilities`` → ``{capabilities:[{name,…}], total}``.
@@ -104,22 +147,12 @@ class RegistryClient:
         MCP tool the org has not approved is refused at dispatch, so offering it can only earn a
         block). Before this, an org with 44 imported tools and 3 approved was shown all 44, and the
         drafter duly picked an unapproved one. A row carrying no ``status`` at all is treated as
-        active — an older registry payload should not silently empty the menu."""
-        try:
-            resp = await self._client.get("/api/v1/capabilities", params={"kind": "tool"})
-        except httpx.HTTPError as exc:  # registry unreachable — clean failure, not a 500
-            raise RegistryClientError(f"registry unreachable: {type(exc).__name__}") from exc
-        if resp.status_code // 100 != 2:  # reachable but rejected — not unreachable
-            raise RegistryRejected(resp.status_code, _render_detail(resp.text))
-        body = resp.json()
-        caps = body.get("capabilities") if isinstance(body, dict) else None
-        if not isinstance(caps, list):
-            return []
-        return [
-            c["name"]
-            for c in caps
-            if isinstance(c, dict) and c.get("name") and c.get("status", "active") == "active"
-        ]
+        active — an older registry payload should not silently empty the menu.
+
+        #713: derived from ``list_capability_rows`` so the two views cannot drift. This one stays a
+        bare-name list because it feeds the VALIDATORS — the capability-absence gate compares slugs,
+        and descriptions belong in the prompt, not in what a gate diffs against."""
+        return [row["name"] for row in await self.list_capability_rows()]
 
     async def instance_exists(self, instance_id: uuid.UUID) -> bool:
         """True iff a configured instance with this id exists in the CALLER's organisation (the

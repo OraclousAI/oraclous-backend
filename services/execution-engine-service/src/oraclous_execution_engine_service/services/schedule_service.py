@@ -53,6 +53,7 @@ from oraclous_execution_engine_service.services.team_run_service import (
     load_team_manifest,
     strip_reserved_refresh_seed,
     thread_refresh_seed,
+    validate_input_keys,
     validate_task_input,
 )
 
@@ -190,6 +191,10 @@ class ScheduleService:
             if team is not None:
                 try:
                     validate_task_input(team, (input_data or {}).get("inputs"))
+                    # #714: and a key the team cannot READ is caught here too. On a cron the silent
+                    # drop is worse than on the request path — it repeats on every fire, for as
+                    # long as the schedule lives, with nothing in the run to say what went missing.
+                    validate_input_keys(team, (input_data or {}).get("inputs"))
                 except TeamRunError as exc:
                     raise ScheduleError(str(exc)) from exc
         else:

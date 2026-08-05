@@ -17,7 +17,7 @@ import re
 from typing import Any
 
 from oraclous_ohm.import_ import ImportFlag, assemble_and_report, render_report
-from oraclous_ohm.manifest import OHMMember, OHMOrchestration
+from oraclous_ohm.manifest import OHMMember, OHMOrchestration, OHMTaskInput
 
 _UUID_NS = "00000000-0000-0000-0000-000000000000"
 
@@ -156,6 +156,24 @@ def validate_draft(
                     severity="blocking",
                     member_role="",
                     message="the draft orchestration failed schema validation",
+                )
+            )
+
+    # #714 (Contract §TASK): the per-run task the team expects. A malformed block BLOCKS rather
+    # than being quietly dropped — the reviewer's repair loop gets a named reason to fix it, and a
+    # team that silently loses its task declaration is exactly the team #714 reports: one that
+    # looks compiled and cannot be told which pull request to work on.
+    raw_task_input = data.get("task_input")
+    if raw_task_input is not None:
+        try:
+            OHMTaskInput.model_validate(raw_task_input)
+        except Exception:  # noqa: BLE001 — a malformed task_input blocks, never crashes
+            flags.append(
+                ImportFlag(
+                    code="F-DRAFT-INVALID",
+                    severity="blocking",
+                    member_role="",
+                    message="the draft task_input failed schema validation",
                 )
             )
 

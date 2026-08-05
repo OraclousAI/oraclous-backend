@@ -20,6 +20,7 @@ from oraclous_ohm.manifest import OHMModel
 from oraclous_execution_engine_service.domain.compiler_onramp import (
     compose_objective,
     draft_catalog,
+    draft_catalog_described,
 )
 from oraclous_execution_engine_service.models.team_run import EngineTeamRun
 from oraclous_execution_engine_service.services.registry_client import (
@@ -45,6 +46,31 @@ async def surveyed_catalog(registry: RegistryClient | None) -> list[str]:
         except RegistryClientError:  # unreachable / non-2xx → seed-only, never fail-open
             registered = []
     return draft_catalog(registered)
+
+
+async def surveyed_catalog_described(
+    registry: RegistryClient | None,
+) -> list[dict[str, str]]:
+    """The same surveyed catalog, plus what each tool DOES — the menu, for a PROMPT.
+
+    #713: choosing a tool from a slug alone is close to guessing from the name. In compiler run
+    ``a3443e24`` the drafter handed ``knowledge-retriever`` to the member whose job was reading an
+    unmerged pull request diff; the tool reads the org's stored documents and could only ever
+    return nothing for that job. The gate has nothing to say about it — the tool is registered,
+    active and first-party — so the fix belongs in what the drafter is shown.
+
+    Returns one entry per catalog slug, in the same order as ``surveyed_catalog``, carrying
+    ``description`` ONLY when the registry has one. A seed-inventory tool has no descriptor row and
+    so no description; it renders as its name alone rather than an invented blurb. Degrades exactly
+    like ``surveyed_catalog`` — a registry outage yields the seed catalog, undescribed, never
+    fail-open."""
+    rows: list[dict[str, str]] = []
+    if registry is not None:
+        try:
+            rows = await registry.list_capability_rows()
+        except RegistryClientError:  # unreachable / non-2xx → seed-only, never fail-open
+            rows = []
+    return draft_catalog_described(rows)
 
 
 class CompilerRunService:
@@ -75,8 +101,14 @@ class CompilerRunService:
             constraints=constraints,
             success_criteria=success_criteria,
         )
-        catalog = await surveyed_catalog(self._registry)  # #638: seed ∪ live registry (org-scoped)
-        manifest, subs = build_compiler_team(org, objective=composed, catalog=catalog)
+        # #638: seed ∪ live registry (org-scoped). #713: one fetch, two views — the surveyor gets
+        # the bare slugs (its output is what the drafter's tool rules are checked against) and the
+        # drafter gets the same tools with their descriptions.
+        described = await surveyed_catalog_described(self._registry)
+        catalog = [entry["name"] for entry in described]
+        manifest, subs = build_compiler_team(
+            org, objective=composed, catalog=catalog, catalog_descriptions=described
+        )
         doc = manifest.model_dump(mode="json")
         doc["models"] = bound_models
         bound_subs = {role: {**sub, "models": bound_models} for role, sub in subs.items()}

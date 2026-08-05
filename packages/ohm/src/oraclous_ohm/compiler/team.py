@@ -46,19 +46,63 @@ def _planner_topology_subgoal(objective: str) -> str:
     return f"{objective}\n\n{guidance}" if objective else guidance
 
 
-def _drafter_governance_subgoal() -> str:
+#: #713: how much of a tool's registry description rides the drafter's sub-goal. Descriptions are
+#: capped at 500 chars at MCP import, and a busy org offers tens of tools, so the untrimmed union
+#: would be several thousand characters of prompt on every compile. Observed on the deployed stack:
+#: the useful part — what the tool is FOR, and the caveat that decides between two similar tools —
+#: lives in the first couple of sentences; past that a description is a method list. 300 keeps
+#: ``add_issue_comment``'s "use this with pull requests as well" caveat whole.
+_DESCRIPTION_CHARS = 300
+
+
+def _catalog_menu(catalog_descriptions: list[Any] | None) -> str:
+    """#713: render the surveyed tools as ``[{name, description}]`` for the DRAFTER.
+
+    An entry with no description renders as its name alone — a seed-inventory tool has no
+    descriptor row, and inventing text for it would be worse than silence because the drafter would
+    act on it. Descriptions are trimmed to ``_DESCRIPTION_CHARS`` so a large catalog cannot inflate
+    every compile's prompt without bound."""
+    menu: list[dict[str, str]] = []
+    for entry in catalog_descriptions or []:
+        if not isinstance(entry, dict) or not entry.get("name"):
+            continue
+        item = {"name": str(entry["name"])}
+        description = entry.get("description")
+        if isinstance(description, str) and description.strip():
+            item["description"] = description.strip()[:_DESCRIPTION_CHARS]
+        menu.append(item)
+    return json.dumps(menu)
+
+
+def _drafter_governance_subgoal(catalog_descriptions: list[Any] | None = None) -> str:
     """#596: the drafter's sub-goal seeds the GOVERNED-BY-DEFAULT policy template — it must emit the
     seed ``governance`` (a KNOWN policy_set_ref + redact_patterns) + the 3-layer ``budget`` VERBATIM
-    on the compiled team, so a fresh org's compiled team ships governed (ADR-047 §5)."""
+    on the compiled team, so a fresh org's compiled team ships governed (ADR-047 §5).
+
+    #713 adds the described tool menu here, and HERE specifically. The drafter reads the SURVEYOR's
+    OUTPUT, not the surveyor's sub-goal, and ``SURVEYOR_PROMPT`` has it echo ``{name, ref}`` only —
+    so a description hung on the surveyor would have to survive a model retyping tens of them. That
+    is the relay #705 already found unreliable, when one name dropped while re-typing a 72-entry
+    list blocked an entire compile. Baking the menu into the drafter's own sub-goal is
+    deterministic: the descriptions reach the model that picks the tools, unretyped, and the
+    surveyor's authoritative name list is untouched."""
     p = seed_policy_template()
     seed = {
         "governance": p.governance.model_dump(mode="json", exclude_none=True),
         "budget": p.budget.model_dump(mode="json", exclude_none=True),
     }
-    return (
+    parts = [
         "GOVERNED-BY-DEFAULT: emit this seed policy VERBATIM as the team's `governance` and "
         f"`budget` (do not invent values): {json.dumps(seed)}"
-    )
+    ]
+    if catalog_descriptions:
+        parts.append(
+            "WHAT EACH SURVEYED TOOL DOES — read this before assigning any tool, and give a member "
+            "only a tool whose description fits that member's sub-goal. A tool that cannot do the "
+            "job is worse than no tool: the member will call it, get nothing, and answer anyway. "
+            f"{_catalog_menu(catalog_descriptions)}"
+        )
+    return "\n\n".join(parts)
 
 
 #: the bounded in-harness repair loop (CTO decision A / decision-3): the reviewer fixes a blocked
@@ -80,6 +124,7 @@ def build_compiler_team(
     *,
     objective: str = "",
     catalog: list[Any] | None = None,
+    catalog_descriptions: list[Any] | None = None,
     name: str = "harness-compiler",
 ) -> tuple[OHMManifest, dict[str, dict]]:
     """Return the compiler Team Harness manifest + its four member sub-harnesses (ready to POST to
@@ -91,6 +136,11 @@ def build_compiler_team(
     surveyed ``catalog`` (the tool ceiling) becomes the SURVEYOR's. The reviewer ``depends_on`` BOTH
     the drafter (the draft to validate) and the surveyor (the catalog to diff against); the chain
     stays acyclic (planner→surveyor→drafter→reviewer). A live survey connector is a fast-follow.
+
+    ``catalog_descriptions`` (#713) is the same catalog as ``[{name, description}]`` and is baked
+    into the DRAFTER's sub-goal, not the surveyor's — see ``_drafter_governance_subgoal``. Omit it
+    (the unit path, or a registry outage degrading to the seed inventory) and the sub-goals are
+    byte-identical to before.
     """
     surveyor_goal = (
         f"The surveyed capability catalog (the ONLY tools a member may use): {json.dumps(catalog)}"
@@ -126,7 +176,7 @@ def build_compiler_team(
             # #596: emit the seed governance + budget. NOTE: this rides the static sub-goal; the
             # compiler's surveyor/planner emit NO ## Handoff objective_slice (#577), so nothing
             # shadows it — but if handoff wiring is ever added upstream, guard this governance seed.
-            subgoal=_drafter_governance_subgoal(),
+            subgoal=_drafter_governance_subgoal(catalog_descriptions),
         ),
         OHMMember(
             role="reviewer",

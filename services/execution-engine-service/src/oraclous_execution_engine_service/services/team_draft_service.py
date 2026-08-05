@@ -35,7 +35,14 @@ from oraclous_ohm.compiler import apply_refine, parse_op, validate_draft
 from oraclous_ohm.compiler.prompts import OP_DRAFTER_PROMPT
 from oraclous_ohm.import_ import ImportResult, assemble_and_report, render_report
 from oraclous_ohm.import_.mapping import build_subharness
-from oraclous_ohm.manifest import OHMManifest, OHMMember, OHMMetadata, OHMRuntime
+from oraclous_ohm.manifest import (
+    OHMManifest,
+    OHMMember,
+    OHMMetadata,
+    OHMOrchestration,
+    OHMRuntime,
+)
+from pydantic import ValidationError
 
 from oraclous_execution_engine_service.core.rls import org_scope
 from oraclous_execution_engine_service.models.team_draft import EngineTeamDraft
@@ -45,6 +52,7 @@ from oraclous_execution_engine_service.repositories.team_draft_repository import
 )
 from oraclous_execution_engine_service.services.compiler_run_service import (
     surveyed_catalog,
+    surveyed_catalog_described,
     validate_model_bindings,
 )
 from oraclous_execution_engine_service.services.registry_client import RegistryClient
@@ -93,6 +101,19 @@ def _first_json_object(text: str) -> dict[str, Any] | None:
             return parsed
         idx = text.find("{", idx + 1)
     return None
+
+
+def _maybe_orchestration(raw: Any) -> OHMOrchestration | None:
+    """The drafted ``orchestration``, or None when it is absent or junk. ``assemble_and_report``
+    wants the typed object here (unlike the untyped governance/budget/task_input threads), and a
+    model-authored block cannot be trusted to validate — a malformed one is dropped, never raised.
+    The reviewer's gate already blocks it upstream, so this is the defensive floor."""
+    if not isinstance(raw, dict):
+        return None
+    try:
+        return OHMOrchestration.model_validate(raw)
+    except ValidationError:
+        return None
 
 
 class DraftVerdict:
@@ -174,8 +195,15 @@ class TeamDraftService:
 
     async def _catalog(self) -> list[str]:
         """#638: the surveyed catalog for the caller's org — seed inventory ∪ the live registry
-        (degrades to seed-only on a registry outage). One seam behind validate/from-run/refine."""
+        (degrades to seed-only on a registry outage). One seam behind validate/from-run/refine.
+
+        Bare slugs, deliberately: every caller of this is a VALIDATOR (the capability-absence gate
+        diffs a draft's tools against it). The described view below is for prompts only."""
         return await surveyed_catalog(self._registry)
+
+    async def _described_catalog(self) -> list[dict[str, str]]:
+        """#713: the same catalog with each tool's description, for the text a MODEL reads."""
+        return await surveyed_catalog_described(self._registry)
 
     # ── shared helpers ────────────────────────────────────────────────────────
 
@@ -372,8 +400,26 @@ class TeamDraftService:
                 422,
                 error_type="compiled_team_blocked",
             )
+        # Carry through everything the drafter declared BESIDE members[]. assemble_and_report
+        # rebuilds the stored manifest from members alone, so each of these is dropped here unless
+        # it is threaded — and each drop has a cost:
+        #   task_input (#714) — the console GO path has nowhere to put the user's task;
+        #   budget      — nothing bounds a member's tool loop. The #714 proof failed exactly here:
+        #                 the drafter declared max_tool_calls_per_member 50, the rebuild dropped
+        #                 it, and the Reviewer re-read the PR's comments to 219,124 tokens;
+        #   governance  — the team ships with no policy set and no redact patterns, against #596's
+        #                 governed-by-default promise. The quietest of the three, and the worst;
+        #   orchestration — the drafted style / success_criteria (the #477 flow gate) is lost.
+        # The gate above already ran, so a malformed block never reaches this line.
         result = assemble_and_report(
-            draft_name, members, owner_organization_id=org, shape="compiled"
+            draft_name,
+            members,
+            owner_organization_id=org,
+            shape="compiled",
+            task_input=compiled.get("task_input"),
+            governance=compiled.get("governance"),
+            budget=compiled.get("budget"),
+            orchestration=_maybe_orchestration(compiled.get("orchestration")),
         )
         if result.manifest is None:  # defensive — the gate above already proved assemblable
             raise TeamRunError(
@@ -538,9 +584,11 @@ class TeamDraftService:
         instruction: str,
         models: list[dict[str, Any]],
     ) -> EngineTeamRun:
+        # #713: the op-drafter picks tools too (an `add_member` op names them), and it reads this
+        # text directly — no relay — so it gets the described catalog rather than bare slugs.
         subgoal = (
             f"CURRENT TEAM MANIFEST:\n{json.dumps(manifest)}\n\n"
-            f"SURVEYED CATALOG: {json.dumps(await self._catalog())}\n\n"
+            f"SURVEYED CATALOG: {json.dumps(await self._described_catalog())}\n\n"
             f"EDIT REQUEST: {instruction}"
         )
         team = OHMManifest(

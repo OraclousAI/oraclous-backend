@@ -19,7 +19,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from oraclous_ohm.seeds import default_seed_set, survey_catalog
+from oraclous_ohm.seeds import catalog_slug, default_seed_set, survey_catalog
 
 
 def draft_catalog(registered: list[str] | None = None) -> list[str]:
@@ -28,6 +28,28 @@ def draft_catalog(registered: list[str] | None = None) -> list[str]:
     (from ``RegistryClient.list_capabilities`` — the caller degrades to ``None``/``[]`` seed-only
     on a registry outage, never fail-open). ``survey_catalog`` normalises + de-dups the union."""
     return survey_catalog(default_seed_set().inventory, registered or [])
+
+
+def draft_catalog_described(
+    registered: list[dict[str, str]] | None = None,
+) -> list[dict[str, str]]:
+    """The same catalog as ``draft_catalog``, each entry paired with what the tool DOES (#713).
+
+    ``registered`` is the org's live rows (``RegistryClient.list_capability_rows`` — name +
+    description). Entries come back in ``draft_catalog`` order, one per slug, carrying
+    ``description`` ONLY when the registry supplied a non-empty one. A seed-inventory tool has no
+    descriptor row and therefore no description: it renders as its bare name. Nothing is invented
+    for it — a made-up blurb is worse than none, because the drafter would believe it."""
+    rows = registered or []
+    described = {
+        slug: row["description"]
+        for row in rows
+        if (slug := catalog_slug(row.get("name", ""))) and row.get("description")
+    }
+    return [
+        {"name": slug, **({"description": described[slug]} if slug in described else {})}
+        for slug in draft_catalog([row.get("name", "") for row in rows])
+    ]
 
 
 def compose_objective(
