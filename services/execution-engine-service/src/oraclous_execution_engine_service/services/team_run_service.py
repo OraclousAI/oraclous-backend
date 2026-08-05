@@ -180,6 +180,58 @@ def validate_task_input(manifest: OHMManifest, inputs: dict[str, Any] | None) ->
         )
 
 
+def _consumed_input_keys(manifest: OHMManifest) -> set[str]:
+    """Every ``inputs`` key this team can actually read. ``inputs`` is overloaded, so the answer is
+    not just ``task_input``:
+
+    - the declared ``task_input.key`` — ``team_run.resolve_run_task``;
+    - any member's ``fan_out.over`` (#599) — ``orchestrate._resolve_over``, which accepts both the
+      ``"$.<key>"`` JSONPath spelling and a bare key;
+    - the engine-reserved ``REFRESH_SEED_KEY`` (#602), which ``create`` strips moments later.
+
+    Those three are the ONLY readers of team state; nothing else in the runtime looks at it.
+    """
+    consumed = {REFRESH_SEED_KEY}
+    if manifest.task_input is not None:
+        consumed.add(manifest.task_input.key)
+    for member in manifest.members:
+        if member.fan_out is not None:
+            over = member.fan_out.over
+            consumed.add(over[2:] if over.startswith("$.") else over)
+    return consumed
+
+
+def validate_input_keys(manifest: OHMManifest, inputs: dict[str, Any] | None) -> None:
+    """#714 defect (b), fail-closed at create: an ``inputs`` key this team cannot read is a 422
+    naming it, never a silent discard.
+
+    Run ``538ab1fa`` is what silence costs. The caller supplied
+    ``inputs={"task": "Review pull request 710 …"}``, the manifest declared no ``task_input``, the
+    engine dropped it without a word, and the member invented ``my-org/my-repo#123``. The user saw
+    four ``MCP_TOOL_ERROR`` rows — a broken-integration story for what was actually a dropped
+    input. Discarding a caller's input and letting a model substitute its own guess is the opposite
+    of the fail-closed default (CLAUDE.md §3.5).
+
+    This runs BEFORE the run is persisted or enqueued, so a rejected create costs one 422 — no
+    worker, no tokens, no half-finished run to explain."""
+    if not inputs:
+        return
+    consumed = _consumed_input_keys(manifest)
+    undeclared = sorted(k for k in inputs if k not in consumed)
+    if not undeclared:
+        return
+    readable = sorted(consumed - {REFRESH_SEED_KEY})
+    raise TeamRunError(
+        "this team does not consume "
+        + ", ".join(f"inputs[{k!r}]" for k in undeclared)
+        + " — it consumes "
+        + (", ".join(f"{k!r}" for k in readable) if readable else "no run inputs at all")
+        + ". A key it cannot read would be dropped, and its members would have to guess.",
+        422,
+        error_type="undeclared_input_key",
+    )
+
+
 #: operator-configured org-scoped workspaces root (MUST match the capability-registry sandbox guard,
 #: #517). A team's ``workspace_root`` is validated fail-fast at create against ``<root>/<org>`` so a
 #: bad root is a clear 422 here, not a confusing mid-run member failure (defense-in-depth: the
@@ -655,6 +707,7 @@ class TeamRunService:
         team = self._load_team(manifest)  # validate BEFORE persisting
         self._enforce_member_ceilings(team, sub_harnesses)  # ADR-032/035 §5 — fail-closed ceiling
         validate_task_input(team, inputs)  # Contract §TASK (#674): required task missing → 422
+        validate_input_keys(team, inputs)  # #714: an inputs key the team cannot read → 422
         if (
             workspace_root is not None
         ):  # file-native (#518): org-scoped, fail-fast 422 (not mid-run)

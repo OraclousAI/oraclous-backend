@@ -11,8 +11,9 @@ from __future__ import annotations
 
 import uuid
 from pathlib import Path
+from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from oraclous_ohm.import_._flags import ImportFlag
 from oraclous_ohm.import_.assemble import TeamAssembly, assemble_team
@@ -24,7 +25,13 @@ from oraclous_ohm.import_.parse import discover_agents, parse_agent_file
 from oraclous_ohm.import_.precedence import parse_precedence
 from oraclous_ohm.import_.schedules import ScheduledJob, parse_cron
 from oraclous_ohm.import_.skills import resolve_skill
-from oraclous_ohm.manifest import OHMManifest, OHMMember, OHMOrchestration, OHMPrecedence
+from oraclous_ohm.manifest import (
+    OHMManifest,
+    OHMMember,
+    OHMOrchestration,
+    OHMPrecedence,
+    OHMTaskInput,
+)
 
 
 class ImportReport(BaseModel):
@@ -133,6 +140,7 @@ def assemble_and_report(
     schedules: list[ScheduledJob] | None = None,
     orchestration: OHMOrchestration | None = None,
     precedence: OHMPrecedence | None = None,
+    task_input: Any = None,
     sub_harnesses: dict[str, dict] | None = None,
     extra_flags: list[ImportFlag] | None = None,
 ) -> ImportResult:
@@ -145,7 +153,16 @@ def assemble_and_report(
     blocking flag drives ``would_block`` on the prose path exactly as on the import path. ``shape``
     records which on-ramp produced the team (``"compiled"`` for the compiler; ``"agent-team"`` /
     ``"orchestrator"`` / ``"none"`` for the importer). No filesystem access — importable in-process
-    by a service/sub-harness."""
+    by a service/sub-harness.
+
+    ``task_input`` (#714, Contract §TASK) is the drafted team's per-run task declaration, threaded
+    for the same reason ``precedence`` is: this call REBUILDS the manifest from ``members``, so
+    anything the source declared beside them is dropped unless it is carried explicitly. Without it
+    a compiled team reaches the console with no way to be told WHICH pull request to review, and
+    its first member invents one (run ``538ab1fa``). Untyped on the way in because the compiler
+    on-ramp hands over a model-authored dict; an unparseable one is DROPPED rather than raised —
+    ``validate_draft`` already blocks a malformed block upstream, and a dry-run must never turn a
+    bad draft into a crash."""
     flags = list(extra_flags or [])
     if not members:
         # fail-closed (ADR §3.5): a caller that supplies NO members (a drafter that produced
@@ -174,6 +191,11 @@ def assemble_and_report(
         orchestration=orchestration,
     )
     flags.extend(assembly.flags)
+    if task_input is not None:  # #714: the per-run task the source declared (Contract §TASK)
+        try:
+            assembly.manifest.task_input = OHMTaskInput.model_validate(task_input)
+        except ValidationError:
+            pass  # a malformed block is the gate's to report; here it is simply not carried
     if precedence is not None:  # the source's declared Hierarchy-of-Truth ordering (provenance)
         assembly.manifest.precedence = precedence
         flags.append(

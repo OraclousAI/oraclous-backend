@@ -372,8 +372,16 @@ class TeamDraftService:
                 422,
                 error_type="compiled_team_blocked",
             )
+        # #714: carry the drafter's task_input through the rebuild. assemble_and_report constructs
+        # the stored manifest from `members` alone, so the block the reviewer emitted is dropped
+        # right here unless it is threaded — and the console GO path then has nowhere to put the
+        # user's task. The gate above already ran, so a malformed block never reaches this line.
         result = assemble_and_report(
-            draft_name, members, owner_organization_id=org, shape="compiled"
+            draft_name,
+            members,
+            owner_organization_id=org,
+            shape="compiled",
+            task_input=compiled.get("task_input"),
         )
         if result.manifest is None:  # defensive — the gate above already proved assemblable
             raise TeamRunError(

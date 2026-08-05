@@ -37,6 +37,8 @@ DRAFTER_PROMPT = (
     '  {"members": [{"role","kind":"agent","manifest_ref":"org:compiled/<role>@1","subgoal",'
     '"tools":[…],"depends_on":[…]}, …],\n'
     '   "orchestration": {"style": "...", "success_criteria": "..."},\n'
+    '   "task_input": {"required": <bool>, "key": "task", "description": "<the question to ask '
+    'the user>"},\n'
     '   "governance": {"policy_set_ref": "...", "redact_patterns": [...]},\n'
     '   "budget": {"max_tokens_total": <int>, "max_tool_calls_total": <int>, '
     '"max_sub_runs": <int>, "max_tokens_per_member": <int>, "max_tool_calls_per_member": <int>}}\n'
@@ -44,6 +46,13 @@ DRAFTER_PROMPT = (
     "- Every member.tools entry MUST be a tool the surveyor listed. NEVER invent a tool; if a "
     "sub-goal needs a capability the surveyor did not list, OMIT the tool and note the gap in "
     "that member's subgoal.\n"
+    "- ALWAYS emit `task_input` — on EVERY team, without exception. It is how the USER tells the "
+    "finished team WHICH thing to work on at run time (which pull request, which document, which "
+    "customer); a team without it can only guess, and will. Set `required` to false by default; "
+    "set it to true ONLY when the objective names a target the team cannot possibly know on its "
+    'own. `key` is normally "task". The `description` is shown to the USER as the LABEL of the '
+    'input field, so write it as a short question or noun phrase addressed to them ("the pull '
+    'request to review"), NEVER as a schema note ("string, optional").\n'
     "- The depends_on edges MUST be ACYCLIC (a runnable DAG).\n"
     "- GOVERNED-BY-DEFAULT: emit `governance` (policy_set_ref + redact_patterns) and `budget` "
     "EXACTLY as the seed policy default given in your sub-goal — do NOT invent governance/budget "
