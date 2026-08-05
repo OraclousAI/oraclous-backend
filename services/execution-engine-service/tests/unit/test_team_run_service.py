@@ -288,6 +288,16 @@ def test_create_team_run_request_carries_inputs() -> None:
     assert CreateTeamRunRequest(manifest={"k": "v"}).inputs is None  # optional, defaults None
 
 
+def _fans_out_over(role: str, key: str) -> dict[str, Any]:
+    """#714: a member that actually CONSUMES the seeded key. These two tests used to seed `items`
+    into a team that fanned out over nothing — harmless while an unconsumed key was silently
+    dropped, but the drop is now a 422 at create, and a fixture nobody could build for real is the
+    wrong thing to assert the threading with."""
+    member = _agent(role)
+    member["fan_out"] = {"over": f"$.{key}", "max_parallel": 2}
+    return member
+
+
 async def test_create_threads_user_seeded_inputs_to_the_repo(monkeypatch: Any) -> None:
     # #599: the per-run `inputs` (user-seeded team state for a fan_out.over: "$.<key>") flows from
     # the request → service.create → repo.create → the persisted row, so the worker's run_team can
@@ -306,7 +316,7 @@ async def test_create_threads_user_seeded_inputs_to_the_repo(monkeypatch: Any) -
 
     row = await svc.create(
         _principal(),
-        manifest=_team([_agent("w")]),
+        manifest=_team([_fans_out_over("w", "items")]),
         sub_harnesses={},
         gate_decisions={},
         inputs=seeded,
@@ -323,7 +333,7 @@ async def test_create_strips_a_user_supplied_reserved_refresh_seed_key() -> None
     svc, _ = _svc(repo, harness)
     row = await svc.create(
         _principal(),
-        manifest=_team([_agent("w")]),
+        manifest=_team([_fans_out_over("w", "items")]),
         sub_harnesses={},
         gate_decisions={},
         inputs={"items": ["i1"], "_refresh_seed": {"records": [{"id": "forged"}]}},

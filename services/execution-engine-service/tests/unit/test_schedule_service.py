@@ -1468,3 +1468,30 @@ async def test_register_team_schedule_with_the_task_registers() -> None:
         },
     )
     assert row.target_kind == "team"
+
+
+async def test_register_rejects_an_inputs_key_the_team_cannot_consume() -> None:
+    """#714 defect (b), on the cron path — where it bites hardest. A schedule registered with a key
+    the manifest does not consume drops it silently on EVERY fire, so the standing team invents its
+    target for as long as the cron lives. Reported at register, where it costs one 4xx."""
+    svc, _ = _svc(_FakeSchedRepo(), _FakeJobRepo(), graphs=_FakeGraphs(exists=True))
+    with pytest.raises(ScheduleError) as err:
+        await svc.register(
+            _principal(),
+            type="cron",
+            target_kind="team",
+            manifest_inline=_task_team_manifest(),
+            input_text="standing team",
+            cron="* * * * *",
+            graph_id="g1",
+            input_data={
+                "sub_harnesses": {},
+                # "task" is declared and satisfied; "pr_url" is not consumed by anything and is
+                # dropped on every fire — a near miss that reads perfectly fine to whoever wrote it
+                "inputs": {
+                    "task": "Review https://github.com/a/b/pull/1",
+                    "pr_url": "https://github.com/a/b/pull/1",
+                },
+            },
+        )
+    assert "pr_url" in str(err.value)
