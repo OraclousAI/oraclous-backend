@@ -198,3 +198,35 @@ def test_kgs_grantee_not_in_org_422_surfaces_the_machine_token() -> None:
     out = extract_validation_details(raw)
     assert out is not None
     assert out[0].field == "grantee_user_id" and out[0].issue == "GRANTEE_NOT_IN_ORG"
+
+
+def test_mcp_import_auth_refusal_409_surfaces_the_credential_token() -> None:
+    # #715 cross-service contract: the capability-registry answers an MCP server's authentication
+    # refusal with a 409 carrying the needs_credential token, so the console gets
+    # CREDENTIALS_REQUIRED instead of the SERVICE_UNAVAILABLE that a 502 produced. The token must
+    # sit at the TOP level of the body — nested under `detail` it is invisible to this extractor.
+    raw = json.dumps(
+        {
+            "detail": "the MCP server refused the request for authentication",
+            "needs_credential": {"requirement_id": "api_key", "provider": "mcp"},
+        }
+    ).encode()
+    nc = extract_needs_credential(raw)
+    assert nc == NeedsCredential("api_key", "mcp")
+
+
+def test_mcp_import_credential_422_surfaces_which_credential_failure_it_was() -> None:
+    # #715: an unresolvable credential and a credential of the wrong kind are OUR failure, not the
+    # MCP server's. Both are a 422 naming `credential_id`; the machine token is what keeps them
+    # apart at the edge, so the console can say which fix the admin needs.
+    for typ, token in (
+        ("credential_unresolvable", "CREDENTIAL_UNRESOLVABLE"),
+        ("credential_not_api_key", "CREDENTIAL_NOT_API_KEY"),
+    ):
+        out = extract_validation_details(
+            _raw([{"loc": ["body", "credential_id"], "type": typ, "msg": "cred-abc123 is bad"}])
+        )
+        assert out is not None
+        assert out[0].field == "credential_id" and out[0].issue == token
+        # the msg reflects the submitted credential id — it must never cross the edge
+        assert "abc123" not in f"{out[0].field} {out[0].issue}"
