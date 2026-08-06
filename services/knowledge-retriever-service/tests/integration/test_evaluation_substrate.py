@@ -13,8 +13,8 @@ from collections.abc import Iterator
 
 import pytest
 from oraclous_knowledge_retriever_service.core.dependencies import (
-    get_eval_judge,
     get_neo4j_driver,
+    get_org_judge,
 )
 from oraclous_knowledge_retriever_service.services import evaluation_service as ev
 from oraclous_knowledge_retriever_service.services.embedder import HashingEmbedder
@@ -96,7 +96,7 @@ def seeded_graphs(real_neo4j_driver) -> tuple[str, str]:
 def client(app, async_client, real_neo4j_driver):
     # Real retrieval wiring against the container driver; ONLY the judge is fake.
     app.dependency_overrides[get_neo4j_driver] = lambda: real_neo4j_driver
-    app.dependency_overrides[get_eval_judge] = lambda: _FakeJudge()
+    app.dependency_overrides[get_org_judge] = lambda: _FakeJudge()
     yield async_client
     app.dependency_overrides.clear()
 

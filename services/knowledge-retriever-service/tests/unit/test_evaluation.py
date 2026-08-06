@@ -15,13 +15,7 @@ import asyncio
 import inspect
 
 import pytest
-from oraclous_knowledge_retriever_service.core.config import Settings, get_settings
 from oraclous_knowledge_retriever_service.services import evaluation_service as ev
-from oraclous_knowledge_retriever_service.services.eval_judge import (
-    EvalJudge,
-    OpenAIEvalJudge,
-    make_judge,
-)
 from oraclous_knowledge_retriever_service.services.evaluation_service import (
     EvaluationCapacityExceeded,
     EvaluationService,
@@ -567,76 +561,8 @@ async def test_empty_retrieval_warns_and_judges_against_placeholder() -> None:
 # --- the judge factory (no key → None → DI maps to a typed 422) -----------------------------------
 
 
-def test_make_judge_without_key_returns_none() -> None:
-    assert make_judge(Settings(openai_api_key=None)) is None
-
-
-def test_make_judge_with_key_builds_the_openai_client() -> None:
-    judge = make_judge(Settings(openai_api_key="test-key"))
-    assert isinstance(judge, OpenAIEvalJudge)
-    assert isinstance(judge, EvalJudge)  # satisfies the protocol seam
-
-
-def test_make_judge_applies_the_timeout_and_retry_posture() -> None:
-    # #333: NEVER the SDK defaults (600s × 3 attempts) — explicit short timeout, bounded retries.
-    judge = make_judge(
-        Settings(
-            openai_api_key="test-key",
-            eval_judge_timeout_seconds=9.0,
-            eval_judge_max_retries=2,
-        )
-    )
-    assert judge is not None
-    assert judge._client.timeout == 9.0
-    assert judge._client.max_retries == 2
-    # and the config default itself is short — under the gateway's 30s read timeout
-    defaults = Settings(openai_api_key="test-key")
-    assert defaults.eval_judge_timeout_seconds <= 15.0
-    assert defaults.eval_judge_max_retries <= 1
-    assert defaults.eval_deadline_seconds < 30.0
-
-
-# --- the lifespan judge singleton (#333: one client per process, closed on shutdown) -------------
-
-
-async def test_lifespan_builds_one_judge_and_the_eval_slots(monkeypatch) -> None:
-    from oraclous_knowledge_retriever_service.app.factory import create_app
-    from oraclous_knowledge_retriever_service.core import lifespan as lifespan_module
-
-    monkeypatch.setenv("KRS_OPENAI_API_KEY", "test-key")
-    monkeypatch.delenv("KRS_NEO4J_URI", raising=False)
-    monkeypatch.delenv("EXIT_ON_STARTUP_DEGRADE", raising=False)
-    get_settings.cache_clear()
-    closed: list[bool] = []
-    try:
-        app = create_app()
-        async with lifespan_module.lifespan(app):
-            judge = app.state.eval_judge
-            assert isinstance(judge, OpenAIEvalJudge)  # built ONCE at startup, not per request
-            assert isinstance(app.state.eval_slots, asyncio.Semaphore)
-            original_aclose = judge.aclose
-
-            async def _spy() -> None:
-                closed.append(True)
-                await original_aclose()
-
-            monkeypatch.setattr(judge, "aclose", _spy)
-        assert closed == [True]  # the client is closed on shutdown
-    finally:
-        get_settings.cache_clear()
-
-
-async def test_lifespan_without_a_key_leaves_the_judge_unconfigured(monkeypatch) -> None:
-    from oraclous_knowledge_retriever_service.app.factory import create_app
-    from oraclous_knowledge_retriever_service.core import lifespan as lifespan_module
-
-    monkeypatch.delenv("KRS_OPENAI_API_KEY", raising=False)
-    monkeypatch.delenv("KRS_NEO4J_URI", raising=False)
-    monkeypatch.delenv("EXIT_ON_STARTUP_DEGRADE", raising=False)
-    get_settings.cache_clear()
-    try:
-        app = create_app()
-        async with lifespan_module.lifespan(app):
-            assert app.state.eval_judge is None  # DI maps this to the typed 422
-    finally:
-        get_settings.cache_clear()
+# #724 removed `make_judge`: the platform-key judge factory is gone, so the three tests that
+# pinned it (no key -> None, key -> client, timeout/retry posture) have no subject. A judge is now
+# built per request from the ORG's credential by `resolve_judge_for_org`, and that contract is
+# pinned in `unit/test_krs_byom_judge_required.py`. The timeout/retry posture it asserted still
+# holds and is carried unchanged into the new builder.

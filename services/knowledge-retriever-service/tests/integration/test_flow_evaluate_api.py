@@ -8,7 +8,7 @@ import uuid
 
 import pytest
 from oraclous_knowledge_retriever_service.core.config import get_settings
-from oraclous_knowledge_retriever_service.core.dependencies import get_eval_judge_optional
+from oraclous_knowledge_retriever_service.core.dependencies import get_org_judge
 
 pytestmark = pytest.mark.integration
 
@@ -39,7 +39,7 @@ class _FakeJudge:
 
 @pytest.fixture
 def client(app, async_client):
-    app.dependency_overrides[get_eval_judge_optional] = lambda: _FakeJudge()
+    app.dependency_overrides[get_org_judge] = lambda: _FakeJudge()
     yield async_client
     app.dependency_overrides.clear()
 
@@ -55,7 +55,7 @@ async def test_returns_a_structured_verdict(client) -> None:
 
 
 async def test_below_threshold_does_not_pass(app, client) -> None:
-    app.dependency_overrides[get_eval_judge_optional] = lambda: _FakeJudge(score=0.2)
+    app.dependency_overrides[get_org_judge] = lambda: _FakeJudge(score=0.2)
     resp = await client.post("/internal/v1/evaluate", json=_body(), headers=_AUTH)
     assert resp.json()["pass"] is False and resp.json()["recommended_action"] == "revise"
 
@@ -65,7 +65,7 @@ async def test_requires_auth(client) -> None:
 
 
 async def test_no_judge_configured_is_typed_422(app, async_client) -> None:
-    # no get_eval_judge_optional override → app.state.eval_judge unset → the typed 422 (no fakes)
+    # no get_org_judge override → app.state.eval_judge unset → the typed 422 (no fakes)
     resp = await async_client.post("/internal/v1/evaluate", json=_body(), headers=_AUTH)
     assert resp.status_code == 422
 
@@ -120,7 +120,7 @@ async def test_byom_judge_credential_grades_via_broker_without_singleton(
     import oraclous_knowledge_retriever_service.routes.internal_routes as ir
 
     monkeypatch.setattr(ir, "resolve_byom_judge", _fake_resolve)
-    # NO get_eval_judge_optional override → the singleton is None; only the BYOM path can succeed.
+    # NO get_org_judge override → the singleton is None; only the BYOM path can succeed.
     resp = await async_client.post(
         "/internal/v1/evaluate", json=_body(judge_credential_id="cred-byom"), headers=_AUTH
     )
