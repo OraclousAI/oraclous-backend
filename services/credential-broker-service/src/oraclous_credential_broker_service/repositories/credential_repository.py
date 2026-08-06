@@ -139,6 +139,23 @@ class CredentialRepository:
                 result = await session.execute(stmt)
                 return result.scalars().first()
 
+    async def get_org_default(self, organisation_id: UUID, purpose: str) -> UserCredential | None:
+        """The credential the org designated as its default for ``purpose`` (#724), or None.
+
+        Org-scoped like every other read. A platform-side model call has no manifest naming a
+        credential, so this is what it asks for instead of reaching for a key of the platform's.
+        The partial unique index makes at most one row match.
+        """
+        with org_scope(organisation_id):
+            async with self._session() as session:
+                result = await session.execute(
+                    select(UserCredential).where(
+                        UserCredential.organisation_id == organisation_id,
+                        UserCredential.default_for == purpose,
+                    )
+                )
+                return result.scalars().first()
+
     async def list_credentials(
         self, request: RequestCredentials, organisation_id: UUID
     ) -> list[UserCredential]:

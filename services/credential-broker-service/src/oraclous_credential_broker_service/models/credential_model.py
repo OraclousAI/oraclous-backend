@@ -32,3 +32,9 @@ class UserCredential(BaseModel):
     cred_type: Mapped[CredentialType | None] = mapped_column(
         Enum(CredentialType, native_enum=False), nullable=True
     )
+    # #724: designates this credential as the organisation's default for a PURPOSE (today only
+    # "model"). NULL for an ordinary credential. A platform-side model call over customer data
+    # (graph extraction, the evaluation judge) has no manifest to name a credential, so it asks
+    # the broker for the org's default instead of falling back to a key of the platform's.
+    # A partial unique index enforces one default per (organisation_id, default_for).
+    default_for: Mapped[str | None] = mapped_column(String, nullable=True, index=True)

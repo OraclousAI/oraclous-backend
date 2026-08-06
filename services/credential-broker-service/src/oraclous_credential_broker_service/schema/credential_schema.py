@@ -162,6 +162,27 @@ class ResolveCredentialInput(BaseModel):
     credential_id: UUID
 
 
+class OrgDefaultCredentialInput(BaseModel):
+    """Internal (X-Internal-Key) lookup of the org's default credential for a purpose (#724).
+
+    ``*Input`` (not ``*Request``): the trusted caller supplies ``organisation_id``, the same
+    service-to-service idiom as ``ResolveCredentialInput``.
+    """
+
+    organisation_id: UUID
+    purpose: str = "model"
+
+
+class OrgDefaultCredentialResponse(BaseModel):
+    """The designated credential's ID, or None when the org has designated nothing.
+
+    Carries no secret. The caller resolves the payload through ``/resolve-credential`` as usual, so
+    the decryption path is unchanged.
+    """
+
+    credential_id: UUID | None = None
+
+
 class ResolveCredentialResponse(BaseModel):
     """The decrypted credential payload for a trusted service caller (e.g. a connection_string)."""
 
