@@ -10,6 +10,7 @@ from __future__ import annotations
 import uuid
 
 from fastapi import APIRouter, HTTPException, status
+from oraclous_substrate.access import enforced_organisation_id
 
 from oraclous_knowledge_graph_service.core.config import get_settings
 from oraclous_knowledge_graph_service.core.dependencies import OntologyServiceDep, UserIdDep
@@ -19,7 +20,12 @@ from oraclous_knowledge_graph_service.schema.ontology_schemas import (
     SuggestedOntologyResponse,
     SuggestOntologyRequest,
 )
+from oraclous_knowledge_graph_service.services.credential_client import make_credential_broker
 from oraclous_knowledge_graph_service.services.graph_service import GraphNotFound
+from oraclous_knowledge_graph_service.services.model_credential import (
+    ModelCredentialUnavailable,
+    credential_for_graph,
+)
 from oraclous_knowledge_graph_service.services.ontology_service import OntologyError
 from oraclous_knowledge_graph_service.services.schema_synthesis_service import (
     SchemaSynthesisUnavailable,
@@ -43,8 +49,25 @@ async def suggest_ontology(
     The synthesizer is built inside the handler (not as a dependency) so its fail-closed
     ``SchemaSynthesisUnavailable`` maps cleanly to 503 instead of escaping dependency resolution.
     """
+    settings = get_settings()
     try:
-        synthesizer = make_synthesizer(get_settings())
+        # #724: schema synthesis reads the caller's sample text, so it runs on the ORG's
+        # credential. This route is deliberately graph-free (/api/v1/ontology/suggest infers an
+        # ontology BEFORE a graph exists), so there is no pin to apply and the org default is the
+        # only tier. A missing credential surfaces as the same 503 as a missing LLM, since from
+        # the caller's side both mean "synthesis is not available to you right now".
+        credential = await credential_for_graph(
+            settings,
+            organisation_id=uuid.UUID(enforced_organisation_id()),
+            graph_id=None,
+            graph_credential_id=None,
+            broker_factory=make_credential_broker,
+        )
+        synthesizer = make_synthesizer(settings, credential=credential)
+    except ModelCredentialUnavailable as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)
+        ) from exc
     except SchemaSynthesisUnavailable as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)
