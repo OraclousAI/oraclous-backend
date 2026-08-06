@@ -156,7 +156,6 @@ services:
         KGS_INTERNAL_SERVICE_KEY: { secretName: "oraclous-internal-key", secretKey: "value" }
         KGS_JWT_SECRET:           { secretName: "oraclous-jwt",          secretKey: "value" }
         KGS_NEO4J_PASSWORD:       { secretName: "neo4j-kgs-writer",      secretKey: "password" }
-        KGS_OPENAI_API_KEY:       { secretName: "openrouter-key",        secretKey: "value" }
 
   knowledge-graph-worker:
     env:
@@ -164,7 +163,6 @@ services:
         KGS_INTERNAL_SERVICE_KEY: { secretName: "oraclous-internal-key", secretKey: "value" }
         KGS_JWT_SECRET:           { secretName: "oraclous-jwt",          secretKey: "value" }
         KGS_NEO4J_PASSWORD:       { secretName: "neo4j-kgs-writer",      secretKey: "password" }
-        KGS_OPENAI_API_KEY:       { secretName: "openrouter-key",        secretKey: "value" }
 
   knowledge-retriever-service:
     env:
@@ -172,7 +170,6 @@ services:
         KRS_INTERNAL_SERVICE_KEY: { secretName: "oraclous-internal-key", secretKey: "value" }
         KRS_JWT_SECRET:           { secretName: "oraclous-jwt",          secretKey: "value" }
         KRS_NEO4J_PASSWORD:       { secretName: "neo4j-krs-reader",      secretKey: "password" }
-        KRS_OPENAI_API_KEY:       { secretName: "openrouter-key",        secretKey: "value" }
 
   harness-runtime-service:
     env:
