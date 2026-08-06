@@ -25,7 +25,7 @@ crypto material, not a model reading customer data. A guardrail that fired on th
 switched off within a week, and then it would protect nothing. Their fail-closed shape is
 ``check_failclosed_secrets``'s concern, not this one.
 
-**A test-runner env file is not a service environment.** ``deploy/.env`` legitimately holds
+**A test-runner env file is not a service environment.** ``deploy/.env.test`` legitimately holds
 ``TAVILY_API_KEY`` and ``OPENROUTER_API_KEY``: an e2e reads one and pastes it through the
 credentials API so it becomes an org credential, which is the pattern this guardrail exists to
 protect. The tell is the shape. ``KEY=value`` is an env-file assignment; ``KEY: <value>`` under a
