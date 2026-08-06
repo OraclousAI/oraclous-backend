@@ -37,6 +37,7 @@ from oraclous_knowledge_graph_service.services.code.embeddings import (
     make_optional_embedder,
 )
 from oraclous_knowledge_graph_service.services.code.parser import parse_source, resolve_edges
+from oraclous_knowledge_graph_service.services.model_credential import ModelCredential
 
 logger = logging.getLogger(__name__)
 
@@ -87,6 +88,7 @@ class CodeIngestionService:
         data: bytes,
         git_url: str | None = None,
         branch: str = "",
+        credential: ModelCredential | None = None,
     ) -> dict:
         writer = CodeGraphWriteRepository(
             self._driver, graph_id=graph_id, organisation_id=self._org, database=self._db
@@ -130,12 +132,24 @@ class CodeIngestionService:
             token = lock.acquire()
         try:
             return self._ingest_locked(
-                writer=writer, graph_id=graph_id, parsed_files=parsed_files, deps=deps
+                credential=credential,
+                writer=writer,
+                graph_id=graph_id,
+                parsed_files=parsed_files,
+                deps=deps,
             )
         finally:
             lock.release(token)
 
-    def _ingest_locked(self, *, writer, graph_id: str, parsed_files: list, deps: list) -> dict:
+    def _ingest_locked(
+        self,
+        *,
+        writer,  # noqa: ANN001
+        graph_id: str,
+        parsed_files: list,
+        deps: list,
+        credential: ModelCredential | None = None,
+    ) -> dict:
         # Stage 1 — delta: compare each file's hash to the existing :File node.
         all_paths = [meta.path for meta, _ in parsed_files]
         upload_paths = set(all_paths)
@@ -210,7 +224,7 @@ class CodeIngestionService:
         # (org+graph scoped). The accelerating vector INDEX is deferred to the retriever slice — a
         # label-wide Neo4j vector index cannot be org-scoped, so the org-filtered kNN belongs where
         # the read happens (#294); see CodeGraphWriteRepository for the rationale.
-        embedder = make_optional_embedder(self._settings)
+        embedder = make_optional_embedder(self._settings, credential=credential)
         embeddings = generate_embeddings(
             node_symbols, embedder, max_symbols=self._settings.code_max_embed_symbols
         )
