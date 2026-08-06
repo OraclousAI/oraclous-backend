@@ -32,6 +32,7 @@ def _to_domain(row: KnowledgeGraph) -> Graph:
         created_at=row.created_at,
         updated_at=row.updated_at,
         system_kind=row.system_kind,
+        model_credential_id=row.model_credential_id,
     )
 
 

@@ -24,3 +24,5 @@ class Graph:
     # Reserved-graph marker (#332 / ADR-027 §5): NULL for a user graph, a reserved value (e.g.
     # `agent_memory`) for a system-owned graph. Defaulted so existing constructors are unaffected.
     system_kind: str | None = None
+    # #724: per-graph BYOM model credential; None means the organisation's default applies.
+    model_credential_id: str | None = None
