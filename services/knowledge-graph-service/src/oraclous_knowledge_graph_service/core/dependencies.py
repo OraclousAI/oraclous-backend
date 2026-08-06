@@ -50,7 +50,6 @@ from oraclous_knowledge_graph_service.repositories.recipe_repository import Reci
 from oraclous_knowledge_graph_service.repositories.resolution_repository import ResolutionRepository
 from oraclous_knowledge_graph_service.services.analytics_service import AnalyticsService
 from oraclous_knowledge_graph_service.services.auth_client import make_auth_client
-from oraclous_knowledge_graph_service.services.community_summarizer import make_summarizer
 from oraclous_knowledge_graph_service.services.credential_client import make_credential_broker
 from oraclous_knowledge_graph_service.services.dry_run_service import DryRunService
 from oraclous_knowledge_graph_service.services.embedder import Embedder, make_embedder
@@ -262,7 +261,7 @@ def get_analytics_service(
         repo=repo,
         job_repo=IngestionJobRepository(session),
         enqueue=_enqueue_detect,
-        summarizer=make_summarizer(settings, repo=repo),
+        settings=settings,
     )
 
 
