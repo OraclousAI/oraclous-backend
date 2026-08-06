@@ -38,6 +38,9 @@ class CredentialsUpdate(BaseModel):
     cred_type: Literal["oauth", "api_key", "raw"]
     # Optional: omit to preserve the stored secret (name-only rename); when set, rotates it.
     credential: dict | None = None
+    # #724: designate this credential the org's default for a purpose ("model"), or "" to clear.
+    # Omit to leave the designation untouched, so an ordinary rename never changes it.
+    default_for: str | None = None
 
 
 class CredentialOut(BaseModel):
