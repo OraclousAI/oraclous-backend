@@ -38,6 +38,10 @@ class KnowledgeGraph(Base):
     # DB invariant, so the lazy find-or-create is race-safe (a concurrent first run that loses the
     # insert race re-reads the winner rather than creating a duplicate).
     system_kind: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    # #724: this graph's OWN model credential, overriding the org default. NULL = use the
+    # org default. No FK: the credential lives in another service's table, so the id is
+    # validated by RESOLUTION (fails closed when gone or cross-org) rather than by the DB.
+    model_credential_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     node_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     relationship_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
