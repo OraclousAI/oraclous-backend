@@ -146,3 +146,42 @@ async def resolve_for_graph(
         org_default_credential_id=org_default,
         graph_credential_id=graph_credential_id,
     )
+
+
+def model_call_is_configured(settings: Any) -> bool:
+    """True when this deployment will actually call a model, so a credential must be resolved.
+
+    The key-free modes (``KGS_EXTRACTOR=null`` with a non-openai embedder) call nothing, so a
+    caller on those skips resolution entirely: no broker call, no credential, behaviour identical
+    to before #724. This is what keeps CI and a key-free deployment untouched.
+    """
+    return settings.extractor == "openai" or settings.embedder == "openai"
+
+
+async def credential_for_graph(
+    settings: Any,
+    *,
+    organisation_id: uuid.UUID,
+    graph_id: uuid.UUID | None,
+    graph_credential_id: str | None,
+    broker_factory: Any,
+) -> ModelCredential | None:
+    """The org credential for work on ``graph_id``, or None when no model will be called.
+
+    The one entry point every KGS call site uses, so the skip rule and the broker lifecycle live in
+    one place rather than being re-derived at ten sites. ``broker_factory`` is
+    ``credential_client.make_credential_broker``, injected to keep this module free of config
+    imports and easy to drive in tests.
+    """
+    if not model_call_is_configured(settings):
+        return None
+    broker = broker_factory(settings)
+    try:
+        return await resolve_for_graph(
+            organisation_id=organisation_id,
+            graph_id=graph_id,
+            graph_credential_id=graph_credential_id,
+            broker=broker,
+        )
+    finally:
+        await broker.aclose()

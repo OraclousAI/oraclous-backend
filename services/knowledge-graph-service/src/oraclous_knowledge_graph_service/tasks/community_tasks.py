@@ -34,6 +34,8 @@ from oraclous_knowledge_graph_service.repositories.community_repository import C
 from oraclous_knowledge_graph_service.repositories.job_repository import IngestionJobRepository
 from oraclous_knowledge_graph_service.services.analytics_service import decode_detect_params
 from oraclous_knowledge_graph_service.services.community_summarizer import make_summarizer
+from oraclous_knowledge_graph_service.services.credential_client import make_credential_broker
+from oraclous_knowledge_graph_service.services.model_credential import credential_for_graph
 from oraclous_knowledge_graph_service.tasks.celery_app import AsyncTaskExecutor, celery_app
 from oraclous_knowledge_graph_service.tasks.ingest_tasks import JobNotVisibleYet
 
@@ -110,7 +112,16 @@ async def _detect_async(job_id_s: str, organisation_id_s: str) -> dict[str, Any]
                         skipped_reason = "community detection already in progress"
                         levels = {}
                     total = sum(len(groups) for groups in levels.values())
-                    summarizer = make_summarizer(settings, repo=repo)
+                    # #724: summarisation reads graph content, so it runs on the ORG's
+                    # credential. The graph is known here, so its override applies too.
+                    credential = await credential_for_graph(
+                        settings,
+                        organisation_id=org_id,
+                        graph_id=payload.graph_id,
+                        graph_credential_id=None,
+                        broker_factory=make_credential_broker,
+                    )
+                    summarizer = make_summarizer(settings, repo=repo, credential=credential)
                     if summarizer is not None and total:
                         outcome = await summarizer.summarize_graph(graph_id=graph_id)
                         summarized = len(outcome.results)

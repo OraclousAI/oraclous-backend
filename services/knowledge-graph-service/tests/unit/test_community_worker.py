@@ -98,7 +98,9 @@ async def test_detect_async_wires_job_lifecycle_and_applies_params(monkeypatch) 
     monkeypatch.setattr(community_tasks, "IngestionJobRepository", _FakeJobRepo)
     monkeypatch.setattr(community_tasks, "CommunityRepository", _FakeRepo)
     # No LLM summarizer in this smoke (keeps it network-free).
-    monkeypatch.setattr(community_tasks, "make_summarizer", lambda _s, *, repo: None)
+    monkeypatch.setattr(
+        community_tasks, "make_summarizer", lambda _s, *, repo, credential=None: None
+    )
 
     result = await community_tasks._detect_async(str(uuid.uuid4()), _ORG)
 

@@ -20,7 +20,7 @@ from typing import Any
 from oraclous_governance import OrganisationContext, PrincipalType, use_organisation_context
 from oraclous_substrate.access import enforced_organisation_id
 
-from oraclous_knowledge_graph_service.core.config import Settings, get_settings
+from oraclous_knowledge_graph_service.core.config import get_settings
 from oraclous_knowledge_graph_service.core.database import make_sessionmaker, make_worker_engine
 from oraclous_knowledge_graph_service.core.neo4j import make_neo4j_driver
 from oraclous_knowledge_graph_service.core.redis import make_redis_lock_client
@@ -46,10 +46,7 @@ from oraclous_knowledge_graph_service.services.credential_client import make_cre
 from oraclous_knowledge_graph_service.services.embedder import make_embedder
 from oraclous_knowledge_graph_service.services.entity_extractor import make_extractor
 from oraclous_knowledge_graph_service.services.ingestion_service import IngestionService
-from oraclous_knowledge_graph_service.services.model_credential import (
-    ModelCredential,
-    resolve_for_graph,
-)
+from oraclous_knowledge_graph_service.services.model_credential import credential_for_graph
 from oraclous_knowledge_graph_service.services.structured_ingestion_service import (
     StructuredIngestionService,
     is_structured,
@@ -130,11 +127,12 @@ async def _ingest_async(job_id_s: str, organisation_id_s: str) -> dict[str, Any]
                     # #724: ONE resolution per run, passed to every model client this run builds.
                     # Resolved only when a model will actually be called — the key-free hashing /
                     # null modes need no credential, so a key-free stack is unchanged.
-                    credential = await _model_credential_for(
+                    credential = await credential_for_graph(
                         settings,
                         organisation_id=org_id,
                         graph_id=payload.graph_id,
                         graph_credential_id=getattr(graph, "model_credential_id", None),
+                        broker_factory=make_credential_broker,
                     )
                     extractor = make_extractor(
                         settings,
@@ -203,38 +201,6 @@ async def _ingest_async(job_id_s: str, organisation_id_s: str) -> dict[str, Any]
         finally:
             driver.close()
             await engine.dispose()
-
-
-async def _model_credential_for(
-    settings: Settings,
-    *,
-    organisation_id: uuid.UUID,
-    graph_id: uuid.UUID,
-    graph_credential_id: str | None,
-) -> ModelCredential | None:
-    """The org's model credential for this run, or None when this run calls no model (#724).
-
-    Resolution is SKIPPED entirely on the key-free modes (``KGS_EXTRACTOR=null`` +
-    ``KGS_EMBEDDER=hashing``), so a key-free stack makes no broker call and behaves exactly as
-    before. When a model WILL be called the credential is resolved once and shared by every client
-    the run builds, rather than each factory resolving its own.
-
-    Failure propagates: ``resolve_for_graph`` raises ``ModelCredentialUnavailable``, the task's
-    ``except`` records the job ``failed`` with ``error_message=str(exc)``, and that string carries
-    the error code. A refused ingest is visible instead of silently producing zero entities.
-    """
-    if settings.extractor == "null" and settings.embedder != "openai":
-        return None
-    broker = make_credential_broker(settings)
-    try:
-        return await resolve_for_graph(
-            organisation_id=organisation_id,
-            graph_id=graph_id,
-            graph_credential_id=graph_credential_id,
-            broker=broker,
-        )
-    finally:
-        await broker.aclose()
 
 
 async def _ingest_structured(*, driver, maker, settings, payload, data: bytes) -> dict[str, Any]:
