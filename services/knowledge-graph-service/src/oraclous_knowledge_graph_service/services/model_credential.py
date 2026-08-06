@@ -136,8 +136,15 @@ async def resolve_for_graph(
     every test can drive the order without a broker that knows about defaults. Callers that already
     hold both ids should use the lower-level function directly.
     """
-    org_default = await broker.org_default_credential_id(
-        organisation_id=organisation_id, purpose="model"
+    # Only ask for the org default when the graph does NOT pin its own. The pin wins in
+    # `resolve_model_credential`, so fetching the default first was a round-trip whose answer was
+    # then discarded — half the broker traffic on every pinned graph.
+    org_default = (
+        None
+        if graph_credential_id
+        else await broker.org_default_credential_id(
+            organisation_id=organisation_id, purpose="model"
+        )
     )
     return await resolve_model_credential(
         organisation_id=organisation_id,

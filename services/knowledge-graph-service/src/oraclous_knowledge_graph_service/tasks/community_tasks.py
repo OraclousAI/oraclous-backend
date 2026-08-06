@@ -31,6 +31,7 @@ from oraclous_knowledge_graph_service.domain.community import (
     DetectionInProgress,
 )
 from oraclous_knowledge_graph_service.repositories.community_repository import CommunityRepository
+from oraclous_knowledge_graph_service.repositories.graph_repository import GraphRepository
 from oraclous_knowledge_graph_service.repositories.job_repository import IngestionJobRepository
 from oraclous_knowledge_graph_service.services.analytics_service import decode_detect_params
 from oraclous_knowledge_graph_service.services.community_summarizer import make_summarizer
@@ -79,6 +80,10 @@ async def _detect_async(job_id_s: str, organisation_id_s: str) -> dict[str, Any]
                 # The request params (min_entities/force_rebuild) ride on source_content so the
                 # worker applies the SAME floor/skip semantics as the inline path (not defaults).
                 min_entities, force_rebuild = decode_detect_params(payload.source_content)
+                # #724: read the graph's own credential pin in the session that is already open,
+                # so the per-graph override applies here as it does on the ingest path.
+                graph_row = await GraphRepository(session).get(payload.graph_id)
+                graph_model_credential_id = getattr(graph_row, "model_credential_id", None)
                 await jobs.update_status(job_id, status="running", progress=10)
                 await session.commit()
 
@@ -118,7 +123,7 @@ async def _detect_async(job_id_s: str, organisation_id_s: str) -> dict[str, Any]
                         settings,
                         organisation_id=org_id,
                         graph_id=payload.graph_id,
-                        graph_credential_id=None,
+                        graph_credential_id=graph_model_credential_id,
                         broker_factory=make_credential_broker,
                     )
                     summarizer = make_summarizer(settings, repo=repo, credential=credential)
