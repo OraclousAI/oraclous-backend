@@ -4,7 +4,8 @@ The acceptance for #490 (ADR-039): *"the first SCHEDULED run consumes secrets wi
 wall."* A real user, through the application-gateway (`:8006`) with a real JWT:
 
 POSITIVE (the headline): pastes a Tavily key ONCE via the credentials API (BYOM — source is
-``TAVILY_API_KEY`` in deploy/.env, NEVER a registry server env), binds it to a keyed Web-Research
+``TAVILY_API_KEY`` in deploy/.env.test, NEVER a registry server env), binds it to a keyed Web-
+Research
 instance, registers a CRON ``adopted_tool_run`` schedule that runs a live ``search``, and fires it
 via ``POST /v1/engine/schedules/{id}/fire-now``. The SCHEDULED run — engine → worker → registry
 ``execute_sync`` — resolves the stored per-org key from the broker **with no prompt** and returns

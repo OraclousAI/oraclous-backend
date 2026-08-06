@@ -16,9 +16,9 @@ The guardrail denies a platform model key reaching a service two ways:
            ``anthropic_api_key``, and the like), which is the thing a deployment would populate.
 
 Test-runner env is explicitly not in scope. ``OPENROUTER_API_KEY`` and ``TAVILY_API_KEY`` read from
-``deploy/.env`` by an e2e test are BYOM *sources*: the test pastes them through the credentials API
-so they become an org credential, which is the pattern this guardrail exists to protect. The rule is
-about what a **service container** is handed, not what a test harness reads.
+``deploy/.env.test`` by an e2e are BYOM *sources*: the test pastes them through the
+credentials API so they become an org credential, which is the pattern this guardrail exists to
+protect. The rule is about what a **service container** is handed, not what a test harness reads.
 
 RED until the [impl] lands ``tools/lint/check_byom_model_keys.py``.
 """
@@ -92,7 +92,7 @@ def test_a_tavily_key_in_a_service_env_is_still_denied() -> None:
 def test_an_env_file_source_is_not_a_service_env(line: str) -> None:
     """The exemption the guardrail depends on, pinned rather than only documented.
 
-    ``deploy/.env`` legitimately holds these: an e2e reads one and pastes it through the
+    ``deploy/.env.test`` legitimately holds these: an e2e reads one and pastes it through the
     credentials API so it becomes an org credential, which is the pattern #724 protects. A
     guardrail that fired on the env file would flag the correct BYOM flow and be switched off.
 

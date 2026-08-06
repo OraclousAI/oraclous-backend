@@ -2,7 +2,8 @@
 
 A real user, through the gateway (:8006), discovers the seeded **Web Research** tool, instantiates
 it, brings their OWN Tavily key via the credentials API (**BYOM** — the key source is
-``TAVILY_API_KEY`` in deploy/.env, NEVER a registry server env), binds it, and dispatches a live
+``TAVILY_API_KEY`` in deploy/.env.test, NEVER a registry server env), binds it, and dispatches a
+live
 ``search`` that returns REAL web hits. ``fetch``/``read`` run on the same key-mapped instance; an
 unconfigured instance fails closed. Real capability-registry + credential-broker + a real Tavily
 call — nothing mocked, no internal port, no DB-direct (FUCK_CLAUDE_FUCK_PAPERCLIP rule 5).

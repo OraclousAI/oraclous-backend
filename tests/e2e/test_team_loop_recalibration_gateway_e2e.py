@@ -16,7 +16,7 @@ halts it (no second endless loop). ``recalibration_count`` is read off the surfa
   3. RECOVER — a clearable threshold: a stalling team recovers (in-drive after a recalibration, or
      via the ADR-042 bounded re-run) to SUCCEEDED — it gets unstuck, it does not run forever.
 
-``byom``-marked → DESELECTED in CI; run LOCALLY via ``scripts/e2e.sh`` with ``deploy/.env``'s
+``byom``-marked → DESELECTED in CI; run LOCALLY via ``scripts/e2e.sh`` with ``deploy/.env.test``'s
 OPENROUTER_API_KEY (the engine rebuilt with the #553 recalibration wiring) + the CTO's remote check.
 """
 
