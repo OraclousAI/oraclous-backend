@@ -31,6 +31,9 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
 
+from oraclous_substrate.access import enforced_organisation_id
+
+from oraclous_knowledge_graph_service.core.config import Settings, get_settings
 from oraclous_knowledge_graph_service.domain.memory_decay import (
     base_importance_for,
     compute_importance,
@@ -55,7 +58,9 @@ from oraclous_knowledge_graph_service.schema.memory_schemas import (
     MemoryUpdate,
     MemoryUpdateResponse,
 )
-from oraclous_knowledge_graph_service.services.embedder import Embedder
+from oraclous_knowledge_graph_service.services.credential_client import make_credential_broker
+from oraclous_knowledge_graph_service.services.embedder import Embedder, make_embedder
+from oraclous_knowledge_graph_service.services.model_credential import credential_for_graph
 
 logger = logging.getLogger(__name__)
 
@@ -94,13 +99,13 @@ class MemoryService:
         *,
         graphs: GraphRepository,
         repo_factory: Callable[[str], MemoryRepository],
-        embedder: Embedder | None,
+        settings: Settings | None = None,
         enqueue_consolidation: Callable[[str, str], str],
         vector_candidate_cap: int = 1_000,
     ) -> None:
         self._graphs = graphs
         self._repo_factory = repo_factory
-        self._embedder = embedder
+        self._settings = settings or get_settings()
         self._enqueue = enqueue_consolidation
         # Pre-cosine candidate cap passed to the repository's brute-force vector recall (#332 MED).
         self._vector_candidate_cap = vector_candidate_cap
@@ -132,12 +137,43 @@ class MemoryService:
 
     # ------------------------------------------------------------------ store
 
-    def _embed(self, content: str) -> list[float] | None:
-        """Fail-soft embedding: no embedder (no key) or an embed fault → None (fulltext-only)."""
-        if self._embedder is None:
+    async def _embedder_for(self, graph_id: uuid.UUID) -> Embedder | None:
+        """The embedder for THIS graph, built from the org's credential (#724), or None.
+
+        Fail-soft per ADR-027 §3 ("fail-soft to fulltext-only when no key"): an org that has not
+        designated a model credential stores memories without vectors and recalls fulltext-only,
+        rather than losing the memory surface. The degradation is LOGGED at WARNING with the
+        error_code, because #724 makes "no credential" a normal per-tenant state rather than a
+        deployment error, and silent quality loss is the failure mode this issue exists to end.
+        """
+        try:
+            credential = await credential_for_graph(
+                self._settings,
+                organisation_id=uuid.UUID(enforced_organisation_id()),
+                graph_id=graph_id,
+                graph_credential_id=await self._graph_pin(graph_id),
+                broker_factory=make_credential_broker,
+            )
+            return make_embedder(self._settings, credential=credential)
+        except Exception as exc:  # noqa: BLE001 — fail-soft; a vector enriches, it never gates
+            logger.warning(
+                "memory embeddings unavailable for graph %s, recall is fulltext-only: %s",
+                graph_id,
+                exc,
+            )
+            return None
+
+    async def _graph_pin(self, graph_id: uuid.UUID) -> str | None:
+        graph = await self._graphs.get(graph_id)
+        return getattr(graph, "model_credential_id", None)
+
+    @staticmethod
+    def _embed_with(embedder: Embedder | None, content: str) -> list[float] | None:
+        """Fail-soft embedding: no embedder or an embed fault → None (fulltext-only)."""
+        if embedder is None:
             return None
         try:
-            return self._embedder.embed([content])[0]
+            return embedder.embed([content])[0]
         except Exception as exc:  # noqa: BLE001 — fail-soft: a vector is an enrichment, never a gate
             logger.warning("memory embedding failed (storing without a vector): %s", exc)
             return None
@@ -196,7 +232,8 @@ class MemoryService:
         base_imp = base_importance_for(
             source=req.source.value, memory_type=req.type.value, confidence=req.confidence
         )
-        embedding = await asyncio.to_thread(self._embed, req.content)
+        embedder = await self._embedder_for(graph_id)
+        embedding = await asyncio.to_thread(self._embed_with, embedder, req.content)
 
         try:
             await asyncio.to_thread(
@@ -332,7 +369,8 @@ class MemoryService:
         for row in await asyncio.to_thread(repo.fulltext_candidates, query=query, **filters):
             candidates[row["memory_id"]] = row
 
-        qvec = await asyncio.to_thread(self._embed, query)
+        embedder = await self._embedder_for(graph_id)
+        qvec = await asyncio.to_thread(self._embed_with, embedder, query)
         if qvec is not None:
             for row in await asyncio.to_thread(
                 repo.vector_candidates,
@@ -405,7 +443,8 @@ class MemoryService:
         candidates: dict[str, dict[str, Any]] = {}
         for row in await asyncio.to_thread(repo.fulltext_candidates, query=query, **filters):
             candidates[row["memory_id"]] = row
-        qvec = await asyncio.to_thread(self._embed, query)
+        embedder = await self._embedder_for(graph_id)
+        qvec = await asyncio.to_thread(self._embed_with, embedder, query)
         if qvec is not None:
             for row in await asyncio.to_thread(
                 repo.vector_candidates,
@@ -466,7 +505,12 @@ class MemoryService:
         new_content = req.content if req.content is not None else str(old["content"])
         new_confidence = req.confidence if req.confidence is not None else float(old["confidence"])
         content_changed = new_content != old["content"]
-        embedding = await asyncio.to_thread(self._embed, new_content) if content_changed else None
+        embedder = await self._embedder_for(graph_id) if content_changed else None
+        embedding = (
+            await asyncio.to_thread(self._embed_with, embedder, new_content)
+            if content_changed
+            else None
+        )
         new_id = str(uuid.uuid4())
         base_imp = float(old.get("base_importance") or 0.8)
 

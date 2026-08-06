@@ -22,11 +22,11 @@ _NOW = datetime(2026, 6, 1, tzinfo=UTC)
 
 
 def _svc() -> MemoryService:
-    # _rank touches none of the collaborators; pass trivial stand-ins.
+    # _rank touches none of the collaborators; pass trivial stand-ins. Since #724 the
+    # embedder is built per graph inside the service, so there is none to inject.
     return MemoryService(
         graphs=object(),  # type: ignore[arg-type]
         repo_factory=lambda _g: object(),  # type: ignore[arg-type,return-value]
-        embedder=None,
         enqueue_consolidation=lambda _g, _o: "job",
     )
 

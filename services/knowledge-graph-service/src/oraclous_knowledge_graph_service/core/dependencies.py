@@ -13,7 +13,6 @@ stay terse and ruff-clean (no `Depends()` in argument defaults, B008).
 
 from __future__ import annotations
 
-import logging
 import secrets
 import uuid
 from collections.abc import AsyncIterator
@@ -52,7 +51,6 @@ from oraclous_knowledge_graph_service.services.analytics_service import Analytic
 from oraclous_knowledge_graph_service.services.auth_client import make_auth_client
 from oraclous_knowledge_graph_service.services.credential_client import make_credential_broker
 from oraclous_knowledge_graph_service.services.dry_run_service import DryRunService
-from oraclous_knowledge_graph_service.services.embedder import Embedder, make_embedder
 from oraclous_knowledge_graph_service.services.grant_service import GraphGrantService
 from oraclous_knowledge_graph_service.services.graph_service import GraphService
 from oraclous_knowledge_graph_service.services.job_service import JobService
@@ -308,19 +306,6 @@ def _enqueue_memory_consolidation(graph_id: str, organisation_id: str) -> str:
     return str(consolidate_memories_task.delay(graph_id, organisation_id).id)
 
 
-def _make_memory_embedder() -> Embedder | None:
-    """Fail-soft embedder for the memory vertical (#332 / ADR-027 §3): a misconfigured embedder
-    (e.g. KGS_EMBEDDER=openai with no key) degrades to None — memories store without vectors and
-    recall runs fulltext-only — rather than taking the memory surface down."""
-    try:
-        return make_embedder(get_settings())
-    except Exception as exc:  # noqa: BLE001 — fail-soft: embeddings enrich recall, never gate it
-        logging.getLogger(__name__).warning(
-            "memory embedder unavailable (fulltext-only recall): %s", exc
-        )
-        return None
-
-
 def get_memory_service(
     driver: Annotated[Driver, Depends(get_neo4j_driver)],
     session: Annotated[AsyncSession, Depends(get_db_session)],
@@ -338,7 +323,7 @@ def get_memory_service(
     return MemoryService(
         graphs=GraphRepository(session),
         repo_factory=repo_factory,
-        embedder=_make_memory_embedder(),
+        settings=settings,
         enqueue_consolidation=_enqueue_memory_consolidation,
         vector_candidate_cap=settings.memory_vector_candidate_cap,
     )
