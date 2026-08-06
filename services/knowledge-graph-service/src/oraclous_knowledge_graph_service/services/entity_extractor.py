@@ -38,6 +38,10 @@ from neo4j_graphrag.experimental.components.types import (
 from neo4j_graphrag.llm import LLMInterface
 
 from oraclous_knowledge_graph_service.core.config import Settings
+from oraclous_knowledge_graph_service.services.model_credential import (
+    ModelCredential,
+    ModelCredentialUnavailable,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -151,6 +155,7 @@ class EntityExtractor:
 def make_extractor(
     settings: Settings,
     *,
+    credential: ModelCredential | None = None,
     schema: GraphSchema | None = None,
     prompt_prefix: str = "",
 ) -> EntityExtractor | None:
@@ -165,8 +170,12 @@ def make_extractor(
     """
     if settings.extractor == "null":
         return None
-    if not settings.openai_api_key:
-        raise RuntimeError("KGS_EXTRACTOR=openai requires KGS_OPENAI_API_KEY")
+    if credential is None:
+        raise ModelCredentialUnavailable(
+            "entity extraction reads every ingested chunk and needs the organisation's model "
+            "credential; none was resolved for this run",
+            error_code="model_credential_not_configured",
+        )
     # Lazy import so the key-free `null` path (CI default) never imports openai.
     from neo4j_graphrag.llm import OpenAILLM
 
@@ -175,7 +184,7 @@ def make_extractor(
         # JSON-object response so the extractor's JSON parse is reliable across providers.
         model_params={"temperature": 0.0, "response_format": {"type": "json_object"}},
         # kwargs flow to the openai client init -> point it at OpenRouter (or any compatible base).
-        api_key=settings.openai_api_key,
+        api_key=credential.api_key,
         base_url=settings.openai_base_url,
     )
     return EntityExtractor(
