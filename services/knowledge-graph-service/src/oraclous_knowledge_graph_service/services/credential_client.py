@@ -17,7 +17,8 @@ server-injected (the caller cannot override it).
 
 from __future__ import annotations
 
-from typing import Protocol
+import uuid
+from typing import Any, Protocol
 
 import httpx
 
@@ -34,6 +35,19 @@ class CredentialBrokerPort(Protocol):
     async def resolve_connection_string(
         self, *, organisation_id: str, credential_id: str
     ) -> str: ...
+
+    async def resolve_credential(
+        self, *, credential_id: str, organisation_id: uuid.UUID
+    ) -> dict[str, Any]:
+        """The decrypted payload by id, org-scoped (#724). Satisfies ``ModelCredentialBrokerPort``
+        so ``resolve_model_credential`` can take this client directly."""
+        ...
+
+    async def org_default_credential_id(
+        self, *, organisation_id: uuid.UUID, purpose: str = "model"
+    ) -> str | None:
+        """The org's designated default credential id for ``purpose``, or None (#724)."""
+        ...
 
     async def aclose(self) -> None: ...
 
@@ -61,6 +75,24 @@ class FakeCredentialBroker:
                 error_code="credential_not_found",
             )
         return dsn
+
+    async def resolve_credential(
+        self,
+        *,
+        credential_id: str,
+        organisation_id: uuid.UUID,  # noqa: ARG002 — fake ignores org
+    ) -> dict[str, Any]:
+        """#724 dev/CI seam. Returns a deterministic api_key so a key-free stack still exercises
+        the resolution PATH; it never reaches a real provider."""
+        return {"api_key": f"fake-model-key-for-{credential_id}"}
+
+    async def org_default_credential_id(
+        self,
+        *,
+        organisation_id: uuid.UUID,  # noqa: ARG002 — fake ignores org
+        purpose: str = "model",
+    ) -> str | None:
+        return f"fake-default-{purpose}"
 
     async def aclose(self) -> None:
         self.closed = True  # no client to close; mark for symmetry with the real broker
@@ -108,6 +140,46 @@ class RealCredentialBroker:
                 "resolved credential has no connection_string", error_code="credential_wrong_type"
             )
         return dsn
+
+    async def resolve_credential(
+        self, *, credential_id: str, organisation_id: uuid.UUID
+    ) -> dict[str, Any]:
+        """The decrypted payload by id (#724), org-scoped. Raises on every non-200 so the caller's
+        fail-closed path fires rather than a partial payload being used."""
+        resp = await self._client.post(
+            "/internal/resolve-credential",
+            json={"organisation_id": str(organisation_id), "credential_id": credential_id},
+        )
+        if resp.status_code == 404:
+            raise CredentialResolutionError(
+                "credential not found in the broker", error_code="credential_not_found"
+            )
+        if resp.status_code != 200:
+            raise CredentialResolutionError(
+                f"broker resolve-credential returned {resp.status_code}", error_code="broker_error"
+            )
+        payload: dict[str, Any] = resp.json().get("credential", {})
+        return payload
+
+    async def org_default_credential_id(
+        self, *, organisation_id: uuid.UUID, purpose: str = "model"
+    ) -> str | None:
+        """The org's designated default credential id (#724), or None when nothing is designated.
+
+        A null answer is NOT an error: it is the fail-closed signal the caller turns into a typed
+        refusal naming what the user must configure.
+        """
+        resp = await self._client.post(
+            "/internal/org-default-credential",
+            json={"organisation_id": str(organisation_id), "purpose": purpose},
+        )
+        if resp.status_code != 200:
+            raise CredentialResolutionError(
+                f"broker org-default-credential returned {resp.status_code}",
+                error_code="broker_error",
+            )
+        value = resp.json().get("credential_id")
+        return str(value) if value else None
 
     async def aclose(self) -> None:
         await self._client.aclose()

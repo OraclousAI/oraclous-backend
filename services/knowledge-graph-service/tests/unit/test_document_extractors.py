@@ -22,6 +22,9 @@ from oraclous_knowledge_graph_service.services.extractors import (
     source_type_for,
     supported_kinds,
 )
+from oraclous_knowledge_graph_service.services.model_credential import (
+    ModelCredentialUnavailable,
+)
 from oraclous_knowledge_graph_service.services.vision_extractor import (
     VisionExtractor,
     diagram_to_text,
@@ -277,6 +280,7 @@ def test_make_vision_extractor_off_in_null_mode() -> None:
     assert make_vision_extractor(Settings()) is None
 
 
-def test_make_vision_extractor_requires_key() -> None:
-    with pytest.raises(RuntimeError, match="KGS_OPENAI_API_KEY"):
-        make_vision_extractor(Settings(extractor="openai"))
+def test_make_vision_extractor_requires_the_org_credential() -> None:
+    """#724: vision extraction reads ingested images, so it needs the org's credential."""
+    with pytest.raises(ModelCredentialUnavailable, match="model_credential_not_configured"):
+        make_vision_extractor(Settings(extractor="openai"), credential=None)

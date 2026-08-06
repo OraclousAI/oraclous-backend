@@ -32,6 +32,10 @@ from oraclous_knowledge_graph_service.services.entity_extractor import (
     make_extractor,
 )
 from oraclous_knowledge_graph_service.services.ingestion_service import IngestionService
+from oraclous_knowledge_graph_service.services.model_credential import (
+    ModelCredential,
+    ModelCredentialUnavailable,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -260,14 +264,17 @@ def test_make_extractor_null_returns_none() -> None:
     assert make_extractor(Settings(extractor="null")) is None
 
 
-def test_make_extractor_openai_requires_key() -> None:
-    with pytest.raises(RuntimeError, match="KGS_OPENAI_API_KEY"):
-        make_extractor(Settings(extractor="openai", openai_api_key=None))
+def test_make_extractor_openai_requires_the_org_credential() -> None:
+    """#724 replaced the platform key: extraction reads every ingested chunk, so it runs on the
+    ORG's broker-resolved credential or not at all. No credential is a refusal, never a fallback."""
+    with pytest.raises(ModelCredentialUnavailable, match="model_credential_not_configured"):
+        make_extractor(Settings(extractor="openai"), credential=None)
 
 
-def test_make_extractor_openai_builds_with_key() -> None:
+def test_make_extractor_openai_builds_with_the_org_credential() -> None:
     extractor = make_extractor(
-        Settings(extractor="openai", openai_api_key="sk-test", extractor_model="openai/gpt-4o-mini")
+        Settings(extractor="openai", extractor_model="openai/gpt-4o-mini"),
+        credential=ModelCredential(api_key="sk-org-byom", credential_id="cred-1"),
     )
     assert isinstance(extractor, EntityExtractor)
 
@@ -276,17 +283,22 @@ def test_make_extractor_forwards_max_concurrency(monkeypatch: pytest.MonkeyPatch
     """`KGS_EXTRACTOR_MAX_CONCURRENCY` -> settings.extractor_max_concurrency -> the extractor's
     library `max_concurrency` (env-tunable per-chunk LLM fan-out)."""
     monkeypatch.setenv("KGS_EXTRACTOR_MAX_CONCURRENCY", "17")
-    settings = Settings(extractor="openai", openai_api_key="sk-test")
+    settings = Settings(extractor="openai")
     assert settings.extractor_max_concurrency == 17  # env var maps via the KGS_ prefix
 
-    extractor = make_extractor(settings)
+    extractor = make_extractor(
+        settings, credential=ModelCredential(api_key="sk-org-byom", credential_id="cred-1")
+    )
     assert isinstance(extractor, EntityExtractor)
     assert extractor._extractor.max_concurrency == 17
 
 
 def test_make_extractor_default_max_concurrency() -> None:
     """The default per-chunk concurrency is 10 (raised from 5 for throughput)."""
-    extractor = make_extractor(Settings(extractor="openai", openai_api_key="sk-test"))
+    extractor = make_extractor(
+        Settings(extractor="openai"),
+        credential=ModelCredential(api_key="sk-org-byom", credential_id="cred-1"),
+    )
     assert isinstance(extractor, EntityExtractor)
     assert extractor._extractor.max_concurrency == 10
 
@@ -297,7 +309,8 @@ def test_make_extractor_forwards_schema_and_prompt_prefix() -> None:
 
     schema = GraphSchema(node_types=(NodeType(label="Person"),))
     extractor = make_extractor(
-        Settings(extractor="openai", openai_api_key="sk-test"),
+        Settings(extractor="openai"),
+        credential=ModelCredential(api_key="sk-org-byom", credential_id="cred-1"),
         schema=schema,
         prompt_prefix="## hint",
     )

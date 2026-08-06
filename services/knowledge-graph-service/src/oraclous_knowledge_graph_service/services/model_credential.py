@@ -59,6 +59,14 @@ class ModelCredentialBrokerPort(Protocol):
     ) -> dict[str, Any]: ...
 
 
+class DefaultLookupBrokerPort(ModelCredentialBrokerPort, Protocol):
+    """A broker that can also answer which credential the org designated as its default."""
+
+    async def org_default_credential_id(
+        self, *, organisation_id: uuid.UUID, purpose: str = "model"
+    ) -> str | None: ...
+
+
 def _api_key_of(payload: dict[str, Any]) -> str | None:
     """The usable key out of a resolved payload, or None. Mirrors the retriever's BYOM judge,
     which accepts either shape the broker stores."""
@@ -113,3 +121,28 @@ async def resolve_model_credential(
             error_code="model_credential_unusable",
         )
     return ModelCredential(api_key=api_key, credential_id=credential_id)
+
+
+async def resolve_for_graph(
+    *,
+    organisation_id: uuid.UUID,
+    graph_id: uuid.UUID | None,
+    graph_credential_id: str | None,
+    broker: DefaultLookupBrokerPort,
+) -> ModelCredential:
+    """The call-site convenience: look the org default up, then apply the #724 resolution order.
+
+    Separated from :func:`resolve_model_credential` so that function stays pure of the lookup and
+    every test can drive the order without a broker that knows about defaults. Callers that already
+    hold both ids should use the lower-level function directly.
+    """
+    org_default = await broker.org_default_credential_id(
+        organisation_id=organisation_id, purpose="model"
+    )
+    return await resolve_model_credential(
+        organisation_id=organisation_id,
+        graph_id=graph_id,
+        broker=broker,
+        org_default_credential_id=org_default,
+        graph_credential_id=graph_credential_id,
+    )
