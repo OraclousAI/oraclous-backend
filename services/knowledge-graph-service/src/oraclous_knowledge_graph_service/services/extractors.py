@@ -34,6 +34,7 @@ from collections.abc import Callable
 from typing import Any
 
 from oraclous_knowledge_graph_service.core.config import Settings, get_settings
+from oraclous_knowledge_graph_service.services.model_credential import ModelCredential
 from oraclous_knowledge_graph_service.services.vision_extractor import (
     is_image_ext,
     make_vision_extractor,
@@ -220,10 +221,20 @@ def _extract_md(
 
 
 def _extract_image(
-    *, data: bytes, filename: str | None = None, settings: Settings | None = None, **_: Any
+    *,
+    data: bytes,
+    filename: str | None = None,
+    settings: Settings | None = None,
+    credential: ModelCredential | None = None,
+    **_: Any,
 ) -> tuple[str, dict[str, Any]]:
-    """Image → prose via the live LLM vision seam; fail-closed when no LLM is configured."""
-    vision = make_vision_extractor(settings or get_settings())
+    """Image → prose via the live LLM vision seam; fail-closed without the org's credential.
+
+    #724: the credential arrives through ``extract_text``'s ``**kwargs`` passthrough, so the
+    public plug-in signature (``register_extractor``) is unchanged and a third-party extractor
+    that ignores it keeps working.
+    """
+    vision = make_vision_extractor(settings or get_settings(), credential=credential)
     if vision is None:
         raise ExtractionError(
             "image extraction requires the LLM seam (set KGS_EXTRACTOR=openai + KGS_OPENAI_API_KEY)"
@@ -262,6 +273,7 @@ def extract_text(
     filename: str | None = None,
     source_type: str | None = None,
     settings: Settings | None = None,
+    credential: ModelCredential | None = None,
 ) -> tuple[str, dict[str, Any]]:
     """Return (plain_text, metadata) by dispatching on content-type. Raises ExtractionError.
 
@@ -275,7 +287,11 @@ def extract_text(
         # extract_text on one is a programming error, surfaced (never silently emptied).
         raise ExtractionError(f"no text extractor for kind {kind!r} (routed to a structured path)")
     text, metadata = extractor(
-        data=data, filename=filename, source_type=source_type, settings=settings
+        data=data,
+        filename=filename,
+        source_type=source_type,
+        settings=settings,
+        credential=credential,
     )
     text = text.strip()
     if not text:

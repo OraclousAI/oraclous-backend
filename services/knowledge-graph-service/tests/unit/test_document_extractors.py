@@ -258,7 +258,7 @@ def test_diagram_to_text_resolves_ids_to_labels() -> None:
 def test_image_dispatch_uses_vision_when_configured(monkeypatch: pytest.MonkeyPatch) -> None:
     client = _FakeVisionClient(_ENTITIES_JSON)
     monkeypatch.setattr(
-        extractors, "make_vision_extractor", lambda _s: VisionExtractor(client=client)
+        extractors, "make_vision_extractor", lambda _s, **_kw: VisionExtractor(client=client)
     )
     text, meta = extract_text(
         data=b"\x89PNG", filename="screenshot.png", source_type="image", settings=Settings()

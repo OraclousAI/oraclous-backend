@@ -314,7 +314,7 @@ def test_temporal_rule_with_no_dates_writes_bare_edge(monkeypatch: pytest.Monkey
 def test_temporal_flag_appends_steering_to_prompt_prefix(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: dict[str, str] = {}
 
-    def _capture_make_extractor(settings, *, schema=None, prompt_prefix=""):  # noqa: ARG001
+    def _capture_make_extractor(settings, *, schema=None, prompt_prefix="", **_kw):  # noqa: ARG001
         captured["prefix"] = prompt_prefix
         return EntityExtractor(
             llm=_FixedLLM(
