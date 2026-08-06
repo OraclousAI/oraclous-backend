@@ -16,6 +16,10 @@ import math
 from typing import Protocol, runtime_checkable
 
 from oraclous_knowledge_graph_service.core.config import Settings
+from oraclous_knowledge_graph_service.services.model_credential import (
+    ModelCredential,
+    ModelCredentialUnavailable,
+)
 
 
 @runtime_checkable
@@ -82,12 +86,16 @@ class OpenAIEmbedder:
         return out
 
 
-def make_embedder(settings: Settings) -> Embedder:
+def make_embedder(settings: Settings, *, credential: ModelCredential | None = None) -> Embedder:
     if settings.embedder == "openai":
-        if not settings.openai_api_key:
-            raise RuntimeError("KGS_EMBEDDER=openai requires KGS_OPENAI_API_KEY")
+        if credential is None:
+            raise ModelCredentialUnavailable(
+                "embedding ingested content needs the organisation's model credential; none was "
+                "resolved for this run",
+                error_code="model_credential_not_configured",
+            )
         return OpenAIEmbedder(
-            api_key=settings.openai_api_key,
+            api_key=credential.api_key,
             dim=settings.embedding_dim,
             base_url=settings.openai_base_url,
         )

@@ -27,6 +27,10 @@ import logging
 from typing import Any, Protocol, runtime_checkable
 
 from oraclous_knowledge_graph_service.core.config import Settings
+from oraclous_knowledge_graph_service.services.model_credential import (
+    ModelCredential,
+    ModelCredentialUnavailable,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -267,7 +271,9 @@ class VisionExtractor:
         return text, metadata
 
 
-def make_vision_extractor(settings: Settings) -> VisionExtractor | None:
+def make_vision_extractor(
+    settings: Settings, *, credential: ModelCredential | None = None
+) -> VisionExtractor | None:
     """Build the vision extractor from config, or None when the LLM seam is off.
 
     Gated by the SAME switch as free-text entity extraction (`KGS_EXTRACTOR`): vision needs the live
@@ -276,10 +282,14 @@ def make_vision_extractor(settings: Settings) -> VisionExtractor | None:
     """
     if settings.extractor == "null":
         return None
-    if not settings.openai_api_key:
-        raise RuntimeError("KGS_EXTRACTOR=openai requires KGS_OPENAI_API_KEY for vision extraction")
+    if credential is None:
+        raise ModelCredentialUnavailable(
+            "vision extraction reads ingested images and needs the organisation's model "
+            "credential; none was resolved for this run",
+            error_code="model_credential_not_configured",
+        )
     client = OpenAIVisionChatClient(
-        api_key=settings.openai_api_key,
+        api_key=credential.api_key,
         model=settings.extractor_model,
         base_url=settings.openai_base_url,
     )

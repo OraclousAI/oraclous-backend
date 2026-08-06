@@ -59,9 +59,11 @@ class Settings(BaseSettings):
     embedder: Literal["hashing", "openai"] = "hashing"
     embedding_dim: int = 512
     extractor: Literal["null", "openai"] = "null"
-    # Shared OpenAI-compatible API key (embedder + extractor). The platform's single LLM key is
-    # OpenRouter's; compose injects KGS_OPENAI_API_KEY=${OPENROUTER_API_KEY}.
-    openai_api_key: str | None = None
+    # #724: there is deliberately NO platform model key here. Every model call over customer data
+    # (extraction, summarisation, vision, embeddings, schema synthesis) resolves the ORG's
+    # credential from the credential-broker per call, via `services.model_credential`. A field
+    # here would be a fallback, and a fallback is the thing #295 and #653 each removed once.
+    # The org's default credential id and a graph's override are what get looked up instead.
     # OpenAI-compatible base URL the embedder + extractor clients point at. Default = OpenRouter, so
     # the one platform key reaches Claude/OpenAI/etc. behind one endpoint. The stock OpenAI embedder
     # model `text-embedding-3-small` is only served by api.openai.com, so an OpenAI embedder caller
