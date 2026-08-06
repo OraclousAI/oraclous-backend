@@ -56,6 +56,15 @@ def _resolver():
     return resolve_model_credential, ModelCredentialUnavailable
 
 
+class _BrokerError(Exception):
+    """Mirrors the real client's failure type.
+
+    ``BrokerClient.resolve_credential`` raises ``BrokerError`` for an unknown or unresolvable
+    credential (``broker_client.py:50``). A fake that raised ``KeyError`` instead would let a
+    resolver catching only ``KeyError`` pass here and then fail OPEN against the real broker.
+    """
+
+
 class _Broker:
     """A stand-in credential broker: maps credential_id to a resolved payload, org-scoped."""
 
@@ -68,7 +77,7 @@ class _Broker:
     ) -> dict[str, str]:
         self.calls.append((credential_id, organisation_id))
         if credential_id not in self._payloads:
-            raise KeyError(credential_id)
+            raise _BrokerError(f"credential {credential_id} not found")
         return self._payloads[credential_id]
 
 
@@ -227,7 +236,55 @@ async def test_the_failure_tells_the_caller_what_to_do() -> None:
     assert "sk-" not in str(err)
 
 
+@pytest.mark.asyncio
+async def test_the_message_carries_the_code_because_that_string_is_all_a_user_sees() -> None:
+    """#724 AC3, the caller-visible half.
+
+    Extraction runs in a Celery worker after the request has returned, so the only surface a user
+    has is the ingest job record. ``ingest_tasks.py:158`` writes ``error_message=str(exc)`` on any
+    exception, which makes ``str(exc)`` the entire user-facing account of the failure. On run
+    ``dc167d8e`` that record read ``completed`` with ``0 entities`` while every call was refused.
+    """
+    resolve, unavailable = _resolver()
+
+    with pytest.raises(unavailable) as excinfo:
+        await resolve(
+            organisation_id=_ORG,
+            graph_id=_GRAPH,
+            broker=_Broker({}),
+            org_default_credential_id=None,
+            graph_credential_id=None,
+        )
+
+    assert "model_credential_not_configured" in str(excinfo.value), (
+        "the code must survive into str(exc): the job record keeps only that string, so a code "
+        "held on an attribute alone never reaches the user"
+    )
+
+
 # --- AC4: every one of the six factories takes a resolved credential ------------------------
+
+
+def _is_settings_borne(node: ast.Attribute) -> bool:
+    """True when ``node`` reads an api_key off SETTINGS, e.g. ``settings.openai_api_key``,
+    ``self._settings.openai_api_key`` or ``get_settings().openai_api_key``.
+
+    The distinction is the whole issue: the defect is where the key comes from, not that a key is
+    used. ``credential.api_key`` off a broker-resolved credential is the CORRECT shape and must
+    keep passing, so matching on the attribute name alone would make the criterion unsatisfiable.
+    """
+    if not node.attr.endswith("api_key"):
+        return False
+    base = node.value
+    if isinstance(base, ast.Name):
+        return "settings" in base.id.lower()
+    if isinstance(base, ast.Attribute):
+        return "settings" in base.attr.lower()
+    if isinstance(base, ast.Call):  # get_settings().openai_api_key
+        func = base.func
+        name = func.id if isinstance(func, ast.Name) else getattr(func, "attr", "")
+        return "settings" in name.lower()
+    return False
 
 
 @pytest.mark.parametrize(("relative_path", "why"), _CUSTOMER_DATA_MODEL_SITES)
@@ -235,19 +292,30 @@ def test_no_customer_data_model_client_reads_a_platform_key(relative_path: str, 
     """#724 AC4 + AC5, the enforcement half.
 
     Static rather than behavioural on purpose: the guarantee is "no site does this", and a
-    behavioural test per factory would pass while the seventh site added next month does not
-    exist yet. Scans for any attribute read of a settings-borne ``*api_key``.
+    behavioural test per factory would pass while saying nothing about the seventh site added
+    next month.
     """
     source = (_KGS_SRC / relative_path).read_text(encoding="utf-8")
     tree = ast.parse(source)
 
     offenders = [
-        f"line {node.lineno}: reads {node.attr}"
+        f"line {node.lineno}: reads {node.attr} off settings"
         for node in ast.walk(tree)
-        if isinstance(node, ast.Attribute) and node.attr.endswith("api_key")
+        if isinstance(node, ast.Attribute) and _is_settings_borne(node)
     ]
 
     assert not offenders, (
         f"{relative_path} builds a model client from platform config, but {why}. "
         f"It must take a broker-resolved org credential (#724). Found: {offenders}"
     )
+
+
+def test_the_scan_still_allows_a_broker_resolved_credential() -> None:
+    """Guards the predicate itself. The fixed shape reads ``credential.api_key``; a scan that
+    flagged it would block the correct implementation rather than the wrong one."""
+    fixed = (
+        "def make_extractor(settings, credential):\n"
+        "    return OpenAILLM(api_key=credential.api_key, base_url=settings.openai_base_url)\n"
+    )
+    flagged = [n for n in ast.walk(ast.parse(fixed)) if isinstance(n, ast.Attribute)]
+    assert not [n for n in flagged if _is_settings_borne(n)]

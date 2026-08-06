@@ -88,6 +88,20 @@ def test_a_tavily_key_in_a_service_env_is_still_denied() -> None:
     assert "BMK001" in _check_manifest('  CRS_TAVILY_API_KEY: "${TAVILY_API_KEY}"')
 
 
+@pytest.mark.parametrize("line", ["TAVILY_API_KEY=tvly-xxx", "OPENROUTER_API_KEY=sk-or-v1-xxx"])
+def test_an_env_file_source_is_not_a_service_env(line: str) -> None:
+    """The exemption the guardrail depends on, pinned rather than only documented.
+
+    ``deploy/.env`` legitimately holds these: an e2e reads one and pastes it through the
+    credentials API so it becomes an org credential, which is the pattern #724 protects. A
+    guardrail that fired on the env file would flag the correct BYOM flow and be switched off.
+
+    The tell is the shape. ``KEY=value`` is an env-file assignment; ``KEY: "${...}"`` under a
+    service is an injection into a container.
+    """
+    assert _check_manifest(line) == set()
+
+
 # --- BMK002: a service config declares the field a deployment would populate -----------------
 
 
