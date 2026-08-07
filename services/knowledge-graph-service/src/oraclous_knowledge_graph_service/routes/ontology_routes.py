@@ -8,12 +8,18 @@ ontology PUT accepts, so a client can review and then save it onto a graph.
 from __future__ import annotations
 
 import uuid
+from typing import Annotated
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status
+from oraclous_governance.propagation import OrganisationContext
 from oraclous_substrate.access import enforced_organisation_id
 
 from oraclous_knowledge_graph_service.core.config import get_settings
-from oraclous_knowledge_graph_service.core.dependencies import OntologyServiceDep, UserIdDep
+from oraclous_knowledge_graph_service.core.dependencies import (
+    OntologyServiceDep,
+    UserIdDep,
+    bind_org_context,
+)
 from oraclous_knowledge_graph_service.schema.ontology_schemas import (
     OntologyRequest,
     OntologyResponse,
@@ -42,7 +48,9 @@ _NOT_FOUND = HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="graph 
 
 @suggest_router.post("/suggest", response_model=SuggestedOntologyResponse)
 async def suggest_ontology(
-    body: SuggestOntologyRequest, _user_id: UserIdDep
+    body: SuggestOntologyRequest,
+    _user_id: UserIdDep,
+    _org: Annotated[OrganisationContext, Depends(bind_org_context)],
 ) -> SuggestedOntologyResponse:
     """Infer a typed ontology from a text sample (schema synthesis). 503 when no LLM is configured.
 

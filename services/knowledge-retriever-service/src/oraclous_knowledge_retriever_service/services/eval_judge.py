@@ -92,8 +92,16 @@ async def resolve_judge_for_org(
     not run at all. Raises :class:`BrokerError` when nothing is configured or nothing resolves; the
     route turns that into a typed 422, never a fabricated score (#331).
     """
+    if not settings.credential_broker_url:
+        # #724: the judge is BYOM-only, so a deployment with no broker cannot build one. Say that
+        # plainly. Constructing a client on an empty base_url defers the failure to request time,
+        # where httpx raises UnsupportedProtocol and the caller learns nothing useful.
+        raise BrokerError(
+            "model_credential_not_configured: no credential broker is configured, so the "
+            "evaluation judge cannot resolve this organisation's model credential."
+        )
     broker = BrokerClient(
-        settings.credential_broker_url or "", internal_key=settings.internal_service_key or ""
+        settings.credential_broker_url, internal_key=settings.internal_service_key or ""
     )
     try:
         resolved_id = credential_id or await broker.org_default_credential_id(

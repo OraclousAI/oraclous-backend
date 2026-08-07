@@ -36,9 +36,21 @@ class _FakeJudge:
     async def complete_text(self, *, system: str, user: str) -> str:
         return "text"
 
+    async def aclose(self) -> None:
+        # #724: the route builds a per-request judge and closes it, so a stand-in must close too.
+        return None
+
 
 @pytest.fixture
-def client(app, async_client):
+def client(app, async_client, monkeypatch):
+    # #724: /internal/evaluate resolves its judge per request from the ORG's credential instead of
+    # taking an injected one, so a DI override no longer reaches this route. Patch the resolver.
+    import oraclous_knowledge_retriever_service.routes.internal_routes as ir
+
+    async def _resolve(*_a, **_kw):
+        return _FakeJudge()
+
+    monkeypatch.setattr(ir, "resolve_judge_for_org", _resolve)
     app.dependency_overrides[get_org_judge] = lambda: _FakeJudge()
     yield async_client
     app.dependency_overrides.clear()
@@ -54,7 +66,13 @@ async def test_returns_a_structured_verdict(client) -> None:
     assert v["evaluated"]["target_ref"] == "run-1/member-a"
 
 
-async def test_below_threshold_does_not_pass(app, client) -> None:
+async def test_below_threshold_does_not_pass(app, client, monkeypatch) -> None:
+    import oraclous_knowledge_retriever_service.routes.internal_routes as ir
+
+    async def _resolve_low(*_a, **_kw):
+        return _FakeJudge(score=0.2)
+
+    monkeypatch.setattr(ir, "resolve_judge_for_org", _resolve_low)
     app.dependency_overrides[get_org_judge] = lambda: _FakeJudge(score=0.2)
     resp = await client.post("/internal/v1/evaluate", json=_body(), headers=_AUTH)
     assert resp.json()["pass"] is False and resp.json()["recommended_action"] == "revise"
@@ -119,7 +137,7 @@ async def test_byom_judge_credential_grades_via_broker_without_singleton(
 
     import oraclous_knowledge_retriever_service.routes.internal_routes as ir
 
-    monkeypatch.setattr(ir, "resolve_byom_judge", _fake_resolve)
+    monkeypatch.setattr(ir, "resolve_judge_for_org", _fake_resolve)
     # NO get_org_judge override → the singleton is None; only the BYOM path can succeed.
     resp = await async_client.post(
         "/internal/v1/evaluate", json=_body(judge_credential_id="cred-byom"), headers=_AUTH
@@ -141,7 +159,7 @@ async def test_byom_credential_unresolvable_is_fail_closed_422(
 
     import oraclous_knowledge_retriever_service.routes.internal_routes as ir
 
-    monkeypatch.setattr(ir, "resolve_byom_judge", _boom)
+    monkeypatch.setattr(ir, "resolve_judge_for_org", _boom)
     resp = await async_client.post(
         "/internal/v1/evaluate", json=_body(judge_credential_id="cred-x"), headers=_AUTH
     )
