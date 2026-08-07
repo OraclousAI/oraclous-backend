@@ -52,6 +52,9 @@ class CredentialOut(BaseModel):
     user_id: UUID
     tool_id: UUID
     cred_type: str
+    # #724: which purpose this credential is the org's default for, or None. Echoed so a caller
+    # can read back what it just designated instead of having to re-fetch and guess.
+    default_for: str | None = None
 
 
 class RequestCredentialsResponse(BaseModel):
