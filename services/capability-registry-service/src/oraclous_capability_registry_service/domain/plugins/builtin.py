@@ -268,7 +268,19 @@ class GraphIngestPlugin(_ConnectorToolPlugin):
                 "a different graph your org owns.",
             },
             "content": {"type": "string", "minLength": 1},
-            "source_type": {"type": "string"},
+            # #728: a described title so the model can NAME what it writes. Optional — the KGS
+            # derives one from the content's own heading, or from the producing member, when it is
+            # absent, so no artifact is ever the constant ``inline.txt``.
+            "title": {
+                "type": "string",
+                "description": "A short human-readable name for this content, e.g. its heading. "
+                "Optional; one is derived from the content when omitted.",
+            },
+            "source_type": {
+                "type": "string",
+                "enum": ["text", "md", "markdown", "csv", "json", "code", "pdf"],
+                "description": "The content's format. Defaults to free text.",
+            },
             "recipe_id": {"type": "string"},
         },
     }
