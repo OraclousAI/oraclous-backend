@@ -39,6 +39,11 @@ from oraclous_knowledge_graph_service.core.dependencies import (
     MemoryServiceDep,
     UserIdDep,
 )
+from oraclous_knowledge_graph_service.domain.artifact_naming import (
+    ProducerKind,
+    ProducerRef,
+    derive_name,
+)
 from oraclous_knowledge_graph_service.schema.ingest_schemas import (
     GraphIdName,
     InternalGraphListResponse,
@@ -56,6 +61,31 @@ from oraclous_knowledge_graph_service.services.graph_service import GraphNotFoun
 from oraclous_knowledge_graph_service.services.memory_service import GraphNotVisible
 
 router = APIRouter(prefix="/internal/v1", tags=["internal"])
+
+#: The producer kinds an agent write may claim. Anything else (or nothing) reads as a user upload,
+#: which keeps filename-based document keying (#522) — fail-safe, never a silent id-keyed write.
+_AGENT_KINDS: frozenset[str] = frozenset({"team-member", "standalone-agent"})
+
+
+def _producer_of(body: InternalIngestRequest) -> ProducerRef | None:
+    """The producer an internal ingest declares, or None for anything that is not an agent write.
+
+    The values arrive from the connector's INSTANCE CONFIGURATION rather than from the model, the
+    same trusted path ``graph_id`` already travels, so this only has to reject the absent case.
+    """
+    if body.producer_kind not in _AGENT_KINDS:
+        return None
+    kind: ProducerKind = (
+        "team-member" if body.producer_kind == "team-member" else "standalone-agent"
+    )
+    return ProducerRef(
+        kind=kind,
+        team_run_id=body.team_run_id,
+        member_role=body.member_role,
+        execution_id=body.execution_id,
+        team_id=body.team_id,
+        ordinal=body.ordinal,
+    )
 
 
 @router.get("/graphs", response_model=InternalGraphListResponse)
@@ -102,15 +132,21 @@ async def internal_ingest(
     a graph that is not in the principal's org raises ``GraphNotFound`` → 404, so a forwarded
     principal can never write into another tenant's graph.
     """
-    default_name = "inline.txt" if body.source_type == "text" else f"inline.{body.source_type}"
+    # #728: an artifact is named for a person. Every agent write used to arrive as the constant
+    # ``inline.txt``, and the lexical document node is keyed on that name, so a run's whole output
+    # collapsed onto ONE node (run dc167d8e: 7 artifacts landed, 1 survived). The name is DERIVED —
+    # a supplied title, else the title the content already carries, else the producing member.
+    producer = _producer_of(body)
+    name = derive_name(body.content, title=body.title, producer=producer)
     try:
         job = await service.submit(
             user_id=user_id,
             graph_id=body.graph_id,
             data=body.content.encode("utf-8"),
-            filename=default_name,
+            filename=name,
             source_type=body.source_type,
             recipe_id=body.recipe_id,
+            producer=producer,
         )
     except GraphNotFound:
         raise HTTPException(

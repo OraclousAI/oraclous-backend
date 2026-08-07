@@ -55,6 +55,19 @@ class InternalIngestRequest(BaseModel):
     content: str = Field(min_length=1, validation_alias="source_content")
     source_type: str = "text"
     recipe_id: str | None = None
+    # #728 — the artifact's human name. Optional: when absent the route derives one from the
+    # content (a leading heading) or from the producing member, so an artifact is NEVER the
+    # constant ``inline.txt`` that made a run's whole output collapse onto one graph node.
+    title: str | None = None
+    # #728 provenance. Supplied by the RUNTIME through the connector's instance configuration
+    # (the rule ``graph_ingest`` already applies to ``graph_id``), never chosen by the model.
+    # Absent → a user upload, which keeps filename-based document keying (#522).
+    producer_kind: str | None = None
+    team_run_id: uuid.UUID | None = None
+    member_role: str | None = None
+    execution_id: uuid.UUID | None = None
+    team_id: str | None = None
+    ordinal: int | None = None
 
     model_config = {"populate_by_name": True}
 
