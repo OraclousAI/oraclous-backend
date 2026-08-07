@@ -13,6 +13,7 @@ from oraclous_substrate.access import enforced_organisation_id
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from oraclous_knowledge_graph_service.domain.artifact_naming import ProducerRef
 from oraclous_knowledge_graph_service.domain.job import IngestionJobRecord, IngestionPayload
 from oraclous_knowledge_graph_service.repositories.models import IngestionJob
 
@@ -31,6 +32,13 @@ def _to_record(row: IngestionJob) -> IngestionJobRecord:
         extracted_relationships=row.extracted_relationships,
         created_at=row.created_at,
         updated_at=row.updated_at,
+        producer_kind=row.producer_kind,
+        team_run_id=row.team_run_id,
+        member_role=row.member_role,
+        execution_id=row.execution_id,
+        team_id=row.team_id,
+        ordinal=row.ordinal,
+        content_hash=row.content_hash,
     )
 
 
@@ -54,6 +62,8 @@ class IngestionJobRepository:
         valid_from: str | None = None,
         valid_to: str | None = None,
         event_time: str | None = None,
+        producer: ProducerRef | None = None,
+        content_hash: str | None = None,
     ) -> IngestionJobRecord:
         row = IngestionJob(
             organisation_id=self._org(),
@@ -67,6 +77,15 @@ class IngestionJobRepository:
             event_time=event_time,
             status="pending",
             progress=0,
+            # #728: provenance rides the create so an artifact knows its producer from birth. A
+            # user upload passes none and keeps NULL, which is what preserves filename keying.
+            producer_kind=producer.kind if producer else None,
+            team_run_id=producer.team_run_id if producer else None,
+            member_role=producer.member_role if producer else None,
+            execution_id=producer.execution_id if producer else None,
+            team_id=producer.team_id if producer else None,
+            ordinal=producer.ordinal if producer else None,
+            content_hash=content_hash,
         )
         self._session.add(row)
         await self._session.flush()
