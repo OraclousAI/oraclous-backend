@@ -45,12 +45,23 @@ class ModelCredentialUnavailable(Exception):
         self.error_code = error_code
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, repr=False)
 class ModelCredential:
-    """A resolved BYOM model credential. Carries the key only for the call being built."""
+    """A resolved BYOM model credential. Carries the key only for the call being built.
+
+    ``repr`` is written by hand and REDACTS the key. The generated dataclass repr printed it, which
+    put a customer's decrypted credential one log line, traceback frame or exception render away
+    from disclosure. This object crosses nine call sites, worker threads and a Celery boundary, so
+    "nothing logs it today" is not a property worth relying on.
+    """
 
     api_key: str
     credential_id: str
+
+    def __repr__(self) -> str:
+        return f"ModelCredential(credential_id={self.credential_id!r}, api_key=<redacted>)"
+
+    __str__ = __repr__
 
 
 class ModelCredentialBrokerPort(Protocol):

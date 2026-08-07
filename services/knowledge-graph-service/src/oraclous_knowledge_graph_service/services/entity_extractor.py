@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import uuid
 
 from neo4j_graphrag.experimental.components.entity_relation_extractor import (
     LLMEntityRelationExtractor,
@@ -38,6 +39,7 @@ from neo4j_graphrag.experimental.components.types import (
 from neo4j_graphrag.llm import LLMInterface
 
 from oraclous_knowledge_graph_service.core.config import Settings
+from oraclous_knowledge_graph_service.services import credential_cache
 from oraclous_knowledge_graph_service.services.model_credential import (
     ModelCredential,
     ModelCredentialUnavailable,
@@ -100,6 +102,8 @@ class EntityExtractor:
         max_concurrency: int = 5,
         schema: GraphSchema | None = None,
         prompt_prefix: str = "",
+        organisation_id: uuid.UUID | None = None,
+        credential_id: str | None = None,
     ) -> None:
         # create_lexical_graph=False: we own the lexical (:Document/:Chunk) graph on the write side
         # with deterministic ids + embeddings; the extractor returns ONLY the entity sub-graph.
@@ -115,6 +119,9 @@ class EntityExtractor:
         # library `max_concurrency` above governs fan-out WITHIN a single chunk; this bounds the
         # across-chunk gather below so a 600-chunk document is not 600 serial round-trips.
         self._max_concurrency = max_concurrency
+        # #724: identify the credential in use so a provider rejection can drop it from the cache.
+        self._organisation_id = organisation_id
+        self._credential_id = credential_id
 
     async def extract(self, *, chunks: list[str], chunk_ids: list[str]) -> Neo4jGraph:
         """Run extraction over the chunk texts and return their entity sub-graph.
@@ -176,6 +183,11 @@ class EntityExtractor:
         # fault is not per-chunk: it will not fix itself for chunk 4, so the honest outcome is to
         # fail the run and let it be re-run once the credential is fixed.
         if credential_failures:
+            # #724: the provider rejected this org's key, so the cached copy is now known-bad.
+            # Dropping it makes a rotation heal on the next call instead of after the full TTL,
+            # which is the flush-on-rejection the cache documents.
+            if self._credential_id is not None and self._organisation_id is not None:
+                credential_cache.invalidate(self._organisation_id, self._credential_id)
             raise ExtractionCredentialRejected(
                 f"the model provider rejected this organisation's credential on "
                 f"{credential_failures} of {len(chunks)} chunks (auth/quota). Nothing was "
@@ -203,6 +215,7 @@ def make_extractor(
     settings: Settings,
     *,
     credential: ModelCredential | None = None,
+    organisation_id: uuid.UUID | None = None,
     schema: GraphSchema | None = None,
     prompt_prefix: str = "",
 ) -> EntityExtractor | None:
@@ -239,4 +252,6 @@ def make_extractor(
         max_concurrency=settings.extractor_max_concurrency,
         schema=schema,
         prompt_prefix=prompt_prefix,
+        organisation_id=organisation_id,
+        credential_id=credential.credential_id,
     )

@@ -36,6 +36,7 @@ from oraclous_knowledge_graph_service.schema.resolution_schemas import (
 )
 from oraclous_knowledge_graph_service.services.resolution_service import (
     CandidateNotFound,
+    CrossGraphCredentialMismatch,
     GraphNotFound,
     ResolutionConflict,
 )
@@ -77,6 +78,10 @@ async def approve_candidate(
             candidate_id_path=candidate_id,
             other_graph_id=body.other_graph_id,
         )
+    except CrossGraphCredentialMismatch as exc:
+        # #724: the request is well formed; the two graphs' current pins make it unsatisfiable.
+        # 409 rather than 500 so the caller gets the actionable message instead of a request id.
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     except GraphNotFound:
         raise _GRAPH_NOT_FOUND from None
     except CandidateNotFound:
