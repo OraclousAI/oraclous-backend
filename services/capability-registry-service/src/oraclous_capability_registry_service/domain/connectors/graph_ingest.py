@@ -62,6 +62,26 @@ class GraphIngestConnector(InternalTool):
             headers["X-Internal-Key"] = settings.INTERNAL_SERVICE_KEY
         return headers
 
+    @staticmethod
+    def _producer_config(context: ExecutionContext) -> dict[str, Any]:
+        """The #728 provenance the runtime bound onto this instance, as ingest body fields.
+
+        Read from ``context.configuration`` ONLY — never from ``input_data`` — so the producer is
+        exactly what the engine bound at dispatch and a model cannot claim to be another member.
+        Returns an empty dict when nothing is bound (a single-agent or user-driven call), which the
+        KGS reads as a user upload.
+        """
+        config = context.configuration or {}
+        fields = (
+            "producer_kind",
+            "team_run_id",
+            "member_role",
+            "execution_id",
+            "team_id",
+            "ordinal",
+        )
+        return {key: config[key] for key in fields if config.get(key) is not None}
+
     async def _execute_internal(
         self, input_data: dict[str, Any], context: ExecutionContext
     ) -> ExecutionResult:
@@ -101,6 +121,17 @@ class GraphIngestConnector(InternalTool):
         recipe_id = input_data.get("recipe_id")
         if recipe_id is not None:
             body["recipe_id"] = recipe_id
+        # #728 — the artifact's NAME. The model may offer a title; the KGS derives one from the
+        # content or the producing member when it does not, so an artifact is never the constant
+        # ``inline.txt`` that collapsed a whole run's output onto one graph node.
+        title = input_data.get("title")
+        if isinstance(title, str) and title.strip():
+            body["title"] = title.strip()
+        # #728 — the artifact's PRODUCER. Bound by the runtime onto this instance's configuration
+        # (the same trusted path ``graph_id`` above travels), so a model can neither supply nor
+        # forge it. Absent → the write reads as a user upload and keeps filename-based document
+        # keying, which is what preserves the #522 replace-on-same-path refresh contract.
+        body.update(self._producer_config(context))
 
         settings = get_settings()
         try:
