@@ -12,11 +12,13 @@ from __future__ import annotations
 
 import base64
 import binascii
+import hashlib
 import uuid
 from collections.abc import Callable
 
 from oraclous_substrate.access import enforced_organisation_id
 
+from oraclous_knowledge_graph_service.domain.artifact_naming import ProducerRef
 from oraclous_knowledge_graph_service.domain.community import COMMUNITY_DETECT_SOURCE_TYPE
 from oraclous_knowledge_graph_service.domain.job import IngestionJobRecord
 from oraclous_knowledge_graph_service.repositories.job_repository import IngestionJobRepository
@@ -53,6 +55,7 @@ class JobService:
         valid_from: str | None = None,
         valid_to: str | None = None,
         event_time: str | None = None,
+        producer: ProducerRef | None = None,
     ) -> IngestionJobRecord:
         # owner gate (raises GraphNotFound -> 404 at the route) before any write
         await self._graphs.get_graph(graph_id=graph_id, user_id=user_id)
@@ -66,6 +69,10 @@ class JobService:
             valid_from=valid_from,
             valid_to=valid_to,
             event_time=event_time,
+            # #728: an agent artifact carries its producer; a user upload passes none and keeps
+            # NULL, which is what preserves filename-based document keying (#522).
+            producer=producer,
+            content_hash=hashlib.sha256(data).hexdigest(),
         )
         # Durably COMMIT the job row before enqueueing: the request-scoped unit of work otherwise
         # commits only after the route returns, so the worker (a SEPARATE session) could pick up
