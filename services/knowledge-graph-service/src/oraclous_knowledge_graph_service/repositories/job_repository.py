@@ -159,6 +159,7 @@ class IngestionJobRepository:
             valid_from=row.valid_from,
             valid_to=row.valid_to,
             event_time=row.event_time,
+            producer_kind=row.producer_kind,
         )
 
     async def update_status(

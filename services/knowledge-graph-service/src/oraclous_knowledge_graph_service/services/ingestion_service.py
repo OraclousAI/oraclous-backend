@@ -103,8 +103,22 @@ class IngestionService:
         self._ontology = ontology
 
     async def ingest(
-        self, *, graph_id: str, document: str, data: bytes, source_type: str | None
+        self,
+        *,
+        graph_id: str,
+        document: str,
+        data: bytes,
+        source_type: str | None,
+        document_key: str | None = None,
     ) -> WriteResult:
+        """Chunk, embed, extract and write one document.
+
+        ``document`` is the human name — it drives format detection (its extension) and becomes the
+        node's title. ``document_key`` (#728) is the node's IDENTITY when supplied: an agent
+        artifact passes its own job id, so two members of one run writing under similar names can
+        never merge onto a single node. Omitted → the name IS the key, which is what keeps a user
+        upload's re-ingest-the-same-path REPLACE behaviour (#522) intact.
+        """
         try:
             text, _meta = extract_text(data=data, filename=document, source_type=source_type)
         except ExtractionError as exc:
@@ -116,9 +130,10 @@ class IngestionService:
         entity_graph = None
         violations = 0
         coercions = 0
+        key = document_key or document
         if self._extractor is not None:
             # Link extracted entities to the SAME deterministic chunk ids the writer builds.
-            chunk_ids = chunk_node_ids(graph_id=graph_id, document=document, count=len(chunks))
+            chunk_ids = chunk_node_ids(graph_id=graph_id, document=key, count=len(chunks))
             extracted = await self._extractor.extract(chunks=chunks, chunk_ids=chunk_ids)
             # Hard schema steers the LLM; this strict/coerce pass is the belt-and-braces guarantee
             # that a strict graph never gains an off-ontology node from free text.
@@ -128,7 +143,8 @@ class IngestionService:
             coercions = enforced.coercions
         return await self._write_repo.write_document(
             graph_id=graph_id,
-            document=document,
+            document=key,
+            title=document,
             chunks=chunks,
             embeddings=embeddings,
             entity_graph=entity_graph,

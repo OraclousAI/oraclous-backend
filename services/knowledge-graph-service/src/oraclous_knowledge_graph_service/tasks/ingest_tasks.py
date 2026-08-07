@@ -28,6 +28,7 @@ from oraclous_knowledge_graph_service.domain.extraction_schema import (
     to_graph_schema,
     to_prompt_prefix,
 )
+from oraclous_knowledge_graph_service.domain.job import IngestionPayload
 from oraclous_knowledge_graph_service.domain.ontology import Ontology
 from oraclous_knowledge_graph_service.repositories.graph_generation_repository import (
     GraphGenerationRepository,
@@ -53,6 +54,25 @@ from oraclous_knowledge_graph_service.services.structured_ingestion_service impo
 )
 from oraclous_knowledge_graph_service.tasks.celery_app import AsyncTaskExecutor, celery_app
 from oraclous_knowledge_graph_service.tasks.code_stale_tasks import cleanup_stale_code_task
+
+#: Producer kinds whose artifacts key on their own job id rather than on their name (#728).
+_AGENT_PRODUCERS = frozenset({"team-member", "standalone-agent"})
+
+
+def _document_key(job_id: uuid.UUID, payload: IngestionPayload) -> str | None:
+    """The graph document node's identity for this job, or None to key on the name.
+
+    An AGENT artifact keys on its job id, so two members of one run cannot merge onto a single
+    node — the collapse that left run ``dc167d8e`` with 1 document from 7 writes, because the node
+    id hashes ``graph_id|document|suffix`` and every write was named ``inline.txt``.
+
+    A user upload returns None and keeps name keying, which is exactly what makes re-ingesting the
+    same path REPLACE (#522). Anything unrecognised also returns None, so the fail-safe direction
+    is the old behaviour rather than a silent id-keyed write.
+    """
+    if payload.producer_kind in _AGENT_PRODUCERS:
+        return str(job_id)
+    return None
 
 
 class JobNotVisibleYet(Exception):
@@ -150,6 +170,7 @@ async def _ingest_async(job_id_s: str, organisation_id_s: str) -> dict[str, Any]
                     result = await ingestion.ingest(
                         graph_id=str(payload.graph_id),
                         document=payload.filename or "inline",
+                        document_key=_document_key(job_id, payload),
                         data=data,
                         source_type=payload.source_type,
                     )

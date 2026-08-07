@@ -46,3 +46,7 @@ class IngestionPayload:
     valid_from: str | None
     valid_to: str | None
     event_time: str | None
+    # #728: the worker needs the producer kind to decide the DOCUMENT KEY. An agent artifact keys
+    # on its own job id, so two members writing at once cannot merge onto one node; a user upload
+    # keeps filename keying, so re-ingesting the same path still REPLACES (#522). None → upload.
+    producer_kind: str | None = None
