@@ -159,7 +159,8 @@ def test_a_granted_foreign_graph_returns_the_owner_org_rows(
     (not empty). Deny before grant; after the grant the grantee reads org A's actual ingested row;
     a third, ungranted org never can. The deny→grant→read flip across one grant call is the proof
     the per-branch owner-org binding is gated on a fail-closed ReBAC grant."""
-    owner = register(f"A{uuid.uuid4().hex[:8]} Owner")
+    # org A ingests below, so it needs a model credential on a real-extractor stack (#724).
+    owner = register(f"A{uuid.uuid4().hex[:8]} Owner", with_model_credential=True)
     grantee = register(f"B{uuid.uuid4().hex[:8]} User")
     outsider = register(f"C{uuid.uuid4().hex[:8]} User")  # never granted — isolation control
     owner_c = gateway_client(owner["token"])

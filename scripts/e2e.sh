@@ -95,6 +95,11 @@ run_deterministic() {
   _recreate_harness fake
   _setup_gitea
   _load_test_key TAVILY_API_KEY   # a BYOM source an e2e pastes through the credentials API
+  # #724: on a stack running a REAL extractor (KGS_EXTRACTOR=openai) every ingest needs the ORG to
+  # have designated a model credential — no platform key exists any more. The conftest pastes this
+  # through the credentials API at registration. Absent is fine: the compose default extractor is
+  # `null`, which never calls a model, and that is what CI runs.
+  _load_test_key OPENROUTER_API_KEY
   echo ">> deterministic e2e through the gateway (fake LLM)…"
   uv run pytest tests/e2e -m "e2e and not byom and not oauth" -v -p no:cacheprovider \
     && _banner "deterministic"
