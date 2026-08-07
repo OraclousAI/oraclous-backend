@@ -43,6 +43,7 @@ def _metadata(row: UserCredential) -> CredentialOut:
         user_id=row.user_id,
         tool_id=row.tool_id,
         cred_type=str(row.cred_type.value if row.cred_type else ""),
+        default_for=row.default_for,
     )
 
 

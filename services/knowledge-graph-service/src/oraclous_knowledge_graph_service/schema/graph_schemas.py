@@ -45,6 +45,7 @@ class GraphResponse(BaseModel):
             id=g.id,
             name=g.name,
             description=g.description,
+            model_credential_id=g.model_credential_id,
             status=g.status,
             node_count=g.node_count,
             relationship_count=g.relationship_count,
