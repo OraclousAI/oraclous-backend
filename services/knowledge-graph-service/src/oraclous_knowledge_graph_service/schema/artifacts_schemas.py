@@ -26,6 +26,15 @@ class ArtifactSummary(BaseModel):
     extracted_entities: int
     extracted_relationships: int
     created_at: datetime
+    # #728: who produced this artifact. NULL on a user upload and on every row that predates the
+    # provenance columns; ``organisation_id`` stays internal (ORG001) and is still never exposed.
+    producer_kind: str | None = None
+    team_run_id: uuid.UUID | None = None
+    member_role: str | None = None
+    execution_id: uuid.UUID | None = None
+    team_id: str | None = None
+    ordinal: int | None = None
+    content_hash: str | None = None
 
     @classmethod
     def of(cls, rec: IngestionJobRecord) -> ArtifactSummary:
@@ -38,6 +47,13 @@ class ArtifactSummary(BaseModel):
             extracted_entities=rec.extracted_entities,
             extracted_relationships=rec.extracted_relationships,
             created_at=rec.created_at,
+            producer_kind=rec.producer_kind,
+            team_run_id=rec.team_run_id,
+            member_role=rec.member_role,
+            execution_id=rec.execution_id,
+            team_id=rec.team_id,
+            ordinal=rec.ordinal,
+            content_hash=rec.content_hash,
         )
 
 

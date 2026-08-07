@@ -33,10 +33,23 @@ async def list_artifacts(
     user_id: UserIdDep,
     q: str | None = None,
     source_type: str | None = None,
+    # #728 provenance filters: what a run produced, what a team has ever produced, what one member
+    # wrote. Each optional; omitting them all lists the graph exactly as before.
+    team_run_id: uuid.UUID | None = None,
+    team_id: str | None = None,
+    member_role: str | None = None,
+    producer_kind: str | None = None,
 ) -> list[ArtifactSummary]:
     try:
         records = await service.list_artifacts(
-            user_id=user_id, graph_id=graph_id, q=q, source_type=source_type
+            user_id=user_id,
+            graph_id=graph_id,
+            q=q,
+            source_type=source_type,
+            team_run_id=team_run_id,
+            team_id=team_id,
+            member_role=member_role,
+            producer_kind=producer_kind,
         )
     except GraphNotFound:
         raise _NOT_FOUND from None
