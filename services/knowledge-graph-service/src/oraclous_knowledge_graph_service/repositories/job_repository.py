@@ -113,7 +113,14 @@ class IngestionJobRepository:
         return row.source_content if row else None
 
     async def list_for_graph(
-        self, graph_id: uuid.UUID, *, exclude_source_types: tuple[str, ...] = ()
+        self,
+        graph_id: uuid.UUID,
+        *,
+        exclude_source_types: tuple[str, ...] = (),
+        team_run_id: uuid.UUID | None = None,
+        team_id: str | None = None,
+        member_role: str | None = None,
+        producer_kind: str | None = None,
     ) -> list[IngestionJobRecord]:
         stmt = (
             select(IngestionJob)
@@ -125,6 +132,17 @@ class IngestionJobRepository:
         )
         if exclude_source_types:
             stmt = stmt.where(IngestionJob.source_type.notin_(exclude_source_types))
+        # #728: the provenance reads — "everything this run produced", "everything this team ever
+        # produced", "everything this member wrote". Each is optional and composes with the others;
+        # an unfiltered call is byte-for-byte the query it was before.
+        if team_run_id is not None:
+            stmt = stmt.where(IngestionJob.team_run_id == team_run_id)
+        if team_id is not None:
+            stmt = stmt.where(IngestionJob.team_id == team_id)
+        if member_role is not None:
+            stmt = stmt.where(IngestionJob.member_role == member_role)
+        if producer_kind is not None:
+            stmt = stmt.where(IngestionJob.producer_kind == producer_kind)
         rows = (await self._session.execute(stmt)).scalars().all()
         return [_to_record(r) for r in rows]
 

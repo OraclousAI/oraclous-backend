@@ -109,12 +109,28 @@ class JobService:
         graph_id: uuid.UUID,
         q: str | None = None,
         source_type: str | None = None,
+        team_run_id: uuid.UUID | None = None,
+        team_id: str | None = None,
+        member_role: str | None = None,
+        producer_kind: str | None = None,
     ) -> list[IngestionJobRecord]:
         """The graph's ARTIFACTS (its ingested documents) for the unified /v1/artifacts surface
         (#543) — optionally filtered by a filename query ``q`` or ``source_type``. Org-scoped via
         graph ownership (a non-owned graph → GraphNotFound → 404). Verbatim content is served only
-        by ``get_artifact`` (the list is summaries)."""
-        records = await self.list_documents(user_id=user_id, graph_id=graph_id)
+        by ``get_artifact`` (the list is summaries).
+
+        #728: the provenance filters answer "what did this run produce", "what has this team ever
+        produced" and "what did this member write" — the questions an artifact could not be asked
+        while it recorded nothing about who made it."""
+        await self._graphs.get_graph(graph_id=graph_id, user_id=user_id)  # owner gate → 404
+        records = await self._jobs.list_for_graph(
+            graph_id,
+            exclude_source_types=(COMMUNITY_DETECT_SOURCE_TYPE,),
+            team_run_id=team_run_id,
+            team_id=team_id,
+            member_role=member_role,
+            producer_kind=producer_kind,
+        )
         if source_type:
             records = [r for r in records if r.source_type == source_type]
         if q:
