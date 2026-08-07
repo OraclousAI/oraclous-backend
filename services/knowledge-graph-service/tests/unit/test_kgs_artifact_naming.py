@@ -12,7 +12,6 @@ from __future__ import annotations
 import uuid
 
 import pytest
-
 from oraclous_knowledge_graph_service.domain.artifact_naming import (
     MAX_NAME_LEN,
     ProducerRef,
@@ -24,7 +23,7 @@ from oraclous_knowledge_graph_service.domain.artifact_naming import (
 # The real opening lines from run dc167d8e (base64-decoded from ingestion_jobs.source_content).
 EURAIL_HEADINGS = [
     (
-        "### Consequences of Inaction for Interrail B.V. Without AI Adoption\n\n1. **Deteriorating**",
+        "### Consequences of Inaction for Interrail B.V. Without AI Adoption\n\n1. **Falling**",
         "Consequences of Inaction for Interrail B.V. Without AI Adoption",
     ),
     (

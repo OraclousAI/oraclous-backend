@@ -41,6 +41,7 @@ class _RecordingHarness:
         workspace_root: str | None = None,
         graph_id: str | None = None,
         team_id: str | None = None,
+        producer: dict[str, Any] | None = None,
         precedence_order: list[str] | None = None,
         graph_authoritative: bool = False,
         max_tokens: int | None = None,
