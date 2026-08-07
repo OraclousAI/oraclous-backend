@@ -29,6 +29,23 @@ import pytest
 
 pytestmark = pytest.mark.unit
 
+
+@pytest.fixture(autouse=True)
+def _no_cached_credentials():
+    """Isolate every test from the process-global credential cache (#724).
+
+    The resolver memoises for 60s, so without this a credential cached by one test satisfies the
+    next and the broker is never called — which silently turns an assertion about resolution into
+    an assertion about nothing. Any process-global cache needs this; the alternative is
+    order-dependent tests that pass in isolation and fail in a suite.
+    """
+    from oraclous_knowledge_graph_service.services import credential_cache  # noqa: PLC0415
+
+    credential_cache.clear()
+    yield
+    credential_cache.clear()
+
+
 _ORG = uuid.UUID("a35472b5-9490-4e22-bf20-3399a5462f5a")
 _GRAPH = uuid.UUID("38f43dc4-5797-41b0-964d-a177bb728471")
 

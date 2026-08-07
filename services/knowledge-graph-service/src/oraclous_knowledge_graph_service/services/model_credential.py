@@ -28,6 +28,8 @@ import uuid
 from dataclasses import dataclass
 from typing import Any, Protocol
 
+from oraclous_knowledge_graph_service.services import credential_cache
+
 
 class ModelCredentialUnavailable(Exception):
     """No usable org model credential, so no model call may be made.
@@ -101,6 +103,10 @@ async def resolve_model_credential(
             error_code="model_credential_not_configured",
         )
 
+    cached_credential = credential_cache.get_credential(organisation_id, credential_id)
+    if cached_credential is not None:
+        return cached_credential
+
     try:
         payload = await broker.resolve_credential(
             credential_id=credential_id, organisation_id=organisation_id
@@ -120,7 +126,9 @@ async def resolve_model_credential(
             f"the configured model credential {credential_id} holds no usable api_key",
             error_code="model_credential_unusable",
         )
-    return ModelCredential(api_key=api_key, credential_id=credential_id)
+    resolved = ModelCredential(api_key=api_key, credential_id=credential_id)
+    credential_cache.put_credential(organisation_id, resolved)
+    return resolved
 
 
 async def resolve_for_graph(
@@ -139,13 +147,17 @@ async def resolve_for_graph(
     # Only ask for the org default when the graph does NOT pin its own. The pin wins in
     # `resolve_model_credential`, so fetching the default first was a round-trip whose answer was
     # then discarded — half the broker traffic on every pinned graph.
-    org_default = (
-        None
-        if graph_credential_id
-        else await broker.org_default_credential_id(
-            organisation_id=organisation_id, purpose="model"
-        )
-    )
+    if graph_credential_id:
+        org_default = None
+    else:
+        cached = credential_cache.get_default_id(organisation_id, "model")
+        if cached is not None:
+            org_default = cached[0]
+        else:
+            org_default = await broker.org_default_credential_id(
+                organisation_id=organisation_id, purpose="model"
+            )
+            credential_cache.put_default_id(organisation_id, "model", org_default)
     return await resolve_model_credential(
         organisation_id=organisation_id,
         graph_id=graph_id,
