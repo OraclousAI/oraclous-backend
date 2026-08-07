@@ -15,8 +15,10 @@ COPY packages/ ./packages/
 COPY services/harness-runtime-service/pyproject.toml \
      ./services/harness-runtime-service/pyproject.toml
 
-ENV UV_PROJECT_ENVIRONMENT=/app/.venv
-RUN uv sync \
+ENV UV_PROJECT_ENVIRONMENT=/app/.venv \
+    UV_LINK_MODE=copy
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync \
       --package oraclous-harness-runtime-service \
       --frozen \
       --no-dev \
