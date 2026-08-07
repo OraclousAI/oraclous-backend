@@ -51,6 +51,12 @@ class ExecuteHarnessRequest(BaseModel):
     # hook writes ``scope=team`` under it (into the bound graph) + the loop reads the team's memory.
     # None → a single-agent run (legacy ``scope=agent``).
     team_id: str | None = None
+    # #728: WHO is writing. Bound by the ENGINE at dispatch (producer_kind / team_run_id /
+    # member_role / team_id / ordinal) and set on each instance's configuration, so an artifact the
+    # run writes records its producer and two members can never collide onto one graph node. The
+    # harness adds ``execution_id`` before binding it. None → a single-agent or user-driven run,
+    # which the KGS reads as a user upload and keeps filename-based document keying (#522).
+    producer: dict[str, Any] | None = None
     # Hierarchy of Truth (#538): the team's declared precedence (order high→low + graph mode). The
     # harness binds it on each instance's config so the knowledge-retriever ranks a member's in-loop
     # read canonical-first (#536). None/empty → no precedence applied (read unchanged).

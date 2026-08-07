@@ -61,6 +61,7 @@ class _Harness(Protocol):
         workspace_root: str | None = ...,
         graph_id: str | None = ...,
         team_id: str | None = ...,
+        producer: dict[str, Any] | None = ...,
         precedence_order: list[str] | None = ...,
         graph_authoritative: bool = ...,
         max_tokens: int | None = ...,
@@ -184,6 +185,28 @@ def render_member_input(
     if member.tools:  # #642: a member that declared tools is graded on receipts — ask for them
         parts.append(GROUNDING_DIRECTIVE)
     return "\n\n".join(parts)
+
+
+def _producer_ref(
+    member: OHMMember,
+    trace_id: uuid.UUID | None,
+    team_id: str | None,
+    fan_item: Any = None,
+) -> dict[str, Any]:
+    """#728 — the provenance a member's artifacts carry: who wrote it, in which run.
+
+    ``ordinal`` disambiguates a FAN-OUT member, whose sub-runs share one role: without it the
+    per-item outputs would be named identically. It is the fan index when the item carries one and
+    is otherwise omitted, so a plain single dispatch is unchanged.
+    """
+    ref: dict[str, Any] = {"producer_kind": "team-member", "member_role": member.role}
+    if trace_id is not None:
+        ref["team_run_id"] = str(trace_id)
+    if team_id is not None:
+        ref["team_id"] = team_id
+    if isinstance(fan_item, dict) and isinstance(fan_item.get("index"), int):
+        ref["ordinal"] = fan_item["index"]
+    return ref
 
 
 def parse_driving_signals(output: Any) -> list[dict[str, Any]]:
@@ -320,6 +343,12 @@ def make_harness_dispatch(
             # shares — the harness writes/reads team-scope memory under it, so concurrent members +
             # future runs of the same team see one blackboard (the adopted-graph world-model).
             team_id=team_id,
+            # #728: WHO is writing. An artifact used to record nothing about its producer, so a
+            # run's outputs were indistinguishable and — because the lexical document node keys on
+            # the filename, which was the constant `inline.txt` — every write in a run collapsed
+            # onto ONE node (run dc167d8e landed 7 artifacts and kept 1). Bound here, on the same
+            # trusted path as graph_id, so the model can neither supply nor forge its identity.
+            producer=_producer_ref(member, trace_id, team_id, fan_item),
             # Hierarchy of Truth (#538): the team's precedence + authoritative flag, bound onto
             # each knowledge-retriever instance so a member's in-loop read is auto-ranked (#514).
             precedence_order=precedence_order,

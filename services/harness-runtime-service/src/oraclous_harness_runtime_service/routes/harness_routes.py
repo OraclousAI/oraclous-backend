@@ -66,6 +66,7 @@ async def execute_harness(
             workspace_root=body.workspace_root,
             graph_id=body.graph_id,
             team_id=body.team_id,
+            producer=body.producer,
             precedence_order=body.precedence_order,
             graph_authoritative=body.graph_authoritative,
             max_tokens=body.max_tokens,
