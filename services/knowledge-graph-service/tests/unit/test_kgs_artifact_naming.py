@@ -23,14 +23,22 @@ from oraclous_knowledge_graph_service.domain.artifact_naming import (
 
 # The real opening lines from run dc167d8e (base64-decoded from ingestion_jobs.source_content).
 EURAIL_HEADINGS = [
-    ("### Consequences of Inaction for Interrail B.V. Without AI Adoption\n\n1. **Deteriorating**",
-     "Consequences of Inaction for Interrail B.V. Without AI Adoption"),
-    ("### Driving Signals for Consequences of Inaction\n- x",
-     "Driving Signals for Consequences of Inaction"),
-    ("### Opportunities for AI Adoption at Interrail B.V.\n\n1. **Reservation**",
-     "Opportunities for AI Adoption at Interrail B.V."),
-    ("### Urgent Decisions for Interrail's Board Regarding AI Strategy\n\n1. **Investment**",
-     "Urgent Decisions for Interrail's Board Regarding AI Strategy"),
+    (
+        "### Consequences of Inaction for Interrail B.V. Without AI Adoption\n\n1. **Deteriorating**",
+        "Consequences of Inaction for Interrail B.V. Without AI Adoption",
+    ),
+    (
+        "### Driving Signals for Consequences of Inaction\n- x",
+        "Driving Signals for Consequences of Inaction",
+    ),
+    (
+        "### Opportunities for AI Adoption at Interrail B.V.\n\n1. **Reservation**",
+        "Opportunities for AI Adoption at Interrail B.V.",
+    ),
+    (
+        "### Urgent Decisions for Interrail's Board Regarding AI Strategy\n\n1. **Investment**",
+        "Urgent Decisions for Interrail's Board Regarding AI Strategy",
+    ),
 ]
 
 # The one artifact of the seven with no title: a raw driving_signals payload.
@@ -52,7 +60,9 @@ class TestTitleFromContent:
         assert title_from_content("## Quarterly Review ##") == "Quarterly Review"
 
     def test_a_body_paragraph_is_not_a_title(self) -> None:
-        assert title_from_content("This document explains the reasoning behind the decision.") is None
+        assert (
+            title_from_content("This document explains the reasoning behind the decision.") is None
+        )
 
     def test_a_plain_first_line_may_serve_as_a_title(self) -> None:
         assert title_from_content("Board Briefing 2026\n\nbody text") == "Board Briefing 2026"
