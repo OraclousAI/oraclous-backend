@@ -77,7 +77,11 @@ async def update_graph(
 ) -> GraphResponse:
     try:
         graph = await service.update_graph(
-            graph_id=graph_id, user_id=user_id, name=body.name, description=body.description
+            graph_id=graph_id,
+            user_id=user_id,
+            name=body.name,
+            description=body.description,
+            model_credential_id=body.model_credential_id,
         )
     except GraphNotFound:
         raise _NOT_FOUND from None
