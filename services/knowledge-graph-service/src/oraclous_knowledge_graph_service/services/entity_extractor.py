@@ -49,6 +49,38 @@ logger = logging.getLogger(__name__)
 _FROM_CHUNK = LexicalGraphConfig().node_to_chunk_relationship_type
 
 
+#: Provider answers that mean OUR credential is the problem, not this chunk's content: 401/403
+#: (rejected or revoked) and 429 (quota exhausted). Matched on the stringified error because the
+#: extraction library wraps provider exceptions in its own LLMGenerationError, so the status code
+#: survives only in the message.
+_CREDENTIAL_FAULT_MARKERS = (
+    "401",
+    "403",
+    "429",
+    "permissiondenied",
+    "authenticationerror",
+    "invalid_api_key",
+    "quota",
+    "insufficient_quota",
+    "key limit exceeded",
+)
+
+
+def _is_credential_failure(error: BaseException) -> bool:
+    """True when a chunk failed because the CREDENTIAL is bad, not because the chunk is."""
+    text = f"{type(error).__name__}: {error}".lower()
+    return any(marker in text for marker in _CREDENTIAL_FAULT_MARKERS)
+
+
+class ExtractionCredentialRejected(RuntimeError):
+    """The provider rejected the org's credential during extraction (#724).
+
+    Raised rather than logged because it is not recoverable within the run: every remaining chunk
+    will fail the same way. The ingest task records it as the job's error_message, so the user sees
+    why nothing was extracted instead of a completed job with a plausible-looking count.
+    """
+
+
 class EntityExtractor:
     """Extract domain entities + relationships from chunks via an injectable LLM.
 
@@ -126,14 +158,29 @@ class EntityExtractor:
         )
 
         combined = Neo4jGraph()
+        credential_failures = 0
         for chunk_id, result in zip(chunk_ids, results, strict=True):
             # One bad chunk must not sink the whole document — mirror the library's
             # `on_error=IGNORE`: log and skip the failed chunk, keep the rest.
             if isinstance(result, BaseException):
                 logger.warning("EntityExtractor: chunk %s failed: %r", chunk_id, result)
+                if _is_credential_failure(result):
+                    credential_failures += 1
                 continue
             combined.nodes.extend(result.nodes)
             combined.relationships.extend(result.relationships)
+
+        # #724: "the model refused this chunk's content" and "our credential stopped working" are
+        # NOT the same failure, and treating them alike is how a run reports `completed` with a
+        # small, entirely plausible entity count after the key died at chunk 3 of 900. A credential
+        # fault is not per-chunk: it will not fix itself for chunk 4, so the honest outcome is to
+        # fail the run and let it be re-run once the credential is fixed.
+        if credential_failures:
+            raise ExtractionCredentialRejected(
+                f"the model provider rejected this organisation's credential on "
+                f"{credential_failures} of {len(chunks)} chunks (auth/quota). Nothing was "
+                f"extracted from those chunks; re-run once the credential is valid."
+            )
 
         logger.info(
             "EntityExtractor: %d entities, %d relationships from %d chunks",
