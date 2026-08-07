@@ -111,6 +111,7 @@ class HarnessClient:
         workspace_root: str | None = None,
         graph_id: str | None = None,
         team_id: str | None = None,
+        producer: dict[str, Any] | None = None,
         precedence_order: list[str] | None = None,
         graph_authoritative: bool = False,
         max_tokens: int | None = None,
@@ -150,6 +151,11 @@ class HarnessClient:
         # team-scope blackboard (#513): the team identity the harness writes/reads memory under.
         if team_id is not None:
             body["team_id"] = team_id
+        # #728: WHO is dispatching. The harness binds it onto each instance's config, so an artifact
+        # this member writes records the member and run that produced it and two members writing at
+        # once cannot merge onto one graph node. Runtime-supplied, never from the model.
+        if producer is not None:
+            body["producer"] = producer
         # Hierarchy of Truth (#538/#514): the team's precedence the harness binds onto each
         # knowledge-retriever instance so a member's in-loop retrieval is auto-ranked (read-side).
         if precedence_order is not None:
