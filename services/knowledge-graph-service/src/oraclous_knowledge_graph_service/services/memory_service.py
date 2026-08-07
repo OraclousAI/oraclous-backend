@@ -100,12 +100,18 @@ class MemoryService:
         graphs: GraphRepository,
         repo_factory: Callable[[str], MemoryRepository],
         settings: Settings | None = None,
+        embedder: Embedder | None = None,
         enqueue_consolidation: Callable[[str, str], str],
         vector_candidate_cap: int = 1_000,
     ) -> None:
         self._graphs = graphs
         self._repo_factory = repo_factory
         self._settings = settings or get_settings()
+        # Test seam ONLY. Production leaves this None and an embedder is built per graph from the
+        # org's credential (#724). Integration tests inject a controlled embedder to assert exact
+        # similarity behaviour, which needs deterministic vectors rather than a live model. No DI
+        # provider passes it, so the per-org resolution cannot be bypassed in a running service.
+        self._embedder_override = embedder
         self._enqueue = enqueue_consolidation
         # Pre-cosine candidate cap passed to the repository's brute-force vector recall (#332 MED).
         self._vector_candidate_cap = vector_candidate_cap
@@ -138,6 +144,8 @@ class MemoryService:
     # ------------------------------------------------------------------ store
 
     async def _embedder_for(self, graph_id: uuid.UUID) -> Embedder | None:
+        if self._embedder_override is not None:
+            return self._embedder_override
         """The embedder for THIS graph, built from the org's credential (#724), or None.
 
         Fail-soft per ADR-027 §3 ("fail-soft to fulltext-only when no key"): an org that has not

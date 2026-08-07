@@ -70,7 +70,9 @@ async def test_suggest_returns_ontology_shaped_suggestion(async_client, monkeypa
         patterns=(("Station", "OPERATED_BY", "Operator"),),
     )
     monkeypatch.setattr(
-        ontology_routes, "make_synthesizer", lambda _s: SchemaSynthesisService(lambda _t: fixed)
+        ontology_routes,
+        "make_synthesizer",
+        lambda _s, **_kw: SchemaSynthesisService(lambda _t: fixed),
     )
     resp = await async_client.post(
         "/api/v1/ontology/suggest",
@@ -85,7 +87,7 @@ async def test_suggest_returns_ontology_shaped_suggestion(async_client, monkeypa
 
 
 async def test_suggest_is_503_when_no_llm_configured(async_client, monkeypatch) -> None:
-    def _unavailable(_settings):
+    def _unavailable(_settings, **_kw):
         raise SchemaSynthesisUnavailable("no LLM")
 
     monkeypatch.setattr(ontology_routes, "make_synthesizer", _unavailable)
