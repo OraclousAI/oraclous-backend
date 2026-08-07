@@ -24,7 +24,10 @@ from oraclous_capability_registry_service.domain.connectors.standard_tools impor
     WebSearchConnector,
     WriteFileConnector,
 )
-from oraclous_capability_registry_service.domain.executors.base import ExecutionContext
+from oraclous_capability_registry_service.domain.executors.base import (
+    ExecutionContext,
+    ExecutionResult,
+)
 from oraclous_capability_registry_service.domain.executors.factory import create_executor
 from oraclous_capability_registry_service.domain.plugins import plugin_registry
 from oraclous_capability_registry_service.domain.plugins.builtin import (
@@ -215,16 +218,31 @@ async def test_glob_lists_matching_sandbox_paths(org: uuid.UUID) -> None:
 
 # --------------------------------------------------------------------------- bash
 
+# `/bin/sh: 1: Cannot fork` is the CI runner refusing to create a process — resource exhaustion
+# on a 3,000+ test unit run, not a BashConnector defect (#723). Retry once so that dice roll
+# doesn't redden unrelated PRs; a real BashConnector bug still fails on the second try.
+_FORK_EXHAUSTION_MARKERS = ("Cannot fork", "Resource temporarily unavailable")
+
+
+async def _run_bash(
+    connector: BashConnector, input_data: dict, ctx: ExecutionContext
+) -> ExecutionResult:
+    res = await connector.execute(input_data, ctx)
+    stderr = (res.data or {}).get("stderr", "")
+    if not res.success and any(marker in stderr for marker in _FORK_EXHAUSTION_MARKERS):
+        res = await connector.execute(input_data, ctx)
+    return res
+
 
 async def test_bash_runs_in_the_sandbox_and_returns_output(org: uuid.UUID) -> None:
-    res = await BashConnector({"id": "b"}).execute({"command": "echo hi"}, _ctx(org))
+    res = await _run_bash(BashConnector({"id": "b"}), {"command": "echo hi"}, _ctx(org))
     assert res.success and res.data["exit_code"] == 0
     assert res.data["stdout"].strip() == "hi"
 
 
 async def test_bash_cwd_is_the_sandbox_root(org: uuid.UUID) -> None:
     await WriteFileConnector({"id": "w"}).execute({"path": "marker.txt", "content": "x"}, _ctx(org))
-    res = await BashConnector({"id": "b"}).execute({"command": "ls"}, _ctx(org))
+    res = await _run_bash(BashConnector({"id": "b"}), {"command": "ls"}, _ctx(org))
     assert res.success and "marker.txt" in res.data["stdout"]
 
 
@@ -237,7 +255,7 @@ async def test_bash_times_out(org: uuid.UUID) -> None:
     original = st._BASH_TIMEOUT_S
     st._BASH_TIMEOUT_S = 0.5
     try:
-        res = await connector.execute({"command": "sleep 5"}, _ctx(org))
+        res = await _run_bash(connector, {"command": "sleep 5"}, _ctx(org))
     finally:
         st._BASH_TIMEOUT_S = original
     assert not res.success and res.error_type == "TIMEOUT"
