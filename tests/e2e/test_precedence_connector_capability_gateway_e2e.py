@@ -124,7 +124,9 @@ def test_a_bound_member_retrieval_is_auto_ranked_canonical_first(
     register: Callable[..., dict],
     gateway_client: Callable[[str], httpx.Client],
 ) -> None:
-    user = register(f"prconn{uuid.uuid4().hex[:10]} owner")  # unique slug → fresh personal org
+    user = register(
+        f"prconn{uuid.uuid4().hex[:10]} owner", with_model_credential=True
+    )  # unique slug → fresh personal org
     c = gateway_client(user["token"])
     graph_id = c.post("/api/v1/graphs", json={"name": "prec-conn-kb"}).json()["id"]
 
