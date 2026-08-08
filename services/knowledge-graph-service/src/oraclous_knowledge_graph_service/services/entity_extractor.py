@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import uuid
 
 from neo4j_graphrag.experimental.components.entity_relation_extractor import (
     LLMEntityRelationExtractor,
@@ -38,11 +39,48 @@ from neo4j_graphrag.experimental.components.types import (
 from neo4j_graphrag.llm import LLMInterface
 
 from oraclous_knowledge_graph_service.core.config import Settings
+from oraclous_knowledge_graph_service.services import credential_cache
+from oraclous_knowledge_graph_service.services.model_credential import (
+    ModelCredential,
+    ModelCredentialUnavailable,
+)
 
 logger = logging.getLogger(__name__)
 
 # entity → chunk edge type; matches the library's lexical default so reads are uniform.
 _FROM_CHUNK = LexicalGraphConfig().node_to_chunk_relationship_type
+
+
+#: Provider answers that mean OUR credential is the problem, not this chunk's content: 401/403
+#: (rejected or revoked) and 429 (quota exhausted). Matched on the stringified error because the
+#: extraction library wraps provider exceptions in its own LLMGenerationError, so the status code
+#: survives only in the message.
+_CREDENTIAL_FAULT_MARKERS = (
+    "401",
+    "403",
+    "429",
+    "permissiondenied",
+    "authenticationerror",
+    "invalid_api_key",
+    "quota",
+    "insufficient_quota",
+    "key limit exceeded",
+)
+
+
+def _is_credential_failure(error: BaseException) -> bool:
+    """True when a chunk failed because the CREDENTIAL is bad, not because the chunk is."""
+    text = f"{type(error).__name__}: {error}".lower()
+    return any(marker in text for marker in _CREDENTIAL_FAULT_MARKERS)
+
+
+class ExtractionCredentialRejected(RuntimeError):
+    """The provider rejected the org's credential during extraction (#724).
+
+    Raised rather than logged because it is not recoverable within the run: every remaining chunk
+    will fail the same way. The ingest task records it as the job's error_message, so the user sees
+    why nothing was extracted instead of a completed job with a plausible-looking count.
+    """
 
 
 class EntityExtractor:
@@ -64,6 +102,8 @@ class EntityExtractor:
         max_concurrency: int = 5,
         schema: GraphSchema | None = None,
         prompt_prefix: str = "",
+        organisation_id: uuid.UUID | None = None,
+        credential_id: str | None = None,
     ) -> None:
         # create_lexical_graph=False: we own the lexical (:Document/:Chunk) graph on the write side
         # with deterministic ids + embeddings; the extractor returns ONLY the entity sub-graph.
@@ -79,6 +119,9 @@ class EntityExtractor:
         # library `max_concurrency` above governs fan-out WITHIN a single chunk; this bounds the
         # across-chunk gather below so a 600-chunk document is not 600 serial round-trips.
         self._max_concurrency = max_concurrency
+        # #724: identify the credential in use so a provider rejection can drop it from the cache.
+        self._organisation_id = organisation_id
+        self._credential_id = credential_id
 
     async def extract(self, *, chunks: list[str], chunk_ids: list[str]) -> Neo4jGraph:
         """Run extraction over the chunk texts and return their entity sub-graph.
@@ -122,14 +165,34 @@ class EntityExtractor:
         )
 
         combined = Neo4jGraph()
+        credential_failures = 0
         for chunk_id, result in zip(chunk_ids, results, strict=True):
             # One bad chunk must not sink the whole document — mirror the library's
             # `on_error=IGNORE`: log and skip the failed chunk, keep the rest.
             if isinstance(result, BaseException):
                 logger.warning("EntityExtractor: chunk %s failed: %r", chunk_id, result)
+                if _is_credential_failure(result):
+                    credential_failures += 1
                 continue
             combined.nodes.extend(result.nodes)
             combined.relationships.extend(result.relationships)
+
+        # #724: "the model refused this chunk's content" and "our credential stopped working" are
+        # NOT the same failure, and treating them alike is how a run reports `completed` with a
+        # small, entirely plausible entity count after the key died at chunk 3 of 900. A credential
+        # fault is not per-chunk: it will not fix itself for chunk 4, so the honest outcome is to
+        # fail the run and let it be re-run once the credential is fixed.
+        if credential_failures:
+            # #724: the provider rejected this org's key, so the cached copy is now known-bad.
+            # Dropping it makes a rotation heal on the next call instead of after the full TTL,
+            # which is the flush-on-rejection the cache documents.
+            if self._credential_id is not None and self._organisation_id is not None:
+                credential_cache.invalidate(self._organisation_id, self._credential_id)
+            raise ExtractionCredentialRejected(
+                f"the model provider rejected this organisation's credential on "
+                f"{credential_failures} of {len(chunks)} chunks (auth/quota). Nothing was "
+                f"extracted from those chunks; re-run once the credential is valid."
+            )
 
         logger.info(
             "EntityExtractor: %d entities, %d relationships from %d chunks",
@@ -151,6 +214,8 @@ class EntityExtractor:
 def make_extractor(
     settings: Settings,
     *,
+    credential: ModelCredential | None = None,
+    organisation_id: uuid.UUID | None = None,
     schema: GraphSchema | None = None,
     prompt_prefix: str = "",
 ) -> EntityExtractor | None:
@@ -165,8 +230,12 @@ def make_extractor(
     """
     if settings.extractor == "null":
         return None
-    if not settings.openai_api_key:
-        raise RuntimeError("KGS_EXTRACTOR=openai requires KGS_OPENAI_API_KEY")
+    if credential is None:
+        raise ModelCredentialUnavailable(
+            "entity extraction reads every ingested chunk and needs the organisation's model "
+            "credential; none was resolved for this run",
+            error_code="model_credential_not_configured",
+        )
     # Lazy import so the key-free `null` path (CI default) never imports openai.
     from neo4j_graphrag.llm import OpenAILLM
 
@@ -175,7 +244,7 @@ def make_extractor(
         # JSON-object response so the extractor's JSON parse is reliable across providers.
         model_params={"temperature": 0.0, "response_format": {"type": "json_object"}},
         # kwargs flow to the openai client init -> point it at OpenRouter (or any compatible base).
-        api_key=settings.openai_api_key,
+        api_key=credential.api_key,
         base_url=settings.openai_base_url,
     )
     return EntityExtractor(
@@ -183,4 +252,6 @@ def make_extractor(
         max_concurrency=settings.extractor_max_concurrency,
         schema=schema,
         prompt_prefix=prompt_prefix,
+        organisation_id=organisation_id,
+        credential_id=credential.credential_id,
     )

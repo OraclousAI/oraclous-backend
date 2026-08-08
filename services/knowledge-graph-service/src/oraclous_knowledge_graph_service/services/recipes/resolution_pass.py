@@ -62,6 +62,7 @@ from oraclous_knowledge_graph_service.domain.recipes.transforms import (
     canonical as canonical_transform,
 )
 from oraclous_knowledge_graph_service.services.embedder import make_embedder
+from oraclous_knowledge_graph_service.services.model_credential import ModelCredential
 
 logger = logging.getLogger(__name__)
 
@@ -161,6 +162,7 @@ def cluster_canonical_keys(
     keys_by_label: dict[str, dict[str, int]],
     plan: ResolutionPlan,
     settings: Settings,
+    credential: ModelCredential | None = None,
 ) -> ClusterResult:
     """Cluster the DISTINCT canonical names within each label and pick a representative per cluster.
 
@@ -191,7 +193,7 @@ def cluster_canonical_keys(
         for key in counts:
             result.representative[(label, key)] = key
 
-    embedder = make_embedder(settings)
+    embedder = make_embedder(settings, credential=credential)
     for label, counts in keys_by_label.items():
         distinct = sorted(counts)  # deterministic order in + out
         if len(distinct) < 2:

@@ -14,6 +14,7 @@ from typing import Any
 from uuid import UUID
 
 from sqlalchemy import select
+from sqlalchemy import update as sa_update
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from oraclous_credential_broker_service.core.rls import build_rls_engine, org_scope
@@ -139,6 +140,23 @@ class CredentialRepository:
                 result = await session.execute(stmt)
                 return result.scalars().first()
 
+    async def get_org_default(self, organisation_id: UUID, purpose: str) -> UserCredential | None:
+        """The credential the org designated as its default for ``purpose`` (#724), or None.
+
+        Org-scoped like every other read. A platform-side model call has no manifest naming a
+        credential, so this is what it asks for instead of reaching for a key of the platform's.
+        The partial unique index makes at most one row match.
+        """
+        with org_scope(organisation_id):
+            async with self._session() as session:
+                result = await session.execute(
+                    select(UserCredential).where(
+                        UserCredential.organisation_id == organisation_id,
+                        UserCredential.default_for == purpose,
+                    )
+                )
+                return result.scalars().first()
+
     async def list_credentials(
         self, request: RequestCredentials, organisation_id: UUID
     ) -> list[UserCredential]:
@@ -182,6 +200,23 @@ class CredentialRepository:
                         obj.encrypted_cred = await self._encrypt(
                             organisation_id=organisation_id, plaintext=update.credential
                         )
+                    # #724: designate (or clear) this credential as the org's default for a
+                    # purpose. "THE default" is singular, so designating one clears any other in
+                    # the same org first; without that the partial unique index would reject the
+                    # second designation and the user would have to un-set the old one by hand.
+                    if update.default_for is not None:
+                        purpose = update.default_for.strip() or None
+                        if purpose is not None:
+                            await session.execute(
+                                sa_update(UserCredential)
+                                .where(
+                                    UserCredential.organisation_id == organisation_id,
+                                    UserCredential.default_for == purpose,
+                                    UserCredential.id != obj.id,
+                                )
+                                .values(default_for=None)
+                            )
+                        obj.default_for = purpose
                 return obj
 
     async def update_encrypted_credential(

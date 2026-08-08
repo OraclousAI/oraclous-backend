@@ -111,11 +111,22 @@ class GraphService:
         return await self._with_live_counts(graph)
 
     async def update_graph(
-        self, *, graph_id: uuid.UUID, user_id: uuid.UUID, name: str | None, description: str | None
+        self,
+        *,
+        graph_id: uuid.UUID,
+        user_id: uuid.UUID,
+        name: str | None,
+        description: str | None,
+        model_credential_id: str | None = None,
     ) -> Graph:
         # owner gate first (a graph owned by another user in the same org -> 404, no leak)
         await self._owned_or_404(graph_id=graph_id, user_id=user_id)
-        updated = await self._repo.update(graph_id, name=name, description=description)
+        updated = await self._repo.update(
+            graph_id,
+            name=name,
+            description=description,
+            model_credential_id=model_credential_id,
+        )
         if updated is None:
             raise GraphNotFound(str(graph_id))
         return updated

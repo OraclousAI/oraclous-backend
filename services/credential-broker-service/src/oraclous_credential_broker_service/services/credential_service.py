@@ -43,6 +43,7 @@ def _metadata(row: UserCredential) -> CredentialOut:
         user_id=row.user_id,
         tool_id=row.tool_id,
         cred_type=str(row.cred_type.value if row.cred_type else ""),
+        default_for=row.default_for,
     )
 
 
@@ -112,6 +113,18 @@ class CredentialService:
         if row is None:
             raise CredentialNotFoundError("credential not found")
         return await self._with_secret(row)
+
+    async def org_default_credential_id(
+        self, *, organisation_id: UUID, purpose: str
+    ) -> UUID | None:
+        """The id of the org's designated default credential for ``purpose``, or None (#724).
+
+        Returns the ID ONLY, never the secret. A platform-side model call resolves the id here and
+        then decrypts through ``resolve_decrypted`` like any other caller, so this endpoint adds no
+        new path by which a secret leaves the broker (ADR-008 operator separation).
+        """
+        row = await self._repo.get_org_default(organisation_id, purpose)
+        return row.id if row is not None else None
 
     async def list(
         self, *, organisation_id: UUID, user_id: UUID, tool_id: UUID | None = None

@@ -28,6 +28,8 @@ from oraclous_credential_broker_service.schema.credential_schema import (
     MintDelegatedTokenInput,
     OAuthConnectInput,
     OAuthConnectResponse,
+    OrgDefaultCredentialInput,
+    OrgDefaultCredentialResponse,
     ResolveCredentialInput,
     ResolveCredentialResponse,
     RevokeDelegatedTokenInput,
@@ -186,6 +188,26 @@ async def resolve_credential(
         cred_type=out.cred_type,
         credential=out.credential,
     )
+
+
+@router.post("/org-default-credential", response_model=OrgDefaultCredentialResponse)
+async def org_default_credential(
+    default_input: OrgDefaultCredentialInput, svc: CredentialServiceDep
+) -> OrgDefaultCredentialResponse:
+    """The org's designated default credential ID for a purpose (#724), or null.
+
+    A platform-side model call over customer data (KGS entity extraction, the KRS evaluation
+    judge) has no manifest naming a credential the way a team member does. Rather than reach for a
+    key of the platform's, it asks here and then decrypts through ``/resolve-credential`` like any
+    other caller. Returns the ID only: no new path by which a secret leaves the broker.
+
+    A null answer is the fail-closed signal, not an error: the caller refuses the model call and
+    tells the user to designate a credential.
+    """
+    credential_id = await svc.org_default_credential_id(
+        organisation_id=default_input.organisation_id, purpose=default_input.purpose
+    )
+    return OrgDefaultCredentialResponse(credential_id=credential_id)
 
 
 @router.post("/webhook-secrets", response_model=WebhookSecretMintResponse)

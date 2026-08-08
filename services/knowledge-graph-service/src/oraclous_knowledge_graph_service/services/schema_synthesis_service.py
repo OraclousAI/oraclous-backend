@@ -25,6 +25,10 @@ from neo4j_graphrag.llm import LLMInterface
 
 from oraclous_knowledge_graph_service.core.config import Settings
 from oraclous_knowledge_graph_service.domain.extraction_schema import from_graph_schema
+from oraclous_knowledge_graph_service.services.model_credential import (
+    ModelCredential,
+    ModelCredentialUnavailable,
+)
 
 # A factory the service calls to run the inference: (text) -> GraphSchema (or an awaitable of one,
 # which is what SchemaFromTextExtractor.run returns). Injected so tests can supply a deterministic
@@ -60,7 +64,12 @@ class SchemaSynthesisService:
         return await result
 
 
-def make_synthesizer(settings: Settings, *, default_mode: str = "strict") -> SchemaSynthesisService:
+def make_synthesizer(
+    settings: Settings,
+    *,
+    credential: ModelCredential | None = None,
+    default_mode: str = "strict",
+) -> SchemaSynthesisService:
     """Build the real synthesizer from config; fail closed when no LLM is configured.
 
     Mirrors ``entity_extractor.make_extractor``: ``KGS_EXTRACTOR=openai`` + a key builds an
@@ -72,15 +81,19 @@ def make_synthesizer(settings: Settings, *, default_mode: str = "strict") -> Sch
         raise SchemaSynthesisUnavailable(
             "schema synthesis requires an LLM (set KGS_EXTRACTOR=openai)"
         )
-    if not settings.openai_api_key:
-        raise SchemaSynthesisUnavailable("KGS_EXTRACTOR=openai requires KGS_OPENAI_API_KEY")
+    if credential is None:
+        raise ModelCredentialUnavailable(
+            "schema synthesis reads customer content and needs the organisation's model "
+            "credential; none was resolved for this run",
+            error_code="model_credential_not_configured",
+        )
     # Lazy import so the key-free `null` path never imports openai.
     from neo4j_graphrag.llm import OpenAILLM
 
     llm: LLMInterface = OpenAILLM(
         model_name=settings.extractor_model,
         model_params={"temperature": 0.0, "response_format": {"type": "json_object"}},
-        api_key=settings.openai_api_key,
+        api_key=credential.api_key,
         base_url=settings.openai_base_url,
     )
     extractor = SchemaFromTextExtractor(llm=llm)

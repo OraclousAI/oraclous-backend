@@ -17,6 +17,7 @@ import logging
 
 from oraclous_knowledge_graph_service.core.config import Settings
 from oraclous_knowledge_graph_service.services.embedder import Embedder, make_embedder
+from oraclous_knowledge_graph_service.services.model_credential import ModelCredential
 
 logger = logging.getLogger(__name__)
 
@@ -30,13 +31,22 @@ def _embed_text(symbol: dict) -> str:
     return "\n".join(p for p in parts if p).strip()
 
 
-def make_optional_embedder(settings: Settings) -> Embedder | None:
-    """Build the embedder, fail-soft: None when `openai` mode has no key (skip embeddings)."""
-    if settings.embedder == "openai" and not settings.openai_api_key:
-        logger.warning("KGS_EMBEDDER=openai but no KGS_OPENAI_API_KEY — skipping code embeddings")
+def make_optional_embedder(
+    settings: Settings, *, credential: ModelCredential | None = None
+) -> Embedder | None:
+    """Build the embedder, fail-soft: None when `openai` mode has no org credential (#724).
+
+    Code embeddings enrich search; they never gate an ingest. So an unresolved credential is
+    logged and skipped here rather than raised, unlike the extraction path where a missing
+    credential means the run reports entities it never extracted.
+    """
+    if settings.embedder == "openai" and credential is None:
+        logger.warning(
+            "KGS_EMBEDDER=openai with no org model credential — skipping code embeddings"
+        )
         return None
     try:
-        return make_embedder(settings)
+        return make_embedder(settings, credential=credential)
     except Exception as exc:  # noqa: BLE001 — embedder init never crashes the ingest
         logger.warning("code embedder unavailable, skipping embeddings: %s", exc)
         return None

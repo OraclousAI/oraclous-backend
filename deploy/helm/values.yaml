@@ -293,7 +293,6 @@ services:
         KGS_JWT_SECRET:           { secretName: "", secretKey: "value" }
         KGS_NEO4J_PASSWORD:       { secretName: "", secretKey: "password" }
         # OpenRouter/BYOM key for semantic embeddings + LLM extraction.
-        KGS_OPENAI_API_KEY:       { secretName: "", secretKey: "value" }
 
   # ── knowledge-graph-worker (KGS Celery worker — no Service) ─────────────────────────────────
   knowledge-graph-worker:
@@ -341,7 +340,6 @@ services:
         KGS_INTERNAL_SERVICE_KEY: { secretName: "", secretKey: "value" }
         KGS_JWT_SECRET:           { secretName: "", secretKey: "value" }
         KGS_NEO4J_PASSWORD:       { secretName: "", secretKey: "password" }
-        KGS_OPENAI_API_KEY:       { secretName: "", secretKey: "value" }
 
   # ── knowledge-retriever-service ─────────────────────────────────────────────────────────────
   knowledge-retriever-service:
@@ -376,7 +374,6 @@ services:
         KRS_JWT_SECRET:           { secretName: "", secretKey: "value" }
         KRS_NEO4J_PASSWORD:       { secretName: "", secretKey: "password" }
         # RAGAS-style evaluation judge key (reuses OpenRouter). Omit => /evaluate fail-closes 422.
-        KRS_OPENAI_API_KEY:       { secretName: "", secretKey: "value" }
 
   # ── harness-runtime-service ─────────────────────────────────────────────────────────────────
   harness-runtime-service:

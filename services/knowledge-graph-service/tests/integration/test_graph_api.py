@@ -63,7 +63,12 @@ class _FakeRepo:
         return self._rows.get(graph_id)
 
     async def update(
-        self, graph_id: uuid.UUID, *, name: str | None, description: str | None
+        self,
+        graph_id: uuid.UUID,
+        *,
+        name: str | None,
+        description: str | None,
+        model_credential_id: str | None = None,
     ) -> Graph | None:
         g = self._rows.get(graph_id)
         if g is None:

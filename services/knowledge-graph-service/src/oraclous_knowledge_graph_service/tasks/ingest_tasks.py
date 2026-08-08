@@ -42,9 +42,11 @@ from oraclous_knowledge_graph_service.services.code_ingestion_service import (
     CodeIngestionService,
     is_code,
 )
+from oraclous_knowledge_graph_service.services.credential_client import make_credential_broker
 from oraclous_knowledge_graph_service.services.embedder import make_embedder
 from oraclous_knowledge_graph_service.services.entity_extractor import make_extractor
 from oraclous_knowledge_graph_service.services.ingestion_service import IngestionService
+from oraclous_knowledge_graph_service.services.model_credential import credential_for_graph
 from oraclous_knowledge_graph_service.services.structured_ingestion_service import (
     StructuredIngestionService,
     is_structured,
@@ -118,18 +120,32 @@ async def _ingest_async(job_id_s: str, organisation_id_s: str) -> dict[str, Any]
                     # a hard GraphSchema (the extractor enforces it) + a prompt prefix (soft
                     # steering), and pass the ontology through for the strict/coerce post-pass.
                     async with maker() as session:
-                        ontology_data = await GraphRepository(session).get_ontology(
-                            payload.graph_id
-                        )
+                        graph_repo = GraphRepository(session)
+                        ontology_data = await graph_repo.get_ontology(payload.graph_id)
+                        graph = await graph_repo.get(payload.graph_id)
                     ontology = Ontology.of(ontology_data)
+                    # #724: ONE resolution per run, passed to every model client this run builds.
+                    # Resolved only when a model will actually be called — the key-free hashing /
+                    # null modes need no credential, so a key-free stack is unchanged.
+                    credential = await credential_for_graph(
+                        settings,
+                        organisation_id=org_id,
+                        graph_id=payload.graph_id,
+                        graph_credential_id=getattr(graph, "model_credential_id", None),
+                        broker_factory=make_credential_broker,
+                    )
                     extractor = make_extractor(
                         settings,
+                        credential=credential,
                         schema=to_graph_schema(ontology),
                         prompt_prefix=to_prompt_prefix(ontology),
                     )
                     write_repo = GraphWriteRepository(driver, database=settings.neo4j_database)
                     ingestion = IngestionService(
-                        write_repo, make_embedder(settings), extractor, ontology=ontology
+                        write_repo,
+                        make_embedder(settings, credential=credential),
+                        extractor,
+                        ontology=ontology,
                     )
                     result = await ingestion.ingest(
                         graph_id=str(payload.graph_id),
@@ -205,7 +221,18 @@ async def _ingest_structured(*, driver, maker, settings, payload, data: bytes) -
                 raise RuntimeError(
                     f"recipe {payload.recipe_id!r} is a draft; promote it before ingesting"
                 )
-        ontology_data = await GraphRepository(session).get_ontology(payload.graph_id)
+        graph_repo = GraphRepository(session)
+        ontology_data = await graph_repo.get_ontology(payload.graph_id)
+        graph_row = await graph_repo.get(payload.graph_id)
+    # #724: resolve ONCE here, on the event loop. Everything below runs inside asyncio.to_thread
+    # and cannot await a broker, so the credential crosses that boundary as a plain value.
+    credential = await credential_for_graph(
+        settings,
+        organisation_id=uuid.UUID(enforced_organisation_id()),
+        graph_id=payload.graph_id,
+        graph_credential_id=getattr(graph_row, "model_credential_id", None),
+        broker_factory=make_credential_broker,
+    )
     temporal = {
         "valid_from": payload.valid_from,
         "valid_to": payload.valid_to,
@@ -219,6 +246,7 @@ async def _ingest_structured(*, driver, maker, settings, payload, data: bytes) -
     )
     result = await asyncio.to_thread(
         service.ingest,
+        credential=credential,
         graph_id=str(payload.graph_id),
         document=payload.filename or "inline",
         text=text,
@@ -268,6 +296,15 @@ async def _ingest_code(*, driver, settings, payload, data: bytes) -> dict[str, A
         )
         counts = await asyncio.to_thread(
             service.ingest,
+            # #724: code embeddings are fail-soft, so a missing credential skips vectors rather
+            # than failing the ingest. Resolved here on the loop; the pipeline runs in a thread.
+            credential=await credential_for_graph(
+                settings,
+                organisation_id=uuid.UUID(enforced_organisation_id()),
+                graph_id=payload.graph_id,
+                graph_credential_id=None,
+                broker_factory=make_credential_broker,
+            ),
             graph_id=str(payload.graph_id),
             document=payload.filename or "code.zip",
             data=data,

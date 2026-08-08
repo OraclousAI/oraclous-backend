@@ -15,8 +15,8 @@ import uuid
 
 import pytest
 from oraclous_knowledge_retriever_service.core.dependencies import (
-    get_eval_judge,
     get_evaluation_service,
+    get_org_judge,
     get_retrieval_service,
 )
 from oraclous_knowledge_retriever_service.services import evaluation_service as ev
@@ -70,7 +70,7 @@ class _FakeJudge:
 @pytest.fixture
 def client(app, async_client):
     app.dependency_overrides[get_retrieval_service] = lambda: _FakeRetrieval()
-    app.dependency_overrides[get_eval_judge] = lambda: _FakeJudge()
+    app.dependency_overrides[get_org_judge] = lambda: _FakeJudge()
     yield async_client
     app.dependency_overrides.clear()
 
@@ -118,7 +118,7 @@ async def test_evaluate_returns_the_full_envelope(client) -> None:
 
 async def test_unknown_graph_is_404(app, async_client) -> None:
     app.dependency_overrides[get_retrieval_service] = lambda: _FakeRetrieval(exists=False)
-    app.dependency_overrides[get_eval_judge] = lambda: _FakeJudge()
+    app.dependency_overrides[get_org_judge] = lambda: _FakeJudge()
     try:
         resp = await async_client.post(
             f"/v1/graph/{uuid.uuid4()}/evaluate", json=_BODY, headers=_AUTH
@@ -187,8 +187,8 @@ async def test_overlong_metric_name_is_rejected_at_the_dto(client) -> None:
 
 
 async def test_unconfigured_judge_is_a_typed_422(app, async_client) -> None:
-    # The REAL get_eval_judge runs (no override) on an app whose lifespan built no judge —
-    # exactly the no-KRS_OPENAI_API_KEY posture: an explicit eval endpoint must refuse with a
+    # The REAL get_org_judge runs (no override) on an app whose lifespan built no judge —
+    # exactly the no-credential posture: an explicit eval endpoint must refuse with a
     # machine-readable error, never fake scores.
     app.dependency_overrides[get_retrieval_service] = lambda: _FakeRetrieval()
     try:
@@ -199,7 +199,9 @@ async def test_unconfigured_judge_is_a_typed_422(app, async_client) -> None:
         (item,) = resp.json()["detail"]
         assert item["loc"] == ["eval"]
         assert item["type"] == "eval_judge_not_configured"
-        assert "KRS_OPENAI_API_KEY" in item["msg"]
+        # #724 deleted KRS_OPENAI_API_KEY. The refusal now names what a user can actually
+        # do about it: designate an org model credential, or pass judge_credential_id.
+        assert "model credential" in item["msg"]
     finally:
         app.dependency_overrides.clear()
 
@@ -214,7 +216,7 @@ async def test_typed_422_bodies_match_the_gateway_extractor_contract(app, async_
         no_judge = await async_client.post(
             f"/v1/graph/{uuid.uuid4()}/evaluate", json=_BODY, headers=_AUTH
         )
-        app.dependency_overrides[get_eval_judge] = lambda: _FakeJudge()
+        app.dependency_overrides[get_org_judge] = lambda: _FakeJudge()
         no_metrics = await async_client.post(
             f"/v1/graph/{uuid.uuid4()}/evaluate",
             json={"question": "q?", "metrics": []},

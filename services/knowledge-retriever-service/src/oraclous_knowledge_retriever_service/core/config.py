@@ -77,7 +77,10 @@ class Settings(BaseSettings):
     # /evaluate endpoint returns a typed 422; it NEVER fabricates scores. The caps bound judge
     # spend per request AND per process; the deadline keeps every response under the gateway's
     # 30s read timeout (#333). ---
-    openai_api_key: str | None = None
+    # #724: no platform model key here. The evaluation judge grades the caller's own
+    # content, so it runs on the ORG's broker-resolved credential (an explicit
+    # judge_credential_id, else the org default) or refuses. A field here would be a
+    # fallback, and a fallback is what #295 and #653 each removed once already.
     openai_base_url: str = "https://openrouter.ai/api/v1"
     eval_judge_model: str = "openai/gpt-4o-mini"
     eval_judge_timeout_seconds: float = 15.0  # per-call HTTP timeout on the judge client

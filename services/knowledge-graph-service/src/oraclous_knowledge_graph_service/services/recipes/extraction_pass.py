@@ -51,6 +51,7 @@ from oraclous_knowledge_graph_service.domain.temporal import (
     temporal_prompt_steering,
 )
 from oraclous_knowledge_graph_service.services.entity_extractor import make_extractor
+from oraclous_knowledge_graph_service.services.model_credential import ModelCredential
 from oraclous_knowledge_graph_service.services.recipes.resolution_pass import (
     SAME_AS_CANDIDATE,
     ClusterResult,
@@ -92,6 +93,7 @@ def run_extraction_pass(
     engine: Any,
     meta: dict[str, Any],
     source_id: str,
+    credential: ModelCredential | None = None,
 ) -> _ExtractionStats:
     """Run every `extractions[]` rule over the projected records; return the entity/mention totals.
 
@@ -120,6 +122,7 @@ def run_extraction_pass(
             prompt_prefix = f"{prompt_prefix}\n\n{steering}" if prompt_prefix else steering
         extractor = make_extractor(
             settings,
+            credential=credential,
             schema=to_graph_schema(ontology),
             prompt_prefix=prompt_prefix,
         )
@@ -172,6 +175,7 @@ def run_extraction_pass(
             # node per cluster, aliases unioned, MENTIONS from all source records) + the
             # ambiguous-band SAME_AS_CANDIDATE edges. Resolving BEFORE write avoids node surgery.
             _resolve_and_write_rule(
+                credential=credential,
                 rule=rule,
                 by_record=by_record,
                 ontology=ontology,
@@ -375,6 +379,7 @@ def _resolve_and_write_rule(
     deterministic_id: Any,
     meta: dict[str, Any],
     source_id: str,
+    credential: ModelCredential | None,
     stats: _ExtractionStats,
     extract_temporal: bool = False,
 ) -> None:
@@ -420,7 +425,7 @@ def _resolve_and_write_rule(
     # 3. Semantic clustering (conservative; fail-soft). Each (label, canonical_key) maps to a
     #    representative canonical key; ambiguous-band pairs come back as candidates.
     cluster: ClusterResult = cluster_canonical_keys(
-        keys_by_label=keys_by_label, plan=plan, settings=settings
+        keys_by_label=keys_by_label, plan=plan, settings=settings, credential=credential
     )
     stats.warnings.extend(cluster.warnings)
     stats.entities_merged += cluster.merged
