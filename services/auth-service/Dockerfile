@@ -20,8 +20,10 @@ COPY packages/ ./packages/
 COPY services/auth-service/pyproject.toml ./services/auth-service/pyproject.toml
 
 # Install the service's production dependencies into an isolated .venv
-ENV UV_PROJECT_ENVIRONMENT=/app/.venv
-RUN uv sync \
+ENV UV_PROJECT_ENVIRONMENT=/app/.venv \
+    UV_LINK_MODE=copy
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync \
       --package oraclous-auth-service \
       --frozen \
       --no-dev \

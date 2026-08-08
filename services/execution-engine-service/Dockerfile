@@ -15,8 +15,10 @@ COPY packages/ ./packages/
 COPY services/execution-engine-service/pyproject.toml \
      ./services/execution-engine-service/pyproject.toml
 
-ENV UV_PROJECT_ENVIRONMENT=/app/.venv
-RUN uv sync \
+ENV UV_PROJECT_ENVIRONMENT=/app/.venv \
+    UV_LINK_MODE=copy
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync \
       --package oraclous-execution-engine-service \
       --frozen \
       --no-dev \
