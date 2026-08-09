@@ -1,0 +1,128 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://oraclous.dev/contracts/citation/v1.json",
+  "title": "Resolvable citation on a tool result",
+  "description": "Canonical shape for the source identity the platform mints for every knowledge record and every assertable tool result, and that the console renders. Canonical home: oraclous-knowledge interface-contracts §CITE (rev3). The root schema is a Citation; SourceRef (what a connector emits inbound) is in $defs. additionalProperties is false at every level, so no locator, no chunk index and no caller-smuggled field can ever exist. A citation resolves to a DOCUMENT VERSION and nothing finer (rev3).",
+  "$ref": "#/$defs/Citation",
+  "$defs": {
+    "Citation": {
+      "title": "Citation",
+      "description": "The resolvable source identity of one knowledge record. Minted by platform code only — a model may reference a citation_id, it may never author one.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "citation_id",
+        "source_system",
+        "source_id",
+        "revision",
+        "revision_kind",
+        "url",
+        "title",
+        "author",
+        "retrieved_at",
+        "permission_ref"
+      ],
+      "properties": {
+        "citation_id": {
+          "description": "Platform-computed, deterministic: 'cit_' + sha256(source_system ‖ 0x00 ‖ source_id ‖ 0x00 ‖ revision)[:32], where ‖ 0x00 ‖ is a NUL byte. The ONLY handle an answer may cite.",
+          "type": "string",
+          "pattern": "^cit_[0-9a-f]{32}$"
+        },
+        "source_system": {
+          "description": "A REGISTERED connector slug, plus the reserved value 'upload' for a direct file upload. Deliberately NOT a closed enum: UC-E1 acceptance 6 requires a sixth, unplanned source type to be connectable without re-modelling existing records. That the value names a registered connector is a runtime check, not a schema one.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "source_id": {
+          "description": "Identity WITHIN that system, stable across revisions (e.g. 'owner/repo:path', a canonical URL, an ingest job id).",
+          "type": "string",
+          "minLength": 1
+        },
+        "revision": {
+          "description": "The version read. NEVER null, on any path: when a source exposes no version of its own the platform falls back to the SHA-256 of the content it holds, with revision_kind 'content_hash'. Required and non-nullable so both the identity hash and the supersession rule stay total.",
+          "type": "string",
+          "minLength": 1
+        },
+        "revision_kind": {
+          "description": "What kind of version 'revision' is — a source-native version, or our own content-hash fallback. This is what tells the two apart.",
+          "type": "string",
+          "enum": [
+            "commit",
+            "blob_sha",
+            "version_id",
+            "etag",
+            "edited_at",
+            "block",
+            "content_hash"
+          ]
+        },
+        "url": {
+          "description": "Absolute and openable. Null only when the platform genuinely cannot resolve the source: today that is the 'upload' path, because no route serves an uploaded document back yet.",
+          "type": ["string", "null"],
+          "pattern": "^https?://"
+        },
+        "title": {
+          "description": "Display label ONLY — never identity. Null when the source exposes no title.",
+          "type": ["string", "null"],
+          "minLength": 1
+        },
+        "author": {
+          "description": "The SOURCE's author. Null when the system exposes none — many do not.",
+          "oneOf": [{ "$ref": "#/$defs/Author" }, { "type": "null" }]
+        },
+        "retrieved_at": {
+          "description": "As-of: when this revision was read from the source. Platform-computed, never inbound.",
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?(Z|[+-]\\d{2}:\\d{2})$"
+        },
+        "permission_ref": {
+          "description": "The source's own permission handle. CARRIED now, UNENFORCED until per-user permission mirroring lands — that is the entire point of it being in the shape already.",
+          "type": ["string", "null"],
+          "minLength": 1
+        }
+      }
+    },
+    "SourceRef": {
+      "title": "SourceRef",
+      "description": "What a CONNECTOR emits alongside the content it read, and the only citation-shaped thing that may travel inbound. 'revision'/'revision_kind' are optional inbound (the platform falls back to a content hash); citation_id and retrieved_at are absent by construction — they are platform-computed, so additionalProperties:false makes a caller-supplied citation_id unrepresentable here.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source_system", "source_id"],
+      "dependentRequired": {
+        "revision": ["revision_kind"],
+        "revision_kind": ["revision"]
+      },
+      "properties": {
+        "source_system": { "$ref": "#/$defs/Citation/properties/source_system" },
+        "source_id": { "$ref": "#/$defs/Citation/properties/source_id" },
+        "revision": { "$ref": "#/$defs/Citation/properties/revision" },
+        "revision_kind": { "$ref": "#/$defs/Citation/properties/revision_kind" },
+        "url": { "$ref": "#/$defs/Citation/properties/url" },
+        "title": { "$ref": "#/$defs/Citation/properties/title" },
+        "author": { "$ref": "#/$defs/Citation/properties/author" },
+        "permission_ref": { "$ref": "#/$defs/Citation/properties/permission_ref" }
+      }
+    },
+    "Author": {
+      "title": "Author",
+      "description": "The source record's author, as the source exposes them.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["display_name"],
+      "properties": {
+        "display_name": { "type": "string", "minLength": 1 },
+        "source_handle": {
+          "description": "The handle within the source system. Omitted when the system exposes none.",
+          "type": "string",
+          "minLength": 1
+        },
+        "email": {
+          "description": "Optional; omitted unless the source exposes it.",
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    }
+  }
+}

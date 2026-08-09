@@ -1,0 +1,15 @@
+{
+  "citation_id": "cit_fa15f7461dad797b8a1cecc484297c71",
+  "source_system": "web-research",
+  "source_id": "https://blog.example.com/posts/2026/partner-agreements",
+  "revision": "c45527e9fe6d5adb0ee639879d6a7a44a097ce26d7a8b1ec75ce7e2b95a3ac4e",
+  "revision_kind": "content_hash",
+  "url": "https://blog.example.com/posts/2026/partner-agreements",
+  "title": "How partner agreements work",
+  "author": {
+    "display_name": "Ilse Nakamura",
+    "source_handle": "ilsen"
+  },
+  "retrieved_at": "2026-08-08T11:02:07Z",
+  "permission_ref": null
+}
