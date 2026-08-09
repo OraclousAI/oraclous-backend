@@ -12,6 +12,7 @@ dependencies = [
     "neo4j>=5.23,<6.0",
     "redis>=5.0,<7.0",
     "openai>=1.40,<2.0",
+    "oraclous-citation",
     "oraclous-governance",
     "oraclous-substrate",
     "oraclous-rebac",
@@ -22,6 +23,7 @@ dependencies = [
 ]
 
 [tool.uv.sources]
+oraclous-citation = { workspace = true }
 oraclous-governance = { workspace = true }
 oraclous-substrate = { workspace = true }
 oraclous-rebac = { workspace = true }

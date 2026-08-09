@@ -28,6 +28,7 @@ dependencies = [
     "tree-sitter-python>=0.23,<0.24",
     "tree-sitter-javascript>=0.23,<0.24",
     "tree-sitter-typescript>=0.23,<0.24",
+    "oraclous-citation",
     "oraclous-governance",
     "oraclous-rebac",
     "oraclous-substrate",
@@ -35,6 +36,7 @@ dependencies = [
 ]
 
 [tool.uv.sources]
+oraclous-citation = { workspace = true }
 oraclous-governance = { workspace = true }
 oraclous-rebac = { workspace = true }
 oraclous-substrate = { workspace = true }
