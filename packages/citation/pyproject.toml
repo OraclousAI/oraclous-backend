@@ -1,0 +1,17 @@
+[project]
+name = "oraclous-citation"
+version = "0.0.0"
+description = "Shared citation contract fixture + the Citation/SourceRef models and the deterministic citation_id (shared)."
+requires-python = "==3.12.*"
+dependencies = []
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+# The `[tests]` PR (#742) ships the contract fixture under `contract/` ONLY — the
+# `src/oraclous_citation/` package is the paired `[impl]`'s work, so there is nothing to select
+# into a wheel yet and the workspace member would otherwise fail to build. The `[impl]` PR replaces
+# this line with `packages = ["src/oraclous_citation"]`, matching every other workspace package.
+[tool.hatch.build.targets.wheel]
+bypass-selection = true
