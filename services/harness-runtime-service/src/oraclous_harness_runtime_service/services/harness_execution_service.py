@@ -267,6 +267,7 @@ class HarnessExecutionService:
         max_tokens: int | None = None,
         max_tool_calls: int | None = None,
         on_exhaustion: Literal["escalate", "degrade"] | None = None,
+        producer: dict[str, Any] | None = None,
     ) -> HarnessExecution:
         # Fail-closed tenancy (ADR-006/T1-M1): org is the principal's ONLY, never the manifest's.
         if principal.organisation_id is None:
@@ -295,6 +296,10 @@ class HarnessExecutionService:
         # cap the ceiling by the caller's member tools[] (ADR-032/035 §5) — fail-closed for a
         # manifest_ref member too, whose registered manifest could otherwise declare a broader set.
         ext_ceiling = frozenset(capability_ceiling) if capability_ceiling is not None else None
+        # Minted BEFORE the runnable is built so #728 provenance can carry it: an artifact this run
+        # writes records the execution that produced it, and the instances are configured inside
+        # _build_runnable. Generation is pure, so hoisting it changes nothing else.
+        execution_id = uuid.uuid4()
         envelope, tool_specs, dispatch, llm = await self._build_runnable(
             manifest,
             policy,
@@ -307,8 +312,10 @@ class HarnessExecutionService:
             member_max_tokens=max_tokens,
             member_max_tool_calls=max_tool_calls,
             member_on_exhaustion=on_exhaustion,
+            producer=(
+                {**producer, "execution_id": str(execution_id)} if producer is not None else None
+            ),
         )
-        execution_id = uuid.uuid4()
         resource = f"harness_execution:{execution_id}"
         prompt = manifest.primary_prompt()
         # team-scope blackboard READ (#513): when a team member is bound to a graph and a reader
@@ -769,6 +776,7 @@ class HarnessExecutionService:
         member_max_tokens: int | None = None,
         member_max_tool_calls: int | None = None,
         member_on_exhaustion: Literal["escalate", "degrade"] | None = None,
+        producer: dict[str, Any] | None = None,
     ) -> tuple[Any, list[ToolSpec], Any, LLMClient]:
         """Resolve + materialise the manifest's capabilities, build the dispatch + the LLM + the
         runtime envelope. Shared by execute() and resume() so a resume sets up identically.
@@ -793,6 +801,7 @@ class HarnessExecutionService:
             graph_id=graph_id,
             precedence_order=precedence_order,
             graph_authoritative=graph_authoritative,
+            producer=producer,
         )
 
         async def dispatch(spec: ToolSpec, args: dict[str, Any]) -> dict[str, Any]:
@@ -987,6 +996,7 @@ class HarnessExecutionService:
         graph_id: str | None = None,
         precedence_order: list[str] | None = None,
         graph_authoritative: bool = False,
+        producer: dict[str, Any] | None = None,
     ) -> tuple[dict[str, uuid.UUID], list[ToolSpec]]:
         """Find-or-create a registry instance per capability + build the agent's full toolset.
 
@@ -1074,6 +1084,12 @@ class HarnessExecutionService:
                             "order": precedence_order,
                             "graph_authoritative": graph_authoritative,
                         }
+                    # #728: bind WHO is writing, so an artifact records the member and run that
+                    # produced it. Instance configuration is the trusted channel graph_id already
+                    # uses, so the model can neither supply nor forge its own identity. Only the
+                    # graph-ingest connector reads it; every other instance carries it inertly.
+                    if producer:
+                        cap_config.update(producer)
                     instance = await self._registry.create_instance(
                         capability_id=str(item["id"]),
                         name=name,

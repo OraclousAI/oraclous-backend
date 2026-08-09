@@ -31,9 +31,12 @@ from oraclous_knowledge_graph_service.domain.community import (
     DetectionInProgress,
 )
 from oraclous_knowledge_graph_service.repositories.community_repository import CommunityRepository
+from oraclous_knowledge_graph_service.repositories.graph_repository import GraphRepository
 from oraclous_knowledge_graph_service.repositories.job_repository import IngestionJobRepository
 from oraclous_knowledge_graph_service.services.analytics_service import decode_detect_params
 from oraclous_knowledge_graph_service.services.community_summarizer import make_summarizer
+from oraclous_knowledge_graph_service.services.credential_client import make_credential_broker
+from oraclous_knowledge_graph_service.services.model_credential import credential_for_graph
 from oraclous_knowledge_graph_service.tasks.celery_app import AsyncTaskExecutor, celery_app
 from oraclous_knowledge_graph_service.tasks.ingest_tasks import JobNotVisibleYet
 
@@ -77,6 +80,10 @@ async def _detect_async(job_id_s: str, organisation_id_s: str) -> dict[str, Any]
                 # The request params (min_entities/force_rebuild) ride on source_content so the
                 # worker applies the SAME floor/skip semantics as the inline path (not defaults).
                 min_entities, force_rebuild = decode_detect_params(payload.source_content)
+                # #724: read the graph's own credential pin in the session that is already open,
+                # so the per-graph override applies here as it does on the ingest path.
+                graph_row = await GraphRepository(session).get(payload.graph_id)
+                graph_model_credential_id = getattr(graph_row, "model_credential_id", None)
                 await jobs.update_status(job_id, status="running", progress=10)
                 await session.commit()
 
@@ -110,7 +117,16 @@ async def _detect_async(job_id_s: str, organisation_id_s: str) -> dict[str, Any]
                         skipped_reason = "community detection already in progress"
                         levels = {}
                     total = sum(len(groups) for groups in levels.values())
-                    summarizer = make_summarizer(settings, repo=repo)
+                    # #724: summarisation reads graph content, so it runs on the ORG's
+                    # credential. The graph is known here, so its override applies too.
+                    credential = await credential_for_graph(
+                        settings,
+                        organisation_id=org_id,
+                        graph_id=payload.graph_id,
+                        graph_credential_id=graph_model_credential_id,
+                        broker_factory=make_credential_broker,
+                    )
+                    summarizer = make_summarizer(settings, repo=repo, credential=credential)
                     if summarizer is not None and total:
                         outcome = await summarizer.summarize_graph(graph_id=graph_id)
                         summarized = len(outcome.results)

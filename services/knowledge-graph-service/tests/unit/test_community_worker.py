@@ -83,6 +83,23 @@ async def test_detect_async_wires_job_lifecycle_and_applies_params(monkeypatch) 
         async def commit(self) -> None:
             return None
 
+        async def execute(self, *_args, **_kwargs):  # noqa: ANN002, ANN003, ANN202
+            # #724: the task now reads the graph row for its model_credential_id pin in this same
+            # session. A graph with no pin is the default, so returning nothing is the shape under
+            # test here; the pinned case is covered by the resolver's own unit tests.
+            class _Result:
+                def scalar_one_or_none(self):  # noqa: ANN202
+                    return None
+
+                def scalars(self):  # noqa: ANN202
+                    class _S:
+                        def first(self):  # noqa: ANN202
+                            return None
+
+                    return _S()
+
+            return _Result()
+
     @asynccontextmanager
     async def _fake_session():
         yield _FakeSession()
@@ -98,7 +115,9 @@ async def test_detect_async_wires_job_lifecycle_and_applies_params(monkeypatch) 
     monkeypatch.setattr(community_tasks, "IngestionJobRepository", _FakeJobRepo)
     monkeypatch.setattr(community_tasks, "CommunityRepository", _FakeRepo)
     # No LLM summarizer in this smoke (keeps it network-free).
-    monkeypatch.setattr(community_tasks, "make_summarizer", lambda _s, *, repo: None)
+    monkeypatch.setattr(
+        community_tasks, "make_summarizer", lambda _s, *, repo, credential=None: None
+    )
 
     result = await community_tasks._detect_async(str(uuid.uuid4()), _ORG)
 

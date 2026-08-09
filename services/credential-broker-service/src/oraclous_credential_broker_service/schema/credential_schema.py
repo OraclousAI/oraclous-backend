@@ -38,6 +38,9 @@ class CredentialsUpdate(BaseModel):
     cred_type: Literal["oauth", "api_key", "raw"]
     # Optional: omit to preserve the stored secret (name-only rename); when set, rotates it.
     credential: dict | None = None
+    # #724: designate this credential the org's default for a purpose ("model"), or "" to clear.
+    # Omit to leave the designation untouched, so an ordinary rename never changes it.
+    default_for: str | None = None
 
 
 class CredentialOut(BaseModel):
@@ -49,6 +52,9 @@ class CredentialOut(BaseModel):
     user_id: UUID
     tool_id: UUID
     cred_type: str
+    # #724: which purpose this credential is the org's default for, or None. Echoed so a caller
+    # can read back what it just designated instead of having to re-fetch and guess.
+    default_for: str | None = None
 
 
 class RequestCredentialsResponse(BaseModel):
@@ -160,6 +166,27 @@ class ResolveCredentialInput(BaseModel):
 
     organisation_id: UUID
     credential_id: UUID
+
+
+class OrgDefaultCredentialInput(BaseModel):
+    """Internal (X-Internal-Key) lookup of the org's default credential for a purpose (#724).
+
+    ``*Input`` (not ``*Request``): the trusted caller supplies ``organisation_id``, the same
+    service-to-service idiom as ``ResolveCredentialInput``.
+    """
+
+    organisation_id: UUID
+    purpose: str = "model"
+
+
+class OrgDefaultCredentialResponse(BaseModel):
+    """The designated credential's ID, or None when the org has designated nothing.
+
+    Carries no secret. The caller resolves the payload through ``/resolve-credential`` as usual, so
+    the decryption path is unchanged.
+    """
+
+    credential_id: UUID | None = None
 
 
 class ResolveCredentialResponse(BaseModel):

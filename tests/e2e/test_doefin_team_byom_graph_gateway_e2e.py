@@ -16,7 +16,8 @@ The whole loop, nothing injected, nothing mocked:
   4. SERVED — the outputs are listed + fetched verbatim through the unified ``/v1/artifacts`` route.
 
 ``byom``+``github``-marked → DESELECTED in CI (no real write PAT / model key there); run LOCALLY via
-``scripts/e2e.sh --doefin`` with ``deploy/.env`` creds (GITHUB_IMPORT_PAT + GITHUB_IMPORT_REPO +
+``scripts/e2e.sh --doefin`` with ``deploy/.env`` creds (GITHUB_IMPORT_PAT + GITHUB_IMPORT_REPO) +
+deploy/.env.test's (
 OPENROUTER_API_KEY) + the CTO's remote R4 check. Closes #543.
 """
 

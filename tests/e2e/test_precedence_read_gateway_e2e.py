@@ -99,7 +99,9 @@ def test_canonical_tier_outranks_lower_and_derived_tiers_on_the_read(
     register: Callable[..., dict],
     gateway_client: Callable[[str], httpx.Client],
 ) -> None:
-    user = register(f"prec{uuid.uuid4().hex[:10]} owner")  # unique slug → fresh personal-org
+    user = register(
+        f"prec{uuid.uuid4().hex[:10]} owner", with_model_credential=True
+    )  # unique slug → fresh personal-org
     c = gateway_client(user["token"])
     graph_id = c.post("/api/v1/graphs", json={"name": "precedence-kb"}).json()["id"]
 

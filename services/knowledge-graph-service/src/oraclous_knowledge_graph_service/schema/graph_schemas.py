@@ -22,12 +22,17 @@ class CreateGraphRequest(BaseModel):
 class UpdateGraphRequest(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=255)
     description: str | None = None
+    # #724: pin THIS graph to one of the org's model credentials, overriding the org default for
+    # every model call over its content. Omit to leave the pin untouched; "" clears it back to the
+    # org default. An id only — the secret stays in the broker and is resolved per call.
+    model_credential_id: str | None = Field(default=None, max_length=64)
 
 
 class GraphResponse(BaseModel):
     id: uuid.UUID
     name: str
     description: str | None
+    model_credential_id: str | None = None  # #724: the graph's pinned model credential, if any
     status: str
     node_count: int
     relationship_count: int
@@ -40,6 +45,7 @@ class GraphResponse(BaseModel):
             id=g.id,
             name=g.name,
             description=g.description,
+            model_credential_id=g.model_credential_id,
             status=g.status,
             node_count=g.node_count,
             relationship_count=g.relationship_count,

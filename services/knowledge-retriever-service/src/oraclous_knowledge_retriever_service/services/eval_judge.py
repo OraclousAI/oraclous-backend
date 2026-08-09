@@ -24,7 +24,7 @@ from oraclous_knowledge_retriever_service.services.broker_client import BrokerCl
 
 # EvalJudge / OpenAIEvalJudge are re-exported from oraclous_eval (the canonical seam) so KRS callers
 # keep importing them from here.
-__all__ = ["EvalJudge", "OpenAIEvalJudge", "make_judge", "resolve_byom_judge"]
+__all__ = ["EvalJudge", "OpenAIEvalJudge", "resolve_byom_judge", "resolve_judge_for_org"]
 
 
 def _model_from_binding(binding: str | None) -> str | None:
@@ -74,19 +74,57 @@ async def resolve_byom_judge(
     )
 
 
-def make_judge(settings: Settings) -> OpenAIEvalJudge | None:
-    """Build the judge from config, or None when no API key is configured.
+async def resolve_judge_for_org(
+    settings: Settings,
+    *,
+    organisation_id: uuid.UUID,
+    credential_id: str | None,
+    judge_model: str | None = None,
+) -> OpenAIEvalJudge:
+    """The ONLY way a judge is built since #724: the org's own credential, or a refusal.
 
-    Called ONCE at lifespan; the caller (the DI provider, off ``app.state``) maps None to a typed
-    422: scores from an unconfigured judge would be fabrications, and an explicit eval endpoint
-    must never return those (#331).
+    ``credential_id`` is the caller's explicit choice (a manifest ``role="evaluator"`` model's
+    ``config.credential_id``). With none supplied, the ORG's designated default is looked up. That
+    is the same marker KGS reads for graph extraction, so one designation serves both services.
+
+    There is no operator-key fallback. The judge reads the caller's ``target_output`` and grades
+    it, which is a model call over customer data, so it runs on a key the customer owns or it does
+    not run at all. Raises :class:`BrokerError` when nothing is configured or nothing resolves; the
+    route turns that into a typed 422, never a fabricated score (#331).
     """
-    if not settings.openai_api_key:
-        return None
+    if not settings.credential_broker_url:
+        # #724: the judge is BYOM-only, so a deployment with no broker cannot build one. Say that
+        # plainly. Constructing a client on an empty base_url defers the failure to request time,
+        # where httpx raises UnsupportedProtocol and the caller learns nothing useful.
+        raise BrokerError(
+            "model_credential_not_configured: no credential broker is configured, so the "
+            "evaluation judge cannot resolve this organisation's model credential."
+        )
+    broker = BrokerClient(
+        settings.credential_broker_url, internal_key=settings.internal_service_key or ""
+    )
+    try:
+        resolved_id = credential_id or await broker.org_default_credential_id(
+            organisation_id=organisation_id, purpose="model"
+        )
+        if not resolved_id:
+            raise BrokerError(
+                "model_credential_not_configured: no model credential is configured for this "
+                "organisation. Store one through the credentials API and designate it the "
+                "organisation default, or pass judge_credential_id explicitly."
+            )
+        payload = await broker.resolve_credential(
+            credential_id=resolved_id, organisation_id=organisation_id
+        )
+    finally:
+        await broker.aclose()
+    api_key = payload.get("api_key") or payload.get("key")
+    if not api_key:
+        raise BrokerError(f"model credential {resolved_id} holds no usable api_key")
     return OpenAIEvalJudge(
-        api_key=settings.openai_api_key,
-        base_url=settings.openai_base_url,
-        model_name=settings.eval_judge_model,
+        api_key=str(api_key),
+        base_url=settings.openai_base_url,  # operator default (OpenRouter); user base_url ignored
+        model_name=_model_from_binding(judge_model) or settings.eval_judge_model,
         timeout_seconds=settings.eval_judge_timeout_seconds,
         max_retries=settings.eval_judge_max_retries,
         max_completion_tokens=settings.eval_judge_max_tokens,

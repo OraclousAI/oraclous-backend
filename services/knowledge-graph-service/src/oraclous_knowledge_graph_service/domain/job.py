@@ -23,6 +23,15 @@ class IngestionJobRecord:
     extracted_relationships: int
     created_at: datetime
     updated_at: datetime
+    # #728 provenance — metadata, never part of the name. Defaulted so every existing construction
+    # site (and every pre-provenance row) stays valid.
+    producer_kind: str | None = None
+    team_run_id: uuid.UUID | None = None
+    member_role: str | None = None
+    execution_id: uuid.UUID | None = None
+    team_id: str | None = None
+    ordinal: int | None = None
+    content_hash: str | None = None
 
 
 @dataclass(frozen=True)
@@ -37,3 +46,7 @@ class IngestionPayload:
     valid_from: str | None
     valid_to: str | None
     event_time: str | None
+    # #728: the worker needs the producer kind to decide the DOCUMENT KEY. An agent artifact keys
+    # on its own job id, so two members writing at once cannot merge onto one node; a user upload
+    # keeps filename keying, so re-ingesting the same path still REPLACES (#522). None → upload.
+    producer_kind: str | None = None

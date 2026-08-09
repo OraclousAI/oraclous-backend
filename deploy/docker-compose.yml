@@ -60,7 +60,6 @@ x-kgs-env: &kgs-env
   # key-free CI. "openai" = LLM extraction over an OpenAI-compatible endpoint (OpenRouter) using the
   # platform key — also materialises real :Entity nodes + their relationships, linked to chunks.
   KGS_EXTRACTOR: "${KGS_EXTRACTOR:-null}"
-  KGS_OPENAI_API_KEY: "${OPENROUTER_API_KEY:-}"
   KGS_OPENAI_BASE_URL: "${KGS_OPENAI_BASE_URL:-https://openrouter.ai/api/v1}"
   KGS_EXTRACTOR_MODEL: "${KGS_EXTRACTOR_MODEL:-openai/gpt-4o-mini}"
   # Max concurrent per-chunk LLM extraction calls within one document (the extractor fans out across
@@ -401,7 +400,8 @@ services:
       KRS_INTERNAL_SERVICE_KEY: "${INTERNAL_SERVICE_KEY:-dev-internal-key}"
       # BYOM judge (ADR-037 / BYOM-judge): core/evaluate resolves a per-org judge key (a manifest
       # role="evaluator" model's config.credential_id) from the broker, so a user brings their own
-      # OpenRouter key via the gateway credentials API instead of the operator KRS_OPENAI_API_KEY.
+      # OpenRouter key via the gateway credentials API. #724 removed the operator key entirely, so
+      # this is now the ONLY way a judge is built; an org with no credential gets a typed refusal.
       KRS_CREDENTIAL_BROKER_URL: "http://credential-broker-service:8000"
       KRS_JWT_SECRET: "${AUTH_JWT_SECRET:-dev-jwt-secret}"
       KRS_NEO4J_URI: "bolt://neo4j:7687"
@@ -414,11 +414,10 @@ services:
       KRS_REDIS_URL: "redis://redis:6379/0"
       KRS_QUERY_CACHE: "${KRS_QUERY_CACHE:-false}"
       KRS_QUERY_CACHE_TTL: "${KRS_QUERY_CACHE_TTL:-300}"
-      # RAGAS-style evaluation judge (#331/#333): reuses the OpenRouter key (same provider as the
-      # KGS extractor at line 50). Absent a key the evaluate endpoint fail-closes with a typed 422
-      # EVAL_JUDGE_NOT_CONFIGURED (never fabricates scores); base_url/model default to OpenRouter +
-      # openai/gpt-4o-mini in code. Override KRS_OPENAI_API_KEY to use a distinct judge credential.
-      KRS_OPENAI_API_KEY: "${KRS_OPENAI_API_KEY:-${OPENROUTER_API_KEY:-}}"
+      # RAGAS-style evaluation judge (#331/#333): the judge is BYOM-only since #724. base_url and
+      # model still default to OpenRouter + openai/gpt-4o-mini in code; the KEY comes from the
+      # caller's broker credential, never from this file. Absent one the endpoint fail-closes with
+      # a typed 422 rather than fabricating scores.
       # Federation (#330 / ADR-026): KRS enumerates the caller's accessible set from the KGS
       # internal plane (GET /internal/v1/graphs, X-Internal-Key). Unset ⇒ federated routes 503.
       KRS_KNOWLEDGE_GRAPH_URL: "http://knowledge-graph-service:8000"

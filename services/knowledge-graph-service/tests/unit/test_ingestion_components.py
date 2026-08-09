@@ -22,6 +22,9 @@ from oraclous_knowledge_graph_service.services.extractors import (
     extract_text,
     source_type_for,
 )
+from oraclous_knowledge_graph_service.services.model_credential import (
+    ModelCredentialUnavailable,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -89,9 +92,10 @@ def test_make_embedder_default_is_hashing() -> None:
     assert isinstance(make_embedder(Settings()), HashingEmbedder)
 
 
-def test_make_embedder_openai_requires_key() -> None:
-    with pytest.raises(RuntimeError):
-        make_embedder(Settings(embedder="openai", openai_api_key=None))
+def test_make_embedder_openai_requires_the_org_credential() -> None:
+    """#724: real embeddings run on the org's credential. Hashing mode stays key-free."""
+    with pytest.raises(ModelCredentialUnavailable, match="model_credential_not_configured"):
+        make_embedder(Settings(embedder="openai"), credential=None)
 
 
 # --- graph builder ------------------------------------------------------------

@@ -108,6 +108,7 @@ class FakeHarness:
         workspace_root: str | None = None,
         graph_id: str | None = None,
         team_id: str | None = None,
+        producer: dict[str, Any] | None = None,
         precedence_order: list[str] | None = None,  # additive (#538) — accepted, ignored here
         graph_authoritative: bool = False,
     ) -> dict[str, Any]:

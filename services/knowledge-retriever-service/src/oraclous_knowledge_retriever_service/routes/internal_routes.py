@@ -24,16 +24,13 @@ from oraclous_substrate.access import enforced_organisation_id
 
 from oraclous_knowledge_retriever_service.core.config import get_settings
 from oraclous_knowledge_retriever_service.core.dependencies import (
-    EvalJudge,
     OrganisationContext,
     bind_org_context,
     build_flow_eval_service,
-    get_eval_judge,
-    get_eval_judge_optional,
 )
 from oraclous_knowledge_retriever_service.schema.flow_eval_schemas import FlowEvaluateRequest
 from oraclous_knowledge_retriever_service.services.broker_client import BrokerError
-from oraclous_knowledge_retriever_service.services.eval_judge import resolve_byom_judge
+from oraclous_knowledge_retriever_service.services.eval_judge import resolve_judge_for_org
 from oraclous_knowledge_retriever_service.services.flow_evaluation_service import (
     BatteryNotSupported,
     FlowEvaluationService,
@@ -47,7 +44,6 @@ async def evaluate_flow(
     body: FlowEvaluateRequest,
     request: Request,
     _org: Annotated[OrganisationContext, Depends(bind_org_context)],
-    judge_singleton: Annotated[EvalJudge | None, Depends(get_eval_judge_optional)],
 ) -> Verdict:
     """Grade `target_output` against `success_criteria`, returning the structured `Verdict`. The org
     is the bound principal's (server-stamped, H2). With a `judge_credential_id`, the per-org BYOM
@@ -56,37 +52,32 @@ async def evaluate_flow(
     organisation_id = enforced_organisation_id()  # the verified principal's org (ADR-037 H2)
     settings = get_settings()
 
-    if (
-        body.judge_credential_id
-    ):  # BYOM judge — resolve the caller's own key per-org from the broker
-        try:
-            judge = await resolve_byom_judge(
-                settings,
-                credential_id=body.judge_credential_id,
-                judge_model=body.judge_model,
-                organisation_id=uuid.UUID(organisation_id),  # broker resolve is UUID-typed
-            )
-        except BrokerError as exc:
-            raise HTTPException(  # fail-closed: an unresolvable BYOM credential is a typed 422
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail=[
-                    {
-                        "loc": ["judge_credential_id"],
-                        "type": "byom_judge_credential_unavailable",
-                        "msg": str(exc),
-                    }
-                ],
-            ) from exc
-        try:
-            service = build_flow_eval_service(judge, request, settings)
-            return await _evaluate(service, body, organisation_id)
-        finally:
-            await judge.aclose()  # per-request judge — close its HTTP client; never the singleton
-
-    # operator-key fallback: the lifespan singleton, or the typed 422 when none is configured
-    judge_singleton = judge_singleton or get_eval_judge(request)  # raises the typed 422 when None
-    service = build_flow_eval_service(judge_singleton, request, settings)
-    return await _evaluate(service, body, organisation_id)
+    # #724: the judge runs on the ORG's credential — the caller's explicit judge_credential_id,
+    # else the organisation's designated default. There is no operator-key fallback: the judge
+    # reads the caller's target_output, so it runs on a key the customer owns or not at all.
+    try:
+        judge = await resolve_judge_for_org(
+            settings,
+            organisation_id=uuid.UUID(organisation_id),  # broker resolve is UUID-typed
+            credential_id=body.judge_credential_id,
+            judge_model=body.judge_model,
+        )
+    except BrokerError as exc:
+        raise HTTPException(  # fail-closed: nothing configured / nothing resolvable is a typed 422
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=[
+                {
+                    "loc": ["judge_credential_id"],
+                    "type": "byom_judge_credential_unavailable",
+                    "msg": str(exc),
+                }
+            ],
+        ) from exc
+    try:
+        service = build_flow_eval_service(judge, request, settings)
+        return await _evaluate(service, body, organisation_id)
+    finally:
+        await judge.aclose()  # per-request judge — close its HTTP client
 
 
 async def _evaluate(

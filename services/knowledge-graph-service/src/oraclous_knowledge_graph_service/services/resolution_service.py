@@ -40,14 +40,20 @@ from oraclous_knowledge_graph_service.repositories.graph_write_repository import
     GraphWriteRepository,
 )
 from oraclous_knowledge_graph_service.repositories.resolution_repository import ResolutionRepository
+from oraclous_knowledge_graph_service.services.credential_client import make_credential_broker
 from oraclous_knowledge_graph_service.services.cross_graph_resolution import (
     generate_cross_graph_pairs,
 )
 from oraclous_knowledge_graph_service.services.embedder import make_embedder
 from oraclous_knowledge_graph_service.services.graph_service import GraphNotFound, GraphService
+from oraclous_knowledge_graph_service.services.model_credential import credential_for_graph
 
 # The most entities fetched per graph for cross-graph candidate generation (a bounded scan).
 _CROSS_GRAPH_ENTITY_SCAN_LIMIT = 5000
+
+
+class CrossGraphCredentialMismatch(Exception):
+    """Two graphs pinned to different model credentials cannot be compared (#724)."""
 
 
 class ResolutionService:
@@ -210,6 +216,29 @@ class ResolutionService:
 
     # ── cross-graph SAME_AS (#330 / ADR-026) ───────────────────────────────────────────────────
 
+    async def _graph_pin(self, graph_id: uuid.UUID, user_id: uuid.UUID) -> str | None:
+        """This graph's own model credential id, or None to use the org default (#724)."""
+        graph = await self._graphs.get_graph(graph_id=graph_id, user_id=user_id)
+        return getattr(graph, "model_credential_id", None)
+
+    async def _refuse_if_pins_disagree(
+        self, graph_id: uuid.UUID, target_graph_id: uuid.UUID, user_id: uuid.UUID
+    ) -> None:
+        """Cross-graph comparison needs ONE vector space, so it needs ONE credential (#724).
+
+        Two graphs pinned to different models produce vectors that cannot be compared: cosine
+        between them is arithmetic without meaning. Rather than silently pick one and emit
+        confident nonsense, refuse and say which two graphs disagree.
+        """
+        source = await self._graph_pin(graph_id, user_id)
+        target = await self._graph_pin(target_graph_id, user_id)
+        if source != target:
+            raise CrossGraphCredentialMismatch(
+                f"graphs {graph_id} and {target_graph_id} are pinned to different model "
+                "credentials, so their vectors are not comparable. Point both at the same "
+                "credential, or clear one pin to use the organisation default."
+            )
+
     async def generate_cross_graph(
         self,
         *,
@@ -250,7 +279,19 @@ class ResolutionService:
             graph_id_a=str(graph_id),
             graph_id_b=str(target_graph_id),
         )
-        embedder = make_embedder(self._settings)
+        # #724: cross-graph comparison embeds entities from BOTH graphs into ONE vector space,
+        # so it must use ONE credential. The source graph's pin decides; a target graph pinned to a
+        # different model would put the two sides in incomparable spaces, so that case refuses
+        # rather than silently producing meaningless cosine scores.
+        credential = await credential_for_graph(
+            self._settings,
+            organisation_id=uuid.UUID(org),
+            graph_id=graph_id,
+            graph_credential_id=await self._graph_pin(graph_id, user_id),
+            broker_factory=make_credential_broker,
+        )
+        await self._refuse_if_pins_disagree(graph_id, target_graph_id, user_id)
+        embedder = make_embedder(self._settings, credential=credential)
         # The whole generation (quadratic cosine + the embedder's SYNC OpenAI HTTP) runs off the
         # event loop, like the entity fetches above — it must never block the KGS loop.
         candidates, warnings = await asyncio.to_thread(

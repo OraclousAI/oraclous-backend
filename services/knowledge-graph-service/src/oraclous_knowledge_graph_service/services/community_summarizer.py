@@ -25,6 +25,10 @@ from typing import Protocol, runtime_checkable
 from oraclous_knowledge_graph_service.core.config import Settings
 from oraclous_knowledge_graph_service.domain.community import CommunityMember
 from oraclous_knowledge_graph_service.repositories.community_repository import CommunityRepository
+from oraclous_knowledge_graph_service.services.model_credential import (
+    ModelCredential,
+    ModelCredentialUnavailable,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -282,7 +286,12 @@ class OpenAICommunityLLM:
         return response.choices[0].message.content or "{}"
 
 
-def make_summarizer(settings: Settings, *, repo: CommunityRepository) -> CommunitySummarizer | None:
+def make_summarizer(
+    settings: Settings,
+    *,
+    repo: CommunityRepository,
+    credential: ModelCredential | None = None,
+) -> CommunitySummarizer | None:
     """Build the summarizer from config, or None when LLM summarisation is off.
 
     Reuses the extractor's LLM seam: enabled when ``KGS_EXTRACTOR=openai`` (the same OpenAI-compat
@@ -291,12 +300,14 @@ def make_summarizer(settings: Settings, *, repo: CommunityRepository) -> Communi
     """
     if settings.extractor != "openai":
         return None
-    if not settings.openai_api_key:
-        raise RuntimeError(
-            "community summarisation (KGS_EXTRACTOR=openai) requires KGS_OPENAI_API_KEY"
+    if credential is None:
+        raise ModelCredentialUnavailable(
+            "community summarisation reads graph content and needs the organisation's model "
+            "credential; none was resolved for this run",
+            error_code="model_credential_not_configured",
         )
     llm = OpenAICommunityLLM(
-        api_key=settings.openai_api_key,
+        api_key=credential.api_key,
         base_url=settings.openai_base_url,
         model_name=settings.extractor_model,
     )

@@ -38,6 +38,10 @@ class KnowledgeGraph(Base):
     # DB invariant, so the lazy find-or-create is race-safe (a concurrent first run that loses the
     # insert race re-reads the winner rather than creating a duplicate).
     system_kind: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    # #724: this graph's OWN model credential, overriding the org default. NULL = use the
+    # org default. No FK: the credential lives in another service's table, so the id is
+    # validated by RESOLUTION (fails closed when gone or cross-org) rather than by the DB.
+    model_credential_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     node_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     relationship_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
@@ -144,6 +148,16 @@ class IngestionJob(Base):
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     extracted_entities: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     extracted_relationships: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    # #728 provenance — who produced this artifact. Runtime-supplied at dispatch (never the model,
+    # the rule graph_ingest already applies to graph_id). NULL on a user upload and on every row
+    # that predates this, both of which keep filename-based document keying (#522 refresh).
+    producer_kind: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    team_run_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    member_role: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    execution_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    team_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    ordinal: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    content_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()

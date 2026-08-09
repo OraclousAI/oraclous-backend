@@ -14,6 +14,7 @@ from oraclous_knowledge_graph_service.core.config import Settings, get_settings
 from oraclous_knowledge_graph_service.domain.ontology import Ontology
 from oraclous_knowledge_graph_service.domain.structural import ExtractionMode, Primitive
 from oraclous_knowledge_graph_service.repositories.recipe_write_repository import RecipeGraphWriter
+from oraclous_knowledge_graph_service.services.model_credential import ModelCredential
 from oraclous_knowledge_graph_service.services.recipes.auto_similarity import (
     synthesize_similarity_rules,
 )
@@ -64,6 +65,7 @@ class StructuredIngestionService:
         recipe: dict | None = None,
         ontology: Ontology | None = None,
         temporal: dict | None = None,
+        credential: ModelCredential | None = None,
     ) -> dict:
         family = "csv" if (source_type or "").lower() in {"csv", "tsv"} else "json"
         primitive = self._primitives[family]
@@ -110,6 +112,7 @@ class StructuredIngestionService:
             }
             if active_recipe.get("extractions"):
                 ex_stats = run_extraction_pass(
+                    credential=credential,
                     recipe=active_recipe,
                     representation=representation,
                     writer=writer,
@@ -130,6 +133,7 @@ class StructuredIngestionService:
             # SAME writer + settings; fail-soft on an embed() error (the pass is skipped).
             if active_recipe.get("similarities"):
                 sim_stats = run_similarity_pass(
+                    credential=credential,
                     recipe=active_recipe,
                     representation=representation,
                     writer=writer,

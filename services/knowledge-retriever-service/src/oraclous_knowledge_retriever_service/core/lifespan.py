@@ -25,7 +25,6 @@ from oraclous_knowledge_retriever_service.core.neo4j import (
     make_neo4j_async_driver,
     make_neo4j_driver,
 )
-from oraclous_knowledge_retriever_service.services.eval_judge import make_judge
 
 
 def _open_neo4j() -> Driver | None:
@@ -102,11 +101,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         )
     app.state.redis_client = redis_client
 
-    # Evaluation seam (#331/#333): ONE judge client per process (explicit short timeout + bounded
-    # retries — never the SDK's 600s × 3) and the process-level evaluation slots. None when no
-    # key is configured; the DI provider maps that to the typed eval_judge_not_configured 422.
+    # Evaluation seam (#331/#333): the process-level evaluation slots. There is no longer a judge
+    # singleton: since #724 a judge is built PER REQUEST from the caller organisation's own
+    # credential (services.eval_judge.resolve_judge_for_org), because one process-wide client
+    # cannot hold a per-org key. Its HTTP client is closed by the route that built it.
     settings = get_settings()
-    app.state.eval_judge = make_judge(settings)
     app.state.eval_slots = asyncio.Semaphore(max(1, settings.eval_max_concurrent_requests))
 
     # Federation registry client (#330 / ADR-026): ONE pooled httpx.AsyncClient for the KGS
@@ -136,9 +135,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             await rebac_drv.close()
         if redis_client is not None:
             await redis_client.aclose()
-        judge = getattr(app.state, "eval_judge", None)
-        if judge is not None:
-            await judge.aclose()
         fed_client = getattr(app.state, "federation_http_client", None)
         if fed_client is not None:
             await fed_client.aclose()

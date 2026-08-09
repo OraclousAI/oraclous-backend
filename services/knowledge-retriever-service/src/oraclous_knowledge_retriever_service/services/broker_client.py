@@ -38,6 +38,23 @@ class BrokerClient:
     async def aclose(self) -> None:
         await self._client.aclose()
 
+    async def org_default_credential_id(
+        self, *, organisation_id: uuid.UUID, purpose: str = "model"
+    ) -> str | None:
+        """The org's designated default credential id for ``purpose`` (#724), or None.
+
+        A null answer is the fail-closed signal, not an error: the caller refuses the model call
+        and names what the user must configure.
+        """
+        resp = await self._client.post(
+            "/internal/org-default-credential",
+            json={"organisation_id": str(organisation_id), "purpose": purpose},
+        )
+        if resp.status_code != 200:
+            raise BrokerError(f"org-default-credential -> {resp.status_code}")
+        value = resp.json().get("credential_id")
+        return str(value) if value else None
+
     async def resolve_credential(
         self, *, credential_id: str, organisation_id: uuid.UUID
     ) -> dict[str, Any]:

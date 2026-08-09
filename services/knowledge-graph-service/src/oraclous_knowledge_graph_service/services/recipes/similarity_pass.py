@@ -13,7 +13,8 @@ For each `similarities[]` rule in a validated recipe:
     handed off by the engine on the projection result via `node_index_by_rule`), skipping empty
     text and any record whose primary node was not projected;
   - if fewer than 2 records have text → no pair exists → no edges (return);
-  - `make_embedder(settings).embed(texts)` → one vector per record; L2-normalise each so a dot
+  - `make_embedder(settings, credential=...).embed(texts)` -> one vector per record; L2-normalise
+    each so a dot
     product IS the cosine similarity;
   - resolve the effective minimum cosine: `per_type_min_score[<the node_rule's label>]` when the
     rule provides a per-type override for that label, else the rule's `min_score` floor (#310 —
@@ -42,6 +43,7 @@ from oraclous_knowledge_graph_service.core.config import Settings
 from oraclous_knowledge_graph_service.domain.recipes.writer import RecipeGraphWriter
 from oraclous_knowledge_graph_service.domain.structural import StructuralRepresentation
 from oraclous_knowledge_graph_service.services.embedder import make_embedder
+from oraclous_knowledge_graph_service.services.model_credential import ModelCredential
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +68,7 @@ def run_similarity_pass(
     engine: Any,
     meta: dict[str, Any],
     source_id: str,
+    credential: ModelCredential | None = None,
 ) -> _SimilarityStats:
     """Run every `similarities[]` rule over the projected records; return the edge total.
 

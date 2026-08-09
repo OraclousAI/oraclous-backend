@@ -2155,18 +2155,39 @@ paths:
   /v1/artifacts:
     get:
       tags: [knowledge-graph]
-      summary: List a graph's artifacts (its ingested documents), filterable by filename query and source type.
+      summary: List a graph's artifacts (its ingested documents), filterable by query, source type and producer.
       description: >-
         The unified artifact read/serve surface (#543 / ADR-041), served by the
         knowledge-graph-service. Org-scoped via graph ownership — an unknown / cross-org
         `graph_id` is a 404. `q` filters by filename substring; `source_type` by the ingest
         source type. Rich semantic query stays the retriever's /v1/search over the same graph.
+
+
+        PROVENANCE (#728). Each item now carries who produced it, so a client can attribute an
+        artifact and group a run's output: `producer_kind` (`team-member` | `standalone-agent` |
+        `null` for a user upload), `team_run_id`, `member_role`, `execution_id`, `team_id`,
+        `ordinal` (the fan-out index, disambiguating one member's parallel sub-runs) and
+        `content_hash`. All are nullable: a user upload and every artifact written before #728
+        carries none. The four producer query parameters filter on the same fields.
+
+
+        `filename` is now a DERIVED human name (the supplied title, else the content's own leading
+        heading, else `"<role> output <n>"`), never the constant `inline.txt` every agent write
+        used to share. Identity lives in the provenance fields, not the name — two artifacts may
+        legitimately share a name and remain distinct.
       operationId: listArtifacts
       x-stability: provisional
       parameters:
         - { name: graph_id, in: query, required: true, schema: { type: string, format: uuid } }
         - { name: q, in: query, required: false, schema: { type: string } }
         - { name: source_type, in: query, required: false, schema: { type: string } }
+        - { name: team_run_id, in: query, required: false, schema: { type: string, format: uuid } }
+        - { name: team_id, in: query, required: false, schema: { type: string } }
+        - { name: member_role, in: query, required: false, schema: { type: string } }
+        - name: producer_kind
+          in: query
+          required: false
+          schema: { type: string, enum: [team-member, standalone-agent, user-upload] }
       responses:
         "200": { $ref: "#/components/responses/UpstreamJson" }
         "401": { $ref: "#/components/responses/Unauthenticated" }
@@ -3161,6 +3182,21 @@ components:
         tool_id: { type: string, format: uuid }
         cred_type: { type: string, enum: [oauth, api_key, raw] }
         credential: { type: object, additionalProperties: true, nullable: true }
+        default_for:
+          type: string
+          nullable: true
+          description: >-
+            Designate this credential the ORGANISATION's default for a purpose (#724). Currently
+            the only purpose is `model`: the key every model call over the org's content resolves
+            (entity extraction, community summarisation, vision, embeddings, schema synthesis).
+            OMIT to leave the designation untouched — an ordinary rename never changes it. Send
+            `"model"` to designate, which first clears any other credential holding that purpose in
+            the same org (the designation is singular). Send `""` to clear it.
+            Since #724 no service carries a platform model key, so an org with NO designated model
+            credential fails every ingest that reaches a real extractor, with
+            `model_credential_not_configured`. A graph may override the org default via its own
+            `model_credential_id`.
+          example: model
     ChangePasswordRequest:
       type: object
       description: The new password for the authenticated account (the bearer identifies the user).

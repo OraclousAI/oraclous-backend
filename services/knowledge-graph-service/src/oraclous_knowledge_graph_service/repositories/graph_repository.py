@@ -32,6 +32,7 @@ def _to_domain(row: KnowledgeGraph) -> Graph:
         created_at=row.created_at,
         updated_at=row.updated_at,
         system_kind=row.system_kind,
+        model_credential_id=row.model_credential_id,
     )
 
 
@@ -138,7 +139,12 @@ class GraphRepository:
         return _to_domain(row) if row else None
 
     async def update(
-        self, graph_id: uuid.UUID, *, name: str | None, description: str | None
+        self,
+        graph_id: uuid.UUID,
+        *,
+        name: str | None,
+        description: str | None,
+        model_credential_id: str | None = None,
     ) -> Graph | None:
         stmt = select(KnowledgeGraph).where(
             KnowledgeGraph.id == graph_id,
@@ -151,6 +157,9 @@ class GraphRepository:
             row.name = name
         if description is not None:
             row.description = description
+        if model_credential_id is not None:
+            # "" clears the pin back to the org default; a value pins this graph (#724).
+            row.model_credential_id = model_credential_id.strip() or None
         await self._session.flush()
         await self._session.refresh(row)
         return _to_domain(row)

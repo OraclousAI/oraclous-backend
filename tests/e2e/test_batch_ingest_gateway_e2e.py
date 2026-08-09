@@ -105,7 +105,7 @@ def test_a_folder_of_content_lands_in_the_graph_and_reingest_is_idempotent(
     register: Callable[..., dict],
     gateway_client: Callable[[str], httpx.Client],
 ) -> None:
-    user = register(f"ingest{uuid.uuid4().hex[:10]} user")
+    user = register(f"ingest{uuid.uuid4().hex[:10]} user", with_model_credential=True)
     c = gateway_client(user["token"])
     graph_id = c.post("/api/v1/graphs", json={"name": "content-kb"}).json()["id"]
 

@@ -5,7 +5,7 @@
 #
 #   scripts/e2e.sh            # deterministic suite (fake LLM): -m "e2e and not byom"
 #   scripts/e2e.sh --up       # bring the stack up (fake LLM) first, then run the deterministic suite
-#   scripts/e2e.sh --byom     # BYOM real-LLM run: harness -> LIVE, -m byom (needs OPENROUTER_API_KEY)
+#   scripts/e2e.sh --byom     # BYOM real-LLM run: harness -> LIVE, -m byom (OPENROUTER_API_KEY in deploy/.env.test)
 #   scripts/e2e.sh --oauth    # OAuth login: bring up a real dex OIDC provider, -m oauth
 #   scripts/e2e.sh --github   # real-github.com deliver-back O7 proof (#542), -m github (deploy/.env PAT)
 #   scripts/e2e.sh --doefin   # #543 DoefinGPT use-case proof: github-tool import + real OpenRouter + /v1/artifacts
@@ -18,6 +18,22 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 COMPOSE="docker compose --env-file deploy/.env -f deploy/docker-compose.yml -f deploy/docker-compose.dev-ports.yml"
+
+# --- test-only key sources (#724) -------------------------------------------------------------
+# deploy/.env.test holds the keys a TEST brings (OPENROUTER_API_KEY, TAVILY_API_KEY). They are
+# never service environment: an e2e reads one here and pastes it through the gateway credentials
+# API so it becomes an ORG credential, which is the BYOM path the product actually uses.
+# deploy/.env stays deployment config; since #724 it carries no model key at all, and the
+# check_byom_model_keys guardrail fails the build if one reappears in a service env.
+TEST_ENV_FILE="deploy/.env.test"
+
+_load_test_key() {  # _load_test_key VAR — export VAR from deploy/.env.test unless already set
+  local var="$1" val
+  [ -n "${!var:-}" ] && return 0
+  val=$(grep -E "^${var}=" "$TEST_ENV_FILE" 2>/dev/null | head -1 | cut -d= -f2-)
+  [ -n "$val" ] && export "$var=$val"
+  return 0
+}
 OAUTH_COMPOSE="$COMPOSE -f deploy/docker-compose.e2e-oauth.yml"
 
 run_oauth() {
@@ -78,13 +94,20 @@ _require_gateway
 run_deterministic() {
   _recreate_harness fake
   _setup_gitea
+  _load_test_key TAVILY_API_KEY   # a BYOM source an e2e pastes through the credentials API
+  # #724: on a stack running a REAL extractor (KGS_EXTRACTOR=openai) every ingest needs the ORG to
+  # have designated a model credential — no platform key exists any more. The conftest pastes this
+  # through the credentials API at registration. Absent is fine: the compose default extractor is
+  # `null`, which never calls a model, and that is what CI runs.
+  _load_test_key OPENROUTER_API_KEY
   echo ">> deterministic e2e through the gateway (fake LLM)…"
   uv run pytest tests/e2e -m "e2e and not byom and not oauth" -v -p no:cacheprovider \
     && _banner "deterministic"
 }
 
 run_byom() {
-  : "${OPENROUTER_API_KEY:?set OPENROUTER_API_KEY to the BYOM model key for --byom}"
+  _load_test_key OPENROUTER_API_KEY
+  : "${OPENROUTER_API_KEY:?set OPENROUTER_API_KEY in deploy/.env.test for --byom}"
   _recreate_harness live
   echo ">> BYOM real-LLM e2e through the gateway (live LLM, user-supplied key)…"
   uv run pytest tests/e2e -m byom -v -p no:cacheprovider && _banner "BYOM real-LLM"
@@ -108,13 +131,14 @@ run_doefin() {  # the #543 DoefinGPT real-model use-case proof (import via githu
   local pat repo ork
   pat=$(grep -E '^GITHUB_IMPORT_PAT=' deploy/.env 2>/dev/null | head -1 | cut -d= -f2-)
   repo=$(grep -E '^GITHUB_IMPORT_REPO=' deploy/.env 2>/dev/null | head -1 | cut -d= -f2-)
-  ork=$(grep -E '^OPENROUTER_API_KEY=' deploy/.env 2>/dev/null | head -1 | cut -d= -f2-)
+  _load_test_key OPENROUTER_API_KEY
+  ork="${OPENROUTER_API_KEY:-}"
   export GITHUB_IMPORT_PAT="${GITHUB_IMPORT_PAT:-$pat}"
   export GITHUB_IMPORT_REPO="${GITHUB_IMPORT_REPO:-$repo}"
   export OPENROUTER_API_KEY="${OPENROUTER_API_KEY:-$ork}"
   : "${GITHUB_IMPORT_PAT:?set GITHUB_IMPORT_PAT in deploy/.env for --doefin}"
   : "${GITHUB_IMPORT_REPO:?set GITHUB_IMPORT_REPO in deploy/.env for --doefin}"
-  : "${OPENROUTER_API_KEY:?set OPENROUTER_API_KEY (the BYOM model key) in deploy/.env for --doefin}"
+  : "${OPENROUTER_API_KEY:?set OPENROUTER_API_KEY (the BYOM model key) in deploy/.env.test for --doefin}"
   _recreate_harness live  # RULE 8: real model, never fake
   echo ">> DoefinGPT real-model use-case e2e (#543): import via github tool → real OpenRouter → /v1/artifacts…"
   uv run pytest tests/e2e -m "byom and github" -v -p no:cacheprovider && _banner "DoefinGPT real-model (#543)"

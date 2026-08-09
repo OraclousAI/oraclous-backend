@@ -25,6 +25,7 @@ from oraclous_governance import (
 )
 from oraclous_rebac import ReBACEngine
 from oraclous_rebac.adapter import ReBACEngineResolver
+from oraclous_substrate.access import enforced_organisation_id
 from oraclous_substrate.rebac import AccessDecisionClient
 
 from oraclous_knowledge_retriever_service.core.auth import (
@@ -34,8 +35,12 @@ from oraclous_knowledge_retriever_service.core.auth import (
     verify_token,
 )
 from oraclous_knowledge_retriever_service.core.config import Settings, get_settings
+from oraclous_knowledge_retriever_service.services.broker_client import BrokerError
 from oraclous_knowledge_retriever_service.services.embedder import HashingEmbedder
-from oraclous_knowledge_retriever_service.services.eval_judge import EvalJudge
+from oraclous_knowledge_retriever_service.services.eval_judge import (
+    EvalJudge,
+    resolve_judge_for_org,
+)
 from oraclous_knowledge_retriever_service.services.evaluation_service import EvaluationService
 from oraclous_knowledge_retriever_service.services.federated_service import (
     FederatedRetrievalService,
@@ -185,47 +190,55 @@ def get_federated_service(
     )
 
 
-def get_eval_judge(request: Request) -> EvalJudge:
-    """The lifespan-built judge singleton behind /evaluate (#331), or a typed 422 when absent.
+_JUDGE_UNCONFIGURED = [
+    {
+        "loc": ["eval"],
+        "type": "eval_judge_not_configured",
+        "msg": (
+            "evaluation requires a model credential owned by your organisation: store one through"
+            " the credentials API and designate it the organisation default, or pass"
+            " judge_credential_id."
+        ),
+    }
+]
 
-    An explicit evaluation endpoint must refuse rather than silently fabricate scores, so a
-    missing KRS_OPENAI_API_KEY is a caller-visible, machine-readable 422 — never fake numbers.
-    The detail uses the Pydantic LIST shape (``[{"loc": [...], "type": "...", "msg": "..."}]``)
-    because the gateway's leak-safe #225 extractor relays ONLY that shape: the typed error
-    survives the edge as VALIDATION_FAILED with field ``eval`` / issue
-    ``EVAL_JUDGE_NOT_CONFIGURED`` instead of collapsing to the detail-free envelope (#333).
+
+async def get_org_judge(
+    _org: Annotated[OrganisationContext, Depends(bind_org_context)],
+) -> AsyncIterator[EvalJudge]:
+    """A judge built PER REQUEST from the caller organisation's own credential (#724).
+
+    There is no longer a process-wide judge: it graded the caller's content on a key of the
+    platform's, and one singleton cannot hold a per-org key anyway. A ``yield`` dependency because
+    the judge owns an HTTP client that must be closed when the request ends, which the lifespan
+    used to do for the singleton.
+
+    An org with nothing configured gets the same typed 422 shape as before, so the gateway's
+    leak-safe #225 extractor still relays it as VALIDATION_FAILED / EVAL_JUDGE_NOT_CONFIGURED
+    rather than a detail-free envelope. Refusing beats fabricating scores (#331).
     """
-    judge = getattr(request.app.state, "eval_judge", None)
-    if judge is None:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=[
-                {
-                    "loc": ["eval"],
-                    "type": "eval_judge_not_configured",
-                    "msg": (
-                        "evaluation requires an LLM judge: set KRS_OPENAI_API_KEY (and optionally"
-                        " KRS_OPENAI_BASE_URL / KRS_EVAL_JUDGE_MODEL)."
-                    ),
-                }
-            ],
+    settings = get_settings()
+    try:
+        judge = await resolve_judge_for_org(
+            settings,
+            organisation_id=uuid.UUID(enforced_organisation_id()),
+            credential_id=None,
+            judge_model=None,
         )
-    return judge
-
-
-def get_eval_judge_optional(request: Request) -> EvalJudge | None:
-    """The lifespan judge singleton, or ``None`` (no raise) — the BYOM-judge route can't hard-depend
-    on the singleton (a request may bring its own per-org credential instead). The route maps a
-    ``None`` singleton (and no BYOM credential) to the typed 422 via :func:`get_eval_judge`. Kept a
-    DI provider (not a bare ``app.state`` read) so tests inject a fake judge via overrides."""
-    judge: EvalJudge | None = getattr(request.app.state, "eval_judge", None)
-    return judge
+    except BrokerError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=_JUDGE_UNCONFIGURED
+        ) from exc
+    try:
+        yield judge
+    finally:
+        await judge.aclose()
 
 
 def get_evaluation_service(
     request: Request,
     retrieval: Annotated[RetrievalService, Depends(get_retrieval_service)],
-    judge: Annotated[EvalJudge, Depends(get_eval_judge)],
+    judge: Annotated[EvalJudge, Depends(get_org_judge)],
 ) -> EvaluationService:
     settings = get_settings()
     return EvaluationService(
@@ -259,7 +272,7 @@ def build_flow_eval_service(
 
 def get_flow_evaluation_service(
     request: Request,
-    judge: Annotated[EvalJudge, Depends(get_eval_judge)],
+    judge: Annotated[EvalJudge, Depends(get_org_judge)],
     _org: Annotated[OrganisationContext, Depends(bind_org_context)],
 ) -> FlowEvaluationService:
     """core/evaluate (ADR-037 / #469): the shared packages/eval evaluator over the ONE lifespan

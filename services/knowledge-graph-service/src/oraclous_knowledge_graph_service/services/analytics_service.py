@@ -19,7 +19,7 @@ import uuid
 from collections.abc import Callable
 from datetime import UTC, datetime
 
-from oraclous_knowledge_graph_service.core.config import get_settings
+from oraclous_knowledge_graph_service.core.config import Settings, get_settings
 from oraclous_knowledge_graph_service.domain.community import (
     COMMUNITY_DETECT_SOURCE_TYPE,
     DEFAULT_MIN_ENTITIES,
@@ -38,8 +38,10 @@ from oraclous_knowledge_graph_service.repositories.job_repository import Ingesti
 from oraclous_knowledge_graph_service.services.community_summarizer import (
     CommunitySummarizer,
     SummarizeOutcome,
+    make_summarizer,
 )
 from oraclous_knowledge_graph_service.services.graph_service import GraphService
+from oraclous_knowledge_graph_service.services.model_credential import ModelCredential
 
 
 class SummarizationUnavailable(Exception):
@@ -90,13 +92,19 @@ class AnalyticsService:
         repo: CommunityRepository,
         job_repo: IngestionJobRepository | None = None,
         enqueue: EnqueueFn | None = None,
+        settings: Settings | None = None,
         summarizer: CommunitySummarizer | None = None,
     ) -> None:
         self._graphs = graph_service
         self._repo = repo
         self._jobs = job_repo
         self._enqueue = enqueue
-        self._summarizer = summarizer
+        self._settings = settings or get_settings()
+        # Test seam ONLY. Production leaves this None and the summariser is built inside
+        # `summarize` from the credential the caller resolved (#724), which is what keeps a
+        # read-only community route from needing a key it never uses. Injecting one here does not
+        # reopen that: no DI provider passes it.
+        self._summarizer_override = summarizer
 
     @staticmethod
     def kinds() -> list[CommunityKind]:
@@ -349,6 +357,7 @@ class AnalyticsService:
     async def summarize(
         self,
         *,
+        credential: ModelCredential | None = None,
         graph_id: uuid.UUID,
         user_id: uuid.UUID,
         level: int | None = None,
@@ -365,11 +374,17 @@ class AnalyticsService:
         on the worker). Owner-gated. Raises ``SummarizationUnavailable`` (→503) when no LLM
         summarizer is configured (``KGS_EXTRACTOR`` is not ``openai``) — never silently no-ops."""
         await self._own(graph_id=graph_id, user_id=user_id)
-        if self._summarizer is None:
+        # #724: the summariser is built HERE, from the credential the route resolved, rather
+        # than at dependency time. A read-only community route then needs no credential at all,
+        # which is what stops `GET /communities` failing for want of a key it never uses.
+        summarizer = self._summarizer_override or make_summarizer(
+            self._settings, repo=self._repo, credential=credential
+        )
+        if summarizer is None:
             raise SummarizationUnavailable(
                 "community summarisation is not configured (set KGS_EXTRACTOR=openai)"
             )
         cap = get_settings().community_summarize_max_inline
-        return await self._summarizer.summarize_graph(
+        return await summarizer.summarize_graph(
             graph_id=str(graph_id), level=level, force=force, max_communities=cap or None
         )
