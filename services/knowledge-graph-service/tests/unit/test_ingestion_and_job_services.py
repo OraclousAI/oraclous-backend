@@ -41,6 +41,7 @@ class _FakeWriteRepo:
         entity_graph=None,
         ontology_violations=0,
         ontology_coercions=0,
+        citation=None,
     ):
         self.calls.append({"graph_id": graph_id, "document": document, "chunks": chunks})
         return WriteResult(nodes=1 + len(chunks), relationships=len(chunks), chunks=len(chunks))

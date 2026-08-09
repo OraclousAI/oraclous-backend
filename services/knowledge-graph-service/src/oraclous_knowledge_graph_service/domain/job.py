@@ -5,6 +5,7 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
+from typing import Any
 
 
 @dataclass(frozen=True)
@@ -50,3 +51,7 @@ class IngestionPayload:
     # on its own job id, so two members writing at once cannot merge onto one node; a user upload
     # keeps filename keying, so re-ingesting the same path still REPLACES (#522). None → upload.
     producer_kind: str | None = None
+    #: The connector's SourceRef as stored, or None when the job carried no source. Kept as a
+    #: plain mapping so the domain layer stays free of the shared model; the worker validates it
+    #: back into a ``SourceRef`` at the point it mints.
+    source: dict[str, Any] | None = None

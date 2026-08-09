@@ -143,6 +143,11 @@ class IngestionJob(Base):
     )  # temporal passthrough
     valid_to: Mapped[str | None] = mapped_column(String(64), nullable=True)
     event_time: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # The connector-supplied SourceRef, verbatim (#742 / §CITE). Stored because the citation is
+    # minted in the WORKER, which is a separate process with no access to the request body — the
+    # job row is the only channel across that boundary. NULL for a job submitted without one; the
+    # worker then mints an `upload` citation instead.
+    source: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     status: Mapped[str] = mapped_column(String(50), default="pending", nullable=False)
     progress: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)

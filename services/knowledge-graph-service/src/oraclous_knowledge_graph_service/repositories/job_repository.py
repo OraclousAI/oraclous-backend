@@ -8,6 +8,7 @@ like the graph repository. Used from the request path (create/get/list) and from
 from __future__ import annotations
 
 import uuid
+from typing import Any
 
 from oraclous_substrate.access import enforced_organisation_id
 from sqlalchemy import select
@@ -64,6 +65,7 @@ class IngestionJobRepository:
         event_time: str | None = None,
         producer: ProducerRef | None = None,
         content_hash: str | None = None,
+        source: dict[str, Any] | None = None,
     ) -> IngestionJobRecord:
         row = IngestionJob(
             organisation_id=self._org(),
@@ -75,6 +77,7 @@ class IngestionJobRepository:
             valid_from=valid_from,
             valid_to=valid_to,
             event_time=event_time,
+            source=source,
             status="pending",
             progress=0,
             # #728: provenance rides the create so an artifact knows its producer from birth. A
@@ -174,6 +177,7 @@ class IngestionJobRepository:
             filename=row.filename,
             source_content=row.source_content,
             recipe_id=row.recipe_id,
+            source=row.source,
             valid_from=row.valid_from,
             valid_to=row.valid_to,
             event_time=row.event_time,

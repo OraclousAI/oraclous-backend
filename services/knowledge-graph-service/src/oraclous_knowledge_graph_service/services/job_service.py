@@ -16,6 +16,8 @@ import hashlib
 import uuid
 from collections.abc import Callable
 
+from oraclous_citation import SourceRef
+
 from oraclous_substrate.access import enforced_organisation_id
 
 from oraclous_knowledge_graph_service.domain.artifact_naming import ProducerRef
@@ -56,6 +58,7 @@ class JobService:
         valid_to: str | None = None,
         event_time: str | None = None,
         producer: ProducerRef | None = None,
+        source: SourceRef | None = None,
     ) -> IngestionJobRecord:
         # owner gate (raises GraphNotFound -> 404 at the route) before any write
         await self._graphs.get_graph(graph_id=graph_id, user_id=user_id)
@@ -73,6 +76,9 @@ class JobService:
             # NULL, which is what preserves filename-based document keying (#522).
             producer=producer,
             content_hash=hashlib.sha256(data).hexdigest(),
+            # Stored verbatim: the connector is the only party that may state a source, and the
+            # citation is minted in the worker, which cannot see the request body.
+            source=source.model_dump(mode="json") if source is not None else None,
         )
         # Durably COMMIT the job row before enqueueing: the request-scoped unit of work otherwise
         # commits only after the route returns, so the worker (a SEPARATE session) could pick up

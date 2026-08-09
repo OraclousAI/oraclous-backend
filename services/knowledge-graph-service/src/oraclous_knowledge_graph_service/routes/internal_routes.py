@@ -147,6 +147,7 @@ async def internal_ingest(
             source_type=body.source_type,
             recipe_id=body.recipe_id,
             producer=producer,
+            source=body.source,
         )
     except GraphNotFound:
         raise HTTPException(
