@@ -19,6 +19,7 @@ from oraclous_knowledge_graph_service.core.dependencies import (
     SqlIngestionServiceDep,
     UserIdDep,
 )
+from oraclous_knowledge_graph_service.domain.artifact_naming import derive_name
 from oraclous_knowledge_graph_service.domain.connectors.sql_connector import DbSyncMode
 from oraclous_knowledge_graph_service.domain.ontology import Ontology
 from oraclous_knowledge_graph_service.schema.ingest_schemas import (
@@ -43,13 +44,16 @@ _GRAPH_NOT_FOUND = HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="
 async def ingest_text(
     graph_id: uuid.UUID, body: IngestTextRequest, service: JobServiceDep, user_id: UserIdDep
 ) -> JobResponse:
-    default_name = "inline.txt" if body.source_type == "text" else f"inline.{body.source_type}"
+    # #728: an artifact is named for a person. A caller-supplied `filename` wins (a real upload
+    # keeps its own name, and #522's re-ingest-the-same-path REPLACE depends on that). Otherwise the
+    # name is DERIVED from the content's own leading heading rather than stamped `inline.txt`, which
+    # made every inline ingest indistinguishable in the list and collapsed them onto one graph node.
     try:
         job = await service.submit(
             user_id=user_id,
             graph_id=graph_id,
             data=body.content.encode("utf-8"),
-            filename=body.filename or default_name,
+            filename=body.filename or derive_name(body.content),
             source_type=body.source_type,
             recipe_id=body.recipe_id,
             valid_from=body.valid_from,
