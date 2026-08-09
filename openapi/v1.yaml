@@ -583,7 +583,7 @@ paths:
           application/json:
             schema: { $ref: "#/components/schemas/JsonObject" }
       responses:
-        "200": { $ref: "#/components/responses/UpstreamJson" }
+        "200": { $ref: "#/components/responses/NodeResults" }
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "422": { $ref: "#/components/responses/ValidationFailed" }
   /v1/graph/{graphId}/temporal:
@@ -596,7 +596,7 @@ paths:
         - { name: graphId, in: path, required: true, schema: { type: string } }
         - { name: as_of, in: query, required: true, schema: { type: string } }
       responses:
-        "200": { $ref: "#/components/responses/UpstreamJson" }
+        "200": { $ref: "#/components/responses/NodeResults" }
         "401": { $ref: "#/components/responses/Unauthenticated" }
   /v1/graph/{graphId}/similar/{nodeId}:
     get:
@@ -615,7 +615,7 @@ paths:
         - { name: top_k, in: query, required: false, schema: { type: integer, minimum: 1, maximum: 100, default: 10 } }
         - { name: min_score, in: query, required: false, schema: { type: number, minimum: 0, maximum: 1, default: 0 } }
       responses:
-        "200": { $ref: "#/components/responses/UpstreamJson" }
+        "200": { $ref: "#/components/responses/NodeResults" }
         "401": { $ref: "#/components/responses/Unauthenticated" }
   /v1/graph/{graphId}/evaluate:
     post:
@@ -2227,7 +2227,7 @@ paths:
         - { name: nodeId, in: path, required: true, schema: { type: string } }
         - { name: top_k, in: query, required: false, schema: { type: integer, minimum: 1, maximum: 200, default: 25 } }
       responses:
-        "200": { $ref: "#/components/responses/UpstreamJson" }
+        "200": { $ref: "#/components/responses/NodeResults" }
         "401": { $ref: "#/components/responses/Unauthenticated" }
   /v1/engine/team-runs:
     get:
@@ -2771,6 +2771,132 @@ components:
         deterministic ORDER BY so paging is repeatable.
       schema: { type: integer, minimum: 0, default: 0 }
   schemas:
+    Citation:
+      type: object
+      description: >-
+        The resolvable source identity of one knowledge record (oraclous-knowledge
+        interface-contracts §CITE rev3). Minted by PLATFORM CODE only — a model may reference a
+        `citation_id`, it may never author one. Never partly filled: a record carries a complete
+        citation or `null`, so a caller can say "this cannot be cited" without inspecting five
+        fields. Resolves to a DOCUMENT VERSION and nothing finer — there is no chunk index, line
+        range, page or anchor in v1. The canonical bytes are the shared fixture
+        `packages/citation/contract/citation.schema.json`, which both repos validate against; this
+        component follows it.
+      required: [citation_id, source_system, source_id, revision, revision_kind, url, title, author, retrieved_at, permission_ref]
+      additionalProperties: false
+      properties:
+        citation_id:
+          type: string
+          pattern: "^cit_[0-9a-f]{32}$"
+          description: >-
+            Platform-computed and deterministic: 'cit_' + sha256(source_system NUL source_id NUL
+            revision)[:32]. The ONLY handle an answer may cite. Re-reading the same revision yields
+            the same id; a new revision yields a different one, which is what makes supersession
+            computable without a supersession table.
+        source_system:
+          type: string
+          minLength: 1
+          maxLength: 64
+          description: >-
+            A REGISTERED connector slug, plus the reserved value 'upload' for a direct file
+            upload. Deliberately NOT a closed enum — an unplanned sixth source type must be
+            connectable without re-modelling existing records.
+        source_id:
+          type: string
+          minLength: 1
+          description: Identity WITHIN that system, stable across revisions (e.g. 'owner/repo:path').
+        revision:
+          type: string
+          minLength: 1
+          description: >-
+            The version read. NEVER null, on any path: when a source exposes no version of its own
+            the platform falls back to the SHA-256 of the content it holds.
+        revision_kind:
+          type: string
+          enum: [commit, blob_sha, version_id, etag, edited_at, block, content_hash]
+          description: >-
+            What kind of version `revision` is — a source-native one, or our own content-hash
+            fallback. Telling those two apart is this field's only job.
+        url:
+          type: [string, "null"]
+          pattern: "^https?://"
+          description: >-
+            Absolute and openable. Null only where the platform genuinely cannot resolve the
+            source — today that is the 'upload' path, because no route serves an uploaded document
+            back yet.
+        title:
+          type: [string, "null"]
+          minLength: 1
+          description: Display label ONLY — never identity.
+        author:
+          oneOf:
+            - { $ref: "#/components/schemas/CitationAuthor" }
+            - { type: "null" }
+          description: The SOURCE's author. Null when the system exposes none — many do not.
+        retrieved_at:
+          type: string
+          format: date-time
+          description: As-of — when this revision was read from the source. Platform-computed, never inbound.
+        permission_ref:
+          type: [string, "null"]
+          minLength: 1
+          description: >-
+            The source's own permission handle. CARRIED now and UNENFORCED until per-user
+            permission mirroring lands — it is only obtainable at read time, so omitting it would
+            force a full re-ingest later.
+    CitationAuthor:
+      type: object
+      description: The source record's author, as the source exposes them.
+      required: [display_name]
+      additionalProperties: false
+      properties:
+        display_name: { type: string, minLength: 1 }
+        source_handle:
+          type: string
+          minLength: 1
+          description: The handle within the source system. Omitted when the system exposes none.
+        email:
+          type: string
+          minLength: 1
+          description: Omitted unless the source exposes it.
+    NodeResult:
+      type: object
+      description: >-
+        The uniform retrieval envelope every read modality returns. Modality data (score, text,
+        relationship, precedence_tier) lives inside `properties`; `citation` is a typed SIBLING,
+        never a key inside the bag — the console renders it and UC-E1 makes it a blocking gate, and
+        a gate cannot run against an untyped bag whose keys change per modality.
+      required: [id, type, properties, citation]
+      properties:
+        id: { type: string }
+        type: { type: string, description: The node's primary label (e.g. Chunk, Document). }
+        properties:
+          type: object
+          additionalProperties: true
+        citation:
+          oneOf:
+            - { $ref: "#/components/schemas/Citation" }
+            - { type: "null" }
+          description: >-
+            Null means the record has no source identity — ingested before this Contract, or
+            ingested without a `source`. There is no backfill: synthesising source identity is
+            exactly the forged provenance the Contract exists to reject.
+    FederatedNodeResult:
+      type: object
+      description: A NodeResult labeled with the graph it came from (#330 / ADR-026).
+      required: [id, type, properties, citation, source_graph_id, source_graph_name]
+      properties:
+        id: { type: string }
+        type: { type: string }
+        properties:
+          type: object
+          additionalProperties: true
+        citation:
+          oneOf:
+            - { $ref: "#/components/schemas/Citation" }
+            - { type: "null" }
+        source_graph_id: { type: string }
+        source_graph_name: { type: string }
     JsonObject:
       type: object
       description: A free-form JSON object; the precise request shape is owned by the upstream service.
@@ -3481,6 +3607,15 @@ components:
           minProperties: 1
           additionalProperties: { $ref: "#/components/schemas/GateDecision" }
   responses:
+    NodeResults:
+      description: >-
+        Success — the uniform retrieval envelope, one entry per hit, each carrying its typed
+        `citation` (§CITE) or `null`.
+      content:
+        application/json:
+          schema:
+            type: array
+            items: { $ref: "#/components/schemas/NodeResult" }
     UpstreamJson:
       description: Success — a JSON body produced and owned by the upstream service, streamed through unchanged.
       content:
