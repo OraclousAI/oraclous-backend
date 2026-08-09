@@ -9,8 +9,8 @@ Nullable, with no backfill. Existing rows stay NULL, which is the Contract's def
 record with no source identity — synthesising one for a document nobody captured a source for is
 exactly the forged provenance the whole Contract exists to reject.
 
-Revision ID: 0008_ingestion_job_source
-Revises: 0007_enable_rls
+Revision ID: 0010_ingestion_job_source
+Revises: 0009_artifact_provenance
 Create Date: 2026-08-09
 """
 
@@ -21,8 +21,8 @@ from collections.abc import Sequence
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = "0008_ingestion_job_source"
-down_revision: str | None = "0007_enable_rls"
+revision: str = "0010_ingestion_job_source"
+down_revision: str | None = "0009_artifact_provenance"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
