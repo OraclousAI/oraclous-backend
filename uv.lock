@@ -1240,6 +1240,12 @@ requires-dist = [
 name = "oraclous-citation"
 version = "0.0.0"
 source = { editable = "packages/citation" }
+dependencies = [
+    { name = "pydantic" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "pydantic", specifier = ">=2.0,<3.0" }]
 
 [[package]]
 name = "oraclous-credential-broker-service"
