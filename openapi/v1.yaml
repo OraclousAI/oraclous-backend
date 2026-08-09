@@ -583,7 +583,15 @@ paths:
           application/json:
             schema: { $ref: "#/components/schemas/JsonObject" }
       responses:
-        "200": { $ref: "#/components/responses/NodeResults" }
+        "200":
+          description: >-
+            Success — the uniform retrieval envelope, one entry per hit, each carrying its typed
+            `citation` (§CITE) or `null`.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/NodeResult" }
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "422": { $ref: "#/components/responses/ValidationFailed" }
   /v1/graph/{graphId}/temporal:
@@ -596,7 +604,15 @@ paths:
         - { name: graphId, in: path, required: true, schema: { type: string } }
         - { name: as_of, in: query, required: true, schema: { type: string } }
       responses:
-        "200": { $ref: "#/components/responses/NodeResults" }
+        "200":
+          description: >-
+            Success — the uniform retrieval envelope, one entry per hit, each carrying its typed
+            `citation` (§CITE) or `null`.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/NodeResult" }
         "401": { $ref: "#/components/responses/Unauthenticated" }
   /v1/graph/{graphId}/similar/{nodeId}:
     get:
@@ -615,7 +631,15 @@ paths:
         - { name: top_k, in: query, required: false, schema: { type: integer, minimum: 1, maximum: 100, default: 10 } }
         - { name: min_score, in: query, required: false, schema: { type: number, minimum: 0, maximum: 1, default: 0 } }
       responses:
-        "200": { $ref: "#/components/responses/NodeResults" }
+        "200":
+          description: >-
+            Success — the uniform retrieval envelope, one entry per hit, each carrying its typed
+            `citation` (§CITE) or `null`.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/NodeResult" }
         "401": { $ref: "#/components/responses/Unauthenticated" }
   /v1/graph/{graphId}/evaluate:
     post:
@@ -2227,7 +2251,15 @@ paths:
         - { name: nodeId, in: path, required: true, schema: { type: string } }
         - { name: top_k, in: query, required: false, schema: { type: integer, minimum: 1, maximum: 200, default: 25 } }
       responses:
-        "200": { $ref: "#/components/responses/NodeResults" }
+        "200":
+          description: >-
+            Success — the uniform retrieval envelope, one entry per hit, each carrying its typed
+            `citation` (§CITE) or `null`.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/NodeResult" }
         "401": { $ref: "#/components/responses/Unauthenticated" }
   /v1/engine/team-runs:
     get:
@@ -3607,15 +3639,6 @@ components:
           minProperties: 1
           additionalProperties: { $ref: "#/components/schemas/GateDecision" }
   responses:
-    NodeResults:
-      description: >-
-        Success — the uniform retrieval envelope, one entry per hit, each carrying its typed
-        `citation` (§CITE) or `null`.
-      content:
-        application/json:
-          schema:
-            type: array
-            items: { $ref: "#/components/schemas/NodeResult" }
     UpstreamJson:
       description: Success — a JSON body produced and owned by the upstream service, streamed through unchanged.
       content:
