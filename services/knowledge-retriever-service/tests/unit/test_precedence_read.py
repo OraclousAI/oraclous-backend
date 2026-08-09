@@ -18,7 +18,10 @@ _ORDER = ["rules", "bible", "toc", "drafts"]
 
 def _hit(node_id: str, source: str) -> NodeResult:
     return NodeResult(
-        id=node_id, type="Chunk", properties={"ingestion_source": source, "text": "x"}
+        id=node_id,
+        type="Chunk",
+        properties={"ingestion_source": source, "text": "x"},
+        citation=None,
     )
 
 

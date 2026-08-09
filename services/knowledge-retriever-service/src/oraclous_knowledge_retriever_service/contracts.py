@@ -11,6 +11,8 @@ from __future__ import annotations
 
 from typing import Any, TypedDict
 
+from oraclous_citation import Citation
+
 
 class NodeResult(TypedDict):
     """OHM envelope for a retrieved knowledge-graph node.
@@ -23,6 +25,11 @@ class NodeResult(TypedDict):
     id: str
     type: str
     properties: dict[str, Any]
+    #: The resolvable source identity of this record, lifted out of the stored node (§CITE). A
+    #: typed SIBLING, never a key inside ``properties``: the console renders it and UC-E1 makes it
+    #: a gate, and a gate cannot run against an untyped bag whose contents vary by modality.
+    #: ``None`` means the record has no source identity — ingested before this Contract.
+    citation: Citation | None
 
 
 class EdgeResult(TypedDict):
@@ -57,6 +64,7 @@ class FederatedNodeResult(TypedDict):
     id: str
     type: str
     properties: dict[str, Any]
+    citation: Citation | None
     source_graph_id: str
     source_graph_name: str
 

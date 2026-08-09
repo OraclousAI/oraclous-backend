@@ -5,6 +5,7 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
+from oraclous_citation import Citation
 from pydantic import BaseModel, Field
 
 
@@ -31,6 +32,11 @@ class NodeResultModel(BaseModel):
     id: str
     type: str
     properties: dict[str, Any]
+    # A typed SIBLING, never a key inside `properties` (§CITE). The console renders it and the
+    # user clicks it, and UC-E1 makes the citation a blocking gate — a gate cannot run against an
+    # untyped bag whose keys change per modality, and a key inside it would be indistinguishable
+    # from a caller-planted one. `None` means the record carries no source identity.
+    citation: Citation | None = None
 
 
 class EdgeResultModel(BaseModel):

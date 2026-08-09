@@ -10,6 +10,7 @@ from __future__ import annotations
 import uuid
 from typing import Any, Literal
 
+from oraclous_citation import Citation
 from pydantic import BaseModel, Field
 
 
@@ -41,6 +42,9 @@ class FederatedNodeResultModel(BaseModel):
     id: str
     type: str
     properties: dict[str, Any]
+    # A federated answer spans organisationally distinct graphs, so "which document" matters more
+    # there, not less. Sibling, following the `source_graph_id` precedent right below it.
+    citation: Citation | None = None
     source_graph_id: str
     source_graph_name: str
 

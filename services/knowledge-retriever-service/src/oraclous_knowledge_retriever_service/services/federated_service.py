@@ -81,6 +81,7 @@ def _labeled_node(row: dict, graph: GraphInfo) -> FederatedNodeResult:
         id=node["id"],
         type=node["type"],
         properties=node["properties"],
+        citation=node["citation"],
         source_graph_id=graph.id,
         source_graph_name=graph.name,
     )
@@ -166,6 +167,7 @@ def rrf_fuse(
                 id=node["id"],
                 type=node["type"],
                 properties={**node["properties"], "rrf_score": entry["rrf"]},
+                citation=node["citation"],
                 source_graph_id=node["source_graph_id"],
                 source_graph_name=node["source_graph_name"],
             )

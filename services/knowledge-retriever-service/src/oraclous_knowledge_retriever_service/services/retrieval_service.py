@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import asyncio
 
+from oraclous_citation import Citation, citation_from_properties
+from oraclous_citation.graph_properties import is_citation_property
 from oraclous_ohm.precedence_resolution import rank_hits_by_precedence
 from oraclous_substrate.access import enforced_organisation_id
 
@@ -46,13 +48,59 @@ def _jsonable(value):
 
 
 def _to_node_result(row: dict) -> NodeResult:
+    stored = row.get("props", {})
     labels = [label for label in row.get("labels", []) if not str(label).startswith("__")]
-    properties = {k: _jsonable(v) for k, v in row.get("props", {}).items() if k != "embedding"}
+    # The citation is LIFTED out of the property bag into a typed sibling (§CITE): the writer
+    # flattens it onto the node because a Neo4j property must be a primitive, and the reader is
+    # the other half of that pair. Nothing citation-shaped is left underneath — the console reads
+    # one typed field, and a caller can never tell a planted key from a stamped one.
+    citation = citation_from_properties(stored)
+    properties = {
+        k: _jsonable(v)
+        for k, v in stored.items()
+        if k != "embedding" and not is_citation_property(k)
+    }
     if row.get("score") is not None:
         properties["score"] = row["score"]
     if row.get("relationship") is not None:
         properties["relationship"] = row["relationship"]
-    return NodeResult(id=row["id"], type=labels[0] if labels else "Node", properties=properties)
+    return NodeResult(
+        id=row["id"],
+        type=labels[0] if labels else "Node",
+        properties=properties,
+        citation=citation,
+    )
+
+
+def _cacheable(results: list[NodeResult]) -> list[dict]:
+    """The JSON-safe form of a result list, for the Redis query cache.
+
+    ``Citation`` is a Pydantic model, and the cache serialises with ``json.dumps(..., default=str)``
+    — which would store its repr and hand back an unparseable string on the next hit. Dump it
+    properly here, and rehydrate on read, so a cached response is identical to a live one.
+    """
+    return [{**result, "citation": _dumped_citation(result.get("citation"))} for result in results]
+
+
+def _dumped_citation(citation: Citation | None) -> dict | None:
+    return citation.model_dump(mode="json") if citation is not None else None
+
+
+def _from_cache(payload: list[dict]) -> list[NodeResult]:
+    """Rehydrate ``_cacheable``'s output, so a cache hit returns the same typed envelope."""
+    return [
+        NodeResult(
+            id=entry["id"],
+            type=entry["type"],
+            properties=entry["properties"],
+            citation=(
+                Citation.model_validate(entry["citation"])
+                if entry.get("citation") is not None
+                else None
+            ),
+        )
+        for entry in payload
+    ]
 
 
 def _apply_precedence(
@@ -75,6 +123,7 @@ def _apply_precedence(
             id=node["id"],
             type=node["type"],
             properties={**node["properties"], "precedence_tier": tier},
+            citation=node["citation"],
         )
         for node, tier in ranked
     ]
@@ -149,14 +198,19 @@ class RetrievalService:
         cached = await self._cache_get(graph_id=graph_id, query=cache_query, modality="semantic")
         if cached is not None:
             return _apply_precedence(
-                cached["results"], precedence_order, graph_authoritative=graph_authoritative
+                _from_cache(cached["results"]),
+                precedence_order,
+                graph_authoritative=graph_authoritative,
             )
         qvec = self._embedder.embed(query)
         repo = self._repo()
         rows = await asyncio.to_thread(repo.semantic, graph_id=graph_id, qvec=qvec, top_k=top_k)
         results = [_to_node_result(r) for r in rows]
         await self._cache_set(
-            graph_id=graph_id, query=cache_query, modality="semantic", payload={"results": results}
+            graph_id=graph_id,
+            query=cache_query,
+            modality="semantic",
+            payload={"results": _cacheable(results)},
         )
         return _apply_precedence(results, precedence_order, graph_authoritative=graph_authoritative)
 
@@ -173,7 +227,9 @@ class RetrievalService:
         cached = await self._cache_get(graph_id=graph_id, query=cache_query, modality="fulltext")
         if cached is not None:
             return _apply_precedence(
-                cached["results"], precedence_order, graph_authoritative=graph_authoritative
+                _from_cache(cached["results"]),
+                precedence_order,
+                graph_authoritative=graph_authoritative,
             )
         repo = self._repo()
         rows = await asyncio.to_thread(
@@ -184,7 +240,10 @@ class RetrievalService:
         )
         results = [_to_node_result(r) for r in rows]
         await self._cache_set(
-            graph_id=graph_id, query=cache_query, modality="fulltext", payload={"results": results}
+            graph_id=graph_id,
+            query=cache_query,
+            modality="fulltext",
+            payload={"results": _cacheable(results)},
         )
         return _apply_precedence(results, precedence_order, graph_authoritative=graph_authoritative)
 
@@ -201,7 +260,9 @@ class RetrievalService:
         cached = await self._cache_get(graph_id=graph_id, query=cache_query, modality="hybrid")
         if cached is not None:
             return _apply_precedence(
-                cached["results"], precedence_order, graph_authoritative=graph_authoritative
+                _from_cache(cached["results"]),
+                precedence_order,
+                graph_authoritative=graph_authoritative,
             )
         # the fusion inputs stay UNRANKED (no precedence) — precedence applies to the fused result
         sem = await self.semantic(graph_id=graph_id, query=query, top_k=top_k * 2)
@@ -220,10 +281,14 @@ class RetrievalService:
                     id=node["id"],
                     type=node["type"],
                     properties={**node["properties"], "rrf_score": entry["rrf"]},
+                    citation=node["citation"],
                 )
             )
         await self._cache_set(
-            graph_id=graph_id, query=cache_query, modality="hybrid", payload={"results": results}
+            graph_id=graph_id,
+            query=cache_query,
+            modality="hybrid",
+            payload={"results": _cacheable(results)},
         )
         return _apply_precedence(results, precedence_order, graph_authoritative=graph_authoritative)
 
