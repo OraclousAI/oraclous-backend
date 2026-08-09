@@ -17,7 +17,6 @@ import uuid
 from collections.abc import Callable
 
 from oraclous_citation import SourceRef
-
 from oraclous_substrate.access import enforced_organisation_id
 
 from oraclous_knowledge_graph_service.domain.artifact_naming import ProducerRef

@@ -30,7 +30,5 @@ def compute_citation_id(source_system: str, source_id: str, revision: str) -> st
     The separator is a NUL BYTE, not a literal string. A fixture minted under one convention would
     stop resolving against the other, so the byte is spelled out here rather than inlined.
     """
-    payload = _SEPARATOR.join(
-        part.encode("utf-8") for part in (source_system, source_id, revision)
-    )
+    payload = _SEPARATOR.join(part.encode("utf-8") for part in (source_system, source_id, revision))
     return _PREFIX + hashlib.sha256(payload).hexdigest()[:_DIGEST_CHARS]
