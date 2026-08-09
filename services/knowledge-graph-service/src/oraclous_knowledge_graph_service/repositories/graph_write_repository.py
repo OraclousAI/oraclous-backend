@@ -23,6 +23,7 @@ from neo4j_graphrag.experimental.components.types import (
     Neo4jNode,
     Neo4jRelationship,
 )
+from oraclous_citation import Citation
 from oraclous_substrate.access import enforced_organisation_id
 
 from oraclous_knowledge_graph_service.multi_tenant import OrganisationScopedKGWriter
@@ -164,6 +165,7 @@ class GraphWriteRepository:
         entity_graph: Neo4jGraph | None = None,
         ontology_violations: int = 0,
         ontology_coercions: int = 0,
+        citation: Citation | None = None,
     ) -> WriteResult:
         # Replace-document semantics -> idempotent re-ingest. The neo4j_graphrag lexical writer does
         # not MERGE across runs (its __tmp_internal_id is transient), so we delete this document's
@@ -178,8 +180,11 @@ class GraphWriteRepository:
             entity_graph=entity_graph,
         )
         base = Neo4jWriter(driver=self._driver, neo4j_database=self._database, clean_db=False)
+        # The citation arrives ALREADY MINTED from the ingest service (§CITE mints once, at the
+        # tool-execution boundary). The writer stamps it on the lexical nodes and strips whatever
+        # the caller or the LLM claimed, exactly as it already does for ingestion_source.
         writer = OrganisationScopedKGWriter(
-            base_writer=base, graph_id=graph_id, ingestion_source=document
+            base_writer=base, graph_id=graph_id, ingestion_source=document, citation=citation
         )
         # Org id is read live from the bound context inside run() (fail-closed).
         await writer.run(graph)
