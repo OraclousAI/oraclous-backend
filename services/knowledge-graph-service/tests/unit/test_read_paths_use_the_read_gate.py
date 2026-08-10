@@ -285,6 +285,9 @@ class _CommunityRepo:
     def list_communities(self, *, graph_id, level=None, min_entities=1):
         return []
 
+    def get_community(self, *, graph_id, community_id):
+        return None  # the repo holds no communities; the gate decides before this is reached
+
     def status(self, *, graph_id):
         return (0, [], 7)
 
@@ -312,6 +315,16 @@ async def test_a_member_reads_graph_analytics(graphs, owners_graph) -> None:
     assert await svc.list_communities(graph_id=owners_graph.id) == []
 
 
+async def test_a_member_reads_one_community(graphs, owners_graph) -> None:
+    """`get_community` moved to the read gate in #765; unlike its three sibling reads it was never
+    pinned here, so reverting it to the owner gate left the whole suite green. Now it is pinned:
+    the gate lets a non-owner through, and the fake repo (holding no communities) returns None."""
+    from oraclous_knowledge_graph_service.services.analytics_service import AnalyticsService
+
+    svc = AnalyticsService(graph_service=graphs, repo=_CommunityRepo())  # type: ignore[arg-type]
+    assert await svc.get_community(graph_id=owners_graph.id, community_id="community_xyz") is None
+
+
 async def test_a_member_cannot_run_community_detection(graphs, owners_graph) -> None:
     """`detect` writes communities into the substrate, so it stays on the owner gate."""
     from oraclous_knowledge_graph_service.services.analytics_service import AnalyticsService
@@ -330,3 +343,14 @@ async def test_another_organisation_still_cannot_read_analytics(graph_repo, owne
     )
     with pytest.raises(GraphNotFound):
         await svc.analytics(graph_id=owners_graph.id)
+
+
+async def test_another_organisation_still_cannot_read_a_community(graph_repo, owners_graph) -> None:
+    from oraclous_knowledge_graph_service.services.analytics_service import AnalyticsService
+
+    svc = AnalyticsService(
+        graph_service=GraphService(_outsider(graph_repo)),
+        repo=_CommunityRepo(),  # type: ignore[arg-type]
+    )
+    with pytest.raises(GraphNotFound):
+        await svc.get_community(graph_id=owners_graph.id, community_id="community_xyz")
