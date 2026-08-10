@@ -211,7 +211,9 @@ async def test_submit_unowned_graph_raises_not_found() -> None:
     assert enqueued == []  # nothing enqueued on a denied submit
 
 
-async def test_get_job_unowned_graph_raises() -> None:
+async def test_get_job_graph_outside_the_organisation_raises() -> None:
+    """`get_job` sits behind the org-scoped read gate (#736 / ADR-051): the refusal proves the
+    graph is invisible in this organisation, not that the caller fails an owner check."""
     svc = _service(set(), [])
     with _ctx(), pytest.raises(GraphNotFound):
         await svc.get_job(user_id=_USER, graph_id=_GRAPH, job_id=uuid.uuid4())
