@@ -39,7 +39,9 @@ _GRAPH = uuid.uuid4()
 
 
 class _FakeGraphService:
-    """Owner gate stand-in: raises GraphNotFound for graphs the caller does not own (cross-org)."""
+    """Gate stand-in for both gates (#736 / ADR-051): the WRITE gate (`get_graph`, owner-scoped)
+    behind detection and summarisation, and the READ gate (`assert_readable`, org-scoped) behind
+    the statistics and community reads. The fixture's `owned` set stands for "visible here"."""
 
     def __init__(self, *, owned: set[uuid.UUID]) -> None:
         self._owned = owned
@@ -48,6 +50,10 @@ class _FakeGraphService:
         if graph_id not in self._owned:
             raise GraphNotFound(str(graph_id))
         return object()
+
+    async def assert_readable(self, *, graph_id: uuid.UUID) -> None:
+        if graph_id not in self._owned:
+            raise GraphNotFound(str(graph_id))
 
 
 class _FakeRepo:

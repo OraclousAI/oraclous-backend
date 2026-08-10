@@ -275,6 +275,9 @@ async def test_get_artifact_decodes_base64_stored_content() -> None:
             return base64.b64encode(b"# verbatim\nbody").decode("ascii")
 
     class _Graphs:
+        async def assert_readable(self, *, graph_id):
+            return None
+
         async def get_graph(self, *, graph_id, user_id):
             return None
 
