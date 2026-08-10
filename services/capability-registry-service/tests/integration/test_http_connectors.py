@@ -135,6 +135,141 @@ async def test_notion_auth_failure_is_mapped(
     assert out["error_type"] == "NOTION_API_ERROR"
 
 
+async def test_notion_read_page_returns_body_content_and_source(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#770: read_page yields the page BODY under ``content`` plus a connector-authored SourceRef.
+
+    The body lives behind ``/v1/blocks/{id}/children`` (paginated), not ``/v1/pages/{id}`` —
+    the page object only carries the SourceRef fields (url, last_edited_time, title property).
+    """
+    from oraclous_capability_registry_service.domain.connectors import notion
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        if req.url.path == "/v1/pages/p1":
+            return httpx.Response(
+                200,
+                json={
+                    "object": "page",
+                    "id": "p1",
+                    "url": "https://www.notion.so/My-Page-p1",
+                    "last_edited_time": "2026-08-01T10:00:00.000Z",
+                    "properties": {
+                        "title": {"type": "title", "title": [{"plain_text": "My Page"}]}
+                    },
+                },
+            )
+        if req.url.path == "/v1/blocks/p1/children":
+            if req.url.params.get("start_cursor") == "c2":
+                return httpx.Response(
+                    200,
+                    json={
+                        "results": [
+                            {
+                                "type": "paragraph",
+                                "paragraph": {"rich_text": [{"plain_text": "Second half."}]},
+                            }
+                        ],
+                        "has_more": False,
+                        "next_cursor": None,
+                    },
+                )
+            return httpx.Response(
+                200,
+                json={
+                    "results": [
+                        {
+                            "type": "paragraph",
+                            "paragraph": {"rich_text": [{"plain_text": "First half."}]},
+                        }
+                    ],
+                    "has_more": True,
+                    "next_cursor": "c2",
+                },
+            )
+        raise AssertionError(f"unexpected Notion path {req.url.path}")
+
+    monkeypatch.setattr(notion.NotionReader, "transport", httpx.MockTransport(handler))
+    iid = await _instance(client, "Notion Reader")
+    resp = await client.post(
+        f"/api/v1/instances/{iid}/execute",
+        json={"input_data": {"operation": "read_page", "page_id": "p1"}},
+        headers=_auth(),
+    )
+    assert resp.status_code == 201, resp.text
+    out = resp.json()
+    assert out["status"] == "SUCCESS"
+    data = out["output_data"]
+    # the whole paginated body, in order
+    assert "First half." in data["content"] and "Second half." in data["content"]
+    assert data["content"].index("First half.") < data["content"].index("Second half.")
+    # the SourceRef, connector-authored from source-native identity (§CITE): no invention,
+    # revision travels with its kind, platform-only fields (citation_id/retrieved_at) absent.
+    src = data["source"]
+    assert src["source_system"] == "notion"
+    assert src["source_id"] == "p1"
+    assert src["revision"] == "2026-08-01T10:00:00.000Z"
+    assert src["revision_kind"] == "edited_at"
+    assert src["url"] == "https://www.notion.so/My-Page-p1"
+    assert src["title"] == "My Page"
+    assert "citation_id" not in src and "retrieved_at" not in src
+
+
+async def test_notion_read_page_children_failure_is_mapped(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#770: a non-200 from the blocks call fails closed, same as a page-call failure."""
+    from oraclous_capability_registry_service.domain.connectors import notion
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        if req.url.path == "/v1/pages/p1":
+            return httpx.Response(
+                200,
+                json={
+                    "id": "p1",
+                    "url": "https://www.notion.so/My-Page-p1",
+                    "last_edited_time": "2026-08-01T10:00:00.000Z",
+                    "properties": {},
+                },
+            )
+        return httpx.Response(500, json={"message": "boom"})
+
+    monkeypatch.setattr(notion.NotionReader, "transport", httpx.MockTransport(handler))
+    iid = await _instance(client, "Notion Reader")
+    out = (
+        await client.post(
+            f"/api/v1/instances/{iid}/execute",
+            json={"input_data": {"operation": "read_page", "page_id": "p1"}},
+            headers=_auth(),
+        )
+    ).json()
+    assert out["status"] == "FAILED"
+    assert out["error_type"] == "NOTION_API_ERROR"
+
+
+async def test_notion_read_page_still_requires_page_id(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression guard: the missing-page_id input error must survive the #770 rework."""
+    from oraclous_capability_registry_service.domain.connectors import notion
+
+    monkeypatch.setattr(
+        notion.NotionReader,
+        "transport",
+        httpx.MockTransport(lambda req: httpx.Response(200, json={})),
+    )
+    iid = await _instance(client, "Notion Reader")
+    out = (
+        await client.post(
+            f"/api/v1/instances/{iid}/execute",
+            json={"input_data": {"operation": "read_page"}},
+            headers=_auth(),
+        )
+    ).json()
+    assert out["status"] == "FAILED"
+    assert out["error_type"] == "INVALID_INPUT"
+
+
 async def test_github_list_files_success_via_mock(
     client: AsyncClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
