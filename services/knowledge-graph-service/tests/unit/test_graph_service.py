@@ -50,9 +50,6 @@ class _FakeRepo:
         self.rows[g.id] = g
         return g
 
-    async def list_for_user(self, *, user_id) -> list[Graph]:
-        return [g for g in self.rows.values() if g.user_id == user_id]
-
     async def get(self, graph_id) -> Graph | None:
         return self.rows.get(graph_id)
 

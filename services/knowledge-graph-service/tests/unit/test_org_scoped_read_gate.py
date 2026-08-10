@@ -26,7 +26,9 @@ import pytest
 from oraclous_knowledge_graph_service.domain.graph import Graph
 from oraclous_knowledge_graph_service.services.graph_service import GraphNotFound, GraphService
 
-pytestmark = pytest.mark.unit
+# api_authz: with test_read_paths_use_the_read_gate.py this file is the whole unit-level proof
+# that the read gate widened and the write gate did not, so it belongs on the T1 threat map.
+pytestmark = [pytest.mark.unit, pytest.mark.api_authz]
 
 _ORG = uuid.UUID("00000000-0000-0000-0000-00000000050a")
 _OTHER_ORG = uuid.UUID("00000000-0000-0000-0000-0000000005ff")
@@ -69,9 +71,6 @@ class _FakeRepo:
 
     async def create(self, *, user_id, name, description, system_kind=None) -> Graph:
         return self.seed(_graph(user_id=user_id, name=name, organisation_id=self.bound_org))
-
-    async def list_for_user(self, *, user_id) -> list[Graph]:
-        return [g for g in self._visible() if g.user_id == user_id]
 
     async def list_for_org(self) -> list[Graph]:
         return self._visible()

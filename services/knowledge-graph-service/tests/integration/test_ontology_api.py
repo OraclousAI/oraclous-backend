@@ -119,7 +119,9 @@ async def test_set_strict_without_labels_is_422(client) -> None:
     assert resp.status_code == 422
 
 
-async def test_unowned_graph_is_404(client, graph_service) -> None:
+async def test_graph_outside_the_organisation_is_404(client, graph_service) -> None:
+    """The ontology READ takes the org-scoped read gate (#736 / ADR-051), so the 404 here proves
+    org-level invisibility, not ownership — a same-org non-owner would get through."""
     graph_service.owned = False
     resp = await client.get(f"/api/v1/graphs/{uuid.uuid4()}/ontology", headers=_AUTH)
     assert resp.status_code == 404
