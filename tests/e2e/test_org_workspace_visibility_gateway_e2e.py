@@ -25,7 +25,16 @@ from collections.abc import Callable
 import httpx
 import pytest
 
-pytestmark = [pytest.mark.e2e, pytest.mark.integration]
+# `security` puts this in the T1-T7 suite the security workflow runs; `api_authz` is the threat
+# marker for exactly this surface — cross-tenant denial and the ownership gate (pytest.ini). Without
+# both, an access-control change contributes nothing to either gate. Precedent:
+# tests/e2e/test_rebac_cross_org_grant_gateway_e2e.py.
+pytestmark = [
+    pytest.mark.e2e,
+    pytest.mark.integration,
+    pytest.mark.security,
+    pytest.mark.api_authz,
+]
 
 
 def _new_graph(c: httpx.Client, name: str) -> str:
