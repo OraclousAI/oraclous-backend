@@ -92,7 +92,7 @@ async def test_startup_seeds_builtin_tools_visible_to_tenant(client: AsyncClient
     out = listed.json()
     assert out["total"] >= 5
     names = {t["name"] for t in out["capabilities"]}
-    assert {"PostgreSQL Reader", "MySQL Reader", "Google Drive Reader"} <= names
+    assert {"PostgreSQL Reader", "MySQL Reader", "Notion Reader"} <= names
     # deterministic ids: the embedded descriptor id equals the row id
     for t in out["capabilities"]:
         assert t["descriptor"]["id"] == t["id"]
