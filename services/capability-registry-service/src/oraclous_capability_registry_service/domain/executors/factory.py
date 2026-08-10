@@ -96,8 +96,7 @@ class NoExecutorError(Exception):
     """No executor is registered for the descriptor (the tool is registered but not executable)."""
 
 
-# descriptor id (deterministic tool UUIDv5, as str) -> executor class. The Google Drive Reader's
-# live OAuth connector is deferred (no key-free smoke); its descriptor stays registered.
+# descriptor id (deterministic tool UUIDv5, as str) -> executor class.
 _EXECUTORS: dict[str, type[BaseToolExecutor]] = {
     PostgreSQLReaderPlugin.plugin_id(): PostgreSQLReader,
     MySQLReaderPlugin.plugin_id(): MySQLReader,

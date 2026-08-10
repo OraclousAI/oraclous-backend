@@ -172,32 +172,6 @@ class GitHubReaderPlugin(_ConnectorToolPlugin):
     OUTPUT_SCHEMA = _DOCS_OUTPUT
 
 
-@plugin_registry.register
-class GoogleDriveReaderPlugin(_ConnectorToolPlugin):
-    NAME = "Google Drive Reader"
-    DESCRIPTION = "Read files from Google Drive via an OAuth token (drive.readonly scope)."
-    TYPE = "API"
-    TAGS = ["google", "drive", "saas", "documents"]
-    CAPABILITIES = [
-        {"name": "list_files", "description": "List Drive files", "parameters": {"query": "str"}},
-        {
-            "name": "read_file",
-            "description": "Read a Drive file's contents",
-            "parameters": {"file_id": "str"},
-        },
-    ]
-    CREDENTIAL_REQUIREMENTS = [
-        {
-            "type": "oauth_token",
-            "provider": "google",
-            "required": True,
-            "scopes": ["https://www.googleapis.com/auth/drive.readonly"],
-        }
-    ]
-    INPUT_SCHEMA = {"type": "object", "properties": {"file_id": {"type": "string"}}}
-    OUTPUT_SCHEMA = _DOCS_OUTPUT
-
-
 _HITS_OUTPUT = {
     "type": "object",
     "properties": {
