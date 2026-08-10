@@ -2,7 +2,8 @@
 
 Replaces the legacy inline `GraphNodeService` stub that lived *inside* the route module
 (a service-architecture violation). The org scope is enforced fail-closed in the repository
-(`enforced_organisation_id`); this layer adds the per-user ownership gate.
+(`enforced_organisation_id`); this layer adds TWO gates on top (#736 / ADR-051) — an org-scoped
+read gate and a per-user owner gate for writes.
 """
 
 from __future__ import annotations

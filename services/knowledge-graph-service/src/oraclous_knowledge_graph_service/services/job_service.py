@@ -1,7 +1,9 @@
 """Ingestion-job use-cases (services layer).
 
-Owner-gated (a job is only visible/creatable on a graph the caller owns — reuses GraphService's
-gate, so cross-user/cross-org → 404) and org-scoped (the repository enforces the org). `submit`
+Two gates, both reused from GraphService (#736 / ADR-051): a job is READABLE on any graph in the
+caller's organisation (the read gate — documents, artifacts, artifact content, job status) and
+CREATABLE only on a graph the caller owns (the owner gate — `submit`). Cross-org → 404 either way,
+and the repository enforces the org underneath both. `submit`
 creates the job row, COMMITS it (so the worker's separate session can see it — see #267), then
 enqueues the Celery task, passing organisation_id explicitly so the worker can re-bind the org
 context across the process boundary. `enqueue` is injected so the service stays testable without a
@@ -123,8 +125,8 @@ class JobService:
     ) -> list[IngestionJobRecord]:
         """The graph's ARTIFACTS (its ingested documents) for the unified /v1/artifacts surface
         (#543) — optionally filtered by a filename query ``q`` or ``source_type``. Org-scoped via
-        graph ownership (a non-owned graph → GraphNotFound → 404). Verbatim content is served only
-        by ``get_artifact`` (the list is summaries).
+        the read gate (#736 / ADR-051): a graph outside the caller's organisation → GraphNotFound →
+        404. Verbatim content is served only by ``get_artifact`` (the list is summaries).
 
         #728: the provenance filters answer "what did this run produce", "what has this team ever
         produced" and "what did this member write" — the questions an artifact could not be asked
@@ -149,8 +151,9 @@ class JobService:
         self, *, user_id: uuid.UUID, artifact_id: uuid.UUID
     ) -> tuple[IngestionJobRecord, str | None]:
         """One artifact's record + its verbatim content (#543). Org-scoped: the repo read is
-        org-bound, and the owning graph is ownership-checked; a missing / cross-org artifact raises
-        JobNotFound (→ 404)."""
+        org-bound, and the owning graph passes the read gate (#736 / ADR-051); a missing artifact,
+        or one whose graph is outside the caller's organisation, raises JobNotFound / GraphNotFound
+        (→ 404)."""
         job = await self._jobs.get(artifact_id)
         if job is None:
             raise JobNotFound(str(artifact_id))
