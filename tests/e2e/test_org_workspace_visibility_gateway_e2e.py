@@ -147,9 +147,16 @@ def test_an_invited_member_finds_and_reads_the_organisations_workspace(
     assert out.get(f"/api/v1/graphs/{graph_id}/ontology").status_code == 404
     assert out.get(f"/api/v1/graphs/{graph_id}/analytics").status_code == 404
     assert out.patch(f"/api/v1/graphs/{graph_id}", json={"name": "hijacked"}).status_code == 404
-    # and no content leaks through the search path either
+    # And nothing leaks through the search path — the route this whole issue exists because of.
+    # The retriever answers 200 with an EMPTY list rather than 404: its org filter matches no rows,
+    # so a cross-org graph id reads exactly like a graph with no matches. That is the pre-existing
+    # behaviour and it discloses nothing, but it is asserted precisely rather than as
+    # "not 200 OR empty" — a loose disjunction would pass for the wrong reason if the response
+    # shape ever changed, which is the leak this line exists to catch.
     hijack = out.post("/v1/search/hybrid", json={"query": "expense", "graph_id": graph_id})
-    assert hijack.status_code != 200 or hijack.json() == []
+    assert hijack.status_code == 200, hijack.text[:400]
+    assert hijack.json() == [], hijack.text[:400]
+    assert "expense policy" not in hijack.text
 
     # ── acceptance 5: federated search fans out over EXACTLY the listed set ───────────────────
     fed = member.post("/v1/federated/search", json={"query": "expense policy", "mode": "fulltext"})
