@@ -90,7 +90,7 @@ class JobService:
     async def get_job(
         self, *, user_id: uuid.UUID, graph_id: uuid.UUID, job_id: uuid.UUID
     ) -> IngestionJobRecord:
-        await self._graphs.get_graph(graph_id=graph_id, user_id=user_id)
+        await self._graphs.assert_readable(graph_id=graph_id)  # org read gate (#736)
         job = await self._jobs.get(job_id)
         if job is None or job.graph_id != graph_id:
             raise JobNotFound(str(job_id))
@@ -102,7 +102,9 @@ class JobService:
         # /documents lists INGESTED documents. A community-detect job reuses the ingestion_jobs
         # table (no separate table) but is not a document, so it is excluded here — otherwise detect
         # jobs would surface as phantom documents in the list.
-        await self._graphs.get_graph(graph_id=graph_id, user_id=user_id)
+        # ADR-051: listing a graph's documents is a READ, so it is org-scoped — a member no longer
+        # gets a 404 on a graph they can already search.
+        await self._graphs.assert_readable(graph_id=graph_id)
         return await self._jobs.list_for_graph(
             graph_id, exclude_source_types=(COMMUNITY_DETECT_SOURCE_TYPE,)
         )
@@ -127,7 +129,7 @@ class JobService:
         #728: the provenance filters answer "what did this run produce", "what has this team ever
         produced" and "what did this member write" — the questions an artifact could not be asked
         while it recorded nothing about who made it."""
-        await self._graphs.get_graph(graph_id=graph_id, user_id=user_id)  # owner gate → 404
+        await self._graphs.assert_readable(graph_id=graph_id)  # org read gate → 404 (#736)
         records = await self._jobs.list_for_graph(
             graph_id,
             exclude_source_types=(COMMUNITY_DETECT_SOURCE_TYPE,),
@@ -152,7 +154,7 @@ class JobService:
         job = await self._jobs.get(artifact_id)
         if job is None:
             raise JobNotFound(str(artifact_id))
-        await self._graphs.get_graph(graph_id=job.graph_id, user_id=user_id)
+        await self._graphs.assert_readable(graph_id=job.graph_id)  # org read gate (#736)
         raw = await self._jobs.get_source_content(artifact_id)
         # ingest stores source_content base64-encoded (submit, above; the worker decodes it the same
         # way) — serve the VERBATIM file, decoded. Fall back to the raw value if it is not base64.

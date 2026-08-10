@@ -43,7 +43,7 @@ class OntologyService:
         self._graphs = graph_service
 
     async def get(self, *, user_id: uuid.UUID, graph_id: uuid.UUID) -> dict:
-        await self._graphs.get_graph(graph_id=graph_id, user_id=user_id)  # owner gate -> 404
+        await self._graphs.assert_readable(graph_id=graph_id)  # org read gate -> 404 (#736)
         ontology = await self._graphs_repo.get_ontology(graph_id)
         if not ontology:
             return {"allowed_labels": [], "mode": "open"}
@@ -66,6 +66,8 @@ class OntologyService:
         focus: list[str] | None = None,
         ignore: list[str] | None = None,
     ) -> dict:
+        # The ontology WRITE stays owner-gated (ADR-051 decision 3) — it reshapes extraction for
+        # everyone reading the graph.
         await self._graphs.get_graph(graph_id=graph_id, user_id=user_id)
         if mode not in MODES:
             raise OntologyError(f"mode must be one of {MODES}")
