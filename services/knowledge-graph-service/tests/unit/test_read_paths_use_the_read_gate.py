@@ -28,7 +28,9 @@ from oraclous_knowledge_graph_service.services.graph_service import GraphNotFoun
 from oraclous_knowledge_graph_service.services.job_service import JobService
 from oraclous_knowledge_graph_service.services.ontology_service import OntologyService
 
-pytestmark = pytest.mark.unit
+# api_authz: with test_org_scoped_read_gate.py this file carries every per-call-site cross-org
+# negative for the widened read gate, so the T1 coverage gate must collect it.
+pytestmark = [pytest.mark.unit, pytest.mark.api_authz]
 
 _ORG = uuid.UUID("00000000-0000-0000-0000-00000000050a")
 _OTHER_ORG = uuid.UUID("00000000-0000-0000-0000-0000000005ff")

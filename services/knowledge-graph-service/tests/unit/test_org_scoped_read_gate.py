@@ -26,7 +26,9 @@ import pytest
 from oraclous_knowledge_graph_service.domain.graph import Graph
 from oraclous_knowledge_graph_service.services.graph_service import GraphNotFound, GraphService
 
-pytestmark = pytest.mark.unit
+# api_authz: with test_read_paths_use_the_read_gate.py this file is the whole unit-level proof
+# that the read gate widened and the write gate did not, so it belongs on the T1 threat map.
+pytestmark = [pytest.mark.unit, pytest.mark.api_authz]
 
 _ORG = uuid.UUID("00000000-0000-0000-0000-00000000050a")
 _OTHER_ORG = uuid.UUID("00000000-0000-0000-0000-0000000005ff")
