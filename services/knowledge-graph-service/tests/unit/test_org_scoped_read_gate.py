@@ -70,9 +70,6 @@ class _FakeRepo:
     async def create(self, *, user_id, name, description, system_kind=None) -> Graph:
         return self.seed(_graph(user_id=user_id, name=name, organisation_id=self.bound_org))
 
-    async def list_for_user(self, *, user_id) -> list[Graph]:
-        return [g for g in self._visible() if g.user_id == user_id]
-
     async def list_for_org(self) -> list[Graph]:
         return self._visible()
 
