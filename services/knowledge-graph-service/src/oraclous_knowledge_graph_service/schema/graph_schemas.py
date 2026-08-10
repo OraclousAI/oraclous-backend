@@ -38,9 +38,14 @@ class GraphResponse(BaseModel):
     relationship_count: int
     created_at: datetime
     updated_at: datetime
+    # #736 / ADR-051: the list is the ORGANISATION's workspaces, so a row must say whether the
+    # caller owns it — that is what separates "mine" from "the organisation's" in the console, and
+    # what tells it which rows offer rename/delete. Derived from the graph's own `user_id`: a
+    # response field, never stored, never a second query.
+    is_owner: bool
 
     @classmethod
-    def of(cls, g: Graph) -> GraphResponse:
+    def of(cls, g: Graph, *, viewer_user_id: uuid.UUID) -> GraphResponse:
         return cls(
             id=g.id,
             name=g.name,
@@ -51,6 +56,7 @@ class GraphResponse(BaseModel):
             relationship_count=g.relationship_count,
             created_at=g.created_at,
             updated_at=g.updated_at,
+            is_owner=g.user_id == viewer_user_id,
         )
 
 

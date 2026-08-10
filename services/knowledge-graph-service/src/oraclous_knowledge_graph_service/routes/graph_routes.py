@@ -51,24 +51,32 @@ async def create_graph(
             status_code=status.HTTP_409_CONFLICT,
             detail="graph name is reserved for system use",
         ) from None
-    return GraphResponse.of(graph)
+    return GraphResponse.of(graph, viewer_user_id=user_id)
 
 
 @router.get("", response_model=list[GraphResponse])
 async def list_graphs(service: GraphServiceDep, user_id: UserIdDep) -> list[GraphResponse]:
-    graphs = await service.list_graphs(user_id=user_id)
-    return [GraphResponse.of(g) for g in graphs]
+    """The caller ORGANISATION's workspaces (#736 / ADR-051), each marked with `is_owner`.
+
+    The listing gate now equals the read gate: every graph returned here is one the caller can
+    already read through the org-scoped `POST /v1/search/*`, and it is exactly the set ADR-026
+    federated search fans out over. `user_id` no longer filters the set — it only decides
+    ownership on each row."""
+    graphs = await service.list_graphs()
+    return [GraphResponse.of(g, viewer_user_id=user_id) for g in graphs]
 
 
 @router.get("/{graph_id}", response_model=GraphResponse)
 async def get_graph(
     graph_id: uuid.UUID, service: GraphServiceDep, user_id: UserIdDep
 ) -> GraphResponse:
+    """One workspace. A pure READ, so it takes the org-scoped read gate (#736): a member who sees
+    this graph in the list can open it, instead of the console rendering a row that 404s."""
     try:
-        graph = await service.get_graph(graph_id=graph_id, user_id=user_id)
+        graph = await service.get_readable_graph(graph_id=graph_id)
     except GraphNotFound:
         raise _NOT_FOUND from None
-    return GraphResponse.of(graph)
+    return GraphResponse.of(graph, viewer_user_id=user_id)
 
 
 @router.patch("/{graph_id}", response_model=GraphResponse)
@@ -85,7 +93,7 @@ async def update_graph(
         )
     except GraphNotFound:
         raise _NOT_FOUND from None
-    return GraphResponse.of(graph)
+    return GraphResponse.of(graph, viewer_user_id=user_id)
 
 
 @router.delete("/{graph_id}", status_code=status.HTTP_204_NO_CONTENT)

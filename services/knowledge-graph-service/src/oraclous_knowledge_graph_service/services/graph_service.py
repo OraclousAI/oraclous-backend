@@ -37,7 +37,8 @@ class ReservedGraphName(Exception):
 
 
 class GraphService:
-    """Graph CRUD use-cases. Owner-gated on top of org-scoping."""
+    """Graph CRUD use-cases. TWO gates on top of org-scoping (#736 / ADR-051): reads pass the
+    org-scoped read gate, writes keep the per-user owner gate."""
 
     def __init__(
         self, repo: GraphRepository, write_repo: GraphWriteRepository | None = None
@@ -79,9 +80,18 @@ class GraphService:
         # system_kind is left NULL — a user route can never mint a system-owned graph.
         return await self._repo.create(user_id=user_id, name=name, description=description)
 
-    async def list_graphs(self, *, user_id: uuid.UUID) -> list[Graph]:
-        graphs = await self._repo.list_for_user(user_id=user_id)
-        return [await self._with_live_counts(g) for g in graphs]
+    async def list_graphs(self) -> list[Graph]:
+        """The workspaces the caller can see: ALL graphs in their organisation (#736 / ADR-051).
+
+        Deliberately the SAME set as `list_org_graphs` — it delegates to it rather than repeating
+        the query, so the console list and the ADR-026 federation fan-out can never drift apart.
+        The rows carry their owner's `user_id`, which is what lets the response mark "mine" without
+        a second query; ownership is reported here, not required.
+
+        This was `list_for_user`, and its narrowness protected nothing: every graph in the set is
+        already readable by every org member through the org-scoped `POST /v1/search/*`.
+        """
+        return [await self._with_live_counts(g) for g in await self.list_org_graphs()]
 
     async def list_org_graphs(self) -> list[Graph]:
         """The federation accessible-set (#330 / ADR-026): ALL graphs in the caller's bound org.
@@ -93,12 +103,44 @@ class GraphService:
         """
         return await self._repo.list_for_org()
 
+    # ── the two gates (#736 / ADR-051) ────────────────────────────────────────────────────────
+    #
+    # Read and manage are separate decisions, so they are separate checks. `_owned_or_404` is the
+    # WRITE gate and is unchanged; `_readable_or_404` is the READ gate. Relaxing the one gate in
+    # place would have widened ingest, the ontology write and resolution decisions along with the
+    # reads — ADR-051 decision 3 draws the line exactly here.
+
     async def _owned_or_404(self, *, graph_id: uuid.UUID, user_id: uuid.UUID) -> Graph:
-        """Owner gate (no live-count overlay) — the raw stored graph or a 404-mapped error."""
+        """WRITE gate (no live-count overlay) — the raw stored graph or a 404-mapped error.
+
+        Behind every mutation: create, rename, delete, ingest submit, the ontology write, community
+        detection, summarisation, resolution decisions and the cross-org grant."""
         graph = await self._repo.get(graph_id)
         if graph is None or graph.user_id != user_id:
             raise GraphNotFound(str(graph_id))
         return graph
+
+    async def _readable_or_404(self, *, graph_id: uuid.UUID) -> Graph:
+        """READ gate — org-scoped, no owner filter (ADR-051 decision 2).
+
+        The organisation comes from the bound governance context inside the repository, never from
+        the request, so this is the org-scoped floor ADR-018 sets and ADR-026 §1 composes — the same
+        gate the retriever's single-graph reads already apply. A graph in another organisation is
+        not visible at all, so it raises `GraphNotFound` exactly as before."""
+        graph = await self._repo.get(graph_id)
+        if graph is None:
+            raise GraphNotFound(str(graph_id))
+        return graph
+
+    async def assert_readable(self, *, graph_id: uuid.UUID) -> None:
+        """Gate-only form of the read gate, for the read paths that need permission but not the
+        graph (documents, artifacts, the ontology read, analytics) — so none of them pays for the
+        live-count overlay it would throw away."""
+        await self._readable_or_404(graph_id=graph_id)
+
+    async def get_readable_graph(self, *, graph_id: uuid.UUID) -> Graph:
+        """One graph for READING, org-scoped, with live counts. The detail route's gate."""
+        return await self._with_live_counts(await self._readable_or_404(graph_id=graph_id))
 
     async def assert_owned(self, *, graph_id: uuid.UUID, user_id: uuid.UUID) -> None:
         """Public owner gate for cross-cutting callers (e.g. the cross-org grant): raises
@@ -107,6 +149,8 @@ class GraphService:
         await self._owned_or_404(graph_id=graph_id, user_id=user_id)
 
     async def get_graph(self, *, graph_id: uuid.UUID, user_id: uuid.UUID) -> Graph:
+        """OWNER-gated fetch with live counts — the gate the write paths hold. Reads use
+        `get_readable_graph` / `assert_readable` instead (#736)."""
         graph = await self._owned_or_404(graph_id=graph_id, user_id=user_id)
         return await self._with_live_counts(graph)
 
