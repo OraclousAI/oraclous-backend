@@ -32,8 +32,15 @@ class _FakeGraphRepo:
 
 
 class _FakeGraphService:
+    """`owned` now means "visible to this caller": the ontology READ takes the org-scoped read gate
+    (#736 / ADR-051) while the ontology WRITE keeps the owner gate."""
+
     def __init__(self, owned: bool = True) -> None:
         self.owned = owned
+
+    async def assert_readable(self, *, graph_id) -> None:
+        if not self.owned:
+            raise GraphNotFound(str(graph_id))
 
     async def get_graph(self, *, graph_id, user_id):
         if not self.owned:

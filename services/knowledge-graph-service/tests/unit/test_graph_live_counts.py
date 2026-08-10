@@ -56,7 +56,8 @@ class _ListRepo:
     def __init__(self, graphs: list[Graph]) -> None:
         self._graphs = graphs
 
-    async def list_for_user(self, *, user_id: uuid.UUID) -> list[Graph]:
+    async def list_for_org(self) -> list[Graph]:
+        # #736 / ADR-051: the list is the ORGANISATION's graphs; the owner filter moved off it.
         return list(self._graphs)
 
 
@@ -90,7 +91,7 @@ async def test_degrades_to_stored_counts_when_neo4j_count_raises() -> None:
 async def test_list_graphs_isolates_a_failing_count() -> None:
     graph = _graph()
     service = GraphService(repo=_ListRepo([graph]), write_repo=_RaisingWriteRepo())  # type: ignore[arg-type]
-    out = await service.list_graphs(user_id=_OWNER)
+    out = await service.list_graphs()
     assert len(out) == 1
     assert out[0].node_count == 0  # degraded to stored, did not crash the whole list
 

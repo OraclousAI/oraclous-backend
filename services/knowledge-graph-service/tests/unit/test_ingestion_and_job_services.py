@@ -109,8 +109,15 @@ class _FakeJobRepo:
 
 
 class _FakeGraphService:
+    """Both gates (#736 / ADR-051): `get_graph` is the owner gate `submit` holds, `assert_readable`
+    is the org-scoped read gate the document / artifact / job-status reads hold."""
+
     def __init__(self, owned: set[uuid.UUID]) -> None:
         self._owned = owned
+
+    async def assert_readable(self, *, graph_id) -> None:
+        if graph_id not in self._owned:
+            raise GraphNotFound(str(graph_id))
 
     async def get_graph(self, *, graph_id, user_id):
         if graph_id not in self._owned:

@@ -2,8 +2,9 @@
 
 Every query is scoped to the caller's organisation via
 `oraclous_substrate.access.enforced_organisation_id()` (ADR-006 / ADR-012, fail-closed): the org id
-is taken from the bound governance context, never from a request. The `user_id` owner gate is
-applied on top for ownership semantics. SQL lives here only.
+is taken from the bound governance context, never from a request. The service layer adds the
+`user_id` owner gate on top for WRITES only (#736 / ADR-051); reads are org-scoped. SQL lives here
+only.
 """
 
 from __future__ import annotations
@@ -100,18 +101,6 @@ class GraphRepository:
             if won is None:  # pragma: no cover — the violation implies a row now exists
                 raise
             return won
-
-    async def list_for_user(self, *, user_id: uuid.UUID) -> list[Graph]:
-        stmt = (
-            select(KnowledgeGraph)
-            .where(
-                KnowledgeGraph.organisation_id == self._org(),
-                KnowledgeGraph.user_id == user_id,
-            )
-            .order_by(KnowledgeGraph.created_at.desc())
-        )
-        rows = (await self._session.execute(stmt)).scalars().all()
-        return [_to_domain(r) for r in rows]
 
     async def list_for_org(self) -> list[Graph]:
         """ALL graphs in the caller's bound organisation (no per-user owner filter).

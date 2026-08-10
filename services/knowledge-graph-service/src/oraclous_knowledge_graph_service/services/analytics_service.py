@@ -117,8 +117,13 @@ class AnalyticsService:
             raise UnknownCommunityKind(kind)
 
     async def _own(self, *, graph_id: uuid.UUID, user_id: uuid.UUID) -> None:
-        """Owner gate (raises GraphNotFound → 404). The org scope is enforced in the repository."""
+        """WRITE gate (raises GraphNotFound → 404): detection, summarisation. Owner-scoped."""
         await self._graphs.get_graph(graph_id=graph_id, user_id=user_id)
+
+    async def _readable(self, *, graph_id: uuid.UUID) -> None:
+        """READ gate (#736 / ADR-051): the statistics and community reads are org-scoped, matching
+        the search the member can already run over the same graph."""
+        await self._graphs.assert_readable(graph_id=graph_id)
 
     async def detect(
         self,
@@ -258,7 +263,7 @@ class AnalyticsService:
     ) -> list[Community]:
         """List the graph's communities, filtered by level + kind. Empty list when none detected."""
         self._validate_kind(kind)
-        await self._own(graph_id=graph_id, user_id=user_id)
+        await self._readable(graph_id=graph_id)
         return await asyncio.to_thread(
             self._repo.list_communities,
             graph_id=str(graph_id),
@@ -270,7 +275,7 @@ class AnalyticsService:
         self, *, graph_id: uuid.UUID, user_id: uuid.UUID, community_id: str
     ) -> Community | None:
         """One community with its member entities (None → 404 at the route, incl. cross-org ids)."""
-        await self._own(graph_id=graph_id, user_id=user_id)
+        await self._readable(graph_id=graph_id)
         return await asyncio.to_thread(
             self._repo.get_community, graph_id=str(graph_id), community_id=community_id
         )
@@ -283,7 +288,7 @@ class AnalyticsService:
         the latest detect job: ``running`` (pending/running) or ``failed`` (errored). Otherwise
         ``active``/``not_detected`` derive from the substrate. Staleness = the entity count grew
         since detection."""
-        await self._own(graph_id=graph_id, user_id=user_id)
+        await self._readable(graph_id=graph_id)
         count, levels, entity_count = await asyncio.to_thread(
             self._repo.status, graph_id=str(graph_id)
         )
@@ -337,8 +342,8 @@ class AnalyticsService:
         return "not_detected"
 
     async def analytics(self, *, graph_id: uuid.UUID, user_id: uuid.UUID) -> GraphAnalytics:
-        """Graph statistics (the legacy ``/analytics`` shape), org+graph scoped + owner-gated."""
-        await self._own(graph_id=graph_id, user_id=user_id)
+        """Graph statistics (the legacy ``/analytics`` shape), org+graph scoped, read-gated."""
+        await self._readable(graph_id=graph_id)
         data = await asyncio.to_thread(self._repo.analytics, graph_id=str(graph_id))
         return GraphAnalytics(
             graph_id=str(graph_id),
