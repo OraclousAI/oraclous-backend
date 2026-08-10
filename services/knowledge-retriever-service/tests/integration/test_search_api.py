@@ -89,9 +89,13 @@ async def test_semantic_returns_node_result_envelope(client) -> None:
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert len(body) == 1
-    assert set(body[0].keys()) == {"id", "type", "properties"}  # strict envelope
+    # Strict envelope, widened by ONE typed sibling for #742/§CITE: `citation` is always present,
+    # and null for a record with no source identity. Kept as an exact-key-set assertion on purpose
+    # — that is what catches a future field leaking into the envelope.
+    assert set(body[0].keys()) == {"id", "type", "properties", "citation"}
     assert body[0]["type"] == "Chunk"
     assert body[0]["properties"]["text"] == "ada lovelace"
+    assert body[0]["citation"] is None  # this fixture row carries no source identity
 
 
 async def test_empty_query_is_422(client) -> None:
@@ -145,7 +149,7 @@ async def test_similar_returns_node_results(client) -> None:
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert len(body) == 1
-    assert set(body[0].keys()) == {"id", "type", "properties"}  # strict envelope
+    assert set(body[0].keys()) == {"id", "type", "properties", "citation"}  # strict envelope
     assert body[0]["properties"]["relationship"] == "SIMILAR_TO"
     assert body[0]["properties"]["score"] == 0.91
 

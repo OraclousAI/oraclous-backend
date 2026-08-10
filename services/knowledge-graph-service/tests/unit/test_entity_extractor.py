@@ -161,6 +161,7 @@ class _CapturingWriteRepo:
         entity_graph=None,
         ontology_violations=0,
         ontology_coercions=0,
+        citation=None,
     ):
         self.last_entity_graph = entity_graph
         self.last_violations = ontology_violations

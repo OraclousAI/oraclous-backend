@@ -8,9 +8,21 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
+from oraclous_citation import SourceRef
 from pydantic import BaseModel, Field
 
 from oraclous_knowledge_graph_service.domain.job import IngestionJobRecord
+
+# Every ingest entry point carries an optional ``source: SourceRef | None`` — where the content
+# came from, as the CONNECTOR emitted it (§CITE). It is optional on purpose: a body without it
+# stays valid, so every existing caller and every connector that does not emit one yet keeps
+# working, and the record is stamped with an ``upload`` citation instead.
+#
+# The caller passes it through UNMODIFIED and never synthesises one. ``SourceRef`` forbids extra
+# keys, so a caller-supplied ``citation_id`` or ``retrieved_at`` — provenance the platform never
+# issued — is rejected at the boundary rather than silently dropped (threat T1).
+#
+# ``organisation_id`` stays off the wire (ORG001); ``source`` does not change that.
 
 
 class BatchIngestItem(BaseModel):
@@ -21,6 +33,7 @@ class BatchIngestItem(BaseModel):
     content: str = Field(min_length=1)
     source_type: str = "text"
     recipe_id: str | None = None
+    source: SourceRef | None = None
 
 
 class BatchIngestRequest(BaseModel):
@@ -39,6 +52,7 @@ class IngestTextRequest(BaseModel):
     valid_from: str | None = None  # temporal passthrough (structured) — stamped on entity nodes
     valid_to: str | None = None
     event_time: str | None = None
+    source: SourceRef | None = None
 
 
 class InternalIngestRequest(BaseModel):
@@ -68,6 +82,7 @@ class InternalIngestRequest(BaseModel):
     execution_id: uuid.UUID | None = None
     team_id: str | None = None
     ordinal: int | None = None
+    source: SourceRef | None = None
 
     model_config = {"populate_by_name": True}
 

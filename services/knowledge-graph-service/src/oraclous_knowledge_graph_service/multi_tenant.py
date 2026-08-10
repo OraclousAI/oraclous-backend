@@ -16,7 +16,9 @@ Threats: T1 (cross-tenant leakage via property injection). The
 that pins a different organisation's id is overwritten so a write can never
 land in another tenant's scope. Neo4j community has no RLS / WITH-CHECK
 backstop (see ADR-012 §1 implementation note), so this stamp is the primary
-write-isolation control.
+write-isolation control. The ``citation`` stamp is the same defence at the same
+seam: a caller- or LLM-supplied citation is stripped unconditionally before the
+server-minted value is applied, so a forged provenance never reaches the graph.
 """
 
 from __future__ import annotations
@@ -27,6 +29,8 @@ from typing import TYPE_CHECKING
 
 # Module-level neo4j-graphrag imports so tests can monkeypatch ``Neo4jWriter``.
 from neo4j_graphrag.experimental.components.kg_writer import Neo4jWriter
+from oraclous_citation import Citation, citation_properties
+from oraclous_citation.graph_properties import is_citation_property
 
 # Module-level (NOT a ``from-import``) so the substrate's canonical
 # ``ORGANISATION_ID_PROPERTY`` is reached via attribute lookup at use-time —
@@ -43,6 +47,26 @@ _MAX_INGESTION_SOURCE_LEN = 512
 # ``text`` / ``path`` instead). Empty-name entity filtering only applies to
 # other labels — i.e. things the LLM classified as entity types.
 _LEXICAL_LABELS = frozenset({"Chunk", "Document"})
+# A caller/LLM property claiming where content came from. Stripped alongside the citation keys —
+# the connector is the only party that may state a source, and it does so out of band.
+_CLAIMED_SOURCE_PREFIX = "source_"
+
+
+def _strip_claimed_provenance(properties: dict[str, object]) -> None:
+    """Remove every caller- or LLM-supplied citation-shaped key, in place.
+
+    Unconditional, and deliberately broader than the key set the writer itself stamps: a bare
+    ``citation``, anything under the ``citation_`` prefix, and any ``source_*`` key are all
+    provenance a caller was never issued. Stripping only when the writer HAS a citation to
+    overwrite would leave a forgery in place on an uncited write, looking authentic — which is the
+    dangerous case, since nothing downstream can tell a planted citation from a real one.
+    """
+    for key in [
+        key
+        for key in properties
+        if is_citation_property(key) or key.startswith(_CLAIMED_SOURCE_PREFIX)
+    ]:
+        del properties[key]
 
 
 def _sanitize_source(raw: str | None) -> str | None:
@@ -72,11 +96,17 @@ class MultiTenantKGWriter:
         graph_id: str,
         user_id: str | None = None,
         ingestion_source: str | None = None,
+        citation: Citation | None = None,
     ) -> None:
         self.base_writer = base_writer
         self.graph_id = graph_id
         self.user_id = user_id
         self.ingestion_source = ingestion_source
+        # An ALREADY-MINTED citation. The writer stamps, it never mints: §CITE mints once at the
+        # tool-execution boundary, through a function general over a SourceRef, and the writer
+        # sits well below that boundary (it holds chunks, not the document content). Exactly the
+        # relationship it already has with ``ingestion_source``.
+        self.citation = citation
 
     def _injected_properties(self, now: datetime) -> dict[str, object]:
         """Properties stamped on every node and relationship in one ``run``.
@@ -132,7 +162,15 @@ class MultiTenantKGWriter:
                 graph.relationships = kept_rels  # type: ignore[attr-defined]
 
         injected = self._injected_properties(now)
-        safe_source = _sanitize_source(self.ingestion_source)
+        # An explicit ingestion_source still WINS; deriving from the citation title is a fallback,
+        # not a takeover. ``GraphWriteRepository._delete_document`` matches on the exact value
+        # passed in to get replace-on-re-ingest, and the retriever's precedence ranking reads the
+        # same field as a path — an unconditional override would silently stop replacing and start
+        # accumulating duplicates.
+        safe_source = _sanitize_source(self.ingestion_source) or _sanitize_source(
+            self.citation.title if self.citation else None
+        )
+        stamped_citation = citation_properties(self.citation) if self.citation else None
 
         for node in graph.nodes:  # type: ignore[attr-defined]
             if not node.properties:
@@ -145,6 +183,12 @@ class MultiTenantKGWriter:
             node.properties.pop("ingestion_source", None)
             if safe_source is not None:
                 node.properties["ingestion_source"] = safe_source
+            _strip_claimed_provenance(node.properties)
+            # Lexical nodes only. A derived or extracted entity is something the platform
+            # inferred, not a document it read — attaching the document's citation to it would
+            # assert that the source said something it never said, so it stays uncited in v1.
+            if stamped_citation is not None and getattr(node, "label", None) in _LEXICAL_LABELS:
+                node.properties.update(stamped_citation)
             if self.user_id:
                 node.properties["user_id"] = self.user_id
 
@@ -181,6 +225,9 @@ class MultiTenantKGWriter:
             rel.properties.pop("ingestion_source", None)
             if safe_source is not None:
                 rel.properties["ingestion_source"] = safe_source
+            # Stripped but never stamped: a citation belongs to a source document, and an edge is
+            # not one. The strip still applies — a relationship is an LLM-extraction landing site.
+            _strip_claimed_provenance(rel.properties)
             if self.user_id:
                 rel.properties["user_id"] = self.user_id
 
@@ -220,6 +267,11 @@ class OrganisationScopedKGWriter(MultiTenantKGWriter):
     with the original call sites but is **deliberately ignored** —
     the substrate seam is the single source of truth.
 
+    The signature is keyword-only and enumerates its arguments explicitly, so
+    ``citation`` has to be forwarded here as well: this is the class the real
+    write path constructs, and adding the argument to the base alone would
+    leave that path unable to carry a citation at all.
+
     Fail-closed: ``.run()`` raises ``MissingOrganisationContextError`` if no
     context is bound at runtime (T1-M1 / ADR-012 §1b).
     """
@@ -232,12 +284,14 @@ class OrganisationScopedKGWriter(MultiTenantKGWriter):
         context: OrganisationContext | None = None,  # noqa: ARG002 — deprecated; ignored
         user_id: str | None = None,
         ingestion_source: str | None = None,
+        citation: Citation | None = None,
     ) -> None:
         super().__init__(
             base_writer=base_writer,
             graph_id=graph_id,
             user_id=user_id,
             ingestion_source=ingestion_source,
+            citation=citation,
         )
 
     def _injected_properties(self, now: datetime) -> dict[str, object]:

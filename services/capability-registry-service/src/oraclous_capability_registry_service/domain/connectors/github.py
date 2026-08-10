@@ -70,6 +70,40 @@ class GitHubReader(InternalTool):
         if operation == "read_file" and isinstance(payload, dict) and payload.get("content"):
             decoded = base64.b64decode(payload["content"]).decode("utf-8", errors="replace")
             return ExecutionResult(
-                success=True, data={"path": payload.get("path"), "content": decoded}
+                success=True,
+                data={
+                    "path": payload.get("path"),
+                    "content": decoded,
+                    "source": _source_ref(repo=str(repo), payload=payload),
+                },
             )
         return ExecutionResult(success=True, data={"entries": payload})
+
+
+def _source_ref(*, repo: str, payload: dict[str, Any]) -> dict[str, Any]:
+    """The source identity of the file just read, from the response already parsed.
+
+    No second network call: the Contents API response carries ``sha`` and ``html_url``, and both
+    were previously discarded — which is why a knowledge record ended up with an untyped
+    ``ingestion_source`` and no way to resolve it.
+
+    The connector is the one party holding source-native identity, so it is the one party that may
+    fill this. It never mints: ``citation_id`` and ``retrieved_at`` are the platform's, computed at
+    the tool-execution boundary.
+
+    ``author`` is null because the Contents API response carries none. Fetching one costs a second
+    API call per read and belongs with the source object, so this records the gap honestly rather
+    than inventing a name. ``permission_ref`` is carried and unenforced, so records written today
+    stay usable when per-user permission mirroring lands.
+    """
+    path = str(payload.get("path") or "")
+    return {
+        "source_system": "github",
+        "source_id": f"{repo}:{path}",
+        "revision": payload.get("sha"),
+        "revision_kind": "blob_sha",
+        "url": payload.get("html_url"),
+        "title": path.rsplit("/", 1)[-1],
+        "author": None,
+        "permission_ref": None,
+    }

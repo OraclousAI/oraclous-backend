@@ -94,8 +94,17 @@ async def test_federated_search_returns_labeled_results(client, svc) -> None:
     body = resp.json()
     assert body["total"] == 1
     hit = body["results"][0]
-    # the strict federated envelope: NodeResult + the two source-graph labels (ADR-026)
-    assert set(hit.keys()) == {"id", "type", "properties", "source_graph_id", "source_graph_name"}
+    # the strict federated envelope: NodeResult + the two source-graph labels (ADR-026), widened by
+    # the one typed `citation` sibling for #742/§CITE. "Which document" matters MORE across
+    # organisationally distinct graphs, not less, so the federated hit carries it too.
+    assert set(hit.keys()) == {
+        "id",
+        "type",
+        "properties",
+        "citation",
+        "source_graph_id",
+        "source_graph_name",
+    }
     assert hit["source_graph_id"] == _G1 and hit["source_graph_name"] == "research"
     assert body["meta"]["mode"] == "entity"
     assert svc.search_calls[0]["mode"] == "entity"

@@ -17,6 +17,7 @@ import logging
 import uuid
 from typing import Any
 
+from oraclous_citation import SourceRef
 from oraclous_governance import OrganisationContext, PrincipalType, use_organisation_context
 from oraclous_substrate.access import enforced_organisation_id
 
@@ -173,6 +174,11 @@ async def _ingest_async(job_id_s: str, organisation_id_s: str) -> dict[str, Any]
                         document_key=_document_key(job_id, payload),
                         data=data,
                         source_type=payload.source_type,
+                        # The connector's source, as the submitting request stored it — the job row
+                        # is the only channel to this process. The job id is what an upload
+                        # citation resolves to when no connector supplied a source (§CITE).
+                        source=SourceRef.model_validate(payload.source) if payload.source else None,
+                        job_id=job_id_s,
                     )
                     # Honest extracted counts: the LLM-extracted entities + their entity↔entity
                     # relationships (0 in null mode), NOT the lexical Document/Chunk node total.

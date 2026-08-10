@@ -292,6 +292,7 @@ def test_rrf_fuse_keys_by_graph_and_node_so_twins_do_not_collapse() -> None:
         "id": "n1",
         "type": "Chunk",
         "properties": {},
+        "citation": None,
         "source_graph_id": _G1.id,
         "source_graph_name": "research",
     }
@@ -309,6 +310,7 @@ def test_rrf_uses_per_graph_local_rank_not_global_merge_position() -> None:
         "id": "x",
         "type": "Chunk",
         "properties": {},
+        "citation": None,
         "source_graph_id": _G1.id,
         "source_graph_name": "research",
     }

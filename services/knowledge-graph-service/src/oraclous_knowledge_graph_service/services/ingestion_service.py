@@ -25,6 +25,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from neo4j_graphrag.experimental.components.types import Neo4jGraph
+from oraclous_citation import Citation, SourceRef, mint_citation
 
 from oraclous_knowledge_graph_service.domain.ontology import Ontology, resolve_label
 from oraclous_knowledge_graph_service.repositories.graph_write_repository import (
@@ -89,6 +90,45 @@ def enforce_ontology(entity_graph: Neo4jGraph, ontology: Ontology | None) -> _En
     return _Enforced(Neo4jGraph(nodes=kept_nodes, relationships=kept_rels), violations, coercions)
 
 
+#: The reserved ``source_system`` for content the platform received directly rather than read from
+#: a connector. §CITE: an upload citation carries the ingest job id as its ``source_id``, the
+#: content hash as its revision, and ``url: null`` — no route serves an uploaded document back yet,
+#: and claiming a URL that does not resolve would be the same fiction the Contract exists to reject.
+_UPLOAD_SOURCE_SYSTEM = "upload"
+
+
+def _mint_for_ingest(
+    *, source: SourceRef | None, job_id: str | None, document: str, content: str
+) -> Citation | None:
+    """Mint the citation this ingest will stamp, from the connector's source or the upload fallback.
+
+    Minting happens HERE and not in the writer: §CITE mints once, at the tool-execution boundary,
+    through a function general over a ``SourceRef``. The writer sits below that boundary and holds
+    chunks rather than the document content, so it could not compute the content-hash fallback even
+    if it were the right place.
+
+    ``content`` is the EXTRACTED text, not the raw bytes: it is what the record actually carries,
+    so re-saving a PDF with different container metadata does not read as a new revision.
+
+    Returns ``None`` only when there is no job id to attribute an upload to — a direct service-level
+    call outside the job pipeline. The record is then ``citation: null``, which is the Contract's
+    defined meaning for a record with no source identity.
+    """
+    if source is not None:
+        return mint_citation(source, content=content)
+    if job_id is None:
+        return None
+    return mint_citation(
+        SourceRef(
+            source_system=_UPLOAD_SOURCE_SYSTEM,
+            source_id=job_id,
+            url=None,
+            title=document or None,
+        ),
+        content=content,
+    )
+
+
 class IngestionService:
     def __init__(
         self,
@@ -110,6 +150,8 @@ class IngestionService:
         data: bytes,
         source_type: str | None,
         document_key: str | None = None,
+        source: SourceRef | None = None,
+        job_id: str | None = None,
     ) -> WriteResult:
         """Chunk, embed, extract and write one document.
 
@@ -126,6 +168,7 @@ class IngestionService:
         chunks = chunk_text(text)
         if not chunks:
             raise IngestionError("no chunks produced from extracted text")
+        citation = _mint_for_ingest(source=source, job_id=job_id, document=document, content=text)
         embeddings = self._embedder.embed(chunks)
         entity_graph = None
         violations = 0
@@ -150,4 +193,5 @@ class IngestionService:
             entity_graph=entity_graph,
             ontology_violations=violations,
             ontology_coercions=coercions,
+            citation=citation,
         )

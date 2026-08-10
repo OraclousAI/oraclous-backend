@@ -59,6 +59,7 @@ async def ingest_text(
             valid_from=body.valid_from,
             valid_to=body.valid_to,
             event_time=body.event_time,
+            source=body.source,
         )
     except GraphNotFound:
         raise _GRAPH_NOT_FOUND from None
@@ -85,6 +86,7 @@ async def batch_ingest(
                 filename=item.path,
                 source_type=item.source_type,
                 recipe_id=item.recipe_id,
+                source=item.source,
             )
             jobs.append(JobResponse.of(job))
     except GraphNotFound:
