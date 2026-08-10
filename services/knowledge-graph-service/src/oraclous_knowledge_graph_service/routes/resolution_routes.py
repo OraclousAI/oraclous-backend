@@ -164,7 +164,8 @@ async def list_pending_cross_graph_candidates(
     """The pending cross-graph SAME_AS review queue touching this graph (#330) — what a HITL
     reviewer reads to see the candidates a prior generation run wrote (the generation response is
     otherwise the only place they surface). Owner-gated (a graph not in the caller's org/owner →
-    404). Each pending pair keys the same approve/reject verdict endpoints."""
+    404) — the one pure read #736 did NOT move to the org-scoped read gate; see the service
+    docstring for why. Each pending pair keys the same approve/reject verdict endpoints."""
     try:
         candidates = await service.list_pending_cross_graph(
             graph_id=graph_id, user_id=user_id, limit=limit

@@ -345,8 +345,14 @@ class ResolutionService:
     ) -> list[CrossGraphCandidate]:
         """The pending cross-graph SAME_AS review queue touching this graph (#330) — what a HITL
         reviewer reads to see the candidates a prior generation run wrote (the queue is otherwise
-        only returned in the generation response). Owner-gated (a graph not in the caller's
-        org/owner → 404, no leak)."""
+        only returned in the generation response).
+
+        THE ONE PURE READ STILL ON THE OWNER GATE (#736 / ADR-051). Every other read in this service
+        moved to the org-scoped read gate; this one did not, because
+        `test_list_pending_cross_graph_is_owner_gated_and_returns_the_queue` pins the owner gate and
+        an implementer may not edit a test to change behaviour (CLAUDE.md §4.1). Moving it needs a
+        `[tests]` change first. It is defensible either way: the queue only feeds approve/reject,
+        which are owner-gated, so an org member could read the pairs but act on none of them."""
         org = await self._owned_org(graph_id=graph_id, user_id=user_id)
         rows = await asyncio.to_thread(
             self._write.pending_cross_graph_candidates,
