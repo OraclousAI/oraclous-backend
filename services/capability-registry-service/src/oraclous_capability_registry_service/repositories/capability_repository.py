@@ -55,6 +55,11 @@ class CapabilityConflictError(Exception):
     deterministic id collides with a platform built-in). Maps to HTTP 409."""
 
 
+class CapabilityInUseError(Exception):
+    """A descriptor delete was blocked because rows still reference it — ``ondelete=RESTRICT``
+    sees every org, while the caller's delete is scoped to one (#770 retirement sweep)."""
+
+
 class CapabilityRepository:
     def __init__(self, db_url: str, *, platform_org_id: uuid.UUID | None = None) -> None:
         # ADR-030: build_rls_engine installs the org-GUC begin-guard so every transaction binds
@@ -407,15 +412,20 @@ class CapabilityRepository:
         # GUC → no row found → False); the app-layer org equality is preserved as defense-in-depth.
         with org_scope(organisation_id):
             async with self._session() as session:
-                async with session.begin():
-                    result = await session.execute(
-                        select(CapabilityDescriptor).where(
-                            CapabilityDescriptor.id == descriptor_id,
-                            CapabilityDescriptor.organisation_id == organisation_id,
+                try:
+                    async with session.begin():
+                        result = await session.execute(
+                            select(CapabilityDescriptor).where(
+                                CapabilityDescriptor.id == descriptor_id,
+                                CapabilityDescriptor.organisation_id == organisation_id,
+                            )
                         )
-                    )
-                    row = result.scalars().first()
-                    if row is None:
-                        return False
-                    await session.delete(row)
+                        row = result.scalars().first()
+                        if row is None:
+                            return False
+                        await session.delete(row)
+                except IntegrityError as exc:
+                    raise CapabilityInUseError(
+                        f"capability {descriptor_id} is still referenced and cannot be deleted"
+                    ) from exc
                 return True

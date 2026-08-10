@@ -88,6 +88,28 @@ class InstanceRepository:
                 )
                 return list(result.scalars().all())
 
+    async def delete_by_capability(
+        self, capability_id: uuid.UUID, organisation_id: uuid.UUID
+    ) -> int:
+        """Delete every instance of ``capability_id`` in this org; returns the count deleted.
+
+        Descriptor retirement support (#770): ``tool_instances.descriptor_id`` is
+        ``ondelete=RESTRICT``, so a descriptor row can only go once its instances are gone.
+        """
+        with org_scope(organisation_id):
+            async with self._session() as session:
+                async with session.begin():
+                    result = await session.execute(
+                        select(ToolInstance).where(
+                            ToolInstance.capability_id == capability_id,
+                            ToolInstance.organisation_id == organisation_id,
+                        )
+                    )
+                    rows = list(result.scalars().all())
+                    for row in rows:
+                        await session.delete(row)
+                return len(rows)
+
     async def record_execution(
         self,
         instance_id: uuid.UUID,

@@ -144,8 +144,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     if repo is not None:
         try:
             with org_scope(uuid.UUID(settings.PLATFORM_ORG_ID)):
+                # instance_repository arms the retirement sweep (#770): descriptors whose plugin
+                # class is gone are deleted from the platform catalogue, instances first.
                 statuses = await sync_plugins(
-                    repository=repo, organisation_id=uuid.UUID(settings.PLATFORM_ORG_ID)
+                    repository=repo,
+                    instance_repository=instance_repo,
+                    organisation_id=uuid.UUID(settings.PLATFORM_ORG_ID),
                 )
             logger.info("seeded built-in tools into platform org: %s", statuses)
         except Exception as exc:  # noqa: BLE001 — degrade: catalogue empty, service still serves

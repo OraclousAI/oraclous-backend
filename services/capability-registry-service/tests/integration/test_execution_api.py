@@ -153,8 +153,32 @@ async def test_parameterized_query_returns_rows(ctx: dict) -> None:
 
 async def test_tool_without_executor_is_409(ctx: dict) -> None:
     client: AsyncClient = ctx["client"]
-    # Google Drive Reader is registered but its live OAuth connector is deferred (no executor).
-    cap_id = await _tool_id(client, "Google Drive Reader")
+    # An API-registered tool has no executor mapped by construction — #770 retired the Google
+    # Drive Reader, the last seeded connector without one, so the test registers its own.
+    registered = await client.post(
+        "/api/v1/tools",
+        json={
+            "descriptor": {
+                "kind": "tool",
+                "metadata": {"name": "Executorless Reader", "category": "INGESTION"},
+                "spec": {
+                    "type": "API",
+                    "capabilities": [{"name": "read_nothing", "description": "never executable"}],
+                    "credential_requirements": [
+                        {
+                            "type": "oauth_token",
+                            "provider": "google",
+                            "required": True,
+                            "scopes": ["https://www.googleapis.com/auth/drive.readonly"],
+                        }
+                    ],
+                },
+            }
+        },
+        headers=_auth(),
+    )
+    assert registered.status_code == 201, registered.text
+    cap_id = registered.json()["id"]
     iid = await _ready_instance(client, cap_id, "oauth_token")
     resp = await client.post(
         f"/api/v1/instances/{iid}/execute", json={"input_data": {}}, headers=_auth()

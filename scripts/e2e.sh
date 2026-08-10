@@ -30,7 +30,8 @@ TEST_ENV_FILE="deploy/.env.test"
 _load_test_key() {  # _load_test_key VAR — export VAR from deploy/.env.test unless already set
   local var="$1" val
   [ -n "${!var:-}" ] && return 0
-  val=$(grep -E "^${var}=" "$TEST_ENV_FILE" 2>/dev/null | head -1 | cut -d= -f2-)
+  # tolerate a missing file/key under set -euo pipefail: the deterministic suite runs keyless
+  val=$(grep -E "^${var}=" "$TEST_ENV_FILE" 2>/dev/null | head -1 | cut -d= -f2-) || true
   [ -n "$val" ] && export "$var=$val"
   return 0
 }
