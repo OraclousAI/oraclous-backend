@@ -125,6 +125,14 @@ def test_an_invited_member_finds_and_reads_the_organisations_workspace(
 
     arts = member.get(f"/v1/artifacts?graph_id={graph_id}")
     assert arts.status_code == 200, arts.text
+    artifact_ids = [a["id"] for a in arts.json()]
+    assert artifact_ids, "the member sees the workspace but none of its artifacts"
+
+    # The highest-fidelity read the gate widened: verbatim document content, through the gateway.
+    # A fake repository proves least here, so this leg is the one that has to run live.
+    content = member.get(f"/v1/artifacts/{artifact_ids[0]}")
+    assert content.status_code == 200, content.text
+    assert content.json()["id"] == artifact_ids[0]
 
     # ── acceptance 3: read did not become write ───────────────────────────────────────────────
     assert member.patch(f"/api/v1/graphs/{graph_id}", json={"name": "hijacked"}).status_code == 404
@@ -144,6 +152,7 @@ def test_an_invited_member_finds_and_reads_the_organisations_workspace(
     assert out.get(f"/api/v1/graphs/{graph_id}").status_code == 404
     assert out.get(f"/api/v1/graphs/{graph_id}/documents").status_code == 404
     assert out.get(f"/v1/artifacts?graph_id={graph_id}").status_code == 404
+    assert out.get(f"/v1/artifacts/{artifact_ids[0]}").status_code == 404
     assert out.get(f"/api/v1/graphs/{graph_id}/ontology").status_code == 404
     assert out.get(f"/api/v1/graphs/{graph_id}/analytics").status_code == 404
     assert out.patch(f"/api/v1/graphs/{graph_id}", json={"name": "hijacked"}).status_code == 404
