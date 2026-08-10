@@ -2,8 +2,14 @@
 
 Exercises the REAL routes, DI wiring, dev-auth seam and error mapping. The persistence layer is an
 in-memory fake injected via `dependency_overrides[get_graph_service]`, so no Postgres is needed; the
-owner gate (other user's graph -> 404, no existence leak) and the auth seam (401) are real. Live
-cross-org scoping (`enforced_organisation_id`) is verified by the docker smoke.
+gates and the auth seam (401) are real. Live cross-org scoping (`enforced_organisation_id`) is
+verified by the docker smoke.
+
+#736 / ADR-051: reads and writes no longer share one gate. Read is ORG-scoped — a member sees and
+opens every workspace in their organisation — and write stays OWNER-scoped. The 404-no-leak
+assertions therefore moved from "another user" to "another organisation", which is where the wall
+now is. The fake repository below models the org filter the real one applies, so a graph outside the
+bound organisation is invisible rather than merely forbidden.
 
 Replaces the hollow-era `test_api_authz_isolation.py`, which patched the now-deleted inline
 `GraphNodeService` stub and the `api.*` modules.
@@ -23,21 +29,32 @@ pytestmark = pytest.mark.integration
 
 _DEV_USER = uuid.UUID("00000000-0000-0000-0000-0000000000d5")  # matches Settings.dev_user_id
 _DEV_ORG = uuid.UUID("00000000-0000-0000-0000-00000000050a")  # matches Settings.dev_org_id
-_OTHER_USER = uuid.UUID("00000000-0000-0000-0000-00000000beef")
+_OTHER_USER = uuid.UUID("00000000-0000-0000-0000-00000000beef")  # same org, a colleague
+_OTHER_ORG = uuid.UUID("00000000-0000-0000-0000-0000000005ff")  # a different tenant
 _AUTH = {"Authorization": "Bearer dev-token"}
 
 
 class _FakeRepo:
-    """In-memory stand-in for GraphRepository (same method surface GraphService calls)."""
+    """In-memory stand-in for GraphRepository (same method surface GraphService calls).
+
+    Reads are filtered by the bound organisation, mirroring `enforced_organisation_id()`: a row in
+    another tenant is invisible, never merely unowned."""
 
     def __init__(self) -> None:
         self._rows: dict[uuid.UUID, Graph] = {}
 
-    def _make(self, *, user_id: uuid.UUID, name: str, description: str | None) -> Graph:
+    def _make(
+        self,
+        *,
+        user_id: uuid.UUID,
+        name: str,
+        description: str | None,
+        organisation_id: uuid.UUID = _DEV_ORG,
+    ) -> Graph:
         now = datetime(2026, 6, 4, tzinfo=UTC)
         return Graph(
             id=uuid.uuid4(),
-            organisation_id=_DEV_ORG,
+            organisation_id=organisation_id,
             user_id=user_id,
             name=name,
             description=description,
@@ -57,10 +74,16 @@ class _FakeRepo:
         return g
 
     async def list_for_user(self, *, user_id: uuid.UUID) -> list[Graph]:
-        return [g for g in self._rows.values() if g.user_id == user_id]
+        return [
+            g for g in self._rows.values() if g.user_id == user_id and g.organisation_id == _DEV_ORG
+        ]
+
+    async def list_for_org(self) -> list[Graph]:
+        return [g for g in self._rows.values() if g.organisation_id == _DEV_ORG]
 
     async def get(self, graph_id: uuid.UUID) -> Graph | None:
-        return self._rows.get(graph_id)
+        g = self._rows.get(graph_id)
+        return g if g is not None and g.organisation_id == _DEV_ORG else None
 
     async def update(
         self,
@@ -127,28 +150,77 @@ async def test_create_then_get_roundtrip(client) -> None:
     assert got.json()["name"] == "g1"
 
 
-async def test_list_only_returns_callers_graphs(client, repo) -> None:
+async def test_list_returns_the_organisations_graphs(client, repo) -> None:
+    """#736 / ADR-051 acceptance 1. The list gate now equals the read gate, so a colleague's
+    workspace appears instead of being hidden by a check that never protected it."""
     await client.post("/api/v1/graphs", json={"name": "mine"}, headers=_AUTH)
-    # a graph owned by another user must not appear in the dev caller's list
     repo.seed(repo._make(user_id=_OTHER_USER, name="theirs", description=None))
     resp = await client.get("/api/v1/graphs", headers=_AUTH)
     assert resp.status_code == 200
-    names = [g["name"] for g in resp.json()]
-    assert names == ["mine"]
+    assert {g["name"] for g in resp.json()} == {"mine", "theirs"}
 
 
-async def test_get_other_users_graph_is_404_no_leak(client, repo) -> None:
-    secret = repo._make(user_id=_OTHER_USER, name="UserBSecret", description="confidential")
+async def test_list_marks_which_graphs_the_caller_owns(client, repo) -> None:
+    """Acceptance 1's second half: ownership is visible, so the console can separate "mine" from
+    "the organisation's". Derived from the graph's own `user_id` — no extra query, nothing
+    stored."""
+    await client.post("/api/v1/graphs", json={"name": "mine"}, headers=_AUTH)
+    repo.seed(repo._make(user_id=_OTHER_USER, name="theirs", description=None))
+    rows = {g["name"]: g for g in (await client.get("/api/v1/graphs", headers=_AUTH)).json()}
+    assert rows["mine"]["is_owner"] is True
+    assert rows["theirs"]["is_owner"] is False
+
+
+async def test_list_excludes_another_organisation(client, repo) -> None:
+    """Acceptance 4. The org boundary is the wall, and it did not move."""
+    await client.post("/api/v1/graphs", json={"name": "mine"}, headers=_AUTH)
+    repo.seed(
+        repo._make(
+            user_id=_OTHER_USER,
+            name="RivalCorpKB",
+            description="confidential",
+            organisation_id=_OTHER_ORG,
+        )
+    )
+    resp = await client.get("/api/v1/graphs", headers=_AUTH)
+    assert resp.status_code == 200
+    assert {g["name"] for g in resp.json()} == {"mine"}
+    assert "RivalCorpKB" not in resp.text
+
+
+async def test_get_a_colleagues_graph_in_the_same_org_is_200(client, repo) -> None:
+    """The boundary ruled on #736: graph detail is a pure read, so it follows the list. A member who
+    sees a row in the list can open it — the console never renders a row that then 404s."""
+    theirs = repo._make(user_id=_OTHER_USER, name="Company Knowledge Base", description=None)
+    repo.seed(theirs)
+    resp = await client.get(f"/api/v1/graphs/{theirs.id}", headers=_AUTH)
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["name"] == "Company Knowledge Base"
+    assert resp.json()["is_owner"] is False
+
+
+async def test_get_a_graph_in_another_org_is_404_no_leak(client, repo) -> None:
+    """Acceptance 4 on the detail route. The 404-no-leak guarantee moved to the org boundary; it was
+    not dropped."""
+    secret = repo._make(
+        user_id=_OTHER_USER,
+        name="RivalCorpSecret",
+        description="confidential",
+        organisation_id=_OTHER_ORG,
+    )
     repo.seed(secret)
     resp = await client.get(f"/api/v1/graphs/{secret.id}", headers=_AUTH)
     assert resp.status_code == 404
-    assert "UserBSecret" not in resp.text
+    assert "RivalCorpSecret" not in resp.text
     assert "confidential" not in resp.text
 
 
 async def test_update_other_users_graph_is_404(client, repo) -> None:
+    """Acceptance 3. Read widened; rename did not. The caller can open this graph one route over and
+    is still refused the write — ADR-051 decision 3."""
     secret = repo._make(user_id=_OTHER_USER, name="theirs", description=None)
     repo.seed(secret)
+    assert (await client.get(f"/api/v1/graphs/{secret.id}", headers=_AUTH)).status_code == 200
     resp = await client.patch(
         f"/api/v1/graphs/{secret.id}", json={"name": "hijacked"}, headers=_AUTH
     )
@@ -158,6 +230,7 @@ async def test_update_other_users_graph_is_404(client, repo) -> None:
 
 
 async def test_delete_other_users_graph_is_404(client, repo) -> None:
+    """Acceptance 3. Delete stays owner-scoped."""
     secret = repo._make(user_id=_OTHER_USER, name="theirs", description=None)
     repo.seed(secret)
     resp = await client.delete(f"/api/v1/graphs/{secret.id}", headers=_AUTH)
