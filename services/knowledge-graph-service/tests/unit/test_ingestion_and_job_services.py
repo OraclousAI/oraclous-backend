@@ -216,10 +216,10 @@ async def test_get_job_graph_outside_the_organisation_raises() -> None:
     graph is invisible in this organisation, not that the caller fails an owner check."""
     svc = _service(set(), [])
     with _ctx(), pytest.raises(GraphNotFound):
-        await svc.get_job(user_id=_USER, graph_id=_GRAPH, job_id=uuid.uuid4())
+        await svc.get_job(graph_id=_GRAPH, job_id=uuid.uuid4())
 
 
 async def test_get_missing_job_raises_job_not_found() -> None:
     svc = _service({_GRAPH}, [])
     with _ctx(), pytest.raises(JobNotFound):
-        await svc.get_job(user_id=_USER, graph_id=_GRAPH, job_id=uuid.uuid4())
+        await svc.get_job(graph_id=_GRAPH, job_id=uuid.uuid4())

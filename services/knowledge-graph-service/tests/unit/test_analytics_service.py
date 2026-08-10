@@ -301,30 +301,30 @@ async def test_submit_detect_boundary_runs_sync_at_threshold() -> None:
 async def test_list_and_get_delegate() -> None:
     repo = _FakeRepo(communities=[_community(level=0), _community(level=1, cid="community_xyz")])
     svc = _svc(repo)
-    all_comms = await svc.list_communities(graph_id=_GRAPH, user_id=_USER)
+    all_comms = await svc.list_communities(graph_id=_GRAPH)
     assert len(all_comms) == 2
-    level_0 = await svc.list_communities(graph_id=_GRAPH, user_id=_USER, level=0)
+    level_0 = await svc.list_communities(graph_id=_GRAPH, level=0)
     assert len(level_0) == 1
-    got = await svc.get_community(graph_id=_GRAPH, user_id=_USER, community_id="community_xyz")
+    got = await svc.get_community(graph_id=_GRAPH, community_id="community_xyz")
     assert got is not None and got.community_id == "community_xyz"
-    missing = await svc.get_community(graph_id=_GRAPH, user_id=_USER, community_id="nope")
+    missing = await svc.get_community(graph_id=_GRAPH, community_id="nope")
     assert missing is None
 
 
 async def test_unknown_kind_rejected() -> None:
     svc = _svc(_FakeRepo(communities=[_community()]))
     with pytest.raises(UnknownCommunityKind):
-        await svc.list_communities(graph_id=_GRAPH, user_id=_USER, kind="not_a_kind")
+        await svc.list_communities(graph_id=_GRAPH, kind="not_a_kind")
 
 
 async def test_status_not_detected_then_active() -> None:
     empty = _svc(_FakeRepo(entity_count=5))
-    status = await empty.status(graph_id=_GRAPH, user_id=_USER)
+    status = await empty.status(graph_id=_GRAPH)
     assert status.status == "not_detected"
     assert status.communities_count == 0
 
     detected = _svc(_FakeRepo(entity_count=5, communities=[_community(level=0)]))
-    status = await detected.status(graph_id=_GRAPH, user_id=_USER)
+    status = await detected.status(graph_id=_GRAPH)
     assert status.status == "active"
     assert status.communities_count == 1
     # entity_count (5) > entities covered by level-0 communities (3) → stale.
@@ -353,20 +353,20 @@ async def test_status_folds_in_running_detect_job() -> None:
     # → status 'running', not the split-brain 'not_detected'.
     repo = _FakeRepo(entity_count=5)
     jobs = _FakeJobRepo(latest_detect=_detect_job("running"))
-    status = await _svc(repo, job_repo=jobs).status(graph_id=_GRAPH, user_id=_USER)
+    status = await _svc(repo, job_repo=jobs).status(graph_id=_GRAPH)
     assert status.status == "running"
 
 
 async def test_status_folds_in_failed_detect_job() -> None:
     repo = _FakeRepo(entity_count=5)
     jobs = _FakeJobRepo(latest_detect=_detect_job("failed"))
-    status = await _svc(repo, job_repo=jobs).status(graph_id=_GRAPH, user_id=_USER)
+    status = await _svc(repo, job_repo=jobs).status(graph_id=_GRAPH)
     assert status.status == "failed"
 
 
 async def test_analytics_shape() -> None:
     svc = _svc(_FakeRepo(entity_count=8, communities=[_community()]))
-    a = await svc.analytics(graph_id=_GRAPH, user_id=_USER)
+    a = await svc.analytics(graph_id=_GRAPH)
     assert a.node_count == 10
     assert a.relationship_count == 4
     assert a.entity_count == 8

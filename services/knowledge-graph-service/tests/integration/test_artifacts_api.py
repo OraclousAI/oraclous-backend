@@ -286,5 +286,5 @@ async def test_get_artifact_decodes_base64_stored_content() -> None:
         graph_service=_Graphs(),  # type: ignore[arg-type]
         enqueue=lambda *_a, **_k: None,
     )
-    _job, content = await svc.get_artifact(user_id=uuid.uuid4(), artifact_id=rec.id)
+    _job, content = await svc.get_artifact(artifact_id=rec.id)
     assert content == "# verbatim\nbody"
