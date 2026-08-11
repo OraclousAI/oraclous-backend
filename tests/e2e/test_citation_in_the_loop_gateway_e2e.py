@@ -28,6 +28,7 @@ import time
 import uuid
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 import httpx
 import pytest
@@ -123,6 +124,40 @@ def _execute(c: httpx.Client, instance_id: str, input_data: dict) -> dict:
     body = r.json() or {}
     assert str(body.get("status")).upper() == "SUCCESS", r.text[:400]
     return dict(body.get("output_data") or {})
+
+
+#: The corpus the two KEY-FREE connector legs share, seeded once per session.
+#:
+#: The gateway rate-limits per IP across the WHOLE suite, and ingest plus search polling is the
+#: request-heavy part of this file. Seeding twice pushed the suite over that budget and broke
+#: unrelated tests at `/v1/auth/me`, which returns an error body the shared `register` fixture reads
+#: as a missing `organisation_id`. Both legs read the same corpus and neither writes to it, so
+#: sharing costs nothing in coverage and halves the traffic.
+_SEEDED: dict[str, Any] = {}
+
+
+def _shared_corpus(
+    register: Callable[..., dict], gateway_client: Callable[[str], httpx.Client]
+) -> tuple[httpx.Client, str, str, set[str]]:
+    """The one registered user and seeded graph the two key-free legs share.
+
+    The user is shared as well as the corpus, because the graph is org-scoped: a second
+    registration would be a second org, which could not read the first one's workspace. The TOKEN is
+    what gets cached, never the client — ``gateway_client`` closes each client when its test ends,
+    so a cached one is unusable by the next.
+    """
+    if not _SEEDED:
+        user = register(f"citeloop{uuid.uuid4().hex[:10]} owner")
+        client = gateway_client(user["token"])
+        graph_id, nonce, ids = _seed_two_documents(client)
+        _SEEDED.update(token=user["token"], graph_id=graph_id, nonce=nonce, ids=ids)
+        return client, graph_id, nonce, ids
+    return (
+        gateway_client(_SEEDED["token"]),
+        _SEEDED["graph_id"],
+        _SEEDED["nonce"],
+        _SEEDED["ids"],
+    )
 
 
 def _seed_two_documents(c: httpx.Client) -> tuple[str, str, set[str]]:
@@ -262,9 +297,7 @@ def test_a_deployed_retrieval_serves_its_citations_and_the_reserved_key(
     The per-hit ``citation`` stays in the content a model would read (#642 — a receipt it cannot see
     is a trap), and the reserved ``served_citation_ids`` key carries the same ids for the platform.
     """
-    user = register(f"citeloop{uuid.uuid4().hex[:10]} owner")
-    c = gateway_client(user["token"])
-    graph_id, nonce, ids = _seed_two_documents(c)
+    c, graph_id, nonce, ids = _shared_corpus(register, gateway_client)
 
     out = _execute(c, _retriever_instance(c, graph_id), {"operation": "search", "query": nonce})
 
@@ -285,9 +318,7 @@ def test_a_caller_supplied_served_ids_key_never_survives_the_connector(
     A caller (and therefore a model, whose tool arguments become this input) offering the reserved
     name gets the connector's own answer back, computed from the hits it really served.
     """
-    user = register(f"citeforge{uuid.uuid4().hex[:10]} owner")
-    c = gateway_client(user["token"])
-    graph_id, nonce, ids = _seed_two_documents(c)
+    c, graph_id, nonce, ids = _shared_corpus(register, gateway_client)
 
     out = _execute(
         c,
