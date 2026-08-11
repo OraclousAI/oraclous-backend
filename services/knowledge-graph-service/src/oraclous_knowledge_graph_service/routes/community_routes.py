@@ -64,14 +64,12 @@ async def list_kinds(
 async def list_communities(
     graph_id: uuid.UUID,
     service: AnalyticsServiceDep,
-    user_id: UserIdDep,
+    _user_id: UserIdDep,
     level: int | None = None,
     kind: str = "entity",
 ) -> list[CommunityResponse]:
     try:
-        communities = await service.list_communities(
-            graph_id=graph_id, user_id=user_id, level=level, kind=kind
-        )
+        communities = await service.list_communities(graph_id=graph_id, level=level, kind=kind)
     except UnknownCommunityKind as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail=f"unknown community kind: {exc}"
@@ -112,10 +110,10 @@ async def detect_communities(
 
 @router.get("/communities/status", response_model=CommunitiesStatusResponse)
 async def communities_status(
-    graph_id: uuid.UUID, service: AnalyticsServiceDep, user_id: UserIdDep
+    graph_id: uuid.UUID, service: AnalyticsServiceDep, _user_id: UserIdDep
 ) -> CommunitiesStatusResponse:
     try:
-        result = await service.status(graph_id=graph_id, user_id=user_id)
+        result = await service.status(graph_id=graph_id)
     except GraphNotFound:
         raise _GRAPH_NOT_FOUND from None
     return CommunitiesStatusResponse.of(result)
@@ -126,12 +124,10 @@ async def get_community(
     graph_id: uuid.UUID,
     community_id: str,
     service: AnalyticsServiceDep,
-    user_id: UserIdDep,
+    _user_id: UserIdDep,
 ) -> CommunityResponse:
     try:
-        community = await service.get_community(
-            graph_id=graph_id, user_id=user_id, community_id=community_id
-        )
+        community = await service.get_community(graph_id=graph_id, community_id=community_id)
     except GraphNotFound:
         raise _GRAPH_NOT_FOUND from None
     if community is None:
@@ -169,10 +165,10 @@ async def summarize_communities(
 
 @router.get("/analytics", response_model=AnalyticsResponse)
 async def graph_analytics(
-    graph_id: uuid.UUID, service: AnalyticsServiceDep, user_id: UserIdDep
+    graph_id: uuid.UUID, service: AnalyticsServiceDep, _user_id: UserIdDep
 ) -> AnalyticsResponse:
     try:
-        result = await service.analytics(graph_id=graph_id, user_id=user_id)
+        result = await service.analytics(graph_id=graph_id)
     except GraphNotFound:
         raise _GRAPH_NOT_FOUND from None
     return AnalyticsResponse.of(result)
