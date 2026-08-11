@@ -220,7 +220,11 @@ def _run_team(c: httpx.Client, root: Path, credential_id: str, graph_id: str, ta
     assert created.status_code == 202, created.text
     run_id = created.json()["id"]
     row: dict = {}
-    for _ in range(60):
+    # Generous on purpose. The task itself takes ~20s, but a run waits behind whatever else the
+    # single Celery worker is doing, and a stack carrying leftover schedules from earlier e2e runs
+    # can queue it for minutes. A short budget reports "never reached a terminal state" for a run
+    # that in fact SUCCEEDED, which reads as a product bug and is not one.
+    for _ in range(150):
         row = c.get(f"/v1/engine/team-runs/{run_id}").json()
         if row["state"] in {"SUCCEEDED", "FAILED", "REJECTED"}:
             return row
