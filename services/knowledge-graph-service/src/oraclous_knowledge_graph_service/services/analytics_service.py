@@ -256,7 +256,6 @@ class AnalyticsService:
         self,
         *,
         graph_id: uuid.UUID,
-        user_id: uuid.UUID,
         level: int | None = None,
         kind: str = ENTITY_KIND,
         min_entities: int = 1,
@@ -271,16 +270,14 @@ class AnalyticsService:
             min_entities=min_entities,
         )
 
-    async def get_community(
-        self, *, graph_id: uuid.UUID, user_id: uuid.UUID, community_id: str
-    ) -> Community | None:
+    async def get_community(self, *, graph_id: uuid.UUID, community_id: str) -> Community | None:
         """One community with its member entities (None → 404 at the route, incl. cross-org ids)."""
         await self._readable(graph_id=graph_id)
         return await asyncio.to_thread(
             self._repo.get_community, graph_id=str(graph_id), community_id=community_id
         )
 
-    async def status(self, *, graph_id: uuid.UUID, user_id: uuid.UUID) -> CommunitiesStatus:
+    async def status(self, *, graph_id: uuid.UUID) -> CommunitiesStatus:
         """Detection status: substrate counts FOLDED WITH the latest ``community_detect`` job row.
 
         The substrate alone is split-brained — a running/failed async detect is invisible, and right
@@ -341,7 +338,7 @@ class AnalyticsService:
         # A completed job that left no communities (e.g. a skip) reads as not_detected.
         return "not_detected"
 
-    async def analytics(self, *, graph_id: uuid.UUID, user_id: uuid.UUID) -> GraphAnalytics:
+    async def analytics(self, *, graph_id: uuid.UUID) -> GraphAnalytics:
         """Graph statistics (the legacy ``/analytics`` shape), org+graph scoped, read-gated."""
         await self._readable(graph_id=graph_id)
         data = await asyncio.to_thread(self._repo.analytics, graph_id=str(graph_id))

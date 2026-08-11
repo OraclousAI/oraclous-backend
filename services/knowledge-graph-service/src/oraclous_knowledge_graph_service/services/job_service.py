@@ -89,18 +89,14 @@ class JobService:
         self._enqueue(str(job.id), enforced_organisation_id())
         return job
 
-    async def get_job(
-        self, *, user_id: uuid.UUID, graph_id: uuid.UUID, job_id: uuid.UUID
-    ) -> IngestionJobRecord:
+    async def get_job(self, *, graph_id: uuid.UUID, job_id: uuid.UUID) -> IngestionJobRecord:
         await self._graphs.assert_readable(graph_id=graph_id)  # org read gate (#736)
         job = await self._jobs.get(job_id)
         if job is None or job.graph_id != graph_id:
             raise JobNotFound(str(job_id))
         return job
 
-    async def list_documents(
-        self, *, user_id: uuid.UUID, graph_id: uuid.UUID
-    ) -> list[IngestionJobRecord]:
+    async def list_documents(self, *, graph_id: uuid.UUID) -> list[IngestionJobRecord]:
         # /documents lists INGESTED documents. A community-detect job reuses the ingestion_jobs
         # table (no separate table) but is not a document, so it is excluded here — otherwise detect
         # jobs would surface as phantom documents in the list.
@@ -114,7 +110,6 @@ class JobService:
     async def list_artifacts(
         self,
         *,
-        user_id: uuid.UUID,
         graph_id: uuid.UUID,
         q: str | None = None,
         source_type: str | None = None,
@@ -148,7 +143,7 @@ class JobService:
         return records
 
     async def get_artifact(
-        self, *, user_id: uuid.UUID, artifact_id: uuid.UUID
+        self, *, artifact_id: uuid.UUID
     ) -> tuple[IngestionJobRecord, str | None]:
         """One artifact's record + its verbatim content (#543). Org-scoped: the repo read is
         org-bound, and the owning graph passes the read gate (#736 / ADR-051); a missing artifact,
