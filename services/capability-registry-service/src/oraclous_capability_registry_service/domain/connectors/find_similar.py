@@ -22,6 +22,10 @@ from typing import Any
 import httpx
 
 from oraclous_capability_registry_service.core.config import get_settings
+from oraclous_capability_registry_service.domain.connectors.retrieval_citations import (
+    SERVED_CITATION_IDS_KEY,
+    served_citation_ids,
+)
 from oraclous_capability_registry_service.domain.executors.base import (
     ExecutionContext,
     ExecutionResult,
@@ -125,8 +129,15 @@ class FindSimilarConnector(InternalTool):
                 error_message="the knowledge retriever returned a malformed body",
                 error_type="RETRIEVER_BAD_RESPONSE",
             )
+        # #743 (§CITE): identical to the primary retriever — a similar-to answer that cannot be
+        # cited is not an answer. Reserved key, emitted only when something is cited; the loop pops
+        # it. The hits (and their per-hit `citation`) are passed through untouched.
+        data: dict[str, Any] = {"hits": hits}
+        served = served_citation_ids(hits)
+        if served:
+            data[SERVED_CITATION_IDS_KEY] = served
         return ExecutionResult(
             success=True,
-            data={"hits": hits},
+            data=data,
             metadata={"hit_count": len(hits)},
         )

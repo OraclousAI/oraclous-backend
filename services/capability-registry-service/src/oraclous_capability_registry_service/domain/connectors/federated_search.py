@@ -22,6 +22,10 @@ from typing import Any
 import httpx
 
 from oraclous_capability_registry_service.core.config import get_settings
+from oraclous_capability_registry_service.domain.connectors.retrieval_citations import (
+    SERVED_CITATION_IDS_KEY,
+    served_citation_ids,
+)
 from oraclous_capability_registry_service.domain.executors.base import (
     ExecutionContext,
     ExecutionResult,
@@ -141,8 +145,16 @@ class FederatedSearchConnector(InternalTool):
                 error_message="the knowledge retriever returned a malformed body",
                 error_type="RETRIEVER_BAD_RESPONSE",
             )
+        # #743 (§CITE): identical to the primary retriever, so a federated answer can be cited.
+        # Dedup is keyed on the citation_id alone, so ONE document version mirrored into two
+        # workspaces is one source — `source_graph_id` never enters the identity (§CITE keys it on
+        # source_system/source_id/revision). Reserved key, emitted only when something is cited.
+        data: dict[str, Any] = {"results": payload["results"], "meta": payload.get("meta", {})}
+        served = served_citation_ids(payload["results"])
+        if served:
+            data[SERVED_CITATION_IDS_KEY] = served
         return ExecutionResult(
             success=True,
-            data={"results": payload["results"], "meta": payload.get("meta", {})},
+            data=data,
             metadata={"result_count": len(payload["results"])},
         )
