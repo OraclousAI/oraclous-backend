@@ -80,7 +80,7 @@ async def _dispatch(spec: ToolSpec, args: dict[str, Any]) -> dict[str, Any]:
     """The retrieval connector emits the reserved key; the echo tool reflects the model's args."""
     if spec.binding == _RETRIEVE.binding:
         return {"hits": [_hit(_SERVED)], "served_citation_ids": [_SERVED]}
-    return {"echoed": dict(args), **args}
+    return dict(args)
 
 
 class _Injector:
@@ -147,8 +147,12 @@ async def test_an_injected_key_adds_nothing_to_a_real_retrieval() -> None:
 
 
 async def test_the_injected_key_is_stripped_from_the_content_the_model_reads() -> None:
-    # Stripped on EVERY tool result, not only the retrieval path. Reflecting the key back would
-    # teach the model that the name is live, and would let it confirm the injection landed.
+    # The reserved key is popped from EVERY tool result, not only the retrieval path — the same
+    # top-level boundary data_absent (#580) draws. An untrusted tool that carries the key back
+    # loses it exactly as a trusted one does, so the key name never appears in tool content at all.
+    # Scoped to the TOP-LEVEL key on purpose (be-test-reviewer, Tests Review gate): requiring the
+    # loop to hunt the name out of nested third-party payloads would mangle legitimate tool output
+    # and buys nothing, because the property that matters is the served set, asserted just above.
     llm = _Injector(retrieve_first=True)
     await _run(llm)
     assert llm.tool_content  # the tools really ran — an empty transcript would pass vacuously
