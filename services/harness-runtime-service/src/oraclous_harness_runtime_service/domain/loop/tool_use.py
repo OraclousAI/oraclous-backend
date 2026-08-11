@@ -165,9 +165,7 @@ _SERVED_CITATION_IDS_KEY = "served_citation_ids"
 # bind core/knowledge-retriever as "retriever", "Read", or anything else), not a verified identity.
 # Trusting the alias string alone would let a manifest name an imported MCP binding
 # "knowledge-retriever" and be believed. #746 extends the resolved set to web/MCP reads.
-_DEFAULT_CITATION_BINDINGS = frozenset(
-    {"knowledge-retriever", "federated-search", "find-similar"}
-)
+_DEFAULT_CITATION_BINDINGS = frozenset({"knowledge-retriever", "federated-search", "find-similar"})
 
 
 async def run_tool_use_loop(
@@ -221,10 +219,10 @@ async def run_tool_use_loop(
     # model still saw the "no data" note), a known minor fidelity gap, never a cascade.
     retrieval_empty = False
     # #743: the run's served set — what the PLATFORM handed this member, in first-seen order. Like
-    # `retrieval_empty` it is intentionally NOT carried across a HITL resume (the checkpoint holds
-    # the transcript, not this), so a resumed run reports only what its post-resume segment served.
-    # Same known fidelity gap as #580's, and it bites nothing today because #743 delivers the gate
-    # as a pure function rather than wiring it into the run boundary.
+    # `retrieval_empty` it is a fresh list on a HITL resume, because the checkpoint carries the
+    # transcript rather than platform counters. That loses nothing durable: the resume path UNIONS
+    # this segment into the row the pre-pause segment already wrote, so the persisted set stays
+    # whole and an answer written after the pause can still cite what was served before it.
     served_citation_ids: list[str] = []
     # Gate the nudge to PRODUCING members — those with a graph-ingest ("ingest") tool that are meant
     # to persist output. A reasoning/retrieval-only member that legitimately answers without a tool

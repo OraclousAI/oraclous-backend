@@ -13,7 +13,7 @@ same thing:
    precedent, and ``tool_use.py`` draws the same "no other tool may emit it" boundary).
 
 **The key is emitted only when the result actually cites something**, exactly as ``data_absent`` is
-set only on an empty result: a tool result carries no empty platform bookkeeping for the loop to pop.
+set only on an empty result: a tool result carries no empty platform bookkeeping to pop.
 
 Dedup is keyed on the ``citation_id`` alone, never on the graph a hit came from. §CITE derives that
 id from ``(source_system, source_id, revision)``, so one document version mirrored into two

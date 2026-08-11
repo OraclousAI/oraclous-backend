@@ -2,10 +2,10 @@
 
 Two rules, both blocking, both evaluated **in platform code** at the end of a run:
 
-| # | Rule | Kills |
-| --- | --- | --- |
-| 1 | An asserted fact carries no ``citation_id``. | ``(source: partner-agreement.md)`` — prose is not a citation. |
-| 2 | A cited ``citation_id`` is not in the set the platform served to that run. | The invented ``source_tool_call_id=call_...``, and every hallucinated source. |
+* **Rule 1 — an asserted fact carries no ``citation_id``.** Kills
+  ``(source: partner-agreement.md)``: model prose is not a citation.
+* **Rule 2 — a cited ``citation_id`` is not in the set the platform served to that run.** Kills the
+  invented ``source_tool_call_id=call_...``, and every hallucinated source with it.
 
 Otherwise it PASSES. Neither rule depends on anything a third-party tool chooses to send, because
 the platform mints the id itself.

@@ -417,6 +417,10 @@ class HarnessExecutionService:
             # run-tree correlation (#471): trace_id None at the root → repo mints it = execution_id.
             trace_id=trace_id,
             parent_execution_id=parent_execution_id,
+            # #743 (§CITE): persist what the platform served, so rule 2 stays checkable after the
+            # run. Without the durable record a fabricated citation is unfalsifiable once the loop
+            # has exited — which is the whole gap #734 exposed.
+            served_citation_ids=result.served_citation_ids,
         )
         await self._emit_provenance(
             result.steps,
@@ -680,6 +684,10 @@ class HarnessExecutionService:
             input_tokens=(execution.input_tokens or 0) + result.input_tokens,
             output_tokens=(execution.output_tokens or 0) + result.output_tokens,
             steps=[*prior, *new_steps],
+            # #743 (§CITE): the loop's served set covers the post-resume segment only, so the
+            # repository UNIONS it into what the pre-pause segment already recorded. A citation
+            # served before the pause is still one this member was handed.
+            served_citation_ids=result.served_citation_ids,
         )
         await self._emit_provenance(
             result.steps,  # the new tail only

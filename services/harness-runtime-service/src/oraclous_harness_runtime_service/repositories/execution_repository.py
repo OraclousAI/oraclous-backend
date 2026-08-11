@@ -67,6 +67,7 @@ class ExecutionRepository:
         output_tokens: int = 0,
         trace_id: uuid.UUID | None = None,
         parent_execution_id: uuid.UUID | None = None,
+        served_citation_ids: list[str] | None = None,
     ) -> HarnessExecution:
         row = HarnessExecution(
             id=execution_id,
@@ -89,6 +90,9 @@ class ExecutionRepository:
             # run-tree correlation (#471): root mints trace_id = its own id when none was passed.
             trace_id=trace_id if trace_id is not None else execution_id,
             parent_execution_id=parent_execution_id,
+            # #743 (§CITE): what the platform served this run. A caller that omits it records the
+            # empty list, never NULL — the answer-time gate reads this on every run.
+            served_citation_ids=list(served_citation_ids or []),
         )
         # ADR-030: bind the org so the engine begin-guard sets app.current_organisation_id; the
         # FORCE'd RLS WITH CHECK admits this INSERT only when the stamped org equals the bound one.
@@ -158,11 +162,19 @@ class ExecutionRepository:
         steps: list[dict[str, Any]],
         input_tokens: int | None = None,
         output_tokens: int | None = None,
+        served_citation_ids: list[str] | None = None,
     ) -> HarnessExecution | None:
         """Full in-place update of an org-scoped run — the S6 resume path overwrites status/output/
         error/iterations/tokens and REPLACES the step trace (caller appends the new tail). Unlike
         update_status this sets error fields verbatim (a DENIED resume preserves human_rejected).
-        ``input_tokens``/``output_tokens`` are updated only when supplied (the spend breakdown)."""
+        ``input_tokens``/``output_tokens`` are updated only when supplied (the spend breakdown).
+
+        #743 (§CITE): ``served_citation_ids`` is UNIONED into the persisted set rather than
+        replacing it, because the loop's own set covers the post-resume segment only. A citation
+        served before a HITL pause is still one the member was handed, and an answer written after
+        the pause may legitimately cite it — replacing would silently turn it into a rule 2
+        violation.
+        """
         with org_scope(organisation_id):
             async with self._session() as session:
                 async with session.begin():
@@ -187,6 +199,10 @@ class ExecutionRepository:
                         row.input_tokens = input_tokens
                     if output_tokens is not None:
                         row.output_tokens = output_tokens
+                    if served_citation_ids:
+                        merged = list(row.served_citation_ids or [])
+                        merged.extend(c for c in served_citation_ids if c not in merged)
+                        row.served_citation_ids = merged
                     row.steps = steps
                 await session.refresh(row)
                 return row
