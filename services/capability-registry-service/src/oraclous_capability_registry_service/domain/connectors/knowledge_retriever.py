@@ -21,6 +21,10 @@ from typing import Any
 import httpx
 
 from oraclous_capability_registry_service.core.config import get_settings
+from oraclous_capability_registry_service.domain.connectors.retrieval_citations import (
+    SERVED_CITATION_IDS_KEY,
+    served_citation_ids,
+)
 from oraclous_capability_registry_service.domain.executors.base import (
     ExecutionContext,
     ExecutionResult,
@@ -149,6 +153,13 @@ class KnowledgeRetrieverConnector(InternalTool):
         data: dict[str, Any] = {"hits": hits}
         if not hits:
             data["data_absent"] = True
+        # #743 (§CITE): alongside the per-hit `citation` the model reads, hand the platform the set
+        # of citation_ids this result served. Reserved key, emitted only when something is cited —
+        # the loop pops it, so the model never sees it and can never write itself into the run's
+        # served set. The hits themselves are passed through untouched.
+        served = served_citation_ids(hits)
+        if served:
+            data[SERVED_CITATION_IDS_KEY] = served
         return ExecutionResult(
             success=True,
             data=data,

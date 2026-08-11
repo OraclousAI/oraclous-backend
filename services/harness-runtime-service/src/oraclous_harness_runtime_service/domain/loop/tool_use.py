@@ -111,6 +111,12 @@ class LoopResult:
     error_type: str | None = None
     error_message: str | None = None
     checkpoint: LoopCheckpoint | None = None  # set only on a mid-loop HITL pause (resumable)
+    # #743 (§CITE): the citation_ids the PLATFORM served to this run, accumulated across every
+    # retrieval call and every iteration, deduplicated. A `list` (not a `set`) because this is
+    # carried out of the loop and serialised. EMPTY, never None: the answer-time gate reads it on
+    # every run, and a None would make "served nothing" indistinguishable from "the loop forgot to
+    # record" at the one moment it matters.
+    served_citation_ids: list[str] = field(default_factory=list)
 
 
 def _truncate(text: str, limit: int = 500) -> str:
@@ -144,6 +150,23 @@ _EMPTY_RETRIEVAL_NOTE = (
     "retrying the same retrieval; there is no data there to find."
 )
 
+# #743 (Contract #735 §CITE): the reserved result key carrying the citation_ids a retrieval served.
+# The loop POPS it from EVERY tool result — trusted or not — so the name never reaches the model,
+# and ACCUMULATES it only from a trusted binding. Both halves are needed: popping everywhere keeps
+# the model from learning the name is live, and accumulating selectively is what makes the id
+# unforgeable. Without the second half a model could push the key through any echo-shaped tool (a
+# generic REST call, an imported MCP server) and write its own id into the set that the answer-time
+# gate checks against — which would make rule 2 check nothing at all.
+_SERVED_CITATION_IDS_KEY = "served_citation_ids"
+
+# The registry's own names for the first-party retrieval capabilities that mint citations today.
+# This is the DEFAULT only. `run_tool_use_loop(citation_bindings=...)` overrides it, and the harness
+# service always does, because a `ToolSpec.binding` is the MANIFEST-chosen alias (a manifest may
+# bind core/knowledge-retriever as "retriever", "Read", or anything else), not a verified identity.
+# Trusting the alias string alone would let a manifest name an imported MCP binding
+# "knowledge-retriever" and be believed. #746 extends the resolved set to web/MCP reads.
+_DEFAULT_CITATION_BINDINGS = frozenset({"knowledge-retriever", "federated-search", "find-similar"})
+
 
 async def run_tool_use_loop(
     *,
@@ -155,8 +178,12 @@ async def run_tool_use_loop(
     policy: PolicyEnvelope,
     resume_state: LoopCheckpoint | None = None,
     memory_context: Callable[[], Awaitable[str | None]] | None = None,
+    citation_bindings: frozenset[str] | None = None,
 ) -> LoopResult:
     by_name = {s.name: s for s in tool_specs}
+    trusted_citation_bindings = (
+        _DEFAULT_CITATION_BINDINGS if citation_bindings is None else citation_bindings
+    )
     if resume_state is not None:
         redactors = [re.compile(p) for p in resume_state.redact_patterns]
         messages: list[Message] = list(resume_state.messages)
@@ -191,6 +218,12 @@ async def run_tool_use_loop(
     # paused run that resumes to completion reports SUCCEEDED — acceptable (degrade-not-crash; the
     # model still saw the "no data" note), a known minor fidelity gap, never a cascade.
     retrieval_empty = False
+    # #743: the run's served set — what the PLATFORM handed this member, in first-seen order. Like
+    # `retrieval_empty` it is a fresh list on a HITL resume, because the checkpoint carries the
+    # transcript rather than platform counters. That loses nothing durable: the resume path UNIONS
+    # this segment into the row the pre-pause segment already wrote, so the persisted set stays
+    # whole and an answer written after the pause can still cite what was served before it.
+    served_citation_ids: list[str] = []
     # Gate the nudge to PRODUCING members — those with a graph-ingest ("ingest") tool that are meant
     # to persist output. A reasoning/retrieval-only member that legitimately answers without a tool
     # is never re-prompted (so the completion contract can't add a spurious turn to it).
@@ -221,6 +254,7 @@ async def run_tool_use_loop(
             error_type=reason,
             error_message=message,
             checkpoint=checkpoint,
+            served_citation_ids=list(served_citation_ids),
         )
 
     def _degrade(name: str, reason: str, message: str, iterations: int) -> LoopResult:
@@ -238,6 +272,9 @@ async def run_tool_use_loop(
             error_type=reason,
             error_message=message,
             checkpoint=None,
+            # #580 + #743: a run that degrades on a LATER empty retrieval still served what it
+            # served, and the answer may legitimately cite it. Carry it out.
+            served_citation_ids=list(served_citation_ids),
         )
 
     def _budget_gate(name: str, reason: str, message: str, iterations: int) -> LoopResult:
@@ -334,6 +371,22 @@ async def run_tool_use_loop(
                     if isinstance(result, dict) and result.pop("data_absent", False):
                         retrieval_empty = True
                         result["note"] = _EMPTY_RETRIEVAL_NOTE
+                    # #743 (§CITE): pop the served-ids key from EVERY tool result, then accumulate
+                    # it only from a TRUSTED retrieval binding. A model-supplied key of the same
+                    # name — pushed through a generic REST call or an imported MCP server — is
+                    # therefore stripped and never merged, so an id the model chose can never be in
+                    # the set rule 2 checks against. Provenance, never a format check: a forged id
+                    # is indistinguishable from a real one by shape.
+                    if isinstance(result, dict):
+                        served = result.pop(_SERVED_CITATION_IDS_KEY, None)
+                        if spec.binding in trusted_citation_bindings and isinstance(served, list):
+                            for citation_id in served:
+                                if (
+                                    isinstance(citation_id, str)
+                                    and citation_id
+                                    and citation_id not in served_citation_ids
+                                ):
+                                    served_citation_ids.append(citation_id)
                     content = _redact(json.dumps(result, default=str), redactors)
                     status = "ok"
                 except Exception as exc:  # noqa: BLE001 — feed the error back so the model can adapt
@@ -423,6 +476,7 @@ async def run_tool_use_loop(
                 output_tokens=output_used,
                 error_type=type(exc).__name__,
                 error_message=str(exc),
+                served_citation_ids=list(served_citation_ids),
             )
         tokens_used += resp.total_tokens
         input_used += resp.input_tokens
@@ -464,6 +518,7 @@ async def run_tool_use_loop(
                 total_tokens=tokens_used,
                 input_tokens=input_used,
                 output_tokens=output_used,
+                served_citation_ids=list(served_citation_ids),
             )
 
         steps.append(

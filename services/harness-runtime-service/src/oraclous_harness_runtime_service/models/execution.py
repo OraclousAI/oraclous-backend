@@ -11,7 +11,7 @@ mapper configuration, so they must be real types.
 import uuid
 from typing import Any
 
-from sqlalchemy import Integer, String, Text
+from sqlalchemy import Integer, String, Text, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -44,6 +44,13 @@ class HarnessExecution(BaseModel):
     input_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     output_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     steps: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, nullable=False, default=list)
+    # #743 (Contract #735 §CITE): the citation_ids the PLATFORM served to this run, accumulated by
+    # the loop across every retrieval call and every iteration. This is the set §CITE's rule 2 is
+    # checked against, so it is the record that makes a fabricated source detectable at all. Empty
+    # and never NULL — "served nothing" must not be confusable with "not recorded".
+    served_citation_ids: Mapped[list[str]] = mapped_column(
+        JSONB, nullable=False, default=list, server_default=text("'[]'::jsonb")
+    )
     # ── run-tree correlation (ADR-037 Decision 3 / #471; additive, nullable) ──────────────────
     # trace_id groups every execution in ONE logical run-tree; the root execution mints it to its
     # own id (mint-if-absent). parent_execution_id is the dispatching member's run (NULL at root).

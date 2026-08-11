@@ -113,6 +113,10 @@ class HarnessExecutionOut(BaseModel):
     # run-tree correlation (#471): trace_id groups the tree; parent is the dispatching execution.
     trace_id: uuid.UUID | None = None
     parent_execution_id: uuid.UUID | None = None
+    # #743 (Contract #735 §CITE): the citation_ids the PLATFORM served to this run. A citation in
+    # the answer resolves only if it is in here — that is rule 2, and it is the property that tells
+    # a real source from an invented one. Opaque platform-issued ids, never source content.
+    served_citation_ids: list[str] = []
 
     @computed_field  # type: ignore[prop-decorator]
     @property

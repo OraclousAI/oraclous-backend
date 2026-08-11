@@ -69,6 +69,16 @@ def _slug(text: str) -> str:
     return _NON_ALNUM.sub("-", text.lower()).strip("-")
 
 
+def capability_slug(name: str) -> str:
+    """The registry row's OWN name, slugified — the only trustworthy identity of a capability.
+
+    A manifest picks its ``binding`` alias freely (``retriever``, ``Read``, anything), so the alias
+    never identifies which capability a binding actually resolved to. ``resolve_capability`` proves
+    the row's name matches the ref slug, so slugging that name is what a caller may key trust on.
+    """
+    return _slug(name)
+
+
 def _ref_slug(ref: str) -> str:
     """``core/postgresql-reader@1.0.0`` → ``postgresql-reader`` (drop the prefix + @version)."""
     tail = ref.split("/")[-1].split("@")[0]  # drop core/ or org:<id>/ prefix and @version
