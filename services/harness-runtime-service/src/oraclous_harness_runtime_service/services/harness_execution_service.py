@@ -58,11 +58,24 @@ from oraclous_harness_runtime_service.repositories.checkpoint_repository import 
 from oraclous_harness_runtime_service.repositories.execution_repository import ExecutionRepository
 from oraclous_harness_runtime_service.services.broker_client import BrokerClient, BrokerError
 from oraclous_harness_runtime_service.services.memory_client import MemoryReader, MemoryWriter
-from oraclous_harness_runtime_service.services.registry_client import RegistryClient, RegistryError
+from oraclous_harness_runtime_service.services.registry_client import (
+    RegistryClient,
+    RegistryError,
+    capability_slug,
+)
 
 logger = logging.getLogger(__name__)
 
 _RESERVED_CONFIG_KEYS = ("credential_mappings", "capability_id")
+
+# #743 (Contract #735 §CITE): the first-party retrieval capabilities whose results the loop may
+# believe when they carry the served-citation-ids reserved key. Matched on the REGISTRY row's own
+# name, never on the manifest's binding alias — a manifest may bind core/knowledge-retriever as
+# "retriever" or "Read", and equally may name an imported MCP binding "knowledge-retriever". #746
+# adds the live web / MCP rows of §CITE's minting table to this set.
+_CITATION_MINTING_CAPABILITIES = frozenset(
+    {"knowledge-retriever", "federated-search", "find-similar"}
+)
 
 # #663 — the credential types whose broker resolution READS an instance's credential_mappings.
 # oauth_token is deliberately absent: the broker resolves it per request from (org, user, provider,
@@ -300,7 +313,7 @@ class HarnessExecutionService:
         # writes records the execution that produced it, and the instances are configured inside
         # _build_runnable. Generation is pure, so hoisting it changes nothing else.
         execution_id = uuid.uuid4()
-        envelope, tool_specs, dispatch, llm = await self._build_runnable(
+        envelope, tool_specs, dispatch, llm, citation_bindings = await self._build_runnable(
             manifest,
             policy,
             org_id,
@@ -341,6 +354,7 @@ class HarnessExecutionService:
                 dispatch=dispatch,
                 policy=envelope,
                 memory_context=memory_context,
+                citation_bindings=citation_bindings,
             )
         finally:
             await self._aclose_llm(llm)
@@ -592,7 +606,7 @@ class HarnessExecutionService:
         # budget. Without it, resume reverts to the policy tier and a heavy member already past it
         # would re-escalate immediately — the exact bug #576 fixes. Old checkpoints lack the keys
         # → None → the tier (a pre-#576 paused run is unchanged).
-        envelope, tool_specs, dispatch, llm = await self._build_runnable(
+        envelope, tool_specs, dispatch, llm, citation_bindings = await self._build_runnable(
             manifest,
             policy,
             org_id,
@@ -619,6 +633,7 @@ class HarnessExecutionService:
                 dispatch=dispatch,
                 policy=envelope,
                 resume_state=resume_state,
+                citation_bindings=citation_bindings,
             )
         finally:
             await self._aclose_llm(llm)
@@ -777,7 +792,7 @@ class HarnessExecutionService:
         member_max_tool_calls: int | None = None,
         member_on_exhaustion: Literal["escalate", "degrade"] | None = None,
         producer: dict[str, Any] | None = None,
-    ) -> tuple[Any, list[ToolSpec], Any, LLMClient]:
+    ) -> tuple[Any, list[ToolSpec], Any, LLMClient, frozenset[str]]:
         """Resolve + materialise the manifest's capabilities, build the dispatch + the LLM + the
         runtime envelope. Shared by execute() and resume() so a resume sets up identically.
         ``external_ceiling`` caps the ceiling by the caller's member ``tools[]`` (ADR-032).
@@ -816,8 +831,21 @@ class HarnessExecutionService:
                 raise RegistryError(f"tool execution failed: {detail}")
             return execution.get("output_data") or {}
 
+        # #743 (§CITE): translate the trusted CAPABILITIES into the binding aliases this particular
+        # manifest gave them, so the loop can key trust on something the manifest author did not
+        # choose. `resolved` is the registry's answer, and resolve_capability already proved each
+        # row's name matches the ref slug, so a manifest cannot smuggle an MCP tool in under a
+        # first-party alias. A binding that resolves to anything else is simply absent from the set,
+        # and the loop strips its served-ids key without believing it.
+        citation_bindings = frozenset(
+            cap.binding
+            for cap in manifest.capabilities
+            if capability_slug(str(resolved[cap.binding].get("name") or ""))
+            in _CITATION_MINTING_CAPABILITIES
+        )
+
         llm = await self._build_llm(manifest, org_id)
-        return envelope, tool_specs, dispatch, llm
+        return envelope, tool_specs, dispatch, llm, citation_bindings
 
     @staticmethod
     async def _aclose_llm(llm: LLMClient) -> None:
