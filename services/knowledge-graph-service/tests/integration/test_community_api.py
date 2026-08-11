@@ -56,17 +56,17 @@ class _FakeAnalyticsService:
             raise self.raise_with
         return self.detect_returns
 
-    async def list_communities(self, *, graph_id, user_id, level=None, kind="entity"):  # noqa: ARG002
+    async def list_communities(self, *, graph_id, level=None, kind="entity"):  # noqa: ARG002
         if self.raise_with is not None:
             raise self.raise_with
         return self.communities
 
-    async def get_community(self, *, graph_id, user_id, community_id):  # noqa: ARG002
+    async def get_community(self, *, graph_id, community_id):  # noqa: ARG002
         if self.raise_with is not None:
             raise self.raise_with
         return self.community
 
-    async def status(self, *, graph_id, user_id):  # noqa: ARG002
+    async def status(self, *, graph_id):
         if self.raise_with is not None:
             raise self.raise_with
         return CommunitiesStatus(
@@ -84,7 +84,7 @@ class _FakeAnalyticsService:
             raise self.raise_with
         return self.summarize_outcome
 
-    async def analytics(self, *, graph_id, user_id):  # noqa: ARG002
+    async def analytics(self, *, graph_id):
         if self.raise_with is not None:
             raise self.raise_with
         return GraphAnalytics(

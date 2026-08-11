@@ -69,7 +69,6 @@ class _FakeJobService:
     async def list_artifacts(
         self,
         *,
-        user_id,
         graph_id,
         q=None,
         source_type=None,
@@ -79,7 +78,6 @@ class _FakeJobService:
         producer_kind=None,
     ):
         self.last_call = {
-            "user_id": user_id,
             "graph_id": graph_id,
             "q": q,
             "source_type": source_type,
@@ -105,7 +103,7 @@ class _FakeJobService:
             out = [r for r in out if r.producer_kind == producer_kind]
         return out
 
-    async def get_artifact(self, *, user_id, artifact_id):
+    async def get_artifact(self, *, artifact_id):
         if not self.owned:
             raise GraphNotFound("x")
         if artifact_id not in self.records:

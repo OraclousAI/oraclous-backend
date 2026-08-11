@@ -59,14 +59,14 @@ class _FakeJobService:
         self.jobs[rec.id] = rec
         return rec
 
-    async def get_job(self, *, user_id, graph_id, job_id):
+    async def get_job(self, *, graph_id, job_id):
         if not self.owned:
             raise GraphNotFound(str(graph_id))
         if job_id not in self.jobs:
             raise JobNotFound(str(job_id))
         return self.jobs[job_id]
 
-    async def list_documents(self, *, user_id, graph_id):
+    async def list_documents(self, *, graph_id):
         if not self.owned:
             raise GraphNotFound(str(graph_id))
         return list(self.jobs.values())
@@ -202,7 +202,7 @@ class _FakeSqlIngestionService:
 class _UnconfiguredOntologyService:
     """A graph with no ontology set — the service's open default (#654; no DB in this app)."""
 
-    async def get(self, *, user_id, graph_id):  # noqa: ARG002 — owner gate faked
+    async def get(self, *, graph_id):  # noqa: ARG002 — owner gate faked
         return {"allowed_labels": [], "mode": "open"}
 
 
@@ -310,7 +310,7 @@ async def test_ingest_sql_loads_and_passes_the_graph_ontology(app, async_client)
             return self.result
 
     class _FakeOntologyService:
-        async def get(self, *, user_id, graph_id):  # noqa: ARG002 — owner gate faked
+        async def get(self, *, graph_id):  # noqa: ARG002 — owner gate faked
             return {"allowed_labels": ["Employee", "Manager", "Team"], "mode": "strict"}
 
     sql = _RecordingSql()
@@ -344,7 +344,7 @@ async def test_ingest_sql_open_ontology_passes_none_or_open(app, async_client) -
             return self.result
 
     class _OpenOntologyService:
-        async def get(self, *, user_id, graph_id):  # noqa: ARG002
+        async def get(self, *, graph_id):  # noqa: ARG002
             return {"allowed_labels": [], "mode": "open"}
 
     sql = _RecordingSql()
