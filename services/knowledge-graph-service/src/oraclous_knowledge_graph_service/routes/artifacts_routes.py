@@ -30,7 +30,7 @@ _NOT_FOUND = HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="not fo
 async def list_artifacts(
     graph_id: uuid.UUID,
     service: JobServiceDep,
-    user_id: UserIdDep,
+    _user_id: UserIdDep,
     q: str | None = None,
     source_type: str | None = None,
     # #728 provenance filters: what a run produced, what a team has ever produced, what one member
@@ -42,7 +42,6 @@ async def list_artifacts(
 ) -> list[ArtifactSummary]:
     try:
         records = await service.list_artifacts(
-            user_id=user_id,
             graph_id=graph_id,
             q=q,
             source_type=source_type,
@@ -58,10 +57,10 @@ async def list_artifacts(
 
 @router.get("/{artifact_id}", response_model=ArtifactDetail)
 async def get_artifact(
-    artifact_id: uuid.UUID, service: JobServiceDep, user_id: UserIdDep
+    artifact_id: uuid.UUID, service: JobServiceDep, _user_id: UserIdDep
 ) -> ArtifactDetail:
     try:
-        rec, content = await service.get_artifact(user_id=user_id, artifact_id=artifact_id)
+        rec, content = await service.get_artifact(artifact_id=artifact_id)
     except (GraphNotFound, JobNotFound):
         raise _NOT_FOUND from None
     return ArtifactDetail.of_with_content(rec, content)

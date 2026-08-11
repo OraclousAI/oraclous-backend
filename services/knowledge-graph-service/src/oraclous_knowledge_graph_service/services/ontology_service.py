@@ -42,7 +42,7 @@ class OntologyService:
         self._graphs_repo = graph_repo
         self._graphs = graph_service
 
-    async def get(self, *, user_id: uuid.UUID, graph_id: uuid.UUID) -> dict:
+    async def get(self, *, graph_id: uuid.UUID) -> dict:
         await self._graphs.assert_readable(graph_id=graph_id)  # org read gate -> 404 (#736)
         ontology = await self._graphs_repo.get_ontology(graph_id)
         if not ontology:

@@ -172,7 +172,7 @@ async def ingest_sql(
     # #654: the graph's ontology gates the SQL path exactly like the free-text one. The route never
     # loaded it, so Strict/Coerce was a silent no-op for database imports (a Strict graph gained
     # `Employees` nodes verbatim from a table name). The engine enforces it at projection time.
-    ontology = Ontology.of(await ontologies.get(user_id=user_id, graph_id=graph_id))
+    ontology = Ontology.of(await ontologies.get(graph_id=graph_id))
     try:
         result = await sql_service.ingest(
             graph_id=str(graph_id),
@@ -205,10 +205,10 @@ async def ingest_sql(
 
 @router.get("/jobs/{job_id}", response_model=JobResponse)
 async def get_job(
-    graph_id: uuid.UUID, job_id: uuid.UUID, service: JobServiceDep, user_id: UserIdDep
+    graph_id: uuid.UUID, job_id: uuid.UUID, service: JobServiceDep, _user_id: UserIdDep
 ) -> JobResponse:
     try:
-        job = await service.get_job(user_id=user_id, graph_id=graph_id, job_id=job_id)
+        job = await service.get_job(graph_id=graph_id, job_id=job_id)
     except (GraphNotFound, JobNotFound):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="job not found") from None
     return JobResponse.of(job)
@@ -216,10 +216,10 @@ async def get_job(
 
 @router.get("/documents", response_model=list[JobResponse])
 async def list_documents(
-    graph_id: uuid.UUID, service: JobServiceDep, user_id: UserIdDep
+    graph_id: uuid.UUID, service: JobServiceDep, _user_id: UserIdDep
 ) -> list[JobResponse]:
     try:
-        jobs = await service.list_documents(user_id=user_id, graph_id=graph_id)
+        jobs = await service.list_documents(graph_id=graph_id)
     except GraphNotFound:
         raise _GRAPH_NOT_FOUND from None
     return [JobResponse.of(j) for j in jobs]

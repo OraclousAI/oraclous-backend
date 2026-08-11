@@ -86,10 +86,10 @@ async def suggest_ontology(
 
 @router.get("", response_model=OntologyResponse)
 async def get_ontology(
-    graph_id: uuid.UUID, service: OntologyServiceDep, user_id: UserIdDep
+    graph_id: uuid.UUID, service: OntologyServiceDep, _user_id: UserIdDep
 ) -> OntologyResponse:
     try:
-        data = await service.get(user_id=user_id, graph_id=graph_id)
+        data = await service.get(graph_id=graph_id)
     except GraphNotFound:
         raise _NOT_FOUND from None
     return OntologyResponse(**data)
