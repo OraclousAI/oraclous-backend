@@ -24,6 +24,7 @@ document back. Each auto-skips without its key, and a skip is NOT a pass (rule 3
 from __future__ import annotations
 
 import os
+import re
 import time
 import uuid
 from collections.abc import Callable
@@ -454,3 +455,177 @@ def test_12_every_id_the_run_served_resolves_to_an_openable_document(
         assert url, f"served id {citation_id} resolves to a citation with no url"
         opened = httpx.head(url, follow_redirects=True, timeout=30.0)
         assert opened.status_code == 200, f"citation.url did not open: {url} -> {opened}"
+
+
+# --------------------------------------------------------------------------------------------
+# #782 criteria 16 + 17 — the ANSWER-TIME GATE on a live model, through the gateway
+#
+# The two legs above prove what the run RECORDS. These prove what the gate DOES with it, which is
+# the half #782 adds: a fabricated attribution goes back to the member and is fixed inside the run,
+# and an honest decline is never touched. Both need a real model — the whole question is what a
+# model does when it is corrected, and a scripted fake cannot answer that.
+# --------------------------------------------------------------------------------------------
+
+
+def _studio(root: Path, body: str) -> None:
+    """A one-member Answer Desk whose only tool is ``Read`` → the in-loop graph retriever.
+
+    The sibling of ``_answer_desk_studio``, taking the member's whole prompt so each gate leg can
+    set up the behaviour it needs to observe. Same roster, same single tool.
+    """
+    agents = root / ".claude" / "agents"
+    agents.mkdir(parents=True)
+    (agents / "answerdesk.md").write_text(
+        f"---\nname: answerdesk\nmodel: sonnet\ntools: Read\n---\n{body}\n"
+    )
+    (root / "teams" / "1-desk").mkdir(parents=True)
+    (root / "teams" / "1-desk" / "charter.md").write_text(
+        "# Team I — Answer Desk\n## Roster\n| Agent | Type | Model | Job |\n"
+        "| --- | --- | --- | --- |\n| `answerdesk` | subagent | sonnet | answer |\n"
+    )
+
+
+_SEARCH_INSTRUCTION = (
+    "You are an answer desk. Use your Read tool (it searches the knowledge graph) to answer the "
+    "question. Call the tool with a `query` and `mode` of `hybrid`; the graph is already selected "
+    "for this run, so do NOT pass a graph_id. "
+)
+
+# Each leg carries its QUESTION in the member's own prompt rather than relying on `task_input`.
+# `task_input` is consumed only by a manifest that DECLARES it (#714, `team_run.py:130`), and an
+# imported `.claude/agents` studio declares nothing — so the run's task text never reaches the
+# member. A first draft of these tests put the question there and watched a live model, handed no
+# question at all, invent a topic and answer it. Still passed through the gateway as a real user
+# would send it, so the run shape is unchanged; the member simply gets its question the way this
+# manifest shape actually delivers one.
+
+
+def _the_execution(c: httpx.Client) -> dict:
+    """The single harness execution this org's run produced, read through the public API.
+
+    Read from the gateway, never from the database: the point is that the trace is really there and
+    really reachable by the user who owns the run.
+    """
+    r = c.get("/v1/harnesses/executions")
+    assert r.status_code == 200, r.text
+    rows = r.json()["executions"]
+    assert len(rows) == 1, f"expected exactly one execution for a fresh org, got {len(rows)}"
+    return dict(rows[0])
+
+
+def _corrections(execution: dict) -> list[dict]:
+    return [s for s in execution.get("steps") or [] if s.get("status") == "citation_correction"]
+
+
+@requires_byom_key
+@pytest.mark.byom
+@pytest.mark.security
+def test_16_a_prose_sourced_answer_is_corrected_inside_the_run_and_still_succeeds(
+    tmp_path: Path,
+    register: Callable[..., dict],
+    gateway_client: Callable[[str], httpx.Client],
+) -> None:
+    """Criterion 16: the correction loop works on a REAL model, not only on a scripted one.
+
+    The member is told to attribute its facts the way the #734 PoC did — a bare filename in prose.
+    That is precisely what §CITE rule 1 blocks, so the gate must send the draft back, and the member
+    must then cite an id the platform actually served. The run SUCCEEDS: a blocked draft costs an
+    iteration, never the user's answer (rev4 decision 9).
+
+    The load-bearing assertion is the last one. A run that succeeded without a correction would
+    prove nothing — the model might simply have ignored its instructions — and a run that succeeded
+    with an INVENTED id would be the original bug wearing a citation. Both are excluded.
+    """
+    user = register(f"citefix{uuid.uuid4().hex[:10]} owner")
+    c = gateway_client(user["token"])
+    credential_id = _store_model_key(c, user["user_id"])
+    graph_id, nonce, ids = _seed_two_documents(c)
+
+    _studio(
+        tmp_path,
+        _SEARCH_INSTRUCTION
+        + (
+            f"Search for the probe word {nonce} to find this workspace's documents. Answer this "
+            "question in one sentence: what termination notice period did we agree? Attribute the "
+            "fact by writing the source document's FILENAME in the form (source: <filename>)."
+        ),
+    )
+    done = _run_team(
+        c,
+        tmp_path,
+        credential_id,
+        graph_id,
+        f"In the documents tagged {nonce}, what notice period did we agree?",
+    )
+    assert done["state"] == "SUCCEEDED", f"a corrected member must still complete — {done}"
+
+    execution = _the_execution(c)
+    assert _corrections(execution), (
+        "the member was told to prose-source and the run succeeded with no correction at all — "
+        f"the gate did not fire: {execution.get('steps')}"
+    )
+    answer = execution["output"] or ""
+    served = set(execution.get("served_citation_ids") or [])
+    assert served, "the run served nothing, so this proves nothing about the correction"
+    cited = {m.group(0) for m in re.finditer(r"cit_[0-9a-fA-F]{32}", answer)}
+    assert cited & served, (
+        f"the corrected answer carries no id the platform served — answer={answer!r} "
+        f"served={sorted(served)}"
+    )
+    assert cited <= served, f"the corrected answer invented an id: {sorted(cited - served)}"
+
+
+@requires_byom_key
+@pytest.mark.byom
+def test_17_an_honest_decline_is_never_blocked_on_a_live_model(
+    tmp_path: Path,
+    register: Callable[..., dict],
+    gateway_client: Callable[[str], httpx.Client],
+) -> None:
+    """Criterion 17: a member that reads real sources and honestly reports it cannot answer.
+
+    This is the property rev4 exists to protect and the one an over-eager gate destroys first. The
+    corpus is real and IS served — the member simply cannot answer the question from it — so the
+    run reaches the gate with a non-empty served set and an answer that cites nothing. Under rev2's
+    deleted rule 1 that combination was a violation. It must pass.
+
+    The decline is pinned to a fixed token so a live model's wording cannot make the assertion
+    flaky. The token carries no attribution marker and no id, which is the whole point: a
+    citation-free answer is the member reasoning on its own account, and reasoning needs no source.
+    """
+    user = register(f"citedecl{uuid.uuid4().hex[:10]} owner")
+    c = gateway_client(user["token"])
+    credential_id = _store_model_key(c, user["user_id"])
+    graph_id, nonce, _ids = _seed_two_documents(c)
+
+    _studio(
+        tmp_path,
+        _SEARCH_INSTRUCTION
+        + (
+            f"Search for the probe word {nonce} to find this workspace's documents. Answer this "
+            "question: what is the annual contract value in dollars? If the documents you retrieve "
+            "do not contain the answer, do NOT guess and do NOT explain — reply with exactly "
+            "NOT_IN_SOURCES and nothing else."
+        ),
+    )
+    # The corpus covers a notice period and a counterparty name. It carries no money at all, so a
+    # truthful member must decline — while the retrieval itself still returns hits, which is what
+    # separates an honest decline (SUCCEEDED) from data-absence (#580 degrades that to PARTIAL).
+    done = _run_team(
+        c,
+        tmp_path,
+        credential_id,
+        graph_id,
+        f"In the documents tagged {nonce}, what is the annual contract value in dollars?",
+    )
+    assert done["state"] == "SUCCEEDED", f"an honest decline must not fail the run — {done}"
+
+    execution = _the_execution(c)
+    assert execution.get("served_citation_ids"), (
+        "the run served nothing, so it never exercised the case under test — a decline is only "
+        "interesting when the platform DID hand the member sources"
+    )
+    assert "NOT_IN_SOURCES" in (execution["output"] or ""), (
+        f"the member did not decline: {execution['output']!r}"
+    )
+    assert not _corrections(execution), f"an honest decline was gated: {_corrections(execution)}"
