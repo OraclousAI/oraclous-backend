@@ -36,9 +36,11 @@ Two properties rule 1 needs, or it catches what it was never aimed at:
 
 * **The detection is attribution MARKERS, never filenames.** "I edited ``partner-agreement.md`` for
   you" names a file and asserts nothing; a filename-shaped pattern would block it, and would block
-  every member that mentions a file it touched. The v1 marker list is fixed by the Contract —
-  ``source:``, ``sources:``, ``source_tool_call_id`` — and widening it is the Contract's business,
-  never the implementer's.
+  every member that mentions a file it touched. The marker list is ``source:`` / ``sources:``, and
+  changing it is the Contract's business, never the implementer's.
+* **``source_tool_call_id`` is NOT a marker** (#788, ruled 2026-08-12 — rev4 listed it, and that is
+  superseded). #642 already verifies that token against the member's real trace, so watching it here
+  too laid a prose guess over a working proof. See the note on ``_ATTRIBUTION_MARKER`` below.
 * **The window is THE LINE.** A marker fires unless a ``cit_`` id sits on the same line. rev4's own
   wording does the work: an answer "names a source in prose while carrying no ``citation_id`` **for
   it**" is a per-marker check, and a whole-answer window cannot express "for it" — it would let a
@@ -78,10 +80,17 @@ from dataclasses import dataclass, field
 # both rules. The flag covers the trailing guard too, or a mixed-case run yields a truncated match.
 _CITATION_ID = re.compile(r"\bcit_[0-9a-f]{32}(?![0-9a-f])", re.IGNORECASE)
 
-# rule 1's v1 attribution markers, FIXED BY THE CONTRACT (§CITE rev4). A marker is the member
-# pointing at a source; a filename is not. `source_tool_call_id` carries no colon of its own, so it
-# needs its own alternative — it is the exact token the #734 PoC invented.
-_ATTRIBUTION_MARKER = re.compile(r"\bsources?:|\bsource_tool_call_id\b", re.IGNORECASE)
+# rule 1's attribution markers. A marker is the member pointing at a source; a filename is not.
+#
+# `source_tool_call_id` is deliberately NOT here (#788, ruled 2026-08-12). §CITE rev4 listed it,
+# because the #734 PoC used it as a stand-in for a citation the platform never issued. But that
+# token is already VERIFIED, properly, by #642: `validate_grounding` resolves every declared
+# `source_tool_call_id` against an `ok` tool step in the member's own trace and fails closed on a
+# missing, null, unresolvable, or errored id. Watching it here as well put a prose heuristic on top
+# of a real verifier — and the heuristic won, because #642's own grounding block (which the platform
+# ORDERS every tool-declaring member to emit) has no `cit_` id on its line. A live member was
+# corrected four times and killed at `citation_unresolved` for obeying that order.
+_ATTRIBUTION_MARKER = re.compile(r"\bsources?:", re.IGNORECASE)
 
 
 @dataclass(frozen=True, slots=True)

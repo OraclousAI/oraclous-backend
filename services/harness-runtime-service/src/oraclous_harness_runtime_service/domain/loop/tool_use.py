@@ -180,24 +180,45 @@ _CITATION_CORRECTION_RULE_1 = (
     "Your answer names a source in text but carries no citation. Cite the `citation_id` you were "
     "given for that source, or remove the claim."
 )
+# The same verdict, for the run that was served NOTHING. Approved 2026-08-12, out of the #788
+# investigation: a live member burned all 25 of its iterations being told to "cite the `citation_id`
+# you were given" for a run whose served set was empty. It had been given none, so the only remedy
+# it could actually perform was the one the message buries. An instruction the member cannot follow
+# is #692/#693 again — a member told "409" can only retry blindly.
+_CITATION_CORRECTION_RULE_1_NOTHING_SERVED = (
+    "Your answer names a source in text but carries no citation. No citations were served to this "
+    "run, so there is no `citation_id` for you to cite — remove the source attribution from your "
+    "answer and state the claim on your own account, or drop the claim."
+)
 _CITATION_CORRECTION_RULE_2 = (
     "You cited an id that was never served to this run: {ids}. Cite only ids from the results you "
     "were given."
 )
 
 
-def _citation_correction(violations: list[CitationViolation]) -> tuple[str, str]:
+def _citation_correction(
+    violations: list[CitationViolation], *, nothing_served: bool
+) -> tuple[str, str]:
     """Turn a failed gate into (the message the member reads, the detail the trace records).
 
     Both rules can fail one draft, so both messages are carried — correcting only the first would
     cost the member an extra iteration to discover the second. The detail is never blank: a step
     that does not say WHICH rule blocked the answer leaves an operator unable to tell a corrected
     run from a model that simply changed its mind.
+
+    ``nothing_served`` swaps rule 1's remedy for the one that exists when the run's served set is
+    empty. The verdict is unchanged — pointing at a source the platform never issued is the defect
+    whatever the run served — but the remedy has to be performable, or the member spends the whole
+    budget discovering that it is not.
     """
     messages: list[str] = []
     detail: list[str] = []
     if any(violation.rule == 1 for violation in violations):
-        messages.append(_CITATION_CORRECTION_RULE_1)
+        messages.append(
+            _CITATION_CORRECTION_RULE_1_NOTHING_SERVED
+            if nothing_served
+            else _CITATION_CORRECTION_RULE_1
+        )
         detail.append("rule 1: a source named in prose with no citation alongside it")
     unserved = [v.citation_id for v in violations if v.rule == 2 and v.citation_id]
     if unserved:
@@ -558,9 +579,12 @@ async def run_tool_use_loop(
             # a second fabrication. The gate checks against the PERSISTED UNION (a prior segment's
             # served set + this one's), or a post-pause answer citing a pre-pause source would be
             # failed by bookkeeping.
-            check = check_answer_citations(last_text, [*prior_served, *served_citation_ids])
+            gate_served = [*prior_served, *served_citation_ids]
+            check = check_answer_citations(last_text, gate_served)
             if not check.passed:
-                correction, citation_blocked = _citation_correction(check.violations)
+                correction, citation_blocked = _citation_correction(
+                    check.violations, nothing_served=not gate_served
+                )
                 messages.append({"role": "assistant", "content": last_text})
                 messages.append({"role": "user", "content": correction})
                 steps.append(
