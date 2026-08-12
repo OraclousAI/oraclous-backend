@@ -216,3 +216,55 @@ async def test_a_degraded_run_still_carries_what_it_served() -> None:
     assert result.status is HarnessStatus.PARTIAL
     assert result.error_type == "empty_retrieval"
     assert set(result.served_citation_ids) == {_CIT_A}
+
+
+# --- #784 (folded into #782): the ESCALATE path carries the served set out too ----------------
+
+_GATED = ToolSpec(
+    name="kg__write",
+    description="write to the team graph",
+    parameters={"type": "object", "properties": {}, "required": []},
+    binding="graph-writer",
+    operation="write",
+)
+
+_GATED_ENVELOPE = PolicyEnvelope(
+    max_iterations=6,
+    max_tool_calls=None,
+    max_wall_time_seconds=None,
+    max_tokens=None,
+    gated_bindings=frozenset({"graph-writer"}),
+)
+
+
+class _RetrievesThenWrites:
+    """Retrieves on turn one, then calls the HITL-gated write tool — which pauses the run."""
+
+    protocol_shape = "fake"
+
+    def __init__(self) -> None:
+        self._turn = 0
+
+    async def complete(self, *, messages: Any, system: str, tools: list[ToolSpec]) -> LLMResponse:
+        self._turn += 1
+        name = _RETRIEVE.name if self._turn == 1 else _GATED.name
+        return LLMResponse(text="working", tool_calls=[ToolCall(f"c{self._turn}", name, {})])
+
+
+async def test_a_hitl_pause_carries_what_it_served_so_far() -> None:
+    # The pause is where the union starts mattering: the service persists this set, the human
+    # approves, and the post-resume answer may legitimately cite a source served BEFORE the pause.
+    # An escalation that dropped the set would make every such answer a rule 2 violation, and the
+    # persisted union would have nothing to union.
+    result = await run_tool_use_loop(
+        llm=_RetrievesThenWrites(),
+        system="",
+        user_input="what did we agree",
+        tool_specs=[_RETRIEVE, _GATED],
+        dispatch=_serving(_CIT_A),
+        policy=_GATED_ENVELOPE,
+    )
+    assert result.status is HarnessStatus.ESCALATED
+    assert result.error_type == "hitl_required"
+    assert result.checkpoint is not None  # a real resumable pause, not a budget halt
+    assert set(result.served_citation_ids) == {_CIT_A}
