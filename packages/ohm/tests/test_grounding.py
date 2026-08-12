@@ -104,6 +104,17 @@ def test_validate_grounding_rejects_an_unresolved_source_id() -> None:
     assert validate_grounding(_signals("tc-999"), _ok_steps()) != []
 
 
+def test_the_poc_invented_receipt_id_is_rejected_by_grounding() -> None:
+    # The #734 PoC's invented receipt id (`source_tool_call_id=call_8f3a2b`), pinned at its real
+    # home per the #788 ruling (option B, 2026-08-12): §CITE rule 1 no longer watches this token,
+    # because THIS layer resolves it against the member's own trace and can tell whether the cited
+    # call actually ran — which a prose regex never could. Green before the ruling too: #642
+    # already caught it; the ruling revealed the coverage belonged here, not that it was missing.
+    from oraclous_ohm.envelope import validate_grounding
+
+    assert validate_grounding(_signals("call_8f3a2b"), _ok_steps()) != []
+
+
 def test_validate_grounding_rejects_a_claim_backed_by_a_failed_call() -> None:
     from oraclous_ohm.envelope import validate_grounding
 

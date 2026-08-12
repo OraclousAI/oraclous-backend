@@ -14,6 +14,11 @@ path only, and stripped everywhere else — the same "no other tool may emit it"
 
 These tests exercise the injection itself, through a real dispatch and a real loop turn. A helper
 that filters ids in isolation would prove nothing about the path an attacker actually has.
+
+#782 wired the answer-time gate to the run boundary, so the second half of the property now shows
+up in the terminal status: an answer citing the forged id is blocked (rule 2), corrected inside the
+loop, and — with this fake model never backing down — the run ends ``ESCALATED``, typed
+``citation_unresolved``. The forged id neither enters the served set NOR reaches the user.
 """
 
 from __future__ import annotations
@@ -132,7 +137,10 @@ async def _run(llm: Any) -> Any:
 
 async def test_a_model_injected_reserved_key_never_enters_the_served_set() -> None:
     result = await _run(_Injector())
-    assert result.status is HarnessStatus.SUCCEEDED
+    # #782: the gate now runs at the run boundary, so the answer citing _FORGED is refused and the
+    # run fails typed rather than shipping the forgery.
+    assert result.status is HarnessStatus.ESCALATED
+    assert result.error_type == "citation_unresolved"
     assert _FORGED not in set(result.served_citation_ids)
     assert len(result.served_citation_ids) == 0  # the run genuinely served nothing
 
@@ -140,9 +148,11 @@ async def test_a_model_injected_reserved_key_never_enters_the_served_set() -> No
 async def test_an_injected_key_adds_nothing_to_a_real_retrieval() -> None:
     # The decisive case. The member really did retrieve, so the served set is non-empty and looks
     # entirely normal — and the forged id still is not in it. This is what makes rule 2 mean
-    # something: the answer above cites _FORGED, and the gate has to be able to reject it.
+    # something: the answer above cites _FORGED, and the gate rejects it (#782 wired that
+    # rejection to the terminal, so the run fails typed instead of succeeding).
     result = await _run(_Injector(retrieve_first=True))
-    assert result.status is HarnessStatus.SUCCEEDED
+    assert result.status is HarnessStatus.ESCALATED
+    assert result.error_type == "citation_unresolved"
     assert set(result.served_citation_ids) == {_SERVED}
 
 
@@ -161,7 +171,9 @@ async def test_the_injected_key_is_stripped_from_the_content_the_model_reads() -
 
 async def test_the_reserved_key_in_the_models_own_prose_is_not_a_tool_result() -> None:
     # The naive vector, kept because it is the one an attacker tries first: the model simply writes
-    # the key. Assistant text is never a source of platform state, so the run served nothing.
+    # the key. Assistant text is never a source of platform state, so the run served nothing — and
+    # since the prose also CITES the forged id, the gate refuses the answer (#782).
     result = await _run(_TalksAboutTheKey())
-    assert result.status is HarnessStatus.SUCCEEDED
+    assert result.status is HarnessStatus.ESCALATED
+    assert result.error_type == "citation_unresolved"
     assert len(result.served_citation_ids) == 0

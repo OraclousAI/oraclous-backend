@@ -4,7 +4,7 @@ Two rules, both blocking, both evaluated in platform code. Neither depends on an
 tool chooses to send, because the platform mints the id itself:
 
 * **Rule 1 — the answer NAMES A SOURCE IN PROSE while carrying no ``citation_id`` for it.** Kills
-  ``(source: partner-agreement.md)`` and the invented ``source_tool_call_id=call_...``.
+  ``(source: partner-agreement.md)``.
 * **Rule 2 — a cited ``citation_id`` is not in the set the platform served to that run.** Kills
   every hallucinated id.
 
@@ -25,10 +25,13 @@ tested here** — see ``test_citation_gate_loop.py``.
 cannot name its documents is refused before it is ever used, so by answer time the only thing that
 can still be missing is a version, and that degrades a citation rather than failing an answer.
 
-Rule 1's detection is pinned to the v1 marker list the brief names, and this file does not widen it:
-``source:`` / ``sources:`` and ``source_tool_call_id``, firing only when no ``cit_`` id sits
-alongside the marker. Extending the list is the Contract's business, not the implementer's — and not
-the test author's.
+Rule 1's detection is pinned to the marker list as RULED on #788 (option B, 2026-08-12), and this
+file does not widen it: ``source:`` and ``sources:`` only, firing when no ``cit_`` id sits
+alongside the marker. ``source_tool_call_id`` — the brief's third marker — is REMOVED: #642's
+``validate_grounding`` already verifies that token against an ``ok`` tool step in the member's own
+trace, fail-closed, and a prose regex watching the same token put a guess on top of a proof (a live
+member was killed at ``citation_unresolved`` for obeying ``GROUNDING_DIRECTIVE``). Extending or
+re-widening the list is the Contract's business, not the implementer's — and not the test author's.
 
 **What "alongside" means — RULED at the Tests Review gate: the window is THE LINE.** A marker fires
 unless a ``cit_`` id appears on the same line. The brief did not name the window, but rev4's own
@@ -138,30 +141,33 @@ async def test_prose_sourcing_fires_even_when_the_run_served_nothing() -> None:
     assert _rules(result) == [1]
 
 
-async def test_the_poc_invented_receipt_id_fails() -> None:
-    # #734, the other half: the model emitted a `source_tool_call_id` the platform never issued.
-    # It is not a `citation_id` at all, so rule 2 cannot see it — under rev4 it is an attribution
-    # marker and fires rule 1.
+async def test_a_receipt_id_in_prose_is_not_a_cite_layer_defect() -> None:
+    # #734's other half, re-homed by the #788 ruling (option B). The invented receipt id is caught
+    # at the #642 layer (`validate_grounding`, pinned in `packages/ohm/tests/test_grounding.py`),
+    # which resolves it against the member's OWN trace and can tell whether the call actually ran —
+    # something a prose regex never could. §CITE watching the same token was a guess overruling
+    # that proof, and the guess killed a compliant live member. So this draft PASSES here.
     result = _check(
         "The partner agreement sets a 30-day notice. source_tool_call_id=call_8f3a2b",
         {_SERVED_A},
     )
-    assert result.passed is False
-    assert _rules(result) == [1]
+    assert result.passed is True
+    assert list(result.violations) == []
 
 
-async def test_the_poc_invented_receipt_id_fires_with_an_empty_served_set_too() -> None:
-    # Same shape as the prose marker: rev4's rule 1 does not consult the served set. RED against the
-    # shipped gate, which passes this draft because nothing was served.
+async def test_a_receipt_id_in_prose_passes_with_an_empty_served_set_too() -> None:
+    # The served set changes nothing: the token is not a rule 1 marker at all under the #788
+    # ruling, whatever the run served. (Green against the pre-rev4 gate as well — this pins that
+    # rev4 does not regress it, not a RED-by-design behaviour change.)
     result = _check(
         "The partner agreement sets a 30-day notice. source_tool_call_id=call_8f3a2b", set()
     )
-    assert result.passed is False
-    assert _rules(result) == [1]
+    assert result.passed is True
+    assert list(result.violations) == []
 
 
 async def test_the_plural_marker_fires_too() -> None:
-    # The v1 list is `source:` / `sources:` / `source_tool_call_id` — the brief names all three.
+    # The marker list is `source:` / `sources:` (#788 removed the brief's third marker).
     result = _check("Notice is 30 days (sources: partner-agreement.md, addendum.md).", {_SERVED_A})
     assert result.passed is False
     assert _rules(result) == [1]
