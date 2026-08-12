@@ -638,6 +638,12 @@ class HarnessExecutionService:
                 policy=envelope,
                 resume_state=resume_state,
                 citation_bindings=citation_bindings,
+                # #782 (§CITE): the answer-time gate checks against the PERSISTED UNION, not this
+                # segment alone. The loop's own served set is a FRESH list on a HITL resume (the
+                # checkpoint carries the transcript, not platform counters), so without this a
+                # post-pause answer citing a pre-pause source is failed by bookkeeping — a correct
+                # answer blocked. The fresh-run call site needs nothing: it has no prior segment.
+                prior_served_citation_ids=execution.served_citation_ids or [],
             )
         finally:
             await self._aclose_llm(llm)
