@@ -82,6 +82,14 @@ _ENVELOPE = PolicyEnvelope(
 _TIGHT = PolicyEnvelope(
     max_iterations=4, max_tool_calls=None, max_wall_time_seconds=None, max_tokens=None
 )
+# The same budget on a member that asked to DEGRADE rather than escalate when a budget trips (#587).
+_TIGHT_DEGRADE = PolicyEnvelope(
+    max_iterations=4,
+    max_tool_calls=None,
+    max_wall_time_seconds=None,
+    max_tokens=None,
+    on_exhaustion="degrade",
+)
 
 
 class _Scripted:
@@ -302,6 +310,24 @@ async def test_the_last_blocked_draft_is_still_carried_out_of_the_run() -> None:
     result = await _run(llm, _serving(_CIT_A), policy=_TIGHT)
     assert result.status is _UNRESOLVED_STATUS
     assert result.output == "The notice period is 30 days (source: partner-agreement.md)."
+
+
+async def test_a_degrade_configured_member_still_escalates_on_an_unresolved_citation() -> None:
+    # `on_exhaustion="degrade"` (#587) is a BUDGET preference — finish with what you have rather
+    # than pause — and it must not reach the citation terminal. A member that cannot clear the gate
+    # produced WRONG data; shipping it as a flagged PARTIAL still ships it, which is option 2 by the
+    # back door. The knob is per-member (`member_on_exhaustion` rides the resume cursor), so without
+    # this test the ruling above holds only for members that happen to leave it at the default.
+    #
+    # The trap is that `_budget_gate` routes on `on_exhaustion` unconditionally, and it is the
+    # obvious precedent to reuse: the citation terminal must be its own return, not a `_budget_gate`
+    # call. Every other test in this file passes either way, because `_TIGHT` uses the default.
+    llm = _Scripted(
+        _Scripted.RETRIEVE, "The notice period is 30 days (source: partner-agreement.md)."
+    )
+    result = await _run(llm, _serving(_CIT_A), policy=_TIGHT_DEGRADE)
+    assert result.status is _UNRESOLVED_STATUS
+    assert result.error_type == _UNRESOLVED_ERROR_TYPE
 
 
 # --- criterion 10: the gate reads the PERSISTED UNION, not this segment alone ------------------
