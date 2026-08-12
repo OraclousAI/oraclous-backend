@@ -1,38 +1,45 @@
-"""#743 criterion 7 — the answer-time citation gate, in platform code (§CITE rev3).
+"""#782 — the answer-time citation gate's RULE VERDICTS at §CITE **rev4** (Contract #735).
 
-Two rules, both blocking, both evaluated in platform code at the end of a run. Neither depends on
-anything a third-party tool chooses to send, because the platform mints the id itself:
+Two rules, both blocking, both evaluated in platform code. Neither depends on anything a third-party
+tool chooses to send, because the platform mints the id itself:
 
-* **Rule 1 — an asserted fact carries no ``citation_id``.** Kills
-  ``(source: partner-agreement.md)``: model prose is not a citation.
+* **Rule 1 — the answer NAMES A SOURCE IN PROSE while carrying no ``citation_id`` for it.** Kills
+  ``(source: partner-agreement.md)`` and the invented ``source_tool_call_id=call_...``.
 * **Rule 2 — a cited ``citation_id`` is not in the set the platform served to that run.** Kills
-  the invented ``source_tool_call_id=call_...``, and every hallucinated source with it.
+  every hallucinated id.
 
-**The checker is platform code at the run boundary, not an OHM member** (§CITE rev2 decision 2, and
-`solution-architect` on #743). A gate implemented as a model instruction is a gate that can be
-talked out of, which is precisely the failure this Contract closes. So it is a pure function over
-(the draft, the run's served set) and it is unit-testable with no loop and no model.
+**An answer that cites nothing at all is not a violation.** rev4 decision 8 deleted rev2's rule 1
+("an asserted fact carries no ``citation_id``") outright: separating an asserted fact from reasoning
+is a judgment call, and this Contract forbids a model-implemented gate. The model is not a source of
+truth, so anything it says without a citation is its own reasoning, and reasoning needs no source.
+The shipped approximation — *"the run served sources and the answer cited none"* — fails an honest
+decline, which is the product working. That is the single most important property in this file.
 
-Both #734 failures are pinned below as tests, because they are the evidence the Contract was
-written from.
+**The checker is platform code at the run boundary, not an OHM member** (§CITE rev2 decision 2). A
+gate implemented as a model instruction is a gate that can be talked out of, which is precisely the
+failure this Contract closes. So the verdicts are a pure function over (the draft, the run's served
+set), unit-testable with no loop and no model. **What a violation DOES is loop behaviour and is not
+tested here** — see ``test_citation_gate_loop.py``.
 
 **rev1 rules 3 and 4 are NOT tested here.** rev3 moved precision to connect time (#744): a tool that
 cannot name its documents is refused before it is ever used, so by answer time the only thing that
 can still be missing is a version, and that degrades a citation rather than failing an answer.
 
-Two things this file decides, flagged for the Tests Review gate because §CITE states the rules but
-not their mechanism:
+Rule 1's detection is pinned to the v1 marker list the brief names, and this file does not widen it:
+``source:`` / ``sources:`` and ``source_tool_call_id``, firing only when no ``cit_`` id sits
+alongside the marker. Extending the list is the Contract's business, not the implementer's — and not
+the test author's.
 
-* **How a citation appears in a draft.** §CITE fixes ``citation_id`` as ``cit_`` + 32 hex
-  characters, which is self-delimiting, so the gate reads the ids occurring in the draft text. §CITE
-  does not prescribe a wrapper syntax and these tests do not invent one.
-* **A run that served nothing cannot fail rule 1.** A reasoning-only member has no source to cite,
-  and rule 1 exists to catch prose standing in for a citation the member *did* have. Without that
-  limit the gate would fail every tool-less member — the same trap §CITE-QUAL calls out with its
-  Limit 1. If the reviewer reads it otherwise, this is the test to change.
+**Flagged for the Tests Review gate — what "alongside" means.** The brief says a marker fires "only
+when no ``cit_`` id sits **alongside** it", and gives ``Source: [cit_9f2a…]`` as the shape that must
+pass. It does not name the window. This file pins the LINE as the window: a marker fires unless a
+``cit_`` id appears on the same line. The alternative — the whole answer as the window — lets a
+member cite one real source and prose-source a second one in the same draft, which is half of the
+#734 failure surviving. The line is the smallest window the Contract's own example sits inside. If
+the reviewer reads it otherwise, the test to change is
+``test_a_marker_on_its_own_line_fires_even_when_another_line_cites``.
 
-``oraclous_harness_runtime_service.domain.citation_gate`` does not exist yet, so it is imported
-function-locally and these tests hard-fail RED until the ``[impl]`` lands
+``check_answer_citations`` is imported function-locally, never at module level
 (``.claude/rules/tests-seam-imports.md``).
 """
 
@@ -48,6 +55,10 @@ _SERVED_A = "cit_9f2a4c81b7d3e50a1c6f28934bd5e7a0"
 _SERVED_B = "cit_0b1d3f57a9c2e4680d8f1a3b5c7e9021"
 # Well-formed and never served — the shape of a real id is not evidence of one.
 _FORGED = "cit_deadbeefdeadbeefdeadbeefdeadbeef"
+# #780 item 2: the same forgery in uppercase hex. The shipped `_CITATION_ID` is lowercase-only, so
+# this token is not extracted at all and slips past BOTH rules.
+_FORGED_UPPER = "cit_DEADBEEFDEADBEEFDEADBEEFDEADBEEF"
+_SERVED_A_UPPER = "cit_" + _SERVED_A[4:].upper()
 
 
 def _check(answer: str, served: set[str]) -> Any:
@@ -58,6 +69,118 @@ def _check(answer: str, served: set[str]) -> Any:
 
 def _rules(result: Any) -> list[int]:
     return sorted(v.rule for v in result.violations)
+
+
+# --- the property rev4 exists to protect: silence is not a violation -------------------------
+
+
+async def test_an_answer_citing_nothing_passes_even_when_the_run_served_sources() -> None:
+    # THE regression test for the bug #743 shipped, and acceptance criterion 2. The run served two
+    # sources; the member cited neither and named neither. Under rev2 that was rule 1; under rev4 it
+    # is a member reasoning on its own account, which needs no source. RED against the shipped gate.
+    result = _check("The two clauses do not conflict.", {_SERVED_A, _SERVED_B})
+    assert result.passed is True
+    assert list(result.violations) == []
+
+
+async def test_an_honest_decline_after_a_retrieval_that_returned_hits_passes() -> None:
+    # Criterion 3. A member that searches, reads what came back, and reports it has no answer is
+    # behaving correctly — refusing to hallucinate is the product working, and a gate that punishes
+    # it is worse than no gate (rev4 decision 8). WHY it found nothing is a retrieval problem with a
+    # hundred causes; this gate does not pretend to diagnose it.
+    result = _check("I don't have that information in the sources I was given.", {_SERVED_A})
+    assert result.passed is True
+    assert list(result.violations) == []
+
+
+async def test_naming_a_file_without_an_attribution_marker_is_not_a_violation() -> None:
+    # rev4 Limit 2: "I edited partner-agreement.md for you" names a file and asserts no fact. A
+    # filename-shaped pattern would block it, and would block every member that mentions a file it
+    # touched. The detection is attribution MARKERS, never filenames.
+    result = _check("I edited partner-agreement.md for you and saved it.", {_SERVED_A})
+    assert result.passed is True
+    assert list(result.violations) == []
+
+
+# --- rule 1: an attribution marker with no citation alongside it ----------------------------
+
+
+async def test_prose_sourcing_is_not_a_citation() -> None:
+    # #734, verbatim: `(source: partner-agreement.md)` is a bare filename in model prose. It
+    # resolves to nothing and no gate can check it. Under rev4 the verdict is unchanged but the
+    # REASON is new — the member pointed at a source and wrote prose instead of the id it was
+    # handed, which is mechanical and diagnostic where "is this an asserted fact?" was neither.
+    result = _check("The notice period is 30 days (source: partner-agreement.md).", {_SERVED_A})
+    assert result.passed is False
+    assert _rules(result) == [1]
+
+
+async def test_prose_sourcing_fires_even_when_the_run_served_nothing() -> None:
+    # rev4 detaches rule 1 from the served set entirely. The shipped gate PASSES this draft, because
+    # it only fired rule 1 when the served set was non-empty — so a member that never retrieved
+    # could point at a source freely. Pointing at a source the platform never issued is the defect,
+    # whatever the run did or did not serve. RED against the shipped gate.
+    result = _check("The notice period is 30 days (source: partner-agreement.md).", set())
+    assert result.passed is False
+    assert _rules(result) == [1]
+
+
+async def test_the_poc_invented_receipt_id_fails() -> None:
+    # #734, the other half: the model emitted a `source_tool_call_id` the platform never issued.
+    # It is not a `citation_id` at all, so rule 2 cannot see it — under rev4 it is an attribution
+    # marker and fires rule 1.
+    result = _check(
+        "The partner agreement sets a 30-day notice. source_tool_call_id=call_8f3a2b",
+        {_SERVED_A},
+    )
+    assert result.passed is False
+    assert _rules(result) == [1]
+
+
+async def test_the_poc_invented_receipt_id_fires_with_an_empty_served_set_too() -> None:
+    # Same shape as the prose marker: rev4's rule 1 does not consult the served set. RED against the
+    # shipped gate, which passes this draft because nothing was served.
+    result = _check(
+        "The partner agreement sets a 30-day notice. source_tool_call_id=call_8f3a2b", set()
+    )
+    assert result.passed is False
+    assert _rules(result) == [1]
+
+
+async def test_the_plural_marker_fires_too() -> None:
+    # The v1 list is `source:` / `sources:` / `source_tool_call_id` — the brief names all three.
+    result = _check("Notice is 30 days (sources: partner-agreement.md, addendum.md).", {_SERVED_A})
+    assert result.passed is False
+    assert _rules(result) == [1]
+
+
+async def test_the_marker_is_matched_case_insensitively() -> None:
+    # A model capitalises the start of a line. Case is not a defence.
+    result = _check("Notice is 30 days.\nSource: partner-agreement.md", {_SERVED_A})
+    assert result.passed is False
+    assert _rules(result) == [1]
+
+
+async def test_a_marker_carrying_a_citation_passes() -> None:
+    # Criterion 5. `Source: [cit_9f2a…]` is a CORRECT citation wearing a marker. §CITE prescribes no
+    # wrapper syntax and this file invents none — the gate reads the bare id, so any wrapper chosen
+    # later (FE #194) still contains it and nothing here has to change when that lands.
+    result = _check(f"The notice period is 30 days. Source: [{_SERVED_A}]", {_SERVED_A})
+    assert result.passed is True
+    assert list(result.violations) == []
+
+
+async def test_a_marker_on_its_own_line_fires_even_when_another_line_cites() -> None:
+    # The "alongside" window, flagged in this module's docstring. One real citation does not buy
+    # amnesty for a second claim that points at a source with no id — that is half of #734 surviving
+    # a partly-honest answer. THIS is the test to change if the reviewer reads the window as the
+    # whole answer rather than the line.
+    result = _check(
+        f"Notice is 30 days [{_SERVED_A}].\nThe term is one year (source: addendum.md).",
+        {_SERVED_A},
+    )
+    assert result.passed is False
+    assert _rules(result) == [1]
 
 
 # --- rule 2: a cited id the platform never served -------------------------------------------
@@ -96,36 +219,6 @@ async def test_every_unserved_id_is_reported_not_just_the_first() -> None:
     assert sorted(v.citation_id for v in result.violations) == sorted([_FORGED, other])
 
 
-async def test_the_poc_invented_receipt_id_fails() -> None:
-    # #734, verbatim: the model emitted a source_tool_call_id the platform never issued. It is not
-    # a citation_id at all, so the answer cites nothing and fails on rule 1 rather than rule 2.
-    result = _check(
-        "The partner agreement sets a 30-day notice. source_tool_call_id=call_8f3a2b",
-        {_SERVED_A},
-    )
-    assert result.passed is False
-    assert _rules(result) == [1]
-
-
-# --- rule 1: an asserted fact carrying no citation_id ---------------------------------------
-
-
-async def test_prose_sourcing_is_not_a_citation() -> None:
-    # #734, the other half: `(source: partner-agreement.md)` is a bare filename in model prose. It
-    # resolves to nothing, no gate can check it, and the member HAD a real id it could have used.
-    result = _check("The notice period is 30 days (source: partner-agreement.md).", {_SERVED_A})
-    assert result.passed is False
-    assert _rules(result) == [1]
-
-
-async def test_a_run_that_served_nothing_cannot_fail_rule_1() -> None:
-    # A reasoning-only member has no source to cite. Rule 1 catches prose standing in for a
-    # citation the member was actually handed — see the note in this module's docstring.
-    result = _check("I already knew the answer: 30 days.", set())
-    assert result.passed is True
-    assert list(result.violations) == []
-
-
 async def test_an_empty_served_set_still_rejects_an_invented_id() -> None:
     # Serving nothing does not license citing something. This is the run shape a member reaches by
     # answering without ever retrieving, and it is where a fabricated id is most likely.
@@ -133,3 +226,46 @@ async def test_an_empty_served_set_still_rejects_an_invented_id() -> None:
     assert result.passed is False
     assert _rules(result) == [2]
     assert [v.citation_id for v in result.violations] == [_FORGED]
+
+
+async def test_a_run_that_served_nothing_is_not_gated_on_a_plain_answer() -> None:
+    # Renamed from `test_a_run_that_served_nothing_cannot_fail_rule_1`: the verdict is unchanged but
+    # the old name and comment encoded the DELETED rule's rationale ("rule 1 only fires when the
+    # member was actually handed something"). Under rev4 the reason is simpler and stronger — the
+    # member cited nothing and pointed at nothing, so there is nothing to check. Acceptance
+    # criterion 11's pure-function half.
+    result = _check("I already knew the answer: 30 days.", set())
+    assert result.passed is True
+    assert list(result.violations) == []
+
+
+# --- #780 item 2, folded in (criterion 12): the id is matched case-insensitively -------------
+
+
+async def test_an_uppercase_forgery_alongside_a_real_id_fails_rule_2() -> None:
+    # The hole #780 recorded. `_CITATION_ID` is lowercase-hex only, so `cit_DEADBEEF…` is not
+    # extracted at all: rule 2 never sees it, and rule 1 sees a draft that cites a real id. The
+    # draft passes both rules today. Harmless while the gate is unwired; a hole the moment it is
+    # not. RED against the shipped gate.
+    result = _check(
+        f"Notice is 30 days [{_SERVED_A}] and the term is one year [{_FORGED_UPPER}].",
+        {_SERVED_A},
+    )
+    assert result.passed is False
+    assert _rules(result) == [2]
+
+
+async def test_a_served_id_retyped_in_uppercase_still_passes() -> None:
+    # The other half of case-insensitivity, and the reason it is the right fix rather than a
+    # tightening: ids are minted lowercase, so an uppercase retype is a formatting slip by the
+    # model, not a fabrication. Lowercase before the membership test and both halves fall out.
+    result = _check(f"The notice period is 30 days [{_SERVED_A_UPPER}].", {_SERVED_A})
+    assert result.passed is True
+    assert list(result.violations) == []
+
+
+async def test_a_forgery_in_mixed_case_is_caught_too() -> None:
+    mixed = "cit_DeadBeefDEADbeefdeadBEEFdeadbeef"
+    result = _check(f"The notice period is 30 days [{mixed}].", {_SERVED_A})
+    assert result.passed is False
+    assert _rules(result) == [2]
