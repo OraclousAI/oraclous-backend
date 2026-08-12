@@ -641,8 +641,8 @@ async def run_tool_use_loop(
     # #782 (§CITE rev4 Limit 1): the member spent the run's budget without producing an answer that
     # clears the citation gate. The run FAILS, typed — "did not converge" tells an operator nothing,
     # and #692 is the record of what an untyped failure costs. The last blocked draft is still
-    # carried out as the output (`_escalate` uses `last_text`): a blocked run with an empty output is
-    # unauditable.
+    # carried out as the output (`_escalate` uses `last_text`): a blocked run with an empty output
+    # is unauditable.
     #
     # This is its OWN return and deliberately NOT a `_budget_gate` call, even though `_budget_gate`
     # is the obvious precedent. `on_exhaustion` is a per-member BUDGET preference (#587,
