@@ -1,36 +1,59 @@
-"""The answer-time citation gate (domain layer) — Contract #735 §CITE, issue #743.
+"""The answer-time citation gate (domain layer) — Contract #735 §CITE **rev4**, issues #743 + #782.
 
-Two rules, both blocking, both evaluated **in platform code** at the end of a run:
+Two rules, both blocking, both evaluated **in platform code** at the run boundary:
 
-* **Rule 1 — an asserted fact carries no ``citation_id``.** Kills
-  ``(source: partner-agreement.md)``: model prose is not a citation.
-* **Rule 2 — a cited ``citation_id`` is not in the set the platform served to that run.** Kills the
-  invented ``source_tool_call_id=call_...``, and every hallucinated source with it.
+* **Rule 1 — the answer NAMES A SOURCE IN PROSE while carrying no ``citation_id`` for it.** Kills
+  ``(source: partner-agreement.md)`` and the invented ``source_tool_call_id=call_...``: the member
+  pointed at a source, so a citation was available to it, and it wrote prose instead.
+* **Rule 2 — a cited ``citation_id`` is not in the set the platform served to that run.** Kills
+  every hallucinated source.
 
 Otherwise it PASSES. Neither rule depends on anything a third-party tool chooses to send, because
 the platform mints the id itself.
+
+**An answer that cites nothing at all is not a violation.** rev4 deleted rev2's rule 1 ("an asserted
+fact carries no ``citation_id``") outright, and its shipped approximation — *the run served sources
+and the answer cited none* — with it. Separating an asserted fact from reasoning is a judgment call,
+and this Contract forbids a model-implemented gate. The model is not a source of truth, so anything
+it says without a citation is its own reasoning, and reasoning needs no source. The case this
+protects is the one the gate must never punish: a member that retrieves, reads what came back, and
+honestly reports it has no answer. That is the product working.
 
 **This is code, not an OHM member.** UC-E1 draws ``citation-checker`` as a team member, and a
 harness member may still review citation *quality* as an ordinary reviewer. The guarantee, though,
 is a gate at the run boundary: a gate implemented as a model instruction is a gate that can be
 talked out of, which is precisely the failure this Contract closes. So this is a pure function over
-(the draft, the run's served set) — no loop, no model, no I/O.
+(the draft, the run's served set) — no loop, no model, no I/O. **What a violation DOES is loop
+behaviour** and lives in ``domain/loop/tool_use.py``: the draft goes back to the member with a
+correction, bounded by the run's iteration budget (§CITE rev4 Limit 1).
 
 **rev1's rules 3 and 4 are not here.** rev3 moved precision to connect time (§CITE-QUAL, #744): a
 tool that cannot name its documents is refused before it is ever used, so by answer time the only
 thing that can still be missing is a version, and a missing version degrades a citation rather than
 failing an answer.
 
-Two limits the rules need, or they catch things they were never aimed at:
+Two properties rule 1 needs, or it catches what it was never aimed at:
 
-* **A run that served nothing cannot fail rule 1.** A reasoning-only member has no source to cite,
-  and rule 1 exists to catch prose standing in for a citation the member actually WAS handed.
-  Without the limit the gate fails every tool-less member on every run. §CITE-QUAL's Limit 1 is the
-  same shape: never grade a thing that has nothing to cite. Serving nothing still does not license
-  citing something — an invented id with an empty served set fails rule 2.
-* **A draft that cites at least one id satisfies rule 1**, even when that id turns out to be
-  invented. The two rules answer different questions: rule 1 asks whether the member cited at all,
-  rule 2 asks whether what it cited was real. An invented id is a rule 2 failure, once.
+* **The detection is attribution MARKERS, never filenames.** "I edited ``partner-agreement.md`` for
+  you" names a file and asserts nothing; a filename-shaped pattern would block it, and would block
+  every member that mentions a file it touched. The v1 marker list is fixed by the Contract —
+  ``source:``, ``sources:``, ``source_tool_call_id`` — and widening it is the Contract's business,
+  never the implementer's.
+* **The window is THE LINE.** A marker fires unless a ``cit_`` id sits on the same line. rev4's own
+  wording does the work: an answer "names a source in prose while carrying no ``citation_id`` **for
+  it**" is a per-marker check, and a whole-answer window cannot express "for it" — it would let a
+  member cite one real source and prose-source a second claim in the same draft.
+
+**rev4 Limit 2, on the record: rule 1's detection will misfire.** A bulleted source list fires it
+falsely, because the ``Sources:`` line carries no id of its own::
+
+    Sources:
+    - [cit_9f2a…]
+
+That costs the member one iteration and a correction naming the remedy, never a refused answer,
+which is the deal Limit 2 explicitly strikes. **It is not licence to widen the window.** If the
+deployed stack shows it misfiring often enough to matter, that is a ``Contract`` issue for
+``solution-architect``.
 
 §CITE fixes ``citation_id`` as ``cit_`` + 32 hex characters, which is self-delimiting, so the gate
 reads the ids occurring in the draft. §CITE prescribes no wrapper syntax and this module invents
@@ -48,13 +71,23 @@ from dataclasses import dataclass, field
 # The trailing guard stops a longer hex run from yielding a truncated (and wrong) id; the leading
 # `\b` stops a mid-word match. NOT a security control: a forged id is well-formed by construction,
 # so only rule 2 — membership of the served set — can tell a real one from an invented one.
-_CITATION_ID = re.compile(r"\bcit_[0-9a-f]{32}(?![0-9a-f])")
+#
+# #780 item 2: matched case-INSENSITIVELY. Ids are minted lowercase, so an uppercase retype is a
+# formatting slip by the model rather than a fabrication — but a lowercase-only pattern does not
+# merely mis-handle it, it fails to EXTRACT the token at all, so an uppercase forgery slips past
+# both rules. The flag covers the trailing guard too, or a mixed-case run yields a truncated match.
+_CITATION_ID = re.compile(r"\bcit_[0-9a-f]{32}(?![0-9a-f])", re.IGNORECASE)
+
+# rule 1's v1 attribution markers, FIXED BY THE CONTRACT (§CITE rev4). A marker is the member
+# pointing at a source; a filename is not. `source_tool_call_id` carries no colon of its own, so it
+# needs its own alternative — it is the exact token the #734 PoC invented.
+_ATTRIBUTION_MARKER = re.compile(r"\bsources?:|\bsource_tool_call_id\b", re.IGNORECASE)
 
 
 @dataclass(frozen=True, slots=True)
 class CitationViolation:
     """One failed rule. ``citation_id`` names the offending id for rule 2, and is None for rule 1,
-    where the defect is the ABSENCE of any id rather than a particular one."""
+    where the defect is prose standing in for an id rather than a particular id being wrong."""
 
     rule: int
     citation_id: str | None = None
@@ -70,36 +103,51 @@ def cited_citation_ids(answer: str) -> list[str]:
     """Every ``citation_id`` occurring in the draft, in first-seen order, deduplicated.
 
     Citing one source twice in an answer is one citation, so a duplicate never produces a second
-    violation and never inflates the report the console shows the user.
+    violation and never inflates the report the console shows the user. Deduplication is
+    case-insensitive for the same reason the match is, but each id is returned AS THE MODEL WROTE
+    IT — a correction that names the id has to name the one the member can find in its own draft.
     """
     out: list[str] = []
     seen: set[str] = set()
     for match in _CITATION_ID.finditer(answer):
         citation_id = match.group(0)
-        if citation_id not in seen:
-            seen.add(citation_id)
+        if citation_id.lower() not in seen:
+            seen.add(citation_id.lower())
             out.append(citation_id)
     return out
+
+
+def _names_a_source_without_citing(answer: str) -> bool:
+    """Rule 1: does any LINE carry an attribution marker with no ``citation_id`` alongside it?
+
+    Per-line, per this module's docstring — one real citation elsewhere in the draft does not buy
+    amnesty for a claim that points at a source with no id.
+    """
+    return any(
+        _ATTRIBUTION_MARKER.search(line) and not _CITATION_ID.search(line)
+        for line in answer.splitlines()
+    )
 
 
 def check_answer_citations(answer: str, served: Collection[str]) -> CitationCheckResult:
     """Run both §CITE rules over one draft and the run's served set.
 
-    ``served`` is ``LoopResult.served_citation_ids`` — what the platform actually handed this run.
-    EVERY unserved id is reported, never only the first: the console has to tell the user which
-    sources were invented, and stopping early would understate the problem on exactly the worst
-    answers.
+    ``served`` is what the platform actually handed this run — on a resumed run the PERSISTED UNION
+    of every segment, not the current segment alone, or a post-pause answer citing a pre-pause
+    source would be failed by bookkeeping.
+
+    Rule 1 yields at most ONE violation: it is a single verdict about the draft ("the member pointed
+    at a source and wrote prose"), not a count of how many times it did so. EVERY unserved id, by
+    contrast, is reported — the console has to tell the user which sources were invented, and
+    stopping at the first would understate the problem on exactly the worst answers.
     """
-    served_set = set(served)
-    cited = cited_citation_ids(answer)
+    served_set = {citation_id.lower() for citation_id in served}
     violations: list[CitationViolation] = []
-    if not cited and served_set:
-        # Rule 1 — the member was handed sources and cited none of them. Gated on a non-empty served
-        # set, per the limit in this module's docstring.
+    if _names_a_source_without_citing(answer):
         violations.append(CitationViolation(rule=1))
     violations.extend(
         CitationViolation(rule=2, citation_id=citation_id)
-        for citation_id in cited
-        if citation_id not in served_set
+        for citation_id in cited_citation_ids(answer)
+        if citation_id.lower() not in served_set
     )
     return CitationCheckResult(passed=not violations, violations=violations)
