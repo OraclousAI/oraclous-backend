@@ -28,10 +28,14 @@ import os
 import random
 import re
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Collection
 from dataclasses import dataclass, field
 from typing import Any
 
+from oraclous_harness_runtime_service.domain.citation_gate import (
+    CitationViolation,
+    check_answer_citations,
+)
 from oraclous_harness_runtime_service.domain.llm.base import LLMClient, Message, ToolSpec
 from oraclous_harness_runtime_service.domain.policy import PolicyEnvelope
 from oraclous_harness_runtime_service.models.enums import HarnessStatus, StepKind
@@ -167,6 +171,40 @@ _SERVED_CITATION_IDS_KEY = "served_citation_ids"
 # "knowledge-retriever" and be believed. #746 extends the resolved set to web/MCP reads.
 _DEFAULT_CITATION_BINDINGS = frozenset({"knowledge-retriever", "federated-search", "find-similar"})
 
+# #782 (§CITE rev4): what a blocked answer tells the member. A blocked answer goes back to the
+# MEMBER, not to the user — the member is the only party that can fix the defect, and an error it
+# cannot act on is one it can only retry blindly (the #692/#693 failure, where a member was told
+# "409" and simply repeated the failing call). Both strings are the Contract's own wording; rule 2
+# additionally NAMES the offending id, because "you cited something wrong" is not actionable.
+_CITATION_CORRECTION_RULE_1 = (
+    "Your answer names a source in text but carries no citation. Cite the `citation_id` you were "
+    "given for that source, or remove the claim."
+)
+_CITATION_CORRECTION_RULE_2 = (
+    "You cited an id that was never served to this run: {ids}. Cite only ids from the results you "
+    "were given."
+)
+
+
+def _citation_correction(violations: list[CitationViolation]) -> tuple[str, str]:
+    """Turn a failed gate into (the message the member reads, the detail the trace records).
+
+    Both rules can fail one draft, so both messages are carried — correcting only the first would
+    cost the member an extra iteration to discover the second. The detail is never blank: a step
+    that does not say WHICH rule blocked the answer leaves an operator unable to tell a corrected
+    run from a model that simply changed its mind.
+    """
+    messages: list[str] = []
+    detail: list[str] = []
+    if any(violation.rule == 1 for violation in violations):
+        messages.append(_CITATION_CORRECTION_RULE_1)
+        detail.append("rule 1: a source named in prose with no citation alongside it")
+    unserved = [v.citation_id for v in violations if v.rule == 2 and v.citation_id]
+    if unserved:
+        messages.append(_CITATION_CORRECTION_RULE_2.format(ids=", ".join(unserved)))
+        detail.append(f"rule 2: never served — {', '.join(unserved)}")
+    return "\n\n".join(messages), "; ".join(detail) or "citation gate violation"
+
 
 async def run_tool_use_loop(
     *,
@@ -179,6 +217,7 @@ async def run_tool_use_loop(
     resume_state: LoopCheckpoint | None = None,
     memory_context: Callable[[], Awaitable[str | None]] | None = None,
     citation_bindings: frozenset[str] | None = None,
+    prior_served_citation_ids: Collection[str] | None = None,
 ) -> LoopResult:
     by_name = {s.name: s for s in tool_specs}
     trusted_citation_bindings = (
@@ -224,6 +263,15 @@ async def run_tool_use_loop(
     # this segment into the row the pre-pause segment already wrote, so the persisted set stays
     # whole and an answer written after the pause can still cite what was served before it.
     served_citation_ids: list[str] = []
+    # #782: what a PRIOR segment of this run served, handed in by the service from the persisted
+    # row. It widens what the answer-time gate checks against and NOTHING else — it is deliberately
+    # not merged into `served_citation_ids`, because the repository owns the union (`update_run`)
+    # and a loop that returned it too would move that merge to the wrong layer.
+    prior_served = list(prior_served_citation_ids or [])
+    # #782: the detail of the last correction the citation gate issued, or None if it never fired.
+    # It is what turns a spent iteration budget into a TYPED citation failure at the terminal below
+    # rather than an anonymous "did not converge".
+    citation_blocked: str | None = None
     # Gate the nudge to PRODUCING members — those with a graph-ingest ("ingest") tool that are meant
     # to persist output. A reasoning/retrieval-only member that legitimately answers without a tool
     # is never re-prompted (so the completion contract can't add a spurious turn to it).
@@ -500,6 +548,31 @@ async def run_tool_use_loop(
                 messages.append({"role": "user", "content": _TOOL_USE_NUDGE})
                 steps.append(LoopStep(len(steps), StepKind.LLM, "primary", "nudge", "use-tools"))
                 continue
+            # #782 (Contract #735 §CITE rev4): the answer-time citation gate, INSIDE the loop. A
+            # blocked answer goes back to the MEMBER and never to the user, so the gate has to run
+            # before the answer is accepted rather than after this function returns. The mechanism
+            # is the completion nudge's, twelve lines above — append the answer, append a
+            # correction, record the step, continue — but NOT its one-shot flag: each correction
+            # consumes an iteration from the run's existing budget (§CITE Limit 1), because a
+            # one-shot correction would accept whatever the member writes on attempt two, including
+            # a second fabrication. The gate checks against the PERSISTED UNION (a prior segment's
+            # served set + this one's), or a post-pause answer citing a pre-pause source would be
+            # failed by bookkeeping.
+            check = check_answer_citations(last_text, [*prior_served, *served_citation_ids])
+            if not check.passed:
+                correction, citation_blocked = _citation_correction(check.violations)
+                messages.append({"role": "assistant", "content": last_text})
+                messages.append({"role": "user", "content": correction})
+                steps.append(
+                    LoopStep(
+                        len(steps),
+                        StepKind.GATE,
+                        "citation",
+                        "citation_correction",
+                        citation_blocked,
+                    )
+                )
+                continue
             if retrieval_empty:
                 # #580: the member completed, but a retrieval reported data-absence — degrade to a
                 # flagged PARTIAL (never a silent SUCCEEDED) via #587's _degrade, so the data gap
@@ -541,6 +614,25 @@ async def run_tool_use_loop(
         if escalation is not None:
             return escalation
 
+    # #782 (§CITE rev4 Limit 1): the member spent the run's budget without producing an answer that
+    # clears the citation gate. The run FAILS, typed — "did not converge" tells an operator nothing,
+    # and #692 is the record of what an untyped failure costs. The last blocked draft is still
+    # carried out as the output (`_escalate` uses `last_text`): a blocked run with an empty output is
+    # unauditable.
+    #
+    # This is its OWN return and deliberately NOT a `_budget_gate` call, even though `_budget_gate`
+    # is the obvious precedent. `on_exhaustion` is a per-member BUDGET preference (#587,
+    # `member_on_exhaustion` rides the resume cursor) meaning "finish with what you have rather than
+    # pause". A member that could not clear the gate produced WRONG data, and shipping it as a
+    # flagged PARTIAL still ships it — which is the option the Contract rejected, restored through a
+    # user knob. `_escalate` is unconditional, which is exactly what this terminal needs.
+    if citation_blocked is not None:
+        return _escalate(
+            "citation",
+            "citation_unresolved",
+            f"the member could not produce a citable answer within the budget ({citation_blocked})",
+            policy.max_iterations,
+        )
     # iteration cap reached without a final answer → escalate or degrade (#587).
     return _budget_gate(
         "budget", "iteration_cap", "tool-use loop did not converge", policy.max_iterations
