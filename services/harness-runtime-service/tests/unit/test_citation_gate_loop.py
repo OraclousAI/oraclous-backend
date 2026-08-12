@@ -15,12 +15,11 @@ gate has to run INSIDE the loop, before the final answer is accepted, rather tha
 append the answer, append a correction, record a step, ``continue``. The gate sits AFTER the nudge
 and BEFORE the ``retrieval_empty`` degrade check.
 
-Three things this file decides rather than inherits, all flagged in the PR body for the Tests Review
-gate:
+Three things this file decides rather than inherits. All three were flagged for the Tests Review
+gate and **ruled there** — they are settled, not open:
 
-* **The terminal outcome when the retry budget is spent.** Pinned in ``_UNRESOLVED_STATUS`` /
-  ``_UNRESOLVED_ERROR_TYPE`` below — two constants, flip them together, nothing else in the file
-  encodes the choice.
+* **The terminal outcome when the retry budget is spent** — the run FAILS: ``ESCALATED``, typed
+  ``citation_unresolved``. Pinned in ``_UNRESOLVED_STATUS`` / ``_UNRESOLVED_ERROR_TYPE`` below.
 * **The retry bound.** Corrections are NOT one-shot like the nudge: each one consumes an iteration
   from the run's existing budget, per the brief's "retries are bounded" decision and §CITE Limit 1.
 * **The seam that carries the persisted union into the loop** — ``prior_served_citation_ids``.
@@ -46,23 +45,21 @@ _CIT_A = "cit_9f2a4c81b7d3e50a1c6f28934bd5e7a0"
 _CIT_B = "cit_0b1d3f57a9c2e4680d8f1a3b5c7e9021"
 _FORGED = "cit_deadbeefdeadbeefdeadbeefdeadbeef"
 
-# --- THE OPEN DECISION, for be-test-reviewer to rule at the Tests Review gate ----------------
-# What does a run report once the member has spent the retry budget without satisfying the gate?
+# What a run reports once the member has spent the retry budget without satisfying the gate. RULED
+# at the Tests Review gate: the run FAILS — ESCALATED, typed `citation_unresolved`. A fabricated
+# citation must not reach a user, which is the entire point of the Contract. #580's
+# degrade-to-PARTIAL exists for MISSING data; this is WRONG data, and shipping it flagged still
+# ships it. The rejected alternative was to degrade to PARTIAL with the violation recorded.
 #
-#   Option 1 (briefed by product-planner, authored here): the run FAILS — ESCALATED, typed
-#   `citation_unresolved`. A fabricated citation must not reach a user, which is the entire point of
-#   the Contract. #580's degrade-to-PARTIAL exists for MISSING data; this is WRONG data, and
-#   shipping it flagged still ships it.
-#
-#   Option 2: degrade to PARTIAL and ship the answer with the violation recorded.
-#
-# Flip these two constants together to switch the whole file to option 2. Nothing else encodes it.
+# The whole file reads these two constants, so the ruling lives in exactly one place — including
+# `test_a_degrade_configured_member_still_escalates_on_an_unresolved_citation`, which is the test
+# that stops a per-member `on_exhaustion="degrade"` from quietly restoring the rejected option.
 _UNRESOLVED_STATUS = HarnessStatus.ESCALATED
 _UNRESOLVED_ERROR_TYPE = "citation_unresolved"
 
 # The correction's step in the trace (criterion 9). StepKind.GATE because §CITE calls this a gate,
 # and StepKind.GATE is "a governance decision"; the nudge used StepKind.LLM because a nudge is a
-# prompt, not a decision. Named here so the trace shape is one edit away if the reviewer disagrees.
+# prompt, not a decision. Approved as shaped at the Tests Review gate.
 _CORRECTION_KIND = StepKind.GATE
 _CORRECTION_NAME = "citation"
 _CORRECTION_STATUS = "citation_correction"

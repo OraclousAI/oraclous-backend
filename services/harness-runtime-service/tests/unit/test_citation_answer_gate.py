@@ -30,14 +30,27 @@ Rule 1's detection is pinned to the v1 marker list the brief names, and this fil
 alongside the marker. Extending the list is the Contract's business, not the implementer's — and not
 the test author's.
 
-**Flagged for the Tests Review gate — what "alongside" means.** The brief says a marker fires "only
-when no ``cit_`` id sits **alongside** it", and gives ``Source: [cit_9f2a…]`` as the shape that must
-pass. It does not name the window. This file pins the LINE as the window: a marker fires unless a
-``cit_`` id appears on the same line. The alternative — the whole answer as the window — lets a
-member cite one real source and prose-source a second one in the same draft, which is half of the
-#734 failure surviving. The line is the smallest window the Contract's own example sits inside. If
-the reviewer reads it otherwise, the test to change is
-``test_a_marker_on_its_own_line_fires_even_when_another_line_cites``.
+**What "alongside" means — RULED at the Tests Review gate: the window is THE LINE.** A marker fires
+unless a ``cit_`` id appears on the same line. The brief did not name the window, but rev4's own
+wording does the work: an answer "names a source in prose while carrying no ``citation_id`` **for
+it**" is a per-marker check, and a whole-answer window cannot express "for it" — it lets a member
+cite one real source and prose-source a second one in the same draft, which is half of the #734
+failure surviving inside a partly-honest answer. The line is also the smallest window the Contract's
+own passing example (``Source: [cit_9f2a…]``) sits inside.
+``test_a_marker_on_its_own_line_fires_even_when_another_line_cites`` is where that ruling lives.
+
+**The misfire this window accepts, put on the record at that gate.** A bulleted source list fires
+rule 1 falsely, because the ``Sources:`` line carries no id of its own::
+
+    Sources:
+    - [cit_9f2a…]
+    - [cit_0b1d…]
+
+That is a plausible model output shape, not an exotic one, and it is ACCEPTABLE under rev4 Limit 2:
+the cost is one iteration and a correction message naming the remedy, never a refused answer, which
+is the deal Limit 2 explicitly strikes. **It is not licence to widen the window at implementation
+time.** If the deployed-stack e2e shows this misfiring often enough to matter, that is a
+``Contract`` issue for ``solution-architect``.
 
 ``check_answer_citations`` is imported function-locally, never at module level
 (``.claude/rules/tests-seam-imports.md``).
