@@ -301,6 +301,10 @@ async def run_tool_use_loop(
     # It is what turns a spent iteration budget into a TYPED citation failure at the terminal below
     # rather than an anonymous "did not converge".
     citation_blocked: str | None = None
+    # #792: whether that last block included a rule 2 violation (a forged id). The terminal's
+    # precedence SPLITS BY RULE, so the flag has to carry which defect it recorded. Cleared
+    # wherever `citation_blocked` is.
+    citation_blocked_rule2 = False
     # Gate the nudge to PRODUCING members — those with a graph-ingest ("ingest") tool that are meant
     # to persist output. A reasoning/retrieval-only member that legitimately answers without a tool
     # is never re-prompted (so the completion contract can't add a spurious turn to it).
@@ -593,6 +597,7 @@ async def run_tool_use_loop(
                 correction, citation_blocked = _citation_correction(
                     check.violations, nothing_served=not gate_served
                 )
+                citation_blocked_rule2 = any(v.rule == 2 for v in check.violations)
                 messages.append({"role": "assistant", "content": last_text})
                 messages.append({"role": "user", "content": correction})
                 steps.append(
@@ -633,6 +638,7 @@ async def run_tool_use_loop(
         # non-convergence. The terminal below must fire only when the LAST completed turn was a
         # blocked answer.
         citation_blocked = None
+        citation_blocked_rule2 = False
         steps.append(
             LoopStep(
                 len(steps),
@@ -665,7 +671,16 @@ async def run_tool_use_loop(
     # pause". A member that could not clear the gate produced WRONG data, and shipping it as a
     # flagged PARTIAL still ships it — which is the option the Contract rejected, restored through a
     # user knob. `_escalate` is unconditional, which is exactly what this terminal needs.
-    if citation_blocked is not None:
+    #
+    # #792 (ruled 2026-08-13): the precedence against #580's empty-retrieval degrade SPLITS BY
+    # RULE. A rule 2 violation (a forged id) is wrong data and escalates regardless of data-absence
+    # and of `on_exhaustion` — degrading it would ship the forged citation flagged. A rule 1-only
+    # block on a run whose retrieval reported data-absence is the accepted Limit 2 misfire landing
+    # on MISSING data: fall through to `_budget_gate`, whose #580 branch degrades it to
+    # PARTIAL/`empty_retrieval` (ADR-021) — the same terminal the identical decline reaches without
+    # the marker. A rule 1-only block with data present still escalates: the member had sources to
+    # cite and spent the budget not citing them.
+    if citation_blocked is not None and (citation_blocked_rule2 or not retrieval_empty):
         return _escalate(
             "citation",
             "citation_unresolved",

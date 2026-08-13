@@ -20,9 +20,12 @@ Three gaps, one behaviour fix, all from the Code Review / QA gates on the `[impl
 * **The ids named in a correction are capped** (Code Review nit 3): a model that fabricates dozens
   of ids must not grow the correction prompt and the step detail without bound, once per iteration.
 
-NOT here, deliberately: the precedence between ``citation_unresolved`` and ``empty_retrieval`` on a
-data-absent run. That is escalated for a ruling (it is a Contract/ADR-021 question, not the
-implementer's), and whichever way it lands gets pinned then.
+Plus the #792 ruling (2026-08-13), pinned in the last two tests: on a data-absent run the terminal
+precedence SPLITS BY RULE. A rule 2 violation (a forged id) escalates ``citation_unresolved``
+regardless of data-absence and of ``on_exhaustion`` — wrong data never ships, flagged or not. A
+rule 1-only block (a prose marker) on a data-absent run degrades to ``PARTIAL`` /
+``empty_retrieval`` (ADR-021) — the accepted Limit 2 misfire landing on missing data reaches the
+same terminal the identical decline reaches without the marker.
 """
 
 from __future__ import annotations
@@ -96,6 +99,15 @@ def _serving(*citation_ids: str) -> Any:
             "hits": [{"id": "n0", "type": "Chunk", "properties": {"text": "30-day notice"}}],
             "served_citation_ids": list(citation_ids),
         }
+
+    return dispatch
+
+
+def _absent() -> Any:
+    # #580's reserved key: the knowledge-retriever connector flags an empty result `data_absent`,
+    # which marks the run to degrade rather than hard-fail on missing data (ADR-021).
+    async def dispatch(_spec: ToolSpec, _args: dict[str, Any]) -> dict[str, Any]:
+        return {"hits": [], "data_absent": True, "served_citation_ids": []}
 
     return dispatch
 
@@ -183,6 +195,33 @@ async def test_a_run_that_moved_past_a_blocked_draft_escalates_as_iteration_cap(
     assert len(_corrections(result)) == 1
     assert result.status is HarnessStatus.ESCALATED
     assert result.error_type == "iteration_cap"
+
+
+# --- the #792 ruling: terminal precedence splits by rule ------------------------------------
+
+
+async def test_a_rule1_only_block_on_a_data_absent_run_degrades_as_empty_retrieval() -> None:
+    # #792 branch 2: the retrieval reported data-absence and the member spent its budget on an
+    # honest decline that keeps tripping rule 1 ("Sources: none were available"). That is the
+    # accepted Limit 2 misfire landing on MISSING data — the run reaches the same
+    # PARTIAL/empty_retrieval terminal the identical decline reaches without the marker, never a
+    # hard ESCALATED (ADR-021).
+    llm = _Scripted(_Scripted.RETRIEVE, "I found nothing.\nSources: none were available.")
+    result = await _run(llm, _absent(), policy=_TIGHT)
+    assert len(_corrections(result)) >= 1  # the gate DID fire, and kept firing
+    assert result.status is HarnessStatus.PARTIAL
+    assert result.error_type == "empty_retrieval"
+
+
+async def test_a_forged_id_on_a_data_absent_run_still_escalates() -> None:
+    # #792 branch 1: same data-absent run, but the member's blocked draft carries a FORGED id.
+    # That is wrong data, not missing data — it escalates citation_unresolved even on a
+    # data-absent run and even for an on_exhaustion="degrade" member. Degrading would ship the
+    # forged citation as flagged PARTIAL output, the option the Contract rejected.
+    llm = _Scripted(_Scripted.RETRIEVE, f"The notice period is 30 days [{_FORGED}].")
+    result = await _run(llm, _absent(), policy=_TIGHT_DEGRADE)
+    assert result.status is HarnessStatus.ESCALATED
+    assert result.error_type == "citation_unresolved"
 
 
 # --- the correction names at most five ids ---------------------------------------------------
