@@ -17,7 +17,7 @@ from __future__ import annotations
 import logging
 import uuid
 from collections.abc import Awaitable, Callable
-from typing import Any, Literal
+from typing import Any, Literal, NamedTuple
 
 import yaml
 from oraclous_governance import Principal
@@ -76,6 +76,72 @@ _RESERVED_CONFIG_KEYS = ("credential_mappings", "capability_id")
 _CITATION_MINTING_CAPABILITIES = frozenset(
     {"knowledge-retriever", "federated-search", "find-similar"}
 )
+
+# #781 (Contract #735 §CITE, security): the capabilities whose results the loop may believe when
+# they carry #580's `data_absent` key. Kept separate from — and narrower than — the citation set
+# above, on purpose. `data_absent` is emitted in exactly ONE place in the platform, the
+# knowledge-retriever connector; neither federated-search nor find-similar sets it. #746 extends the
+# MINTING set to live web reads and imported MCP tools, whose results are whatever a remote server
+# returned; sharing one set would silently extend absence-trust to those rows too, which is the
+# echo-shaped surface #781 exists to close. Two sets, derived together right below, so #746 sees
+# both and states which one it means.
+_DATA_ABSENCE_CAPABILITIES = frozenset({"knowledge-retriever"})
+
+# #780 item 1 (security): the second predicate, alongside the row's name slug. A registry row's
+# `name` is a DISPLAY string — for an imported MCP tool it is `<admin label>-<server tool name>`,
+# both halves chosen outside the platform, so an admin importing a server labelled `knowledge` with
+# a tool named `retriever` stores exactly the first-party retriever's slug. That collision loses the
+# resolution today only because `list_by_kind` orders by `created_at` and the seeded row is older —
+# incidental, never a stated invariant, and #746 removes the property it rests on. MCP rows carry
+# `spec.type == "mcp"`, so requiring the first-party type closes it outright, and (unlike keying on
+# the descriptor id) puts no registry UUIDs in the runtime.
+_FIRST_PARTY_SPEC_TYPE = "INTERNAL"
+
+
+class TrustedBindings(NamedTuple):
+    """The binding aliases this manifest may be believed on, per reserved result key.
+
+    One value rather than two loose frozensets so a caller cannot pass them in the wrong order, and
+    so the pair travels together — the #781 decision is that these sets differ, and a shape that
+    hides the difference is the shape that loses it.
+    """
+
+    citation: frozenset[str]  # #743 §CITE: may mint `served_citation_ids`
+    data_absence: frozenset[str]  # #580/#781: may flag `data_absent`
+
+
+def _trusted_bindings(
+    manifest,  # noqa: ANN001
+    resolved: dict[str, dict[str, Any]],
+) -> TrustedBindings:
+    """Translate the trusted CAPABILITIES into the binding aliases THIS manifest gave them.
+
+    The loop cannot key trust on a ``ToolSpec.binding`` — that alias is the manifest author's free
+    choice, so a manifest could name an imported MCP binding ``knowledge-retriever`` and be
+    believed. ``resolved`` is the registry's answer, and each row must clear BOTH predicates:
+
+    * the row's own ``name``, slugified, is one of the capabilities that emit the key (#743);
+    * the row is first-party — ``spec.type == "INTERNAL"`` (#780 item 1), which an imported MCP row
+      (``spec.type == "mcp"``) can never satisfy however its admin-chosen name happens to slug.
+
+    A binding that clears neither is simply absent from the set, and the loop strips its reserved
+    key without believing it. Fail-closed: a row with no readable descriptor is untrusted.
+    """
+    citation: set[str] = set()
+    data_absence: set[str] = set()
+    for cap in manifest.capabilities:
+        row = resolved.get(cap.binding) or {}
+        descriptor = row.get("descriptor") or {}
+        spec = descriptor.get("spec") or {}
+        if not isinstance(spec, dict) or spec.get("type") != _FIRST_PARTY_SPEC_TYPE:
+            continue
+        slug = capability_slug(str(row.get("name") or ""))
+        if slug in _CITATION_MINTING_CAPABILITIES:
+            citation.add(cap.binding)
+        if slug in _DATA_ABSENCE_CAPABILITIES:
+            data_absence.add(cap.binding)
+    return TrustedBindings(citation=frozenset(citation), data_absence=frozenset(data_absence))
+
 
 # #663 — the credential types whose broker resolution READS an instance's credential_mappings.
 # oauth_token is deliberately absent: the broker resolves it per request from (org, user, provider,
@@ -313,7 +379,7 @@ class HarnessExecutionService:
         # writes records the execution that produced it, and the instances are configured inside
         # _build_runnable. Generation is pure, so hoisting it changes nothing else.
         execution_id = uuid.uuid4()
-        envelope, tool_specs, dispatch, llm, citation_bindings = await self._build_runnable(
+        envelope, tool_specs, dispatch, llm, trust = await self._build_runnable(
             manifest,
             policy,
             org_id,
@@ -354,7 +420,10 @@ class HarnessExecutionService:
                 dispatch=dispatch,
                 policy=envelope,
                 memory_context=memory_context,
-                citation_bindings=citation_bindings,
+                # Two trust sets, deliberately different sizes (#781): only the
+                # knowledge-retriever connector emits `data_absent`, so its set is the narrower.
+                citation_bindings=trust.citation,
+                data_absent_bindings=trust.data_absence,
             )
         finally:
             await self._aclose_llm(llm)
@@ -610,7 +679,7 @@ class HarnessExecutionService:
         # budget. Without it, resume reverts to the policy tier and a heavy member already past it
         # would re-escalate immediately — the exact bug #576 fixes. Old checkpoints lack the keys
         # → None → the tier (a pre-#576 paused run is unchanged).
-        envelope, tool_specs, dispatch, llm, citation_bindings = await self._build_runnable(
+        envelope, tool_specs, dispatch, llm, trust = await self._build_runnable(
             manifest,
             policy,
             org_id,
@@ -637,7 +706,10 @@ class HarnessExecutionService:
                 dispatch=dispatch,
                 policy=envelope,
                 resume_state=resume_state,
-                citation_bindings=citation_bindings,
+                # Two trust sets, deliberately different sizes (#781): only the
+                # knowledge-retriever connector emits `data_absent`, so its set is the narrower.
+                citation_bindings=trust.citation,
+                data_absent_bindings=trust.data_absence,
                 # #782 (§CITE): the answer-time gate checks against the PERSISTED UNION, not this
                 # segment alone. The loop's own served set is a FRESH list on a HITL resume (the
                 # checkpoint carries the transcript, not platform counters), so without this a
@@ -806,7 +878,7 @@ class HarnessExecutionService:
         member_max_tool_calls: int | None = None,
         member_on_exhaustion: Literal["escalate", "degrade"] | None = None,
         producer: dict[str, Any] | None = None,
-    ) -> tuple[Any, list[ToolSpec], Any, LLMClient, frozenset[str]]:
+    ) -> tuple[Any, list[ToolSpec], Any, LLMClient, TrustedBindings]:
         """Resolve + materialise the manifest's capabilities, build the dispatch + the LLM + the
         runtime envelope. Shared by execute() and resume() so a resume sets up identically.
         ``external_ceiling`` caps the ceiling by the caller's member ``tools[]`` (ADR-032).
@@ -845,21 +917,10 @@ class HarnessExecutionService:
                 raise RegistryError(f"tool execution failed: {detail}")
             return execution.get("output_data") or {}
 
-        # #743 (§CITE): translate the trusted CAPABILITIES into the binding aliases this particular
-        # manifest gave them, so the loop can key trust on something the manifest author did not
-        # choose. `resolved` is the registry's answer, and resolve_capability already proved each
-        # row's name matches the ref slug, so a manifest cannot smuggle an MCP tool in under a
-        # first-party alias. A binding that resolves to anything else is simply absent from the set,
-        # and the loop strips its served-ids key without believing it.
-        citation_bindings = frozenset(
-            cap.binding
-            for cap in manifest.capabilities
-            if capability_slug(str(resolved[cap.binding].get("name") or ""))
-            in _CITATION_MINTING_CAPABILITIES
-        )
+        trust = _trusted_bindings(manifest, resolved)
 
         llm = await self._build_llm(manifest, org_id)
-        return envelope, tool_specs, dispatch, llm, citation_bindings
+        return envelope, tool_specs, dispatch, llm, trust
 
     @staticmethod
     async def _aclose_llm(llm: LLMClient) -> None:

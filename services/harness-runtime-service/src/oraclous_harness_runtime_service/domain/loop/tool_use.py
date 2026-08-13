@@ -171,6 +171,16 @@ _SERVED_CITATION_IDS_KEY = "served_citation_ids"
 # "knowledge-retriever" and be believed. #746 extends the resolved set to web/MCP reads.
 _DEFAULT_CITATION_BINDINGS = frozenset({"knowledge-retriever", "federated-search", "find-similar"})
 
+# #781 (security): the same treatment for #580's `data_absent`, and a DELIBERATELY NARROWER set.
+# `data_absent` is emitted in exactly one place in the platform — the knowledge-retriever connector
+# — while the citation set above covers three capabilities and #746 extends it to live web reads and
+# imported MCP tools. An MCP tool's result is whatever the remote server returned, which is the
+# echo-shaped surface #781 is about; sharing one set would re-trust this key for those rows the day
+# #746 lands, with nobody having decided to. Trust each reserved key from the connectors that
+# actually emit it. Both sets are derived together in `harness_execution_service`, so #746 reads
+# them side by side rather than discovering this one later.
+_DEFAULT_DATA_ABSENT_BINDINGS = frozenset({"knowledge-retriever"})
+
 # #782 (§CITE rev4): what a blocked answer tells the member. A blocked answer goes back to the
 # MEMBER, not to the user — the member is the only party that can fix the defect, and an error it
 # cannot act on is one it can only retry blindly (the #692/#693 failure, where a member was told
@@ -246,11 +256,15 @@ async def run_tool_use_loop(
     resume_state: LoopCheckpoint | None = None,
     memory_context: Callable[[], Awaitable[str | None]] | None = None,
     citation_bindings: frozenset[str] | None = None,
+    data_absent_bindings: frozenset[str] | None = None,
     prior_served_citation_ids: Collection[str] | None = None,
 ) -> LoopResult:
     by_name = {s.name: s for s in tool_specs}
     trusted_citation_bindings = (
         _DEFAULT_CITATION_BINDINGS if citation_bindings is None else citation_bindings
+    )
+    trusted_data_absent_bindings = (
+        _DEFAULT_DATA_ABSENT_BINDINGS if data_absent_bindings is None else data_absent_bindings
     )
     if resume_state is not None:
         redactors = [re.compile(p) for p in resume_state.redact_patterns]
@@ -449,9 +463,20 @@ async def run_tool_use_loop(
                     # key set ONLY by the knowledge-retriever connector on an empty result (no other
                     # tool may emit it). Strip the private flag, swap in a clear proceed-note so the
                     # model stops looping on empty, and mark the run to degrade (ADR-021).
-                    if isinstance(result, dict) and result.pop("data_absent", False):
-                        retrieval_empty = True
-                        result["note"] = _EMPTY_RETRIEVAL_NOTE
+                    #
+                    # #781 (security): "no other tool may emit it" is now ENFORCED rather than
+                    # asserted in a comment. The pop stays unconditional — the key never reaches the
+                    # model, trusted binding or not — but the flag is BELIEVED only from a trusted
+                    # retrieval. A forged one bought the model three things: a false data-absence
+                    # alert to an operator, the platform-authored proceed-note on demand, and (since
+                    # the #792 precedence ruling) a softer citation terminal — a rule 1-only block
+                    # degrading to PARTIAL/`empty_retrieval`, which SHIPS the blocked answer to the
+                    # user flagged, where ESCALATED would have stopped it. See the trust-set note.
+                    if isinstance(result, dict):
+                        absent = result.pop("data_absent", False)
+                        if absent and spec.binding in trusted_data_absent_bindings:
+                            retrieval_empty = True
+                            result["note"] = _EMPTY_RETRIEVAL_NOTE
                     # #743 (§CITE): pop the served-ids key from EVERY tool result, then accumulate
                     # it only from a TRUSTED retrieval binding. A model-supplied key of the same
                     # name — pushed through a generic REST call or an imported MCP server — is
