@@ -618,6 +618,13 @@ async def run_tool_use_loop(
                 served_citation_ids=list(served_citation_ids),
             )
 
+        # A tool-call turn is the member moving PAST a blocked draft, so the run no longer ends on
+        # one. Without this clear, the flag is sticky: a run corrected once and then failing to
+        # converge for an unrelated reason is reported `citation_unresolved` ("could not produce a
+        # citable answer"), and #587's on_exhaustion="degrade" is overridden for plain
+        # non-convergence. The terminal below must fire only when the LAST completed turn was a
+        # blocked answer.
+        citation_blocked = None
         steps.append(
             LoopStep(
                 len(steps),
