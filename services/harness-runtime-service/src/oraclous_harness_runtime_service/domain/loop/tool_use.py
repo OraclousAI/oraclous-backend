@@ -194,6 +194,10 @@ _CITATION_CORRECTION_RULE_2 = (
     "You cited an id that was never served to this run: {ids}. Cite only ids from the results you "
     "were given."
 )
+# Rule 2 NAMES the offending ids (actionability), but bounded: every id a model fabricates would
+# otherwise ride into the correction prompt AND the step detail, once per iteration, unbounded.
+# Five is plenty to act on; the remainder is counted, not listed.
+_CITATION_CORRECTION_MAX_NAMED_IDS = 5
 
 
 def _citation_correction(
@@ -222,8 +226,12 @@ def _citation_correction(
         detail.append("rule 1: a source named in prose with no citation alongside it")
     unserved = [v.citation_id for v in violations if v.rule == 2 and v.citation_id]
     if unserved:
-        messages.append(_CITATION_CORRECTION_RULE_2.format(ids=", ".join(unserved)))
-        detail.append(f"rule 2: never served — {', '.join(unserved)}")
+        named = unserved[:_CITATION_CORRECTION_MAX_NAMED_IDS]
+        if len(unserved) > len(named):
+            named.append(f"and {len(unserved) - len(named)} more")
+        ids = ", ".join(named)
+        messages.append(_CITATION_CORRECTION_RULE_2.format(ids=ids))
+        detail.append(f"rule 2: never served — {ids}")
     return "\n\n".join(messages), "; ".join(detail) or "citation gate violation"
 
 
@@ -593,7 +601,7 @@ async def run_tool_use_loop(
                         StepKind.GATE,
                         "citation",
                         "citation_correction",
-                        citation_blocked,
+                        _truncate(citation_blocked),
                     )
                 )
                 continue
