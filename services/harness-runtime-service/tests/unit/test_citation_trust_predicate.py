@@ -89,10 +89,31 @@ _INGEST = _row(row_id="cap-ingest", name="Graph Ingest", spec_type="INTERNAL")
 
 
 class _Registry:
-    """A registry fake: no pre-existing instances, recording the mints ``_materialise`` makes."""
+    """A registry fake: no pre-existing instances, recording the mints ``_materialise`` makes.
 
-    def __init__(self) -> None:
+    ``serving`` (the wiring tests at the bottom) makes it a whole registry: one resolvable row and
+    a dispatch that answers every tool call with the given result, so ``execute()`` can be driven
+    end to end without a network.
+    """
+
+    def __init__(
+        self, *, serving: dict[str, Any] | None = None, result: dict[str, Any] | None = None
+    ) -> None:
         self.created: list[dict[str, Any]] = []
+        self._serving = serving
+        self._result = result or {}
+
+    async def list_tools(self) -> list[dict[str, Any]]:
+        return [self._serving] if self._serving else []
+
+    async def resolve_capability(
+        self, ref: str, *, explicit_id: str | None = None
+    ) -> dict[str, Any]:
+        assert self._serving is not None
+        return self._serving
+
+    async def execute(self, instance_id: uuid.UUID, input_data: dict[str, Any]) -> dict[str, Any]:
+        return {"status": "SUCCESS", "output_data": dict(self._result)}
 
     async def list_instances(self) -> list[dict[str, Any]]:
         return []
@@ -119,9 +140,9 @@ def _manifest(*bindings: tuple[str, str]) -> OHMManifest:
     )
 
 
-def _service() -> HarnessExecutionService:
+def _service(registry: _Registry | None = None) -> HarnessExecutionService:
     return HarnessExecutionService(
-        registry=_Registry(),
+        registry=registry or _Registry(),
         broker=None,
         executions=None,
         assignments=None,
@@ -214,3 +235,77 @@ async def test_the_collider_is_untrusted_even_beside_a_genuine_retriever() -> No
     trust = await _trust(manifest, {"notes": _MCP_COLLIDER, "Read": _FIRST_PARTY})
     assert trust.citation == frozenset({"Read"})
     assert trust.data_absence == frozenset({"Read"})
+
+
+# --- the wiring: the derived set has to REACH the loop ---------------------------------------
+#
+# Raised at the Tests Review gate. Everything above proves the service computes the right sets, and
+# `test_data_absent_provenance.py` proves the loop honours a set it is handed. Neither notices if
+# the service forgets to hand it over — and the failure would be silent in BOTH directions, because
+# the loop falls back to a default keyed on the literal capability name. A manifest binding the
+# retriever as "Read" (which the deployed harness does) would then lose data-absence entirely, and
+# nothing in the unit suite would say so. These two drive the whole service path instead.
+
+
+def _inline_manifest(ref: str, binding: str) -> dict[str, Any]:
+    return {
+        "ohm_version": "1.0",
+        "metadata": {
+            "id": str(uuid.uuid4()),
+            "name": "Retrieval Demo",
+            "owner_organization_id": str(_ORG),
+        },
+        "capabilities": [{"ref": ref, "binding": binding}],
+        "prompts": [{"role": "primary", "source": "inline", "body": "You are helpful."}],
+        "runtime": {"entrypoint": binding},
+    }
+
+
+async def _run_status(row: dict[str, Any], ref: str, binding: str) -> tuple[str, str | None]:
+    """Drive ``execute()`` with the fake LLM against one resolvable row whose only tool call comes
+    back flagged ``data_absent``, and report the run's terminal."""
+    from types import SimpleNamespace
+
+    from oraclous_governance import Principal, PrincipalType
+
+    class _Executions:
+        async def create(self, **fields: Any) -> Any:  # noqa: ANN401
+            return SimpleNamespace(id=fields["execution_id"], **fields)
+
+    class _Provenance:
+        async def emit(self, record: Any) -> None:  # noqa: ANN401
+            return None
+
+    registry = _Registry(serving=row, result={"hits": [], "data_absent": True})
+    service = _service(registry)
+    service._executions = _Executions()  # type: ignore[assignment]
+    service._provenance = _Provenance()  # type: ignore[assignment]
+    execution = await service.execute(
+        manifest_inline=_inline_manifest(ref, binding),
+        manifest_ref=None,
+        user_input="what did we agree",
+        principal=Principal(
+            principal_id=uuid.uuid4(),
+            principal_type=PrincipalType.USER,
+            organisation_id=_ORG,
+        ),
+    )
+    return execution.status, execution.error_type
+
+
+async def test_the_data_absence_set_reaches_the_loop_under_the_manifests_own_alias() -> None:
+    # A genuine first-party retriever bound as "Read" reports data-absence, and the run degrades.
+    # The loop's fallback set names the CAPABILITY, not this alias, so this only passes if the
+    # service actually passed the set it derived. #580's behaviour, proven through the real path.
+    status, error_type = await _run_status(_FIRST_PARTY, "core/knowledge-retriever@1.0.0", "Read")
+    assert status == "PARTIAL"
+    assert error_type == "empty_retrieval"
+
+
+async def test_a_name_colliding_mcp_row_cannot_degrade_a_real_run() -> None:
+    # The same run with the MCP collider resolving the ref. It is the row that #780 item 1 keeps out
+    # of the trust set, so its `data_absent` is stripped and disbelieved, and the run completes
+    # normally instead of being flagged for a data-absence the platform never observed.
+    status, error_type = await _run_status(_MCP_COLLIDER, "core/knowledge-retriever@1.0.0", "notes")
+    assert status == "SUCCEEDED"
+    assert error_type is None
