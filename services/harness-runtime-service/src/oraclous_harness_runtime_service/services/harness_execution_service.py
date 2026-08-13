@@ -87,6 +87,16 @@ _CITATION_MINTING_CAPABILITIES = frozenset(
 # both and states which one it means.
 _DATA_ABSENCE_CAPABILITIES = frozenset({"knowledge-retriever"})
 
+# #780 item 1 (security): the second predicate, alongside the row's name slug. A registry row's
+# `name` is a DISPLAY string — for an imported MCP tool it is `<admin label>-<server tool name>`,
+# both halves chosen outside the platform, so an admin importing a server labelled `knowledge` with
+# a tool named `retriever` stores exactly the first-party retriever's slug. That collision loses the
+# resolution today only because `list_by_kind` orders by `created_at` and the seeded row is older —
+# incidental, never a stated invariant, and #746 removes the property it rests on. MCP rows carry
+# `spec.type == "mcp"`, so requiring the first-party type closes it outright, and (unlike keying on
+# the descriptor id) puts no registry UUIDs in the runtime.
+_FIRST_PARTY_SPEC_TYPE = "INTERNAL"
+
 
 class TrustedBindings(NamedTuple):
     """The binding aliases this manifest may be believed on, per reserved result key.
@@ -110,14 +120,21 @@ def _trusted_bindings(
     choice, so a manifest could name an imported MCP binding ``knowledge-retriever`` and be
     believed. ``resolved`` is the registry's answer, and each row must clear BOTH predicates:
 
-    A row is trusted when its own ``name``, slugified, is one of the capabilities that emit the key
-    (#743). A binding that resolves to anything else is simply absent from the set, and the loop
-    strips its reserved key without believing it.
+    * the row's own ``name``, slugified, is one of the capabilities that emit the key (#743);
+    * the row is first-party — ``spec.type == "INTERNAL"`` (#780 item 1), which an imported MCP row
+      (``spec.type == "mcp"``) can never satisfy however its admin-chosen name happens to slug.
+
+    A binding that clears neither is simply absent from the set, and the loop strips its reserved
+    key without believing it. Fail-closed: a row with no readable descriptor is untrusted.
     """
     citation: set[str] = set()
     data_absence: set[str] = set()
     for cap in manifest.capabilities:
         row = resolved.get(cap.binding) or {}
+        descriptor = row.get("descriptor") or {}
+        spec = descriptor.get("spec") or {}
+        if not isinstance(spec, dict) or spec.get("type") != _FIRST_PARTY_SPEC_TYPE:
+            continue
         slug = capability_slug(str(row.get("name") or ""))
         if slug in _CITATION_MINTING_CAPABILITIES:
             citation.add(cap.binding)
