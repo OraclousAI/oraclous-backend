@@ -25,7 +25,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from neo4j_graphrag.experimental.components.types import Neo4jGraph
-from oraclous_citation import Citation, SourceRef, mint_citation
+from oraclous_citation import UPLOAD_SOURCE_SYSTEM, Citation, SourceRef, mint_citation
 
 from oraclous_knowledge_graph_service.domain.ontology import Ontology, resolve_label
 from oraclous_knowledge_graph_service.repositories.graph_write_repository import (
@@ -90,13 +90,6 @@ def enforce_ontology(entity_graph: Neo4jGraph, ontology: Ontology | None) -> _En
     return _Enforced(Neo4jGraph(nodes=kept_nodes, relationships=kept_rels), violations, coercions)
 
 
-#: The reserved ``source_system`` for content the platform received directly rather than read from
-#: a connector. §CITE: an upload citation carries the ingest job id as its ``source_id``, the
-#: content hash as its revision, and ``url: null`` — no route serves an uploaded document back yet,
-#: and claiming a URL that does not resolve would be the same fiction the Contract exists to reject.
-_UPLOAD_SOURCE_SYSTEM = "upload"
-
-
 def _mint_for_ingest(
     *, source: SourceRef | None, job_id: str | None, document: str, content: str
 ) -> Citation | None:
@@ -113,6 +106,10 @@ def _mint_for_ingest(
     Returns ``None`` only when there is no job id to attribute an upload to — a direct service-level
     call outside the job pipeline. The record is then ``citation: null``, which is the Contract's
     defined meaning for a record with no source identity.
+
+    §CITE: an upload citation carries the ingest job id as its ``source_id``, the content hash as
+    its revision, and ``url: null`` — no route serves an uploaded document back yet, and claiming a
+    URL that does not resolve would be the same fiction the Contract exists to reject.
     """
     if source is not None:
         return mint_citation(source, content=content)
@@ -120,7 +117,7 @@ def _mint_for_ingest(
         return None
     return mint_citation(
         SourceRef(
-            source_system=_UPLOAD_SOURCE_SYSTEM,
+            source_system=UPLOAD_SOURCE_SYSTEM,
             source_id=job_id,
             url=None,
             title=document or None,

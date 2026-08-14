@@ -40,6 +40,7 @@ def _to_record(row: IngestionJob) -> IngestionJobRecord:
         team_id=row.team_id,
         ordinal=row.ordinal,
         content_hash=row.content_hash,
+        source=row.source,
     )
 
 

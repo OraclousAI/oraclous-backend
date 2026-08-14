@@ -16,7 +16,7 @@ Two boundaries are encoded in the types rather than left to a caller's disciplin
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Annotated, Literal
+from typing import Annotated, Final, Literal
 
 from pydantic import BaseModel, ConfigDict, StringConstraints, model_serializer, model_validator
 
@@ -36,6 +36,10 @@ RevisionKind = Literal[
 NonEmpty = Annotated[str, StringConstraints(min_length=1)]
 SourceSystem = Annotated[str, StringConstraints(min_length=1, max_length=64)]
 AbsoluteUrl = Annotated[str, StringConstraints(pattern=r"^https?://")]
+
+#: The reserved ``source_system`` for content the platform received directly rather than read from
+#: a connector — the one canonical definition every citing/attributing caller shares.
+UPLOAD_SOURCE_SYSTEM: Final = "upload"
 
 
 class Author(BaseModel):

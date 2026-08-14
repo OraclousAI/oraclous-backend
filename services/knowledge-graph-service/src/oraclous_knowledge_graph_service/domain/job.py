@@ -33,6 +33,10 @@ class IngestionJobRecord:
     team_id: str | None = None
     ordinal: int | None = None
     content_hash: str | None = None
+    #: The connector's SourceRef as stored, or None on a plain upload / a row that predates the
+    #: column. Kept as a plain mapping so the domain layer stays free of the shared citation model;
+    #: a caller validates it back into a ``SourceRef`` at the point it needs the typed fields.
+    source: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
