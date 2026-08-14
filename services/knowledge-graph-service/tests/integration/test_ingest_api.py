@@ -51,10 +51,15 @@ class _FakeJobService:
     def __init__(self) -> None:
         self.jobs: dict[uuid.UUID, IngestionJobRecord] = {}
         self.owned = True
+        # What the ROUTE decided to call the artifact. The fixture record hardcodes `a.txt`, so
+        # the response body says nothing about the name the route derived — capture the kwarg the
+        # route actually submitted, or the naming assertions below would test the fixture.
+        self.submitted_filenames: list[str | None] = []
 
     async def submit(self, *, user_id, graph_id, data, filename, source_type, recipe_id=None, **_):
         if not self.owned:
             raise GraphNotFound(str(graph_id))
+        self.submitted_filenames.append(filename)
         rec = _record(graph_id)
         self.jobs[rec.id] = rec
         return rec
@@ -99,6 +104,91 @@ async def test_ingest_text_returns_202(client) -> None:
     assert body["status"] == "pending"
     assert body["source_type"] == "text"
     assert "organisation_id" not in body
+
+
+# --- what an ingest names the artifact (#800; oraclous-frontend#203) ---------------------------
+#
+# The live defect: reading `README.md` out of `OraclousAI/oraclous-backend` through a GitHub
+# connection produced an artifact named `oraclous-backend`. Nothing ever read the repository name.
+# That README opens with `# oraclous-backend`, so the content-heading fallback (#728) returned a
+# name that merely LOOKED like the repo, and the coincidence hid the real cause for a while.
+#
+# The connector already reports the right name and it is the only party entitled to: `source.title`
+# is the file's basename, authored by the connector from the source system's own API response and
+# never by anything a person typed (§CITE). The route has to consult it.
+#
+# The assertions read `fake_service.submitted_filenames`, never the response body: the fixture
+# record hardcodes `a.txt`, so asserting on the response would test the fake instead of the route.
+
+#: Shaped exactly like what `GitHub Reader`'s `read_file` emits under `data["source"]`.
+_GITHUB_SOURCE = {
+    "source_system": "github",
+    "source_id": "OraclousAI/oraclous-backend:README.md",
+    "revision": "9f1c0a2b3d4e5f60718293a4b5c6d7e8f9012345",
+    "revision_kind": "blob_sha",
+    "url": "https://github.com/OraclousAI/oraclous-backend/blob/9f1c0a2/README.md",
+    "title": "README.md",
+}
+
+#: The opening of the real README — the H1 that collides with the repository name.
+_README = "# oraclous-backend\n\nThe Python monorepo for the Oraclous Platform.\n"
+
+
+async def test_a_connector_source_title_names_the_artifact(client, fake_service) -> None:
+    resp = await client.post(
+        f"/api/v1/graphs/{uuid.uuid4()}/ingest",
+        json={"content": _README, "source_type": "md", "source": _GITHUB_SOURCE},
+        headers=_AUTH,
+    )
+    assert resp.status_code == 202, resp.text
+    # NOT `oraclous-backend`. The file is README.md, the connector said so, and the content's own
+    # heading is a fallback for content that arrived with no source at all.
+    assert fake_service.submitted_filenames == ["README.md"]
+
+
+async def test_an_explicit_filename_still_beats_the_source_title(client, fake_service) -> None:
+    # The caller-supplied name stays the top of the resolution order: a real upload keeps its own
+    # name, and #522's re-ingest-the-same-path REPLACE contract depends on that.
+    resp = await client.post(
+        f"/api/v1/graphs/{uuid.uuid4()}/ingest",
+        json={
+            "content": _README,
+            "filename": "notes.md",
+            "source_type": "md",
+            "source": _GITHUB_SOURCE,
+        },
+        headers=_AUTH,
+    )
+    assert resp.status_code == 202, resp.text
+    assert fake_service.submitted_filenames == ["notes.md"]
+
+
+async def test_content_with_no_source_is_still_named_by_its_own_heading(
+    client, fake_service
+) -> None:
+    # #728, and it must not regress: pasted text has no source identity, so its own leading heading
+    # is the best name available — far better than the constant `inline.txt` that used to collapse
+    # every inline ingest onto one graph node.
+    resp = await client.post(
+        f"/api/v1/graphs/{uuid.uuid4()}/ingest",
+        json={"content": "# My notes\n\nsomething I typed"},
+        headers=_AUTH,
+    )
+    assert resp.status_code == 202, resp.text
+    assert fake_service.submitted_filenames == ["My notes"]
+
+
+async def test_a_source_without_a_title_falls_back_to_the_content(client, fake_service) -> None:
+    # `title` is optional on a SourceRef — a connector that reports identity but no display label
+    # must not blank the name or crash the route; it falls through to the content heading.
+    untitled = {k: v for k, v in _GITHUB_SOURCE.items() if k != "title"}
+    resp = await client.post(
+        f"/api/v1/graphs/{uuid.uuid4()}/ingest",
+        json={"content": _README, "source_type": "md", "source": untitled},
+        headers=_AUTH,
+    )
+    assert resp.status_code == 202, resp.text
+    assert fake_service.submitted_filenames == ["oraclous-backend"]
 
 
 async def test_ingest_empty_content_is_422(client) -> None:
@@ -147,6 +237,16 @@ async def test_upload_text_returns_202(client) -> None:
     files = {"file": ("a.txt", b"hello\n\nworld", "text/plain")}
     resp = await client.post(f"/api/v1/graphs/{uuid.uuid4()}/upload", files=files, headers=_AUTH)
     assert resp.status_code == 202, resp.text
+
+
+async def test_an_uploaded_file_keeps_its_own_name(client, fake_service) -> None:
+    # The upload door never derives anything: the person handed us a named file. Asserted here
+    # because /upload had no naming coverage at all, and it is the door most easily broken by a
+    # change to how the sibling /ingest route resolves a name.
+    files = {"file": ("quarterly-report.txt", b"# Something Else\n\nbody", "text/plain")}
+    resp = await client.post(f"/api/v1/graphs/{uuid.uuid4()}/upload", files=files, headers=_AUTH)
+    assert resp.status_code == 202, resp.text
+    assert fake_service.submitted_filenames == ["quarterly-report.txt"]
 
 
 async def test_upload_unsupported_type_is_422(client) -> None:
