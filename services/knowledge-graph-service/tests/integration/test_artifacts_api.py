@@ -33,6 +33,7 @@ def _record(
     team_id: str | None = None,
     member_role: str | None = None,
     producer_kind: str | None = None,
+    source: dict[str, object] | None = None,
 ) -> IngestionJobRecord:
     now = datetime(2026, 6, 25, tzinfo=UTC)
     return IngestionJobRecord(
@@ -52,6 +53,7 @@ def _record(
         team_id=team_id,
         member_role=member_role,
         producer_kind=producer_kind,
+        source=source,
     )
 
 
@@ -139,6 +141,40 @@ async def test_list_artifacts_for_a_graph(client, fake_service) -> None:
     assert {a["filename"] for a in body} == {"bible/canon.md", "drafts/ch1.md"}
     assert "organisation_id" not in body[0]
     assert "content" not in body[0]  # the list is summaries — no verbatim content
+
+
+async def test_list_artifacts_source_system_reflects_connector_origin(client, fake_service) -> None:
+    """#800: the Artifacts list must agree with search citations on where a document came from —
+    a GitHub-connection ingest shows ``github``, a plain upload shows the ``upload`` fallback."""
+    gid = uuid.uuid4()
+    fake_service.add(
+        _record(
+            gid,
+            filename="README.md",
+            source={
+                "source_system": "github",
+                "source_id": "OraclousAI/oraclous-backend:README.md",
+            },
+        ),
+        "content",
+    )
+    fake_service.add(_record(gid, filename="notes.md", source=None), "content")
+    resp = await client.get(f"/v1/artifacts?graph_id={gid}", headers=_AUTH)
+    assert resp.status_code == 200, resp.text
+    by_filename = {a["filename"]: a["source_system"] for a in resp.json()}
+    assert by_filename == {"README.md": "github", "notes.md": "upload"}
+
+
+async def test_list_artifacts_source_system_falls_back_on_malformed_source(
+    client, fake_service
+) -> None:
+    """A malformed/legacy ``source`` payload must never break the list — it degrades to the same
+    ``upload`` fallback the citation minting path uses, rather than a 500."""
+    gid = uuid.uuid4()
+    fake_service.add(_record(gid, filename="legacy.md", source={"not": "a source ref"}), "content")
+    resp = await client.get(f"/v1/artifacts?graph_id={gid}", headers=_AUTH)
+    assert resp.status_code == 200, resp.text
+    assert resp.json()[0]["source_system"] == "upload"
 
 
 async def test_list_artifacts_q_filter(client, fake_service) -> None:

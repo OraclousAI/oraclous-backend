@@ -10,9 +10,23 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel
+from oraclous_citation import UPLOAD_SOURCE_SYSTEM, SourceRef
+from pydantic import BaseModel, ValidationError
 
 from oraclous_knowledge_graph_service.domain.job import IngestionJobRecord
+
+
+def _source_system(rec: IngestionJobRecord) -> str:
+    """The artifact's connector origin (``"github"``, ``"upload"``, ...), the same value §CITE
+    already mints onto the record's citation (#800) — so /v1/artifacts and /v1/search agree on
+    where a document came from. Falls back to the citation minting path's own upload default on a
+    missing or malformed ``source`` (a legacy pre-provenance row, or a plain upload)."""
+    if rec.source is None:
+        return UPLOAD_SOURCE_SYSTEM
+    try:
+        return SourceRef.model_validate(rec.source).source_system
+    except ValidationError:
+        return UPLOAD_SOURCE_SYSTEM
 
 
 class ArtifactSummary(BaseModel):
@@ -26,6 +40,8 @@ class ArtifactSummary(BaseModel):
     extracted_entities: int
     extracted_relationships: int
     created_at: datetime
+    #: The artifact's connector origin, e.g. ``"github"``; ``"upload"`` for a plain upload (#800).
+    source_system: str
     # #728: who produced this artifact. NULL on a user upload and on every row that predates the
     # provenance columns; ``organisation_id`` stays internal (ORG001) and is still never exposed.
     producer_kind: str | None = None
@@ -47,6 +63,7 @@ class ArtifactSummary(BaseModel):
             extracted_entities=rec.extracted_entities,
             extracted_relationships=rec.extracted_relationships,
             created_at=rec.created_at,
+            source_system=_source_system(rec),
             producer_kind=rec.producer_kind,
             team_run_id=rec.team_run_id,
             member_role=rec.member_role,
