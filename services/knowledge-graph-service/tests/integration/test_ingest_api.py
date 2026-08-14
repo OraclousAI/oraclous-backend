@@ -55,11 +55,16 @@ class _FakeJobService:
         # the response body says nothing about the name the route derived — capture the kwarg the
         # route actually submitted, or the naming assertions below would test the fixture.
         self.submitted_filenames: list[str | None] = []
+        # The SourceRef the route forwarded. Naming now READS `source.title`, so "the name is
+        # right" and "the provenance still arrives" have to be asserted separately — otherwise a
+        # route that consumed the source for a name and dropped it would look correct.
+        self.submitted_sources: list[object] = []
 
-    async def submit(self, *, user_id, graph_id, data, filename, source_type, recipe_id=None, **_):
+    async def submit(self, *, user_id, graph_id, data, filename, source_type, recipe_id=None, **kw):
         if not self.owned:
             raise GraphNotFound(str(graph_id))
         self.submitted_filenames.append(filename)
+        self.submitted_sources.append(kw.get("source"))
         rec = _record(graph_id)
         self.jobs[rec.id] = rec
         return rec
@@ -144,6 +149,23 @@ async def test_a_connector_source_title_names_the_artifact(client, fake_service)
     # NOT `oraclous-backend`. The file is README.md, the connector said so, and the content's own
     # heading is a fallback for content that arrived with no source at all.
     assert fake_service.submitted_filenames == ["README.md"]
+
+
+async def test_naming_from_the_source_does_not_consume_it(client, fake_service) -> None:
+    # The source is provenance first and a name second. A route that read `source.title` for the
+    # name and forgot to forward the SourceRef would pass the test above and still cost every
+    # record its resolvable citation (§CITE) — the failure would be silent, because an ingest with
+    # no source succeeds exactly like one with a source.
+    resp = await client.post(
+        f"/api/v1/graphs/{uuid.uuid4()}/ingest",
+        json={"content": _README, "source_type": "md", "source": _GITHUB_SOURCE},
+        headers=_AUTH,
+    )
+    assert resp.status_code == 202, resp.text
+    submitted = fake_service.submitted_sources[0]
+    assert submitted is not None, "the route dropped the SourceRef"
+    assert submitted.source_id == "OraclousAI/oraclous-backend:README.md"
+    assert submitted.revision_kind == "blob_sha"
 
 
 async def test_an_explicit_filename_still_beats_the_source_title(client, fake_service) -> None:
