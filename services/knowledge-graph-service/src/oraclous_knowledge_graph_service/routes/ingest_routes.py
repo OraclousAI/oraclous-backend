@@ -48,12 +48,27 @@ async def ingest_text(
     # keeps its own name, and #522's re-ingest-the-same-path REPLACE depends on that). Otherwise the
     # name is DERIVED from the content's own leading heading rather than stamped `inline.txt`, which
     # made every inline ingest indistinguishable in the list and collapsed them onto one graph node.
+    #
+    # #800: when the content arrived through a CONNECTOR, its `source.title` sits ahead of the
+    # content heading — the connector read the document and is the only party that knows what it is
+    # called. Skipping it named a GitHub-connection read of `README.md` `oraclous-backend`, because
+    # that README opens with `# oraclous-backend` and the heading fallback took over; the match to
+    # the repository name was a coincidence, not a lookup. Nothing a PERSON types can reach this:
+    # §CITE makes the connector the sole author of a SourceRef, and `title` is its display label.
+    #
+    # Which layer fires, since two now can. The console sends its own `filename` for a connection
+    # ingest (oraclous-frontend#204, the full path the connector echoed) and wins on the line above,
+    # so for THAT door this step is dead. It is the only fix for every caller that sends a `source`
+    # and no name — MCP, a direct API client, a future surface — which is why the rule lives here
+    # rather than only in one console screen. Keep it: deleting it silently re-breaks those callers,
+    # and they have no screen to fix.
     try:
         job = await service.submit(
             user_id=user_id,
             graph_id=graph_id,
             data=body.content.encode("utf-8"),
-            filename=body.filename or derive_name(body.content),
+            filename=body.filename
+            or derive_name(body.content, title=body.source.title if body.source else None),
             source_type=body.source_type,
             recipe_id=body.recipe_id,
             valid_from=body.valid_from,
