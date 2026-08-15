@@ -88,11 +88,17 @@ class PostgreSQLReaderPlugin(_ConnectorToolPlugin):
     TYPE = "INTERNAL"
     TAGS = ["postgresql", "relational", "database"]
     CAPABILITIES = [
-        {"name": "list_tables", "description": "List the tables in the database", "parameters": {}},
+        {
+            "name": "list_tables",
+            "description": "List the tables in the database",
+            "parameters": {},
+            "result_kind": "status",
+        },
         {
             "name": "query",
             "description": "Run a parameterized read-only query",
             "parameters": {"query": "string", "params": "object"},
+            "result_kind": "collection",
         },
     ]
     CREDENTIAL_REQUIREMENTS = [
@@ -112,11 +118,17 @@ class MySQLReaderPlugin(_ConnectorToolPlugin):
     TYPE = "INTERNAL"
     TAGS = ["mysql", "relational", "database"]
     CAPABILITIES = [
-        {"name": "list_tables", "description": "List the tables in the database", "parameters": {}},
+        {
+            "name": "list_tables",
+            "description": "List the tables in the database",
+            "parameters": {},
+            "result_kind": "status",
+        },
         {
             "name": "query",
             "description": "Run a parameterized read-only query",
             "parameters": {"query": "string", "params": "object"},
+            "result_kind": "collection",
         },
     ]
     CREDENTIAL_REQUIREMENTS = [{"type": "connection_string", "provider": "mysql", "required": True}]
@@ -138,8 +150,16 @@ class NotionReaderPlugin(_ConnectorToolPlugin):
             "name": "read_page",
             "description": "Read a Notion page",
             "parameters": {"page_id": "str"},
+            "result_kind": "single",
         },
-        {"name": "search", "description": "Search the workspace", "parameters": {"query": "str"}},
+        {
+            "name": "search",
+            "description": "Search the workspace",
+            "parameters": {"query": "str"},
+            # `/v1/search` returns page PROPERTIES, not bodies — a listing, and the non-citing
+            # sibling of `read_page` (#804 ruling).
+            "result_kind": "status",
+        },
     ]
     CREDENTIAL_REQUIREMENTS = [{"type": "api_key", "provider": "notion", "required": True}]
     INPUT_SCHEMA = {"type": "object", "properties": {"page_id": {"type": "string"}}}
@@ -153,15 +173,19 @@ class GitHubReaderPlugin(_ConnectorToolPlugin):
     TYPE = "API"
     TAGS = ["github", "saas", "code"]
     CAPABILITIES = [
+        # The per-capability property #776 was written for: one tool exposes a read that cites
+        # next to a listing that does not, so the declaration cannot live on the tool.
         {
             "name": "list_files",
             "description": "List files in a repository path",
             "parameters": {"repo": "str", "path": "str"},
+            "result_kind": "status",
         },
         {
             "name": "read_file",
             "description": "Read a file's contents",
             "parameters": {"repo": "str", "path": "str"},
+            "result_kind": "single",
         },
     ]
     CREDENTIAL_REQUIREMENTS = [{"type": "api_key", "provider": "github", "required": True}]
@@ -225,6 +249,8 @@ class GraphIngestPlugin(_ConnectorToolPlugin):
                 "source_type": "str",  # text (default) | md | csv | json | ...
                 "recipe_id": "str",  # structured only: a stored recipe id (optional)
             },
+            # an id for the enqueued job, not for a source (#804 ruling)
+            "result_kind": "status",
         },
     ]
     CREDENTIAL_REQUIREMENTS: list[dict] = []  # first-party: reached over the internal trust path
@@ -286,6 +312,7 @@ class KnowledgeRetrieverPlugin(_ConnectorToolPlugin):
                 "top_k": "int",
                 "mode": "str",  # semantic (default) | fulltext | hybrid
             },
+            "result_kind": "collection",
         },
     ]
     CREDENTIAL_REQUIREMENTS: list[dict] = []  # first-party: reached over the internal trust path
@@ -363,6 +390,9 @@ class RecallMemoryPlugin(_ConnectorToolPlugin):
                 "scope": "str",  # session | user | agent | team | organization (optional)
                 "limit": "int",
             },
+            # content by the #804 criterion; that it serves no citation ids today is defect #808,
+            # not grounds to downgrade it to `status`.
+            "result_kind": "collection",
         },
     ]
     CREDENTIAL_REQUIREMENTS: list[dict] = []  # first-party: reached over the internal trust path
@@ -411,6 +441,7 @@ class FindSimilarPlugin(_ConnectorToolPlugin):
                 "top_k": "int",
                 "min_score": "float",  # 0.0 returns every SIMILAR_TO link; raise to keep close ones
             },
+            "result_kind": "collection",
         },
     ]
     CREDENTIAL_REQUIREMENTS: list[dict] = []  # first-party: reached over the internal trust path
@@ -468,6 +499,7 @@ class FederatedSearchPlugin(_ConnectorToolPlugin):
                 "per_graph_k": "int",
                 "total_k": "int",
             },
+            "result_kind": "collection",
         },
     ]
     CREDENTIAL_REQUIREMENTS: list[dict] = []  # first-party: reached over the internal trust path
@@ -520,16 +552,20 @@ class WebResearchPlugin(_ConnectorToolPlugin):
             "name": "search",
             "description": "Search the live web and return ranked hits (BYOM api_key).",
             "parameters": {"query": "str", "max_results": "int", "provider": "str"},
+            # §CITE rev6 names `core/web-research.search` as THE collection case
+            "result_kind": "collection",
         },
         {
             "name": "fetch",
             "description": "HTTP GET a URL and return its raw text body.",
             "parameters": {"url": "str"},
+            "result_kind": "single",
         },
         {
             "name": "read",
             "description": "HTTP GET a URL and return readable text (tags/script stripped).",
             "parameters": {"url": "str"},
+            "result_kind": "single",
         },
     ]
     # A per-org web-search api_key, resolved at dispatch (ADR-038 D3 / ADR-008). REQUIRED so the
@@ -571,6 +607,8 @@ class ScriptIngestionPlugin(_ConnectorToolPlugin):
             "name": "run",
             "description": "Run a curated loader by id and capture its JSON output.",
             "parameters": {"loader_id": "str", "args": "object", "graph_id": "str"},
+            # an ingest ACTION — what it loads is cited where it lands (#804 ruling)
+            "result_kind": "status",
         },
     ]
     CREDENTIAL_REQUIREMENTS: list[dict] = []  # the curated synthetic loaders are keyless
@@ -637,6 +675,9 @@ class RestConnectorPlugin(_ConnectorToolPlugin):
             "name": "fetch",
             "description": "Fetch a curated source endpoint and return its parsed data.",
             "parameters": {"source_id": "str", "endpoint": "str"},
+            # §CITE-QUAL's own sentence: "a REST or SQL read gives an addressable record". That the
+            # fetched URL is discarded today is defect #808, not grounds to downgrade it.
+            "result_kind": "single",
         },
     ]
     CREDENTIAL_REQUIREMENTS: list[dict] = []  # the shipped sources are keyless
@@ -678,6 +719,8 @@ class ManifestValidatePlugin(_ConnectorToolPlugin):
             "name": "validate_manifest",
             "description": "Dry-run a drafted Team Harness and return its would_block verdict.",
             "parameters": {"draft": "object"},
+            # a verdict on our own draft — nothing that exists independently of the call
+            "result_kind": "status",
         },
     ]
     CREDENTIAL_REQUIREMENTS: list[dict] = []  # first-party: pure in-process validation, keyless
@@ -724,6 +767,8 @@ class ManifestRefinePlugin(_ConnectorToolPlugin):
             "name": "refine_manifest",
             "description": "Apply one typed structural op to a team manifest, re-validated.",
             "parameters": {"manifest": "object", "edit_op": "object", "catalog": "array"},
+            # our own edited manifest — no independent existence
+            "result_kind": "status",
         },
     ]
     CREDENTIAL_REQUIREMENTS: list[dict] = []  # first-party: pure in-process apply, keyless
@@ -772,6 +817,12 @@ class ReadToolPlugin(_ConnectorToolPlugin):
             "name": "read",
             "description": "Read a text file from the sandbox and return its content.",
             "parameters": {"path": "str"},
+            # The sandbox is keyed on organisation_id and nothing deletes it, so a sandbox file is
+            # a durable document another member can be pointed at — a source read, not scratch
+            # state. Writing is an action and reading is a source read, on the same file; that
+            # asymmetry against `Write`/`Edit` is deliberate (#804 ruling). No `SourceRef` is
+            # emitted yet — that gap is #786, not grounds to downgrade it to `status`.
+            "result_kind": "single",
         },
     ]
     CREDENTIAL_REQUIREMENTS: list[dict] = []  # sandbox-confined; keyless
@@ -798,6 +849,8 @@ class WriteToolPlugin(_ConnectorToolPlugin):
             "name": "write",
             "description": "Write text to a sandbox file and return the byte count.",
             "parameters": {"path": "str", "content": "str"},
+            # §CITE-QUAL Limit 1 names "write a file" verbatim as an act with no source to cite
+            "result_kind": "status",
         },
     ]
     CREDENTIAL_REQUIREMENTS: list[dict] = []  # sandbox-confined; keyless
@@ -827,6 +880,7 @@ class EditToolPlugin(_ConnectorToolPlugin):
             "name": "edit",
             "description": "Replace old_string with new_string in a sandbox file (must be unique).",
             "parameters": {"path": "str", "old_string": "str", "new_string": "str"},
+            "result_kind": "status",
         },
     ]
     CREDENTIAL_REQUIREMENTS: list[dict] = []  # sandbox-confined; keyless
@@ -857,6 +911,9 @@ class GrepToolPlugin(_ConnectorToolPlugin):
             "name": "grep",
             "description": "Search the sandbox for a regex and return matching lines (bounded).",
             "parameters": {"pattern": "str", "path": "str"},
+            # returns file CONTENT from durable, addressable sandbox files, and many of them —
+            # the same reason `Read.read` is `single` (#804 ruling)
+            "result_kind": "collection",
         },
     ]
     CREDENTIAL_REQUIREMENTS: list[dict] = []  # sandbox-confined; keyless
@@ -886,6 +943,8 @@ class GlobToolPlugin(_ConnectorToolPlugin):
             "name": "glob",
             "description": "List sandbox paths matching a glob pattern (bounded).",
             "parameters": {"pattern": "str"},
+            # paths only, no content — a listing is a status
+            "result_kind": "status",
         },
     ]
     CREDENTIAL_REQUIREMENTS: list[dict] = []  # sandbox-confined; keyless
@@ -916,6 +975,10 @@ class BashToolPlugin(_ConnectorToolPlugin):
             "name": "bash",
             "description": "Run a shell command in the sandbox and return stdout/stderr/exit_code.",
             "parameters": {"command": "str"},
+            # `cat foo.md` does put a document's bytes in stdout, and it is still a status: the
+            # result is the outcome of running a command, and the shell cannot say which document
+            # any given line came from. A member who wants a citable read has `Read.read`.
+            "result_kind": "status",
         },
     ]
     CREDENTIAL_REQUIREMENTS: list[dict] = []  # sandbox-confined; keyless
@@ -944,6 +1007,7 @@ class WebSearchToolPlugin(_ConnectorToolPlugin):
             "name": "search",
             "description": "Search the live web and return ranked hits.",
             "parameters": {"query": "str", "max_results": "int"},
+            "result_kind": "collection",
         },
     ]
     # A per-org web-search api_key (same as Web Research's `search`); resolved at dispatch. REQUIRED
@@ -979,6 +1043,8 @@ class WebFetchToolPlugin(_ConnectorToolPlugin):
             "name": "fetch",
             "description": "HTTP GET a URL and return its raw text body.",
             "parameters": {"url": "str"},
+            # delegates to Web Research's `fetch`, and declares the same kind
+            "result_kind": "single",
         },
     ]
     CREDENTIAL_REQUIREMENTS: list[dict] = []  # fetch is keyless (SSRF-guarded)
@@ -1010,6 +1076,8 @@ class SendToDraftsPlugin(_ConnectorToolPlugin):
             "name": "send",
             "description": "Record a delivery as a DRAFT (never published).",
             "parameters": {"channel": "str", "content": "str", "recipient": "str"},
+            # §CITE-QUAL Limit 1 names "send a message" verbatim
+            "result_kind": "status",
         },
     ]
     CREDENTIAL_REQUIREMENTS: list[dict] = []  # keyless; drafts only, no external credential
@@ -1052,6 +1120,8 @@ class GitHubSinkPlugin(_ConnectorToolPlugin):
                 "head_branch": "str",
                 "files": "list",
             },
+            # §CITE-QUAL Limit 1 names "open a pull request" verbatim
+            "result_kind": "status",
         },
     ]
     CREDENTIAL_REQUIREMENTS: list[dict] = [
