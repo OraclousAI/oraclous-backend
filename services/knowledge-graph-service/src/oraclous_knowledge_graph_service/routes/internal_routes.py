@@ -63,6 +63,7 @@ from oraclous_knowledge_graph_service.services.memory_service import GraphNotVis
 
 router = APIRouter(prefix="/internal/v1", tags=["internal"])
 
+
 def _producer_of(body: InternalIngestRequest) -> ProducerRef | None:
     """The producer an internal ingest declares, or None for anything that is not an agent write.
 

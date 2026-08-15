@@ -177,6 +177,11 @@ async def _ingest_async(job_id_s: str, organisation_id_s: str) -> dict[str, Any]
                         # citation resolves to when no connector supplied a source (§CITE).
                         source=SourceRef.model_validate(payload.source) if payload.source else None,
                         job_id=job_id_s,
+                        # #786: WHO wrote this, from the job row the ingest door stored. Without
+                        # this hop the minting service never learns the producer and a member's own
+                        # writing is recorded as a user upload on a running stack, however the
+                        # service-level branch is written.
+                        producer_kind=payload.producer_kind,
                     )
                     # Honest extracted counts: the LLM-extracted entities + their entity↔entity
                     # relationships (0 in null mode), NOT the lexical Document/Chunk node total.
