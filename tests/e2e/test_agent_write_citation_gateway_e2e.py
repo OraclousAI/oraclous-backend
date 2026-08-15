@@ -84,14 +84,21 @@ def _archivist_studio(root: Path, nonce: str) -> None:
     member's output is persisted to the bound graph in-loop — which is exactly the write path
     decision 7 is about. The nonce has to survive verbatim into the persisted text, because it is
     both the retrieval key and the proof the model was live.
+
+    The prompt NAMES the tool's ``content`` argument on purpose. A cheap model given "persist this
+    with your Write tool" calls it with a file-shaped argument set and the registry rejects the call
+    with ``content is required``, which fails the run for a reason that has nothing to do with the
+    behaviour under test. The graph retrieval proof spells out its ``query``/``mode`` arguments for
+    the same reason.
     """
     agents = root / ".claude" / "agents"
     agents.mkdir(parents=True)
     body = (
         "You are an archivist. Write one short paragraph of your own about how a team keeps notes, "
-        f"and include the exact token {nonce} verbatim in it. Then persist that paragraph with "
-        "your Write tool so the rest of the team can read it. The graph is already selected for "
-        "this run, so do NOT pass a graph_id. Finally, reply with the paragraph you persisted."
+        f"and include the exact token {nonce} verbatim in it. Then persist that paragraph by "
+        "calling your Write tool ONCE, passing the whole paragraph as the `content` argument and a "
+        "short `title`. The graph is already selected for this run, so do NOT pass a graph_id. "
+        "Finally, reply with the paragraph you persisted, verbatim."
     )
     (agents / "archivist.md").write_text(
         f"---\nname: archivist\nmodel: sonnet\ntools: Write\n---\n{body}\n"
@@ -190,8 +197,19 @@ def test_a_members_own_writing_is_cited_as_agent_not_as_an_upload(
     assert created.status_code == 202, created.text
     run_id = str(created.json()["id"])
 
+    # ADR-042: re-run a member the weak model failed or blocked, bounded, until SUCCEEDED. A cheap
+    # model sometimes answers in prose without invoking its tool at all, which is a property of the
+    # model rather than a defect in the behaviour under test — so retry it rather than let it read
+    # as a broken feature.
     done = _poll(c, run_id)
-    assert done["state"] == "SUCCEEDED", done
+    for _ in range(3):
+        if done["state"] == "SUCCEEDED":
+            break
+        assert done["state"] == "FAILED", done
+        rerun = c.post(f"/v1/engine/team-runs/{run_id}/rerun")
+        assert rerun.status_code == 202, rerun.text
+        done = _poll(c, run_id)
+    assert done["state"] == "SUCCEEDED", f"the run never succeeded: {done}"
     # RULE 8: only a real LLM echoes the per-run nonce — a fake-mode run cannot.
     assert nonce in str(done["results"]), (
         f"nonce {nonce!r} in no result — was the harness LIVE? results={done['results']!r}"
@@ -202,8 +220,13 @@ def test_a_members_own_writing_is_cited_as_agent_not_as_an_upload(
     #    producer the minting never learned about.
     arts = c.get(f"/v1/artifacts?graph_id={graph_id}")
     assert arts.status_code == 200, arts.text
-    kinds = {a.get("producer_kind") for a in arts.json()}
-    assert "team-member" in kinds, f"the run bound no producer onto its write: {arts.json()}"
+    listed = arts.json()
+    assert listed, (
+        "the member persisted nothing — it answered without calling its Write tool, so there is no "
+        "agent write to judge. This is the model, not the behaviour under test."
+    )
+    kinds = {a.get("producer_kind") for a in listed}
+    assert "team-member" in kinds, f"the run bound no producer onto its write: {listed}"
 
     # 5) THE POINT: the member's own writing is not passed off as a document a person brought.
     citation = _await_cited_hits(c, graph_id, nonce)[0]["citation"]
