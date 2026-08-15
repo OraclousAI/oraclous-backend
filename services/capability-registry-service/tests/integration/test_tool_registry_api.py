@@ -184,3 +184,60 @@ async def test_register_tool_without_name_is_422(client: AsyncClient) -> None:
     desc = {"kind": "tool", "metadata": {}, "spec": {"type": "INTERNAL", "capabilities": []}}
     resp = await client.post("/api/v1/tools", json={"descriptor": desc}, headers=_auth(_TENANT_A))
     assert resp.status_code == 422, resp.text
+
+
+async def test_result_kind_reaches_the_catalogue_response(client: AsyncClient) -> None:
+    """#804 — the console reads `result_kind` off this response, so it must survive the seed.
+
+    The field is declared in ``builtin.py``, stored in the descriptor JSONB by ``sync_plugins``,
+    and read back through ``CapabilityOut``. Each hop is a place it could be dropped, and a unit
+    test over ``plugin.descriptor()`` alone would not notice.
+    """
+    listed = await client.get("/api/v1/tools", headers=_auth(_TENANT_A))
+    assert listed.status_code == 200
+    catalogue = listed.json()["capabilities"]
+
+    reader = next(t for t in catalogue if t["name"] == "GitHub Reader")
+    by_name = {c["name"]: c for c in reader["descriptor"]["spec"]["capabilities"]}
+    assert by_name["read_file"]["result_kind"] == "single"
+    # the same tool's listing operation is declared separately, and differently
+    assert by_name["list_files"]["result_kind"] != "single"
+
+    # every seeded built-in arrives declared, not only the one asserted above
+    undeclared = [
+        f"{t['name']}.{c['name']}"
+        for t in catalogue
+        for c in t["descriptor"]["spec"]["capabilities"]
+        if "result_kind" not in c
+    ]
+    assert undeclared == [], f"seeded capabilities with no result_kind: {undeclared}"
+
+
+async def test_a_registered_tool_without_a_result_kind_is_accepted_and_stays_undeclared(
+    client: AsyncClient,
+) -> None:
+    """§CITE rev6 decision 16 — absent is undeclared, and the registry never fills it in.
+
+    An MCP import produces exactly this shape. The value of leaving it absent is that the
+    §CITE-QUAL gate refuses it and the console hides it; a default of ``status`` would instead
+    let a content-returning tool skip grading and be asserted from uncited.
+    """
+    desc = {
+        "kind": "tool",
+        "metadata": {"name": "Undeclared Tenant Tool", "category": "UTILITY"},
+        "version": {"semver": "1.0.0"},
+        "spec": {
+            "type": "INTERNAL",
+            "capabilities": [{"name": "mystery", "description": "no declaration"}],
+            "credential_requirements": [],
+        },
+    }
+    created = await client.post(
+        "/api/v1/tools", json={"descriptor": desc}, headers=_auth(_TENANT_A)
+    )
+    assert created.status_code == 201, created.text
+
+    got = await client.get(f"/api/v1/tools/{created.json()['id']}", headers=_auth(_TENANT_A))
+    assert got.status_code == 200
+    entry = got.json()["descriptor"]["spec"]["capabilities"][0]
+    assert "result_kind" not in entry, f"the registry invented a result_kind: {entry}"
