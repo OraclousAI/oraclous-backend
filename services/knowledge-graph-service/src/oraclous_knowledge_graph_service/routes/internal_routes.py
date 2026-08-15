@@ -40,6 +40,7 @@ from oraclous_knowledge_graph_service.core.dependencies import (
     UserIdDep,
 )
 from oraclous_knowledge_graph_service.domain.artifact_naming import (
+    AGENT_PRODUCER_KINDS,
     ProducerKind,
     ProducerRef,
     derive_name,
@@ -62,18 +63,13 @@ from oraclous_knowledge_graph_service.services.memory_service import GraphNotVis
 
 router = APIRouter(prefix="/internal/v1", tags=["internal"])
 
-#: The producer kinds an agent write may claim. Anything else (or nothing) reads as a user upload,
-#: which keeps filename-based document keying (#522) — fail-safe, never a silent id-keyed write.
-_AGENT_KINDS: frozenset[str] = frozenset({"team-member", "standalone-agent"})
-
-
 def _producer_of(body: InternalIngestRequest) -> ProducerRef | None:
     """The producer an internal ingest declares, or None for anything that is not an agent write.
 
     The values arrive from the connector's INSTANCE CONFIGURATION rather than from the model, the
     same trusted path ``graph_id`` already travels, so this only has to reject the absent case.
     """
-    if body.producer_kind not in _AGENT_KINDS:
+    if body.producer_kind not in AGENT_PRODUCER_KINDS:
         return None
     kind: ProducerKind = (
         "team-member" if body.producer_kind == "team-member" else "standalone-agent"

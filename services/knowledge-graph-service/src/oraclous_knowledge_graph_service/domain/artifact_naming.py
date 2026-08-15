@@ -29,6 +29,12 @@ from typing import Literal
 #: How a produced artifact reached the graph. ``user-upload`` keeps filename keying (#522).
 ProducerKind = Literal["team-member", "standalone-agent", "user-upload"]
 
+#: The producer kinds that mark content as AGENT-WRITTEN. ``user-upload`` and anything unrecognised
+#: are deliberately absent, so the fail-safe direction is the old upload behaviour rather than a
+#: silent agent write. Three readers ask this question — the internal ingest door, the worker's
+#: document keying, and the citation the ingest mints — and they must never disagree.
+AGENT_PRODUCER_KINDS: frozenset[str] = frozenset({"team-member", "standalone-agent"})
+
 #: Longest derived name we store; ``ingestion_jobs.filename`` is String(512), so this leaves room.
 MAX_NAME_LEN = 200
 
