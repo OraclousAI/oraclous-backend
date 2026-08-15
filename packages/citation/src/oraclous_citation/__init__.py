@@ -16,9 +16,16 @@ them verbatim.
 from oraclous_citation.graph_properties import citation_from_properties, citation_properties
 from oraclous_citation.identity import compute_citation_id
 from oraclous_citation.minting import mint_citation
-from oraclous_citation.models import UPLOAD_SOURCE_SYSTEM, Author, Citation, SourceRef
+from oraclous_citation.models import (
+    AGENT_SOURCE_SYSTEM,
+    UPLOAD_SOURCE_SYSTEM,
+    Author,
+    Citation,
+    SourceRef,
+)
 
 __all__ = [
+    "AGENT_SOURCE_SYSTEM",
     "UPLOAD_SOURCE_SYSTEM",
     "Author",
     "Citation",
