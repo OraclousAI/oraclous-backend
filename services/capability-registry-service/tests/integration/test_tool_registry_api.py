@@ -236,8 +236,18 @@ async def test_a_registered_tool_without_a_result_kind_is_accepted_and_stays_und
         "/api/v1/tools", json={"descriptor": desc}, headers=_auth(_TENANT_A)
     )
     assert created.status_code == 201, created.text
+    tool_id = created.json()["id"]
 
-    got = await client.get(f"/api/v1/tools/{created.json()['id']}", headers=_auth(_TENANT_A))
+    # acceptance criterion 4 names the LIST response — that is the surface the console reads,
+    # and the one where a serialiser default would do the damage.
+    listed = await client.get("/api/v1/tools", headers=_auth(_TENANT_A))
+    assert listed.status_code == 200
+    tool = next(t for t in listed.json()["capabilities"] if t["id"] == tool_id)
+    entry = tool["descriptor"]["spec"]["capabilities"][0]
+    assert "result_kind" not in entry, f"the list response invented a result_kind: {entry}"
+
+    # and the by-id read, which shares the CapabilityOut model but not the code path
+    got = await client.get(f"/api/v1/tools/{tool_id}", headers=_auth(_TENANT_A))
     assert got.status_code == 200
-    entry = got.json()["descriptor"]["spec"]["capabilities"][0]
-    assert "result_kind" not in entry, f"the registry invented a result_kind: {entry}"
+    by_id = got.json()["descriptor"]["spec"]["capabilities"][0]
+    assert "result_kind" not in by_id, f"the by-id response invented a result_kind: {by_id}"

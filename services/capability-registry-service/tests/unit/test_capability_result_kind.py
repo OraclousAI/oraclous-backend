@@ -16,12 +16,23 @@ Absent is **undeclared**, and rev6 decision 16 is explicit that it is never read
 That direction is fail-open: an ungraded content-returning tool would declare itself an action tool,
 skip §CITE-QUAL grading entirely, and let a member read from it and assert uncited.
 
-**What these tests do and do not pin.** They pin the invariants (every first-party capability
-declares one; the value is in the closed set; an MCP import declares nothing; nothing coerces an
-absent value) and the classifications the Contract itself states. They deliberately do NOT pin a
-value for every operation in the catalogue — several are genuine judgment calls, and #804 says an
-operation you cannot classify is a question for the issue rather than a default. The completeness
-test below is what forces each one to be decided.
+**Every operation is pinned, and that is the point of the table below.** An earlier revision of this
+file pinned only the values §CITE quotes and left the rest to a closed-set check. `be-test-reviewer`
+rejected it: twelve content-returning operations could all have been declared ``status`` with the
+suite green, which is exactly the one direction the Contract calls dangerous. The table now carries
+every operation, from the ruling on #804.
+
+The criterion behind the table, restated so the next connector needs no new ruling — §CITE-QUAL
+Limit 1's own words are that action tools "have no source to cite", not that they return no bytes:
+
+    A capability returns content when its result names something that exists independently of
+    the call, which a reader could be pointed at. Otherwise it returns a status.
+
+Two corollaries carry most of the list. **A listing is a status** — a list of names, paths or ids
+supports only "these things exist", and that claim's source is the connector call, not a document.
+**An operation is classified by what it is, not by what it currently emits** — a content-returning
+operation with no ``SourceRef`` is a defect in that connector (tracked as #808, and #786 for
+``Read.read``), never grounds to downgrade it to ``status``.
 """
 
 from __future__ import annotations
@@ -37,15 +48,68 @@ pytestmark = pytest.mark.unit
 #: The closed value set (§CITE-QUAL, rev6). Absent is a fourth state and is NOT a member.
 RESULT_KINDS = {"status", "single", "collection"}
 
+#: Every operation in the first-party catalogue, keyed by (tool display name, operation name).
+#: 33 operations across 25 plugins. Values ruled on #804 on 2026-08-15.
+RULED: dict[tuple[str, str], str] = {
+    # --- status: the result reports what the platform did, or lists identifiers without content --
+    # §CITE-QUAL Limit 1 names these four acts verbatim: "open a pull request, send a message,
+    # write a file, deliver a report".
+    ("GitHub Sink", "deliver"): "status",
+    ("Send to Drafts", "send"): "status",
+    ("Write", "write"): "status",
+    ("Edit", "edit"): "status",
+    # Listings. A list of names carries no content to assert from.
+    ("GitHub Reader", "list_files"): "status",
+    ("PostgreSQL Reader", "list_tables"): "status",
+    ("MySQL Reader", "list_tables"): "status",
+    ("Notion Reader", "search"): "status",
+    ("Glob", "glob"): "status",
+    # The platform reporting on its own work.
+    ("Bash", "bash"): "status",
+    ("Graph Ingest", "ingest"): "status",
+    ("Script Ingestion", "run"): "status",
+    ("Manifest Validate", "validate_manifest"): "status",
+    ("Manifest Refine", "refine_manifest"): "status",
+    # Transforms of input the caller already holds.
+    ("Text Tools", "word_count"): "status",
+    ("Text Tools", "to_upper"): "status",
+    ("Text Tools", "extract_emails"): "status",
+    # --- single: one identified document ------------------------------------------------------
+    ("GitHub Reader", "read_file"): "single",
+    ("Notion Reader", "read_page"): "single",
+    ("Read", "read"): "single",
+    ("Web Research", "read"): "single",
+    ("Web Research", "fetch"): "single",
+    ("WebFetch", "fetch"): "single",
+    ("REST Connector", "fetch"): "single",
+    # --- collection: many content items, each with its own identity -----------------------------
+    ("Web Research", "search"): "collection",
+    ("WebSearch", "search"): "collection",
+    ("Knowledge Retriever", "search"): "collection",
+    ("Find Similar", "find_similar"): "collection",
+    ("Federated Search", "federated_search"): "collection",
+    ("Recall Memory", "recall_memory"): "collection",
+    ("PostgreSQL Reader", "query"): "collection",
+    ("MySQL Reader", "query"): "collection",
+    ("Grep", "grep"): "collection",
+}
+
 
 def _operations() -> dict[tuple[str, str], dict[str, Any]]:
-    """Every first-party capability entry, keyed by (tool display name, operation name)."""
+    """Every first-party capability entry, keyed by (tool display name, operation name).
+
+    The key is asserted unique. Two plugins sharing a display name would otherwise let one
+    silently overwrite the other, and an operation that never reaches the dict is an operation
+    the completeness check below cannot see.
+    """
     found: dict[tuple[str, str], dict[str, Any]] = {}
     for plugin in plugin_registry.discover():
         descriptor = plugin.descriptor()
         tool = descriptor["metadata"]["name"]
         for operation in descriptor["spec"]["capabilities"]:
-            found[(tool, operation["name"])] = operation
+            key = (tool, operation["name"])
+            assert key not in found, f"two plugins expose {key}; the catalogue key is not unique"
+            found[key] = operation
     return found
 
 
@@ -56,25 +120,30 @@ def _kind_of(tool: str, operation: str) -> Any:
 
 
 # --------------------------------------------------------------------------------------
-# The invariants
+# The table is the specification
 # --------------------------------------------------------------------------------------
 
 
-def test_every_first_party_capability_declares_a_result_kind() -> None:
-    """Completeness. This is the test that forces all 31 operations to be classified.
+def test_the_ruled_table_covers_the_catalogue_exactly() -> None:
+    """The table and the catalogue must agree in both directions.
 
-    An operation with no declaration is refused by the §CITE-QUAL gate and hidden from the
-    console's ingest picker, so leaving one out silently retires it rather than shipping it.
+    A new connector arriving with no ruled value fails here rather than passing on a permissive
+    closed-set check, and a table entry for an operation that no longer exists fails too. This is
+    the guard that keeps the pinning honest as the catalogue grows.
     """
-    undeclared = [
-        f"{tool}.{operation}"
-        for (tool, operation), entry in _operations().items()
-        if "result_kind" not in entry
-    ]
-    assert undeclared == [], f"first-party capabilities with no result_kind: {undeclared}"
+    catalogue = set(_operations())
+    assert catalogue - set(RULED) == set(), "catalogue operations with no ruled result_kind"
+    assert set(RULED) - catalogue == set(), "ruled operations that are not in the catalogue"
+    assert len(catalogue) == 33, f"expected 33 operations, found {len(catalogue)}"
+
+
+@pytest.mark.parametrize(("tool", "operation"), sorted(RULED), ids=lambda p: p)
+def test_each_capability_declares_its_ruled_result_kind(tool: str, operation: str) -> None:
+    assert _kind_of(tool, operation) == RULED[(tool, operation)]
 
 
 def test_every_declared_result_kind_is_in_the_closed_set() -> None:
+    """Cheap backstop. The table above is the real constraint; this catches a typo'd value."""
     wrong = {
         f"{tool}.{operation}": entry.get("result_kind")
         for (tool, operation), entry in _operations().items()
@@ -95,60 +164,33 @@ def test_the_generated_library_group_operations_declare_one_too() -> None:
         assert entry.get("result_kind") in RESULT_KINDS, entry
 
 
-# --------------------------------------------------------------------------------------
-# The classifications the Contract itself states
-# --------------------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    ("tool", "operation"),
-    [
-        # The two working readers that emit a SourceRef today (#770; Notion since PR #772).
-        # These are the operations the console's ingest picker exists to offer.
-        ("GitHub Reader", "read_file"),
-        ("Notion Reader", "read_page"),
-    ],
-)
-def test_a_document_read_declares_single(tool: str, operation: str) -> None:
-    assert _kind_of(tool, operation) == "single"
-
-
-@pytest.mark.parametrize(
-    ("tool", "operation"),
-    [
-        # §CITE-QUAL Limit 1 names these four acts verbatim: "open a pull request, send a
-        # message, write a file, deliver a report". They have no source to cite.
-        ("GitHub Sink", "deliver"),
-        ("Send to Drafts", "send"),
-        ("Write", "write"),
-        ("Edit", "edit"),
-    ],
-)
-def test_an_action_tool_declares_status(tool: str, operation: str) -> None:
-    assert _kind_of(tool, operation) == "status"
-
-
-@pytest.mark.parametrize(
-    ("tool", "operation"),
-    [
-        # §CITE rev6 names `core/web-research.search` as the collection case: one tool result,
-        # ten hits, ten sources. WebSearch is the same act under a different plugin.
-        ("Web Research", "search"),
-        ("WebSearch", "search"),
-    ],
-)
-def test_a_live_web_search_declares_collection(tool: str, operation: str) -> None:
-    assert _kind_of(tool, operation) == "collection"
-
-
-def test_a_tool_may_mix_kinds_across_its_own_operations() -> None:
+def test_a_tool_declares_differently_across_its_own_operations() -> None:
     """The property that makes this per-capability rather than per-tool (#776).
 
     GitHub Reader exposes a read that reports its source and a listing that does not. A
     tool-level declaration cannot express that, which is why §CITE-QUAL Limit 1's "a tool
-    declares" wording was amended in rev6.
+    declares" wording was amended in rev6. Redundant against the table, and kept because the
+    table alone does not say *why* two entries for one tool differ.
     """
-    assert _kind_of("GitHub Reader", "read_file") != _kind_of("GitHub Reader", "list_files")
+    assert _kind_of("GitHub Reader", "read_file") == "single"
+    assert _kind_of("GitHub Reader", "list_files") == "status"
+
+
+def test_no_content_returning_operation_is_declared_a_status() -> None:
+    """The fail-open direction, asserted as its own named test rather than left implied.
+
+    Under-claiming skips §CITE-QUAL grading *and* skips minting, so a member reads content and
+    asserts from it uncited. `Read.read` is the sharpest case: an agent writes a file, a later
+    member reads it back off the org-shared sandbox, and nothing is recorded.
+    """
+    content_returning = [key for key, kind in RULED.items() if kind != "status"]
+    assert len(content_returning) == 16
+    downgraded = [
+        f"{tool}.{operation}"
+        for (tool, operation) in content_returning
+        if _kind_of(tool, operation) == "status"
+    ]
+    assert downgraded == [], f"content-returning operations declared as a status: {downgraded}"
 
 
 # --------------------------------------------------------------------------------------
