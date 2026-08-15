@@ -200,8 +200,8 @@ async def test_result_kind_reaches_the_catalogue_response(client: AsyncClient) -
     reader = next(t for t in catalogue if t["name"] == "GitHub Reader")
     by_name = {c["name"]: c for c in reader["descriptor"]["spec"]["capabilities"]}
     assert by_name["read_file"]["result_kind"] == "single"
-    # the same tool's listing operation is declared separately, and differently
-    assert by_name["list_files"]["result_kind"] != "single"
+    # the same tool's listing operation is declared separately, and differently (ruled on #804)
+    assert by_name["list_files"]["result_kind"] == "status"
 
     # every seeded built-in arrives declared, not only the one asserted above
     undeclared = [

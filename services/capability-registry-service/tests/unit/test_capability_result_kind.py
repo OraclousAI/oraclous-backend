@@ -184,7 +184,10 @@ def test_no_content_returning_operation_is_declared_a_status() -> None:
     member reads it back off the org-shared sandbox, and nothing is recorded.
     """
     content_returning = [key for key, kind in RULED.items() if kind != "status"]
-    assert len(content_returning) == 16
+    assert len(content_returning) == 16, (
+        f"the ruling classifies 16 operations as content-returning, the table holds "
+        f"{len(content_returning)} — if a new one was ruled, update this count deliberately"
+    )
     downgraded = [
         f"{tool}.{operation}"
         for (tool, operation) in content_returning
