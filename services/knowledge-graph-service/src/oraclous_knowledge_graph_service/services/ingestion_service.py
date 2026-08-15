@@ -25,8 +25,15 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from neo4j_graphrag.experimental.components.types import Neo4jGraph
-from oraclous_citation import UPLOAD_SOURCE_SYSTEM, Citation, SourceRef, mint_citation
+from oraclous_citation import (
+    AGENT_SOURCE_SYSTEM,
+    UPLOAD_SOURCE_SYSTEM,
+    Citation,
+    SourceRef,
+    mint_citation,
+)
 
+from oraclous_knowledge_graph_service.domain.artifact_naming import AGENT_PRODUCER_KINDS
 from oraclous_knowledge_graph_service.domain.ontology import Ontology, resolve_label
 from oraclous_knowledge_graph_service.repositories.graph_write_repository import (
     GraphWriteRepository,
@@ -91,9 +98,14 @@ def enforce_ontology(entity_graph: Neo4jGraph, ontology: Ontology | None) -> _En
 
 
 def _mint_for_ingest(
-    *, source: SourceRef | None, job_id: str | None, document: str, content: str
+    *,
+    source: SourceRef | None,
+    job_id: str | None,
+    document: str,
+    content: str,
+    producer_kind: str | None = None,
 ) -> Citation | None:
-    """Mint the citation this ingest will stamp, from the connector's source or the upload fallback.
+    """Mint the citation this ingest will stamp, from the connector's source or a fallback.
 
     Minting happens HERE and not in the writer: §CITE mints once, at the tool-execution boundary,
     through a function general over a ``SourceRef``. The writer sits below that boundary and holds
@@ -110,14 +122,25 @@ def _mint_for_ingest(
     §CITE: an upload citation carries the ingest job id as its ``source_id``, the content hash as
     its revision, and ``url: null`` — no route serves an uploaded document back yet, and claiming a
     URL that does not resolve would be the same fiction the Contract exists to reject.
+
+    ``producer_kind`` (§CITE rev4 decision 7) is what separates the two sourceless cases. Content an
+    AGENT wrote is stamped ``agent``, so a reader can tell a cited passage was written by an agent
+    rather than read from the world; without it an agent can write a file, retrieve it and cite it,
+    and the citation is indistinguishable from a document a person actually brought. A real
+    ``source`` still WINS — an agent that reads a genuine GitHub file has a genuine origin, and
+    recording authorship must never destroy it. Anything unrecognised falls back to ``upload``, so
+    the fail-safe direction is the old behaviour rather than a silent agent write.
     """
     if source is not None:
         return mint_citation(source, content=content)
     if job_id is None:
         return None
+    source_system = (
+        AGENT_SOURCE_SYSTEM if producer_kind in AGENT_PRODUCER_KINDS else UPLOAD_SOURCE_SYSTEM
+    )
     return mint_citation(
         SourceRef(
-            source_system=UPLOAD_SOURCE_SYSTEM,
+            source_system=source_system,
             source_id=job_id,
             url=None,
             title=document or None,
@@ -149,6 +172,7 @@ class IngestionService:
         document_key: str | None = None,
         source: SourceRef | None = None,
         job_id: str | None = None,
+        producer_kind: str | None = None,
     ) -> WriteResult:
         """Chunk, embed, extract and write one document.
 
@@ -157,6 +181,10 @@ class IngestionService:
         artifact passes its own job id, so two members of one run writing under similar names can
         never merge onto a single node. Omitted → the name IS the key, which is what keeps a user
         upload's re-ingest-the-same-path REPLACE behaviour (#522) intact.
+
+        ``producer_kind`` (#786) is WHO wrote the content, as the job row recorded it. It decides
+        the citation when nothing else supplied a source: an agent's own writing is stamped
+        ``agent`` rather than passed off as a user upload.
         """
         try:
             text, _meta = extract_text(data=data, filename=document, source_type=source_type)
@@ -165,7 +193,13 @@ class IngestionService:
         chunks = chunk_text(text)
         if not chunks:
             raise IngestionError("no chunks produced from extracted text")
-        citation = _mint_for_ingest(source=source, job_id=job_id, document=document, content=text)
+        citation = _mint_for_ingest(
+            source=source,
+            job_id=job_id,
+            document=document,
+            content=text,
+            producer_kind=producer_kind,
+        )
         embeddings = self._embedder.embed(chunks)
         entity_graph = None
         violations = 0

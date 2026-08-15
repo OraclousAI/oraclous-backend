@@ -41,6 +41,13 @@ AbsoluteUrl = Annotated[str, StringConstraints(pattern=r"^https?://")]
 #: a connector — the one canonical definition every citing/attributing caller shares.
 UPLOAD_SOURCE_SYSTEM: Final = "upload"
 
+#: The reserved ``source_system`` for content an agent itself wrote (§CITE rev4 decision 7). It is
+#: the one row of the minting table with no external source at all: a reader has to be able to tell
+#: that a cited passage was written by an agent rather than read from the world. Minting it as an
+#: upload conceals exactly that, and lets an agent write a file, retrieve it and cite it while
+#: passing every other rule.
+AGENT_SOURCE_SYSTEM: Final = "agent"
+
 
 class Author(BaseModel):
     """The SOURCE record's author, as the source exposes them."""

@@ -25,6 +25,7 @@ from oraclous_knowledge_graph_service.core.config import get_settings
 from oraclous_knowledge_graph_service.core.database import make_sessionmaker, make_worker_engine
 from oraclous_knowledge_graph_service.core.neo4j import make_neo4j_driver
 from oraclous_knowledge_graph_service.core.redis import make_redis_lock_client
+from oraclous_knowledge_graph_service.domain.artifact_naming import AGENT_PRODUCER_KINDS
 from oraclous_knowledge_graph_service.domain.extraction_schema import (
     to_graph_schema,
     to_prompt_prefix,
@@ -56,9 +57,6 @@ from oraclous_knowledge_graph_service.services.structured_ingestion_service impo
 from oraclous_knowledge_graph_service.tasks.celery_app import AsyncTaskExecutor, celery_app
 from oraclous_knowledge_graph_service.tasks.code_stale_tasks import cleanup_stale_code_task
 
-#: Producer kinds whose artifacts key on their own job id rather than on their name (#728).
-_AGENT_PRODUCERS = frozenset({"team-member", "standalone-agent"})
-
 
 def _document_key(job_id: uuid.UUID, payload: IngestionPayload) -> str | None:
     """The graph document node's identity for this job, or None to key on the name.
@@ -71,7 +69,7 @@ def _document_key(job_id: uuid.UUID, payload: IngestionPayload) -> str | None:
     same path REPLACE (#522). Anything unrecognised also returns None, so the fail-safe direction
     is the old behaviour rather than a silent id-keyed write.
     """
-    if payload.producer_kind in _AGENT_PRODUCERS:
+    if payload.producer_kind in AGENT_PRODUCER_KINDS:
         return str(job_id)
     return None
 
@@ -179,6 +177,11 @@ async def _ingest_async(job_id_s: str, organisation_id_s: str) -> dict[str, Any]
                         # citation resolves to when no connector supplied a source (§CITE).
                         source=SourceRef.model_validate(payload.source) if payload.source else None,
                         job_id=job_id_s,
+                        # #786: WHO wrote this, from the job row the ingest door stored. Without
+                        # this hop the minting service never learns the producer and a member's own
+                        # writing is recorded as a user upload on a running stack, however the
+                        # service-level branch is written.
+                        producer_kind=payload.producer_kind,
                     )
                     # Honest extracted counts: the LLM-extracted entities + their entity↔entity
                     # relationships (0 in null mode), NOT the lexical Document/Chunk node total.
