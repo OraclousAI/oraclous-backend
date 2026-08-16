@@ -8,8 +8,11 @@ is what the write does to the row:
   3900-second lease sweep. That is a deliberate consequence of decision 1 on the issue: the lease
   exists to catch a DEAD driver, and a run emitting checkpoints is demonstrably alive. A run wedged
   inside one long member emits nothing and is still reaped, which is the case the lease was written
-  for. An implementation that reached for a raw UPDATE would skip the ORM ``onupdate`` and silently
-  drop this property, so it is asserted rather than assumed;
+  for. The property is asserted rather than assumed because it is invisible at the call site: an
+  implementation that passes ``updated_at`` through explicitly to "preserve" it, or that writes
+  through textual SQL, silently drops it while every unit test stays green. (A SQLAlchemy Core
+  ``update()`` against the mapped table is fine — the column's ``onupdate`` default still applies.
+  Neither the ORM nor Core is being ruled out here; only the outcome is pinned);
 * it refuses a row that is not RUNNING, so a settled run can never be rewritten by a late write
   from a driver that has already lost the race.
 
@@ -111,7 +114,7 @@ async def test_a_checkpoint_persists_the_partial_state_on_a_running_row(repos) -
 async def test_a_checkpoint_refreshes_the_reaper_lease(repos) -> None:  # noqa: ANN001
     # A run that is still completing members must stop looking stale. Take a cutoff AFTER the row
     # was claimed RUNNING (so it is stale by that cutoff), checkpoint, and it must drop out of the
-    # sweep — the ORM's `onupdate=func.now()` doing its job on the checkpoint write.
+    # sweep — the model's `onupdate=func.now()` applying to the checkpoint write like any other.
     app_repo, owner_repo = repos
     row = await _running_row(app_repo, ORG_A)
 

@@ -79,17 +79,21 @@ class _Recorder:
 
 
 async def test_on_checkpoint_fires_once_per_settled_member() -> None:
-    # Three members in a chain. Each one settling emits exactly one checkpoint, and the run's own
-    # return value is unchanged — the hook OBSERVES, it never alters the result.
+    # Decision 1 is per-MEMBER, not per stage, so the shape has to be able to tell them apart: two
+    # independent members in one wide stage, then a dependent third. Per-member emits three
+    # checkpoints, per-stage emits two. A chain of three would be three stages of one member and
+    # would pass either way, which is exactly how a stage-boundary implementation slips through.
+    # The run's own return value is unchanged either way — the hook OBSERVES, it never alters it.
     async def dispatch(member: OHMMember, envs: list[HandoffEnvelope], item: Any) -> dict:
         return {"out": member.role}
 
     rec = _Recorder()
     res = await run_team(
-        _team([_m("a"), _m("b", ["a"]), _m("c", ["b"])]), dispatch, on_checkpoint=rec
+        _team([_m("a"), _m("b"), _m("c", ["a", "b"])]), dispatch, on_checkpoint=rec
     )
 
-    assert len(rec.snapshots) == 3  # one per member, not one per stage and not one at the end
+    assert len(rec.snapshots) == 3  # one per member; a stage-boundary hook would emit 2
+    assert len(rec.statuses[0]) == 1  # the first wide-stage member alone, mid-stage
     assert rec.statuses[-1] == {"a": "succeeded", "b": "succeeded", "c": "succeeded"}
     assert res.member_status == rec.statuses[-1]  # the hook did not change the outcome
     assert res.results["c"] == {"out": "c"}
