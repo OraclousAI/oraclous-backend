@@ -513,6 +513,38 @@ async def test_a_run_reaped_before_any_member_finished_is_still_a_409() -> None:
     assert ei.value.status_code == 409 and ei.value.error_type == "nothing_to_rerun"
 
 
+async def test_a_drive_that_dies_before_any_member_settles_is_still_a_409() -> None:
+    # The in-process twin of the test above, and they must agree. The 50-minute soft limit and the
+    # 60-minute SIGKILL are the same event on two clocks; if the handler backfills unconditionally
+    # while the reaper backfills only over real work, the same run answers /rerun differently
+    # depending on which one got to it.
+    #
+    # The answer pinned here is the reaper's: backfill only when at least one member was
+    # checkpointed. A drive that dies before member 1 — an unreachable harness, an immediate kill —
+    # has no partial work to recover, so a fresh POST is the right recovery and today's
+    # nothing_to_rerun behaviour on the commonest failure path is preserved.
+    repo = FakeTeamRunRepo()
+    svc, _ = _svc(
+        repo, ScriptedHarness(delays={"a": 2.0})
+    )  # 'a' is still in flight at the deadline
+
+    row = await _run(
+        svc,
+        _principal(),
+        manifest=_team([_agent("a"), _agent("b", ["a"])], max_wall_seconds=1),
+        sub_harnesses={},
+        gate_decisions={},
+    )
+
+    assert row.state == "FAILED"
+    assert not (row.member_status or {})  # nothing settled, so nothing to backfill over
+    assert not (row.results or {})
+
+    with pytest.raises(TeamRunError) as ei:
+        await svc.rerun(row.id, _principal())
+    assert ei.value.status_code == 409 and ei.value.error_type == "nothing_to_rerun"
+
+
 # ── decision 4: loop teams get the same durability ───────────────────────────────────────────────
 
 
@@ -541,3 +573,165 @@ async def test_a_loop_team_drive_wires_the_checkpoint_hook(monkeypatch: Any) -> 
 
     requeued = await svc.rerun(row.id, _principal())
     assert requeued.state == "QUEUED"
+
+
+# ── decision 4, mock-free: the real hybrid driver must not leak its internal node ─────────────────
+#
+# The test above monkeypatches run_team_hybrid, so it pins only that the drive passes the kwarg
+# down. These drive the REAL hybrid, because what happens downstream of that kwarg is where the
+# feature can reintroduce the very bug #819 exists to fix.
+#
+# run_team_hybrid runs the acyclic skeleton over a CONDENSED member list in which each loop is one
+# synthetic `__loop__<i>` node. The settle path pops that node because it is internal — but a
+# checkpoint fires before the pop. A completed drive is therefore clean and a KILLED one is not,
+# which is the worst possible split: the leak is invisible until the exact moment it matters.
+
+
+class _CountingHarness:
+    """Records every role the harness really dispatched, so a skipped loop is visible."""
+
+    def __init__(self) -> None:
+        self.roles: list[str] = []
+
+    async def execute(self, *, manifest_ref: str | None = None, **kw: Any) -> dict[str, Any]:
+        role = (manifest_ref or "?/?").split("/")[-1].split("@")[0]
+        self.roles.append(role)
+        return {
+            "id": str(uuid.uuid4()),
+            "status": "SUCCEEDED",
+            "output": f"{role}-out",
+            "total_tokens": 100,
+        }
+
+
+def _ohm_loop_team() -> Any:
+    """a → loop(b) → c, as OHM objects: a skeleton member on each side of a genuine loop."""
+    from oraclous_ohm.manifest import (
+        OHMLoop,
+        OHMManifest,
+        OHMMember,
+        OHMMetadata,
+        OHMOrchestration,
+        OHMRuntime,
+        OHMTermination,
+    )
+
+    def _member(role: str, deps: list[str] | None = None) -> OHMMember:
+        return OHMMember(
+            role=role, kind="agent", manifest_ref=f"org:x/{role}@1", depends_on=deps or []
+        )
+
+    return OHMManifest(
+        ohm_version="1.1",
+        metadata=OHMMetadata(id=uuid.uuid4(), name="t", owner_organization_id=_ORG, kind="team"),
+        members=[_member("a"), _member("b", ["a"]), _member("c", ["b"])],
+        orchestration=OHMOrchestration(
+            loops=[OHMLoop(members=["b"], routing={"b": "keep writing"})],
+            termination=OHMTermination(max_rounds=8),
+        ),
+        runtime=OHMRuntime(entrypoint="a"),
+    )
+
+
+def _loop_conductor() -> tuple[Any, Any]:
+    """A coordinator that dispatches whatever the loop has not produced, and a coded done-check
+    that converges once every loop member has produced. No model, no evaluator — the loop
+    machinery is real, only its two injected decisions are deterministic."""
+
+    async def coordinate(loop: Any, results: dict[str, Any], rounds_left: int) -> list[str]:
+        return [r for r in loop.members if results.get(r) is None]
+
+    def done_check_for(loop: Any, diag: dict[str, Any] | None = None) -> Any:
+        async def done(results: dict[str, Any]) -> bool:
+            return all(results.get(r) is not None for r in loop.members)
+
+        return done
+
+    return coordinate, done_check_for
+
+
+async def _hybrid(manifest: Any, harness: Any, **kw: Any) -> Any:
+    from oraclous_execution_engine_service.services.team_run import run_team_hybrid
+
+    return await run_team_hybrid(manifest, harness, **kw)
+
+
+async def test_a_loop_drive_never_checkpoints_the_internal_condensed_node() -> None:
+    # Every checkpoint must contain only roles the user declared. `__loop__0` is an implementation
+    # detail of the condensation; on the row it is both a leak of internal state to the API and a
+    # poisoned resume seed (see the test below).
+    harness = _CountingHarness()
+    coordinate, done_check_for = _loop_conductor()
+    snapshots: list[tuple[dict[str, Any], dict[str, str]]] = []
+
+    async def record(results: dict[str, Any], member_status: dict[str, str]) -> None:
+        snapshots.append((dict(results), dict(member_status)))
+
+    res = await _hybrid(
+        _ohm_loop_team(),
+        harness,
+        coordinate=coordinate,
+        done_check_for=done_check_for,
+        on_checkpoint=record,
+    )
+
+    assert res.status == "completed"
+    assert snapshots, "the loop drive checkpointed nothing"
+    declared = {"a", "b", "c"}
+    for results, member_status in snapshots:
+        assert set(member_status) <= declared, f"internal role leaked: {set(member_status)}"
+        assert set(results) <= declared, f"internal role leaked: {set(results)}"
+    # decision 4 has substance only if the loop's own member reaches the row, not just the skeleton
+    assert any("b" in status for _, status in snapshots)
+    # ...and the snapshot stays COMPLETE — a loop-side write must not drop the skeleton member
+    assert all("a" in status for _, status in snapshots if "b" in status)
+
+
+async def test_a_killed_loop_run_resumes_with_its_loop_member_intact() -> None:
+    # The consequence, end to end. Take the checkpoint the row would be holding if the worker were
+    # killed after the loop converged but before 'c' finished, rebuild `completed` exactly as
+    # `_completed_for_resume` does, and re-drive.
+    #
+    # With the internal node leaking, `completed` carries `__loop__0`, run_team marks the condensed
+    # node succeeded without ever entering the conductor, and 'b' vanishes from the results while
+    # the run still reports completed. That is #819's own failure, reappearing inside the fix.
+    coordinate, done_check_for = _loop_conductor()
+    first_harness = _CountingHarness()
+    snapshots: list[tuple[dict[str, Any], dict[str, str]]] = []
+
+    async def record(results: dict[str, Any], member_status: dict[str, str]) -> None:
+        snapshots.append((dict(results), dict(member_status)))
+
+    manifest = _ohm_loop_team()
+    await _hybrid(
+        manifest,
+        first_harness,
+        coordinate=coordinate,
+        done_check_for=done_check_for,
+        on_checkpoint=record,
+    )
+
+    # the last state written before 'c' settled — what a kill at that instant leaves on the row
+    mid = next((s for s in reversed(snapshots) if "c" not in s[1]), None)
+    assert mid is not None, "no checkpoint landed before the final member"
+    results, member_status = mid
+    completed = {
+        role: results[role]
+        for role, status in member_status.items()
+        if status in ("succeeded", "partial") and role in results
+    }
+
+    second_harness = _CountingHarness()
+    resumed = await _hybrid(
+        manifest,
+        second_harness,
+        coordinate=coordinate,
+        done_check_for=done_check_for,
+        completed=completed,
+    )
+
+    assert resumed.status == "completed"
+    assert set(resumed.member_status) == {"a", "b", "c"}  # every declared member, no internal node
+    assert resumed.results.get("b") is not None  # the loop's output survived the kill
+    assert "__loop__0" not in resumed.results
+    assert "a" not in second_harness.roles  # the durable skeleton member was not re-dispatched
