@@ -30,6 +30,7 @@ from oraclous_ohm.manifest import (
     resolve_member_on_exhaustion,
 )
 from oraclous_ohm.orchestrate import (
+    CheckpointFn,
     Diagnostic,
     DispatchFn,
     DoneCheckFn,
@@ -411,13 +412,15 @@ async def run_team_harness(
     inputs: dict[str, Any] | None = None,
     precedence_order: list[str] | None = None,
     graph_authoritative: bool = False,
+    on_checkpoint: CheckpointFn | None = None,
 ) -> TeamRunResult:
     """Run a Team Harness member DAG, dispatching each member as a real harness execution.
 
     ``completed`` (members that already ran in a prior drive) is passed through so a resume past a
     human gate does not re-dispatch already-finished members (their side effects fire once).
     ``trace_id``/``parent_execution_id``/``on_child`` thread + collect the run-tree (#471);
-    ``on_cost`` accumulates the run's RAW token cost (#472)."""
+    ``on_cost`` accumulates the run's RAW token cost (#472); ``on_checkpoint`` (#819) makes each
+    settled member durable mid-drive."""
     # team-scope blackboard (#513): the STABLE team identity is the team-manifest id — derived here
     # (not a separate binding) + threaded to every member so they share one team-scope memory.
     team_id = str(manifest.metadata.id)
@@ -458,6 +461,7 @@ async def run_team_harness(
         gate_decisions=gate_decisions,
         completed=completed,
         cost_so_far=pooled_cost,
+        on_checkpoint=on_checkpoint,  # #819: per-member durability
     )
 
 
@@ -539,6 +543,7 @@ async def run_team_hybrid(
     inputs: dict[str, Any] | None = None,
     precedence_order: list[str] | None = None,
     graph_authoritative: bool = False,
+    on_checkpoint: CheckpointFn | None = None,
 ) -> TeamRunResult:
     """Drive a Team Harness whose handoff graph has GENUINE loops (ADR-043 #552): the acyclic
     skeleton runs on ``run_team`` and each loop SCC runs the bounded ``run_loop_seam`` conductor,
@@ -551,7 +556,11 @@ async def run_team_hybrid(
     are INJECTED — the engine wires the real BYOM coordinator + coverage/artifacts/evaluator check;
     a loop team with either unwired FAILS CLOSED (the team can never satisfy its own done-check).
     A loop that does not converge raises out of its condensed node, so ``run_team`` records it
-    failed + BLOCKS its downstream (#551 non-abort), and the run is re-runnable."""
+    failed + BLOCKS its downstream (#551 non-abort), and the run is re-runnable.
+
+    ``on_checkpoint`` (#819) is forwarded to BOTH sides — the skeleton on ``run_team`` and each
+    loop's ``run_loop_seam`` — through ``_emit_checkpoint`` below, which is where the condensed
+    node is filtered out and the two sides' state is merged."""
     loops = list(manifest.orchestration.loops) if manifest.orchestration else []
     if not loops:  # purely acyclic — the unchanged single-pass DAG path
         return await run_team_harness(
@@ -570,6 +579,7 @@ async def run_team_hybrid(
             inputs=inputs,  # #599: user-seeded state for a fan_out.over: "$.<key>"
             precedence_order=precedence_order,
             graph_authoritative=graph_authoritative,
+            on_checkpoint=on_checkpoint,  # #819: per-member durability
         )
     if coordinate is None or done_check_for is None:  # fail-closed (ADR-043 invariant)
         raise OHMError("team has loops but no coordinator/done-check wired")
@@ -604,6 +614,56 @@ async def run_team_hybrid(
     in_loop_state = loop_state or {}  # PR-C: prior per-loop checkpoint (resume), by loop index
     out_loop_state: dict[str, Any] = {}  # PR-C: the checkpoint to persist after this drive
     paused_gates: list[str] = []  # PR-C: per-round HITL gate(s) a loop is paused on
+    # #819: the two sides of the hybrid checkpoint. The skeleton and each loop accumulate state in
+    # SEPARATE dicts (run_team's own + run_loop_seam's own), and neither can see the other — so a
+    # snapshot from one side alone is INCOMPLETE. The engine's ``checkpoint`` OVERWRITES the column,
+    # so emitting a loop-side snapshot on its own would erase the skeleton members already durable
+    # on the row. Both sides therefore emit through ``_emit_checkpoint``, which merges the latest
+    # state of the other side back in.
+    skeleton_seen: tuple[dict[str, Any], dict[str, str]] = ({}, {})
+    loop_results_seen: dict[str, Any] = {}
+    loop_status_seen: dict[str, str] = {}
+
+    async def _emit_checkpoint(
+        results: dict[str, Any], member_status: dict[str, str], *, from_loop: bool
+    ) -> None:
+        """Merge the skeleton's and the loops' accumulated state into ONE complete snapshot, with
+        the internal condensed node stripped.
+
+        The strip is not cosmetic. ``run_team`` drives the CONDENSED member list, in which each loop
+        is one synthetic ``__loop__<i>`` node, and the settle path pops that node only AFTER the run
+        returns — so a checkpoint fired mid-drive would carry it. On the row it is both a leak of
+        internal state to the API and, worse, a poisoned resume seed: ``_completed_for_resume``
+        would seed ``__loop__0``, ``run_team`` would mark the condensed node succeeded without ever
+        entering the conductor, the loop member's real output would vanish, and the run would report
+        SUCCEEDED. That is #819's own failure reappearing inside the fix for it."""
+        nonlocal skeleton_seen
+        if from_loop:
+            loop_results_seen.update(results)
+            loop_status_seen.update(member_status)
+        else:
+            skeleton_seen = (results, member_status)
+        if on_checkpoint is None:
+            return
+        merged_results = {
+            role: value
+            for role, value in skeleton_seen[0].items()
+            if _loop_node_index(role) is None
+        }
+        merged_status = {
+            role: value
+            for role, value in skeleton_seen[1].items()
+            if _loop_node_index(role) is None
+        }
+        merged_results.update(loop_results_seen)
+        merged_status.update(loop_status_seen)
+        await on_checkpoint(merged_results, merged_status)
+
+    async def _skeleton_checkpoint(results: dict[str, Any], member_status: dict[str, str]) -> None:
+        await _emit_checkpoint(results, member_status, from_loop=False)
+
+    async def _loop_checkpoint(results: dict[str, Any], member_status: dict[str, str]) -> None:
+        await _emit_checkpoint(results, member_status, from_loop=True)
 
     async def hybrid_dispatch(
         member: OHMMember, envelopes: list[HandoffEnvelope], fan_item: Any
@@ -653,6 +713,7 @@ async def run_team_hybrid(
             recalibration_cap=_RECALIBRATION_CAP,
             done_check_diag=done_check_diag,
             resume_recalibrations_used=resume_recals,
+            on_checkpoint=_loop_checkpoint,  # #819 decision 4: durable at each round boundary
         )
         loop_results[i] = seam
         out_loop_state[str(i)] = {
@@ -675,6 +736,7 @@ async def run_team_hybrid(
         completed=completed,
         members=condensed,
         cost_so_far=cost_so_far,  # #585: the pooled token gate binds the skeleton members too
+        on_checkpoint=_skeleton_checkpoint,  # #819: durable per settled skeleton member
     )
 
     # merge each loop's real-member results into the team result; the synthetic node is internal
