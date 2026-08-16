@@ -1391,6 +1391,29 @@ class TeamRunService:
                 team, row.id, row.graph_id, loop, artifacts_baseline=artifacts_baseline, diag=diag
             )
 
+        # #819: the durability hook. Every member that reaches a terminal status is written onto the
+        # RUNNING row immediately, so a worker killed mid-drive (Celery's SoftTimeLimitExceeded at
+        # 50 minutes, SIGKILL at 60) leaves the finished members recoverable instead of a FAILED row
+        # with an empty member_status that /rerun answers 409 nothing_to_rerun. ``checkpoint`` is a
+        # write on the live row, NOT a transition — the run stays RUNNING throughout.
+        settled_status: dict[str, str] = {}
+
+        async def _checkpoint(results: dict[str, Any], member_status: dict[str, str]) -> None:
+            settled_status.clear()
+            settled_status.update(member_status)
+            with org_scope(org):
+                await self._team_runs.checkpoint(
+                    row.id,
+                    org,
+                    results=dict(results),
+                    member_status=dict(member_status),
+                    child_execution_ids=list(child_ids),
+                    # the RUNNING TOTAL, never a delta: the settle write computes
+                    # `prior_cost + sum(cost_deltas)` off this same base, so writing a delta here
+                    # would be counted twice across a resume.
+                    cost_tokens=prior_cost + sum(cost_deltas),
+                )
+
         try:
             result = await run_team_hybrid(
                 team,
@@ -1425,14 +1448,27 @@ class TeamRunService:
                 graph_authoritative=(
                     team.precedence is not None and team.precedence.graph == "authoritative"
                 ),
+                on_checkpoint=_checkpoint,  # #819: each settled member durable mid-drive
             )
         except Exception as exc:  # noqa: BLE001 — never strand the run in RUNNING (G-C); fail closed
             # ANY in-process drive error (harness failure, decode, network, bug) -> FAILED, not a
-            # stuck RUNNING row. Return the FAILED row to the caller. NB this path does NOT record
-            # per-member member_status (it stays {}), so the run is NOT re-runnable (rerun → 409
-            # nothing_to_rerun). That is intentional for a TEAM-level hard fail — most notably a
-            # max_wall_seconds timeout (OHMError from run_team): re-running the same DAG would just
-            # time out again, so the recovery is a fresh POST, not a per-member re-drive (ADR-042).
+            # stuck RUNNING row. Return the FAILED row to the caller.
+            #
+            # #819: this path used to record NO per-member member_status, deliberately, so that a
+            # team-level hard fail — most notably a max_wall_seconds breach (OHMError from
+            # run_team) — was NOT re-runnable: re-running the same DAG would just time out again,
+            # so the recovery was a fresh POST. That carve-out is GONE (decision 3 on #819,
+            # overruling the issue's own acceptance criterion 4). Its premise held only while a
+            # re-run re-drove the WHOLE DAG; now that finished members are checkpointed durably,
+            # a re-run drives strictly LESS work on a wall clock that starts fresh each drive, so a
+            # breach is re-runnable like any other failure. Hence no SoftTimeLimitExceeded branch
+            # and no OHMError special case here — one path handles every mid-drive death.
+            #
+            # What the row still needs is a re-run TARGET: a member in flight when the kill landed
+            # has no status of its own, so /rerun's failed-or-blocked gate would find nothing even
+            # though real work survived. Backfill the unreached members to "failed" — but ONLY over
+            # at least one settled member (see ``_backfill_unreached``).
+            backfilled = self._backfill_unreached(settled_status, team)
             with org_scope(org):
                 updated, _ = await self._team_runs.transition(
                     row.id,
@@ -1442,6 +1478,10 @@ class TeamRunService:
                     error_message=str(exc)[:2000] or type(exc).__name__,
                     child_execution_ids=child_ids,  # record what was dispatched before the failure
                     cost_tokens=prior_cost + sum(cost_deltas),  # ...and what it cost
+                    # NB ``results`` is deliberately NOT written here — the checkpoints already put
+                    # the finished members' real outputs on the row, and re-writing a stale copy
+                    # over them is exactly the blanking this issue is about.
+                    **({"member_status": backfilled} if backfilled is not None else {}),
                 )
             await self._accrue_schedule_cost(
                 row, org, sum(cost_deltas)
@@ -1537,6 +1577,30 @@ class TeamRunService:
             await self._stamp_schedule_seed(row, org)
         return consumed
 
+    @staticmethod
+    def _backfill_unreached(
+        member_status: Mapping[str, str], team: OHMManifest
+    ) -> dict[str, str] | None:
+        """#819 decision 2: mark every member a dying drive never reached as "failed", so /rerun
+        has a target. Returns the completed map, or ``None`` when the caller should write nothing.
+
+        A member that was mid-dispatch when the kill landed has NO entry at all — not failed, not
+        succeeded — so ``rerun``'s failed-or-blocked gate would answer 409 even though earlier
+        members' output is sitting durable on the row. ``setdefault`` fills only the gaps: a member
+        that really did settle keeps its own terminal status.
+
+        The guard is that this applies ONLY over at least one settled member. A run that dies before
+        member 1 (an unreachable harness, an immediate kill) has no partial work worth resuming, so
+        it keeps an empty record and still answers 409 — the commonest failure path, and today's
+        behaviour on it must not change. ADR-042's nothing_to_rerun is narrowed here, not deleted.
+        """
+        if not member_status:
+            return None
+        filled = dict(member_status)
+        for member in team.members:
+            filled.setdefault(member.role, "failed")
+        return filled
+
     async def _accrue_schedule_cost(self, row: EngineTeamRun, org: uuid.UUID, delta: int) -> None:
         """#601: accrue THIS DRIVE's RAW-token cost (the delta, NOT the cumulative ``cost_tokens``)
         into the originating schedule's per-cadence accumulator, so a resume past a pause never
@@ -1567,10 +1631,25 @@ class TeamRunService:
         """Fail team runs stuck RUNNING past the lease (a driver that died mid-drive, where no
         in-process except ran). Cross-org ENUMERATION is on the maintenance/owner engine; each FAIL
         is org-bound (``org_scope``) on the org engine — the ADR-030 §3 carve. We FAIL (not
-        re-queue) so a stranded run does not silently re-execute its members; re-POST if wanted."""
+        re-queue) so a stranded run does not silently re-execute its members; re-POST if wanted.
+
+        #819: the reaper applies decision 2's backfill too. At 60 minutes Celery SIGKILLs the child
+        process, so NO except clause runs and the blanket handler above never fires — the row simply
+        sits RUNNING until this sweep fails it. Without the backfill here, the HARDER of the two
+        kills would be the one that stays unrecoverable, and the same run would answer /rerun
+        differently depending on which clock got to it first."""
         stale = await maintenance.list_stale_team_runs(older_than)
         reaped = 0
         for row in stale:
+            fields: dict[str, Any] = {}
+            # a manifest that no longer parses (a schema move since the run was created) must not
+            # break the sweep — the row still gets failed, just without the re-run backfill.
+            with contextlib.suppress(Exception):
+                backfilled = self._backfill_unreached(
+                    row.member_status or {}, self._load_team(row.manifest)
+                )
+                if backfilled is not None:
+                    fields["member_status"] = backfilled
             with org_scope(row.organisation_id):
                 _, applied = await self._team_runs.transition(
                     row.id,
@@ -1578,6 +1657,7 @@ class TeamRunService:
                     new_state="FAILED",
                     allowed_from=frozenset({"RUNNING"}),
                     error_message="reaped: stale RUNNING past lease (driver died mid-drive)",
+                    **fields,
                 )
             reaped += int(applied)
         return reaped
