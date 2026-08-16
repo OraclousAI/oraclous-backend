@@ -14,6 +14,7 @@ stage + ``fan_out``), and ``conditional`` (a skip predicate) are the three patte
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 import re
@@ -43,6 +44,17 @@ from oraclous_ohm.precedence_resolution import clamp_member_source
 # The engine's ``make_harness_dispatch`` honours this (it surfaces the harness's own error_type, not
 # a provider body; the LLM client already strips the body — see openai_compatible.py's classifier).
 DispatchFn = Callable[[OHMMember, list[HandoffEnvelope], Any], Awaitable[Any]]
+
+# #819: the DURABILITY seam. Called with a SNAPSHOT of ``(results, member_status)`` every time a
+# member reaches a terminal status (per ROUND for the loop seam), so a caller that persists can make
+# each finished member durable DURING the drive instead of only when the whole DAG returns. The
+# orchestrator stays a pure executor: it knows nothing about a database, exactly as ``dispatch`` is
+# injected. Two properties the emitters below guarantee, both load-bearing:
+#   * the snapshot is a COPY — handing over the live accumulators makes every snapshot alias one
+#     dict, so the caller records the same end-state each time and a killed drive recovers nothing;
+#   * a raising hook NEVER aborts the run — durability is best-effort (losing a checkpoint costs
+#     recovery granularity, letting it kill the drive costs the whole DAG).
+CheckpointFn = Callable[[dict[str, Any], dict[str, str]], Awaitable[None]]
 
 # Stage fan-out cap (#543): a wide imported team (e.g. 18 members collapsed into one flat stage)
 # would otherwise fire every member's LLM call at once against ONE shared per-org BYOM key and
@@ -252,6 +264,7 @@ async def run_team(
     completed: dict[str, Any] | None = None,
     members: list[OHMMember] | None = None,
     cost_so_far: Callable[[], int] | None = None,
+    on_checkpoint: CheckpointFn | None = None,
 ) -> TeamRunResult:
     """Execute a Team Harness member DAG stage by stage, a real fan-in barrier between stages.
 
@@ -267,6 +280,10 @@ async def run_team(
     ``members`` overrides the member set the DAG is built over — the hybrid driver (ADR-043 #552)
     passes the acyclic skeleton + one condensed node per loop, so ``run_team`` schedules the loops
     at their topological position. ``None`` ⇒ ``manifest.members`` (existing callers unchanged).
+
+    ``on_checkpoint`` (#819) is fired with a snapshot of ``(results, member_status)`` each time a
+    member settles, so the engine can make finished members durable mid-drive. ``None`` (the
+    default) leaves this path byte-for-byte as it was.
     """
     state = state or {}
     gates = gate_decisions or {}
@@ -484,6 +501,19 @@ async def run_team(
         )
         _grade_grounding(role)  # #642: claims need receipts before this member counts as delivered
 
+    async def _checkpoint() -> None:
+        """#819: emit a durability snapshot of the state settled SO FAR.
+
+        ``dict(...)`` is the whole point: the caller must receive a copy it can persist, never the
+        live accumulators (which keep growing as later members land, so every earlier "snapshot"
+        would silently become the end state). The emit is suppressed on failure because durability
+        is best-effort — a transient write error must not turn a healthy run FAILED. ``Exception``
+        only: a cancellation (the very kill this feature exists for) still propagates."""
+        if on_checkpoint is None:
+            return
+        with contextlib.suppress(Exception):
+            await on_checkpoint(dict(results), dict(member_status))
+
     # Stage fan-out cap (#543): bound how many members dispatch concurrently so a wide stage cannot
     # self-throttle the shared BYOM key. Wraps the run_member calls (NOT the inner fan_out dispatch,
     # which keeps its own max_parallel) so there is no semaphore re-entrancy / deadlock.
@@ -492,6 +522,11 @@ async def run_team(
     async def _bounded(role: str) -> None:
         async with stage_sem:
             await run_member(role)
+        # #819: every ``run_member`` return path records a terminal ``member_status[role]``, so
+        # checkpointing here is exactly "once per settled member" — including a FAILED or BLOCKED
+        # one, which /rerun needs to find a target. Deliberately OUTSIDE the stage semaphore: the
+        # write is I/O and must not hold a dispatch slot.
+        await _checkpoint()
 
     for stage in stages:
         if (
@@ -806,6 +841,7 @@ async def run_loop_seam(
     done_check_diag: dict[str, Any] | None = None,
     resume_recalibrations_used: int = 0,
     resume_last_directive_digest: str | None = None,
+    on_checkpoint: CheckpointFn | None = None,
 ) -> LoopSeamResult:
     """Run ONE loop SCC round-by-round under coded governance (ADR-043 #552); see module note.
 
@@ -814,7 +850,11 @@ async def run_loop_seam(
     decision. ``resume_from_round`` + ``started_at`` make the seam resumable at a round boundary:
     the round counter continues (a resume can't buy a fresh round budget) and wall-clock is measured
     from the ORIGINAL run start (a long human pause does not reset the timeout). The four runaway
-    bounds are checked FIRST each round, so a blown budget halts even with a gate pending."""
+    bounds are checked FIRST each round, so a blown budget halts even with a gate pending.
+
+    ``on_checkpoint`` (#819 decision 4) fires at each ROUND boundary — the loop's natural sync
+    point, and loop teams are the likeliest thing on the platform to run past the Celery soft limit,
+    so they get the same durability as an acyclic team."""
     _clock = clock or time.monotonic
     _cost = cost_so_far or (lambda: 0)
     gates = gate_decisions or {}
@@ -854,6 +894,13 @@ async def run_loop_seam(
             recalibrations_used=recalibrations_used,
             last_directive=last_directive,
         )
+
+    async def _checkpoint() -> None:
+        """#819: the round-boundary durability snapshot — a COPY, best-effort (see ``run_team``)."""
+        if on_checkpoint is None:
+            return
+        with contextlib.suppress(Exception):
+            await on_checkpoint(dict(results), dict(member_status))
 
     def _diagnose(stall_kind: str) -> Diagnostic:
         # #553: the CODED, external read of the stall — coverage gaps + failed members from the
@@ -959,6 +1006,9 @@ async def run_loop_seam(
                 member_status[role] = "failed"
                 member_errors[role] = str(exc)[:2000] or type(exc).__name__
 
+        # #819: the round produced everything it is going to — make it durable BEFORE the
+        # done-check, so the converging round's own output is checkpointed like every other one.
+        await _checkpoint()
         if await done_check(results):  # the coded done-check (coverage-floor + evaluator) confirms
             return _result("converged")
         signature = _progress_signature(results, member_status)  # no-progress: nothing changed
