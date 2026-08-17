@@ -258,6 +258,7 @@ RETURN r.role_id AS role_id
 # ``MATCH (p:Permission:__System__ {name})`` finds nothing → NO HAS_PERMISSION edge is wired →
 # check_graph_permission's Phase-B (role→permission) ALWAYS returns False. Org-independent +
 # idempotent (MERGE), so seeding them in every bootstrap_graph_roles is safe.
+# org-scoping: global — a shared system Permission catalog node, not tenant data (ADR-006).
 _BOOTSTRAP_SYSTEM_PERM_QUERY = """
 MERGE (p:Permission:__System__ {name: $name})
 ON CREATE SET p.resource_type = $resource_type, p.action = $action, p.created_at = $now

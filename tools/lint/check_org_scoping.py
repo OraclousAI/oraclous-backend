@@ -42,6 +42,19 @@ NOT a runtime substitute for RLS (security-architect concurrence).
            (a vector/fulltext index without org returns cross-org neighbours
            regardless of runtime filters). Flags such a ``CREATE VECTOR INDEX`` /
            ``CREATE FULLTEXT INDEX`` omitting org; passes when org is present.
+  ORG006 — a MUTATING Cypher statement (``DETACH DELETE``/``DELETE``/``SET``/
+           ``REMOVE``/``MERGE``) must carry an organisation predicate. Neo4j has
+           no row-level security, so this property IS the tenancy control for the
+           graph store; there is no runtime backstop underneath it. Reads are out
+           of scope, and a file under a ``tests/`` directory is out of scope (a
+           test-fixture wipe never touches real tenant data). An f-string query
+           is read as ONE logical statement, so an org predicate in any fragment
+           counts. Two opt-outs, each a comment on (or immediately above) the
+           statement: ``# org-scoping: cross-org-migration``, scoped to a file
+           under a ``migrations/`` directory, for a backfill that by construction
+           cannot filter on the property it is creating; ``# org-scoping:
+           global``, the same marker ORG004 uses, for deliberately org-free
+           system/catalog data (e.g. a shared permission-catalog node).
 
 The set of org-scoped labels is loaded from the single source of truth at
 ``packages/substrate/src/oraclous_substrate/schema/org_scoped_labels.yaml``.
@@ -138,8 +151,24 @@ _CYPHER_INDEX_OR_CONSTRAINT_RE = re.compile(r"\b(INDEX|CONSTRAINT)\b", re.IGNORE
 _CYPHER_VECTOR_RE = re.compile(r"\bVECTOR\s+INDEX\b", re.IGNORECASE)
 _CYPHER_FULLTEXT_RE = re.compile(r"\bFULLTEXT\s+INDEX\b", re.IGNORECASE)
 
+# ORG006: a statement that looks like Cypher (a MATCH/MERGE/CREATE clause opening a
+# node/relationship pattern — the keyword directly followed by `(`/`[`) AND carries a mutating
+# clause. The opening-bracket requirement is load-bearing: without it, ordinary English prose
+# ("semantic merge skipped") in a log message or docstring reads as a false positive. Reads are
+# out of scope by design — a read that leaks is a different, lesser defect.
+_CYPHER_STATEMENT_RE = re.compile(r"\b(MATCH|MERGE|CREATE)\s*[(\[]", re.IGNORECASE)
+_CYPHER_MUTATING_CLAUSE_RE = re.compile(
+    r"\bDETACH\s+DELETE\b|\bDELETE\b|\bSET\b|\bREMOVE\b|\bMERGE\s*[(\[]", re.IGNORECASE
+)
+
 # A deliberately-global Redis key opts out of ORG004 with this comment on its line.
 GLOBAL_OPT_OUT_MARKER = "org-scoping: global"
+
+# A cross-org backfill migration opts out of ORG006 with this comment on the line immediately
+# above the mutating statement. Scoped to files under a `migrations/` directory only — a mutating
+# Cypher statement anywhere else (a repository, a service) can never claim it, or the guardrail
+# becomes a comment that anyone can paste past.
+CROSS_ORG_MIGRATION_MARKER = "org-scoping: cross-org-migration"
 
 # A non-tenant-scoped table opts out of ORG002 with one of these comments inside the class body:
 #   cross-org-principal — a principal that spans organisations (e.g. ``users``: org via membership)
@@ -454,10 +483,12 @@ class _Visitor(ast.NodeVisitor):
         # literal fragments are handled by visit_JoinedStr, never reached here.
         if isinstance(node.value, str) and id(node) not in self.docstring_ids:
             self._check_ddl(node)
+            self._check_mutation(node)
 
     def visit_JoinedStr(self, node: ast.JoinedStr) -> None:
         self._check_ddl(node)
         self._check_redis_key(node)
+        self._check_mutation(node)
         # Descend only into interpolated expressions (to catch e.g. ORG001 inside
         # `{...}`), never into the literal Constant fragments, so a DDL/key split
         # across fragments is evaluated once, as a whole, by the checks above.
@@ -530,6 +561,49 @@ class _Visitor(ast.NodeVisitor):
         start = node.lineno - 1
         end = getattr(node, "end_lineno", None) or node.lineno
         return any(GLOBAL_OPT_OUT_MARKER in line.lower() for line in self.source_lines[start:end])
+
+    def _check_mutation(self, node: ast.expr) -> None:
+        # A test fixture wipe (`MATCH (n) DETACH DELETE n` between tests) is not the production
+        # write surface ORG006 protects — real tenant data never lives in a test-only container.
+        if "tests" in Path(self.path).parts:
+            return
+        parts = _string_parts(node)
+        if parts is None:
+            return
+        text = _static_text(parts)
+        if _is_cypher_index_or_constraint(text):
+            return  # ORG003/ORG005 territory; never double-reported here.
+        if not (_CYPHER_STATEMENT_RE.search(text) and _CYPHER_MUTATING_CLAUSE_RE.search(text)):
+            return
+        if _ddl_has_org(parts):
+            return
+        if self._has_cross_org_migration_marker(node) or self._has_marker_near(
+            node, GLOBAL_OPT_OUT_MARKER
+        ):
+            return
+        self.violations.append(
+            Violation(
+                "ORG006",
+                self.path,
+                node.lineno,
+                "mutating Cypher statement omits an organisation_id predicate (ADR-006; no Neo4j "
+                f"RLS backstop); annotate deliberately global system data with "
+                f"`# {GLOBAL_OPT_OUT_MARKER}` or a cross-org migration with "
+                f"`# {CROSS_ORG_MIGRATION_MARKER}`",
+            )
+        )
+
+    def _has_marker_near(self, node: ast.expr, marker: str) -> bool:
+        start = max(node.lineno - 2, 0)  # the marker sits on the line immediately above (or on)
+        end = getattr(node, "end_lineno", None) or node.lineno
+        return any(marker in line.lower() for line in self.source_lines[start:end])
+
+    def _has_cross_org_migration_marker(self, node: ast.expr) -> bool:
+        # Scoped to a migration module: any other file claiming the marker still flags, or the
+        # opt-out becomes a licence any repository can paste onto a live violation.
+        if "migrations" not in Path(self.path).parts:
+            return False
+        return self._has_marker_near(node, CROSS_ORG_MIGRATION_MARKER)
 
 
 def check_source(

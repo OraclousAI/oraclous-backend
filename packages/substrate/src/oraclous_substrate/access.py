@@ -169,7 +169,14 @@ def scoped_write_node(driver: object, *, label: str, properties: Mapping[str, ob
     # silently overwritten — Neo4j community has no WITH-CHECK backstop, so
     # this stamping is the primary write-isolation control.
     props[ORGANISATION_ID_PROPERTY] = org_id
-    driver.execute_query(f"CREATE (n:`{label}`) SET n = $props", props=props)  # type: ignore[attr-defined]
+    # The org predicate is ALSO spelled out in the key map (redundant with `props`, which
+    # `SET n = $props` overwrites onto the node right after) so the stamp is visible in the
+    # Cypher text itself, not only inside the bound `$props` dict (ORG006).
+    driver.execute_query(  # type: ignore[attr-defined]
+        f"CREATE (n:`{label}` {{organisation_id: $organisation_id}}) SET n = $props",
+        organisation_id=org_id,
+        props=props,
+    )
 
 
 # --------------------------------------------------------------------------- #

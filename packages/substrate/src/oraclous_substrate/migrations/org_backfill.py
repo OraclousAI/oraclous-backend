@@ -95,10 +95,13 @@ def backfill_neo4j(driver, *, organisation_id: uuid.UUID = SEED_ORGANISATION_ID)
     prop = neo4j_schema.ORG_PROPERTY
     for label in neo4j_schema.ORG_SCOPED_LABELS:
         driver.execute_query(
-            f"MATCH (n:`{label}`) WHERE n.{prop} IS NULL SET n.{prop} = $org", org=org
+            # org-scoping: cross-org-migration
+            f"MATCH (n:`{label}`) WHERE n.{prop} IS NULL SET n.{prop} = $org",
+            org=org,
         )
     for rel_type in neo4j_schema.ORG_SCOPED_RELATIONSHIP_TYPES:
         driver.execute_query(
+            # org-scoping: cross-org-migration
             f"MATCH ()-[r:`{rel_type}`]->() WHERE r.{prop} IS NULL SET r.{prop} = $org",
             org=org,
         )
@@ -109,9 +112,11 @@ def rollback_neo4j(driver) -> None:
     """Revert the Neo4j backfill: remove ``organisation_id`` from the org-scoped graph."""
     prop = neo4j_schema.ORG_PROPERTY
     for label in neo4j_schema.ORG_SCOPED_LABELS:
+        # org-scoping: cross-org-migration
         driver.execute_query(f"MATCH (n:`{label}`) WHERE n.{prop} IS NOT NULL REMOVE n.{prop}")
     for rel_type in neo4j_schema.ORG_SCOPED_RELATIONSHIP_TYPES:
         driver.execute_query(
+            # org-scoping: cross-org-migration
             f"MATCH ()-[r:`{rel_type}`]->() WHERE r.{prop} IS NOT NULL REMOVE r.{prop}"
         )
 
