@@ -5,12 +5,18 @@ instantiates it, brings their own credential via the public credentials API, and
 ``fetch`` and ``read`` at a **real PDF on the real internet**. The tool must refuse it with a typed
 error naming the content type. Today it decodes the PDF as text and hands back mojibake.
 
-Why this needs a real URL rather than a fixture. The defect is a missing branch on a response
-header, and the only honest way to prove the branch exists is to let a real server set the header.
-A stubbed response would prove that our stub says ``application/pdf``.
+Why a real URL rather than a fixture. The defect is a missing branch on a response header, and the
+only honest way to prove the branch exists is to let a real server set the header. A stubbed
+response would prove that our stub says ``application/pdf``.
 
-The credential bound here is a placeholder, and deliberately so: ``fetch``/``read`` are keyless in
-the connector: only the instance-readiness check requires the mapping to exist. The user still
+Why one test and not three. Registration is the expensive call in this suite and the shared edge
+rate limiter is per-IP (see the ``register`` fixture's own note in ``conftest.py``), so each extra
+registered user raises the odds of a 429 somewhere else in the run. The three scenarios are one
+user's session anyway: refuse the PDF on ``fetch``, refuse it on ``read``, still read an ordinary
+HTML page. Each carries its own assertion message, so a failure still says which leg broke.
+
+The credential bound here is a placeholder, and deliberately so. ``fetch``/``read`` are keyless in
+the connector; only the instance-readiness check requires the mapping to exist. The user still
 stores it through the real ``POST /credentials/`` endpoint, so nothing is injected server-side
 (FUCK_CLAUDE_FUCK_PAPERCLIP rule 5). No third party is faked, because no third party is called.
 
@@ -31,7 +37,7 @@ import pytest
 pytestmark = [pytest.mark.e2e, pytest.mark.integration]
 
 # A long-lived W3C accessibility-test fixture served as `application/pdf`. Chosen for stability:
-# it has been at this path for years and is not behind a CDN that content-negotiates.
+# it has sat at this path for years and is not behind a CDN that content-negotiates.
 _PDF_URL = "https://www.w3.org/WAI/ER/tests/xhtml/testfiles/resources/pdf/dummy.pdf"
 _HTML_URL = "https://example.com"
 
@@ -79,7 +85,7 @@ def _execute(c: httpx.Client, iid: str, operation: str, url: str) -> dict:
     return ex.json()
 
 
-def test_fetching_a_real_pdf_through_the_gateway_is_refused_not_decoded(
+def test_web_fetch_refuses_a_real_pdf_but_still_reads_html_through_the_gateway(
     register: Callable[..., dict], gateway_client: Callable[[str], httpx.Client]
 ) -> None:
     """THE PROOF: a real PDF URL comes back as a typed refusal, never as decoded binary."""
@@ -87,44 +93,23 @@ def test_fetching_a_real_pdf_through_the_gateway_is_refused_not_decoded(
     c = gateway_client(user["token"])
     iid = _ready_instance(c, user["user_id"])
 
-    out = _execute(c, iid, "fetch", _PDF_URL)
-
-    assert out["status"] == "FAILED", out
-    assert out["error_type"] == "UNSUPPORTED_CONTENT_TYPE", out
-    assert "application/pdf" in out["error_message"], out
+    fetched = _execute(c, iid, "fetch", _PDF_URL)
+    assert fetched["status"] == "FAILED", f"fetch decoded a PDF as text: {fetched}"
+    assert fetched["error_type"] == "UNSUPPORTED_CONTENT_TYPE", fetched
+    assert "application/pdf" in fetched["error_message"], fetched
     # The regression this issue exists to stop: the PDF file header reaching the caller as "text".
-    assert "%PDF" not in json.dumps(out), out
+    assert "%PDF" not in json.dumps(fetched), fetched
 
+    # `read` is the dangerous half: the HTML parser turns decoded binary into plausible prose.
+    was_read = _execute(c, iid, "read", _PDF_URL)
+    assert was_read["status"] == "FAILED", f"read parsed a PDF as HTML: {was_read}"
+    assert was_read["error_type"] == "UNSUPPORTED_CONTENT_TYPE", was_read
+    assert "%PDF" not in json.dumps(was_read), was_read
 
-def test_reading_a_real_pdf_through_the_gateway_is_refused(
-    register: Callable[..., dict], gateway_client: Callable[[str], httpx.Client]
-) -> None:
-    """`read` is the dangerous half: the HTML parser makes decoded binary look like prose."""
-    user = register(f"wfpdfread{uuid.uuid4().hex[:10]} user")
-    c = gateway_client(user["token"])
-    iid = _ready_instance(c, user["user_id"])
-
-    out = _execute(c, iid, "read", _PDF_URL)
-
-    assert out["status"] == "FAILED", out
-    assert out["error_type"] == "UNSUPPORTED_CONTENT_TYPE", out
-
-
-def test_an_html_page_still_reads_through_the_gateway(
-    register: Callable[..., dict], gateway_client: Callable[[str], httpx.Client]
-) -> None:
-    """The gate narrows the surface without breaking the feature.
-
-    A content-type check that refused everything would pass both tests above. This pins that a
-    normal HTML page still fetches, reads, and reports its truncation state to the caller.
-    """
-    user = register(f"wfhtml{uuid.uuid4().hex[:10]} user")
-    c = gateway_client(user["token"])
-    iid = _ready_instance(c, user["user_id"])
-
-    out = _execute(c, iid, "read", _HTML_URL)
-
-    assert out["status"] == "SUCCESS", out
-    assert "Example Domain" in out["output_data"]["text"], out
-    # #820 criterion 3: truncation is visible in `data`, which is the only part the model receives.
-    assert out["output_data"]["truncated"] is False, out
+    # The gate narrows the surface without breaking the feature. A content-type check that refused
+    # everything would satisfy both assertions above, so an ordinary page has to still come back.
+    html = _execute(c, iid, "read", _HTML_URL)
+    assert html["status"] == "SUCCESS", f"the gate refused an ordinary HTML page: {html}"
+    assert "Example Domain" in html["output_data"]["text"], html
+    # #820 criterion 3: truncation is visible in `data`, the only part the model receives.
+    assert html["output_data"]["truncated"] is False, html
