@@ -8,8 +8,8 @@ from tools.lint.check_org_scoping import check_source
 pytestmark = pytest.mark.unit
 
 
-def _rules(src: str) -> set[str]:
-    return {v.rule for v in check_source(src)}
+def _rules(src: str, path: str = "<string>") -> set[str]:
+    return {v.rule for v in check_source(src, path)}
 
 
 def test_org001_subscript_from_body() -> None:
@@ -369,3 +369,162 @@ def test_check_source_accepts_org_scoped_labels_yaml_kwarg(tmp_path: Path) -> No
     assert "org_scoped_labels_yaml" in sig.parameters, list(sig.parameters)
     param = sig.parameters["org_scoped_labels_yaml"]
     assert param.kind == inspect.Parameter.KEYWORD_ONLY, param.kind
+
+
+# --- ORG006: a MUTATING Cypher statement must carry an organisation predicate (#817) ------------
+#
+# Neo4j has no row-level security (migrations/versions/0007_enable_rls.py:34-36 puts it explicitly
+# out of scope), so the ``organisation_id`` property in the Cypher IS the tenancy control for the
+# graph — there is no runtime backstop underneath it the way forced RLS backstops Postgres. ORG006
+# is therefore the build-time control on the one store that has nothing else. It covers MUTATION
+# only (DETACH DELETE / DELETE / SET / REMOVE / MERGE): a read that leaks is a different (lesser)
+# defect with a different fix, and the two intentional cross-org enumerations
+# (``enumerate_code_graphs``, ``enumerate_memory_graphs``) are pure reads that a mutation-scoped
+# rule never sees — so they need no allowlist entry.
+
+
+def test_org006_detach_delete_without_an_org_predicate_is_flagged() -> None:
+    # The #817 defect verbatim: graph_id-scoped, org-blind, on the live graph-delete path.
+    src = (
+        "def delete_graph_nodes(self, *, graph_id):\n"
+        "    return self._driver.execute_query(\n"
+        '        "MATCH (n {graph_id: $graph_id}) "\n'
+        '        "WITH collect(n) AS nodes "\n'
+        '        "FOREACH (n IN nodes | DETACH DELETE n) "\n'
+        '        "RETURN size(nodes) AS deleted",\n'
+        "        graph_id=graph_id,\n"
+        "    )\n"
+    )
+    assert "ORG006" in _rules(src)
+
+
+def test_org006_sibling_delete_with_the_org_predicate_passes() -> None:
+    # ``_delete_document`` (graph_write_repository.py:215) — the shape the defect should have had.
+    src = (
+        "def _delete_document(self, *, graph_id, document):\n"
+        "    self._driver.execute_query(\n"
+        '        "MATCH (n {graph_id: $graph_id}) "\n'
+        '        "WHERE n.organisation_id = $organisation_id AND n.ingestion_source = $source "\n'
+        '        "DETACH DELETE n",\n'
+        "        organisation_id=enforced_organisation_id(),\n"
+        "    )\n"
+    )
+    assert "ORG006" not in _rules(src)
+
+
+def test_org006_org_in_the_node_key_map_passes() -> None:
+    # The key-map spelling (code_write_repository.py:101) is as strong as a WHERE clause.
+    src = (
+        'Q = "UNWIND $paths AS p '
+        "MATCH (f:File {graph_id: $graph_id, organisation_id: $organisation_id, path: p}) "
+        'SET f.stale_at = datetime()"\n'
+    )
+    assert "ORG006" not in _rules(src)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ["DETACH DELETE n", "DELETE n", "SET n.x = 1", "REMOVE n.x", "MERGE (n)-[:R]->(m)"],
+)
+def test_org006_covers_every_mutating_clause(mutation: str) -> None:
+    src = f'Q = "MATCH (n {{graph_id: $graph_id}}) {mutation}"\n'
+    assert "ORG006" in _rules(src), mutation
+
+
+def test_org006_ignores_a_read_only_match() -> None:
+    # Reads are out of scope: the rule is about a write reaching another tenant's data.
+    src = 'Q = "MATCH (n {graph_id: $graph_id}) RETURN count(n) AS c"\n'
+    assert "ORG006" not in _rules(src)
+
+
+def test_org006_ignores_index_and_constraint_ddl() -> None:
+    # Index/constraint DDL is ORG003/ORG005 territory; ORG006 must not double-report it.
+    src = (
+        "Q = 'CREATE INDEX chunk_idx IF NOT EXISTS FOR (n:`Chunk`) "
+        "ON (n.organisation_id, n.graph_id)'\n"
+    )
+    assert "ORG006" not in _rules(src)
+
+
+def test_org006_ignores_prose_in_a_docstring() -> None:
+    # A docstring that describes a DETACH DELETE is not an executable statement. Without this,
+    # `delete_stale_symbols` (code_write_repository.py:277) false-positives on its own prose.
+    src = (
+        "def delete_stale_symbols(self):\n"
+        '    """Stage 6 sweep: MATCH the stale symbols and DETACH DELETE them."""\n'
+        "    return 0\n"
+    )
+    assert "ORG006" not in _rules(src)
+
+
+def test_org006_reads_an_f_string_query_as_one_whole_statement() -> None:
+    """An interpolated query is ONE logical statement, so an org predicate in any fragment counts.
+
+    Decisive: ``memory_repository.py:489`` opens with the org predicate and then interpolates a
+    label many lines later. A rule that inspected each ``JoinedStr`` fragment on its own would
+    report the tail fragment as org-blind — a false positive on correct code, which is how a
+    guardrail gets switched off.
+    """
+    src = (
+        "label = 'Memory'\n"
+        'Q = ("MATCH (old:Memory {organisation_id: $organisation_id, graph_id: $graph_id}) "\n'
+        '     "SET old.valid_to = datetime($now) "\n'
+        '     f"CREATE (new:Memory:{label}) SET new = properties(old), "\n'
+        '     "  new.valid_from = datetime($now)")\n'
+    )
+    assert "ORG006" not in _rules(src)
+
+
+def test_org006_recognises_an_interpolated_org_property_name() -> None:
+    # packages/substrate/.../migrations/agent_subject_node.py composes the property name from the
+    # substrate constant rather than the literal, and that is the preferred spelling (ADR-012 §1b).
+    src = (
+        "ORG_PROPERTY = 'organisation_id'\n"
+        'Q = f"MERGE (a:Agent {{agent_id: $agent_id}}) ON CREATE SET a.{ORG_PROPERTY} = $org"\n'
+    )
+    assert "ORG006" not in _rules(src)
+
+
+def test_org006_cross_org_migration_opts_out_with_an_explicit_marker() -> None:
+    """A deliberately context-free migration opts out in the open, never silently.
+
+    ``packages/substrate/.../migrations/org_backfill.py`` stamps the org property onto rows that
+    do not have one yet, so by construction it cannot filter on the property it is creating. That
+    is legitimate and it is the ONLY legitimate shape — so it costs one visible comment, exactly
+    like the ORG002 and ORG004 opt-outs.
+    """
+    from tools.lint.check_org_scoping import CROSS_ORG_MIGRATION_MARKER
+
+    src = (
+        "# org-scoping: cross-org-migration\n"
+        'Q = f"MATCH (n:`{label}`) WHERE n.{prop} IS NULL SET n.{prop} = $org"\n'
+    )
+    assert CROSS_ORG_MIGRATION_MARKER == "org-scoping: cross-org-migration"
+    migration = "packages/substrate/src/oraclous_substrate/migrations/org_backfill.py"
+    assert "ORG006" not in _rules(src, path=migration)
+
+
+def test_org006_marker_on_an_ordinary_repository_write_still_flags() -> None:
+    """The opt-out is scoped to a migration module, not a licence any file can claim.
+
+    Without this, the cheapest way past a red guardrail is to paste the marker onto the offending
+    line — which converts the control into a comment.
+    """
+    src = (
+        "# org-scoping: cross-org-migration\n"
+        'Q = "MATCH (n {graph_id: $graph_id}) DETACH DELETE n"\n'
+    )
+    assert "ORG006" in _rules(src, path="services/x/src/x/repositories/graph_write_repository.py")
+
+
+def test_org006_finds_no_violation_left_in_the_shipped_tree() -> None:
+    """The audit (#817 acceptance criterion 5) as an executable assertion.
+
+    RED until ``delete_graph_nodes`` carries the org predicate and the backfill migration carries
+    its marker. Green afterwards, and it stays green — which is the whole point of writing the rule
+    rather than only the fix.
+    """
+    from tools.lint.check_org_scoping import check_paths
+
+    found = [v for v in check_paths(["packages", "services"]) if v.rule == "ORG006"]
+    assert not found, "\n".join(str(v) for v in found)

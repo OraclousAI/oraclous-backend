@@ -9,6 +9,11 @@ import uuid
 from datetime import UTC, datetime
 
 import pytest
+from oraclous_governance.context import OrganisationContext, PrincipalType
+from oraclous_governance.propagation import (
+    MissingOrganisationContextError,
+    use_organisation_context,
+)
 from oraclous_knowledge_graph_service.domain.graph import Graph
 from oraclous_knowledge_graph_service.repositories.graph_write_repository import (
     GraphWriteRepository,
@@ -111,20 +116,59 @@ class _RecordingDriver:
         return self._records, None, None
 
 
-def test_delete_graph_nodes_issues_graph_id_scoped_detach_delete() -> None:
+def _org_ctx(org: uuid.UUID) -> OrganisationContext:
+    return OrganisationContext(
+        organisation_id=org, principal_id=uuid.uuid4(), principal_type=PrincipalType.USER
+    )
+
+
+def test_delete_graph_nodes_scopes_the_detach_delete_to_the_bound_organisation() -> None:
+    """#817: the cascade must filter on organisation_id, not on graph_id alone.
+
+    Neo4j has no RLS backstop, so this predicate IS the tenancy control — the Postgres ownership
+    pre-check that guards the call today lives in a different database and is not asserted by the
+    query itself.
+    """
     driver = _RecordingDriver([{"deleted": 7}])
     repo = GraphWriteRepository(driver, database="neo4j")  # type: ignore[arg-type]
     gid = "11111111-1111-1111-1111-111111111111"
-    deleted = repo.delete_graph_nodes(graph_id=gid)
+    with use_organisation_context(_org_ctx(_ORG)):
+        deleted = repo.delete_graph_nodes(graph_id=gid)
     assert deleted == 7
     assert "DETACH DELETE" in driver.query
     assert "{graph_id: $graph_id}" in driver.query  # graph_id-scoped MATCH
-    # graph_id is a BOUND parameter (never interpolated) -> injection-safe
+    assert "organisation_id = $organisation_id" in driver.query  # …AND org-scoped
+    # Both scopes are BOUND parameters (never interpolated) -> injection-safe.
     assert driver.params["graph_id"] == gid
+    assert driver.params["organisation_id"] == str(_ORG)
     assert driver.params["database_"] == "neo4j"
+
+
+def test_delete_graph_nodes_takes_the_org_from_the_context_not_the_caller() -> None:
+    """The org is read live from the bound context, exactly as ``_delete_document`` reads it.
+
+    A caller-supplied organisation_id would re-open the hole from the other side: the caller could
+    pass any org it liked. ``enforced_organisation_id()`` is the only source.
+    """
+    driver = _RecordingDriver([{"deleted": 1}])
+    repo = GraphWriteRepository(driver, database=None)  # type: ignore[arg-type]
+    other = uuid.UUID("22222222-2222-2222-2222-222222222222")
+    with use_organisation_context(_org_ctx(other)):
+        repo.delete_graph_nodes(graph_id="g")
+    assert driver.params["organisation_id"] == str(other)
+
+
+def test_delete_graph_nodes_fails_closed_with_no_organisation_context() -> None:
+    """No bound context -> no delete. Fail-closed (CLAUDE.md §3.5), never a graph-wide fallback."""
+    driver = _RecordingDriver([{"deleted": 3}])
+    repo = GraphWriteRepository(driver, database=None)  # type: ignore[arg-type]
+    with pytest.raises(MissingOrganisationContextError):
+        repo.delete_graph_nodes(graph_id="g")
+    assert driver.query is None, "the query must never be issued without an organisation scope"
 
 
 def test_delete_graph_nodes_returns_zero_when_no_rows() -> None:
     driver = _RecordingDriver([])  # empty graph -> nothing matched
     repo = GraphWriteRepository(driver, database=None)  # type: ignore[arg-type]
-    assert repo.delete_graph_nodes(graph_id="g") == 0
+    with use_organisation_context(_org_ctx(_ORG)):
+        assert repo.delete_graph_nodes(graph_id="g") == 0
