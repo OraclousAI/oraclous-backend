@@ -271,3 +271,205 @@ async def test_read_on_a_plaintext_body_returns_the_text() -> None:
     res = await ex.execute({"operation": "read", "url": _PUBLIC}, _ctx())
     assert res.success
     assert res.data["title"] == "" and "just plain text" in res.data["text"]
+
+
+# --- #820 content-type gate ---------------------------------------------------------------------
+#
+# The connector reads `content-type` today only to echo it into metadata, and metadata is dropped
+# before the model ever sees it (`tool_execution_service.py:209` keeps `result.data` alone). So a
+# PDF is decoded by `resp.text` and, on `read`, run through the HTML parser. What comes back is
+# mojibake with the shape of prose — and a SourceRef minted over it is indistinguishable from a
+# good one. For an evidence product that is the worst available failure mode, because the citation
+# gate checks that the identifier was served, never what the content was.
+
+
+def _typed(content_type: str, body: bytes = b"%PDF-1.4 binary") -> Callable[..., httpx.Response]:
+    return lambda _r: httpx.Response(200, content=body, headers={"content-type": content_type})
+
+
+@pytest.mark.parametrize(
+    "content_type",
+    [
+        "application/pdf",
+        "image/png",
+        "application/zip",
+        "application/octet-stream",
+        "audio/mpeg",
+        "video/mp4",
+        "font/woff2",
+    ],
+)
+async def test_fetch_refuses_a_binary_content_type(content_type: str) -> None:
+    ex = _connector(_typed(content_type))
+    res = await ex.execute({"operation": "fetch", "url": _PUBLIC}, _ctx())
+    assert not res.success, f"{content_type} was decoded as text"
+    assert res.error_type == "UNSUPPORTED_CONTENT_TYPE"
+    # The caller is told WHAT was served, so "fetch the PDF" is an actionable next step rather
+    # than a dead end (the #692/#693 actionable-error discipline).
+    assert content_type in res.error_message
+    assert res.metadata.get("content_type") == content_type
+
+
+async def test_read_refuses_a_binary_content_type() -> None:
+    """`read` is the worse half: the HTML parser turns decoded binary into plausible prose."""
+    ex = _connector(_typed("application/pdf"))
+    res = await ex.execute({"operation": "read", "url": _PUBLIC}, _ctx())
+    assert not res.success and res.error_type == "UNSUPPORTED_CONTENT_TYPE"
+
+
+@pytest.mark.parametrize(
+    "content_type",
+    [
+        "text/html; charset=utf-8",
+        "text/plain",
+        "text/markdown",
+        "text/csv",
+        "application/json",
+        "application/xml",
+        "application/ld+json",
+        "image/svg+xml",
+        "APPLICATION/JSON",  # the header is case-insensitive
+    ],
+)
+async def test_fetch_accepts_text_and_the_structured_types(content_type: str) -> None:
+    ex = _connector(_typed(content_type, body=b"<p>hello</p>"))
+    res = await ex.execute({"operation": "fetch", "url": _PUBLIC}, _ctx())
+    assert res.success, f"{content_type} was refused: {res.error_message}"
+    assert res.data["content"] == "<p>hello</p>"
+
+
+async def test_fetch_refuses_a_response_with_no_content_type() -> None:
+    """An unlabelled body is refused, not guessed.
+
+    RFC 9110 §8.3 says a recipient that gets no Content-Type may assume
+    ``application/octet-stream``, and that is the honest reading here: for an evidence product an
+    unlabelled body is exactly the ambiguity we cannot resolve, and guessing "probably HTML" is
+    how binary reaches the model. Flagged for the tests reviewer as a deliberate ruling — the
+    alternative (default to text) trades a small compatibility win for the defect this issue is
+    about.
+    """
+    ex = _connector(lambda _r: httpx.Response(200, content=b"\x89PNG\r\n", headers={}))
+    res = await ex.execute({"operation": "fetch", "url": _PUBLIC}, _ctx())
+    assert not res.success and res.error_type == "UNSUPPORTED_CONTENT_TYPE"
+
+
+# --- #820 byte cap, applied during download -----------------------------------------------------
+
+
+async def test_fetch_refuses_an_over_cap_content_length_without_reading_the_body() -> None:
+    """A declared over-cap length is refused before a single body byte is pulled.
+
+    Today the only bound on a multi-gigabyte response is the 12-second timeout, and the whole body
+    is materialised (`resp.text`) before the 100k-character trim ever runs. Checking the declared
+    length first is the cheapest half of the fix.
+    """
+    from oraclous_capability_registry_service.domain.connectors.web_research import _MAX_BODY_BYTES
+
+    pulled = {"n": 0}
+
+    async def _body():
+        pulled["n"] += 1
+        yield b"x" * 1024
+
+    ex = _connector(
+        lambda _r: httpx.Response(
+            200,
+            content=_body(),
+            headers={
+                "content-type": "text/html",
+                "content-length": str(_MAX_BODY_BYTES + 1),
+            },
+        )
+    )
+    res = await ex.execute({"operation": "fetch", "url": _PUBLIC}, _ctx())
+    assert not res.success and res.error_type == "RESPONSE_TOO_LARGE"
+    assert pulled["n"] == 0, "the body was read despite an over-cap Content-Length"
+
+
+async def test_fetch_stops_pulling_a_chunked_body_once_it_passes_the_cap() -> None:
+    """No Content-Length is the case that matters, and it must be caught mid-stream.
+
+    A server that omits the header (or lies) is the reason the cap has to be applied DURING the
+    download rather than after it. The assertion is that the connector stopped early — not merely
+    that it reported an error once the whole body was in memory.
+    """
+    from oraclous_capability_registry_service.domain.connectors.web_research import _MAX_BODY_BYTES
+
+    chunk = b"x" * 65_536
+    total_chunks = (_MAX_BODY_BYTES // len(chunk)) * 4
+    served = {"n": 0}
+
+    async def _body():
+        for _ in range(total_chunks):
+            served["n"] += 1
+            yield chunk
+
+    ex = _connector(
+        lambda _r: httpx.Response(200, content=_body(), headers={"content-type": "text/html"})
+    )
+    res = await ex.execute({"operation": "fetch", "url": _PUBLIC}, _ctx())
+    assert not res.success and res.error_type == "RESPONSE_TOO_LARGE"
+    assert served["n"] < total_chunks, "the whole body was buffered before the cap was applied"
+
+
+async def test_the_byte_cap_sits_above_the_character_truncation_limit() -> None:
+    """The two limits are different controls and must not be collapsed into one.
+
+    Over the byte cap is a refusal (the caller gets nothing and is told why). Over the character
+    limit is a truncation (the caller gets a usable prefix and is told it is a prefix). Ordering
+    them the other way round would make every truncation a refusal.
+    """
+    from oraclous_capability_registry_service.domain.connectors.web_research import (
+        _MAX_BODY_BYTES,
+        _MAX_TEXT_CHARS,
+    )
+
+    assert _MAX_BODY_BYTES > _MAX_TEXT_CHARS
+
+
+# --- #820 truncation has to reach the caller ----------------------------------------------------
+
+
+async def test_fetch_reports_truncation_in_data_not_only_metadata() -> None:
+    """`ExecutionResult.metadata` never reaches the model.
+
+    The registry keeps `result.data` alone (`tool_execution_service.py:209`), so a `truncated`
+    flag that lives in metadata is a flag nobody can read. An agent that cannot tell a whole page
+    from the first 100k characters of one will cite the page as if it had read all of it.
+    """
+    ex = _connector(lambda _r: httpx.Response(200, text="x" * 250_000))
+    res = await ex.execute({"operation": "fetch", "url": _PUBLIC}, _ctx())
+    assert res.success
+    assert res.data["truncated"] is True
+
+
+async def test_fetch_reports_truncated_false_on_a_whole_body() -> None:
+    # Present and False, not absent: a missing key reads as "unknown", which is the same ambiguity.
+    ex = _connector(lambda _r: httpx.Response(200, text="short"))
+    res = await ex.execute({"operation": "fetch", "url": _PUBLIC}, _ctx())
+    assert res.success and res.data["truncated"] is False
+
+
+async def test_read_reports_truncation_in_data() -> None:
+    ex = _connector(lambda _r: httpx.Response(200, text="<p>" + "x" * 250_000 + "</p>"))
+    res = await ex.execute({"operation": "read", "url": _PUBLIC}, _ctx())
+    assert res.success and res.data["truncated"] is True
+
+
+async def test_read_does_not_truncate_the_extracted_text_a_second_time() -> None:
+    """`read` trims twice today: the body to 100k, then the extracted text to 100k again.
+
+    On a script-heavy page the first trim can consume the budget on markup the reader then drops,
+    so the caller sees far less visible text than the limit implies. The raw body is the thing
+    that gets capped; whatever survives extraction is returned whole.
+    """
+    from oraclous_capability_registry_service.domain.connectors.web_research import _MAX_TEXT_CHARS
+
+    visible = "y" * 5_000
+    padding = "<span>" + "z" * (_MAX_TEXT_CHARS - 6_000) + "</span>"
+    html = f"<html><body><p>{visible}</p>{padding}</body></html>"
+    ex = _connector(lambda _r: httpx.Response(200, text=html))
+    res = await ex.execute({"operation": "read", "url": _PUBLIC}, _ctx())
+    assert res.success
+    assert res.data["truncated"] is False, "a body under the cap must not be reported as truncated"
+    assert visible in res.data["text"]
