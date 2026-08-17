@@ -242,6 +242,41 @@ class TeamRunRepository:
                 await session.refresh(row)
             return row, True
 
+    async def checkpoint(
+        self, team_run_id: uuid.UUID, organisation_id: uuid.UUID, **fields: Any
+    ) -> bool:
+        """#819: write the accumulated drive state onto a LIVE (RUNNING) row, WITHOUT a state
+        change; returns whether it applied.
+
+        Deliberately NOT ``transition`` with ``RUNNING→RUNNING``. A checkpoint is a durability write
+        on a row a driver still owns, not a state-machine move — modelling it as a transition would
+        let a late write from a driver that already lost the race resurrect a settled run. The
+        RUNNING guard under the row lock is what makes that impossible: a settled row is never
+        rewritten. Org-scoped like every other write (ADR-006), RLS-backstopped (ADR-030), so
+        another tenant's id is a no-op rather than a cross-org overwrite.
+
+        The ORM UPDATE applies the model's ``updated_at`` ``onupdate`` default, so a run that is
+        actively completing members refreshes its reaper lease and stops looking stale. That is
+        deliberate: the lease exists to catch a DEAD driver, and a run emitting checkpoints is
+        demonstrably alive. Never pass ``updated_at`` through explicitly — it would pin the stamp
+        and silently strand a live run in the sweep."""
+        async with self._session() as session:
+            async with session.begin():
+                result = await session.execute(
+                    select(EngineTeamRun)
+                    .where(
+                        EngineTeamRun.id == team_run_id,
+                        EngineTeamRun.organisation_id == organisation_id,
+                    )
+                    .with_for_update()
+                )
+                row = result.scalar_one_or_none()
+                if row is None or row.state != "RUNNING":
+                    return False
+                for key, value in fields.items():
+                    setattr(row, key, value)
+            return True
+
     async def list_stale_running(
         self, older_than: datetime, *, limit: int = 100
     ) -> list[EngineTeamRun]:
