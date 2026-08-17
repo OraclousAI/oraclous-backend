@@ -46,6 +46,10 @@ from oraclous_capability_registry_service.domain.executors.base import (
 _FETCH_TIMEOUT_S = 12.0
 _OUTER_TIMEOUT_S = 50.0  # headroom for up to _MAX_REDIRECTS sequential hops
 _MAX_TEXT_CHARS = 100_000
+# The hard refusal ceiling, applied to the raw byte stream DURING download (never after
+# buffering the whole body) — well above _MAX_TEXT_CHARS so an ordinary truncation never becomes
+# a refusal (#820: the two limits are deliberately not the same control).
+_MAX_BODY_BYTES = 10 * 1024 * 1024
 _MAX_REDIRECTS = 4
 _USER_AGENT = "OraclousWebResearch/1.0"
 _OPERATIONS = frozenset({"search", "fetch", "read"})
@@ -185,7 +189,6 @@ class WebResearchConnector(InternalTool):
         # auto-following would let an external page 302 the fetch onto an internal/metadata target.
         headers = {"User-Agent": _USER_AGENT}
         current = url
-        resp: httpx.Response | None = None
         async with httpx.AsyncClient(
             headers=headers,
             timeout=_FETCH_TIMEOUT_S,
@@ -206,29 +209,38 @@ class WebResearchConnector(InternalTool):
                 # connect can't re-resolve to an internal target (DNS-rebinding TOCTOU closed).
                 target, host_headers, extensions = pinned_request(current, pinned_ip)
                 try:
-                    resp = await client.get(target, headers=host_headers, extensions=extensions)
+                    # Streamed (not .get()) so the byte cap can be enforced DURING download —
+                    # both the declared Content-Length and the running total, mid-body, before
+                    # the whole response is ever materialised (#820).
+                    async with client.stream(
+                        "GET", target, headers=host_headers, extensions=extensions
+                    ) as resp:
+                        if resp.is_redirect and resp.headers.get("location"):
+                            current = urljoin(current, resp.headers["location"])
+                            continue
+                        return await self._finish_fetch(resp, url=url, read=read)
                 except httpx.HTTPError:
                     return ExecutionResult(
                         success=False,
                         error_message="the URL could not be fetched",
                         error_type="FETCH_UNREACHABLE",
                     )
-                if resp.is_redirect and resp.headers.get("location"):
-                    current = urljoin(current, resp.headers["location"])
-                    continue
-                break
             else:
                 return ExecutionResult(
                     success=False,
                     error_message="too many redirects",
                     error_type="TOO_MANY_REDIRECTS",
                 )
-        if resp is None:  # defensive: the loop always sets resp or returns before here
-            return ExecutionResult(
-                success=False,
-                error_message="the URL could not be fetched",
-                error_type="FETCH_UNREACHABLE",
-            )
+
+    async def _finish_fetch(self, resp: httpx.Response, *, url: str, read: bool) -> ExecutionResult:
+        """Validate the final (non-redirect) hop's response and materialise its body.
+
+        Order matters: status, then content-type (before a single body byte is pulled — a typed
+        binary or a missing header is refused, never decoded), then the byte cap (checked
+        against the declared ``Content-Length`` up front and against the running total while
+        streaming, so an over-cap or lying/chunked body is refused mid-download, not after it is
+        fully buffered).
+        """
         if resp.status_code != 200:
             return ExecutionResult(
                 success=False,
@@ -236,10 +248,6 @@ class WebResearchConnector(InternalTool):
                 error_type="FETCH_HTTP_ERROR",
                 metadata={"status_code": resp.status_code},
             )
-        # The content-type gate runs BEFORE the body reaches serialisation (`resp.text` below):
-        # on the deployed stack a PDF URL returned HTTP 500 rather than mojibake because the
-        # decoded bytes never survived the response path, so a post-hoc check on the returned
-        # text would not have caught it.
         content_type = resp.headers.get("content-type", "")
         if not _is_supported_content_type(content_type):
             return ExecutionResult(
@@ -248,18 +256,44 @@ class WebResearchConnector(InternalTool):
                 error_type="UNSUPPORTED_CONTENT_TYPE",
                 metadata={"content_type": content_type},
             )
-        body = resp.text
-        truncated = len(body) > _MAX_TEXT_CHARS
-        body = body[:_MAX_TEXT_CHARS]
+        declared_length = resp.headers.get("content-length")
+        if declared_length is not None and declared_length.isdigit():
+            if int(declared_length) > _MAX_BODY_BYTES:
+                return ExecutionResult(
+                    success=False,
+                    error_message="the response body exceeds the size limit",
+                    error_type="RESPONSE_TOO_LARGE",
+                )
+        chunks: list[bytes] = []
+        total = 0
+        async for chunk in resp.aiter_bytes():
+            total += len(chunk)
+            if total > _MAX_BODY_BYTES:
+                return ExecutionResult(
+                    success=False,
+                    error_message="the response body exceeds the size limit",
+                    error_type="RESPONSE_TOO_LARGE",
+                )
+            chunks.append(chunk)
+        # Cap the raw body ONCE, here — `read`'s extraction below then returns whatever survives
+        # whole, rather than trimming the already-trimmed body to the same limit a second time
+        # (which used to spend the whole budget on markup a script-heavy page then discards).
+        raw_body = b"".join(chunks).decode(resp.encoding or "utf-8", errors="replace")
+        truncated = len(raw_body) > _MAX_TEXT_CHARS
+        body = raw_body[:_MAX_TEXT_CHARS]
+        # `truncated` lives in `data`, not only `metadata`: the registry keeps only
+        # `result.data` (tool_execution_service.py:209), so a flag that lived solely in
+        # `metadata` never reached the model. Present and False on a whole body, not absent —
+        # a missing key reads as "unknown", the same ambiguity this is meant to remove.
         if read:
             title, text = _html_to_text(body)
             return ExecutionResult(
                 success=True,
-                data={"url": url, "title": title, "text": text[:_MAX_TEXT_CHARS]},
+                data={"url": url, "title": title, "text": text, "truncated": truncated},
                 metadata={"truncated": truncated, "content_type": content_type},
             )
         return ExecutionResult(
             success=True,
-            data={"url": url, "content": body},
+            data={"url": url, "content": body, "truncated": truncated},
             metadata={"truncated": truncated, "content_type": content_type},
         )
