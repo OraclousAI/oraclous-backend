@@ -123,7 +123,11 @@ async def test_fetch_returns_raw_body() -> None:
     ex = _connector(lambda _r: httpx.Response(200, text="hello <b>world</b>"))
     res = await ex.execute({"operation": "fetch", "url": _PUBLIC}, _ctx())
     assert res.success
-    assert res.data == {"url": _PUBLIC, "content": "hello <b>world</b>"}
+    # `truncated` joined `data` in #820 (metadata never reaches the model), so this asserts the
+    # two fields it is actually about rather than pinning the whole dict. An exact-equality
+    # assertion on a payload makes every future addition to that payload a test failure.
+    assert res.data["url"] == _PUBLIC
+    assert res.data["content"] == "hello <b>world</b>"
 
 
 async def test_read_extracts_title_and_text_stripping_script() -> None:
