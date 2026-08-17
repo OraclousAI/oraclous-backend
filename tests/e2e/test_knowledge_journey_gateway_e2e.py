@@ -47,6 +47,17 @@ def test_a_user_builds_a_knowledge_graph_and_retrieves_a_memory(
     contents = [mem["content"] for mem in s.json()["memories"]]
     assert fact in contents, contents
 
+    # #817 added an organisation predicate to the graph-delete cascade. That predicate could turn
+    # a working cascade into a silent no-op if real nodes did not carry the stamp it filters on,
+    # and the leak would be invisible — the metadata row disappears either way. So the delete is
+    # exercised here on a graph built by the real ingest path, not on a synthetic node. The
+    # cross-organisation half is not provable through the gateway: the Postgres ownership check
+    # refuses another org's graph before any Cypher runs, which is why that half lives in
+    # tests/organization_isolation/test_graph_delete_org_isolation.py against real Neo4j.
+    d = c.delete(f"/api/v1/graphs/{gid}")
+    assert d.status_code in (200, 204), d.text
+    assert c.get(f"/api/v1/graphs/{gid}").status_code == 404, "the graph survived its own delete"
+
 
 def test_a_knowledge_graph_is_org_isolated_through_the_gateway(
     register: Callable[..., dict], gateway_client: Callable[[str], httpx.Client]
