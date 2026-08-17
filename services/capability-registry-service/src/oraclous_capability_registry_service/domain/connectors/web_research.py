@@ -50,6 +50,25 @@ _MAX_REDIRECTS = 4
 _USER_AGENT = "OraclousWebResearch/1.0"
 _OPERATIONS = frozenset({"search", "fetch", "read"})
 
+# #820: a non-text response is refused rather than decoded — a PDF/image/archive run through
+# resp.text (and, worse, the HTML parser on `read`) produces mojibake with the shape of prose,
+# and a SourceRef minted over it is indistinguishable from a good one. text/*, the structured
+# application/json|xml, and any +json/+xml suffix (e.g. application/ld+json, image/svg+xml) pass;
+# a missing or empty header is refused, not guessed (RFC 9110 §8.3's default of
+# application/octet-stream is the honest reading for an evidence product).
+_STRUCTURED_CONTENT_TYPES = frozenset({"application/json", "application/xml"})
+
+
+def _is_supported_content_type(content_type: str) -> bool:
+    base = content_type.split(";", 1)[0].strip().lower()
+    if not base:
+        return False
+    return (
+        base.startswith("text/")
+        or base in _STRUCTURED_CONTENT_TYPES
+        or base.endswith(("+json", "+xml"))
+    )
+
 
 class _TextExtractor(HTMLParser):
     """Stdlib HTML → text: drops ``script``/``style``, keeps ``<title>`` and visible text."""
@@ -217,10 +236,21 @@ class WebResearchConnector(InternalTool):
                 error_type="FETCH_HTTP_ERROR",
                 metadata={"status_code": resp.status_code},
             )
+        # The content-type gate runs BEFORE the body reaches serialisation (`resp.text` below):
+        # on the deployed stack a PDF URL returned HTTP 500 rather than mojibake because the
+        # decoded bytes never survived the response path, so a post-hoc check on the returned
+        # text would not have caught it.
+        content_type = resp.headers.get("content-type", "")
+        if not _is_supported_content_type(content_type):
+            return ExecutionResult(
+                success=False,
+                error_message=f"unsupported content type: {content_type or '(none)'}",
+                error_type="UNSUPPORTED_CONTENT_TYPE",
+                metadata={"content_type": content_type},
+            )
         body = resp.text
         truncated = len(body) > _MAX_TEXT_CHARS
         body = body[:_MAX_TEXT_CHARS]
-        content_type = resp.headers.get("content-type", "")
         if read:
             title, text = _html_to_text(body)
             return ExecutionResult(
