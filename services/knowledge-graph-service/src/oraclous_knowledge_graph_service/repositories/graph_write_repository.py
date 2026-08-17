@@ -222,23 +222,31 @@ class GraphWriteRepository:
         )
 
     def delete_graph_nodes(self, *, graph_id: str) -> int:
-        """Detach-delete every Neo4j node carrying this graph_id (cascade on graph delete).
+        """Detach-delete every Neo4j node carrying this graph_id AND the bound organisation
+        (cascade on graph delete).
 
         Graph-delete removes the Postgres metadata row; without this the graph's Neo4j
         nodes/edges are orphaned (storage leak + stale-node collisions on a re-create that
-        reuses the id). All mapped nodes stamp `graph_id`, so a single graph_id-scoped
-        DETACH DELETE clears the whole graph (the deterministic ids are sha256(graph_id|...),
-        so they never resurface). Bound parameter (never interpolated): injection-safe. Sync
-        driver call — callers in async code wrap it in `asyncio.to_thread`. Returns the node
-        count deleted (for logging / surfacing).
+        reuses the id). All mapped nodes stamp `graph_id`, so a graph_id-scoped DETACH DELETE
+        clears the whole graph (the deterministic ids are sha256(graph_id|...), so they never
+        resurface) — but `graph_id` alone is not enough: Neo4j has no row-level security, so
+        the `organisation_id` predicate below IS the tenancy control for this store, exactly
+        like `_delete_document` above. Read live from `enforced_organisation_id()`, never
+        accepted as a parameter — a caller-supplied org id would re-open the hole from the
+        other side. Fails closed (no bound context -> no delete) via
+        MissingOrganisationContextError. Both scopes are bound parameters (never interpolated):
+        injection-safe. Sync driver call — callers in async code wrap it in
+        `asyncio.to_thread`, which copies the current context, so the contextvar reaches the
+        thread. Returns the node count deleted (for logging / surfacing).
         """
         records, _, _ = self._driver.execute_query(
-            "MATCH (n {graph_id: $graph_id}) "
+            "MATCH (n {graph_id: $graph_id}) WHERE n.organisation_id = $organisation_id "
             "WITH collect(n) AS nodes "
             "WITH nodes, size(nodes) AS deleted "
             "FOREACH (n IN nodes | DETACH DELETE n) "
             "RETURN deleted",
             graph_id=graph_id,
+            organisation_id=enforced_organisation_id(),
             database_=self._database,
         )
         return int(records[0]["deleted"]) if records else 0
