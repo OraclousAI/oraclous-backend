@@ -60,9 +60,13 @@ NOT a runtime substitute for RLS (security-architect concurrence).
            global``, the same marker ORG004 uses, for deliberately org-free
            system/catalog data (e.g. a shared permission-catalog node) — gated on
            the STATEMENT rather than the file, since this marker has no directory
-           to scope to: it never silences a statement that carries a
-           ``graph_id`` (or other resource-scoping key), which is unambiguously
-           tied to one tenant's data and so can never be genuinely org-free.
+           to scope to: it never silences a statement that carries ``graph_id``,
+           which is unambiguously tied to one tenant's data and so can never be
+           genuinely org-free. ``graph_id`` is the ONLY key the gate recognises.
+           A statement keyed on another tenant-scoped id (``memory_id``,
+           ``user_id``, …) can still be silenced by this marker, so the marker
+           is narrowed, not airtight — widen ``_TENANT_SCOPING_KEY_RE`` when a
+           second key is needed rather than assuming it is already covered.
 
 The set of org-scoped labels is loaded from the single source of truth at
 ``packages/substrate/src/oraclous_substrate/schema/org_scoped_labels.yaml``.
@@ -299,6 +303,9 @@ def _ddl_has_org(parts: list[tuple[str, object]]) -> bool:
 
 # ORG006's `global` opt-out gate: a statement carrying this key is unambiguously scoped to one
 # tenant's resource, so it can never be genuinely org-free — the marker must not silence it.
+# `graph_id` is the ONLY key here. Other tenant-scoped ids (`memory_id`, `user_id`, …) are NOT
+# recognised, so the marker can still silence a statement keyed on one of those. Add them here
+# when that matters; do not read this gate as covering every resource key.
 _TENANT_SCOPING_KEY_RE = re.compile(r"graph_id", re.IGNORECASE)
 
 
@@ -658,10 +665,12 @@ class _Visitor(ast.NodeVisitor):
         # Unlike the migration marker, this one isn't restricted to a directory — a genuinely
         # global system/catalog node (e.g. a shared Permission label) can live anywhere. So the
         # restriction has to be on the STATEMENT instead: it only opts out a statement that
-        # carries no tenant-scoping key at all. A statement keyed on `graph_id` (or any other
-        # resource id) is unambiguously scoped to one tenant's data, so this marker can never
-        # silence a violation shaped like the #817 bug it fixed — only the migration marker (or a
-        # genuine fix) can. Without this, the marker is a one-line bypass for any file.
+        # carries no `graph_id`. A statement keyed on `graph_id` is unambiguously scoped to one
+        # tenant's data, so this marker can never silence a violation shaped like the #817 bug it
+        # fixed — only the migration marker (or a genuine fix) can. Without this, the marker is a
+        # one-line bypass for any file. NOTE the gate stops at `graph_id`: a delete keyed on
+        # `memory_id` or `user_id` is still silenceable, so this narrows the bypass rather than
+        # closing it.
         if _statement_has_tenant_scoping_key(parts):
             return False
         return self._has_marker_near(node, GLOBAL_OPT_OUT_MARKER)
