@@ -169,13 +169,14 @@ def scoped_write_node(driver: object, *, label: str, properties: Mapping[str, ob
     # silently overwritten — Neo4j community has no WITH-CHECK backstop, so
     # this stamping is the primary write-isolation control.
     props[ORGANISATION_ID_PROPERTY] = org_id
-    # The org predicate is ALSO spelled out in the key map (redundant with `props`, which
-    # `SET n = $props` overwrites onto the node right after) so the stamp is visible in the
-    # Cypher text itself, not only inside the bound `$props` dict (ORG006).
+    # `organisation_id=org_id` is passed as its own bound parameter (unreferenced by the query
+    # text — Neo4j ignores an unused parameter) purely so ORG006 can see the predicate as a bound
+    # call argument, the same way it reads `_delete_document`'s explicit kwarg. Spelling the
+    # predicate into the Cypher key map instead (an earlier version of this fix) had no runtime
+    # effect — `SET n = $props` immediately overwrites whatever the CREATE just set — so it never
+    # belongs in the query text here.
     driver.execute_query(  # type: ignore[attr-defined]
-        f"CREATE (n:`{label}` {{organisation_id: $organisation_id}}) SET n = $props",
-        organisation_id=org_id,
-        props=props,
+        f"CREATE (n:`{label}`) SET n = $props", organisation_id=org_id, props=props
     )
 
 

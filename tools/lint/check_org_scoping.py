@@ -49,12 +49,20 @@ NOT a runtime substitute for RLS (security-architect concurrence).
            of scope, and a file under a ``tests/`` directory is out of scope (a
            test-fixture wipe never touches real tenant data). An f-string query
            is read as ONE logical statement, so an org predicate in any fragment
-           counts. Two opt-outs, each a comment on (or immediately above) the
+           counts; the predicate also counts when it travels as a bound
+           ``organisation_id=``/``organization_id=`` keyword argument on the SAME
+           call rather than appearing in the query text (that is stronger
+           evidence than a text match, since it is a real parameter the driver
+           sends). Two opt-outs, each a comment on (or immediately above) the
            statement: ``# org-scoping: cross-org-migration``, scoped to a file
            under a ``migrations/`` directory, for a backfill that by construction
            cannot filter on the property it is creating; ``# org-scoping:
            global``, the same marker ORG004 uses, for deliberately org-free
-           system/catalog data (e.g. a shared permission-catalog node).
+           system/catalog data (e.g. a shared permission-catalog node) — gated on
+           the STATEMENT rather than the file, since this marker has no directory
+           to scope to: it never silences a statement that carries a
+           ``graph_id`` (or other resource-scoping key), which is unambiguously
+           tied to one tenant's data and so can never be genuinely org-free.
 
 The set of org-scoped labels is loaded from the single source of truth at
 ``packages/substrate/src/oraclous_substrate/schema/org_scoped_labels.yaml``.
@@ -289,6 +297,21 @@ def _ddl_has_org(parts: list[tuple[str, object]]) -> bool:
     return any(_is_org_expr(expr) for expr in _exprs(parts))
 
 
+# ORG006's `global` opt-out gate: a statement carrying this key is unambiguously scoped to one
+# tenant's resource, so it can never be genuinely org-free — the marker must not silence it.
+_TENANT_SCOPING_KEY_RE = re.compile(r"graph_id", re.IGNORECASE)
+
+
+def _statement_has_tenant_scoping_key(parts: list[tuple[str, object]]) -> bool:
+    text = _static_text(parts)
+    if _TENANT_SCOPING_KEY_RE.search(text):
+        return True
+    return any(
+        isinstance(expr, ast.Name) and _TENANT_SCOPING_KEY_RE.search(expr.id)
+        for expr in _exprs(parts)
+    )
+
+
 def _ddl_targets_org_scoped_label(parts: list[tuple[str, object]], labels: tuple[str, ...]) -> bool:
     text = _static_text(parts)
     for label in labels:
@@ -382,6 +405,28 @@ def _collect_docstring_ids(tree: ast.AST) -> set[int]:
     return ids
 
 
+def _collect_org_bound_call_string_ids(tree: ast.AST) -> set[int]:
+    """Object ids of string/f-string query arguments on a call that ALSO passes an
+    ``organisation_id``/``organization_id`` keyword argument (ORG006).
+
+    A bound call keyword is at least as strong evidence as the word appearing in the query text —
+    it is a real parameter the driver sends, not a string a linter pattern-matches — and it is how
+    the org can travel to a call whose Cypher never spells the property out (e.g. it arrives inside
+    a separately-bound properties map). Scoped to the SAME call as the query string: a kwarg on an
+    unrelated call elsewhere in the file proves nothing about this one.
+    """
+    ids: set[int] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        if not any(kw.arg in ORG_NAMES for kw in node.keywords):
+            continue
+        for candidate in (*node.args, *(kw.value for kw in node.keywords)):
+            if isinstance(candidate, (ast.Constant, ast.JoinedStr)):
+                ids.add(id(candidate))
+    return ids
+
+
 class _Visitor(ast.NodeVisitor):
     def __init__(
         self,
@@ -390,12 +435,14 @@ class _Visitor(ast.NodeVisitor):
         qcache_prefix_names: set[str],
         docstring_ids: set[int],
         org_scoped_labels: tuple[str, ...],
+        org_bound_call_ids: set[int],
     ) -> None:
         self.path = path
         self.source_lines = source.splitlines()
         self.qcache_prefix_names = qcache_prefix_names
         self.docstring_ids = docstring_ids
         self.org_scoped_labels = org_scoped_labels
+        self.org_bound_call_ids = org_bound_call_ids
         self.violations: list[Violation] = []
 
     def _flag_body_read(self, line: int) -> None:
@@ -575,10 +622,10 @@ class _Visitor(ast.NodeVisitor):
             return  # ORG003/ORG005 territory; never double-reported here.
         if not (_CYPHER_STATEMENT_RE.search(text) and _CYPHER_MUTATING_CLAUSE_RE.search(text)):
             return
-        if _ddl_has_org(parts):
+        if _ddl_has_org(parts) or id(node) in self.org_bound_call_ids:
             return
-        if self._has_cross_org_migration_marker(node) or self._has_marker_near(
-            node, GLOBAL_OPT_OUT_MARKER
+        if self._has_cross_org_migration_marker(node) or self._has_global_system_data_marker(
+            node, parts
         ):
             return
         self.violations.append(
@@ -605,6 +652,20 @@ class _Visitor(ast.NodeVisitor):
             return False
         return self._has_marker_near(node, CROSS_ORG_MIGRATION_MARKER)
 
+    def _has_global_system_data_marker(
+        self, node: ast.expr, parts: list[tuple[str, object]]
+    ) -> bool:
+        # Unlike the migration marker, this one isn't restricted to a directory — a genuinely
+        # global system/catalog node (e.g. a shared Permission label) can live anywhere. So the
+        # restriction has to be on the STATEMENT instead: it only opts out a statement that
+        # carries no tenant-scoping key at all. A statement keyed on `graph_id` (or any other
+        # resource id) is unambiguously scoped to one tenant's data, so this marker can never
+        # silence a violation shaped like the #817 bug it fixed — only the migration marker (or a
+        # genuine fix) can. Without this, the marker is a one-line bypass for any file.
+        if _statement_has_tenant_scoping_key(parts):
+            return False
+        return self._has_marker_near(node, GLOBAL_OPT_OUT_MARKER)
+
 
 def check_source(
     source: str,
@@ -628,6 +689,7 @@ def check_source(
         _collect_qcache_prefix_names(tree),
         _collect_docstring_ids(tree),
         labels,
+        _collect_org_bound_call_string_ids(tree),
     )
     visitor.visit(tree)
     return visitor.violations
