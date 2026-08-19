@@ -188,29 +188,40 @@ def validate_task_input(manifest: OHMManifest, inputs: dict[str, Any] | None) ->
 _ENGINE_RESERVED_KEYS = frozenset({REFRESH_SEED_KEY, ANSWERS_KEY})
 
 
-def _consumed_input_keys(manifest: OHMManifest) -> set[str]:
-    """Every ``inputs`` key this team can actually read. ``inputs`` is overloaded, so the answer is
-    not just ``task_input``:
+def _declared_input_keys(manifest: OHMManifest) -> set[str]:
+    """The keys this team DECLARES for itself — the ones a caller is meant to send:
 
     - the declared ``task_input.key`` — ``team_run.resolve_run_task``;
     - any member's ``fan_out.over`` (#599) — ``orchestrate._resolve_over``, which accepts both the
-      ``"$.<key>"`` JSONPath spelling and a bare key;
-    - the engine-reserved ``REFRESH_SEED_KEY`` (#602), which ``create`` strips moments later;
+      ``"$.<key>"`` JSONPath spelling and a bare key.
+
+    Kept separate from the engine-reserved keys so the 422 can name exactly these. A team that
+    happens to declare a key spelled like a reserved one still gets it named, which it would not if
+    the message were built by subtracting the reserved set from everything consumed.
+    """
+    declared: set[str] = set()
+    if manifest.task_input is not None:
+        declared.add(manifest.task_input.key)
+    for member in manifest.members:
+        if member.fan_out is not None:
+            over = member.fan_out.over
+            declared.add(over[2:] if over.startswith("$.") else over)
+    return declared
+
+
+def _consumed_input_keys(manifest: OHMManifest) -> set[str]:
+    """Every ``inputs`` key this team can actually read — its own declared keys plus the two the
+    engine reads on every team's behalf:
+
+    - ``REFRESH_SEED_KEY`` (#602), which ``create`` strips moments later;
     - ``ANSWERS_KEY`` (#846) — the validation desk's intake answers, which ``render_member_input``
       delivers to every member. A ONE-OFF for that one app: ADR-052 decision 3 ships it now and
       migrates it onto the app-descriptor layer (#845) once that exists. Unlike the refresh seed,
       it is NOT stripped at create — here the caller is the intended source.
 
-    Those four are the ONLY readers of team state; nothing else in the runtime looks at it.
+    Those are the ONLY readers of team state; nothing else in the runtime looks at it.
     """
-    consumed = set(_ENGINE_RESERVED_KEYS)
-    if manifest.task_input is not None:
-        consumed.add(manifest.task_input.key)
-    for member in manifest.members:
-        if member.fan_out is not None:
-            over = member.fan_out.over
-            consumed.add(over[2:] if over.startswith("$.") else over)
-    return consumed
+    return _declared_input_keys(manifest) | _ENGINE_RESERVED_KEYS
 
 
 def validate_input_keys(manifest: OHMManifest, inputs: dict[str, Any] | None) -> None:
@@ -232,7 +243,7 @@ def validate_input_keys(manifest: OHMManifest, inputs: dict[str, Any] | None) ->
     undeclared = sorted(k for k in inputs if k not in consumed)
     if not undeclared:
         return
-    readable = sorted(consumed - _ENGINE_RESERVED_KEYS)
+    readable = sorted(_declared_input_keys(manifest))
     raise TeamRunError(
         "this team does not consume "
         + ", ".join(f"inputs[{k!r}]" for k in undeclared)
