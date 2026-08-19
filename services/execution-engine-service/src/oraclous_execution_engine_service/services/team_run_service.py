@@ -44,6 +44,7 @@ from oraclous_ohm.parse import load_ohm
 
 from oraclous_execution_engine_service.core.rls import org_scope
 from oraclous_execution_engine_service.domain import verdict_consumption as vc
+from oraclous_execution_engine_service.domain.app_answers import ANSWERS_KEY, parse_answers
 from oraclous_execution_engine_service.domain.refresh import (
     REFRESH_SEED_KEY,
     compute_delta,
@@ -180,6 +181,13 @@ def validate_task_input(manifest: OHMManifest, inputs: dict[str, Any] | None) ->
         )
 
 
+#: The two keys the ENGINE consumes on every team's behalf, whatever its manifest declares. Both are
+#: kept out of the 422's "it consumes …" list: that list exists to tell a caller which of THEIR
+#: team's keys to use, and naming an engine-internal one there would just teach them to reach for
+#: it. That matters most for ``ANSWERS_KEY``, which ADR-052 schedules for removal.
+_ENGINE_RESERVED_KEYS = frozenset({REFRESH_SEED_KEY, ANSWERS_KEY})
+
+
 def _consumed_input_keys(manifest: OHMManifest) -> set[str]:
     """Every ``inputs`` key this team can actually read. ``inputs`` is overloaded, so the answer is
     not just ``task_input``:
@@ -187,11 +195,15 @@ def _consumed_input_keys(manifest: OHMManifest) -> set[str]:
     - the declared ``task_input.key`` — ``team_run.resolve_run_task``;
     - any member's ``fan_out.over`` (#599) — ``orchestrate._resolve_over``, which accepts both the
       ``"$.<key>"`` JSONPath spelling and a bare key;
-    - the engine-reserved ``REFRESH_SEED_KEY`` (#602), which ``create`` strips moments later.
+    - the engine-reserved ``REFRESH_SEED_KEY`` (#602), which ``create`` strips moments later;
+    - ``ANSWERS_KEY`` (#846) — the validation desk's intake answers, which ``render_member_input``
+      delivers to every member. A ONE-OFF for that one app: ADR-052 decision 3 ships it now and
+      migrates it onto the app-descriptor layer (#845) once that exists. Unlike the refresh seed,
+      it is NOT stripped at create — here the caller is the intended source.
 
-    Those three are the ONLY readers of team state; nothing else in the runtime looks at it.
+    Those four are the ONLY readers of team state; nothing else in the runtime looks at it.
     """
-    consumed = {REFRESH_SEED_KEY}
+    consumed = set(_ENGINE_RESERVED_KEYS)
     if manifest.task_input is not None:
         consumed.add(manifest.task_input.key)
     for member in manifest.members:
@@ -220,7 +232,7 @@ def validate_input_keys(manifest: OHMManifest, inputs: dict[str, Any] | None) ->
     undeclared = sorted(k for k in inputs if k not in consumed)
     if not undeclared:
         return
-    readable = sorted(consumed - {REFRESH_SEED_KEY})
+    readable = sorted(consumed - _ENGINE_RESERVED_KEYS)
     raise TeamRunError(
         "this team does not consume "
         + ", ".join(f"inputs[{k!r}]" for k in undeclared)
@@ -230,6 +242,23 @@ def validate_input_keys(manifest: OHMManifest, inputs: dict[str, Any] | None) ->
         422,
         error_type="undeclared_input_key",
     )
+
+
+def validate_answers(inputs: dict[str, Any] | None) -> None:
+    """#846, fail-closed at create: a malformed ``inputs["answers"]`` is a 422, never a half-render.
+
+    The payload decides how a member is TOLD to treat each item — a flagged one as an assumption to
+    test, an unflagged one as a supplied fact. A shape the renderer cannot read would either drop
+    items or, worse, mis-frame them, and mis-framing is the one outcome worse than sending nothing:
+    a fabricated premise researched as ground truth produces an impeccably-cited wrong answer.
+
+    The message names the expected SHAPE and nothing the user typed (CLAUDE.md §11). Like the other
+    create-time gates it runs before persist/enqueue, so a rejected create costs one 422.
+    """
+    try:
+        parse_answers(inputs)
+    except ValueError as exc:
+        raise TeamRunError(str(exc), 422, error_type="invalid_answers") from exc
 
 
 #: operator-configured org-scoped workspaces root (MUST match the capability-registry sandbox guard,
@@ -708,6 +737,9 @@ class TeamRunService:
         self._enforce_member_ceilings(team, sub_harnesses)  # ADR-032/035 §5 — fail-closed ceiling
         validate_task_input(team, inputs)  # Contract §TASK (#674): required task missing → 422
         validate_input_keys(team, inputs)  # #714: an inputs key the team cannot read → 422
+        validate_answers(
+            inputs
+        )  # #846: a malformed app-answers payload → 422 (never half-rendered)
         if (
             workspace_root is not None
         ):  # file-native (#518): org-scoped, fail-fast 422 (not mid-run)

@@ -43,6 +43,7 @@ from oraclous_ohm.orchestrate import (
     run_team,
 )
 
+from oraclous_execution_engine_service.domain.app_answers import parse_answers
 from oraclous_execution_engine_service.domain.refresh import REFRESH_SEED_KEY
 from oraclous_execution_engine_service.services.harness_client import HarnessClientError
 
@@ -125,6 +126,52 @@ REFRESH_CARRY_FORWARD_DIRECTIVE = (
 )
 
 
+# #846 — the two framings the validation desk's intake answers arrive under. ADR-052 decision 3
+# ships this as that app's own one-off field; the general mechanism (an app-descriptor layer, and a
+# platform-level hypothesis flag) is #845's remaining scope. Both blocks are additive: a run with no
+# ``answers`` renders byte-for-byte as it does today (the #602/#674 default-OFF discipline).
+#
+# The flagged half is the point of the feature. Frontend #210 makes "I don't know" a first-class
+# intake answer precisely because a founder who does not know will otherwise invent something, and
+# nothing downstream catches that: the citation gate checks sources, not premises. A fabricated
+# premise produces an impeccably-evidenced wrong brief. So the member is told, in the same breath as
+# the question, that this one is an assumption to test.
+CONFIRMED_ANSWERS_HEADER = (
+    "ANSWERS THE USER GAVE. These are supplied facts about their own situation — use them as "
+    "given, and do not re-derive or second-guess them."
+)
+HYPOTHESIS_DIRECTIVE = (
+    "UNVERIFIED ASSUMPTIONS. The user did NOT know the answer to these. Treat every item below as "
+    "a hypothesis to TEST against evidence, never as a premise you may rely on. Do not invent an "
+    "answer for one, and never present one as established. If your work depends on one of them, "
+    "say so explicitly and state what evidence would settle it."
+)
+#: What an item with no answer renders as. Never a blank — a blank reads to a model as an omission
+#: it is free to fill in, which is the exact failure this field exists to stop.
+_NO_ANSWER = "no answer given"
+
+
+def _render_answers(items: list[dict[str, Any]]) -> str:
+    lines: list[str] = []
+    for item in items:
+        answer = item.get("answer")
+        rendered = f'"{answer}"' if isinstance(answer, str) and answer.strip() else _NO_ANSWER
+        lines.append(f"  - {item['question']} — {rendered}")
+    return "\n".join(lines)
+
+
+def resolve_run_answers(
+    inputs: dict[str, Any] | None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]] | None:
+    """#846: the app's intake answers as ``(confirmed, hypotheses)``, or ``None`` for a run without
+    them. Read-side only — the SHAPE was already fail-closed at create (``validate_answers``), so a
+    malformed payload never reaches a dispatch."""
+    try:
+        return parse_answers(inputs)
+    except ValueError:  # unreachable via create; a stored pre-validation row must not kill a drive
+        return None
+
+
 def resolve_run_task(manifest: OHMManifest, inputs: dict[str, Any] | None) -> str | None:
     """Contract §TASK (#674): the run's task text, or ``None`` when there is none to deliver.
 
@@ -148,6 +195,7 @@ def render_member_input(
     *,
     refresh_records: list[dict[str, Any]] | None = None,
     task: str | None = None,
+    answers: tuple[list[dict[str, Any]], list[dict[str, Any]]] | None = None,
 ) -> str:
     """Render a member's objective + fan item + inbound typed hand-offs into the harness input.
 
@@ -173,6 +221,16 @@ def render_member_input(
     # rendering to a pre-#674 run (the #602 default-OFF discipline).
     if task is not None:
         parts.append(f"Task: {task}")
+    # #846: the app's intake answers, delivered to EVERY member like the task. The confirmed ones
+    # come FIRST and the flagged ones last, under the directive that reframes them — an answer that
+    # drifted under the wrong heading is worse than sending neither, since it either invites the
+    # member to distrust a supplied fact or to build on an admitted guess.
+    if answers is not None:
+        confirmed, hypotheses = answers
+        if confirmed:
+            parts.append(f"{CONFIRMED_ANSWERS_HEADER}\n{_render_answers(confirmed)}")
+        if hypotheses:
+            parts.append(f"{HYPOTHESIS_DIRECTIVE}\n{_render_answers(hypotheses)}")
     if fan_item is not None:
         parts.append(f"Item: {json.dumps(fan_item, default=str)}")
     for env in envelopes:
@@ -284,6 +342,7 @@ def make_harness_dispatch(
     refresh_seed_records: list[dict[str, Any]] | None = None,
     refresh_sink_role: str | None = None,
     task: str | None = None,
+    answers: tuple[list[dict[str, Any]], list[dict[str, Any]]] | None = None,
 ) -> DispatchFn:
     """Build a ``run_team`` dispatch that runs each member as a real harness execution.
 
@@ -323,6 +382,9 @@ def make_harness_dispatch(
                 ),
                 # Contract §TASK (#674): the run's task, delivered to EVERY member verbatim.
                 task=task,
+                # #846: and the app's intake answers, to every member for the same reason — a
+                # downstream member must not have to reconstruct what was assumed from a hand-off.
+                answers=answers,
             ),
             manifest_inline=sub,
             manifest_ref=(member.manifest_ref if sub is None else None),
@@ -453,6 +515,7 @@ async def run_team_harness(
         refresh_seed_records=refresh_records,  # #602: the sink's prior records (refresh only)
         refresh_sink_role=refresh_sink,
         task=resolve_run_task(manifest, inputs),  # Contract §TASK (#674): to every member
+        answers=resolve_run_answers(inputs),  # #846: the app's intake answers, to every member
     )
     return await run_team(
         manifest,
@@ -603,6 +666,7 @@ async def run_team_hybrid(
         refresh_seed_records=refresh_records,  # #602: the sink's prior records (refresh only)
         refresh_sink_role=refresh_sink,
         task=resolve_run_task(manifest, inputs),  # Contract §TASK (#674): to every member
+        answers=resolve_run_answers(inputs),  # #846: the app's intake answers, to every member
     )
     termination = manifest.orchestration.termination if manifest.orchestration else None
     max_rounds = (termination.max_rounds if termination else None) or _DEFAULT_MAX_ROUNDS
