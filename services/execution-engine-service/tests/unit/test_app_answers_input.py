@@ -27,6 +27,7 @@ seam is imported function-locally (§4.1) and these fail at runtime, never at co
 from __future__ import annotations
 
 import uuid
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -299,6 +300,40 @@ async def test_create_rejects_a_malformed_payload_before_persisting_or_enqueuein
     assert enqueued == []  # no worker, no tokens
 
 
+class _RecordingRepo:
+    """Captures what ``create`` was asked to persist."""
+
+    def __init__(self) -> None:
+        self.inputs: dict[str, Any] | None = None
+
+    async def create(self, **kw: Any) -> Any:
+        self.inputs = kw.get("inputs")
+        return SimpleNamespace(id=uuid.uuid4(), organisation_id=_ORG)
+
+
+async def test_create_persists_the_answers_rather_than_stripping_them() -> None:
+    """``answers`` is NOT ``_refresh_seed``. ``create`` strips the refresh seed on every on-ramp so
+    a caller can never hand-inject it into their own sink's prompt (#602 finding 3). Here the
+    caller IS the intended source, so the same reflex applied to this key would delete the whole
+    feature while every rendering test above still passed."""
+    from oraclous_execution_engine_service.services.team_run_service import TeamRunService
+
+    repo = _RecordingRepo()
+    svc = TeamRunService(
+        team_runs=repo,  # type: ignore[arg-type] — duck-typed seam in unit tests
+        harness=None,
+        enqueue=lambda _rid, _org, _user: None,
+    )
+    await svc.create(
+        _principal(),
+        manifest=_team_document(),
+        sub_harnesses={},
+        gate_decisions={},
+        inputs={"answers": _ANSWERS},
+    )
+    assert (repo.inputs or {}).get("answers") == _ANSWERS
+
+
 # ── half 2: the answers actually reach a member ──────────────────────────────────────────────
 
 
@@ -320,7 +355,9 @@ def test_a_hypothesis_flagged_answer_renders_under_a_directive_forbidding_a_prem
 def test_an_unanswered_question_renders_as_unanswered_not_as_an_empty_string() -> None:
     """``answer: null`` is "I don't know", which is not the same as an answer of "". A blank reads
     to a model as an omission it may fill in; the field has to say the founder did not know."""
-    rendered = _render(answers=_parsed([{"question": _Q_SEGMENT, "answer": None}]))
+    rendered = _render(
+        answers=_parsed([{"question": _Q_SEGMENT, "answer": None, "hypothesis": True}])
+    )
     line = next(ln for ln in rendered.splitlines() if _Q_SEGMENT in ln)
     assert not line.rstrip().endswith("—")  # never a dangling separator with nothing after it
     assert "no answer given" in line
