@@ -175,6 +175,7 @@ def _poll(c: httpx.Client, run_id: str, tries: int = 120) -> dict:
     raise AssertionError(f"run {run_id} never terminated (last: {row.get('state')})")
 
 
+@pytest.mark.byom
 @requires_byom
 def test_a_flagged_answer_reaches_a_real_member_marked_unverified(
     register: Callable[..., dict], gateway_client: Callable[[str], httpx.Client]
