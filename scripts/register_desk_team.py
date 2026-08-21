@@ -11,9 +11,9 @@ run needs. Two BYOM keys are pasted through the gateway's public credentials API
 injected into a service environment — and the model credential is bound onto every member:
 
 * the model key (OpenRouter), bound as each sub-harness's ``models[0]``;
-* the web-search key (Tavily), which the registry resolves per-org at dispatch, so it needs no
-  per-member binding. Without it ``web-research`` fails closed and the two searching members
-  produce nothing.
+* the web-search key (Tavily), bound onto an organisation-wide instance of the Web Research tool.
+  Storing the key alone is not enough: the tool is dispatched through a configured instance, and
+  without one the two searching members fail closed with "no configured instance".
 
 This script never runs the team — creating or replacing a draft calls no model
 (``POST /v1/engine/team-drafts`` only validates and persists documents). Executing the team is
@@ -66,6 +66,34 @@ def _store_credential(
     return str(resp.json()["id"])
 
 
+def _configure_tool(client: httpx.Client, *, capability_name: str, credential_id: str) -> str:
+    """Give the organisation a configured instance of a keyed tool, and return its id.
+
+    A stored credential is not reachable on its own. A member's tool call is dispatched through the
+    organisation's instance of that capability, and an instance with no credential mapped fails
+    closed — which is what "the organisation has no configured instance of it" means when a member
+    dies on its first search.
+    """
+    catalogue = client.get("/api/v1/capabilities").json()["capabilities"]
+    capability = next((c for c in catalogue if c["name"] == capability_name), None)
+    if capability is None:
+        raise SystemExit(f"the registry has no capability named {capability_name!r}")
+    instance = client.post(
+        "/api/v1/instances",
+        json={"capability_id": capability["id"], "name": capability_name, "configuration": {}},
+    )
+    if instance.status_code not in (200, 201):
+        raise SystemExit(f"creating the {capability_name} instance failed ({instance.status_code})")
+    instance_id = str(instance.json()["id"])
+    configured = client.post(
+        f"/api/v1/instances/{instance_id}/configure-credentials",
+        json={"credential_mappings": {"api_key": credential_id}},
+    )
+    if configured.status_code not in (200, 201):
+        raise SystemExit(f"configuring {capability_name} failed ({configured.status_code})")
+    return instance_id
+
+
 def _register(gateway_url: str, full_name: str) -> dict:
     email = f"desk-team-{uuid.uuid4().hex[:12]}@studio.test"
     with httpx.Client(base_url=gateway_url, timeout=15.0, trust_env=False) as c:
@@ -98,8 +126,9 @@ def main() -> int:
     )
     parser.add_argument(
         "--model",
-        default="openrouter/openai/gpt-4o-mini",
-        help="the model binding every member runs on",
+        default="openrouter/deepseek/deepseek-v3.2",
+        help="the model every member runs on; the provider prefix names the gateway that serves "
+        "it, so an OpenRouter model reads openrouter/<vendor>/<model>",
     )
     parser.add_argument(
         "--search-key",
@@ -144,6 +173,10 @@ def main() -> int:
                 name="desk team web search",
             )
             print(f"search credential: {search_cred}")
+            search_tool = _configure_tool(
+                c, capability_name="Web Research", credential_id=search_cred
+            )
+            print(f"web research tool: {search_tool}")
         else:
             print(
                 "WARNING: no web-search key given. The researcher and the cross-examiner will "
