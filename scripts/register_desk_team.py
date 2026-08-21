@@ -6,13 +6,22 @@ organisation into it, and POSTs (or, with ``--draft-id``, PUTs) it to the deploy
 application-gateway as a team draft. Prints the draft id — the value the desk's
 ``VITE_DESK_TEAM_DRAFT_ID`` points at.
 
-This script never runs the team — creating/replacing a draft costs nothing and calls no model
-(``POST /v1/engine/team-drafts`` only validates and persists documents). Executing the team for
-real is a separate, deliberate step (``POST /v1/engine/team-runs``) and is NOT part of this script.
+The desk runs the documents this draft holds, unchanged, so the draft has to carry everything a
+run needs. Two BYOM keys are pasted through the gateway's public credentials API first — never
+injected into a service environment — and the model credential is bound onto every member:
+
+* the model key (OpenRouter), bound as each sub-harness's ``models[0]``;
+* the web-search key (Tavily), which the registry resolves per-org at dispatch, so it needs no
+  per-member binding. Without it ``web-research`` fails closed and the two searching members
+  produce nothing.
+
+This script never runs the team — creating or replacing a draft calls no model
+(``POST /v1/engine/team-drafts`` only validates and persists documents). Executing the team is
+``scripts/run_desk_team.py``, a separate deliberate step.
 
 Usage:
-    uv run python scripts/register_desk_team.py --token <bearer> [--gateway-url http://localhost:8006]
-    uv run python scripts/register_desk_team.py --register "Desk Team Owner"  # a fresh user
+    uv run python scripts/register_desk_team.py --register "Desk Team Owner" \
+        --model-key "$OPENROUTER_API_KEY" --search-key "$TAVILY_API_KEY"
     uv run python scripts/register_desk_team.py --token <bearer> --draft-id <uuid>   # replace (PUT)
 """
 
@@ -20,6 +29,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import uuid
 from pathlib import Path
@@ -28,6 +38,32 @@ import httpx
 
 sys.path.insert(0, str(Path(__file__).parent))
 from desk_research_team.build import build_documents  # noqa: E402
+
+
+def _store_credential(
+    client: httpx.Client, *, user_id: str, provider: str, key: str, name: str
+) -> str:
+    """Paste a BYOM key through the gateway's public credentials API and return its id.
+
+    The key is never echoed back by the store response (KMS-sealed), which is asserted here rather
+    than trusted — a script that prints a customer's key into a terminal is its own incident.
+    """
+    resp = client.post(
+        "/credentials/",
+        json={
+            "tool_id": str(uuid.uuid4()),
+            "user_id": user_id,
+            "name": name,
+            "provider": provider,
+            "cred_type": "api_key",
+            "credential": {"api_key": key},
+        },
+    )
+    if resp.status_code != 201:
+        raise SystemExit(f"storing the {provider} credential failed ({resp.status_code})")
+    if key in resp.text:
+        raise SystemExit(f"the {provider} store response echoed the secret — refusing to continue")
+    return str(resp.json()["id"])
 
 
 def _register(gateway_url: str, full_name: str) -> dict:
@@ -40,7 +76,12 @@ def _register(gateway_url: str, full_name: str) -> dict:
         reg.raise_for_status()
         token = reg.json()["access_token"]
         me = c.get("/v1/auth/me", headers={"Authorization": f"Bearer {token}"}).json()
-    return {"token": token, "org_id": me["organisation_id"], "email": email}
+    return {
+        "token": token,
+        "org_id": me["organisation_id"],
+        "user_id": me["id"],
+        "email": email,
+    }
 
 
 def main() -> int:
@@ -50,28 +91,76 @@ def main() -> int:
     parser.add_argument("--register", default=None, metavar="FULL_NAME", help="create a fresh user")
     parser.add_argument("--draft-id", default=None, help="replace (PUT) this existing draft id")
     parser.add_argument("--name", default="Desk Research Team")
+    parser.add_argument(
+        "--model-key",
+        default=os.environ.get("OPENROUTER_API_KEY"),
+        help="the OpenRouter key every member's model runs on (default: $OPENROUTER_API_KEY)",
+    )
+    parser.add_argument(
+        "--model",
+        default="openrouter/openai/gpt-4o-mini",
+        help="the model binding every member runs on",
+    )
+    parser.add_argument(
+        "--search-key",
+        default=os.environ.get("TAVILY_API_KEY"),
+        help="the web-search key the searching members need (default: $TAVILY_API_KEY)",
+    )
     args = parser.parse_args()
 
     if args.token:
         token = args.token
         with httpx.Client(base_url=args.gateway_url, timeout=15.0, trust_env=False) as c:
             me = c.get("/v1/auth/me", headers={"Authorization": f"Bearer {token}"}).json()
-        org_id = me["organisation_id"]
+        org_id, user_id = me["organisation_id"], me["id"]
     elif args.register:
         who = _register(args.gateway_url, args.register)
-        token, org_id = who["token"], who["org_id"]
+        token, org_id, user_id = who["token"], who["org_id"], who["user_id"]
         print(f"registered {who['email']} (org {org_id})")
     else:
         parser.error("pass --token <bearer> or --register <full name>")
         return 2
 
-    manifest, sub_harnesses = build_documents(uuid.UUID(org_id))
-    body = {"name": args.name, "manifest": manifest, "sub_harnesses": sub_harnesses}
+    if not args.model_key:
+        parser.error(
+            "pass --model-key (or set OPENROUTER_API_KEY) — a team with no model cannot run"
+        )
+        return 2
 
     headers = {"Authorization": f"Bearer {token}"}
     with httpx.Client(
         base_url=args.gateway_url, headers=headers, timeout=30.0, trust_env=False
     ) as c:
+        model_cred = _store_credential(
+            c, user_id=user_id, provider="openrouter", key=args.model_key, name="desk team model"
+        )
+        print(f"model credential: {model_cred}")
+        if args.search_key:
+            search_cred = _store_credential(
+                c,
+                user_id=user_id,
+                provider="web_search",
+                key=args.search_key,
+                name="desk team web search",
+            )
+            print(f"search credential: {search_cred}")
+        else:
+            print(
+                "WARNING: no web-search key given. The researcher and the cross-examiner will "
+                "fail closed on every search, and the brief will rest on nothing."
+            )
+
+        manifest, sub_harnesses = build_documents(uuid.UUID(org_id))
+        model = {
+            "role": "primary",
+            "binding": args.model,
+            "protocol_shape": "openai-compatible",
+            "config": {"credential_id": model_cred},
+        }
+        for sub in sub_harnesses.values():
+            sub["models"] = [model]
+        body = {"name": args.name, "manifest": manifest, "sub_harnesses": sub_harnesses}
+
         if args.draft_id:
             resp = c.put(f"/v1/engine/team-drafts/{args.draft_id}", json=body)
         else:
@@ -94,7 +183,7 @@ def main() -> int:
     print()
     print(envelope["report"])
     print()
-    print(json.dumps({"draft_id": draft["id"], "org_id": org_id}))
+    print(json.dumps({"draft_id": draft["id"], "org_id": org_id, "token": token}))
     return 1 if envelope["would_block"] else 0
 
 
