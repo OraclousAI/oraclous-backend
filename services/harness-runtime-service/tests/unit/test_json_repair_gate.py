@@ -207,3 +207,17 @@ async def test_a_member_at_its_tool_call_cap_still_gets_the_repair() -> None:
     assert len(calls) == 2
     assert calls[0]["content"] == _FIXED
     assert calls[1]["content"] == _FIXED
+
+
+async def test_the_grant_is_exactly_one_call_not_a_disabled_budget() -> None:
+    # "Granted on top of the budget" and "the budget no longer applies" are indistinguishable
+    # unless something checks the call AFTER the granted one. After the repair is spent, the
+    # member's cap must bind again on the very next call — the grant is ONE extra slot, not a
+    # standing exemption for the rest of the run.
+    llm = _Scripted(
+        ("ingest", _FIXED), ("ingest", _BROKEN), ("ingest", _FIXED), ("ingest", _FIXED), "done"
+    )
+    dispatch, calls = _tracked_dispatch()
+    result = await _run(llm, dispatch, policy=_envelope(max_tool_calls=1))
+    assert len(calls) == 2  # the member's own call + the granted repair; the fourth turn is gated
+    assert result.status is HarnessStatus.ESCALATED
