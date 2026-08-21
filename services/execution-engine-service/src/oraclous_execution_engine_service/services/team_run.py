@@ -370,6 +370,10 @@ def make_harness_dispatch(
         # unchanged team adds zero kwargs (the #576 send-only-when-set pattern; back-compat).
         if resolve_member_on_exhaustion(member, budget) == "degrade":
             caps["on_exhaustion"] = "degrade"
+        # #853: the member's structured-output declaration rides the same way — sent only when the
+        # member declared it, so an undeclared team adds zero kwargs and is unchanged.
+        if member.requires_valid_json:
+            caps["requires_valid_json"] = True
         result = await harness.execute(
             input_text=render_member_input(
                 member,

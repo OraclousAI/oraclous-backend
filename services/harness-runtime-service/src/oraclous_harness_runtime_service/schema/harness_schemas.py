@@ -70,6 +70,10 @@ class ExecuteHarnessRequest(BaseModel):
     # #587: the member's budget-exhaustion behaviour — "degrade" finishes a budget-gated loop with a
     # flagged PARTIAL; None ⇒ the harness default "escalate" (back-compat).
     on_exhaustion: Literal["escalate", "degrade"] | None = Field(default=None)
+    # #853: the dispatching member declared that its structured document must PARSE. The loop checks
+    # a JSON graph-ingest call before dispatching it and grants exactly one repair turn on a
+    # malformed one. False ⇒ unchanged behaviour (every pre-#853 caller omits the key).
+    requires_valid_json: bool = Field(default=False)
 
     @model_validator(mode="after")
     def _exactly_one_manifest(self) -> ExecuteHarnessRequest:

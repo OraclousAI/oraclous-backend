@@ -117,6 +117,7 @@ class HarnessClient:
         max_tokens: int | None = None,
         max_tool_calls: int | None = None,
         on_exhaustion: str | None = None,  # #587: "degrade" → the loop finishes PARTIAL at a gate
+        requires_valid_json: bool = False,  # #853: one repair turn on a malformed JSON document
         timeout: float | None = None,  # noqa: ASYNC109 — forwarded to httpx, not an asyncio cancel
     ) -> dict[str, Any]:
         """Run a harness to completion/escalation and return its ``HarnessExecutionOut`` JSON.
@@ -172,6 +173,10 @@ class HarnessClient:
         # harness default escalate (back-compat — an unchanged member adds zero keys).
         if on_exhaustion is not None:
             body["on_exhaustion"] = on_exhaustion
+        # #853: the member's structured-output declaration. Sent only when set — an undeclared
+        # member adds zero keys and behaves exactly as it does today (the #576 pattern).
+        if requires_valid_json:
+            body["requires_valid_json"] = True
         kwargs: dict[str, Any] = {"json": body}
         if timeout is not None:
             kwargs["timeout"] = timeout
