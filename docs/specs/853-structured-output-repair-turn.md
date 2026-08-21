@@ -179,6 +179,19 @@ The declaration is carried member → engine → harness → envelope the way `o
 including re-application from the checkpoint cursor on a HITL resume. An undeclared member adds
 zero keys to the request body.
 
+Two more, corrected at review (PR #856):
+
+- **The check is keyed on the tool's OPERATION (`ingest`), never on its binding.** Assumption 6
+  above says "the `graph-ingest` tool call", and reading that as the binding *name* was wrong: a
+  binding is the author's own label for a capability in their manifest, so an author who bound the
+  same capability under another name got no check at all, silently. `operation == "ingest"` is
+  already how the loop identifies a producing member; `source_type` comes from the caller.
+- **The repair state rides the HITL checkpoint**, both halves. The granted extra call must survive
+  the pause or a member that had already earned its repair meets a budget gate on resume and its
+  *corrected* document is refused; the one-shot flag must survive it or every pause renews the
+  allowance. Assumption 3 named the grant but not its lifetime, and "a resumed segment gets its own
+  one shot" — briefly the implementation — is the retry loop this feature refuses.
+
 ## Open questions
 
 None outstanding — the three the issue raised are ruled in Assumptions 1–3. Flag at review if the
