@@ -234,6 +234,8 @@ def _cursor(
     member_max_tool_calls: int | None = None,
     member_on_exhaustion: str | None = None,
     member_requires_valid_json: bool = False,
+    json_repair_used: bool = False,
+    json_repair_grant: int = 0,
 ) -> dict[str, int | str | None]:
     return {
         "iteration": checkpoint.iteration,
@@ -244,11 +246,13 @@ def _cursor(
         "member_max_tool_calls": member_max_tool_calls,
         # #587: persist on_exhaustion so a resumed (escalated) run re-applies the choice.
         "member_on_exhaustion": member_on_exhaustion,
-        # #853: persist the structured-output declaration so a resumed run keeps checking. The
-        # repair BUDGET is deliberately not persisted — a resumed segment gets its own one shot,
-        # which is the fail-soft direction (a correction offered twice across a human pause, never
-        # a loop within one segment).
+        # #853: persist the structured-output declaration so a resumed run keeps checking, and the
+        # repair state with it. A grant already earned must come back, or the corrected document
+        # meets a budget gate on resume; a spent one-shot must come back too, or every pause renews
+        # it. The checkpoint carries both — this only writes them where they survive the pause.
         "member_requires_valid_json": member_requires_valid_json,
+        "json_repair_used": json_repair_used,
+        "json_repair_grant": json_repair_grant,
     }
 
 
@@ -465,7 +469,17 @@ class HarnessExecutionService:
                 approved_tool_call_id=cp.approved_tool_call_id,
                 # #576: persist the member's per-member cap in the cursor (JSONB, no migration) so
                 # resume re-applies the user's budget rather than reverting to the policy tier.
-                resume_cursor=_cursor(cp, max_tokens, max_tool_calls, on_exhaustion),
+                resume_cursor=_cursor(
+                    cp,
+                    max_tokens,
+                    max_tool_calls,
+                    on_exhaustion,
+                    # #853: the declaration AND the repair state, or the first pause of a declared
+                    # member comes back undeclared and its earned repair slot is gone.
+                    requires_valid_json,
+                    cp.json_repair_used,
+                    cp.json_repair_grant,
+                ),
                 redact_patterns=cp.redact_patterns,
             )
             if steps and steps[-1]["kind"] == StepKind.GATE.value:
@@ -705,6 +719,9 @@ class HarnessExecutionService:
             tool_calls_made=cursor["tool_calls_made"],
             tokens_used=cursor["tokens_used"],
             redact_patterns=checkpoint.redact_patterns,
+            # #853: old checkpoints lack the keys → False/0 → a pre-#853 paused run is unchanged.
+            json_repair_used=bool(cursor.get("json_repair_used")),
+            json_repair_grant=int(cursor.get("json_repair_grant") or 0),
         )
         prompt = manifest.primary_prompt()
         try:
@@ -752,6 +769,8 @@ class HarnessExecutionService:
                     cursor.get("member_max_tool_calls"),
                     cursor.get("member_on_exhaustion"),
                     bool(cursor.get("member_requires_valid_json")),  # #853: across a chained gate
+                    new_cp.json_repair_used,
+                    new_cp.json_repair_grant,
                 ),
                 redact_patterns=new_cp.redact_patterns,
             )

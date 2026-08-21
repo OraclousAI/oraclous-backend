@@ -99,6 +99,13 @@ class LoopCheckpoint:
     tool_calls_made: int
     tokens_used: int
     redact_patterns: list[str]
+    # #853: the repair state at the moment of the pause. Both are needed, and for opposite reasons.
+    # Without the grant, a member that had ALREADY earned its extra call comes back to a budget gate
+    # and its corrected document is refused — the repair rejecting the document it asked for.
+    # Without the flag, every pause renews the one-shot allowance, which is the retry loop this
+    # feature exists not to be. Defaulted so a checkpoint written before #853 resumes unchanged.
+    json_repair_used: bool = False
+    json_repair_grant: int = 0
 
 
 @dataclass(slots=True)
@@ -321,13 +328,13 @@ async def run_tool_use_loop(
     # #853: whether this member has already spent its ONE repair turn. Like `nudged`, a one-shot
     # flag — a repair, not a loop. A second malformed document falls through to the ordinary path
     # and settles exactly as it does today (no second correction, no silent retry storm).
-    json_repair_used = False
+    json_repair_used = resume_state.json_repair_used if resume_state is not None else False
     # #853 (ruled 2026-08-21): the repair is granted ON TOP of the member's own budget, never
     # charged to it — a member that already spent its whole budget on real work is exactly the
     # member this fix exists for, and could not otherwise pay for its own correction. One extra
     # tool call AND one extra iteration, spent only on the repair, and only once. Not a standing
     # exemption: the member's cap binds again on the very next call after the granted one.
-    json_repair_grant = 0
+    json_repair_grant = resume_state.json_repair_grant if resume_state is not None else 0
     # #580: set when a retrieval reports data-absence (an empty result it flagged). A run that
     # completes after this degrades to a flagged PARTIAL (never a silent SUCCEEDED) — ADR-021.
     # Intentionally NOT carried across a HITL resume (a fresh nonlocal): an empty-retrieval-then-
@@ -470,6 +477,8 @@ async def run_tool_use_loop(
                     tool_calls_made=tool_calls_made,
                     tokens_used=tokens_used,
                     redact_patterns=[p.pattern for p in redactors],
+                    json_repair_used=json_repair_used,
+                    json_repair_grant=json_repair_grant,
                 )
                 return _escalate(
                     f"{spec.binding}.{spec.operation}",
