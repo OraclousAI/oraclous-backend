@@ -186,6 +186,14 @@ class OHMMember(BaseModel):
     # degrade (finish with the best-effort last text, a flagged partial). None → inherit the team
     # budget default, else the hard default escalate (back-compat).
     on_exhaustion: Literal["escalate", "degrade"] | None = None
+    # #853: this member's structured output must PARSE. A member whose brief is JSON declares it
+    # here, and a malformed document earns one bounded repair turn inside the same run instead of
+    # discarding every member's work (run e3a6af87 lost 5,395 characters to one missing bracket).
+    # Deliberately NOT folded into `outputs_schema`: that field is about SHAPE (required keys of an
+    # already-parsed payload) and is checked only at a hand-off, so it never fires for a terminal
+    # member and never catches a payload that fails to parse at all. This is about SYNTAX. A member
+    # may declare either, both, or neither. Default False → every pre-#853 manifest is unchanged.
+    requires_valid_json: bool = False
 
     @model_validator(mode="after")
     def _human_requires_role(self) -> OHMMember:
