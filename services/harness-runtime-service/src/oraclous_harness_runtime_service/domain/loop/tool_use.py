@@ -215,7 +215,11 @@ _CITATION_CORRECTION_MAX_NAMED_IDS = 5
 # later, possibly after the run has already settled. Pre-dispatch is therefore both the right layer
 # (the document is wrong where it is written) and the only layer early enough to ask for a fix.
 _JSON_REPAIR_STATUS = "json_repair"
-_JSON_REPAIR_BINDING = "graph-ingest"
+# Keyed on the OPERATION, never on the capability's binding name. A binding is the author's own
+# label for a capability in their manifest, so matching it meant an author who bound the same
+# ingest capability under any other name silently got no check at all — the run lost to a bad
+# document exactly as before, with nothing to say why. `operation == "ingest"` is how this loop
+# already identifies a producing member (see `produces`), and `source_type` comes from the caller.
 _JSON_REPAIR_OPERATION = "ingest"
 _JSON_REPAIR_SOURCE_TYPE = "json"
 # The parser's OWN message rides into the prompt verbatim ("Expecting property name enclosed in
@@ -483,7 +487,6 @@ async def run_tool_use_loop(
                 spec is not None
                 and policy.requires_valid_json
                 and not json_repair_used
-                and spec.binding == _JSON_REPAIR_BINDING
                 and spec.operation == _JSON_REPAIR_OPERATION
                 and str(tc["args"].get("source_type", "")).strip().lower()
                 == _JSON_REPAIR_SOURCE_TYPE
