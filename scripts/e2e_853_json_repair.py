@@ -231,21 +231,28 @@ def main() -> int:
             print(f"  the parser said: {step.get('detail')}")
         print(f"ingest dispatches: {len(ingests)} ({[s.get('status') for s in ingests]})")
 
-        # 2. the brief the run produced, read the way a client reads it
-        listing = c.get("/v1/artifacts", params={"graph_id": graph_id, "team_run_id": run_id})
-        artifacts = sorted(
-            listing.json(), key=lambda a: str(a.get("created_at") or ""), reverse=True
-        )
+        # 2. the brief the run produced, read the way a client reads it. `graph-ingest` is
+        # fire-and-forget — the document is written by a worker AFTER the call returns, and a run
+        # can settle before that worker has caught up — so the read is retried for a short while.
+        # Waiting is honest here; asserting on the first empty listing would be a race, not a fact.
         brief = None
-        for summary in artifacts[:6]:
-            content = (c.get(f"/v1/artifacts/{summary['id']}").json().get("content") or "").strip()
-            try:
-                doc = json.loads(content)
-            except ValueError:
-                continue
-            if isinstance(doc, dict) and doc.get("posture") and doc.get("headline"):
-                brief = (summary["id"], doc)
+        for _ in range(12):
+            listing = c.get("/v1/artifacts", params={"graph_id": graph_id, "team_run_id": run_id})
+            artifacts = sorted(
+                listing.json(), key=lambda a: str(a.get("created_at") or ""), reverse=True
+            )
+            for summary in artifacts[:6]:
+                detail = c.get(f"/v1/artifacts/{summary['id']}").json()
+                try:
+                    doc = json.loads((detail.get("content") or "").strip())
+                except ValueError:
+                    continue
+                if isinstance(doc, dict) and doc.get("posture") and doc.get("headline"):
+                    brief = (summary["id"], doc)
+                    break
+            if brief is not None:
                 break
+            time.sleep(5.0)
 
     print()
     ok = True
