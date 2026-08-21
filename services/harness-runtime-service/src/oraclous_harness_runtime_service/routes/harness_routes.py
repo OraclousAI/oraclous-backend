@@ -72,6 +72,7 @@ async def execute_harness(
             max_tokens=body.max_tokens,
             max_tool_calls=body.max_tool_calls,
             on_exhaustion=body.on_exhaustion,
+            requires_valid_json=body.requires_valid_json,
         )
     except OHMError as exc:
         raise HTTPException(

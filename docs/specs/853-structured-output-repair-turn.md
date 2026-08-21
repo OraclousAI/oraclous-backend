@@ -1,6 +1,6 @@
 # Spec: one bounded repair turn for a malformed structured document (issue #853)
 
-Status: **proposed**. Issue: `OraclousAI/oraclous-backend#853` · Epic: `#827` · Child of #851's first run.
+Status: **shipped**. Issue: `OraclousAI/oraclous-backend#853` · Epic: `#827` · Child of #851's first run.
 
 ---
 
@@ -160,6 +160,37 @@ an `[impl]` PR turns them green.
 3. A second malformed attempt settles the member (and thus the run) exactly as today — no loop.
 4. Proven on a real run through the gateway on a real model (issue #853's own scenario), not only a
    unit test with a hand-broken fixture.
+
+## As built
+
+Two details the design above left implicit, settled while implementing:
+
+- **The check runs before the tool-call budget gate**, not after it. The member this fix exists for
+  spends its budget on real work and only then writes the broken brief, so a check placed after the
+  gate would never run on the call that matters. The repair's grant is one extra tool call *and* one
+  extra iteration (`max_iterations` is derived as `max_tool_calls + 1`, so without the second grant
+  a member that spent its budget has no turn left to write the answer in after the repair).
+- **The correction is a `tool` turn, not a `user` turn.** The assistant turn already carries the
+  tool-call id, and a provider transcript with a call and no matching result is malformed. The
+  member reads the correction where it expects the result. The trace records it as a `gate` step
+  named `structured_output` with status `json_repair`.
+
+The declaration is carried member → engine → harness → envelope the way `on_exhaustion` (#587) is,
+including re-application from the checkpoint cursor on a HITL resume. An undeclared member adds
+zero keys to the request body.
+
+Two more, corrected at review (PR #856):
+
+- **The check is keyed on the tool's OPERATION (`ingest`), never on its binding.** Assumption 6
+  above says "the `graph-ingest` tool call", and reading that as the binding *name* was wrong: a
+  binding is the author's own label for a capability in their manifest, so an author who bound the
+  same capability under another name got no check at all, silently. `operation == "ingest"` is
+  already how the loop identifies a producing member; `source_type` comes from the caller.
+- **The repair state rides the HITL checkpoint**, both halves. The granted extra call must survive
+  the pause or a member that had already earned its repair meets a budget gate on resume and its
+  *corrected* document is refused; the one-shot flag must survive it or every pause renews the
+  allowance. Assumption 3 named the grant but not its lifetime, and "a resumed segment gets its own
+  one shot" — briefly the implementation — is the retry loop this feature refuses.
 
 ## Open questions
 

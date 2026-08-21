@@ -55,6 +55,11 @@ class PolicyEnvelope:
     # human, today's behaviour) or "degrade" (finish with the best-effort last_text, a flagged
     # PARTIAL). Default "escalate" so an envelope built the old way is byte-for-byte unchanged.
     on_exhaustion: Literal["escalate", "degrade"] = "escalate"
+    # #853: the acting member declared that its structured document must PARSE. When set, the loop
+    # checks a JSON graph-ingest call's content BEFORE dispatching it, and a malformed one earns
+    # exactly one repair turn (the parser's own error handed back to the member) instead of losing
+    # the whole run. Default False so an envelope built the old way is byte-for-byte unchanged.
+    requires_valid_json: bool = False
 
 
 # Built-in catalogue (Structured Governance Taxonomy v1.0 §2). The single source until a policy
@@ -198,6 +203,7 @@ def build_envelope(
     max_tokens_ceiling: int | None = None,
     max_tool_calls_ceiling: int | None = None,
     member_on_exhaustion: Literal["escalate", "degrade"] | None = None,
+    member_requires_valid_json: bool | None = None,
 ) -> PolicyEnvelope:
     """Build the effective runtime envelope. The iteration cap is a safety backstop derived from the
     policy's tool-call budget (so a stricter tier's smaller budget actually binds), bounded by the
@@ -244,4 +250,5 @@ def build_envelope(
         tool_ceiling=ceiling,
         redact_patterns=redact,
         on_exhaustion=member_on_exhaustion or "escalate",  # #587: degrade vs escalate at a gate
+        requires_valid_json=bool(member_requires_valid_json),  # #853: one repair turn on bad JSON
     )

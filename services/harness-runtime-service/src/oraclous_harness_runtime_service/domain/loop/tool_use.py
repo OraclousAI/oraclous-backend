@@ -99,6 +99,13 @@ class LoopCheckpoint:
     tool_calls_made: int
     tokens_used: int
     redact_patterns: list[str]
+    # #853: the repair state at the moment of the pause. Both are needed, and for opposite reasons.
+    # Without the grant, a member that had ALREADY earned its extra call comes back to a budget gate
+    # and its corrected document is refused — the repair rejecting the document it asked for.
+    # Without the flag, every pause renews the one-shot allowance, which is the retry loop this
+    # feature exists not to be. Defaulted so a checkpoint written before #853 resumes unchanged.
+    json_repair_used: bool = False
+    json_repair_grant: int = 0
 
 
 @dataclass(slots=True)
@@ -209,6 +216,30 @@ _CITATION_CORRECTION_RULE_2 = (
 # Five is plenty to act on; the remainder is counted, not listed.
 _CITATION_CORRECTION_MAX_NAMED_IDS = 5
 
+# #853: the one bounded repair turn for a malformed structured document. A member that declares
+# `requires_valid_json` writes its brief as a JSON `graph-ingest` call, and that connector is
+# fire-and-forget — it returns {job_id, status} and the knowledge-graph worker parses the document
+# later, possibly after the run has already settled. Pre-dispatch is therefore both the right layer
+# (the document is wrong where it is written) and the only layer early enough to ask for a fix.
+_JSON_REPAIR_STATUS = "json_repair"
+# Keyed on the OPERATION, never on the capability's binding name. A binding is the author's own
+# label for a capability in their manifest, so matching it meant an author who bound the same
+# ingest capability under any other name silently got no check at all — the run lost to a bad
+# document exactly as before, with nothing to say why. `operation == "ingest"` is how this loop
+# already identifies a producing member (see `produces`), and `source_type` comes from the caller.
+_JSON_REPAIR_OPERATION = "ingest"
+_JSON_REPAIR_SOURCE_TYPE = "json"
+# The parser's OWN message rides into the prompt verbatim ("Expecting property name enclosed in
+# double quotes: line 1 column 2541 (char 2540)"). A generic "invalid JSON" is what makes a
+# one-shot repair unreliable — a model given the exact position usually fixes it in one turn.
+_JSON_REPAIR_MESSAGE = (
+    "Your document was NOT saved, because it is not parseable JSON. The parser stopped here:\n\n"
+    "{error}\n\n"
+    "Write the whole document again with that fixed, and call the tool once more. Send only the "
+    "JSON document itself — no prose around it and no markdown fence. This is your one correction: "
+    "a second malformed document is saved exactly as written."
+)
+
 
 def _citation_correction(
     violations: list[CitationViolation], *, nothing_served: bool
@@ -294,6 +325,16 @@ async def run_tool_use_loop(
     steps: list[LoopStep] = []
     last_text = ""
     nudged = False  # completion contract (#543): one-time "use your tools" re-prompt — see below
+    # #853: whether this member has already spent its ONE repair turn. Like `nudged`, a one-shot
+    # flag — a repair, not a loop. A second malformed document falls through to the ordinary path
+    # and settles exactly as it does today (no second correction, no silent retry storm).
+    json_repair_used = resume_state.json_repair_used if resume_state is not None else False
+    # #853 (ruled 2026-08-21): the repair is granted ON TOP of the member's own budget, never
+    # charged to it — a member that already spent its whole budget on real work is exactly the
+    # member this fix exists for, and could not otherwise pay for its own correction. One extra
+    # tool call AND one extra iteration, spent only on the repair, and only once. Not a standing
+    # exemption: the member's cap binds again on the very next call after the granted one.
+    json_repair_grant = resume_state.json_repair_grant if resume_state is not None else 0
     # #580: set when a retrieval reports data-absence (an empty result it flagged). A run that
     # completes after this degrades to a flagged PARTIAL (never a silent SUCCEEDED) — ADR-021.
     # Intentionally NOT carried across a HITL resume (a fresh nonlocal): an empty-retrieval-then-
@@ -391,7 +432,7 @@ async def run_tool_use_loop(
     ) -> LoopResult | None:
         """Dispatch a turn's tool calls. Returns an escalation LoopResult (pause/budget) or None to
         continue. ``approved_id`` (resume only) bypasses the HITL gate for exactly that one call."""
-        nonlocal tool_calls_made, retrieval_empty
+        nonlocal tool_calls_made, retrieval_empty, json_repair_used, json_repair_grant
         for i, tc in enumerate(tool_calls):
             spec = by_name.get(tc["name"])
             # Coded governance — enforced BEFORE any dispatch, regardless of what the prose said.
@@ -436,6 +477,8 @@ async def run_tool_use_loop(
                     tool_calls_made=tool_calls_made,
                     tokens_used=tokens_used,
                     redact_patterns=[p.pattern for p in redactors],
+                    json_repair_used=json_repair_used,
+                    json_repair_grant=json_repair_grant,
                 )
                 return _escalate(
                     f"{spec.binding}.{spec.operation}",
@@ -444,7 +487,56 @@ async def run_tool_use_loop(
                     iteration,
                     checkpoint=checkpoint,
                 )
-            if policy.max_tool_calls is not None and tool_calls_made >= policy.max_tool_calls:
+            # #853: the structured-output check, BEFORE the tool-call budget gate on purpose. The
+            # member this fix exists for spends its budget on real work and only then writes the
+            # broken brief, so a check placed after the gate would never run on the call that
+            # matters. Scoped to a JSON `graph-ingest` document: a declared member still ingests
+            # prose, and prose that was never meant to be JSON is not malformed JSON.
+            if (
+                spec is not None
+                and policy.requires_valid_json
+                and not json_repair_used
+                and spec.operation == _JSON_REPAIR_OPERATION
+                and str(tc["args"].get("source_type", "")).strip().lower()
+                == _JSON_REPAIR_SOURCE_TYPE
+            ):
+                document = tc["args"].get("content")
+                parse_error: str | None = None
+                if isinstance(document, str):  # a non-str content is already structured
+                    try:
+                        json.loads(document)
+                    except ValueError as exc:
+                        parse_error = str(exc)
+                if parse_error is not None:
+                    json_repair_used = True
+                    json_repair_grant = 1
+                    correction = _redact(_JSON_REPAIR_MESSAGE.format(error=parse_error), redactors)
+                    # A `tool` turn, not a bare `user` one: the assistant turn already carries this
+                    # tool_call_id, and a provider transcript with a call and no matching result is
+                    # malformed. The member reads the correction where it expects the result.
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": tc["id"],
+                            "name": tc["name"],
+                            "content": correction,
+                        }
+                    )
+                    steps.append(
+                        LoopStep(
+                            len(steps),
+                            StepKind.GATE,
+                            "structured_output",
+                            _JSON_REPAIR_STATUS,
+                            _truncate(parse_error),
+                            tool_call_id=tc["id"],
+                        )
+                    )
+                    continue  # never dispatched — the malformed document is not persisted at all
+            if (
+                policy.max_tool_calls is not None
+                and tool_calls_made >= policy.max_tool_calls + json_repair_grant
+            ):
                 return _budget_gate(
                     "budget", "tool_call_budget", "tool-call budget exhausted", iteration
                 )
@@ -558,7 +650,12 @@ async def run_tool_use_loop(
                     raise
                 attempt += 1
 
-    for iteration in range(resume_iteration + 1, policy.max_iterations + 1):
+    # #853: a `while` rather than a `range()` because the iteration cap is no longer fixed — a
+    # spent repair turn grants one extra iteration alongside the extra tool call, so a member that
+    # discovers its malformed document on its last allowed iteration can still write the fixed one.
+    iteration = resume_iteration
+    while iteration < policy.max_iterations + json_repair_grant:
+        iteration += 1
         if _over_wall_time():
             return _budget_gate("budget", "wall_time", "wall-time budget exhausted", iteration)
 
@@ -710,9 +807,12 @@ async def run_tool_use_loop(
             "citation",
             "citation_unresolved",
             f"the member could not produce a citable answer within the budget ({citation_blocked})",
-            policy.max_iterations,
+            policy.max_iterations + json_repair_grant,
         )
     # iteration cap reached without a final answer → escalate or degrade (#587).
     return _budget_gate(
-        "budget", "iteration_cap", "tool-use loop did not converge", policy.max_iterations
+        "budget",
+        "iteration_cap",
+        "tool-use loop did not converge",
+        policy.max_iterations + json_repair_grant,
     )
