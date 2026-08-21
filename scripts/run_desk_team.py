@@ -14,8 +14,13 @@ The read mirrors the desk too. It lists the run's artifacts, sorts them newest f
 six, and takes the first that parses as a brief — a document carrying both ``posture`` and
 ``headline``, which is how the desk tells a synthesis apart from a captured source.
 
+A team run outlives its access token: the token is good for thirty minutes and a five-member run
+on a real model takes longer, so the poll re-authenticates rather than dying with the answer
+already sitting on the server.
+
 Usage:
-    uv run python scripts/run_desk_team.py --token <bearer> --draft-id <uuid> --task "..."
+    uv run python scripts/run_desk_team.py --email <addr> --password <pw> \\
+        --draft-id <uuid> --task "..."
 """
 
 from __future__ import annotations
@@ -24,6 +29,7 @@ import argparse
 import json
 import sys
 import time
+from collections.abc import Callable
 from typing import Any
 
 import httpx
@@ -50,12 +56,34 @@ def _parse_brief(content: str) -> dict[str, Any] | None:
     return None
 
 
-def _poll(client: httpx.Client, run_id: str, *, tries: int, every: float) -> dict[str, Any]:
+def _login(gateway_url: str, email: str, password: str) -> str:
+    with httpx.Client(base_url=gateway_url, timeout=15.0, trust_env=False) as c:
+        resp = c.post("/v1/auth/login", json={"email": email, "password": password})
+        if resp.status_code != 200:
+            raise SystemExit(f"login failed ({resp.status_code})")
+        return str(resp.json()["access_token"])
+
+
+def _poll(
+    client: httpx.Client,
+    run_id: str,
+    *,
+    tries: int,
+    every: float,
+    refresh: Callable[[], str] | None,
+) -> dict[str, Any]:
+    """Poll until the run settles, re-authenticating when the access token ages out mid-run."""
     row: dict[str, Any] = {}
     for _ in range(tries):
-        row = client.get(f"/v1/engine/team-runs/{run_id}").json()
-        if row.get("state") in _TERMINAL:
+        resp = client.get(f"/v1/engine/team-runs/{run_id}")
+        if resp.status_code == 401 and refresh is not None:
+            client.headers["Authorization"] = f"Bearer {refresh()}"
+            continue
+        row = resp.json()
+        state = row.get("state")
+        if state in _TERMINAL:
             return row
+        print(f"  {state}...", flush=True)
         time.sleep(every)
     raise SystemExit(f"run {run_id} never reached a terminal state (last: {row.get('state')})")
 
@@ -63,14 +91,29 @@ def _poll(client: httpx.Client, run_id: str, *, tries: int, every: float) -> dic
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run the desk research team and read its brief.")
     parser.add_argument("--gateway-url", default="http://localhost:8006")
-    parser.add_argument("--token", required=True, help="bearer token of the owning org")
+    parser.add_argument("--token", default=None, help="bearer token of the owning org")
+    parser.add_argument("--email", default=None, help="the owner's email, for a long run")
+    parser.add_argument("--password", default=None, help="the owner's password, for a long run")
     parser.add_argument("--draft-id", required=True, help="the draft the desk is configured with")
     parser.add_argument("--task", required=True, help="the idea or decision being validated")
     parser.add_argument("--poll-seconds", type=float, default=10.0)
     parser.add_argument("--poll-tries", type=int, default=240)
     args = parser.parse_args()
 
-    headers = {"Authorization": f"Bearer {args.token}"}
+    refresh: Callable[[], str] | None = None
+    if args.email and args.password:
+
+        def refresh() -> str:  # noqa: F811  — the concrete refresher, once credentials exist
+            return _login(args.gateway_url, args.email, args.password)
+
+        token = refresh()
+    elif args.token:
+        token = args.token
+    else:
+        parser.error("pass --token, or --email and --password so a long run can re-authenticate")
+        return 2
+
+    headers = {"Authorization": f"Bearer {token}"}
     with httpx.Client(
         base_url=args.gateway_url, headers=headers, timeout=60.0, trust_env=False
     ) as c:
@@ -101,7 +144,7 @@ def main() -> int:
         run_id = created.json()["id"]
         print(f"run id:   {run_id}")
 
-        done = _poll(c, run_id, tries=args.poll_tries, every=args.poll_seconds)
+        done = _poll(c, run_id, tries=args.poll_tries, every=args.poll_seconds, refresh=refresh)
         print(f"state:    {done['state']}")
         print(f"members:  {json.dumps(done.get('member_status') or {})}")
 
