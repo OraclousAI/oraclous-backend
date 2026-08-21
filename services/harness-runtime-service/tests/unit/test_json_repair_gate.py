@@ -61,13 +61,19 @@ def _envelope(*, requires_valid_json: bool = True, max_tool_calls: int | None = 
 
 class _Scripted:
     """One scripted entry per model turn. ``("ingest", content)`` calls graph-ingest with that
-    content (``source_type: "json"``); any other value is a final answer with no tool calls."""
+    content (``source_type: "json"`` unless a third element overrides it); any other value is a
+    final answer with no tool calls."""
 
     protocol_shape = "fake"
 
     def __init__(self, *script: Any) -> None:
         self._script = list(script)
         self.turns = 0
+        # every role="user"/"tool" message content seen across the WHOLE run so far, in order —
+        # accumulates turn over turn (the loop's own `messages` list already carries prior turns,
+        # so this simply mirrors it); never grab `[-1]` off this, since the last entry by the run's
+        # end is whatever the LATEST tool call returned, not necessarily a correction (#853 review).
+        self.user_messages_seen: list[str] = []
 
     async def complete(self, *, messages: Any, system: str, tools: list[ToolSpec]) -> LLMResponse:
         self.user_messages_seen = [
@@ -77,10 +83,11 @@ class _Scripted:
         self.turns += 1
         if isinstance(entry, tuple) and entry[0] == "ingest":
             content = entry[1]
+            source_type = entry[2] if len(entry) > 2 else "json"
             call = ToolCall(
                 f"c{self.turns}",
                 _INGEST.name,
-                {"graph_id": "g1", "content": content, "source_type": "json"},
+                {"graph_id": "g1", "content": content, "source_type": source_type},
             )
             return LLMResponse(text="ingesting", tool_calls=[call])
         return LLMResponse(text=entry, tool_calls=[])
@@ -132,10 +139,12 @@ async def test_the_correction_quotes_the_real_parser_error() -> None:
     dispatch, _calls = _tracked_dispatch()
     await _run(llm, dispatch)
     # the model must read the parser's OWN message (e.g. "Expecting ',' delimiter"), not a generic
-    # "invalid JSON" — a vague message is what makes a one-shot repair unreliable.
-    correction = llm.user_messages_seen[-1]
-    assert "line 1 column" in correction  # json.JSONDecodeError's own position marker
-    assert "char" in correction
+    # "invalid JSON" — a vague message is what makes a one-shot repair unreliable. Scan the WHOLE
+    # transcript rather than pinning a position: by the run's end the transcript's last tool
+    # message is the corrected call's own dispatch result, not the correction that preceded it.
+    corrections = [m for m in llm.user_messages_seen if "line 1 column" in m]
+    assert len(corrections) == 1  # exactly one correction, never re-sent on the retry's own reply
+    assert "char" in corrections[0]
 
 
 # --- a second failure settles exactly as today — no loop, no silent retry storm ---------------
@@ -149,6 +158,9 @@ async def test_a_second_malformed_attempt_gets_no_second_repair() -> None:
     # the second malformed attempt fell through to the normal path — dispatched like any other call
     assert len(calls) == 1
     assert calls[0]["content"] == _BROKEN
+    # "settles exactly as today" is pinned, not just implied: a member that never fixes its output
+    # still finishes — today's ordinary tool-error handling, no loop, no silent retry storm.
+    assert result.status is HarnessStatus.SUCCEEDED
 
 
 # --- a member with no declaration is byte-for-byte unaffected ---------------------------------
@@ -163,15 +175,35 @@ async def test_a_member_without_the_declaration_is_never_checked() -> None:
     assert calls[0]["content"] == _BROKEN
 
 
+async def test_a_non_json_source_type_is_never_checked() -> None:
+    # A declared member still ingests markdown/plain-text content — "requires_valid_json" scopes
+    # to a JSON document, not to every ingest call this member ever makes. Text that is not meant
+    # to be JSON is not malformed JSON; checking it here would be a live regression on prose ingest.
+    prose = "# Adoption Barriers\n\nCost is the biggest one, not { curly braces } that don't close."
+    llm = _Scripted(("ingest", prose, "md"), "done")
+    dispatch, calls = _tracked_dispatch()
+    result = await _run(llm, dispatch)  # requires_valid_json=True (the default)
+    assert len(_repairs(result)) == 0
+    assert len(calls) == 1 and calls[0]["content"] == prose
+    assert result.status is HarnessStatus.SUCCEEDED
+
+
 # --- the repair is granted on top of the member's own budget, never charged to it -------------
 
 
 async def test_a_member_at_its_tool_call_cap_still_gets_the_repair() -> None:
-    # max_tool_calls=1: without the grant, the corrected retry would be the member's SECOND call
-    # and would hit the tool-call budget gate before ever reaching the connector.
-    llm = _Scripted(("ingest", _BROKEN), ("ingest", _FIXED), "done")
+    # The scenario the issue actually describes: a member SPENDS its budget on real work first
+    # (one successful ingest), THEN writes the broken brief. `max_tool_calls=1` means that first
+    # call already exhausts the cap, so the tool-call budget gate (`tool_use.py:447`) fires on the
+    # malformed call BEFORE the pre-dispatch JSON check ever runs — unless the repair is genuinely
+    # granted on top of, not carved out of, the member's own budget.
+    llm = _Scripted(("ingest", _FIXED), ("ingest", _BROKEN), ("ingest", _FIXED), "done")
     dispatch, calls = _tracked_dispatch()
     result = await _run(llm, dispatch, policy=_envelope(max_tool_calls=1))
     assert result.status is HarnessStatus.SUCCEEDED
     assert len(_repairs(result)) == 1
-    assert len(calls) == 1 and calls[0]["content"] == _FIXED
+    # the pre-budget call, then the repaired one on the granted slot — the malformed attempt in
+    # between was never dispatched at all.
+    assert len(calls) == 2
+    assert calls[0]["content"] == _FIXED
+    assert calls[1]["content"] == _FIXED
