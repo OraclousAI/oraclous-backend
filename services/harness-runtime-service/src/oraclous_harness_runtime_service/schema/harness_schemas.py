@@ -96,6 +96,17 @@ class StepOut(BaseModel):
     # #641: the LLM's id for the tool call this step records — the receipt a member's claim cites.
     # None for an LLM/gate step AND for traces persisted before #641 (back-compat, no migration).
     tool_call_id: str | None = None
+    # #828 item 2: the real dispatch's wall-clock bounds — None for a synthetic bookkeeping step
+    # AND for every trace persisted before this change (the #641 back-compat posture, no migration).
+    started_at: datetime | None = None
+    ended_at: datetime | None = None
+
+    @model_validator(mode="after")
+    def _end_not_before_start(self) -> StepOut:
+        if self.started_at is not None and self.ended_at is not None:
+            if self.ended_at < self.started_at:
+                raise ValueError("ended_at must not be before started_at")
+        return self
 
 
 class HarnessExecutionOut(BaseModel):

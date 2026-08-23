@@ -207,6 +207,9 @@ def _serialize_steps(steps: list[LoopStep], base: int = 0) -> list[dict[str, Any
             # #641: the durable claim→receipt link. Persisted on every step (None for LLM/gate
             # steps) so the engine can resolve a member's driving_signals against its own trace.
             "tool_call_id": s.tool_call_id,
+            # #828 item 2: the step's wall-clock bounds (None for a synthetic bookkeeping step).
+            "started_at": s.started_at,
+            "ended_at": s.ended_at,
         }
         for i, s in enumerate(steps)
     ]

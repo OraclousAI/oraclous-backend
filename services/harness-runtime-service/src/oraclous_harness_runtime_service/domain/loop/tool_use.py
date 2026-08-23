@@ -30,6 +30,7 @@ import re
 import time
 from collections.abc import Awaitable, Callable, Collection
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Any
 
 from oraclous_harness_runtime_service.domain.citation_gate import (
@@ -84,6 +85,12 @@ class LoopStep:
     # what makes a member's later claim resolvable back to the call that produced it — without it
     # nothing durable links a driving_signal to a dispatch that actually ran.
     tool_call_id: str | None = None
+    # #828 item 2: wall-clock bounds of the real dispatch this step records (an LLM completion or a
+    # tool call) — None for a synthetic, effectively-instantaneous bookkeeping step (a gate, a
+    # budget halt, a retry note). Nullable/additive like tool_call_id (#641's precedent): every
+    # trace persisted before this change still validates.
+    started_at: datetime | None = None
+    ended_at: datetime | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -541,6 +548,8 @@ async def run_tool_use_loop(
                     "budget", "tool_call_budget", "tool-call budget exhausted", iteration
                 )
 
+            tool_started: datetime | None = None
+            tool_ended: datetime | None = None
             if spec is None:
                 unknown = {"error": "unknown_tool", "detail": tc["name"]}
                 content = _redact(json.dumps(unknown), redactors)
@@ -549,6 +558,7 @@ async def run_tool_use_loop(
             else:
                 step_name = f"{spec.binding}.{spec.operation}"
                 tool_calls_made += 1
+                tool_started = datetime.now(UTC)
                 try:
                     result = await dispatch(spec, tc["args"])
                     # #580: a retrieval that found nothing flags `data_absent` — a RESERVED result
@@ -592,6 +602,8 @@ async def run_tool_use_loop(
                         json.dumps({"error": type(exc).__name__, "detail": str(exc)}), redactors
                     )
                     status = "error"
+                finally:
+                    tool_ended = datetime.now(UTC)
             # #642: show the receipt id INSIDE the tool result the model reads. The provider's
             # `tool_call_id` field is transport metadata the model never sees, so a member asked to
             # cite its receipts could only guess — real models cited the tool NAME, a chunk id, or
@@ -613,6 +625,8 @@ async def run_tool_use_loop(
                     status,
                     _truncate(content),
                     tool_call_id=tc["id"],
+                    started_at=tool_started,
+                    ended_at=tool_ended,
                 )
             )
         return None
@@ -663,6 +677,7 @@ async def run_tool_use_loop(
         # retried with backoff+jitter before the run fails — so one member hitting the shared BYOM
         # key's throttle does not spuriously fail the team. A PERMANENT error (auth / model-not-
         # found / bad-request) is not retried; an exhausted transient or a permanent error → FAILED.
+        llm_started = datetime.now(UTC)
         try:
             resp = await _complete_with_retry(iteration)
         except Exception as exc:  # noqa: BLE001 — transient exhausted, or a permanent error → FAILED
@@ -681,6 +696,7 @@ async def run_tool_use_loop(
                 error_message=str(exc),
                 served_citation_ids=list(served_citation_ids),
             )
+        llm_ended = datetime.now(UTC)
         tokens_used += resp.total_tokens
         input_used += resp.input_tokens
         output_used += resp.output_tokens
@@ -691,7 +707,15 @@ async def run_tool_use_loop(
 
         if not resp.tool_calls:
             steps.append(
-                LoopStep(len(steps), StepKind.LLM, "primary", "answer", _truncate(last_text))
+                LoopStep(
+                    len(steps),
+                    StepKind.LLM,
+                    "primary",
+                    "answer",
+                    _truncate(last_text),
+                    started_at=llm_started,
+                    ended_at=llm_ended,
+                )
             )
             # Completion contract (#543): if this tool-capable member answered without ever calling
             # a tool, nudge it ONCE to actually use its tools before accepting. Turns an imported
@@ -768,6 +792,8 @@ async def run_tool_use_loop(
                 "primary",
                 "tool_calls",
                 f"{len(resp.tool_calls)} tool call(s)",
+                started_at=llm_started,
+                ended_at=llm_ended,
             )
         )
         # Store the REDACTED assistant text (not resp.text) so a checkpoint never persists a secret
