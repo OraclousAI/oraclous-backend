@@ -568,8 +568,14 @@ async def run_team(
         async with stage_sem:
             # #828: announced INSIDE the semaphore, so it means "a dispatch slot is held" — outside
             # it, a stage wider than the concurrency cap would announce every member as working at
-            # once, when only _STAGE_CONCURRENCY of them actually are.
-            await _announce_dispatch(role)
+            # once, when only _STAGE_CONCURRENCY of them actually are. A member already seeded via
+            # ``completed`` (a resume past a human gate / re-run) is REUSED, never dispatched —
+            # run_member returns it "succeeded" without calling ``dispatch`` at all, so announcing
+            # it here would be a lie: it tells a caller a already-finished member is newly working,
+            # and on the engine side overwrites that member's REAL historical timing with a fresh,
+            # near-zero one.
+            if role not in done:
+                await _announce_dispatch(role)
             await run_member(role)
         # #819: every ``run_member`` return path records a terminal ``member_status[role]``, so
         # checkpointing here is exactly "once per settled member" — including a FAILED or BLOCKED
