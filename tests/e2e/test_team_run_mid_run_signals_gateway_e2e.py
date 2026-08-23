@@ -59,11 +59,15 @@ def _three_stage_studio(root: Path) -> None:
     )
 
 
-def _sample_status(client: httpx.Client, run_id: str, *, tries: int = 40) -> list[dict]:
+def _sample_status(client: httpx.Client, run_id: str, *, tries: int = 300) -> list[dict]:
     """Poll /status until the run settles, keeping every response that differs from the last.
 
-    Two-second cadence, well inside the 10-15s a real client would use, so a fast deployed run
-    still yields more than one distinct sample.
+    Measured on the deployed stack: three reasoning-only sonnet members in a strict chain can
+    settle the WHOLE run in well under a second (one observed run: 0.66s total). A poll cadence
+    built for "well inside the 10-15s a real client would use" misses that window almost every
+    time — it is not a slow-client margin, it is a coin flip against the run's actual lifetime.
+    0.25s keeps the same ~75s ceiling (300 tries) while giving several samples inside even a
+    sub-second run, so criterion 5 is asserting on the signal rather than on scheduler luck.
     """
     samples: list[dict] = []
     for _ in range(tries):
@@ -72,7 +76,7 @@ def _sample_status(client: httpx.Client, run_id: str, *, tries: int = 40) -> lis
             samples.append(body)
         if body["state"] in _TERMINAL:
             return samples
-        time.sleep(2)
+        time.sleep(0.25)
     raise AssertionError(f"run {run_id} never settled (last: {samples[-1] if samples else None})")
 
 
