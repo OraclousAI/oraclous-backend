@@ -105,12 +105,20 @@ class EngineTeamRun(BaseModel):
     # comparing this run's records to the seed run's (identity + evidence fingerprint). NULL on a
     # non-refresh run (seed_from_run_id NULL); surfaced read-side on TeamRunOut beside the verdict.
     refresh_delta: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
-    # ── per-member terminal status (ADR-042 / #551; additive) ──────────────────────────────────
-    # role -> "succeeded"|"failed"|"blocked"|"skipped"|"budget_skipped" (#585)|"partial" (#587) —
-    # the orchestrator's per-member result.
-    # A team run is SUCCEEDED only when EVERY member delivered; a FAILED run carries the failed +
-    # blocked members here, and the re-run re-drives exactly those (seeding the succeeded ones via
-    # ``completed``). Empty until the first drive records it.
+    # ── per-member status (ADR-042 / #551; additive; #828 breaks its terminal-only guarantee) ──
+    # role -> "running" (#828: written at DISPATCH, before the member has settled) |
+    # "succeeded"|"failed"|"blocked"|"skipped"|"budget_skipped" (#585)|"partial" (#587) — the
+    # orchestrator's per-member result, OVERWRITTEN with the terminal value once the member settles.
+    #
+    # Before #828 every value here was terminal: a role's entry, once written, was never revised.
+    # That guarantee is broken ON PURPOSE — "running" is deliberately provisional, so a caller can
+    # answer "who is working right now" instead of only "who has finished". #857 (Contract) records
+    # the shape change for solution-architect. Two properties still hold, both pinned by tests:
+    # a "running" entry never counts toward completion (``_member_completion_progress`` only counts
+    # succeeded|skipped|partial) and never seeds a resume as done (``_completed_for_resume`` only
+    # seeds succeeded|partial). A team run is SUCCEEDED only when EVERY member delivered; a FAILED
+    # run carries the failed + blocked members here, and the re-run re-drives exactly those (seeding
+    # the succeeded ones via ``completed``). Empty until the first drive records it.
     member_status: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
     # ── per-member timings (#828 item 2; additive) ─────────────────────────────────────────────
     # role -> {"started_at": <iso8601>, "ended_at": <iso8601> | null} — started_at is written at
