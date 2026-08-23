@@ -1429,16 +1429,25 @@ class TeamRunService:
         child_roles: dict[str, str] = dict(row.child_execution_roles or {})
 
         def _record_child(execution_id: str, role: str) -> None:
-            child_ids.append(execution_id)
+            # #828: dedupe on execution_id — run_team's own on_child (packages/ohm) and this
+            # dispatch closure's on_child are two independent seams that both surface the same
+            # execution; only production-wired here, but guarding cheaply against future double
+            # wiring keeps child_execution_ids from ever growing a duplicate entry (review finding
+            # 4).
+            if execution_id not in child_roles:
+                child_ids.append(execution_id)
             child_roles[execution_id] = role
 
         # #828 items 1+2: the live per-member status (now including the provisional "running") +
         # timings, seeded from any prior (resumed) drive. #832-style race: on_dispatch and the
         # settle checkpoint both write this row from concurrent members of a wide stage, so BOTH
-        # the local bookkeeping mutation and the persisted write are serialized under one lock —
+        # the local bookkeeping mutation AND the persisted write are serialized under one lock —
         # the same D3 posture packages/ohm's orchestrator applies to its own checkpoint emit,
         # applied here too since this is a SEPARATE write path the orchestrator's own lock does
-        # not cover.
+        # not cover. The write must stay INSIDE the lock (not just the snapshot): the repository's
+        # row lock only serializes arrival order, not snapshot order, so a lock released before the
+        # await lets an older snapshot's write land after a newer one and a settled member regress
+        # back to "running" on the durable row (review finding 1).
         live_status: dict[str, str] = dict(row.member_status or {})
         member_timings: dict[str, dict[str, Any]] = dict(row.member_timings or {})
         status_lock = asyncio.Lock()
@@ -1448,15 +1457,13 @@ class TeamRunService:
             async with status_lock:
                 live_status[role] = "running"
                 member_timings[role] = {"started_at": now, "ended_at": None}
-                status_snapshot = dict(live_status)
-                timings_snapshot = dict(member_timings)
-            with org_scope(org):
-                await self._team_runs.checkpoint(
-                    row.id,
-                    org,
-                    member_status=status_snapshot,
-                    member_timings=timings_snapshot,
-                )
+                with org_scope(org):
+                    await self._team_runs.checkpoint(
+                        row.id,
+                        org,
+                        member_status=dict(live_status),
+                        member_timings=dict(member_timings),
+                    )
 
         # O4 metering (#472): this drive's per-member token costs, summed onto the prior cost on
         # resume (succeeded members are not re-dispatched, so their cost is counted once). NB on an
@@ -1510,30 +1517,34 @@ class TeamRunService:
                 # check keeps it from being restamped on each subsequent checkpoint).
                 live_status.update(member_status)
                 for role in member_status:
-                    # a NEW dict, never a mutation of the existing one — a snapshot taken by an
-                    # earlier (e.g. dispatch-time) checkpoint holds a shallow copy that still
-                    # references this same inner dict; mutating it in place would retroactively
-                    # rewrite that already-emitted snapshot's ended_at too.
-                    window = member_timings.get(role) or {"started_at": now, "ended_at": None}
+                    # a role the orchestrator settled WITHOUT ever dispatching (skipped / blocked /
+                    # budget_skipped) has no timing window at all — leave it absent rather than
+                    # fabricating a zero-duration one (review finding 3): a client renders
+                    # member_timings as a duration, and "started and ended at the same instant" is
+                    # indistinguishable from a member that genuinely ran and returned instantly.
+                    window = member_timings.get(role)
+                    if window is None:
+                        continue
                     if window.get("ended_at") is None:
-                        window = {**window, "ended_at": now}
-                    member_timings[role] = window
-                status_snapshot = dict(live_status)
-                timings_snapshot = dict(member_timings)
-            with org_scope(org):
-                await self._team_runs.checkpoint(
-                    row.id,
-                    org,
-                    results=dict(results),
-                    member_status=status_snapshot,
-                    member_timings=timings_snapshot,
-                    child_execution_ids=list(child_ids),
-                    child_execution_roles=dict(child_roles),
-                    # the RUNNING TOTAL, never a delta: the settle write computes
-                    # `prior_cost + sum(cost_deltas)` off this same base, so writing a delta here
-                    # would be counted twice across a resume.
-                    cost_tokens=prior_cost + sum(cost_deltas),
-                )
+                        # a NEW dict, never a mutation of the existing one — a snapshot taken by an
+                        # earlier (e.g. dispatch-time) checkpoint holds a shallow copy that still
+                        # references this same inner dict; mutating it in place would retroactively
+                        # rewrite that already-emitted snapshot's ended_at too.
+                        member_timings[role] = {**window, "ended_at": now}
+                with org_scope(org):
+                    await self._team_runs.checkpoint(
+                        row.id,
+                        org,
+                        results=dict(results),
+                        member_status=dict(live_status),
+                        member_timings=dict(member_timings),
+                        child_execution_ids=list(child_ids),
+                        child_execution_roles=dict(child_roles),
+                        # the RUNNING TOTAL, never a delta: the settle write computes
+                        # `prior_cost + sum(cost_deltas)` off this same base, so writing a delta
+                        # here would be counted twice across a resume.
+                        cost_tokens=prior_cost + sum(cost_deltas),
+                    )
 
         try:
             result = await run_team_hybrid(

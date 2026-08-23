@@ -29,6 +29,7 @@ from __future__ import annotations
 import asyncio
 import datetime as _dt
 import uuid
+from collections.abc import Callable
 from typing import Any
 
 import pytest
@@ -60,6 +61,10 @@ class FakeTeamRunRepo:
         self.rows: dict[uuid.UUID, EngineTeamRun] = {}
         self.checkpoints: list[dict[str, Any]] = []
         self.checkpoint_raises: Exception | None = None
+        # a predicate over the write's fields -> seconds to sleep BEFORE the write lands, so a test
+        # can force one specific checkpoint call (e.g. a dispatch-time write) to take the long road
+        # to the row, the way #832 / review finding 1 (PR #859) forced the race.
+        self.checkpoint_delay: Callable[[dict[str, Any]], float] | None = None
 
     async def create(
         self,
@@ -118,6 +123,10 @@ class FakeTeamRunRepo:
     ) -> bool:
         if self.checkpoint_raises is not None:
             raise self.checkpoint_raises
+        if self.checkpoint_delay is not None:
+            delay = self.checkpoint_delay(fields)
+            if delay:
+                await asyncio.sleep(delay)
         row = self.rows.get(team_run_id)
         if row is None or row.organisation_id != organisation_id or row.state != "RUNNING":
             return False  # only a live drive checkpoints; a settled row is never rewritten
@@ -265,6 +274,51 @@ async def test_the_checkpoint_accumulates_rather_than_replacing() -> None:
     assert written[0] == {"a": "running"}
     assert written[-1] == {"a": "succeeded", "b": "succeeded", "c": "succeeded"}
     assert all(c["state"] == "RUNNING" for c in repo.checkpoints)  # never a state change
+
+
+async def test_a_dispatch_time_write_never_regresses_a_later_settle() -> None:
+    # Review finding 1 (PR #859) on #828+#832: a member's dispatch-time "running" write and a
+    # sibling's settle write both mutate this row from a wide stage; without both the local
+    # bookkeeping AND the persisted write serialized under one lock, an older dispatch snapshot can
+    # land AFTER a newer settle snapshot and regress an already-succeeded member back to "running"
+    # on the durable row — the #832 class of bug, this time on the engine's own write path (which
+    # packages/ohm's D3 checkpoint lock does not cover).
+    repo = FakeTeamRunRepo()
+
+    def _slow_dispatch_write(fields: dict[str, Any]) -> float:
+        # only 'b's dispatch-time write carries no "results" key (only the settle checkpoint does)
+        # and marks 'b' running — force it to take the long road to the row.
+        status = fields.get("member_status") or {}
+        return 0.05 if "results" not in fields and status.get("b") == "running" else 0.0
+
+    repo.checkpoint_delay = _slow_dispatch_write
+    # 'a' needs ONE real yield point (its harness call) so the event loop can interleave 'b's
+    # dispatch onto the same tick — with no delay anywhere, 'a' runs start-to-settle in one
+    # uninterrupted stretch and 'b' never gets scheduled until 'a' is already done.
+    svc, _ = _svc(repo, ScriptedHarness(delays={"a": 0.01}))
+
+    row = await _run(
+        svc,
+        _principal(),
+        manifest=_team([_agent("a"), _agent("b")]),  # one wide stage, both independent
+        sub_harnesses={},
+        gate_decisions={},
+    )
+
+    assert row.state == "SUCCEEDED"
+    assert row.member_status == {"a": "succeeded", "b": "succeeded"}
+
+    seen_a_succeeded = False
+    for cp in repo.checkpoints:
+        status = cp.get("member_status")
+        if status is None:
+            continue
+        if seen_a_succeeded:
+            assert status.get("a") == "succeeded", (
+                f"'a' regressed from succeeded back to {status.get('a')!r}: {status}"
+            )
+        if status.get("a") == "succeeded":
+            seen_a_succeeded = True
 
 
 async def test_a_checkpoint_write_failure_does_not_fail_the_run() -> None:
