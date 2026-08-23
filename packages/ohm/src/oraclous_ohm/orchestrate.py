@@ -56,6 +56,17 @@ DispatchFn = Callable[[OHMMember, list[HandoffEnvelope], Any], Awaitable[Any]]
 #     recovery granularity, letting it kill the drive costs the whole DAG).
 CheckpointFn = Callable[[dict[str, Any], dict[str, str]], Awaitable[None]]
 
+# #828: fired once per member, the instant it is admitted to a dispatch slot (inside the stage
+# semaphore) — BEFORE ``dispatch`` runs. Means "a dispatch slot is held", not "queued behind the
+# cap", so a caller can write "this member is working right now". Best-effort, like the hooks above.
+DispatchAnnounceFn = Callable[[str], Awaitable[None]]
+
+# #828 item 4: fired with (execution_id, role) whenever a single (non-fan-out) dispatch's result
+# carries an "id" — the role rides along so a caller can attribute the execution back to its member
+# without threading the role through its own dispatch closure. Synchronous (a caller-side
+# bookkeeping append, not I/O) and best-effort: a raising hook never aborts the run.
+OnChildFn = Callable[[str, str], None]
+
 # Stage fan-out cap (#543): a wide imported team (e.g. 18 members collapsed into one flat stage)
 # would otherwise fire every member's LLM call at once against ONE shared per-org BYOM key and
 # self-throttle (429), failing a random member non-deterministically. Bound how many members
@@ -265,6 +276,8 @@ async def run_team(
     members: list[OHMMember] | None = None,
     cost_so_far: Callable[[], int] | None = None,
     on_checkpoint: CheckpointFn | None = None,
+    on_dispatch: DispatchAnnounceFn | None = None,
+    on_child: OnChildFn | None = None,
 ) -> TeamRunResult:
     """Execute a Team Harness member DAG stage by stage, a real fan-in barrier between stages.
 
@@ -284,6 +297,13 @@ async def run_team(
     ``on_checkpoint`` (#819) is fired with a snapshot of ``(results, member_status)`` each time a
     member settles, so the engine can make finished members durable mid-drive. ``None`` (the
     default) leaves this path byte-for-byte as it was.
+
+    ``on_dispatch`` (#828) fires once per member, the instant it is admitted to a dispatch slot —
+    inside the stage semaphore, before ``dispatch`` runs — so a caller can write "working now"
+    rather than only "finished". ``on_child`` (#828 item 4) fires ``(execution_id, role)`` whenever
+    a single (non-fan-out) dispatch's result carries an ``"id"``, so a caller can attribute an
+    execution back to its member without its own dispatch closure threading the role through. Both
+    are best-effort, like ``on_checkpoint``: a raising hook never aborts the run.
     """
     state = state or {}
     gates = gate_decisions or {}
@@ -363,6 +383,14 @@ async def run_team(
         if errors:
             member_status[role] = "failed"
             member_errors[role] = f"grounding: {'; '.join(errors)}"[:2000]
+
+    def _announce_child(role: str, out: Any) -> None:
+        # #828 item 4: best-effort — a raising hook never aborts the run, same posture as the
+        # other two hooks below.
+        if on_child is None or not isinstance(out, dict) or out.get("id") is None:
+            return
+        with contextlib.suppress(Exception):
+            on_child(str(out["id"]), role)
 
     async def run_member(role: str) -> None:
         nonlocal budget_exhausted
@@ -481,6 +509,7 @@ async def run_team(
                     return
                 pool.sub_runs += 1
                 results[role] = await dispatch(member, inbound, None)
+                _announce_child(role, results[role])
         except Exception as exc:  # noqa: BLE001 — ADR-042: record FAILED, never abort the team DAG
             # The member's hand-off validation (build_handoff) OR its harness dispatch failed (a
             # hand-off-schema violation, a transient-exhausted FAILED, a budget escalation, or a
@@ -501,6 +530,14 @@ async def run_team(
         )
         _grade_grounding(role)  # #642: claims need receipts before this member counts as delivered
 
+    # #832: a DEDICATED lock (never the stage semaphore — that would cost a dispatch slot and
+    # reintroduce the throughput problem _bounded is shaped to avoid) held across BOTH the
+    # snapshot and the emit, so concurrent checkpoints commit in the order their snapshots were
+    # taken. Without it, up to _STAGE_CONCURRENCY members can be mid-emit at once, each holding
+    # its own dict(...) copy, and nothing orders which snapshot's write lands last — an older,
+    # smaller snapshot can be delivered after a newer, larger one and the caller's row regresses.
+    _checkpoint_lock = asyncio.Lock()
+
     async def _checkpoint() -> None:
         """#819: emit a durability snapshot of the state settled SO FAR.
 
@@ -511,16 +548,28 @@ async def run_team(
         only: a cancellation (the very kill this feature exists for) still propagates."""
         if on_checkpoint is None:
             return
-        with contextlib.suppress(Exception):
-            await on_checkpoint(dict(results), dict(member_status))
+        async with _checkpoint_lock:  # #832: snapshot + emit as ONE ordered critical section
+            with contextlib.suppress(Exception):
+                await on_checkpoint(dict(results), dict(member_status))
 
     # Stage fan-out cap (#543): bound how many members dispatch concurrently so a wide stage cannot
     # self-throttle the shared BYOM key. Wraps the run_member calls (NOT the inner fan_out dispatch,
     # which keeps its own max_parallel) so there is no semaphore re-entrancy / deadlock.
     stage_sem = asyncio.Semaphore(_STAGE_CONCURRENCY)
 
+    async def _announce_dispatch(role: str) -> None:
+        # #828: best-effort, same posture as the checkpoint emit — a raising hook never aborts run.
+        if on_dispatch is None:
+            return
+        with contextlib.suppress(Exception):
+            await on_dispatch(role)
+
     async def _bounded(role: str) -> None:
         async with stage_sem:
+            # #828: announced INSIDE the semaphore, so it means "a dispatch slot is held" — outside
+            # it, a stage wider than the concurrency cap would announce every member as working at
+            # once, when only _STAGE_CONCURRENCY of them actually are.
+            await _announce_dispatch(role)
             await run_member(role)
         # #819: every ``run_member`` return path records a terminal ``member_status[role]``, so
         # checkpointing here is exactly "once per settled member" — including a FAILED or BLOCKED
