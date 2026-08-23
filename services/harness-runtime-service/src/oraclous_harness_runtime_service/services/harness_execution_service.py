@@ -207,9 +207,13 @@ def _serialize_steps(steps: list[LoopStep], base: int = 0) -> list[dict[str, Any
             # #641: the durable claim→receipt link. Persisted on every step (None for LLM/gate
             # steps) so the engine can resolve a member's driving_signals against its own trace.
             "tool_call_id": s.tool_call_id,
-            # #828 item 2: the step's wall-clock bounds (None for a synthetic bookkeeping step).
-            "started_at": s.started_at,
-            "ended_at": s.ended_at,
+            # #828 item 2: the step's wall-clock bounds (None for a synthetic bookkeeping step). ISO
+            # strings, not raw datetimes — this dict is persisted into a JSONB column whose
+            # serializer has no datetime support (a raw datetime 500s every write, caught live on
+            # PR #859's deployed-stack e2e). StepOut parses the string back into a datetime same as
+            # any other JSON-sourced timestamp on a read.
+            "started_at": s.started_at.isoformat() if s.started_at is not None else None,
+            "ended_at": s.ended_at.isoformat() if s.ended_at is not None else None,
         }
         for i, s in enumerate(steps)
     ]
