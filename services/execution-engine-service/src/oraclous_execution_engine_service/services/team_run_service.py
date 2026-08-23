@@ -309,6 +309,10 @@ class TeamRunStatus:
     last_outcome: str
     cost_tokens: int
     grounding_score: float | None = None  # #642: claims-with-receipts, read beside the cost
+    # #828 item 1: role -> status (including the provisional "running"); item 2's per-member
+    # timings. None on a service that predates this field (defaulted so no caller has to change).
+    member_status: dict[str, str] | None = None
+    member_timings: dict[str, Any] | None = None
 
 
 def _verdict_score(verdict: Any) -> float | None:
@@ -428,6 +432,21 @@ def _resolve_max_revisions(team: OHMManifest) -> int:
     term = team.orchestration.termination if team.orchestration else None
     configured = term.max_revisions if term is not None else None
     return int(configured) if configured else _MAX_REVISIONS_DEFAULT
+
+
+def _drive_started_at(row: EngineTeamRun) -> datetime | None:
+    """#828 item 2: the moment the drive actually started dispatching, not ``created_at`` (the
+    moment the run was QUEUED). The earliest ``started_at`` across ``member_timings`` — written at
+    dispatch, before any member settles — is that moment; falls back to ``created_at`` when no
+    member has been dispatched yet (a QUEUED run, or a genuinely pre-migration row with no
+    timings)."""
+    starts: list[datetime] = []
+    for window in (row.member_timings or {}).values():
+        raw = window.get("started_at") if isinstance(window, dict) else None
+        if isinstance(raw, str):
+            with contextlib.suppress(ValueError):
+                starts.append(datetime.fromisoformat(raw))
+    return min(starts) if starts else row.created_at
 
 
 def _member_completion_progress(row: EngineTeamRun) -> int:
@@ -833,10 +852,12 @@ class TeamRunService:
             != "FAILED",  # FAILED is unhealthy; QUEUED/RUNNING/PAUSED/SUCCEEDED ok
             state=row.state,
             progress=_member_completion_progress(row),
-            last_run_at=row.created_at,
+            last_run_at=_drive_started_at(row),
             last_outcome=row.state,
             cost_tokens=int(row.cost_tokens or 0),
             grounding_score=row.grounding_score,
+            member_status=row.member_status or {},
+            member_timings=row.member_timings or {},
         )
 
     async def list_for_org(
@@ -1402,6 +1423,41 @@ class TeamRunService:
         # accumulate this drive's child execution ids onto any recorded by a prior (resumed) drive
         # (`or []` — a freshly-built / pre-migration row may carry NULL before the DB default fires)
         child_ids: list[str] = list(row.child_execution_ids or [])
+        # #828 item 4: execution_id -> role, alongside the flat list (additive, GET /tree surfaces
+        # both). Mutated synchronously by ``_record_child`` — a plain dict/list append needs no lock
+        # under asyncio's cooperative scheduling (no preemption mid-statement).
+        child_roles: dict[str, str] = dict(row.child_execution_roles or {})
+
+        def _record_child(execution_id: str, role: str) -> None:
+            child_ids.append(execution_id)
+            child_roles[execution_id] = role
+
+        # #828 items 1+2: the live per-member status (now including the provisional "running") +
+        # timings, seeded from any prior (resumed) drive. #832-style race: on_dispatch and the
+        # settle checkpoint both write this row from concurrent members of a wide stage, so BOTH
+        # the local bookkeeping mutation and the persisted write are serialized under one lock —
+        # the same D3 posture packages/ohm's orchestrator applies to its own checkpoint emit,
+        # applied here too since this is a SEPARATE write path the orchestrator's own lock does
+        # not cover.
+        live_status: dict[str, str] = dict(row.member_status or {})
+        member_timings: dict[str, dict[str, Any]] = dict(row.member_timings or {})
+        status_lock = asyncio.Lock()
+
+        async def _on_dispatch(role: str) -> None:
+            now = datetime.now(UTC).isoformat()
+            async with status_lock:
+                live_status[role] = "running"
+                member_timings[role] = {"started_at": now, "ended_at": None}
+                status_snapshot = dict(live_status)
+                timings_snapshot = dict(member_timings)
+            with org_scope(org):
+                await self._team_runs.checkpoint(
+                    row.id,
+                    org,
+                    member_status=status_snapshot,
+                    member_timings=timings_snapshot,
+                )
+
         # O4 metering (#472): this drive's per-member token costs, summed onto the prior cost on
         # resume (succeeded members are not re-dispatched, so their cost is counted once). NB on an
         # ADR-042 re-run a FAILED member's first-attempt tokens are already in prior_cost and its
@@ -1444,13 +1500,35 @@ class TeamRunService:
         async def _checkpoint(results: dict[str, Any], member_status: dict[str, str]) -> None:
             settled_status.clear()
             settled_status.update(member_status)
+            now = datetime.now(UTC).isoformat()
+            async with status_lock:
+                # #828: overlay the orchestrator's settled-so-far snapshot onto the live map — it
+                # OVERWRITES a role's "running" with its terminal status (dispatch never revises a
+                # settled role, so this is safe in either order). ended_at is stamped the FIRST
+                # time a role appears here (a role stays in `member_status` on every later
+                # checkpoint too, since the orchestrator's own accumulator only grows — the None
+                # check keeps it from being restamped on each subsequent checkpoint).
+                live_status.update(member_status)
+                for role in member_status:
+                    # a NEW dict, never a mutation of the existing one — a snapshot taken by an
+                    # earlier (e.g. dispatch-time) checkpoint holds a shallow copy that still
+                    # references this same inner dict; mutating it in place would retroactively
+                    # rewrite that already-emitted snapshot's ended_at too.
+                    window = member_timings.get(role) or {"started_at": now, "ended_at": None}
+                    if window.get("ended_at") is None:
+                        window = {**window, "ended_at": now}
+                    member_timings[role] = window
+                status_snapshot = dict(live_status)
+                timings_snapshot = dict(member_timings)
             with org_scope(org):
                 await self._team_runs.checkpoint(
                     row.id,
                     org,
                     results=dict(results),
-                    member_status=dict(member_status),
+                    member_status=status_snapshot,
+                    member_timings=timings_snapshot,
                     child_execution_ids=list(child_ids),
+                    child_execution_roles=dict(child_roles),
                     # the RUNNING TOTAL, never a delta: the settle write computes
                     # `prior_cost + sum(cost_deltas)` off this same base, so writing a delta here
                     # would be counted twice across a resume.
@@ -1475,7 +1553,7 @@ class TeamRunService:
                 loop_state=dict(row.loop_state or {}),
                 trace_id=root_execution_id,
                 parent_execution_id=root_execution_id,
-                on_child=child_ids.append,
+                on_child=_record_child,
                 on_cost=cost_deltas.append,
                 workspace_root=row.workspace_root,  # file-native (#518): the run's working tree
                 graph_id=row.graph_id,  # graph substrate (#524): the run's bound graph
@@ -1492,6 +1570,7 @@ class TeamRunService:
                     team.precedence is not None and team.precedence.graph == "authoritative"
                 ),
                 on_checkpoint=_checkpoint,  # #819: each settled member durable mid-drive
+                on_dispatch=_on_dispatch,  # #828: "running", written before the member runs
             )
         except Exception as exc:  # noqa: BLE001 — never strand the run in RUNNING (G-C); fail closed
             # ANY in-process drive error (harness failure, decode, network, bug) -> FAILED, not a

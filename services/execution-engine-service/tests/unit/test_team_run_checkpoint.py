@@ -240,7 +240,9 @@ async def test_a_finished_member_is_readable_while_the_run_is_still_running() ->
 
     assert row.state == "SUCCEEDED"
     assert seen_by_b["state"] == "RUNNING"  # the checkpoint did not settle the run
-    assert seen_by_b["member_status"] == {"a": "succeeded"}
+    # #828: 'b' is dispatched by the time this peek fires, so it now reads "running" rather than
+    # being absent — the terminal-only guarantee this test originally pinned is deliberately broken.
+    assert seen_by_b["member_status"] == {"a": "succeeded", "b": "running"}
     assert seen_by_b["results"]["a"]["output"] == "a-out"  # 'a' was readable mid-drive
 
 
@@ -259,7 +261,8 @@ async def test_the_checkpoint_accumulates_rather_than_replacing() -> None:
 
     written = [c["member_status"] for c in repo.checkpoints if "member_status" in c]
     assert written, "the drive wrote no checkpoint at all"
-    assert written[0] == {"a": "succeeded"}
+    # #828: the FIRST checkpoint is now the dispatch-time "running" write, not the settle one.
+    assert written[0] == {"a": "running"}
     assert written[-1] == {"a": "succeeded", "b": "succeeded", "c": "succeeded"}
     assert all(c["state"] == "RUNNING" for c in repo.checkpoints)  # never a state change
 
@@ -537,7 +540,10 @@ async def test_a_drive_that_dies_before_any_member_settles_is_still_a_409() -> N
     )
 
     assert row.state == "FAILED"
-    assert not (row.member_status or {})  # nothing settled, so nothing to backfill over
+    # #828: 'a' was dispatched (so it reads "running", not absent), but never SETTLED — the
+    # backfill guard keys off settled work (``settled_status``, terminal statuses only), which stays
+    # empty here, so nothing_to_rerun below is unchanged.
+    assert row.member_status == {"a": "running"}
     assert not (row.results or {})
 
     with pytest.raises(TeamRunError) as ei:

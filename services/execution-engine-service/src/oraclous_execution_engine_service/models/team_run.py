@@ -76,6 +76,12 @@ class EngineTeamRun(BaseModel):
     # reassembled from the engine's own record (no cross-DB query). Both org-scoped by the row.
     root_execution_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
     child_execution_ids: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
+    # execution_id -> the role that produced it (#828 item 4; additive) — child_execution_ids stays
+    # the flat, unlabeled list; this is a parallel map so GET /tree can attribute each child to its
+    # member. Empty until the first drive records it (server_default '{}', migration 0025).
+    child_execution_roles: Mapped[dict[str, str]] = mapped_column(
+        JSONB, nullable=False, default=dict
+    )
     # ── O4 metering (ADR-037 Decision 5 / #472; additive) ─────────────────────────────────────
     # Accumulated RAW token cost of this run = Σ the member harness executions' total_tokens (read
     # from each dispatch response — the harness's existing metering, ADR-009 raw counts, never a
@@ -106,6 +112,13 @@ class EngineTeamRun(BaseModel):
     # blocked members here, and the re-run re-drives exactly those (seeding the succeeded ones via
     # ``completed``). Empty until the first drive records it.
     member_status: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    # ── per-member timings (#828 item 2; additive) ─────────────────────────────────────────────
+    # role -> {"started_at": <iso8601>, "ended_at": <iso8601> | null} — started_at is written at
+    # dispatch (alongside member_status's "running"), ended_at once the member settles. Lets a
+    # client render a duration or order members by time; ``status.last_run_at`` (the O4 light
+    # status) derives from the earliest started_at here rather than the row's create time (the
+    # queue time, not the drive start). Empty until the first drive records it.
+    member_timings: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
     # ── per-loop checkpoint (ADR-043 #552 PR-C; additive) ─────────────────────────────────────
     # "<loop_index>" -> {round, started_at, status} — set by the hybrid conductor so a loop resumes
     # at a ROUND boundary (the round counter + the ORIGINAL wall-clock start survive a HITL pause /
