@@ -398,6 +398,8 @@ async def test_a_settled_member_carries_an_end_time_at_or_after_its_start() -> N
 async def test_last_run_at_reports_the_drive_start_not_the_queue_time() -> None:
     # status.last_run_at maps to created_at today, so a run that sat in the queue for ten minutes
     # reports a start time ten minutes before it started. Distinguishable only when the two differ.
+    import datetime as _dt
+
     repo = FakeTeamRunRepo()
     svc = _svc(repo, ScriptedHarness())
     principal = _principal()
@@ -407,15 +409,20 @@ async def test_last_run_at_reports_the_drive_start_not_the_queue_time() -> None:
         sub_harnesses={},
         gate_decisions={},
     )
-    await asyncio.sleep(0.05)
+    # The fake builds the row in memory, so created_at — a server_default-only column with no
+    # Python-side default — is None until a real flush. Stamped here rather than left None: the
+    # comparison below is the whole point of the test, and against None it raises a TypeError
+    # before it can assert anything. Ten minutes back is the queue wait the test is named for.
+    row = repo.rows[created.id]
+    row.created_at = _dt.datetime.now(_dt.UTC) - _dt.timedelta(minutes=10)
+
     await svc.drive(created.id, principal)
 
     status = await svc.status(created.id, principal)
 
-    row = repo.rows[created.id]
     assert status.last_run_at is not None
     assert status.last_run_at != row.created_at
-    assert status.last_run_at >= row.created_at
+    assert status.last_run_at > row.created_at, "the drive started before the run was queued"
 
 
 # ── item 4: the tree maps a child execution to the member that produced it ───────────────────────
