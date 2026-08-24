@@ -685,6 +685,66 @@ class RefineTeamDraftNlRequest(BaseModel):
         return self
 
 
+class IntakeReadbackRequest(BaseModel):
+    """The validation desk's read-back (#866): EITHER an ``idea`` (the founder's own free text,
+    plus the caller's BYOM ``models[]`` — the reader is a real LLM member) to start a read, OR a
+    ``readback_run_id`` from a prior 202 to collect a still-driving one.
+
+    The 80-character floor is NOT enforced here. It is a domain rule with its own taxonomy code,
+    and a Pydantic ``min_length`` would surface it as a generic validation failure the screen
+    cannot tell apart from any other bad field.
+    """
+
+    idea: str | None = Field(default=None, min_length=1, max_length=20_000)
+    models: list[dict[str, Any]] = Field(default_factory=list)
+    readback_run_id: uuid.UUID | None = None
+
+    @model_validator(mode="after")
+    def _one_of_idea_or_run(self) -> IntakeReadbackRequest:
+        if (self.idea is None) == (self.readback_run_id is None):
+            raise ValueError(
+                "supply exactly one of 'idea' (start a read-back) or"
+                " 'readback_run_id' (collect a prior one)"
+            )
+        return self
+
+
+class ReadbackSpan(BaseModel):
+    """One piece of the restatement. ``source`` is ``read`` when the span is grounded in the
+    founder's own words and ``inferred`` when the system supplied it — the screen renders the two
+    differently so a wrong inference can be corrected."""
+
+    text: str
+    source: str
+
+
+class ReadbackQuestion(BaseModel):
+    """One question derived from the idea. ``choice`` carries a non-empty ``options``; ``text``
+    carries an empty one."""
+
+    id: str
+    text: str
+    kind: str
+    options: list[str] = Field(default_factory=list)
+
+
+class IntakeReadbackOut(BaseModel):
+    """The idea, read back. ``restatement`` is an ORDERED ARRAY, never one blob of prose: the
+    screen's whole job is to show the inferred spans as inferred, and it cannot do that if it
+    cannot tell them apart. Joining the ``text`` fields in order reads as one paragraph."""
+
+    restatement: list[ReadbackSpan]
+    questions: list[ReadbackQuestion] = Field(default_factory=list)
+
+
+class IntakeReadbackPendingOut(BaseModel):
+    """The 202 body: the reader run is still driving — re-call with this ``readback_run_id`` to
+    collect (or watch the run via the team-run reads)."""
+
+    readback_run_id: uuid.UUID
+    status: str = "running"
+
+
 class TeamDraftOut(BaseModel):
     """One stored team draft — the full editable document (manifest + sub_harnesses + version)."""
 
