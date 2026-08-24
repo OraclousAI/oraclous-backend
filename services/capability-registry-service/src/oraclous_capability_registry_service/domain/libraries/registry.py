@@ -10,6 +10,13 @@ it plainly: "a member binds the group token and gets every operation". One flat 
 would therefore hand the member that asked for a word counter a compounding function, and the
 member doing unit economics an e-mail extractor. So each curated library is its own group with its
 own plugin, and every lookup here is parameterised by :data:`TEXT_TOOLS` / :data:`MATH_TOOLS`.
+
+The ``group`` parameter still DEFAULTS to :data:`TEXT_TOOLS`, and that default is worth removing.
+It is held in place by two tests merged with #488 — ``test_descriptor_capabilities_match_the
+_registry`` calls ``operation_names()`` with no group, and ``test_library_group_connector`` builds a
+bare ``LibraryGroupExecutor`` and dispatches text operations on it. Both call sites in production
+code pass the group explicitly. Removing the default means changing those two tests, which is
+``test-author``'s to do, so it is tracked rather than done here.
 """
 
 from __future__ import annotations
@@ -130,16 +137,27 @@ def group_names() -> list[str]:
     return list(_GROUPS)
 
 
+def _operations_of(group: str) -> dict[str, OperationSpec]:
+    """The group's operations, or a loud failure if the key names no group.
+
+    Not ``.get(group, {})``: an unknown key would then produce a tool advertising zero operations
+    and rejecting every call, which reads as a broken tool rather than as the typo it is.
+    """
+    if group not in _GROUPS:
+        raise ValueError(f"unknown curated library group {group!r}; known: {sorted(_GROUPS)}")
+    return _GROUPS[group]
+
+
 def get_operation(name: str, group: str = TEXT_TOOLS) -> OperationSpec | None:
     """The curated operation for ``name`` WITHIN ``group``, or ``None`` if the group does not own
     it. An operation of another group is unknown here, which is what keeps the groups separate at
     dispatch rather than only in the advertised capability list."""
-    return _GROUPS.get(group, {}).get(name)
+    return _operations_of(group).get(name)
 
 
 def operation_names(group: str = TEXT_TOOLS) -> list[str]:
     """The group's operation names (stable order) — for the INPUT_SCHEMA enum + diagnostics."""
-    return list(_GROUPS.get(group, {}))
+    return list(_operations_of(group))
 
 
 def capabilities(group: str = TEXT_TOOLS) -> list[dict]:
@@ -151,5 +169,5 @@ def capabilities(group: str = TEXT_TOOLS) -> list[dict]:
             "parameters": s.parameters(),
             "result_kind": s.result_kind,
         }
-        for s in _GROUPS.get(group, {}).values()
+        for s in _operations_of(group).values()
     ]
