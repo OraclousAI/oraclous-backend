@@ -178,6 +178,18 @@ def test_an_idea_under_the_floor_is_refused_instantly_and_legibly(
     assert elapsed < 5.0, f"the refusal took {elapsed:.1f}s — a model was probably called"
 
 
+def test_an_unknown_collect_token_is_a_404_not_a_server_error(
+    register: Callable[..., dict], gateway_client: Callable[[str], httpx.Client]
+) -> None:
+    # A collect token for a run that does not exist — or belongs to another organisation — must
+    # come back as something the screen can act on. It used to escape the route's handler and
+    # surface as a 500, which tells the founder nothing and looks like the platform broke.
+    user = register(f"deskbadtoken{uuid.uuid4().hex[:8]} user")
+    c = gateway_client(user["token"])
+    resp = c.post(_READBACK, json={"readback_run_id": str(uuid.uuid4())}, timeout=30.0)
+    assert resp.status_code == 404, resp.text
+
+
 def test_no_connected_model_refuses_rather_than_borrowing_one(
     register: Callable[..., dict], gateway_client: Callable[[str], httpx.Client]
 ) -> None:

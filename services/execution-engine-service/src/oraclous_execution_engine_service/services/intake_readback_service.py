@@ -216,7 +216,15 @@ class IntakeReadbackService:
         deadline = time.monotonic() + self._poll_budget
         checked_shape = False
         while True:
-            run = await self._team_runs.get(run_id, principal)  # 404 if not this org's run
+            try:
+                run = await self._team_runs.get(run_id, principal)  # 404 if not this org's run
+            except TeamRunError as exc:
+                # A collect token for a run that does not exist (or belongs to another org) is a
+                # 404 the caller can act on. Without this it escaped the route's handler and
+                # became a 500 — found by probing the deployed stack, not by any unit test.
+                raise IntakeReadbackError(
+                    str(exc), exc.status_code, error_type=exc.error_type
+                ) from exc
             if not checked_shape:
                 # Fail-closed on run identity, on the FIRST read before any budget burns: a
                 # collect token is only redeemable against a read-back run. Any other same-org run
