@@ -49,7 +49,8 @@ pytestmark = pytest.mark.unit
 RESULT_KINDS = {"status", "single", "collection"}
 
 #: Every operation in the first-party catalogue, keyed by (tool display name, operation name).
-#: 33 operations across 25 plugins. Values ruled on #804 on 2026-08-15.
+#: 38 operations across 26 plugins. Values ruled on #804 on 2026-08-15; the five Math Tools
+#: derivations added by #822 follow the same criterion and are noted inline below.
 RULED: dict[tuple[str, str], str] = {
     # --- status: the result reports what the platform did, or lists identifiers without content --
     # §CITE-QUAL Limit 1 names these four acts verbatim: "open a pull request, send a message,
@@ -74,6 +75,20 @@ RULED: dict[tuple[str, str], str] = {
     ("Text Tools", "word_count"): "status",
     ("Text Tools", "to_upper"): "status",
     ("Text Tools", "extract_emails"): "status",
+    # Derivations (#822). A computed figure is a `status` under the criterion above: the result
+    # names nothing that exists independently of the call, so there is no source a reader could be
+    # pointed at. The number's warrant is its inputs and the arithmetic, not a document — which is
+    # exactly why it is worth computing rather than letting a model write it in prose.
+    #
+    # Worth being explicit about what this does NOT settle: the provenance of the INPUTS does not
+    # carry through to the output. Feed a figure read from a cited document into a ratio and the
+    # ratio is uncited. #822 raises that deliberately, as a thing to decide before the first
+    # financial function ships rather than after; nothing here resolves it.
+    ("Math Tools", "percentage_change"): "status",
+    ("Math Tools", "compound_growth"): "status",
+    ("Math Tools", "break_even_units"): "status",
+    ("Math Tools", "payback_period"): "status",
+    ("Math Tools", "ratio"): "status",
     # --- single: one identified document ------------------------------------------------------
     ("GitHub Reader", "read_file"): "single",
     ("Notion Reader", "read_page"): "single",
@@ -134,7 +149,7 @@ def test_the_ruled_table_covers_the_catalogue_exactly() -> None:
     catalogue = set(_operations())
     assert catalogue - set(RULED) == set(), "catalogue operations with no ruled result_kind"
     assert set(RULED) - catalogue == set(), "ruled operations that are not in the catalogue"
-    assert len(catalogue) == 33, f"expected 33 operations, found {len(catalogue)}"
+    assert len(catalogue) == 38, f"expected 38 operations, found {len(catalogue)}"
 
 
 @pytest.mark.parametrize(("tool", "operation"), sorted(RULED), ids=lambda p: p)
