@@ -641,14 +641,69 @@ class LibraryGroupPlugin(_ConnectorToolPlugin):
     )
     TYPE = "INTERNAL"
     TAGS = ["library", "transform", "text", "curated"]
-    CAPABILITIES = library_registry.capabilities()  # one per function, generated from the registry
+    # one per function, generated from the registry — named group, never the default (#822)
+    CAPABILITIES = library_registry.capabilities(library_registry.TEXT_TOOLS)
     CREDENTIAL_REQUIREMENTS: list[dict] = []  # curated, in-process, keyless
     INPUT_SCHEMA = {
         "type": "object",
         "required": ["operation"],
         "properties": {
-            "operation": {"type": "string", "enum": library_registry.operation_names()},
+            "operation": {
+                "type": "string",
+                "enum": library_registry.operation_names(library_registry.TEXT_TOOLS),
+            },
             "text": {"type": "string"},
+        },
+    }
+    OUTPUT_SCHEMA = {"type": "object"}
+
+
+@plugin_registry.register
+class MathToolsPlugin(_ConnectorToolPlugin):
+    """The curated ``math-tools`` library as a typed tool group (#822) — bound as
+    ``core/math-tools@1.0.0``. Five deterministic financial operations, so a figure in a deliverable
+    is COMPUTED rather than written by a model in prose. Its own group, deliberately separate from
+    ``Text Tools``: a member binds a group and gets every operation in it, so one shared library
+    would hand the member counting words a compounding function. CAPABILITIES + the op enum are
+    GENERATED from ``domain/libraries/registry`` so they never drift from the callables; dispatch is
+    in-process via :class:`MathToolsExecutor`. Curated, trusted, keyless."""
+
+    NAME = "Math Tools"  # slug ``math-tools`` MUST match the ref's name slug
+    CATEGORY = "TRANSFORM"
+    DESCRIPTION = (
+        "A curated in-repo library of deterministic financial arithmetic exposed as a typed tool "
+        "group: percentage change, compound growth, break-even units, payback period and a "
+        "united ratio. Every undefined case returns a typed error rather than a plausible number. "
+        "Deterministic, keyless, in-process."
+    )
+    TYPE = "INTERNAL"
+    TAGS = ["library", "transform", "math", "finance", "curated"]
+    CAPABILITIES = library_registry.capabilities(library_registry.MATH_TOOLS)
+    CREDENTIAL_REQUIREMENTS: list[dict] = []  # curated, in-process, keyless
+    INPUT_SCHEMA = {
+        "type": "object",
+        "required": ["operation"],
+        "properties": {
+            "operation": {
+                "type": "string",
+                "enum": library_registry.operation_names(library_registry.MATH_TOOLS),
+            },
+            # Money arguments are declared "number", which accepts a whole number as well as a
+            # decimal — a member sends 40000, not 40000.0. `periods` is an "integer" because a
+            # count of periods is a count; the widening runs one way (see `library_group.py`).
+            "start": {"type": "number"},
+            "end": {"type": "number"},
+            "rate": {"type": "number"},
+            "periods": {"type": "integer"},
+            "fixed_costs": {"type": "number"},
+            "price_per_unit": {"type": "number"},
+            "variable_cost_per_unit": {"type": "number"},
+            "initial_investment": {"type": "number"},
+            "cash_flow_per_period": {"type": "number"},
+            "numerator": {"type": "number"},
+            "denominator": {"type": "number"},
+            "numerator_unit": {"type": "string"},
+            "denominator_unit": {"type": "string"},
         },
     }
     OUTPUT_SCHEMA = {"type": "object"}

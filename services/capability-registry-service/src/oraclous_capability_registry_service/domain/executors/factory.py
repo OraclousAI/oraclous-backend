@@ -29,6 +29,7 @@ from oraclous_capability_registry_service.domain.connectors.knowledge_retriever 
 )
 from oraclous_capability_registry_service.domain.connectors.library_group import (
     LibraryGroupExecutor,
+    MathToolsExecutor,
 )
 from oraclous_capability_registry_service.domain.connectors.manifest_refine import (
     ManifestRefineConnector,
@@ -77,6 +78,7 @@ from oraclous_capability_registry_service.domain.plugins.builtin import (
     LibraryGroupPlugin,
     ManifestRefinePlugin,
     ManifestValidatePlugin,
+    MathToolsPlugin,
     MySQLReaderPlugin,
     NotionReaderPlugin,
     PostgreSQLReaderPlugin,
@@ -113,6 +115,9 @@ _EXECUTORS: dict[str, type[BaseToolExecutor]] = {
     WebResearchPlugin.plugin_id(): WebResearchConnector,
     ScriptIngestionPlugin.plugin_id(): ScriptIngestionConnector,
     LibraryGroupPlugin.plugin_id(): LibraryGroupExecutor,
+    # Its own group, not more operations on the text one: a member binds a group and gets
+    # every operation in it (#822).
+    MathToolsPlugin.plugin_id(): MathToolsExecutor,
     RestConnectorPlugin.plugin_id(): GenericRestConnector,
     SendToDraftsPlugin.plugin_id(): SendToDraftsConnector,
     # The standard agent toolset (#440 / #507) — the eight curated core/* tools an imported
