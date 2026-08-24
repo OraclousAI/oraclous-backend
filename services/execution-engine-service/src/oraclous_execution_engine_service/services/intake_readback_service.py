@@ -39,7 +39,13 @@ from oraclous_execution_engine_service.domain.intake_readback import (
     parse_readback,
 )
 from oraclous_execution_engine_service.domain.model_answer import first_json_object
-from oraclous_execution_engine_service.services.team_run_service import TeamRunService
+from oraclous_execution_engine_service.services.compiler_run_service import (
+    validate_model_bindings,
+)
+from oraclous_execution_engine_service.services.team_run_service import (
+    TeamRunError,
+    TeamRunService,
+)
 
 #: The reader team's name, used to prove a collect token names a read-back run and not some other
 #: run of the same organisation.
@@ -165,6 +171,14 @@ class IntakeReadbackService:
                 error_code="MODEL_NOT_CONNECTED",
                 error_type="model_not_connected",
             )
+        # Validate the binding's SHAPE at the edge, the same way the compiler on-ramp and refine-nl
+        # do — a malformed binding is a curated 422 here rather than a member failure minutes into
+        # a run the founder is watching. Ordered after the refusal above so an empty models[] is
+        # still MODEL_NOT_CONNECTED (the thing the screen must tell them) and not "invalid models".
+        try:
+            models = validate_model_bindings(models, who="the intake read-back")
+        except TeamRunError as exc:
+            raise IntakeReadbackError(str(exc), exc.status_code, error_type=exc.error_type) from exc
         team = OHMManifest(
             ohm_version="1.1",
             metadata=OHMMetadata(
