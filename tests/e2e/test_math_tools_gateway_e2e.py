@@ -20,6 +20,21 @@ import pytest
 
 pytestmark = [pytest.mark.e2e, pytest.mark.integration]
 
+#: One registration for the whole module. The gateway rate-limits sign-up per IP and the suite runs
+#: at that ceiling on a shared CI runner (#850), so a file that registers once per test spends the
+#: budget other files need. Nothing here is order-dependent: the tool is keyless and every operation
+#: is pure, so one org and one instance serve every case below.
+_SHARED: dict = {}
+
+
+@pytest.fixture
+def math_client(
+    register: Callable[..., dict], gateway_client: Callable[[str], httpx.Client]
+) -> httpx.Client:
+    if "token" not in _SHARED:
+        _SHARED.update(register(f"mathtools{uuid.uuid4().hex[:10]} user"))
+    return gateway_client(_SHARED["token"])
+
 
 def _capabilities(c: httpx.Client) -> dict:
     return {x["name"]: x for x in c.get("/api/v1/capabilities").json()["capabilities"]}
@@ -47,7 +62,7 @@ def _run(c: httpx.Client, iid: str, payload: dict) -> dict:
 
 
 def test_the_curated_arithmetic_runs_and_lands_on_the_execution_row(
-    register: Callable[..., dict], gateway_client: Callable[[str], httpx.Client]
+    math_client: httpx.Client,
 ) -> None:
     """THE PROOF: each curated operation dispatches in-process; its output persists on the org row.
 
@@ -56,10 +71,8 @@ def test_the_curated_arithmetic_runs_and_lands_on_the_execution_row(
     9,000 higher. Note the round 40000: a whole number where a decimal is declared, which is what
     a member actually sends and what the dispatcher had to be widened to accept.
     """
-    user = register(f"mathtools{uuid.uuid4().hex[:10]} user")
-    c = gateway_client(user["token"])
-    cap = _math_tools_cap(c)
-    iid = _instantiate(c, cap["id"])
+    c = math_client
+    iid = _instantiate(c, _math_tools_cap(c)["id"])
 
     growth = _run(
         c, iid, {"operation": "compound_growth", "start": 40000, "rate": 0.08, "periods": 18}
@@ -112,15 +125,13 @@ def test_the_curated_arithmetic_runs_and_lands_on_the_execution_row(
 
 
 def test_an_undefined_calculation_comes_back_as_data_not_as_a_tool_failure(
-    register: Callable[..., dict], gateway_client: Callable[[str], httpx.Client]
+    math_client: httpx.Client,
 ) -> None:
     """A product priced below variable cost never breaks even. The call still WORKED, so the
     execution succeeds and the member reads a named reason it can write down — rather than an
     opaque tool failure it can only retry."""
-    user = register(f"mathundefined{uuid.uuid4().hex[:10]} user")
-    c = gateway_client(user["token"])
-    cap = _math_tools_cap(c)
-    iid = _instantiate(c, cap["id"])
+    c = math_client
+    iid = _instantiate(c, _math_tools_cap(c)["id"])
 
     out = _run(
         c,
@@ -137,7 +148,7 @@ def test_an_undefined_calculation_comes_back_as_data_not_as_a_tool_failure(
 
 
 def test_the_groups_are_separate_and_the_period_count_is_bounded(
-    register: Callable[..., dict], gateway_client: Callable[[str], httpx.Client]
+    math_client: httpx.Client,
 ) -> None:
     """Two properties the deployed catalogue has to carry, not just the unit suite.
 
@@ -145,8 +156,7 @@ def test_the_groups_are_separate_and_the_period_count_is_bounded(
     the math tool and vice versa. And the period count is bounded in the curated function, because
     dispatch runs in a thread the platform cannot kill and its only other guard caps string length.
     """
-    user = register(f"mathgroups{uuid.uuid4().hex[:10]} user")
-    c = gateway_client(user["token"])
+    c = math_client
     by_name = _capabilities(c)
     assert "Text Tools" in by_name, f"text-tools not seeded; got {sorted(by_name)}"
     math_iid = _instantiate(c, _math_tools_cap(c)["id"])
@@ -159,3 +169,54 @@ def test_the_groups_are_separate_and_the_period_count_is_bounded(
     )
     assert bounded["status"] == "SUCCESS"
     assert bounded["output_data"]["error"] == "periods_out_of_range"
+
+
+def test_a_result_too_large_to_represent_is_typed_data_not_a_500(
+    math_client: httpx.Client,
+) -> None:
+    """The defect a live review found on this branch, pinned where it was seen.
+
+    Every argument here is a finite, JSON-legal number and the result is not: infinity is not a
+    JSON number, so before the fix this left the gateway as an INTERNAL_ERROR — the one outcome a
+    member can neither read nor act on. The period bound does not help: `periods` is 1.
+    """
+    c = math_client
+    iid = _instantiate(c, _math_tools_cap(c)["id"])
+
+    overflowed = _run(
+        c, iid, {"operation": "compound_growth", "start": 1e308, "rate": 1, "periods": 1}
+    )
+    assert overflowed["status"] == "SUCCESS", overflowed
+    assert overflowed["output_data"]["error"] == "value_out_of_range"
+
+    # break_even_units rounds up, and math.ceil(inf) RAISES — so this one came back as an opaque
+    # FAILED/OverflowError rather than a 500. Both are the same defect from the member's side.
+    ceiled = _run(
+        c,
+        iid,
+        {
+            "operation": "break_even_units",
+            "fixed_costs": 1e308,
+            "price_per_unit": 1e-320,
+            "variable_cost_per_unit": 0,
+        },
+    )
+    assert ceiled["status"] == "SUCCESS", ceiled
+    assert ceiled["output_data"]["error"] == "value_out_of_range"
+
+
+def test_a_declared_decimal_argument_comes_back_as_a_decimal(
+    math_client: httpx.Client,
+) -> None:
+    """A round input must not change the RESULT's type.
+
+    A member writes `rate: 1`, not `1.0`. Accepting the whole number without converting it left the
+    whole computation on Python's integer path, so `value` came back as 800 rather than 800.0 —
+    a different JSON shape depending only on how the caller happened to write the input.
+    """
+    c = math_client
+    iid = _instantiate(c, _math_tools_cap(c)["id"])
+    out = _run(c, iid, {"operation": "compound_growth", "start": 100, "rate": 1, "periods": 3})
+    assert out["status"] == "SUCCESS", out
+    assert isinstance(out["output_data"]["value"], float)
+    assert out["output_data"]["value"] == 800.0
