@@ -2529,6 +2529,33 @@ paths:
         "403": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/NotFound" }
         "422": { $ref: "#/components/responses/ValidationFailed" }
+  /v1/engine/intake/readback:
+    post:
+      tags: [engine]
+      summary: >-
+        Read a founder's idea back to them before the run starts — a restatement split into spans
+        marked `read` or `inferred`, plus at most three questions derived from that idea. The
+        reader is a one-member team run with the caller's BYOM models bound; there is no platform
+        fallback model. Polls under the gateway read timeout — a slower read returns 202 +
+        readback_run_id (re-call with it to collect).
+      operationId: intakeReadback
+      x-stability: provisional
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/IntakeReadbackRequest" }
+      responses:
+        "200":
+          description: The idea, read back.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/IntakeReadback" }
+        "202": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Unauthorized" }
+        "409": { $ref: "#/components/responses/ModelNotConnected" }
+        "422": { $ref: "#/components/responses/IdeaTooVague" }
   /v1/engine/compiler-runs:
     post:
       tags: [engine]
@@ -3242,6 +3269,8 @@ components:
                 - INTERNAL_ERROR
                 - SERVICE_UNAVAILABLE
                 - GATEWAY_TIMEOUT
+                - MODEL_NOT_CONNECTED
+                - IDEA_TOO_VAGUE
             message:
               type: string
               minLength: 1
@@ -3562,6 +3591,56 @@ components:
       properties:
         edit_op: { type: object, additionalProperties: true }
         dry_run: { type: boolean, default: false }
+    IntakeReadbackRequest:
+      type: object
+      description: >-
+        The validation desk's intake read-back: EITHER `idea` (the founder's own free text, at
+        least 80 characters) plus the caller's BYOM `models[]` — the reader is a real LLM member —
+        OR `readback_run_id` from a prior 202 to collect a still-driving read.
+      additionalProperties: true
+      properties:
+        idea: { type: string, minLength: 1, maxLength: 20000, nullable: true }
+        models:
+          type: array
+          items: { type: object, additionalProperties: true }
+        readback_run_id: { type: string, format: uuid, nullable: true }
+    IntakeReadback:
+      type: object
+      description: >-
+        The restatement is an ORDERED ARRAY of spans, never one blob of prose: the screen renders
+        the inferred spans AS inferred so the founder can correct them, and it cannot do that if it
+        cannot tell them apart. Joining the `text` fields in order reproduces readable prose.
+      required: [restatement, questions]
+      properties:
+        restatement:
+          type: array
+          items:
+            type: object
+            required: [text, source]
+            properties:
+              text: { type: string, minLength: 1 }
+              source:
+                type: string
+                description: >-
+                  `read` means the span is grounded in the founder's own words; `inferred` means
+                  the system supplied it.
+                enum: [read, inferred]
+        questions:
+          type: array
+          maxItems: 3
+          description: >-
+            0 to 3, capped by the endpoint and not by the caller. `choice` carries a non-empty
+            `options`; `text` carries an empty one.
+          items:
+            type: object
+            required: [id, text, kind, options]
+            properties:
+              id: { type: string, minLength: 1 }
+              text: { type: string, minLength: 1 }
+              kind: { type: string, enum: [text, choice] }
+              options:
+                type: array
+                items: { type: string }
     RefineTeamDraftNlRequest:
       type: object
       description: >-
@@ -3661,6 +3740,21 @@ components:
           schema: { $ref: "#/components/schemas/ErrorEnvelope" }
     Conflict:
       description: The request conflicts with current state (CONFLICT).
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+    ModelNotConnected:
+      description: >-
+        The caller has connected no model (MODEL_NOT_CONNECTED). This path deliberately has no
+        platform fallback model to borrow, so it refuses rather than running on one silently.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+    IdeaTooVague:
+      description: >-
+        The submitted text is below the deterministic length floor (IDEA_TOO_VAGUE), checked
+        before any model call. Never the model's own judgement — a model-judged refusal would not
+        be reproducible, so the same text would pass one day and be refused the next.
       content:
         application/json:
           schema: { $ref: "#/components/schemas/ErrorEnvelope" }

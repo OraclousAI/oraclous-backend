@@ -16,12 +16,13 @@ factory's exception handlers (404 / 502 / 504).
 from __future__ import annotations
 
 from fastapi import APIRouter, Request
-from oraclous_errors import ErrorCode, status_to_code
+from oraclous_errors import ErrorCode, http_status_for, status_to_code
 from starlette.responses import Response
 
 from oraclous_application_gateway_service.core.dependencies import EdgePrincipalDep, ProxyServiceDep
 from oraclous_application_gateway_service.domain.method_hint import suggest_method_hint
 from oraclous_application_gateway_service.domain.validation_passthrough import (
+    extract_error_code,
     extract_needs_credential,
     extract_validation_details,
 )
@@ -57,6 +58,15 @@ async def proxy(
         # rule 8). aread() already closes on exhaustion; the explicit aclose() is the safety net.
         raw = await upstream.aread()
         await upstream.aclose()
+        # #866: an ALLOW-LISTED code the upstream named for itself, checked FIRST so a refusal
+        # the caller must be able to tell apart is not flattened into the generic envelope. The
+        # code must also agree with the status it arrived on, so a mislabelled upstream cannot
+        # dress a 500 as a 422; a disagreement falls through to the ordinary handling below.
+        relayed = extract_error_code(raw)
+        if relayed is not None and http_status_for(ErrorCode(relayed)) == upstream.status_code:
+            return gateway_error(
+                request, code=ErrorCode(relayed), status_code=upstream.status_code
+            )
         # 422 is the one case worth surfacing user-correctable signal: extract ONLY the field path +
         # the error-type machine token (never the value-reflecting msg) into VALIDATION_FAILED.
         if upstream.status_code == 422:
