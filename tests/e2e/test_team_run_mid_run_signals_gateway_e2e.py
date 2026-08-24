@@ -94,7 +94,16 @@ def _sample_status(client: httpx.Client, run_id: str, *, deadline_s: float = 75.
     end = time.monotonic() + deadline_s
     samples: list[dict] = []
     while time.monotonic() < end:
-        body = client.get(f"/v1/engine/team-runs/{run_id}/status").json()
+        resp = client.get(f"/v1/engine/team-runs/{run_id}/status")
+        if resp.status_code != 200:
+            # Most likely 429: this poll shares one per-client-IP budget with the whole suite. Back
+            # off at the SLOW cadence and stop spending the fast allowance — hammering a limiter is
+            # what put us here. Never parse the body: an error envelope has no "state", and reading
+            # it anyway turns a throttle into a bare KeyError that hides what actually happened.
+            fast_polls_left = 0
+            time.sleep(0.25)
+            continue
+        body = resp.json()
         if not samples or body != samples[-1]:
             samples.append(body)
         if body["state"] in _TERMINAL:
