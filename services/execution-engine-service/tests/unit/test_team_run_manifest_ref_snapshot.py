@@ -1,0 +1,247 @@
+"""A run resolves its members' filed agents and keeps the result as its own record (#695, D3).
+
+Once a draft stores references instead of inline manifests, something has to turn a reference back
+into a manifest before the members can be dispatched. That happens ONCE, at run creation, and what
+it produces is written onto the run row.
+
+The reason it is a snapshot rather than a live read: an agent is editable in place and has no
+version axis (ADR-050 D4). If a run resolved its members at dispatch, editing an agent would
+rewrite the behaviour of runs that already happened. Holding the snapshot is what makes an
+in-place edit safe — the edit changes the next run, never the last one.
+
+The dispatch loop is deliberately UNCHANGED. ``team_run.py`` still looks each member up by role in
+``sub_harnesses``, because the snapshot IS that dict.
+
+RED until the [impl] adds the resolution step.
+"""
+
+from __future__ import annotations
+
+import uuid
+from typing import Any
+
+import pytest
+from oraclous_execution_engine_service.services.team_run_service import (
+    TeamRunError,
+    TeamRunService,
+)
+from oraclous_governance import Principal, PrincipalType
+
+pytestmark = pytest.mark.unit
+
+_ORG = uuid.uuid4()
+_USER = uuid.uuid4()
+_EDITOR_ID = uuid.UUID("12341234-5678-5678-9abc-9abc9abc9abc")
+_GRAPH_INGEST = "core/graph-ingest@1.0.0"
+
+
+def _principal() -> Principal:
+    return Principal(principal_id=_USER, principal_type=PrincipalType.USER, organisation_id=_ORG)
+
+
+def _agent_manifest(role: str, caps: list[str], cap_id: uuid.UUID) -> dict[str, Any]:
+    return {
+        "ohm_version": "1.0",
+        "metadata": {
+            "id": str(cap_id),
+            "name": role,
+            "kind": "agent",
+            "owner_organization_id": str(_ORG),
+        },
+        "capabilities": [{"ref": r, "binding": r.split("/")[-1].split("@")[0]} for r in caps],
+        "prompts": [{"role": "primary", "source": "inline", "body": f"You are the {role}."}],
+        "runtime": {"entrypoint": "primary"},
+        "actors": [{"name": "primary", "kind": "agent"}],
+    }
+
+
+def _team(manifest_ref: str, tools: list[str]) -> dict[str, Any]:
+    return {
+        "ohm_version": "1.1",
+        "metadata": {
+            "id": str(uuid.uuid4()),
+            "name": "run-team",
+            "owner_organization_id": str(_ORG),
+            "kind": "team",
+        },
+        "members": [
+            {
+                "role": "editor",
+                "kind": "agent",
+                "manifest_ref": manifest_ref,
+                "subgoal": "write the assessment",
+                "tools": tools,
+                "depends_on": [],
+            }
+        ],
+        "runtime": {"entrypoint": "editor"},
+    }
+
+
+class _RunRow:
+    def __init__(self, **kw: Any) -> None:
+        self.id = uuid.uuid4()
+        self.organisation_id = kw["organisation_id"]
+        self.user_id = kw["user_id"]
+        self.manifest = kw["manifest"]
+        self.sub_harnesses = kw["sub_harnesses"]
+        self.state = "QUEUED"
+        self.results: dict[str, Any] = {}
+        self.graph_id = kw.get("graph_id")
+        self.workspace_root = kw.get("workspace_root")
+        self.inputs = kw.get("inputs")
+        self.seed_from_run_id = kw.get("seed_from_run_id")
+        self.gate_decisions = kw.get("gate_decisions")
+
+
+class _FakeRunRepo:
+    def __init__(self) -> None:
+        self.rows: dict[uuid.UUID, _RunRow] = {}
+
+    async def create(self, **kw: Any) -> _RunRow:
+        row = _RunRow(**kw)
+        self.rows[row.id] = row
+        return row
+
+
+class _FakeRegistry:
+    """Resolves a filed agent by id, the way ``GET /api/v1/capabilities/{id}`` does."""
+
+    def __init__(self, descriptors: dict[uuid.UUID, dict[str, Any]] | None = None) -> None:
+        self.descriptors = descriptors or {}
+        self.reads: list[uuid.UUID] = []
+
+    async def get_capability(self, capability_id: uuid.UUID) -> dict[str, Any] | None:
+        self.reads.append(capability_id)
+        descriptor = self.descriptors.get(capability_id)
+        return None if descriptor is None else {"id": str(capability_id), "descriptor": descriptor}
+
+
+def _service(registry: _FakeRegistry | None = None) -> tuple[TeamRunService, _FakeRunRepo]:
+    repo = _FakeRunRepo()
+    svc = TeamRunService(
+        team_runs=repo,  # type: ignore[arg-type] — duck-typed seam in unit tests
+        enqueue=lambda _rid, _org, _user: None,
+        registry=registry,  # type: ignore[call-arg] — the new seam this slice adds
+    )
+    return svc, repo
+
+
+# ── R5: resolve the reference, keep the snapshot ──────────────────────────────
+
+
+async def test_a_member_reference_is_resolved_and_snapshotted_onto_the_run() -> None:
+    filed = _agent_manifest("editor", [_GRAPH_INGEST], _EDITOR_ID)
+    registry = _FakeRegistry({_EDITOR_ID: filed})
+    svc, repo = _service(registry)
+    row = await svc.create(
+        _principal(),
+        manifest=_team(str(_EDITOR_ID), ["graph-ingest"]),
+        sub_harnesses={},
+        gate_decisions={},
+    )
+    stored = repo.rows[row.id].sub_harnesses
+    assert set(stored) == {"editor"}
+    assert stored["editor"]["metadata"]["name"] == "editor"
+    assert [c["ref"] for c in stored["editor"]["capabilities"]] == [_GRAPH_INGEST]
+    assert registry.reads == [_EDITOR_ID]
+
+
+async def test_editing_the_agent_afterwards_leaves_the_run_record_alone() -> None:
+    """The whole reason the snapshot exists. An agent has no version axis, so an in-place edit
+    would otherwise rewrite what an old run is recorded as having executed."""
+    filed = _agent_manifest("editor", [_GRAPH_INGEST], _EDITOR_ID)
+    registry = _FakeRegistry({_EDITOR_ID: filed})
+    svc, repo = _service(registry)
+    row = await svc.create(
+        _principal(),
+        manifest=_team(str(_EDITOR_ID), ["graph-ingest"]),
+        sub_harnesses={},
+        gate_decisions={},
+    )
+    snapshot = repo.rows[row.id].sub_harnesses["editor"]
+    registry.descriptors[_EDITOR_ID] = _agent_manifest("editor", ["core/bash@1"], _EDITOR_ID)
+    assert repo.rows[row.id].sub_harnesses["editor"] == snapshot
+
+
+async def test_an_unresolvable_reference_fails_the_run_at_creation() -> None:
+    """Fail closed, and fail EARLY: a dangling reference discovered mid-drive would burn the
+    upstream members' tokens before surfacing."""
+    svc, _repo = _service(_FakeRegistry({}))
+    with pytest.raises(TeamRunError) as exc:
+        await svc.create(
+            _principal(),
+            manifest=_team(str(uuid.uuid4()), ["graph-ingest"]),
+            sub_harnesses={},
+            gate_decisions={},
+        )
+    assert exc.value.status_code == 422
+    assert "editor" in str(exc.value)
+
+
+# ── R6: a pre-existing draft still runs ───────────────────────────────────────
+
+
+async def test_an_inline_sub_harness_wins_and_is_never_resolved() -> None:
+    """Back-compat without a migration. A draft written before this slice carries inline manifests
+    and an unresolvable ``org:compiled/<role>@1``; it must run exactly as it does today."""
+    inline = _agent_manifest("editor", ["core/write@1"], uuid.uuid4())
+    registry = _FakeRegistry({})
+    svc, repo = _service(registry)
+    row = await svc.create(
+        _principal(),
+        manifest=_team("org:compiled/editor@1", ["write"]),
+        sub_harnesses={"editor": inline},
+        gate_decisions={},
+    )
+    assert repo.rows[row.id].sub_harnesses == {"editor": inline}
+    assert registry.reads == []  # the legacy ref is never dereferenced
+
+
+async def test_a_legacy_reference_with_no_inline_manifest_is_a_clean_422() -> None:
+    """``org:compiled/<role>@1`` was never resolvable. Without an inline manifest there is nothing
+    to dispatch, and saying so beats a 500 halfway through the drive."""
+    svc, _repo = _service(_FakeRegistry({}))
+    with pytest.raises(TeamRunError) as exc:
+        await svc.create(
+            _principal(),
+            manifest=_team("org:compiled/editor@1", ["write"]),
+            sub_harnesses={},
+            gate_decisions={},
+        )
+    assert exc.value.status_code == 422
+
+
+# ── R7: the ceiling still holds for a filed agent ─────────────────────────────
+
+
+@pytest.mark.security
+async def test_a_filed_agent_edited_wider_than_the_member_is_rejected() -> None:
+    """ADR-032. The agent is editable in place and the team that references it is not re-validated
+    on that edit, so the run is where the two are reconciled. Without this, editing a filed agent
+    would be a way to widen a member past what its team declared."""
+    widened = _agent_manifest("editor", [_GRAPH_INGEST, "core/bash@1"], _EDITOR_ID)
+    svc, _repo = _service(_FakeRegistry({_EDITOR_ID: widened}))
+    with pytest.raises(TeamRunError) as exc:
+        await svc.create(
+            _principal(),
+            manifest=_team(str(_EDITOR_ID), ["graph-ingest"]),  # the narrower ceiling
+            sub_harnesses={},
+            gate_decisions={},
+        )
+    assert exc.value.status_code == 422
+    assert "bash" in str(exc.value) or "ceiling" in str(exc.value).lower()
+
+
+@pytest.mark.security
+async def test_a_filed_agent_within_the_member_ceiling_is_admitted() -> None:
+    """The guard must not become a blanket refusal — a filed agent may legitimately narrow."""
+    narrower = _agent_manifest("editor", [_GRAPH_INGEST], _EDITOR_ID)
+    svc, repo = _service(_FakeRegistry({_EDITOR_ID: narrower}))
+    row = await svc.create(
+        _principal(),
+        manifest=_team(str(_EDITOR_ID), ["graph-ingest", "web-research"]),
+        sub_harnesses={},
+        gate_decisions={},
+    )
+    assert set(repo.rows[row.id].sub_harnesses) == {"editor"}
