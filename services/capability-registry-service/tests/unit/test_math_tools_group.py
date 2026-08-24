@@ -21,6 +21,14 @@ INVALID_INPUT. That is unreachable today because no curated operation takes a nu
 reachable with the first one. Widening this is an implementation change to
 ``connectors/library_group.py``, not to the curated functions.
 
+**The widening runs ONE WAY, and the size guard has two halves.** Both were added after the Tests
+Review hand-back, and both close a gap a single assertion leaves open. A whole number is accepted
+where a decimal is declared; a decimal is NOT accepted where a whole number is declared, because a
+count of periods is a count and ``1.1 ** 2.5`` returns a confident figure for a question nobody
+asked. And a guard that refuses a nine-digit period count passes equally well if it refuses
+everything above ten — so a realistic thirty-year horizon is pinned as something that must still
+work, which fixes the guard between the two.
+
 RED until the math library, its plugin and the numeric-argument handling land. Imports of the
 not-yet-built seam are function-local (``.claude/rules/tests-seam-imports.md``) so a missing module
 fails these tests at runtime instead of aborting collection for the whole suite.
@@ -171,6 +179,30 @@ async def test_a_whole_number_is_accepted_where_a_number_is_expected() -> None:
     )
     assert res.success, f"a whole number was rejected: {res.error_message}"
     assert res.data["value"] == pytest.approx(159840.7819666870, abs=1e-6)
+
+
+async def test_a_realistic_horizon_is_still_accepted_through_dispatch() -> None:
+    # The other half of the size guard, and the half a refusal test alone does not give you. A guard
+    # that rejects a nine-digit period count passes just as well if it rejects everything above ten,
+    # which would make the operation useless. 360 monthly periods is a thirty-year model.
+    res = await _math_executor().execute(
+        {"operation": "compound_growth", "start": 1000, "rate": 0.005, "periods": 360}, _ctx()
+    )
+    assert res.success, f"a realistic horizon was rejected: {res.error_message}"
+    assert "error" not in res.data
+    assert res.data["value"] == pytest.approx(6022.5752122629865, abs=1e-6)
+
+
+async def test_a_fraction_is_rejected_where_a_whole_number_is_expected() -> None:
+    # The widening in the test above this file's header describes runs ONE WAY. A whole number is
+    # accepted where a decimal is declared, because that is what a member sends for money. A decimal
+    # is NOT accepted where a whole number is declared: a count of periods is a count, and
+    # `1.1 ** 2.5` is arithmetically valid, which is precisely the danger — a confident figure for a
+    # question nobody asked. An implementation that relaxes the type check symmetrically fails here.
+    res = await _math_executor().execute(
+        {"operation": "compound_growth", "start": 100, "rate": 0.1, "periods": 2.5}, _ctx()
+    )
+    assert not res.success and res.error_type == "INVALID_INPUT"
 
 
 async def test_a_bool_is_still_rejected_where_a_number_is_expected() -> None:

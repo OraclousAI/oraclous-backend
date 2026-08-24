@@ -109,6 +109,32 @@ def test_compound_growth_refuses_an_unbounded_period_count() -> None:
     assert "detail" in out
 
 
+def test_compound_growth_still_accepts_a_realistic_horizon() -> None:
+    # The bound above must not be drawn so tight that it refuses ordinary work. 360 monthly periods
+    # is a thirty-year model at 0.5% a month — unremarkable, and the kind of value a real
+    # deliverable carries. Pinned so the guard cannot be implemented as a small number that passes
+    # the refusal test while breaking every genuine use.
+    out = _math().compound_growth(start=1000, rate=0.005, periods=360)
+    assert "error" not in out
+    assert out["value"] == pytest.approx(6022.5752122629865, abs=1e-6)
+
+
+def test_compound_growth_accepts_a_period_count_in_the_thousands() -> None:
+    # Headroom, stated as a floor rather than left to judgement: anything up to ten thousand periods
+    # is cheap arithmetic, so the ceiling belongs well above it. This fixes the guard between "real
+    # work is fine" and "a nine-digit exponent is refused" instead of leaving the gap open.
+    assert "error" not in _math().compound_growth(start=100, rate=0.001, periods=10_000)
+
+
+def test_compound_growth_refuses_a_fractional_period_count() -> None:
+    # A number of periods is a count. `1.08 ** 2.5` is arithmetically fine, which is exactly the
+    # problem: it returns a confident figure for a question nobody asked. Widening whole numbers to
+    # be accepted where a decimal is declared must not widen the reverse.
+    out = _math().compound_growth(start=100, rate=0.1, periods=2.5)
+    assert out["error"] == "periods_out_of_range"
+    assert "detail" in out
+
+
 def test_compound_growth_refuses_a_negative_period_count() -> None:
     assert _math().compound_growth(start=100, rate=0.1, periods=-1)["error"] == (
         "periods_out_of_range"
