@@ -39,6 +39,27 @@ from oraclous_capability_registry_service.domain.libraries.registry import (
 _MAX_ARG_CHARS = 100_000
 
 
+def _type_matches(value: Any, expected: type) -> bool:
+    """Does ``value`` satisfy an operation's declared arg type?
+
+    ``bool`` is never a number, however it is declared: it is an ``int`` subclass, so without the
+    explicit rejection ``True`` would arrive at a curated function as 1.
+
+    A whole number IS accepted where a decimal is declared. Every money argument is naturally a
+    ``float`` and ``isinstance(40000, float)`` is ``False``, so without this a member sending a
+    round figure — which is what a member sends — has its call rejected as INVALID_INPUT.
+
+    The widening runs ONE WAY. A decimal is NOT accepted where a whole number is declared: a count
+    of periods is a count, and ``1.08 ** 2.5`` is arithmetically valid, which is precisely the
+    danger — a confident figure for a question nobody asked.
+    """
+    if isinstance(value, bool):
+        return False
+    if expected is float:
+        return isinstance(value, int | float)
+    return isinstance(value, expected)
+
+
 class LibraryGroupExecutor(InternalTool):
     """Dispatches a curated library operation in-process and returns its dict output (#488)."""
 
@@ -62,15 +83,15 @@ class LibraryGroupExecutor(InternalTool):
         kwargs: dict[str, Any] = {}
         for name, expected in spec.args.items():
             value = input_data.get(name)
-            # bool is an int subclass; none of the curated arg types are bool, so a plain
-            # isinstance is correct here (reject a bool slipping in where a str is expected).
-            if not isinstance(value, expected) or isinstance(value, bool):
+            if not _type_matches(value, expected):
                 return ExecutionResult(
                     success=False,
                     error_message=f"'{name}' must be a {expected.__name__}",
                     error_type="INVALID_INPUT",
                 )
             # Cap string args so a hostile input can't drive a function into pathological cost.
+            # The numeric equivalent lives in the curated function itself (a bounded period count),
+            # because only the function knows which of its arguments drives the cost.
             if isinstance(value, str) and len(value) > _MAX_ARG_CHARS:
                 return ExecutionResult(
                     success=False,
