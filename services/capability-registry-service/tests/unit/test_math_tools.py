@@ -24,6 +24,11 @@ couple of bits and which a correct implementation is free to do — computing by
 multiplication rather than by exponentiation is still correct — and a wrong formula, which is out
 by thousands. Nothing lands in between, so the tolerance never has to be argued about again.
 
+One thing exact equality does that a tolerance does not: on a derived value it pins the order of
+operations as well as the answer, because two correct arrangements of the same arithmetic can differ
+in the last bit. Use it only where that constraint is intended, and say so at the assertion — see
+``test_percentage_change_is_exact``.
+
 Every expected value here is computed, never derived by hand. The 18-period figure was hand-derived
 once and was wrong in the ninth significant digit, which would have failed a correct
 implementation.
@@ -65,6 +70,10 @@ def _math() -> object:
 
 
 def test_percentage_change_is_exact() -> None:
+    # Exact equality here pins the ORDER OF OPERATIONS, not only the answer, and that is deliberate:
+    # `(end - start) / start * 100` gives 30.0, while `(end / start - 1) * 100` gives
+    # 30.000000000000004. Both are correct percentage changes. Subtract first — it is the standard
+    # form, and it is the one that lands on the round number a reader expects to see in a document.
     assert _math().percentage_change(start=40000, end=52000) == {
         "percent": 30.0,
         "start": 40000,
@@ -74,6 +83,8 @@ def test_percentage_change_is_exact() -> None:
 
 def test_percentage_change_is_signed() -> None:
     # A fall is negative, not an absolute magnitude. Prose routinely loses this sign.
+    # Unlike the case above, this one agrees to the last bit under either order of operations, so it
+    # constrains the sign and nothing else.
     assert _math().percentage_change(start=200, end=150)["percent"] == -25.0
 
 
