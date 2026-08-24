@@ -7,9 +7,12 @@ server-side, nothing is mocked, and no service port is touched directly.
 Three legs, and each one is a claim the desk depends on:
 
 1. **The read.** An idea over the floor comes back as ordered spans marked ``read`` or
-   ``inferred``, plus at most three questions. The idea is generated per run and names a made-up
-   subject, so a canned or fake-mode responder cannot produce a restatement that mentions it — a
-   pass proves a real model read the founder's actual words.
+   ``inferred``, plus at most three questions. Liveness is proven by reading TWO unrelated ideas
+   in the same run and checking each restatement reflects its own: a canned or fake-mode
+   responder answers both the same way, and cannot describe bakery orders for one and translation
+   invoices for the other. (An earlier version echoed a per-run invented word instead; a real
+   reader summarises and legitimately drops such a word, so that assertion was flaky ~4% of runs
+   while the endpoint itself was fine.)
 2. **The instant refusal.** An idea under the floor is refused with ``IDEA_TOO_VAGUE``, and the
    refusal arrives fast enough that no model was called.
 3. **The missing model.** With nothing connected, the call refuses with ``MODEL_NOT_CONNECTED``
@@ -66,14 +69,52 @@ def _collect(c: httpx.Client, run_id: str) -> httpx.Response:
         time.sleep(3)
 
 
+_IDEA_A = (
+    "I want to build an ordering tool for independent bakeries that still take their weekend "
+    "orders on paper and lose track of about half of them."
+)
+_IDEA_B = (
+    "I want to build an invoicing assistant for freelance translators who chase late payments "
+    "by hand and cannot tell which agencies are the slow ones."
+)
+
+
+def _read(c: httpx.Client, idea: str, models: list[dict]) -> tuple[dict, float]:
+    started = time.monotonic()
+    resp = c.post(_READBACK, json={"idea": idea, "models": models}, timeout=60.0)
+    if resp.status_code == 202:
+        resp = _collect(c, resp.json()["readback_run_id"])
+    assert resp.status_code == 200, resp.text
+    return resp.json(), time.monotonic() - started
+
+
+def _check_shape(body: dict) -> str:
+    """Assert the contract and return the joined restatement."""
+    spans = body["restatement"]
+    assert isinstance(spans, list) and spans
+    assert {s["source"] for s in spans} <= {"read", "inferred"}
+    prose = "".join(s["text"] for s in spans)
+    # joining the pieces has to give the screen a readable paragraph. An earlier prompt used an
+    # angle-bracket placeholder in its example and the model copied it literally, wrapping every
+    # piece in a tag — the restatement still "passed" every other check and was unreadable.
+    assert "<" not in prose and ">" not in prose, prose
+    questions = body["questions"]
+    assert len(questions) <= 3
+    for q in questions:
+        assert q["id"] and q["text"]
+        assert q["kind"] in ("text", "choice")
+        assert (q["kind"] == "choice") == bool(q["options"])
+    return prose
+
+
 @requires_byom_key
-def test_a_founders_idea_is_read_back_with_the_inferred_parts_marked(
+def test_two_different_ideas_are_each_read_back_in_their_own_terms(
     register: Callable[..., dict], gateway_client: Callable[[str], httpx.Client]
 ) -> None:
     user = register(f"deskuser{uuid.uuid4().hex[:8]} user")
     c = gateway_client(user["token"])
 
-    # 1) the user stores THEIR OWN model key through the real credential API
+    # the user stores THEIR OWN model key through the real credential API
     cred = c.post(
         "/credentials/",
         json={
@@ -86,46 +127,22 @@ def test_a_founders_idea_is_read_back_with_the_inferred_parts_marked(
         },
     )
     assert cred.status_code == 201, cred.text
-    credential_id = cred.json()["id"]
+    models = _models(cred.json()["id"])
 
-    # 2) a per-run subject nothing could have canned in advance
-    subject = f"zeblin{uuid.uuid4().hex[:6]}"
-    idea = (
-        f"I want to build a scheduling tool for {subject} groomers who still book their weekend "
-        "appointments in a paper diary and lose about a third of them every month."
-    )
-    assert len(idea) >= 80
+    body_a, elapsed_a = _read(c, _IDEA_A, models)
+    body_b, elapsed_b = _read(c, _IDEA_B, models)
+    prose_a = _check_shape(body_a).lower()
+    prose_b = _check_shape(body_b).lower()
 
-    started = time.monotonic()
-    resp = c.post(_READBACK, json={"idea": idea, "models": _models(credential_id)}, timeout=60.0)
-    if resp.status_code == 202:
-        run_id = resp.json()["readback_run_id"]
-        resp = _collect(c, run_id)
-    elapsed = time.monotonic() - started
-    assert resp.status_code == 200, resp.text
-    body = resp.json()
+    # Each restatement is about ITS OWN idea. Nothing canned can satisfy both directions.
+    assert "bak" in prose_a, prose_a
+    assert "translat" in prose_b, prose_b
+    assert "translat" not in prose_a, prose_a
+    assert "bak" not in prose_b, prose_b
+    # the questions are drawn from the idea too, not a fixed list reused for both
+    assert [q["text"] for q in body_a["questions"]] != [q["text"] for q in body_b["questions"]]
 
-    # the restatement is an ORDERED ARRAY of spans, never one blob of prose
-    spans = body["restatement"]
-    assert isinstance(spans, list) and spans
-    assert {s["source"] for s in spans} <= {"read", "inferred"}
-    prose = "".join(s["text"] for s in spans)
-    # a real model read the founder's OWN words: the per-run subject appears in the restatement
-    assert subject.lower() in prose.lower(), prose
-    # joining the pieces has to give the screen a readable paragraph. An earlier prompt used an
-    # angle-bracket placeholder in its example and the model copied it literally, wrapping every
-    # piece in a tag — the restatement still "passed" every other check and was unreadable.
-    assert "<" not in prose and ">" not in prose, prose
-
-    # 0 to 3 questions, each well-formed, none of them the old hardcoded three
-    questions = body["questions"]
-    assert len(questions) <= 3
-    for q in questions:
-        assert q["id"] and q["text"]
-        assert q["kind"] in ("text", "choice")
-        assert (q["kind"] == "choice") == bool(q["options"])
-
-    print(f"[#866] read-back settled in {elapsed:.1f}s ({len(spans)} spans, {len(questions)} qs)")
+    print(f"[#866] read-back settled in {elapsed_a:.1f}s and {elapsed_b:.1f}s")
 
 
 @requires_byom_key
