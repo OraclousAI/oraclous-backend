@@ -64,9 +64,7 @@ async def proxy(
         # dress a 500 as a 422; a disagreement falls through to the ordinary handling below.
         relayed = extract_error_code(raw)
         if relayed is not None and http_status_for(ErrorCode(relayed)) == upstream.status_code:
-            return gateway_error(
-                request, code=ErrorCode(relayed), status_code=upstream.status_code
-            )
+            return gateway_error(request, code=ErrorCode(relayed), status_code=upstream.status_code)
         # 422 is the one case worth surfacing user-correctable signal: extract ONLY the field path +
         # the error-type machine token (never the value-reflecting msg) into VALIDATION_FAILED.
         if upstream.status_code == 422:
