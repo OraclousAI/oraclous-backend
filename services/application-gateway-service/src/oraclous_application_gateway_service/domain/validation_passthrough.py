@@ -1,4 +1,7 @@
-"""Leak-safe 422 → VALIDATION_FAILED + 409 → CREDENTIALS_REQUIRED extraction (domain layer) — pure.
+"""Leak-safe upstream-4xx extraction (domain layer) — pure.
+
+422 → VALIDATION_FAILED details, 409 → CREDENTIALS_REQUIRED token, and (#866) an ALLOW-LISTED
+error code on either.
 
 The gateway never relays an error body verbatim (§3 rule 8). A 422 is the one case where there is
 *user-correctable* signal worth surfacing — but only the SHAPE of the failure, never a value. This
@@ -7,6 +10,11 @@ extracts, from a FastAPI/Pydantic validation error, just the field path (``loc``
 which stock Pydantic reflects the submitted value into (``"not a valid email: alice@corp.internal"``
 or ``"Value error, invalid CORS origin 'evil/'"``). Both extracted parts are additionally sanitised
 + length-capped, so a non-conformant input cannot turn this into a relay channel.
+
+``extract_error_code`` is the third and narrowest hole in the same wall (#866): a two-value
+allow-list, matched exactly, returning a token and never a structure — so there is no field a
+message, a URL, or a stack trace could ride in on. An upstream cannot choose which code the
+browser sees; anything outside the allow-list falls back to the status-derived envelope.
 
 Two entry points share the same sanitisers:
 - ``extract_validation_details`` parses a serialised upstream ``{"detail": [...]}`` body (the proxy
@@ -24,12 +32,18 @@ import re
 from collections.abc import Sequence
 from typing import Any
 
-from oraclous_errors import FieldError, NeedsCredential
+from oraclous_errors import ErrorCode, FieldError, NeedsCredential
 
 _MAX_FIELDS = 20  # cap the number of surfaced field errors
 _MAX_FIELD_LEN = 64  # a field PATH is short; a longer one is suspicious → truncate
 _MAX_TOKEN_LEN = 48  # a Pydantic error type is short; truncate defensively
 _MAX_BODY = 64 * 1024  # never parse an oversized body
+# #866: the ONLY upstream-named codes that may reach a client. Deliberately not "every taxonomy
+# value" — an upstream (or anything that can shape its body) must not get to pick what the browser
+# is told, e.g. turning a 409 into UNAUTHORIZED. Widening this set is a security decision.
+_RELAYABLE_CODES: frozenset[str] = frozenset(
+    {ErrorCode.MODEL_NOT_CONNECTED.value, ErrorCode.IDEA_TOO_VAGUE.value}
+)
 _NON_TOKEN = re.compile(r"[^A-Z0-9_]")
 _NON_FIELD = re.compile(r"[^A-Za-z0-9_]")  # a loc part is a field name, never a value
 _LEAD = re.compile(r"^[^A-Z]+")
@@ -173,3 +187,32 @@ def extract_needs_credential(raw: bytes) -> NeedsCredential | None:
     if requirement_id is None or provider is None:
         return None
     return NeedsCredential(requirement_id, provider)
+
+
+def extract_error_code(raw: bytes) -> str | None:
+    """Extract an ALLOW-LISTED upstream error code from a 4xx body, or None (#866).
+
+    The engine's intake read-back names its refusal in ``error_code`` — at the top level, or one
+    level down inside a FastAPI ``HTTPException(detail={...})`` wrapper, since it raises through
+    that path. Matching is EXACT: no case-folding and no stripping, because a near-miss is a miss
+    and normalising would widen the hole for no benefit (the emitter writes the exact token).
+
+    Returns the token itself, never a structure, so nothing else from the body can ride along.
+    None → the proxy falls back to today's status-derived envelope, which is what every code
+    outside the allow-list gets.
+    """
+    if not raw or len(raw) > _MAX_BODY:
+        return None
+    try:
+        body = json.loads(raw)
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(body, dict):
+        return None
+    code = body.get("error_code")
+    if code is None:
+        detail = body.get("detail")
+        code = detail.get("error_code") if isinstance(detail, dict) else None
+    if isinstance(code, str) and code in _RELAYABLE_CODES:
+        return code
+    return None

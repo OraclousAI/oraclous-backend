@@ -29,7 +29,9 @@
             "RATE_LIMITED",
             "INTERNAL_ERROR",
             "SERVICE_UNAVAILABLE",
-            "GATEWAY_TIMEOUT"
+            "GATEWAY_TIMEOUT",
+            "MODEL_NOT_CONNECTED",
+            "IDEA_TOO_VAGUE"
           ]
         },
         "message": {

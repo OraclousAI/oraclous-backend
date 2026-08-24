@@ -54,6 +54,12 @@ class Settings(BaseSettings):
     refine_nl_poll_seconds: float = 25.0
     refine_nl_poll_interval_seconds: float = 2.0
 
+    # --- #866 intake read-back: same reasoning as refine-nl above. The reader is a real LLM
+    # team-run the request path polls, and the budget stays under the gateway's upstream read
+    # timeout so a slow read returns a clean 202 + readback_run_id rather than a gateway 504. ---
+    readback_poll_seconds: float = 25.0
+    readback_poll_interval_seconds: float = 2.0
+
     # --- Postgres RLS backstop (ADR-030 / #353) ---
     # When true, the service asserts at startup (web lifespan) AND the worker asserts at
     # worker_process_init that the ORG-BOUND runtime DB role is NOSUPERUSER/NOBYPASSRLS (a bypassing

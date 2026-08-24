@@ -40,6 +40,9 @@ from oraclous_execution_engine_service.services.activity_service import Activity
 from oraclous_execution_engine_service.services.compiler_run_service import CompilerRunService
 from oraclous_execution_engine_service.services.graph_client import GraphClient
 from oraclous_execution_engine_service.services.harness_client import HarnessClient
+from oraclous_execution_engine_service.services.intake_readback_service import (
+    IntakeReadbackService,
+)
 from oraclous_execution_engine_service.services.job_service import JobService
 from oraclous_execution_engine_service.services.registry_client import RegistryClient
 from oraclous_execution_engine_service.services.roundtable_service import RoundtableService
@@ -305,6 +308,20 @@ def get_team_draft_service(
     )
 
 
+def get_intake_readback_service(
+    team_runs: Annotated[TeamRunService, Depends(get_team_run_service)],
+) -> IntakeReadbackService:
+    # #866: the validation desk's read-back. `team_runs` is the SAME create/read path a client
+    # uses — the reader submits through it, so there is no second way to call a model and no
+    # bypass of a run's provenance and budget machinery.
+    settings = get_settings()
+    return IntakeReadbackService(
+        team_runs=team_runs,
+        readback_poll_seconds=settings.readback_poll_seconds,
+        readback_poll_interval_seconds=settings.readback_poll_interval_seconds,
+    )
+
+
 def get_compiler_run_service(
     team_runs: Annotated[TeamRunService, Depends(get_team_run_service)],
     registry: Annotated[RegistryClient, Depends(get_registry_client)],
@@ -324,3 +341,4 @@ RoundtableServiceDep = Annotated[RoundtableService, Depends(get_roundtable_servi
 TeamRunServiceDep = Annotated[TeamRunService, Depends(get_team_run_service)]
 TeamDraftServiceDep = Annotated[TeamDraftService, Depends(get_team_draft_service)]
 CompilerRunServiceDep = Annotated[CompilerRunService, Depends(get_compiler_run_service)]
+IntakeReadbackServiceDep = Annotated[IntakeReadbackService, Depends(get_intake_readback_service)]

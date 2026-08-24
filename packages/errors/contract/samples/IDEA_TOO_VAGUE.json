@@ -1,0 +1,8 @@
+{
+  "error": {
+    "code": "IDEA_TOO_VAGUE",
+    "message": "There is not enough detail here to read back. Add more and try again.",
+    "requestId": "req_01J9ZQ8XK3M2N7P5R1T0VWABCG",
+    "retryable": false
+  }
+}
