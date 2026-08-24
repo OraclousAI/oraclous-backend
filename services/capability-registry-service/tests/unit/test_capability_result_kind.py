@@ -82,8 +82,8 @@ RULED: dict[tuple[str, str], str] = {
     #
     # Worth being explicit about what this does NOT settle: the provenance of the INPUTS does not
     # carry through to the output. Feed a figure read from a cited document into a ratio and the
-    # ratio is uncited. #822 raises that deliberately, as a thing to decide before the first
-    # financial function ships rather than after; nothing here resolves it.
+    # ratio is uncited. That is a §CITE question about derivation, not a classification one, and it
+    # is tracked as #864 — the `status` values above are correct either way.
     ("Math Tools", "percentage_change"): "status",
     ("Math Tools", "compound_growth"): "status",
     ("Math Tools", "break_even_units"): "status",
