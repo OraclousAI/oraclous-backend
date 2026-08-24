@@ -49,6 +49,30 @@ bearer; `AUTH_MODE=jwt` decodes the real auth-service HS256 token).
   live OAuth connector is deferred (no key-free smoke); its descriptor stays registered → executing it
   returns 409 `no_executor`. **Carries `needs-human` for Reza's §22 8-gate sign-off.**
 
+## Curated tool groups (and why `Bash` is not the calculator)
+
+Two curated in-repo libraries are mounted as typed tool groups: **Text Tools** (`text-tools`) and
+**Math Tools** (`math-tools`, #822). Each is its own group with its own descriptor, because a member
+binds a GROUP and gets every operation in it — one shared library would hand the member counting
+words a compounding function. Operations live in `domain/libraries/registry.py`, one
+`OperationSpec` per exported function, and both the advertised capabilities and the operation enum
+are generated from it so a function and its descriptor cannot drift.
+
+`Bash` is the closest existing way to compute a number and it is the wrong tool for it, on four
+counts:
+
+- it declares `result_kind: "status"` and runs arbitrary text, so nothing it computes is checkable
+  against a declared operation;
+- its sandbox `MINIMAL_PATH` excludes `/app/.venv/bin`, so the interpreter it reaches is the system
+  one — stdlib only, no numeric libraries;
+- it runs inside the registry container with unrestricted outbound network, so "compute a figure"
+  and "reach the internet" are the same permission;
+- its sandbox is keyed on `organisation_id` alone, with no run or member component, and nothing
+  deletes it.
+
+A curated math operation has none of that surface: fixed arguments, a fixed callable, no shell, no
+network, no filesystem, and a typed error instead of an exception on bad input.
+
 ## Run / smoke
 
 ```bash
