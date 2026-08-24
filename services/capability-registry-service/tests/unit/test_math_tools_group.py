@@ -178,7 +178,7 @@ async def test_a_whole_number_is_accepted_where_a_number_is_expected() -> None:
         {"operation": "compound_growth", "start": 40000, "rate": 0.08, "periods": 18}, _ctx()
     )
     assert res.success, f"a whole number was rejected: {res.error_message}"
-    assert res.data["value"] == pytest.approx(159840.7819666870, abs=1e-6)
+    assert res.data["value"] == pytest.approx(159840.77996739736, rel=1e-9)
 
 
 async def test_a_realistic_horizon_is_still_accepted_through_dispatch() -> None:
@@ -190,7 +190,7 @@ async def test_a_realistic_horizon_is_still_accepted_through_dispatch() -> None:
     )
     assert res.success, f"a realistic horizon was rejected: {res.error_message}"
     assert "error" not in res.data
-    assert res.data["value"] == pytest.approx(6022.5752122629865, abs=1e-6)
+    assert res.data["value"] == pytest.approx(6022.5752122629865, rel=1e-9)
 
 
 async def test_a_fraction_is_rejected_where_a_whole_number_is_expected() -> None:

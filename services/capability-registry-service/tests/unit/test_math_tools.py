@@ -12,8 +12,21 @@ covers how they are reached as a tool.
 Four properties, and each is a rule for the next function added here:
 
 **Exact, not approximate.** The point of the capability is that the same inputs give the same
-number every time. Where a value is exactly representable the assertion is exact equality; where
-it is not, the tolerance is tight enough that a wrong formula fails.
+number every time. Where a value is exactly representable — 225.0, 6.25, 150.0 — the assertion is
+exact equality.
+
+Where it is not, the tolerance is RELATIVE (``rel=1e-9``), not absolute, and the reasoning matters
+because an earlier revision of this file got it wrong in both directions at once. An absolute
+tolerance means something different at 6,022 than at 159,840, so one number is over-constrained and
+the other under-constrained by the same literal. And ``rel=1e-9`` is chosen to sit in the gap
+between the two things that can move a result: floating-point reassociation, which is the last
+couple of bits and which a correct implementation is free to do — computing by repeated
+multiplication rather than by exponentiation is still correct — and a wrong formula, which is out
+by thousands. Nothing lands in between, so the tolerance never has to be argued about again.
+
+Every expected value here is computed, never derived by hand. The 18-period figure was hand-derived
+once and was wrong in the ninth significant digit, which would have failed a correct
+implementation.
 
 **Total.** Acceptance criterion 3: no exceptions on bad input, a typed error result instead. Every
 undefined case — a zero base, a product that never breaks even, an investment that never pays back
@@ -85,7 +98,7 @@ def test_compound_growth_matches_the_worked_example_on_the_issue() -> None:
     # 40,000/month at 8% a month for 18 months. The issue's illustration of a model answering
     # "roughly 151,000" in prose when the real figure is nearly 9,000 higher.
     out = _math().compound_growth(start=40000, rate=0.08, periods=18)
-    assert out["value"] == pytest.approx(159840.7819666870, abs=1e-6)
+    assert out["value"] == pytest.approx(159840.77996739736, rel=1e-9)
 
 
 def test_compound_growth_accepts_a_negative_rate() -> None:
@@ -116,7 +129,7 @@ def test_compound_growth_still_accepts_a_realistic_horizon() -> None:
     # the refusal test while breaking every genuine use.
     out = _math().compound_growth(start=1000, rate=0.005, periods=360)
     assert "error" not in out
-    assert out["value"] == pytest.approx(6022.5752122629865, abs=1e-6)
+    assert out["value"] == pytest.approx(6022.5752122629865, rel=1e-9)
 
 
 def test_compound_growth_accepts_a_period_count_in_the_thousands() -> None:
