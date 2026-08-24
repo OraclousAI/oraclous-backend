@@ -1717,19 +1717,32 @@ class TeamRunService:
         """#819 decision 2: mark every member a dying drive never reached as "failed", so /rerun
         has a target. Returns the completed map, or ``None`` when the caller should write nothing.
 
-        A member that was mid-dispatch when the kill landed has NO entry at all — not failed, not
-        succeeded — so ``rerun``'s failed-or-blocked gate would answer 409 even though earlier
-        members' output is sitting durable on the row. ``setdefault`` fills only the gaps: a member
-        that really did settle keeps its own terminal status.
+        A member that was mid-dispatch when the kill landed is UNSETTLED — before #828 that meant
+        no entry at all, and since #828 it can also mean a durable ``"running"`` entry written at
+        dispatch. Either way ``rerun``'s failed-or-blocked gate would find nothing, and the run
+        would answer 409 even though earlier members' output is sitting durable on the row. Both
+        shapes are converted to "failed"; a member that really did settle keeps its own terminal
+        status.
 
-        The guard is that this applies ONLY over at least one settled member. A run that dies before
-        member 1 (an unreachable harness, an immediate kill) has no partial work worth resuming, so
-        it keeps an empty record and still answers 409 — the commonest failure path, and today's
-        behaviour on it must not change. ADR-042's nothing_to_rerun is narrowed here, not deleted.
+        ``"running"`` MUST be rewritten rather than left alone. It is the one non-terminal value
+        this map can hold, and this is the last write the row gets — the drive that would have
+        revised it is dead. Left as-is on the reaper's path (which reads the DURABLE row, unlike
+        the in-process path, which reads the orchestrator's settled-only snapshot), a run whose
+        every other member succeeded has nothing failed or blocked, so /rerun answers 409 forever
+        and the unfinished member can never be retried.
+
+        The guard is that this applies ONLY over at least one SETTLED member — a "running" entry
+        does not count, or it would silently narrow ADR-042's 409 further than #819 intended. A run
+        that dies before member 1 delivers (an unreachable harness, an immediate kill) has no
+        partial work worth resuming, so it keeps its record and still answers 409 — the commonest
+        failure path, and today's behaviour on it must not change.
         """
-        if not member_status:
+        if not any(status != "running" for status in member_status.values()):
             return None
-        filled = dict(member_status)
+        filled = {
+            role: ("failed" if status == "running" else status)
+            for role, status in member_status.items()
+        }
         for member in team.members:
             filled.setdefault(member.role, "failed")
         return filled

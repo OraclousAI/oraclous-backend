@@ -542,6 +542,70 @@ async def test_a_reaped_run_keeps_its_checkpoints_and_is_rerunnable() -> None:
     assert requeued.state == "QUEUED"
 
 
+async def test_a_reaped_run_never_strands_a_member_on_running() -> None:
+    # #828 gave member_status a NON-terminal value, and the reaper reads the DURABLE row (unlike
+    # the in-process path, which reads the orchestrator's settled-only snapshot). A member that was
+    # in flight when the SIGKILL landed therefore arrives here as "running", not as a missing key,
+    # and setdefault leaves it alone. With every other member succeeded, /rerun's failed-or-blocked
+    # gate then finds nothing: 409 forever, on a run with real unfinished work. The reaper write is
+    # the LAST write the row gets — the drive that would have revised "running" is dead.
+    repo = FakeTeamRunRepo()
+    svc, _ = _svc(repo, ScriptedHarness())
+    manifest = _team([_agent("a"), _agent("b", ["a"])])
+    killed = EngineTeamRun(
+        id=uuid.uuid4(),
+        organisation_id=_ORG,
+        user_id=_USER,
+        manifest=manifest,
+        sub_harnesses={},
+        gate_decisions={},
+        state="RUNNING",
+        results={"a": {"output": "a-out", "status": "SUCCEEDED"}},
+        member_status={"a": "succeeded", "b": "running"},  # 'b' was mid-dispatch when it died
+        paused_at=[],
+    )
+    repo.rows[killed.id] = killed
+
+    reaped = await svc.reap_stale(FakeMaintenance([killed]), older_than=_dt.datetime.now(_dt.UTC))
+
+    assert reaped == 1 and killed.state == "FAILED"
+    assert killed.member_status == {"a": "succeeded", "b": "failed"}
+    assert killed.results["a"]["output"] == "a-out"  # the finished member's output is untouched
+
+    requeued = await svc.rerun(killed.id, _principal())
+    assert requeued.state == "QUEUED"
+
+
+async def test_a_run_reaped_with_only_a_running_member_is_still_a_409() -> None:
+    # The guard's half of the same bug. "at least one settled member" must mean SETTLED — a lone
+    # "running" entry is a member that was dispatched and delivered nothing, which is exactly the
+    # no-partial-work case ADR-042 answers 409 on. Counting it as settled would let #828's
+    # dispatch-time write silently narrow that 409 on the commonest failure path of all: a run that
+    # dies before its first member delivers.
+    repo = FakeTeamRunRepo()
+    svc, _ = _svc(repo, ScriptedHarness())
+    killed = EngineTeamRun(
+        id=uuid.uuid4(),
+        organisation_id=_ORG,
+        user_id=_USER,
+        manifest=_team([_agent("a")]),
+        sub_harnesses={},
+        gate_decisions={},
+        state="RUNNING",
+        results={},
+        member_status={"a": "running"},  # dispatched, then killed — nothing delivered
+        paused_at=[],
+    )
+    repo.rows[killed.id] = killed
+
+    await svc.reap_stale(FakeMaintenance([killed]), older_than=_dt.datetime.now(_dt.UTC))
+    assert killed.state == "FAILED"
+
+    with pytest.raises(TeamRunError) as ei:
+        await svc.rerun(killed.id, _principal())
+    assert ei.value.status_code == 409 and ei.value.error_type == "nothing_to_rerun"
+
+
 async def test_a_run_reaped_before_any_member_finished_is_still_a_409() -> None:
     # The backfill must not manufacture a re-run target out of nothing. A run killed before ANY
     # member settled has no partial work to keep, so a fresh POST is the right recovery and
