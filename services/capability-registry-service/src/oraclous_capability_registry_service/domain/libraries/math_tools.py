@@ -16,6 +16,12 @@ number is the one a reader expects to see in a document.
 calculation is not a tool failure — the call worked, and the member that made it needs to read
 "this product never breaks even" and say so, rather than seeing an opaque tool error.
 
+Totality covers the RESULT as well as the arguments, and that half is easy to miss. Every input can
+be a finite, JSON-legal number and the result still overflow to infinity — 1e308 doubled, or a
+division by a denormal denominator. Infinity is not valid JSON, so it leaves as a 500 the member
+cannot read; ``math.ceil(inf)`` raises outright. So every function checks that its own result is
+finite before returning it, and reports ``value_out_of_range`` when it is not.
+
 **Bounded.** :data:`MAX_PERIODS` caps the period count. :class:`LibraryGroupExecutor` dispatches in
 a thread it cannot kill and its only other guard caps STRING length, so a nine-digit exponent
 reachable through a keyless, in-process, curated operation is an unbounded CPU and memory cost. The
@@ -36,12 +42,32 @@ import math
 #: Upper bound on a period count. 10,000 periods of compounding is still cheap arithmetic and a
 #: thirty-year monthly model is 360, so the cap is drawn an order of magnitude above real work — it
 #: exists to refuse an exponent that would burn the dispatch thread, not to constrain a model.
+#:
+#: The dispatcher coerces a whole number to a float before it arrives here, so the exponentiation
+#: below is float arithmetic and a huge exponent raises rather than allocating. Were it ever to run
+#: on the integer path, ``2 ** 10**9`` would allocate a gigabyte-scale integer instead — which is
+#: what makes this bound load-bearing rather than merely tidy.
 MAX_PERIODS = 100_000
 
 
 def _error(code: str, detail: str) -> dict:
     """The typed-error result shape every operation here returns instead of raising."""
     return {"error": code, "detail": detail}
+
+
+def _unrepresentable(value: float) -> dict | None:
+    """The typed error for a result that overflowed, or ``None`` when the value is representable.
+
+    Called at the point each function builds its result. A finite argument pair can still produce
+    an infinity, and an infinity is not a JSON number: without this the execution leaves as a 500,
+    which is the one outcome a member can neither read nor act on.
+    """
+    if math.isfinite(value):
+        return None
+    return _error(
+        "value_out_of_range",
+        "the result is too large to represent as a number; check the scale of the inputs",
+    )
 
 
 def _valid_periods(periods: object) -> bool:
@@ -66,7 +92,8 @@ def percentage_change(start: float, end: float) -> dict:
             "undefined_base",
             "percentage change from a zero base is undefined: there is nothing to grow from",
         )
-    return {"percent": (end - start) / start * 100, "start": start, "end": end}
+    percent = (end - start) / start * 100
+    return _unrepresentable(percent) or {"percent": percent, "start": start, "end": end}
 
 
 def compound_growth(start: float, rate: float, periods: int) -> dict:
@@ -87,7 +114,12 @@ def compound_growth(start: float, rate: float, periods: int) -> dict:
             "value_out_of_range",
             "the compounded value is too large to represent; reduce the rate or the period count",
         )
-    return {"value": value, "start": start, "rate": rate, "periods": periods}
+    return _unrepresentable(value) or {
+        "value": value,
+        "start": start,
+        "rate": rate,
+        "periods": periods,
+    }
 
 
 def break_even_units(
@@ -109,7 +141,9 @@ def break_even_units(
             "break-even volume",
         )
     units = fixed_costs / contribution
-    return {
+    # Before the ceil, not after: math.ceil(inf) raises OverflowError and math.ceil(nan) raises
+    # ValueError, and either would reach the member as an opaque tool failure.
+    return _unrepresentable(units) or {
         "units": units,
         "units_whole": math.ceil(units),
         "contribution_per_unit": contribution,
@@ -132,8 +166,9 @@ def payback_period(initial_investment: float, cash_flow_per_period: float) -> di
             "no_payback",
             "a cash flow at or below zero never recovers the investment",
         )
-    return {
-        "periods": initial_investment / cash_flow_per_period,
+    periods = initial_investment / cash_flow_per_period
+    return _unrepresentable(periods) or {
+        "periods": periods,
         "initial_investment": initial_investment,
         "cash_flow_per_period": cash_flow_per_period,
     }
@@ -147,8 +182,9 @@ def ratio(numerator: float, denominator: float, numerator_unit: str, denominator
     """
     if denominator == 0:
         return _error("division_by_zero", "'denominator' is zero, so the ratio is undefined")
-    return {
-        "value": numerator / denominator,
+    value = numerator / denominator
+    return _unrepresentable(value) or {
+        "value": value,
         "unit": f"{numerator_unit} per {denominator_unit}",
         "numerator": numerator,
         "denominator": denominator,
