@@ -44,6 +44,12 @@ EXPECTED_CODES = {
     "INTERNAL_ERROR",
     "SERVICE_UNAVAILABLE",
     "GATEWAY_TIMEOUT",
+    # #866: the validation-desk read-back's two refusals. The gateway drains an upstream error
+    # body rather than relaying it, so a refusal only reaches the browser as a taxonomy code —
+    # and a founder reads "we could not tell what you are building" and "connect a model first"
+    # as different problems, which VALIDATION_FAILED and CREDENTIALS_REQUIRED cannot express.
+    "MODEL_NOT_CONNECTED",
+    "IDEA_TOO_VAGUE",
 }
 
 # A minimal valid (non-VALIDATION_FAILED) envelope inner object used as a base for
@@ -81,10 +87,10 @@ def test_schema_is_itself_valid(schema: dict[str, Any]) -> None:
     Draft202012Validator.check_schema(schema)  # raises if the schema is malformed
 
 
-def test_code_enum_is_the_closed_set_of_14(schema: dict[str, Any]) -> None:
+def test_code_enum_is_the_closed_set(schema: dict[str, Any]) -> None:
     enum = schema["properties"]["error"]["properties"]["code"]["enum"]
     assert set(enum) == EXPECTED_CODES
-    assert len(enum) == 14
+    assert len(enum) == len(EXPECTED_CODES)
 
 
 def test_additional_properties_false_at_every_level(schema: dict[str, Any]) -> None:
@@ -265,3 +271,34 @@ def test_scanner_flags_a_leaky_body() -> None:
 def test_checksum_manifest_matches_artifacts() -> None:
     errors = verify_checksums()
     assert not errors, errors
+
+
+# --- #866: the two read-back refusal codes ---------------------------------
+# Pinned explicitly rather than left to the parametrised sweep above: these two codes exist so a
+# refusal survives the gateway's error-body drain, and the whole point is the STATUS a founder's
+# browser branches on. A drift in either row silently turns "connect a model" into "conflict".
+
+
+def test_model_not_connected_is_a_409_and_never_retryable() -> None:
+    row = next(r for r in load_taxonomy()["codes"] if r["code"] == "MODEL_NOT_CONNECTED")
+    assert row["http"] == 409
+    assert row["retryable_default"] is False
+    assert row["details_required"] is False
+
+
+def test_idea_too_vague_is_a_422_and_never_retryable() -> None:
+    # 422, not 400: the body parsed fine and the field is present — it is the CONTENT that is
+    # below the floor. A 400 would tell the screen the request was malformed, which it was not.
+    row = next(r for r in load_taxonomy()["codes"] if r["code"] == "IDEA_TOO_VAGUE")
+    assert row["http"] == 422
+    assert row["retryable_default"] is False
+    assert row["details_required"] is False
+
+
+def test_readback_refusals_carry_no_details(validator: Draft202012Validator) -> None:
+    # `details` is reserved for VALIDATION_FAILED. Neither refusal names a field: one is about the
+    # idea's length, the other about an absent model, and the code alone says which.
+    for code in ("MODEL_NOT_CONNECTED", "IDEA_TOO_VAGUE"):
+        sample = load_samples()[code]
+        assert "details" not in sample["error"]
+        assert not list(validator.iter_errors(sample))
