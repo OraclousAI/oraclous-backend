@@ -16,6 +16,8 @@
     { "code": "RATE_LIMITED", "http": 429, "retryable_default": true, "retryable_overridable": false, "details_required": false, "when": "throttle; retry hint via Retry-After header, not body" },
     { "code": "INTERNAL_ERROR", "http": 500, "retryable_default": false, "retryable_overridable": true, "details_required": false, "when": "unexpected fault; message always generic (server may set retryable true when transient)" },
     { "code": "SERVICE_UNAVAILABLE", "http": 503, "retryable_default": true, "retryable_overridable": false, "details_required": false, "when": "dependency down / draining" },
-    { "code": "GATEWAY_TIMEOUT", "http": 504, "retryable_default": true, "retryable_overridable": false, "details_required": false, "when": "upstream timeout" }
+    { "code": "GATEWAY_TIMEOUT", "http": 504, "retryable_default": true, "retryable_overridable": false, "details_required": false, "when": "upstream timeout" },
+    { "code": "MODEL_NOT_CONNECTED", "http": 409, "retryable_default": false, "retryable_overridable": false, "details_required": false, "when": "the caller has connected no model and the path has no platform fallback to borrow (#866)" },
+    { "code": "IDEA_TOO_VAGUE", "http": 422, "retryable_default": false, "retryable_overridable": false, "details_required": false, "when": "submitted text is below the deterministic length floor, checked before any model call (#866)" }
   ]
 }

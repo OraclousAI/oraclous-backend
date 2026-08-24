@@ -15,7 +15,7 @@ from enum import StrEnum
 
 
 class ErrorCode(StrEnum):
-    """The 14-value closed taxonomy. The frontend branches only on this code."""
+    """The 16-value closed taxonomy. The frontend branches only on this code."""
 
     VALIDATION_FAILED = "VALIDATION_FAILED"
     MALFORMED_REQUEST = "MALFORMED_REQUEST"
@@ -31,6 +31,13 @@ class ErrorCode(StrEnum):
     INTERNAL_ERROR = "INTERNAL_ERROR"
     SERVICE_UNAVAILABLE = "SERVICE_UNAVAILABLE"
     GATEWAY_TIMEOUT = "GATEWAY_TIMEOUT"
+    # #866 — the validation desk's intake read-back. Both refusals exist because the gateway
+    # drains an upstream error body rather than relaying it, so a refusal reaches the browser as
+    # a taxonomy code or not at all. A founder reads "we could not tell what you are building"
+    # and "connect a model first" as different problems; CONFLICT and VALIDATION_FAILED cannot
+    # say either one, and the screen has to render a different next step for each.
+    MODEL_NOT_CONNECTED = "MODEL_NOT_CONNECTED"
+    IDEA_TOO_VAGUE = "IDEA_TOO_VAGUE"
 
 
 @dataclass(frozen=True)
@@ -69,6 +76,16 @@ CODE_POLICY: dict[ErrorCode, CodePolicy] = {
     ErrorCode.INTERNAL_ERROR: CodePolicy(500, False, "An unexpected error occurred."),
     ErrorCode.SERVICE_UNAVAILABLE: CodePolicy(503, True, "The service is temporarily unavailable."),
     ErrorCode.GATEWAY_TIMEOUT: CodePolicy(504, True, "The upstream service timed out."),
+    # 409 — the caller has connected no model, and this path deliberately has no platform
+    # fallback to borrow (#866). Not retryable: retrying without connecting one cannot succeed.
+    ErrorCode.MODEL_NOT_CONNECTED: CodePolicy(
+        409, False, "No model is connected. Connect one and try again."
+    ),
+    # 422, not 400 — the body parsed fine and the field was present; it is the CONTENT that is
+    # below the floor. A 400 would tell the caller the request was malformed, which it was not.
+    ErrorCode.IDEA_TOO_VAGUE: CodePolicy(
+        422, False, "There is not enough detail here to read back. Add more and try again."
+    ),
 }
 
 
