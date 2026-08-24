@@ -90,6 +90,27 @@ async def _method405(request):  # noqa: ANN001 — an upstream 405 (Allow + a le
     )
 
 
+async def _no_model(request):  # noqa: ANN001 — #866: the engine's 409 refusal, with a leaky message
+    # The engine names the refusal in `error_code`; everything else in this body is exactly what
+    # rule 8 exists to stop, so the proof is that the code arrives and the rest does not.
+    return JSONResponse(
+        {
+            "error_code": "MODEL_NOT_CONNECTED",
+            "detail": "no binding for org on db-1.internal 10.0.0.5",
+        },
+        status_code=409,
+    )
+
+
+async def _too_vague(request):  # noqa: ANN001 — #866: the engine's 422 refusal
+    return JSONResponse({"error_code": "IDEA_TOO_VAGUE"}, status_code=422)
+
+
+async def _wrong_code(request):  # noqa: ANN001 — #866: an upstream naming a NON-allow-listed code
+    # An upstream must not be able to choose any code it likes for the browser.
+    return JSONResponse({"error_code": "UNAUTHORIZED"}, status_code=409)
+
+
 _UPSTREAM_APP = Starlette(
     routes=[
         Route("/v1/search", _search, methods=["GET"]),
@@ -99,6 +120,9 @@ _UPSTREAM_APP = Starlette(
         Route("/api/v1/tools/weak", _struct422, methods=["POST"]),
         Route("/api/v1/tools/stringerr", _string422, methods=["POST"]),
         Route("/api/v1/graphs/g/documents", _method405, methods=["POST"]),
+        Route("/v1/engine/intake/readback", _no_model, methods=["POST"]),
+        Route("/v1/engine/intake/vague", _too_vague, methods=["POST"]),
+        Route("/v1/engine/intake/imposter", _wrong_code, methods=["POST"]),
     ]
 )
 
@@ -249,3 +273,35 @@ async def test_timeout_is_504() -> None:
     await upstream.aclose()
     assert r.status_code == 504
     assert r.json()["error"]["code"] == "GATEWAY_TIMEOUT"
+
+
+# --- #866: the read-back refusals reach the browser as themselves -------------
+
+
+async def test_model_not_connected_survives_the_boundary(client: AsyncClient) -> None:
+    # Without this the founder's browser sees a bare CONFLICT and cannot tell "connect a model"
+    # apart from any other 409, which is the whole reason the code was added to the taxonomy.
+    r = await client.post("/v1/engine/intake/readback", json={"idea": "x"}, headers=_auth())
+    assert r.status_code == 409
+    assert r.json()["error"]["code"] == "MODEL_NOT_CONNECTED"
+
+
+async def test_model_not_connected_carries_none_of_the_upstream_body(client: AsyncClient) -> None:
+    r = await client.post("/v1/engine/intake/readback", json={"idea": "x"}, headers=_auth())
+    assert not scan_forbidden(r.text)
+    assert "db-1.internal" not in r.text and "10.0.0.5" not in r.text
+    assert "details" not in r.json()["error"]
+
+
+async def test_idea_too_vague_survives_the_boundary(client: AsyncClient) -> None:
+    r = await client.post("/v1/engine/intake/vague", json={"idea": "x"}, headers=_auth())
+    assert r.status_code == 422
+    assert r.json()["error"]["code"] == "IDEA_TOO_VAGUE"
+
+
+async def test_a_code_outside_the_allow_list_falls_back_to_the_status(client: AsyncClient) -> None:
+    # The hole in rule 8 is exactly two codes wide. An upstream naming UNAUTHORIZED on a 409 gets
+    # the ordinary status-derived envelope, not a free choice of what the browser is told.
+    r = await client.post("/v1/engine/intake/imposter", json={"idea": "x"}, headers=_auth())
+    assert r.status_code == 409
+    assert r.json()["error"]["code"] == "CONFLICT"
