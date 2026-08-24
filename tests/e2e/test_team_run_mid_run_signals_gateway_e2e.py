@@ -71,7 +71,7 @@ def _three_stage_studio(root: Path) -> None:
     )
 
 
-def _sample_status(client: httpx.Client, run_id: str, *, deadline_s: float = 75.0) -> list[dict]:
+def _sample_status(client: httpx.Client, run_id: str, *, deadline_s: float = 150.0) -> list[dict]:
     """Poll /status until the run settles, keeping every response that differs from the last.
 
     Two cadences, because the run's own lifetime and the deadline differ by two orders of magnitude.
@@ -89,6 +89,13 @@ def _sample_status(client: httpx.Client, run_id: str, *, deadline_s: float = 75.
     purpose: every request here comes out of the same per-client-IP budget the rest of the suite is
     already exhausting, so a burst measured in wall-clock time would quietly bill more the slower
     the run gets — starving the other tests rather than fixing this one.
+
+    ``deadline_s`` is generous on purpose. The predecessor counted 300 tries and slept 0.25s
+    between them, so its real budget was the sleeps PLUS 300 round trips — comfortably past 90
+    seconds. Switching to a wall clock made the budget honest but, at the same 75, quietly SHORTER,
+    and a CI runner whose worker is briefly saturated can leave a run QUEUED past that. Set well
+    above the old effective ceiling: waiting longer costs nothing when the run settles in under a
+    second, and a false "never settled" costs a whole CI cycle.
     """
     fast_polls_left = _FAST_POLLS
     end = time.monotonic() + deadline_s
