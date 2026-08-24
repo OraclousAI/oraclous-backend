@@ -35,6 +35,14 @@ _TERMINAL = {"SUCCEEDED", "FAILED", "REJECTED", "COST_BUDGET"}
 # test needs a sample taken while the drive was actually running.
 _QUEUED = "QUEUED"
 
+# The dense opening burst, bounded by REQUEST COUNT rather than by wall clock. Every request in this
+# suite shares one per-client-IP budget at the gateway (EDGE_RATE_LIMIT, 600/minute), and the suite
+# already sits at that ceiling — #850/#844 are exactly that. So the burst has to be paid for out of
+# a fixed allowance: 15 polls at 40ms covers about 0.6s, which is a whole fake-model run, at a cost
+# of 15 requests per test instead of the ~100 an unbounded two-second burst would spend.
+_FAST_POLLS = 15
+_FAST_INTERVAL_S = 0.04
+
 
 def _three_stage_studio(root: Path) -> None:
     """Three members in a strict chain, reasoning-only so it runs on the deployed harness without
@@ -75,13 +83,14 @@ def _sample_status(client: httpx.Client, run_id: str, *, deadline_s: float = 75.
     ``test_a_member_reports_how_long_it_has_been_running`` passed against the same build, proving
     the signal reaches the gateway; this poll simply blinked and missed it.
 
-    So: sample hard (20ms) through the first couple of seconds, which is the whole lifetime of a
-    fake-model run and the beginning of a real one, then fall back to 0.25s for the long tail of a
-    real-model run. The burst is deliberately bounded — the gateway's edge limiter allows 600
-    requests per minute per client IP, shared by every test in this suite, so an unbounded tight
-    loop here would starve the rest of the run rather than fix this one.
+    So: spend a small fixed allowance of fast polls (see ``_FAST_POLLS``) up front, which covers
+    the whole lifetime of a fake-model run and the beginning of a real one, then fall back to 0.25s
+    for the long tail of a real-model run. The allowance is counted in REQUESTS, not seconds, on
+    purpose: every request here comes out of the same per-client-IP budget the rest of the suite is
+    already exhausting, so a burst measured in wall-clock time would quietly bill more the slower
+    the run gets — starving the other tests rather than fixing this one.
     """
-    fast_until = time.monotonic() + 2.0
+    fast_polls_left = _FAST_POLLS
     end = time.monotonic() + deadline_s
     samples: list[dict] = []
     while time.monotonic() < end:
@@ -90,7 +99,11 @@ def _sample_status(client: httpx.Client, run_id: str, *, deadline_s: float = 75.
             samples.append(body)
         if body["state"] in _TERMINAL:
             return samples
-        time.sleep(0.02 if time.monotonic() < fast_until else 0.25)
+        if fast_polls_left > 0:
+            fast_polls_left -= 1
+            time.sleep(_FAST_INTERVAL_S)
+        else:
+            time.sleep(0.25)
     raise AssertionError(f"run {run_id} never settled (last: {samples[-1] if samples else None})")
 
 
