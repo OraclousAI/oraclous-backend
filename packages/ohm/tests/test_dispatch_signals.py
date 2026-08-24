@@ -111,19 +111,26 @@ async def test_on_dispatch_fires_inside_the_stage_semaphore() -> None:
     width = _STAGE_CONCURRENCY + 2
     announced: list[str] = []
     release = asyncio.Event()
-    peak: dict[str, int] = {"value": 0}
+    # LIVE count, not cumulative: on_dispatch raises it, the end of the member's dispatch lowers it
+    # again. An append-only tally cannot express this assertion — announcing before dispatch is
+    # required by the test above, so the running total necessarily passes the cap on a wide stage
+    # no matter how correct the driver is. Only the number announced-and-not-yet-finished is
+    # bounded by a dispatch slot, and that is the number this test is about.
+    live: dict[str, int] = {"now": 0, "peak": 0}
 
     async def dispatch(
         member: OHMMember, envelopes: list[HandoffEnvelope], fan_item: Any = None
     ) -> dict[str, Any]:
-        peak["value"] = max(peak["value"], len(announced))
-        if len(announced) >= _STAGE_CONCURRENCY:
+        if live["now"] >= _STAGE_CONCURRENCY:
             release.set()
         await release.wait()
+        live["now"] -= 1
         return {"id": str(uuid.uuid4()), "status": "SUCCEEDED", "output": "x"}
 
     async def on_dispatch(role: str) -> None:
         announced.append(role)
+        live["now"] += 1
+        live["peak"] = max(live["peak"], live["now"])
 
     await run_team(
         _team([_m(f"m{i}") for i in range(width)]),
@@ -132,7 +139,7 @@ async def test_on_dispatch_fires_inside_the_stage_semaphore() -> None:
     )
 
     assert sorted(announced) == sorted(f"m{i}" for i in range(width))  # every member, eventually
-    assert peak["value"] <= _STAGE_CONCURRENCY, "announced more members than could be in flight"
+    assert live["peak"] <= _STAGE_CONCURRENCY, "announced more members than could be in flight"
 
 
 async def test_a_raising_on_dispatch_hook_does_not_abort_the_run() -> None:
