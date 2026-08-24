@@ -565,6 +565,16 @@ class TeamRunListOut(BaseModel):
     total: int
 
 
+class TreeChild(BaseModel):
+    """#828 item 4: one child execution + the member role that produced it. ``role`` is ``None`` for
+    an execution recorded before this change (``child_execution_roles`` has no entry for it) — every
+    id in ``child_execution_ids`` is still covered, just unlabeled, so an old execution is never
+    silently dropped from ``children``."""
+
+    execution_id: uuid.UUID
+    role: str | None = None
+
+
 class TeamRunTreeOut(BaseModel):
     """The run-tree of a team run (ADR-037 Decision 3 / #471): the root (= the trace_id threaded to
     every member) + the member harness execution ids the engine dispatched. Reassembled from the
@@ -575,6 +585,9 @@ class TeamRunTreeOut(BaseModel):
     root_execution_id: uuid.UUID | None
     state: str
     child_execution_ids: list[uuid.UUID]
+    # #828 item 4: additive — child_execution_ids stays the flat, unlabeled list an existing client
+    # already reads; children carries the SAME ids, each paired with the role that produced it.
+    children: list[TreeChild] = Field(default_factory=list)
 
 
 class TeamRunCost(BaseModel):
@@ -603,6 +616,19 @@ class TeamRunStatusOut(BaseModel):
     # #642: shown next to the cost on purpose — "3,099 tokens billed" and "zero claims grounded"
     # belong in the same glance. None when the team declares no tools, or on a pre-#642 run.
     grounding_score: float | None = None
+    # #828 item 1: role -> status (including the provisional "running" — see EngineTeamRun's
+    # member_status docstring), so a client wanting "who is working right now" no longer needs a
+    # second call to the full run read. #828 item 2: role -> {started_at, ended_at | null}.
+    member_status: dict[str, str] = Field(default_factory=dict)
+    member_timings: dict[str, Any] = Field(default_factory=dict)
+
+    # A real flushed row holds {} (the migration 0025 server_default); this coerces None from a
+    # pre-migration row / a hypothetical unflushed row — fail-soft, mirroring TeamRunOut's precedent
+    # (never a validation 500 on a poll a UI hits every fifteen seconds).
+    @field_validator("member_status", "member_timings", mode="before")
+    @classmethod
+    def _coerce_empty(cls, v: Any) -> Any:
+        return v if v is not None else {}
 
 
 # ── #635 (C-1): team drafts + the compiler on-ramp ───────────────────────────────────────────────

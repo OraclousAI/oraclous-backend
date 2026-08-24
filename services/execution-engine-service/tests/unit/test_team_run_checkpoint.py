@@ -29,6 +29,7 @@ from __future__ import annotations
 import asyncio
 import datetime as _dt
 import uuid
+from collections.abc import Callable
 from typing import Any
 
 import pytest
@@ -60,6 +61,10 @@ class FakeTeamRunRepo:
         self.rows: dict[uuid.UUID, EngineTeamRun] = {}
         self.checkpoints: list[dict[str, Any]] = []
         self.checkpoint_raises: Exception | None = None
+        # a predicate over the write's fields -> seconds to sleep BEFORE the write lands, so a test
+        # can force one specific checkpoint call (e.g. a dispatch-time write) to take the long road
+        # to the row, the way #832 / review finding 1 (PR #859) forced the race.
+        self.checkpoint_delay: Callable[[dict[str, Any]], float] | None = None
 
     async def create(
         self,
@@ -118,6 +123,10 @@ class FakeTeamRunRepo:
     ) -> bool:
         if self.checkpoint_raises is not None:
             raise self.checkpoint_raises
+        if self.checkpoint_delay is not None:
+            delay = self.checkpoint_delay(fields)
+            if delay:
+                await asyncio.sleep(delay)
         row = self.rows.get(team_run_id)
         if row is None or row.organisation_id != organisation_id or row.state != "RUNNING":
             return False  # only a live drive checkpoints; a settled row is never rewritten
@@ -240,7 +249,9 @@ async def test_a_finished_member_is_readable_while_the_run_is_still_running() ->
 
     assert row.state == "SUCCEEDED"
     assert seen_by_b["state"] == "RUNNING"  # the checkpoint did not settle the run
-    assert seen_by_b["member_status"] == {"a": "succeeded"}
+    # #828: 'b' is dispatched by the time this peek fires, so it now reads "running" rather than
+    # being absent — the terminal-only guarantee this test originally pinned is deliberately broken.
+    assert seen_by_b["member_status"] == {"a": "succeeded", "b": "running"}
     assert seen_by_b["results"]["a"]["output"] == "a-out"  # 'a' was readable mid-drive
 
 
@@ -259,9 +270,55 @@ async def test_the_checkpoint_accumulates_rather_than_replacing() -> None:
 
     written = [c["member_status"] for c in repo.checkpoints if "member_status" in c]
     assert written, "the drive wrote no checkpoint at all"
-    assert written[0] == {"a": "succeeded"}
+    # #828: the FIRST checkpoint is now the dispatch-time "running" write, not the settle one.
+    assert written[0] == {"a": "running"}
     assert written[-1] == {"a": "succeeded", "b": "succeeded", "c": "succeeded"}
     assert all(c["state"] == "RUNNING" for c in repo.checkpoints)  # never a state change
+
+
+async def test_a_dispatch_time_write_never_regresses_a_later_settle() -> None:
+    # Review finding 1 (PR #859) on #828+#832: a member's dispatch-time "running" write and a
+    # sibling's settle write both mutate this row from a wide stage; without both the local
+    # bookkeeping AND the persisted write serialized under one lock, an older dispatch snapshot can
+    # land AFTER a newer settle snapshot and regress an already-succeeded member back to "running"
+    # on the durable row — the #832 class of bug, this time on the engine's own write path (which
+    # packages/ohm's D3 checkpoint lock does not cover).
+    repo = FakeTeamRunRepo()
+
+    def _slow_dispatch_write(fields: dict[str, Any]) -> float:
+        # only 'b's dispatch-time write carries no "results" key (only the settle checkpoint does)
+        # and marks 'b' running — force it to take the long road to the row.
+        status = fields.get("member_status") or {}
+        return 0.05 if "results" not in fields and status.get("b") == "running" else 0.0
+
+    repo.checkpoint_delay = _slow_dispatch_write
+    # 'a' needs ONE real yield point (its harness call) so the event loop can interleave 'b's
+    # dispatch onto the same tick — with no delay anywhere, 'a' runs start-to-settle in one
+    # uninterrupted stretch and 'b' never gets scheduled until 'a' is already done.
+    svc, _ = _svc(repo, ScriptedHarness(delays={"a": 0.01}))
+
+    row = await _run(
+        svc,
+        _principal(),
+        manifest=_team([_agent("a"), _agent("b")]),  # one wide stage, both independent
+        sub_harnesses={},
+        gate_decisions={},
+    )
+
+    assert row.state == "SUCCEEDED"
+    assert row.member_status == {"a": "succeeded", "b": "succeeded"}
+
+    seen_a_succeeded = False
+    for cp in repo.checkpoints:
+        status = cp.get("member_status")
+        if status is None:
+            continue
+        if seen_a_succeeded:
+            assert status.get("a") == "succeeded", (
+                f"'a' regressed from succeeded back to {status.get('a')!r}: {status}"
+            )
+        if status.get("a") == "succeeded":
+            seen_a_succeeded = True
 
 
 async def test_a_checkpoint_write_failure_does_not_fail_the_run() -> None:
@@ -485,6 +542,70 @@ async def test_a_reaped_run_keeps_its_checkpoints_and_is_rerunnable() -> None:
     assert requeued.state == "QUEUED"
 
 
+async def test_a_reaped_run_never_strands_a_member_on_running() -> None:
+    # #828 gave member_status a NON-terminal value, and the reaper reads the DURABLE row (unlike
+    # the in-process path, which reads the orchestrator's settled-only snapshot). A member that was
+    # in flight when the SIGKILL landed therefore arrives here as "running", not as a missing key,
+    # and setdefault leaves it alone. With every other member succeeded, /rerun's failed-or-blocked
+    # gate then finds nothing: 409 forever, on a run with real unfinished work. The reaper write is
+    # the LAST write the row gets — the drive that would have revised "running" is dead.
+    repo = FakeTeamRunRepo()
+    svc, _ = _svc(repo, ScriptedHarness())
+    manifest = _team([_agent("a"), _agent("b", ["a"])])
+    killed = EngineTeamRun(
+        id=uuid.uuid4(),
+        organisation_id=_ORG,
+        user_id=_USER,
+        manifest=manifest,
+        sub_harnesses={},
+        gate_decisions={},
+        state="RUNNING",
+        results={"a": {"output": "a-out", "status": "SUCCEEDED"}},
+        member_status={"a": "succeeded", "b": "running"},  # 'b' was mid-dispatch when it died
+        paused_at=[],
+    )
+    repo.rows[killed.id] = killed
+
+    reaped = await svc.reap_stale(FakeMaintenance([killed]), older_than=_dt.datetime.now(_dt.UTC))
+
+    assert reaped == 1 and killed.state == "FAILED"
+    assert killed.member_status == {"a": "succeeded", "b": "failed"}
+    assert killed.results["a"]["output"] == "a-out"  # the finished member's output is untouched
+
+    requeued = await svc.rerun(killed.id, _principal())
+    assert requeued.state == "QUEUED"
+
+
+async def test_a_run_reaped_with_only_a_running_member_is_still_a_409() -> None:
+    # The guard's half of the same bug. "at least one settled member" must mean SETTLED — a lone
+    # "running" entry is a member that was dispatched and delivered nothing, which is exactly the
+    # no-partial-work case ADR-042 answers 409 on. Counting it as settled would let #828's
+    # dispatch-time write silently narrow that 409 on the commonest failure path of all: a run that
+    # dies before its first member delivers.
+    repo = FakeTeamRunRepo()
+    svc, _ = _svc(repo, ScriptedHarness())
+    killed = EngineTeamRun(
+        id=uuid.uuid4(),
+        organisation_id=_ORG,
+        user_id=_USER,
+        manifest=_team([_agent("a")]),
+        sub_harnesses={},
+        gate_decisions={},
+        state="RUNNING",
+        results={},
+        member_status={"a": "running"},  # dispatched, then killed — nothing delivered
+        paused_at=[],
+    )
+    repo.rows[killed.id] = killed
+
+    await svc.reap_stale(FakeMaintenance([killed]), older_than=_dt.datetime.now(_dt.UTC))
+    assert killed.state == "FAILED"
+
+    with pytest.raises(TeamRunError) as ei:
+        await svc.rerun(killed.id, _principal())
+    assert ei.value.status_code == 409 and ei.value.error_type == "nothing_to_rerun"
+
+
 async def test_a_run_reaped_before_any_member_finished_is_still_a_409() -> None:
     # The backfill must not manufacture a re-run target out of nothing. A run killed before ANY
     # member settled has no partial work to keep, so a fresh POST is the right recovery and
@@ -537,7 +658,10 @@ async def test_a_drive_that_dies_before_any_member_settles_is_still_a_409() -> N
     )
 
     assert row.state == "FAILED"
-    assert not (row.member_status or {})  # nothing settled, so nothing to backfill over
+    # #828: 'a' was dispatched (so it reads "running", not absent), but never SETTLED — the
+    # backfill guard keys off settled work (``settled_status``, terminal statuses only), which stays
+    # empty here, so nothing_to_rerun below is unchanged.
+    assert row.member_status == {"a": "running"}
     assert not (row.results or {})
 
     with pytest.raises(TeamRunError) as ei:

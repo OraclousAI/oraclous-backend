@@ -27,6 +27,7 @@ from oraclous_execution_engine_service.schema.engine_schemas import (
     TeamRunStateFilter,
     TeamRunStatusOut,
     TeamRunTreeOut,
+    TreeChild,
 )
 from oraclous_execution_engine_service.services.team_run_service import TeamRunError
 
@@ -115,12 +116,19 @@ async def get_team_run_tree(
         row = await service.get(team_run_id, principal)
     except TeamRunError as exc:
         raise _http(exc) from exc
+    roles = row.child_execution_roles or {}
     return TeamRunTreeOut(
         team_run_id=row.id,
         organisation_id=row.organisation_id,
         root_execution_id=row.root_execution_id,
         state=row.state,
         child_execution_ids=[uuid.UUID(c) for c in (row.child_execution_ids or [])],
+        # #828 item 4: every id in child_execution_ids is covered — a pre-migration id absent from
+        # child_execution_roles gets role=None rather than being dropped from the list.
+        children=[
+            TreeChild(execution_id=uuid.UUID(c), role=roles.get(c))
+            for c in (row.child_execution_ids or [])
+        ],
     )
 
 
@@ -145,6 +153,9 @@ async def get_team_run_status(
         cost=TeamRunCost(tokens=s.cost_tokens, usd=None),
         # #642: read beside the cost — a green pill never hides an ungrounded run
         grounding_score=s.grounding_score,
+        # #828 item 1: which member is working right now, and item 2's per-member timings
+        member_status=s.member_status or {},
+        member_timings=s.member_timings or {},
     )
 
 

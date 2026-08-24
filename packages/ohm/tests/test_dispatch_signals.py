@@ -157,6 +157,27 @@ async def test_a_raising_on_dispatch_hook_does_not_abort_the_run() -> None:
     assert res.member_status == {"a": "succeeded", "b": "succeeded"}
 
 
+async def test_on_dispatch_does_not_fire_for_a_member_seeded_via_completed() -> None:
+    # A resumed run (past a human gate, or a re-run) seeds already-finished members via
+    # ``completed`` — they are REUSED, never dispatched. Announcing one as "running" is a lie: on
+    # the engine side it overwrites that member's REAL historical timing with a fresh, near-zero
+    # one (reported against PR #859 after the review round that added the D3/status_lock fixes).
+    announced: list[str] = []
+
+    async def on_dispatch(role: str) -> None:
+        announced.append(role)
+
+    res = await run_team(
+        _team([_m("a"), _m("b", depends_on=["a"])]),
+        _dispatch_factory(),
+        on_dispatch=on_dispatch,
+        completed={"a": {"id": "prior", "status": "SUCCEEDED", "output": "a-out"}},
+    )
+
+    assert announced == ["b"], "a seeded/reused member must not be announced as dispatched"
+    assert res.member_status == {"a": "succeeded", "b": "succeeded"}
+
+
 # ── item 4: the role rides along with the execution id ───────────────────────────────────────────
 
 

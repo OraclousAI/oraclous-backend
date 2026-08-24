@@ -32,6 +32,7 @@ from oraclous_ohm.manifest import (
 from oraclous_ohm.orchestrate import (
     CheckpointFn,
     Diagnostic,
+    DispatchAnnounceFn,
     DispatchFn,
     DoneCheckFn,
     LoopCoordinateFn,
@@ -331,7 +332,7 @@ def make_harness_dispatch(
     *,
     trace_id: uuid.UUID | None = None,
     parent_execution_id: uuid.UUID | None = None,
-    on_child: Callable[[str], None] | None = None,
+    on_child: Callable[[str, str], None] | None = None,
     on_cost: Callable[[int], None] | None = None,
     workspace_root: str | None = None,
     graph_id: str | None = None,
@@ -348,7 +349,8 @@ def make_harness_dispatch(
 
     Run-tree correlation (#471): ``trace_id`` (the team-run root) + ``parent_execution_id`` are
     threaded into every member's harness run so the harness stamps each into the same tree; each
-    member's harness execution id is surfaced via ``on_child`` so the engine records the tree.
+    member's harness execution id is surfaced via ``on_child`` — with the role that produced it
+    (#828 item 4) — so the engine records the tree.
     O4 metering (#472): each member's ``total_tokens`` is surfaced via ``on_cost`` so the engine
     accumulates the run's RAW token cost from the harness's own metering (ADR-009)."""
 
@@ -427,7 +429,7 @@ def make_harness_dispatch(
         # count. Skipped if the harness omitted an id.
         child_id = result.get("id")
         if on_child is not None and child_id is not None:
-            on_child(str(child_id))
+            on_child(str(child_id), member.role)
         # O4 metering (#472): accumulate this member's RAW token cost (0 if the harness omitted it)
         if on_cost is not None:
             on_cost(int(result.get("total_tokens") or 0))
@@ -470,7 +472,7 @@ async def run_team_harness(
     completed: dict[str, Any] | None = None,
     trace_id: uuid.UUID | None = None,
     parent_execution_id: uuid.UUID | None = None,
-    on_child: Callable[[str], None] | None = None,
+    on_child: Callable[[str, str], None] | None = None,
     on_cost: Callable[[int], None] | None = None,
     cost_so_far: Callable[[], int] | None = None,
     workspace_root: str | None = None,
@@ -479,6 +481,7 @@ async def run_team_harness(
     precedence_order: list[str] | None = None,
     graph_authoritative: bool = False,
     on_checkpoint: CheckpointFn | None = None,
+    on_dispatch: DispatchAnnounceFn | None = None,
 ) -> TeamRunResult:
     """Run a Team Harness member DAG, dispatching each member as a real harness execution.
 
@@ -486,7 +489,8 @@ async def run_team_harness(
     human gate does not re-dispatch already-finished members (their side effects fire once).
     ``trace_id``/``parent_execution_id``/``on_child`` thread + collect the run-tree (#471);
     ``on_cost`` accumulates the run's RAW token cost (#472); ``on_checkpoint`` (#819) makes each
-    settled member durable mid-drive."""
+    settled member durable mid-drive; ``on_dispatch`` (#828) fires the instant a member is admitted
+    to a dispatch slot, before it runs."""
     # team-scope blackboard (#513): the STABLE team identity is the team-manifest id — derived here
     # (not a separate binding) + threaded to every member so they share one team-scope memory.
     team_id = str(manifest.metadata.id)
@@ -529,6 +533,7 @@ async def run_team_harness(
         completed=completed,
         cost_so_far=pooled_cost,
         on_checkpoint=on_checkpoint,  # #819: per-member durability
+        on_dispatch=on_dispatch,  # #828: fires before a member's dispatch runs
     )
 
 
@@ -603,7 +608,7 @@ async def run_team_hybrid(
     loop_state: dict[str, Any] | None = None,
     trace_id: uuid.UUID | None = None,
     parent_execution_id: uuid.UUID | None = None,
-    on_child: Callable[[str], None] | None = None,
+    on_child: Callable[[str, str], None] | None = None,
     on_cost: Callable[[int], None] | None = None,
     workspace_root: str | None = None,
     graph_id: str | None = None,
@@ -611,6 +616,7 @@ async def run_team_hybrid(
     precedence_order: list[str] | None = None,
     graph_authoritative: bool = False,
     on_checkpoint: CheckpointFn | None = None,
+    on_dispatch: DispatchAnnounceFn | None = None,
 ) -> TeamRunResult:
     """Drive a Team Harness whose handoff graph has GENUINE loops (ADR-043 #552): the acyclic
     skeleton runs on ``run_team`` and each loop SCC runs the bounded ``run_loop_seam`` conductor,
@@ -647,6 +653,7 @@ async def run_team_hybrid(
             precedence_order=precedence_order,
             graph_authoritative=graph_authoritative,
             on_checkpoint=on_checkpoint,  # #819: per-member durability
+            on_dispatch=on_dispatch,  # #828: fires before a member's dispatch runs
         )
     if coordinate is None or done_check_for is None:  # fail-closed (ADR-043 invariant)
         raise OHMError("team has loops but no coordinator/done-check wired")
@@ -805,6 +812,7 @@ async def run_team_hybrid(
         members=condensed,
         cost_so_far=cost_so_far,  # #585: the pooled token gate binds the skeleton members too
         on_checkpoint=_skeleton_checkpoint,  # #819: durable per settled skeleton member
+        on_dispatch=on_dispatch,  # #828: fires before a skeleton member's dispatch runs
     )
 
     # merge each loop's real-member results into the team result; the synthetic node is internal

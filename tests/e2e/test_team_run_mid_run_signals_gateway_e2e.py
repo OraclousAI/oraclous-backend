@@ -30,6 +30,18 @@ from oraclous_ohm.import_.setup import import_setup
 pytestmark = [pytest.mark.e2e, pytest.mark.integration]
 
 _TERMINAL = {"SUCCEEDED", "FAILED", "REJECTED", "COST_BUDGET"}
+# A run that has been accepted but whose drive has not dispatched anything yet. Not terminal, but
+# not evidence of anything either: its member_status is legitimately empty. Excluded wherever a
+# test needs a sample taken while the drive was actually running.
+_QUEUED = "QUEUED"
+
+# The dense opening burst, bounded by REQUEST COUNT rather than by wall clock. Every request in this
+# suite shares one per-client-IP budget at the gateway (EDGE_RATE_LIMIT, 600/minute), and the suite
+# already sits at that ceiling — #850/#844 are exactly that. So the burst has to be paid for out of
+# a fixed allowance: 15 polls at 40ms covers about 0.6s, which is a whole fake-model run, at a cost
+# of 15 requests per test instead of the ~100 an unbounded two-second burst would spend.
+_FAST_POLLS = 15
+_FAST_INTERVAL_S = 0.04
 
 
 def _three_stage_studio(root: Path) -> None:
@@ -59,20 +71,55 @@ def _three_stage_studio(root: Path) -> None:
     )
 
 
-def _sample_status(client: httpx.Client, run_id: str, *, tries: int = 40) -> list[dict]:
+def _sample_status(client: httpx.Client, run_id: str, *, deadline_s: float = 150.0) -> list[dict]:
     """Poll /status until the run settles, keeping every response that differs from the last.
 
-    Two-second cadence, well inside the 10-15s a real client would use, so a fast deployed run
-    still yields more than one distinct sample.
+    Two cadences, because the run's own lifetime and the deadline differ by two orders of magnitude.
+
+    A run with no real work in it settles almost instantly: under the fake harness CI runs keyless,
+    three reasoning-only members in a chain finish faster than a single quarter-second tick, so a
+    fixed 0.25s poll takes one or two samples for the whole run and whether either lands mid-drive
+    is chance. That is what made criterion 5's test flaky rather than wrong — its sibling
+    ``test_a_member_reports_how_long_it_has_been_running`` passed against the same build, proving
+    the signal reaches the gateway; this poll simply blinked and missed it.
+
+    So: spend a small fixed allowance of fast polls (see ``_FAST_POLLS``) up front, which covers
+    the whole lifetime of a fake-model run and the beginning of a real one, then fall back to 0.25s
+    for the long tail of a real-model run. The allowance is counted in REQUESTS, not seconds, on
+    purpose: every request here comes out of the same per-client-IP budget the rest of the suite is
+    already exhausting, so a burst measured in wall-clock time would quietly bill more the slower
+    the run gets — starving the other tests rather than fixing this one.
+
+    ``deadline_s`` is generous on purpose. The predecessor counted 300 tries and slept 0.25s
+    between them, so its real budget was the sleeps PLUS 300 round trips — comfortably past 90
+    seconds. Switching to a wall clock made the budget honest but, at the same 75, quietly SHORTER,
+    and a CI runner whose worker is briefly saturated can leave a run QUEUED past that. Set well
+    above the old effective ceiling: waiting longer costs nothing when the run settles in under a
+    second, and a false "never settled" costs a whole CI cycle.
     """
+    fast_polls_left = _FAST_POLLS
+    end = time.monotonic() + deadline_s
     samples: list[dict] = []
-    for _ in range(tries):
-        body = client.get(f"/v1/engine/team-runs/{run_id}/status").json()
+    while time.monotonic() < end:
+        resp = client.get(f"/v1/engine/team-runs/{run_id}/status")
+        if resp.status_code != 200:
+            # Most likely 429: this poll shares one per-client-IP budget with the whole suite. Back
+            # off at the SLOW cadence and stop spending the fast allowance — hammering a limiter is
+            # what put us here. Never parse the body: an error envelope has no "state", and reading
+            # it anyway turns a throttle into a bare KeyError that hides what actually happened.
+            fast_polls_left = 0
+            time.sleep(0.25)
+            continue
+        body = resp.json()
         if not samples or body != samples[-1]:
             samples.append(body)
         if body["state"] in _TERMINAL:
             return samples
-        time.sleep(2)
+        if fast_polls_left > 0:
+            fast_polls_left -= 1
+            time.sleep(_FAST_INTERVAL_S)
+        else:
+            time.sleep(0.25)
     raise AssertionError(f"run {run_id} never settled (last: {samples[-1] if samples else None})")
 
 
@@ -112,16 +159,25 @@ def test_the_status_response_changes_while_the_run_is_still_driving(
 
     samples = _sample_status(c, run_id)
 
-    mid_run = [s for s in samples if s["state"] not in _TERMINAL]
-    assert mid_run, "every sample was terminal: the run emitted nothing between start and settle"
+    # QUEUED is excluded deliberately: an accepted-but-not-yet-driving run is not terminal, but its
+    # member_status is legitimately empty, so counting it here would let the assertion below fail
+    # with "no member ever reported running" when the truth is "the drive had not started yet".
+    driving = [s for s in samples if s["state"] not in _TERMINAL and s["state"] != _QUEUED]
+    assert driving, (
+        "no sample was taken while the run was driving — every one was queued or terminal, so the "
+        f"poll never saw inside the run (states seen: {[s['state'] for s in samples]})"
+    )
 
     running_roles = {
         role
-        for sample in mid_run
+        for sample in driving
         for role, status in (sample.get("member_status") or {}).items()
         if status == "running"
     }
-    assert running_roles, "no member ever reported running"
+    assert running_roles, (
+        "no member ever reported running while the run was driving "
+        f"(member_status seen: {[s.get('member_status') for s in driving]})"
+    )
     assert running_roles <= set(roster), (
         f"a non-member reported running: {running_roles - set(roster)}"
     )
