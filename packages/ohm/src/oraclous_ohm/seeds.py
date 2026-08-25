@@ -123,12 +123,17 @@ def seed_capability_inventory() -> CapabilityInventory:
             MemberArchetype(
                 name="writer",
                 role_description="Draft and revise written content from the inputs.",
-                tools=["write", "text-tools"],
+                # #694: ``graph-ingest`` is the write side under the cloud (graph) substrate, and
+                # the catalog hides ``write`` there. Without it a writer archetype under the
+                # default substrate offers no way to persist anything at all.
+                tools=["graph-ingest", "write", "text-tools"],
             ),
             MemberArchetype(
                 name="editor",
                 role_description="Review and edit a draft for quality and correctness.",
-                tools=["read", "edit"],
+                # #694: run ``fe548aac`` FAILED on its Editor, which held ``core/edit@1`` and had
+                # no graph tool at all — nothing it produced could reach the bound graph.
+                tools=["graph-ingest", "read", "edit"],
             ),
             MemberArchetype(
                 name="analyst",
@@ -149,8 +154,12 @@ def seed_capability_inventory() -> CapabilityInventory:
         tool_groups=[
             ToolGroup(name="research", tools=["web-research", "websearch", "webfetch"]),
             ToolGroup(name="filesystem", tools=["read", "write", "edit", "grep", "glob"]),
+            # #694: the knowledge group was three RETRIEVAL tools and no way to write back, so
+            # the one seeded write-side graph capability appeared nowhere in the inventory. A
+            # drafter shown this group could read the graph and persist nothing.
             ToolGroup(
-                name="knowledge", tools=["knowledge-retriever", "find-similar", "recall-memory"]
+                name="knowledge",
+                tools=["knowledge-retriever", "find-similar", "recall-memory", "graph-ingest"],
             ),
             ToolGroup(name="delivery", tools=["send-to-drafts"]),
         ],
