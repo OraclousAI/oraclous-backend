@@ -66,6 +66,10 @@ from oraclous_execution_engine_service.services.evaluate_client import (
 )
 from oraclous_execution_engine_service.services.graph_client import GraphClient, GraphClientError
 from oraclous_execution_engine_service.services.harness_client import HarnessClient
+from oraclous_execution_engine_service.services.registry_client import (
+    RegistryClient,
+    RegistryClientError,
+)
 from oraclous_execution_engine_service.services.team_run import (
     make_loop_coordinator,
     make_recalibration_coordinator,
@@ -602,6 +606,12 @@ def _pre_run_artifact_count(artifacts: list[dict[str, Any]], run_created_at: dat
     return count
 
 
+#: What the compiler stamped on every generated member before #695: a reference that resolved to
+#: nothing registered, so the member was unaddressable and died with the run. A team still carrying
+#: it runs only from its INLINE sub-harness (the back-compat path); without one it is a clean 422.
+_COMPILED_REF_PREFIX = "org:compiled/"
+
+
 class TeamRunService:
     def __init__(
         self,
@@ -613,6 +623,7 @@ class TeamRunService:
         graphs: GraphClient | None = None,
         artifacts: ArtifactsClient | None = None,
         schedules: ScheduleRepository | None = None,
+        registry: RegistryClient | None = None,
     ) -> None:
         # The drive runs on the WORKER (like jobs/round-tables): the request path (create/advance)
         # needs `enqueue` (hand the QUEUED run to the broker) but NOT a harness; the worker `drive`
@@ -631,6 +642,10 @@ class TeamRunService:
         # per-cadence accumulator (the #598 cap reads it). None on the request path (create/advance
         # never settle cost) — a non-scheduled run accrues nothing.
         self._schedules = schedules
+        # #695 (ADR-050 D3): the request path resolves each member's ``manifest_ref`` against the
+        # capability registry ONCE, at create, and snapshots the result onto the run row. None ⇒ no
+        # resolution is possible, so a member that carries only a reference fails closed at create.
+        self._registry = registry
 
     def _org(self, principal: Principal) -> uuid.UUID:
         if principal.organisation_id is None:  # fail-closed tenancy (ADR-006)
@@ -673,6 +688,84 @@ class TeamRunService:
                     422,
                     error_type="ceiling_exceeded",
                 ) from exc
+
+    async def _resolve_member_manifests(
+        self, team: OHMManifest, sub_harnesses: Mapping[str, dict]
+    ) -> dict[str, dict]:
+        """Turn each agent member's ``manifest_ref`` back into a manifest, ONCE, at run creation
+        (#695, ADR-050 D3) — and keep what it produces as the run's own record.
+
+        Once a draft stores references instead of inline manifests, something has to resolve them
+        before the members can be dispatched. It happens here rather than at dispatch because an
+        agent is editable in place and has no version axis (ADR-050 D4): a live read at dispatch
+        would let editing an agent rewrite the behaviour of runs that already happened. Holding the
+        snapshot is what makes an in-place edit safe — it changes the next run, never the last one.
+
+        The dispatch loop is deliberately unchanged: ``team_run.py`` still looks each member up by
+        role in ``sub_harnesses``, because the snapshot IS that dict.
+
+        Back-compat needs no migration: an INLINE sub-harness wins and is never resolved, so a
+        draft written before this slice — carrying inline manifests and an unresolvable
+        ``org:compiled/<role>@1`` — runs exactly as it does today.
+
+        Fail closed, and fail EARLY. A dangling reference discovered mid-drive would burn the
+        upstream members' tokens before surfacing.
+        """
+        resolved = dict(sub_harnesses)
+        pending = [m for m in team.members if m.kind == "agent" and m.role not in resolved]
+        if not pending:
+            return resolved
+        newly: dict[str, dict] = {}
+        for member in pending:
+            ref = str(member.manifest_ref or "")
+            if ref.startswith(_COMPILED_REF_PREFIX):
+                # The compiler's own stamp, and it was never resolvable: ``get_capability``
+                # interpolates the ref into a path, so a ref carrying '/' produced a different URL
+                # rather than a lookup. Without an inline sub-harness there is nothing to dispatch,
+                # and saying so beats a 500 halfway through the drive.
+                raise TeamRunError(
+                    f"member '{member.role}' carries no sub-harness and its manifest_ref"
+                    f" '{ref}' does not name a registered agent",
+                    422,
+                    error_type="unresolvable_manifest_ref",
+                )
+            try:
+                capability_id = uuid.UUID(ref)
+            except ValueError:
+                # Any OTHER reference form is not this seam's to resolve — it goes to the harness
+                # on the ``manifest_ref`` dispatch path exactly as it does today. Only a REGISTRY
+                # id is resolved here (ADR-050 D1).
+                continue
+            if self._registry is None:
+                raise TeamRunError(
+                    f"member '{member.role}' must be resolved from the capability registry,"
+                    " which is not available",
+                    422,
+                    error_type="unresolvable_manifest_ref",
+                )
+            try:
+                record = await self._registry.get_capability(capability_id)
+            except RegistryClientError as exc:
+                raise TeamRunError(
+                    "the capability registry could not be reached to resolve the team's agents",
+                    502,
+                    error_type="registry_unavailable",
+                ) from exc
+            descriptor = record.get("descriptor") if isinstance(record, dict) else None
+            if not isinstance(descriptor, dict):
+                raise TeamRunError(
+                    f"member '{member.role}' references agent {capability_id}, which does not"
+                    " exist in this organisation",
+                    422,
+                    error_type="unresolvable_manifest_ref",
+                )
+            newly[member.role] = descriptor
+        # ADR-032. The agent is editable in place and the team referencing it is NOT re-validated
+        # on that edit, so the run is where the two are reconciled — without this, editing a filed
+        # agent would be a way to widen a member past what its team declared.
+        self._enforce_member_ceilings(team, newly)
+        resolved.update(newly)
+        return resolved
 
     async def _validate_graph_id(self, organisation_id: uuid.UUID, graph_id: str) -> None:
         """Fail-fast org-scoped check (#524, ADR-040 Decision 7): the bound ``graph_id`` MUST exist
@@ -765,6 +858,9 @@ class TeamRunService:
         org = self._org(principal)
         team = self._load_team(manifest)  # validate BEFORE persisting
         self._enforce_member_ceilings(team, sub_harnesses)  # ADR-032/035 §5 — fail-closed ceiling
+        # #695 (ADR-050 D3): resolve each member's filed agent ONCE and keep the result as this
+        # run's record. An inline sub-harness wins, so a pre-existing draft is untouched.
+        sub_harnesses = await self._resolve_member_manifests(team, sub_harnesses)
         validate_task_input(team, inputs)  # Contract §TASK (#674): required task missing → 422
         validate_input_keys(team, inputs)  # #714: an inputs key the team cannot read → 422
         validate_answers(
