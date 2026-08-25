@@ -52,7 +52,11 @@ def _agent_manifest(role: str, caps: list[str], cap_id: uuid.UUID) -> dict[str, 
         "capabilities": [{"ref": r, "binding": r.split("/")[-1].split("@")[0]} for r in caps],
         "prompts": [{"role": "primary", "source": "inline", "body": f"You are the {role}."}],
         "runtime": {"entrypoint": "primary"},
-        "actors": [{"name": "primary", "kind": "agent"}],
+        # an OHM actor's field is ``role`` (``OHMActor.role``, min_length=1) — ``build_subharness``
+        # emits ``OHMActor(role="primary", …)``. Spelt ``name`` the fixture does not load, so
+        # ``_enforce_member_ceilings`` rejected every manifest here as an invalid sub-harness before
+        # any of these assertions could be reached (#694/#695 [impl] discovery).
+        "actors": [{"role": "primary", "kind": "agent"}],
     }
 
 
