@@ -16,44 +16,19 @@ import json
 import re
 from typing import Any
 
+from oraclous_ohm._slug import tool_slug
 from oraclous_ohm.import_ import ImportFlag, assemble_and_report, render_report
 from oraclous_ohm.manifest import OHMMember, OHMOrchestration, OHMTaskInput
 
 _UUID_NS = "00000000-0000-0000-0000-000000000000"
 
 
-def _slug(text: str) -> str:
-    return re.sub(r"[^a-z0-9]+", "-", text.strip().lower()).strip("-")
-
-
-def _tool_slug(text: str) -> str:
-    """Normalise a tool NAME or a capability REF to one canonical slug so the catalog and the draft
-    compare identically — WITHOUT letting a bogus namespace masquerade as a surveyed bare tool.
-
-    We drop a trailing ``@version`` and ONLY the canonical ``core/`` built-in namespace. If a ``/``
-    still remains the identifier is NON-canonical (a foreign namespace or a nested path); we prefix
-    it with a ``ns--`` marker that a bare slug can never contain (``_slug`` collapses runs of ``-``
-    to one), so it can NEVER collapse to a bare surveyed slug — even when the namespace is
-    punctuation/emoji that ``_slug`` would otherwise erase entirely (``😈/web-research`` and
-    ``.../web-research`` would both bare-slug to ``web-research`` and slip the gate). Thus
-    ``core/web-research@1.0.0`` and ``web-research`` both → ``web-research`` (a drafter that writes
-    the surveyed ref still matches the surveyed name), but ``evil/web-research`` → ``ns--…`` and
-    ``core/web-search@1.0.0`` → ``web-search`` — neither matches a ``web-research`` catalog."""
-    s = text.strip().lower().split("@", 1)[0]
-    if s.startswith("core/"):
-        s = s[len("core/") :]
-    if "/" in s:
-        # non-canonical (foreign namespace / nested path): slug EACH segment and keep them ALL,
-        # joined by ``--`` under an ``ns--`` marker, so it can neither collapse to a bare surveyed
-        # slug NOR to a *different* foreign namespace. If ANY segment slugs to empty — a namespace
-        # or name that ``_slug`` erases (``./x``, ``/x``, ``😈/x``, ``core//x``) — the identifier is
-        # degenerate: return ``""`` so it is DROPPED from the catalog and BLOCKS as a draft, never
-        # collapsing two distinct erasing-namespace forms onto one slug.
-        parts = [_slug(seg) for seg in s.split("/")]
-        if not all(parts):
-            return ""
-        return "ns--" + "--".join(parts)
-    return _slug(s)
+#: The canonical tool-name normaliser, now shared with ``seeds`` and ``import_.mapping`` from one
+#: leaf module (#694). It was copied here and inlined in ``seeds`` because ``compiler.validate``
+#: imports ``import_``; the copies drifted on CASE, which is the mechanism of #694. Kept under its
+#: existing private name — callers and the #594 tests import ``_tool_slug`` — but it IS the shared
+#: function now, never a look-alike.
+_tool_slug = tool_slug
 
 
 def _catalog_slugs(catalog: Any) -> set[str]:
