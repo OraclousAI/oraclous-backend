@@ -162,6 +162,12 @@ def seed_capability_inventory() -> CapabilityInventory:
                 tools=["knowledge-retriever", "find-similar", "recall-memory", "graph-ingest"],
             ),
             ToolGroup(name="delivery", tools=["send-to-drafts"]),
+            # #694: the rare sandbox EXEC need (#507). It survives the graph substrate's catalog
+            # filter because it is not a deliverable sink — a member that genuinely has to run a
+            # command still can, and nothing it produces is silently diverted off the graph. It
+            # reached the drafter only via an org's live registry before, so a fresh org's menu
+            # lost it entirely.
+            ToolGroup(name="exec", tools=["bash"]),
         ],
     )
 

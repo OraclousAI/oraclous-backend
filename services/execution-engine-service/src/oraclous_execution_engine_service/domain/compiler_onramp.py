@@ -17,21 +17,44 @@ The two deterministic pieces the compile/refine endpoints share:
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import Any, Literal
 
 from oraclous_ohm.seeds import catalog_slug, default_seed_set, survey_catalog
 
+Substrate = Literal["graph", "file"]
 
-def draft_catalog(registered: list[str] | None = None) -> list[str]:
+#: The tools that write to / read from the per-org FILE sandbox. Hidden from the drafter's menu
+#: under the graph substrate (#694): filtering beats remapping at this layer, because the drafter
+#: cannot pick what it is not shown and no rewrite step is needed afterwards. The remap in
+#: ``import_.mapping`` stays as the backstop for a file tool that arrives by another route (an
+#: import, a hand-edited draft, a team compiled before this fix).
+#:
+#: ``bash`` is deliberately NOT here. It is the rare sandbox exec fallback (#507), not a
+#: deliverable sink, and it is not what #694 reports.
+_FILE_SUBSTRATE_TOOLS = frozenset({"read", "write", "edit", "grep", "glob"})
+
+
+def draft_catalog(
+    registered: list[str] | None = None, *, substrate: Substrate = "graph"
+) -> list[str]:
     """The surveyed tool slugs a draft may draw from: the #596 seed inventory UNIONed with the
     org's LIVE registry capability names (#638). ``registered`` is the org's live capability names
     (from ``RegistryClient.list_capabilities`` — the caller degrades to ``None``/``[]`` seed-only
-    on a registry outage, never fail-open). ``survey_catalog`` normalises + de-dups the union."""
-    return survey_catalog(default_seed_set().inventory, registered or [])
+    on a registry outage, never fail-open). ``survey_catalog`` normalises + de-dups the union.
+
+    Under the default graph ``substrate`` (ADR-040 Decision 7, cloud-first) the FILE tools are
+    withheld — including one arriving from the org's live registry under a colliding name, which
+    would otherwise smuggle the same failure back in. The default is what actually ships: every
+    existing caller passes no substrate, so a default of ``file`` would reintroduce #694 silently.
+    """
+    slugs = survey_catalog(default_seed_set().inventory, registered or [])
+    if substrate == "file":
+        return slugs
+    return [s for s in slugs if s not in _FILE_SUBSTRATE_TOOLS]
 
 
 def draft_catalog_described(
-    registered: list[dict[str, str]] | None = None,
+    registered: list[dict[str, str]] | None = None, *, substrate: Substrate = "graph"
 ) -> list[dict[str, str]]:
     """The same catalog as ``draft_catalog``, each entry paired with what the tool DOES (#713).
 
@@ -39,7 +62,10 @@ def draft_catalog_described(
     description). Entries come back in ``draft_catalog`` order, one per slug, carrying
     ``description`` ONLY when the registry supplied a non-empty one. A seed-inventory tool has no
     descriptor row and therefore no description: it renders as its bare name. Nothing is invented
-    for it — a made-up blurb is worse than none, because the drafter would believe it."""
+    for it — a made-up blurb is worse than none, because the drafter would believe it.
+
+    #694: the menu a MODEL reads and the list a GATE diffs against share one filter, because that
+    divergence is exactly how a file tool survived a validator."""
     rows = registered or []
     described = {
         slug: row["description"]
@@ -48,7 +74,9 @@ def draft_catalog_described(
     }
     return [
         {"name": slug, **({"description": described[slug]} if slug in described else {})}
-        for slug in draft_catalog([row.get("name", "") for row in rows])
+        for slug in draft_catalog(
+            [row.get("name", "") for row in rows], substrate=substrate
+        )
     ]
 
 
