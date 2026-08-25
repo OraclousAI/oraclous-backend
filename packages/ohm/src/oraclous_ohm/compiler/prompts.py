@@ -54,6 +54,15 @@ DRAFTER_PROMPT = (
     'input field, so write it as a short question or noun phrase addressed to them ("the pull '
     'request to review"), NEVER as a schema note ("string, optional").\n'
     "- The depends_on edges MUST be ACYCLIC (a runnable DAG).\n"
+    # #694 defect 2: the drafter was handed a menu of bare names and no statement of where output
+    # goes, so it picked the two names it has the strongest prior for and the whole team's work
+    # landed in a throwaway sandbox. Descriptions now ride the menu; this rule states the
+    # destination, so the manifest reads honestly rather than by accident.
+    "- Every member that PRODUCES something a later member or the user needs MUST hold a tool "
+    "that PERSISTS it to the team's shared knowledge graph, and its subgoal MUST say so. The "
+    "knowledge graph is where a team's work is saved and made visible: `graph-ingest` writes to "
+    "it, `knowledge-retriever` and `find-similar` read what other members put there. A member "
+    "that only reasons about what it was handed needs no persistence tool.\n"
     "- GOVERNED-BY-DEFAULT: emit `governance` (policy_set_ref + redact_patterns) and `budget` "
     "EXACTLY as the seed policy default given in your sub-goal — do NOT invent governance/budget "
     "values, and NEVER emit a per-member budget block (the per-member caps each <= the pool)."
