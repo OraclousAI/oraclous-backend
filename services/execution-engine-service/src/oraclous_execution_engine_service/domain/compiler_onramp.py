@@ -74,9 +74,7 @@ def draft_catalog_described(
     }
     return [
         {"name": slug, **({"description": described[slug]} if slug in described else {})}
-        for slug in draft_catalog(
-            [row.get("name", "") for row in rows], substrate=substrate
-        )
+        for slug in draft_catalog([row.get("name", "") for row in rows], substrate=substrate)
     ]
 
 

@@ -272,11 +272,17 @@ async def get_registry_client(
 def get_team_run_service(
     team_runs: Annotated[TeamRunRepository, Depends(get_team_run_repository)],
     graphs: Annotated[GraphClient, Depends(get_graph_client)],
+    registry: Annotated[RegistryClient, Depends(get_registry_client)],
 ) -> TeamRunService:
     # the request path only validates/creates/advances + ENQUEUES; the worker drives the team
     # (run_tasks.drive_team_run_task), so a large team never blocks the request. No harness here.
     # `graphs` is the request-path KGS existence check for a graph-bound run's graph_id (#524).
-    return TeamRunService(team_runs=team_runs, enqueue=enqueue_team_run, graphs=graphs)
+    # #695: `registry` (org-scoped by the caller's downstream headers) resolves each member's filed
+    # agent ONCE at create and snapshots it onto the run row. The WORKER needs none — it only
+    # drives, and the snapshot is already on the row by then.
+    return TeamRunService(
+        team_runs=team_runs, enqueue=enqueue_team_run, graphs=graphs, registry=registry
+    )
 
 
 def get_team_draft_repository(request: Request) -> TeamDraftRepository:

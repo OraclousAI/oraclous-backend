@@ -29,7 +29,6 @@ catalog_slug = tool_slug
 _slug = tool_slug
 
 
-
 # The seed policy-set ref MUST equal harness-runtime ``policy.py``'s ``DEFAULT_POLICY_SET_REF`` so
 # ``resolve_policy_set`` never fail-closes on an unknown ref (ohm cannot import the service; this
 # string is the contract). A drafted team carrying this ref resolves on the real stack.
