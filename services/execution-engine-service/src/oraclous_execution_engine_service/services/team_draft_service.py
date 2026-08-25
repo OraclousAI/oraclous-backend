@@ -55,7 +55,10 @@ from oraclous_execution_engine_service.services.compiler_run_service import (
     surveyed_catalog_described,
     validate_model_bindings,
 )
-from oraclous_execution_engine_service.services.registry_client import RegistryClient
+from oraclous_execution_engine_service.services.registry_client import (
+    RegistryClient,
+    RegistryClientError,
+)
 from oraclous_execution_engine_service.services.team_run_service import (
     TeamRunError,
     TeamRunService,
@@ -238,6 +241,85 @@ class TeamDraftService:
             ).model_dump(mode="json")
         return subs
 
+    @staticmethod
+    def _agent_id(manifest_ref: str | None) -> uuid.UUID:
+        """The registry id to file a member's generated agent under (#695, ADR-050).
+
+        Taken from the ``manifest_ref`` on the manifest BEING WRITTEN when that parses as a UUID,
+        and minted fresh when it does not. The two halves look contradictory and are the same rule:
+        a draft already carrying registry ids is REFRESHED in place (an edit updates the agents the
+        user already has rather than minting a second set beside them), while a legacy
+        ``org:compiled/<role>@1`` — which resolved to nothing — has no id to reuse.
+        """
+        try:
+            return uuid.UUID(str(manifest_ref))
+        except (TypeError, ValueError):
+            return uuid.uuid4()
+
+    async def _file_agents(
+        self,
+        manifest_doc: dict[str, Any],
+        team: OHMManifest,
+        org: uuid.UUID,
+        *,
+        existing: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Build each agent member's sub-harness, FILE it in the registry, and point the member at
+        the returned id. Returns what the draft should store under ``sub_harnesses``.
+
+        #695: a compiled member and a console-built agent are the same object, and only the console
+        one was ever filed. The compiler stamped ``org:compiled/<role>@1``, which resolves to
+        nothing, and shipped the generated manifests inline — so the agents were unlistable,
+        uneditable, unbindable, and died with the run.
+
+        ADR-050 D3, one source of truth: once the agents are filed the draft stops carrying them
+        inline. Keeping both would mean two copies of every agent, and editing the filed one would
+        silently not affect the team — which makes the reuse this exists for cosmetic. The RUN
+        record keeps its own snapshot instead (``TeamRunService.create``).
+
+        Fail-closed and NOT fail-soft: a registry failure fails the whole draft write. A
+        half-registered draft is worse than one that was not saved — the team would point at one
+        filed agent and one dangling reference, and that would only surface at the next run.
+
+        With no registry wired there is nowhere to file anything, so the old inline shape is kept
+        rather than a draft being written with references that resolve to nothing.
+        """
+        subs = self._synthesize_subs(team, org, existing=existing)
+        if self._registry is None:
+            return subs
+        raw_members = manifest_doc.get("members")
+        by_role: dict[str, dict[str, Any]] = {}
+        if isinstance(raw_members, list):
+            for raw in raw_members:
+                if isinstance(raw, dict) and isinstance(raw.get("role"), str):
+                    by_role[raw["role"]] = raw
+        for member in team.members:
+            # a kind:human member is a GATE, not an agent: it has no sub-harness to build and
+            # nothing to put in the library — filing one would place a person on /app/agents.
+            if member.kind != "agent":
+                continue
+            descriptor = subs.get(member.role)
+            if descriptor is None:
+                continue
+            agent_id = self._agent_id(member.manifest_ref)
+            metadata = descriptor.get("metadata")
+            if not isinstance(metadata, dict):  # defensive — build_subharness always emits one
+                continue
+            metadata["id"] = str(agent_id)
+            try:
+                filed = await self._registry.upsert_harness(descriptor, descriptor_id=agent_id)
+            except RegistryClientError as exc:
+                raise TeamRunError(
+                    f"the capability registry could not file the '{member.role}' agent,"
+                    " so the team was not saved",
+                    502,
+                    error_type="agent_registration_failed",
+                ) from exc
+            raw = by_role.get(member.role)
+            if raw is not None:
+                raw["manifest_ref"] = str(filed)
+        return {}
+
     # ── concern 1: the draft store ────────────────────────────────────────────
 
     async def create(
@@ -251,13 +333,17 @@ class TeamDraftService:
         org = self._org(principal)
         team = self._load_team(manifest)
         verdict = await self._verdict(manifest, team)
+        # #695 Amendment 2 names four entry points and this is one of them: ``_synthesize_subs``
+        # fills only the roles the caller left out, so a caller's own sub-harness still wins and an
+        # omitted member is no longer bodiless.
+        subs = await self._file_agents(manifest, team, org, existing=sub_harnesses)
         with org_scope(org):
             row = await self._drafts.create(
                 organisation_id=org,
                 user_id=principal.principal_id,
                 name=name,
                 manifest=manifest,
-                sub_harnesses=sub_harnesses,
+                sub_harnesses=subs,
             )
         return row, verdict
 
@@ -287,13 +373,23 @@ class TeamDraftService:
         sub_harnesses: dict[str, Any],
     ) -> tuple[EngineTeamDraft, DraftVerdict]:
         org = self._org(principal)
+        # ADR-006 fail-closed tenancy: a cross-org draft id is absent, and the miss must be found
+        # BEFORE anything is filed — otherwise a tenancy miss would copy one org's agent into
+        # another org's library on its way to the 404.
+        await self._get_or_404(draft_id, org)
         team = self._load_team(manifest)
         verdict = await self._verdict(manifest, team)
+        # #694 Amendment 2, the healing seam. Unlike ``create_from_run`` — which refuses a blocked
+        # team outright — ``replace`` PERSISTS a blocked draft and returns the verdict beside it, so
+        # the user can refine until the strip is green. A path that refuses cannot heal, so this is
+        # where a draft compiled before the substrate fix has its file refs re-synthesized onto the
+        # graph. Its stored manifest then describes what it actually uses, at all times.
+        subs = await self._file_agents(manifest, team, org, existing=sub_harnesses)
         with org_scope(org):
             row = await self._drafts.replace(
-                draft_id, org, name=name, manifest=manifest, sub_harnesses=sub_harnesses
+                draft_id, org, name=name, manifest=manifest, sub_harnesses=subs
             )
-        if row is None:
+        if row is None:  # deleted from under us between the read and the write
             raise TeamRunError("team draft not found", 404)
         return row, verdict
 
@@ -398,13 +494,17 @@ class TeamDraftService:
                 422,
                 error_type="compiled_team_blocked",
             )
-        subs = self._synthesize_subs(result.manifest, org)
+        # #695: filing happens BEFORE the row is written, so a registry failure leaves no
+        # half-registered draft behind. ``from-run`` IS the explicit save — a compile the user
+        # abandons never becomes a draft and registers nothing.
+        manifest_doc = result.manifest.model_dump(mode="json")
+        subs = await self._file_agents(manifest_doc, result.manifest, org)
         with org_scope(org):
             row, created = await self._drafts.create_from_run(
                 organisation_id=org,
                 user_id=principal.principal_id,
                 name=draft_name,
-                manifest=result.manifest.model_dump(mode="json"),
+                manifest=manifest_doc,
                 sub_harnesses=subs,
                 team_run_id=team_run_id,
             )
@@ -477,12 +577,17 @@ class TeamDraftService:
                 op=edit_op,
                 op_drafter_run_id=op_drafter_run_id,
             )
-        subs = self._synthesize_subs(result.manifest, org, existing=dict(row.sub_harnesses))
+        # #695 R2's other half: each id comes from the STORED member's ``manifest_ref``, so a
+        # refine REFRESHES the agents the user already has and files only the genuinely new one.
+        manifest_doc = result.manifest.model_dump(mode="json")
+        subs = await self._file_agents(
+            manifest_doc, result.manifest, org, existing=dict(row.sub_harnesses)
+        )
         with org_scope(org):
             updated = await self._drafts.update_documents(
                 row.id,
                 org,
-                manifest=result.manifest.model_dump(mode="json"),
+                manifest=manifest_doc,
                 sub_harnesses=subs,
             )
         if updated is None:  # deleted from under us — surface the truth, nothing applied
