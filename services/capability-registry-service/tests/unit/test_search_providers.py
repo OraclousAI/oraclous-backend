@@ -103,15 +103,117 @@ async def test_tavily_sends_key_in_body_and_normalizes_results() -> None:
 
 async def test_tavily_non_200_is_coarse_and_body_free() -> None:
     def handler(_req: httpx.Request) -> httpx.Response:
-        return httpx.Response(401, json={"error": "invalid api_key tvly-LEAKED"})
+        return httpx.Response(500, json={"error": "upstream blew up on tvly-LEAKED"})
 
     with pytest.raises(SearchProviderError) as exc:
         await TavilySearchProvider().search(
             "q", api_key="tvly-x", transport=httpx.MockTransport(handler)
         )
     assert exc.value.error_type == "PROVIDER_HTTP_ERROR"
-    assert exc.value.status_code == 401
+    assert exc.value.status_code == 500
     assert "LEAKED" not in str(exc.value)
+
+
+# --- #875: a provider status is CLASSIFIED, not collapsed into one bucket -----------------------
+#
+# Live 2026-08-25: every Tavily call returned 432 (its plan/usage-limit status) for ~30h. The
+# provider mapped it to the same PROVIDER_HTTP_ERROR as a transient 5xx, so no caller above the
+# connector could tell "this organisation's search key is out of credit" from "the provider had a
+# bad minute". The member then reported it had no sources, and the run failed for unbacked claims
+# — pointing every operator at the grounding rules instead of at the one billing fact that fixes
+# it. These tests pin the four outcomes apart. The no-body-echo rule (ADR-008 operator separation)
+# still holds throughout: a status-derived label copies no upstream text.
+
+_LEAKY_BODY = {"detail": "quota gone for key tvly-LEAKED", "query": "SECRET-QUERY"}
+
+
+@pytest.mark.parametrize(
+    ("status", "expected_type"),
+    [
+        (432, "PROVIDER_QUOTA_EXHAUSTED"),  # Tavily: plan/usage limit exhausted
+        (429, "PROVIDER_RATE_LIMITED"),  # the standard too-many-requests status
+        (433, "PROVIDER_RATE_LIMITED"),  # Tavily's own rate-limit status
+        (401, "PROVIDER_AUTH_FAILED"),  # key missing/invalid — NOT a quota problem
+        (403, "PROVIDER_AUTH_FAILED"),  # key valid, not entitled to this call
+        (400, "PROVIDER_HTTP_ERROR"),  # unclassified, keeps the existing coarse label
+        (500, "PROVIDER_HTTP_ERROR"),
+        (502, "PROVIDER_HTTP_ERROR"),
+    ],
+)
+async def test_tavily_status_is_classified_into_a_distinct_error_type(
+    status: int, expected_type: str
+) -> None:
+    def handler(_req: httpx.Request) -> httpx.Response:
+        return httpx.Response(status, json=_LEAKY_BODY)
+
+    with pytest.raises(SearchProviderError) as exc:
+        await TavilySearchProvider().search(
+            "q", api_key="tvly-x", transport=httpx.MockTransport(handler)
+        )
+    assert exc.value.error_type == expected_type
+    assert exc.value.status_code == status  # the raw status survives for diagnostics
+    message = str(exc.value)
+    assert "LEAKED" not in message and "SECRET-QUERY" not in message
+
+
+async def test_quota_exhausted_is_distinguishable_from_every_other_failure() -> None:
+    """The whole point: four statuses, four labels. A collapsed mapping fails here."""
+
+    async def _type_for(status: int) -> str:
+        def handler(_req: httpx.Request) -> httpx.Response:
+            return httpx.Response(status, json={})
+
+        with pytest.raises(SearchProviderError) as exc:
+            await TavilySearchProvider().search(
+                "q", api_key="tvly-x", transport=httpx.MockTransport(handler)
+            )
+        return exc.value.error_type
+
+    types = [await _type_for(s) for s in (432, 429, 401, 500)]
+    assert len(set(types)) == 4, f"statuses collapsed into {set(types)}"
+
+
+async def test_quota_message_names_the_condition_an_operator_can_fix() -> None:
+    """An operator reading this reaches for the billing page, not the harness logs."""
+
+    def handler(_req: httpx.Request) -> httpx.Response:
+        return httpx.Response(432, json=_LEAKY_BODY)
+
+    with pytest.raises(SearchProviderError) as exc:
+        await TavilySearchProvider().search(
+            "q", api_key="tvly-x", transport=httpx.MockTransport(handler)
+        )
+    message = str(exc.value).lower()
+    assert "quota" in message
+    assert "432" not in message  # a bare status number told the operator nothing
+
+
+async def test_rate_limited_message_says_rate_limit_not_quota() -> None:
+    """A temporary throttle must not read as 'go buy more credit'."""
+
+    def handler(_req: httpx.Request) -> httpx.Response:
+        return httpx.Response(429, json=_LEAKY_BODY)
+
+    with pytest.raises(SearchProviderError) as exc:
+        await TavilySearchProvider().search(
+            "q", api_key="tvly-x", transport=httpx.MockTransport(handler)
+        )
+    message = str(exc.value).lower()
+    assert "rate" in message
+    assert "quota" not in message
+
+
+async def test_auth_failed_message_points_at_the_credential() -> None:
+    def handler(_req: httpx.Request) -> httpx.Response:
+        return httpx.Response(401, json=_LEAKY_BODY)
+
+    with pytest.raises(SearchProviderError) as exc:
+        await TavilySearchProvider().search(
+            "q", api_key="tvly-x", transport=httpx.MockTransport(handler)
+        )
+    message = str(exc.value).lower()
+    assert "credential" in message or "key" in message
+    assert "quota" not in message
 
 
 async def test_tavily_non_json_is_bad_response() -> None:
