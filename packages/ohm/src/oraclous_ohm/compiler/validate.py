@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any
+from typing import Any, Literal
 
 from oraclous_ohm._slug import tool_slug
 from oraclous_ohm.import_ import ImportFlag, assemble_and_report, render_report
@@ -29,6 +29,15 @@ _UUID_NS = "00000000-0000-0000-0000-000000000000"
 #: existing private name — callers and the #594 tests import ``_tool_slug`` — but it IS the shared
 #: function now, never a look-alike.
 _tool_slug = tool_slug
+
+Substrate = Literal["graph", "file"]
+
+#: The tools that write to / read from the per-org FILE sandbox. Under the graph substrate the
+#: catalog no longer offers them (``compiler_onramp.draft_catalog``), so the drafter cannot choose
+#: one — but a draft can still carry one by another route: a hand edit, a refine op, a team
+#: compiled before this slice, or a live-registry capability whose name collides. This gate is what
+#: stops any of those reaching storage (#694).
+_FILE_SUBSTRATE_TOOLS = frozenset({"read", "write", "edit", "grep", "glob"})
 
 
 def _catalog_slugs(catalog: Any) -> set[str]:
@@ -74,11 +83,16 @@ def validate_draft(
     *,
     owner_organization_id: Any,
     name: str = "compiled-team",
+    substrate: Substrate = "graph",
 ) -> dict[str, Any]:
     """Diff a drafted Team Harness against the surveyed ``catalog`` + run the shared dry-run.
 
     Returns ``{"would_block": bool, "blocking": list[str], "report": str}`` — the reviewer ships the
-    draft only when ``would_block`` is False; otherwise it re-drafts (bounded) with ``blocking``."""
+    draft only when ``would_block`` is False; otherwise it re-drafts (bounded) with ``blocking``.
+
+    ``substrate`` defaults to ``graph`` (ADR-040 Decision 7, cloud-first), where a file tool blocks
+    with ``F-SUBSTRATE-FILE``. A default of ``file`` would put a tenant's deliverables in a
+    server-side tmp tree, which is precisely what #694 reports."""
     data: Any
     if isinstance(draft, str):
         # a member's harness output is TEXT (#599): peel the JSON object out of the drafter LLM's
@@ -109,6 +123,28 @@ def validate_draft(
     for m in members:
         for tool in m.tools:
             slug = _tool_slug(tool)
+            # #694: the substrate reason takes PRECEDENCE over capability-absence for the same
+            # tool. Both are true under the graph substrate — the catalog no longer lists ``write``
+            # either — but the reviewer member is a MODEL that re-drafts against ``blocking``, and
+            # "not in the catalog" sends it looking for a typo instead of a substrate. The member
+            # role rides in the message because the rendered blocking line carries the code and the
+            # message only.
+            if substrate == "graph" and slug in _FILE_SUBSTRATE_TOOLS:
+                flags.append(
+                    ImportFlag(
+                        code="F-SUBSTRATE-FILE",
+                        severity="blocking",
+                        member_role=m.role,
+                        message=(
+                            f"member {m.role!r} declares tool {tool!r}, which reads and writes a"
+                            " per-organisation file sandbox that nothing else can see. Under the"
+                            " graph substrate a member persists to the team's shared knowledge"
+                            " graph: use 'graph-ingest' to write and 'knowledge-retriever' /"
+                            " 'find-similar' to read"
+                        ),
+                    )
+                )
+                continue
             if not slug or slug not in allowed:  # an empty-slug tool ("@", "/") also fails closed
                 flags.append(
                     ImportFlag(
