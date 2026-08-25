@@ -71,7 +71,7 @@ def test_a_namespace_that_slugs_to_nothing_is_degenerate_and_drops() -> None:
         assert tool_slug(degenerate) == ""
 
 
-def test_the_three_old_copies_are_gone_and_re_export_the_shared_one() -> None:
+def test_the_old_copies_are_gone_and_re_export_the_shared_one() -> None:
     """The copies are DELETED, not left beside the new module to drift again. ``validate`` and
     ``seeds`` keep their public names — callers and the existing tests still import those — but
     both must now be the shared function itself, not a look-alike."""
@@ -81,3 +81,43 @@ def test_the_three_old_copies_are_gone_and_re_export_the_shared_one() -> None:
 
     assert _tool_slug is tool_slug
     assert catalog_slug is tool_slug
+
+
+def test_both_on_ramps_answer_identically_on_the_cases_that_used_to_differ() -> None:
+    """The identity check above passes for a re-export; this one would still catch a re-inlined
+    copy that happens to be assigned the same public name. Every case here is one where a
+    hand-written twin could plausibly diverge."""
+    from oraclous_ohm.compiler.validate import _tool_slug
+    from oraclous_ohm.seeds import catalog_slug
+
+    for value in (
+        "Write",
+        "write",
+        "core/graph-ingest@1.0.0",
+        "Graph Ingest",
+        "evil/web-research",
+        "😈/web-research",
+        "core//x",
+        "",
+        "@",
+    ):
+        assert _tool_slug(value) == catalog_slug(value), value
+
+
+def test_the_leaf_module_imports_nothing_from_the_package() -> None:
+    """This is what makes the shared home possible at all. ``compiler.validate`` imports
+    ``import_``, so ``import_.mapping`` cannot import ``compiler.validate`` back — that cycle is
+    why three copies existed. A leaf with no intra-package imports has no cycle to close."""
+    import ast
+    import pathlib
+
+    import oraclous_ohm._slug as slug_module
+
+    source = pathlib.Path(slug_module.__file__).read_text()
+    for node in ast.walk(ast.parse(source)):
+        module = getattr(node, "module", None) or ""
+        if isinstance(node, ast.ImportFrom):
+            assert not module.startswith("oraclous_ohm"), module
+            assert node.level == 0, "no relative import either"
+        if isinstance(node, ast.Import):
+            assert all(not a.name.startswith("oraclous_ohm") for a in node.names)

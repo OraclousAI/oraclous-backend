@@ -56,7 +56,8 @@ def test_the_file_substrate_still_offers_the_file_tools() -> None:
 def test_the_substrate_defaults_to_graph() -> None:
     """Cloud-first (ADR-040 Decision 7). Every existing caller passes no substrate today, so the
     default is what actually ships — a default of ``file`` would reintroduce the bug silently."""
-    assert _FILE_TOOLS.isdisjoint(_catalog())
+    assert _catalog() == _catalog(substrate="graph")
+    assert _catalog() != _catalog(substrate="file")
 
 
 def test_a_live_registry_file_tool_is_filtered_too() -> None:
@@ -75,10 +76,19 @@ def test_the_described_catalog_filters_identically() -> None:
         draft_catalog_described,
     )
 
-    rows = [{"name": "Write", "description": "Write text to a file."}]
+    rows = [
+        {"name": "Write", "description": "Write text to a file."},
+        {"name": "GitHub Sink", "description": "Push a file to a repository."},
+    ]
     described = draft_catalog_described(rows)
-    assert [e["name"] for e in described] == draft_catalog(["Write"])
-    assert all(e["name"] not in _FILE_TOOLS for e in described)
+    names = [e["name"] for e in described]
+    # asserted against a LITERAL expectation, not just against draft_catalog — both call the same
+    # filter, so comparing them to each other alone could not fail
+    assert "write" not in names
+    assert "github-sink" in names
+    assert "graph-ingest" in names
+    assert {"description": "Push a file to a repository.", "name": "github-sink"} in described
+    assert names == draft_catalog(["Write", "GitHub Sink"])  # the two views agree, as well
 
 
 def test_the_described_catalog_honours_the_file_substrate_too() -> None:

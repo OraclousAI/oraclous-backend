@@ -34,6 +34,9 @@ pytestmark = pytest.mark.unit
 _ORG = uuid.uuid4()
 _USER = uuid.uuid4()
 
+# The SEEDED refs. Written down once in
+# ``packages/ohm/tests/test_compiled_graph_substrate.py::_SEEDED_GRAPH_REFS``, which is the arbiter
+# if these two suites ever disagree again — that disagreement is what #694 is about.
 _GRAPH_INGEST = "core/graph-ingest@1.0.0"
 _RETRIEVER = "core/knowledge-retriever@1.0.0"
 
@@ -248,16 +251,54 @@ async def test_a_generated_member_is_granted_the_graph_capability_not_the_file_o
     assert caps == {"graph-ingest": _GRAPH_INGEST}
 
 
-async def test_a_re_synthesized_member_never_gets_a_tmp_sandbox_ref() -> None:
-    """Run ``fe548aac``'s exact shape: a member declaring the lower-cased ``write``. Under the
-    graph substrate it must reach ``graph-ingest``, never ``core/write@1``."""
-    svc, _repo, runs, registry = _service()
+async def test_a_freshly_compiled_team_declaring_a_file_tool_is_refused() -> None:
+    """Run ``fe548aac``'s exact shape: a member declaring the lower-cased ``write``.
+
+    A NEW compile does not get healed, it gets rejected. Under the graph substrate the drafter is
+    not shown ``write`` at all, so a draft that names it anyway is a defect in the compile, and
+    ``create_from_run`` already refuses a blocked team with a 422 and persists nothing.
+
+    Healing belongs to the drafts that predate this slice, and it happens on the paths that SAVE a
+    blocked draft rather than refusing it — see the ``replace`` test below.
+    """
+    svc, repo, runs, registry = _service()
     run = runs.seed("SUCCEEDED", _reviewer_results(_compiled(tools=["write", "read"])))
-    row, _verdict, _created = await svc.create_from_run(_principal(), team_run_id=run.id)
-    editor_id = uuid.UUID(_refs(row)["editor"])
-    refs = {c["ref"] for c in registry.filed[editor_id]["capabilities"]}
-    assert refs == {_GRAPH_INGEST, _RETRIEVER}
-    assert "core/write@1" not in refs and "core/read@1" not in refs
+    with pytest.raises(TeamRunError) as exc:
+        await svc.create_from_run(_principal(), team_run_id=run.id)
+    assert exc.value.status_code == 422
+    assert "F-SUBSTRATE-FILE" in str(exc.value)
+    assert repo.rows == {} and registry.filed == {}
+
+
+async def test_replacing_a_legacy_draft_heals_its_file_refs_onto_the_graph() -> None:
+    """Amendment 2: an old draft is repaired by being re-written, not by a migration and not by a
+    rewrite at dispatch. ``replace`` re-synthesizes, so the stored manifest describes what it
+    actually uses at all times.
+
+    ``replace`` reports a blocked verdict but still persists — a draft may be SAVED blocked, and
+    the user refines until the verdict is green. That is what makes it the healing seam and
+    ``create_from_run`` (which refuses) not.
+
+    Note the id rule this pins alongside the refs: the agent id is taken from the ``manifest_ref``
+    on the manifest BEING WRITTEN when that parses as a UUID, and minted fresh when it does not.
+    Here the incoming manifest carries the legacy ``org:compiled/editor@1``, so a fresh id is
+    correct; ``test_replacing_a_draft_reuses_the_stored_ids`` writes a manifest already carrying
+    UUIDs and pins the reuse side of the same rule.
+    """
+    svc, repo, runs, registry = _service()
+    seeded = runs.seed("SUCCEEDED", _reviewer_results(_compiled()))
+    row, _v, _c = await svc.create_from_run(_principal(), team_run_id=seeded.id)
+    legacy = _team([_member("editor", tools=["write", "read"])])
+    replaced, verdict = await svc.replace(
+        row.id, _principal(), name="legacy", manifest=legacy, sub_harnesses={}
+    )
+    assert verdict.would_block is True  # honest about the file tools it still declares
+    assert replaced.id in repo.rows  # ...and saved anyway, so the user can refine it
+    editor_id = uuid.UUID(_refs(replaced)["editor"])
+    caps = {c["binding"]: c["ref"] for c in registry.filed[editor_id]["capabilities"]}
+    assert caps == {"write": _GRAPH_INGEST, "read": _RETRIEVER}
+    # the BINDING is preserved (ADR-032, the ceiling is binding-based) — only the ref moves
+    assert "core/write@1" not in caps.values() and "core/read@1" not in caps.values()
 
 
 # ── #695: R1 — saving a team files its agents ─────────────────────────────────
@@ -348,6 +389,65 @@ async def test_replacing_a_draft_reuses_the_stored_ids() -> None:
     assert registry.upserts.count(uuid.UUID(before["editor"])) == 2  # created, then refreshed
 
 
+async def test_creating_a_draft_directly_also_builds_and_files_its_members() -> None:
+    """Amendment 2 names four entry points, and ``create`` is one of them. It takes a
+    caller-supplied ``sub_harnesses``, and ``_synthesize_subs`` fills only the roles the caller left
+    out — so a caller's own sub-harness still wins, and an omitted member is no longer bodiless."""
+    svc, repo, _runs, registry = _service()
+    row, verdict = await svc.create(
+        _principal(),
+        name="hand-authored",
+        manifest=_team([_member("researcher", tools=["web-research"])]),
+        sub_harnesses={},
+    )
+    assert verdict.would_block is False, verdict.blocking
+    assert row.id in repo.rows
+    assert len(registry.filed) == 1
+    assert uuid.UUID(_refs(row)["researcher"]) in registry.filed
+
+
+async def test_a_non_agent_member_is_never_filed_as_an_agent() -> None:
+    """A ``kind: human`` member is a gate, not an agent. It has no sub-harness to build and nothing
+    to put in the library — filing one would place a person on ``/app/agents``."""
+    svc, _repo, _runs, registry = _service()
+    manifest = _team(
+        [
+            _member("researcher", tools=["web-research"]),
+            {
+                "role": "approver",
+                "kind": "human",
+                "human_role": "reviewer",
+                "subgoal": "approve the assessment",
+                "depends_on": ["researcher"],
+                "tools": [],
+            },
+        ]
+    )
+    row, _verdict = await svc.create(
+        _principal(), name="gated", manifest=manifest, sub_harnesses={}
+    )
+    assert len(registry.filed) == 1
+    assert {d["metadata"]["name"] for d in registry.filed.values()} == {"researcher"}
+    approver = next(m for m in row.manifest["members"] if m["role"] == "approver")
+    assert approver.get("manifest_ref") in (None, "")
+
+
+async def test_a_draft_from_another_org_is_absent_not_refiled() -> None:
+    """ADR-006 fail-closed tenancy. A cross-org draft id is a 404, and the miss must not become a
+    registration in the CALLER's org — that would copy one tenant's agent into another's library."""
+    svc, _repo, runs, registry = _service()
+    run = runs.seed("SUCCEEDED", _reviewer_results(_compiled()))
+    row, _v, _c = await svc.create_from_run(_principal(), team_run_id=run.id)
+    filed_before = dict(registry.filed)
+    stranger = Principal(
+        principal_id=uuid.uuid4(), principal_type=PrincipalType.USER, organisation_id=uuid.uuid4()
+    )
+    with pytest.raises(TeamRunError) as exc:
+        await svc.replace(row.id, stranger, name="stolen", manifest=row.manifest, sub_harnesses={})
+    assert exc.value.status_code == 404
+    assert registry.filed == filed_before
+
+
 # ── #695: R3 — fail closed ────────────────────────────────────────────────────
 
 
@@ -378,9 +478,19 @@ async def test_a_run_that_is_never_saved_files_no_agent() -> None:
     """Registration happens at draft persistence, not at every compile. ``from-run`` IS the
     explicit save; a compile the user abandons never becomes a draft. The reporting org's two
     drafts alone would otherwise have produced 18 agents."""
-    _svc, _repo, runs, registry = _service()
-    runs.seed("SUCCEEDED", _reviewer_results(_compiled()))  # compiled, never saved
-    assert registry.filed == {}
+    svc, repo, runs, registry = _service()
+    abandoned = runs.seed("SUCCEEDED", _reviewer_results(_compiled()))
+    saved = runs.seed("SUCCEEDED", _reviewer_results(_compiled()))
+    # only the second run is saved; both compiled the same two members
+    await svc.create_from_run(_principal(), team_run_id=saved.id)
+    assert len(repo.rows) == 1
+    assert len(registry.filed) == 2, "the abandoned compile must not have contributed four"
+    # and reading the saved draft back registers nothing further
+    stored = next(iter(repo.rows.values()))
+    before = dict(registry.filed)
+    await svc.get(stored.id, _principal())
+    assert registry.filed == before
+    assert await repo.get_by_team_run(_ORG, abandoned.id) is None
 
 
 async def test_a_failed_compile_files_nothing() -> None:

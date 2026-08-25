@@ -17,6 +17,7 @@ RED until the [impl] adds the resolution step.
 
 from __future__ import annotations
 
+import copy
 import uuid
 from typing import Any
 
@@ -159,9 +160,13 @@ async def test_editing_the_agent_afterwards_leaves_the_run_record_alone() -> Non
         sub_harnesses={},
         gate_decisions={},
     )
-    snapshot = repo.rows[row.id].sub_harnesses["editor"]
+    # a DEEP copy — comparing the stored dict against a reference to itself would pass under any
+    # implementation, including one that resolves live at dispatch
+    snapshot = copy.deepcopy(repo.rows[row.id].sub_harnesses["editor"])
+    assert [c["ref"] for c in snapshot["capabilities"]] == [_GRAPH_INGEST]
     registry.descriptors[_EDITOR_ID] = _agent_manifest("editor", ["core/bash@1"], _EDITOR_ID)
     assert repo.rows[row.id].sub_harnesses["editor"] == snapshot
+    assert registry.reads == [_EDITOR_ID]  # resolved ONCE, at creation — never re-read
 
 
 async def test_an_unresolvable_reference_fails_the_run_at_creation() -> None:

@@ -91,10 +91,43 @@ def test_the_file_substrate_opt_out_still_keeps_the_sandbox_refs() -> None:
     }
 
 
-def test_a_non_file_tool_is_untouched_under_either_substrate() -> None:
-    """Only the five file tools remap. A connector keeps its synthesized ``core/<slug>@1``."""
+def test_an_unseeded_tool_keeps_its_provisional_ref() -> None:
+    """A connector the registry resolves by slug keeps its synthesized ``core/<slug>@1`` (surfaced
+    as F-TOOLREF by the dry-run). Only a SEEDED capability gets a real pinned ref."""
     assert _caps(["web-research"])["web-research"] == "core/web-research@1"
-    assert _caps(["graph-ingest"])["graph-ingest"] == "core/graph-ingest@1"
+    assert _caps(["send-to-drafts"])["send-to-drafts"] == "core/send-to-drafts@1"
+
+
+#: THE one place the seeded graph capability refs are written down. Both this suite and
+#: ``services/execution-engine-service/tests/unit/test_team_draft_agent_registration.py`` assert
+#: against these exact strings; if they ever disagree again, this test is the arbiter.
+_SEEDED_GRAPH_REFS = {
+    "graph-ingest": "core/graph-ingest@1.0.0",
+    "knowledge-retriever": "core/knowledge-retriever@1.0.0",
+    "find-similar": "core/find-similar@1.0.0",
+}
+
+
+@pytest.mark.parametrize(("tool", "ref"), sorted(_SEEDED_GRAPH_REFS.items()))
+def test_a_graph_tool_named_directly_gets_the_same_ref_a_remapped_one_gets(
+    tool: str, ref: str
+) -> None:
+    """The drafter is now TOLD to pick ``graph-ingest`` (it joins the seed inventory in this
+    slice), so naming it directly must reach the same capability as declaring ``write`` does.
+
+    Before this, ``graph-ingest`` was not in the remap table and fell through to the provisional
+    ``core/graph-ingest@1`` while ``write`` reached the real ``core/graph-ingest@1.0.0`` — two refs
+    for one capability, which is the same drift, one layer along, that #694 is about.
+    """
+    assert _caps([tool])[tool] == ref
+    assert _caps([tool.upper()])[tool.upper()] == ref  # and case-insensitively
+
+
+def test_the_remapped_file_tools_land_on_those_same_seeded_refs() -> None:
+    """Closes the loop: ``write`` and ``graph-ingest`` are one capability, not two."""
+    assert _caps(["write"])["write"] == _SEEDED_GRAPH_REFS["graph-ingest"]
+    assert _caps(["read"])["read"] == _SEEDED_GRAPH_REFS["knowledge-retriever"]
+    assert _caps(["glob"])["glob"] == _SEEDED_GRAPH_REFS["find-similar"]
 
 
 def test_a_tool_less_member_still_builds_a_reasoning_only_sub_harness() -> None:

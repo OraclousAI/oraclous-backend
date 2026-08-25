@@ -81,11 +81,24 @@ def test_the_block_names_the_member_and_the_tool() -> None:
     assert "write" in blocking
 
 
-def test_the_reason_is_the_substrate_not_a_missing_capability() -> None:
-    """Both would be true. Only one tells the reviewer what to do about it."""
+def test_the_substrate_reason_replaces_the_missing_capability_one() -> None:
+    """Both are true — the graph catalog no longer lists ``write``, so the capability-absence gate
+    fires too. Reporting both sends the reviewer model looking for a typo. The substrate reason
+    takes precedence and is the ONLY finding raised for that tool."""
     verdict = _validate(_draft(["write"]), _GRAPH_CATALOG)
-    codes = " ".join(str(b) for b in verdict["blocking"])
-    assert "F-SUBSTRATE-FILE" in codes
+    findings = [str(b) for b in verdict["blocking"] if "write" in str(b)]
+    assert len(findings) == 1, findings
+    assert "F-SUBSTRATE-FILE" in findings[0]
+    assert "F-CAPABILITY-MISSING" not in findings[0]
+
+
+def test_a_genuinely_unknown_tool_still_reports_the_absence() -> None:
+    """The precedence above must not swallow the ADR-032 gate for a hallucinated tool."""
+    verdict = _validate(_draft(["totally-invented-tool"]), _GRAPH_CATALOG)
+    assert verdict["would_block"] is True
+    blocking = " ".join(str(b) for b in verdict["blocking"])
+    assert "F-CAPABILITY-MISSING" in blocking
+    assert "F-SUBSTRATE-FILE" not in blocking
 
 
 def test_the_graph_write_tool_passes_under_the_graph_substrate() -> None:
