@@ -16,6 +16,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from oraclous_ohm._slug import tool_slug
 from oraclous_ohm.errors import OHMImportError
 from oraclous_ohm.import_._flags import FlagSeverity, ImportFlag
 from oraclous_ohm.import_.parse import AgentDefinition
@@ -54,21 +55,40 @@ Substrate = Literal["graph", "file"]
 # calling Read/Write — they just hit graph retrieval / ingest. Bash stays the sandbox exec fallback
 # (#507); a non-file tool keeps its synthesized core/<slug>@1 ref. ``substrate="file"`` is the
 # explicit opt-out for the parked local-single-tenant mode (#512/#518), kept as-is.
+# The table is keyed on the SHARED tool slug (#694), not on a raw tool name. It used to be keyed
+# on the Claude-Code names, so it fired for the importer (whose tools arrive as ``Write``) and
+# missed for the compiler (whose tools arrive as the lower-cased catalog slug ``write``). Every
+# member of team run ``fe548aac`` fell through to ``core/write@1`` and wrote ~10 KB of deliverables
+# into ``/tmp/oraclous-agent-sandbox/<org>/`` while its bound graph stayed empty.
+#
+# The graph tools name THEMSELVES here too, at their seeded refs. ``graph-ingest`` joins the seed
+# inventory in this slice, so the drafter now picks it directly; without these rows a member naming
+# it would take the provisional ``core/graph-ingest@1`` while a member declaring ``write`` took the
+# seeded ``core/graph-ingest@1.0.0`` — two refs for one capability, which is #694's own drift
+# reintroduced by its fix.
 _GRAPH_REMAP: dict[str, str] = {
-    "Read": "core/knowledge-retriever@1.0.0",
-    "Grep": "core/knowledge-retriever@1.0.0",
-    "Glob": "core/find-similar@1.0.0",
-    "Write": "core/graph-ingest@1.0.0",
-    "Edit": "core/graph-ingest@1.0.0",
+    "read": "core/knowledge-retriever@1.0.0",
+    "grep": "core/knowledge-retriever@1.0.0",
+    "glob": "core/find-similar@1.0.0",
+    "write": "core/graph-ingest@1.0.0",
+    "edit": "core/graph-ingest@1.0.0",
+    "knowledge-retriever": "core/knowledge-retriever@1.0.0",
+    "find-similar": "core/find-similar@1.0.0",
+    "graph-ingest": "core/graph-ingest@1.0.0",
 }
 
 
 def _capability_ref(tool: str, substrate: Substrate) -> str:
     """The sub-harness capability ref for a declared tool. Under the graph substrate a file tool
     remaps onto its seeded graph capability (real ref, not provisional); otherwise the tool's ref is
-    the provisional synthesized ``core/<slug>@1`` (surfaced as F-TOOLREF for the O8 dry-run)."""
-    if substrate == "graph" and tool in _GRAPH_REMAP:
-        return _GRAPH_REMAP[tool]
+    the provisional synthesized ``core/<slug>@1`` (surfaced as F-TOOLREF for the O8 dry-run).
+
+    The lookup normalises through the ONE shared slug function, so ``Write`` and ``write`` are the
+    same tool to it — the case-sensitivity that let a compiled member escape the remap (#694)."""
+    if substrate == "graph":
+        remapped = _GRAPH_REMAP.get(tool_slug(tool))
+        if remapped is not None:
+            return remapped
     return f"core/{slugify(tool)}@1"
 
 
