@@ -161,11 +161,16 @@ def seed_capability_inventory() -> CapabilityInventory:
                 tools=["knowledge-retriever", "find-similar", "recall-memory", "graph-ingest"],
             ),
             ToolGroup(name="delivery", tools=["send-to-drafts"]),
-            # #694: the rare sandbox EXEC need (#507). It survives the graph substrate's catalog
-            # filter because it is not a deliverable sink — a member that genuinely has to run a
-            # command still can, and nothing it produces is silently diverted off the graph. It
-            # reached the drafter only via an org's live registry before, so a fresh org's menu
-            # lost it entirely.
+            # #694 acceptance criterion 1 as ruled ("`bash` remains offered"), pinned by
+            # ``test_compiler_onramp_substrate.py::test_bash_survives_the_filter``, which asserts
+            # ``bash`` is in ``draft_catalog()`` with NO live registry rows supplied. It was only
+            # ever reachable through an org's own registry, so a fresh org's menu had no exec
+            # fallback at all and that test could not pass.
+            #
+            # It survives the graph substrate's catalog filter because it is the rare sandbox EXEC
+            # need (#507), not a deliverable sink: nothing a member produces is diverted off the
+            # graph by holding it. Widening a fresh org's menu is a real consequence and is called
+            # out in the PR body rather than left as a footnote.
             ToolGroup(name="exec", tools=["bash"]),
         ],
     )
