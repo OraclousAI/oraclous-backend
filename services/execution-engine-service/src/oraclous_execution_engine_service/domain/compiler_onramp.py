@@ -19,19 +19,18 @@ from __future__ import annotations
 import json
 from typing import Any, Literal
 
+from oraclous_ohm._slug import FILE_SUBSTRATE_TOOLS
 from oraclous_ohm.seeds import catalog_slug, default_seed_set, survey_catalog
 
 Substrate = Literal["graph", "file"]
 
-#: The tools that write to / read from the per-org FILE sandbox. Hidden from the drafter's menu
-#: under the graph substrate (#694): filtering beats remapping at this layer, because the drafter
-#: cannot pick what it is not shown and no rewrite step is needed afterwards. The remap in
-#: ``import_.mapping`` stays as the backstop for a file tool that arrives by another route (an
-#: import, a hand-edited draft, a team compiled before this fix).
-#:
-#: ``bash`` is deliberately NOT here. It is the rare sandbox exec fallback (#507), not a
-#: deliverable sink, and it is not what #694 reports.
-_FILE_SUBSTRATE_TOOLS = frozenset({"read", "write", "edit", "grep", "glob"})
+#: Hidden from the drafter's menu under the graph substrate (#694): filtering beats remapping at
+#: this layer, because the drafter cannot pick what it is not shown and no rewrite step is needed
+#: afterwards. The remap in ``import_.mapping`` stays as the backstop for a file tool that arrives
+#: by another route (an import, a hand-edited draft, a team compiled before this fix). The
+#: membership set itself lives in the ``_slug`` leaf, so this module and the validator cannot
+#: disagree about what a file tool IS.
+_FILE_SUBSTRATE_TOOLS = FILE_SUBSTRATE_TOOLS
 
 
 def draft_catalog(

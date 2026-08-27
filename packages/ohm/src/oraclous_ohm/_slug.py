@@ -21,7 +21,38 @@ from __future__ import annotations
 
 import re
 
-__all__ = ["tool_slug"]
+__all__ = [
+    "FILE_SUBSTRATE_READ_TOOLS",
+    "FILE_SUBSTRATE_TOOLS",
+    "FILE_SUBSTRATE_WRITE_TOOLS",
+    "GRAPH_READ_TOOLS",
+    "GRAPH_WRITE_TOOLS",
+    "tool_slug",
+]
+
+# The membership sets live beside the normaliser for the same reason the normaliser does. They
+# were written out in three modules — the compiler validator, the on-ramp catalog, and the run
+# directive — plus a fourth statement of the same partition in the remap table, and the argument
+# against that is this module's own docstring: two callers disagreed about what a tool is CALLED
+# because neither could see the other's answer. Three callers disagreeing about what a file tool
+# IS would be the same failure one layer along.
+#
+# Slugs, always: a caller compares them through ``tool_slug``, so ``Write`` and ``core/write@1``
+# both land here.
+#: Tools that WRITE into the per-organisation file sandbox — a directory nothing else can see and
+#: that does not survive a container recreate.
+FILE_SUBSTRATE_WRITE_TOOLS = frozenset({"write", "edit"})
+#: Tools that READ that same sandbox. Against an EMPTY one they are #509's Gap 1: the model loops
+#: looking for files nobody wrote.
+FILE_SUBSTRATE_READ_TOOLS = frozenset({"read", "grep", "glob"})
+#: Both halves. ``bash`` is deliberately absent — it is the rare sandbox EXEC fallback (#507), not
+#: a deliverable sink, and it is not what #694 reports.
+FILE_SUBSTRATE_TOOLS = FILE_SUBSTRATE_WRITE_TOOLS | FILE_SUBSTRATE_READ_TOOLS
+
+#: The graph write side — where a member's deliverable belongs under the cloud default.
+GRAPH_WRITE_TOOLS = frozenset({"graph-ingest"})
+#: The graph read side: what other members have already published.
+GRAPH_READ_TOOLS = frozenset({"knowledge-retriever", "find-similar", "recall-memory"})
 
 
 def _basic_slug(text: str) -> str:

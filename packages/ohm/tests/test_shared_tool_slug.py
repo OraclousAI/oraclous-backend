@@ -121,3 +121,62 @@ def test_the_leaf_module_imports_nothing_from_the_package() -> None:
             assert node.level == 0, "no relative import either"
         if isinstance(node, ast.Import):
             assert all(not a.name.startswith("oraclous_ohm") for a in node.names)
+
+
+# ── the membership sets moved to the leaf too (#694, [impl] review M2) ────────────────────────
+#
+# The normaliser's consolidation fixed callers disagreeing about what a tool is CALLED. The same
+# slice then wrote the file-tool set out in three modules and stated the same partition a fourth
+# time in the remap table, which is the identical failure one layer along: callers disagreeing
+# about what a file tool IS.
+
+
+def test_the_membership_sets_live_beside_the_normaliser() -> None:
+    from oraclous_ohm._slug import (
+        FILE_SUBSTRATE_READ_TOOLS,
+        FILE_SUBSTRATE_TOOLS,
+        FILE_SUBSTRATE_WRITE_TOOLS,
+        GRAPH_READ_TOOLS,
+        GRAPH_WRITE_TOOLS,
+    )
+
+    assert FILE_SUBSTRATE_WRITE_TOOLS == {"write", "edit"}
+    assert FILE_SUBSTRATE_READ_TOOLS == {"read", "grep", "glob"}
+    assert FILE_SUBSTRATE_TOOLS == FILE_SUBSTRATE_WRITE_TOOLS | FILE_SUBSTRATE_READ_TOOLS
+    assert GRAPH_WRITE_TOOLS == {"graph-ingest"}
+    assert GRAPH_READ_TOOLS == {"knowledge-retriever", "find-similar", "recall-memory"}
+    assert "bash" not in FILE_SUBSTRATE_TOOLS  # the exec fallback is not a deliverable sink (#507)
+    assert not FILE_SUBSTRATE_TOOLS & (GRAPH_WRITE_TOOLS | GRAPH_READ_TOOLS)
+
+
+def test_every_consumer_reads_the_leaf_rather_than_its_own_copy() -> None:
+    """Identity, not equality: an equal-but-separate copy is exactly what drifts."""
+    from oraclous_execution_engine_service.domain import compiler_onramp
+    from oraclous_execution_engine_service.services import team_run
+    from oraclous_ohm._slug import (
+        FILE_SUBSTRATE_READ_TOOLS,
+        FILE_SUBSTRATE_TOOLS,
+        FILE_SUBSTRATE_WRITE_TOOLS,
+        GRAPH_READ_TOOLS,
+        GRAPH_WRITE_TOOLS,
+    )
+    from oraclous_ohm.compiler import validate
+
+    assert validate._FILE_SUBSTRATE_TOOLS is FILE_SUBSTRATE_TOOLS
+    assert compiler_onramp._FILE_SUBSTRATE_TOOLS is FILE_SUBSTRATE_TOOLS
+    assert team_run._SANDBOX_WRITE_TOOLS is FILE_SUBSTRATE_WRITE_TOOLS
+    assert team_run._SANDBOX_READ_TOOLS is FILE_SUBSTRATE_READ_TOOLS
+    assert team_run._GRAPH_WRITE_TOOLS is GRAPH_WRITE_TOOLS
+    assert team_run._GRAPH_READ_TOOLS is GRAPH_READ_TOOLS
+
+
+def test_the_remap_table_covers_every_file_tool_the_leaf_names() -> None:
+    """The fourth statement of the partition. A file tool the remap does not carry falls through
+    to a provisional ``core/<slug>@1`` — which is #694's own failure, silently."""
+    from oraclous_ohm._slug import FILE_SUBSTRATE_TOOLS, GRAPH_READ_TOOLS, GRAPH_WRITE_TOOLS
+    from oraclous_ohm.import_.mapping import _GRAPH_REMAP
+
+    assert FILE_SUBSTRATE_TOOLS <= set(_GRAPH_REMAP)
+    assert GRAPH_WRITE_TOOLS | GRAPH_READ_TOOLS <= set(_GRAPH_REMAP)
+    # and every target is a SEEDED ref, never a provisional @1
+    assert all(not ref.endswith("@1") for ref in _GRAPH_REMAP.values()), _GRAPH_REMAP

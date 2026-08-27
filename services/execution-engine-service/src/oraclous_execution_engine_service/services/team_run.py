@@ -19,7 +19,13 @@ import uuid
 from collections.abc import Callable
 from typing import Any, Protocol
 
-from oraclous_ohm._slug import tool_slug
+from oraclous_ohm._slug import (
+    FILE_SUBSTRATE_READ_TOOLS,
+    FILE_SUBSTRATE_WRITE_TOOLS,
+    GRAPH_READ_TOOLS,
+    GRAPH_WRITE_TOOLS,
+    tool_slug,
+)
 from oraclous_ohm.envelope import HandoffEnvelope
 from oraclous_ohm.errors import OHMError
 from oraclous_ohm.manifest import (
@@ -99,10 +105,13 @@ EXECUTION_DIRECTIVE = (
 #
 # So the persistence sentence is DERIVED from the member's resolved sub-harness capability refs,
 # and a member holding neither kind gets no persistence sentence at all — silence beats a guess.
-_GRAPH_WRITE_TOOLS = frozenset({"graph-ingest"})
-_GRAPH_READ_TOOLS = frozenset({"knowledge-retriever", "find-similar", "recall-memory"})
-_SANDBOX_WRITE_TOOLS = frozenset({"write", "edit"})
-_SANDBOX_READ_TOOLS = frozenset({"read", "grep", "glob"})
+# The four membership sets are the ``_slug`` leaf's, not this module's: the directive, the compile
+# gate and the drafter's menu must agree about what a file tool is, or they drift the way the two
+# on-ramps drifted about what a tool is CALLED.
+_GRAPH_WRITE_TOOLS = GRAPH_WRITE_TOOLS
+_GRAPH_READ_TOOLS = GRAPH_READ_TOOLS
+_SANDBOX_WRITE_TOOLS = FILE_SUBSTRATE_WRITE_TOOLS
+_SANDBOX_READ_TOOLS = FILE_SUBSTRATE_READ_TOOLS
 
 _GRAPH_WRITE_SENTENCE = (
     "Your graph-ingest tool persists your output to the team's shared knowledge graph — this is "

@@ -16,7 +16,12 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from oraclous_ohm._slug import tool_slug
+from oraclous_ohm._slug import (
+    FILE_SUBSTRATE_WRITE_TOOLS,
+    GRAPH_READ_TOOLS,
+    GRAPH_WRITE_TOOLS,
+    tool_slug,
+)
 from oraclous_ohm.errors import OHMImportError
 from oraclous_ohm.import_._flags import FlagSeverity, ImportFlag
 from oraclous_ohm.import_.parse import AgentDefinition
@@ -66,15 +71,22 @@ Substrate = Literal["graph", "file"]
 # it would take the provisional ``core/graph-ingest@1`` while a member declaring ``write`` took the
 # seeded ``core/graph-ingest@1.0.0`` — two refs for one capability, which is #694's own drift
 # reintroduced by its fix.
-_GRAPH_REMAP: dict[str, str] = {
-    "read": "core/knowledge-retriever@1.0.0",
-    "grep": "core/knowledge-retriever@1.0.0",
-    "glob": "core/find-similar@1.0.0",
-    "write": "core/graph-ingest@1.0.0",
-    "edit": "core/graph-ingest@1.0.0",
+_SEEDED_GRAPH_REFS: dict[str, str] = {
+    "graph-ingest": "core/graph-ingest@1.0.0",
     "knowledge-retriever": "core/knowledge-retriever@1.0.0",
     "find-similar": "core/find-similar@1.0.0",
-    "graph-ingest": "core/graph-ingest@1.0.0",
+    "recall-memory": "core/recall-memory@1.0.0",
+}
+
+_GRAPH_REMAP: dict[str, str] = {
+    # the file WRITE side, whichever of it exists, lands on the one graph write capability
+    **dict.fromkeys(FILE_SUBSTRATE_WRITE_TOOLS, _SEEDED_GRAPH_REFS["graph-ingest"]),
+    # the file READ side splits: a content read is retrieval, a name/pattern read is similarity
+    "read": _SEEDED_GRAPH_REFS["knowledge-retriever"],
+    "grep": _SEEDED_GRAPH_REFS["knowledge-retriever"],
+    "glob": _SEEDED_GRAPH_REFS["find-similar"],
+    # ...and the graph tools name themselves, at those same refs
+    **{t: _SEEDED_GRAPH_REFS[t] for t in GRAPH_WRITE_TOOLS | GRAPH_READ_TOOLS},
 }
 
 

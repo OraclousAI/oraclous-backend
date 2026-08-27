@@ -16,7 +16,7 @@ import json
 import re
 from typing import Any, Literal
 
-from oraclous_ohm._slug import tool_slug
+from oraclous_ohm._slug import FILE_SUBSTRATE_TOOLS, tool_slug
 from oraclous_ohm.import_ import ImportFlag, assemble_and_report, render_report
 from oraclous_ohm.manifest import OHMMember, OHMOrchestration, OHMTaskInput
 
@@ -32,12 +32,12 @@ _tool_slug = tool_slug
 
 Substrate = Literal["graph", "file"]
 
-#: The tools that write to / read from the per-org FILE sandbox. Under the graph substrate the
-#: catalog no longer offers them (``compiler_onramp.draft_catalog``), so the drafter cannot choose
-#: one — but a draft can still carry one by another route: a hand edit, a refine op, a team
-#: compiled before this slice, or a live-registry capability whose name collides. This gate is what
-#: stops any of those reaching storage (#694).
-_FILE_SUBSTRATE_TOOLS = frozenset({"read", "write", "edit", "grep", "glob"})
+#: The membership set lives in the ``_slug`` leaf, beside the normaliser that compares against it.
+#: Under the graph substrate the catalog no longer offers these (``compiler_onramp.draft_catalog``),
+#: so the drafter cannot choose one — but a draft can still carry one by another route: a hand edit,
+#: a refine op, a team compiled before this slice, or a live-registry capability whose name
+#: collides. This gate is what stops any of those reaching storage (#694).
+_FILE_SUBSTRATE_TOOLS = FILE_SUBSTRATE_TOOLS
 
 
 def _catalog_slugs(catalog: Any) -> set[str]:
