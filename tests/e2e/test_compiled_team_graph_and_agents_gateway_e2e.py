@@ -99,8 +99,12 @@ def _connect_tools(c: httpx.Client, user: dict, tools: set[str]) -> None:
     }
     for tool in sorted(tools):
         cap = by_slug.get(tool)
-        if cap is None:  # a tool with no registered capability cannot be connected
-            continue
+        # A silent skip inside a DoD proof makes a green run mean less than it looks: the team
+        # would run with a member's tool unconnected and the test would still report PASS.
+        assert cap is not None, (
+            f"the compiled team declared {tool!r}, which the registry does not carry —"
+            f" it cannot be connected, so this run would not prove what it claims"
+        )
         inst = c.post(
             "/api/v1/instances",
             json={
