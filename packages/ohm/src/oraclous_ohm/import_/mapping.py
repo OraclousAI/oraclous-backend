@@ -104,6 +104,40 @@ def _capability_ref(tool: str, substrate: Substrate) -> str:
     return f"core/{slugify(tool)}@1"
 
 
+def remap_capability_refs(descriptor: dict, substrate: Substrate = "graph") -> dict:
+    """Return ``descriptor`` with every ``capabilities[].ref`` put on the right substrate (#694).
+
+    ``build_subharness`` already does this for a sub-harness the platform SYNTHESIZES, keyed on the
+    declared tool name. This does it for one that ARRIVES built — an import, a draft compiled before
+    the fix, or a caller-supplied ``sub_harnesses`` entry — and it keys on the REF, because that is
+    what a descriptor actually carries and what the harness actually dispatches.
+
+    Keying on the ref rather than the binding is the load-bearing part. The binding is the member's
+    ceiling (ADR-032) and a supplied descriptor can hold ``{"ref": "core/write@1", "binding":
+    "graph-ingest"}`` — a per-organisation tmp sandbox behind a clean, ceiling-passing name. The
+    binding is preserved untouched, so the ceiling stays valid; only the ref moves.
+
+    A ref that is not on the file substrate is returned verbatim, so this is a no-op for a
+    descriptor that was already correct. Pure: the input is not mutated.
+    """
+    if substrate != "graph":
+        return descriptor
+    capabilities = descriptor.get("capabilities")
+    if not isinstance(capabilities, list):
+        return descriptor
+    remapped: list[object] = []
+    changed = False
+    for cap in capabilities:
+        ref = cap.get("ref") if isinstance(cap, dict) else None
+        target = _GRAPH_REMAP.get(tool_slug(ref)) if isinstance(ref, str) else None
+        if target is None or target == ref:
+            remapped.append(cap)
+            continue
+        remapped.append({**cap, "ref": target})
+        changed = True
+    return {**descriptor, "capabilities": remapped} if changed else descriptor
+
+
 class AgentMapping(BaseModel):
     """Mapping result: the team member, its sub-harness (None if unbuildable), and dry-run flags."""
 
