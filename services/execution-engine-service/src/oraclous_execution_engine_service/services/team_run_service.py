@@ -690,7 +690,10 @@ class TeamRunService:
                 ) from exc
 
     async def _resolve_member_manifests(
-        self, team: OHMManifest, sub_harnesses: Mapping[str, dict]
+        self,
+        team: OHMManifest,
+        sub_harnesses: Mapping[str, dict],
+        models: Any = None,
     ) -> dict[str, dict]:
         """Turn each agent member's ``manifest_ref`` back into a manifest, ONCE, at run creation
         (#695, ADR-050 D3) — and keep what it produces as the run's own record.
@@ -710,6 +713,19 @@ class TeamRunService:
 
         Fail closed, and fail EARLY. A dangling reference discovered mid-drive would burn the
         upstream members' tokens before surfacing.
+
+        ``models`` is the caller's GO-time model binding off the team manifest, threaded onto every
+        RESOLVED sub-harness (#878, ruled shape A). The harness reads a model off the per-member
+        document, and a draft that no longer carries its agents inline leaves the caller nothing to
+        write one into — so every member of a saved team failed ``502: live LLM mode requires a
+        model in the OHM``. The console's own binder copies the SAME list into every role, and
+        ``test_team_draft_loop_gateway_e2e.py`` step 6 does it line for line, so this moves that
+        copy behind the seam rather than changing what it does.
+
+        An INLINE sub-harness is not touched: it came from the caller, who bound it already. The
+        recorded cost of the ruling is that a per-member override is no longer expressible through
+        the draft path — the caller's GO-time binding wins for every resolved member, exactly as
+        the console's unconditional overwrite already made it win.
         """
         resolved = dict(sub_harnesses)
         pending = [m for m in team.members if m.kind == "agent" and m.role not in resolved]
@@ -759,7 +775,11 @@ class TeamRunService:
                     422,
                     error_type="unresolvable_manifest_ref",
                 )
-            newly[member.role] = descriptor
+            newly[member.role] = (
+                {**descriptor, "models": models}
+                if isinstance(models, list) and models
+                else descriptor
+            )
         # ADR-032. The agent is editable in place and the team referencing it is NOT re-validated
         # on that edit, so the run is where the two are reconciled — without this, editing a filed
         # agent would be a way to widen a member past what its team declared.
@@ -860,7 +880,9 @@ class TeamRunService:
         self._enforce_member_ceilings(team, sub_harnesses)  # ADR-032/035 §5 — fail-closed ceiling
         # #695 (ADR-050 D3): resolve each member's filed agent ONCE and keep the result as this
         # run's record. An inline sub-harness wins, so a pre-existing draft is untouched.
-        sub_harnesses = await self._resolve_member_manifests(team, sub_harnesses)
+        sub_harnesses = await self._resolve_member_manifests(
+            team, sub_harnesses, models=manifest.get("models")
+        )
         validate_task_input(team, inputs)  # Contract §TASK (#674): required task missing → 422
         validate_input_keys(team, inputs)  # #714: an inputs key the team cannot read → 422
         validate_answers(
