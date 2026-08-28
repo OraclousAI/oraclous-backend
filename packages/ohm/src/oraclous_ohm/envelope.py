@@ -17,6 +17,12 @@ from pydantic import BaseModel, ConfigDict, Field
 from oraclous_ohm.errors import OHMHandoffError
 from oraclous_ohm.manifest import OHMMember
 
+# The ceiling on one grounding message (#685). Bounded by the run page, not by this module: every
+# failed member is joined into ONE 2000-char string there, so ~six failed members still fit and the
+# live payload ("the web-search credential has no remaining quota") is 47 characters. Leaves room
+# for the ``grounding: `` prefix the orchestrator adds within a 300-character whole.
+_MESSAGE_CAP = 280
+
 
 class HandoffEnvelope(BaseModel):
     """A typed member→member hand-off (ADR-035 §3). Data only — no capability is ever carried."""
@@ -64,6 +70,37 @@ def _ok_tool_call_ids(tool_steps: list[dict[str, Any]] | None) -> set[str]:
     return ids
 
 
+def _tool_steps(tool_steps: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    """The member's TOOL steps, in trace order. An llm turn is not an attempted tool call."""
+    return [s for s in (tool_steps or []) if isinstance(s, dict) and s.get("kind") == "tool"]
+
+
+def _no_successful_call_message(errored: list[dict[str, Any]]) -> str:
+    """Case A (#685): calls were made and every one failed — say so, and name the last failure.
+
+    The member did not fabricate anything; it truthfully reported that it reached nothing, so the
+    old accusation points the operator at the grounding rules instead of at the real cause (live
+    run ``eb08c17d``: four searches, every one a spent-quota status from the search provider).
+
+    The excerpt is taken ONLY from a step whose ``status == "error"``. That detail is the
+    connector's own diagnostic, already redacted and capped where the trace is built. An ``ok``
+    step's ``detail`` is the opposite object — the tool's RESULT payload (retrieved text, customer
+    rows) — and it must never reach the run page (§11).
+
+    Bounded at ``_MESSAGE_CAP``: every failed member of a run shares ONE 2000-char run-page string
+    (``team_run_service`` joins them), so a generous per-member sentence silently cuts later
+    members off the page entirely.
+    """
+    last = errored[-1]  # the LAST failure, by trace order — the most recent attempt is the cause
+    count = f"{len(errored)} calls, all errored" if len(errored) > 1 else "1 call, errored"
+    name = last.get("name") or "<unnamed tool>"
+    message = f"no tool call succeeded ({count}) — last failure from {name!r}"
+    detail = last.get("detail")
+    if isinstance(detail, str) and detail.strip():
+        message = f"{message}: {' '.join(detail.split())}"
+    return message[:_MESSAGE_CAP]
+
+
 def grounding_counts(
     driving_signals: list[dict[str, Any]] | None, tool_steps: list[dict[str, Any]] | None
 ) -> tuple[int, int]:
@@ -89,9 +126,18 @@ def validate_grounding(
     ERRORED (run ``1fe1bcb5``'s collector cited an ``unknown_tool`` failure as its evidence).
     """
     signals = [s for s in (driving_signals or []) if isinstance(s, dict)]
-    if not signals:
-        return ["no driving_signals: the member made claims nothing backs"]
     ok_ids = _ok_tool_call_ids(tool_steps)
+    if not signals:
+        # #685: three different conditions used to share one accusing sentence. They have three
+        # different owners — fix the credential/connector, fix the member's prompt or tool list,
+        # or distrust the member — so the operator has to be able to tell them apart. All three
+        # still FAIL the member: with no successful call there is nothing to ground (fail-closed).
+        attempted = _tool_steps(tool_steps)
+        if ok_ids:
+            return ["no driving_signals: the member made claims nothing backs"]
+        if attempted:
+            return [_no_successful_call_message(attempted)]
+        return ["no tool call was made: the member answered without calling any of its tools"]
     errors: list[str] = []
     for signal in signals:
         name = signal.get("signal") or "<unnamed>"
