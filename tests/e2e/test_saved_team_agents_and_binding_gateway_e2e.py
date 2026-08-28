@@ -131,6 +131,14 @@ def _connect(c: httpx.Client, tool: str) -> None:
     assert created.status_code == 201, created.text
 
 
+def _library(c: httpx.Client) -> list[dict[str, Any]]:
+    """The org's filed agents — what ``/app/agents`` reads."""
+    got = c.get("/api/v1/capabilities", params={"kind": "harness"})
+    assert got.status_code == 200, got.text
+    rows: list[dict[str, Any]] = got.json()["capabilities"]
+    return rows
+
+
 def _poll(c: httpx.Client, run_id: str, tries: int = 120) -> dict[str, Any]:
     row: dict[str, Any] = {}
     for _ in range(tries):
@@ -168,9 +176,7 @@ def test_a_saved_team_files_its_agents_and_runs_them_with_the_callers_model(
     ref = str(member["manifest_ref"])
     assert "org:x/" not in ref, f"the member still carries its pre-save ref {ref!r}"
 
-    library = c.get("/api/v1/capabilities", params={"kind": "harness"})
-    assert library.status_code == 200, library.text
-    assert ref in {str(r["id"]) for r in library.json()["capabilities"]}, (
+    assert ref in {str(r["id"]) for r in _library(c)}, (
         "the agent is not listed for the organisation — the agents page reads this"
     )
 
@@ -183,19 +189,19 @@ def test_a_saved_team_files_its_agents_and_runs_them_with_the_callers_model(
     # #694: it was granted the GRAPH capability at its SEEDED ref, never a tmp-sandbox file tool
     assert [cap["ref"] for cap in descriptor["capabilities"]] == [_GRAPH_INGEST], descriptor
 
-    # a second save of the same document refreshes the agent rather than duplicating it
-    again = c.post(
-        "/v1/engine/team-drafts",
-        json={
-            "name": "saved team again",
-            "manifest": _team(user["org_id"], nonce),
-            "sub_harnesses": {},
-        },
+    # Re-saving the SAME draft refreshes its agent rather than minting a second one beside it.
+    # It has to be the same draft: a fresh POST has no stored draft to reuse an id from, so it
+    # mints by design (an id on a request body is never trusted — the same-org overwrite guard).
+    # An earlier version of this check POSTed a second time and counted two rows, which proved
+    # nothing: ``_team`` mints a new ``metadata.id`` per call, so it was comparing two different
+    # teams that had each correctly filed one agent.
+    replaced = c.put(
+        f"/v1/engine/team-drafts/{draft['id']}",
+        json={"name": "saved team, renamed", "manifest": draft["manifest"], "sub_harnesses": {}},
     )
-    assert again.status_code == 201, again.text
-    assert (
-        len(c.get("/api/v1/capabilities", params={"kind": "harness"}).json()["capabilities"]) == 2
-    )
+    assert replaced.status_code == 200, replaced.text
+    assert str(replaced.json()["draft"]["manifest"]["members"][0]["manifest_ref"]) == ref
+    assert {str(r["id"]) for r in _library(c)} == {ref}, "the re-save minted a second agent"
 
     # ── 3. #878: run it EXACTLY as the console posts it — nothing inline ──────────────────────
     _connect(c, "graph-ingest")
