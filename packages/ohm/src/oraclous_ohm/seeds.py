@@ -12,12 +12,22 @@ the importer's report-not-clobber shape (``ImportReport`` / ``would_block`` / ``
 
 from __future__ import annotations
 
-import re
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from oraclous_ohm._slug import tool_slug
 from oraclous_ohm.manifest import OHMBudget, OHMFanOut, OHMGovernance, OHMMember
+
+#: The catalog's name→slug normalisation, and the compiler validator's, are ONE function now
+#: (#694): both live in the ``oraclous_ohm._slug`` leaf module. They were written out separately
+#: to avoid a compiler↔seeds import cycle, and drifted on CASE — ``Write`` and ``write`` read as
+#: two different tools, which is exactly how a compiled member's file tool escaped the graph
+#: remap. ``catalog_slug`` keeps its public name (#713 callers pair a registry row's description
+#: with its catalog entry through it) and ``_slug`` its private one.
+catalog_slug = tool_slug
+_slug = tool_slug
+
 
 # The seed policy-set ref MUST equal harness-runtime ``policy.py``'s ``DEFAULT_POLICY_SET_REF`` so
 # ``resolve_policy_set`` never fail-closes on an unknown ref (ohm cannot import the service; this
@@ -112,12 +122,17 @@ def seed_capability_inventory() -> CapabilityInventory:
             MemberArchetype(
                 name="writer",
                 role_description="Draft and revise written content from the inputs.",
-                tools=["write", "text-tools"],
+                # #694: ``graph-ingest`` is the write side under the cloud (graph) substrate, and
+                # the catalog hides ``write`` there. Without it a writer archetype under the
+                # default substrate offers no way to persist anything at all.
+                tools=["graph-ingest", "write", "text-tools"],
             ),
             MemberArchetype(
                 name="editor",
                 role_description="Review and edit a draft for quality and correctness.",
-                tools=["read", "edit"],
+                # #694: run ``fe548aac`` FAILED on its Editor, which held ``core/edit@1`` and had
+                # no graph tool at all — nothing it produced could reach the bound graph.
+                tools=["graph-ingest", "read", "edit"],
             ),
             MemberArchetype(
                 name="analyst",
@@ -138,10 +153,25 @@ def seed_capability_inventory() -> CapabilityInventory:
         tool_groups=[
             ToolGroup(name="research", tools=["web-research", "websearch", "webfetch"]),
             ToolGroup(name="filesystem", tools=["read", "write", "edit", "grep", "glob"]),
+            # #694: the knowledge group was three RETRIEVAL tools and no way to write back, so
+            # the one seeded write-side graph capability appeared nowhere in the inventory. A
+            # drafter shown this group could read the graph and persist nothing.
             ToolGroup(
-                name="knowledge", tools=["knowledge-retriever", "find-similar", "recall-memory"]
+                name="knowledge",
+                tools=["knowledge-retriever", "find-similar", "recall-memory", "graph-ingest"],
             ),
             ToolGroup(name="delivery", tools=["send-to-drafts"]),
+            # #694 acceptance criterion 1 as ruled ("`bash` remains offered"), pinned by
+            # ``test_compiler_onramp_substrate.py::test_bash_survives_the_filter``, which asserts
+            # ``bash`` is in ``draft_catalog()`` with NO live registry rows supplied. It was only
+            # ever reachable through an org's own registry, so a fresh org's menu had no exec
+            # fallback at all and that test could not pass.
+            #
+            # It survives the graph substrate's catalog filter because it is the rare sandbox EXEC
+            # need (#507), not a deliverable sink: nothing a member produces is diverted off the
+            # graph by holding it. Widening a fresh org's menu is a real consequence and is called
+            # out in the PR body rather than left as a footnote.
+            ToolGroup(name="exec", tools=["bash"]),
         ],
     )
 
@@ -241,36 +271,8 @@ def survey_catalog(inventory: CapabilityInventory, registered: list[str]) -> lis
     returned slugs are de-duplicated; every seed tool is a real registered capability."""
     seed = {t for a in inventory.archetypes for t in a.tools}
     seed |= {t for g in inventory.tool_groups for t in g.tools}
-    live = {_slug(r) for r in registered}
+    live = {tool_slug(r) for r in registered}
     return sorted(seed | live)
-
-
-def catalog_slug(ref: str) -> str:
-    """The public name of the catalog's name→slug normalisation (``_slug``). #713: a caller pairing
-    a registry row's DESCRIPTION with its catalog entry has to slug the raw name exactly the way
-    ``survey_catalog`` did, or the two halves of the menu do not line up."""
-    return _slug(ref)
-
-
-def _basic_slug(text: str) -> str:
-    return re.sub(r"[^a-z0-9]+", "-", text.strip().lower()).strip("-")
-
-
-def _slug(ref: str) -> str:
-    """Normalise a registry NAME or ref to its bare slug — ALIGNED with
-    ``compiler.validate._tool_slug`` (#594 hardening; kept inline, NOT imported, to avoid a
-    compiler↔seeds import cycle). Strip a trailing ``@version`` and ONLY a leading canonical
-    ``core/`` namespace; a remaining ``/`` marks a FOREIGN namespace and is encoded ``ns--…`` (an
-    empty segment → ``""``), so ``evil/web-research`` can NEVER collapse to the bare surveyed
-    ``web-research`` (the exact masquerade #594 closed).
-    ``'Web Research'`` / ``'core/web-research@1'`` both → ``web-research``."""
-    s = ref.strip().lower().split("@", 1)[0]
-    if s.startswith("core/"):
-        s = s[len("core/") :]
-    if "/" in s:
-        parts = [_basic_slug(seg) for seg in s.split("/")]
-        return "ns--" + "--".join(parts) if all(parts) else ""
-    return _basic_slug(s)
 
 
 # --------------------------------------------------------------------------

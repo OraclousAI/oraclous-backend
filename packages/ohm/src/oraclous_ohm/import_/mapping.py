@@ -16,6 +16,12 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from oraclous_ohm._slug import (
+    FILE_SUBSTRATE_WRITE_TOOLS,
+    GRAPH_READ_TOOLS,
+    GRAPH_WRITE_TOOLS,
+    tool_slug,
+)
 from oraclous_ohm.errors import OHMImportError
 from oraclous_ohm.import_._flags import FlagSeverity, ImportFlag
 from oraclous_ohm.import_.parse import AgentDefinition
@@ -54,22 +60,82 @@ Substrate = Literal["graph", "file"]
 # calling Read/Write — they just hit graph retrieval / ingest. Bash stays the sandbox exec fallback
 # (#507); a non-file tool keeps its synthesized core/<slug>@1 ref. ``substrate="file"`` is the
 # explicit opt-out for the parked local-single-tenant mode (#512/#518), kept as-is.
+# The table is keyed on the SHARED tool slug (#694), not on a raw tool name. It used to be keyed
+# on the Claude-Code names, so it fired for the importer (whose tools arrive as ``Write``) and
+# missed for the compiler (whose tools arrive as the lower-cased catalog slug ``write``). Every
+# member of team run ``fe548aac`` fell through to ``core/write@1`` and wrote ~10 KB of deliverables
+# into ``/tmp/oraclous-agent-sandbox/<org>/`` while its bound graph stayed empty.
+#
+# The graph tools name THEMSELVES here too, at their seeded refs. ``graph-ingest`` joins the seed
+# inventory in this slice, so the drafter now picks it directly; without these rows a member naming
+# it would take the provisional ``core/graph-ingest@1`` while a member declaring ``write`` took the
+# seeded ``core/graph-ingest@1.0.0`` — two refs for one capability, which is #694's own drift
+# reintroduced by its fix.
+_SEEDED_GRAPH_REFS: dict[str, str] = {
+    "graph-ingest": "core/graph-ingest@1.0.0",
+    "knowledge-retriever": "core/knowledge-retriever@1.0.0",
+    "find-similar": "core/find-similar@1.0.0",
+    "recall-memory": "core/recall-memory@1.0.0",
+}
+
 _GRAPH_REMAP: dict[str, str] = {
-    "Read": "core/knowledge-retriever@1.0.0",
-    "Grep": "core/knowledge-retriever@1.0.0",
-    "Glob": "core/find-similar@1.0.0",
-    "Write": "core/graph-ingest@1.0.0",
-    "Edit": "core/graph-ingest@1.0.0",
+    # the file WRITE side, whichever of it exists, lands on the one graph write capability
+    **dict.fromkeys(FILE_SUBSTRATE_WRITE_TOOLS, _SEEDED_GRAPH_REFS["graph-ingest"]),
+    # the file READ side splits: a content read is retrieval, a name/pattern read is similarity
+    "read": _SEEDED_GRAPH_REFS["knowledge-retriever"],
+    "grep": _SEEDED_GRAPH_REFS["knowledge-retriever"],
+    "glob": _SEEDED_GRAPH_REFS["find-similar"],
+    # ...and the graph tools name themselves, at those same refs
+    **{t: _SEEDED_GRAPH_REFS[t] for t in GRAPH_WRITE_TOOLS | GRAPH_READ_TOOLS},
 }
 
 
 def _capability_ref(tool: str, substrate: Substrate) -> str:
     """The sub-harness capability ref for a declared tool. Under the graph substrate a file tool
     remaps onto its seeded graph capability (real ref, not provisional); otherwise the tool's ref is
-    the provisional synthesized ``core/<slug>@1`` (surfaced as F-TOOLREF for the O8 dry-run)."""
-    if substrate == "graph" and tool in _GRAPH_REMAP:
-        return _GRAPH_REMAP[tool]
+    the provisional synthesized ``core/<slug>@1`` (surfaced as F-TOOLREF for the O8 dry-run).
+
+    The lookup normalises through the ONE shared slug function, so ``Write`` and ``write`` are the
+    same tool to it — the case-sensitivity that let a compiled member escape the remap (#694)."""
+    if substrate == "graph":
+        remapped = _GRAPH_REMAP.get(tool_slug(tool))
+        if remapped is not None:
+            return remapped
     return f"core/{slugify(tool)}@1"
+
+
+def remap_capability_refs(descriptor: dict, substrate: Substrate = "graph") -> dict:
+    """Return ``descriptor`` with every ``capabilities[].ref`` put on the right substrate (#694).
+
+    ``build_subharness`` already does this for a sub-harness the platform SYNTHESIZES, keyed on the
+    declared tool name. This does it for one that ARRIVES built — an import, a draft compiled before
+    the fix, or a caller-supplied ``sub_harnesses`` entry — and it keys on the REF, because that is
+    what a descriptor actually carries and what the harness actually dispatches.
+
+    Keying on the ref rather than the binding is the load-bearing part. The binding is the member's
+    ceiling (ADR-032) and a supplied descriptor can hold ``{"ref": "core/write@1", "binding":
+    "graph-ingest"}`` — a per-organisation tmp sandbox behind a clean, ceiling-passing name. The
+    binding is preserved untouched, so the ceiling stays valid; only the ref moves.
+
+    A ref that is not on the file substrate is returned verbatim, so this is a no-op for a
+    descriptor that was already correct. Pure: the input is not mutated.
+    """
+    if substrate != "graph":
+        return descriptor
+    capabilities = descriptor.get("capabilities")
+    if not isinstance(capabilities, list):
+        return descriptor
+    remapped: list[object] = []
+    changed = False
+    for cap in capabilities:
+        ref = cap.get("ref") if isinstance(cap, dict) else None
+        target = _GRAPH_REMAP.get(tool_slug(ref)) if isinstance(ref, str) else None
+        if target is None or target == ref:
+            remapped.append(cap)
+            continue
+        remapped.append({**cap, "ref": target})
+        changed = True
+    return {**descriptor, "capabilities": remapped} if changed else descriptor
 
 
 class AgentMapping(BaseModel):

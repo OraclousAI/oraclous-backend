@@ -154,6 +154,69 @@ class RegistryClient:
         and descriptions belong in the prompt, not in what a gate diffs against."""
         return [row["name"] for row in await self.list_capability_rows()]
 
+    async def get_capability(self, capability_id: uuid.UUID) -> dict[str, Any] | None:
+        """One registered capability in the CALLER's org, or ``None`` when it does not exist there.
+
+        #695: a compiled team member's ``manifest_ref`` is the registry id of its filed agent
+        (ADR-050), and the run resolves each reference through this call before dispatching. A 404 —
+        absent, or belonging to another org — is ``None`` so the caller can name the member in a
+        clean 422. Any other non-2xx is INCONCLUSIVE and raises, because dispatching a member whose
+        agent we could not read would be the fail-open direction."""
+        try:
+            resp = await self._client.get(f"/api/v1/capabilities/{capability_id}")
+        except httpx.HTTPError as exc:  # registry unreachable — clean failure, not a 500
+            raise RegistryClientError(f"registry unreachable: {type(exc).__name__}") from exc
+        if resp.status_code == httpx.codes.NOT_FOUND:  # absent, or not in the caller's org
+            return None
+        if resp.status_code // 100 != 2:  # inconclusive — never treated as absent
+            raise RegistryClientError(f"registry → {resp.status_code}")
+        body: dict[str, Any] = resp.json()
+        return body
+
+    async def upsert_harness(
+        self, descriptor: dict[str, Any], *, descriptor_id: uuid.UUID
+    ) -> uuid.UUID:
+        """File a generated agent in the CALLER's org as a ``kind=harness`` capability (#695).
+
+        A compiled team member and a console-built agent are the same object: an ``OHMManifest``
+        with ``metadata.kind = "agent"``, produced by the same ``build_subharness``. The console
+        builder POSTs its descriptor and keeps the returned id as the agent's ``manifest_ref``; the
+        compiler filed nothing, so its agents were unlistable, uneditable, unbindable, and died with
+        the run — ``/app/agents`` was empty because nothing had ever been written for it to read.
+
+        FIND-OR-REFRESH, never blind-insert (the #698 precedent: a re-import refreshes an MCP
+        server's tools rather than duplicating them). The registry's create inserts keyed on
+        ``descriptor_id``, so a blind second POST is a primary-key conflict rather than an update.
+        Hence: read the id → present means PUT, absent means POST. An inconclusive read raises
+        rather than assuming absence.
+
+        Filed as ``harness``, not ``tool``: ``/app/agents`` reads ``kind=harness`` for the caller's
+        org, and the drafter's tool menu is filtered to ``kind=tool`` (#705) — a compiled agent
+        filed as a tool would be invisible on the agents page AND offered as a tool to the next
+        compile."""
+        exists = await self.get_capability(descriptor_id) is not None
+        path = f"/api/v1/capabilities/{descriptor_id}" if exists else "/api/v1/capabilities"
+        payload: dict[str, Any] = (
+            {"descriptor": descriptor}
+            if exists
+            else {
+                "kind": "harness",
+                "descriptor": descriptor,
+                "descriptor_id": str(descriptor_id),
+            }
+        )
+        try:
+            resp = (
+                await self._client.put(path, json=payload)
+                if exists
+                else await self._client.post(path, json=payload)
+            )
+        except httpx.HTTPError as exc:  # registry unreachable — clean failure, not a 500
+            raise RegistryClientError(f"registry unreachable: {type(exc).__name__}") from exc
+        if resp.status_code // 100 != 2:  # reachable but rejected — not unreachable
+            raise RegistryRejected(resp.status_code, _render_detail(resp.text))
+        return descriptor_id
+
     async def instance_exists(self, instance_id: uuid.UUID) -> bool:
         """True iff a configured instance with this id exists in the CALLER's organisation (the
         registry is org-scoped by the downstream headers). #501-#5: register validates an

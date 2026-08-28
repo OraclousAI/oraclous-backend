@@ -42,6 +42,10 @@ _REAL = {
     "knowledge-retriever",
     "find-similar",
     "recall-memory",
+    # the registry's GraphIngestPlugin (NAME "Graph Ingest", bound as core/graph-ingest@1.0.0).
+    # It was real all along and simply missing from this list, which is why #694 could add it to
+    # the inventory and still trip a phantom-tool guard (#694/#695 [impl] discovery).
+    "graph-ingest",
     "read",
     "write",
     "edit",

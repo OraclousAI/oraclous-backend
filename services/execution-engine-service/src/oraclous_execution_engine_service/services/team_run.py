@@ -19,6 +19,13 @@ import uuid
 from collections.abc import Callable
 from typing import Any, Protocol
 
+from oraclous_ohm._slug import (
+    FILE_SUBSTRATE_READ_TOOLS,
+    FILE_SUBSTRATE_WRITE_TOOLS,
+    GRAPH_READ_TOOLS,
+    GRAPH_WRITE_TOOLS,
+    tool_slug,
+)
 from oraclous_ohm.envelope import HandoffEnvelope
 from oraclous_ohm.errors import OHMError
 from oraclous_ohm.manifest import (
@@ -82,12 +89,77 @@ class _Harness(Protocol):
 EXECUTION_DIRECTIVE = (
     "You are EXECUTING this objective right now inside Oraclous — you are not planning, and "
     "there is no human who will act on a handoff. Do the work yourself and USE YOUR TOOLS to do "
-    "it: your Write tool persists your output to the team's shared knowledge graph (this is how "
-    "your work is saved and made visible to the rest of the team); your Read tool retrieves what "
-    "other members have already written there. Produce your substantive output and persist it "
-    "with your Write tool before you finish. A reply that only proposes a '## Handoff' or a next "
-    "step, without doing the work and calling your tools, is NOT an acceptable result."
+    "it. Produce your substantive output before you finish. A reply that only proposes a "
+    "'## Handoff' or a next step, without doing the work and calling your tools, is NOT an "
+    "acceptable result."
 )
+
+
+# #694 defect 3. The directive above used to assert, unconditionally, that "your Write tool
+# persists your output to the team's shared knowledge graph". That is true on the import on-ramp,
+# where ``Write`` resolves to ``graph-ingest``, and it was FALSE for all 14 members of run
+# ``fe548aac``, every one of which held ``core/write@1`` and wrote disposable files while being
+# told it was saving to the graph. Telling a model a false fact about its own tools is the
+# mechanism by which that run looked successful and delivered nothing: each member persisted
+# "successfully", reported done, and the next member read an empty graph.
+#
+# So the persistence sentence is DERIVED from the member's resolved sub-harness capability refs,
+# and a member holding neither kind gets no persistence sentence at all — silence beats a guess.
+# The four membership sets are the ``_slug`` leaf's, not this module's: the directive, the compile
+# gate and the drafter's menu must agree about what a file tool is, or they drift the way the two
+# on-ramps drifted about what a tool is CALLED.
+_GRAPH_WRITE_TOOLS = GRAPH_WRITE_TOOLS
+_GRAPH_READ_TOOLS = GRAPH_READ_TOOLS
+_SANDBOX_WRITE_TOOLS = FILE_SUBSTRATE_WRITE_TOOLS
+_SANDBOX_READ_TOOLS = FILE_SUBSTRATE_READ_TOOLS
+
+_GRAPH_WRITE_SENTENCE = (
+    "Your graph-ingest tool persists your output to the team's shared knowledge graph — this is "
+    "how your work is saved and made visible to the rest of the team, so persist your substantive "
+    "output there before you finish."
+)
+_GRAPH_READ_SENTENCE = (
+    "Your retrieval tools read the team's shared knowledge graph, which is where the other "
+    "members put their work."
+)
+_SANDBOX_WRITE_SENTENCE = (
+    "Your write tool persists your output as a file in your sandbox workspace — this is how your "
+    "work is saved and made visible to the rest of the team, so persist your substantive output "
+    "there before you finish."
+)
+_SANDBOX_READ_SENTENCE = (
+    "Your read tools read your sandbox workspace, which is where the other members put their work."
+)
+
+
+def execution_directive(capability_refs: list[str]) -> str:
+    """The run directive for a member holding these resolved sub-harness capability ``ref``s.
+
+    The executor re-framing (#543) is unconditional: an imported Claude-Code "conductor" persona is
+    written to PROPOSE a ``## Handoff`` for a human to dispatch, and run inline with a thin
+    objective a model satisfies that persona by emitting a handoff stub. The directive re-frames the
+    member as the EXECUTOR so it does the work and calls its tools.
+
+    The PERSISTENCE sentence is derived, never asserted (#694). A member whose capabilities reach
+    the graph is told about the knowledge graph; one whose capabilities reach the per-org file
+    sandbox is told about its sandbox workspace; one with neither is told nothing about persistence.
+    A member holding BOTH kinds is told about the graph: that is ambiguous, and graph indexing is
+    the invariant (ADR-041 Decision 3 — a sink that writes externally without graph-indexing is
+    non-conformant), so the graph sentence wins rather than a guess between them.
+    """
+    slugs = {tool_slug(ref) for ref in capability_refs}
+    parts = [EXECUTION_DIRECTIVE]
+    if slugs & (_GRAPH_WRITE_TOOLS | _GRAPH_READ_TOOLS):
+        if slugs & _GRAPH_WRITE_TOOLS:
+            parts.append(_GRAPH_WRITE_SENTENCE)
+        if slugs & _GRAPH_READ_TOOLS:
+            parts.append(_GRAPH_READ_SENTENCE)
+    elif slugs & (_SANDBOX_WRITE_TOOLS | _SANDBOX_READ_TOOLS):
+        if slugs & _SANDBOX_WRITE_TOOLS:
+            parts.append(_SANDBOX_WRITE_SENTENCE)
+        if slugs & _SANDBOX_READ_TOOLS:
+            parts.append(_SANDBOX_READ_SENTENCE)
+    return " ".join(parts)
 
 
 # #642 — the OTHER half of the grounding contract. ``validate_grounding`` demands that every claim
@@ -197,13 +269,18 @@ def render_member_input(
     refresh_records: list[dict[str, Any]] | None = None,
     task: str | None = None,
     answers: tuple[list[dict[str, Any]], list[dict[str, Any]]] | None = None,
+    capability_refs: list[str] | None = None,
 ) -> str:
     """Render a member's objective + fan item + inbound typed hand-offs into the harness input.
 
     ``refresh_records`` (#602): the producing (sink) member's OWN records from the seed run,
     rendered with the carry-forward directive so the member can skip re-deriving unchanged records
     (the cost lever). Only passed to the sink member of a seeded refresh; ``None`` on every normal
-    dispatch, so a non-refresh run's input is byte-for-byte unchanged (default-OFF)."""
+    dispatch, so a non-refresh run's input is byte-for-byte unchanged (default-OFF).
+
+    ``capability_refs`` (#694): the member's RESOLVED sub-harness capability refs, from which the
+    run directive derives its persistence sentence instead of asserting the knowledge graph
+    unconditionally. ``None``/empty yields the directive with no persistence sentence at all."""
     parts: list[str] = []
     # #577: the inbound handoff's objective_slice scopes THIS dispatch (the producer's ## Handoff
     # Next-task — e.g. "Draft Chapter 04") and takes precedence over the member's static subgoal
@@ -241,10 +318,21 @@ def render_member_input(
     ):  # #602 cost lever — the sink member's prior records to carry fwd
         parts.append(REFRESH_CARRY_FORWARD_DIRECTIVE)
         parts.append(f"Your prior records ({len(refresh_records)}):\n{json.dumps(refresh_records)}")
-    parts.append(EXECUTION_DIRECTIVE)
+    parts.append(execution_directive(capability_refs or []))
     if member.tools:  # #642: a member that declared tools is graded on receipts — ask for them
         parts.append(GROUNDING_DIRECTIVE)
     return "\n\n".join(parts)
+
+
+def _capability_refs(sub: dict[str, Any] | None) -> list[str]:
+    """The ``capabilities[].ref`` strings on a member's resolved sub-harness, for #694's derived
+    persistence sentence. A member with no sub-harness (a ``manifest_ref`` dispatch) or a malformed
+    one yields none, which renders the directive WITHOUT a persistence sentence — the fail-quiet
+    direction, since a guess here is what misinformed all 14 members of run ``fe548aac``."""
+    caps = (sub or {}).get("capabilities")
+    if not isinstance(caps, list):
+        return []
+    return [c["ref"] for c in caps if isinstance(c, dict) and isinstance(c.get("ref"), str)]
 
 
 def _producer_ref(
@@ -391,6 +479,9 @@ def make_harness_dispatch(
                 # #846: and the app's intake answers, to every member for the same reason — a
                 # downstream member must not have to reconstruct what was assumed from a hand-off.
                 answers=answers,
+                # #694: the member's OWN resolved capability refs, so the run directive states
+                # where its output actually persists rather than asserting the graph for everyone.
+                capability_refs=_capability_refs(sub),
             ),
             manifest_inline=sub,
             manifest_ref=(member.manifest_ref if sub is None else None),

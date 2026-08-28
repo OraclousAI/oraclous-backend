@@ -15,7 +15,11 @@ from oraclous_eval.guardrails import GuardrailReport, run_plan_guardrails
 pytestmark = pytest.mark.unit
 
 _ORG = uuid.UUID("87654321-4321-8765-4321-876543210000")
-_CATALOG = ["web-research", "write", "edit"]
+# #694: a member persists to the team's shared knowledge graph, not to a per-org file sandbox
+# that is thrown away. ``write``/``edit`` now BLOCK with F-SUBSTRATE-FILE under the default
+# graph substrate, so these fixtures name the graph tools instead. Nothing under test here is
+# about tool identity — ``write`` was standing in for "some tool this member holds".
+_CATALOG = ["web-research", "graph-ingest", "knowledge-retriever"]
 
 
 def _member(role: str, deps: list[str], **kw: object) -> dict[str, object]:
@@ -39,7 +43,7 @@ def _draft(members: list[dict[str, object]], **top: object) -> dict[str, object]
 _GOOD = _draft(
     [
         _member("researcher", [], tools=["web-research"]),
-        _member("writer", ["researcher"], tools=["write"]),
+        _member("writer", ["researcher"], tools=["graph-ingest"]),
     ],
     budget={"max_tokens_total": 500_000, "max_tokens_per_member": 100_000},
 )
@@ -99,7 +103,7 @@ def test_a_foreign_namespace_tool_cannot_masquerade_as_surveyed() -> None:
 
 def test_a_member_cap_above_the_pool_blocks() -> None:
     draft = _draft(
-        [_member("greedy", [], tools=["write"], max_tokens=9_000_000)],
+        [_member("greedy", [], tools=["graph-ingest"], max_tokens=9_000_000)],
         budget={"max_tokens_total": 1_000_000},
     )
     report = _run(draft)
@@ -109,7 +113,7 @@ def test_a_member_cap_above_the_pool_blocks() -> None:
 
 def test_a_member_tool_call_cap_above_the_pool_blocks() -> None:
     draft = _draft(
-        [_member("greedy", [], tools=["write"], max_tool_calls=500)],
+        [_member("greedy", [], tools=["graph-ingest"], max_tool_calls=500)],
         budget={"max_tool_calls_total": 50},
     )
     report = _run(draft)
@@ -119,7 +123,7 @@ def test_a_member_tool_call_cap_above_the_pool_blocks() -> None:
 
 def test_a_member_cap_equal_to_the_pool_is_allowed() -> None:
     draft = _draft(
-        [_member("ok", [], tools=["write"], max_tokens=1_000_000)],
+        [_member("ok", [], tools=["graph-ingest"], max_tokens=1_000_000)],
         budget={"max_tokens_total": 1_000_000},
     )
     report = _run(draft)
@@ -130,7 +134,7 @@ def test_a_budget_per_member_default_above_the_pool_blocks() -> None:
     # the budget-level per-member DEFAULT (not just a member's own cap) above the pool slips the
     # naive check — every defaulted member would resolve above the team total.
     draft = _draft(
-        [_member("a", [], tools=["write"])],
+        [_member("a", [], tools=["graph-ingest"])],
         budget={"max_tokens_total": 1_000_000, "max_tokens_per_member": 9_000_000},
     )
     report = _run(draft)
@@ -140,7 +144,7 @@ def test_a_budget_per_member_default_above_the_pool_blocks() -> None:
 
 def test_a_present_but_invalid_budget_blocks_not_silently_skipped() -> None:
     # an invalid budget must BLOCK — never silently disable the stricter cap guardrail (GO: ready).
-    draft = _draft([_member("a", [], tools=["write"])], budget={"max_tokens_total": "lots"})
+    draft = _draft([_member("a", [], tools=["graph-ingest"])], budget={"max_tokens_total": "lots"})
     report = _run(draft)
     assert report.would_block is True
     assert any("budget" in b.lower() for b in report.blocking)
@@ -175,9 +179,10 @@ def test_a_draft_as_prose_with_embedded_json_is_parsed() -> None:
 
 
 def test_a_ceiling_widening_sub_harness_blocks() -> None:
-    # ADR-032: a member with tools=[write] whose sub-harness declares capabilities=[write, bash]
+    # ADR-032: a member with tools=[graph-ingest] whose sub-harness declares
+    # capabilities=[graph-ingest, bash]
     # widens its ceiling — a blocking violation.
-    draft = _draft([_member("w", [], tools=["write"])])
+    draft = _draft([_member("w", [], tools=["graph-ingest"])])
     sub = {
         "ohm_version": "1.1",
         "metadata": {
@@ -186,8 +191,8 @@ def test_a_ceiling_widening_sub_harness_blocks() -> None:
             "owner_organization_id": str(_ORG),
         },
         "capabilities": [
-            {"ref": "core/write@1", "binding": "write"},
-            {"ref": "core/bash@1", "binding": "bash"},  # widens the member's {write} ceiling
+            {"ref": "core/graph-ingest@1.0.0", "binding": "graph-ingest"},
+            {"ref": "core/bash@1", "binding": "bash"},  # widens the member's {graph-ingest} ceiling
         ],
         "actors": [{"role": "primary", "kind": "agent"}],
         "runtime": {"entrypoint": "primary"},

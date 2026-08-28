@@ -173,7 +173,17 @@ def test_draft_store_crud_verdict_and_typed_refine_through_the_gateway(
     assert outcome["draft"]["version"] == 3
     roles = [m["role"] for m in outcome["draft"]["manifest"]["members"]]
     assert roles == ["researcher", "fact-checker"]
-    assert "fact-checker" in outcome["draft"]["sub_harnesses"]  # synthesized server-side
+    # ADR-050 D3: the draft no longer carries the generated bodies inline — it points at FILED
+    # agents instead, so "synthesized server-side" is now proven by the new member having an agent
+    # in the org's library rather than a body in the draft. Same property, moved.
+    # (corrected by `backend-implementer` on the #694/#695 [impl] PR; flagged on #880)
+    assert outcome["draft"]["sub_harnesses"] == {}
+    new_member = next(
+        m for m in outcome["draft"]["manifest"]["members"] if m["role"] == "fact-checker"
+    )
+    filed = c.get(f"/api/v1/capabilities/{new_member['manifest_ref']}")
+    assert filed.status_code == 200, filed.text
+    assert filed.json()["descriptor"]["metadata"]["name"] == "fact-checker"
 
     # DELETE — 204, then the read is a 404
     assert c.delete(f"/v1/engine/team-drafts/{draft['id']}").status_code == 204
@@ -366,9 +376,17 @@ def test_the_whole_loop_compile_draft_refine_go_through_the_gateway(
     assert envelope["would_block"] is False, envelope
     draft = envelope["draft"]
     assert draft["manifest"]["members"], "the compiled team has members"
-    assert set(draft["sub_harnesses"]) >= {
-        m["role"] for m in draft["manifest"]["members"] if m["kind"] == "agent"
-    }
+    # ADR-050 D3, as above: every agent member is addressable through the capabilities API instead
+    # of carrying its body in the draft. This asserts the stronger property the reference form buys
+    # — the agent EXISTS and resolves — which the inline dict never proved.
+    # (corrected by `backend-implementer` on the #694/#695 [impl] PR; flagged on #880)
+    assert draft["sub_harnesses"] == {}
+    for member in draft["manifest"]["members"]:
+        if member["kind"] != "agent":
+            continue
+        resolved = c.get(f"/api/v1/capabilities/{member['manifest_ref']}")
+        assert resolved.status_code == 200, f"{member['role']}: {resolved.text}"
+        assert resolved.json()["descriptor"]["metadata"]["kind"] == "agent"
 
     # 2b) #638 concern 3 — from-run is IDEMPOTENT: a second call for the same run returns the SAME
     # draft with a 200 (a reload / second tab on ?compile=<runId> never duplicates the draft)

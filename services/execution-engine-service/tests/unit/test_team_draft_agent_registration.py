@@ -525,3 +525,119 @@ async def test_without_a_wired_registry_the_draft_keeps_its_inline_manifests() -
     row, _verdict, _created = await svc.create_from_run(_principal(), team_run_id=run.id)
     assert set(row.sub_harnesses) == {"researcher", "editor"}
     assert row.sub_harnesses["editor"]["metadata"]["kind"] == "agent"
+
+
+# ── #694 B2: a file ref arriving via sub_harnesses[], not via members[].tools ──────────────────
+#
+# Added by `backend-implementer` on the [impl] PR, at `qa-engineer`'s request (Q2/Q3) after
+# `code-reviewer` reproduced the hole (B2). The suite covered a file tool declared in
+# ``members[].tools``; nothing covered one arriving underneath, in a caller-supplied descriptor's
+# own ``capabilities[].ref``. Both gates read the declared tools, and the ceiling check is
+# binding-based, so a tmp-sandbox ref hiding under a clean binding passed everything and was FILED.
+
+
+def _sub_with_ref(role: str, ref: str, binding: str) -> dict[str, Any]:
+    """A caller-supplied sub-harness whose BINDING is clean and whose REF is not."""
+    return {
+        "ohm_version": "1.0",
+        "metadata": {
+            "id": str(uuid.uuid4()),
+            "name": role,
+            "kind": "agent",
+            "owner_organization_id": str(_ORG),
+        },
+        "capabilities": [{"ref": ref, "binding": binding}],
+        "prompts": [{"role": "primary", "source": "inline", "body": f"You are the {role}."}],
+        "actors": [{"role": "primary", "kind": "agent"}],
+        "runtime": {"entrypoint": "primary"},
+    }
+
+
+async def test_creating_a_draft_never_files_a_tmp_sandbox_ref_hidden_under_a_clean_binding() -> (
+    None
+):
+    """The member declares ``graph-ingest`` and every gate agrees, because every gate reads the
+    DECLARED tools. The descriptor underneath carries ``core/write@1``, which is the per-org tmp
+    directory run ``fe548aac`` wrote 10 KB into. Filed, that survives the run rather than dying
+    with it — the exact thing #694's correction lands first to prevent."""
+    svc, _repo, _runs, registry = _service()
+    row, verdict = await svc.create(
+        _principal(),
+        name="clean-looking",
+        manifest=_team([_member("editor", tools=["graph-ingest"])]),
+        sub_harnesses={"editor": _sub_with_ref("editor", "core/write@1", "graph-ingest")},
+    )
+    assert verdict.would_block is False, verdict.blocking  # the declared tools really are clean
+    filed = registry.filed[uuid.UUID(_refs(row)["editor"])]
+    assert [c["ref"] for c in filed["capabilities"]] == [_GRAPH_INGEST]
+    # the BINDING is untouched, so the member's ceiling (ADR-032) still matches
+    assert [c["binding"] for c in filed["capabilities"]] == ["graph-ingest"]
+
+
+async def test_replacing_a_draft_never_files_a_tmp_sandbox_ref_hidden_under_a_clean_binding() -> (
+    None
+):
+    """``replace`` takes ``sub_harnesses`` straight off the request body too."""
+    svc, _repo, runs, registry = _service()
+    seeded = runs.seed("SUCCEEDED", _reviewer_results(_compiled()))
+    row, _v, _c = await svc.create_from_run(_principal(), team_run_id=seeded.id)
+    replaced, _verdict = await svc.replace(
+        row.id,
+        _principal(),
+        name="clean-looking",
+        manifest=_team([_member("editor", tools=["graph-ingest"])]),
+        sub_harnesses={"editor": _sub_with_ref("editor", "core/edit@1", "graph-ingest")},
+    )
+    filed = registry.filed[uuid.UUID(_refs(replaced)["editor"])]
+    assert [c["ref"] for c in filed["capabilities"]] == [_GRAPH_INGEST]
+
+
+async def test_a_forwarded_pre_695_draft_is_healed_rather_than_filed_verbatim() -> None:
+    """Q3 — the same gap from the non-adversarial side, and the likelier way in.
+
+    A console holding a draft saved before this slice forwards the ``sub_harnesses`` it already
+    has. ``_synthesize_subs`` keeps a supplied entry verbatim, so without a correction at filing
+    time Amendment 2 heals nothing at all on the path that actually carries the legacy documents —
+    only on the one that passes ``{}``."""
+    svc, _repo, runs, registry = _service()
+    seeded = runs.seed("SUCCEEDED", _reviewer_results(_compiled()))
+    row, _v, _c = await svc.create_from_run(_principal(), team_run_id=seeded.id)
+    legacy_subs = {
+        "editor": _sub_with_ref("editor", "core/write@1", "write"),
+        "researcher": _sub_with_ref("researcher", "core/read@1", "read"),
+    }
+    replaced, _verdict = await svc.replace(
+        row.id,
+        _principal(),
+        name="forwarded",
+        manifest=_team([_member("editor", tools=["write"]), _member("researcher", tools=["read"])]),
+        sub_harnesses=legacy_subs,
+    )
+    filed = {
+        role: {c["binding"]: c["ref"] for c in registry.filed[uuid.UUID(ref)]["capabilities"]}
+        for role, ref in _refs(replaced).items()
+    }
+    assert filed == {"editor": {"write": _GRAPH_INGEST}, "researcher": {"read": _RETRIEVER}}
+
+
+@pytest.mark.security
+async def test_a_draft_cannot_name_an_agent_id_its_stored_draft_does_not_reference() -> None:
+    """``manifest_ref`` arrives on the REQUEST BODY, and filing PUTs an existing row in place.
+
+    Cross-org was already closed (the registry read and write are both org-scoped under RLS). This
+    is the same-org case: naming a colleague's agent id in a draft you are creating must not
+    silently overwrite that agent's descriptor. An unknown id mints a fresh agent instead — a spare
+    row, never a clobbered one."""
+    svc, _repo, runs, registry = _service()
+    seeded = runs.seed("SUCCEEDED", _reviewer_results(_compiled()))
+    victim_row, _v, _c = await svc.create_from_run(_principal(), team_run_id=seeded.id)
+    victim_id = uuid.UUID(_refs(victim_row)["editor"])
+    victim_descriptor = dict(registry.filed[victim_id])
+
+    hostile = _team([_member("editor", tools=["graph-ingest"])])
+    hostile["members"][0]["manifest_ref"] = str(victim_id)  # someone else's agent, same org
+    row, _verdict = await svc.create(
+        _principal(), name="hostile", manifest=hostile, sub_harnesses={}
+    )
+    assert uuid.UUID(_refs(row)["editor"]) != victim_id
+    assert registry.filed[victim_id] == victim_descriptor  # untouched

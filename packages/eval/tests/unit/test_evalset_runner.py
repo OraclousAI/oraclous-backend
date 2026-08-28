@@ -25,7 +25,11 @@ from oraclous_eval.types import Dimension, Rubric
 pytestmark = pytest.mark.unit
 
 _ORG = uuid.UUID("87654321-4321-8765-4321-876543210000")
-_CATALOG = ["web-research", "write"]
+# #694: a member persists to the team's shared knowledge graph, not to a per-org file sandbox
+# that is thrown away. ``write``/``edit`` now BLOCK with F-SUBSTRATE-FILE under the default
+# graph substrate, so these fixtures name the graph tools instead. Nothing under test here is
+# about tool identity — ``write`` was standing in for "some tool this member holds".
+_CATALOG = ["web-research", "graph-ingest"]
 
 
 class _FakeJudge:
@@ -95,7 +99,7 @@ def _good_manifest() -> dict[str, object]:
                 "role": "writer",
                 "kind": "agent",
                 "manifest_ref": "org:c/w@1",
-                "tools": ["write"],
+                "tools": ["graph-ingest"],
                 "depends_on": ["researcher"],
             },
         ],

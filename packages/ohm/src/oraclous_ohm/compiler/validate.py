@@ -14,46 +14,30 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any
+from typing import Any, Literal
 
+from oraclous_ohm._slug import FILE_SUBSTRATE_TOOLS, tool_slug
 from oraclous_ohm.import_ import ImportFlag, assemble_and_report, render_report
 from oraclous_ohm.manifest import OHMMember, OHMOrchestration, OHMTaskInput
 
 _UUID_NS = "00000000-0000-0000-0000-000000000000"
 
 
-def _slug(text: str) -> str:
-    return re.sub(r"[^a-z0-9]+", "-", text.strip().lower()).strip("-")
+#: The canonical tool-name normaliser, now shared with ``seeds`` and ``import_.mapping`` from one
+#: leaf module (#694). It was copied here and inlined in ``seeds`` because ``compiler.validate``
+#: imports ``import_``; the copies drifted on CASE, which is the mechanism of #694. Kept under its
+#: existing private name — callers and the #594 tests import ``_tool_slug`` — but it IS the shared
+#: function now, never a look-alike.
+_tool_slug = tool_slug
 
+Substrate = Literal["graph", "file"]
 
-def _tool_slug(text: str) -> str:
-    """Normalise a tool NAME or a capability REF to one canonical slug so the catalog and the draft
-    compare identically — WITHOUT letting a bogus namespace masquerade as a surveyed bare tool.
-
-    We drop a trailing ``@version`` and ONLY the canonical ``core/`` built-in namespace. If a ``/``
-    still remains the identifier is NON-canonical (a foreign namespace or a nested path); we prefix
-    it with a ``ns--`` marker that a bare slug can never contain (``_slug`` collapses runs of ``-``
-    to one), so it can NEVER collapse to a bare surveyed slug — even when the namespace is
-    punctuation/emoji that ``_slug`` would otherwise erase entirely (``😈/web-research`` and
-    ``.../web-research`` would both bare-slug to ``web-research`` and slip the gate). Thus
-    ``core/web-research@1.0.0`` and ``web-research`` both → ``web-research`` (a drafter that writes
-    the surveyed ref still matches the surveyed name), but ``evil/web-research`` → ``ns--…`` and
-    ``core/web-search@1.0.0`` → ``web-search`` — neither matches a ``web-research`` catalog."""
-    s = text.strip().lower().split("@", 1)[0]
-    if s.startswith("core/"):
-        s = s[len("core/") :]
-    if "/" in s:
-        # non-canonical (foreign namespace / nested path): slug EACH segment and keep them ALL,
-        # joined by ``--`` under an ``ns--`` marker, so it can neither collapse to a bare surveyed
-        # slug NOR to a *different* foreign namespace. If ANY segment slugs to empty — a namespace
-        # or name that ``_slug`` erases (``./x``, ``/x``, ``😈/x``, ``core//x``) — the identifier is
-        # degenerate: return ``""`` so it is DROPPED from the catalog and BLOCKS as a draft, never
-        # collapsing two distinct erasing-namespace forms onto one slug.
-        parts = [_slug(seg) for seg in s.split("/")]
-        if not all(parts):
-            return ""
-        return "ns--" + "--".join(parts)
-    return _slug(s)
+#: The membership set lives in the ``_slug`` leaf, beside the normaliser that compares against it.
+#: Under the graph substrate the catalog no longer offers these (``compiler_onramp.draft_catalog``),
+#: so the drafter cannot choose one — but a draft can still carry one by another route: a hand edit,
+#: a refine op, a team compiled before this slice, or a live-registry capability whose name
+#: collides. This gate is what stops any of those reaching storage (#694).
+_FILE_SUBSTRATE_TOOLS = FILE_SUBSTRATE_TOOLS
 
 
 def _catalog_slugs(catalog: Any) -> set[str]:
@@ -99,11 +83,16 @@ def validate_draft(
     *,
     owner_organization_id: Any,
     name: str = "compiled-team",
+    substrate: Substrate = "graph",
 ) -> dict[str, Any]:
     """Diff a drafted Team Harness against the surveyed ``catalog`` + run the shared dry-run.
 
     Returns ``{"would_block": bool, "blocking": list[str], "report": str}`` — the reviewer ships the
-    draft only when ``would_block`` is False; otherwise it re-drafts (bounded) with ``blocking``."""
+    draft only when ``would_block`` is False; otherwise it re-drafts (bounded) with ``blocking``.
+
+    ``substrate`` defaults to ``graph`` (ADR-040 Decision 7, cloud-first), where a file tool blocks
+    with ``F-SUBSTRATE-FILE``. A default of ``file`` would put a tenant's deliverables in a
+    server-side tmp tree, which is precisely what #694 reports."""
     data: Any
     if isinstance(draft, str):
         # a member's harness output is TEXT (#599): peel the JSON object out of the drafter LLM's
@@ -134,6 +123,28 @@ def validate_draft(
     for m in members:
         for tool in m.tools:
             slug = _tool_slug(tool)
+            # #694: the substrate reason takes PRECEDENCE over capability-absence for the same
+            # tool. Both are true under the graph substrate — the catalog no longer lists ``write``
+            # either — but the reviewer member is a MODEL that re-drafts against ``blocking``, and
+            # "not in the catalog" sends it looking for a typo instead of a substrate. The member
+            # role rides in the message because the rendered blocking line carries the code and the
+            # message only.
+            if substrate == "graph" and slug in _FILE_SUBSTRATE_TOOLS:
+                flags.append(
+                    ImportFlag(
+                        code="F-SUBSTRATE-FILE",
+                        severity="blocking",
+                        member_role=m.role,
+                        message=(
+                            f"member {m.role!r} declares tool {tool!r}, which reads and writes a"
+                            " per-organisation file sandbox that nothing else can see. Under the"
+                            " graph substrate a member persists to the team's shared knowledge"
+                            " graph: use 'graph-ingest' to write and 'knowledge-retriever' /"
+                            " 'find-similar' to read"
+                        ),
+                    )
+                )
+                continue
             if not slug or slug not in allowed:  # an empty-slug tool ("@", "/") also fails closed
                 flags.append(
                     ImportFlag(

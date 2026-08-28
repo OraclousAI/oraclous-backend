@@ -52,7 +52,11 @@ def _agent_manifest(role: str, caps: list[str], cap_id: uuid.UUID) -> dict[str, 
         "capabilities": [{"ref": r, "binding": r.split("/")[-1].split("@")[0]} for r in caps],
         "prompts": [{"role": "primary", "source": "inline", "body": f"You are the {role}."}],
         "runtime": {"entrypoint": "primary"},
-        "actors": [{"name": "primary", "kind": "agent"}],
+        # an OHM actor's field is ``role`` (``OHMActor.role``, min_length=1) — ``build_subharness``
+        # emits ``OHMActor(role="primary", …)``. Spelt ``name`` the fixture does not load, so
+        # ``_enforce_member_ceilings`` rejected every manifest here as an invalid sub-harness before
+        # any of these assertions could be reached (#694/#695 [impl] discovery).
+        "actors": [{"role": "primary", "kind": "agent"}],
     }
 
 
@@ -250,3 +254,129 @@ async def test_a_filed_agent_within_the_member_ceiling_is_admitted() -> None:
         gate_decisions={},
     )
     assert set(repo.rows[row.id].sub_harnesses) == {"editor"}
+
+
+# ── #878 (ruled shape A): the engine binds the caller's model onto a resolved member ───────────
+#
+# Added by `backend-implementer` on the [impl] PR, after the ruling. ADR-050 D3 empties the draft's
+# inline sub-harnesses, and the harness reads a model off the PER-MEMBER document — so a caller had
+# nothing left to write one into and every member of a saved team failed
+# `502: live LLM mode requires a model in the OHM`. The console's binder copies the SAME list into
+# every role, and `test_team_draft_loop_gateway_e2e.py` step 6 does it line for line; this moves
+# that copy behind the seam.
+
+_MODELS = [
+    {
+        "role": "primary",
+        "binding": "openrouter/openai/gpt-4o-mini",
+        "protocol_shape": "openai-compatible",
+        "config": {"credential_id": str(uuid.uuid4())},
+    }
+]
+
+
+def _team_with_models(manifest_ref: str, tools: list[str]) -> dict[str, Any]:
+    doc = _team(manifest_ref, tools)
+    doc["models"] = _MODELS
+    return doc
+
+
+async def test_a_resolved_member_is_given_the_callers_model_binding() -> None:
+    """The whole of #878. Without this the member document carries no model and the run 502s."""
+    registry = _FakeRegistry({_EDITOR_ID: _agent_manifest("editor", [_GRAPH_INGEST], _EDITOR_ID)})
+    svc, repo = _service(registry)
+    row = await svc.create(
+        _principal(),
+        manifest=_team_with_models(str(_EDITOR_ID), ["graph-ingest"]),
+        sub_harnesses={},
+        gate_decisions={},
+    )
+    assert repo.rows[row.id].sub_harnesses["editor"]["models"] == _MODELS
+
+
+async def test_the_binding_does_not_disturb_the_rest_of_the_snapshot() -> None:
+    """It adds one key. The resolved descriptor is otherwise the record of what executed."""
+    filed = _agent_manifest("editor", [_GRAPH_INGEST], _EDITOR_ID)
+    svc, repo = _service(_FakeRegistry({_EDITOR_ID: filed}))
+    row = await svc.create(
+        _principal(),
+        manifest=_team_with_models(str(_EDITOR_ID), ["graph-ingest"]),
+        sub_harnesses={},
+        gate_decisions={},
+    )
+    stored = repo.rows[row.id].sub_harnesses["editor"]
+    assert {k: v for k, v in stored.items() if k != "models"} == filed
+    assert "models" not in filed  # the registry's copy is not mutated
+
+
+async def test_an_inline_sub_harness_keeps_the_binding_the_caller_gave_it() -> None:
+    """A caller that supplied the document bound it already, so the engine does not overwrite it —
+    only a member the engine RESOLVED had nobody to bind it."""
+    own = [{**_MODELS[0], "binding": "openrouter/anthropic/claude-haiku-4-5"}]
+    inline = {**_agent_manifest("editor", [_GRAPH_INGEST], uuid.uuid4()), "models": own}
+    svc, repo = _service(_FakeRegistry({}))
+    row = await svc.create(
+        _principal(),
+        manifest=_team_with_models("org:compiled/editor@1", ["graph-ingest"]),
+        sub_harnesses={"editor": inline},
+        gate_decisions={},
+    )
+    assert repo.rows[row.id].sub_harnesses["editor"]["models"] == own
+
+
+async def test_a_team_with_no_model_binding_resolves_exactly_as_before() -> None:
+    """Default-OFF: a manifest carrying no ``models`` adds no key, so a team that bound its models
+    some other way renders byte-for-byte as it did."""
+    filed = _agent_manifest("editor", [_GRAPH_INGEST], _EDITOR_ID)
+    svc, repo = _service(_FakeRegistry({_EDITOR_ID: filed}))
+    row = await svc.create(
+        _principal(),
+        manifest=_team(str(_EDITOR_ID), ["graph-ingest"]),  # no models[]
+        sub_harnesses={},
+        gate_decisions={},
+    )
+    assert repo.rows[row.id].sub_harnesses["editor"] == filed
+
+
+@pytest.mark.security
+async def test_the_binding_does_not_widen_a_resolved_member_past_its_ceiling() -> None:
+    """The ADR-032 re-check runs over the document that is actually stored, binding included."""
+    widened = _agent_manifest("editor", [_GRAPH_INGEST, "core/bash@1"], _EDITOR_ID)
+    svc, _repo = _service(_FakeRegistry({_EDITOR_ID: widened}))
+    with pytest.raises(TeamRunError) as exc:
+        await svc.create(
+            _principal(),
+            manifest=_team_with_models(str(_EDITOR_ID), ["graph-ingest"]),
+            sub_harnesses={},
+            gate_decisions={},
+        )
+    assert exc.value.status_code == 422
+
+
+@pytest.mark.security
+async def test_the_callers_binding_replaces_one_the_filed_agent_already_carried() -> None:
+    """The ruling's recorded COST, pinned as a decision rather than left as prose (#878).
+
+    An agent acquires a ``models`` key the ordinary way: it is filed from a draft whose
+    sub-harnesses had a model bound into them client-side at GO. So a filed agent carrying its own
+    binding is the normal case, not a contrived one, and the ruling says the caller's GO-time
+    binding wins for every resolved member — which is what the console's unconditional overwrite
+    already made true.
+
+    Every other test here starts from an agent with NO ``models``, so they all exercise insertion.
+    This is the replacement half, and it is the half a future reader could delete without reddening
+    anything: silent, paid-for behaviour, changed by accident."""
+    stale = [{**_MODELS[0], "config": {"credential_id": str(uuid.uuid4())}}]
+    filed = {**_agent_manifest("editor", [_GRAPH_INGEST], _EDITOR_ID), "models": stale}
+    svc, repo = _service(_FakeRegistry({_EDITOR_ID: filed}))
+    row = await svc.create(
+        _principal(),
+        manifest=_team_with_models(str(_EDITOR_ID), ["graph-ingest"]),
+        sub_harnesses={},
+        gate_decisions={},
+    )
+    stored = repo.rows[row.id].sub_harnesses["editor"]["models"]
+    assert stored == _MODELS
+    # the stale credential is GONE, not merged beside the caller's — a run must never reach for a
+    # credential its caller did not present
+    assert stale[0]["config"]["credential_id"] not in str(stored)
