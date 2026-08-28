@@ -238,3 +238,165 @@ async def test_member_grounding_counts_surface_on_the_result() -> None:
     )
     # Only the tool-declaring member is graded; the zero-tools member contributes no bucket.
     assert res.member_grounding == {"analyzer": {"grounded": 1, "total": 1}}
+
+
+# --- #685: the message must name what actually failed -------------------------------------------
+#
+# Live 2026-08-25, run eb08c17d (the "Validation Desk"): the researcher made four search calls,
+# every one came back 432 — the search provider's plan/usage-limit status — and it answered
+# honestly that it had reached no sources. The run failed with:
+#
+#     grounding: no driving_signals: the member made claims nothing backs
+#
+# The member made no claims. It reported failure, with receipts for the failures. FAILING it is
+# correct and stays correct — with no successful call there is nothing to ground (fail-closed).
+# The defect is diagnostic: the operator-facing sentence accuses the member of fabrication, which
+# sent the investigation into the grounding rules when the real cause was one billing fact.
+#
+# `validate_grounding` currently collapses three different empty-signal conditions into that one
+# accusation. These tests pull them apart:
+#
+#   A. tool calls were made, NONE succeeded  -> say so, and name the last failure
+#   B. no tool call was made at all          -> say that instead
+#   C. a call DID succeed, still no claims   -> the old wording is accurate; keep it
+#
+# Paired with #875 (which classifies the provider status), case A is what finally puts the real
+# cause — an exhausted search key — on the run page.
+
+_OLD_ACCUSATION = "made claims nothing backs"
+
+
+def _errored_steps(n: int = 1, *, detail: str = '{"error":"unknown_tool"}') -> list[dict[str, Any]]:
+    return [
+        {
+            "index": i,
+            "kind": "tool",
+            "name": "web.search",
+            "status": "error",
+            "tool_call_id": f"tc-{i}",
+            "detail": detail,
+        }
+        for i in range(1, n + 1)
+    ]
+
+
+def test_all_calls_errored_is_not_reported_as_fabrication() -> None:
+    """Case A. The member cited its failures honestly; the message must not call that a claim."""
+    from oraclous_ohm.envelope import validate_grounding
+
+    errors = validate_grounding([], _errored_steps(4))
+    assert errors, "no successful call means nothing to ground — this must still FAIL"
+    message = " ".join(errors)
+    assert _OLD_ACCUSATION not in message
+
+
+def test_all_calls_errored_names_the_count_and_the_failing_tool() -> None:
+    """An operator reading it should know how many calls ran and which tool broke."""
+    from oraclous_ohm.envelope import validate_grounding
+
+    message = " ".join(validate_grounding([], _errored_steps(4)))
+    assert "4" in message, f"the call count is missing from {message!r}"
+    assert "web.search" in message, f"the failing tool is missing from {message!r}"
+
+
+def test_all_calls_errored_carries_the_last_error() -> None:
+    """The live case: this is where the real cause reaches the run page.
+
+    With #875 landed, a spent search key produces exactly this detail, so the operator reads
+    'quota' instead of being told the member fabricated something.
+    """
+    from oraclous_ohm.envelope import validate_grounding
+
+    steps = _errored_steps(2, detail='{"error":"the web-search credential has no remaining quota"}')
+    message = " ".join(validate_grounding([], steps))
+    assert "quota" in message.lower()
+
+
+def test_the_last_error_is_the_last_one_not_the_first() -> None:
+    """'last error' has to mean the most recent attempt, or it names the wrong cause."""
+    from oraclous_ohm.envelope import validate_grounding
+
+    steps = _errored_steps(1, detail='{"error":"FIRST-FAILURE"}')
+    steps += [
+        {
+            "index": 2,
+            "kind": "tool",
+            "name": "web.search",
+            "status": "error",
+            "tool_call_id": "tc-2",
+            "detail": '{"error":"LAST-FAILURE"}',
+        }
+    ]
+    message = " ".join(validate_grounding([], steps))
+    assert "LAST-FAILURE" in message
+    assert "FIRST-FAILURE" not in message
+
+
+def test_the_error_excerpt_is_bounded() -> None:
+    """A tool result can be arbitrarily long. The run page must not swallow one whole."""
+    from oraclous_ohm.envelope import validate_grounding
+
+    steps = _errored_steps(1, detail="x" * 10_000)
+    message = " ".join(validate_grounding([], steps))
+    assert len(message) < 600, (
+        f"the message grew to {len(message)} chars — the excerpt is unbounded"
+    )
+
+
+def test_no_tool_call_at_all_reads_differently_from_all_calls_failed() -> None:
+    """Case B. 'It never tried' and 'it tried four times and every one broke' are different
+    problems with different fixes, and the operator has to be able to tell them apart."""
+    from oraclous_ohm.envelope import validate_grounding
+
+    never_tried = " ".join(validate_grounding([], []))
+    all_failed = " ".join(validate_grounding([], _errored_steps(4)))
+    assert never_tried, "a member that called nothing still has nothing to ground — still FAILS"
+    assert never_tried != all_failed
+    assert _OLD_ACCUSATION not in never_tried
+
+
+def test_a_successful_call_with_no_claims_keeps_the_old_wording() -> None:
+    """Case C. Here the accusation is ACCURATE — the member had a working call and cited nothing.
+    #685 narrows that sentence to the case it was written for; it does not delete it."""
+    from oraclous_ohm.envelope import validate_grounding
+
+    message = " ".join(validate_grounding([], _ok_steps()))
+    assert _OLD_ACCUSATION in message
+
+
+def test_a_mixed_trace_with_one_ok_call_is_still_case_c() -> None:
+    """One call succeeded among failures, so there WAS something to cite. Not case A."""
+    from oraclous_ohm.envelope import validate_grounding
+
+    message = " ".join(validate_grounding([], _errored_steps(3) + _ok_steps()))
+    assert _OLD_ACCUSATION in message
+
+
+def test_llm_steps_do_not_count_as_attempted_tool_calls() -> None:
+    """A trace of pure LLM turns is case B — the member never called a tool at all."""
+    from oraclous_ohm.envelope import validate_grounding
+
+    llm_only = [{"index": 1, "kind": "llm", "name": "gpt", "status": "answer"}]
+    assert " ".join(validate_grounding([], llm_only)) == " ".join(validate_grounding([], []))
+
+
+async def test_the_run_page_message_names_the_real_cause() -> None:
+    """End to end through run_team — this is the string the operator actually reads.
+
+    Reproduces run eb08c17d: four failed searches, an honest 'I reached nothing' answer.
+    """
+    steps = _errored_steps(4, detail='{"error":"the web-search credential has no remaining quota"}')
+    res = await run_team(
+        _team([_m("researcher", tools=["web"])]),
+        _dispatch_returning(
+            {
+                "output": "I could not access any sources — every search failed.",
+                "status": "SUCCEEDED",
+                "steps": steps,
+            }
+        ),
+    )
+    assert res.member_status == {"researcher": "failed"}  # fail-closed, unchanged
+    message = res.member_errors["researcher"]
+    assert _OLD_ACCUSATION not in message
+    assert "quota" in message.lower()
