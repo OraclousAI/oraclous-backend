@@ -43,8 +43,16 @@ _OBJECTIVE = (
     "Use exactly two members: one researches the reasons, one writes the briefing. Keep it under "
     "300 words. The member who writes the briefing MUST save it to the team's shared knowledge "
     "graph with the graph-ingest tool — that is the deliverable. Do not publish, deliver, send, "
-    "or push it anywhere outside Oraclous, and give no member a delivery or publishing tool."
+    "or push it anywhere outside Oraclous. Use ONLY these tools and no others: web-research, "
+    "graph-ingest, knowledge-retriever. Give no member any other tool for any reason."
 )
+
+#: The tools this test's user can actually connect: one needs their search key, the rest need none.
+#: Naming them in the objective is what a real user does when their organisation has connected a
+#: known set — and it is what keeps this proof deterministic. Left open, the drafter reached for a
+#: delivery connector in one run out of three (``github-sink``), which needs a credential the test
+#: has no way to supply, so the run died on a missing key rather than on anything under test.
+_CONNECTABLE = {"web-research", "graph-ingest", "knowledge-retriever", "find-similar", "bash"}
 
 
 def _model_doc(cred_id: str) -> dict[str, Any]:
@@ -191,46 +199,82 @@ def test_a_compiled_team_writes_to_the_graph_and_its_agents_exist_afterwards(
     reread = again.json()["draft"]["manifest"]["members"]
     assert {m["role"]: str(m["manifest_ref"]) for m in reread if m["role"] in refs} == refs
 
-    # ── 4. run the saved team on a FRESH graph ───────────────────────────────────────────────
-    # The user's model binding is applied per member, by reading each filed agent back through the
-    # public capabilities API and writing the binding into it. That read is what a caller has to do
-    # while the draft no longer carries the agents inline: the console's own binder walks
-    # ``sub_harnesses``, which is now empty, so a saved team otherwise runs with no model and every
-    # member fails 502 "live LLM mode requires a model in the OHM" (reproduced on this stack).
-    # WHERE that binding belongs is a cross-repo shape and is not settled here — Contract #878.
-    _connect_tools(c, user, {t for m in members for t in (m.get("tools") or [])})
+    # ── 4. run the saved team on a FRESH graph, EXACTLY as the console posts it ──────────────
+    # ``sub_harnesses`` is EMPTY and stays empty, and that is the whole point. The draft no longer
+    # carries its agents inline (ADR-050 D3), so the console has nothing to put there and every
+    # member must be RESOLVED from its manifest_ref at run creation. An earlier version of this
+    # test supplied documents here; an inline sub-harness wins, so the resolution seam was never
+    # reached and #878's binding branch never executed.
+    #
+    # The model binding therefore rides on ``manifest.models[]`` alone, and the engine threads it
+    # onto each resolved member (#878, ruled shape A). Without it every member fails
+    # 502 "live LLM mode requires a model in the OHM", which is what this stack did before the
+    # ruling landed.
+    declared = {t for m in members for t in (m.get("tools") or [])}
+    # A tool outside the connectable set needs a credential this test cannot supply, so the run
+    # would die on a missing key rather than on anything under test. The objective names the
+    # allowed tools; a compile that ignores it is a defect worth failing on, LOUDLY, rather than
+    # a red run that reads as if the substrate or the binding were broken.
+    assert declared <= _CONNECTABLE, (
+        f"the compiled team declared {sorted(declared - _CONNECTABLE)}, which the objective"
+        f" excluded and this test cannot connect — re-run, or widen _CONNECTABLE deliberately"
+    )
+    _connect_tools(c, user, declared)
 
     nonce = f"nonce-{uuid.uuid4().hex[:12]}"
     manifest = dict(draft["manifest"])
     manifest["models"] = [_model_doc(cred)]
-    bound_subs: dict[str, Any] = {}
-    for role, ref in refs.items():
-        agent = c.get(f"/api/v1/capabilities/{ref}").json()["descriptor"]
-        bound_subs[role] = {**agent, "models": [_model_doc(cred)]}
+    # read the filed agents ONLY to assert what they were granted — none of this is posted
+    granted_by_role = {
+        role: c.get(f"/api/v1/capabilities/{ref}").json()["descriptor"]
+        for role, ref in refs.items()
+    }
     gid = c.post("/api/v1/graphs", json={"name": "compiled-team-deliverables"}).json()["id"]
     created = c.post(
         "/v1/engine/team-runs",
         json={
             "manifest": manifest,
-            "sub_harnesses": bound_subs,
+            "sub_harnesses": {},  # nothing inline: every member resolves from its reference
             "gate_decisions": {},
             "graph_id": gid,
-            "inputs": {"task": f"{_OBJECTIVE} Include the token {nonce} verbatim in your answer."},
+            # RULE 8's marker leads, verbatim and alone, the way the doefin proof weaves it into
+            # each agent's prompt. Buried at the end of a long objective a small model drops it,
+            # and a dropped marker reads as "the harness was fake" when it only means the model
+            # skimmed.
+            "inputs": {
+                "task": (
+                    f"IMPORTANT: include the exact token {nonce} verbatim in your output.\n\n"
+                    f"{_OBJECTIVE}"
+                )
+            },
         },
     )
     assert created.status_code == 202, created.text
-    done = _poll(c, str(created.json()["id"]))
-    assert done["state"] == "SUCCEEDED", f"the saved team must run — {done}"
+    run_id = str(created.json()["id"])
+    done = _poll(c, run_id)
 
-    # RULE 8: only a real model echoes the per-run token. A fake-mode run cannot, so it is no proof.
-    assert nonce in str(done["results"]), (
-        f"token {nonce!r} in no member result — was the harness LIVE? (fake = no proof)"
+    # #878 shape A, asserted BEFORE the terminal state and independently of it. This is the whole
+    # point of the ruling, and it must not be masked by a run that failed for some other reason:
+    # every member resolved from its reference got the caller's model, or none of them did.
+    assert "requires a model in the OHM" not in str(done.get("error_message") or ""), (
+        f"a resolved member was dispatched with no model — the binding did not reach it: {done}"
     )
+
+    # a real model is graded on evidence it cites, and it sometimes cites a call it did not make.
+    # The established affordance for that here is a re-run, which re-drives ONLY the failures
+    # (the same shape test_doefin_team_byom_graph uses).
+    for _ in range(3):
+        if done["state"] == "SUCCEEDED":
+            break
+        assert done["state"] == "FAILED", done  # only a FAILED run is re-runnable
+        assert c.post(f"/v1/engine/team-runs/{run_id}/rerun").status_code == 202
+        done = _poll(c, run_id)
+    assert done["state"] == "SUCCEEDED", f"the saved team must run — {done}"
 
     # #694: every member was granted a GRAPH capability, never a tmp-sandbox file tool. Read off
     # the filed agents through the public API — the same documents the run dispatched.
     granted = {
-        role: [cap["ref"] for cap in bound_subs[role].get("capabilities", [])] for role in refs
+        role: [cap["ref"] for cap in granted_by_role[role].get("capabilities", [])] for role in refs
     }
     flat = [ref for refs_ in granted.values() for ref in refs_]
     assert not [r for r in flat if r in ("core/write@1", "core/edit@1", "core/read@1")], (
@@ -248,3 +292,11 @@ def test_a_compiled_team_writes_to_the_graph_and_its_agents_exist_afterwards(
     )
     served = [c.get(f"/v1/artifacts/{a['id']}").json() for a in listed]
     assert any(a.get("content") for a in served), f"nothing served verbatim off the graph: {listed}"
+
+    # RULE 8: only a real model carries the per-run token through. A fake-mode run cannot produce
+    # it anywhere, so this is the proof the harness was LIVE. Both surfaces count — a member's
+    # answer or what it persisted — because which one carries it depends on where the model chose
+    # to put it, and a re-run re-drives members whose earlier answer is then replaced.
+    assert nonce in str(done["results"]) + str(served), (
+        f"token {nonce!r} in no member result and on no artifact — was the harness LIVE?"
+    )

@@ -351,3 +351,32 @@ async def test_the_binding_does_not_widen_a_resolved_member_past_its_ceiling() -
             gate_decisions={},
         )
     assert exc.value.status_code == 422
+
+
+@pytest.mark.security
+async def test_the_callers_binding_replaces_one_the_filed_agent_already_carried() -> None:
+    """The ruling's recorded COST, pinned as a decision rather than left as prose (#878).
+
+    An agent acquires a ``models`` key the ordinary way: it is filed from a draft whose
+    sub-harnesses had a model bound into them client-side at GO. So a filed agent carrying its own
+    binding is the normal case, not a contrived one, and the ruling says the caller's GO-time
+    binding wins for every resolved member — which is what the console's unconditional overwrite
+    already made true.
+
+    Every other test here starts from an agent with NO ``models``, so they all exercise insertion.
+    This is the replacement half, and it is the half a future reader could delete without reddening
+    anything: silent, paid-for behaviour, changed by accident."""
+    stale = [{**_MODELS[0], "config": {"credential_id": str(uuid.uuid4())}}]
+    filed = {**_agent_manifest("editor", [_GRAPH_INGEST], _EDITOR_ID), "models": stale}
+    svc, repo = _service(_FakeRegistry({_EDITOR_ID: filed}))
+    row = await svc.create(
+        _principal(),
+        manifest=_team_with_models(str(_EDITOR_ID), ["graph-ingest"]),
+        sub_harnesses={},
+        gate_decisions={},
+    )
+    stored = repo.rows[row.id].sub_harnesses["editor"]["models"]
+    assert stored == _MODELS
+    # the stale credential is GONE, not merged beside the caller's — a run must never reach for a
+    # credential its caller did not present
+    assert stale[0]["config"]["credential_id"] not in str(stored)
