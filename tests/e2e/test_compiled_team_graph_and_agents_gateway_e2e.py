@@ -35,17 +35,33 @@ _TAVILY = os.environ.get("TAVILY_API_KEY", "")
 requires_byom = pytest.mark.skipif(_OR_KEY is None, reason="OPENROUTER_API_KEY unset (real BYOM)")
 _MODEL = "openrouter/openai/gpt-4o-mini"
 
+
 # Deliberately steered away from any DELIVERY connector: the drafter otherwise reaches for one
 # (``github-sink`` on the first attempt), and a fresh org has no credential configured for it, so
 # the run fails on a missing credential rather than on anything this slice is about.
-_OBJECTIVE = (
+def _objective(nonce: str) -> str:
+    """The user's prose, carrying RULE 8's marker.
+
+    It goes in HERE, before the compile, so it reaches each generated agent's own prompt body —
+    the same mechanism ``test_doefin_team_byom_graph`` uses when it appends the directive to every
+    ``.claude/agents`` file. Delivered instead as the per-run task it arrives as one line among
+    many and a small model skims past it, and a dropped marker reads as "the harness was fake"
+    when it only means the model did not read carefully."""
+    return _OBJECTIVE_TEMPLATE.format(nonce=nonce)
+
+
+_OBJECTIVE_TEMPLATE = (
+    "EVERY member must include the exact token {nonce} verbatim in its output. "
     "Write a short plain-text briefing on why a small team should keep a written decision log. "
     "Use exactly two members: one researches the reasons, one writes the briefing. Keep it under "
     "300 words. The member who writes the briefing MUST save it to the team's shared knowledge "
     "graph with the graph-ingest tool — that is the deliverable. Do not publish, deliver, send, "
     "or push it anywhere outside Oraclous. Use ONLY these tools and no others: web-research, "
-    "graph-ingest, knowledge-retriever. Give no member any other tool for any reason."
+    "graph-ingest, knowledge-retriever. Give no member any other tool for any reason. "
+    "Repeat the token {nonce} in the briefing itself."
 )
+#: the tool-choice steering, without a marker — for assertions that quote the objective back
+_OBJECTIVE = _OBJECTIVE_TEMPLATE.format(nonce="<none>")
 
 #: The tools this test's user can actually connect: one needs their search key, the rest need none.
 #: Naming them in the objective is what a real user does when their organisation has connected a
@@ -147,6 +163,7 @@ def _connect_tools(c: httpx.Client, user: dict, tools: set[str]) -> None:
 def test_a_compiled_team_writes_to_the_graph_and_its_agents_exist_afterwards(
     register: Callable[..., dict], gateway_client: Callable[[str], httpx.Client]
 ) -> None:
+    nonce = f"nonce-{uuid.uuid4().hex[:12]}"
     user = register(f"compiled{uuid.uuid4().hex[:10]} u")
     c = gateway_client(user["token"])
     cred = _cred(c, user)
@@ -156,7 +173,7 @@ def test_a_compiled_team_writes_to_the_graph_and_its_agents_exist_afterwards(
     started = c.post(
         "/v1/engine/compiler-runs",
         json={
-            "objective": _OBJECTIVE,
+            "objective": _objective(nonce),
             "models": [_model_doc(cred)],
             "graph_id": compile_graph,
         },
@@ -221,7 +238,6 @@ def test_a_compiled_team_writes_to_the_graph_and_its_agents_exist_afterwards(
     )
     _connect_tools(c, user, declared)
 
-    nonce = f"nonce-{uuid.uuid4().hex[:12]}"
     manifest = dict(draft["manifest"])
     manifest["models"] = [_model_doc(cred)]
     # read the filed agents ONLY to assert what they were granted — none of this is posted
@@ -237,16 +253,7 @@ def test_a_compiled_team_writes_to_the_graph_and_its_agents_exist_afterwards(
             "sub_harnesses": {},  # nothing inline: every member resolves from its reference
             "gate_decisions": {},
             "graph_id": gid,
-            # RULE 8's marker leads, verbatim and alone, the way the doefin proof weaves it into
-            # each agent's prompt. Buried at the end of a long objective a small model drops it,
-            # and a dropped marker reads as "the harness was fake" when it only means the model
-            # skimmed.
-            "inputs": {
-                "task": (
-                    f"IMPORTANT: include the exact token {nonce} verbatim in your output.\n\n"
-                    f"{_OBJECTIVE}"
-                )
-            },
+            "inputs": {"task": _objective(nonce)},
         },
     )
     assert created.status_code == 202, created.text
