@@ -1,16 +1,16 @@
-"""#695 R8 + #878 — a saved team's agents exist, and a run resolves them with the caller's model.
+"""#878 — a run resolves a saved team's filed agents and binds them with the caller's model.
 
 The half of the journey that does NOT depend on a model drafting a team. It hand-authors the team,
 which is the same `POST /v1/engine/team-drafts` a console user hits when they build one rather than
 compile one, and it is what makes this a gate rather than a coin flip: no drafter means no tool
 roulette, one member means no cascade, and the only model turn is the member doing its own job.
 
+The FILING half of #695 R8 — the agent is listed and its reference resolves — needs no model and is
+gated keyless in `test_saved_team_file_tool_substrate_gateway_e2e.py`. This file keeps only what a
+real model is genuinely required for, so the key-gated leg stays as small as it can be.
+
 What it proves, through the application-gateway on `:8006` only, with a real model:
 
-* **#695 R8** — saving files one `kind=harness` capability per agent member, the member's
-  `manifest_ref` is the returned id, and it resolves through `GET /api/v1/capabilities/{id}`. Before
-  this the ref was `org:compiled/<role>@1`, which resolved to nothing, so the agents page was empty
-  and the generated agents died with the run.
 * **#878 (ruled shape A)** — the draft no longer carries its agents inline (ADR-050 D3), so the run
   posts `sub_harnesses={}` and every member is RESOLVED from its reference. The model binding rides
   on `manifest.models[]` alone and the engine threads it onto each resolved member. Without that,
@@ -131,14 +131,6 @@ def _connect(c: httpx.Client, tool: str) -> None:
     assert created.status_code == 201, created.text
 
 
-def _library(c: httpx.Client) -> list[dict[str, Any]]:
-    """The org's filed agents — what ``/app/agents`` reads."""
-    got = c.get("/api/v1/capabilities", params={"kind": "harness"})
-    assert got.status_code == 200, got.text
-    rows: list[dict[str, Any]] = got.json()["capabilities"]
-    return rows
-
-
 def _poll(c: httpx.Client, run_id: str, tries: int = 120) -> dict[str, Any]:
     row: dict[str, Any] = {}
     for _ in range(tries):
@@ -171,37 +163,12 @@ def test_a_saved_team_files_its_agents_and_runs_them_with_the_callers_model(
     # ADR-050 D3 — one source of truth: the generated body is NOT kept beside the reference
     assert draft["sub_harnesses"] == {}, draft["sub_harnesses"]
 
-    # ── 2. #695 R8: the agent is in the library and its reference resolves ────────────────────
-    member = draft["manifest"]["members"][0]
-    ref = str(member["manifest_ref"])
+    # The FILING half — the agent is listed, its reference resolves, and a re-save refreshes it —
+    # needs no model, so it is gated keyless in
+    # ``test_saved_team_file_tool_substrate_gateway_e2e.py`` rather than repeated here behind a key.
+    # This test keeps only what a real model is actually required for.
+    ref = str(draft["manifest"]["members"][0]["manifest_ref"])
     assert "org:x/" not in ref, f"the member still carries its pre-save ref {ref!r}"
-
-    assert ref in {str(r["id"]) for r in _library(c)}, (
-        "the agent is not listed for the organisation — the agents page reads this"
-    )
-
-    resolved = c.get(f"/api/v1/capabilities/{ref}")
-    assert resolved.status_code == 200, resolved.text
-    descriptor = resolved.json()["descriptor"]
-    assert descriptor["metadata"]["kind"] == "agent", descriptor["metadata"]
-    assert descriptor["metadata"]["name"] == "writer", descriptor["metadata"]
-
-    # #694: it was granted the GRAPH capability at its SEEDED ref, never a tmp-sandbox file tool
-    assert [cap["ref"] for cap in descriptor["capabilities"]] == [_GRAPH_INGEST], descriptor
-
-    # Re-saving the SAME draft refreshes its agent rather than minting a second one beside it.
-    # It has to be the same draft: a fresh POST has no stored draft to reuse an id from, so it
-    # mints by design (an id on a request body is never trusted — the same-org overwrite guard).
-    # An earlier version of this check POSTed a second time and counted two rows, which proved
-    # nothing: ``_team`` mints a new ``metadata.id`` per call, so it was comparing two different
-    # teams that had each correctly filed one agent.
-    replaced = c.put(
-        f"/v1/engine/team-drafts/{draft['id']}",
-        json={"name": "saved team, renamed", "manifest": draft["manifest"], "sub_harnesses": {}},
-    )
-    assert replaced.status_code == 200, replaced.text
-    assert str(replaced.json()["draft"]["manifest"]["members"][0]["manifest_ref"]) == ref
-    assert {str(r["id"]) for r in _library(c)} == {ref}, "the re-save minted a second agent"
 
     # ── 3. #878: run it EXACTLY as the console posts it — nothing inline ──────────────────────
     _connect(c, "graph-ingest")
