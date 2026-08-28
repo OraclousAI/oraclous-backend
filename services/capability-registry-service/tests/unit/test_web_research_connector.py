@@ -99,13 +99,57 @@ async def test_search_missing_query_is_rejected() -> None:
 
 async def test_search_provider_error_is_mapped_without_leaking_the_body() -> None:
     def handler(_req: httpx.Request) -> httpx.Response:
-        return httpx.Response(401, json={"error": "invalid key tvly-LEAKED"})
+        return httpx.Response(500, json={"error": "upstream blew up on tvly-LEAKED"})
 
     ex = _connector(handler)
     res = await ex.execute({"operation": "search", "query": "q"}, _ctx(with_key=True))
     assert not res.success and res.error_type == "PROVIDER_HTTP_ERROR"
-    assert res.metadata.get("status_code") == 401
+    assert res.metadata.get("status_code") == 500
     assert "LEAKED" not in (res.error_message or "")
+
+
+# --- #875: the connector hands the CLASSIFIED failure onward, it does not re-flatten it ---------
+
+
+@pytest.mark.parametrize(
+    ("status", "expected_type"),
+    [
+        (432, "PROVIDER_QUOTA_EXHAUSTED"),
+        (429, "PROVIDER_RATE_LIMITED"),
+        (433, "PROVIDER_RATE_LIMITED"),
+        (401, "PROVIDER_AUTH_FAILED"),
+        (403, "PROVIDER_AUTH_FAILED"),
+        (500, "PROVIDER_HTTP_ERROR"),
+    ],
+)
+async def test_search_passes_the_classified_failure_through(
+    status: int, expected_type: str
+) -> None:
+    """Whatever the provider decided a status means, the caller above still sees it."""
+
+    def handler(_req: httpx.Request) -> httpx.Response:
+        return httpx.Response(status, json={"detail": "tvly-LEAKED", "query": "SECRET-QUERY"})
+
+    ex = _connector(handler)
+    res = await ex.execute({"operation": "search", "query": "q"}, _ctx(with_key=True))
+    assert not res.success
+    assert res.error_type == expected_type
+    assert res.metadata.get("status_code") == status
+    message = res.error_message or ""
+    assert "LEAKED" not in message and "SECRET-QUERY" not in message
+
+
+async def test_exhausted_quota_is_not_reported_as_a_missing_credential() -> None:
+    """The key IS present and IS valid — it just has no credit left. Confusing the two sends the
+    operator to re-enter a key that was never the problem (live 2026-08-25, run eb08c17d)."""
+
+    def handler(_req: httpx.Request) -> httpx.Response:
+        return httpx.Response(432, json={})
+
+    ex = _connector(handler)
+    res = await ex.execute({"operation": "search", "query": "q"}, _ctx(with_key=True))
+    assert res.error_type not in {"MISSING_CREDENTIAL", "PROVIDER_AUTH_FAILED"}
+    assert res.error_type == "PROVIDER_QUOTA_EXHAUSTED"
 
 
 async def test_search_unknown_provider_override_fails_closed() -> None:
