@@ -317,6 +317,7 @@ def test_the_last_error_is_the_last_one_not_the_first() -> None:
     from oraclous_ohm.envelope import validate_grounding
 
     steps = _errored_steps(1, detail='{"error":"FIRST-FAILURE"}')
+    steps[0]["name"] = "github.list_commits"  # a different tool, so ordering can't pass by luck
     steps += [
         {
             "index": 2,
@@ -333,12 +334,21 @@ def test_the_last_error_is_the_last_one_not_the_first() -> None:
 
 
 def test_the_error_excerpt_is_bounded() -> None:
-    """A tool result can be arbitrarily long. The run page must not swallow one whole."""
+    """A tool result can be arbitrarily long. The run page must not swallow one whole.
+
+    300, not 600 (ruled on review). Two bounds sit downstream of this one. The stored detail is
+    already capped at 500 where the trace is built, so a 600-char message would admit the whole
+    body plus a frame — "a bounded excerpt" and "all of it" would be the same implementation.
+    More importantly every failed member shares ONE 2000-char budget on the run page, so a
+    generous per-member message silently cuts later members off the page entirely. At 300 six
+    failed members still fit, and the live payload ("the web-search credential has no remaining
+    quota") is 47 characters — roughly four times the real signal is still available.
+    """
     from oraclous_ohm.envelope import validate_grounding
 
     steps = _errored_steps(1, detail="x" * 10_000)
     message = " ".join(validate_grounding([], steps))
-    assert len(message) < 600, (
+    assert len(message) < 300, (
         f"the message grew to {len(message)} chars — the excerpt is unbounded"
     )
 
@@ -365,11 +375,29 @@ def test_a_successful_call_with_no_claims_keeps_the_old_wording() -> None:
 
 
 def test_a_mixed_trace_with_one_ok_call_is_still_case_c() -> None:
-    """One call succeeded among failures, so there WAS something to cite. Not case A."""
+    """One call succeeded among failures, so there WAS something to cite. Not case A.
+
+    This trace also guards the excerpt itself. An errored step's ``detail`` is the connector's own
+    diagnostic, which is what the excerpt ruling covers. An OK step's ``detail`` is the opposite
+    thing — the tool's RESULT: retrieved document text, search hits, a customer's rows. That must
+    never reach the run page. An implementation reaching for "the last step's detail" rather than
+    "the last ERRORED step's detail" would leak it, and would pass every other test here.
+    """
     from oraclous_ohm.envelope import validate_grounding
 
-    message = " ".join(validate_grounding([], _errored_steps(3) + _ok_steps()))
+    ok_with_payload = [
+        {
+            "index": 4,
+            "kind": "tool",
+            "name": "github.list_commits",
+            "status": "ok",
+            "tool_call_id": "tc-ok",
+            "detail": '{"rows":[{"customer":"RETRIEVED-PAYLOAD"}]}',
+        }
+    ]
+    message = " ".join(validate_grounding([], _errored_steps(3) + ok_with_payload))
     assert _OLD_ACCUSATION in message
+    assert "RETRIEVED-PAYLOAD" not in message, "an OK step's result payload must never be excerpted"
 
 
 def test_llm_steps_do_not_count_as_attempted_tool_calls() -> None:
