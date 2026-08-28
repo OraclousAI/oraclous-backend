@@ -70,9 +70,19 @@ def _ok_tool_call_ids(tool_steps: list[dict[str, Any]] | None) -> set[str]:
     return ids
 
 
-def _tool_steps(tool_steps: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
-    """The member's TOOL steps, in trace order. An llm turn is not an attempted tool call."""
-    return [s for s in (tool_steps or []) if isinstance(s, dict) and s.get("kind") == "tool"]
+def _split_tool_steps(
+    tool_steps: list[dict[str, Any]] | None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """``(succeeded, failed)`` TOOL steps of the member's trace, in order. An llm turn is neither.
+
+    Split on ``status`` alone. A step's ``tool_call_id`` says whether a CLAIM can resolve against
+    it (``_ok_tool_call_ids``); it says nothing about whether the call ran, and it is nullable in
+    the stored trace — so keying the two questions off the same set would let an ``ok`` step
+    carrying no id be reported as a failure and have its RESULT payload excerpted.
+    """
+    steps = [s for s in (tool_steps or []) if isinstance(s, dict) and s.get("kind") == "tool"]
+    succeeded = [s for s in steps if s.get("status") == "ok"]
+    return succeeded, [s for s in steps if s.get("status") != "ok"]
 
 
 def _no_successful_call_message(errored: list[dict[str, Any]]) -> str:
@@ -82,10 +92,10 @@ def _no_successful_call_message(errored: list[dict[str, Any]]) -> str:
     old accusation points the operator at the grounding rules instead of at the real cause (live
     run ``eb08c17d``: four searches, every one a spent-quota status from the search provider).
 
-    The excerpt is taken ONLY from a step whose ``status == "error"``. That detail is the
-    connector's own diagnostic, already redacted and capped where the trace is built. An ``ok``
-    step's ``detail`` is the opposite object — the tool's RESULT payload (retrieved text, customer
-    rows) — and it must never reach the run page (§11).
+    Every step handed here is a NON-ok one (``_split_tool_steps``), so the excerpt can only ever
+    be a failed call's ``detail`` — the connector's own diagnostic, already redacted and capped
+    where the trace is built. An ``ok`` step's ``detail`` is the opposite object: the tool's RESULT
+    payload (retrieved text, customer rows), which must never reach the run page (§11).
 
     Bounded at ``_MESSAGE_CAP``: every failed member of a run shares ONE 2000-char run-page string
     (``team_run_service`` joins them), so a generous per-member sentence silently cuts later
@@ -126,18 +136,18 @@ def validate_grounding(
     ERRORED (run ``1fe1bcb5``'s collector cited an ``unknown_tool`` failure as its evidence).
     """
     signals = [s for s in (driving_signals or []) if isinstance(s, dict)]
-    ok_ids = _ok_tool_call_ids(tool_steps)
     if not signals:
         # #685: three different conditions used to share one accusing sentence. They have three
         # different owners — fix the credential/connector, fix the member's prompt or tool list,
         # or distrust the member — so the operator has to be able to tell them apart. All three
         # still FAIL the member: with no successful call there is nothing to ground (fail-closed).
-        attempted = _tool_steps(tool_steps)
-        if ok_ids:
+        succeeded, failed = _split_tool_steps(tool_steps)
+        if succeeded:
             return ["no driving_signals: the member made claims nothing backs"]
-        if attempted:
-            return [_no_successful_call_message(attempted)]
+        if failed:
+            return [_no_successful_call_message(failed)]
         return ["no tool call was made: the member answered without calling any of its tools"]
+    ok_ids = _ok_tool_call_ids(tool_steps)
     errors: list[str] = []
     for signal in signals:
         name = signal.get("signal") or "<unnamed>"
