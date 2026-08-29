@@ -84,6 +84,38 @@ def available_providers() -> list[str]:
     return sorted(_PROVIDERS)
 
 
+# Status -> (error_type, operator-facing sentence). Each sentence names the condition someone can
+# act on; none of them quotes the upstream body. 432/433 are Tavily's own plan-limit and rate-limit
+# statuses, 429 the standard one — a provider that does not use them simply falls through to the
+# coarse label, which is the behaviour every caller had before #875.
+_STATUS_CLASSES: dict[int, tuple[str, str]] = {
+    432: (
+        "PROVIDER_QUOTA_EXHAUSTED",
+        "the web-search credential for this organisation has no remaining quota",
+    ),
+    429: ("PROVIDER_RATE_LIMITED", "the search provider is rate-limiting this organisation"),
+    433: ("PROVIDER_RATE_LIMITED", "the search provider is rate-limiting this organisation"),
+    401: ("PROVIDER_AUTH_FAILED", "the web-search credential was rejected by the provider"),
+    403: (
+        "PROVIDER_AUTH_FAILED",
+        "the web-search credential is not entitled to make this search",
+    ),
+}
+
+
+def classify_provider_status(status_code: int) -> tuple[str, str]:
+    """Map a non-200 provider status to ``(error_type, message)`` — status only, never the body.
+
+    An exhausted plan, a throttle and a rejected key each get their own type and their own
+    sentence, so a caller above the connector can tell them apart and an operator reading the run
+    page knows which one to go fix. Anything unrecognised keeps the pre-existing coarse label.
+    """
+    known = _STATUS_CLASSES.get(status_code)
+    if known is not None:
+        return known
+    return "PROVIDER_HTTP_ERROR", f"the search provider returned {status_code}"
+
+
 def clamp_max_results(value: object) -> int:
     """Coerce a caller-supplied ``max_results`` into ``[1, _MAX_RESULTS_CAP]`` (default on junk)."""
     if not isinstance(value, int) or isinstance(value, bool):
@@ -130,12 +162,9 @@ class TavilySearchProvider(SearchProvider):
                 "the search provider could not be reached", error_type="PROVIDER_UNREACHABLE"
             ) from exc
         if resp.status_code != 200:
-            # coarse status only — the provider's body (which may echo the query/key) never leaks
-            raise SearchProviderError(
-                f"the search provider returned {resp.status_code}",
-                error_type="PROVIDER_HTTP_ERROR",
-                status_code=resp.status_code,
-            )
+            # the status is classified, never the body — an upstream body may echo the query or key
+            error_type, message = classify_provider_status(resp.status_code)
+            raise SearchProviderError(message, error_type=error_type, status_code=resp.status_code)
         try:
             payload = resp.json()
         except ValueError as exc:
