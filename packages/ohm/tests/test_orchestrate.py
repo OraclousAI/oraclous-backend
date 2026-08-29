@@ -330,9 +330,14 @@ async def test_fan_out_member_failure_is_recorded_not_aborted() -> None:
 async def test_handoff_schema_failure_records_member_failed_not_aborts_team() -> None:
     # ADR-042 (#551) BLOCKING fix: a hand-off output-schema violation (build_handoff fail-closed) is
     # a PER-MEMBER failure, not a team abort. Producer 'p' declares outputs_schema requiring "key"
-    # but returns a payload missing it; consumer 'c's inbound build raises OHMHandoffError → 'c' is
-    # recorded FAILED, the INDEPENDENT sibling 's' still produces, and the team is "failed"
-    # (re-runnable) — NOT aborted (which, pre-fix, would cancel 's' via the gather).
+    # but returns a payload missing it; the INDEPENDENT sibling 's' still produces, and the team is
+    # "failed" (re-runnable) — NOT aborted (which, pre-fix, would cancel 's' via the gather).
+    #
+    # #697 ruling (2026-08-24) CHANGES WHO IS BLAMED. The violation is 'p's — it declared "key" and
+    # did not deliver it — but the check ran while building 'c's inbound, so 'c' was recorded FAILED
+    # for its producer's omission. That is the attribution that made run fe548aac unreadable: the
+    # Editor was the failing row, and the Adversarial-reviewer that wrote nothing looked healthy.
+    # 'p' now fails on its own row and 'c' is BLOCKED behind it.
     producer = OHMMember(
         role="p", kind="agent", manifest_ref="org:x/p@1", outputs_schema={"required": ["key"]}
     )
@@ -347,7 +352,8 @@ async def test_handoff_schema_failure_records_member_failed_not_aborts_team() ->
     assert res.status == "failed"  # recorded, not an exception / team abort
     assert res.member_status["s"] == "succeeded"  # the independent sibling still produced
     assert res.results["s"] == {"out": "s"}
-    assert res.member_status["c"] == "failed"  # the hand-off-validation failure recorded on c
+    assert res.member_status["p"] == "failed"  # the producer owns its own broken contract
+    assert res.member_status["c"] == "blocked"  # the consumer never ran; it is not at fault
 
 
 async def test_a_failed_member_in_a_parallel_branch_outranks_a_pending_gate() -> None:
