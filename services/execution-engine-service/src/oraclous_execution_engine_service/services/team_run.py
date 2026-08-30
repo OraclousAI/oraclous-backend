@@ -414,6 +414,38 @@ def refresh_dispatch_args(
     return [r for r in records if isinstance(r, dict)], sinks[0].role
 
 
+def _declared_output_keys(member: OHMMember) -> list[str]:
+    """The keys this member DECLARED it will hand on (#697), or [] when it declared nothing.
+
+    ``outputs_schema`` is ``{"required": [...]}`` — the same shape ``validate_payload`` reads, so
+    the two cannot disagree about what was promised. A member that declares nothing is untouched:
+    every team compiled before this change runs exactly as it did."""
+    schema = member.outputs_schema or {}
+    required = schema.get("required")
+    return [k for k in required if isinstance(k, str)] if isinstance(required, list) else []
+
+
+def _parse_member_object(output: Any) -> dict[str, Any]:
+    """The JSON object a member answered with, or {} when it did not answer with one.
+
+    A real model wraps its JSON in prose or a fence, so the object is PEELED rather than parsed
+    whole (the same reason ``validate_draft`` peels the drafter's reply). Never raises: a member
+    that answered with prose simply declared keys it did not deliver, and the orchestrator fails it
+    on its own contract with a readable reason — a parse crash would say nothing."""
+    if isinstance(output, dict):
+        return output
+    if not isinstance(output, str):
+        return {}
+    match = re.search(r"\{.*\}", output, re.DOTALL)
+    if match is None:
+        return {}
+    try:
+        parsed = json.loads(match.group(0))
+    except ValueError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
 def make_harness_dispatch(
     harness: _Harness,
     sub_harnesses: dict[str, dict[str, Any]],
@@ -462,7 +494,10 @@ def make_harness_dispatch(
             caps["on_exhaustion"] = "degrade"
         # #853: the member's structured-output declaration rides the same way — sent only when the
         # member declared it, so an undeclared team adds zero kwargs and is unchanged.
-        if member.requires_valid_json:
+        # #697: a member that DECLARED output keys must return something that parses, or the keys
+        # can never be found — so a declared contract asks for the same bounded repair turn.
+        declared_keys = _declared_output_keys(member)
+        if member.requires_valid_json or declared_keys:
             caps["requires_valid_json"] = True
         result = await harness.execute(
             input_text=render_member_input(
@@ -540,7 +575,7 @@ def make_harness_dispatch(
         # A harness that reports its claims structurally is taken at its word; otherwise they are
         # parsed out of the member's own answer, where the directive asked it to put them.
         reported = result.get("driving_signals")
-        return {
+        payload: dict[str, Any] = {
             "output": result.get("output"),
             "status": status,
             "steps": result.get("steps") or [],
@@ -550,6 +585,21 @@ def make_harness_dispatch(
                 else parse_driving_signals(result.get("output"))
             ),
         }
+        # #697: the member's DECLARED keys join the payload the next member receives. Without this
+        # the declaration can never be satisfied — what a producer hands on is this envelope, and
+        # its answer sits under "output" as prose. Team run 76620efe: the Reviewer wrote a complete
+        # review of a pull request and succeeded; the Commenter, which depends on it, searched the
+        # shared knowledge graph for that review, failed five calls, and posted nothing. It held
+        # the review and had no name to reach it by.
+        #
+        # Only the DECLARED keys are lifted, and never over the envelope's own four: a member
+        # cannot rename its status or forge its trace by answering with those keys.
+        if declared_keys:
+            answered = _parse_member_object(result.get("output"))
+            for key in declared_keys:
+                if key in answered and key not in payload:
+                    payload[key] = answered[key]
+        return payload
 
     return dispatch
 
