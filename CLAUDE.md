@@ -162,7 +162,7 @@ A story is done when, and only when:
 - The implementer fixes their own test/lint/type/format failures (including local pre-push gate failures, §4.7) — a PR is not done until green.
 - A failure that is actually a regression in a different story → file a separate critical `[regression]` issue (linked, assigned); it does not hold the current story hostage.
 - **Security-marked test** failures → `security-architect` (via the coordinator). Overall red-PR board health → the CTO (daily board-check). CI workflow files (`.github/workflows/*`) → `devops-implementer` (via the coordinator); never edit them from an application-code PR.
-- **Type gate (WP-7, A6 — ratchet COMPLETE, #366).** CI's `lint` job and the pre-push hook run `uv run mypy services packages` error-free; there is no lenient set. New code lands typed; never reintroduce an `ignore_errors` override; no bare `# type: ignore` (always a `[error-code]`).
+- **Type gate (#366).** CI's `lint` job and the pre-push hook run `uv run mypy services packages` error-free; there is no lenient set. New code lands typed; never reintroduce an `ignore_errors` override; no bare `# type: ignore` (always a `[error-code]`).
 
 The implementer rebases their own branch when its base moves or CI goes red from drift — without waiting or asking. Stacked PRs rebase onto the new base and re-run CI before CTO review/merge. Only genuinely unresolvable conflicts escalate to the CTO.
 
