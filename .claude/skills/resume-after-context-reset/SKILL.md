@@ -16,4 +16,4 @@ If you are resuming work mid-task and have lost prior session context:
 7. Before any push, run the mandatory local pre-push gate (`CLAUDE.md` §4.7).
 8. Continue.
 
-If the trail is broken or contradictory, escalate to the human via the `escalate_to_human` operation in `CLAUDE.md` §5.4.
+If the trail is broken or contradictory, escalate to the human via the `escalate_to_human` operation in `CLAUDE.md` §5.
