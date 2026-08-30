@@ -385,3 +385,55 @@ async def test_an_operation_only_input_sends_empty_arguments() -> None:
     ex = _executor({"type": "mcp", "server_url": _URL, "tool_name": "t"}, _capture_arguments(seen))
     await ex.execute({"operation": "t"}, _ctx())
     assert seen["params"]["arguments"] == {}
+
+
+async def test_a_tool_error_carries_the_servers_own_reason() -> None:
+    """#697 live blocker: the connector swallowed WHY the tool refused.
+
+    Run 43174243 posted a review through `add_issue_comment` and got back one fixed sentence — "the
+    MCP tool reported a failure" — which is true of a wrong argument, a token without write access
+    and a server that is down alike. The tool's own ``content`` is its ANSWER to the caller, not an
+    internal detail, and it is what tells those three apart. The JSON-RPC transport error stays
+    withheld (the test above); only the tool's own reply is surfaced, and bounded.
+    """
+    ex = _executor(
+        {"type": "mcp", "server_url": _URL, "tool_name": "add_issue_comment"},
+        lambda _r: httpx.Response(
+            200,
+            json={
+                "result": {
+                    "isError": True,
+                    "content": [
+                        {"type": "text", "text": "resource not accessible by personal access token"}
+                    ],
+                }
+            },
+        ),
+    )
+    res = await ex.execute({}, _ctx())
+    assert not res.success and res.error_type == "MCP_TOOL_ERROR"
+    assert "resource not accessible by personal access token" in (res.error_message or "")
+
+
+async def test_a_tool_error_reason_is_bounded() -> None:
+    # A tool may answer with a wall of text; the run page and the error envelope both have budgets.
+    ex = _executor(
+        {"type": "mcp", "server_url": _URL, "tool_name": "t"},
+        lambda _r: httpx.Response(
+            200,
+            json={"result": {"isError": True, "content": [{"type": "text", "text": "x" * 5000}]}},
+        ),
+    )
+    res = await ex.execute({}, _ctx())
+    assert not res.success
+    assert len(res.error_message or "") <= 400
+
+
+async def test_a_tool_error_with_no_content_still_reads_cleanly() -> None:
+    ex = _executor(
+        {"type": "mcp", "server_url": _URL, "tool_name": "t"},
+        lambda _r: httpx.Response(200, json={"result": {"isError": True, "content": []}}),
+    )
+    res = await ex.execute({}, _ctx())
+    assert not res.success and res.error_type == "MCP_TOOL_ERROR"
+    assert res.error_message  # a sentence, never an empty string
