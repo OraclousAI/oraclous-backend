@@ -28,6 +28,8 @@ def _member(role: str, deps: list[str], **kw: object) -> dict[str, object]:
         "kind": "agent",
         "manifest_ref": f"org:compiled/{role}@1",
         "depends_on": deps,
+        # #697: every member declares what it hands on. Before **kw so a caller can override.
+        "outputs_schema": {"required": ["summary"]},
         **kw,
     }
 

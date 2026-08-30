@@ -44,6 +44,8 @@ def _member(role: str, deps: list[str] | None = None, tools: list[str] | None = 
         "subgoal": f"do {role}",
         "depends_on": deps or [],
         "tools": tools or [],
+        # #697: every member declares what it hands on; the fixture carries the default.
+        "outputs_schema": {"required": ["summary"]},
     }
 
 
@@ -313,8 +315,10 @@ async def test_from_run_peels_validates_and_persists_with_sub_harnesses() -> Non
     svc, repo, team_runs = _service()
     compiled = (
         'Here is the team:\n{"members": ['
-        '{"role": "researcher", "kind": "agent", "subgoal": "research"},'
-        '{"role": "writer", "kind": "agent", "subgoal": "write", "depends_on": ["researcher"]}'
+        '{"role": "researcher", "kind": "agent", "subgoal": "research",'
+        ' "outputs_schema": {"required": ["summary"]}},'
+        '{"role": "writer", "kind": "agent", "subgoal": "write", "depends_on": ["researcher"],'
+        ' "outputs_schema": {"required": ["summary"]}}'
         "]}"
     )
     run = team_runs.seed("SUCCEEDED", _reviewer_results(compiled))
@@ -337,7 +341,10 @@ async def test_from_run_is_idempotent_per_org_and_run() -> None:
     # #638: a second from-run for the SAME run returns the SAME draft (created=False → the route
     # 200s), never a duplicate — a reload / second tab on ?compile=<runId> is safe.
     svc, repo, team_runs = _service()
-    compiled = '{"members": [{"role": "researcher", "kind": "agent", "subgoal": "research"}]}'
+    compiled = (
+        '{"members": [{"role": "researcher", "kind": "agent", "subgoal": "research",'
+        ' "outputs_schema": {"required": ["summary"]}}]}'
+    )
     run = team_runs.seed("SUCCEEDED", _reviewer_results(compiled))
     first, _v1, c1 = await svc.create_from_run(_principal(), team_run_id=run.id)
     second, _v2, c2 = await svc.create_from_run(_principal(), team_run_id=run.id)
@@ -602,12 +609,14 @@ async def test_from_run_grants_each_member_its_declared_tools_as_capabilities() 
             {
                 "role": "reader",
                 "kind": "agent",
+                "outputs_schema": {"required": ["summary"]},  # #697
                 "subgoal": "fetch the diff",
                 "tools": [_GRANTED_TOOL],
             },
             {
                 "role": "writer",
                 "kind": "agent",
+                "outputs_schema": {"required": ["summary"]},  # #697
                 "subgoal": "write the review",
                 "depends_on": ["reader"],
             },
@@ -627,7 +636,14 @@ async def test_a_tool_less_member_still_builds_a_loadable_reasoning_only_sub_har
     row = await _from_run(
         svc,
         team_runs,
-        [{"role": "thinker", "kind": "agent", "subgoal": "reason about it"}],
+        [
+            {
+                "role": "thinker",
+                "kind": "agent",
+                "outputs_schema": {"required": ["summary"]},
+                "subgoal": "reason about it",
+            }
+        ],
     )
     sub = row.sub_harnesses["thinker"]
     assert _bindings(sub) == []
@@ -647,6 +663,7 @@ async def test_the_synthesized_grant_stays_within_the_member_ceiling() -> None:
             {
                 "role": "reader",
                 "kind": "agent",
+                "outputs_schema": {"required": ["summary"]},  # #697
                 "subgoal": "fetch the diff",
                 "tools": [_GRANTED_TOOL, _OTHER_TOOL],
             }
@@ -670,6 +687,7 @@ async def test_a_sub_harness_widened_past_the_member_ceiling_is_still_rejected()
             {
                 "role": "reader",
                 "kind": "agent",
+                "outputs_schema": {"required": ["summary"]},  # #697
                 "subgoal": "fetch the diff",
                 "tools": [_GRANTED_TOOL],
             }
@@ -698,6 +716,7 @@ async def test_a_granted_tool_resolves_into_a_dispatchable_capability() -> None:
             {
                 "role": "reader",
                 "kind": "agent",
+                "outputs_schema": {"required": ["summary"]},  # #697
                 "subgoal": "fetch the diff",
                 "tools": [_GRANTED_TOOL],
             }
@@ -724,6 +743,7 @@ async def test_run_0fc1f7f1_shape_does_not_compile_to_an_empty_capability_set() 
         {
             "role": f"reviewer-{i}",
             "kind": "agent",
+            "outputs_schema": {"required": ["summary"]},  # #697
             "subgoal": f"review aspect {i}",
             "depends_on": ["reader"],
         }
@@ -736,6 +756,7 @@ async def test_run_0fc1f7f1_shape_does_not_compile_to_an_empty_capability_set() 
             {
                 "role": "reader",
                 "kind": "agent",
+                "outputs_schema": {"required": ["summary"]},  # #697
                 "subgoal": "fetch the pull request diff",
                 "tools": [_GRANTED_TOOL],
             },
@@ -783,8 +804,10 @@ _RECEIPT = (
 )
 _COMPILED = (
     '{"members": ['
-    '{"role": "researcher", "kind": "agent", "subgoal": "research"},'
-    '{"role": "writer", "kind": "agent", "subgoal": "write", "depends_on": ["researcher"]}'
+    '{"role": "researcher", "kind": "agent", "subgoal": "research",'
+    ' "outputs_schema": {"required": ["summary"]}},'
+    '{"role": "writer", "kind": "agent", "subgoal": "write", "depends_on": ["researcher"],'
+    ' "outputs_schema": {"required": ["summary"]}}'
     "]}"
 )
 

@@ -41,6 +41,7 @@ def _compiled(task_input: dict[str, Any] | None = None) -> dict[str, Any]:
                 "manifest_ref": "org:compiled/reviewer@1",
                 "subgoal": "Retrieve the pull request changes",
                 "tools": [],
+                "outputs_schema": {"required": ["summary"]},  # #697
             },
             {
                 "role": "CommentPoster",
@@ -49,6 +50,7 @@ def _compiled(task_input: dict[str, Any] | None = None) -> dict[str, Any]:
                 "subgoal": "Post the review back as a comment",
                 "depends_on": ["Reviewer"],
                 "tools": [],
+                "outputs_schema": {"required": ["summary"]},  # #697
             },
         ],
         "orchestration": {"style": "pipeline"},
