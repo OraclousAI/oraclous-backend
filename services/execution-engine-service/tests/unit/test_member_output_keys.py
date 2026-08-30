@@ -136,3 +136,27 @@ async def test_a_producer_that_omits_a_declared_key_fails_on_its_own_row() -> No
     assert res.member_status["reviewer"] == "failed"
     assert res.member_status["publisher"] == "blocked"
     assert res.status == "failed"
+
+
+async def test_a_member_is_told_which_keys_it_declared() -> None:
+    """Enforcing a promise the member never heard is worse than not enforcing it.
+
+    Run `b3fce78f` (2026-08-30, real model, through the gateway): the reviewer read the pull
+    request, wrote a real review, and FAILED its own contract — nothing in its input had said the
+    answer must carry `summary` and `artifact_refs`. Before the contract existed that member
+    succeeded; the half-built version turned a working member into a failing one.
+    """
+    harness = _ScriptedHarness({"reviewer": json.dumps({"summary": "s", "artifact_refs": []})})
+    team = _team([_m("reviewer", outputs_schema={"required": ["summary", "artifact_refs"]})])
+    await run_team_harness(team, harness)
+
+    sent = _call(harness, "reviewer")["input_text"]
+    assert "summary" in sent and "artifact_refs" in sent
+    assert "JSON object" in sent
+
+
+async def test_a_member_that_declared_nothing_is_told_nothing() -> None:
+    # Back-compat: an undeclared member's input is unchanged, so a pre-#697 team runs as before.
+    harness = _ScriptedHarness({"a": "prose"})
+    await run_team_harness(_team([_m("a")]), harness)
+    assert "JSON object carrying exactly these keys" not in _call(harness, "a")["input_text"]
