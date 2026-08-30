@@ -159,4 +159,6 @@ async def test_a_member_that_declared_nothing_is_told_nothing() -> None:
     # Back-compat: an undeclared member's input is unchanged, so a pre-#697 team runs as before.
     harness = _ScriptedHarness({"a": "prose"})
     await run_team_harness(_team([_m("a")]), harness)
-    assert "JSON object carrying exactly these keys" not in _call(harness, "a")["input_text"]
+    # Assert the ABSENCE of the same substring the positive test above requires, so an
+    # implementation that appends the directive to every member's input cannot pass both.
+    assert "JSON object" not in _call(harness, "a")["input_text"]
