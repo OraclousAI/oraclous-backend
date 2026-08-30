@@ -136,7 +136,13 @@ The Backlog → Ready gate happens entirely in the coordinator session before an
 
 ## 9. Done means done
 
-> **⚠️ DEPLOYED-STACK VERIFICATION LAW (non-negotiable, do not bypass).** A feature is not tested / not done until it has been driven against the DEPLOYED docker stack (the built images, real services, real Celery worker/broker, real harness — `deploy/docker-compose.yml` [+ `docker-compose.dev-ports.yml`]) through the application-gateway (`:8006`) — the only surface a real user touches — via its real HTTP API endpoints (or an MCP server). Every e2e simulates a real user: through the gateway only (never a service port directly, never `/internal`), the user brings their own data/model/token via the public APIs (never injected server-side or hardcoded), nothing mocked, nothing assumed, no DB-direct assertions — `FUCK_CLAUDE_FUCK_PAPERCLIP.md` rule 5. CI-green, unit tests, and testcontainers integration tests are necessary but NOT sufficient — they run a *hypothesised* version (a real DB but `FakeHarness`/fake repos/mocked seams) and never exercise the engine↔worker↔harness HTTP wiring, the broker, or the registry seed. Forbidden as a substitute for the deployed proof: custom backend logic in the test (fakes/monkeypatch), calling internal functions, or asserting against the DB directly. The acceptance bar is: rebuild the changed images from current `main`, recreate the services, wait healthy, and prove the bound behaviour with `curl` against the live endpoints. *(Why: the team-runtime shipped CI-green but the running stack was stale and the full HTTP wiring was never exercised end-to-end — CI-green ≠ runs-deployed; real-stack runs also surface what CI can't, e.g. `ENGINE_AUTH_MODE=gateway` needing `X-Internal-Key` + `X-Principal-*` headers, not a bearer.)*
+> **⚠️ DEPLOYED-STACK VERIFICATION LAW (non-negotiable, do not bypass).** Not tested, not done, until driven against the DEPLOYED docker stack (`deploy/docker-compose.yml` [+ `docker-compose.dev-ports.yml`]) through the application-gateway on `:8006`, via its real HTTP API or a real MCP server. Full text and rationale: `FUCK_CLAUDE_FUCK_PAPERCLIP.md` rules 1 and 5.
+>
+> - Gateway only — never a service port, never `/internal`; a real JWT from a real registration.
+> - The user brings their own data, model and token through the public APIs — never injected server-side, never hardcoded in the test.
+> - Forbidden as a substitute for the deployed proof: fakes/monkeypatch, internal-function calls, DB-direct assertions.
+> - CI-green, unit and testcontainers are necessary, never sufficient — they run a *hypothesised* stack and never exercise the engine↔worker↔harness wiring, the broker, or the registry seed.
+> - Acceptance bar: rebuild the changed images from current `main`, recreate the services, wait healthy, prove the bound behaviour with `curl` against the live endpoints.
 
 A story is done when, and only when:
 
