@@ -94,3 +94,41 @@ def test_an_outputs_schema_declaring_no_keys_is_not_a_declaration() -> None:
     draft = _draft([_member("researcher", outputs_schema={"required": []}), _member("writer")])
     v = validate_draft(draft, _CATALOG, owner_organization_id=_ORG)
     assert v["would_block"] is True, v
+
+
+def test_a_member_added_by_a_hand_edit_is_not_rejected_by_the_new_rule() -> None:
+    """The rule must not turn the user's own edit into a block.
+
+    "Add a fact-checker" is one of the four typed edits a user can make to a compiled team, and the
+    edit carries no place to state output keys. If the added member arrives with an empty
+    declaration, the very next validation rejects a team the user just asked for. So the edit gets
+    the same default the drafter emits.
+    """
+    from oraclous_ohm.compiler.refine import AddMember, apply_refine
+    from oraclous_ohm.import_.setup import assemble_and_report
+    from oraclous_ohm.manifest import OHMMember
+
+    draft = _draft([_member("researcher"), _member("writer", depends_on=["researcher"])])
+    built = assemble_and_report(
+        "t",
+        [OHMMember.model_validate(m) for m in draft["members"]],
+        owner_organization_id=_ORG,
+        shape="compiled",
+    )
+    manifest = built.manifest
+    assert manifest is not None
+
+    res = apply_refine(
+        manifest,
+        AddMember(role="fact-checker", tools=["web-search"], depends_on=["writer"]),
+        catalog=_CATALOG,
+        owner_organization_id=_ORG,
+    )
+    assert res.manifest is not None and res.report.would_block is False
+    added = {m.role: m for m in res.manifest.members}["fact-checker"]
+    assert added.outputs_schema.get("required"), "a hand-added member declares nothing"
+
+    # and the compile gate, which the refine endpoint re-runs, accepts the edited team
+    edited = {"members": [m.model_dump(mode="json") for m in res.manifest.members]}
+    v = validate_draft(edited, _CATALOG, owner_organization_id=_ORG)
+    assert v["would_block"] is False, v

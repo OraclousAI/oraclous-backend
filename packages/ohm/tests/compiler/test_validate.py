@@ -18,14 +18,24 @@ _ORG = uuid.UUID("87654321-4321-8765-4321-876543210000")
 
 
 def _draft(tool: str) -> dict:
+    # #697: every member declares its output keys, so these fixtures carry the default
+    # declaration. This file is about the capability-absence gate; the declaration is here only
+    # so a draft that SHOULD pass is not blocked for an unrelated reason.
     return {
         "members": [
-            {"role": "researcher", "kind": "agent", "manifest_ref": "org:x/r@1", "tools": [tool]},
+            {
+                "role": "researcher",
+                "kind": "agent",
+                "manifest_ref": "org:x/r@1",
+                "tools": [tool],
+                "outputs_schema": {"required": ["summary"]},
+            },
             {
                 "role": "writer",
                 "kind": "agent",
                 "manifest_ref": "org:x/w@1",
                 "depends_on": ["researcher"],
+                "outputs_schema": {"required": ["summary"]},
             },
         ]
     }
