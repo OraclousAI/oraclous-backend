@@ -34,8 +34,9 @@ SURVEYOR_PROMPT = (
 DRAFTER_PROMPT = (
     "You are the MANIFEST-DRAFTER. Using the PLANNER's sketch and the SURVEYOR's catalog, draft "
     "the user's team as a schema-valid OHM v1.1 Team Harness. Reply with ONLY a JSON object:\n"
-    '  {"members": [{"role","kind":"agent","manifest_ref":"org:compiled/<role>@1","subgoal",'
-    '"tools":[…],"depends_on":[…]}, …],\n'
+    '  {"members": [{"role":"analyst","kind":"agent",'
+    '"manifest_ref":"org:compiled/analyst@1","subgoal":"…","tools":["web-search"],'
+    '"depends_on":["researcher"],"outputs_schema":{"required":["summary"]}}, …],\n'
     '   "orchestration": {"style": "...", "success_criteria": "..."},\n'
     '   "task_input": {"required": <bool>, "key": "task", "description": "<the question to ask '
     'the user>"},\n'
@@ -53,7 +54,25 @@ DRAFTER_PROMPT = (
     'own. `key` is normally "task". The `description` is shown to the USER as the LABEL of the '
     'input field, so write it as a short question or noun phrase addressed to them ("the pull '
     'request to review"), NEVER as a schema note ("string, optional").\n'
+    # #751: the field was shown as a bare ellipsis and ruled only on topology, so compiler run
+    # 2d24b128 read it as POSITIONS and emitted [1, 2, 3, 4]. One member then failed schema
+    # validation, the whole draft was dropped, and 28,869 tokens produced no team. Every other
+    # field in the template is named or shown with a concrete value; this one now is too.
+    "- `depends_on` lists the ROLE NAMES of the members this one waits on — exactly as they are "
+    'spelled in `role`, e.g. "depends_on": ["researcher", "analyst"]. NEVER a number, NEVER a '
+    "position or index into the members list; a member that waits on nothing gets [].\n"
     "- The depends_on edges MUST be ACYCLIC (a runnable DAG).\n"
+    # #697 (ruling 2026-08-24): the typed hand-off has enforced a declared key fail-closed since
+    # ADR-035 and was inert on every compiled team, because nothing filled the declaration. Run
+    # fe548aac: 14 members, all declaring nothing, four filing conventions invented in one run,
+    # and an Editor that spent 34,855 tokens chasing files that were never written.
+    "- EVERY member MUST declare `outputs_schema` — no exception, including a member nobody "
+    "depends on. It is how a member hands a NAMED result to the next one instead of an essay the "
+    'next one has to read. The shape is {"required": ["<key>", …]}, and the keys are what this '
+    "member will actually put in its answer. When the objective gives you nothing specific to go "
+    'on, declare ["summary"] — and ["summary", "artifact_refs"] for a member that persists '
+    "something, where `artifact_refs` names WHERE it put its work. Declare only keys the member "
+    "can really fill: a declared key it omits FAILS its hand-off.\n"
     # #694 defect 2: the drafter was handed a menu of bare names and no statement of where output
     # goes, so it picked the two names it has the strongest prior for and the whole team's work
     # landed in a throwaway sandbox. Descriptions now ride the menu; this rule states the
