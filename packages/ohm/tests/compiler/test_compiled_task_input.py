@@ -44,7 +44,12 @@ def _members() -> list[OHMMember]:
 def _draft(task_input: Any = ...) -> dict[str, Any]:
     draft: dict[str, Any] = {
         "members": [
-            {"role": "reviewer", "kind": "agent", "manifest_ref": "org:compiled/reviewer@1"},
+            {
+                "role": "reviewer",
+                "kind": "agent",
+                "manifest_ref": "org:compiled/reviewer@1",
+                "outputs_schema": {"required": ["summary"]},  # #697
+            },
         ],
         "orchestration": {"style": "pipeline"},
     }

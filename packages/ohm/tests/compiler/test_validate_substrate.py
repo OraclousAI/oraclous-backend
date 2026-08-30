@@ -40,6 +40,7 @@ def _draft(tools: list[str], role: str = "editor") -> dict:
                 "subgoal": "gather the evidence",
                 "tools": ["web-research"],
                 "depends_on": [],
+                "outputs_schema": {"required": ["summary"]},  # #697
             },
             {
                 "role": role,
@@ -48,6 +49,7 @@ def _draft(tools: list[str], role: str = "editor") -> dict:
                 "subgoal": "write the assessment",
                 "tools": tools,
                 "depends_on": ["researcher"],
+                "outputs_schema": {"required": ["summary"]},  # #697
             },
         ],
         "orchestration": {"style": "pipeline", "success_criteria": "the assessment exists"},

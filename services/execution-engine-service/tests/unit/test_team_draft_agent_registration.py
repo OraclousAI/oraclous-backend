@@ -53,6 +53,8 @@ def _member(role: str, deps: list[str] | None = None, tools: list[str] | None = 
         "subgoal": f"do {role}",
         "depends_on": deps or [],
         "tools": tools or [],
+        # #697: every member declares what it hands on; the fixture carries the default.
+        "outputs_schema": {"required": ["summary"]},
     }
 
 
@@ -216,6 +218,7 @@ def _compiled(tools: list[str] | None = None) -> dict[str, Any]:
             {
                 "role": "researcher",
                 "kind": "agent",
+                "outputs_schema": {"required": ["summary"]},  # #697
                 "manifest_ref": "org:compiled/researcher@1",
                 "subgoal": "gather evidence",
                 "tools": ["web-research"],
@@ -224,6 +227,7 @@ def _compiled(tools: list[str] | None = None) -> dict[str, Any]:
             {
                 "role": "editor",
                 "kind": "agent",
+                "outputs_schema": {"required": ["summary"]},  # #697
                 "manifest_ref": "org:compiled/editor@1",
                 "subgoal": "write the assessment",
                 "tools": tools if tools is not None else ["graph-ingest"],
@@ -416,6 +420,7 @@ async def test_a_non_agent_member_is_never_filed_as_an_agent() -> None:
             {
                 "role": "approver",
                 "kind": "human",
+                "outputs_schema": {"required": ["summary"]},  # #697
                 "human_role": "reviewer",
                 "subgoal": "approve the assessment",
                 "depends_on": ["researcher"],

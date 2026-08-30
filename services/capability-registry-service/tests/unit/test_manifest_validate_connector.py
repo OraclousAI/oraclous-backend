@@ -56,12 +56,19 @@ def _ctx() -> ExecutionContext:
 def _draft(tool: str) -> dict:
     return {
         "members": [
-            {"role": "researcher", "kind": "agent", "manifest_ref": "org:x/r@1", "tools": [tool]},
+            {
+                "role": "researcher",
+                "kind": "agent",
+                "manifest_ref": "org:x/r@1",
+                "tools": [tool],
+                "outputs_schema": {"required": ["summary"]},  # #697
+            },
             {
                 "role": "writer",
                 "kind": "agent",
                 "manifest_ref": "org:x/w@1",
                 "depends_on": ["researcher"],
+                "outputs_schema": {"required": ["summary"]},  # #697
             },
         ]
     }

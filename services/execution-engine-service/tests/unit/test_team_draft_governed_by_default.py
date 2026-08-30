@@ -55,6 +55,7 @@ def _compiled(**extra: Any) -> dict[str, Any]:
                 "manifest_ref": "org:compiled/reviewer@1",
                 "subgoal": "fetch pull request changes",
                 "tools": [],
+                "outputs_schema": {"required": ["summary"]},  # #697
             },
             {
                 "role": "Poster",
@@ -63,6 +64,7 @@ def _compiled(**extra: Any) -> dict[str, Any]:
                 "subgoal": "post the review",
                 "depends_on": ["Reviewer"],
                 "tools": [],
+                "outputs_schema": {"required": ["summary"]},  # #697
             },
         ],
         **extra,

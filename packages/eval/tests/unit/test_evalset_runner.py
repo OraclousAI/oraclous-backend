@@ -94,6 +94,7 @@ def _good_manifest() -> dict[str, object]:
                 "manifest_ref": "org:c/r@1",
                 "tools": ["web-research"],
                 "depends_on": [],
+                "outputs_schema": {"required": ["summary"]},  # #697
             },
             {
                 "role": "writer",
@@ -101,6 +102,7 @@ def _good_manifest() -> dict[str, object]:
                 "manifest_ref": "org:c/w@1",
                 "tools": ["graph-ingest"],
                 "depends_on": ["researcher"],
+                "outputs_schema": {"required": ["summary"]},  # #697
             },
         ],
         "orchestration": {"style": "linear", "success_criteria": "done"},
@@ -111,8 +113,20 @@ def _good_manifest() -> dict[str, object]:
 def _cyclic_manifest() -> dict[str, object]:
     return {
         "members": [
-            {"role": "a", "kind": "agent", "manifest_ref": "org:c/a@1", "depends_on": ["b"]},
-            {"role": "b", "kind": "agent", "manifest_ref": "org:c/b@1", "depends_on": ["a"]},
+            {
+                "role": "a",
+                "kind": "agent",
+                "manifest_ref": "org:c/a@1",
+                "depends_on": ["b"],
+                "outputs_schema": {"required": ["summary"]},  # #697
+            },
+            {
+                "role": "b",
+                "kind": "agent",
+                "manifest_ref": "org:c/b@1",
+                "depends_on": ["a"],
+                "outputs_schema": {"required": ["summary"]},  # #697
+            },
         ],
         "orchestration": {"style": "linear", "success_criteria": "done"},
     }
