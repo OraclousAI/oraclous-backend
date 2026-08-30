@@ -261,6 +261,20 @@ def resolve_run_task(manifest: OHMManifest, inputs: dict[str, Any] | None) -> st
     return None
 
 
+#: #697 — the member is TOLD what it declared, in the words it has to answer in. Without this the
+#: contract is enforced against a member that was never asked: on run b3fce78f the reviewer read
+#: the pull request, wrote a real review, and failed its own contract because nothing had said the
+#: answer must carry `summary` and `artifact_refs`. Enforcing a promise the member never heard is
+#: worse than not enforcing it — it turns a member that worked into one that fails.
+OUTPUT_CONTRACT_DIRECTIVE = (
+    "Your answer MUST be a single JSON object carrying exactly these keys, because the next member "
+    "reads them BY NAME and never reads your prose: {keys}. Put your real work IN those values — "
+    "`summary` is what you would have written as your answer, and `artifact_refs` is a list naming "
+    "WHERE you persisted anything (the ids or references your persistence tool returned; an empty "
+    "list if you persisted nothing). Reply with the JSON object and nothing else."
+)
+
+
 def render_member_input(
     member: OHMMember,
     envelopes: list[HandoffEnvelope],
@@ -321,6 +335,10 @@ def render_member_input(
     parts.append(execution_directive(capability_refs or []))
     if member.tools:  # #642: a member that declared tools is graded on receipts — ask for them
         parts.append(GROUNDING_DIRECTIVE)
+    # #697: last, so the shape of the reply is the final instruction the member reads.
+    declared = _declared_output_keys(member)
+    if declared:
+        parts.append(OUTPUT_CONTRACT_DIRECTIVE.format(keys=", ".join(repr(k) for k in declared)))
     return "\n\n".join(parts)
 
 
