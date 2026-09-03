@@ -226,6 +226,14 @@ def validate_draft(
     allowed = _catalog_slugs(catalog)
     flags: list[ImportFlag] = []
     for m in members:
+        # #713 review fix: tool_rationale is keyed by whatever spelling the drafter/reviewer wrote,
+        # which need not match tools[]'s spelling byte-for-byte (a repair pass can rewrite a
+        # member's raw tool string without touching tool_rationale's key). Normalise BOTH sides
+        # through the same _tool_slug the catalog-membership check two lines below already uses,
+        # so "Web-Search" in tools[] matches a rationale keyed "web-search".
+        # drop empty-slug keys (mirrors _catalog_slugs) so a degenerate rationale key ("", "@")
+        # never acts as a wildcard match for a degenerate, always-blocked drafted tool name.
+        rationale_by_slug = {_tool_slug(k): v for k, v in m.tool_rationale.items() if _tool_slug(k)}
         for tool in m.tools:
             slug = _tool_slug(tool)
             # #694: the substrate reason takes PRECEDENCE over capability-absence for the same
@@ -264,7 +272,7 @@ def validate_draft(
                 )
             # #718: the gate cannot judge FIT, but it CAN require the drafter to have stated a
             # reason tied to THIS member's sub-goal — cheap to check, expensive to skip.
-            if not m.tool_rationale.get(tool, "").strip():
+            if not rationale_by_slug.get(slug, "").strip():
                 flags.append(
                     ImportFlag(
                         code="F-TOOL-UNJUSTIFIED",
