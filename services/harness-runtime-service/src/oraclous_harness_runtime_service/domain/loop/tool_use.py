@@ -151,6 +151,10 @@ class LoopResult:
     # every run, and a None would make "served nothing" indistinguishable from "the loop forgot to
     # record" at the one moment it matters.
     served_citation_ids: list[str] = field(default_factory=list)
+    # #907: which LLM client actually ran this segment (the client's own `protocol_shape`, e.g.
+    # "fake"/"openai-compatible") — recorded once per run, not per step, because the loop's client
+    # never changes mid-run. None only for a client that declares no protocol_shape at all.
+    protocol_shape: str | None = None
 
 
 def _truncate(text: str, limit: int = 500) -> str:
@@ -388,6 +392,9 @@ async def run_tool_use_loop(
     # is never re-prompted (so the completion contract can't add a spurious turn to it).
     produces = any(s.operation == "ingest" for s in tool_specs)
     started = time.monotonic()
+    # #907: the client's own declared shape — read once, stamped on every LoopResult this run
+    # produces. The loop's client never changes mid-run, so this is not a per-step concern.
+    protocol_shape = getattr(llm, "protocol_shape", None)
 
     def _over_wall_time() -> bool:
         return policy.max_wall_time_seconds is not None and (
@@ -414,6 +421,7 @@ async def run_tool_use_loop(
             error_message=message,
             checkpoint=checkpoint,
             served_citation_ids=list(served_citation_ids),
+            protocol_shape=protocol_shape,
         )
 
     def _degrade(name: str, reason: str, message: str, iterations: int) -> LoopResult:
@@ -434,6 +442,7 @@ async def run_tool_use_loop(
             # #580 + #743: a run that degrades on a LATER empty retrieval still served what it
             # served, and the answer may legitimately cite it. Carry it out.
             served_citation_ids=list(served_citation_ids),
+            protocol_shape=protocol_shape,
         )
 
     def _budget_gate(name: str, reason: str, message: str, iterations: int) -> LoopResult:
@@ -722,6 +731,7 @@ async def run_tool_use_loop(
                 error_type=type(exc).__name__,
                 error_message=str(exc),
                 served_citation_ids=list(served_citation_ids),
+                protocol_shape=protocol_shape,
             )
         llm_ended = datetime.now(UTC)
         tokens_used += resp.total_tokens
@@ -802,6 +812,7 @@ async def run_tool_use_loop(
                 input_tokens=input_used,
                 output_tokens=output_used,
                 served_citation_ids=list(served_citation_ids),
+                protocol_shape=protocol_shape,
             )
 
         # A tool-call turn is the member moving PAST a blocked draft, so the run no longer ends on

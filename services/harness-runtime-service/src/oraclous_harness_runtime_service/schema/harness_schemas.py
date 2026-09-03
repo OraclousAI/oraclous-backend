@@ -100,6 +100,9 @@ class StepOut(BaseModel):
     # AND for every trace persisted before this change (the #641 back-compat posture, no migration).
     started_at: datetime | None = None
     ended_at: datetime | None = None
+    # #907: which LLM client ran this step (e.g. "fake" / "openai-compatible") — None for a trace
+    # persisted before this change (same back-compat posture as tool_call_id / started_at).
+    protocol_shape: str | None = None
 
     @model_validator(mode="after")
     def _end_not_before_start(self) -> StepOut:
@@ -153,6 +156,15 @@ class HarnessExecutionOut(BaseModel):
             for s in self.steps
             if s.kind is StepKind.TOOL and s.status == "ok" and s.tool_call_id
         ]
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def simulated(self) -> bool:
+        """#907: True when ANY step of this run's own trace was produced by the scripted stand-in
+        LLM client (``protocol_shape == "fake"``) — the wire-visible fact that #907 traced back to
+        ``HARNESS_LLM_MODE=fake``. Derived from the trace, same posture as ``driving_signals``:
+        False on a pre-#907 trace with no ``protocol_shape`` key at all (back-compat, no crash)."""
+        return any(s.protocol_shape == "fake" for s in self.steps)
 
 
 class ExecutionListResponse(BaseModel):
