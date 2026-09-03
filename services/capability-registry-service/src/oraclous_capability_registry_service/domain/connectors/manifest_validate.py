@@ -17,6 +17,10 @@ a 72-entry list blocked a whole compile. A deterministic validator fed a model-a
 deterministic. The repository is injected by the SERVICES layer at execute time (this is a domain
 object and never touches the database itself), exactly as ``GitHubSinkConnector`` gets its
 ``delivery_repo``.
+
+#708 factored the read itself out to ``_catalog.read_allowed_catalog``, shared with
+``ManifestRefineConnector`` — the identical relay bug #705 fixed here, found again in the refine
+gate.
 """
 
 from __future__ import annotations
@@ -28,18 +32,11 @@ from oraclous_capability_registry_service.domain.executors.base import (
     ExecutionResult,
     InternalTool,
 )
-from oraclous_capability_registry_service.models.enums import DescriptorKind
 
 if TYPE_CHECKING:
     from oraclous_capability_registry_service.repositories.capability_repository import (
         CapabilityRepository,
     )
-
-#: the supply-chain status a descriptor must carry to count as available to the gate. Only
-#: ``active`` — a ``pending_approval`` tool is refused at dispatch by the HITL gate, so admitting it
-#: here would compile a team that is guaranteed to fail later. The failure belongs at compile time,
-#: where it costs one verdict instead of a run.
-_AVAILABLE = "active"
 
 
 class ManifestValidateConnector(InternalTool):
@@ -52,29 +49,14 @@ class ManifestValidateConnector(InternalTool):
     async def _allowed_catalog(self, context: ExecutionContext) -> list[str]:
         """The tools the calling org may actually draw from — READ, never relayed.
 
-        Two sources, both code: the org's registered TOOL descriptors (which is where an imported
-        MCP tool lives) and the in-process plugin registry (the built-in plugin classes compiled
-        into this service, which are registered by construction). A registered harness row is NOT
-        admissible — a member's ``tools[]`` names tools.
+        #708 factored the actual logic out to ``_catalog.read_allowed_catalog``, shared with
+        ``ManifestRefineConnector`` — kept as a thin wrapper here for callers/tests that reach it by
+        this name."""
+        from oraclous_capability_registry_service.domain.connectors._catalog import (
+            read_allowed_catalog,
+        )
 
-        The degrade is fail-CLOSED and mirrors the engine's ``surveyed_catalog`` policy upstream
-        (seed-only on a registry outage): with no repository, or a read that fails, the allowed set
-        NARROWS to the built-ins. A tool the gate cannot confirm is blocked, never waved through.
-        """
-        from oraclous_capability_registry_service.domain.plugins import plugin_registry
-
-        # use the public descriptor() contract (metadata.name) — discover() is typed to the base
-        registered = [str(p.descriptor()["metadata"]["name"]) for p in plugin_registry.discover()]
-        if self.capability_repo is None:
-            return registered
-        try:
-            rows = await self.capability_repo.list_by_kind(
-                context.organisation_id, DescriptorKind.TOOL
-            )
-        except Exception:  # noqa: BLE001 — a registry read failure narrows the gate, never widens it
-            return registered
-        owned = [str(row.name) for row in rows if row.name and row.status == _AVAILABLE]
-        return [*owned, *registered]
+        return await read_allowed_catalog(self.capability_repo, context.organisation_id)
 
     async def _execute_internal(
         self, input_data: dict[str, Any], context: ExecutionContext

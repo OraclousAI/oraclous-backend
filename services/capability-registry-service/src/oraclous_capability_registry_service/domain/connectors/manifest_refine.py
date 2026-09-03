@@ -8,13 +8,19 @@ validator). The manifest flows in deterministically (NOT re-emitted by the model
 PRESERVE-THE-REST byte-identity invariant holds. A delta that cycles the DAG, references an
 unsurveyed tool, or breaks a member schema is rejected (``would_block=True``, ``applied=False``,
 ``manifest=None``) — never silently applied; capability cannot be escalated (ADR-032). No network,
-no credential; the surveyed catalog is unioned with the live registry (the deterministic
-registry-diff, like manifest-validate).
+no credential.
+
+#708 — THE ALLOWED SET IS READ, NOT RELAYED (the same fix #705 already gave
+``ManifestValidateConnector``). This used to read a caller-supplied ``input_data["catalog"]`` and
+union it with only the in-process plugin registry, so an imported MCP tool (a descriptor ROW, not
+an in-process plugin) could never be added to an existing team via refine — an approved, active,
+imported tool always blocked. The shared ``_catalog.read_allowed_catalog`` now backs both
+connectors; the relay is gone entirely.
 """
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from oraclous_capability_registry_service.domain.executors.base import (
     ExecutionContext,
@@ -22,9 +28,18 @@ from oraclous_capability_registry_service.domain.executors.base import (
     InternalTool,
 )
 
+if TYPE_CHECKING:
+    from oraclous_capability_registry_service.repositories.capability_repository import (
+        CapabilityRepository,
+    )
+
 
 class ManifestRefineConnector(InternalTool):
     """Wraps ohm ``apply_refine`` as a registry tool — the deterministic NL-refine op applier."""
+
+    #: the org's registered capabilities, injected on the LIVE path by ToolExecutionService. None on
+    #: a unit construction / a degraded start → the built-ins-only floor below (never fail-open).
+    capability_repo: CapabilityRepository | None = None
 
     async def _execute_internal(
         self, input_data: dict[str, Any], context: ExecutionContext
@@ -33,7 +48,9 @@ class ManifestRefineConnector(InternalTool):
         from oraclous_ohm.compiler import apply_refine, parse_op
         from oraclous_ohm.parse import load_ohm
 
-        from oraclous_capability_registry_service.domain.plugins import plugin_registry
+        from oraclous_capability_registry_service.domain.connectors._catalog import (
+            read_allowed_catalog,
+        )
 
         raw_manifest = input_data.get("manifest")
         raw_op = input_data.get("edit_op")
@@ -46,16 +63,10 @@ class ManifestRefineConnector(InternalTool):
                 success=False, error_message="'edit_op' is required", error_type="INVALID_INPUT"
             )
 
-        # the deterministic registry-diff catalog (same as manifest-validate): a tool is available
-        # iff surveyed OR registered, so a refine cannot escalate to an unregistered capability.
-        relayed = input_data.get("catalog")
-        passed = (
-            relayed.get("tools", [])
-            if isinstance(relayed, dict)
-            else (relayed if isinstance(relayed, list) else [])
-        )
-        registered = [str(p.descriptor()["metadata"]["name"]) for p in plugin_registry.discover()]
-        catalog = [*passed, *registered]
+        # #708: the deterministic registry-diff catalog (same as manifest-validate) — READ from the
+        # org's registry, never relayed by the caller. A ``catalog`` key in input_data is ignored
+        # entirely now, whether absent, partial, or falsely inflated.
+        catalog = await read_allowed_catalog(self.capability_repo, context.organisation_id)
 
         try:
             manifest = load_ohm(raw_manifest)
