@@ -10,6 +10,7 @@ Lives in ``packages/ohm`` beside the schema it references, per ADR-035 §3. Pure
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -22,6 +23,16 @@ from oraclous_ohm.manifest import OHMMember
 # live payload ("the web-search credential has no remaining quota") is 47 characters. Leaves room
 # for the ``grounding: `` prefix the orchestrator adds within a 300-character whole.
 _MESSAGE_CAP = 280
+
+# #696 — the two shapes a tool-less member's fabrication took in the wild (run ``fe548aac``: a
+# "Documentation Saving" section naming ``Interrail_B.V./Identified_Weaknesses_Support_Areas.txt``
+# and a sibling; live re-runs: ``sandbox:`` links). Kept NARROW on purpose — a version ("v2.1"), a
+# decimal ("3.5%"), "e.g." and a bare filename must not trip it — so a path needs a directory
+# separator and a letters-only extension, and a URL is skipped by the ``//`` before its host. A
+# false negative here costs one more fe548aac; a false positive blocks an honest reasoner, which
+# is the failure the citation gate's docstring warns against.
+_SANDBOX_REF = re.compile(r"sandbox:[^\s`'\"<>)\]]+")
+_FILE_PATH = re.compile(r"(?<![\w./-])(?:[\w.-]+/)+[\w.-]+\.[A-Za-z]{1,8}(?![\w/])")
 
 
 class HandoffEnvelope(BaseModel):
@@ -156,6 +167,60 @@ def validate_grounding(
             errors.append(f"claim {name!r} carries no source_tool_call_id")
         elif call_id not in ok_ids:
             errors.append(f"claim {name!r} cites {call_id!r}, which is no ok tool call of its own")
+    return errors
+
+
+def _claimed_locations(text: str) -> list[str]:
+    """Every location-shaped token in ``text``, in text order: ``sandbox:`` references and the
+    directory-qualified paths that are not inside one of them."""
+    found = [(m.start(), m.group(0)) for m in _SANDBOX_REF.finditer(text)]
+    covered = [(m.start(), m.end()) for m in _SANDBOX_REF.finditer(text)]
+    for m in _FILE_PATH.finditer(text):
+        if any(start <= m.start() < end for start, end in covered):
+            continue
+        found.append((m.start(), m.group(0)))
+    return [token for _, token in sorted(found)]
+
+
+def validate_no_tool_claims(output: Any, *, handed: str = "") -> list[str]:
+    """Return the claims a ZERO-TOOL member made that only a tool could back (empty = honest).
+
+    #696: ``_grade_grounding`` used to exempt a member with no declared tools on the premise that
+    it "makes no claims". It makes no tool-BACKED claims; nothing stopped it asserting that it had
+    done tool work, and the assertion cost it nothing (run ``fe548aac``: a reviewer with no tools
+    named two files it had "documented", neither existed, it was graded succeeded, and the Editor
+    spent 34,855 tokens chasing them). The grade looks at the CLAIM, never at the absence of tools:
+
+    * a non-empty ``artifact_refs`` — #697's "WHERE you persisted anything" key. A member with no
+      tool that persists has nothing to put there; a value is a receipt it cannot hold.
+    * a location in its prose that nobody handed it — a ``sandbox:`` reference or a
+      directory-qualified path (``_claimed_locations``). ``handed`` is everything the member was
+      given (its inbound hand-off payloads, its objective, the run's inputs): a path it repeats
+      from there is reasoning over its input, not a claim of work, and is not an error.
+
+    ``output`` is the member's result — a dict carrying its ``output`` prose (and ``artifact_refs``
+    when it declared one) or a bare string. Messages are bounded at ``_MESSAGE_CAP`` for the same
+    reason as ``_no_successful_call_message``: every failed member shares one run-page string.
+    """
+    errors: list[str] = []
+    if isinstance(output, dict):
+        refs = output.get("artifact_refs")
+        if isinstance(refs, list | tuple) and len(refs) > 0:
+            errors.append(
+                f"artifact_refs names {len(refs)} location(s), but the member holds no tool that "
+                "persists — nothing was written"
+            )
+        prose = output.get("output")
+    else:
+        prose = output
+    text = prose if isinstance(prose, str) else ("" if prose is None else str(prose))
+    for token in _claimed_locations(text):
+        if token in handed:
+            continue
+        shown = " ".join(token.split())
+        message = f"named a location it had no tool to reach and was never handed: {shown}"
+        errors.append(message[:_MESSAGE_CAP])
+        break  # the FIRST invented location is what the operator needs; the rest is noise
     return errors
 
 

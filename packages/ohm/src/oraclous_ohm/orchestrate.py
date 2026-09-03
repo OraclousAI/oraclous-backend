@@ -31,6 +31,7 @@ from oraclous_ohm.envelope import (
     build_handoff,
     grounding_counts,
     validate_grounding,
+    validate_no_tool_claims,
     validate_payload,
 )
 from oraclous_ohm.errors import OHMError
@@ -354,15 +355,25 @@ async def run_team(
         PAUSE the run on it)."""
         return any(member_status.get(d) in ("failed", "blocked") for d in by_role[role].depends_on)
 
-    def _grade_grounding(role: str) -> None:
-        """#642: grade a TOOL-DECLARING member on its receipts, after it dispatched successfully.
+    def _grade_grounding(role: str, *, handed: str = "") -> None:
+        """#642: grade a member on its receipts, after it dispatched successfully.
 
         A member that declared tools claims to have USED them, so "the LLM turn finished" is not
         evidence it did (run ``1fe1bcb5`` billed 3,099 tokens for an echoed tool-call plan and an
         ``unknown_tool``-only member, both green). The grade is strict by decision — succeeded only
         when every ``driving_signal`` resolves to an ``ok`` tool step of the member's OWN trace,
-        else ``failed``, which keeps the member re-runnable through the existing rerun path. A
-        zero-tools (pure-reasoning) member makes no claims and is not graded.
+        else ``failed``, which keeps the member re-runnable through the existing rerun path.
+
+        #696: a ZERO-TOOLS member used to be exempt on the premise that it "makes no claims". It
+        makes no tool-backed claims — nothing stopped it asserting that it had done tool work (run
+        ``fe548aac``: a reviewer with no tools named two files it had "documented", was graded
+        succeeded, and its prose sent the Editor chasing them for 34,855 tokens). It is now graded
+        on the CLAIMS it makes (``validate_no_tool_claims``): a persisted-artifact reference or a
+        location nobody handed it fails the member on its OWN row, so its dependents are blocked
+        by the ordinary upstream rule instead of inheriting the fabrication as ground truth. An
+        honest reasoner is unchanged, and it still contributes no ``member_grounding`` bucket — the
+        grounding SCORE stays a tool-declaring measure. ``handed`` is everything this member was
+        given, so a location it repeats from its input is never counted as a claim.
         """
         out = results.get(role)
         parts = out if isinstance(out, list) else [out]  # a fan-out member grades over every item
@@ -376,7 +387,17 @@ async def run_team(
                 steps.extend(part.pop("steps", None) or [])
                 signals.extend(part.pop("driving_signals", None) or [])
         member = by_role[role]
-        if not member.tools or member_status.get(role) not in ("succeeded", "partial"):
+        if member_status.get(role) not in ("succeeded", "partial"):
+            return
+        if not member.tools:
+            claims: list[str] = []
+            for part in parts:
+                for error in validate_no_tool_claims(part, handed=handed):
+                    if error not in claims:
+                        claims.append(error)
+            if claims:
+                member_status[role] = "failed"
+                member_errors[role] = f"grounding: {'; '.join(claims)}"[:2000]
             return
         grounded, total = grounding_counts(signals, steps)
         member_grounding[role] = {"grounded": grounded, "total": total}
@@ -384,6 +405,20 @@ async def run_team(
         if errors:
             member_status[role] = "failed"
             member_errors[role] = f"grounding: {'; '.join(errors)}"[:2000]
+
+    def _handed_text(member: OHMMember, inbound: list[HandoffEnvelope], items: Any = None) -> str:
+        """#696: everything a member was GIVEN, as one searchable string — its inbound hand-offs
+        (payload + objective slice), its own objective, and the run's inputs / fan-out items. A
+        location that appears here is the member's input, not its claim."""
+        pieces: list[str] = [member.subgoal or "", member.handoff_objective or ""]
+        for env in inbound:
+            pieces.append(env.objective_slice)
+            pieces.append(json.dumps(env.payload, default=str))
+        if state:
+            pieces.append(json.dumps(state, default=str))
+        if items is not None:
+            pieces.append(json.dumps(items, default=str))
+        return "\n".join(p for p in pieces if p)
 
     def _announce_child(role: str, out: Any) -> None:
         # #828 item 4: best-effort — a raising hook never aborts the run, same posture as the
@@ -499,7 +534,9 @@ async def run_team(
                     isinstance(reduced, dict) and reduced.get("status") == "PARTIAL"
                 ) or any(isinstance(o, dict) and o.get("status") == "PARTIAL" for o in outputs)
                 member_status[role] = "partial" if degraded else "succeeded"
-                _grade_grounding(role)  # #642: a tool-declaring fan-out member needs receipts too
+                # #642: a tool-declaring fan-out member needs receipts too (#696: a tool-less one
+                # is graded on its claims, over every item, against everything it was handed)
+                _grade_grounding(role, handed=_handed_text(member, inbound, items))
                 return
             else:
                 # #585: the pre-dispatch pooled ceiling gate for a single (non-fan-out) member —
@@ -546,7 +583,9 @@ async def run_team(
         member_status[role] = (
             "partial" if isinstance(out, dict) and out.get("status") == "PARTIAL" else "succeeded"
         )
-        _grade_grounding(role)  # #642: claims need receipts before this member counts as delivered
+        # #642: claims need receipts before this member counts as delivered (#696: a tool-less
+        # member's claims are checked against what it was handed)
+        _grade_grounding(role, handed=_handed_text(member, inbound))
 
     # #832: a DEDICATED lock (never the stage semaphore — that would cost a dispatch slot and
     # reintroduce the throughput problem _bounded is shaped to avoid) held across BOTH the
