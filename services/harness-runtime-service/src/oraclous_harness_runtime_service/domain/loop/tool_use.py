@@ -23,6 +23,7 @@ checkpoint: the assistant turn is stored redacted (``last_text``), like every to
 from __future__ import annotations
 
 import asyncio
+import difflib
 import json
 import os
 import random
@@ -56,6 +57,21 @@ _LLM_RETRY_BASE_S = max(0.0, float(os.environ.get("HARNESS_LLM_RETRY_BASE_SECOND
 _LLM_RETRY_MAX_S = max(0.0, float(os.environ.get("HARNESS_LLM_RETRY_MAX_SECONDS") or "8.0"))
 # indirected so a unit test can substitute a no-op sleep (deterministic, fast)
 _async_sleep = asyncio.sleep
+
+
+# #899: what an unknown tool name is answered with. The loop has always failed closed on a name it
+# does not recognise, but it handed the model back its own mistake and nothing else, so the only
+# move left was to guess again — the #692/#693 failure, where a member told "409" repeated the
+# failing call until its budget ran out.
+#: How many near misses to offer. A shortlist the model can act on, never the catalogue relabelled.
+_MAX_SUGGESTED_TOOLS = 3
+#: The similarity floor for calling something a near miss. Below it the match is a guess, and a
+#: wrong suggestion is worse than none: the model takes it and the next turn fails for a new reason.
+_NAME_MATCH_CUTOFF = 0.6
+#: How many real names to list when NOTHING is close. This reply is written into the transcript on
+#: every failing turn, so an unbounded catalogue would grow the prompt once per iteration — for a
+#: member that is already failing. Name a sample and stop.
+_MAX_LISTED_TOOLS = 20
 
 
 def _is_transient(exc: BaseException) -> bool:
@@ -551,7 +567,18 @@ async def run_tool_use_loop(
             tool_started: datetime | None = None
             tool_ended: datetime | None = None
             if spec is None:
-                unknown = {"error": "unknown_tool", "detail": tc["name"]}
+                # #899: name what the model probably meant. The call is still never dispatched —
+                # the hint sits ALONGSIDE the fail-closed rule, never in place of it.
+                unknown: dict[str, Any] = {"error": "unknown_tool", "detail": tc["name"]}
+                near = difflib.get_close_matches(
+                    tc["name"], by_name, n=_MAX_SUGGESTED_TOOLS, cutoff=_NAME_MATCH_CUTOFF
+                )
+                if near:
+                    unknown["did_you_mean"] = near
+                else:
+                    # nothing resembles it, so a shortlist would be empty — which is the verdict
+                    # this replaces. Name what DOES exist instead, bounded.
+                    unknown["available_tools"] = sorted(by_name)[:_MAX_LISTED_TOOLS]
                 content = _redact(json.dumps(unknown), redactors)
                 status = "error"
                 step_name = tc["name"]

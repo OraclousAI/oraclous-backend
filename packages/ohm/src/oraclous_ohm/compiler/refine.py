@@ -30,6 +30,7 @@ from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 from oraclous_ohm.compiler.validate import (
     DEFAULT_OUTPUTS_SCHEMA,
     _catalog_slugs,
+    _name_hint,
     _tool_slug,
 )
 from oraclous_ohm.dag import OHMDagError, topological_stages
@@ -125,7 +126,14 @@ def _capability_absence_flags(members: list[OHMMember], catalog: object) -> list
                         code="F-CAPABILITY-MISSING",
                         severity="blocking",
                         member_role=m.role,
-                        message=f"tool {tool!r} is not in the surveyed capability catalog",
+                        # #899: the same hint as the compiler gate, from the same helper. This
+                        # message was a verbatim copy of that one, and _slug.py's docstring is the
+                        # record of what a second copy costs — two on-ramps disagreeing because
+                        # neither could see the other's answer.
+                        message=(
+                            f"tool {tool!r} is not in the surveyed capability"
+                            f" catalog.{_name_hint(slug, allowed)}"
+                        ),
                     )
                 )
     return flags
