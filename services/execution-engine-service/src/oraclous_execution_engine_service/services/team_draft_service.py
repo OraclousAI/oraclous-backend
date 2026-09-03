@@ -479,8 +479,18 @@ class TeamDraftService:
                 422,
                 error_type="run_not_succeeded",
             )
+        reviewer_result = (run.results or {}).get("reviewer")
+        # #907: the reviewer's own result says the LLM that ran it was the scripted stand-in — a
+        # typed 422 distinct from "the model misbehaved", checked BEFORE the parse for the same
+        # reason as refine-nl's op-drafter leg above.
+        if isinstance(reviewer_result, dict) and reviewer_result.get("simulated"):
+            raise TeamRunError(
+                "the run's reviewer ran on the scripted stand-in model",
+                422,
+                error_type="reviewer_output_simulated",
+            )
         compiled = self._peel_json(
-            (run.results or {}).get("reviewer"),
+            reviewer_result,
             who="the run's reviewer member",
             error_type="reviewer_output_unparseable",
         )
@@ -684,8 +694,18 @@ class TeamDraftService:
         settled = await self._await_op_drafter(op_drafter_run_id, principal)
         if settled is None:
             return PendingOpDraft(op_drafter_run_id)
+        op_drafter_result = (settled.results or {}).get(_OP_DRAFTER_ROLE)
+        # #907: the op-drafter's own result says the LLM that ran it was the scripted stand-in —
+        # a typed 422 distinct from "the model misbehaved", checked BEFORE the parse so a simulated
+        # run's prose ("No tools were available; nothing to do.") never even reaches _peel_json.
+        if isinstance(op_drafter_result, dict) and op_drafter_result.get("simulated"):
+            raise TeamRunError(
+                "the op-drafter ran on the scripted stand-in model",
+                422,
+                error_type="op_drafter_simulated",
+            )
         edit_op = self._peel_json(
-            (settled.results or {}).get(_OP_DRAFTER_ROLE),
+            op_drafter_result,
             who="the op-drafter",
             error_type="op_drafter_unparseable",
         )
