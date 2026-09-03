@@ -12,6 +12,10 @@ that do not depend on each other, so both dispatch in the same stage —
   given is reasoning over its input, not a claim of tool work — it must SUCCEED. This is the
   "do not swing too far" half of the acceptance.
 
+Decision this test depends on: a member's own PROMPT BODY is not "handed". ``liar``'s persona
+names the invented path and it must still fail — an impl that folds prompt text into what the
+member was given turns this test green for the wrong member.
+
 Everything rides the public surface: registration → JWT → the user's own model credential
 (``POST /credentials/``, sealed by the broker) → ``POST /v1/engine/team-runs`` → real worker →
 live harness → real OpenRouter. ``byom``-marked → deselected in CI; a fake-LLM run is never a DoD

@@ -74,6 +74,8 @@ def _team(org: str) -> tuple[dict, dict]:
 
 
 def _run_total(c: httpx.Client) -> int:
+    """The org's run count. "Unchanged" proves no ROW was created; with the before-persist
+    ordering pinned in the unit suite, that is what "zero tokens" rests on."""
     resp = c.get("/v1/engine/team-runs")
     assert resp.status_code == 200, resp.text
     return int(resp.json()["total"])

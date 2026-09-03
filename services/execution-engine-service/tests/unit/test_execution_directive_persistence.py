@@ -94,7 +94,9 @@ def test_a_tool_less_member_is_told_it_cannot_persist_or_fetch_anything() -> Non
     """Prevention before detection. Run fe548aac's reviewer held no tools and still closed with two
     file paths it had "documented"; nothing had told it that it could not. The sentence names the
     consequence in the words the #697 contract uses (`artifact_refs`), so the reply shape it is
-    asked for and the claim it must not make are the same instruction."""
+    asked for and the claim it must not make are the same instruction. (The directive cannot see
+    ``outputs_schema``, so a member with no declared keys is told about an ``artifact_refs`` it
+    never emits — harmless, and the sentence still says what it must not claim.)"""
     text = _directive([])
     lowered = text.lower()
     assert "no tools" in lowered

@@ -29,9 +29,22 @@ The contract these tests pin (RED until the [impl] lands):
 * A team whose members declare no tools makes no registry call at all (criterion 4). A binding
   whose sub-harness carries its own ``config.credential_mappings`` is skipped — the harness mints
   and configures a fresh instance for it, so refusing would be a false negative. An unreachable
-  registry is a 502 ``registry_unavailable`` (fail closed, the #695 posture), never a skip. With no
-  registry wired at all the check is not run — the ``graphs`` precedent — and the harness gate
-  (#663) remains the second line.
+  registry — or a registry that answers a verdict with a non-2xx — is a 502
+  ``registry_unavailable`` (fail closed, the #695 posture), never a skip and never a miss pinned
+  on the user. With no registry wired at all the check is not run — the ``graphs`` precedent —
+  and the harness gate (#663) remains the second line.
+* NARROW, so it never refuses a run the harness would have bound. The pre-flight applies only to
+  the MAPPING-LOAD-BEARING credential types (``api_key`` / ``connection_string`` /
+  ``username_password`` — the harness's own ``_mapped_credential_types`` line, #663): a tool
+  that declares no such requirement is left to the harness to mint, whether it is a keyless
+  first-party connector (``graph-ingest``, ``write``), an OAuth-only tool (the broker resolves
+  the user's grant per request, no mapping needed — the registry's verdict would flag the
+  unmapped ``oauth_token``, so the verdict is not even asked), or an imported MCP tool carrying
+  its own ``spec.credential_id`` (#698 D2). A ref the org has not registered is left to the
+  harness too, whose ``_resolve_all`` fails before any model token. Known gap, accepted: an
+  OAuth-only tool whose user has no grant still spends up to its first 409.
+* A binding is matched to a registered tool by SLUG — the ref's name slug against the tool row's
+  name slug (``core/web-research@1.0.0`` ⇔ ``Web Research``), exactly as the harness resolves.
 
 New-symbol imports are function-local (§4.1) so collection never breaks other suites.
 """
@@ -42,7 +55,10 @@ import uuid
 from typing import Any
 
 import pytest
-from oraclous_execution_engine_service.services.registry_client import RegistryClientError
+from oraclous_execution_engine_service.services.registry_client import (
+    RegistryClientError,
+    RegistryRejected,
+)
 from oraclous_execution_engine_service.services.team_run_service import TeamRunError, TeamRunService
 from oraclous_governance import Principal, PrincipalType
 
@@ -52,6 +68,9 @@ _ORG = uuid.uuid4()
 _USER = uuid.uuid4()
 _READER_ID = uuid.uuid4()
 _SEARCH_ID = uuid.uuid4()
+_GRAPH_ID = uuid.uuid4()
+_MCP_ID = uuid.uuid4()
+_OAUTH_ID = uuid.uuid4()
 
 
 def _principal() -> Principal:
@@ -84,18 +103,27 @@ class _FakeRunRepo:
         return row
 
 
-def _tool(capability_id: uuid.UUID, name: str, *, credential_type: str = "api_key") -> dict:
-    """A ``GET /api/v1/tools`` row: the registry's own name + the descriptor's requirements."""
+def _tool(
+    capability_id: uuid.UUID,
+    name: str,
+    *,
+    credential_type: str | None = "api_key",
+    spec: dict[str, Any] | None = None,
+) -> dict:
+    """A ``GET /api/v1/tools`` row: the registry's own name + the descriptor's requirements.
+    ``credential_type=None`` declares a keyless tool; ``spec`` overrides the whole spec."""
+    if spec is None:
+        spec = {
+            "credential_requirements": (
+                [{"type": credential_type, "required": True}] if credential_type else []
+            )
+        }
     return {
         "id": str(capability_id),
         "name": name,
         "kind": "tool",
         "status": "active",
-        "descriptor": {
-            "spec": {
-                "credential_requirements": [{"type": credential_type, "required": True}],
-            }
-        },
+        "descriptor": {"spec": spec},
     }
 
 
@@ -125,10 +153,16 @@ class _FakeRegistry:
         tools: list[dict] | None = None,
         instances: list[dict] | None = None,
         unreachable: bool = False,
+        verdicts: dict[str, dict] | None = None,
+        reject_validate: int | None = None,
     ) -> None:
         self.tools = tools or []
         self.instances = instances or []
         self.unreachable = unreachable
+        # a scripted ValidationReport per instance id — overrides the row-status rule below, so a
+        # row that SAYS READY can answer "not ready" the way a revoked credential does (S1)
+        self.verdicts = verdicts or {}
+        self.reject_validate = reject_validate  # a non-2xx from validate-execution (S2)
         self.calls: list[str] = []
 
     async def list_tools(self) -> list[dict[str, Any]]:
@@ -148,6 +182,10 @@ class _FakeRegistry:
         ``READY`` rows are ready; anything else reports a CREDENTIAL_NOT_CONFIGURED error naming
         the first unmapped required type (what the real service derives from the mappings)."""
         self.calls.append(f"validate:{instance_id}")
+        if self.reject_validate is not None:
+            raise RegistryRejected(self.reject_validate, "boom")
+        if str(instance_id) in self.verdicts:
+            return dict(self.verdicts[str(instance_id)])
         row = next(i for i in self.instances if i["id"] == str(instance_id))
         if row["status"] == "READY":
             return {
@@ -298,27 +336,141 @@ async def test_every_unmet_binding_is_reported_and_the_first_is_the_prompt() -> 
     registry = _FakeRegistry(
         tools=[
             _tool(_READER_ID, "GitHub Reader"),
-            _tool(_SEARCH_ID, "Web Search", credential_type="api_key"),
+            _tool(_SEARCH_ID, "Web Research", credential_type="api_key"),
         ],
         instances=[],
     )
     svc, _repo, _enq = _service(registry)
     manifest = _team(
-        [_agent("fetcher", tools=["github-reader"]), _agent("searcher", ["web-search"])]
+        [_agent("fetcher", tools=["github-reader"]), _agent("searcher", ["web-research"])]
     )
     subs = {
         "fetcher": _sub("fetcher", [_reader_cap()]),
-        "searcher": _sub("searcher", [{"ref": "core/web-search@1.0.0", "binding": "web-search"}]),
+        "searcher": _sub(
+            "searcher", [{"ref": "core/web-research@1.0.0", "binding": "web-research"}]
+        ),
     }
 
     with pytest.raises(TeamRunPreflightError) as exc:
         await _go(svc, manifest, subs)
 
-    assert [m["binding"] for m in exc.value.missing] == ["github-reader", "web-search"]
+    assert [m["binding"] for m in exc.value.missing] == ["github-reader", "web-research"]
     assert exc.value.needs_credential["provider"] == "github-reader"
 
 
+async def test_criterion_3_a_ready_row_whose_credential_no_longer_resolves_is_a_miss() -> None:
+    """ "CONFIGURATION_REQUIRED counts, not just an absent credential row": the verdict, not the
+    row. A mapped-then-revoked credential leaves the row at READY until something re-validates
+    it; the registry's ``validate-execution`` resolves it through the broker and says otherwise.
+    An impl that reads ``instance["status"]`` and never asks would admit this run."""
+    from oraclous_execution_engine_service.services.team_run_service import TeamRunPreflightError
+
+    stale = _instance(_READER_ID, status="READY", mappings={"api_key": "cred-revoked"})
+    registry = _FakeRegistry(
+        tools=[_tool(_READER_ID, "GitHub Reader")],
+        instances=[stale],
+        verdicts={
+            stale["id"]: {
+                "is_ready": False,
+                "instance_id": stale["id"],
+                "status": "CONFIGURATION_REQUIRED",
+                "checks": {"capability": "passed", "credentials": "failed"},
+                "errors": [
+                    {
+                        "type": "CREDENTIAL_UNRESOLVABLE",
+                        "message": "the credential connected for 'api_key' could not be resolved",
+                        "severity": "critical",
+                        "credential_type": "api_key",
+                    }
+                ],
+                "action_items": [],
+            }
+        },
+    )
+    svc, repo, enqueued = _service(registry)
+    manifest = _team([_agent("fetcher", tools=["github-reader"])])
+
+    with pytest.raises(TeamRunPreflightError) as exc:
+        await _go(svc, manifest, {"fetcher": _sub("fetcher", [_reader_cap()])})
+
+    assert exc.value.needs_credential == {"requirement_id": "api_key", "provider": "github-reader"}
+    assert repo.rows == {} and enqueued == []
+
+
 # ── the runs that must still start ─────────────────────────────────────────────────────────────
+
+
+async def test_a_tool_that_needs_no_credential_is_left_to_the_harness_to_mint() -> None:
+    """Every keyless first-party connector (``graph-ingest``, ``write``, ``read``…) has NO org
+    instance until the harness mints ``harness:<id>:<binding>`` at dispatch. "No instance ⇒ miss"
+    would refuse every compiled team."""
+    registry = _FakeRegistry(tools=[_tool(_GRAPH_ID, "Graph Ingest", credential_type=None)])
+    svc, _repo, enqueued = _service(registry)
+    manifest = _team([_agent("writer", tools=["graph-ingest"])])
+    sub = _sub("writer", [{"ref": "core/graph-ingest@1.0.0", "binding": "graph-ingest"}])
+
+    row = await _go(svc, manifest, {"writer": sub})
+
+    assert enqueued == [row.id]
+    assert not any(c.startswith("validate:") for c in registry.calls)
+
+
+async def test_an_imported_mcp_tool_carrying_its_own_key_is_left_to_the_harness() -> None:
+    """#698 D2: an MCP import records the key the org admin chose (``spec.credential_id``) AND
+    declares an ``api_key`` requirement; the registry falls back to that key at dispatch and the
+    harness exempts it. The org never holds an instance of it — refusing would 409 the D7
+    pull-request-review team at GO."""
+    mcp = _tool(
+        _MCP_ID,
+        "github-mcp",
+        spec={
+            "type": "mcp",
+            "credential_id": "cred-7",
+            "credential_requirements": [{"type": "api_key", "required": True, "provider": "mcp"}],
+        },
+    )
+    registry = _FakeRegistry(tools=[mcp])
+    svc, _repo, enqueued = _service(registry)
+    manifest = _team([_agent("reader", tools=["github-mcp"])])
+    sub = _sub("reader", [{"ref": "org:mcp/github-mcp@1", "binding": "github-mcp"}])
+
+    row = await _go(svc, manifest, {"reader": sub})
+
+    assert enqueued == [row.id]
+    assert not any(c.startswith("validate:") for c in registry.calls)
+
+
+async def test_an_oauth_only_tool_is_never_refused_at_go() -> None:
+    """OAuth is broker-resolved per request from the user's grant; no instance mapping is needed
+    and the harness's #663 gate exempts it. The registry's verdict WOULD flag the unmapped
+    ``oauth_token``, so the verdict is not asked — with no instance, and with a
+    CONFIGURATION_REQUIRED one. (Known gap: a user with no grant still spends up to the first 409.)
+    """
+    oauth = _tool(_OAUTH_ID, "Google Drive", credential_type="oauth_token")
+    stale = _instance(_OAUTH_ID, status="CONFIGURATION_REQUIRED", required=["oauth_token"])
+    manifest = _team([_agent("reader", tools=["google-drive"])])
+    sub = _sub("reader", [{"ref": "core/google-drive@1.0.0", "binding": "google-drive"}])
+
+    for instances in ([], [stale]):
+        registry = _FakeRegistry(tools=[oauth], instances=instances)
+        svc, _repo, enqueued = _service(registry)
+        row = await _go(svc, manifest, {"reader": sub})
+        assert enqueued == [row.id], instances
+        assert not any(c.startswith("validate:") for c in registry.calls), instances
+
+
+async def test_a_ref_the_org_has_not_registered_is_left_to_the_harness() -> None:
+    """The harness's ``_resolve_all`` fails a ref no registry row matches, before any model
+    token — so the pre-flight does not duplicate that refusal (and never guesses a credential
+    type for a tool it cannot see)."""
+    registry = _FakeRegistry(tools=[], instances=[])
+    svc, _repo, enqueued = _service(registry)
+    manifest = _team([_agent("fetcher", tools=["github-reader"])])
+
+    row = await _go(svc, manifest, {"fetcher": _sub("fetcher", [_reader_cap()])})
+
+    assert enqueued == [row.id]
+    assert not any(c.startswith("validate:") for c in registry.calls)
 
 
 async def test_a_ready_instance_admits_the_run() -> None:
@@ -397,6 +549,25 @@ async def test_the_preflight_runs_before_the_row_is_written() -> None:
 
 async def test_an_unreachable_registry_is_a_502_not_an_admitted_run() -> None:
     registry = _FakeRegistry(unreachable=True)
+    svc, repo, enqueued = _service(registry)
+    manifest = _team([_agent("fetcher", tools=["github-reader"])])
+
+    with pytest.raises(TeamRunError) as exc:
+        await _go(svc, manifest, {"fetcher": _sub("fetcher", [_reader_cap()])})
+
+    assert exc.value.status_code == 502
+    assert exc.value.error_type == "registry_unavailable"
+    assert repo.rows == {} and enqueued == []
+
+
+async def test_a_verdict_the_registry_refuses_to_give_is_a_502_not_a_miss_and_not_a_run() -> None:
+    """A 5xx (or a 404 for an instance that vanished between list and validate) is inconclusive:
+    never admitted, and never reported to the user as THEIR missing credential."""
+    registry = _FakeRegistry(
+        tools=[_tool(_READER_ID, "GitHub Reader")],
+        instances=[_instance(_READER_ID, status="READY", mappings={"api_key": "c"})],
+        reject_validate=500,
+    )
     svc, repo, enqueued = _service(registry)
     manifest = _team([_agent("fetcher", tools=["github-reader"])])
 

@@ -28,6 +28,7 @@ from typing import Any
 import pytest
 from oraclous_ohm.envelope import HandoffEnvelope
 from oraclous_ohm.manifest import (
+    OHMFanOut,
     OHMManifest,
     OHMMember,
     OHMMetadata,
@@ -460,6 +461,20 @@ async def test_the_run_page_message_names_the_real_cause() -> None:
 # about what it was handed is legitimate; a member that asserts a RESULT only a tool can produce
 # — a persisted artifact, a location it invented — is not. The grade looks at the claim, never
 # at the absence of tools.
+#
+# What "handed" means, pinned below: the member's own objective (subgoal / hand-off objective),
+# every inbound hand-off payload, the run's inputs (the user's task text, fan-out state) and the
+# fan-out item it was dispatched over. NOT handed: the member's own prompt body — a persona that
+# instructs the member to name a file has not given it one (the byom e2e depends on this).
+#
+# Edges, pinned below: a URL is a reference, not an artifact the member persisted — never a
+# claim. A bare filename with no directory IS a claim (the cheapest evasion of a
+# directory-only rule). A dotted company name ("Interrail B.V.") and "e.g." are neither. The
+# accepted false positive of a token rule: a reviewer that RECOMMENDS "add a CHANGELOG.md" is
+# token-identical to one claiming it wrote one and will fail — that is the price of the bare-
+# filename pin, and an impl must not "fix" it by weakening that pin. The issue's fuller claim
+# taxonomy ("wrote to the graph", "fetched a page") is NOT pinned; the narrower
+# artifact-location variant the issue allows is.
 
 _FABRICATED_A = "Interrail_B.V./Identified_Weaknesses_Support_Areas.txt"
 _FABRICATED_B = "Interrail_B.V./Consequences_of_Inaction_Summary.txt"
@@ -473,13 +488,30 @@ def test_validate_no_tool_claims_accepts_an_honest_reasoner() -> None:
     from oraclous_ohm.envelope import validate_no_tool_claims
 
     out = {
-        "output": "Three weaknesses stand out: pricing (v2.1 of the deck), support hours, e.g. "
-        "weekends, and the 3.5% churn.",
+        "output": "Three weaknesses stand out at Interrail B.V.: pricing (v2.1 of the deck), "
+        "support hours, e.g. weekends, and the 3.5% churn. Cf. the public figures at "
+        "https://example.com/reports/2026/q1.pdf and on interrail.eu/support.",
         "status": "SUCCEEDED",
         "summary": "three weaknesses",
         "artifact_refs": [],
     }
     assert validate_no_tool_claims(out) == []
+
+
+def test_validate_no_tool_claims_treats_a_url_as_a_reference_not_a_claim() -> None:
+    """A reasoner citing a public source it was not handed is referencing, not persisting."""
+    from oraclous_ohm.envelope import validate_no_tool_claims
+
+    assert validate_no_tool_claims("See https://example.com/docs/report.pdf for the figures.") == []
+
+
+def test_validate_no_tool_claims_rejects_a_bare_filename_it_was_not_handed() -> None:
+    """The cheapest evasion of a directory-only rule: "saved as findings.md"."""
+    from oraclous_ohm.envelope import validate_no_tool_claims
+
+    errors = validate_no_tool_claims("I have saved all findings as findings.md for the team.")
+    assert errors
+    assert "findings.md" in errors[0]
 
 
 def test_validate_no_tool_claims_rejects_a_non_empty_artifact_refs() -> None:
@@ -596,6 +628,28 @@ async def test_zero_tool_member_repeating_a_handed_path_succeeds() -> None:
     res = await run_team(_team([reader, thinker]), dispatch)
     assert res.member_status == {"reader": "succeeded", "thinker": "succeeded"}
     assert res.status == "completed"
+
+
+async def test_zero_tool_member_echoing_its_fan_out_item_succeeds() -> None:
+    # A fan-out member is dispatched once per item; the item IS its input (state → over → item),
+    # so echoing the item's path is reasoning over what it was handed.
+    async def dispatch(member: OHMMember, envs: list[HandoffEnvelope], item: Any) -> dict:
+        return {"output": f"{item} covers pricing.", "status": "SUCCEEDED"}
+
+    fan = OHMFanOut(over="$.files", max_parallel=2)
+    member = OHMMember(role="reader", kind="agent", manifest_ref="org:x/reader@1", fan_out=fan)
+    res = await run_team(_team([member]), dispatch, state={"files": ["docs/a.md", "docs/b.md"]})
+    assert res.member_status == {"reader": "succeeded"}
+
+
+async def test_a_partial_zero_tool_member_is_graded_on_its_claims_too() -> None:
+    # #587: a degraded (PARTIAL) member is still graded — a fabricated location fails it.
+    res = await run_team(
+        _team([_m("reviewer")]),
+        _dispatch_returning({"output": _FE548AAC_CLOSING, "status": "PARTIAL"}),
+    )
+    assert res.member_status == {"reviewer": "failed"}
+    assert res.member_errors["reviewer"].startswith("grounding:")
 
 
 async def test_zero_tool_member_still_contributes_no_grounding_bucket() -> None:
