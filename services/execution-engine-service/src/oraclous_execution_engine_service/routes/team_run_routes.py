@@ -57,8 +57,9 @@ def _preflight_409(exc: TeamRunPreflightError) -> JSONResponse:
     """#664: a credential miss at GO. The gateway relays a 409 as ``CREDENTIALS_REQUIRED`` only
     when ``needs_credential`` sits at the TOP level of the body (``extract_needs_credential`` reads
     nothing nested), so this cannot ride an ``HTTPException`` — its payload lands under ``detail``.
-    The body is the leak-safe pair, the canonical code, and the human sentence for logs; the
-    gateway forwards only the pair."""
+    The body is the leak-safe pair, ``error_code`` (for a DIRECT engine caller — the gateway's
+    own allow-list does not carry ``CREDENTIALS_REQUIRED``, so the relay to the client rides
+    ``needs_credential`` alone), and the human sentence for logs."""
     return JSONResponse(
         status_code=status.HTTP_409_CONFLICT,
         content={
