@@ -55,6 +55,10 @@ def _team(org: uuid.UUID, roles: list[str]) -> dict[str, Any]:
                 "manifest_ref": f"org:x/{r}@1",
                 "subgoal": f"do {r}",
                 "depends_on": [],
+                # #697: every member declares what it hands on — a draft with an empty
+                # output contract is blocked by F-NO-OUTPUT-CONTRACT, so the fixture
+                # carries the DEFAULT_OUTPUTS_SCHEMA shape to stay a VALID team draft.
+                "outputs_schema": {"required": ["summary"]},
             }
             for r in roles
         ],
