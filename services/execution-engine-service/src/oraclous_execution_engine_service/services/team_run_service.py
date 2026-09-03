@@ -134,15 +134,21 @@ class TeamRunPreflightError(TeamRunError):
     """#664: GO on a team whose declared tool has no configured, working instance — a 409 that
     names the capability and the credential type, raised BEFORE a row exists or a worker is told.
 
-    ``missing`` is one ``{role, binding, credential_type}`` per unmet binding, in member order.
-    ``needs_credential`` is the leak-safe ``{requirement_id, provider}`` pair for the FIRST miss —
-    the exact token the gateway already relays as ``CREDENTIALS_REQUIRED`` and the console already
-    renders as a connect prompt, so the promise above the GO button ("a missing one stops the run
-    with a connect prompt") is kept without a new wire shape. ``provider`` is the tool's canonical
-    slug (the registry row's own name), never a value, an id or a URL.
+    ``missing`` is one ``{role, binding, credential_type, provider}`` per unmet binding, in member
+    order. ``needs_credential`` is the leak-safe ``{requirement_id, provider}`` pair for the FIRST
+    miss — the exact token the gateway already relays as ``CREDENTIALS_REQUIRED`` and the console
+    already renders as a connect prompt, so the promise above the GO button ("a missing one stops
+    the run with a connect prompt") is kept without a new wire shape.
+
+    ``provider`` is the REGISTERED tool's own canonical slug (its name in the registry, review
+    round 1 finding), never the team's ``binding`` alias — a member's ``tools[]``/sub-harness
+    ``binding`` is a free string the team's own author chose and can differ from what the tool is
+    actually called; naming the alias would send the console to connect the wrong thing.
     """
 
     def __init__(self, missing: Sequence[Mapping[str, str]]) -> None:
+        if not missing:
+            raise ValueError("TeamRunPreflightError requires at least one miss")
         self.missing: list[dict[str, str]] = [dict(m) for m in missing]
         named = "; ".join(
             f"'{m['binding']}' (member '{m['role']}') needs a '{m['credential_type']}' credential"
@@ -159,7 +165,7 @@ class TeamRunPreflightError(TeamRunError):
     @property
     def needs_credential(self) -> dict[str, str]:
         first = self.missing[0]
-        return {"requirement_id": first["credential_type"], "provider": first["binding"]}
+        return {"requirement_id": first["credential_type"], "provider": first["provider"]}
 
 
 # #663 / #664: the credential types whose instance MAPPING is load-bearing. OAuth is resolved by the
@@ -167,6 +173,12 @@ class TeamRunPreflightError(TeamRunError):
 # org instance is NOT a miss — the harness mints for it (its ``_mapped_credential_types`` draws
 # the same line, and the pre-flight must never refuse a run the harness would have bound).
 _LOAD_BEARING_CREDENTIAL_TYPES = frozenset({"api_key", "connection_string", "username_password"})
+
+# #664 review round 1 (S4): a wall-clock budget on the whole pre-flight — list + up to one
+# ``validate-execution`` per distinct capability. Below the gateway's own request timeout, so a
+# slow broker or an org with many stale instances 502s the caller rather than admitting a run the
+# client already gave up watching for.
+_PREFLIGHT_TIMEOUT_SECONDS = 10.0
 
 
 def _load_bearing_credential_types(descriptor: Mapping[str, Any]) -> list[str]:
@@ -874,9 +886,18 @@ class TeamRunService:
         * a ref that matches no registered tool is left to the harness's own fail-fast, which
           also fires before any model tokens.
 
-        An unreachable registry is a 502 (fail closed, the #695 posture). No registry wired — the
-        unit-test posture — skips the check, exactly as the ``graphs`` existence check does; the
-        real request path always wires one.
+        An unreachable registry, an inconclusive verdict (the broker could not be reached, or the
+        response could not be read), or a call that exceeds ``_PREFLIGHT_TIMEOUT_SECONDS`` is ALL
+        a 502 (fail closed, the #695 posture) — never a skip and never a miss pinned on the user.
+        No registry wired — the unit-test posture — skips the check, exactly as the ``graphs``
+        existence check does; the real request path always wires one.
+
+        Run LAST of ``create``'s checks — after the free local validators, not first (review
+        round 1): ``validate_execution`` has a write side effect (the registry re-derives and
+        persists the instance's status), so a request that is going to 422 on its own inputs
+        should not pay for the registry round-trip, or mutate instance state, before failing
+        anyway. "Before the row, before the worker" is the invariant that matters, and it still
+        holds — this is the last thing that can refuse, right before the row is written.
         """
         if self._registry is None:
             return
@@ -898,23 +919,36 @@ class TeamRunService:
         if not wanted:
             return
         try:
-            tools = await self._registry.list_tools()
-            instances = await self._registry.list_instances()
-            by_slug = {tool_slug(str(t.get("name") or "")): t for t in tools if t.get("name")}
-            verdict: dict[str, str | None] = {}  # capability id → credential type to connect
-            missing: list[dict[str, str]] = []
-            for role, binding, ref in wanted:
-                tool = by_slug.get(tool_slug(ref))
-                if tool is None:
-                    continue
-                cap_id = str(tool.get("id"))
-                if cap_id not in verdict:
-                    rows = [i for i in instances if str(i.get("capability_id")) == cap_id]
-                    verdict[cap_id] = await self._first_unmet_credential(tool, rows)
-                needed = verdict[cap_id]
-                if needed is not None:
-                    missing.append({"role": role, "binding": binding, "credential_type": needed})
-        except RegistryClientError as exc:
+            async with asyncio.timeout(_PREFLIGHT_TIMEOUT_SECONDS):
+                tools = await self._registry.list_tools()
+                instances = await self._registry.list_instances()
+                by_slug = {tool_slug(str(t.get("name") or "")): t for t in tools if t.get("name")}
+                # capability id -> (credential type to connect, or None when ready), cached so a
+                # capability shared by several members is verdict-checked only once
+                verdict: dict[str, str | None] = {}
+                missing: list[dict[str, str]] = []
+                for role, binding, ref in wanted:
+                    tool = by_slug.get(tool_slug(ref))
+                    if tool is None:
+                        continue
+                    cap_id = str(tool.get("id"))
+                    if cap_id not in verdict:
+                        rows = [i for i in instances if str(i.get("capability_id")) == cap_id]
+                        verdict[cap_id] = await self._first_unmet_credential(
+                            self._registry, rows, tool=tool
+                        )
+                    needed = verdict[cap_id]
+                    if needed is not None:
+                        provider = tool_slug(str(tool.get("name") or "")) or binding
+                        missing.append(
+                            {
+                                "role": role,
+                                "binding": binding,
+                                "credential_type": needed,
+                                "provider": provider,
+                            }
+                        )
+        except (RegistryClientError, TimeoutError) as exc:
             raise TeamRunError(
                 "the capability registry could not be reached to check the team's tool credentials",
                 502,
@@ -923,43 +957,56 @@ class TeamRunService:
         if missing:
             raise TeamRunPreflightError(missing)
 
+    @staticmethod
     async def _first_unmet_credential(
-        self, tool: Mapping[str, Any], rows: Sequence[Mapping[str, Any]]
+        registry: RegistryClient, rows: Sequence[Mapping[str, Any]], *, tool: Mapping[str, Any]
     ) -> str | None:
         """``None`` when the org can run this tool; else the load-bearing credential type to
-        connect. Ready = some instance the registry itself calls ready; keyless = never a miss."""
-        assert self._registry is not None  # noqa: S101 — checked by the caller
+        connect. Ready = some instance whose verdict names no unmet LOAD-BEARING credential — an
+        error on a type outside ``needed`` (an OAuth grant, a missing descriptor check) is not
+        this pre-flight's problem; the harness binds the instance regardless. Rows already marked
+        ``READY`` are checked first, so the common case costs one verdict call, not len(rows).
+
+        ``registry`` is passed in rather than read off ``self`` (review round 1 nit): the caller
+        already checked it is not None, and a ``staticmethod`` cannot silently drift onto a stale
+        ``self._registry`` read."""
         descriptor = tool.get("descriptor")
         needed = _load_bearing_credential_types(descriptor if isinstance(descriptor, dict) else {})
         if not needed:
             return None
+        ordered = sorted(rows, key=lambda r: r.get("status") != "READY")
         first_unmet: str | None = None
-        for row in rows:
+        for row in ordered:
             try:
                 instance_id = uuid.UUID(str(row.get("id")))
             except ValueError:
                 continue
-            report = await self._registry.validate_execution(instance_id)
+            report = await registry.validate_execution(instance_id)
+            if not isinstance(report, dict) or not isinstance(report.get("is_ready"), bool):
+                # a shapeless/unreadable verdict is inconclusive, never a silent admission. The
+                # real ``RegistryClient`` already enforces this shape (belt); a test double or a
+                # future implementation of the same seam might not (suspenders).
+                raise RegistryClientError("registry verdict unreadable: not a ValidationReport")
+            checks = report.get("checks")
+            if isinstance(checks, dict) and checks.get("credentials") == "warning":
+                # the registry could not reach the broker to give a real answer — inconclusive,
+                # never treated as ready (review round 1 finding: reading only ``is_ready`` here
+                # admitted a run the harness could still 409 on)
+                raise RegistryClientError("credential broker unreachable: verdict inconclusive")
             if report.get("is_ready"):
                 return None
-            for err in report.get("errors") or []:
-                if not isinstance(err, dict) or not str(err.get("type", "")).startswith(
-                    "CREDENTIAL_"
-                ):
-                    continue
-                cred_type = err.get("credential_type")
-                if cred_type in _LOAD_BEARING_CREDENTIAL_TYPES:
-                    first_unmet = first_unmet or str(cred_type)
-                    break
-            else:
-                # the report failed on something that is not a load-bearing credential (an OAuth
-                # grant, a missing descriptor) — the harness would still bind it; not a miss
-                if not any(
-                    str(e.get("type", "")).startswith("CREDENTIAL_")
-                    for e in report.get("errors") or []
-                    if isinstance(e, dict)
-                ):
-                    return None
+            unmet = [
+                str(err["credential_type"])
+                for err in report.get("errors") or []
+                if isinstance(err, dict)
+                and str(err.get("type", "")).startswith("CREDENTIAL_")
+                and err.get("credential_type") in needed
+            ]
+            if not unmet:
+                # nothing NEEDED is broken — every error is outside this pre-flight's set (an
+                # OAuth grant, a missing descriptor) and the harness would still bind this row
+                return None
+            first_unmet = first_unmet or unmet[0]
         return first_unmet or needed[0]
 
     async def _validate_graph_id(self, organisation_id: uuid.UUID, graph_id: str) -> None:
@@ -1058,9 +1105,6 @@ class TeamRunService:
         sub_harnesses = await self._resolve_member_manifests(
             team, sub_harnesses, models=manifest.get("models")
         )
-        # #664: the promised credential pre-flight — a declared tool with no configured, working
-        # instance is a 409 connect prompt HERE, before a row, a worker, or a model token exists.
-        await self._preflight_tool_credentials(team, sub_harnesses)
         validate_task_input(team, inputs)  # Contract §TASK (#674): required task missing → 422
         validate_input_keys(team, inputs)  # #714: an inputs key the team cannot read → 422
         validate_answers(
@@ -1080,6 +1124,12 @@ class TeamRunService:
         inputs = strip_reserved_refresh_seed(inputs)
         if seed_from_run_id is not None:  # #602 seeded-refresh: fail-fast 422 + thread the seed in
             inputs = await self._seed_refresh(org, seed_from_run_id, inputs)
+        # #664: the promised credential pre-flight — a declared tool with no configured, working
+        # instance is a 409 connect prompt, before a row, a worker, or a model token exists. LAST
+        # of the create-time checks (review round 1): ``validate_execution`` has a write side
+        # effect (the registry re-derives and persists the instance's status), so a request that
+        # is going to 422 on its own inputs should not pay for it first.
+        await self._preflight_tool_credentials(team, sub_harnesses)
         with org_scope(org):  # bind the org-GUC so the RLS-backstopped INSERT is admitted (ADR-030)
             row = await self._team_runs.create(
                 organisation_id=org,
