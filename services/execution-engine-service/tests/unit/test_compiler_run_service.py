@@ -1,9 +1,10 @@
 """CompilerRunService (#635) — unit, the TeamRunService seam faked, no DB.
 
 Pins the Describe door's assembly contract: the compiler team is built server-side with the #596
-seeded catalog baked into the surveyor's subgoal, the caller's BYOM models are bound into the
-manifest AND every sub-harness, the optional Describe fields fold into the planner's objective,
-and the run is submitted through the SAME create path (gate_decisions {}, graph_id passthrough).
+seeded catalog baked into the manifest-drafter's subgoal (#709/#713), the caller's BYOM models are
+bound into the manifest AND every sub-harness, the optional Describe fields fold into the planner's
+objective, and the run is submitted through the SAME create path (gate_decisions {}, graph_id
+passthrough).
 """
 
 from __future__ import annotations
@@ -68,9 +69,10 @@ async def test_compiler_run_assembles_binds_and_submits_through_the_same_path() 
     manifest = submitted["manifest"]
     subs = submitted["sub_harnesses"]
 
-    # the four-member compiler team, assembled server-side (ADR-047 — no new runtime)
+    # the three-member compiler team, assembled server-side (ADR-047 — no new runtime). #709
+    # deleted capability-surveyor: nothing read its retyped output any more.
     roles = {m["role"] for m in manifest["members"]}
-    assert roles == {"planner", "capability-surveyor", "manifest-drafter", "reviewer"}
+    assert roles == {"planner", "manifest-drafter", "reviewer"}
 
     # the caller's BYOM models are bound into the manifest AND every sub-harness
     assert manifest["models"] == [_model()]
@@ -78,11 +80,12 @@ async def test_compiler_run_assembles_binds_and_submits_through_the_same_path() 
     for sub in subs.values():
         assert sub["models"] == [_model()]
 
-    # the #596 seeded catalog is baked into the surveyor's subgoal (a real seeded slug appears)
-    surveyor = next(m for m in manifest["members"] if m["role"] == "capability-surveyor")
+    # #713: the #596 seeded catalog (with descriptions) is baked into the DRAFTER's subgoal now —
+    # the surveyor is gone, so this is where "a real seeded slug appears" is checked.
+    drafter = next(m for m in manifest["members"] if m["role"] == "manifest-drafter")
     catalog = draft_catalog()
     assert catalog, "the seed inventory is non-empty"
-    assert catalog[0] in surveyor["subgoal"]
+    assert catalog[0] in drafter["subgoal"]
 
     # submitted through the SAME create path: no pre-seeded gates, graph passthrough
     assert submitted["gate_decisions"] == {}

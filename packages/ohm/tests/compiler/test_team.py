@@ -1,7 +1,12 @@
-"""#594 — the compiler is a 4-member ACYCLIC team (no loop-SCC); the reviewer holds the validator.
+"""#594 — the compiler is a 3-member ACYCLIC team (no loop-SCC); the reviewer holds the validator.
 
 CTO decision A: the repair loop is the reviewer's IN-HARNESS tool-use loop, so the team itself is a
 plain linear chain with NO team-level loop and NO engine done-check.
+
+#709 deleted the capability-surveyor step: its only job was retyping the surveyed catalog as its
+own output, and nothing read that output any more — the drafter gets the described catalog baked
+into its own sub-goal (#713), and the reviewer's manifest-validate reads the org's live registry
+directly (#705). The chain is now planner -> manifest-drafter -> reviewer.
 """
 
 from __future__ import annotations
@@ -18,12 +23,15 @@ _ORG = uuid.UUID("87654321-4321-8765-4321-876543210000")
 
 
 def test_the_compiler_team_assembles_linear_and_acyclic() -> None:
+    # #709: the capability-surveyor step is DELETED — nothing reads its output any more (the
+    # drafter gets the described catalog straight from its own sub-goal, and the reviewer's
+    # manifest-validate reads the org's live registry, never the surveyor's retyped list). The
+    # chain is now planner -> manifest-drafter -> reviewer, three stages, not four.
     manifest, _subs = build_compiler_team(_ORG)
     loaded = load_ohm(manifest.model_dump(mode="json"))  # THE REAL loader
     assert loaded.is_team()
     assert loaded.execution_stages() == [
         ["planner"],
-        ["capability-surveyor"],
         ["manifest-drafter"],
         ["reviewer"],
     ]
@@ -35,8 +43,8 @@ def test_the_reviewer_holds_the_validate_tool_others_are_reasoning_only() -> Non
     manifest, subs = build_compiler_team(_ORG)
     by = {m.role: m for m in manifest.members}
     assert by["reviewer"].tools == ["manifest-validate"]  # the in-harness repair calls validate
-    assert all(by[r].tools == [] for r in ("planner", "capability-surveyor", "manifest-drafter"))
-    assert set(subs) == {"planner", "capability-surveyor", "manifest-drafter", "reviewer"}
+    assert all(by[r].tools == [] for r in ("planner", "manifest-drafter"))
+    assert set(subs) == {"planner", "manifest-drafter", "reviewer"}  # #709: no surveyor
 
 
 def test_the_budget_is_the_three_layer_shape() -> None:
@@ -69,24 +77,21 @@ def test_the_reviewer_repair_loop_is_hard_bounded_to_n_attempts() -> None:
     by = {m.role: m for m in manifest.members}
     assert by["reviewer"].max_tool_calls == _REVIEWER_VALIDATE_CALLS  # the harness halts here
     # only the reviewer is tool-call-bounded; the others are reasoning-only (no tools, no loop)
-    assert all(
-        by[r].max_tool_calls is None for r in ("planner", "capability-surveyor", "manifest-drafter")
-    )
+    assert all(by[r].max_tool_calls is None for r in ("planner", "manifest-drafter"))
 
 
-def test_the_objective_and_catalog_are_seeded_into_the_subgoals() -> None:
-    # slice-1: the prose objective → the planner's subgoal; the catalog → the surveyor's. No engine
-    # wiring — both render as the member's harness Objective: line (team_run._render_input).
-    manifest, _ = build_compiler_team(
-        _ORG, objective="Summarise the week's AI news into a digest.", catalog=["web-search"]
-    )
+def test_the_objective_is_seeded_into_the_planner_subgoal() -> None:
+    # slice-1: the prose objective → the planner's subgoal. No engine wiring — it renders as the
+    # member's harness Objective: line (team_run._render_input). #709: there is no surveyor left
+    # to seed a catalog into; the described catalog reaching the drafter is
+    # test_catalog_descriptions.py's job, not this test's.
+    manifest, _ = build_compiler_team(_ORG, objective="Summarise the week's AI news into a digest.")
     by = {m.role: m for m in manifest.members}
     # the objective LEADS the planner's subgoal (followed by the seed topology shapes, #596)
     assert by["planner"].subgoal and by["planner"].subgoal.startswith(
         "Summarise the week's AI news into a digest."
     )
-    assert by["capability-surveyor"].subgoal is not None
-    assert "web-search" in by["capability-surveyor"].subgoal  # the seeded catalog is in the subgoal
+    assert "capability-surveyor" not in by  # #709: the step is gone
 
 
 def test_the_drafter_is_seeded_to_emit_the_governance_policy() -> None:
