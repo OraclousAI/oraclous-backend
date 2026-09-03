@@ -227,7 +227,10 @@ def _serialize_steps(
 def _primary_model_binding(manifest) -> str | None:  # noqa: ANN001
     """The OHM primary model's binding (the full ``<provider>/<model-id>`` string, e.g.
     ``openrouter/openai/gpt-4o-mini``) — recorded per execution so spend can be priced by model.
-    ``None`` when the manifest declares no model (fake mode)."""
+    ``None`` when the manifest itself declares no model. #907: this reads the MANIFEST, not which
+    LLM client actually ran — a simulated run (``HARNESS_LLM_MODE=fake``) of a model-bound manifest
+    still persists that real model string here; see ``HarnessExecutionOut.simulated`` for whether
+    the client that ran was the scripted stand-in."""
     model = manifest.primary_model()
     return model.binding if model is not None else None
 
