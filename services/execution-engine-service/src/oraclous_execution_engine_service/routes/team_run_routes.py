@@ -15,6 +15,7 @@ import uuid
 from typing import Annotated
 
 from fastapi import APIRouter, HTTPException, Query, status
+from fastapi.responses import JSONResponse
 
 from oraclous_execution_engine_service.core.dependencies import PrincipalDep, TeamRunServiceDep
 from oraclous_execution_engine_service.schema.engine_schemas import (
@@ -29,7 +30,10 @@ from oraclous_execution_engine_service.schema.engine_schemas import (
     TeamRunTreeOut,
     TreeChild,
 )
-from oraclous_execution_engine_service.services.team_run_service import TeamRunError
+from oraclous_execution_engine_service.services.team_run_service import (
+    TeamRunError,
+    TeamRunPreflightError,
+)
 
 router = APIRouter(prefix="/v1/engine", tags=["engine-team-runs"])
 
@@ -49,10 +53,26 @@ def _http(exc: TeamRunError) -> HTTPException:
     return HTTPException(status_code=exc.status_code, detail=str(exc))
 
 
+def _preflight_409(exc: TeamRunPreflightError) -> JSONResponse:
+    """#664: a credential miss at GO. The gateway relays a 409 as ``CREDENTIALS_REQUIRED`` only
+    when ``needs_credential`` sits at the TOP level of the body (``extract_needs_credential`` reads
+    nothing nested), so this cannot ride an ``HTTPException`` — its payload lands under ``detail``.
+    The body is the leak-safe pair, the canonical code, and the human sentence for logs; the
+    gateway forwards only the pair."""
+    return JSONResponse(
+        status_code=status.HTTP_409_CONFLICT,
+        content={
+            "detail": str(exc),
+            "error_code": "CREDENTIALS_REQUIRED",
+            "needs_credential": exc.needs_credential,
+        },
+    )
+
+
 @router.post("/team-runs", response_model=TeamRunOut, status_code=status.HTTP_202_ACCEPTED)
 async def create_team_run(
     body: CreateTeamRunRequest, principal: PrincipalDep, service: TeamRunServiceDep
-) -> TeamRunOut:
+) -> TeamRunOut | JSONResponse:
     # 202: the run is validated + persisted QUEUED and handed to the worker, which drives the team
     # asynchronously (a 30-agent team would otherwise block the request). Poll GET for state.
     try:
@@ -66,6 +86,8 @@ async def create_team_run(
             inputs=body.inputs,
             seed_from_run_id=body.seed_from_run_id,  # #602: refresh from a named prior run
         )
+    except TeamRunPreflightError as exc:
+        return _preflight_409(exc)  # #664: the connect prompt, in the shape the gateway relays
     except TeamRunError as exc:
         raise _http(exc) from exc
     return TeamRunOut.model_validate(row)

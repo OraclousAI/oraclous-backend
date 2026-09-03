@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Any
 
 from oraclous_governance import Principal
+from oraclous_ohm._slug import tool_slug
 from oraclous_ohm.capabilities import assert_subharness_within_ceiling
 from oraclous_ohm.dag import revision_invalidation_set
 from oraclous_ohm.errors import OHMCapabilityError, OHMError
@@ -127,6 +128,64 @@ class TeamRunError(Exception):
         super().__init__(message)
         self.status_code = status_code
         self.error_type = error_type
+
+
+class TeamRunPreflightError(TeamRunError):
+    """#664: GO on a team whose declared tool has no configured, working instance — a 409 that
+    names the capability and the credential type, raised BEFORE a row exists or a worker is told.
+
+    ``missing`` is one ``{role, binding, credential_type}`` per unmet binding, in member order.
+    ``needs_credential`` is the leak-safe ``{requirement_id, provider}`` pair for the FIRST miss —
+    the exact token the gateway already relays as ``CREDENTIALS_REQUIRED`` and the console already
+    renders as a connect prompt, so the promise above the GO button ("a missing one stops the run
+    with a connect prompt") is kept without a new wire shape. ``provider`` is the tool's canonical
+    slug (the registry row's own name), never a value, an id or a URL.
+    """
+
+    def __init__(self, missing: Sequence[Mapping[str, str]]) -> None:
+        self.missing: list[dict[str, str]] = [dict(m) for m in missing]
+        named = "; ".join(
+            f"'{m['binding']}' (member '{m['role']}') needs a '{m['credential_type']}' credential"
+            for m in self.missing
+        )
+        super().__init__(
+            "the run cannot start: no configured, working instance for "
+            + named
+            + " — connect the credential and configure the tool, then press GO again",
+            409,
+            error_type="tool_not_configured",
+        )
+
+    @property
+    def needs_credential(self) -> dict[str, str]:
+        first = self.missing[0]
+        return {"requirement_id": first["credential_type"], "provider": first["binding"]}
+
+
+# #663 / #664: the credential types whose instance MAPPING is load-bearing. OAuth is resolved by the
+# broker per request from the user's own grant and needs no mapping, so an OAuth-only tool with no
+# org instance is NOT a miss — the harness mints for it (its ``_mapped_credential_types`` draws
+# the same line, and the pre-flight must never refuse a run the harness would have bound).
+_LOAD_BEARING_CREDENTIAL_TYPES = frozenset({"api_key", "connection_string", "username_password"})
+
+
+def _load_bearing_credential_types(descriptor: Mapping[str, Any]) -> list[str]:
+    """The descriptor's REQUIRED, mapping-load-bearing credential types (order-stable, distinct).
+    An MCP import carrying its own ``spec.credential_id`` (#698 D2) needs none: the registry falls
+    back to that key at dispatch."""
+    spec = descriptor.get("spec") or {}
+    if not isinstance(spec, Mapping):
+        return []
+    if spec.get("type") == "mcp" and spec.get("credential_id"):
+        return []
+    out: list[str] = []
+    for req in spec.get("credential_requirements") or []:
+        if not isinstance(req, Mapping) or not req.get("required", True):
+            continue
+        cred_type = req.get("type")
+        if cred_type in _LOAD_BEARING_CREDENTIAL_TYPES and cred_type not in out:
+            out.append(cred_type)
+    return out
 
 
 def load_team_manifest(document: dict) -> OHMManifest:
@@ -787,6 +846,122 @@ class TeamRunService:
         resolved.update(newly)
         return resolved
 
+    async def _preflight_tool_credentials(
+        self, team: OHMManifest, sub_harnesses: Mapping[str, dict]
+    ) -> None:
+        """#664: the credential pre-flight the GO sheet promises, run at create — before a row is
+        written, before a worker is told, before a model is looked at.
+
+        Run ``c904fade``: the ``github-reader`` instance was CONFIGURATION_REQUIRED, no connect
+        prompt appeared, the run started, six tool calls took six 409s and 5,800 real tokens were
+        spent before it failed. Nothing here read a tool instance; the binding happens in the
+        harness per member, after dispatch. #663 made the harness reuse the org's configured
+        instance, but its gate keys off mapping PRESENCE and never reads status — a mapped-but-
+        revoked credential still 409s at execute.
+
+        For every member that declares tools, each resolved sub-harness capability ``ref`` is
+        matched to the org's registered tool by the same rows the harness resolves against
+        (``list_tools``), and the registry's OWN readiness verdict (``validate_execution``, which
+        also resolves each credential through the broker) is asked for that capability's instances
+        until one is ready. No ready instance → the miss names the binding and the credential type
+        to connect. Deliberately narrow, so it never refuses a run the harness would have bound:
+
+        * a member with no tools makes no call at all (criterion 4);
+        * a binding whose sub-harness carries its own ``config.credential_mappings`` is skipped —
+          the harness mints and configures a fresh instance for it;
+        * a tool needing no load-bearing credential (a keyless first-party connector, an OAuth-only
+          tool, an MCP import with its own key) is never a miss — the harness mints for it;
+        * a ref that matches no registered tool is left to the harness's own fail-fast, which
+          also fires before any model tokens.
+
+        An unreachable registry is a 502 (fail closed, the #695 posture). No registry wired — the
+        unit-test posture — skips the check, exactly as the ``graphs`` existence check does; the
+        real request path always wires one.
+        """
+        if self._registry is None:
+            return
+        wanted: list[tuple[str, str, str]] = []  # (role, binding, ref)
+        for member in team.members:
+            if member.kind != "agent" or not member.tools:
+                continue
+            caps = (sub_harnesses.get(member.role) or {}).get("capabilities")
+            for cap in caps if isinstance(caps, list) else []:
+                if not isinstance(cap, dict):
+                    continue
+                ref, binding = cap.get("ref"), cap.get("binding")
+                if not isinstance(ref, str) or not isinstance(binding, str):
+                    continue
+                config = cap.get("config")
+                if isinstance(config, dict) and config.get("credential_mappings"):
+                    continue  # self-configuring: the harness mints + binds from these (#663)
+                wanted.append((member.role, binding, ref))
+        if not wanted:
+            return
+        try:
+            tools = await self._registry.list_tools()
+            instances = await self._registry.list_instances()
+            by_slug = {tool_slug(str(t.get("name") or "")): t for t in tools if t.get("name")}
+            verdict: dict[str, str | None] = {}  # capability id → credential type to connect
+            missing: list[dict[str, str]] = []
+            for role, binding, ref in wanted:
+                tool = by_slug.get(tool_slug(ref))
+                if tool is None:
+                    continue
+                cap_id = str(tool.get("id"))
+                if cap_id not in verdict:
+                    rows = [i for i in instances if str(i.get("capability_id")) == cap_id]
+                    verdict[cap_id] = await self._first_unmet_credential(tool, rows)
+                needed = verdict[cap_id]
+                if needed is not None:
+                    missing.append({"role": role, "binding": binding, "credential_type": needed})
+        except RegistryClientError as exc:
+            raise TeamRunError(
+                "the capability registry could not be reached to check the team's tool credentials",
+                502,
+                error_type="registry_unavailable",
+            ) from exc
+        if missing:
+            raise TeamRunPreflightError(missing)
+
+    async def _first_unmet_credential(
+        self, tool: Mapping[str, Any], rows: Sequence[Mapping[str, Any]]
+    ) -> str | None:
+        """``None`` when the org can run this tool; else the load-bearing credential type to
+        connect. Ready = some instance the registry itself calls ready; keyless = never a miss."""
+        assert self._registry is not None  # noqa: S101 — checked by the caller
+        descriptor = tool.get("descriptor")
+        needed = _load_bearing_credential_types(descriptor if isinstance(descriptor, dict) else {})
+        if not needed:
+            return None
+        first_unmet: str | None = None
+        for row in rows:
+            try:
+                instance_id = uuid.UUID(str(row.get("id")))
+            except ValueError:
+                continue
+            report = await self._registry.validate_execution(instance_id)
+            if report.get("is_ready"):
+                return None
+            for err in report.get("errors") or []:
+                if not isinstance(err, dict) or not str(err.get("type", "")).startswith(
+                    "CREDENTIAL_"
+                ):
+                    continue
+                cred_type = err.get("credential_type")
+                if cred_type in _LOAD_BEARING_CREDENTIAL_TYPES:
+                    first_unmet = first_unmet or str(cred_type)
+                    break
+            else:
+                # the report failed on something that is not a load-bearing credential (an OAuth
+                # grant, a missing descriptor) — the harness would still bind it; not a miss
+                if not any(
+                    str(e.get("type", "")).startswith("CREDENTIAL_")
+                    for e in report.get("errors") or []
+                    if isinstance(e, dict)
+                ):
+                    return None
+        return first_unmet or needed[0]
+
     async def _validate_graph_id(self, organisation_id: uuid.UUID, graph_id: str) -> None:
         """Fail-fast org-scoped check (#524, ADR-040 Decision 7): the bound ``graph_id`` MUST exist
         in the caller's organisation. The KGS GET is org-scoped by the engine's downstream headers,
@@ -883,6 +1058,9 @@ class TeamRunService:
         sub_harnesses = await self._resolve_member_manifests(
             team, sub_harnesses, models=manifest.get("models")
         )
+        # #664: the promised credential pre-flight — a declared tool with no configured, working
+        # instance is a 409 connect prompt HERE, before a row, a worker, or a model token exists.
+        await self._preflight_tool_credentials(team, sub_harnesses)
         validate_task_input(team, inputs)  # Contract §TASK (#674): required task missing → 422
         validate_input_keys(team, inputs)  # #714: an inputs key the team cannot read → 422
         validate_answers(
