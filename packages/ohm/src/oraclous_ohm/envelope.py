@@ -24,15 +24,26 @@ from oraclous_ohm.manifest import OHMMember
 # for the ``grounding: `` prefix the orchestrator adds within a 300-character whole.
 _MESSAGE_CAP = 280
 
-# #696 — the two shapes a tool-less member's fabrication took in the wild (run ``fe548aac``: a
+# #696 — the shapes a tool-less member's fabrication takes in the wild (run ``fe548aac``: a
 # "Documentation Saving" section naming ``Interrail_B.V./Identified_Weaknesses_Support_Areas.txt``
-# and a sibling; live re-runs: ``sandbox:`` links). Kept NARROW on purpose — a version ("v2.1"), a
-# decimal ("3.5%"), "e.g." and a bare filename must not trip it — so a path needs a directory
-# separator and a letters-only extension, and a URL is skipped by the ``//`` before its host. A
+# and a sibling; live re-runs: ``sandbox:`` links; the cheapest evasion: a bare "saved as
+# findings.md"). Kept NARROW on purpose — a version ("v2.1"), a decimal ("3.5%"), "e.g.", a
+# dotted company name ("Interrail B.V.") and a domain ("interrail.eu") must not trip it — so a
+# directory-qualified path needs a letters-only extension, a BARE filename needs one of the
+# document/code extensions below, and a URL is skipped by the ``//`` (or ``.``) before each of
+# its segments: a URL is a reference, not an artifact the member persisted. The accepted false
+# positive of a token rule: a reviewer that RECOMMENDS "add a CHANGELOG.md" reads as a claim. A
 # false negative here costs one more fe548aac; a false positive blocks an honest reasoner, which
-# is the failure the citation gate's docstring warns against.
+# is the failure the citation gate's docstring warns against — hence the narrow shapes.
 _SANDBOX_REF = re.compile(r"sandbox:[^\s`'\"<>)\]]+")
-_FILE_PATH = re.compile(r"(?<![\w./-])(?:[\w.-]+/)+[\w.-]+\.[A-Za-z]{1,8}(?![\w/])")
+_FILE_PATH = re.compile(r"(?<![\w./@-])(?:[\w.-]+/)+[\w.-]+\.[A-Za-z]{1,8}(?![\w/])")
+_BARE_FILE_EXTENSIONS = (
+    "md|markdown|txt|rst|json|jsonl|csv|tsv|yaml|yml|toml|ini|xml|html|htm|pdf|docx?|xlsx?|pptx?|"
+    "py|js|ts|tsx|jsx|sql|sh|log|zip"
+)
+_BARE_FILE = re.compile(
+    r"(?<![\w./@-])[\w-]+\.(?:" + _BARE_FILE_EXTENSIONS + r")(?![\w./-])", re.IGNORECASE
+)
 
 
 class HandoffEnvelope(BaseModel):
@@ -171,15 +182,17 @@ def validate_grounding(
 
 
 def _claimed_locations(text: str) -> list[str]:
-    """Every location-shaped token in ``text``, in text order: ``sandbox:`` references and the
-    directory-qualified paths that are not inside one of them."""
-    found = [(m.start(), m.group(0)) for m in _SANDBOX_REF.finditer(text)]
-    covered = [(m.start(), m.end()) for m in _SANDBOX_REF.finditer(text)]
-    for m in _FILE_PATH.finditer(text):
-        if any(start <= m.start() < end for start, end in covered):
-            continue
-        found.append((m.start(), m.group(0)))
-    return [token for _, token in sorted(found)]
+    """Every location-shaped token in ``text``, in text order: ``sandbox:`` references, then the
+    directory-qualified paths and bare filenames that are not inside an earlier match."""
+    found: list[tuple[int, int, str]] = [
+        (m.start(), m.end(), m.group(0)) for m in _SANDBOX_REF.finditer(text)
+    ]
+    for pattern in (_FILE_PATH, _BARE_FILE):
+        for m in pattern.finditer(text):
+            if any(start <= m.start() < end for start, end, _ in found):
+                continue
+            found.append((m.start(), m.end(), m.group(0)))
+    return [token for _, _, token in sorted(found)]
 
 
 def validate_no_tool_claims(output: Any, *, handed: str = "") -> list[str]:
