@@ -12,6 +12,7 @@ so the reviewer's bounded re-draft converges on a fact, never self-certifies (AD
 
 from __future__ import annotations
 
+import difflib
 import json
 import re
 from typing import Any, Literal
@@ -65,6 +66,32 @@ def _catalog_slugs(catalog: Any) -> set[str]:
             if slug:  # drop empties so "" is never a wildcard match (MEDIUM hardening)
                 out.add(slug)
     return out
+
+
+# #899: how a blocked tool name names the nearest surveyed one. The member reading this verdict is
+# a MODEL with two repair attempts, and #705 is the recorded cost of leaving it to guess — one name
+# dropped while re-typing a 72-entry list blocked an entire compile. The neighbouring flags already
+# learned this: F-SUBSTRATE-FILE names the tools to use instead (#694), and #751 made the schema
+# failure name the field and the reason.
+_MAX_SUGGESTED_TOOLS = 3
+#: Below this similarity the match is a guess. A WRONG suggestion is worse than none: the member
+#: takes it, and the gate blocks again for a new reason on the attempt it cannot spare.
+_NAME_MATCH_CUTOFF = 0.6
+
+
+def _name_hint(slug: str, allowed: set[str]) -> str:
+    """`` Did you mean: …?``, or an empty string when nothing is close enough.
+
+    Matches on the SLUG, never the raw string, because the gate itself compares slugs: ``Web
+    Search`` and ``core/web-search@1`` are one tool here, and measuring the raw form would score a
+    legitimate spelling of a surveyed tool as far from its own catalogue entry. A degenerate
+    identifier slugs to ``""`` and matches nothing, which is correct — it should block with no
+    suggestion, not be nudged toward the nearest real name.
+    """
+    near = difflib.get_close_matches(
+        slug, sorted(allowed), n=_MAX_SUGGESTED_TOOLS, cutoff=_NAME_MATCH_CUTOFF
+    )
+    return f" Did you mean: {', '.join(near)}?" if near else ""
 
 
 def _blocked(code: str, message: str) -> dict[str, Any]:
@@ -229,7 +256,10 @@ def validate_draft(
                         code="F-CAPABILITY-MISSING",
                         severity="blocking",
                         member_role=m.role,
-                        message=f"tool {tool!r} is not in the surveyed capability catalog",
+                        message=(
+                            f"tool {tool!r} is not in the surveyed capability"
+                            f" catalog.{_name_hint(slug, allowed)}"
+                        ),
                     )
                 )
 
