@@ -304,7 +304,12 @@ async def test_regression_run_c904fade_an_unconfigured_instance_stops_the_run_at
     assert exc.value.error_type == "tool_not_configured"
     assert isinstance(exc.value, TeamRunError)  # the route's existing mapping still applies
     assert exc.value.missing == [
-        {"role": "fetcher", "binding": "github-reader", "credential_type": "api_key"}
+        {
+            "role": "fetcher",
+            "binding": "github-reader",
+            "credential_type": "api_key",
+            "provider": "github-reader",
+        }
     ]
     assert exc.value.needs_credential == {"requirement_id": "api_key", "provider": "github-reader"}
     assert repo.rows == {}  # nothing persisted

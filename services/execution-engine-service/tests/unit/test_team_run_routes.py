@@ -250,7 +250,14 @@ async def test_post_team_run_credential_miss_is_a_409_with_a_top_level_needs_cre
     class FakeService:
         async def create(self, principal: Principal, **kwargs: Any) -> EngineTeamRun:
             raise TeamRunPreflightError(
-                [{"role": "fetcher", "binding": "github-reader", "credential_type": "api_key"}]
+                [
+                    {
+                        "role": "fetcher",
+                        "binding": "github-reader",
+                        "credential_type": "api_key",
+                        "provider": "github-reader",
+                    }
+                ]
             )
 
     async with await _client(FakeService()) as c:
