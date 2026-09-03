@@ -49,6 +49,38 @@ def _arguments(input_data: dict[str, Any]) -> dict[str, Any]:
     return {k: v for k, v in input_data.items() if k != "operation"}
 
 
+_TOOL_ERROR_CHARS = 300  # the run page's per-step budget; a tool may answer with a wall of text
+
+
+def _tool_error_message(content: Any) -> str:
+    """WHY the MCP tool refused, in the tool's own words, bounded (#697's live blocker).
+
+    ``the MCP tool reported a failure`` is equally true of a wrong argument, a token without write
+    access and a server that is down — so it told an operator nothing. On run 43174243 a member
+    posted a finished review through ``add_issue_comment``, got that sentence back, and neither the
+    run page nor the member could say what to change.
+
+    A tool result's ``content`` is the tool's ANSWER to its caller, not an internal detail, which
+    is why it is surfaced where the JSON-RPC transport error is still withheld (that one can carry
+    the server's own internals). Text blocks only, joined and capped; a non-text block (an image, a
+    resource handle) is not a reason and is skipped.
+    """
+    base = "the MCP tool reported a failure"
+    if not isinstance(content, list):
+        return base
+    said = " ".join(
+        block["text"].strip()
+        for block in content
+        if isinstance(block, dict)
+        and block.get("type") == "text"
+        and isinstance(block.get("text"), str)
+        and block["text"].strip()
+    )
+    if not said:
+        return base
+    return f"{base}: {said[:_TOOL_ERROR_CHARS]}"
+
+
 class McpToolExecutor(InternalTool):
     #: injectable httpx transport for tests (None → real network)
     transport: httpx.AsyncBaseTransport | None = None
@@ -97,7 +129,7 @@ class McpToolExecutor(InternalTool):
         if result.get("isError"):
             return ExecutionResult(
                 success=False,
-                error_message="the MCP tool reported a failure",
+                error_message=_tool_error_message(result.get("content")),
                 error_type="MCP_TOOL_ERROR",
             )
         return ExecutionResult(success=True, data={"content": result.get("content")})

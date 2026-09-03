@@ -16,11 +16,20 @@ import json
 import re
 from typing import Any, Literal
 
+from pydantic import ValidationError
+
 from oraclous_ohm._slug import FILE_SUBSTRATE_TOOLS, tool_slug
 from oraclous_ohm.import_ import ImportFlag, assemble_and_report, render_report
 from oraclous_ohm.manifest import OHMMember, OHMOrchestration, OHMTaskInput
 
 _UUID_NS = "00000000-0000-0000-0000-000000000000"
+
+#: #697 — what a member declares when nothing more specific fits. The ruling left the default to
+#: the implementer and said only: propose one, never emit ``{}``. ``summary`` is the one key every
+#: member can always honour — it is the answer it was going to write anyway, under a name. A
+#: richer default would be a liability, not a courtesy: ``validate_payload`` checks key PRESENCE,
+#: so a declared key the model cannot fill is a fail-closed hand-off error.
+DEFAULT_OUTPUTS_SCHEMA: dict[str, Any] = {"required": ["summary"]}
 
 
 #: The canonical tool-name normaliser, now shared with ``seeds`` and ``import_.mapping`` from one
@@ -77,6 +86,46 @@ def _blocked(code: str, message: str) -> dict[str, Any]:
     }
 
 
+def _member_label(raw: Any, index: int) -> str:
+    """How to NAME a member that did not parse. Its own ``role`` when it has a usable one, else its
+    position — because a member whose ``role`` is the broken field still has to be findable."""
+    if isinstance(raw, dict):
+        role = raw.get("role")
+        if isinstance(role, str) and role.strip():
+            return role
+    return f"members[{index}]"
+
+
+def _schema_detail(raw: Any, index: int, exc: ValidationError) -> str:
+    """The Pydantic error, rendered for a MODEL that has to repair the member it names (#751).
+
+    Keeps the two facts the reviewer needs and nothing else: which field, and what was wrong with
+    it. The value is deliberately NOT echoed — a draft field can carry a tenant's own words."""
+    parts: list[str] = []
+    for err in exc.errors()[:5]:
+        field = ".".join(str(loc) for loc in err.get("loc", ())) or "<member>"
+        parts.append(f"{field}: {err.get('msg', 'is invalid')}")
+    return f"member {_member_label(raw, index)} failed schema validation — " + "; ".join(parts)
+
+
+def _blocked_with(flags: list[ImportFlag]) -> dict[str, Any]:
+    """A fail-closed verdict carrying already-built flags (the named schema failures)."""
+    import uuid
+
+    result = assemble_and_report(
+        "compiled-team",
+        [],
+        owner_organization_id=uuid.UUID(_UUID_NS),
+        shape="compiled",
+        extra_flags=flags,
+    )
+    return {
+        "would_block": result.report.would_block,
+        "blocking": result.report.blocking,
+        "report": render_report(result.report),
+    }
+
+
 def validate_draft(
     draft: str | dict[str, Any],
     catalog: Any,
@@ -111,11 +160,40 @@ def validate_draft(
         return _blocked("F-DRAFT-INVALID", "the draft is not an OHM team manifest with members[]")
 
     members: list[OHMMember] = []
-    for raw in data["members"]:
+    schema_flags: list[ImportFlag] = []
+    for index, raw in enumerate(data["members"]):
         try:
             members.append(OHMMember.model_validate(raw))
-        except Exception:  # noqa: BLE001 — a malformed member is a draft defect, fail-closed
-            return _blocked("F-DRAFT-INVALID", "a draft member failed schema validation")
+        except ValidationError as exc:
+            # #751: the generic sentence "a draft member failed schema validation" named no member
+            # and no field, and REVIEWER_PROMPT tells the reviewer to edit exactly what the
+            # blocking reasons name. Given nothing to edit it re-validated five times for a
+            # byte-identical verdict and exhausted its cap at 24,050 tokens — while the Pydantic
+            # error already said `members.4.depends_on.0: Input should be a valid string`.
+            #
+            # Collecting instead of returning on the first: a draft with two typos otherwise costs
+            # two compiles against a reviewer allowed at most two fixes.
+            schema_flags.append(
+                ImportFlag(
+                    code="F-DRAFT-INVALID",
+                    severity="blocking",
+                    member_role=_member_label(raw, index),
+                    message=_schema_detail(raw, index, exc),
+                )
+            )
+        except Exception:  # noqa: BLE001 — a non-pydantic surprise still fails closed, unnamed
+            schema_flags.append(
+                ImportFlag(
+                    code="F-DRAFT-INVALID",
+                    severity="blocking",
+                    member_role=_member_label(raw, index),
+                    message=(f"member {_member_label(raw, index)} failed schema validation"),
+                )
+            )
+    if schema_flags:
+        # A member that did not parse cannot be assembled, and assembling the survivors would
+        # report a DAG built from half a team. Fail closed on the named reasons alone.
+        return _blocked_with(schema_flags)
 
     # ADR-032 capability-absence: a tool not in the SURVEYED catalog is a blocking miss (the gate).
     allowed = _catalog_slugs(catalog)
@@ -154,6 +232,31 @@ def validate_draft(
                         message=f"tool {tool!r} is not in the surveyed capability catalog",
                     )
                 )
+
+    # #697 (ruling 2026-08-24): every member declares what it hands on, with NO exception for a
+    # member nobody depends on — the narrower rule would make adding a depends_on edge silently
+    # change what an earlier member must produce. `validate_payload` has enforced a declared key
+    # fail-closed since ADR-035; the contract was inert because nothing ever filled it (run
+    # fe548aac: 14 members, all empty). The member ROLE rides in the message so the reviewer's
+    # repair loop has something to edit — the lesson #751 pays for on the other field.
+    for m in members:
+        required = m.outputs_schema.get("required") if m.outputs_schema else None
+        if isinstance(required, list) and required:
+            continue
+        flags.append(
+            ImportFlag(
+                code="F-NO-OUTPUT-CONTRACT",
+                severity="blocking",
+                member_role=m.role,
+                message=(
+                    f"member {m.role!r} declares no output keys. Every member states what it hands"
+                    ' on, as outputs_schema {"required": ["<key>", …]} — the keys it will really'
+                    " put in its answer, so the next member reads a named result instead of"
+                    ' parsing an essay. Use ["summary"] when nothing more specific fits, and add'
+                    ' "artifact_refs" when the member persists something'
+                ),
+            )
+        )
 
     orchestration: OHMOrchestration | None = None
     raw_orch = data.get("orchestration")

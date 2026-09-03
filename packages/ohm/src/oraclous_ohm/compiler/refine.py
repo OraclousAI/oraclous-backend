@@ -27,7 +27,11 @@ from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
 # the SAME slug normalization the compiler's capability-absence gate uses (one implementation): a
 # foreign namespace / emoji / nested path can never masquerade as a surveyed bare tool (#594).
-from oraclous_ohm.compiler.validate import _catalog_slugs, _tool_slug
+from oraclous_ohm.compiler.validate import (
+    DEFAULT_OUTPUTS_SCHEMA,
+    _catalog_slugs,
+    _tool_slug,
+)
 from oraclous_ohm.dag import OHMDagError, topological_stages
 from oraclous_ohm.import_ import ImportFlag, ImportReport, assemble_and_report
 from oraclous_ohm.manifest import OHMFanOut, OHMManifest, OHMMember
@@ -47,6 +51,11 @@ class AddMember(_BaseOp):
     depends_on: list[str] = Field(default_factory=list)
     subgoal: str | None = None
     human_role: str | None = None
+    # #697: the edit has nowhere for the user to state output keys, and since the compile gate
+    # requires them, a member added without one would make the validation the refine endpoint
+    # re-runs reject a team the user just asked for. The op-drafter MAY fill this; when it does
+    # not, the applier supplies the same default the drafter emits.
+    outputs_schema: dict[str, Any] = Field(default_factory=dict)
     manifest_ref: str | None = None
 
 
@@ -140,6 +149,7 @@ def _apply_op(
                 subgoal=op.subgoal,
                 human_role=op.human_role,
                 manifest_ref=op.manifest_ref,
+                outputs_schema=op.outputs_schema or dict(DEFAULT_OUTPUTS_SCHEMA),
             )
         except ValueError as exc:  # e.g. a human added without a human_role → fail closed
             return [_flag("F-REFINE-INVALID-MEMBER", op.role, str(exc))]

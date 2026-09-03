@@ -31,6 +31,7 @@ from oraclous_ohm.envelope import (
     build_handoff,
     grounding_counts,
     validate_grounding,
+    validate_payload,
 )
 from oraclous_ohm.errors import OHMError
 from oraclous_ohm.gate import gate_verb
@@ -525,6 +526,23 @@ async def run_team(
         # governed graceful exhaustion: downstream still runs, and it is NOT a failure (has_failure
         # below excludes it), so the team verdict is not made "failed" by a degrade.
         out = results.get(role)
+        # #697 (ruling 2026-08-24): a producer that omits a key it DECLARED fails at its OWN
+        # hand-off, not at the consumer. The check used to run while building the consumer's
+        # inbound (build_handoff, still the backstop below), so the consumer carried the failure
+        # for its producer's omission — the attribution that made run fe548aac unreadable: the
+        # Editor was the failing row while the reviewer that wrote nothing looked healthy. The
+        # consumer is now marked "blocked" by the ordinary upstream rule, and is re-runnable.
+        contract_errors = validate_payload(
+            out if isinstance(out, dict) else {"output": out}, member.outputs_schema
+        )
+        if contract_errors:
+            results[role] = None
+            member_status[role] = "failed"
+            member_errors[role] = (
+                f"member {role!r} declared an output contract it did not deliver: "
+                + "; ".join(contract_errors)
+            )[:2000]
+            return
         member_status[role] = (
             "partial" if isinstance(out, dict) and out.get("status") == "PARTIAL" else "succeeded"
         )
