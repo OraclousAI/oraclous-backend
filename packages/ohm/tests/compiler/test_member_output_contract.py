@@ -32,6 +32,7 @@ def _member(role: str, **over: object) -> dict:
         "manifest_ref": f"org:x/{role}@1",
         "subgoal": f"do {role}",
         "tools": ["web-search"],
+        "tool_rationale": {"web-search": "needs live results to answer the objective"},  # #718
         "depends_on": [],
         "outputs_schema": {"required": ["summary"]},
     }
@@ -118,9 +119,12 @@ def test_a_member_added_by_a_hand_edit_is_not_rejected_by_the_new_rule() -> None
     manifest = built.manifest
     assert manifest is not None
 
+    # #718: AddMember carries no tool_rationale field (like outputs_schema, the refine op has
+    # nowhere for the user to state one) — the added member stays tool-less so this test keeps
+    # exercising only the output-contract default it is about, not the separate tool-rationale gate.
     res = apply_refine(
         manifest,
-        AddMember(role="fact-checker", tools=["web-search"], depends_on=["writer"]),
+        AddMember(role="fact-checker", depends_on=["writer"]),
         catalog=_CATALOG,
         owner_organization_id=_ORG,
     )
