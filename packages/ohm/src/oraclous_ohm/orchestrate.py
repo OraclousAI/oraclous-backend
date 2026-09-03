@@ -413,11 +413,13 @@ async def run_team(
         pieces: list[str] = [member.subgoal or "", member.handoff_objective or ""]
         for env in inbound:
             pieces.append(env.objective_slice)
-            pieces.append(json.dumps(env.payload, default=str))
+            # ensure_ascii=False: an escaped \uXXXX would never match the member's own verbatim,
+            # unescaped repeat of a non-ASCII handed path (a false positive on an honest reasoner).
+            pieces.append(json.dumps(env.payload, default=str, ensure_ascii=False))
         if state:
-            pieces.append(json.dumps(state, default=str))
+            pieces.append(json.dumps(state, default=str, ensure_ascii=False))
         if items is not None:
-            pieces.append(json.dumps(items, default=str))
+            pieces.append(json.dumps(items, default=str, ensure_ascii=False))
         return "\n".join(p for p in pieces if p)
 
     def _announce_child(role: str, out: Any) -> None:

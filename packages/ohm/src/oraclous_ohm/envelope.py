@@ -35,8 +35,16 @@ _MESSAGE_CAP = 280
 # positive of a token rule: a reviewer that RECOMMENDS "add a CHANGELOG.md" reads as a claim. A
 # false negative here costs one more fe548aac; a false positive blocks an honest reasoner, which
 # is the failure the citation gate's docstring warns against — hence the narrow shapes.
-_SANDBOX_REF = re.compile(r"sandbox:[^\s`'\"<>)\]]+")
-_FILE_PATH = re.compile(r"(?<![\w./@-])(?:[\w.-]+/)+[\w.-]+\.[A-Za-z]{1,8}(?![\w/])")
+# The trailing group excludes a closing sentence character so a HANDED link followed by a
+# period ("...at sandbox:/x.md.") still matches ``handed`` verbatim, and the run-page message
+# never carries stray punctuation.
+_SANDBOX_REF = re.compile(r"sandbox:[^\s`'\"<>)\]]*[^\s`'\"<>)\].,;:]")
+# An optional leading ``/`` admits an ABSOLUTE path (``/mnt/data/x.md``) — the single most common
+# fabricated-artifact shape a model actually produces — while the lookbehind still excludes a URL
+# segment (each of a URL's own path segments is preceded by ``//`` or another ``/``, so a second
+# leading ``/`` is never "optional-and-alone": ``//cdn.x/y.js``'s ``/y.js`` is still excluded by
+# the char right before it being ``/``).
+_FILE_PATH = re.compile(r"(?<![\w./@-])/?(?:[\w.-]+/)+[\w.-]+\.[A-Za-z]{1,8}(?![\w/])")
 _BARE_FILE_EXTENSIONS = (
     "md|markdown|txt|rst|json|jsonl|csv|tsv|yaml|yml|toml|ini|xml|html|htm|pdf|docx?|xlsx?|pptx?|"
     "py|js|ts|tsx|jsx|sql|sh|log|zip"
@@ -206,10 +214,12 @@ def validate_no_tool_claims(output: Any, *, handed: str = "") -> list[str]:
 
     * a non-empty ``artifact_refs`` — #697's "WHERE you persisted anything" key. A member with no
       tool that persists has nothing to put there; a value is a receipt it cannot hold.
-    * a location in its prose that nobody handed it — a ``sandbox:`` reference or a
-      directory-qualified path (``_claimed_locations``). ``handed`` is everything the member was
-      given (its inbound hand-off payloads, its objective, the run's inputs): a path it repeats
-      from there is reasoning over its input, not a claim of work, and is not an error.
+    * a location in its prose that nobody handed it — a ``sandbox:`` reference, a
+      directory-qualified path, or a bare filename with a document/code extension
+      (``_claimed_locations``; a schemeless URL is a reference, never a claim). ``handed`` is
+      everything the member was given (its inbound hand-off payloads, its objective, the run's
+      inputs): a path it repeats from there is reasoning over its input, not a claim of work, and
+      is not an error.
 
     ``output`` is the member's result — a dict carrying its ``output`` prose (and ``artifact_refs``
     when it declared one) or a bare string. Messages are bounded at ``_MESSAGE_CAP`` for the same
