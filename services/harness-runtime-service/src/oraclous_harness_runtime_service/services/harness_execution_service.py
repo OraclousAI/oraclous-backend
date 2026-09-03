@@ -195,7 +195,9 @@ class ResumeError(Exception):
         self.status_code = status_code
 
 
-def _serialize_steps(steps: list[LoopStep], base: int = 0) -> list[dict[str, Any]]:
+def _serialize_steps(
+    steps: list[LoopStep], base: int = 0, protocol_shape: str | None = None
+) -> list[dict[str, Any]]:
     """LoopSteps → the JSONB step-trace shape, re-indexed from ``base`` (resume appends a tail)."""
     return [
         {
@@ -214,6 +216,9 @@ def _serialize_steps(steps: list[LoopStep], base: int = 0) -> list[dict[str, Any
             # any other JSON-sourced timestamp on a read.
             "started_at": s.started_at.isoformat() if s.started_at is not None else None,
             "ended_at": s.ended_at.isoformat() if s.ended_at is not None else None,
+            # #907: which LLM client ran this segment (the loop's own protocol_shape) — stamped on
+            # every step, same for all of them, because the client never changes mid-run.
+            "protocol_shape": protocol_shape,
         }
         for i, s in enumerate(steps)
     ]
@@ -222,7 +227,10 @@ def _serialize_steps(steps: list[LoopStep], base: int = 0) -> list[dict[str, Any
 def _primary_model_binding(manifest) -> str | None:  # noqa: ANN001
     """The OHM primary model's binding (the full ``<provider>/<model-id>`` string, e.g.
     ``openrouter/openai/gpt-4o-mini``) — recorded per execution so spend can be priced by model.
-    ``None`` when the manifest declares no model (fake mode)."""
+    ``None`` when the manifest itself declares no model. #907: this reads the MANIFEST, not which
+    LLM client actually ran — a simulated run (``HARNESS_LLM_MODE=fake``) of a model-bound manifest
+    still persists that real model string here; see ``HarnessExecutionOut.simulated`` for whether
+    the client that ran was the scripted stand-in."""
     model = manifest.primary_model()
     return model.binding if model is not None else None
 
@@ -463,7 +471,7 @@ class HarnessExecutionService:
         # A mid-loop HITL pause parks a resumable checkpoint; its id goes into the GATE step detail
         # (the engine correlates on the execution id, not this — it's for traceability, like a human
         # assignment). The transcript in the checkpoint is already redacted by the loop.
-        steps = _serialize_steps(result.steps)
+        steps = _serialize_steps(result.steps, protocol_shape=result.protocol_shape)
         cp = result.checkpoint
         # cp is not None whenever _is_hitl_pause holds (it just narrows cp for the create below)
         if _is_hitl_pause(result) and cp is not None:
@@ -757,7 +765,9 @@ class HarnessExecutionService:
         # Append the NEW segment's steps to the prior trace; the loop reset its step list on resume,
         # so result.steps is the new tail only — provenance below emits only that, never the prefix.
         prior = list(execution.steps or [])
-        new_steps = _serialize_steps(result.steps, base=len(prior))
+        new_steps = _serialize_steps(
+            result.steps, base=len(prior), protocol_shape=result.protocol_shape
+        )
         new_cp = result.checkpoint
         # a chained gate → park a fresh checkpoint (new_cp is not None whenever _is_hitl_pause)
         if _is_hitl_pause(result) and new_cp is not None:

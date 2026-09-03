@@ -388,6 +388,8 @@ class TeamRunStatus:
     # timings. None on a service that predates this field (defaulted so no caller has to change).
     member_status: dict[str, str] | None = None
     member_timings: dict[str, Any] | None = None
+    # #907: True when any member's result says the harness that ran it was the scripted stand-in.
+    simulated: bool = False
 
 
 def _verdict_score(verdict: Any) -> float | None:
@@ -1204,6 +1206,10 @@ class TeamRunService:
             grounding_score=row.grounding_score,
             member_status=row.member_status or {},
             member_timings=row.member_timings or {},
+            # #907: mirrors TeamRunOut._derive_partial's derivation from `results`.
+            simulated=any(
+                isinstance(r, dict) and r.get("simulated") for r in (row.results or {}).values()
+            ),
         )
 
     async def list_for_org(

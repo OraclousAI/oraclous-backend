@@ -1006,6 +1006,7 @@ async def test_member_failure_persists_per_member_status_and_keeps_independent_o
     assert row.results.get("a") == {
         "output": "ok",
         "status": "SUCCEEDED",
+        "simulated": False,  # #907: additive — a harness response with no "simulated" key defaults
     }  # the peer's work is kept
     assert "b blew up" in (row.error_message or "")  # the failed member's detail is surfaced
 

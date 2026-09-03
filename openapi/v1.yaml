@@ -2319,7 +2319,7 @@ paths:
   /v1/engine/team-runs/{teamRunId}:
     get:
       tags: [engine]
-      summary: Read a team run (state, per-role results, member_status, verdict, revision_rounds, refresh_delta, plus the bound graph_id and team_name for the Results tab — #638).
+      summary: Read a team run (state, per-role results, member_status, verdict, revision_rounds, refresh_delta, plus the bound graph_id and team_name for the Results tab — #638). `simulated` (#907) is true when any member ran on the scripted stand-in LLM (HARNESS_LLM_MODE=fake).
       operationId: getTeamRun
       x-stability: provisional
       parameters:
@@ -2345,7 +2345,7 @@ paths:
   /v1/engine/team-runs/{teamRunId}/status:
     get:
       tags: [engine]
-      summary: One-glance team-run status — healthy, progress, last outcome and token cost, without full-trace machinery.
+      summary: One-glance team-run status — healthy, progress, last outcome and token cost, without full-trace machinery. `simulated` (#907) mirrors the full read — true when any member ran on the scripted stand-in LLM.
       operationId: getTeamRunStatus
       x-stability: provisional
       parameters:
@@ -2433,7 +2433,7 @@ paths:
   /v1/engine/team-drafts/from-run:
     post:
       tags: [engine]
-      summary: Seed a draft from a SUCCEEDED compiler run — the engine peels the reviewer's compiled JSON, validates it through the shared importer seam, and synthesizes per-member sub-harnesses; an ineligible run is a curated 422, nothing persisted. IDEMPOTENT per (org, team_run_id) — #638 — 201 on the first call, 200 returning the SAME draft on a repeat (a reload / second tab on ?compile=<runId>); the envelope is identical either way, so re-POSTing is safe.
+      summary: Seed a draft from a SUCCEEDED compiler run — the engine peels the reviewer's compiled JSON, validates it through the shared importer seam, and synthesizes per-member sub-harnesses; an ineligible run is a curated 422, nothing persisted (422 reviewer_output_simulated — #907 — when the run's reviewer ran on the scripted stand-in LLM, distinct from reviewer_output_unparseable). IDEMPOTENT per (org, team_run_id) — #638 — 201 on the first call, 200 returning the SAME draft on a repeat (a reload / second tab on ?compile=<runId>); the envelope is identical either way, so re-POSTing is safe.
       operationId: createTeamDraftFromRun
       x-stability: provisional
       requestBody:
@@ -2513,7 +2513,7 @@ paths:
   /v1/engine/team-drafts/{teamDraftId}/refine-nl:
     post:
       tags: [engine]
-      summary: NL refine — the op-drafter (a one-member team run, the caller's BYOM models bound) turns the instruction into ONE typed op, then the same apply path; dry_run previews without applying. Polls the drafter under the gateway read timeout — a slower draft returns 202 + op_drafter_run_id (re-call with it to collect).
+      summary: NL refine — the op-drafter (a one-member team run, the caller's BYOM models bound) turns the instruction into ONE typed op, then the same apply path; dry_run previews without applying. Polls the drafter under the gateway read timeout — a slower draft returns 202 + op_drafter_run_id (re-call with it to collect). 422 op_drafter_simulated (#907) when the settled run was driven by the scripted stand-in LLM, distinct from op_drafter_unparseable (a real model's malformed answer).
       operationId: refineTeamDraftNl
       x-stability: provisional
       parameters:
@@ -2751,7 +2751,7 @@ paths:
   /v1/harnesses/executions/{executionId}:
     get:
       tags: [harness]
-      summary: Read one harness execution (org-scoped; a cross-org id is a 404).
+      summary: Read one harness execution (org-scoped; a cross-org id is a 404). `simulated` (#907) is true when any step of this execution's own trace ran on the scripted stand-in LLM (protocol_shape "fake").
       operationId: getHarnessExecution
       x-stability: provisional
       parameters:
