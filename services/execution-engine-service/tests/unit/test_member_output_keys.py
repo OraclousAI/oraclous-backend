@@ -44,11 +44,25 @@ class _ScriptedHarness:
         ref = str(kwargs.get("manifest_ref") or "")
         role = ref.split("/")[-1].split("@")[0]
         self.calls.append({"role": role, **kwargs})
-        return {
+        out: dict[str, Any] = {
             "id": str(uuid.uuid4()),
             "status": "SUCCEEDED",
             "output": self._answers.get(role, "ok"),
         }
+        if kwargs.get("capability_ceiling"):
+            # #642: a tool-declaring member is graded on receipts — a real ok call, cited. A
+            # tool-less member gets no trace, as in production (#696 grades it on its claims).
+            out["steps"] = [
+                {
+                    "index": 0,
+                    "kind": "tool",
+                    "name": "fake.op",
+                    "status": "ok",
+                    "tool_call_id": "c1",
+                }
+            ]
+            out["driving_signals"] = [{"signal": "ran", "value": True, "source_tool_call_id": "c1"}]
+        return out
 
 
 def _m(role: str, **over: Any) -> OHMMember:
@@ -73,7 +87,11 @@ async def test_a_declared_key_reaches_the_result_the_consumer_reads() -> None:
     harness = _ScriptedHarness({"reviewer": answer})
     team = _team(
         [
-            _m("reviewer", outputs_schema={"required": ["summary", "artifact_refs"]}),
+            _m(
+                "reviewer",
+                tools=["store"],
+                outputs_schema={"required": ["summary", "artifact_refs"]},
+            ),
             _m("publisher", depends_on=["reviewer"]),
         ]
     )
@@ -91,7 +109,11 @@ async def test_the_consumers_input_carries_the_named_keys_not_only_prose() -> No
     harness = _ScriptedHarness({"reviewer": answer})
     team = _team(
         [
-            _m("reviewer", outputs_schema={"required": ["summary", "artifact_refs"]}),
+            _m(
+                "reviewer",
+                tools=["store"],
+                outputs_schema={"required": ["summary", "artifact_refs"]},
+            ),
             _m("publisher", depends_on=["reviewer"]),
         ]
     )
