@@ -23,7 +23,9 @@ The contract these tests pin (RED until the [impl] lands):
 * A binding with no ready instance raises ``TeamRunPreflightError`` (a ``TeamRunError``, status
   409, ``error_type="tool_not_configured"``) carrying ``missing`` — one ``{role, binding,
   credential_type}`` per unmet binding — and ``needs_credential`` = ``{"requirement_id":
-  <credential_type>, "provider": <binding slug>}`` for the FIRST miss: the leak-safe pair the
+  <credential_type>, "provider": <the registered tool's own slug>}`` for the FIRST miss —
+  NOT the team's ``binding`` alias, which can differ (see the connect-prompt test below): the
+  leak-safe pair the
   gateway already relays as CREDENTIALS_REQUIRED and the console already renders as a connect
   prompt. Nothing is persisted, nothing is enqueued, so nothing can spend.
 * A team whose members declare no tools makes no registry call at all (criterion 4). A binding
