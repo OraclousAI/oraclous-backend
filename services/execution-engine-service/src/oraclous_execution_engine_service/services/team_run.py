@@ -16,7 +16,7 @@ import json
 import re
 import time
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import Any, Protocol
 
 from oraclous_ohm._slug import (
@@ -130,10 +130,26 @@ _SANDBOX_WRITE_SENTENCE = (
 _SANDBOX_READ_SENTENCE = (
     "Your read tools read your sandbox workspace, which is where the other members put their work."
 )
+# #696: a member with NO tools is told so, in the words the #697 contract uses. Run fe548aac's
+# reviewer held no tools and still closed with two file paths it had "documented" — nothing had
+# told it that it could not. The grade (validate_no_tool_claims) now fails that claim; this
+# sentence is the prevention half, so the reply shape the member is asked for and the claim it
+# must not make are one instruction. Deliberately names no substrate (#694's silence rule).
+_NO_TOOLS_SENTENCE = (
+    "You have no tools in this run: you cannot save, write, create, fetch or persist anything, and "
+    "no file or location exists because you named it. Do not claim that you did any of those — "
+    "reason only over what you were handed, and if asked for `artifact_refs`, report an empty "
+    "list."
+)
 
 
-def execution_directive(capability_refs: list[str]) -> str:
+def execution_directive(capability_refs: list[str], *, declared_tools: Sequence[str] = ()) -> str:
     """The run directive for a member holding these resolved sub-harness capability ``ref``s.
+
+    ``declared_tools`` (#696) is the member's own ``tools[]`` ceiling: a member holding NEITHER a
+    resolved capability nor a declared tool is told it has no tools (``_NO_TOOLS_SENTENCE``). Both
+    are consulted because a ``manifest_ref`` dispatch resolves no sub-harness here and would
+    otherwise tell a tooled member it has none — the #694 false-fact failure in a new coat.
 
     The executor re-framing (#543) is unconditional: an imported Claude-Code "conductor" persona is
     written to PROPOSE a ``## Handoff`` for a human to dispatch, and run inline with a thin
@@ -149,7 +165,9 @@ def execution_directive(capability_refs: list[str]) -> str:
     """
     slugs = {tool_slug(ref) for ref in capability_refs}
     parts = [EXECUTION_DIRECTIVE]
-    if slugs & (_GRAPH_WRITE_TOOLS | _GRAPH_READ_TOOLS):
+    if not slugs and not declared_tools:
+        parts.append(_NO_TOOLS_SENTENCE)
+    elif slugs & (_GRAPH_WRITE_TOOLS | _GRAPH_READ_TOOLS):
         if slugs & _GRAPH_WRITE_TOOLS:
             parts.append(_GRAPH_WRITE_SENTENCE)
         if slugs & _GRAPH_READ_TOOLS:
@@ -332,7 +350,7 @@ def render_member_input(
     ):  # #602 cost lever — the sink member's prior records to carry fwd
         parts.append(REFRESH_CARRY_FORWARD_DIRECTIVE)
         parts.append(f"Your prior records ({len(refresh_records)}):\n{json.dumps(refresh_records)}")
-    parts.append(execution_directive(capability_refs or []))
+    parts.append(execution_directive(capability_refs or [], declared_tools=member.tools))
     if member.tools:  # #642: a member that declared tools is graded on receipts — ask for them
         parts.append(GROUNDING_DIRECTIVE)
     # #697: last, so the shape of the reply is the final instruction the member reads.

@@ -2302,7 +2302,7 @@ paths:
         "422": { $ref: "#/components/responses/ValidationFailed" }
     post:
       tags: [engine]
-      summary: Run an OHM v1.1 Team Harness (202 — validated, persisted QUEUED and driven async by the worker; poll GET for state).
+      summary: Run an OHM v1.1 Team Harness (202 — validated, persisted QUEUED and driven async by the worker; poll GET for state). 409 CREDENTIALS_REQUIRED when a declared tool has no configured, working instance — the run never starts and nothing is spent (#664).
       operationId: createTeamRun
       x-stability: provisional
       requestBody:
@@ -2314,6 +2314,7 @@ paths:
         "202": { $ref: "#/components/responses/UpstreamJson" }
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "403": { $ref: "#/components/responses/Unauthorized" }
+        "409": { $ref: "#/components/responses/CredentialsRequired" }
         "422": { $ref: "#/components/responses/ValidationFailed" }
   /v1/engine/team-runs/{teamRunId}:
     get:
@@ -3740,6 +3741,14 @@ components:
           schema: { $ref: "#/components/schemas/ErrorEnvelope" }
     Conflict:
       description: The request conflicts with current state (CONFLICT).
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+    CredentialsRequired:
+      description: >-
+        A required credential is missing or does not resolve (CREDENTIALS_REQUIRED). The envelope's
+        `needs_credential` names the requirement type and the provider/tool to connect — leak-safe
+        machine tokens only — so the client can prompt onboarding and retry.
       content:
         application/json:
           schema: { $ref: "#/components/schemas/ErrorEnvelope" }

@@ -58,6 +58,8 @@ def test_a_member_with_neither_gets_no_persistence_sentence() -> None:
 
 
 def test_a_tool_less_member_gets_no_persistence_sentence() -> None:
+    # Not total silence any more: #696 gives a genuinely tool-less member the
+    # "no tools" sentence (below). This pins only the #694 half — no substrate is NAMED.
     text = _directive([]).lower()
     assert "knowledge graph" not in text
     assert "sandbox" not in text

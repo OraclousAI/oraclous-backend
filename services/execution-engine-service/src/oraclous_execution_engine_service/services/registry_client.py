@@ -217,6 +217,58 @@ class RegistryClient:
             raise RegistryRejected(resp.status_code, _render_detail(resp.text))
         return descriptor_id
 
+    async def _get_json(self, path: str, *, params: dict[str, str] | None = None) -> Any:
+        """One org-scoped GET → parsed JSON. Transport failure OR an unparseable 2xx body raises
+        ``RegistryClientError``; a reachable non-2xx raises ``RegistryRejected`` (the engine maps
+        either to a clean 502 — inconclusive is never treated as absent, #664 fail-closed)."""
+        try:
+            resp = await self._client.get(path, params=params)
+        except httpx.HTTPError as exc:  # registry unreachable — clean failure, not a 500
+            raise RegistryClientError(f"registry unreachable: {type(exc).__name__}") from exc
+        if resp.status_code // 100 != 2:  # reachable but rejected — not unreachable
+            raise RegistryRejected(resp.status_code, _render_detail(resp.text))
+        try:
+            return resp.json()
+        except ValueError as exc:  # a 2xx that is not JSON — inconclusive, not a 500
+            raise RegistryClientError(
+                f"registry response unreadable: {type(exc).__name__}"
+            ) from exc
+
+    async def list_tools(self) -> list[dict[str, Any]]:
+        """The CALLER's org's registered tool rows, RAW — ``GET /api/v1/tools`` →
+        ``capabilities`` (each with ``id``, ``name``, ``status`` and its ``descriptor``). This is
+        the list the harness itself resolves a member's capability ``ref`` against (its
+        ``resolve_capability``), so the #664 pre-flight matches a binding by exactly these rows."""
+        body = await self._get_json("/api/v1/tools")
+        rows = body.get("capabilities") if isinstance(body, dict) else None
+        return [r for r in rows if isinstance(r, dict)] if isinstance(rows, list) else []
+
+    async def list_instances(self) -> list[dict[str, Any]]:
+        """The CALLER's org's tool instances — ``GET /api/v1/instances`` → ``instances`` (each with
+        ``id``, ``capability_id``, ``status``, ``credential_mappings``). Mirrors the harness's own
+        ``list_instances``, which is how it finds the org instance a run will bind (#663)."""
+        body = await self._get_json("/api/v1/instances")
+        rows = body.get("instances") if isinstance(body, dict) else None
+        return [r for r in rows if isinstance(r, dict)] if isinstance(rows, list) else []
+
+    async def validate_execution(self, instance_id: uuid.UUID) -> dict[str, Any]:
+        """The registry's OWN readiness verdict for one instance —
+        ``GET /api/v1/instances/{id}/validate-execution`` → a ``ValidationReport``
+        (``is_ready``, ``status``, ``errors[]`` each naming a ``credential_type``).
+
+        #664: the pre-flight asks THIS rather than reading ``status`` off the list row, because
+        the verdict also resolves each mapped credential through the broker — a revoked or
+        unresolvable credential and a lapsed grant count as missing, not only an unmapped one —
+        and it is the same rule that derives ``CONFIGURATION_REQUIRED`` in the first place.
+
+        A shapeless body (not a dict, or missing a boolean ``is_ready``) is UNREADABLE, not a
+        ready instance — raises ``RegistryClientError`` so the caller's fail-closed 502 path
+        handles it, rather than silently admitting a run on a verdict nobody could parse."""
+        body = await self._get_json(f"/api/v1/instances/{instance_id}/validate-execution")
+        if not isinstance(body, dict) or not isinstance(body.get("is_ready"), bool):
+            raise RegistryClientError("registry verdict unreadable: not a ValidationReport shape")
+        return body
+
     async def instance_exists(self, instance_id: uuid.UUID) -> bool:
         """True iff a configured instance with this id exists in the CALLER's organisation (the
         registry is org-scoped by the downstream headers). #501-#5: register validates an

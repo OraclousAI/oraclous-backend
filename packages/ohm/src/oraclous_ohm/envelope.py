@@ -10,6 +10,7 @@ Lives in ``packages/ohm`` beside the schema it references, per ADR-035 §3. Pure
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -22,6 +23,35 @@ from oraclous_ohm.manifest import OHMMember
 # live payload ("the web-search credential has no remaining quota") is 47 characters. Leaves room
 # for the ``grounding: `` prefix the orchestrator adds within a 300-character whole.
 _MESSAGE_CAP = 280
+
+# #696 — the shapes a tool-less member's fabrication takes in the wild (run ``fe548aac``: a
+# "Documentation Saving" section naming ``Interrail_B.V./Identified_Weaknesses_Support_Areas.txt``
+# and a sibling; live re-runs: ``sandbox:`` links; the cheapest evasion: a bare "saved as
+# findings.md"). Kept NARROW on purpose — a version ("v2.1"), a decimal ("3.5%"), "e.g.", a
+# dotted company name ("Interrail B.V.") and a domain ("interrail.eu") must not trip it — so a
+# directory-qualified path needs a letters-only extension, a BARE filename needs one of the
+# document/code extensions below, and a URL is skipped by the ``//`` (or ``.``) before each of
+# its segments: a URL is a reference, not an artifact the member persisted. The accepted false
+# positive of a token rule: a reviewer that RECOMMENDS "add a CHANGELOG.md" reads as a claim. A
+# false negative here costs one more fe548aac; a false positive blocks an honest reasoner, which
+# is the failure the citation gate's docstring warns against — hence the narrow shapes.
+# The trailing group excludes a closing sentence character so a HANDED link followed by a
+# period ("...at sandbox:/x.md.") still matches ``handed`` verbatim, and the run-page message
+# never carries stray punctuation.
+_SANDBOX_REF = re.compile(r"sandbox:[^\s`'\"<>)\]]*[^\s`'\"<>)\].,;:]")
+# An optional leading ``/`` admits an ABSOLUTE path (``/mnt/data/x.md``) — the single most common
+# fabricated-artifact shape a model actually produces — while the lookbehind still excludes a URL
+# segment (each of a URL's own path segments is preceded by ``//`` or another ``/``, so a second
+# leading ``/`` is never "optional-and-alone": ``//cdn.x/y.js``'s ``/y.js`` is still excluded by
+# the char right before it being ``/``).
+_FILE_PATH = re.compile(r"(?<![\w./@-])/?(?:[\w.-]+/)+[\w.-]+\.[A-Za-z]{1,8}(?![\w/])")
+_BARE_FILE_EXTENSIONS = (
+    "md|markdown|txt|rst|json|jsonl|csv|tsv|yaml|yml|toml|ini|xml|html|htm|pdf|docx?|xlsx?|pptx?|"
+    "py|js|ts|tsx|jsx|sql|sh|log|zip"
+)
+_BARE_FILE = re.compile(
+    r"(?<![\w./@-])[\w-]+\.(?:" + _BARE_FILE_EXTENSIONS + r")(?![\w./-])", re.IGNORECASE
+)
 
 
 class HandoffEnvelope(BaseModel):
@@ -156,6 +186,64 @@ def validate_grounding(
             errors.append(f"claim {name!r} carries no source_tool_call_id")
         elif call_id not in ok_ids:
             errors.append(f"claim {name!r} cites {call_id!r}, which is no ok tool call of its own")
+    return errors
+
+
+def _claimed_locations(text: str) -> list[str]:
+    """Every location-shaped token in ``text``, in text order: ``sandbox:`` references, then the
+    directory-qualified paths and bare filenames that are not inside an earlier match."""
+    found: list[tuple[int, int, str]] = [
+        (m.start(), m.end(), m.group(0)) for m in _SANDBOX_REF.finditer(text)
+    ]
+    for pattern in (_FILE_PATH, _BARE_FILE):
+        for m in pattern.finditer(text):
+            if any(start <= m.start() < end for start, end, _ in found):
+                continue
+            found.append((m.start(), m.end(), m.group(0)))
+    return [token for _, _, token in sorted(found)]
+
+
+def validate_no_tool_claims(output: Any, *, handed: str = "") -> list[str]:
+    """Return the claims a ZERO-TOOL member made that only a tool could back (empty = honest).
+
+    #696: ``_grade_grounding`` used to exempt a member with no declared tools on the premise that
+    it "makes no claims". It makes no tool-BACKED claims; nothing stopped it asserting that it had
+    done tool work, and the assertion cost it nothing (run ``fe548aac``: a reviewer with no tools
+    named two files it had "documented", neither existed, it was graded succeeded, and the Editor
+    spent 34,855 tokens chasing them). The grade looks at the CLAIM, never at the absence of tools:
+
+    * a non-empty ``artifact_refs`` — #697's "WHERE you persisted anything" key. A member with no
+      tool that persists has nothing to put there; a value is a receipt it cannot hold.
+    * a location in its prose that nobody handed it — a ``sandbox:`` reference, a
+      directory-qualified path, or a bare filename with a document/code extension
+      (``_claimed_locations``; a schemeless URL is a reference, never a claim). ``handed`` is
+      everything the member was given (its inbound hand-off payloads, its objective, the run's
+      inputs): a path it repeats from there is reasoning over its input, not a claim of work, and
+      is not an error.
+
+    ``output`` is the member's result — a dict carrying its ``output`` prose (and ``artifact_refs``
+    when it declared one) or a bare string. Messages are bounded at ``_MESSAGE_CAP`` for the same
+    reason as ``_no_successful_call_message``: every failed member shares one run-page string.
+    """
+    errors: list[str] = []
+    if isinstance(output, dict):
+        refs = output.get("artifact_refs")
+        if isinstance(refs, list | tuple) and len(refs) > 0:
+            errors.append(
+                f"artifact_refs names {len(refs)} location(s), but the member holds no tool that "
+                "persists — nothing was written"
+            )
+        prose = output.get("output")
+    else:
+        prose = output
+    text = prose if isinstance(prose, str) else ("" if prose is None else str(prose))
+    for token in _claimed_locations(text):
+        if token in handed:
+            continue
+        shown = " ".join(token.split())
+        message = f"named a location it had no tool to reach and was never handed: {shown}"
+        errors.append(message[:_MESSAGE_CAP])
+        break  # the FIRST invented location is what the operator needs; the rest is noise
     return errors
 
 
