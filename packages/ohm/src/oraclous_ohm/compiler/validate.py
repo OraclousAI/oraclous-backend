@@ -262,6 +262,20 @@ def validate_draft(
                         ),
                     )
                 )
+            # #718: the gate cannot judge FIT, but it CAN require the drafter to have stated a
+            # reason tied to THIS member's sub-goal — cheap to check, expensive to skip.
+            if not m.tool_rationale.get(tool, "").strip():
+                flags.append(
+                    ImportFlag(
+                        code="F-TOOL-UNJUSTIFIED",
+                        severity="blocking",
+                        member_role=m.role,
+                        message=(
+                            f"member {m.role!r} holds tool {tool!r} with no stated reason — add"
+                            f' tool_rationale["{tool}"] explaining why THIS member needs it'
+                        ),
+                    )
+                )
 
     # #697 (ruling 2026-08-24): every member declares what it hands on, with NO exception for a
     # member nobody depends on — the narrower rule would make adding a depends_on edge silently
@@ -285,6 +299,19 @@ def validate_draft(
                     ' parsing an essay. Use ["summary"] when nothing more specific fits, and add'
                     ' "artifact_refs" when the member persists something'
                 ),
+            )
+        )
+
+    # #718 F-TEAM-NO-TOOLS (confirm, non-blocking): every member declared tools: [] while the
+    # surveyed catalog offered something. Never drives would_block — worth a human's look, not a
+    # block. An empty catalog means nothing was on offer, so an empty tools[] is not a signal.
+    if allowed and members and all(not m.tools for m in members):
+        flags.append(
+            ImportFlag(
+                code="F-TEAM-NO-TOOLS",
+                severity="confirm",
+                member_role="",
+                message="every member of this team declares tools: [] — worth a human check",
             )
         )
 

@@ -1,13 +1,17 @@
-"""#594 (ADR-047 decision 2) — the four compiler member sub-harness bodies (prompts).
+"""#594 (ADR-047 decision 2) — the compiler member sub-harness bodies (prompts).
 
 Authored as module constants (shipped with the package, importable in-process). Each is the
 ``body=`` of ``build_subharness`` for one member of the compiler Team Harness: planner →
-capability-surveyor → manifest-drafter → reviewer. The reviewer's verdict is a CODED
-``would_block`` from the shared validator (``validate_draft``), never a model self-certification
-(ADR-043 invariant); it runs a BOUNDED in-harness repair loop (validate → FIX the named
-members/tools → re-validate, at most two fix attempts), then fails closed with a gap report. The
-bound is HARD-enforced by the reviewer member's ``max_tool_calls`` cap (the harness halts the
-loop), not merely the prompt — see ``team.build_compiler_team``.
+manifest-drafter → reviewer. #709 deleted the capability-surveyor step: its only job was
+retyping the surveyed catalog as its own output, and nothing read that output any more — the
+drafter gets the described catalog baked directly into its own sub-goal (#713), and the
+reviewer's ``manifest-validate`` reads the org's live tool list directly from the registry,
+never from anything the surveyor produced. The reviewer's verdict is a CODED ``would_block``
+from the shared validator (``validate_draft``), never a model self-certification (ADR-043
+invariant); it runs a BOUNDED in-harness repair loop (validate → FIX the named members/tools →
+re-validate, at most two fix attempts), then fails closed with a gap report. The bound is
+HARD-enforced by the reviewer member's ``max_tool_calls`` cap (the harness halts the loop), not
+merely the prompt — see ``team.build_compiler_team``.
 """
 
 from __future__ import annotations
@@ -18,24 +22,18 @@ PLANNER_PROMPT = (
     "your sub-goal (e.g. fan-out/fan-in, standing-team, gated-pipeline) — ADAPT the closest one to "
     "the objective, never copy a frozen pipeline. Decide the member roles, each member's one-line "
     "sub-goal, and the dependency order (who must run before whom) as an ACYCLIC pipeline. Do NOT "
-    "choose tools (the surveyor owns the tool catalog) and do NOT write a manifest (the drafter "
+    "choose tools (the drafter owns the tool catalog) and do NOT write a manifest (the drafter "
     "does). Reply with a short plain-text plan: a numbered list of members, each as "
     "`role — sub-goal — depends on: …`."
 )
 
-SURVEYOR_PROMPT = (
-    "You are the CAPABILITY-SURVEYOR. The available capability catalog for this org has been "
-    "provided to you (the surveyed tools — the ONLY tools any drafted member may use). Reply "
-    'with ONLY a JSON object: {"tools": [{"name": "<tool>", "ref": "<ref>"}, …]} listing '
-    "exactly the surveyed tools, and nothing else (no prose, no fences). The drafter draws tools "
-    "EXCLUSIVELY from this catalog; a tool you do not list cannot be used."
-)
-
 DRAFTER_PROMPT = (
-    "You are the MANIFEST-DRAFTER. Using the PLANNER's sketch and the SURVEYOR's catalog, draft "
-    "the user's team as a schema-valid OHM v1.1 Team Harness. Reply with ONLY a JSON object:\n"
+    "You are the MANIFEST-DRAFTER. Using the PLANNER's sketch and the surveyed tool catalog "
+    "given in your own instructions, draft the user's team as a schema-valid OHM v1.1 Team "
+    "Harness. Reply with ONLY a JSON object:\n"
     '  {"members": [{"role":"analyst","kind":"agent",'
     '"manifest_ref":"org:compiled/analyst@1","subgoal":"…","tools":["web-search"],'
+    '"tool_rationale":{"web-search":"this member needs live results to answer the objective"},'
     '"depends_on":["researcher"],"outputs_schema":{"required":["summary"]}}, …],\n'
     '   "orchestration": {"style": "...", "success_criteria": "..."},\n'
     '   "task_input": {"required": <bool>, "key": "task", "description": "<the question to ask '
@@ -44,9 +42,18 @@ DRAFTER_PROMPT = (
     '   "budget": {"max_tokens_total": <int>, "max_tool_calls_total": <int>, '
     '"max_sub_runs": <int>, "max_tokens_per_member": <int>, "max_tool_calls_per_member": <int>}}\n'
     "RULES (each is enforced by the reviewer's validator — a violation BLOCKS the compile):\n"
-    "- Every member.tools entry MUST be a tool the surveyor listed. NEVER invent a tool; if a "
-    "sub-goal needs a capability the surveyor did not list, OMIT the tool and note the gap in "
-    "that member's subgoal.\n"
+    "- Every member.tools entry MUST be a tool the surveyed catalog listed. NEVER invent a tool; "
+    "if a sub-goal needs a capability the catalog did not list, OMIT the tool and note the gap "
+    "in that member's subgoal.\n"
+    # #718: F-TOOL-UNJUSTIFIED blocks a member holding a tool with no stated reason (run
+    # a3443e24 handed knowledge-retriever to a member reviewing an unmerged pull request — the
+    # gate cannot judge FIT, but it can require a reason tied to THIS member's own sub-goal).
+    "- For EVERY tool a member holds, add one entry to that member's `tool_rationale` keyed by "
+    "the tool name, explaining in one short sentence why THIS member needs it for its own "
+    "sub-goal. NEVER leave `tools` non-empty with no matching `tool_rationale` entry, and NEVER "
+    "leave a `tool_rationale` entry blank.\n"
+    "- Do not leave a member's `tools: []` when the surveyed catalog plainly offers a tool that "
+    "fits its sub-goal — an empty tool list is only correct when nothing in the catalog helps.\n"
     "- ALWAYS emit `task_input` — on EVERY team, without exception. It is how the USER tells the "
     "finished team WHICH thing to work on at run time (which pull request, which document, which "
     "customer); a team without it can only guess, and will. Set `required` to false by default; "
@@ -99,7 +106,7 @@ REVIEWER_PROMPT = (
     "wasted and is NOT required. STOP.\n"
     "3. ONLY if `would_block` is TRUE → FIX the team YOURSELF: edit exactly the members/tools the "
     "blocking reasons name — drop or replace any unsurveyed/hallucinated tool with one from the "
-    "surveyor's catalog (omit the tool entirely if none fits), and repair the named member — then "
+    "surveyed catalog (omit the tool entirely if none fits), and repair the named member — then "
     "call `manifest-validate` again on the FIXED JSON. The instant `would_block` is FALSE, output "
     "the team JSON and STOP. You may FIX at most TWICE.\n"
     "If it is STILL blocked after the second fix, reply with the final blocking reasons as a "

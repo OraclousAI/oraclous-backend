@@ -52,6 +52,7 @@ class ImportReport(BaseModel):
     unresolved_skills: int = 0
     precedence: list[str] = Field(default_factory=list)  # the declared truth ordering (item 9, [])
     blocking: list[str] = Field(default_factory=list)  # blocking-flag messages
+    confirm: list[str] = Field(default_factory=list)  # #718 — confirm messages, mirroring blocking
     confirm_count: int = 0
     info_count: int = 0
 
@@ -127,6 +128,7 @@ def _build_report(
         resolved_skills=sum(1 for f in flags if f.code == "F-SKILL-RESOLVED"),
         unresolved_skills=sum(1 for f in flags if f.code == "F-SKILL-MISSING"),
         blocking=[f"{f.code}: {f.message}" for f in by_sev["blocking"]],
+        confirm=[f"{f.code}: {f.message}" for f in by_sev["confirm"]],
         confirm_count=len(by_sev["confirm"]),
         info_count=len(by_sev["info"]),
     )
@@ -399,4 +401,5 @@ def render_report(report: ImportReport) -> str:
         f"  GO: {'BLOCKED' if report.would_block else 'ready (pending review of confirm flags)'}",
     ]
     lines.extend(f"    BLOCK {b}" for b in report.blocking)
+    lines.extend(f"    CONFIRM {c}" for c in report.confirm)
     return "\n".join(lines)
