@@ -134,3 +134,27 @@ def test_reviewer_prompt_asks_for_the_grounding_receipt_alongside_the_team() -> 
     assert "BOTH required" in REVIEWER_PROMPT
     # and the exclusive phrasing that forbade it must not come back
     assert "ONLY that team JSON" not in REVIEWER_PROMPT
+
+
+# ── #718: the drafter must justify every tool it hands out ──────────────────
+
+
+def test_drafter_prompt_requires_a_tool_rationale_entry_per_tool() -> None:
+    """The gate (validate.py's F-TOOL-UNJUSTIFIED) blocks a member that holds a tool with no stated
+    reason, so the drafter has to be TOLD to fill `tool_rationale` before it ever gets there — the
+    JSON example shows the field alongside `tools`, and a RULES bullet requires one entry per
+    assigned tool."""
+    from oraclous_ohm.compiler.prompts import DRAFTER_PROMPT
+
+    assert '"tool_rationale"' in DRAFTER_PROMPT  # the JSON example shows the field
+    assert DRAFTER_PROMPT.count("tool_rationale") >= 2  # the example AND a rule about it
+    assert "this member" in DRAFTER_PROMPT.lower()  # ties the reason to THIS member, not the tool
+
+
+def test_drafter_prompt_discourages_leaving_tools_empty_when_one_fits() -> None:
+    """#718's companion team-level check (F-TEAM-NO-TOOLS) is confirm-severity, not blocking — so
+    the only real lever against a team that hands out zero tools while the catalog offers one that
+    fits is a soft nudge in the prompt itself."""
+    from oraclous_ohm.compiler.prompts import DRAFTER_PROMPT
+
+    assert "tools: []" in DRAFTER_PROMPT or "empty" in DRAFTER_PROMPT.lower()

@@ -154,3 +154,23 @@ def test_agent_member_needs_no_human_role() -> None:
     assert m.kind == "agent"
     assert m.human_role is None
     assert m.depends_on == []
+
+
+# ── #718: tool_rationale is a SIBLING of tools[], never nested into it ──────────────────
+def test_tool_rationale_defaults_to_empty_dict() -> None:
+    # a pre-#718 draft / a member added by a hand-edit carries no tool_rationale at all — it must
+    # still validate, with the field defaulting to {} rather than being required.
+    m = OHMMember(role="researcher", kind="agent", manifest_ref="org:x/r@1", tools=["web-search"])
+    assert m.tool_rationale == {}
+
+
+def test_tool_rationale_holds_one_reason_per_tool_name() -> None:
+    m = OHMMember(
+        role="researcher",
+        kind="agent",
+        manifest_ref="org:x/r@1",
+        tools=["web-search"],
+        tool_rationale={"web-search": "needs live results to answer the objective"},
+    )
+    assert m.tool_rationale == {"web-search": "needs live results to answer the objective"}
+    assert m.tools == ["web-search"]  # unaffected — tool_rationale is a sibling field
