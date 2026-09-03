@@ -134,3 +134,6 @@ def test_a_team_of_agents_runs_on_the_users_own_model_through_the_gateway(
     assert nonce in str(done["results"]), (
         f"nonce {nonce!r} not in team results — is the harness LIVE? results={done['results']!r}"
     )
+    # #907: the live counterpart of the keyless suite's `simulated is True` proof — a run driven
+    # entirely by the user's own BYOM model must NOT be labelled as the scripted stand-in.
+    assert done["simulated"] is False
