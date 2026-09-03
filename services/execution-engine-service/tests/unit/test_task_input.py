@@ -192,3 +192,31 @@ def test_a_declared_custom_key_is_honoured() -> None:
     with pytest.raises(TeamRunError):
         validate_task_input(manifest, {"task": _TASK})  # wrong key — the declared one is empty
     validate_task_input(manifest, {"pr_url": _TASK})  # the declared key satisfies it
+
+
+# --- #696: the user's task text is HANDED to every member, so a path in it is never a claim ---
+
+
+async def test_a_tool_less_member_repeating_a_path_from_the_task_is_not_grading_a_claim() -> None:
+    """The entrypoint usually receives the user's own text, which routinely names files and URLs.
+    A tool-less member that talks about the file the TASK named is reasoning over its input, and
+    must not fail #696's claim grade (the engine hands ``inputs`` to the orchestrator as state)."""
+    from oraclous_ohm.parse import load_ohm
+
+    class _EchoHarness:
+        async def execute(self, *, input_text: str, **_: Any) -> dict[str, Any]:
+            return {
+                "id": str(uuid.uuid4()),
+                "status": "SUCCEEDED",
+                "output": "docs/brief.md asks for a pricing review; start with the deck.",
+                "steps": [],
+            }
+
+    manifest = load_ohm(
+        _team_document({"required": True, "description": "what to review", "key": "task"})
+    )
+    res = await run_team_harness(
+        manifest, _EchoHarness(), inputs={"task": "Review the brief at docs/brief.md"}
+    )
+    assert res.member_status["fetcher"] == "succeeded"
+    assert res.member_status["reviewer"] == "succeeded"

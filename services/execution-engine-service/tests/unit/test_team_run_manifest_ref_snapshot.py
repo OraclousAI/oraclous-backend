@@ -121,6 +121,15 @@ class _FakeRegistry:
         descriptor = self.descriptors.get(capability_id)
         return None if descriptor is None else {"id": str(capability_id), "descriptor": descriptor}
 
+    # #664: the create path also pre-flights tool credentials against the org's registered tools
+    # and instances. This org has none registered, so every binding is left to the harness — the
+    # snapshot behaviour under test is unchanged.
+    async def list_tools(self) -> list[dict[str, Any]]:
+        return []
+
+    async def list_instances(self) -> list[dict[str, Any]]:
+        return []
+
 
 def _service(registry: _FakeRegistry | None = None) -> tuple[TeamRunService, _FakeRunRepo]:
     repo = _FakeRunRepo()

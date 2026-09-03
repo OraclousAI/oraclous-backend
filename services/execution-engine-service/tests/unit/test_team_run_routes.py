@@ -230,3 +230,46 @@ async def test_rerun_team_run_maps_409_when_not_failed() -> None:
     async with await _client(FakeService()) as c:
         resp = await c.post(f"/v1/engine/team-runs/{uuid.uuid4()}/rerun")
     assert resp.status_code == 409
+
+
+# --- #664: a credential miss at GO is a 409 the gateway can turn into a connect prompt ----------
+
+
+async def test_post_team_run_credential_miss_is_a_409_with_a_top_level_needs_credential() -> None:
+    """The gateway's wall relays a 409 as CREDENTIALS_REQUIRED only when the body carries
+    ``needs_credential`` at the TOP level (``extract_needs_credential`` reads nothing nested), so
+    this cannot ride an ``HTTPException`` whose payload sits under ``detail``. The route answers a
+    plain JSON body: the leak-safe pair, the canonical code, and a human ``detail`` string.
+
+    ``error_code`` is for DIRECT engine callers: the gateway's code allow-list does not carry
+    CREDENTIALS_REQUIRED, so the relay to the client happens on ``needs_credential`` alone. The
+    body is bounded — nothing the wall must never see (an instance id, a credential id, a URL)
+    rides along."""
+    from oraclous_execution_engine_service.services.team_run_service import TeamRunPreflightError
+
+    class FakeService:
+        async def create(self, principal: Principal, **kwargs: Any) -> EngineTeamRun:
+            raise TeamRunPreflightError(
+                [
+                    {
+                        "role": "fetcher",
+                        "binding": "github-reader",
+                        "credential_type": "api_key",
+                        "provider": "github-reader",
+                    }
+                ]
+            )
+
+    async with await _client(FakeService()) as c:
+        resp = await c.post(
+            "/v1/engine/team-runs",
+            json={"manifest": {"kind": "team"}, "sub_harnesses": {}, "gate_decisions": {}},
+        )
+    assert resp.status_code == 409, resp.text
+    body = resp.json()
+    assert body["needs_credential"] == {"requirement_id": "api_key", "provider": "github-reader"}
+    assert body["error_code"] == "CREDENTIALS_REQUIRED"
+    assert "github-reader" in body["detail"]
+    assert set(body) <= {"detail", "error_code", "needs_credential", "missing"}
+    for miss in body.get("missing", []):
+        assert set(miss) <= {"role", "binding", "credential_type"}

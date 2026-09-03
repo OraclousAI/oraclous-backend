@@ -28,6 +28,7 @@ from typing import Any
 import pytest
 from oraclous_ohm.envelope import HandoffEnvelope
 from oraclous_ohm.manifest import (
+    OHMFanOut,
     OHMManifest,
     OHMMember,
     OHMMetadata,
@@ -428,3 +429,316 @@ async def test_the_run_page_message_names_the_real_cause() -> None:
     message = res.member_errors["researcher"]
     assert _OLD_ACCUSATION not in message
     assert "quota" in message.lower()
+
+
+# --- #696: a member with no tools is graded on the CLAIMS it makes, not on the tools it lacks ----
+#
+# Run fe548aac: the ``Adversarial-reviewer`` declared zero tools, made one LLM turn and no tool
+# call, and closed with "All insights have been documented in two primary files:
+# Interrail_B.V./Identified_Weaknesses_Support_Areas.txt ...". Neither file existed — it had no
+# tool to write one — and it was graded succeeded. Its prose was the whole input of the Editor,
+# which chased both paths for 10 rounds, 27 failed calls and 34,855 tokens, and failed the run.
+#
+# The contract these tests pin (RED until the [impl] lands):
+#
+# * ``validate_no_tool_claims(output, *, handed="")`` (new, ``oraclous_ohm.envelope``) — the pure
+#   check for a ZERO-TOOL member's result. ``output`` is the member's result (a dict carrying its
+#   ``output`` prose and, when it declared one, ``artifact_refs``; or a bare string). ``handed``
+#   is everything the member was given — its inbound hand-off payloads and its objective — so a
+#   location it repeats from there is not a claim. Errors (empty list = an honest reasoner):
+#     - a non-empty ``artifact_refs`` (it persisted nothing: it has no tool that persists);
+#     - a location in its prose that nobody handed it — a ``sandbox:`` reference or a path-like
+#       token with a file extension — which is the exact shape of the fe548aac fabrication.
+#   Messages fit the #685 budget (≤ 280 chars, the ``grounding: `` prefix brings it under 300).
+# * ``run_team`` applies it to a member with EMPTY ``tools`` that dispatched successfully:
+#   ``failed`` + ``member_errors[role]`` starting ``grounding:``, the same terminal the tool path
+#   uses, so dependents are ``blocked`` by the ordinary upstream rule and the fabrication never
+#   becomes a consumer's ground truth. An honest reasoner is byte-for-byte unchanged
+#   (``test_zero_tool_member_keeps_prior_status_semantics`` above still holds), and a zero-tool
+#   member still contributes NO ``member_grounding`` bucket either way.
+#
+# How the two are told apart (the "do not swing too far" decision): a reasoner that only talks
+# about what it was handed is legitimate; a member that asserts a RESULT only a tool can produce
+# — a persisted artifact, a location it invented — is not. The grade looks at the claim, never
+# at the absence of tools.
+#
+# What "handed" means, pinned below: the member's own objective (subgoal / hand-off objective),
+# every inbound hand-off payload, the run's inputs (the user's task text, fan-out state) and the
+# fan-out item it was dispatched over. NOT handed: the member's own prompt body — a persona that
+# instructs the member to name a file has not given it one (the byom e2e depends on this).
+#
+# Edges, pinned below: a URL is a reference, not an artifact the member persisted — never a
+# claim. A bare filename with no directory IS a claim (the cheapest evasion of a
+# directory-only rule). A dotted company name ("Interrail B.V.") and "e.g." are neither. The
+# accepted false positive of a token rule: a reviewer that RECOMMENDS "add a CHANGELOG.md" is
+# token-identical to one claiming it wrote one and will fail — that is the price of the bare-
+# filename pin, and an impl must not "fix" it by weakening that pin. The issue's fuller claim
+# taxonomy ("wrote to the graph", "fetched a page") is NOT pinned; the narrower
+# artifact-location variant the issue allows is.
+
+_FABRICATED_A = "Interrail_B.V./Identified_Weaknesses_Support_Areas.txt"
+_FABRICATED_B = "Interrail_B.V./Consequences_of_Inaction_Summary.txt"
+_FE548AAC_CLOSING = (
+    "All insights have been documented systematically in two primary files for the team's "
+    f"review and development:\n1. `{_FABRICATED_A}`\n2. `{_FABRICATED_B}`"
+)
+
+
+def test_validate_no_tool_claims_accepts_an_honest_reasoner() -> None:
+    from oraclous_ohm.envelope import validate_no_tool_claims
+
+    out = {
+        "output": "Three weaknesses stand out at Interrail B.V.: pricing (v2.1 of the deck), "
+        "support hours, e.g. weekends, and the 3.5% churn. Cf. the public figures at "
+        "https://example.com/reports/2026/q1.pdf and on interrail.eu/support.",
+        "status": "SUCCEEDED",
+        "summary": "three weaknesses",
+        "artifact_refs": [],
+    }
+    assert validate_no_tool_claims(out) == []
+
+
+def test_validate_no_tool_claims_treats_a_url_as_a_reference_not_a_claim() -> None:
+    """A reasoner citing a public source it was not handed is referencing, not persisting."""
+    from oraclous_ohm.envelope import validate_no_tool_claims
+
+    assert validate_no_tool_claims("See https://example.com/docs/report.pdf for the figures.") == []
+
+
+def test_validate_no_tool_claims_rejects_a_bare_filename_it_was_not_handed() -> None:
+    """The cheapest evasion of a directory-only rule: "saved as findings.md"."""
+    from oraclous_ohm.envelope import validate_no_tool_claims
+
+    errors = validate_no_tool_claims("I have saved all findings as findings.md for the team.")
+    assert errors
+    assert "findings.md" in errors[0]
+
+
+def test_validate_no_tool_claims_rejects_a_non_empty_artifact_refs() -> None:
+    from oraclous_ohm.envelope import validate_no_tool_claims
+
+    out = {"output": "done", "artifact_refs": ["doc-1234"]}
+    errors = validate_no_tool_claims(out)
+    assert len(errors) == 1
+    assert "artifact_refs" in errors[0]
+
+
+def test_validate_no_tool_claims_rejects_the_fe548aac_paths() -> None:
+    from oraclous_ohm.envelope import validate_no_tool_claims
+
+    errors = validate_no_tool_claims({"output": _FE548AAC_CLOSING})
+    assert errors, "two invented file paths must be a claim"
+    assert _FABRICATED_A in errors[0]  # the FIRST invented location is named, so the row reads
+    assert all(len(e) <= 280 for e in errors)  # #685 budget: with the prefix, under 300
+
+
+def test_validate_no_tool_claims_rejects_a_sandbox_link() -> None:
+    from oraclous_ohm.envelope import validate_no_tool_claims
+
+    errors = validate_no_tool_claims("Saved the report to sandbox:/reports/findings.md for you.")
+    assert errors
+    assert "sandbox:/reports/findings.md" in errors[0]
+
+
+def test_validate_no_tool_claims_accepts_a_location_the_member_was_handed() -> None:
+    """A reasoner that repeats a path it was GIVEN is talking about its input, not claiming work."""
+    from oraclous_ohm.envelope import validate_no_tool_claims
+
+    handed = 'From reader: {"summary": "the brief is at docs/brief.md", "artifact_refs": []}'
+    out = {"output": "Reading docs/brief.md, the brief asks for three things.", "artifact_refs": []}
+    assert validate_no_tool_claims(out, handed=handed) == []
+
+
+def test_validate_no_tool_claims_bounds_its_message() -> None:
+    from oraclous_ohm.envelope import validate_no_tool_claims
+
+    long_path = "reports/" + "a" * 500 + ".txt"
+    errors = validate_no_tool_claims({"output": f"I wrote {long_path} for the team."})
+    assert errors
+    assert all(len(e) <= 280 for e in errors)
+
+
+async def test_regression_run_fe548aac_zero_tool_reviewer_that_names_files_fails() -> None:
+    # The reviewer holds no tools, so its "two primary files" can only be invented. It used to
+    # pass — and its prose was the Editor's entire input. Now the reviewer FAILS on its own row
+    # and the Editor is BLOCKED (never dispatched), instead of chasing files nobody wrote.
+    dispatched: list[str] = []
+
+    async def dispatch(member: OHMMember, envs: list[HandoffEnvelope], item: Any) -> dict:
+        dispatched.append(member.role)
+        return {"output": _FE548AAC_CLOSING, "status": "SUCCEEDED"}
+
+    res = await run_team(
+        _team([_m("reviewer"), _m("editor", ["reviewer"], tools=["edit"])]), dispatch
+    )
+    assert res.member_status == {"reviewer": "failed", "editor": "blocked"}
+    assert res.status == "failed"
+    assert dispatched == ["reviewer"]  # the Editor never burned a token on the invented paths
+    message = res.member_errors["reviewer"]
+    assert message.startswith("grounding:")
+    assert _FABRICATED_A in message
+    assert len(message) <= 300  # the #685 run-page budget holds for this message too
+
+
+async def test_zero_tool_member_claiming_a_persisted_artifact_fails() -> None:
+    # #697 made `artifact_refs` a declared key: "WHERE you persisted anything". A member with no
+    # tool that persists has nothing to put there; a non-empty list is a claim without a receipt.
+    res = await run_team(
+        _team([_m("thinker")]),
+        _dispatch_returning(
+            {
+                "output": '{"summary": "done", "artifact_refs": ["sandbox:/out/plan.md"]}',
+                "status": "SUCCEEDED",
+                "summary": "done",
+                "artifact_refs": ["sandbox:/out/plan.md"],
+            }
+        ),
+    )
+    assert res.member_status == {"thinker": "failed"}
+    assert res.member_errors["thinker"].startswith("grounding:")
+
+
+async def test_zero_tool_member_repeating_a_handed_path_succeeds() -> None:
+    # The reader is TOLD where the brief is (its subgoal); the thinker is HANDED that summary. Both
+    # mention `docs/brief.md`, neither claims to have written it — both are legitimate reasoners.
+    reader = OHMMember(
+        role="reader",
+        kind="agent",
+        manifest_ref="org:x/reader@1",
+        subgoal="say what the brief at docs/brief.md asks for",
+        outputs_schema={"required": ["summary"]},
+    )
+    thinker = _m("thinker", ["reader"])
+    outputs = {
+        "reader": {
+            "output": "docs/brief.md asks for a pricing review.",
+            "status": "SUCCEEDED",
+            "summary": "docs/brief.md asks for a pricing review",
+            "artifact_refs": [],
+        },
+        "thinker": {
+            "output": "Given docs/brief.md asks for a pricing review, start with the deck.",
+            "status": "SUCCEEDED",
+        },
+    }
+
+    async def dispatch(member: OHMMember, envs: list[HandoffEnvelope], item: Any) -> dict:
+        return dict(outputs[member.role])
+
+    res = await run_team(_team([reader, thinker]), dispatch)
+    assert res.member_status == {"reader": "succeeded", "thinker": "succeeded"}
+    assert res.status == "completed"
+
+
+async def test_zero_tool_member_echoing_its_fan_out_item_succeeds() -> None:
+    # A fan-out member is dispatched once per item; the item IS its input (state → over → item),
+    # so echoing the item's path is reasoning over what it was handed.
+    async def dispatch(member: OHMMember, envs: list[HandoffEnvelope], item: Any) -> dict:
+        return {"output": f"{item} covers pricing.", "status": "SUCCEEDED"}
+
+    fan = OHMFanOut(over="$.files", max_parallel=2)
+    member = OHMMember(role="reader", kind="agent", manifest_ref="org:x/reader@1", fan_out=fan)
+    res = await run_team(_team([member]), dispatch, state={"files": ["docs/a.md", "docs/b.md"]})
+    assert res.member_status == {"reader": "succeeded"}
+
+
+async def test_a_partial_zero_tool_member_is_graded_on_its_claims_too() -> None:
+    # #587: a degraded (PARTIAL) member is still graded — a fabricated location fails it.
+    res = await run_team(
+        _team([_m("reviewer")]),
+        _dispatch_returning({"output": _FE548AAC_CLOSING, "status": "PARTIAL"}),
+    )
+    assert res.member_status == {"reviewer": "failed"}
+    assert res.member_errors["reviewer"].startswith("grounding:")
+
+
+# --- review round 1: an absolute path, trailing punctuation on a handed sandbox link, a --------
+# --- combined claim, and a non-ASCII handed path -----------------------------------------------
+
+
+def test_validate_no_tool_claims_rejects_an_absolute_path() -> None:
+    """The fe548aac shape with a leading slash — the single most common fabricated-artifact
+    form a model actually produces (``/mnt/data/...``, ``/tmp/...``)."""
+    from oraclous_ohm.envelope import validate_no_tool_claims
+
+    errors = validate_no_tool_claims("I have saved this to /mnt/data/summary.md for you.")
+    assert errors
+    assert "/mnt/data/summary.md" in errors[0]
+
+
+def test_validate_no_tool_claims_still_treats_a_url_as_a_reference_after_the_path_fix() -> None:
+    """The absolute-path allowance must not reopen the URL exemption — its own ``//``/``.``
+    delimiters still precede every claimed segment."""
+    from oraclous_ohm.envelope import validate_no_tool_claims
+
+    assert (
+        validate_no_tool_claims("See https://a.b/c/d.pdf and //cdn.x/y.js for the figures.") == []
+    )
+
+
+def test_validate_no_tool_claims_ignores_trailing_punctuation_on_a_handed_sandbox_link() -> None:
+    """A member ending its sentence right after a HANDED ``sandbox:`` link must not fail because
+    the trailing period got folded into the matched token."""
+    from oraclous_ohm.envelope import validate_no_tool_claims
+
+    handed = 'From reader: {"summary": "see sandbox:/reports/summary.md"}'
+    out = "As sandbox:/reports/summary.md notes, pricing is the main issue."
+    assert validate_no_tool_claims(out, handed=handed) == []
+
+
+def test_validate_no_tool_claims_reports_both_an_artifact_ref_and_an_unhanded_location() -> None:
+    """Live proof (run ``89739a9b``, member ``refs``): a member can make BOTH kinds of claim in
+    one turn. Both must be named, not just the first one found."""
+    from oraclous_ohm.envelope import validate_no_tool_claims
+
+    out = {
+        "output": "Saved a copy to sandbox:/reports/summary.md as requested.",
+        "artifact_refs": ["sandbox:/reports/summary.md"],
+    }
+    errors = validate_no_tool_claims(out)
+    assert len(errors) == 2
+    assert any("artifact_refs" in e for e in errors)
+    assert any("sandbox:/reports/summary.md" in e for e in errors)
+
+
+async def test_a_handed_path_with_non_ascii_characters_is_recognised_when_repeated() -> None:
+    """``_handed_text`` must not escape a handed path into a form the member's own verbatim
+    repeat can never match (a JSON dump defaulting to ``ensure_ascii=True`` would)."""
+    handed_path = "docs/Übersicht.md"
+    outputs = {
+        "reader": {
+            "output": f"See {handed_path} for the full context.",
+            "status": "SUCCEEDED",
+            "summary": f"see {handed_path}",
+            "artifact_refs": [],
+        },
+        "thinker": {
+            "output": f"As {handed_path} says, start with pricing.",
+            "status": "SUCCEEDED",
+        },
+    }
+    reader = OHMMember(
+        role="reader",
+        kind="agent",
+        manifest_ref="org:x/reader@1",
+        subgoal=f"summarise {handed_path}",
+        outputs_schema={"required": ["summary"]},
+    )
+    thinker = _m("thinker", ["reader"])
+
+    async def dispatch(member: OHMMember, envs: list[HandoffEnvelope], item: Any) -> dict:
+        return dict(outputs[member.role])
+
+    res = await run_team(_team([reader, thinker]), dispatch)
+    assert res.member_status == {"reader": "succeeded", "thinker": "succeeded"}
+
+
+async def test_zero_tool_member_still_contributes_no_grounding_bucket() -> None:
+    # The grounding SCORE stays a tool-declaring measure: a zero-tool member that fails this check
+    # is reported through member_status/member_errors, never through member_grounding.
+    res = await run_team(
+        _team([_m("reviewer")]),
+        _dispatch_returning({"output": _FE548AAC_CLOSING, "status": "SUCCEEDED"}),
+    )
+    assert res.member_status == {"reviewer": "failed"}
+    assert res.member_grounding == {}
