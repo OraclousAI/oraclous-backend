@@ -337,6 +337,33 @@ async def test_from_run_peels_validates_and_persists_with_sub_harnesses() -> Non
     assert row.sub_harnesses["researcher"]["metadata"]["kind"] == "agent"
 
 
+async def test_from_run_carries_tool_rationale_through_to_the_stored_draft() -> None:
+    # #718: `assemble_and_report` rebuilds the manifest from OHMMember objects rather than a
+    # subset of fields (the same reason `outputs_schema` already survives this path unmodified) —
+    # so `tool_rationale`, a real OHMMember field, threads through create_from_run untouched too.
+    svc, repo, team_runs = _service()
+    compiled = (
+        '{"members": ['
+        '{"role": "researcher", "kind": "agent", "subgoal": "research",'
+        ' "tools": ["web-research"],'
+        ' "tool_rationale": {"web-research": "needs live results for the objective"},'
+        ' "outputs_schema": {"required": ["summary"]}},'
+        '{"role": "writer", "kind": "agent", "subgoal": "write", "depends_on": ["researcher"],'
+        ' "outputs_schema": {"required": ["summary"]}}'
+        "]}"
+    )
+    run = team_runs.seed("SUCCEEDED", _reviewer_results(compiled))
+    row, _verdict, created = await svc.create_from_run(
+        _principal(), team_run_id=run.id, name="from-prose"
+    )
+    assert created is True
+    by_role = {m["role"]: m for m in row.manifest["members"]}
+    assert by_role["researcher"]["tool_rationale"] == {
+        "web-research": "needs live results for the objective"
+    }
+    assert by_role["researcher"]["tools"] == ["web-research"]  # unaffected, a sibling field
+
+
 async def test_from_run_is_idempotent_per_org_and_run() -> None:
     # #638: a second from-run for the SAME run returns the SAME draft (created=False → the route
     # 200s), never a duplicate — a reload / second tab on ?compile=<runId> is safe.

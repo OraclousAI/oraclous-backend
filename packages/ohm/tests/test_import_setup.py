@@ -184,3 +184,43 @@ def test_import_does_not_fabricate_precedence_when_undeclared(tmp_path: Path) ->
     assert result.manifest.precedence is None
     assert result.report.precedence == []
     assert "precedence: (none)" in render_report(result.report)
+
+
+# ── #718: a confirm-severity flag must be VISIBLE, not just counted ─────────
+
+
+def test_a_confirm_flag_message_appears_in_the_rendered_report() -> None:
+    """Before #718, ``ImportReport`` carried ``confirm_count`` only — a bare number with no way to
+    read WHAT the confirm-severity flag actually said. This was a pre-existing gap: two flags
+    already ship at confirm severity (``F-SCHEDULE-NOMATCH`` / ``F-HANDOFF-CONDITIONAL``) and
+    neither is legible to a reviewer past the count. #718's own ``F-TEAM-NO-TOOLS`` needs the same
+    fix, so it lands here rather than duplicated per-flag: ``ImportReport.confirm`` (mirroring
+    ``blocking``) + ``render_report`` emitting a ``CONFIRM ...`` line per entry.
+    """
+    from oraclous_ohm.import_ import ImportFlag, assemble_and_report
+    from oraclous_ohm.manifest import OHMMember
+
+    flag = ImportFlag(
+        code="F-TEAM-NO-TOOLS",
+        severity="confirm",
+        member_role="",
+        message="every member of this team declares tools: [] — worth a human check",
+    )
+    result = assemble_and_report(
+        "t",
+        [
+            OHMMember(
+                role="a",
+                kind="agent",
+                manifest_ref="org:x/a@1",
+                outputs_schema={"required": ["summary"]},
+            )
+        ],
+        owner_organization_id=_ORG,
+        shape="compiled",
+        extra_flags=[flag],
+    )
+    assert result.report.would_block is False  # confirm severity never blocks
+    assert result.report.confirm == [f"F-TEAM-NO-TOOLS: {flag.message}"]
+    text = render_report(result.report)
+    assert f"CONFIRM F-TEAM-NO-TOOLS: {flag.message}" in text

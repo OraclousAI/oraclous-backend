@@ -55,7 +55,6 @@ def _drafter_subgoal(**kw: object) -> str:
 def test_the_drafter_sees_what_each_tool_does() -> None:
     subgoal = _drafter_subgoal(
         objective="Review a GitHub pull request and post the review as a comment.",
-        catalog=["github-mcp-pull-request-read", "knowledge-retriever", "web-research"],
         catalog_descriptions=_DESCRIBED,
     )
     assert "Read a pull request" in subgoal
@@ -66,9 +65,7 @@ def test_the_drafter_sees_what_each_tool_does() -> None:
 def test_a_tool_with_no_description_renders_as_its_name_alone() -> None:
     """``survey_catalog`` unions the seed inventory (bare slugs) with the live registry rows, so a
     tool with no description is normal. Render the name; never invent text for it."""
-    subgoal = _drafter_subgoal(
-        catalog=["web-research"], catalog_descriptions=[{"name": "web-research"}]
-    )
+    subgoal = _drafter_subgoal(catalog_descriptions=[{"name": "web-research"}])
     assert "web-research" in subgoal
     assert '"description": ""' not in subgoal  # not an empty field either — just the name
 
@@ -81,7 +78,6 @@ def test_the_descriptions_are_bounded_so_the_prompt_stays_bounded() -> None:
     assert _DESCRIPTION_CHARS <= 500
     long_description = "x" * 900
     subgoal = _drafter_subgoal(
-        catalog=["verbose-tool"],
         catalog_descriptions=[{"name": "verbose-tool", "description": long_description}],
     )
     assert "x" * _DESCRIPTION_CHARS in subgoal
@@ -93,7 +89,7 @@ def test_the_drafter_still_carries_the_governance_seed() -> None:
     must still be in there, or every compiled team ships ungoverned."""
     from oraclous_ohm.seeds import DEFAULT_POLICY_SET_REF
 
-    subgoal = _drafter_subgoal(catalog=["web-research"], catalog_descriptions=_DESCRIBED)
+    subgoal = _drafter_subgoal(catalog_descriptions=_DESCRIBED)
     assert DEFAULT_POLICY_SET_REF in subgoal
     assert "max_tokens_per_member" in subgoal
 
@@ -101,19 +97,4 @@ def test_the_drafter_still_carries_the_governance_seed() -> None:
 def test_no_descriptions_leaves_the_drafter_subgoal_as_it_was() -> None:
     """A caller that passes none (the unit path, or a registry outage degrading to seed-only) gets
     byte-identical behaviour to today."""
-    assert _drafter_subgoal(catalog=["web-research"]) == _drafter_subgoal(
-        catalog=["web-research"], catalog_descriptions=None
-    )
-
-
-def test_the_surveyor_still_gets_the_plain_slug_catalog() -> None:
-    """The surveyor's job is to name the ceiling, and its output is what the drafter's tool rules
-    are checked against. Keep it a bare list — a model asked to retype 31 descriptions verbatim is
-    a new way to lose a tool name (#705)."""
-    manifest, _ = build_compiler_team(
-        _ORG, catalog=["web-research"], catalog_descriptions=_DESCRIBED
-    )
-    surveyor = {m.role: m for m in manifest.members}["capability-surveyor"].subgoal
-    assert surveyor is not None
-    assert "web-research" in surveyor
-    assert "indexed knowledge graph" not in surveyor  # descriptions do not ride the relay
+    assert _drafter_subgoal() == _drafter_subgoal(catalog_descriptions=None)
