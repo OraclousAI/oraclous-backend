@@ -455,6 +455,10 @@ class TeamRunOut(BaseModel):
     # derived from the governed COST_BUDGET terminal (a budget halt is always partial), so a caller
     # (and the deployed e2e) can branch on the flag without string-matching the state.
     partial: bool = False
+    # #907: True when ANY member's result says the harness that ran it was the scripted stand-in
+    # LLM (HARNESS_LLM_MODE=fake) — derived below from `results`, mirroring `partial`. A blocked/
+    # skipped member's result is None, never a dict, and empty results is not simulated.
+    simulated: bool = False
     # #638: read-side context the console needs (oraclous-frontend#180). ``graph_id`` is the run's
     # bound graph (the Results tab reads artifacts from that workspace) — a direct column, so
     # from_attributes fills it. ``team_name`` is dug from the stored manifest.metadata.name below
@@ -492,6 +496,11 @@ class TeamRunOut(BaseModel):
         # #638: dig the team name from the stored manifest (metadata.name) so every read carries it.
         if self.team_name is None and isinstance(self.manifest, dict):
             self.team_name = ((self.manifest.get("metadata") or {}).get("name")) or None
+        # #907: simulated if ANY member's result says so — a blocked/skipped member's result is
+        # None, never a dict, so `.get` is guarded rather than called directly on every value.
+        self.simulated = any(
+            isinstance(r, dict) and r.get("simulated") for r in self.results.values()
+        )
         return self
 
 
@@ -621,6 +630,9 @@ class TeamRunStatusOut(BaseModel):
     # second call to the full run read. #828 item 2: role -> {started_at, ended_at | null}.
     member_status: dict[str, str] = Field(default_factory=dict)
     member_timings: dict[str, Any] = Field(default_factory=dict)
+    # #907: mirrors TeamRunOut.simulated — True when any member's result was produced by the
+    # scripted stand-in LLM. Computed by the service (TeamRunStatus/status()), not derived here.
+    simulated: bool = False
 
     # A real flushed row holds {} (the migration 0025 server_default); this coerces None from a
     # pre-migration row / a hypothetical unflushed row — fail-soft, mirroring TeamRunOut's precedent

@@ -586,6 +586,9 @@ def make_harness_dispatch(
             graph_authoritative=graph_authoritative,
         )
         status = result.get("status")
+        # #907: whether the harness's OWN LLM client was the scripted stand-in
+        # (HarnessExecutionOut.simulated) — absent on a pre-#907 harness response (back-compat).
+        simulated = bool(result.get("simulated"))
         # run-tree (#471): record the child execution id + token cost BEFORE the fail-closed check,
         # so a FAILED member is still surfaced in GET /tree (not an empty []) and its tokens still
         # count. Skipped if the harness omitted an id.
@@ -603,6 +606,9 @@ def make_harness_dispatch(
             raise HarnessClientError(
                 f"member {member.role!r} harness did not succeed: {status}"
                 + (f" — {detail}" if detail else "")
+                # #907: the real status/detail is kept intact — this only ADDS a note that the LLM
+                # which produced them was the scripted stand-in, never replaces either.
+                + (" (simulated LLM)" if simulated else "")
             )
         # #642: thread the member's durable step trace (with #641's tool_call_ids) and the claims it
         # made up to the orchestrator, which grades a tool-declaring member on whether each claim
@@ -620,6 +626,9 @@ def make_harness_dispatch(
                 if isinstance(reported, list)
                 else parse_driving_signals(result.get("output"))
             ),
+            # #907: lifted from the harness response so TeamRunOut/TeamRunStatus can derive the
+            # run-level flag from `results` without re-reading the harness.
+            "simulated": simulated,
         }
         # #697: the member's DECLARED keys join the payload the next member receives. Without this
         # the declaration can never be satisfied — what a producer hands on is this envelope, and

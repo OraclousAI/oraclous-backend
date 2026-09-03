@@ -179,6 +179,7 @@ async def get_team_run_status(
         # #828 item 1: which member is working right now, and item 2's per-member timings
         member_status=s.member_status or {},
         member_timings=s.member_timings or {},
+        simulated=s.simulated,
     )
 
 
