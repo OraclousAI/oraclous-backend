@@ -109,3 +109,15 @@ def test_a_tool_less_member_is_told_it_cannot_persist_or_fetch_anything() -> Non
 def test_a_member_holding_tools_is_not_told_it_has_none() -> None:
     for refs in ([_GRAPH], [_SANDBOX_WRITE], ["core/web-research@1"]):
         assert "no tools" not in _directive(refs).lower(), refs
+
+
+def test_a_manifest_ref_dispatch_of_a_tooled_member_is_not_told_the_false_fact() -> None:
+    """#694's own failure shape, reopened by #696: a ``manifest_ref`` dispatch resolves NO
+    sub-harness, so ``capability_refs`` is always ``[]`` for it — even for a member that DID
+    declare tools (``member.tools``, the ceiling checked at dispatch). Telling such a member it
+    has none would be exactly the false fact #694 exists to prevent, in the new sentence's words
+    instead of the graph one."""
+    from oraclous_execution_engine_service.services.team_run import execution_directive
+
+    text = execution_directive([], declared_tools=["core/write@1"])
+    assert "no tools" not in text.lower()

@@ -579,6 +579,127 @@ async def test_a_verdict_the_registry_refuses_to_give_is_a_502_not_a_miss_and_no
     assert repo.rows == {} and enqueued == []
 
 
+# --- review round 1: a mixed-credential descriptor, a mislabelled connect target, an ---------
+# --- inconclusive verdict admitting the run --------------------------------------------------
+
+
+async def test_a_mixed_credential_descriptor_with_the_load_bearing_type_mapped_is_admitted() -> (
+    None
+):
+    """A tool declaring BOTH ``api_key`` (load-bearing) and ``oauth_token`` (broker-resolved,
+    never mapped) must be admitted once the org's instance maps the load-bearing type — the
+    harness binds it (``_mapped_credential_types`` only ever asks for the load-bearing set). The
+    registry's verdict still reports the unmapped ``oauth_token`` as a CREDENTIAL_NOT_CONFIGURED
+    error; that error must not count against a binding whose only NEEDED type is satisfied."""
+    mixed = _tool(
+        _READER_ID,
+        "GitHub Reader",
+        spec={
+            "credential_requirements": [
+                {"type": "api_key", "required": True},
+                {"type": "oauth_token", "required": True},
+            ]
+        },
+    )
+    mapped = _instance(
+        _READER_ID,
+        status="CONFIGURATION_REQUIRED",
+        mappings={"api_key": "c"},
+        required=["api_key", "oauth_token"],
+    )
+    registry = _FakeRegistry(
+        tools=[mixed],
+        instances=[mapped],
+        verdicts={
+            mapped["id"]: {
+                "is_ready": False,
+                "instance_id": mapped["id"],
+                "status": "CONFIGURATION_REQUIRED",
+                "checks": {"capability": "passed", "credentials": "failed"},
+                "errors": [
+                    {
+                        "type": "CREDENTIAL_NOT_CONFIGURED",
+                        "message": "required credential 'oauth_token' is not configured",
+                        "severity": "critical",
+                        "credential_type": "oauth_token",
+                    }
+                ],
+                "action_items": [],
+            }
+        },
+    )
+    svc, _repo, enqueued = _service(registry)
+    manifest = _team([_agent("fetcher", tools=["github-reader"])])
+
+    row = await _go(svc, manifest, {"fetcher": _sub("fetcher", [_reader_cap()])})
+
+    assert enqueued == [row.id]
+
+
+async def test_the_connect_prompt_names_the_tools_own_slug_not_the_binding_alias() -> None:
+    """A member's ``tools[]``/sub-harness ``binding`` is a free alias the team's own author chose
+    (it can differ from the registered tool's name); ``provider`` must name the TOOL the credential
+    is actually for, so the console connects the right thing — not whatever alias this team used."""
+    registry = _FakeRegistry(tools=[_tool(_READER_ID, "GitHub Reader")], instances=[])
+    svc, _repo, _enq = _service(registry)
+    manifest = _team([_agent("fetcher", tools=["reader"])])  # a DIFFERENT alias than the tool name
+    sub = _sub("fetcher", [{"ref": "core/github-reader@1.0.0", "binding": "reader"}])
+
+    from oraclous_execution_engine_service.services.team_run_service import TeamRunPreflightError
+
+    with pytest.raises(TeamRunPreflightError) as exc:
+        await _go(svc, manifest, {"fetcher": sub})
+
+    assert exc.value.needs_credential == {"requirement_id": "api_key", "provider": "github-reader"}
+
+
+async def test_a_broker_unreachable_verdict_is_inconclusive_not_a_ready_admission() -> None:
+    """The registry answers a WARNING (not an error) when it cannot reach the credential broker —
+    it genuinely does not know. Reading only ``is_ready`` (true when nothing FAILED) admits a run
+    the harness may still 409 on; this must fail closed the same as any other inconclusive read."""
+    row = _instance(_READER_ID, status="READY", mappings={"api_key": "c"})
+    registry = _FakeRegistry(
+        tools=[_tool(_READER_ID, "GitHub Reader")],
+        instances=[row],
+        verdicts={
+            row["id"]: {
+                "is_ready": True,
+                "instance_id": row["id"],
+                "status": "READY",
+                "checks": {"capability": "passed", "credentials": "warning"},
+                "errors": [],
+                "action_items": [],
+            }
+        },
+    )
+    svc, repo, enqueued = _service(registry)
+    manifest = _team([_agent("fetcher", tools=["github-reader"])])
+
+    with pytest.raises(TeamRunError) as exc:
+        await _go(svc, manifest, {"fetcher": _sub("fetcher", [_reader_cap()])})
+
+    assert exc.value.status_code == 502
+    assert exc.value.error_type == "registry_unavailable"
+    assert repo.rows == {} and enqueued == []
+
+
+async def test_a_verdict_with_no_readable_shape_is_a_502_not_an_admission() -> None:
+    """A verdict body that is not JSON, or carries no ``is_ready`` key, is unreadable — the
+    inconclusive direction is the 502, never a silent admission and never an unhandled crash."""
+    row = _instance(_READER_ID, status="READY", mappings={"api_key": "c"})
+    registry = _FakeRegistry(
+        tools=[_tool(_READER_ID, "GitHub Reader")], instances=[row], verdicts={row["id"]: {}}
+    )
+    svc, repo, enqueued = _service(registry)
+    manifest = _team([_agent("fetcher", tools=["github-reader"])])
+
+    with pytest.raises(TeamRunError) as exc:
+        await _go(svc, manifest, {"fetcher": _sub("fetcher", [_reader_cap()])})
+
+    assert exc.value.status_code == 502
+    assert repo.rows == {} and enqueued == []
+
+
 async def test_with_no_registry_wired_the_check_is_skipped_like_the_graph_check() -> None:
     """The unit-test posture every existing create test relies on (``registry=None``): the
     harness's own #663 gate stays the second line. The REAL request path always wires one."""

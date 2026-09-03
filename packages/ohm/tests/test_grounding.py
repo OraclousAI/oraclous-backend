@@ -652,6 +652,87 @@ async def test_a_partial_zero_tool_member_is_graded_on_its_claims_too() -> None:
     assert res.member_errors["reviewer"].startswith("grounding:")
 
 
+# --- review round 1: an absolute path, trailing punctuation on a handed sandbox link, a --------
+# --- combined claim, and a non-ASCII handed path -----------------------------------------------
+
+
+def test_validate_no_tool_claims_rejects_an_absolute_path() -> None:
+    """The fe548aac shape with a leading slash — the single most common fabricated-artifact
+    form a model actually produces (``/mnt/data/...``, ``/tmp/...``)."""
+    from oraclous_ohm.envelope import validate_no_tool_claims
+
+    errors = validate_no_tool_claims("I have saved this to /mnt/data/summary.md for you.")
+    assert errors
+    assert "/mnt/data/summary.md" in errors[0]
+
+
+def test_validate_no_tool_claims_still_treats_a_url_as_a_reference_after_the_path_fix() -> None:
+    """The absolute-path allowance must not reopen the URL exemption — its own ``//``/``.``
+    delimiters still precede every claimed segment."""
+    from oraclous_ohm.envelope import validate_no_tool_claims
+
+    assert (
+        validate_no_tool_claims("See https://a.b/c/d.pdf and //cdn.x/y.js for the figures.") == []
+    )
+
+
+def test_validate_no_tool_claims_ignores_trailing_punctuation_on_a_handed_sandbox_link() -> None:
+    """A member ending its sentence right after a HANDED ``sandbox:`` link must not fail because
+    the trailing period got folded into the matched token."""
+    from oraclous_ohm.envelope import validate_no_tool_claims
+
+    handed = 'From reader: {"summary": "see sandbox:/reports/summary.md"}'
+    out = "As sandbox:/reports/summary.md notes, pricing is the main issue."
+    assert validate_no_tool_claims(out, handed=handed) == []
+
+
+def test_validate_no_tool_claims_reports_both_an_artifact_ref_and_an_unhanded_location() -> None:
+    """Live proof (run ``89739a9b``, member ``refs``): a member can make BOTH kinds of claim in
+    one turn. Both must be named, not just the first one found."""
+    from oraclous_ohm.envelope import validate_no_tool_claims
+
+    out = {
+        "output": "Saved a copy to sandbox:/reports/summary.md as requested.",
+        "artifact_refs": ["sandbox:/reports/summary.md"],
+    }
+    errors = validate_no_tool_claims(out)
+    assert len(errors) == 2
+    assert any("artifact_refs" in e for e in errors)
+    assert any("sandbox:/reports/summary.md" in e for e in errors)
+
+
+async def test_a_handed_path_with_non_ascii_characters_is_recognised_when_repeated() -> None:
+    """``_handed_text`` must not escape a handed path into a form the member's own verbatim
+    repeat can never match (a JSON dump defaulting to ``ensure_ascii=True`` would)."""
+    handed_path = "docs/Übersicht.md"
+    outputs = {
+        "reader": {
+            "output": f"See {handed_path} for the full context.",
+            "status": "SUCCEEDED",
+            "summary": f"see {handed_path}",
+            "artifact_refs": [],
+        },
+        "thinker": {
+            "output": f"As {handed_path} says, start with pricing.",
+            "status": "SUCCEEDED",
+        },
+    }
+    reader = OHMMember(
+        role="reader",
+        kind="agent",
+        manifest_ref="org:x/reader@1",
+        subgoal=f"summarise {handed_path}",
+        outputs_schema={"required": ["summary"]},
+    )
+    thinker = _m("thinker", ["reader"])
+
+    async def dispatch(member: OHMMember, envs: list[HandoffEnvelope], item: Any) -> dict:
+        return dict(outputs[member.role])
+
+    res = await run_team(_team([reader, thinker]), dispatch)
+    assert res.member_status == {"reader": "succeeded", "thinker": "succeeded"}
+
+
 async def test_zero_tool_member_still_contributes_no_grounding_bucket() -> None:
     # The grounding SCORE stays a tool-declaring measure: a zero-tool member that fails this check
     # is reported through member_status/member_errors, never through member_grounding.
