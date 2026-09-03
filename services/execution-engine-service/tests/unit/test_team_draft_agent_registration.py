@@ -46,13 +46,16 @@ def _principal() -> Principal:
 
 
 def _member(role: str, deps: list[str] | None = None, tools: list[str] | None = None) -> dict:
+    tools = tools or []
     return {
         "role": role,
         "kind": "agent",
         "manifest_ref": f"org:compiled/{role}@1",
         "subgoal": f"do {role}",
         "depends_on": deps or [],
-        "tools": tools or [],
+        "tools": tools,
+        # #718: every held tool needs a stated reason.
+        "tool_rationale": {t: f"needs {t} to do {role}" for t in tools},
         # #697: every member declares what it hands on; the fixture carries the default.
         "outputs_schema": {"required": ["summary"]},
     }
@@ -213,6 +216,7 @@ def _reviewer_results(compiled: dict[str, Any]) -> dict[str, Any]:
 
 
 def _compiled(tools: list[str] | None = None) -> dict[str, Any]:
+    editor_tools = tools if tools is not None else ["graph-ingest"]
     return {
         "members": [
             {
@@ -222,6 +226,7 @@ def _compiled(tools: list[str] | None = None) -> dict[str, Any]:
                 "manifest_ref": "org:compiled/researcher@1",
                 "subgoal": "gather evidence",
                 "tools": ["web-research"],
+                "tool_rationale": {"web-research": "needs web-research to gather evidence"},  # #718
                 "depends_on": [],
             },
             {
@@ -230,7 +235,10 @@ def _compiled(tools: list[str] | None = None) -> dict[str, Any]:
                 "outputs_schema": {"required": ["summary"]},  # #697
                 "manifest_ref": "org:compiled/editor@1",
                 "subgoal": "write the assessment",
-                "tools": tools if tools is not None else ["graph-ingest"],
+                "tools": editor_tools,
+                "tool_rationale": {
+                    t: f"needs {t} to write the assessment" for t in editor_tools
+                },  # #718
                 "depends_on": ["researcher"],
             },
         ]

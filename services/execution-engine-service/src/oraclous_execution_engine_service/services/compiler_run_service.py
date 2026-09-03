@@ -2,7 +2,8 @@
 
 ``POST /v1/engine/compiler-runs`` assembles the harness-compiler team server-side
 (``build_compiler_team`` — ADR-047's compiler-as-a-team, previously constructible only by
-``packages/ohm``), bakes the #596 seeded catalog into the surveyor's subgoal, binds the caller's
+``packages/ohm``), bakes the #596 seeded catalog into the manifest-drafter's subgoal (#709 deleted
+the capability-surveyor step), binds the caller's
 BYOM models into the manifest AND every sub-harness, then submits through the SAME
 ``TeamRunService.create`` path — a compiler run IS a normal team run (202; the worker drives it;
 the caller polls the existing ``/v1/engine/team-runs/{id}`` reads). No new runtime, no new gateway
@@ -101,13 +102,13 @@ class CompilerRunService:
             constraints=constraints,
             success_criteria=success_criteria,
         )
-        # #638: seed ∪ live registry (org-scoped). #713: one fetch, two views — the surveyor gets
-        # the bare slugs (its output is what the drafter's tool rules are checked against) and the
-        # drafter gets the same tools with their descriptions.
+        # #638: seed ∪ live registry (org-scoped). #709/#713: the capability-surveyor step is gone
+        # — the drafter reads the described catalog straight from its own sub-goal, and the
+        # reviewer's manifest-validate reads the org's live registry directly, so only the
+        # described view is needed here.
         described = await surveyed_catalog_described(self._registry)
-        catalog = [entry["name"] for entry in described]
         manifest, subs = build_compiler_team(
-            org, objective=composed, catalog=catalog, catalog_descriptions=described
+            org, objective=composed, catalog_descriptions=described
         )
         doc = manifest.model_dump(mode="json")
         doc["models"] = bound_models

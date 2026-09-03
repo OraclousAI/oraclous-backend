@@ -93,6 +93,7 @@ def _good_manifest() -> dict[str, object]:
                 "kind": "agent",
                 "manifest_ref": "org:c/r@1",
                 "tools": ["web-research"],
+                "tool_rationale": {"web-research": "needs live sources to research the topic"},
                 "depends_on": [],
                 "outputs_schema": {"required": ["summary"]},  # #697
             },
@@ -101,6 +102,9 @@ def _good_manifest() -> dict[str, object]:
                 "kind": "agent",
                 "manifest_ref": "org:c/w@1",
                 "tools": ["graph-ingest"],
+                "tool_rationale": {
+                    "graph-ingest": "persists the written summary to the team's graph"
+                },
                 "depends_on": ["researcher"],
                 "outputs_schema": {"required": ["summary"]},  # #697
             },

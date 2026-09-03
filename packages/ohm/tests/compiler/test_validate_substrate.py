@@ -39,6 +39,7 @@ def _draft(tools: list[str], role: str = "editor") -> dict:
                 "manifest_ref": "org:compiled/researcher@1",
                 "subgoal": "gather the evidence",
                 "tools": ["web-research"],
+                "tool_rationale": {"web-research": "needs web-research to gather evidence"},  # #718
                 "depends_on": [],
                 "outputs_schema": {"required": ["summary"]},  # #697
             },
@@ -48,6 +49,7 @@ def _draft(tools: list[str], role: str = "editor") -> dict:
                 "manifest_ref": f"org:compiled/{role}@1",
                 "subgoal": "write the assessment",
                 "tools": tools,
+                "tool_rationale": {t: f"needs {t} to write the assessment" for t in tools},  # #718
                 "depends_on": ["researcher"],
                 "outputs_schema": {"required": ["summary"]},  # #697
             },

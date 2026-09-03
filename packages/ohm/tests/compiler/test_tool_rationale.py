@@ -80,6 +80,29 @@ def test_a_stated_rationale_clears_this_check() -> None:
     assert v["would_block"] is False, v
 
 
+def test_a_rationale_keyed_by_the_slugged_form_still_clears_the_check() -> None:
+    # The catalog-membership check two lines above this one in validate_draft's loop already
+    # normalises `tool` through `_tool_slug` before comparing against the surveyed catalog (so
+    # "core/web-search@1.0.0" / "Web Search" / "web-search" all match one entry). The
+    # tool_rationale lookup must be normalised the SAME way: a repair pass can rewrite a member's
+    # raw tool spelling without touching tool_rationale's key, so a member holding
+    # tools=["Web-Search"] with tool_rationale keyed under the plain slugged form "web-search" is
+    # stating a reason for the SAME tool and must not be told it holds one unjustified.
+    draft = _draft(
+        [
+            _member(
+                "researcher",
+                tools=["Web-Search"],
+                tool_rationale={"web-search": "needs live results to answer the objective"},
+            ),
+            _member("writer", depends_on=["researcher"]),
+        ]
+    )
+    v = validate_draft(draft, _CATALOG, owner_organization_id=_ORG)
+    assert not any("F-TOOL-UNJUSTIFIED" in b for b in v["blocking"]), v["blocking"]
+    assert v["would_block"] is False, v
+
+
 def test_a_blank_rationale_still_blocks() -> None:
     # the check is .strip()-based — whitespace is not a reason
     draft = _draft(

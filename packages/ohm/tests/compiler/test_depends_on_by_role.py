@@ -33,6 +33,7 @@ def _member(role: str, **over: object) -> dict:
         "manifest_ref": f"org:x/{role}@1",
         "subgoal": f"do {role}",
         "tools": ["web-search"],
+        "tool_rationale": {"web-search": "needs live results to answer the objective"},  # #718
         "depends_on": [],
         "outputs_schema": {"required": ["summary"]},
     }

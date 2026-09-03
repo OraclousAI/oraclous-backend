@@ -162,6 +162,11 @@ class OHMMember(BaseModel):
     kind: Literal["agent", "human"]
     manifest_ref: str | None = None  # the sub-harness OHM (kind: agent)
     tools: list[str] = Field(default_factory=list)  # capability ceiling (ADR-032); deny-by-default
+    # #718: tool -> why THIS member needs it, a SIBLING of tools[] (never nested into it). The
+    # drafter states this alongside tools; the reviewer's F-TOOL-UNJUSTIFIED gate blocks a member
+    # holding a tool with no non-blank entry here. Defaults to {} — a pre-#718 draft / a hand-edited
+    # member still validates.
+    tool_rationale: dict[str, str] = Field(default_factory=dict)
     subgoal: str | None = None
     # #577: the member's ## Handoff Next-task — the producer's scoped objective for its downstream.
     # The acyclic dispatch threads it into each consumer's objective_slice (mirroring the loop's

@@ -1,7 +1,8 @@
 """The Harness Compiler (E10 / ADR-047): a prose objective → a schema-valid OHM v1.1 Team Harness,
-built AS a Team Harness (planner → capability-surveyor → manifest-drafter → reviewer). The
-greenfield surface is the prose front door + the four member sub-harness bodies + the prose→team
-lowering — everything below (the assembler, the dry-run validator, run_team) is shipped and reused.
+built AS a Team Harness (planner → manifest-drafter → reviewer — #709 deleted the
+capability-surveyor step). The greenfield surface is the prose front door + the three member
+sub-harness bodies + the prose→team lowering — everything below (the assembler, the dry-run
+validator, run_team) is shipped and reused.
 
 ``validate_draft`` is the reviewer's capability-absence GATE: it diffs the drafted tools[] against
 the surveyed catalog and runs the SAME ``assemble_and_report`` dry-run the importer uses — one

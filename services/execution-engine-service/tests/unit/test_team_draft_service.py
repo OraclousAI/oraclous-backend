@@ -639,6 +639,9 @@ async def test_from_run_grants_each_member_its_declared_tools_as_capabilities() 
                 "outputs_schema": {"required": ["summary"]},  # #697
                 "subgoal": "fetch the diff",
                 "tools": [_GRANTED_TOOL],
+                "tool_rationale": {
+                    _GRANTED_TOOL: f"needs {_GRANTED_TOOL} to fetch the diff"
+                },  # #718
             },
             {
                 "role": "writer",
@@ -693,6 +696,10 @@ async def test_the_synthesized_grant_stays_within_the_member_ceiling() -> None:
                 "outputs_schema": {"required": ["summary"]},  # #697
                 "subgoal": "fetch the diff",
                 "tools": [_GRANTED_TOOL, _OTHER_TOOL],
+                "tool_rationale": {  # #718
+                    _GRANTED_TOOL: f"needs {_GRANTED_TOOL} to fetch the diff",
+                    _OTHER_TOOL: f"needs {_OTHER_TOOL} to fetch the diff",
+                },
             }
         ],
     )
@@ -717,6 +724,9 @@ async def test_a_sub_harness_widened_past_the_member_ceiling_is_still_rejected()
                 "outputs_schema": {"required": ["summary"]},  # #697
                 "subgoal": "fetch the diff",
                 "tools": [_GRANTED_TOOL],
+                "tool_rationale": {
+                    _GRANTED_TOOL: f"needs {_GRANTED_TOOL} to fetch the diff"
+                },  # #718
             }
         ],
     )
@@ -746,6 +756,9 @@ async def test_a_granted_tool_resolves_into_a_dispatchable_capability() -> None:
                 "outputs_schema": {"required": ["summary"]},  # #697
                 "subgoal": "fetch the diff",
                 "tools": [_GRANTED_TOOL],
+                "tool_rationale": {
+                    _GRANTED_TOOL: f"needs {_GRANTED_TOOL} to fetch the diff"
+                },  # #718
             }
         ],
     )
@@ -786,6 +799,9 @@ async def test_run_0fc1f7f1_shape_does_not_compile_to_an_empty_capability_set() 
                 "outputs_schema": {"required": ["summary"]},  # #697
                 "subgoal": "fetch the pull request diff",
                 "tools": [_GRANTED_TOOL],
+                "tool_rationale": {
+                    _GRANTED_TOOL: f"needs {_GRANTED_TOOL} to fetch the diff"
+                },  # #718
             },
             *reviewers,
         ],

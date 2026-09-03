@@ -28,6 +28,7 @@ def _draft(tool: str) -> dict:
                 "kind": "agent",
                 "manifest_ref": "org:x/r@1",
                 "tools": [tool],
+                "tool_rationale": {tool: f"needs {tool} to cover this sub-goal"},  # #718
                 "outputs_schema": {"required": ["summary"]},
             },
             {

@@ -41,6 +41,6 @@ def test_the_existing_rules_are_untouched() -> None:
     """
     text = DRAFTER_PROMPT
     assert "task_input" in text
-    assert "surveyor listed" in text
+    assert "the surveyed catalog listed" in text  # #709 dropped the dead surveyor step
     assert "ACYCLIC" in text
     assert "GOVERNED-BY-DEFAULT" in text

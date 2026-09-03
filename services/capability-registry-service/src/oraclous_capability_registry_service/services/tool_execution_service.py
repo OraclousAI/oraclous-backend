@@ -13,6 +13,9 @@ import uuid
 from typing import Any, cast
 
 from oraclous_capability_registry_service.domain.connectors.github_sink import GitHubSinkConnector
+from oraclous_capability_registry_service.domain.connectors.manifest_refine import (
+    ManifestRefineConnector,
+)
 from oraclous_capability_registry_service.domain.connectors.manifest_validate import (
     ManifestValidateConnector,
 )
@@ -198,6 +201,9 @@ class ToolExecutionService:
                 # #705: the compile gate's allowed set is READ from the org's registry, never
                 # relayed by the reviewer LLM. Same shape as the sink above — the connector stays a
                 # domain object and the services layer owns the DB repo.
+                executor.capability_repo = self._capabilities
+            if isinstance(executor, ManifestRefineConnector):
+                # #708: the identical fix for the refine gate — same reasoning as #705 above.
                 executor.capability_repo = self._capabilities
             result = await executor.execute(body.input_data, context)
         except NoExecutorError as exc:  # defensive — has_executor already gated this

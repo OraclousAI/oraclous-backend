@@ -821,7 +821,7 @@ class ManifestRefinePlugin(_ConnectorToolPlugin):
         {
             "name": "refine_manifest",
             "description": "Apply one typed structural op to a team manifest, re-validated.",
-            "parameters": {"manifest": "object", "edit_op": "object", "catalog": "array"},
+            "parameters": {"manifest": "object", "edit_op": "object"},
             # our own edited manifest — no independent existence
             "result_kind": "status",
         },
@@ -838,10 +838,6 @@ class ManifestRefinePlugin(_ConnectorToolPlugin):
             "edit_op": {
                 "type": ["object", "string"],
                 "description": "ONE typed refine op (add_member/set_fan_out/change_kind/...)",
-            },
-            "catalog": {
-                "type": ["array", "object"],
-                "description": "the surveyed tool catalog (the ceiling a refine may draw from)",
             },
         },
     }
