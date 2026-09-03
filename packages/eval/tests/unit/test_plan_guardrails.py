@@ -44,8 +44,18 @@ def _draft(members: list[dict[str, object]], **top: object) -> dict[str, object]
 
 _GOOD = _draft(
     [
-        _member("researcher", [], tools=["web-research"]),
-        _member("writer", ["researcher"], tools=["graph-ingest"]),
+        _member(
+            "researcher",
+            [],
+            tools=["web-research"],
+            tool_rationale={"web-research": "needs live sources to research the topic"},
+        ),
+        _member(
+            "writer",
+            ["researcher"],
+            tools=["graph-ingest"],
+            tool_rationale={"graph-ingest": "persists the written summary to the team's graph"},
+        ),
     ],
     budget={"max_tokens_total": 500_000, "max_tokens_per_member": 100_000},
 )
@@ -125,7 +135,15 @@ def test_a_member_tool_call_cap_above_the_pool_blocks() -> None:
 
 def test_a_member_cap_equal_to_the_pool_is_allowed() -> None:
     draft = _draft(
-        [_member("ok", [], tools=["graph-ingest"], max_tokens=1_000_000)],
+        [
+            _member(
+                "ok",
+                [],
+                tools=["graph-ingest"],
+                max_tokens=1_000_000,
+                tool_rationale={"graph-ingest": "persists this member's output to the graph"},
+            )
+        ],
         budget={"max_tokens_total": 1_000_000},
     )
     report = _run(draft)
