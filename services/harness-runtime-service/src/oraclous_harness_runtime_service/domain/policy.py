@@ -130,7 +130,18 @@ _MAX_REDACT_PATTERN_LEN = 200
 
 
 def _registry_of(ref: str) -> str:
-    """``core/echo@1`` → ``core``; ``org:<id>/x@1`` → ``org:<id>`` (lowercased)."""
+    """``core/echo@1`` → ``core``; ``org:<id>/x@1`` → ``org:<id>`` (lowercased).
+
+    Deliberately NOT one of #731's collapsed slug copies, and must never hyphenate: this is
+    matched against ``allowed_registries`` globs like ``"org:*"``. Repointing it at
+    ``oraclous_ohm._slug.basic_slug`` would turn ``org:<uuid>`` into ``org-<uuid>``, which that
+    glob no longer matches — every org-imported capability would fail-CLOSED against a policy that
+    means to allow it today, and read the other way, is exactly the shape of bug that could let a
+    hyphen-disguised registry slip PAST a narrower allow-list glob tomorrow. A concrete case:
+    ``".core/x@1"`` is correctly refused by a strict policy today and would wrongly resolve to
+    ``core`` if this were hyphenated. Pinned as un-hyphenated by
+    ``test_policy.py::test_registry_of_head_is_not_hyphenated_so_the_allow_list_still_matches``.
+    """
     return ref.split("/", 1)[0].strip().lower()
 
 
