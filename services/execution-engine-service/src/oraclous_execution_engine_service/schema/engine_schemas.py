@@ -667,10 +667,12 @@ class TeamDraftFromRunRequest(BaseModel):
 
 
 class RefineTeamDraftRequest(BaseModel):
-    """Apply ONE typed refine op (#595 vocabulary: add_member | set_fan_out | change_kind |
-    add_depends_on) to a draft via ``apply_refine`` — preserve-the-rest guaranteed server-side. A
-    blocked op (e.g. an unsurveyed tool) returns ``applied: false`` with the draft untouched.
-    ``dry_run`` validates without persisting (the preview path refine-nl hands back to)."""
+    """Apply ONE typed refine op (#595/#750 vocabulary: add_member | set_fan_out | change_kind |
+    add_depends_on | set_tools | remove_member) to a draft via ``apply_refine`` — preserve-the-rest
+    guaranteed server-side. A blocked op (e.g. an unsurveyed tool, or a remove_member that would
+    orphan a dependant / the entrypoint / a loop member) returns ``applied: false`` with the draft
+    untouched. ``dry_run`` validates without persisting (the preview path refine-nl hands back
+    to)."""
 
     edit_op: dict[str, Any]
     dry_run: bool = False
