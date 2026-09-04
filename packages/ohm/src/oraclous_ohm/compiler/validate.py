@@ -46,6 +46,9 @@ Substrate = Literal["graph", "file"]
 #: supported (renders today) + reserved (declared, refused at THIS gate, never at run time).
 _SUPPORTED_DELIVERABLE_FORMATS = {"markdown", "text"}
 _RESERVED_DELIVERABLE_FORMATS = {"pdf", "docx", "html"}
+#: How much of a rejected value the refusal message may quote back. Every accepted value is at most
+#: eight characters, so a bad one only has to be identifiable, never reproduced.
+_MAX_SHOWN_FORMAT = 40
 
 #: The membership set lives in the ``_slug`` leaf, beside the normaliser that compares against it.
 #: Under the graph substrate the catalog no longer offers these (``compiler_onramp.draft_catalog``),
@@ -92,13 +95,19 @@ def _deliverable_format_flag(role: str, value: str) -> ImportFlag | None:
     if value in _SUPPORTED_DELIVERABLE_FORMATS:
         return None
     subject = f"member {role!r}" if role else "the team"
+    # The team-level value arrives from the raw draft dict, so a caller can put an arbitrary object
+    # here and it reaches this message as its repr. Echoing that back unbounded would put a slab of
+    # somebody's manifest into an error string that is logged and shown — the class of thing
+    # CLAUDE.md §11 forbids. A recognised value is at most eight characters, so a bad one only needs
+    # to be identifiable, never reproduced.
+    shown = value if len(value) <= _MAX_SHOWN_FORMAT else f"{value[:_MAX_SHOWN_FORMAT]}…"
     if value in _RESERVED_DELIVERABLE_FORMATS:
         return ImportFlag(
             code="F-DELIVERABLE-FORMAT-RESERVED",
             severity="blocking",
             member_role=role,
             message=(
-                f"{subject} declares deliverable_format {value!r}, which is a reserved format —"
+                f"{subject} declares deliverable_format {shown!r}, which is a reserved format —"
                 " not supported yet, no renderer exists for it. Use 'markdown' or 'text' today."
             ),
         )
@@ -107,7 +116,7 @@ def _deliverable_format_flag(role: str, value: str) -> ImportFlag | None:
         severity="blocking",
         member_role=role,
         message=(
-            f"{subject} declares deliverable_format {value!r}, which is not a recognised value."
+            f"{subject} declares deliverable_format {shown!r}, which is not a recognised value."
             " Use 'markdown' or 'text' (or one of the reserved names 'pdf'/'docx'/'html', not"
             " yet supported)."
         ),
