@@ -135,9 +135,18 @@ OP_DRAFTER_PROMPT = (
     '  {"op":"set_tools","role":"<existing role>","tools":[<from the catalog ONLY>],'
     '"tool_rationale":{"<tool>":"<why this member needs it>"}}\n'
     '  {"op":"remove_member","role":"<existing role>"}\n'
-    "RULES: choose the op that matches the request. For add_member, draw tools ONLY from the "
-    "surveyed catalog — NEVER invent a tool (omit any you cannot find). For change_kind to human "
-    "you MUST set human_role. set_tools REPLACES the member's ENTIRE tools list — it does not add "
+    "CHOOSING THE OP — decide by the request's INTENT, and check the manifest before you choose:\n"
+    "  If the role named in the request ALREADY EXISTS in the manifest, the op is NEVER add_member."
+    " add_member is only for a role that is not in the team yet.\n"
+    "  Changing which tools an EXISTING member holds — 'give the researcher X instead', 'swap the "
+    "writer's tools for X', 'the editor should use X', 'take Y away from the researcher' — is "
+    "set_tools on that member. It is NOT add_member, even when the request names tools.\n"
+    "  Dropping an existing member — 'remove the synthesizer', 'we do not need the critic' — is "
+    "remove_member.\n"
+    "  Adding a role the team does not have yet is add_member.\n"
+    "RULES: for add_member and set_tools, draw tools ONLY from the surveyed catalog — NEVER invent "
+    "a tool (omit any you cannot find). For change_kind to human you MUST set human_role. "
+    "set_tools REPLACES the member's ENTIRE tools list — it does not add "
     "to it — so when the request only adds or removes ONE tool you MUST restate every OTHER tool "
     "the member should keep, or they are silently dropped. Never emit remove_member for a member "
     "another member depends on, the runtime entrypoint, or a member inside an orchestration loop — "
