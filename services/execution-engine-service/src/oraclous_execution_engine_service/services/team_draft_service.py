@@ -540,8 +540,12 @@ class TeamDraftService:
         #                 it, and the Reviewer re-read the PR's comments to 219,124 tokens;
         #   governance  — the team ships with no policy set and no redact patterns, against #596's
         #                 governed-by-default promise. The quietest of the three, and the worst;
-        #   orchestration — the drafted style / success_criteria (the #477 flow gate) is lost.
+        #   orchestration — the drafted style / success_criteria (the #477 flow gate) is lost;
+        #   deliverable_format (#730) — the team's declared form (what the USER receives, never a
+        #                 member's) is dropped the same way; the gate above already refused a
+        #                 reserved/unknown value, so only a supported value or None reaches here.
         # The gate above already ran, so a malformed block never reaches this line.
+        raw_deliverable_format = compiled.get("deliverable_format")
         result = assemble_and_report(
             draft_name,
             members,
@@ -551,6 +555,9 @@ class TeamDraftService:
             governance=compiled.get("governance"),
             budget=compiled.get("budget"),
             orchestration=_maybe_orchestration(compiled.get("orchestration")),
+            deliverable_format=(
+                raw_deliverable_format if isinstance(raw_deliverable_format, str) else None
+            ),
         )
         if result.manifest is None:  # defensive — the gate above already proved assemblable
             raise TeamRunError(
