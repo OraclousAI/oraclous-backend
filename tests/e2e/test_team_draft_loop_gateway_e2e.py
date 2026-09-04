@@ -197,6 +197,52 @@ def test_draft_store_crud_verdict_and_typed_refine_through_the_gateway(
     assert c.get(f"/v1/engine/team-drafts/{draft['id']}").status_code == 404
 
 
+def test_deliverable_format_is_declared_and_a_reserved_value_is_refused_through_the_gateway(
+    register: Callable[..., dict], gateway_client: Callable[[str], httpx.Client]
+) -> None:
+    """#730 (knowledge PR 101, §DELIV): the team's declared deliverable FORM is a manifest field,
+    stated once — never inferred from what a member happens to type. ``markdown`` is supported and
+    reads back unchanged; ``pdf`` is a member of the SAME accepted value set but reserved — refused
+    with a reason that says NOT-SUPPORTED-YET, never UNRECOGNISED (which reads as a misspelling
+    that is not there). Matches the store's existing convention (``F-SUBSTRATE-FILE``,
+    ``F-CAPABILITY-MISSING``): a draft PERSISTS regardless, blocked, so the loop can heal it."""
+    user = register(f"deliv{uuid.uuid4().hex[:10]} u")
+    c = gateway_client(user["token"])
+    org = user["org_id"]
+
+    manifest = _team(org, [_agent("researcher")])
+    manifest["deliverable_format"] = "markdown"
+    created = c.post(
+        "/v1/engine/team-drafts",
+        json={"name": "markdown team", "manifest": manifest, "sub_harnesses": {}},
+    )
+    assert created.status_code == 201, created.text
+    body = created.json()
+    assert body["would_block"] is False and body["blocking"] == []
+    draft_id = body["draft"]["id"]
+    assert body["draft"]["manifest"]["deliverable_format"] == "markdown"
+
+    # GET reads the declared form back unchanged
+    fetched = c.get(f"/v1/engine/team-drafts/{draft_id}")
+    assert fetched.status_code == 200
+    assert fetched.json()["draft"]["manifest"]["deliverable_format"] == "markdown"
+
+    # pdf is ACCEPTED (a member of the value set) but RESERVED — refused, never "unrecognised"
+    pdf_manifest = _team(org, [_agent("researcher")])
+    pdf_manifest["deliverable_format"] = "pdf"
+    blocked = c.post(
+        "/v1/engine/team-drafts",
+        json={"name": "pdf team", "manifest": pdf_manifest, "sub_harnesses": {}},
+    )
+    assert blocked.status_code == 201, blocked.text  # persists regardless — drafts are drafts
+    blocked_body = blocked.json()
+    assert blocked_body["would_block"] is True
+    assert any("F-DELIVERABLE-FORMAT-RESERVED" in b for b in blocked_body["blocking"])
+    reason = next(b for b in blocked_body["blocking"] if "F-DELIVERABLE-FORMAT-RESERVED" in b)
+    assert "not supported" in reason.lower() or "reserved" in reason.lower()
+    assert "unrecognised" not in reason.lower() and "unrecognized" not in reason.lower()
+
+
 def test_from_run_ineligible_runs_are_curated_422s(
     register: Callable[..., dict], gateway_client: Callable[[str], httpx.Client]
 ) -> None:
