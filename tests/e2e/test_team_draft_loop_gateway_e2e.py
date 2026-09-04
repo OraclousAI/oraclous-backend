@@ -325,6 +325,129 @@ def test_team_run_read_carries_graph_id_and_team_name_through_the_gateway(
     assert "manifest" not in read  # the raw manifest is never carried on the read
 
 
+def test_the_7da988bf_shape_is_corrected_through_the_refine_endpoint_alone(
+    register: Callable[..., dict], gateway_client: Callable[[str], httpx.Client]
+) -> None:
+    """#750 — regression for the observed 7da988bf shape: four researchers correctly declaring
+    ``federated-search`` + ``knowledge-retriever``, a synthesizer wrongly declaring the FILE
+    substrate (``write``/``read``) and depending on all four. Before #750 there was no way to
+    correct this through the refine endpoint at all — ``set_tools``/``remove_member`` did not
+    exist. Deterministic and keyless: only real, seeded connectors (federated-search,
+    knowledge-retriever) and the deterministic apply gate, no LLM.
+
+    NOTE on ordering: ``apply_refine`` re-validates the WHOLE patched manifest on every op (the
+    capability-absence/substrate scan runs over every member, not just the one the op names) — an
+    existing, unchanged mechanic every op already shared, not something #750 introduces. So while
+    the synthesizer's file tools remain unresolved, EVERY refine on this draft stays blocked, not
+    only ones that touch the synthesizer. The correction therefore clears the synthesizer FIRST
+    (removed, never repaired: the same manifest.metadata.name has real synthesis tools nowhere in
+    the seed catalog for this shape) and only then narrows a clean member's tools — the sequence
+    below is ordered to match that mechanic, not a re-design of #750's ruled semantics.
+    """
+    user = register(f"loop7da{uuid.uuid4().hex[:10]} u")
+    c = gateway_client(user["token"])
+    org = user["org_id"]
+
+    researchers = [
+        _agent(f"researcher-{i}", tools=["federated-search", "knowledge-retriever"])
+        for i in range(1, 5)
+    ]
+    synthesizer = _agent(
+        "synthesizer", deps=[r["role"] for r in researchers], tools=["write", "read"]
+    )
+    manifest = _team(org, [*researchers, synthesizer])
+
+    # a) CREATE — persists regardless (drafts are drafts), but blocked: the synthesizer's file
+    # tools under the graph default (validate_draft's existing F-SUBSTRATE-FILE gate).
+    created = c.post(
+        "/v1/engine/team-drafts",
+        json={"name": "7da988bf shape", "manifest": manifest, "sub_harnesses": {}},
+    )
+    assert created.status_code == 201, created.text
+    body = created.json()
+    assert body["would_block"] is True
+    draft_id = body["draft"]["id"]
+
+    # b) set_tools synthesizer -> write/read AGAIN — the new substrate-aware gate refuses a
+    # set_tools op that (re-)declares a file tool exactly like a create/add_member would.
+    still_blocked = c.post(
+        f"/v1/engine/team-drafts/{draft_id}/refine",
+        json={"edit_op": {"op": "set_tools", "role": "synthesizer", "tools": ["write", "read"]}},
+    )
+    assert still_blocked.status_code == 200, still_blocked.text
+    still_verdict = still_blocked.json()
+    assert still_verdict["applied"] is False and still_verdict["would_block"] is True
+    assert any("F-SUBSTRATE-FILE" in b for b in still_verdict["blocking"])
+    assert still_verdict["draft"]["version"] == 1  # unchanged
+
+    # c) remove_member researcher-4 -> refused, names the synthesizer (still a dependant)
+    blocked_removal = c.post(
+        f"/v1/engine/team-drafts/{draft_id}/refine",
+        json={"edit_op": {"op": "remove_member", "role": "researcher-4"}},
+    )
+    assert blocked_removal.status_code == 200, blocked_removal.text
+    removal_verdict = blocked_removal.json()
+    assert removal_verdict["applied"] is False
+    assert any(
+        "F-REFINE-MEMBER-DEPENDED-ON" in b and "synthesizer" in b
+        for b in removal_verdict["blocking"]
+    )
+    assert removal_verdict["draft"]["version"] == 1  # unchanged
+
+    # ...then remove_member synthesizer -> applied. This is the op that clears the ONLY blocking
+    # issue in the whole draft, so it is also the first op in this sequence to actually land.
+    removed_synth = c.post(
+        f"/v1/engine/team-drafts/{draft_id}/refine",
+        json={"edit_op": {"op": "remove_member", "role": "synthesizer"}},
+    )
+    assert removed_synth.status_code == 200, removed_synth.text
+    removed_outcome = removed_synth.json()
+    assert removed_outcome["applied"] is True, removed_outcome
+    assert removed_outcome["would_block"] is False, removed_outcome  # the draft is clean now
+    assert removed_outcome["draft"]["version"] == 2
+    roles_after_removal = {m["role"] for m in removed_outcome["draft"]["manifest"]["members"]}
+    assert roles_after_removal == {"researcher-1", "researcher-2", "researcher-3", "researcher-4"}
+
+    # d) set_tools researcher-1 -> a narrower real toolset — NOW applies (the draft is clean),
+    # version bumps, every OTHER member's declared shape is untouched (preserve-the-rest).
+    before_members = {m["role"]: m for m in removed_outcome["draft"]["manifest"]["members"]}
+    applied = c.post(
+        f"/v1/engine/team-drafts/{draft_id}/refine",
+        json={
+            "edit_op": {"op": "set_tools", "role": "researcher-1", "tools": ["federated-search"]}
+        },
+    )
+    assert applied.status_code == 200, applied.text
+    outcome = applied.json()
+    assert outcome["applied"] is True, outcome
+    assert outcome["draft"]["version"] == 3
+    after_members = {m["role"]: m for m in outcome["draft"]["manifest"]["members"]}
+    assert after_members["researcher-1"]["tools"] == ["federated-search"]
+    for role in ("researcher-2", "researcher-3", "researcher-4"):
+        assert after_members[role]["tools"] == before_members[role]["tools"]
+        assert after_members[role]["depends_on"] == before_members[role]["depends_on"]
+
+    # e) remove_member researcher-1 (the entrypoint) -> refused with the entrypoint reason
+    blocked_entrypoint = c.post(
+        f"/v1/engine/team-drafts/{draft_id}/refine",
+        json={"edit_op": {"op": "remove_member", "role": "researcher-1"}},
+    )
+    assert blocked_entrypoint.status_code == 200, blocked_entrypoint.text
+    entry_verdict = blocked_entrypoint.json()
+    assert entry_verdict["applied"] is False
+    assert any("F-REFINE-ENTRYPOINT" in b for b in entry_verdict["blocking"])
+    assert entry_verdict["draft"]["version"] == 3  # unchanged
+
+    # f) GET the draft -> 200, NOT 422 — the most valuable assertion in the file: nothing about
+    # this correction ever left the stored draft in the permanent-brick shape (#750's finding).
+    read = c.get(f"/v1/engine/team-drafts/{draft_id}")
+    assert read.status_code == 200, read.text
+
+    # g) final verdict no longer blocked — corrected entirely through the refine endpoint, no
+    # re-compile, no raw PUT of a hand-fixed manifest.
+    assert read.json()["would_block"] is False, read.json()
+
+
 # ── the full loop (real BYOM LLM through the gateway — rule 8) ────────────────
 
 
@@ -416,7 +539,14 @@ def test_the_whole_loop_compile_draft_refine_go_through_the_gateway(
     )
     assert preview["applied"] is False  # a preview never mutates
     op = preview["op"]
-    assert op.get("op") in {"add_member", "set_fan_out", "change_kind", "add_depends_on"}, op
+    assert op.get("op") in {
+        "add_member",
+        "set_fan_out",
+        "change_kind",
+        "add_depends_on",
+        "set_tools",
+        "remove_member",
+    }, op
 
     # 5) REFINE — the previewed op applies deterministically; version bumps
     version_before = c.get(f"/v1/engine/team-drafts/{draft['id']}").json()["draft"]["version"]

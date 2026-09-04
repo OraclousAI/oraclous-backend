@@ -29,7 +29,8 @@ pytestmark = [pytest.mark.e2e, pytest.mark.integration, pytest.mark.byom]
 _OR_KEY = os.environ.get("OPENROUTER_API_KEY")
 requires_byom = pytest.mark.skipif(_OR_KEY is None, reason="OPENROUTER_API_KEY unset (real BYOM)")
 _MODEL = "openrouter/openai/gpt-4o-mini"
-_CATALOG = ["web-research", "send-to-drafts"]  # the surveyed catalog (real registered tools)
+# the surveyed catalog (real registered tools). "graph-ingest" (#750) backs the set_tools NL edit.
+_CATALOG = ["web-research", "send-to-drafts", "graph-ingest"]
 
 
 def _model(cred_id: str) -> dict:
@@ -192,6 +193,43 @@ def test_an_nl_edit_refines_the_team_preserving_the_rest(
     assert new_roles, f"a new member was added — {sorted(patched)}"
     # (c) PRESERVE-THE-REST: every pre-existing member is byte-identical
     for role, member in before.items():
+        assert patched[role] == member, f"member {role!r} was NOT preserved byte-identical"
+
+
+@requires_byom
+def test_an_nl_edit_swaps_a_members_tools_through_the_op_drafter(
+    register: Callable[..., dict], gateway_client: Callable[[str], httpx.Client]
+) -> None:
+    """#750 — "give the researcher web-research and graph-ingest instead" must drive the op-drafter
+    to emit ``{"op": "set_tools", ...}`` (not a fifth-shape hallucination, and never a whole
+    re-drafted manifest), which then applies through the SAME deterministic connector as the other
+    five ops — the delta lands on the named member only, every other member byte-identical.
+    """
+    user = register(f"settools{uuid.uuid4().hex[:10]} u")
+    c = gateway_client(user["token"])
+    cred = _cred(c, user)
+    org = uuid.UUID(user["org_id"])
+    from oraclous_ohm.parse import load_ohm
+
+    manifest = _compiled_manifest(org)
+    before = {m.role: m.model_dump(mode="json") for m in load_ohm(manifest).members}
+
+    op = _draft_op(
+        c, org, manifest, "give the researcher web-research and graph-ingest instead", cred
+    )
+    assert op.get("op") == "set_tools", f"the drafter must emit set_tools for a tool swap — {op}"
+    changed_role = op.get("role")
+    assert changed_role in before, op
+
+    out = _apply(c, manifest, op)
+    assert out["would_block"] is False and out["applied"] is True, out
+    patched = {m["role"]: m for m in out["manifest"]["members"]}
+    # (a) the delta landed: the named member's tools were REPLACED with the drafted set
+    assert set(patched[changed_role]["tools"]) == set(op.get("tools", []))
+    # (b) PRESERVE-THE-REST: every OTHER pre-existing member is byte-identical
+    for role, member in before.items():
+        if role == changed_role:
+            continue
         assert patched[role] == member, f"member {role!r} was NOT preserved byte-identical"
 
 

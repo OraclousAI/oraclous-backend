@@ -199,6 +199,26 @@ class _FakeTeamRuns:
         return row
 
 
+class _FakeRegistryForRefine:
+    """#750's minimal registry seam — just enough to prove set_tools NARROWS a filed agent's
+    capability grant and remove_member does NOT delete the filed row (ADR-050)."""
+
+    def __init__(self) -> None:
+        self.filed: dict[uuid.UUID, dict[str, Any]] = {}
+
+    async def list_capability_rows(self) -> list[dict[str, str]]:
+        return [{"name": n, "description": ""} for n in ("webfetch", "websearch")]
+
+    async def list_capabilities(self) -> list[str]:
+        return [r["name"] for r in await self.list_capability_rows()]
+
+    async def upsert_harness(
+        self, descriptor: dict[str, Any], *, descriptor_id: uuid.UUID
+    ) -> uuid.UUID:
+        self.filed[descriptor_id] = descriptor
+        return descriptor_id
+
+
 def _service(
     repo: _FakeDraftRepo | None = None, team_runs: _FakeTeamRuns | None = None
 ) -> tuple[TeamDraftService, _FakeDraftRepo, _FakeTeamRuns]:
@@ -460,6 +480,157 @@ async def test_refine_malformed_op_is_a_422() -> None:
     with pytest.raises(TeamRunError) as exc:
         await svc.refine(row.id, _principal(), edit_op={"op": "explode_the_team"})
     assert exc.value.status_code == 422
+
+
+# ── refine: #750 set_tools / remove_member ────────────────────────────────────
+
+
+async def test_refine_set_tools_applies_and_bumps_version() -> None:
+    svc, _repo, _ = _service()
+    row, _ = await svc.create(
+        _principal(),
+        name="d",
+        manifest=_team([_member("a", tools=[_GRANTED_TOOL])]),
+        sub_harnesses={},
+    )
+    outcome = await svc.refine(
+        row.id,
+        _principal(),
+        edit_op={"op": "set_tools", "role": "a", "tools": [_OTHER_TOOL]},
+    )
+    assert isinstance(outcome, RefineOutcome)
+    assert outcome.applied is True and outcome.verdict.would_block is False
+    assert outcome.row.version == 2
+    tools = next(m["tools"] for m in outcome.row.manifest["members"] if m["role"] == "a")
+    assert tools == [_OTHER_TOOL]
+
+
+async def test_refine_set_tools_narrows_the_filed_agents_capability_grant() -> None:
+    # AC1 on the set_tools side: the re-filed sub-harness capabilities[] SHRINKS to the new tool
+    # set, and it does so under the SAME agent id (a refine refreshes, never mints a duplicate).
+    registry = _FakeRegistryForRefine()
+    repo = _FakeDraftRepo()
+    svc = TeamDraftService(
+        drafts=repo,  # type: ignore[arg-type]
+        team_runs=_FakeTeamRuns(),  # type: ignore[arg-type]
+        registry=registry,  # type: ignore[arg-type]
+    )
+    row, _ = await svc.create(
+        _principal(),
+        name="d",
+        manifest=_team([_member("a", tools=[_GRANTED_TOOL, _OTHER_TOOL])]),
+        sub_harnesses={},
+    )
+    before_id = uuid.UUID(
+        next(m["manifest_ref"] for m in row.manifest["members"] if m["role"] == "a")
+    )
+    assert set(_bindings(registry.filed[before_id])) == {_GRANTED_TOOL, _OTHER_TOOL}
+
+    outcome = await svc.refine(
+        row.id,
+        _principal(),
+        edit_op={"op": "set_tools", "role": "a", "tools": [_GRANTED_TOOL]},
+    )
+    assert outcome.applied is True, outcome.verdict.blocking
+    after_id = uuid.UUID(
+        next(m["manifest_ref"] for m in outcome.row.manifest["members"] if m["role"] == "a")
+    )
+    assert after_id == before_id  # SAME agent id — refreshed, not a second one minted
+    assert _bindings(registry.filed[after_id]) == [_GRANTED_TOOL]  # narrowed
+
+
+async def test_refine_remove_member_drops_the_members_sub_harness_entry() -> None:
+    # the no-registry path: `_synthesize_subs` must PRUNE to the surviving declared roles, not
+    # merely fill in what is missing — else a removed member's stale body lingers forever.
+    svc, _repo, _ = _service()
+    row, _ = await svc.create(
+        _principal(),
+        name="d",
+        manifest=_team([_member("a"), _member("b", ["a"])]),
+        sub_harnesses={},
+    )
+    assert set(row.sub_harnesses) == {"a", "b"}
+    outcome = await svc.refine(row.id, _principal(), edit_op={"op": "remove_member", "role": "b"})
+    assert outcome.applied is True, outcome.verdict.blocking
+    assert set(outcome.row.sub_harnesses) == {"a"}
+    assert [m["role"] for m in outcome.row.manifest["members"]] == ["a"]
+
+
+async def test_refine_remove_member_leaves_the_filed_agent_in_the_library() -> None:
+    # ADR-050: the registry row for a removed member is NOT deleted — a deliberate choice, pinned
+    # here so a future "clean up on removal" change is a conscious decision, not a drive-by.
+    registry = _FakeRegistryForRefine()
+    repo = _FakeDraftRepo()
+    svc = TeamDraftService(
+        drafts=repo,  # type: ignore[arg-type]
+        team_runs=_FakeTeamRuns(),  # type: ignore[arg-type]
+        registry=registry,  # type: ignore[arg-type]
+    )
+    row, _ = await svc.create(
+        _principal(),
+        name="d",
+        manifest=_team([_member("a"), _member("b", ["a"])]),
+        sub_harnesses={},
+    )
+    removed_id = uuid.UUID(
+        next(m["manifest_ref"] for m in row.manifest["members"] if m["role"] == "b")
+    )
+    assert removed_id in registry.filed
+    outcome = await svc.refine(row.id, _principal(), edit_op={"op": "remove_member", "role": "b"})
+    assert outcome.applied is True, outcome.verdict.blocking
+    assert removed_id in registry.filed  # the agent SURVIVES in the library
+    assert "b" not in {m["role"] for m in outcome.row.manifest["members"]}
+
+
+async def test_refine_remove_member_with_a_dependant_leaves_the_draft_untouched() -> None:
+    svc, _repo, _ = _service()
+    row, _ = await svc.create(
+        _principal(),
+        name="d",
+        manifest=_team([_member("a"), _member("b", ["a"])]),
+        sub_harnesses={},
+    )
+    outcome = await svc.refine(row.id, _principal(), edit_op={"op": "remove_member", "role": "a"})
+    assert outcome.applied is False and outcome.verdict.would_block is True
+    assert outcome.row.version == 1
+    assert any("F-REFINE-MEMBER-DEPENDED-ON" in b and "b" in b for b in outcome.verdict.blocking)
+
+
+async def test_refine_remove_entrypoint_leaves_the_draft_readable() -> None:
+    # the permanent-brick regression, at the service seam: a refused entrypoint removal must never
+    # leave the stored draft in a shape a subsequent GET/refine 422s on forever.
+    svc, _repo, _ = _service()
+    row, _ = await svc.create(
+        _principal(),
+        name="d",
+        manifest=_team([_member("a"), _member("b", ["a"])]),  # "a" is the entrypoint
+        sub_harnesses={},
+    )
+    outcome = await svc.refine(row.id, _principal(), edit_op={"op": "remove_member", "role": "a"})
+    assert outcome.applied is False  # refused, never persisted broken
+    read_row, verdict = await svc.get(row.id, _principal())  # must NOT raise
+    assert read_row.version == 1
+    assert verdict.would_block is False
+
+
+async def test_refine_malformed_op_422_names_all_six_ops() -> None:
+    svc, _repo, _ = _service()
+    row, _ = await svc.create(
+        _principal(), name="d", manifest=_team([_member("a")]), sub_harnesses={}
+    )
+    with pytest.raises(TeamRunError) as exc:
+        await svc.refine(row.id, _principal(), edit_op={"op": "explode_the_team"})
+    assert exc.value.status_code == 422
+    detail = str(exc.value)
+    for op_name in (
+        "add_member",
+        "set_fan_out",
+        "change_kind",
+        "add_depends_on",
+        "set_tools",
+        "remove_member",
+    ):
+        assert op_name in detail, f"{op_name!r} missing from the invalid_edit_op message: {detail}"
 
 
 # ── refine-nl: draft (op-drafter run) → peel → same apply path ───────────────
