@@ -22,6 +22,7 @@ from oraclous_ohm.manifest import (
     OHMMember,
     OHMMetadata,
     OHMOrchestration,
+    OHMRunIf,
     OHMRuntime,
 )
 from pydantic import ValidationError
@@ -29,7 +30,9 @@ from pydantic import ValidationError
 pytestmark = pytest.mark.unit
 
 _ORG = uuid.UUID("87654321-4321-8765-4321-876543210000")
-_CATALOG = ["web-search"]  # the SURVEYED catalog — the ceiling a refine may draw from
+# the SURVEYED catalog — the ceiling a refine may draw from. A second entry (#750) lets
+# set_tools tests prove REPLACE, not merge: swap to a genuinely different surveyed tool.
+_CATALOG = ["web-search", "doc-search"]
 
 
 def _manifest() -> OHMManifest:
@@ -187,12 +190,19 @@ def test_add_member_duplicate_role_fails_closed() -> None:
 
 
 def test_parse_op_routes_the_discriminated_union() -> None:
+    # #750: SetTools and RemoveMember are new discriminated-union members, imported function-locally
+    # per the seam-import rule — the union does not carry them yet, so this hard-fails RED (an
+    # ImportError, or a ValidationError from the unrecognised "op" discriminator) until it does.
+    from oraclous_ohm.compiler.refine import RemoveMember, SetTools
+
     assert isinstance(parse_op({"op": "add_member", "role": "qa"}), AddMember)
     assert isinstance(parse_op({"op": "set_fan_out", "role": "r", "over": "$.x"}), SetFanOut)
     assert isinstance(parse_op({"op": "change_kind", "role": "e", "kind": "human"}), ChangeKind)
     assert isinstance(
         parse_op({"op": "add_depends_on", "role": "w", "depends_on": "r"}), AddDependsOn
     )
+    assert isinstance(parse_op({"op": "set_tools", "role": "r", "tools": ["web-search"]}), SetTools)
+    assert isinstance(parse_op({"op": "remove_member", "role": "r"}), RemoveMember)
 
 
 def test_parse_op_peels_prose_wrapped_json() -> None:
@@ -262,3 +272,298 @@ def test_change_kind_human_to_agent_clears_the_stale_human_role() -> None:
     assert res2.manifest is not None and res2.report.would_block is False
     ed = {x.role: x for x in res2.manifest.members}["editor"]
     assert ed.kind == "agent" and ed.human_role is None  # no stale human_role lingers
+
+
+# ── #750: set_tools — REPLACES the tools list wholesale, prunes tool_rationale ───────────────
+
+
+def test_set_tools_replaces_the_list_and_preserves_the_rest() -> None:
+    from oraclous_ohm.compiler.refine import SetTools
+
+    m = _manifest()
+    res = apply_refine(
+        m,
+        SetTools(role="writer", tools=["doc-search"]),
+        catalog=_CATALOG,
+        owner_organization_id=_ORG,
+    )
+    assert res.manifest is not None and res.report.would_block is False
+    writer = {x.role: x for x in res.manifest.members}["writer"]
+    assert writer.tools == ["doc-search"]
+    _assert_preserved(m, res.manifest, except_roles={"writer"})
+
+
+def test_set_tools_replaces_rather_than_merges() -> None:
+    # the member starts with ONE tool; the op sets a DIFFERENT one — a merge would keep both.
+    m = _manifest()
+    assert m.members[0].tools == ["web-search"]  # researcher's starting tool (the fixture)
+    from oraclous_ohm.compiler.refine import SetTools
+
+    res = apply_refine(
+        m,
+        SetTools(role="researcher", tools=["doc-search"]),
+        catalog=_CATALOG,
+        owner_organization_id=_ORG,
+    )
+    assert res.manifest is not None and res.report.would_block is False
+    researcher = {x.role: x for x in res.manifest.members}["researcher"]
+    assert researcher.tools == ["doc-search"]  # EXACTLY the op's list — "web-search" is gone
+
+
+def test_set_tools_to_empty_removes_every_tool() -> None:
+    from oraclous_ohm.compiler.refine import SetTools
+
+    m = _manifest()
+    res = apply_refine(
+        m, SetTools(role="researcher", tools=[]), catalog=_CATALOG, owner_organization_id=_ORG
+    )
+    assert res.manifest is not None and res.report.would_block is False
+    researcher = {x.role: x for x in res.manifest.members}["researcher"]
+    assert researcher.tools == []
+
+
+def test_set_tools_prunes_and_updates_the_tool_rationale() -> None:
+    from oraclous_ohm.compiler.refine import SetTools
+
+    m = _manifest()
+    by_role = {x.role: x for x in m.members}
+    by_role["researcher"].tool_rationale = {"web-search": "needed to gather background"}
+    res = apply_refine(
+        m,
+        SetTools(
+            role="researcher",
+            tools=["doc-search"],
+            tool_rationale={"doc-search": "needed to check prior documentation"},
+        ),
+        catalog=_CATALOG,
+        owner_organization_id=_ORG,
+    )
+    assert res.manifest is not None and res.report.would_block is False
+    researcher = {x.role: x for x in res.manifest.members}["researcher"]
+    assert researcher.tools == ["doc-search"]
+    # the stale "web-search" rationale entry is PRUNED — it no longer names a held tool
+    assert researcher.tool_rationale == {"doc-search": "needed to check prior documentation"}
+
+
+def test_set_tools_with_an_unsurveyed_tool_fails_closed() -> None:
+    from oraclous_ohm.compiler.refine import SetTools
+
+    m = _manifest()
+    res = apply_refine(
+        m,
+        SetTools(role="researcher", tools=["definitely-not-a-real-tool"]),
+        catalog=_CATALOG,
+        owner_organization_id=_ORG,
+    )
+    assert res.manifest is None and res.report.would_block is True
+    assert any("F-CAPABILITY-MISSING" in b for b in res.report.blocking)
+
+
+@pytest.mark.security
+def test_set_tools_cannot_escalate_capability() -> None:
+    # SECURITY: mirrors test_a_refine_cannot_escalate_capability for set_tools — an NL edit that
+    # tries to grant a send/publish/spend tool the surveyor never offered must NOT escalate
+    # capability. It blocks, and the caller's manifest is left UNMUTATED.
+    from oraclous_ohm.compiler.refine import SetTools
+
+    m = _manifest()
+    original_tools = list(m.members[0].tools)
+    assert m.members[0].role == "researcher"
+    res = apply_refine(
+        m,
+        SetTools(role="researcher", tools=["send-to-drafts"]),  # NOT surveyed
+        catalog=_CATALOG,
+        owner_organization_id=_ORG,
+    )
+    assert res.manifest is None and res.report.would_block is True
+    assert any("F-CAPABILITY-MISSING" in b for b in res.report.blocking)
+    # the original is untouched — researcher's tools were never escalated
+    assert m.members[0].tools == original_tools
+
+
+@pytest.mark.security
+def test_set_tools_on_an_unknown_member_fails_closed() -> None:
+    from oraclous_ohm.compiler.refine import SetTools
+
+    m = _manifest()
+    res = apply_refine(
+        m,
+        SetTools(role="ghost", tools=["web-search"]),
+        catalog=_CATALOG,
+        owner_organization_id=_ORG,
+    )
+    assert res.manifest is None and res.report.would_block is True
+    assert any("F-REFINE-UNKNOWN-MEMBER" in b for b in res.report.blocking)
+
+
+def test_set_tools_naming_a_file_tool_under_graph_substrate_blocks_with_substrate_reason() -> None:
+    # #750: apply_refine gains a keyword-only ``substrate`` param (default "graph"), matching
+    # validate_draft's existing signature. Calling it here — a NEW kwarg the current signature does
+    # not accept — hard-fails RED with a TypeError until the [impl] adds it.
+    from oraclous_ohm.compiler.refine import SetTools
+
+    m = _manifest()
+    res = apply_refine(
+        m,
+        SetTools(role="researcher", tools=["write"]),
+        catalog=_CATALOG,
+        owner_organization_id=_ORG,
+        substrate="graph",
+    )
+    assert res.manifest is None and res.report.would_block is True
+    assert any("F-SUBSTRATE-FILE" in b for b in res.report.blocking)
+    # the substrate reason takes PRECEDENCE — never also reported as a plain capability miss
+    assert not any("F-CAPABILITY-MISSING" in b for b in res.report.blocking)
+
+
+# ── #750: remove_member — refuses rather than orphans (dependant / entrypoint / loop) ────────
+
+
+def test_remove_member_deletes_it_and_preserves_the_rest() -> None:
+    from oraclous_ohm.compiler.refine import RemoveMember
+
+    m = _manifest()  # researcher (entrypoint) -> writer -> editor (a leaf, nobody depends on it)
+    res = apply_refine(m, RemoveMember(role="editor"), catalog=_CATALOG, owner_organization_id=_ORG)
+    assert res.manifest is not None and res.report.would_block is False
+    assert {x.role for x in res.manifest.members} == {"researcher", "writer"}
+    _assert_preserved(m, res.manifest, except_roles={"editor"})
+
+
+def test_remove_member_refuses_while_a_dependant_exists() -> None:
+    from oraclous_ohm.compiler.refine import RemoveMember
+
+    m = _manifest()  # editor depends_on=["writer"]
+    res = apply_refine(m, RemoveMember(role="writer"), catalog=_CATALOG, owner_organization_id=_ORG)
+    assert res.manifest is None and res.report.would_block is True
+    assert any("F-REFINE-MEMBER-DEPENDED-ON" in b and "editor" in b for b in res.report.blocking)
+
+
+def test_remove_member_names_every_dependant_in_the_message() -> None:
+    from oraclous_ohm.compiler.refine import RemoveMember
+
+    m = _manifest()  # editor already depends_on=["writer"]
+    m.members.append(
+        OHMMember(
+            role="fact-checker", kind="agent", manifest_ref="org:x/f@1", depends_on=["writer"]
+        )
+    )
+    res = apply_refine(m, RemoveMember(role="writer"), catalog=_CATALOG, owner_organization_id=_ORG)
+    assert res.manifest is None and res.report.would_block is True
+    msg = next(b for b in res.report.blocking if "F-REFINE-MEMBER-DEPENDED-ON" in b)
+    assert "editor" in msg and "fact-checker" in msg
+    assert msg.index("editor") < msg.index("fact-checker")  # sorted
+
+
+def test_remove_member_refuses_while_a_run_if_points_at_it() -> None:
+    from oraclous_ohm.compiler.refine import RemoveMember
+
+    m = _manifest()
+    # "notifier" is dispatched purely via run_if.from_role — NOT depends_on — so this pins the
+    # run_if half of the guard independently of the depends_on half (test above).
+    m.members.append(
+        OHMMember(
+            role="notifier",
+            kind="agent",
+            manifest_ref="org:x/n@1",
+            depends_on=["researcher"],
+            run_if=OHMRunIf(from_role="writer"),
+        )
+    )
+    res = apply_refine(m, RemoveMember(role="writer"), catalog=_CATALOG, owner_organization_id=_ORG)
+    assert res.manifest is None and res.report.would_block is True
+    assert any("F-REFINE-MEMBER-DEPENDED-ON" in b and "notifier" in b for b in res.report.blocking)
+
+
+def test_remove_member_refuses_the_runtime_entrypoint() -> None:
+    """#750 — without this guard the draft is written successfully and then becomes permanently
+    unreadable: ``apply_refine`` replaces only ``members`` and leaves ``runtime.entrypoint``
+    dangling; ``assemble_team`` computes its own entrypoint and never notices; the next
+    ``load_ohm`` raises and every later GET/PUT/refine/run on the stored draft 422s forever."""
+    from oraclous_ohm.compiler.refine import RemoveMember
+
+    # isolated: "starter" is the entrypoint with NO dependant, so only F-REFINE-ENTRYPOINT can fire.
+    m = OHMManifest(
+        ohm_version="1.1",
+        metadata=OHMMetadata(id=uuid.uuid4(), name="t", owner_organization_id=_ORG, kind="team"),
+        members=[
+            OHMMember(role="starter", kind="agent", manifest_ref="org:x/s@1"),
+            OHMMember(role="helper", kind="agent", manifest_ref="org:x/h@1"),
+        ],
+        runtime=OHMRuntime(entrypoint="starter"),
+    )
+    res = apply_refine(
+        m, RemoveMember(role="starter"), catalog=_CATALOG, owner_organization_id=_ORG
+    )
+    assert res.manifest is None and res.report.would_block is True
+    assert any("F-REFINE-ENTRYPOINT" in b for b in res.report.blocking)
+    assert not any("F-REFINE-MEMBER-DEPENDED-ON" in b for b in res.report.blocking)
+
+
+def test_remove_member_refuses_a_member_inside_a_loop_seam() -> None:
+    from oraclous_ohm.compiler.refine import RemoveMember
+
+    # isolated: "looped" is neither the entrypoint nor anyone's dependant, so only
+    # F-REFINE-MEMBER-IN-LOOP can fire.
+    m = OHMManifest(
+        ohm_version="1.1",
+        metadata=OHMMetadata(id=uuid.uuid4(), name="t", owner_organization_id=_ORG, kind="team"),
+        members=[
+            OHMMember(role="starter", kind="agent", manifest_ref="org:x/s@1"),
+            OHMMember(role="looped", kind="agent", manifest_ref="org:x/l@1"),
+        ],
+        runtime=OHMRuntime(entrypoint="starter"),
+        orchestration=OHMOrchestration(loops=[OHMLoop(members=["looped"])]),
+    )
+    res = apply_refine(m, RemoveMember(role="looped"), catalog=_CATALOG, owner_organization_id=_ORG)
+    assert res.manifest is None and res.report.would_block is True
+    assert any("F-REFINE-MEMBER-IN-LOOP" in b for b in res.report.blocking)
+
+
+def test_remove_member_of_an_unknown_role_fails_closed() -> None:
+    from oraclous_ohm.compiler.refine import RemoveMember
+
+    m = _manifest()
+    res = apply_refine(m, RemoveMember(role="ghost"), catalog=_CATALOG, owner_organization_id=_ORG)
+    assert res.manifest is None and res.report.would_block is True
+    assert any("F-REFINE-UNKNOWN-MEMBER" in b for b in res.report.blocking)
+
+
+def test_remove_the_last_member_fails_closed() -> None:
+    # already covered by the existing F-NO-MEMBERS path (import_/setup.py) — pinned here too so a
+    # future refactor of remove_member cannot silently regress it.
+    from oraclous_ohm.compiler.refine import RemoveMember
+
+    m = OHMManifest(
+        ohm_version="1.1",
+        metadata=OHMMetadata(id=uuid.uuid4(), name="t", owner_organization_id=_ORG, kind="team"),
+        members=[OHMMember(role="solo", kind="agent", manifest_ref="org:x/s@1")],
+        runtime=OHMRuntime(entrypoint="solo"),
+    )
+    res = apply_refine(m, RemoveMember(role="solo"), catalog=_CATALOG, owner_organization_id=_ORG)
+    assert res.manifest is None and res.report.would_block is True
+    assert any("F-NO-MEMBERS" in b for b in res.report.blocking)
+
+
+def test_remove_member_leaves_the_returned_entrypoint_resolvable() -> None:
+    """Regression for the permanent-brick finding (#750): before the F-REFINE-ENTRYPOINT guard, a
+    remove_member of a NON-entrypoint leaf still had to leave the returned manifest genuinely
+    loadable — ``load_ohm`` must not raise on it. This is the proof that a refined-and-applied
+    manifest never becomes the 422-forever draft the finding describes."""
+    from oraclous_ohm.compiler.refine import RemoveMember
+    from oraclous_ohm.parse import load_ohm
+
+    m = _manifest()
+    res = apply_refine(m, RemoveMember(role="editor"), catalog=_CATALOG, owner_organization_id=_ORG)
+    assert res.manifest is not None and res.report.would_block is False
+    reloaded = load_ohm(res.manifest.model_dump(mode="json"))  # must NOT raise
+    assert reloaded.runtime.entrypoint == "researcher"
+
+
+def test_a_blocked_removal_does_not_mutate_the_input() -> None:
+    from oraclous_ohm.compiler.refine import RemoveMember
+
+    m = _manifest()
+    before_roles = {x.role for x in m.members}
+    res = apply_refine(m, RemoveMember(role="writer"), catalog=_CATALOG, owner_organization_id=_ORG)
+    assert res.manifest is None and res.report.would_block is True
+    assert {x.role for x in m.members} == before_roles  # unmutated
