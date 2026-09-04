@@ -345,6 +345,31 @@ def test_set_tools_prunes_and_updates_the_tool_rationale() -> None:
     assert researcher.tool_rationale == {"doc-search": "needed to check prior documentation"}
 
 
+def test_set_tools_keeps_the_rationale_of_a_tool_it_retains() -> None:
+    """A tool the op KEEPS keeps its existing justification, even when the op restates none.
+
+    Pruning is by held-tool membership, not by "was it named in this op". Dropping the surviving
+    entry would silently strip a justification the user never withdrew, and the #718 gate that
+    reads ``tool_rationale`` runs on the NEXT read of the draft — so the loss would surface as an
+    unrelated block later, not as a refusal here.
+    """
+    from oraclous_ohm.compiler.refine import SetTools
+
+    m = _manifest()
+    by_role = {x.role: x for x in m.members}
+    by_role["researcher"].tool_rationale = {"web-search": "needed to gather background"}
+    res = apply_refine(
+        m,
+        SetTools(role="researcher", tools=["web-search", "doc-search"], tool_rationale={}),
+        catalog=_CATALOG,
+        owner_organization_id=_ORG,
+    )
+    assert res.manifest is not None and res.report.would_block is False
+    researcher = {x.role: x for x in res.manifest.members}["researcher"]
+    assert researcher.tools == ["web-search", "doc-search"]
+    assert researcher.tool_rationale == {"web-search": "needed to gather background"}
+
+
 def test_set_tools_with_an_unsurveyed_tool_fails_closed() -> None:
     from oraclous_ohm.compiler.refine import SetTools
 
@@ -497,6 +522,34 @@ def test_remove_member_refuses_the_runtime_entrypoint() -> None:
     assert res.manifest is None and res.report.would_block is True
     assert any("F-REFINE-ENTRYPOINT" in b for b in res.report.blocking)
     assert not any("F-REFINE-MEMBER-DEPENDED-ON" in b for b in res.report.blocking)
+
+
+def test_remove_member_reports_every_reason_it_is_refused_not_just_the_first() -> None:
+    """A member that is BOTH the entrypoint and depended on must name both reasons.
+
+    Reporting one reason at a time makes the user fix, retry, and be refused again for something
+    the first refusal already knew. Both guards run; neither short-circuits the other.
+    """
+    from oraclous_ohm.compiler.refine import RemoveMember
+
+    m = OHMManifest(
+        ohm_version="1.1",
+        metadata=OHMMetadata(id=uuid.uuid4(), name="t", owner_organization_id=_ORG, kind="team"),
+        members=[
+            OHMMember(role="starter", kind="agent", manifest_ref="org:x/s@1"),
+            OHMMember(
+                role="follower", kind="agent", manifest_ref="org:x/f@1", depends_on=["starter"]
+            ),
+        ],
+        runtime=OHMRuntime(entrypoint="starter"),
+    )
+    res = apply_refine(
+        m, RemoveMember(role="starter"), catalog=_CATALOG, owner_organization_id=_ORG
+    )
+    assert res.manifest is None and res.report.would_block is True
+    assert any("F-REFINE-ENTRYPOINT" in b for b in res.report.blocking)
+    assert any("F-REFINE-MEMBER-DEPENDED-ON" in b for b in res.report.blocking)
+    assert any("'follower'" in b for b in res.report.blocking)
 
 
 def test_remove_member_refuses_a_member_inside_a_loop_seam() -> None:
