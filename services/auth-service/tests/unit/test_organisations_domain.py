@@ -99,6 +99,13 @@ _DRIFT_CORPUS = [
     "a--b--c" * 20,
     "\tTabbed\nName\n",
     "😈 Evil Org",
+    # A repoint at ``tool_slug`` instead of ``basic_slug`` (the exact trap this PR names as
+    # highest-stakes for this call site) is invisible to every case above: none contains ``/`` or a
+    # non-bare ``@``, and `tool_slug` agrees with `basic_slug` on those. These two values pin the
+    # two ways `tool_slug` diverges — a ``/`` triggers its `#594` ``ns--`` foreign-namespace marker,
+    # and a non-empty `@`-suffix is dropped as a version instead of being slugged like normal text.
+    "Acme/Corp",
+    "Acme Corp@2.0",
 ]
 
 

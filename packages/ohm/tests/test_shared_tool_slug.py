@@ -195,9 +195,15 @@ def test_the_remap_table_covers_every_file_tool_the_leaf_names() -> None:
 # (``tool_slug``, ``registry_client._ref_slug``, ``policy._registry_of``) are DELIBERATELY
 # different from the plain primitive and from each other, and are already test-pinned that way
 # (``test_a_foreign_namespace_can_never_masquerade_as_a_bare_surveyed_tool`` above,
-# ``test_registry_client.py``, ``test_policy.py``). So this slice pins three corrected properties
-# instead: (1) every PLAIN reader is one function, (2) the deliberate differences are DECLARED, not
-# silently three-way inconsistent, (3) sharing the primitive never widens the #594 masquerade gate.
+# ``test_registry_client.py``, ``test_policy.py``). So this slice pins two corrected properties:
+# (1) every PLAIN reader is one function, (2) the deliberate differences are DECLARED, not silently
+# three-way inconsistent. A third property — sharing the primitive never widens the #594 masquerade
+# gate — holds too, but ``tool_slug`` itself is untouched by #731 (only the five PLAIN copies move),
+# so that property is already fully pinned by the two pre-existing tests above
+# (``test_a_foreign_namespace_can_never_masquerade_as_a_bare_surveyed_tool`` and
+# ``test_a_namespace_that_slugs_to_nothing_is_degenerate_and_drops``) on code this slice never
+# touches; a third test repeating the same assertions against the same unchanged function would add
+# no coverage, so none is added here.
 
 
 def test_the_shared_module_exports_basic_slug() -> None:
@@ -283,16 +289,3 @@ def test_the_deliberately_different_readers_are_declared_not_unified() -> None:
         assert reader(value) == expected, description
     answers = {expected for _, expected in readers.values()}
     assert len(answers) == 4, "the four readers must answer four DIFFERENT questions, not converge"
-
-
-@pytest.mark.security
-def test_sharing_the_primitive_never_widens_the_594_masquerade_gate() -> None:
-    """#731 widens WHERE ``basic_slug`` is called from (five more sites); it must never widen WHAT
-    ``tool_slug``'s own #594 gate protects. Carried over unchanged by the collapse."""
-    from oraclous_ohm._slug import tool_slug
-
-    result = tool_slug("evil/web-research")
-    assert result.startswith("ns--")
-    assert result != "web-research"
-    for degenerate in ("./web-research", "😈/web-research", "core//web-research"):
-        assert tool_slug(degenerate) == ""

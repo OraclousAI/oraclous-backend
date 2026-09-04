@@ -124,6 +124,40 @@ def test_a_function_calling_the_shared_primitive_is_not_flagged(tmp_path: Path) 
     assert "SLUG001" not in _codes(manifest, tmp_path)
 
 
+def test_lower_and_regex_sub_in_different_functions_of_the_same_file_is_not_flagged(
+    tmp_path: Path,
+) -> None:
+    """Pins FUNCTION-level scoping, not file-level. The prose says the checker flags a function only
+    when IT (that one function) both calls ``.lower()`` and performs the regex substitution — but
+    nothing else in this file forces that reading over a much simpler, equally plausible
+    implementation that just checks whether the two patterns co-occur ANYWHERE in the file. That
+    naive reading is not hypothetical: the real repository already has this exact shape — a
+    ``.lower()`` call and a non-alphanumeric-class ``.sub()`` call, in two DIFFERENT functions of
+    one module — in ``sql_connector.py``, ``tool_schemas.py`` and ``validation_passthrough.py``,
+    and none of the three is a slug duplicate. A file-scoped checker would wrongly flag all three
+    and break ``test_the_real_repository_is_clean`` for a reason the [impl] could not diagnose from
+    the prose alone. Neither function below matches the SLUG001 shape on its own; only an AST walk
+    that resolves ``.lower()`` and the substitution call to the SAME enclosing function definition
+    may stay silent here."""
+    _write(
+        tmp_path,
+        "pkg/mod.py",
+        """
+        import re
+
+        _NON_ALNUM = re.compile(r"[^a-z0-9]+")
+
+        def normalise_case(text: str) -> str:
+            return text.lower()
+
+        def strip_punctuation(text: str) -> str:
+            return _NON_ALNUM.sub("_", text)
+        """,
+    )
+    manifest = _manifest(tmp_path)
+    assert "SLUG001" not in _codes(manifest, tmp_path)
+
+
 def test_an_allow_listed_function_is_not_flagged(tmp_path: Path) -> None:
     """The canonical definition site itself (``oraclous_ohm._slug.basic_slug``) necessarily matches
     the SLUG001 shape — it IS the hand-written normaliser everything else now calls. An allow-list
