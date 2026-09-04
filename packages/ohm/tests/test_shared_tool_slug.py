@@ -180,3 +180,119 @@ def test_the_remap_table_covers_every_file_tool_the_leaf_names() -> None:
     assert GRAPH_WRITE_TOOLS | GRAPH_READ_TOOLS <= set(_GRAPH_REMAP)
     # and every target is a SEEDED ref, never a provisional @1
     assert all(not ref.endswith("@1") for ref in _GRAPH_REMAP.values()), _GRAPH_REMAP
+
+
+# ── #731: the FIVE remaining plain copies collapse onto one shared primitive ──────────────────────
+#
+# #694 already collapsed three copies of ``tool_slug`` onto this module. #731 is the same fix one
+# rung down: ``mapping.slugify``, ``registry_client._slug``/``capability_slug``,
+# ``mcp_descriptor_shape.resolution_slug`` and auth's ``organisations.slugify`` are five more
+# hand-written twins of the same ``_basic_slug`` body. The owner ruling (2026-08-24) is: one shared
+# implementation, every current call site repointed at it, stored names NOT rewritten.
+#
+# The issue's own acceptance criterion ("a foreign namespace normalises identically in every
+# module... pinned across all readers") is FALSE against the design: three readers
+# (``tool_slug``, ``registry_client._ref_slug``, ``policy._registry_of``) are DELIBERATELY
+# different from the plain primitive and from each other, and are already test-pinned that way
+# (``test_a_foreign_namespace_can_never_masquerade_as_a_bare_surveyed_tool`` above,
+# ``test_registry_client.py``, ``test_policy.py``). So this slice pins three corrected properties
+# instead: (1) every PLAIN reader is one function, (2) the deliberate differences are DECLARED, not
+# silently three-way inconsistent, (3) sharing the primitive never widens the #594 masquerade gate.
+
+
+def test_the_shared_module_exports_basic_slug() -> None:
+    """The promoted-public primitive #731's five copies repoint at. Function-local: ``basic_slug``
+    does not exist yet, only the private ``_basic_slug``."""
+    import oraclous_ohm._slug as slug_module
+    from oraclous_ohm._slug import basic_slug
+
+    assert callable(basic_slug)
+    assert "basic_slug" in slug_module.__all__
+
+
+# A corpus chosen to plausibly diverge between five independently hand-written twins: leading/
+# trailing whitespace, an existing separator, mixed case + spaces, an emoji segment, a doubled
+# separator, the empty string, an all-punctuation string, an all-separator string, an
+# already-collapsed run, and other whitespace (tab/newline).
+_PLAIN_CORPUS = [
+    "  Web Research  ",
+    "github-mcp/read",
+    "Google Drive Reader",
+    "😈/web-research",
+    "core//x",
+    "",
+    "@",
+    "___",
+    "a--b",
+    "\tfoo\n",
+]
+
+
+@pytest.mark.parametrize("value", _PLAIN_CORPUS)
+def test_every_plain_reader_agrees_with_the_shared_primitive(value: str) -> None:
+    """``mapping.slugify``, ``registry_client._slug``, ``registry_client.capability_slug`` and
+    ``mcp_descriptor_shape.resolution_slug`` are all extensionally identical to ``_basic_slug``
+    today (five hand-written copies of one function). #731 repoints all five at ``basic_slug`` —
+    proved here by comparing each to the shared primitive's OWN answer, not a hand-derived literal,
+    so this test cannot itself be wrong about what the primitive computes."""
+    from oraclous_capability_registry_service.domain.mcp_descriptor_shape import resolution_slug
+    from oraclous_harness_runtime_service.services.registry_client import _slug, capability_slug
+    from oraclous_ohm._slug import basic_slug
+    from oraclous_ohm.import_.mapping import slugify as mapping_slugify
+
+    expected = basic_slug(value)
+    assert mapping_slugify(value) == expected, "import_.mapping.slugify"
+    assert _slug(value) == expected, "registry_client._slug"
+    assert capability_slug(value) == expected, "registry_client.capability_slug"
+    assert resolution_slug(value) == expected, "mcp_descriptor_shape.resolution_slug"
+
+
+@pytest.mark.security
+def test_the_deliberately_different_readers_are_declared_not_unified() -> None:
+    """The corrected form of #731's stated acceptance criterion. ``evil/web-research`` answers FOUR
+    different questions today, on purpose:
+
+    * ``basic_slug``      — what does this text look like, slugified?           (no gate)
+    * ``tool_slug``       — is this a bare surveyed tool, or a namespace? (#594 masquerade gate)
+    * ``_ref_slug``       — which registry ROW does this ref's TAIL name?      (server-side match)
+    * ``_registry_of``    — which registry does this ref's HEAD belong to?     (policy allow-list)
+
+    A test asserting these are equal would have to break three already-shipped, already-pinned
+    behaviours (see this module's own masquerade test above, ``test_registry_client.py``'s
+    ``test_the_old_slashed_name_is_pinned_as_unresolvable``-adjacent tail semantics, and
+    ``test_policy.py``'s allow-list matching). Declaring them here means a future change to any one
+    of the four has to explain itself against this table, not slip through silently."""
+    from oraclous_harness_runtime_service.domain.policy import _registry_of
+    from oraclous_harness_runtime_service.services.registry_client import _ref_slug
+    from oraclous_ohm._slug import basic_slug, tool_slug
+
+    value = "evil/web-research"
+    readers = {
+        "basic_slug — plain text, no gate": (basic_slug, "evil-web-research"),
+        "tool_slug — #594 masquerade gate, foreign namespace marked": (
+            tool_slug,
+            "ns--evil--web-research",
+        ),
+        "_ref_slug — registry TAIL match (server-validated row name)": (_ref_slug, "web-research"),
+        "_registry_of — registry HEAD match (policy allow-list), never hyphenated": (
+            _registry_of,
+            "evil",
+        ),
+    }
+    for description, (reader, expected) in readers.items():
+        assert reader(value) == expected, description
+    answers = {expected for _, expected in readers.values()}
+    assert len(answers) == 4, "the four readers must answer four DIFFERENT questions, not converge"
+
+
+@pytest.mark.security
+def test_sharing_the_primitive_never_widens_the_594_masquerade_gate() -> None:
+    """#731 widens WHERE ``basic_slug`` is called from (five more sites); it must never widen WHAT
+    ``tool_slug``'s own #594 gate protects. Carried over unchanged by the collapse."""
+    from oraclous_ohm._slug import tool_slug
+
+    result = tool_slug("evil/web-research")
+    assert result.startswith("ns--")
+    assert result != "web-research"
+    for degenerate in ("./web-research", "😈/web-research", "core//web-research"):
+        assert tool_slug(degenerate) == ""
