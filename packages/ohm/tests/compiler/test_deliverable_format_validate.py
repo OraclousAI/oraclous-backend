@@ -170,6 +170,47 @@ def test_assemble_without_a_deliverable_format_is_unchanged() -> None:
     assert result.manifest.deliverable_format is None
 
 
+def test_assemble_never_infers_the_teams_format_from_a_member() -> None:
+    """Decision 2 at the layer that rebuilds the manifest from its members.
+
+    ``assemble_and_report`` reconstructs the team from the member list, which makes it the one
+    place where "just take it from a member" is the tempting shortcut — and the pinned tests at
+    the construction and refine layers would not notice. A member declaring markdown must leave
+    the TEAM undeclared, because the team's form is stated by a person, never derived from the
+    shape of the graph. Deriving it means adding a proof-reader silently changes what the user
+    receives.
+    """
+    result = assemble_and_report(
+        "compiled-team",
+        _members("markdown"),
+        owner_organization_id=_ORG,
+        shape="compiled",
+    )
+    assert result.manifest is not None
+    assert result.manifest.deliverable_format is None
+    # the member keeps its own — the two fields are independent, not one field seen twice
+    assert result.manifest.members[0].deliverable_format == "markdown"
+
+
+def test_assemble_keeps_a_team_format_that_disagrees_with_every_member() -> None:
+    """The team says text, every member says markdown, and neither side wins the other's field.
+
+    A single-field reading of this Contract would have to reconcile them; a two-field reading has
+    nothing to reconcile, because they answer different questions — what the user receives, and
+    what a member hands to the next member.
+    """
+    result = assemble_and_report(
+        "compiled-team",
+        _members("markdown"),
+        owner_organization_id=_ORG,
+        shape="compiled",
+        deliverable_format="text",
+    )
+    assert result.manifest is not None
+    assert result.manifest.deliverable_format == "text"
+    assert result.manifest.members[0].deliverable_format == "markdown"
+
+
 def _team_manifest(*, team_format: str | None, member_format: str | None) -> OHMManifest:
     return OHMManifest(
         ohm_version="1.1",
