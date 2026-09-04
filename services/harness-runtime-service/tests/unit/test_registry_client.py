@@ -111,3 +111,62 @@ async def test_two_servers_exposing_the_same_tool_name_stay_distinguishable() ->
     assert (await client.resolve_capability(f"org:{_ORG_ID}/github-mcp-read"))["id"] == _MCP_ID
     jira = await client.resolve_capability(f"org:{_ORG_ID}/jira-mcp-read")
     assert jira["id"] == "44444444-4444-4444-4444-444444444444"
+
+
+# ── #731: ``_slug``/``capability_slug`` repoint at the primitive; ``_ref_slug`` stays as-is ───────
+#
+# ``_slug`` is one of the five plain copies #731 collapses onto ``oraclous_ohm._slug.basic_slug``.
+# ``_ref_slug`` is deliberately DIFFERENT (it keeps only the TAIL after the last "/" — the shape
+# that matches a registry row's own server-validated name) and must NOT be touched; it is pinned
+# here as "the primitive applied to the already-split tail" so a future change that folds the
+# tail-split INTO the primitive itself would be caught.
+
+_TAIL_CORPUS = [
+    "core/postgresql-reader@1.0.0",
+    f"org:{_ORG_ID}/github-mcp-pull_request_read@1.0.0",
+    "evil/web-research",
+    "  Spaced Name  ",
+    "@",
+    "",
+]
+
+
+@pytest.mark.parametrize("ref", _TAIL_CORPUS)
+def test_ref_slug_is_the_shared_primitive_applied_to_the_tail(ref: str) -> None:
+    """RED until the [impl] adds ``oraclous_ohm._slug.basic_slug`` — function-local import."""
+    from oraclous_harness_runtime_service.services.registry_client import _ref_slug
+    from oraclous_ohm._slug import basic_slug
+
+    tail = ref.split("/")[-1].split("@")[0]
+    assert _ref_slug(ref) == basic_slug(tail)
+
+
+def test_ref_slug_still_gives_web_research_for_evil_web_research() -> None:
+    """The value the harness-runtime CLAUDE.md map pins explicitly: repointing ``_slug`` must not
+    change what ``_ref_slug`` returns for a foreign-namespace ref."""
+    from oraclous_harness_runtime_service.services.registry_client import _ref_slug
+
+    assert _ref_slug("evil/web-research") == "web-research"
+
+
+_PLAIN_SLUG_CORPUS = [
+    "  Web Research  ",
+    "Echo",
+    "Shell Exec",
+    "😈/web-research",
+    "core//x",
+    "",
+    "@",
+]
+
+
+@pytest.mark.parametrize("value", _PLAIN_SLUG_CORPUS)
+def test_slug_and_capability_slug_are_the_shared_primitive(value: str) -> None:
+    """``_slug`` and its public wrapper ``capability_slug`` (used to match a registry row's OWN
+    name) must both give the shared primitive's own answer."""
+    from oraclous_harness_runtime_service.services.registry_client import _slug, capability_slug
+    from oraclous_ohm._slug import basic_slug
+
+    expected = basic_slug(value)
+    assert _slug(value) == expected
+    assert capability_slug(value) == expected

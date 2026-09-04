@@ -195,3 +195,25 @@ def test_the_documented_mcp_ref_is_still_refused_by_the_strict_set() -> None:
     strict = resolve_policy_set("policy-set:production-strict@1.0.0")
     with pytest.raises(OHMGovernanceError):
         enforce_load_policy(_ohm(cap_ref=_ORG_REF), strict)
+
+
+# ── #731: ``_registry_of`` must stay UN-hyphenated — repointing it would fail OPEN a gate ─────────
+#
+# ``_registry_of`` keeps everything before the FIRST "/" and does NOT hyphenate at all. #731's five
+# collapsed copies never touch it: folding it into ``basic_slug`` would turn ``org:<uuid>`` into
+# ``org-<uuid>``, which the ``allowed_registries`` glob ``"org:*"`` no longer matches — every
+# org-imported capability would then be rejected by every policy set that allows ``org:*``, which is
+# a fail-CLOSED break for a legitimate ref today but, read the other way, is exactly the shape of
+# bug that would let a hyphen-disguised registry slip PAST a narrower allow-list glob tomorrow. This
+# pins the un-hyphenated head as the deliberate, permanent shape.
+
+
+@pytest.mark.security
+def test_registry_of_head_is_not_hyphenated_so_the_allow_list_still_matches() -> None:
+    import fnmatch
+
+    from oraclous_harness_runtime_service.domain.policy import _registry_of
+
+    registry = _registry_of("org:9f2c-11ee/x@1")
+    assert registry == "org:9f2c-11ee"
+    assert fnmatch.fnmatch(registry, "org:*")

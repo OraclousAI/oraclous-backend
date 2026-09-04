@@ -176,3 +176,39 @@ def test_the_collision_helper_is_quiet_when_names_are_unique() -> None:
     )
 
     assert find_name_collisions(["a-b", "c-d"]) == set()
+
+
+# ── #731: ``resolution_slug`` is one of the five plain copies, repointed at the shared primitive ──
+#
+# ``resolution_slug``'s own docstring already says it "mirrors" the harness runtime's ``_slug`` —
+# this module is the "eleventh copy the issue does not name" from the #731 map. #731 repoints it at
+# ``oraclous_ohm._slug.basic_slug`` like the other four plain copies.
+
+_RESOLUTION_CORPUS = [
+    "github-mcp/read",
+    "github-mcp-read",
+    "  Read PR  ",
+    "😈/web-research",
+    "",
+    "@",
+]
+
+
+@pytest.mark.parametrize("value", _RESOLUTION_CORPUS)
+def test_resolution_slug_is_the_shared_primitive(value: str) -> None:
+    """RED until the [impl] adds ``oraclous_ohm._slug.basic_slug`` — function-local import."""
+    from oraclous_capability_registry_service.domain.mcp_descriptor_shape import resolution_slug
+    from oraclous_ohm._slug import basic_slug
+
+    assert resolution_slug(value) == basic_slug(value)
+
+
+def test_the_legacy_separator_form_still_collapses_onto_the_rewritten_form() -> None:
+    """Live update-vs-insert semantics for the #698 migration this module also serves: a legacy
+    stored name using ``/`` and its rewritten ``-`` form must resolve to the SAME slug, or the
+    migration's own idempotence check (this file's ``test_the_rewrite_is_idempotent`` /
+    ``test_two_legacy_names_that_collapse_to_one_are_detectable``) stops meaning what it says the
+    moment ``resolution_slug`` is repointed at a different implementation."""
+    from oraclous_capability_registry_service.domain.mcp_descriptor_shape import resolution_slug
+
+    assert resolution_slug("github-mcp/read") == resolution_slug("github-mcp-read")
