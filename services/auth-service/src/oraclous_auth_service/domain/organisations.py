@@ -7,12 +7,12 @@ that authorises org-management actions (threat T-PRIV).
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
 
-_SLUG_STRIP = re.compile(r"[^a-z0-9]+")
+from oraclous_ohm._slug import basic_slug
+
 _SLUG_MAX = 63
 
 
@@ -36,9 +36,13 @@ _RANK = {OrgRole.MEMBER: 0, OrgRole.ADMIN: 1, OrgRole.OWNER: 2}
 
 
 def slugify(name: str) -> str:
-    """Lowercase, hyphenate, trim to a valid slug. Falls back to ``org`` if nothing survives."""
-    slug = _SLUG_STRIP.sub("-", name.strip().lower()).strip("-")[:_SLUG_MAX].strip("-")
-    return slug or "org"
+    """Lowercase, hyphenate, trim to a valid slug. Falls back to ``org`` if nothing survives.
+
+    ``organisations.slugify`` feeds a UNIQUE-indexed database column and a public URL handle, so it
+    keeps its own 63-char cap and ``"org"`` fallback around the shared plain-text primitive
+    (``oraclous_ohm._slug.basic_slug``) rather than being a bare alias to it.
+    """
+    return basic_slug(name)[:_SLUG_MAX].strip("-") or "org"
 
 
 def default_org_name(*, full_name: str | None, email: str) -> str:
