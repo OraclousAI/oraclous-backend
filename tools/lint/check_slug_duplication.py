@@ -46,6 +46,13 @@ WHAT THIS CANNOT CATCH (by design — read the behaviour tests for these, not th
     function calling a name, no ``.lower()``/``.sub()`` of its own) — so no AST rule can tell them
     apart. Only the behaviour tests (``test_shared_tool_slug.py``'s
     ``test_every_plain_reader_agrees_with_the_shared_primitive`` and its neighbours) catch that.
+  * A copy SPLIT ACROSS a function and a nested helper — the ``.lower()`` inside an inner function,
+    the substitution in the outer body. Each half is judged on its own body, and neither half alone
+    is the flagged shape. This is the deliberate cost of judging a function on its own body rather
+    than its whole subtree: descending into nested definitions instead would flag two innocent
+    functions that merely happen to contain a ``.lower()`` and an unrelated substitution, and
+    attribute the finding to the wrong name — sending the reader to a place where nothing is wrong.
+    A false alarm on real code is worse here than a miss on a shape nobody writes.
 
 Violations:
   SLUG001 — a function matches the hand-written-copy shape and is not allow-listed.
@@ -170,13 +177,24 @@ def _sub_pattern(node: ast.AST, compiled: dict[str, str]) -> str | None:
 def _matches_duplicate_shape(
     func: ast.FunctionDef | ast.AsyncFunctionDef, compiled: dict[str, str]
 ) -> bool:
-    """True if THIS function's own subtree both calls ``.lower()`` and performs a regex
-    substitution whose pattern is a known non-alphanumeric class."""
+    """True if THIS function's OWN body both calls ``.lower()`` and performs a regex substitution
+    whose pattern is a known non-alphanumeric class.
+
+    "Own body" excludes a nested function's, and that exclusion is the whole point of the rule.
+    ``ast.walk`` descends into nested definitions, so a function with an unrelated ``.lower()`` in a
+    helper and an unrelated substitution beside it would be flagged for a duplication neither half
+    commits — and attributed to the wrong function name, which is the worst kind of guardrail
+    failure: it sends the reader to a place where nothing is wrong. A nested function is visited on
+    its own turn by ``_duplicate_functions`` and judged on its own body, so nothing is missed by
+    stopping at the boundary.
+    """
     has_lower = False
     has_sub = False
-    for node in ast.walk(func):
-        if node is func:
-            continue
+    stack: list[ast.AST] = list(ast.iter_child_nodes(func))
+    while stack:
+        node = stack.pop()
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+            continue  # judged on its own turn, on its own body
         if _is_lower_call(node):
             has_lower = True
         pattern = _sub_pattern(node, compiled)
@@ -184,6 +202,7 @@ def _matches_duplicate_shape(
             has_sub = True
         if has_lower and has_sub:
             return True
+        stack.extend(ast.iter_child_nodes(node))
     return False
 
 
