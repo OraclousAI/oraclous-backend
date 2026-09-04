@@ -49,6 +49,12 @@ def _slug_candidates(base: str) -> list[str]:
     """Candidate slugs in preference order: the plain base, then ``base-2 … base-51``, then random
     suffixes.
 
+    ``base`` is an already-slugified input (the caller passes ``slugify(name)`` — #731's
+    ``organisations.slugify``, itself composed around the shared ``basic_slug`` primitive). This
+    is a UNIQUENESS LADDER over that base, not a text normaliser, so it is out of #731's scope: it
+    never calls ``.lower()`` or substitutes non-alphanumerics — it only appends a numeric or random
+    suffix and re-truncates to fit the column.
+
     The numeric ladder keeps everyday slugs short and familiar. The random tail is the escape for a
     name whose ladder is full: before #676 that case fell back onto ``base[:55]-50``, which for any
     base under 55 chars — every real org name — is the rung the ladder had just found taken, so the

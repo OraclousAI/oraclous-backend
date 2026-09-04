@@ -22,12 +22,11 @@ from __future__ import annotations
 
 import copy
 import hashlib
-import re
 from collections import Counter
 from collections.abc import Iterable
 from typing import Any
 
-_NON_ALNUM = re.compile(r"[^a-z0-9]+")
+from oraclous_ohm._slug import basic_slug
 
 # ``capability_descriptors.name`` is a String(255). An admin label is capped at 64 by the request
 # schema, but the tool name comes from an UNTRUSTED server and is not — so the join must be bounded
@@ -39,13 +38,14 @@ _DIGEST_LENGTH = 8
 def resolution_slug(name: str) -> str:
     """The slug the runtime matches a capability reference against.
 
-    Mirrors ``_slug`` in the harness runtime's registry client: lowercase, then collapse every run
-    of non-alphanumerics to a single ``-``. Two names that differ only by their separators — a
-    legacy ``"github-mcp/read"`` and its rewritten ``"github-mcp-read"`` — collapse to the SAME
+    Calls the shared ``oraclous_ohm._slug.basic_slug`` primitive on the WHOLE string — no tail
+    split, unlike the harness runtime's ``_ref_slug`` (that difference is deliberate: this reads a
+    stored descriptor NAME, not a capability ref). Two names that differ only by their separators —
+    a legacy ``"github-mcp/read"`` and its rewritten ``"github-mcp-read"`` — collapse to the SAME
     slug, which is why the legacy rows still resolve today and why a re-import has to recognise one
     as the older form of the other.
     """
-    return _NON_ALNUM.sub("-", name.lower()).strip("-")
+    return basic_slug(name)
 
 
 def is_mcp_descriptor(descriptor: dict[str, Any]) -> bool:

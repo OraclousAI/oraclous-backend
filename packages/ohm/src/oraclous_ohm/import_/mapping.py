@@ -9,7 +9,6 @@ O8 dry-run, never resolved silently (ADR-034 §7, flag-not-guess). Pure; fail-cl
 
 from __future__ import annotations
 
-import re
 import uuid
 from pathlib import Path
 from typing import Literal
@@ -20,6 +19,7 @@ from oraclous_ohm._slug import (
     FILE_SUBSTRATE_WRITE_TOOLS,
     GRAPH_READ_TOOLS,
     GRAPH_WRITE_TOOLS,
+    basic_slug,
     tool_slug,
 )
 from oraclous_ohm.errors import OHMImportError
@@ -148,9 +148,7 @@ class AgentMapping(BaseModel):
     flags: list[ImportFlag] = Field(default_factory=list)
 
 
-def slugify(value: str) -> str:
-    """Lowercase, non-alphanumeric -> '-', collapsed and trimmed."""
-    return re.sub(r"[^a-z0-9]+", "-", value.strip().lower()).strip("-")
+slugify = basic_slug
 
 
 def _dedup_preserving(items: list[str]) -> tuple[list[str], bool]:

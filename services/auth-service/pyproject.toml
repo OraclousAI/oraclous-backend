@@ -22,12 +22,17 @@ dependencies = [
     # enable_rls_on, wired into the identity engine + the agents/agent_credentials migration for
     # the Postgres RLS backstop. (Already used by the agent-identity backfill; now a direct dep.)
     "oraclous-substrate",
+    # #731: organisations.slugify composes the shared oraclous_ohm._slug.basic_slug primitive
+    # instead of a hand-written twin. The package root is empty and the leaf module imports only
+    # `re`, so this is import-legal (Substrate never imports UP a layer) and near-free at runtime.
+    "oraclous-ohm",
 ]
 
 [tool.uv.sources]
 oraclous-telemetry = { workspace = true }
 oraclous-governance = { workspace = true }
 oraclous-substrate = { workspace = true }
+oraclous-ohm = { workspace = true }
 
 [build-system]
 requires = ["hatchling"]

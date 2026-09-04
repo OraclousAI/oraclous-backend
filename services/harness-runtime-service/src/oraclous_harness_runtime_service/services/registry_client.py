@@ -15,8 +15,7 @@ import uuid
 from typing import Any
 
 import httpx
-
-_NON_ALNUM = re.compile(r"[^a-z0-9]+")
+from oraclous_ohm._slug import basic_slug
 
 #: The shape a registry ``error_code`` may take. The registry is trusted, but this token is echoed
 #: into a string a MODEL reads, so it is accepted only as a bounded lowercase identifier — never as
@@ -64,9 +63,7 @@ def _error_code(resp: httpx.Response) -> str | None:
     return code if isinstance(code, str) and _CODE_TOKEN.match(code) else None
 
 
-def _slug(text: str) -> str:
-    """Lowercase + collapse every run of non-alphanumerics to a single ``-`` (both sides match)."""
-    return _NON_ALNUM.sub("-", text.lower()).strip("-")
+_slug = basic_slug
 
 
 def capability_slug(name: str) -> str:
@@ -80,7 +77,13 @@ def capability_slug(name: str) -> str:
 
 
 def _ref_slug(ref: str) -> str:
-    """``core/postgresql-reader@1.0.0`` → ``postgresql-reader`` (drop the prefix + @version)."""
+    """``core/postgresql-reader@1.0.0`` → ``postgresql-reader`` (drop the prefix + @version).
+
+    Deliberately its own reader, not folded into ``basic_slug``: it answers "which registry ROW
+    does this ref's TAIL name" (server-side match), a different question from the plain primitive
+    or from ``policy._registry_of``'s HEAD match — see ``test_registry_client.py``'s
+    ``test_the_deliberately_different_readers_are_declared_not_unified``-adjacent pin.
+    """
     tail = ref.split("/")[-1].split("@")[0]  # drop core/ or org:<id>/ prefix and @version
     return _slug(tail)
 
