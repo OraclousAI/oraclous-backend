@@ -147,6 +147,7 @@ def assemble_and_report(
     task_input: Any = None,
     governance: Any = None,
     budget: Any = None,
+    deliverable_format: str | None = None,
     sub_harnesses: dict[str, dict] | None = None,
     extra_flags: list[ImportFlag] | None = None,
 ) -> ImportResult:
@@ -176,7 +177,15 @@ def assemble_and_report(
     ``max_tool_calls_per_member: 50``, the rebuild dropped it, and the first member re-read the
     pull request's comments until it escalated at 219,124 tokens. Dropping ``governance`` was
     quieter and worse: every compiled team shipped with no policy set and no redact patterns,
-    against #596's governed-by-default promise."""
+    against #596's governed-by-default promise.
+
+    ``deliverable_format`` (#730, knowledge PR 101 §DELIV) rides the same thread for the same
+    reason: this call REBUILDS the manifest from ``members``, so the TEAM-level declared form —
+    what the user receives — is dropped unless carried explicitly, exactly like ``task_input``.
+    Carried verbatim, never judged here: ``validate_draft`` is the only gate that refuses a
+    reserved/unknown value, and by the time a call reaches this dry-run a value already passed
+    that gate (or the caller is a test exercising this seam directly). Never derived from a
+    member's own ``deliverable_format`` — decision 2: the team's form is stated, never inferred."""
     flags = list(extra_flags or [])
     if not members:
         # fail-closed (ADR §3.5): a caller that supplies NO members (a drafter that produced
@@ -220,6 +229,8 @@ def assemble_and_report(
             assembly.manifest.budget = OHMBudget.model_validate(budget)
         except ValidationError:
             pass
+    if deliverable_format is not None:  # #730: the team's declared form (never a member's)
+        assembly.manifest.deliverable_format = deliverable_format
     if precedence is not None:  # the source's declared Hierarchy-of-Truth ordering (provenance)
         assembly.manifest.precedence = precedence
         flags.append(
