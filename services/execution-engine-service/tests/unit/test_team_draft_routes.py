@@ -208,6 +208,68 @@ async def test_refine_returns_the_op_applied_verdict_draft_shape() -> None:
     assert body["draft"]["version"] == 2
 
 
+async def test_refine_set_tools_returns_the_op_applied_verdict_draft_shape() -> None:
+    row = _Row(version=2)
+
+    class _Svc:
+        async def refine(
+            self,
+            draft_id: uuid.UUID,
+            principal: Principal,
+            *,
+            edit_op: dict[str, Any],
+            dry_run: bool = False,
+        ) -> RefineOutcome:
+            return RefineOutcome(row=row, verdict=_verdict(), applied=True, op=edit_op)
+
+    async with _client(_Svc()) as c:
+        resp = await c.post(
+            f"/v1/engine/team-drafts/{uuid.uuid4()}/refine",
+            json={"edit_op": {"op": "set_tools", "role": "x", "tools": ["web-search"]}},
+        )
+    body = resp.json()
+    assert resp.status_code == 200
+    assert body["applied"] is True
+    assert body["op"] == {"op": "set_tools", "role": "x", "tools": ["web-search"]}
+    assert body["draft"]["version"] == 2
+
+
+async def test_refine_remove_member_refusal_returns_200_with_applied_false_and_a_coded_reason() -> (
+    None
+):
+    # a refusal is a VERDICT, not an HTTP error — the route still 200s, with applied:false and a
+    # blocking reason the console reads, exactly like the existing unsurveyed-tool refusal shape.
+    row = _Row(version=1)
+
+    class _Svc:
+        async def refine(
+            self,
+            draft_id: uuid.UUID,
+            principal: Principal,
+            *,
+            edit_op: dict[str, Any],
+            dry_run: bool = False,
+        ) -> RefineOutcome:
+            refused = _verdict(
+                would_block=True,
+                blocking=[
+                    "F-REFINE-MEMBER-DEPENDED-ON: member 'writer' is depended on by 'editor'"
+                ],
+            )
+            return RefineOutcome(row=row, verdict=refused, applied=False, op=edit_op)
+
+    async with _client(_Svc()) as c:
+        resp = await c.post(
+            f"/v1/engine/team-drafts/{uuid.uuid4()}/refine",
+            json={"edit_op": {"op": "remove_member", "role": "writer"}},
+        )
+    assert resp.status_code == 200, resp.text  # NOT a 4xx/5xx — a refusal is a verdict
+    body = resp.json()
+    assert body["applied"] is False and body["would_block"] is True
+    assert any("F-REFINE-MEMBER-DEPENDED-ON" in b for b in body["blocking"])
+    assert body["draft"]["version"] == 1  # untouched
+
+
 async def test_refine_nl_pending_returns_202_with_the_run_id() -> None:
     run_id = uuid.uuid4()
 
