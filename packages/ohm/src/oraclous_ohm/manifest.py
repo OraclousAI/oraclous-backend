@@ -199,6 +199,14 @@ class OHMMember(BaseModel):
     # member and never catches a payload that fails to parse at all. This is about SYNTAX. A member
     # may declare either, both, or neither. Default False → every pre-#853 manifest is unchanged.
     requires_valid_json: bool = False
+    # #730 (knowledge PR 101, §DELIV decision 1): the form THIS MEMBER hands on to its downstream
+    # (an intermediate hand-off, not what the user receives — that is OHMManifest.deliverable_format
+    # below). Optional, plain string (never a Literal — see validate_draft, which is the ONLY place
+    # that judges a value, so the two refusal reasons stay distinguishable). Accepted value set:
+    # "markdown"/"text" (supported), "pdf"/"docx"/"html" (declared-and-reserved). None → unchanged
+    # pre-#730 behaviour (decision 4); never inherited from the team, never implied by
+    # requires_valid_json (decision 5).
+    deliverable_format: str | None = None
 
     @model_validator(mode="after")
     def _human_requires_role(self) -> OHMMember:
@@ -439,6 +447,10 @@ class OHMManifest(BaseModel):
     precedence: OHMPrecedence | None = None
     # Contract §TASK (#674): the per-run task this standing team expects (None → no run-time task).
     task_input: OHMTaskInput | None = None
+    # #730 (knowledge PR 101, §DELIV decision 1): the form the USER receives, stated on the team —
+    # never inferred from a member (decision 2). Optional; None is never read as "markdown"
+    # (decision 4). validate_draft is the only place that refuses a reserved/unknown value.
+    deliverable_format: str | None = None
     schemas: dict[str, Any] = Field(default_factory=dict)
     # ADR-037 / E4 #470 — named gate batteries (a sibling of `schemas`; same record-once rule).
     # Referenced from orchestration.success_criteria / termination.convergence by a `battery:<name>`

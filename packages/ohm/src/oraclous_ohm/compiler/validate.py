@@ -42,6 +42,14 @@ _tool_slug = tool_slug
 
 Substrate = Literal["graph", "file"]
 
+#: #730 (knowledge PR 101, §DELIV decision 3): the full accepted ``deliverable_format`` value set —
+#: supported (renders today) + reserved (declared, refused at THIS gate, never at run time).
+_SUPPORTED_DELIVERABLE_FORMATS = {"markdown", "text"}
+_RESERVED_DELIVERABLE_FORMATS = {"pdf", "docx", "html"}
+#: How much of a rejected value the refusal message may quote back. Every accepted value is at most
+#: eight characters, so a bad one only has to be identifiable, never reproduced.
+_MAX_SHOWN_FORMAT = 40
+
 #: The membership set lives in the ``_slug`` leaf, beside the normaliser that compares against it.
 #: Under the graph substrate the catalog no longer offers these (``compiler_onramp.draft_catalog``),
 #: so the drafter cannot choose one — but a draft can still carry one by another route: a hand edit,
@@ -69,6 +77,48 @@ def _file_substrate_flag(role: str, tool: str) -> ImportFlag:
             " graph substrate a member persists to the team's shared knowledge"
             " graph: use 'graph-ingest' to write and 'knowledge-retriever' /"
             " 'find-similar' to read"
+        ),
+    )
+
+
+def _deliverable_format_flag(role: str, value: str) -> ImportFlag | None:
+    """The one statement of why a ``deliverable_format`` value is refused (#730, §DELIV decision
+    3), shared across the team-level check (``role=""``) and the member-level check so the two
+    surfaces never drift onto different wording for the same value the way ``_file_substrate_flag``
+    already guards for the file-substrate refusal.
+
+    Returns ``None`` for a supported value. A RESERVED value (``pdf``/``docx``/``html`` — declared,
+    no renderer yet) earns ``F-DELIVERABLE-FORMAT-RESERVED`` and says "not supported yet"; anything
+    else earns ``F-DELIVERABLE-FORMAT-UNKNOWN`` and says the value is not recognised — a
+    misspelling and a not-yet-built format are different problems the user needs told apart.
+    """
+    if value in _SUPPORTED_DELIVERABLE_FORMATS:
+        return None
+    subject = f"member {role!r}" if role else "the team"
+    # The team-level value arrives from the raw draft dict, so a caller can put an arbitrary object
+    # here and it reaches this message as its repr. Echoing that back unbounded would put a slab of
+    # somebody's manifest into an error string that is logged and shown — the class of thing
+    # CLAUDE.md §11 forbids. A recognised value is at most eight characters, so a bad one only needs
+    # to be identifiable, never reproduced.
+    shown = value if len(value) <= _MAX_SHOWN_FORMAT else f"{value[:_MAX_SHOWN_FORMAT]}…"
+    if value in _RESERVED_DELIVERABLE_FORMATS:
+        return ImportFlag(
+            code="F-DELIVERABLE-FORMAT-RESERVED",
+            severity="blocking",
+            member_role=role,
+            message=(
+                f"{subject} declares deliverable_format {shown!r}, which is a reserved format —"
+                " not supported yet, no renderer exists for it. Use 'markdown' or 'text' today."
+            ),
+        )
+    return ImportFlag(
+        code="F-DELIVERABLE-FORMAT-UNKNOWN",
+        severity="blocking",
+        member_role=role,
+        message=(
+            f"{subject} declares deliverable_format {shown!r}, which is not a recognised value."
+            " Use 'markdown' or 'text' (or one of the reserved names 'pdf'/'docx'/'html', not"
+            " yet supported)."
         ),
     )
 
@@ -295,6 +345,28 @@ def validate_draft(
                     )
                 )
 
+    # #730 (§DELIV decision 3): the declared FORM of a deliverable is refused at DEFINITION time,
+    # never at run's end. Team-level (member_role="") reads straight off the raw draft dict — the
+    # team-level field lives on the MANIFEST, which this loop never builds — while member-level
+    # reads the already-parsed OHMMember (the field exists on the schema, so a supported/reserved
+    # value alike constructs cleanly; only validate_draft judges the value).
+    # A non-string here is UNKNOWN, never absent. The team-level value is read from the raw draft
+    # dict rather than a parsed model, so nothing has type-checked it yet — and treating a
+    # ``deliverable_format: 123`` as "not declared" would fail OPEN, letting a garbage value through
+    # a gate whose whole job is to refuse values it does not recognise. The member level gets this
+    # for free: it is read off a parsed OHMMember, so a non-string never reaches here.
+    raw_team_format = data.get("deliverable_format")
+    if raw_team_format is not None:
+        team_value = raw_team_format if isinstance(raw_team_format, str) else repr(raw_team_format)
+        team_flag = _deliverable_format_flag("", team_value)
+        if team_flag is not None:
+            flags.append(team_flag)
+    for m in members:
+        if m.deliverable_format is not None:
+            member_flag = _deliverable_format_flag(m.role, m.deliverable_format)
+            if member_flag is not None:
+                flags.append(member_flag)
+
     # #697 (ruling 2026-08-24): every member declares what it hands on, with NO exception for a
     # member nobody depends on — the narrower rule would make adding a depends_on edge silently
     # change what an earlier member must produce. `validate_payload` has enforced a declared key
@@ -372,6 +444,7 @@ def validate_draft(
         owner_organization_id=owner_organization_id,
         shape="compiled",
         orchestration=orchestration,
+        deliverable_format=raw_team_format if isinstance(raw_team_format, str) else None,
         extra_flags=flags,
     )
     return {
