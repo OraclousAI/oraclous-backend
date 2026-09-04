@@ -27,6 +27,7 @@ __all__ = [
     "FILE_SUBSTRATE_WRITE_TOOLS",
     "GRAPH_READ_TOOLS",
     "GRAPH_WRITE_TOOLS",
+    "basic_slug",
     "tool_slug",
 ]
 
@@ -55,8 +56,22 @@ GRAPH_WRITE_TOOLS = frozenset({"graph-ingest"})
 GRAPH_READ_TOOLS = frozenset({"knowledge-retriever", "find-similar", "recall-memory"})
 
 
-def _basic_slug(text: str) -> str:
-    """Lowercase, non-alphanumeric runs collapsed to a single ``-``, trimmed."""
+def basic_slug(text: str) -> str:
+    """THE canonical plain-text slug primitive (#731): lowercase, every run of non-alphanumeric
+    characters collapsed to a single ``-``, then trimmed of leading/trailing ``-``.
+
+    This is deliberately the whole function — no length cap, no namespace marker, no tail
+    extraction. Anything needing more composes it AROUND this primitive rather than rewriting the
+    body: ``tool_slug`` below is the worked example (it drops ``@version``/``core/``, splits on
+    ``/`` and marks a foreign namespace, calling this function on each segment). A caller that
+    needs a length cap or a fallback default (an org slug, a DB column) also wraps this rather than
+    re-deriving it.
+
+    #731 collapsed five hand-written twins of this exact body onto this one definition, after a
+    prior duplication of a DIFFERENT function here (``tool_slug`` itself, #694) had already cost a
+    production incident. ``tools/lint/check_slug_duplication.py`` now fails CI on a new hand-written
+    copy of this shape.
+    """
     return re.sub(r"[^a-z0-9]+", "-", text.strip().lower()).strip("-")
 
 
@@ -68,7 +83,7 @@ def tool_slug(text: str) -> str:
     A trailing ``@version`` is dropped, and ONLY the canonical ``core/`` built-in namespace is
     stripped. If a ``/`` still remains the identifier is NON-canonical (a foreign namespace or a
     nested path): every segment is slugged and kept, joined by ``--`` under an ``ns--`` marker that
-    a bare slug can never contain (``_basic_slug`` collapses runs of ``-`` to one). So it can
+    a bare slug can never contain (``basic_slug`` collapses runs of ``-`` to one). So it can
     neither collapse onto a bare surveyed slug nor onto a *different* foreign namespace — even when
     the namespace is punctuation or emoji that slugging would otherwise erase entirely
     (``😈/web-research`` and ``./web-research`` would both bare-slug to ``web-research`` and slip
@@ -82,6 +97,6 @@ def tool_slug(text: str) -> str:
     if s.startswith("core/"):
         s = s[len("core/") :]
     if "/" in s:
-        parts = [_basic_slug(seg) for seg in s.split("/")]
+        parts = [basic_slug(seg) for seg in s.split("/")]
         return "ns--" + "--".join(parts) if all(parts) else ""
-    return _basic_slug(s)
+    return basic_slug(s)
