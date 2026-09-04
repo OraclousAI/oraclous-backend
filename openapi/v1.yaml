@@ -2494,7 +2494,7 @@ paths:
   /v1/engine/team-drafts/{teamDraftId}/refine:
     post:
       tags: [engine]
-      summary: Apply ONE typed refine op (add_member | set_fan_out | change_kind | add_depends_on) server-side — preserve-the-rest guaranteed, re-validated, version-bumped; a blocked op returns applied:false with the draft untouched.
+      summary: Apply ONE typed refine op (add_member | set_fan_out | change_kind | add_depends_on | set_tools | remove_member) server-side — preserve-the-rest guaranteed, re-validated, version-bumped; a blocked op returns applied:false with the draft untouched.
       operationId: refineTeamDraft
       x-stability: provisional
       parameters:
@@ -3582,11 +3582,12 @@ components:
     RefineTeamDraftRequest:
       type: object
       description: >-
-        Apply ONE typed refine op (the #595 vocabulary — add_member | set_fan_out | change_kind |
-        add_depends_on, discriminated on `op`) via apply_refine: preserve-the-rest guaranteed
-        server-side, re-validated with the shared seam, version-bumped. A blocked op (e.g. an
-        unsurveyed tool) returns applied:false with the draft untouched. `dry_run` validates
-        without persisting.
+        Apply ONE typed refine op (the #595/#750 vocabulary — add_member | set_fan_out |
+        change_kind | add_depends_on | set_tools | remove_member, discriminated on `op`) via
+        apply_refine: preserve-the-rest guaranteed server-side, re-validated with the shared seam,
+        version-bumped. A blocked op (e.g. an unsurveyed tool, or a remove_member that would orphan
+        a dependant / the entrypoint / a loop member) returns applied:false with the draft
+        untouched. `dry_run` validates without persisting.
       required: [edit_op]
       additionalProperties: true
       properties:

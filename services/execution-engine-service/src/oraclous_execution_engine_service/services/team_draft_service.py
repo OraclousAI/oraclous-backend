@@ -228,8 +228,16 @@ class TeamDraftService:
         within it by construction. A hand-authored or imported sub-harness may still narrow below
         the ceiling; existing sub-harnesses are kept verbatim. A tool-less member still yields a
         loadable reasoning-only sub-harness (``build_subharness`` documents the empty case).
+
+        #750: PRUNED to the roles ``manifest`` still declares, at the top — else a ``remove_member``
+        refine leaves the removed role's stale sub-harness body behind forever, and a ``set_tools``
+        narrowing leaves the old wider grant sitting unused beside the new one (an ADR-032 ceiling
+        violation the member itself no longer even claims). This is about the DRAFT's own
+        ``sub_harnesses`` map, never the filed registry agent row — that one is a library object
+        the user keeps regardless (ADR-050); ``_file_agents`` leaves it alone deliberately.
         """
-        subs = dict(existing or {})
+        declared_roles = {m.role for m in manifest.members}
+        subs = {role: sub for role, sub in (existing or {}).items() if role in declared_roles}
         for m in manifest.members:
             if m.role in subs or m.kind != "agent":
                 continue
@@ -617,12 +625,17 @@ class TeamDraftService:
         except Exception as exc:  # noqa: BLE001 — a malformed op is a curated 422, never a 500
             raise TeamRunError(
                 "edit_op is not one of the typed refine ops"
-                " (add_member | set_fan_out | change_kind | add_depends_on)",
+                " (add_member | set_fan_out | change_kind | add_depends_on | set_tools |"
+                " remove_member)",
                 422,
                 error_type="invalid_edit_op",
             ) from exc
         result = apply_refine(
-            manifest, op, catalog=await self._catalog(), owner_organization_id=org
+            manifest,
+            op,
+            catalog=await self._catalog(),
+            owner_organization_id=org,
+            substrate="graph",
         )
         verdict = DraftVerdict.from_result(result)
         if result.manifest is None or dry_run:

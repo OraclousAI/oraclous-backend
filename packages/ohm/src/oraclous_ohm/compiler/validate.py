@@ -50,6 +50,29 @@ Substrate = Literal["graph", "file"]
 _FILE_SUBSTRATE_TOOLS = FILE_SUBSTRATE_TOOLS
 
 
+def _file_substrate_flag(role: str, tool: str) -> ImportFlag:
+    """The one statement of why a file tool is refused under the graph substrate (#750).
+
+    Both on-ramps refuse it — ``validate_draft`` on the compile path and ``apply_refine`` on the
+    edit path — and both are read by a MODEL that re-drafts against ``blocking``. Two copies of
+    this sentence is how the two paths start telling the user different things about the same
+    refusal, which is the failure #694 already paid for once. The member role rides in the message
+    because the rendered blocking line carries only the code and the message.
+    """
+    return ImportFlag(
+        code="F-SUBSTRATE-FILE",
+        severity="blocking",
+        member_role=role,
+        message=(
+            f"member {role!r} declares tool {tool!r}, which reads and writes a"
+            " per-organisation file sandbox that nothing else can see. Under the"
+            " graph substrate a member persists to the team's shared knowledge"
+            " graph: use 'graph-ingest' to write and 'knowledge-retriever' /"
+            " 'find-similar' to read"
+        ),
+    )
+
+
 def _catalog_slugs(catalog: Any) -> set[str]:
     """The set of SURVEYED tool identifiers (slugged) the drafter is allowed to draw from. Accepts a
     list of bare names/refs OR of dicts ({name|binding|ref}) — whatever the survey tool returned. An
@@ -243,20 +266,7 @@ def validate_draft(
             # role rides in the message because the rendered blocking line carries the code and the
             # message only.
             if substrate == "graph" and slug in _FILE_SUBSTRATE_TOOLS:
-                flags.append(
-                    ImportFlag(
-                        code="F-SUBSTRATE-FILE",
-                        severity="blocking",
-                        member_role=m.role,
-                        message=(
-                            f"member {m.role!r} declares tool {tool!r}, which reads and writes a"
-                            " per-organisation file sandbox that nothing else can see. Under the"
-                            " graph substrate a member persists to the team's shared knowledge"
-                            " graph: use 'graph-ingest' to write and 'knowledge-retriever' /"
-                            " 'find-similar' to read"
-                        ),
-                    )
-                )
+                flags.append(_file_substrate_flag(m.role, tool))
                 continue
             if not slug or slug not in allowed:  # an empty-slug tool ("@", "/") also fails closed
                 flags.append(
