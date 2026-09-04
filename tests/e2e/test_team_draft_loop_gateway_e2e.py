@@ -78,13 +78,20 @@ def _team(org: str, members: list[dict]) -> dict:
 
 
 def _agent(role: str, deps: list[str] | None = None, tools: list[str] | None = None) -> dict:
+    """#697/#718: ``validate_draft`` now blocks any member with no ``outputs_schema.required`` (
+    F-NO-OUTPUT-CONTRACT) and any tool-holding member with no matching ``tool_rationale`` entry
+    (F-TOOL-UNJUSTIFIED). Every member declares the former; only a member that actually holds tools
+    needs the latter — a reasoning-only member has nothing to justify."""
+    tools = tools or []
     return {
         "role": role,
         "kind": "agent",
         "manifest_ref": f"org:x/{role}@1",
         "subgoal": f"do {role}",
         "depends_on": deps or [],
-        "tools": tools or [],
+        "tools": tools,
+        "outputs_schema": {"required": ["summary"]},
+        "tool_rationale": {tool: f"{role} needs {tool} to do {role}" for tool in tools},
     }
 
 
