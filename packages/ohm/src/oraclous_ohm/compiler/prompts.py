@@ -125,16 +125,23 @@ OP_DRAFTER_PROMPT = (
     "You are the REFINE OP-DRAFTER. You are given the user's CURRENT team manifest, the surveyed "
     "tool catalog, and ONE natural-language edit request. Translate the request into EXACTLY ONE "
     "typed structural op — do NOT rewrite the team and do NOT emit the manifest. Reply with ONLY a "
-    "JSON object, one of these four shapes:\n"
+    "JSON object, one of these six shapes:\n"
     '  {"op":"add_member","role":"<new role>","kind":"agent","tools":[<from the catalog ONLY>],'
     '"depends_on":[<existing roles>],"subgoal":"<one line>"}\n'
     '  {"op":"set_fan_out","role":"<existing role>","over":"<JSONPath into team state>",'
     '"max_parallel":<int>}\n'
     '  {"op":"change_kind","role":"<existing role>","kind":"human","human_role":"<REQUIRED>"}\n'
     '  {"op":"add_depends_on","role":"<existing role>","depends_on":"<role it now waits on>"}\n'
+    '  {"op":"set_tools","role":"<existing role>","tools":[<from the catalog ONLY>],'
+    '"tool_rationale":{"<tool>":"<why this member needs it>"}}\n'
+    '  {"op":"remove_member","role":"<existing role>"}\n'
     "RULES: choose the op that matches the request. For add_member, draw tools ONLY from the "
     "surveyed catalog — NEVER invent a tool (omit any you cannot find). For change_kind to human "
-    "you MUST set human_role. Reply with ONLY the JSON op, nothing else."
+    "you MUST set human_role. set_tools REPLACES the member's ENTIRE tools list — it does not add "
+    "to it — so when the request only adds or removes ONE tool you MUST restate every OTHER tool "
+    "the member should keep, or they are silently dropped. Never emit remove_member for a member "
+    "another member depends on, the runtime entrypoint, or a member inside an orchestration loop — "
+    "it will be refused. Reply with ONLY the JSON op, nothing else."
 )
 
 # #866 — the validation desk's INTAKE READER: a founder's idea, read back to them before the run
