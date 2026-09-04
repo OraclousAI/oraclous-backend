@@ -1,8 +1,9 @@
 """manifest-refine connector (domain layer) — apply a typed NL-refine op + re-validate.
 
-Issue #595 / ADR-047 §4. The compiler's refine member (or any caller) emits ONE typed structural op
-(add_member / set_fan_out / change_kind / add_depends_on — the small, reliable function-calling
-shape); this DETERMINISTIC tool applies it to the supplied manifest via ohm ``apply_refine`` and
+Issue #595 / ADR-047 §4 (#750 added set_tools / remove_member). The compiler's refine member (or
+any caller) emits ONE typed structural op (add_member / set_fan_out / change_kind / add_depends_on
+/ set_tools / remove_member — the small, reliable function-calling shape); this DETERMINISTIC tool
+applies it to the supplied manifest via ohm ``apply_refine`` and
 re-validates through the SAME ``assemble_and_report`` dry-run the importer/compiler use (one
 validator). The manifest flows in deterministically (NOT re-emitted by the model) so the
 PRESERVE-THE-REST byte-identity invariant holds. A delta that cycles the DAG, references an

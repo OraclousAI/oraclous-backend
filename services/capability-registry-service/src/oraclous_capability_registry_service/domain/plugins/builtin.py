@@ -801,12 +801,13 @@ class ManifestValidatePlugin(_ConnectorToolPlugin):
 
 @plugin_registry.register
 class ManifestRefinePlugin(_ConnectorToolPlugin):
-    """Compiler NL-refine applier (#595 / ADR-047 §4) — opted into as ``core/manifest-refine@1``.
-    Applies ONE typed structural op (add_member/set_fan_out/change_kind/add_depends_on) to the
+    """Compiler NL-refine applier (#595 / ADR-047 §4, #750 added set_tools/remove_member) — opted
+    into as ``core/manifest-refine@1``. Applies ONE typed structural op
+    (add_member/set_fan_out/change_kind/add_depends_on/set_tools/remove_member) to the
     supplied manifest via ohm ``apply_refine`` and re-validates through the SAME dry-run — preserve-
     the-rest holds (the manifest flows in deterministically, never re-emitted by the model); a
-    cyclic / capability-escalating / schema-breaking delta is rejected. First-party, in-process;
-    keyless; no net."""
+    cyclic / capability-escalating / schema-breaking / orphaning delta is rejected. First-party,
+    in-process; keyless; no net."""
 
     NAME = "Manifest Refine"  # slug ``manifest-refine`` MUST match the ref's name slug
     CATEGORY = "EXECUTION"
@@ -837,7 +838,10 @@ class ManifestRefinePlugin(_ConnectorToolPlugin):
             },
             "edit_op": {
                 "type": ["object", "string"],
-                "description": "ONE typed refine op (add_member/set_fan_out/change_kind/...)",
+                "description": (
+                    "ONE typed refine op (add_member/set_fan_out/change_kind/add_depends_on/"
+                    "set_tools/remove_member)"
+                ),
             },
         },
     }
