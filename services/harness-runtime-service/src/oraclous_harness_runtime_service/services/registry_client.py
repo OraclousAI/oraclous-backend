@@ -15,7 +15,6 @@ import uuid
 from typing import Any
 
 import httpx
-
 from oraclous_ohm._slug import basic_slug
 
 #: The shape a registry ``error_code`` may take. The registry is trusted, but this token is echoed

@@ -1,0 +1,16 @@
+# Slug-duplication allow-list (#731). See check_slug_duplication.py's module docstring for the
+# detection rule and what it cannot catch.
+#
+# An entry here says "this function matches the hand-written-copy shape (.lower() + a
+# non-alphanumeric-class regex substitution) on purpose, and it has been reviewed" — never add one
+# to silence a violation without reading why it exists. The only entry today is the canonical
+# definition site itself: every OTHER call site in this repository is expected to compose
+# `oraclous_ohm._slug.basic_slug` rather than re-deriving its body.
+schema_version: 1
+allow:
+  - path: packages/ohm/src/oraclous_ohm/_slug.py
+    function: basic_slug
+    reason: >
+      The canonical definition site (#731). This IS the hand-written normaliser every other plain
+      copy in the repository now composes instead of re-deriving — flagging it would be flagging
+      the primitive against itself.
