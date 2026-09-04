@@ -192,6 +192,13 @@ def main() -> int:
         }
         for sub in sub_harnesses.values():
             sub["models"] = [model]
+        # #695/ADR-050 D3: a saved draft no longer carries its sub-harnesses inline — the agents are
+        # filed in the registry and the draft keeps only their manifest_refs, so ``sub_harnesses``
+        # reads back as {}. The model bound above therefore survives only inside the filed agent,
+        # where a reader of the draft alone cannot see it. The desk reads the team's models off the
+        # draft to bind its intake read-back to the same model the team runs on, and finds none.
+        # Declare the model at team level too, which is where a team's own model belongs.
+        manifest["models"] = [model]
         body = {"name": args.name, "manifest": manifest, "sub_harnesses": sub_harnesses}
 
         if args.draft_id:
