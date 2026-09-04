@@ -32,6 +32,7 @@ from oraclous_ohm.compiler.validate import (
     DEFAULT_OUTPUTS_SCHEMA,
     Substrate,
     _catalog_slugs,
+    _file_substrate_flag,
     _name_hint,
     _tool_slug,
 )
@@ -157,20 +158,7 @@ def _capability_absence_flags(
         for tool in m.tools:
             slug = _tool_slug(tool)
             if substrate == "graph" and slug in FILE_SUBSTRATE_TOOLS:
-                flags.append(
-                    ImportFlag(
-                        code="F-SUBSTRATE-FILE",
-                        severity="blocking",
-                        member_role=m.role,
-                        message=(
-                            f"member {m.role!r} declares tool {tool!r}, which reads and writes a"
-                            " per-organisation file sandbox that nothing else can see. Under the"
-                            " graph substrate a member persists to the team's shared knowledge"
-                            " graph: use 'graph-ingest' to write and 'knowledge-retriever' /"
-                            " 'find-similar' to read"
-                        ),
-                    )
-                )
+                flags.append(_file_substrate_flag(m.role, tool))
                 continue
             if not slug or slug not in allowed:
                 flags.append(
