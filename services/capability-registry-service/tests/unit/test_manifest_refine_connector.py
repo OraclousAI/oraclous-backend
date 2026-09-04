@@ -215,6 +215,30 @@ async def test_without_a_repository_an_imported_tool_blocks_rather_than_failing_
     assert res.data["would_block"] is True
 
 
+async def test_the_connector_applies_set_tools_through_the_shared_applier() -> None:
+    # #750 — the connector is a thin wrapper over ohm's apply_refine; set_tools must round-trip
+    # through it exactly like the four existing ops do.
+    ex = _connector(_FakeCapabilityRepo([]))
+    op = {"op": "set_tools", "role": "researcher", "tools": [_BUILTIN]}
+    res = await ex.execute({"manifest": _manifest(), "edit_op": op}, _ctx())
+    assert res.success is True
+    assert res.data["applied"] is True and res.data["would_block"] is False
+    researcher = next(m for m in res.data["manifest"]["members"] if m["role"] == "researcher")
+    assert researcher["tools"] == [_BUILTIN]
+
+
+async def test_the_connector_refuses_a_removal_with_a_dependant_and_returns_manifest_none() -> None:
+    # #750 — "writer" depends_on=["researcher"], so removing "researcher" must be REFUSED (never
+    # orphan a dependant), and the refusal's manifest is None like every other blocked delta.
+    ex = _connector(_FakeCapabilityRepo([]))
+    op = {"op": "remove_member", "role": "researcher"}
+    res = await ex.execute({"manifest": _manifest(), "edit_op": op}, _ctx())
+    assert res.success is True
+    assert res.data["would_block"] is True and res.data["applied"] is False
+    assert res.data["manifest"] is None
+    assert any("F-REFINE-MEMBER-DEPENDED-ON" in b for b in res.data["blocking"])
+
+
 async def test_a_malformed_op_fails_closed() -> None:
     ex = ManifestRefineConnector({"id": "x"})
     res = await ex.execute({"manifest": _manifest(), "edit_op": {"op": "nonsense"}}, _ctx())
