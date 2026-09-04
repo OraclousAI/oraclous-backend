@@ -32,7 +32,16 @@
       "tools": [
         "web-research",
         "graph-ingest"
-      ]
+      ],
+      "tool_rationale": {
+        "web-research": "The researcher's whole job is live evidence: it searches for real dated sources on the idea's assumptions, then reads the most relevant hits as text.",
+        "graph-ingest": "Every source it reads must be captured as the source's own words, so the cross-examiner and the synthesiser can cite it instead of re-finding it."
+      },
+      "outputs_schema": {
+        "required": [
+          "summary"
+        ]
+      }
     },
     {
       "role": "knowledge-scout",
@@ -47,7 +56,17 @@
         "knowledge-retriever",
         "find-similar",
         "graph-ingest"
-      ]
+      ],
+      "tool_rationale": {
+        "knowledge-retriever": "It checks what the organisation already knows before anything is searched on the open web, which is a read of this run's graph.",
+        "find-similar": "Prior work rarely matches on keywords, so it needs the similarity search to surface related notes and uploads the retriever misses.",
+        "graph-ingest": "Each relevant internal record is captured as an excerpt, so the synthesiser can cite prior internal evidence as evidence."
+      },
+      "outputs_schema": {
+        "required": [
+          "summary"
+        ]
+      }
     },
     {
       "role": "cross-examiner",
@@ -62,7 +81,17 @@
         "web-research",
         "knowledge-retriever",
         "graph-ingest"
-      ]
+      ],
+      "tool_rationale": {
+        "web-research": "Breaking a claim means finding a source that contradicts it, which cannot be done from what the team already ingested.",
+        "knowledge-retriever": "It makes one read of what the researcher and the knowledge-scout ingested, to pick the load-bearing claims worth attacking.",
+        "graph-ingest": "Every contradicting or complicating source it reads is captured verbatim, so a challenge carries the same evidence weight as the original claim."
+      },
+      "outputs_schema": {
+        "required": [
+          "summary"
+        ]
+      }
     },
     {
       "role": "experiment-designer",
@@ -76,7 +105,17 @@
         "knowledge-retriever",
         "webfetch",
         "graph-ingest"
-      ]
+      ],
+      "tool_rationale": {
+        "knowledge-retriever": "It makes one read of everything ingested so far, including what could not be verified, to know which questions are still open.",
+        "webfetch": "Costing a proposed test sometimes needs one specific page \u2014 a price list or a published benchmark \u2014 rather than an open search.",
+        "graph-ingest": "The finished list of tests and kill conditions is captured once, so the synthesiser cites it instead of re-deriving it."
+      },
+      "outputs_schema": {
+        "required": [
+          "summary"
+        ]
+      }
     },
     {
       "role": "synthesizer",
@@ -93,7 +132,18 @@
         "knowledge-retriever",
         "find-similar",
         "graph-ingest"
-      ]
+      ],
+      "tool_rationale": {
+        "knowledge-retriever": "It writes from what the team gathered, so it must read the run's ingested evidence rather than recall it.",
+        "find-similar": "Claims scatter across members, so similarity search finds the related evidence a keyword read leaves behind.",
+        "graph-ingest": "The decision brief is written exactly once as an artifact, which is how the desk finds and renders it."
+      },
+      "outputs_schema": {
+        "required": [
+          "posture",
+          "headline"
+        ]
+      }
     }
   ],
   "orchestration": {
