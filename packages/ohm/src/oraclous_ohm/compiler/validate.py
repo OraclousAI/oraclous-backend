@@ -341,9 +341,15 @@ def validate_draft(
     # team-level field lives on the MANIFEST, which this loop never builds — while member-level
     # reads the already-parsed OHMMember (the field exists on the schema, so a supported/reserved
     # value alike constructs cleanly; only validate_draft judges the value).
+    # A non-string here is UNKNOWN, never absent. The team-level value is read from the raw draft
+    # dict rather than a parsed model, so nothing has type-checked it yet — and treating a
+    # ``deliverable_format: 123`` as "not declared" would fail OPEN, letting a garbage value through
+    # a gate whose whole job is to refuse values it does not recognise. The member level gets this
+    # for free: it is read off a parsed OHMMember, so a non-string never reaches here.
     raw_team_format = data.get("deliverable_format")
-    if isinstance(raw_team_format, str):
-        team_flag = _deliverable_format_flag("", raw_team_format)
+    if raw_team_format is not None:
+        team_value = raw_team_format if isinstance(raw_team_format, str) else repr(raw_team_format)
+        team_flag = _deliverable_format_flag("", team_value)
         if team_flag is not None:
             flags.append(team_flag)
     for m in members:
