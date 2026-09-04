@@ -27,8 +27,10 @@ from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
 # the SAME slug normalization the compiler's capability-absence gate uses (one implementation): a
 # foreign namespace / emoji / nested path can never masquerade as a surveyed bare tool (#594).
+from oraclous_ohm._slug import FILE_SUBSTRATE_TOOLS
 from oraclous_ohm.compiler.validate import (
     DEFAULT_OUTPUTS_SCHEMA,
+    Substrate,
     _catalog_slugs,
     _name_hint,
     _tool_slug,
@@ -84,8 +86,34 @@ class AddDependsOn(_BaseOp):
     depends_on: str = Field(min_length=1)  # the role the named member now waits on
 
 
+class SetTools(_BaseOp):
+    """ "give the researcher just web search" — REPLACES the named member's tools[] wholesale.
+
+    Not a merge — the op restates the whole list the member should hold. ``tool_rationale`` is
+    pruned to the tools actually held after the replace, then the op's entries are applied over the
+    survivors: a kept tool's existing justification survives even when the op restates none."""
+
+    op: Literal["set_tools"] = "set_tools"
+    tools: list[str] = Field(default_factory=list)
+    tool_rationale: dict[str, str] = Field(default_factory=dict)
+
+
+class RemoveMember(_BaseOp):
+    """ "drop the fact-checker" — delete the named member (#750).
+
+    Refused, never silently orphaning, when the member is depended on (``depends_on`` or
+    ``run_if.from_role``), is the runtime entrypoint, or sits in an orchestration loop seam.
+    ``fan_out.over`` is a free-text JSONPath, not a typed role edge — it is deliberately NOT
+    scanned for a role reference; guessing a role out of it would refuse legitimate removals."""
+
+    op: Literal["remove_member"] = "remove_member"
+
+
 #: a discriminated union — the LLM op-drafter emits exactly ONE of these (function-calling shape).
-RefineOp = Annotated[AddMember | SetFanOut | ChangeKind | AddDependsOn, Field(discriminator="op")]
+RefineOp = Annotated[
+    AddMember | SetFanOut | ChangeKind | AddDependsOn | SetTools | RemoveMember,
+    Field(discriminator="op"),
+]
 
 _OP_ADAPTER: TypeAdapter[RefineOp] = TypeAdapter(RefineOp)
 
@@ -111,15 +139,39 @@ class RefineResult(BaseModel):
     report: ImportReport
 
 
-def _capability_absence_flags(members: list[OHMMember], catalog: object) -> list[ImportFlag]:
+def _capability_absence_flags(
+    members: list[OHMMember], catalog: object, *, substrate: Substrate = "graph"
+) -> list[ImportFlag]:
     """The ADR-032 gate, identical to the compiler's: every member.tools entry must be a SURVEYED
     tool — an unsurveyed/empty-slug tool blocks F-CAPABILITY-MISSING so a refine cannot ESCALATE
-    capability (grant an undeclared send/publish/spend tool the surveyor never offered)."""
+    capability (grant an undeclared send/publish/spend tool the surveyor never offered).
+
+    #750: under the graph substrate a FILE tool (write/edit/read/grep/glob) blocks
+    F-SUBSTRATE-FILE instead — the SAME precedence and wording ``validate_draft`` uses — since a
+    file tool is not merely unsurveyed, it targets a substrate the graph default withholds
+    entirely (the engine's ``draft_catalog`` never offers it, so it always fails the plain
+    membership check too; the substrate reason is just the truthful one)."""
     allowed = _catalog_slugs(catalog)
     flags: list[ImportFlag] = []
     for m in members:
         for tool in m.tools:
             slug = _tool_slug(tool)
+            if substrate == "graph" and slug in FILE_SUBSTRATE_TOOLS:
+                flags.append(
+                    ImportFlag(
+                        code="F-SUBSTRATE-FILE",
+                        severity="blocking",
+                        member_role=m.role,
+                        message=(
+                            f"member {m.role!r} declares tool {tool!r}, which reads and writes a"
+                            " per-organisation file sandbox that nothing else can see. Under the"
+                            " graph substrate a member persists to the team's shared knowledge"
+                            " graph: use 'graph-ingest' to write and 'knowledge-retriever' /"
+                            " 'find-similar' to read"
+                        ),
+                    )
+                )
+                continue
             if not slug or slug not in allowed:
                 flags.append(
                     ImportFlag(
@@ -169,7 +221,40 @@ def _apply_op(
     if target is None:
         return [_flag("F-REFINE-UNKNOWN-MEMBER", op.role, f"no member named {op.role!r}")]
 
-    if isinstance(op, SetFanOut):
+    if isinstance(op, RemoveMember):
+        # cannot join the plain isinstance chain below — it must delete from BOTH members and the
+        # by_role index the caller shares, not just mutate the target in place.
+        def _depends_on_it(m: OHMMember) -> bool:
+            return op.role in m.depends_on or (
+                m.run_if is not None and m.run_if.from_role == op.role
+            )
+
+        dependants = sorted(m.role for m in members if m.role != op.role and _depends_on_it(m))
+        if dependants:
+            names = ", ".join(repr(r) for r in dependants)
+            return [
+                _flag(
+                    "F-REFINE-MEMBER-DEPENDED-ON",
+                    op.role,
+                    f"member {op.role!r} cannot be removed — it is depended on by: {names}",
+                )
+            ]
+        members[:] = [m for m in members if m.role != op.role]  # mutate IN PLACE
+        del by_role[op.role]
+        return []
+
+    if isinstance(op, SetTools):
+        # REPLACE wholesale, never merge (#750) — the caller's later _capability_absence_flags
+        # pass, which walks ALL members post-mutation, is what makes replace-not-merge safe: a
+        # replacement naming an unavailable tool blocks exactly as add_member does.
+        target.tools = list(op.tools)
+        held = {_tool_slug(t) for t in target.tools}
+        # prune to tools actually held (by slug membership, NOT "was it named in this op") so a
+        # kept tool's existing justification survives even when the op restates none.
+        rationale = {k: v for k, v in target.tool_rationale.items() if _tool_slug(k) in held}
+        rationale.update(op.tool_rationale)
+        target.tool_rationale = rationale
+    elif isinstance(op, SetFanOut):
         target.fan_out = OHMFanOut(over=op.over, max_parallel=op.max_parallel, reduce=op.reduce)
     elif isinstance(op, ChangeKind):
         target.kind = op.kind
@@ -186,6 +271,46 @@ def _apply_op(
 
 def _flag(code: str, role: str, message: str) -> ImportFlag:
     return ImportFlag(code=code, severity="blocking", member_role=role, message=message)
+
+
+def _removal_guard_flags(manifest: OHMManifest, op: RefineOp) -> list[ImportFlag]:
+    """Whole-manifest guards ``_apply_op`` cannot see (it gets only ``members``/``by_role``, never
+    widened to take the whole manifest). Returns ``[]`` for any op that is not ``RemoveMember``.
+
+    #750 — F-REFINE-ENTRYPOINT exists because, without it, removing the entrypoint member writes
+    successfully and then bricks the draft permanently: ``apply_refine`` returns
+    ``manifest.model_copy(update={"members": patched_members})`` — only ``members`` is replaced, so
+    a dangling ``runtime.entrypoint`` survives. The dry-run does not notice (``assemble_team``
+    computes its OWN entrypoint from the patched members and ignores the caller's); the next read
+    raises in ``parse.load_ohm``, which the service layer turns into a 422 — forever, since every
+    later read/edit/run on the stored draft hits the same raise.
+
+    Both guards below run unconditionally — neither short-circuits the other, and neither
+    short-circuits the dependants check in ``_apply_op`` — so a member that is both the entrypoint
+    and depended on reports every reason at once."""
+    if not isinstance(op, RemoveMember):
+        return []
+    flags: list[ImportFlag] = []
+    if manifest.runtime.entrypoint == op.role:
+        flags.append(
+            _flag(
+                "F-REFINE-ENTRYPOINT",
+                op.role,
+                f"member {op.role!r} is the runtime entrypoint and cannot be removed — point the"
+                " entrypoint at another member first",
+            )
+        )
+    for loop in manifest.orchestration.loops if manifest.orchestration else []:
+        if op.role in loop.members:
+            flags.append(
+                _flag(
+                    "F-REFINE-MEMBER-IN-LOOP",
+                    op.role,
+                    f"member {op.role!r} is part of an orchestration loop and cannot be removed",
+                )
+            )
+            break
+    return flags
 
 
 def _dag_flags(op: RefineOp, members: list[OHMMember]) -> list[ImportFlag]:
@@ -216,16 +341,24 @@ def apply_refine(
     *,
     catalog: object,
     owner_organization_id: uuid.UUID,
+    substrate: Substrate = "graph",
 ) -> RefineResult:
     """Apply a typed NL-refine op to ``manifest`` and re-validate through the SAME gate the importer
     and compiler use. Returns the patched manifest (only the named member changed, everything else
     byte-identical) + the dry-run report; on a blocking delta the manifest is None (NOT mutated) and
-    the report carries the gap reasons (``would_block=True``)."""
+    the report carries the gap reasons (``would_block=True``).
+
+    ``substrate`` (#750) matches ``validate_draft``'s existing signature and defaults to ``graph``
+    (ADR-040 Decision 7, cloud-first): a ``set_tools`` naming a file tool blocks
+    ``F-SUBSTRATE-FILE`` instead of the generic capability-absence message."""
     patched_members = [m.model_copy(deep=True) for m in manifest.members]
     by_role = {m.role: m for m in patched_members}
 
-    flags = _apply_op(op, patched_members, by_role)
-    flags += _capability_absence_flags(patched_members, catalog)
+    # whole-manifest removal guards (entrypoint / loop membership) run FIRST, before the mutation,
+    # so the most actionable reason is listed first when a member is refused for more than one.
+    flags = _removal_guard_flags(manifest, op)
+    flags += _apply_op(op, patched_members, by_role)
+    flags += _capability_absence_flags(patched_members, catalog, substrate=substrate)
     flags += _dag_flags(op, patched_members)  # cycle / unknown dep / dup role
 
     # deep-copy the orchestration into the assembler: ``assemble_team`` reassigns ``.loops`` on it
