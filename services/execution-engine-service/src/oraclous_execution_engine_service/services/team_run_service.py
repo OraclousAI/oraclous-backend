@@ -901,8 +901,23 @@ class TeamRunService:
         anyway. "Before the row, before the worker" is the invariant that matters, and it still
         holds — this is the last thing that can refuse, right before the row is written.
         """
+        missing = await self.missing_tool_credentials(team, sub_harnesses)
+        if missing:
+            raise TeamRunPreflightError(missing)
+
+    async def missing_tool_credentials(
+        self, team: OHMManifest, sub_harnesses: Mapping[str, dict]
+    ) -> list[dict[str, str]]:
+        """The tool credentials this team still needs, as the pre-flight computes them.
+
+        Split out of ``_preflight_tool_credentials`` (#932) with NO behaviour change, so the apps
+        layer can ASK the same question the GO gate asks. The console shows "connect a search key to
+        use this" on an app's page rather than only as the 409 the moment someone presses Run; the
+        409 stays the load-bearing gate, this is the affordance in front of it. One computation, so
+        the page and the gate can never disagree.
+        """
         if self._registry is None:
-            return
+            return []
         wanted: list[tuple[str, str, str]] = []  # (role, binding, ref)
         for member in team.members:
             if member.kind != "agent" or not member.tools:
@@ -919,7 +934,7 @@ class TeamRunService:
                     continue  # self-configuring: the harness mints + binds from these (#663)
                 wanted.append((member.role, binding, ref))
         if not wanted:
-            return
+            return []
         try:
             async with asyncio.timeout(_PREFLIGHT_TIMEOUT_SECONDS):
                 tools = await self._registry.list_tools()
@@ -956,8 +971,7 @@ class TeamRunService:
                 502,
                 error_type="registry_unavailable",
             ) from exc
-        if missing:
-            raise TeamRunPreflightError(missing)
+        return missing
 
     @staticmethod
     async def _first_unmet_credential(
@@ -1096,6 +1110,7 @@ class TeamRunService:
         graph_id: str | None = None,
         inputs: dict[str, Any] | None = None,
         seed_from_run_id: uuid.UUID | None = None,
+        app_id: uuid.UUID | None = None,
     ) -> EngineTeamRun:
         """Request path: validate + persist a QUEUED run + hand it to the worker (202). The drive
         runs on the worker so a large team (30 agents) never blocks/times out the HTTP request."""
@@ -1143,6 +1158,7 @@ class TeamRunService:
                 graph_id=graph_id,
                 inputs=inputs,
                 seed_from_run_id=seed_from_run_id,
+                app_id=app_id,  # #932: which app started this, so the app can show its history
             )
         if self._enqueue is not None:
             self._enqueue(row.id, org, principal.principal_id)

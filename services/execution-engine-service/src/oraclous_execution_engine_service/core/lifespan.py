@@ -72,6 +72,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     roundtable_repo: RoundtableRepository | None = None
     team_run_repo: TeamRunRepository | None = None
     team_draft_repo: TeamDraftRepository | None = None
+    app_repo: AppRepository | None = None
     provenance_repo: ProvenanceRepository | None = None
     sink: PostgresProvenanceSink | None = None
     try:

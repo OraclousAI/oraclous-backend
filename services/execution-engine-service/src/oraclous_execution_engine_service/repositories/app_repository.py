@@ -14,7 +14,7 @@ leave the other silently wrong, which is why the raw-SQL tests prove the policy 
 from __future__ import annotations
 
 import uuid
-from typing import Any
+from typing import TYPE_CHECKING, Any, cast
 
 from sqlalchemy import cast as sa_cast
 from sqlalchemy import delete, func, literal, select, update
@@ -29,6 +29,9 @@ from oraclous_execution_engine_service.domain.app_freeze import (
     freeze_documents,
 )
 from oraclous_execution_engine_service.models.app import EngineApp
+
+if TYPE_CHECKING:
+    from sqlalchemy.engine import CursorResult
 
 
 class AppRepository:
@@ -269,7 +272,10 @@ class AppRepository:
                         EngineApp.organisation_id == organisation_id,
                     )
                 )
-                return bool(result.rowcount)
+            # AsyncSession.execute is typed Result; a DML statement returns a CursorResult (the only
+            # variant carrying ``rowcount``). Cast to read the affected-row count (typed-service
+            # convention, as schedule_repository.delete does).
+            return (cast("CursorResult[object]", result).rowcount or 0) > 0
 
     def fingerprint(self, manifest: dict[str, Any], sub_harnesses: dict[str, Any]) -> str:
         """Exposed so a caller can ask "has this changed?" without writing."""

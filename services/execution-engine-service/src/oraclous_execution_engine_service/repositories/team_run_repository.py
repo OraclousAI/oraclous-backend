@@ -48,6 +48,7 @@ class TeamRunRepository:
         graph_id: str | None = None,
         inputs: dict[str, Any] | None = None,
         seed_from_run_id: uuid.UUID | None = None,
+        app_id: uuid.UUID | None = None,
     ) -> EngineTeamRun:
         row = EngineTeamRun(
             id=uuid.uuid4(),
@@ -63,6 +64,7 @@ class TeamRunRepository:
             graph_id=graph_id,
             inputs=inputs,
             seed_from_run_id=seed_from_run_id,  # #602: the named prior run this run refreshes from
+            app_id=app_id,  # #932: the app this run was started from, for its own history
         )
         async with self._session() as session:
             async with session.begin():
@@ -146,11 +148,29 @@ class TeamRunRepository:
             )
             return list(result.scalars().all())
 
+    async def list_for_app(
+        self,
+        organisation_id: uuid.UUID,
+        app_id: uuid.UUID,
+        *,
+        limit: int = 20,
+        offset: int = 0,
+    ) -> tuple[list[dict[str, Any]], int]:
+        """#932: the runs one app produced, for THIS organisation.
+
+        STRICTLY org-scoped, with no platform widening — unlike the app row itself. The app may be
+        one every organisation can read; its runs never are, so two organisations running the same
+        Oraclous-provided app cannot see each other's inputs or results. Same lean projection as the
+        org-wide runs list, so an app's history page never loads a manifest per row.
+        """
+        return await self.list_for_org(organisation_id, app_id=app_id, limit=limit, offset=offset)
+
     async def list_for_org(
         self,
         organisation_id: uuid.UUID,
         *,
         states: Sequence[str] | None = None,
+        app_id: uuid.UUID | None = None,
         limit: int = 50,
         offset: int = 0,
     ) -> tuple[list[dict[str, Any]], int]:
@@ -164,6 +184,8 @@ class TeamRunRepository:
         conditions = [EngineTeamRun.organisation_id == organisation_id]
         if states:
             conditions.append(EngineTeamRun.state.in_(list(states)))
+        if app_id is not None:  # #932: one app's own history
+            conditions.append(EngineTeamRun.app_id == app_id)
         async with self._session() as session:
             page = await session.execute(
                 select(

@@ -155,6 +155,12 @@ class EngineTeamRun(BaseModel):
     # (a duplicate Beat tick / fire-now in the same window gets None) WITHOUT constraining direct
     # team-runs (which leave it NULL).
     idempotency_key: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # ── #932 app binding (additive, nullable) ─────────────────────────────────────────────────
+    # The app this run was started from, so an app can show its own history; NULL for a run started
+    # any other way. Mirrors ``schedule_id`` above rather than adding a join table. The run itself
+    # stays STRICTLY org-scoped even when the app is one every organisation can read — the app is
+    # shared, its runs never are.
+    app_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
 
     __table_args__ = (
         Index(
