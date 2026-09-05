@@ -27,9 +27,7 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.add_column(
-        "engine_team_runs", sa.Column("app_id", pg.UUID(as_uuid=True), nullable=True)
-    )
+    op.add_column("engine_team_runs", sa.Column("app_id", pg.UUID(as_uuid=True), nullable=True))
     op.create_index(
         "ix_engine_team_runs_org_app",
         "engine_team_runs",

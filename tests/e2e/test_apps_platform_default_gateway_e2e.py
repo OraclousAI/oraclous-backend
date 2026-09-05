@@ -126,26 +126,82 @@ def test_a_tenant_cannot_rename_or_delete_the_shared_app(
     assert still is not None and still["name"] == desk["name"]
 
 
-def test_running_with_nothing_connected_is_a_connect_prompt_not_a_started_run(
+def test_a_run_with_no_model_is_a_plain_validation_failure(
     register: Callable[..., dict], gateway_client: Callable[[str], httpx.Client]
 ) -> None:
-    """A fresh organisation has no model key and no configured search tool, so the desk cannot run.
-    The refusal has to arrive BEFORE a run exists — a run that starts and dies six tool calls later
-    has already spent the caller's money to tell them the same thing."""
-    client = gateway_client(register("Unconnected User")["token"])
+    """No model supplied is the CLIENT's mistake, and reads as one.
+
+    A stored app carries no credential at all, so the caller's key has to arrive with the request.
+    Leaving it out is a malformed call, not a "go and connect something" — the console always sends
+    it. Kept separate from the test below because collapsing the two would let either refusal
+    satisfy the other, and they mean different things to the person on the screen.
+    """
+    client = gateway_client(register("No Model User")["token"])
     desk = _find(client.get("/v1/engine/apps").json()["apps"], _DESK_SLUG)
     assert desk is not None
 
-    before = client.get("/v1/engine/team-runs").json()["total"]
     attempt = client.post(
         f"/v1/engine/apps/{desk['id']}/runs",
         json={"inputs": {"task": "A tool that files expense reports for contractors."}},
     )
 
+    assert attempt.status_code == 422, attempt.text
+
+
+@requires_byom
+def test_an_unconnected_tool_is_a_connect_prompt_not_a_started_run(
+    register: Callable[..., dict], gateway_client: Callable[[str], httpx.Client]
+) -> None:
+    """The desk searches the web, and a fresh organisation has no search tool configured — so the
+    run must be refused with a prompt naming what to connect.
+
+    The refusal has to arrive BEFORE a run exists. A run that starts and dies six tool calls later
+    has already spent the caller's money to tell them the same thing.
+
+    Needs a real model key only because the model is validated first: this test is about the TOOL
+    gate, and reaching it requires getting past the model one.
+    """
+    who = register("Unconnected Tool User")
+    client = gateway_client(who["token"])
+    desk = _find(client.get("/v1/engine/apps").json()["apps"], _DESK_SLUG)
+    assert desk is not None
+
+    stored = client.post(
+        "/credentials/",
+        json={
+            "tool_id": str(uuid.uuid4()),
+            "user_id": who["user_id"],
+            "name": "e2e model key",
+            "provider": "openrouter",
+            "cred_type": "api_key",
+            "credential": {"api_key": _OR_KEY},
+        },
+    )
+    assert stored.status_code == 201, stored.text
+
+    before = client.get("/v1/engine/team-runs").json()["total"]
+    attempt = client.post(
+        f"/v1/engine/apps/{desk['id']}/runs",
+        json={
+            "inputs": {"task": "A tool that files expense reports for contractors."},
+            "models": [
+                {
+                    "role": "primary",
+                    "binding": _MODEL,
+                    "protocol_shape": "openai-compatible",
+                    "config": {"credential_id": stored.json()["id"]},
+                }
+            ],
+        },
+    )
+
     assert attempt.status_code == 409, attempt.text
     body = attempt.json()
-    assert body.get("needs_credential"), body  # top-level: what the gateway relays
-    assert set(body["needs_credential"]) >= {"provider"}
+    # The gateway rewrites the engine's body into its own error envelope, so the top-level
+    # `needs_credential` can arrive either bare or under `error` — assert on the pair itself.
+    needs = body.get("needs_credential") or body.get("error", {}).get("needs_credential")
+    assert needs, body
+    assert needs.get("provider"), needs
 
     assert client.get("/v1/engine/team-runs").json()["total"] == before, "no run was created"
 
