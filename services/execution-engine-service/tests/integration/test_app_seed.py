@@ -40,8 +40,8 @@ async def app_repository(engine_dsns) -> AsyncIterator[Any]:  # noqa: ANN001
 
 
 async def test_the_validation_desk_is_there_after_one_seed(app_repository: Any) -> None:
+    from oraclous_execution_engine_service.core.rls import org_scope
     from oraclous_execution_engine_service.services.app_seed_service import seed_platform_apps
-    from oraclous_substrate.access import org_scope
 
     await seed_platform_apps(app_repository, platform_org_id=PLATFORM_ORG)
 
@@ -55,8 +55,8 @@ async def test_the_validation_desk_is_there_after_one_seed(app_repository: Any) 
 
 async def test_seeding_twice_leaves_one_app_with_the_same_id(app_repository: Any) -> None:
     """Every boot re-seeds. A second run must be a no-op, not a duplicate tile in everyone's tab."""
+    from oraclous_execution_engine_service.core.rls import org_scope
     from oraclous_execution_engine_service.services.app_seed_service import seed_platform_apps
-    from oraclous_substrate.access import org_scope
 
     await seed_platform_apps(app_repository, platform_org_id=PLATFORM_ORG)
     with org_scope(ORG_A):
@@ -77,8 +77,8 @@ async def test_the_seeded_app_carries_no_credential(app_repository: Any) -> None
     the app simply has nothing to run on otherwise."""
     import json
 
+    from oraclous_execution_engine_service.core.rls import org_scope
     from oraclous_execution_engine_service.services.app_seed_service import seed_platform_apps
-    from oraclous_substrate.access import org_scope
 
     await seed_platform_apps(app_repository, platform_org_id=PLATFORM_ORG)
 
@@ -95,8 +95,8 @@ async def test_the_seeded_app_carries_its_members_inline(app_repository: Any) ->
     """A seeded app must not depend on agents filed in a registry, because resolving those would be
     a cross-organisation lookup on every tenant's run. Holding the member documents inline is what
     makes a platform app runnable in a fresh organisation with nothing provisioned."""
+    from oraclous_execution_engine_service.core.rls import org_scope
     from oraclous_execution_engine_service.services.app_seed_service import seed_platform_apps
-    from oraclous_substrate.access import org_scope
 
     await seed_platform_apps(app_repository, platform_org_id=PLATFORM_ORG)
 
@@ -114,8 +114,8 @@ async def test_a_changed_manifest_is_picked_up_and_bumps_the_pinned_version(
 ) -> None:
     """The other half of idempotency. When Oraclous ships a better version of its own app, the seed
     must actually update it — and say so, so the change is visible rather than silent."""
+    from oraclous_execution_engine_service.core.rls import org_scope
     from oraclous_execution_engine_service.services.app_seed_service import seed_platform_apps
-    from oraclous_substrate.access import org_scope
 
     await seed_platform_apps(app_repository, platform_org_id=PLATFORM_ORG)
     with org_scope(ORG_A):

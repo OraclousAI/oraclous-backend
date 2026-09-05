@@ -149,12 +149,31 @@ def test_an_optional_task_input_is_reported_optional() -> None:
 
 
 def test_the_engine_reserved_keys_are_never_offered_as_fields() -> None:
-    """``_refresh_seed`` and ``answers`` are read by the engine on the team's behalf, not supplied
+    """``_refresh_seed`` and ``answers`` are read by the engine on every team's behalf, not supplied
     through an app's form. ``answers`` especially: it is the validation desk's documented one-off
-    (#846), scheduled by ADR-052 for removal onto the descriptor layer, and the apps layer must
-    stay ignorant of it."""
+    (#846), scheduled by ADR-052 for removal onto the descriptor layer, so the apps layer must stay
+    ignorant of it rather than learning to offer it.
+
+    The team here DECLARES both names itself — a fan-out over ``answers`` and one over
+    ``_refresh_seed`` — because a fixture that never mentions them cannot tell correct exclusion
+    from no exclusion logic at all. A team really can spell a member's fan-out that way, and the
+    engine still reads those two keys for its own purposes, so an app form must not hand them to a
+    person to fill in."""
     from oraclous_execution_engine_service.domain.apps import form_fields
 
-    keys = [f["key"] for f in form_fields(_team())]
-    assert "answers" not in keys
-    assert not any(k.startswith("_") for k in keys)
+    manifest = _team()
+    for role, over in (("answerer", "$.answers"), ("refresher", "$._refresh_seed")):
+        manifest["members"].append(
+            {
+                "role": role,
+                "kind": "agent",
+                "manifest_ref": f"org:desk/{role}@1",
+                "subgoal": "read each item",
+                "depends_on": ["researcher"],
+                "outputs_schema": {"required": ["summary"]},
+                "fan_out": {"over": over, "as": "item"},
+            }
+        )
+
+    keys = [f["key"] for f in form_fields(manifest)]
+    assert keys == ["task"]
