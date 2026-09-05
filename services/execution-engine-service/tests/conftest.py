@@ -39,6 +39,12 @@ RLS_TABLES = (
     "engine_team_drafts",
 )
 
+# #932: the apps table is org-scoped like the rest, but its READ side is widened to the platform org
+# so every tenant sees the Oraclous-provided apps. Kept out of RLS_TABLES because it takes a
+# DIFFERENT policy, not because it takes none — see the enable_rls_on call in engine_dsns.
+APPS_TABLE = "engine_apps"
+PLATFORM_ORG_ID = "00000000-0000-0000-0000-0000000000a0"
+
 
 @pytest.fixture(scope="session")
 def postgres_dsn() -> Iterator[str]:
@@ -102,6 +108,11 @@ async def engine_dsns(postgres_dsn: str):  # noqa: ANN201
     owner_async = postgres_dsn.replace("postgresql://", "postgresql+asyncpg://", 1)
     app_async = _to_app_userinfo(owner_async)
 
+    def _table_exists(conn, table: str) -> bool:  # noqa: ANN001 — a psycopg connection
+        with conn.cursor() as cur:
+            cur.execute("SELECT to_regclass(%s) IS NOT NULL", (f"public.{table}",))
+            return bool(cur.fetchone()[0])
+
     # schema via SQLAlchemy (asyncpg); RLS DDL via a sync psycopg connection — enable_rls_on speaks
     # the sync DB-API cursor protocol (the same path the Alembic migration uses), not asyncpg.
     setup_engine = create_async_engine(owner_async)
@@ -112,5 +123,17 @@ async def engine_dsns(postgres_dsn: str):  # noqa: ANN201
     with psycopg.connect(postgres_dsn, autocommit=True) as raw:
         for table in RLS_TABLES:
             pg_schema.enable_rls_on(raw, table)
+        # #932: engine_apps is the ONE engine table with a widened READ — every tenant must see the
+        # Oraclous-provided apps seeded under the platform org, exactly as capability_descriptors
+        # widens for the built-in tool catalogue (ADR-006 platform-catalogue case). WITH CHECK stays
+        # strict, so a tenant still cannot WRITE a platform-org row. Mirrors the migration.
+        #
+        # Guarded on the table's EXISTENCE, not skipped: the [tests] PR lands before the model, so
+        # create_all makes no such table yet and an unguarded ALTER would abort this fixture and
+        # redden every OTHER engine integration test — the same collateral the function-local seam
+        # import rule exists to prevent. The apps tests themselves still fail on the missing table,
+        # which is the RED they are meant to show. The guard self-clears once the model lands.
+        if _table_exists(raw, APPS_TABLE):
+            pg_schema.enable_rls_on(raw, APPS_TABLE, extra_read_org_id=PLATFORM_ORG_ID)
     _provision_app_role(postgres_dsn)
     yield owner_async, app_async
