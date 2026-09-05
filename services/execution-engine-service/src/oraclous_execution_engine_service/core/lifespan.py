@@ -6,6 +6,8 @@ startup the app still serves ``/health`` and the job routes report 503.
 
 from __future__ import annotations
 
+import logging
+import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -19,6 +21,7 @@ from oraclous_execution_engine_service.core.rls import (
     assert_runtime_role_isolates,
     build_rls_engine,
 )
+from oraclous_execution_engine_service.repositories.app_repository import AppRepository
 from oraclous_execution_engine_service.repositories.job_repository import JobRepository
 from oraclous_execution_engine_service.repositories.provenance_repository import (
     ProvenanceRepository,
@@ -32,6 +35,9 @@ from oraclous_execution_engine_service.repositories.team_draft_repository import
     TeamDraftRepository,
 )
 from oraclous_execution_engine_service.repositories.team_run_repository import TeamRunRepository
+from oraclous_execution_engine_service.services.app_seed_service import seed_platform_apps
+
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
@@ -74,6 +80,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         roundtable_repo = RoundtableRepository(settings.database_url)
         team_run_repo = TeamRunRepository(settings.database_url)
         team_draft_repo = TeamDraftRepository(settings.database_url)
+        app_repo = AppRepository(
+            settings.database_url, platform_org_id=uuid.UUID(settings.platform_org_id)
+        )
         provenance_repo = ProvenanceRepository(settings.database_url)
         sink = PostgresProvenanceSink(settings.database_url)
         app.state.job_repository = job_repo
@@ -81,6 +90,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         app.state.roundtable_repository = roundtable_repo
         app.state.team_run_repository = team_run_repo
         app.state.team_draft_repository = team_draft_repo
+        app.state.app_repository = app_repo
         app.state.provenance_repository = provenance_repo
         app.state.provenance = ProvenanceCollector(sink)
     except Exception as exc:  # noqa: BLE001 — degrade: data routes 503, /health reflects it
@@ -89,6 +99,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         app.state.roundtable_repository = None
         app.state.team_run_repository = None
         app.state.team_draft_repository = None
+        app.state.app_repository = None
         app.state.provenance_repository = None
         app.state.provenance = None
         alert(
@@ -104,6 +115,27 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     if verdict.is_degraded and exit_on_degrade_enabled():
         raise SystemExit(1)
 
+    # #932: seed the Oraclous-provided apps into the PLATFORM org. Every tenant then reads them
+    # through engine_apps' widened RLS read, so a freshly created organisation sees the default
+    # apps with nothing provisioned per tenant.
+    #
+    # ADR-030: the INSERT is stamped with the platform org, and the table's strict WITH CHECK admits
+    # that only when app.current_organisation_id equals the row's org — so seed_platform_apps runs
+    # inside org_scope(PLATFORM). Without it the write raises 42501 under the oraclous_app runtime
+    # role, which is the same protection that stops a tenant planting a shared app. Idempotent: the
+    # repository compares document fingerprints, so a re-seed of unchanged content writes nothing
+    # and concurrent replicas booting together are a no-op.
+    #
+    # Degrades rather than crashing: a failed seed means an empty Apps tab, never a dead engine.
+    if app_repo is not None:
+        try:
+            seeded = await seed_platform_apps(
+                app_repo, platform_org_id=uuid.UUID(settings.platform_org_id)
+            )
+            logger.info("seeded %d platform app(s)", len(seeded))
+        except Exception as exc:  # noqa: BLE001 — degrade: no default apps, service still serves
+            logger.warning("platform app seed skipped: %s", exc)
+
     try:
         yield
     finally:
@@ -117,6 +149,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             await team_run_repo.close()
         if team_draft_repo is not None:
             await team_draft_repo.close()
+        if app_repo is not None:
+            await app_repo.close()
         if provenance_repo is not None:
             await provenance_repo.close()
         if sink is not None:
