@@ -181,7 +181,11 @@ async def test_a_tenant_cannot_write_a_row_owned_by_the_platform_org(app_reposit
             sub_harnesses={},
         )
 
-    assert "42501" in str(excinfo.value)  # InsufficientPrivilege, not a silent success
+    # The SQLSTATE lives on the driver's exception, NOT in the rendered message — that text reads
+    # "new row violates row-level security policy for table ..." and never contains the number. An
+    # earlier version of this test matched the string and so could only ever fail; the raw-SQL
+    # sibling below reads `.orig.sqlstate` and is the correct shape.
+    assert getattr(excinfo.value.orig, "sqlstate", None) == "42501"  # InsufficientPrivilege
 
 
 async def test_a_tenant_cannot_edit_or_delete_the_platform_app(app_repository: Any) -> None:
