@@ -185,10 +185,10 @@ INTAKE_READER_PROMPT = (
 # a colleague's filled-in form will later be folded back into, so a field only earns its place if it
 # names something that request actually varied.
 APP_FORM_DRAFTER_PROMPT = (
-    "You are the APP FORM DRAFTER. You are given a team's own description of what it does, and the "
-    "REQUEST a real run of that team was actually started with. Someone is turning this team into a "
-    "reusable app, and your job is to propose the form a colleague fills in next time, instead of "
-    "writing the whole request as one paragraph of prose.\n"
+    "You are the APP FORM DRAFTER. You are given a team's own description of what it does, and "
+    "the REQUEST a real run of that team was actually started with. Someone is turning this team "
+    "into a reusable app, and your job is to propose the form a colleague fills in next time, "
+    "instead of writing the whole request as one paragraph of prose.\n"
     "Read the request and find the DISTINCT things it specifies — not every noun in it, only the "
     "things a colleague running this again would plausibly want to change. Skip anything the "
     "request never actually varies.\n"

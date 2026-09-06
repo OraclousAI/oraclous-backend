@@ -230,9 +230,10 @@ def _truncate(base: str, keep: int) -> str:
 def app_slug(name: str) -> str | None:
     """The plain handle a name implies, or ``None`` when nothing usable survives.
 
-    ``None`` rather than a made-up fallback (``"app"``, a uuid fragment): ``uq_engine_apps_org_slug``
-    is unique per organisation only WHERE the slug is non-null, so a handle-less app is simply safe
-    to store, and inventing one would let the first such app claim a name the next one cannot have.
+    ``None`` rather than a made-up fallback (``"app"``, a uuid fragment):
+    ``uq_engine_apps_org_slug`` is unique per organisation only WHERE the slug is non-null, so a
+    handle-less app is simply safe to store, and inventing one would let the first such app claim a
+    name the next one cannot have.
     """
     slug = _truncate(basic_slug(name), APP_SLUG_MAX)
     return slug or None

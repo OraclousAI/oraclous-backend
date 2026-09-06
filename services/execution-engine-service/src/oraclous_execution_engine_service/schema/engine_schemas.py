@@ -1066,8 +1066,8 @@ class CreateAppFromRunRequest(BaseModel):
 
 
 class SuggestedFormRequest(BaseModel):
-    """Ask a model to draft an app's form from a finished run, or collect one that outran the
-    first call's budget. EITHER ``models`` (start a draft) OR ``form_draft_run_id`` (collect one)."""
+    """Ask a model to draft an app's form from a finished run, or collect one that outran the first
+    call's budget. EITHER ``models`` (start a draft) OR ``form_draft_run_id`` (collect one)."""
 
     models: list[dict[str, Any]] = Field(default_factory=list)
     form_draft_run_id: uuid.UUID | None = None
