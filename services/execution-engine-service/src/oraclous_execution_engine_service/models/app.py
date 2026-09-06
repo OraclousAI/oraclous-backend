@@ -84,6 +84,12 @@ class EngineApp(BaseModel):
     # the draft's `version` when the copy was taken — the only thing that can answer "has the team
     # moved on since?", and only ever as a boolean signal, since the old version itself is gone.
     source_draft_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # the ordered fields a person saw and edited before saving (#938) — a model INVENTS them (the
+    # team declares one input, so there is nothing else to label) and the person's own edit is what
+    # is stored here, never the model's raw answer. NULL for an app that predates this column
+    # (every app seeded before #938), which falls back to the #932 derived projection at read time
+    # (`domain/apps.form_fields`) rather than to an empty list.
+    form: Mapped[list[dict[str, Any]] | None] = mapped_column(JSONB, nullable=True)
     # whose model key a run spends. Only "caller" is accepted today; "owner" needs credential
     # delegation, a billing answer and an operator-separation review (ADR-008 / CLAUDE.md §3.6).
     credentials_mode: Mapped[str] = mapped_column(

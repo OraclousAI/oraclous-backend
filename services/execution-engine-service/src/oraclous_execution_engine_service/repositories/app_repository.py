@@ -80,6 +80,10 @@ class AppRepository:
         # other value at run time — but it is settled when the app is made rather than patched on
         # later, because who pays is not something an app should change under its users.
         credentials_mode: str = "caller",
+        # The authored form (#938) — the ordered fields a person saw and edited before saving.
+        # ``None`` for a platform-seeded app (the seed never calls this with one), which is what
+        # makes the read fall back to the #932 derived projection rather than an empty form.
+        form: list[dict[str, Any]] | None = None,
     ) -> EngineApp:
         """Store an app, freezing its documents on the way in.
 
@@ -103,6 +107,7 @@ class AppRepository:
             source_team_draft_id=source_team_draft_id,
             source_draft_version=source_draft_version,
             credentials_mode=credentials_mode,
+            form=form,
         )
         async with self._session() as session:
             async with session.begin():
@@ -191,6 +196,36 @@ class AppRepository:
             )
             return result.scalar_one_or_none()
 
+    async def slug_exists(self, slug: str, organisation_id: uuid.UUID) -> bool:
+        """Whether ``slug`` is already taken WITHIN the caller's own organisation (#938's slug
+        ladder). Strict equality, not the widened read: ``uq_engine_apps_org_slug`` is unique per
+        ``(organisation_id, slug)``, so a platform app's slug never collides with a tenant's own —
+        checking the widened read here would refuse a free handle for no reason the index enforces.
+        """
+        async with self._session() as session:
+            result = await session.execute(
+                select(EngineApp.id).where(
+                    EngineApp.organisation_id == organisation_id, EngineApp.slug == slug
+                )
+            )
+            return result.first() is not None
+
+    async def get_by_source_run(
+        self, team_run_id: uuid.UUID, organisation_id: uuid.UUID
+    ) -> EngineApp | None:
+        """The app already converted from this run, if any (#938) — so saving the same run twice
+        returns the one app rather than a duplicate nobody can remove (no delete endpoint exists).
+        Strict equality: only the caller's own conversion, never a platform app (which never carries
+        a source run)."""
+        async with self._session() as session:
+            result = await session.execute(
+                select(EngineApp).where(
+                    EngineApp.organisation_id == organisation_id,
+                    EngineApp.source_team_run_id == team_run_id,
+                )
+            )
+            return result.scalar_one_or_none()
+
     async def list_for_org(
         self,
         organisation_id: uuid.UUID,
@@ -218,6 +253,7 @@ class AppRepository:
                     EngineApp.slug,
                     EngineApp.pinned_version,
                     EngineApp.credentials_mode,
+                    EngineApp.source_team_run_id,
                     func.jsonb_array_length(
                         func.coalesce(EngineApp.manifest["members"], sa_cast(literal("[]"), JSONB))
                     ).label("member_count"),
