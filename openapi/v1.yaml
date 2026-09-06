@@ -2443,10 +2443,16 @@ paths:
     get:
       tags: [engine]
       summary: >-
-        Read one app: `origin`, and `inputs` — one entry per field the form should draw, restated
-        from what the underlying team already declares, so a client can never render a field the
-        run would then refuse. Carries NO team documents: running an app is not opening the plan
-        behind it. An app belonging to another organisation is 404, never 403.
+        Read one app: `origin`, `inputs` — one entry per field the form should draw, restated from
+        what the underlying team already declares, so a client can never render a field the run
+        would then refuse — and `plan`, a STRUCTURAL summary of what running it will do. Carries NO
+        team documents: running an app is not opening the plan behind it. An app belonging to
+        another organisation is 404, never 403.
+
+        `plan.steps` lists each step in order with what it waits on and which tools it may use, and
+        `plan.limits` gives the ceilings the run cannot exceed (a null limit means the team declared
+        none — unlimited, NOT zero). No member's prompt is included: that is the plan's content
+        rather than its shape, and in an app someone authored it can carry their own words.
       operationId: getApp
       x-stability: provisional
       parameters:

@@ -21,6 +21,7 @@ from oraclous_execution_engine_service.domain.apps import (
     bind_run_documents,
     derive_origin,
     form_fields,
+    plan_summary,
 )
 from oraclous_execution_engine_service.models.app import EngineApp
 from oraclous_execution_engine_service.models.team_run import EngineTeamRun
@@ -120,6 +121,8 @@ class AppService:
             "description": row.description,
             "slug": row.slug,
             "inputs": form_fields(row.manifest),
+            # What will happen and what it can cost — structure only, never a member's prompt.
+            "plan": plan_summary(row.manifest),
             "member_count": len(row.manifest.get("members") or []),
             "pinned_version": row.pinned_version,
             "credentials_mode": row.credentials_mode,

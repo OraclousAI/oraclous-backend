@@ -84,6 +84,45 @@ def form_fields(manifest: dict[str, Any]) -> list[dict[str, Any]]:
     return fields
 
 
+def plan_summary(manifest: dict[str, Any]) -> dict[str, Any]:
+    """What is going to happen, and the most it can cost — the two things a person is owed before
+    they spend their own model key.
+
+    The app read carries no team documents, because opening an app is not opening the plan behind
+    it. That is right, but "no documents" is not the same as "nothing at all": someone deciding
+    whether to press Run needs to know that this will search the web and write to their knowledge
+    graph, and needs the ceiling the run cannot exceed. Neither is available anywhere else once a
+    client stops reading the team document directly.
+
+    So this is STRUCTURE ONLY: which steps run, what each waits on, which tools each may use, and
+    the run's ceilings. It deliberately omits every member's ``subgoal``. A subgoal is the plan's
+    CONTENT rather than its shape — it is the thing a shared app should not publish, and in an app
+    someone authored it can carry their own words. A test asserts over the whole serialized summary
+    that no prompt reaches it, so a field added later cannot quietly start leaking one.
+
+    A missing ceiling reads as ``None``, never 0: unlimited and "zero allowed" are opposite claims,
+    and a screen rendering the wrong one would mislead exactly the person this exists to inform.
+    """
+    team = OHMManifest.model_validate(manifest)
+    budget = team.budget
+    return {
+        "steps": [
+            {
+                "role": member.role,
+                "kind": member.kind,
+                "depends_on": list(member.depends_on),
+                "tools": list(member.tools),
+            }
+            for member in team.members
+        ],
+        "limits": {
+            "max_tokens_total": getattr(budget, "max_tokens_total", None),
+            "max_tool_calls_total": getattr(budget, "max_tool_calls_total", None),
+            "max_sub_runs": getattr(budget, "max_sub_runs", None),
+        },
+    }
+
+
 def bind_run_documents(
     manifest: dict[str, Any],
     sub_harnesses: dict[str, dict[str, Any]],
