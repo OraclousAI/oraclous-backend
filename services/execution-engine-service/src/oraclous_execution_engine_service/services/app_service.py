@@ -189,12 +189,22 @@ class AppService:
                 error_type="run_not_succeeded",
             )
 
-        # An empty list is accepted here, unlike in a model's DRAFT. A team that declares no
-        # input has nothing for a person to fill in, and the domain already treats that as a
-        # legitimate end state — ``fallback_fields`` offers none and the fold handles none. The
-        # save has to agree, or a run whose read correctly offers an empty form cannot be
-        # converted at all (code review).
+        # An empty list is accepted ONLY for a team that declares no request field. Such a team
+        # has nothing for a person to fill in, and the domain already treats that as a legitimate
+        # end state — ``fallback_fields`` offers none and the fold handles none — so refusing here
+        # would mean a run whose read correctly offers an empty form could never be converted.
+        #
+        # For a team that DOES declare one, an empty form is a trap: the fold would write an empty
+        # request on every run, discarding whatever the person typed, silently and permanently,
+        # with no update endpoint to repair the app. Refused at the save, which is the last moment
+        # anyone is looking (raised by QA against an earlier fix that relaxed this unconditionally).
         parsed_fields: list[FormField] = []
+        if not fields and run.manifest.get("task_input"):
+            raise TeamRunError(
+                "this team takes a request, so its app needs at least one field to fill in",
+                422,
+                error_type="empty_form",
+            )
         if fields:
             try:
                 parsed_fields = parse_form_draft({"fields": fields})
