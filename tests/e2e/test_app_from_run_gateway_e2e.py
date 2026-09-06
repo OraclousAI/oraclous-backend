@@ -74,7 +74,19 @@ def _credential(c: httpx.Client, user: dict) -> str:
     return str(created.json()["id"])
 
 
-def _brief_team(user: dict, credential_id: str) -> tuple[dict, dict]:
+def _model(credential_id: str) -> dict[str, Any]:
+    """The caller's own binding. Built once and threaded everywhere, because the drafting call, the
+    team run and the app run must all spend the SAME key the person just pasted in — and because a
+    fresh credential per call would store three of them for one journey."""
+    return {
+        "role": "primary",
+        "binding": _MODEL,
+        "protocol_shape": "openai-compatible",
+        "config": {"credential_id": credential_id},
+    }
+
+
+def _brief_team(user: dict, model: dict[str, Any]) -> tuple[dict, dict]:
     """A real one-member team that writes a short competitor brief from its request.
 
     It declares ``task_input`` explicitly. That is what a compiled team carries and what the fold
@@ -95,12 +107,6 @@ def _brief_team(user: dict, credential_id: str) -> tuple[dict, dict]:
     imported = import_setup(
         root, owner_organization_id=uuid.UUID(user["org_id"]), name="competitor-brief-e2e"
     )
-    model = {
-        "role": "primary",
-        "binding": _MODEL,
-        "protocol_shape": "openai-compatible",
-        "config": {"credential_id": credential_id},
-    }
     subs = {role: {**sub, "models": [model]} for role, sub in imported.sub_harnesses.items()}
     doc = imported.manifest.model_dump(mode="json")
     doc["models"] = [model]
@@ -122,13 +128,19 @@ def _poll(c: httpx.Client, run_id: str, tries: int = 120) -> dict:
     raise AssertionError(f"run {run_id} never terminated (last: {row.get('state')})")
 
 
-def _suggested_form(c: httpx.Client, run_id: str, tries: int = 8) -> list[dict[str, Any]]:
+def _suggested_form(
+    c: httpx.Client, run_id: str, models: list[dict[str, Any]], tries: int = 8
+) -> list[dict[str, Any]]:
     """Ask for the drafted form, collecting it if the drafter outran the first call's budget.
+
+    ``models`` is required on the FIRST call: drafting is a real model run on the caller's own key,
+    and there is no platform fallback to borrow, so omitting it is a 409 rather than a draft. The
+    collect call carries the token instead — by then the model is already chosen and running.
 
     202 with a collect token is not a failure — it is the same shape the intake read-back already
     uses for a model call that is slower than one HTTP request should wait for (#866).
     """
-    body: dict[str, Any] = {}
+    body: dict[str, Any] = {"models": models}
     for _ in range(tries):
         resp = c.post(f"/v1/engine/team-runs/{run_id}/suggested-form", json=body)
         if resp.status_code == 200:
@@ -150,7 +162,8 @@ def test_a_person_turns_their_finished_run_into_an_app_their_colleagues_can_run(
 
     # 1) run the team for real, and let it finish. An app is made from a run its author watched
     #    work — that is the ruling, and it is why nothing below can be reached without this.
-    doc, subs = _brief_team(author, _credential(c, author))
+    model = _model(_credential(c, author))
+    doc, subs = _brief_team(author, model)
     created = c.post(
         "/v1/engine/team-runs",
         json={
@@ -167,7 +180,7 @@ def test_a_person_turns_their_finished_run_into_an_app_their_colleagues_can_run(
 
     # 2) a REAL model reads that request and proposes the fields. The team declared one input, so
     #    every field here was invented — none of these names exists anywhere in the manifest.
-    fields = _suggested_form(c, run_id)
+    fields = _suggested_form(c, run_id, [model])
     assert fields, "the drafter proposed no fields at all"
     assert all(f["name"].strip() for f in fields), f"a field came back unnamed: {fields}"
     assert all(f["type"] in {"short_text", "long_text", "choice"} for f in fields), fields
@@ -207,14 +220,7 @@ def test_a_person_turns_their_finished_run_into_an_app_their_colleagues_can_run(
         f"/v1/engine/apps/{app['id']}/runs",
         json={
             "inputs": values,
-            "models": [
-                {
-                    "role": "primary",
-                    "binding": _MODEL,
-                    "protocol_shape": "openai-compatible",
-                    "config": {"credential_id": _credential(c, author)},
-                }
-            ],
+            "models": [model],
         },
     )
     assert started.status_code == 202, started.text
