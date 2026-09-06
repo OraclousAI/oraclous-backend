@@ -33,9 +33,6 @@ MAX_FIELDS: Final[int] = 8
 _FIELD_TYPES: Final[frozenset[str]] = frozenset({"short_text", "long_text", "choice"})
 
 _WHITESPACE = re.compile(r"\s+")
-#: A CRLF, a lone CR, or a lone LF — matched longest-alternative-first so a Windows paste never
-#: leaves a stray ``\r`` at the end of an indented line.
-_LINE_SPLIT = re.compile(r"\r\n|\r|\n")
 
 
 class FormShapeError(ValueError):
@@ -167,7 +164,18 @@ def fallback_fields(manifest: dict[str, Any]) -> list[FormField]:
 
 
 def _split_lines(value: str) -> list[str]:
-    return _LINE_SPLIT.split(value)
+    """Every line break, not only the three from a keyboard.
+
+    This is the indentation defence's whole surface, so it has to agree with what will later read
+    the request. ``str.splitlines`` splits on U+2028, U+2029, U+0085, a vertical tab and a form feed
+    as well as CR/LF — and so does a model. A hand-rolled CR/LF-only pattern left a value carrying
+    one of those on the label's own line, unindented, where its second half started at column zero
+    and read as another field: exactly the forgery the indentation exists to stop (security review).
+
+    It also handles a Windows paste without leaving a stray carriage return on an indented line,
+    which is the reason the hand-rolled version existed in the first place.
+    """
+    return value.splitlines()
 
 
 def fold(fields: list[FormField], values: dict[str, Any]) -> str:
