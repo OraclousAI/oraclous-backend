@@ -1,21 +1,26 @@
-"""The app domain vocabulary (domain layer, #932): where an app came from, what its form asks for,
-and how a caller's own model is bound onto it before a run.
+"""The app domain vocabulary (domain layer, #932/#938): where an app came from, what its form asks
+for, how a caller's own model is bound onto it before a run, and the deep-link handle an app is
+given.
 
-Three small pieces, each deliberately thin, because each is a place where inventing more than the
+Four small pieces, each deliberately thin, because each is a place where inventing more than the
 platform already knows would be a mistake:
 
 * ``derive_origin`` computes the platform-versus-organisation distinction rather than storing it;
 * ``form_fields`` restates what the team manifest already declares rather than authoring a form;
 * ``bind_run_documents`` reuses the shared model-binding validator rather than growing a second
-  error vocabulary.
+  error vocabulary;
+* ``app_slug``/``app_slug_candidates`` derive a stable handle from a name, built around the one
+  shared plain-text primitive (``basic_slug``) rather than a hand-rolled normaliser.
 """
 
 from __future__ import annotations
 
 import copy
+import secrets
 import uuid
-from typing import Any
+from typing import Any, Final
 
+from oraclous_ohm._slug import basic_slug
 from oraclous_ohm.errors import OHMDagError
 from oraclous_ohm.manifest import OHMManifest, OHMMember
 
@@ -200,3 +205,61 @@ def bind_run_documents(
         document["models"] = bound
         run_subs[role] = document
     return run_manifest, run_subs
+
+
+# ── the deep-link handle (#938) ───────────────────────────────────────────────
+
+#: Matches ``slug`` (``String(128)``, ``models/app.py``). A candidate that would exceed it is
+#: truncated before it ever reaches the repository, so a save never 500s on a column overflow.
+APP_SLUG_MAX: Final[int] = 128
+
+#: Room the numeric ladder below leaves for a suffix like ``-2`` … ``-51`` without breaching the
+#: column once appended (the longest suffix, ``-51``, is 3 chars).
+_LADDER_STEM = APP_SLUG_MAX - 3
+_LADDER_MAX_TRIES = 50
+_RANDOM_BYTES = 4  # 8 hex chars
+_RANDOM_TRIES = 8
+
+
+def _truncate(base: str, keep: int) -> str:
+    """Cut ``base`` to ``keep`` chars without leaving a trailing hyphen, which an appended suffix
+    would otherwise double into an invalid slug (``"brief-" + "-2"``)."""
+    return base[:keep].rstrip("-")
+
+
+def app_slug(name: str) -> str | None:
+    """The plain handle a name implies, or ``None`` when nothing usable survives.
+
+    ``None`` rather than a made-up fallback (``"app"``, a uuid fragment):
+    ``uq_engine_apps_org_slug`` is unique per organisation only WHERE the slug is non-null, so a
+    handle-less app is simply safe to store, and inventing one would let the first such app claim a
+    name the next one cannot have.
+    """
+    slug = _truncate(basic_slug(name), APP_SLUG_MAX)
+    return slug or None
+
+
+def _random_slug(base: str) -> str:
+    """``base`` with a random suffix, trimmed so the whole slug still fits the column."""
+    suffix = secrets.token_hex(_RANDOM_BYTES)
+    return f"{_truncate(base, APP_SLUG_MAX - len(suffix) - 1)}-{suffix}"
+
+
+def app_slug_candidates(base: str) -> list[str]:
+    """Candidate slugs in preference order: the plain ``base``, then a numeric ladder
+    (``base-2`` … ``base-51``), then random-suffixed candidates.
+
+    Mirrors the uniqueness ladder auth-service already uses for organisation handles
+    (``org_service._slug_candidates``) — the numeric rungs keep an everyday handle short and
+    guessable, and the random tail is what lets the ladder always find a free value once every
+    rung is taken (#676: a numeric-only ladder falls back to the SAME candidate on every call once
+    exhausted, which never becomes free).
+
+    ``base`` is assumed already slugified (typically ``app_slug(name)``) — this composes a
+    uniqueness ladder AROUND it rather than normalising it again.
+    """
+    return [
+        base,
+        *(f"{_truncate(base, _LADDER_STEM)}-{n}" for n in range(2, _LADDER_MAX_TRIES + 2)),
+        *(_random_slug(base) for _ in range(_RANDOM_TRIES)),
+    ]

@@ -66,6 +66,13 @@ class Settings(BaseSettings):
     readback_poll_seconds: float = 25.0
     readback_poll_interval_seconds: float = 2.0
 
+    # --- #938 app form drafter: same reasoning as the intake read-back above. The drafter is a
+    # real LLM team-run the request path polls, and the budget stays under the gateway's upstream
+    # read timeout so a slow draft returns a clean 202 + form_draft_run_id rather than a gateway
+    # 504. ---
+    app_form_draft_poll_seconds: float = 25.0
+    app_form_draft_poll_interval_seconds: float = 2.0
+
     # --- Postgres RLS backstop (ADR-030 / #353) ---
     # When true, the service asserts at startup (web lifespan) AND the worker asserts at
     # worker_process_init that the ORG-BOUND runtime DB role is NOSUPERUSER/NOBYPASSRLS (a bypassing

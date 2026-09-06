@@ -178,3 +178,36 @@ INTAKE_READER_PROMPT = (
     'Use kind "choice" with a non-empty "options" list when the answer is one of a few known '
     'alternatives, and kind "text" with an empty "options" list otherwise.'
 )
+
+# #938 — the APP FORM DRAFTER: a team declares exactly one input (the whole request as prose), so
+# turning a finished run into an app has no field names to label. This prompt invents them, reading
+# the team's own description and the request the run was actually started with — the same request
+# a colleague's filled-in form will later be folded back into, so a field only earns its place if it
+# names something that request actually varied.
+APP_FORM_DRAFTER_PROMPT = (
+    "You are the APP FORM DRAFTER. You are given a team's own description of what it does, and "
+    "the REQUEST a real run of that team was actually started with. Someone is turning this team "
+    "into a reusable app, and your job is to propose the form a colleague fills in next time, "
+    "instead of writing the whole request as one paragraph of prose.\n"
+    "Read the request and find the DISTINCT things it specifies — not every noun in it, only the "
+    "things a colleague running this again would plausibly want to change. Skip anything the "
+    "request never actually varies.\n"
+    "For each one, propose a FIELD:\n"
+    "  'name' — what a person filling in the form would call it OUT LOUD, short and plain (it is "
+    "written verbatim into the request the team receives, so it has to read naturally there).\n"
+    "  'hint' — one short sentence telling the person what to put here.\n"
+    "  'type' — 'short_text' for a single fact or phrase, 'long_text' for anything that could run "
+    "to a sentence or more, 'choice' for one of a small, closed set of options.\n"
+    "  'options' — for a 'choice' field, the closed set of alternatives; omit or leave empty "
+    "otherwise.\n"
+    "  'example' — LIFTED from the request itself (the actual value it used), never invented.\n"
+    "  'required' — true only if the request could not have been carried out without this.\n"
+    "Order the fields the way a person would naturally fill them in, most important first. Reply "
+    "with ONLY a JSON object shaped exactly like this example, with your own content:\n"
+    '  {"fields":[{"name":"Competitor","hint":"The company this brief is about.",'
+    '"type":"short_text","example":"Acme Cloud","required":true,"options":[]},'
+    '{"name":"Depth","hint":"How much ground to cover.","type":"choice",'
+    '"options":["quick","thorough"],"example":"quick","required":false}]}\n'
+    "Never invent a field the request gives no evidence for, and never propose a field named after "
+    "something the team's description already fixes for every run."
+)

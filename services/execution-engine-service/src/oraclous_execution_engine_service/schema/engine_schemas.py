@@ -930,6 +930,21 @@ class AppPlan(BaseModel):
     limits: AppPlanLimits = Field(default_factory=AppPlanLimits)
 
 
+class AppFormField(BaseModel):
+    """ONE control on an app's AUTHORED form (#938) — what a model drafted and a person edited,
+    never what the model raw-answered. ``id`` is the stable handle the run request is keyed by;
+    ``name`` is what the team itself reads, since the filled-in fields are folded into labelled
+    lines under the team's one declared input."""
+
+    id: str
+    name: str
+    hint: str = ""
+    type: str
+    options: list[str] = Field(default_factory=list)
+    example: str = ""
+    required: bool = False
+
+
 class AppOut(BaseModel):
     """One app, opened. Carries the form, where the app came from, and a structural summary of what
     running it will do — but not the team documents, which a person running an app never needs to
@@ -943,10 +958,19 @@ class AppOut(BaseModel):
     description: str | None = None
     slug: str | None = None
     inputs: list[AppInputField] = Field(default_factory=list)
+    #: An app converted from a run (#938) carries the AUTHORED form here — a model drafted it, a
+    #: person edited it. An app that predates #938 (every seeded platform app included) has no
+    #: stored form, so this falls back to the #932 derived projection (one field per declared
+    #: input) rather than coming back empty.
+    form: list[AppFormField] = Field(default_factory=list)
     plan: AppPlan = Field(default_factory=AppPlan)
     member_count: int = 0
     pinned_version: int = 1
     credentials_mode: str = "caller"
+    #: The run this app was converted from (#938). ``None`` for a platform-seeded app — the only
+    #: signal that tells a converted app apart from a hand-made one (the owner's ruling on #877:
+    #: no new boolean, this column already answers it).
+    source_team_run_id: uuid.UUID | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None
 
@@ -966,6 +990,9 @@ class AppListItem(BaseModel):
     member_count: int = 0
     pinned_version: int = 1
     credentials_mode: str = "caller"
+    #: See ``AppOut.source_team_run_id`` — the same "converted vs platform-seeded" signal, on the
+    #: tile.
+    source_team_run_id: uuid.UUID | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None
 
@@ -1021,3 +1048,41 @@ class RunAppRequest(BaseModel):
     models: list[dict[str, Any]] = Field(default_factory=list)
     graph_id: str | None = None
     workspace_root: str | None = None
+
+
+class CreateAppFromRunRequest(BaseModel):
+    """Turn one of the caller's own finished team runs into an app (#938).
+
+    ``fields`` is the form the person is left with after editing the model's draft — this endpoint
+    holds it to the SAME contract ``domain.app_form.parse_form_draft`` holds a model's own answer
+    to, plus one more refusal a model's chattiness never earns: two fields sharing a name is the
+    person's own authoring mistake, worth naming while they can still fix it.
+    """
+
+    team_run_id: uuid.UUID
+    name: str
+    description: str | None = None
+    fields: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class SuggestedFormRequest(BaseModel):
+    """Ask a model to draft an app's form from a finished run, or collect one that outran the first
+    call's budget. EITHER ``models`` (start a draft) OR ``form_draft_run_id`` (collect one)."""
+
+    models: list[dict[str, Any]] = Field(default_factory=list)
+    form_draft_run_id: uuid.UUID | None = None
+
+
+class SuggestedFormOut(BaseModel):
+    """The drafted form: fields a model invented from the run's own request, in the order it
+    proposed them — the order both the screen and the fold read top to bottom."""
+
+    fields: list[AppFormField]
+
+
+class SuggestedFormPendingOut(BaseModel):
+    """The 202 body: the drafter is still driving — re-call with this ``form_draft_run_id`` to
+    collect it."""
+
+    form_draft_run_id: uuid.UUID
+    status: str = "running"
