@@ -76,6 +76,10 @@ class AppRepository:
         source_team_run_id: uuid.UUID | None = None,
         source_team_draft_id: uuid.UUID | None = None,
         source_draft_version: int | None = None,
+        # Whose model key a run spends. Only "caller" is honoured today — the service refuses any
+        # other value at run time — but it is settled when the app is made rather than patched on
+        # later, because who pays is not something an app should change under its users.
+        credentials_mode: str = "caller",
     ) -> EngineApp:
         """Store an app, freezing its documents on the way in.
 
@@ -98,6 +102,7 @@ class AppRepository:
             source_team_run_id=source_team_run_id,
             source_team_draft_id=source_team_draft_id,
             source_draft_version=source_draft_version,
+            credentials_mode=credentials_mode,
         )
         async with self._session() as session:
             async with session.begin():
