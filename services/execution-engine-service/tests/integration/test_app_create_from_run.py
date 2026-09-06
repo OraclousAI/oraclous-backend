@@ -375,3 +375,32 @@ async def test_running_the_app_folds_the_fields_into_the_teams_one_input(wired: 
     sent = recorder.calls[-1]["inputs"]
     assert set(sent) == {"task"}
     assert sent["task"] == "Competitor: Acme Cloud\nFocus: their pricing move"
+
+
+async def test_running_the_app_with_a_required_field_blank_is_refused(wired: Any) -> None:
+    """Raised at the Tests Review gate: the form marks a field required and nothing consumed it.
+
+    It is enforced rather than decorative. A run that reaches the team missing the one thing it
+    needed spends the person's own model key and comes back with a useless answer — worse than a
+    refusal naming what to fill in. Refused before anything is handed to the run path, so nothing
+    is created and nothing is spent.
+    """
+    from oraclous_execution_engine_service.services.team_run_service import TeamRunError
+
+    service, runs, recorder = wired
+    run = await _finished_run(runs, ORG_A)
+    detail, _ = await service.create_from_run(
+        _principal(ORG_A), team_run_id=run.id, name="Brief", description=None, fields=FIELDS
+    )
+
+    with pytest.raises(TeamRunError) as caught:
+        await service.run(
+            detail["id"],
+            _principal(ORG_A),
+            inputs={"competitor": "Acme Cloud"},  # "Focus" is required and absent
+            models=[{"binding": "default", "provider": "openrouter", "model": "openai/gpt-4o"}],
+        )
+
+    assert caught.value.status_code == 422
+    assert "Focus" in str(caught.value), "the refusal does not name the field to fill in"
+    assert recorder.calls == [], "a run was started despite the refusal"
