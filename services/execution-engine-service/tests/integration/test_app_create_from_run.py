@@ -51,6 +51,20 @@ FIELDS: list[dict[str, Any]] = [
 ]
 
 
+#: A binding ``OHMModel`` accepts. The first version of this fixture omitted ``role`` and
+#: ``protocol_shape``, which it requires — and because ``TeamRunRepository.create`` writes the row
+#: directly, bypassing the validation ``TeamRunService.create`` performs, the run reached a state no
+#: real run could. Every read that revalidates the manifest then failed on it.
+_MODELS: list[dict[str, Any]] = [
+    {
+        "role": "primary",
+        "binding": "openrouter/openai/gpt-4o",
+        "protocol_shape": "openai-compatible",
+        "config": {"credential_id": "c1"},
+    }
+]
+
+
 def _principal(org: uuid.UUID | None) -> Principal:
     return Principal(principal_id=USER_A, principal_type=PrincipalType.USER, organisation_id=org)
 
@@ -68,9 +82,9 @@ def _team(org: uuid.UUID) -> dict[str, Any]:
         "task_input": {"required": True, "key": "task", "description": "The competitor and angle."},
         "models": [
             {
-                "binding": "default",
-                "provider": "openrouter",
-                "model": "openai/gpt-4o",
+                "role": "primary",
+                "binding": "openrouter/openai/gpt-4o",
+                "protocol_shape": "openai-compatible",
                 "config": {"credential_id": str(uuid.uuid4()), "temperature": 0.2},
             }
         ],
@@ -369,7 +383,7 @@ async def test_running_the_app_folds_the_fields_into_the_teams_one_input(wired: 
         detail["id"],
         _principal(ORG_A),
         inputs={"competitor": "Acme Cloud", "focus": "their pricing move"},
-        models=[{"binding": "default", "provider": "openrouter", "model": "openai/gpt-4o"}],
+        models=_MODELS,
     )
 
     sent = recorder.calls[-1]["inputs"]
@@ -398,7 +412,7 @@ async def test_running_the_app_with_a_required_field_blank_is_refused(wired: Any
             detail["id"],
             _principal(ORG_A),
             inputs={"competitor": "Acme Cloud"},  # "Focus" is required and absent
-            models=[{"binding": "default", "provider": "openrouter", "model": "openai/gpt-4o"}],
+            models=_MODELS,
         )
 
     assert caught.value.status_code == 422

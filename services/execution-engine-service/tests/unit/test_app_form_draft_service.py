@@ -277,7 +277,10 @@ async def test_the_drafter_is_handed_the_request_the_run_was_started_with() -> N
 
     await svc.suggest(_principal(), team_run_id=run.id, models=_MODELS)
 
-    submitted = json.dumps(team_runs.created[-1])
+    # ``ensure_ascii=False``: the request below carries an em dash, and the default escapes it
+    # to ``\\u2014`` — so this assert could never pass for an implementation that forwards the
+    # text verbatim, which is exactly what the ruling requires.
+    submitted = json.dumps(team_runs.created[-1], ensure_ascii=False)
     assert _REQUEST in submitted, "the drafter never saw the request it is meant to read"
     assert "The competitor to cover and the angle to take." in submitted, (
         "the drafter never saw what the team says it does"
@@ -291,7 +294,9 @@ async def test_the_drafting_run_spends_the_callers_own_model() -> None:
 
     await svc.suggest(_principal(), team_run_id=run.id, models=_MODELS)
 
-    assert "c1" in json.dumps(runs.created[-1]), "the caller's own binding did not reach the run"
+    assert "c1" in json.dumps(runs.created[-1], ensure_ascii=False), (
+        "the caller's own binding did not reach the run"
+    )
 
 
 # ── the answer ───────────────────────────────────────────────────────────────
