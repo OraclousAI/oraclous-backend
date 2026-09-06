@@ -23,6 +23,7 @@ from oraclous_execution_engine_service.domain.app_form import (
     FormField,
     FormShapeError,
     fallback_fields,
+    fan_out_keys,
     missing_required,
     parse_form_draft,
     to_run_inputs,
@@ -188,10 +189,17 @@ class AppService:
                 error_type="run_not_succeeded",
             )
 
-        try:
-            parsed_fields = parse_form_draft({"fields": fields})
-        except FormShapeError as exc:
-            raise TeamRunError(str(exc), 422, error_type="invalid_form") from exc
+        # An empty list is accepted here, unlike in a model's DRAFT. A team that declares no
+        # input has nothing for a person to fill in, and the domain already treats that as a
+        # legitimate end state — ``fallback_fields`` offers none and the fold handles none. The
+        # save has to agree, or a run whose read correctly offers an empty form cannot be
+        # converted at all (code review).
+        parsed_fields: list[FormField] = []
+        if fields:
+            try:
+                parsed_fields = parse_form_draft({"fields": fields})
+            except FormShapeError as exc:
+                raise TeamRunError(str(exc), 422, error_type="invalid_form") from exc
         names = [f.name for f in parsed_fields]
         if len(names) != len(set(names)):
             # The draft parser forgives a chatty model; the person's own edit is an authoring
@@ -326,7 +334,10 @@ class AppService:
                     422,
                     error_type="missing_required_field",
                 )
-            run_inputs = to_run_inputs(row.manifest, fields, values)
+            # The fold covers the drafted fields; a fan-out key is a list the person supplies
+            # and travels as itself. Passing nothing here dropped it silently (code review).
+            carried = {k: values[k] for k in fan_out_keys(row.manifest) if k in values}
+            run_inputs = to_run_inputs(row.manifest, fields, values, passthrough=carried)
 
         run_manifest, run_subs = bind_run_documents(
             row.manifest, row.sub_harnesses, models=models, organisation_id=org

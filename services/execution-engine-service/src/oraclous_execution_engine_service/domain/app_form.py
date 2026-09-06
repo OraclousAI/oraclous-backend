@@ -211,6 +211,33 @@ def missing_required(fields: list[FormField], values: dict[str, Any]) -> list[st
     return missing
 
 
+def fan_out_keys(manifest: dict[str, Any]) -> set[str]:
+    """The keys a team declares BESIDES its request — the ones ``to_run_inputs`` must carry rather
+    than fold.
+
+    A member that fans out declares the key it fans out over, and that key holds a LIST a person
+    supplies. Folding it into the request would leave the member with nothing to fan out over, so
+    it has to travel as itself. Naming the keys is the manifest reader's job: the run path had a
+    ``passthrough`` parameter and no way to know what belonged in it, so it passed nothing and a
+    fan-out team's list vanished on every run (found at code review).
+
+    Both spellings the engine accepts are understood — ``$.regions`` and a bare ``regions`` — for
+    the same reason ``_declared_input_keys`` understands both: a reader that knew only one would
+    silently drop the other team's list.
+    """
+    keys: set[str] = set()
+    for member in manifest.get("members") or []:
+        if not isinstance(member, dict):
+            continue
+        fan_out = member.get("fan_out")
+        if not isinstance(fan_out, dict):
+            continue
+        over = fan_out.get("over")
+        if isinstance(over, str) and over:
+            keys.add(over[2:] if over.startswith("$.") else over)
+    return keys
+
+
 def to_run_inputs(
     manifest: dict[str, Any],
     fields: list[FormField],
