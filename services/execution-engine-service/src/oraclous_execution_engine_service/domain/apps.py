@@ -16,7 +16,8 @@ import copy
 import uuid
 from typing import Any
 
-from oraclous_ohm.manifest import OHMManifest
+from oraclous_ohm.errors import OHMDagError
+from oraclous_ohm.manifest import OHMManifest, OHMMember
 
 from oraclous_execution_engine_service.services.compiler_run_service import (
     validate_model_bindings,
@@ -82,6 +83,84 @@ def form_fields(manifest: dict[str, Any]) -> list[dict[str, Any]]:
         # and a member that fans out over nothing simply does no work — so it is optional.
         fields.append({"key": key, "required": False, "description": None})
     return fields
+
+
+def plan_summary(manifest: dict[str, Any]) -> dict[str, Any]:
+    """What is going to happen, and the most it can cost — the two things a person is owed before
+    they spend their own model key.
+
+    The app read carries no team documents, because opening an app is not opening the plan behind
+    it. That is right, but "no documents" is not the same as "nothing at all": someone deciding
+    whether to press Run needs to know that this will search the web and write to their knowledge
+    graph, and needs the ceiling the run cannot exceed. Neither is available anywhere else once a
+    client stops reading the team document directly.
+
+    So this is STRUCTURE ONLY: which steps run, in what order, what each waits on, which tools each
+    may use, and the run's ceilings.
+
+    ORDER IS THE REAL ORDER. Steps come back in execution order, grouped by ``stage`` — everything
+    in one stage runs together, and the next stage waits for all of it. That order is computed by
+    the SAME topological pass the runtime uses, not read off the order members happen to be written
+    in. An earlier version iterated declaration order and called it execution order; it agreed with
+    the runtime only by luck of how the manifest was typed, and would have shown a reader a
+    confidently wrong picture of their own run.
+
+    When the graph cannot be ordered at all — a cycle, or a dependency naming a member that does
+    not exist — this does NOT raise. A team like that will fail the moment someone presses Run, and
+    the honest thing is to say the order is unknown rather than either hiding the steps or inventing
+    a sequence: ``ordered`` is False and every ``stage`` is None. A screen can then show the steps
+    and warn, which is strictly more than it had before.
+
+    It deliberately omits every member's ``subgoal``. A subgoal is the plan's CONTENT rather than
+    its shape — the thing a shared app should not publish, and in an app someone authored it can
+    carry their own words. Note the honest limit of that guarantee: it is an exclusion of the field
+    that holds prose today, not proof that no author text can appear. ``role`` is free text. Before
+    user-authored apps become readable by other organisations, this needs to become an allowlist of
+    what may be published rather than a list of what may not.
+
+    A missing ceiling reads as ``None``, never 0: unlimited and "zero allowed" are opposite claims,
+    and a screen rendering the wrong one would mislead exactly the person this exists to inform.
+    """
+    team = OHMManifest.model_validate(manifest)
+    by_role = {member.role: member for member in team.members}
+
+    try:
+        stages = team.execution_stages()
+    except OHMDagError:
+        stages = None
+
+    steps: list[dict[str, Any]] = []
+    if stages is None:
+        steps = [_step(member, stage=None) for member in team.members]
+    else:
+        for index, roles in enumerate(stages):
+            # sorted() so a stage's members come back the same way on every read — a fan-out has no
+            # inherent order, and a list that reshuffles between reads reads as movement to a user.
+            steps.extend(
+                _step(by_role[role], stage=index) for role in sorted(roles) if role in by_role
+            )
+
+    budget = team.budget
+    return {
+        "steps": steps,
+        "ordered": stages is not None,
+        "limits": {
+            "max_tokens_total": budget.max_tokens_total if budget else None,
+            "max_tool_calls_total": budget.max_tool_calls_total if budget else None,
+            "max_sub_runs": budget.max_sub_runs if budget else None,
+        },
+    }
+
+
+def _step(member: OHMMember, *, stage: int | None) -> dict[str, Any]:
+    """One step, as a reader sees it. Structure only — never the member's prompt."""
+    return {
+        "role": member.role,
+        "kind": member.kind,
+        "stage": stage,
+        "depends_on": list(member.depends_on),
+        "tools": list(member.tools),
+    }
 
 
 def bind_run_documents(

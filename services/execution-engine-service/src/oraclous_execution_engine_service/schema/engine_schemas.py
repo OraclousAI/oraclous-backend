@@ -883,9 +883,57 @@ class AppInputField(BaseModel):
     description: str | None = None
 
 
+class AppPlanStep(BaseModel):
+    """ONE step in what an app is about to do.
+
+    Structure only — role, kind, what it waits on, which tools it may use. Deliberately no
+    ``subgoal``: a member's prompt is the plan's CONTENT rather than its shape, it is the thing a
+    shared app must not publish, and in an app someone authored it can carry their own words.
+    """
+
+    role: str
+    kind: str = "agent"
+    #: Which wave this runs in. Everything sharing a stage runs together; the next stage waits for
+    #: all of it. ``None`` when the plan could not be ordered at all (see ``AppPlan.ordered``).
+    stage: int | None = None
+    depends_on: list[str] = Field(default_factory=list)
+    tools: list[str] = Field(default_factory=list)
+
+
+class AppPlanLimits(BaseModel):
+    """The ceilings this run cannot exceed.
+
+    ``None`` means the team declared no ceiling — unlimited, NOT zero. The two are opposite claims,
+    and a screen rendering "0" for an undeclared budget would tell the reader the exact reverse of
+    the truth.
+    """
+
+    max_tokens_total: int | None = None
+    max_tool_calls_total: int | None = None
+    max_sub_runs: int | None = None
+
+
+class AppPlan(BaseModel):
+    """What is going to happen, and the most it can cost — shown before someone presses Run.
+
+    The app read carries no team documents, because opening an app is not opening the plan behind
+    it. This is the part that is nonetheless owed to a person about to spend their own model key:
+    that this will search the web and write to their knowledge graph, and where the ceiling sits.
+    """
+
+    steps: list[AppPlanStep] = Field(default_factory=list)
+    #: False when the steps could not be put in run order — a cycle, or a dependency naming a member
+    #: that does not exist. Such a team fails the moment someone presses Run, so the steps are still
+    #: listed (in declaration order, every ``stage`` None) and the order is reported as unknown
+    #: rather than invented. A client should warn rather than draw a sequence.
+    ordered: bool = True
+    limits: AppPlanLimits = Field(default_factory=AppPlanLimits)
+
+
 class AppOut(BaseModel):
-    """One app, opened. Carries the form and where the app came from — not the team documents,
-    which a person running an app never needs to see."""
+    """One app, opened. Carries the form, where the app came from, and a structural summary of what
+    running it will do — but not the team documents, which a person running an app never needs to
+    see."""
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -895,6 +943,7 @@ class AppOut(BaseModel):
     description: str | None = None
     slug: str | None = None
     inputs: list[AppInputField] = Field(default_factory=list)
+    plan: AppPlan = Field(default_factory=AppPlan)
     member_count: int = 0
     pinned_version: int = 1
     credentials_mode: str = "caller"
