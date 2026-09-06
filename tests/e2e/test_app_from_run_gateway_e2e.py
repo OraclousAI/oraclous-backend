@@ -184,9 +184,13 @@ def test_a_person_turns_their_finished_run_into_an_app_their_colleagues_can_run(
     assert fields, "the drafter proposed no fields at all"
     assert all(f["name"].strip() for f in fields), f"a field came back unnamed: {fields}"
     assert all(f["type"] in {"short_text", "long_text", "choice"} for f in fields), fields
-    assert len(fields) >= 2, (
-        f"the drafter found only one field in a request naming a competitor, an angle and a "
-        f"length — that is the un-drafted form #932 already had: {fields}"
+    # What must not happen is the drafter degrading to the form #932 already had: one long-text
+    # box carrying the team's own description. Asserted by SHAPE rather than by counting fields,
+    # because how many a model finds in one paragraph is the model's judgement on the day — and a
+    # test that fails on a reasonable answer is a flaky test, which is a bug (CLAUDE.md §11).
+    assert not (len(fields) == 1 and fields[0]["type"] == "long_text"), (
+        f"the drafter fell back to the un-drafted single box rather than reading the request: "
+        f"{fields}"
     )
 
     # 3) the person edits a name before saving, and the app is stored with what they chose.

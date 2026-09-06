@@ -503,3 +503,51 @@ async def test_a_team_that_declares_no_input_can_still_become_an_app(wired: Any)
     await service.run(detail["id"], _principal(ORG_A), inputs={}, models=_MODELS)
 
     assert recorder.calls[-1]["inputs"] == {}, "an app with no form still runs the team as it was"
+
+
+async def test_an_empty_form_is_refused_when_the_team_does_have_a_request(wired: Any) -> None:
+    """Raised by QA against the previous fix, which relaxed the empty-form check too far.
+
+    Letting a team with NO request field save an empty form is right. Letting a team that HAS one
+    save an empty form is not: the fold would then write an empty request on every run, discarding
+    whatever the person typed, silently and permanently — with no update endpoint to repair it.
+    """
+    from oraclous_execution_engine_service.services.team_run_service import TeamRunError
+
+    service, runs, _ = wired
+    run = await _finished_run(runs, ORG_A)  # this team declares `task`
+
+    with pytest.raises(TeamRunError) as caught:
+        await service.create_from_run(
+            _principal(ORG_A), team_run_id=run.id, name="Blank", description=None, fields=[]
+        )
+
+    assert caught.value.status_code == 422
+
+
+async def test_an_app_that_predates_the_form_still_passes_its_inputs_through(wired: Any) -> None:
+    """The backward-compatibility claim, asserted rather than only stated in a docstring.
+
+    Every app made before #938 — the Oraclous-provided one included — has no stored form, and its
+    run path must be exactly what it was: whatever the caller sends reaches the team untouched. The
+    only place this was previously observable was an end-to-end test that is red for its own
+    unrelated reasons, so a regression here would have reached main unseen.
+    """
+    from oraclous_execution_engine_service.core.rls import org_scope
+
+    service, _runs, recorder = wired
+    with org_scope(ORG_A):
+        row = await service._apps.create(
+            organisation_id=ORG_A,
+            user_id=USER_A,
+            name="Older App",
+            description=None,
+            slug=None,
+            manifest=_team(ORG_A),
+            sub_harnesses={},
+            form=None,
+        )
+
+    await service.run(row.id, _principal(ORG_A), inputs={"task": "exactly this"}, models=_MODELS)
+
+    assert recorder.calls[-1]["inputs"] == {"task": "exactly this"}
