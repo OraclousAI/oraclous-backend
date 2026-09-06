@@ -3,6 +3,19 @@
 Status: **proposed**. Issue: `OraclousAI/oraclous-backend#851` · Epic: `#827` ·
 Client contract: `OraclousAI/oraclous-frontend` `docs/specs/213-decision-brief.md` and `#224`.
 
+> **Partly superseded by #932 (5 Sep 2026).** The team is no longer registered by hand into
+> whichever organisation a script authenticated as. It is seeded at engine startup into the
+> platform organisation as an **app**, and every organisation reads it through the widened
+> row-level-security read on `engine_apps` — so `scripts/desk_research_team/`,
+> `scripts/register_desk_team.py` and `scripts/run_desk_team.py` are **deleted**, and the frontend's
+> `VITE_DESK_TEAM_DRAFT_ID` is no longer needed (the console finds the app by its `validation-desk`
+> slug). The manifest now lives at
+> `services/execution-engine-service/src/oraclous_execution_engine_service/domain/seed_apps/validation_desk/manifest.json`.
+>
+> This also answers **open question 1** below ("Which organisation owns the team?") — the platform
+> organisation does. The commands and file table further down describe the retired flow; a
+> `docs-writer` pass is owed to rewrite them.
+
 ---
 
 ## Assumptions

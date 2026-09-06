@@ -27,6 +27,12 @@ class Settings(BaseSettings):
     dev_user_id: str = "00000000-0000-0000-0000-0000000000e7"
     # matches the other services' DEV_ORG_ID so a standalone smoke shares one tenant.
     dev_org_id: str = "00000000-0000-0000-0000-00000000050a"
+    # #932: the org that owns the Oraclous-provided apps. Seeded under this org at startup, and
+    # readable by every tenant through the widened RLS read on engine_apps — so a freshly created
+    # organisation sees the default apps with nothing provisioned. Deliberately the SAME value the
+    # capability registry uses for its built-in tool catalogue: one platform tenant, not one per
+    # feature. NOT dev_org_id, which is a dev-auth fallback tenant and not a global-resource seam.
+    platform_org_id: str = "00000000-0000-0000-0000-0000000000a0"
     internal_service_key: str | None = None
     jwt_secret: str | None = None
     jwt_algorithm: str = "HS256"

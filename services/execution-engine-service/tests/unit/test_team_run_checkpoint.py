@@ -78,6 +78,7 @@ class FakeTeamRunRepo:
         graph_id: str | None = None,
         inputs: dict[str, Any] | None = None,
         seed_from_run_id: uuid.UUID | None = None,
+        app_id: uuid.UUID | None = None,  # #932: tracks the real repo's signature
     ) -> EngineTeamRun:
         row = EngineTeamRun(
             id=uuid.uuid4(),

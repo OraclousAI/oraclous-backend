@@ -9,6 +9,7 @@ and exposes the job service. The Postgres repository + provenance collector are 
 from __future__ import annotations
 
 import secrets
+import uuid
 from collections.abc import AsyncIterator
 from typing import Annotated
 
@@ -24,6 +25,7 @@ from oraclous_execution_engine_service.core.auth import (
     verify_token,
 )
 from oraclous_execution_engine_service.core.config import get_settings
+from oraclous_execution_engine_service.repositories.app_repository import AppRepository
 from oraclous_execution_engine_service.repositories.job_repository import JobRepository
 from oraclous_execution_engine_service.repositories.provenance_repository import (
     ProvenanceRepository,
@@ -37,6 +39,7 @@ from oraclous_execution_engine_service.repositories.team_draft_repository import
 )
 from oraclous_execution_engine_service.repositories.team_run_repository import TeamRunRepository
 from oraclous_execution_engine_service.services.activity_service import ActivityService
+from oraclous_execution_engine_service.services.app_service import AppService
 from oraclous_execution_engine_service.services.compiler_run_service import CompilerRunService
 from oraclous_execution_engine_service.services.graph_client import GraphClient
 from oraclous_execution_engine_service.services.harness_client import HarnessClient
@@ -295,6 +298,33 @@ def get_team_draft_repository(request: Request) -> TeamDraftRepository:
     return repo
 
 
+def get_app_repository(request: Request) -> AppRepository:
+    repo = getattr(request.app.state, "app_repository", None)
+    if repo is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="engine store unavailable (DATABASE_URL not reachable)",
+        )
+    return repo
+
+
+def get_app_service(
+    apps: Annotated[AppRepository, Depends(get_app_repository)],
+    team_runs: Annotated[TeamRunService, Depends(get_team_run_service)],
+    team_run_repository: Annotated[TeamRunRepository, Depends(get_team_run_repository)],
+) -> AppService:
+    # #932: the Apps tab. `team_runs` is the SAME create path a client uses, so an app run meets
+    # every validator and the credential pre-flight a direct run meets — no second runtime seam and
+    # no second error vocabulary. `platform_org_id` is what makes an app's `origin` computable.
+    settings = get_settings()
+    return AppService(
+        apps=apps,
+        team_runs=team_runs,
+        team_run_repository=team_run_repository,
+        platform_org_id=uuid.UUID(settings.platform_org_id),
+    )
+
+
 def get_team_draft_service(
     drafts: Annotated[TeamDraftRepository, Depends(get_team_draft_repository)],
     team_runs: Annotated[TeamRunService, Depends(get_team_run_service)],
@@ -346,5 +376,6 @@ ScheduleServiceDep = Annotated[ScheduleService, Depends(get_schedule_service)]
 RoundtableServiceDep = Annotated[RoundtableService, Depends(get_roundtable_service)]
 TeamRunServiceDep = Annotated[TeamRunService, Depends(get_team_run_service)]
 TeamDraftServiceDep = Annotated[TeamDraftService, Depends(get_team_draft_service)]
+AppServiceDep = Annotated[AppService, Depends(get_app_service)]
 CompilerRunServiceDep = Annotated[CompilerRunService, Depends(get_compiler_run_service)]
 IntakeReadbackServiceDep = Annotated[IntakeReadbackService, Depends(get_intake_readback_service)]

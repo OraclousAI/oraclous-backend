@@ -857,3 +857,118 @@ class CreateCompilerRunRequest(BaseModel):
     success_criteria: str | None = Field(default=None, max_length=4000)
     models: list[dict[str, Any]] = Field(min_length=1)
     graph_id: str | None = Field(default=None, max_length=512)
+
+
+# --- Apps (#932) -------------------------------------------------------------------------------
+# An app is a team behind a short form. Two kinds share one list: the ones Oraclous provides and the
+# ones an organisation made. `origin` is what separates them, and it is DERIVED from the row's
+# owner rather than stored — so a request can never assert "platform" and the value can never drift
+# from what the row-level security policy enforces. Ruled by the owner on #877 (5 Sep).
+
+
+class AppInputField(BaseModel):
+    """ONE control the app's form draws.
+
+    A RESTATEMENT of what the team manifest already declares — the ``task_input.key`` plus each
+    member's ``fan_out.over`` — not an authored form. That is what stops the console offering a
+    field the run would then refuse (#714).
+
+    Carries no label, widget type, options or ordering. Those belong to the app-descriptor layer
+    ADR-052 decision 3 ruled must exist, which #845 owns; a partial version here is what that issue
+    exists to prevent.
+    """
+
+    key: str
+    required: bool = False
+    description: str | None = None
+
+
+class AppOut(BaseModel):
+    """One app, opened. Carries the form and where the app came from — not the team documents,
+    which a person running an app never needs to see."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    origin: str
+    name: str
+    description: str | None = None
+    slug: str | None = None
+    inputs: list[AppInputField] = Field(default_factory=list)
+    member_count: int = 0
+    pinned_version: int = 1
+    credentials_mode: str = "caller"
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+class AppListItem(BaseModel):
+    """ONE tile in the Apps tab — a row, NOT the document: never carries ``manifest``/
+    ``sub_harnesses`` (the repo projects only these columns, digging ``member_count`` out of
+    ``manifest.members`` at query time)."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    origin: str
+    name: str
+    description: str | None = None
+    slug: str | None = None
+    member_count: int = 0
+    pinned_version: int = 1
+    credentials_mode: str = "caller"
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+    @field_validator("member_count", mode="before")
+    @classmethod
+    def _coerce_member_count(cls, v: Any) -> Any:
+        return v if v is not None else 0
+
+
+class AppListOut(BaseModel):
+    """One page of the apps a caller can see — its own organisation's AND the Oraclous-provided
+    ones — plus the FULL matching ``total``. The engine's ``{<key>: [...], total}`` convention."""
+
+    apps: list[AppListItem]
+    total: int
+
+
+class AppToolRequirement(BaseModel):
+    """One tool this app needs, and whether the caller has connected it yet."""
+
+    role: str
+    binding: str
+    provider: str
+    credential_type: str | None = None
+    satisfied: bool = False
+
+
+class AppRequirementsOut(BaseModel):
+    """What this app needs before it can run, and what the caller is still missing.
+
+    The console shows this on the app's own page, so "connect a search key to use this" appears
+    BEFORE someone fills in the form — rather than only as the 409 at the moment they press Run.
+    The 409 remains the load-bearing gate; this is the affordance in front of it.
+    """
+
+    credentials_mode: str = "caller"
+    model_required: bool = True
+    model_binding: str | None = None
+    tools: list[AppToolRequirement] = Field(default_factory=list)
+    ready: bool = False
+
+
+class RunAppRequest(BaseModel):
+    """Run an app: values for its declared inputs, plus the caller's OWN model binding.
+
+    ``models`` is required and is the whole of the owner's bring-your-own ruling in one field: a
+    stored app carries no credential (freezing strips them, the seed never had one), so a run
+    cannot start on anyone else's key. Validated by the same ``validate_model_bindings`` the
+    compiler on-ramp uses, so a malformed binding is one familiar 422 rather than a new dialect.
+    """
+
+    inputs: dict[str, Any] = Field(default_factory=dict)
+    models: list[dict[str, Any]] = Field(default_factory=list)
+    graph_id: str | None = None
+    workspace_root: str | None = None

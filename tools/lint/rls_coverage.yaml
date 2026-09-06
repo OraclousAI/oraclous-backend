@@ -86,6 +86,13 @@ services:
       - engine_team_runs
       - engine_adopted_tool_runs
       - engine_team_drafts
+      # #932: engine_apps carries a WIDENED-READ policy (reads admit the caller org OR the
+      # PLATFORM_ORG that owns the Oraclous-provided apps; writes stay strict to the caller org) —
+      # the same shape capability_descriptors uses for the built-in tool catalogue, and the second
+      # use of the substrate's extra_read_org_id hook. Still RLS-enabled, so it counts here; the
+      # widened shape itself is proven by raw-SQL tests in test_app_rls_isolation.py rather than by
+      # this coverage check, which only asks whether a policy exists.
+      - engine_apps
   # Slice (capability-registry) — unified capability/tool registry + execution. All four org-scoped
   # tables carry a uuid organisation_id; every runtime accessor binds the org via the engine's
   # org-GUC begin-guard before any query, so RLS the full set (no exclusions). capability_descriptors
