@@ -418,3 +418,88 @@ async def test_running_the_app_with_a_required_field_blank_is_refused(wired: Any
     assert caught.value.status_code == 422
     assert "Focus" in str(caught.value), "the refusal does not name the field to fill in"
     assert recorder.calls == [], "a run was started despite the refusal"
+
+
+# ── the two paths code review found nothing exercised ────────────────────────
+
+
+async def test_a_fan_out_list_survives_the_run_of_a_converted_app(wired: Any) -> None:
+    """Raised at code review: the fold carried the drafted fields and dropped everything else.
+
+    A member that fans out declares a second key, and that key is a LIST a person supplies rather
+    than prose. Folding it away leaves the member with nothing to fan out over — either a confusing
+    refusal naming an input the form never asked for, or a run that quietly does no work. Nothing
+    caught it because no test ran a fan-out team through an app.
+    """
+    service, runs, recorder = wired
+    team = _team(ORG_A)
+    team["members"][0]["fan_out"] = {"over": "$.regions"}
+    from oraclous_execution_engine_service.core.rls import org_scope
+
+    with org_scope(ORG_A):
+        row = await runs.create(
+            organisation_id=ORG_A,
+            user_id=USER_A,
+            manifest=team,
+            sub_harnesses={"scout": {"models": _MODELS}},
+            gate_decisions={},
+            inputs={"task": "Brief on Acme.", "regions": ["EU", "US"]},
+        )
+        await runs.transition(
+            row.id, ORG_A, new_state="SUCCEEDED", allowed_from=frozenset({"QUEUED"})
+        )
+
+    detail, _ = await service.create_from_run(
+        _principal(ORG_A),
+        team_run_id=row.id,
+        name="Regional Brief",
+        description=None,
+        fields=FIELDS,
+    )
+    await service.run(
+        detail["id"],
+        _principal(ORG_A),
+        inputs={"competitor": "Acme", "focus": "pricing", "regions": ["EU", "US"]},
+        models=_MODELS,
+    )
+
+    sent = recorder.calls[-1]["inputs"]
+    assert sent["regions"] == ["EU", "US"], "the fan-out list was folded away"
+    assert sent["task"].startswith("Competitor: Acme")
+
+
+async def test_a_team_that_declares_no_input_can_still_become_an_app(wired: Any) -> None:
+    """Also raised at code review. Such a team has nothing for a person to fill in, and the domain
+    already treats an empty form as a legitimate end state — ``fallback_fields`` returns none for
+    it and the fold handles none. The save must agree: refusing here would mean a run whose read
+    correctly offers an empty form cannot be converted at all.
+    """
+    from oraclous_execution_engine_service.core.rls import org_scope
+
+    service, runs, recorder = wired
+    team = _team(ORG_A)
+    del team["task_input"]
+
+    with org_scope(ORG_A):
+        row = await runs.create(
+            organisation_id=ORG_A,
+            user_id=USER_A,
+            manifest=team,
+            sub_harnesses={"scout": {"models": _MODELS}},
+            gate_decisions={},
+            inputs=None,
+        )
+        await runs.transition(
+            row.id, ORG_A, new_state="SUCCEEDED", allowed_from=frozenset({"QUEUED"})
+        )
+
+    detail, created = await service.create_from_run(
+        _principal(ORG_A), team_run_id=row.id, name="Standing Brief", description=None, fields=[]
+    )
+
+    assert created is True
+    assert detail["form"] == []
+
+    await service.run(detail["id"], _principal(ORG_A), inputs={}, models=_MODELS)
+
+    assert recorder.calls[-1]["inputs"] == {}, "an app with no form still runs the team as it was"

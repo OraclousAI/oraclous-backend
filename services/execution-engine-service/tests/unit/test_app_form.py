@@ -467,3 +467,63 @@ def test_whitespace_does_not_satisfy_a_required_field() -> None:
     fields = parse_form_draft(_drafted())
 
     assert missing_required(fields, {"competitor": "Acme", "focus": "   "}) == ["Focus"]
+
+
+# ── the keys the fold must NOT swallow ───────────────────────────────────────
+#
+# Raised at code review: ``to_run_inputs`` grew a ``passthrough`` parameter for fan-out keys and was
+# tested with one, but nothing told the caller which keys belong in it — so the one real caller
+# passed none and a fan-out team's list vanished on every run of the app. The keys are a property of
+# the manifest, so naming them is the manifest reader's job, not the caller's guesswork.
+
+
+def test_a_teams_fan_out_keys_are_named_from_its_own_manifest() -> None:
+    """A member that fans out declares the key it fans out over. That key is a list a person
+    supplies, not prose, so it can never be folded — and something has to say which key it is."""
+    from oraclous_execution_engine_service.domain.app_form import fan_out_keys
+
+    team = _team(
+        members=[
+            {
+                "role": "scout",
+                "kind": "agent",
+                "manifest_ref": "org:brief/scout@1",
+                "subgoal": "gather evidence",
+                "depends_on": [],
+                "fan_out": {"over": "$.regions"},
+                "outputs_schema": {"required": ["summary"]},
+            }
+        ]
+    )
+
+    assert fan_out_keys(team) == {"regions"}
+
+
+def test_a_fan_out_key_written_without_the_path_prefix_is_named_too() -> None:
+    """The engine accepts both spellings (``$.regions`` and a bare ``regions``), so a reader that
+    understood only one would drop the other team's list without saying anything."""
+    from oraclous_execution_engine_service.domain.app_form import fan_out_keys
+
+    team = _team(
+        members=[
+            {
+                "role": "scout",
+                "kind": "agent",
+                "manifest_ref": "org:brief/scout@1",
+                "subgoal": "gather evidence",
+                "depends_on": [],
+                "fan_out": {"over": "regions"},
+                "outputs_schema": {"required": ["summary"]},
+            }
+        ]
+    )
+
+    assert fan_out_keys(team) == {"regions"}
+
+
+def test_a_team_that_fans_out_over_nothing_names_no_keys() -> None:
+    """The ordinary team. An empty set here is what makes the caller's passthrough empty rather
+    than absent, which is the distinction the run path got wrong."""
+    from oraclous_execution_engine_service.domain.app_form import fan_out_keys
+
+    assert fan_out_keys(_team()) == set()
