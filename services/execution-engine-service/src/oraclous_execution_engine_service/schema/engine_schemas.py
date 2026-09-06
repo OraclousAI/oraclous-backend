@@ -893,6 +893,9 @@ class AppPlanStep(BaseModel):
 
     role: str
     kind: str = "agent"
+    #: Which wave this runs in. Everything sharing a stage runs together; the next stage waits for
+    #: all of it. ``None`` when the plan could not be ordered at all (see ``AppPlan.ordered``).
+    stage: int | None = None
     depends_on: list[str] = Field(default_factory=list)
     tools: list[str] = Field(default_factory=list)
 
@@ -919,6 +922,11 @@ class AppPlan(BaseModel):
     """
 
     steps: list[AppPlanStep] = Field(default_factory=list)
+    #: False when the steps could not be put in run order — a cycle, or a dependency naming a member
+    #: that does not exist. Such a team fails the moment someone presses Run, so the steps are still
+    #: listed (in declaration order, every ``stage`` None) and the order is reported as unknown
+    #: rather than invented. A client should warn rather than draw a sequence.
+    ordered: bool = True
     limits: AppPlanLimits = Field(default_factory=AppPlanLimits)
 
 

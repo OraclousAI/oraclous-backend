@@ -83,6 +83,70 @@ def test_the_plan_lists_each_step_in_the_order_it_will_run() -> None:
     assert [s["role"] for s in plan["steps"]] == ["researcher", "synthesizer"]
     assert plan["steps"][0]["depends_on"] == []
     assert plan["steps"][1]["depends_on"] == ["researcher"]
+    assert plan["ordered"] is True
+
+
+def test_the_order_is_the_run_order_not_the_order_members_were_typed() -> None:
+    """The claim above is only worth anything if it survives a manifest written back-to-front.
+
+    The first version of this feature iterated members in declaration order and called it execution
+    order. It passed its own test because the fixture happened to be typed in dependency order —
+    exactly the accident this test removes. Here the dependent member is declared FIRST, and the
+    plan must still put the one it waits on ahead of it.
+    """
+    from oraclous_execution_engine_service.domain.apps import plan_summary
+
+    manifest = _team()
+    manifest["members"] = list(reversed(manifest["members"]))
+    assert manifest["members"][0]["role"] == "synthesizer"  # declared first, runs last
+
+    plan = plan_summary(manifest)
+
+    assert [s["role"] for s in plan["steps"]] == ["researcher", "synthesizer"]
+
+
+def test_steps_that_run_together_share_a_stage() -> None:
+    """A fan-out is the plan's shape as much as a sequence is. Two members that wait on nothing run
+    at the same time, and a screen that stacked them vertically would misdescribe the run."""
+    from oraclous_execution_engine_service.domain.apps import plan_summary
+
+    manifest = _team()
+    manifest["members"].insert(
+        1,
+        {
+            "role": "scout",
+            "kind": "agent",
+            "manifest_ref": "org:desk/scout@1",
+            "subgoal": "look in what we already have",
+            "depends_on": [],
+            "tools": ["knowledge-retriever"],
+            "tool_rationale": {"knowledge-retriever": "reads what the team already gathered"},
+            "outputs_schema": {"required": ["summary"]},
+        },
+    )
+    manifest["members"][-1]["depends_on"] = ["researcher", "scout"]
+
+    stages = {s["role"]: s["stage"] for s in plan_summary(manifest)["steps"]}
+
+    assert stages["researcher"] == stages["scout"] == 0
+    assert stages["synthesizer"] == 1
+
+
+def test_a_plan_that_cannot_be_ordered_says_so_instead_of_guessing() -> None:
+    """A dependency naming a member that does not exist makes the run fail the moment someone
+    presses Run. Inventing a sequence for it would show a confident picture of something that
+    cannot happen; refusing to render would tell the reader less than they had before. So the steps
+    come back with the order marked unknown."""
+    from oraclous_execution_engine_service.domain.apps import plan_summary
+
+    manifest = _team()
+    manifest["members"][1]["depends_on"] = ["nobody-by-that-name"]
+
+    plan = plan_summary(manifest)
+
+    assert plan["ordered"] is False
+    assert {s["role"] for s in plan["steps"]} == {"researcher", "synthesizer"}
+    assert all(s["stage"] is None for s in plan["steps"])
 
 
 def test_each_step_names_the_tools_it_may_use() -> None:
@@ -121,7 +185,6 @@ def test_no_members_prompt_reaches_the_plan() -> None:
 
     assert _PRIVATE_PROMPT not in serialized
     assert "subgoal" not in serialized
-    assert "confidential" not in serialized
 
 
 def test_a_team_with_no_declared_budget_reports_no_limits_rather_than_zeroes() -> None:

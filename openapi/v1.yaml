@@ -2427,6 +2427,9 @@ paths:
         slug across every deploy, so a client links to `validation-desk` rather than carrying a
         uuid in its environment. When the caller's OWN organisation has an app under the same slug,
         that one wins, so an organisation's own version of a default shadows Oraclous's.
+
+        Returns the SAME body as GET /v1/engine/apps/{app_id}, `plan` included — see that operation
+        for what the plan carries and what it deliberately leaves out.
       operationId: getAppBySlug
       x-stability: provisional
       parameters:
@@ -2449,10 +2452,15 @@ paths:
         team documents: running an app is not opening the plan behind it. An app belonging to
         another organisation is 404, never 403.
 
-        `plan.steps` lists each step in order with what it waits on and which tools it may use, and
-        `plan.limits` gives the ceilings the run cannot exceed (a null limit means the team declared
-        none — unlimited, NOT zero). No member's prompt is included: that is the plan's content
-        rather than its shape, and in an app someone authored it can carry their own words.
+        `plan.steps` lists each step in RUN order, grouped by `stage` — everything sharing a stage
+        runs together and the next stage waits for all of it — with what each waits on and which
+        tools it may use. `plan.limits` gives the ceilings the run cannot exceed; a null limit means
+        the team declared none, so unlimited, NOT zero. When `plan.ordered` is false the steps could
+        not be sequenced at all (a cycle, or a dependency naming a member that does not exist): the
+        steps are still listed with every `stage` null, and a client should warn rather than draw a
+        sequence, because such a team fails as soon as someone presses Run. No member's prompt is
+        included: that is the plan's content rather than its shape, and in an app someone authored
+        it can carry their own words.
       operationId: getApp
       x-stability: provisional
       parameters:
