@@ -2389,6 +2389,152 @@ paths:
         "403": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/NotFound" }
         "409": { $ref: "#/components/responses/Conflict" }
+  /v1/engine/apps:
+    get:
+      tags: [engine]
+      summary: >-
+        List the apps the caller can see — the organisation's OWN apps AND the Oraclous-provided
+        ones, in ONE page. Each row carries `origin` ("platform" | "organisation"), which is how a
+        client tells the two apart; it is derived server-side from the row's owner and can never be
+        asserted by a request. Newest-first, paginated. Never carries the team documents.
+      operationId: listApps
+      x-stability: provisional
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          description: >-
+            Maximum apps to return (WP-10 pagination). OPTIONAL; defaults to 50 and is CLAMPED
+            server-side to a hard maximum of 200, so no single read is unbounded. A limit below 1
+            clamps to 1 rather than returning an empty page.
+          schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+        - name: offset
+          in: query
+          required: false
+          description: >-
+            Apps to skip before collecting the page. OPTIONAL; defaults to 0, and a negative value
+            clamps to 0. Paired with the deterministic `created_at DESC` ordering so paging repeats.
+          schema: { type: integer, minimum: 0, default: 0 }
+      responses:
+        "200": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Unauthorized" }
+  /v1/engine/apps/by-slug/{slug}:
+    get:
+      tags: [engine]
+      summary: >-
+        Read one app by its stable handle — the deep link. An Oraclous-provided app keeps the same
+        slug across every deploy, so a client links to `validation-desk` rather than carrying a
+        uuid in its environment. When the caller's OWN organisation has an app under the same slug,
+        that one wins, so an organisation's own version of a default shadows Oraclous's.
+      operationId: getAppBySlug
+      x-stability: provisional
+      parameters:
+        - name: slug
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /v1/engine/apps/{app_id}:
+    get:
+      tags: [engine]
+      summary: >-
+        Read one app: `origin`, and `inputs` — one entry per field the form should draw, restated
+        from what the underlying team already declares, so a client can never render a field the
+        run would then refuse. Carries NO team documents: running an app is not opening the plan
+        behind it. An app belonging to another organisation is 404, never 403.
+      operationId: getApp
+      x-stability: provisional
+      parameters:
+        - name: app_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /v1/engine/apps/{app_id}/requirements:
+    get:
+      tags: [engine]
+      summary: >-
+        What this app needs before it will run, and what this organisation has not connected yet —
+        so a client can say "connect X to use this" on the app's own page rather than discovering it
+        as a 409 when someone presses Run. Asks the SAME check the run gate asks, so the page and
+        the gate cannot disagree. `ready` covers the TOOLS only; the model key always travels with
+        the run request and is never connected in advance.
+      operationId: getAppRequirements
+      x-stability: provisional
+      parameters:
+        - name: app_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /v1/engine/apps/{app_id}/runs:
+    get:
+      tags: [engine]
+      summary: >-
+        This app's runs, for the CALLER's organisation only. The app may be one every organisation
+        can see; its runs never are, so two organisations running the same Oraclous-provided app
+        never see each other's inputs or results. Same row shape as the org-wide team-run list.
+      operationId: listAppRuns
+      x-stability: provisional
+      parameters:
+        - name: app_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 200, default: 20 }
+        - name: offset
+          in: query
+          required: false
+          schema: { type: integer, minimum: 0, default: 0 }
+      responses:
+        "200": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    post:
+      tags: [engine]
+      summary: >-
+        Run the app on the CALLER's own model key (202) — the app itself stores no credential, so
+        `models` is required and a run cannot start on anybody else's key. Send values only for the
+        fields the read returned under `inputs`; any other key is a 422 naming it. Returns the SAME
+        shape POST /v1/engine/team-runs returns, so a client follows one kind of run, not two.
+        A 409 CREDENTIALS_REQUIRED means a tool this app needs is not connected yet — nothing was
+        created, and `needs_credential` names the provider to connect.
+      operationId: runApp
+      x-stability: provisional
+      parameters:
+        - name: app_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RunAppRequest" }
+      responses:
+        "202": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/CredentialsRequired" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
   /v1/engine/team-drafts:
     get:
       tags: [engine]
@@ -3551,6 +3697,37 @@ components:
         decision: { type: string, enum: [approve, revise, reject] }
         feedback: { type: string, default: "" }
         edited_payload: { type: object, nullable: true, additionalProperties: true }
+    RunAppRequest:
+      type: object
+      description: >-
+        Run an app (#932). `models` is REQUIRED and carries the CALLER's own model binding: an app
+        stores no credential of its own, so a run cannot start on anybody else's key. `inputs`
+        carries values for the fields the app read returned under `inputs` and nothing else — an
+        undeclared key is a 422 naming it, never a silent discard.
+      required: [models]
+      additionalProperties: true
+      properties:
+        inputs:
+          type: object
+          additionalProperties: true
+          description: >-
+            Values keyed by the `key` of each entry the app read returned under `inputs`.
+        models:
+          type: array
+          minItems: 1
+          description: >-
+            OHM model bindings the caller owns — {role, binding, protocol_shape, config} with the
+            caller's own `config.credential_id`. Validated by the same check the compiler on-ramp
+            uses, so a malformed binding is one familiar 422.
+          items: { type: object, additionalProperties: true }
+        graph_id:
+          type: string
+          nullable: true
+          description: The knowledge graph this run reads and writes; omit for the org default.
+        workspace_root:
+          type: string
+          nullable: true
+          description: The run's working tree; omit for the per-organisation scratch sandbox.
     CreateTeamDraftRequest:
       type: object
       description: >-
