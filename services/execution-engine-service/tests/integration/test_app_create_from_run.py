@@ -51,6 +51,20 @@ FIELDS: list[dict[str, Any]] = [
 ]
 
 
+#: A binding ``OHMModel`` accepts. The first version of this fixture omitted ``role`` and
+#: ``protocol_shape``, which it requires — and because ``TeamRunRepository.create`` writes the row
+#: directly, bypassing the validation ``TeamRunService.create`` performs, the run reached a state no
+#: real run could. Every read that revalidates the manifest then failed on it.
+_MODELS: list[dict[str, Any]] = [
+    {
+        "role": "primary",
+        "binding": "openrouter/openai/gpt-4o",
+        "protocol_shape": "openai-compatible",
+        "config": {"credential_id": "c1"},
+    }
+]
+
+
 def _principal(org: uuid.UUID | None) -> Principal:
     return Principal(principal_id=USER_A, principal_type=PrincipalType.USER, organisation_id=org)
 
@@ -68,9 +82,9 @@ def _team(org: uuid.UUID) -> dict[str, Any]:
         "task_input": {"required": True, "key": "task", "description": "The competitor and angle."},
         "models": [
             {
-                "binding": "default",
-                "provider": "openrouter",
-                "model": "openai/gpt-4o",
+                "role": "primary",
+                "binding": "openrouter/openai/gpt-4o",
+                "protocol_shape": "openai-compatible",
                 "config": {"credential_id": str(uuid.uuid4()), "temperature": 0.2},
             }
         ],
@@ -369,7 +383,7 @@ async def test_running_the_app_folds_the_fields_into_the_teams_one_input(wired: 
         detail["id"],
         _principal(ORG_A),
         inputs={"competitor": "Acme Cloud", "focus": "their pricing move"},
-        models=[{"binding": "default", "provider": "openrouter", "model": "openai/gpt-4o"}],
+        models=_MODELS,
     )
 
     sent = recorder.calls[-1]["inputs"]
@@ -398,9 +412,142 @@ async def test_running_the_app_with_a_required_field_blank_is_refused(wired: Any
             detail["id"],
             _principal(ORG_A),
             inputs={"competitor": "Acme Cloud"},  # "Focus" is required and absent
-            models=[{"binding": "default", "provider": "openrouter", "model": "openai/gpt-4o"}],
+            models=_MODELS,
         )
 
     assert caught.value.status_code == 422
     assert "Focus" in str(caught.value), "the refusal does not name the field to fill in"
     assert recorder.calls == [], "a run was started despite the refusal"
+
+
+# ── the two paths code review found nothing exercised ────────────────────────
+
+
+async def test_a_fan_out_list_survives_the_run_of_a_converted_app(wired: Any) -> None:
+    """Raised at code review: the fold carried the drafted fields and dropped everything else.
+
+    A member that fans out declares a second key, and that key is a LIST a person supplies rather
+    than prose. Folding it away leaves the member with nothing to fan out over — either a confusing
+    refusal naming an input the form never asked for, or a run that quietly does no work. Nothing
+    caught it because no test ran a fan-out team through an app.
+    """
+    service, runs, recorder = wired
+    team = _team(ORG_A)
+    team["members"][0]["fan_out"] = {"over": "$.regions"}
+    from oraclous_execution_engine_service.core.rls import org_scope
+
+    with org_scope(ORG_A):
+        row = await runs.create(
+            organisation_id=ORG_A,
+            user_id=USER_A,
+            manifest=team,
+            sub_harnesses={"scout": {"models": _MODELS}},
+            gate_decisions={},
+            inputs={"task": "Brief on Acme.", "regions": ["EU", "US"]},
+        )
+        await runs.transition(
+            row.id, ORG_A, new_state="SUCCEEDED", allowed_from=frozenset({"QUEUED"})
+        )
+
+    detail, _ = await service.create_from_run(
+        _principal(ORG_A),
+        team_run_id=row.id,
+        name="Regional Brief",
+        description=None,
+        fields=FIELDS,
+    )
+    await service.run(
+        detail["id"],
+        _principal(ORG_A),
+        inputs={"competitor": "Acme", "focus": "pricing", "regions": ["EU", "US"]},
+        models=_MODELS,
+    )
+
+    sent = recorder.calls[-1]["inputs"]
+    assert sent["regions"] == ["EU", "US"], "the fan-out list was folded away"
+    assert sent["task"].startswith("Competitor: Acme")
+
+
+async def test_a_team_that_declares_no_input_can_still_become_an_app(wired: Any) -> None:
+    """Also raised at code review. Such a team has nothing for a person to fill in, and the domain
+    already treats an empty form as a legitimate end state — ``fallback_fields`` returns none for
+    it and the fold handles none. The save must agree: refusing here would mean a run whose read
+    correctly offers an empty form cannot be converted at all.
+    """
+    from oraclous_execution_engine_service.core.rls import org_scope
+
+    service, runs, recorder = wired
+    team = _team(ORG_A)
+    del team["task_input"]
+
+    with org_scope(ORG_A):
+        row = await runs.create(
+            organisation_id=ORG_A,
+            user_id=USER_A,
+            manifest=team,
+            sub_harnesses={"scout": {"models": _MODELS}},
+            gate_decisions={},
+            inputs=None,
+        )
+        await runs.transition(
+            row.id, ORG_A, new_state="SUCCEEDED", allowed_from=frozenset({"QUEUED"})
+        )
+
+    detail, created = await service.create_from_run(
+        _principal(ORG_A), team_run_id=row.id, name="Standing Brief", description=None, fields=[]
+    )
+
+    assert created is True
+    assert detail["form"] == []
+
+    await service.run(detail["id"], _principal(ORG_A), inputs={}, models=_MODELS)
+
+    assert recorder.calls[-1]["inputs"] == {}, "an app with no form still runs the team as it was"
+
+
+async def test_an_empty_form_is_refused_when_the_team_does_have_a_request(wired: Any) -> None:
+    """Raised by QA against the previous fix, which relaxed the empty-form check too far.
+
+    Letting a team with NO request field save an empty form is right. Letting a team that HAS one
+    save an empty form is not: the fold would then write an empty request on every run, discarding
+    whatever the person typed, silently and permanently — with no update endpoint to repair it.
+    """
+    from oraclous_execution_engine_service.services.team_run_service import TeamRunError
+
+    service, runs, _ = wired
+    run = await _finished_run(runs, ORG_A)  # this team declares `task`
+
+    with pytest.raises(TeamRunError) as caught:
+        await service.create_from_run(
+            _principal(ORG_A), team_run_id=run.id, name="Blank", description=None, fields=[]
+        )
+
+    assert caught.value.status_code == 422
+
+
+async def test_an_app_that_predates_the_form_still_passes_its_inputs_through(wired: Any) -> None:
+    """The backward-compatibility claim, asserted rather than only stated in a docstring.
+
+    Every app made before #938 — the Oraclous-provided one included — has no stored form, and its
+    run path must be exactly what it was: whatever the caller sends reaches the team untouched. The
+    only place this was previously observable was an end-to-end test that is red for its own
+    unrelated reasons, so a regression here would have reached main unseen.
+    """
+    from oraclous_execution_engine_service.core.rls import org_scope
+
+    service, _runs, recorder = wired
+    with org_scope(ORG_A):
+        row = await service._apps.create(
+            organisation_id=ORG_A,
+            user_id=USER_A,
+            name="Older App",
+            description=None,
+            slug=None,
+            manifest=_team(ORG_A),
+            sub_harnesses={},
+            form=None,
+        )
+
+    await service.run(row.id, _principal(ORG_A), inputs={"task": "exactly this"}, models=_MODELS)
+
+    assert recorder.calls[-1]["inputs"] == {"task": "exactly this"}
