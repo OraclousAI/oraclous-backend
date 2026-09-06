@@ -396,29 +396,17 @@ def test_the_desk_reaches_a_real_answer_for_a_fully_connected_organisation(
     model_credential = _store("openrouter", str(_OR_KEY), "e2e model key")
     search_credential = _store("web_search", str(_TAVILY_KEY), "e2e search key")
 
-    # The requirements read tells the console what is still missing; connect exactly those.
+    # The requirements read tells the console what is still missing. Assert it names the search
+    # tool, then connect it — rather than looping over the list and matching the provider against
+    # capability names, which is how an earlier version of this test failed: the provider reads
+    # `web-research` and the capability is called "Web Research", so a substring match found
+    # nothing and the test blamed the registry for its own lookup.
     needs = client.get(f"/v1/engine/apps/{desk['id']}/requirements")
     assert needs.status_code == 200, needs.text
-    catalogue = client.get("/api/v1/capabilities").json()["capabilities"]
-    for tool in needs.json()["tools"]:
-        if tool["satisfied"]:
-            continue
-        capability = next((c for c in catalogue if tool["provider"] in c["name"].lower()), None)
-        assert capability is not None, f"the registry has no tool for {tool['provider']}"
-        instance = client.post(
-            "/api/v1/instances",
-            json={
-                "capability_id": capability["id"],
-                "name": capability["name"],
-                "configuration": {},
-            },
-        )
-        assert instance.status_code in (200, 201), instance.text
-        configured = client.post(
-            f"/api/v1/instances/{instance.json()['id']}/configure-credentials",
-            json={"credential_mappings": {"api_key": search_credential}},
-        )
-        assert configured.status_code in (200, 201), configured.text
+    unmet = {t["provider"] for t in needs.json()["tools"] if not t["satisfied"]}
+    assert "web-research" in unmet, f"expected the search tool to need connecting, got {unmet}"
+
+    _connect_web_research(client, credential_id=search_credential)
 
     assert client.get(f"/v1/engine/apps/{desk['id']}/requirements").json()["ready"] is True
 
