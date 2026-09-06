@@ -1,12 +1,11 @@
-"""App routes (routes layer) — parse → ONE service call → HTTP map. #932.
+"""App routes (routes layer) — parse → ONE service call → HTTP map. #932/#938.
 
 The Apps tab's HTTP surface: list what a caller can see (their own apps AND the Oraclous-provided
 ones, in one page, told apart by ``origin``), open one, ask what still has to be connected, run it
-on the caller's own key, and read that app's own run history.
+on the caller's own key, read that app's own run history — and, since #938, turn one of the
+caller's own finished team runs into a new app.
 
-There is deliberately NO create, update or delete. Turning a team into an app is deferred — not
-every team is an app, and the conversion needs designing first — so the only apps that exist are
-the ones Oraclous seeds.
+There is still no update or delete (the owner's ruling on #938 scoped this to create only).
 
 NOTE: the static collection path (``/apps``) and the slug path (``/apps/by-slug/{slug}``) are
 registered BEFORE ``/apps/{app_id}`` so neither is captured as an id.
@@ -17,7 +16,7 @@ from __future__ import annotations
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, HTTPException, Query, status
+from fastapi import APIRouter, HTTPException, Query, Response, status
 from fastapi.responses import JSONResponse
 
 from oraclous_execution_engine_service.core.dependencies import AppServiceDep, PrincipalDep
@@ -27,6 +26,7 @@ from oraclous_execution_engine_service.schema.engine_schemas import (
     AppListOut,
     AppOut,
     AppRequirementsOut,
+    CreateAppFromRunRequest,
     RunAppRequest,
     TeamRunListItem,
     TeamRunListOut,
@@ -67,6 +67,33 @@ async def list_apps(
     except TeamRunError as exc:  # a principal with no org → the contracted 403, not a 500
         raise _http(exc) from exc
     return AppListOut(apps=[AppListItem.model_validate(r) for r in rows], total=total)
+
+
+@router.post("/apps", response_model=AppOut, status_code=status.HTTP_201_CREATED)
+async def create_app_from_run(
+    body: CreateAppFromRunRequest,
+    principal: PrincipalDep,
+    service: AppServiceDep,
+    response: Response,
+) -> AppOut:
+    """Turn one of the caller's own finished team runs into an app (#938).
+
+    Idempotent per ``(org, team_run_id)`` — there is no delete endpoint, so a double-submitted save
+    must not leave a duplicate nobody can remove: **201 Created** on the first call, **200 OK**
+    returning the SAME app on a repeat. REGISTERED BEFORE ``/apps/{app_id}``.
+    """
+    try:
+        detail, created = await service.create_from_run(
+            principal,
+            team_run_id=body.team_run_id,
+            name=body.name,
+            description=body.description,
+            fields=body.fields,
+        )
+    except TeamRunError as exc:
+        raise _http(exc) from exc
+    response.status_code = status.HTTP_201_CREATED if created else status.HTTP_200_OK
+    return AppOut.model_validate(detail)
 
 
 @router.get("/apps/by-slug/{slug}", response_model=AppOut)

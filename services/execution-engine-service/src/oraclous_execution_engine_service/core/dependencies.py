@@ -39,6 +39,7 @@ from oraclous_execution_engine_service.repositories.team_draft_repository import
 )
 from oraclous_execution_engine_service.repositories.team_run_repository import TeamRunRepository
 from oraclous_execution_engine_service.services.activity_service import ActivityService
+from oraclous_execution_engine_service.services.app_form_draft_service import AppFormDraftService
 from oraclous_execution_engine_service.services.app_service import AppService
 from oraclous_execution_engine_service.services.compiler_run_service import CompilerRunService
 from oraclous_execution_engine_service.services.graph_client import GraphClient
@@ -358,6 +359,22 @@ def get_intake_readback_service(
     )
 
 
+def get_app_form_draft_service(
+    team_runs: Annotated[TeamRunService, Depends(get_team_run_service)],
+    team_run_repository: Annotated[TeamRunRepository, Depends(get_team_run_repository)],
+) -> AppFormDraftService:
+    # #938: `team_runs` is the SAME create/read path a client uses — the drafter submits through
+    # it, so there is no second way to call a model. `team_run_repository` is the SOURCE run read
+    # (org-scoped, so a cross-org run is simply absent).
+    settings = get_settings()
+    return AppFormDraftService(
+        team_runs=team_runs,
+        team_run_repository=team_run_repository,
+        draft_poll_seconds=settings.app_form_draft_poll_seconds,
+        draft_poll_interval_seconds=settings.app_form_draft_poll_interval_seconds,
+    )
+
+
 def get_compiler_run_service(
     team_runs: Annotated[TeamRunService, Depends(get_team_run_service)],
     registry: Annotated[RegistryClient, Depends(get_registry_client)],
@@ -379,3 +396,4 @@ TeamDraftServiceDep = Annotated[TeamDraftService, Depends(get_team_draft_service
 AppServiceDep = Annotated[AppService, Depends(get_app_service)]
 CompilerRunServiceDep = Annotated[CompilerRunService, Depends(get_compiler_run_service)]
 IntakeReadbackServiceDep = Annotated[IntakeReadbackService, Depends(get_intake_readback_service)]
+AppFormDraftServiceDep = Annotated[AppFormDraftService, Depends(get_app_form_draft_service)]

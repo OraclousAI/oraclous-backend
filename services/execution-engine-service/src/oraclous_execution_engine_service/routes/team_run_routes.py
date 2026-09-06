@@ -17,11 +17,19 @@ from typing import Annotated
 from fastapi import APIRouter, HTTPException, Query, status
 from fastapi.responses import JSONResponse
 
-from oraclous_execution_engine_service.core.dependencies import PrincipalDep, TeamRunServiceDep
+from oraclous_execution_engine_service.core.dependencies import (
+    AppFormDraftServiceDep,
+    PrincipalDep,
+    TeamRunServiceDep,
+)
 from oraclous_execution_engine_service.routes.preflight_response import preflight_409
 from oraclous_execution_engine_service.schema.engine_schemas import (
     AdvanceTeamRunRequest,
+    AppFormField,
     CreateTeamRunRequest,
+    SuggestedFormOut,
+    SuggestedFormPendingOut,
+    SuggestedFormRequest,
     TeamRunCost,
     TeamRunListItem,
     TeamRunListOut,
@@ -30,6 +38,10 @@ from oraclous_execution_engine_service.schema.engine_schemas import (
     TeamRunStatusOut,
     TeamRunTreeOut,
     TreeChild,
+)
+from oraclous_execution_engine_service.services.app_form_draft_service import (
+    AppFormDraftError,
+    PendingFormDraft,
 )
 from oraclous_execution_engine_service.services.team_run_service import (
     TeamRunError,
@@ -201,3 +213,59 @@ async def rerun_team_run(
     except TeamRunError as exc:
         raise _http(exc) from exc
     return TeamRunOut.model_validate(row)
+
+
+def _draft_http(exc: AppFormDraftError) -> HTTPException:
+    if exc.error_code is not None:
+        # The one shape the gateway's allow-list reads (the gateway drains an upstream error body
+        # rather than relaying it, so an allow-listed code is the only thing that crosses the edge).
+        return HTTPException(status_code=exc.status_code, detail={"error_code": exc.error_code})
+    if exc.status_code == 422:
+        return HTTPException(
+            status_code=422,
+            detail=[{"loc": ["body"], "type": exc.error_type, "msg": str(exc)}],
+        )
+    return HTTPException(status_code=exc.status_code, detail=str(exc))
+
+
+@router.post("/team-runs/{team_run_id}/suggested-form", response_model=SuggestedFormOut)
+async def suggest_app_form(
+    team_run_id: uuid.UUID,
+    body: SuggestedFormRequest,
+    principal: PrincipalDep,
+    service: AppFormDraftServiceDep,
+) -> SuggestedFormOut | JSONResponse:
+    """Ask a model to draft the form a converted app should show (#938), reading the team's own
+    description plus the request THIS run was actually started with. 202 with a collect token
+    (``form_draft_run_id``) when the drafter outruns this call's budget — the same shape the intake
+    read-back already uses (#866)."""
+    try:
+        outcome = await service.suggest(
+            principal,
+            team_run_id=team_run_id,
+            models=body.models,
+            form_draft_run_id=body.form_draft_run_id,
+        )
+    except AppFormDraftError as exc:
+        raise _draft_http(exc) from exc
+    if isinstance(outcome, PendingFormDraft):
+        return JSONResponse(
+            status_code=202,
+            content=SuggestedFormPendingOut(form_draft_run_id=outcome.form_draft_run_id).model_dump(
+                mode="json"
+            ),
+        )
+    return SuggestedFormOut(
+        fields=[
+            AppFormField(
+                id=f.id,
+                name=f.name,
+                hint=f.hint,
+                type=f.type,
+                options=f.options,
+                example=f.example,
+                required=f.required,
+            )
+            for f in outcome.fields
+        ]
+    )

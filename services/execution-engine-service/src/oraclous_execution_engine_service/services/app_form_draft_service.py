@@ -23,7 +23,7 @@ import asyncio
 import time
 import uuid
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Any
 
 from oraclous_governance import Principal
 from oraclous_ohm.compiler.prompts import APP_FORM_DRAFTER_PROMPT
@@ -33,10 +33,14 @@ from oraclous_ohm.manifest import OHMManifest, OHMMember, OHMMetadata, OHMRuntim
 from oraclous_execution_engine_service.core.rls import org_scope
 from oraclous_execution_engine_service.domain.app_form import FormShapeError, parse_form_draft
 from oraclous_execution_engine_service.domain.model_answer import first_json_object
+from oraclous_execution_engine_service.repositories.team_run_repository import TeamRunRepository
 from oraclous_execution_engine_service.services.compiler_run_service import (
     validate_model_bindings,
 )
-from oraclous_execution_engine_service.services.team_run_service import TeamRunError
+from oraclous_execution_engine_service.services.team_run_service import (
+    TeamRunError,
+    TeamRunService,
+)
 
 #: The drafting team's name, used to prove a collect token names a drafting run and not some other
 #: run of the same organisation.
@@ -44,22 +48,6 @@ DRAFTER_TEAM_NAME = "app-form-drafter"
 DRAFTER_ROLE = "drafter"
 
 _TERMINAL_RUN_STATES = frozenset({"SUCCEEDED", "FAILED", "REJECTED", "COST_BUDGET"})
-
-
-class _TeamRuns(Protocol):
-    """The ``TeamRunService`` seam the drafter consumes: submit + poll. Typed narrowly so a unit
-    test's stub duck-types against exactly what this service calls."""
-
-    async def create(self, principal: Principal, **kwargs: Any) -> Any: ...
-
-    async def get(self, run_id: uuid.UUID, principal: Principal) -> Any: ...
-
-
-class _SourceRuns(Protocol):
-    """The repository the SOURCE run is read through — org-scoped, so a cross-org id is simply
-    absent rather than a row carrying a refusal."""
-
-    async def get(self, run_id: uuid.UUID, organisation_id: uuid.UUID) -> Any: ...
 
 
 class AppFormDraftError(Exception):
@@ -103,8 +91,8 @@ class AppFormDraftService:
     def __init__(
         self,
         *,
-        team_runs: _TeamRuns,
-        team_run_repository: _SourceRuns,
+        team_runs: TeamRunService,
+        team_run_repository: TeamRunRepository,
         draft_poll_seconds: float = 25.0,
         draft_poll_interval_seconds: float = 2.0,
     ) -> None:
@@ -186,7 +174,9 @@ class AppFormDraftService:
             raise AppFormDraftError(str(exc), exc.status_code, error_type=exc.error_type) from exc
 
         task_input = (run.manifest or {}).get("task_input") or {}
-        request_text = ((run.inputs or {}).get(task_input.get("key")) or "").strip()
+        task_key = task_input.get("key")
+        request_text = ((run.inputs or {}).get(task_key) if task_key else None) or ""
+        request_text = request_text.strip()
         description = (task_input.get("description") or "").strip()
 
         team = OHMManifest(
