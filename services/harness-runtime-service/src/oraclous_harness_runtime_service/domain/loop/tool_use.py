@@ -429,6 +429,16 @@ def _accumulate_fetched(urls: list[str], fetched_urls: list[str], seen: set[str]
 # Bounded like every other correction in this file (`_LINK_CORRECTION_MAX`, the #853 one-shot
 # repair): the member is told ONCE, plainly, and if it sends the refused call again anyway the run
 # settles instead of spending the rest of its budget discovering the same thing.
+#
+# THE COST THIS BOUND ACCEPTS, recorded rather than left to be rediscovered (#946 review round 5,
+# MEDIUM-4, ruled by the owner 2026-09-07). D2 keys on the (tool, arguments, error) triple, and an
+# error CLASS that renders a fixed sentence makes two throttled calls byte-identical:
+# `search_providers._STATUS_CLASSES` maps 429 and 433 to one string, and PROVIDER_UNREACHABLE does
+# the same. So a transient failure that would clear in seconds locks that exact argument set out for
+# the rest of the run, and across a pause. The bound stays as it is anyway: the alternative is
+# plumbing a transient signal across the connector/MCP boundary, which is precisely the boundary D2
+# exists not to depend on. What does NOT stay is a note claiming a third attempt "cannot work" —
+# false for a throttle, and the one part of this that cost nothing to correct.
 _REPEATED_FAILURE_MAX = 2
 _REPEATED_FAILURE_STATUS = "repeated_failure"
 #: The stable opening of the note, and the ONLY part a transcript reader matches on. The note is
@@ -437,11 +447,14 @@ _REPEATED_FAILURE_STATUS = "repeated_failure"
 #: and re-dispatch the dead call — C1 by a slower route (#946 review round 3, N4). Never change this
 #: prefix without a compatibility branch for transcripts that already carry the old one.
 _REPEATED_FAILURE_NOTE_PREFIX = "This exact call has already failed"
+#: Reworded in #946 review round 5, MEDIUM-4, KEEPING the prefix above byte-identical. What came
+#: out is a claim about the future the bound cannot support — see the accepted cost in the D2 block
+#: above. What stays is what is true and what is actionable: the call failed twice the same way, it
+#: was not sent again, and here are the two ways out.
 _REPEATED_FAILURE_NOTE = (
     "This exact call has already failed twice with the same error, so it was not sent again. "
-    "Sending it a third time cannot work. Either change the arguments — a different value, or the "
-    "same call without the argument that is being rejected — or drop this call and answer with "
-    "what you already have."
+    "Either change the arguments — a different value, or the same call without the argument that "
+    "is being rejected — or drop this call and answer with what you already have."
 )
 #: The per-member ledger: a call signature → (the error it produced, how many times in a row).
 RepeatedFailures = dict[str, tuple[str, int]]
