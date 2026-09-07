@@ -459,6 +459,13 @@ class TeamRunOut(BaseModel):
     # LLM (HARNESS_LLM_MODE=fake) — derived below from `results`, mirroring `partial`. A blocked/
     # skipped member's result is None, never a dict, and empty results is not simulated.
     simulated: bool = False
+    # #944: True when ANY member's answer links a page its run never fetched — derived below from
+    # `results`, mirroring `simulated`. The console reads this for a run-level warning and each
+    # member's own `unverified_links` list for which links to mark. A BOOLEAN rather than a count
+    # or a merged list on purpose: a count invites "3 bad links is three times worse than 1", which
+    # it is not (one fabricated citation discredits every other citation on the same answer), and a
+    # merged list loses which member said what, which is the only thing that makes it actionable.
+    has_unverified_links: bool = False
     # #638: read-side context the console needs (oraclous-frontend#180). ``graph_id`` is the run's
     # bound graph (the Results tab reads artifacts from that workspace) — a direct column, so
     # from_attributes fills it. ``team_name`` is dug from the stored manifest.metadata.name below
@@ -500,6 +507,11 @@ class TeamRunOut(BaseModel):
         # None, never a dict, so `.get` is guarded rather than called directly on every value.
         self.simulated = any(
             isinstance(r, dict) and r.get("simulated") for r in self.results.values()
+        )
+        # #944: same derivation, same guard — a failed or blocked member's result is None, never a
+        # dict, and calling .get on it would 500 the whole run-detail read.
+        self.has_unverified_links = any(
+            isinstance(r, dict) and r.get("unverified_links") for r in self.results.values()
         )
         return self
 
