@@ -10,6 +10,7 @@ Holds the BYOM key in memory only for the request; never logs or persists it.
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 import httpx
@@ -115,6 +116,32 @@ def _tools_payload(tools: list[ToolSpec]) -> list[dict[str, Any]]:
     ]
 
 
+#: A tool call's id is an opaque handle and a receipt token, nothing more. It is taken verbatim from
+#: the model endpoint's response, and it is interpolated UNESCAPED into the receipt line the loop
+#: writes into a persisted transcript — so an id carrying a line break and a receipt opener splits
+#: that line in two, and a reader then classifies a failed call as a success (security audit round
+#: 2, the same laundering path as round 1). The reader now fails closed on a receipt it cannot
+#: parse;
+#: this is the other half, at the boundary, so the class cannot recur at a reader nobody has thought
+#: of yet. Not reachable by prompt alone against a well-behaved endpoint, which generates the id —
+#: but bring-your-own-endpoint makes an untrusted one an ordinary configuration.
+_UNSAFE_TOOL_CALL_ID = re.compile(r"[^A-Za-z0-9_.:-]+")
+_TOOL_CALL_ID_MAX = 128
+
+
+def _safe_tool_call_id(raw: object) -> str:
+    """The endpoint's id reduced to characters a receipt token may hold, bounded, never empty.
+
+    Sanitised rather than rejected: an id that fails this is a malformed response, not an attack we
+    can attribute, and killing the whole run over it would be a worse outcome than dispatching the
+    call under a safe handle. Deterministic, because a resumed run dispatches by the id it was
+    offered.
+    """
+    text = raw if isinstance(raw, str) else ""
+    cleaned = _UNSAFE_TOOL_CALL_ID.sub("", text)[:_TOOL_CALL_ID_MAX]
+    return cleaned or "call"
+
+
 class OpenAICompatibleClient:
     protocol_shape = "openai-compatible"
 
@@ -181,7 +208,13 @@ class OpenAICompatibleClient:
                 args = json.loads(fn.get("arguments") or "{}")
             except (json.JSONDecodeError, TypeError):
                 args = {}
-            calls.append(ToolCall(id=raw.get("id") or "call", name=fn.get("name") or "", args=args))
+            calls.append(
+                ToolCall(
+                    id=_safe_tool_call_id(raw.get("id")),
+                    name=fn.get("name") or "",
+                    args=args,
+                )
+            )
         usage = data.get("usage") or {}
 
         def _usage(key: str) -> int:
