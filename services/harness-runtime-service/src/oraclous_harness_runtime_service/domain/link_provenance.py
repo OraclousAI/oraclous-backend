@@ -165,27 +165,74 @@ def _canonical(url: str) -> str | None:
     scheme = parts.scheme.lower()
     if scheme not in ("http", "https") or not host:
         return None
-    host = host.removeprefix("www.")
+    # #944 review, MEDIUM-5: userinfo is a phishing shape, not a normalisation detail. `urlsplit`
+    # silently drops it from `.hostname` — `https://arxiv.org@evil.example/x` verifies against
+    # `evil.example` while the console renders an anchor that visibly BEGINS "https://arxiv.org@".
+    # Fail closed, like every other unreadable input this function refuses rather than guesses at.
+    if parts.username or parts.password:
+        return None
+    try:
+        # #944 review, LOW-7: fold to the ASCII form a browser would actually resolve (IDNA/UTS-46),
+        # not a bare `.lower()` — a fetched URL in punycode and the same host written in Unicode in
+        # the answer must compare equal, or an honest citation spends a correction over encoding. A
+        # host that will not encode is not one a browser would resolve either — reject it, same as
+        # any other unparseable authority above.
+        host = host.encode("idna").decode("ascii")
+    except ValueError:
+        return None
+    # The stdlib `idna` codec does not itself case-fold a label that is already all-ASCII (e.g.
+    # "Example.com" round-trips unchanged); the explicit `.lower()` is still required after it.
+    host = host.lower().removeprefix("www.")
+    if ":" in host:
+        # #944 review, LOW-6: an IPv6 literal — `urlsplit` strips the brackets it arrived in, so
+        # `http://[::1]:80/x` and `http://[::1:80]/x` would otherwise canonicalise to the identical
+        # (wrong) authority `::1:80`. Re-bracket so the literal and an explicit port cannot collide.
+        host = f"[{host}]"
     path = parts.path.removesuffix("/") if parts.path != "/" else ""
-    authority = f"{host}:{port}" if port is not None else host
-    query = f"?{parts.query}" if parts.query else ""
+    path = _fold_percent_escapes(path)
+    if port is not None and port != _DEFAULT_PORT.get(scheme):
+        authority = f"{host}:{port}"
+    else:
+        authority = host
+    query = f"?{_fold_percent_escapes(parts.query)}" if parts.query else ""
     return f"{scheme}://{authority}{path}{query}"
+
+
+def _looks_like_a_link(url: str) -> bool:
+    """A minimal, LENIENT check for "is this text a link at all" — scheme is http(s) and a hostname
+    is present. Deliberately separate from ``_canonical`` (#944 review, MEDIUM-5 fix): a URL that
+    fails ``_canonical``'s stricter checks (userinfo, an unencodable host) is not junk prose — it is
+    exactly the kind of link this whole module exists to catch, and it must still be extracted and
+    reported as UNVERIFIED. Folding the two together silently dropped a userinfo phishing URL from
+    the answer's own extracted-links list — worse than the bug it was meant to fix, because nothing
+    downstream ever saw it to flag.
+    """
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return False
+    return parts.scheme.lower() in ("http", "https") and bool(parts.hostname)
 
 
 def extract_answer_urls(text: str) -> list[str]:
     """Every http(s) URL occurring in ``text``, as written, first-seen order, deduplicated.
 
-    Deduplication is by CANONICAL form: citing one page twice — once with a fragment, once without
-    — is one citation, and reporting it twice would inflate what a reader is warned about.
+    Deduplication is by CANONICAL form when one exists; a URL ``_canonical`` refuses (userinfo, an
+    unencodable host) dedupes on its own written form instead — it still has to appear in the
+    output, just without the benefit of canonical-form dedup, because there is no comparable form to
+    dedup ON. Citing one real page twice — once with a fragment, once without — is one citation, and
+    reporting it twice would inflate what a reader is warned about.
     """
     out: list[str] = []
     seen: set[str] = set()
     for match in _URL.finditer(text or ""):
         written = _trim(match.group(0))
-        canonical = _canonical(written)
-        if canonical is None or canonical in seen:
+        if not _looks_like_a_link(written):
             continue
-        seen.add(canonical)
+        key = _canonical(written) or written
+        if key in seen:
+            continue
+        seen.add(key)
         out.append(written)
     return out
 
