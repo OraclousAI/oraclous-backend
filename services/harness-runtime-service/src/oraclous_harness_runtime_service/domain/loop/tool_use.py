@@ -412,6 +412,110 @@ def _accumulate_fetched(urls: list[str], fetched_urls: list[str], seen: set[str]
             fetched_urls.append(url)
 
 
+# ── #946 T2: an identical failing call is not dispatched a third time ─────────────────────────────
+#
+# A model handed an argument it can never satisfy does not learn from the failure — it re-sends the
+# identical call until the tool-call budget is gone. The #946 shape: `web-research.search` offered
+# the model a `provider` argument naming the search VENDOR, models filled it with a website name,
+# every call failed UNKNOWN_PROVIDER, and the run ended as an anonymous "did not converge" that cost
+# a whole budget of real dispatches to discover.
+#
+# D2 (tasks/plan.md): the bound keys on the REPEATED CALL, not on an error taxonomy. This loop
+# dispatches to first-party connectors and imported MCP servers alike, and no shared "this was a
+# validation error" signal crosses that boundary — an identical (tool, arguments, error) triple
+# repeating is the one signal that is honest for both sides. Two dispatches are allowed: the first
+# could be transient, the second proves it is not.
+#
+# Bounded like every other correction in this file (`_LINK_CORRECTION_MAX`, the #853 one-shot
+# repair): the member is told ONCE, plainly, and if it sends the refused call again anyway the run
+# settles instead of spending the rest of its budget discovering the same thing.
+_REPEATED_FAILURE_MAX = 2
+_REPEATED_FAILURE_STATUS = "repeated_failure"
+_REPEATED_FAILURE_NOTE = (
+    "This exact call has already failed twice with the same error, so it was not sent again. "
+    "Sending it a third time cannot work. Either change the arguments — a different value, or the "
+    "same call without the argument that is being rejected — or drop this call and answer with "
+    "what you already have."
+)
+#: The per-member ledger: a call signature → (the error it produced, how many times in a row).
+RepeatedFailures = dict[str, tuple[str, int]]
+
+
+def _call_signature(name: str, args: Any) -> str:
+    """A stable identity for "the same call again", independent of key ORDER in the arguments.
+
+    Providers do not guarantee argument order between turns, so a raw dump would read a re-sent
+    identical call as a new one and the bound would never fire. Unserialisable arguments fall back
+    to ``repr`` rather than raising — the bound is a courtesy, never a thing that can fail a run.
+    """
+    try:
+        rendered = json.dumps(args, sort_keys=True, default=str)
+    except (TypeError, ValueError):  # pragma: no cover - json.dumps(default=str) is total
+        rendered = repr(args)
+    return f"{name}\x00{rendered}"
+
+
+def _record_failure(ledger: RepeatedFailures, signature: str, error: str) -> None:
+    """Count consecutive identical failures. A DIFFERENT error resets the count to one — the call
+    is the same but the world changed, and the second failure has not yet proven anything."""
+    prior = ledger.get(signature)
+    ledger[signature] = (
+        (error, prior[1] + 1)
+        if prior is not None and prior[0] == error
+        else (
+            error,
+            1,
+        )
+    )
+
+
+def _repeated_failures_from_transcript(messages: list[Message]) -> RepeatedFailures:
+    """Re-derive the ledger from an already-restored transcript, at a HITL resume.
+
+    Without this every pause hands the member a fresh allowance for a call already proven dead,
+    which is the retry loop the bound exists to stop. Mirrors ``_fetched_urls_from_transcript``:
+    the checkpoint carries the transcript rather than the loop's own counters, so the resumed
+    segment reads its own history back out of the messages instead of being handed one.
+    """
+    args_by_call_id: dict[str, dict[str, Any]] = {}
+    names_by_call_id: dict[str, str] = {}
+    for message in messages:
+        if message.get("role") != "assistant":
+            continue
+        for call in message.get("tool_calls") or []:
+            call_id = call.get("id")
+            if isinstance(call_id, str):
+                args_by_call_id[call_id] = call.get("args") or {}
+                if isinstance(call.get("name"), str):
+                    names_by_call_id[call_id] = call["name"]
+
+    ledger: RepeatedFailures = {}
+    for message in messages:
+        if message.get("role") != "tool":
+            continue
+        raw_content = message.get("content")
+        call_id = message.get("tool_call_id")
+        if not isinstance(raw_content, str) or not isinstance(call_id, str):
+            continue
+        explicit_status = _explicit_tool_status(raw_content)
+        content = raw_content.split("\n[receipt:", 1)[0]
+        failed = (
+            explicit_status == "error"
+            if explicit_status is not None
+            else _is_failed_tool_content(content)
+        )
+        if not failed:
+            continue
+        name = names_by_call_id.get(call_id)
+        if name is None:
+            message_name = message.get("name")
+            if not isinstance(message_name, str):
+                continue
+            name = message_name
+        _record_failure(ledger, _call_signature(name, args_by_call_id.get(call_id, {})), content)
+    return ledger
+
+
 # #944 review round 3, LOW-H/LOW-I: the explicit marker a `tool`-role message's receipt line carries
 # (``status=ok``/``status=error``), so a transcript reader can classify a call the same way the live
 # path did rather than GUESSING from the shape of its content. A guess disagrees with the live
@@ -638,6 +742,18 @@ async def run_tool_use_loop(
     )
     # #944 review round 3, HIGH-C: the parallel membership set — see `_accumulate_fetched` above.
     fetched_urls_seen: set[str] = set(fetched_urls)
+    # #946 T2: the repeated-failure ledger — see `_REPEATED_FAILURE_MAX` above. Re-derived from the
+    # restored transcript on a resume, for the same reason `fetched_urls` is: a member that already
+    # proved a call dead must not get a fresh allowance for it just because the run was paused.
+    repeated_failures: RepeatedFailures = (
+        _repeated_failures_from_transcript(resume_state.messages)
+        if resume_state is not None
+        else {}
+    )
+    # Which signatures the member has already been TOLD about. Told once, plainly; a member that
+    # sends a refused call again anyway has ignored an instruction it could act on, and the run
+    # settles rather than spending the rest of its budget rediscovering the same dead call.
+    repeated_failure_told: set[str] = set()
     # #944 review, HIGH-2 fix B: how many corrections THIS run has already spent — bounded by
     # `_LINK_CORRECTION_MAX`, see its docstring. A fresh count on a resume, matching `nudged`: the
     # checkpoint carries the transcript, not this counter, so a run that had already used one
@@ -849,6 +965,21 @@ async def run_tool_use_loop(
                     "budget", "tool_call_budget", "tool-call budget exhausted", iteration
                 )
 
+            # #946 T2: the member has already been told, in a sentence it could act on, that this
+            # exact call is dead. Sending it again is not a call worth refusing one more time — it
+            # is the member declining to adapt, and the honest outcome is to settle on what it has
+            # rather than spend the rest of the budget rediscovering the same failure.
+            already_told = spec is not None and (
+                _call_signature(tc["name"], tc["args"]) in repeated_failure_told
+            )
+            if already_told:
+                return _degrade(
+                    "tool_repeat",
+                    "repeated_tool_failure",
+                    "a tool call that had already failed twice was sent again unchanged after the "
+                    "member was told it could not work",
+                    iteration,
+                )
             tool_started: datetime | None = None
             tool_ended: datetime | None = None
             if spec is None:
@@ -867,8 +998,21 @@ async def run_tool_use_loop(
                 content = _redact(json.dumps(unknown), redactors)
                 status = "error"
                 step_name = tc["name"]
+            elif (repeated_failures.get(_call_signature(tc["name"], tc["args"])) or ("", 0))[
+                1
+            ] >= _REPEATED_FAILURE_MAX:
+                # #946 T2: this exact call already failed twice the same way. It is NOT dispatched —
+                # the member is handed the note instead, so the turn still gets its tool-role reply
+                # (a provider rejects a tool_call with no answering message) but costs no real call.
+                # Deliberately not charged to `tool_calls_made`: nothing was executed.
+                signature = _call_signature(tc["name"], tc["args"])
+                repeated_failure_told.add(signature)
+                content = _REPEATED_FAILURE_NOTE
+                status = _REPEATED_FAILURE_STATUS
+                step_name = f"{spec.binding}.{spec.operation}"
             else:
                 step_name = f"{spec.binding}.{spec.operation}"
+                signature = _call_signature(tc["name"], tc["args"])
                 tool_calls_made += 1
                 tool_started = datetime.now(UTC)
                 try:
@@ -914,6 +1058,10 @@ async def run_tool_use_loop(
                         json.dumps({"error": type(exc).__name__, "detail": str(exc)}), redactors
                     )
                     status = "error"
+                    # #946 T2: count it against this exact call. A DIFFERENT error resets the count
+                    # — see `_record_failure`. Recorded on the redacted content, so the ledger key
+                    # is the same string a resumed run reads back out of the transcript.
+                    _record_failure(repeated_failures, signature, content)
                 finally:
                     tool_ended = datetime.now(UTC)
             # #944: the run's own link provenance. An OK call contributes the URLs in its RESULT
