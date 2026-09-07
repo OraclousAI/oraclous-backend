@@ -505,3 +505,186 @@ async def test_an_errored_pre_pause_call_is_not_credited_after_resume() -> None:
     assert result.status is HarnessStatus.SUCCEEDED
     assert _steps(result, _CORRECTION_STATUS) == []  # HIGH-2: no fetched set → flag, never loop
     assert result.unverified_links == [_REAL]
+
+
+# --- #944 review round 3: harvest-pipeline defects found reviewing round 2's own fixes -------------
+
+
+async def test_an_all_caps_argument_name_still_counts_as_fetched() -> None:
+    # MEDIUM-F: the argument-name splitter used to break a run of consecutive capitals into single
+    # letters ("URL" -> "u", "r", "l"), matching no token. All-caps is the ordinary REST/MCP
+    # convention for this word, so an honestly fetched URL passed as `URL=...` went uncredited and
+    # cost the member a correction it did not deserve — always the SAFE direction, but a real bug.
+    class _CapsArgLLM:
+        protocol_shape = "fake"
+
+        def __init__(self) -> None:
+            self.turns = 0
+
+        async def complete(self, *, messages: Any, system: str, tools: list[ToolSpec]) -> Any:
+            self.turns += 1
+            if self.turns == 1:
+                return LLMResponse(
+                    text="reading", tool_calls=[ToolCall("c1", _READ.name, {"URL": _REAL})]
+                )
+            return LLMResponse(text=f"Prices fell. [Source]({_REAL})", tool_calls=[])
+
+    async def dispatch(_spec: ToolSpec, _args: dict[str, Any]) -> dict[str, Any]:
+        return {"text": "no url in the body at all"}
+
+    result = await _run(_CapsArgLLM(), dispatch)
+    assert result.status is HarnessStatus.SUCCEEDED
+    assert result.unverified_links == []
+    assert _steps(result, _CORRECTION_STATUS) == []
+
+
+async def test_a_url_smuggled_through_a_non_url_named_argument_is_not_credited() -> None:
+    # MEDIUM-E (coverage item K): `dispatch` receives the model's WHOLE args object with no schema
+    # validation in the harness, so nothing stops a model from putting a URL under an argument name
+    # that does not denote one — the review's own example, "a search whose QUERY happened to be the
+    # fabricated URL". That call returning ok must not launder the URL into the set that judges the
+    # member's own answer.
+    class _QueryLaunderLLM:
+        protocol_shape = "fake"
+
+        def __init__(self) -> None:
+            self.turns = 0
+
+        async def complete(self, *, messages: Any, system: str, tools: list[ToolSpec]) -> Any:
+            self.turns += 1
+            if self.turns == 1:
+                return LLMResponse(
+                    text="searching",
+                    tool_calls=[ToolCall("c1", _SEARCH.name, {"query": _FABRICATED})],
+                )
+            return LLMResponse(text=f"[Source]({_FABRICATED})", tool_calls=[])
+
+    async def dispatch(_spec: ToolSpec, _args: dict[str, Any]) -> dict[str, Any]:
+        return {"results": []}  # the fabricated URL never appears in the RESULT either
+
+    result = await _run(_QueryLaunderLLM(), dispatch)
+    assert result.status is HarnessStatus.SUCCEEDED
+    # HIGH-2: nothing was ever credited, so the draft ships flagged on the first attempt rather than
+    # looping — the same remedy an all-tool-calls-errored member gets.
+    assert _steps(result, _CORRECTION_STATUS) == []
+    assert result.unverified_links == [_FABRICATED]
+
+
+async def test_the_json_repair_corrections_own_prose_is_never_credited_after_resume() -> None:
+    # LOW-H: the #853 JSON-repair correction is a `role: tool` message whose content is PROSE and
+    # was never dispatched at all — the live path `continue`s before the harvest block, crediting
+    # nothing. Before an explicit `status` marker existed, a resume's content-shape heuristic could
+    # not recognise non-JSON prose as failed (only a specific JSON error shape counted as failed),
+    # so the `url` argument of the never-dispatched call — never actually fetched — WAS credited,
+    # but only after a resume.
+    checkpoint = LoopCheckpoint(
+        messages=[
+            {"role": "user", "content": "summarise this quarter's inference pricing"},
+            {
+                "role": "assistant",
+                "content": "reading",
+                "tool_calls": [
+                    {
+                        "id": "c1",
+                        "name": _READ.name,
+                        "args": {"url": "https://never-fetched.example/report"},
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "c1",
+                "name": _READ.name,
+                "content": (
+                    "Your last document was not valid JSON: bad token.\n"
+                    "[receipt: source_tool_call_id=c1 status=error]"
+                ),
+            },
+        ],
+        pending_tool_calls=[],
+        approved_tool_call_id="c1",
+        iteration=1,
+        tool_calls_made=1,
+        tokens_used=10,
+        redact_patterns=[],
+    )
+    llm = _Scripted("[Source](https://never-fetched.example/report)")
+    result = await _run(llm, resume_state=checkpoint)
+    assert result.unverified_links == ["https://never-fetched.example/report"]
+
+
+async def test_an_ok_result_shaped_like_an_error_object_is_still_credited_after_resume() -> None:
+    # LOW-I: `dispatch` decides ok/error by whether it raised, never by the shape of what it
+    # returns — a connector's genuine ok payload can happen to look like `{"error": ...}` (a status
+    # field literally named that). Before an explicit marker, the resume path GUESSED "failed" from
+    # content shape alone and lost the credit — a false accusation costing the member a correction
+    # it did not deserve. Same root cause as LOW-H, opposite direction.
+    checkpoint = LoopCheckpoint(
+        messages=[
+            {"role": "user", "content": "summarise this quarter's inference pricing"},
+            {
+                "role": "assistant",
+                "content": "reading",
+                "tool_calls": [{"id": "c1", "name": _READ.name, "args": {"url": _REAL}}],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "c1",
+                "name": _READ.name,
+                "content": (
+                    '{"error": "none", "detail": "queued"}\n'
+                    "[receipt: source_tool_call_id=c1 status=ok]"
+                ),
+            },
+        ],
+        pending_tool_calls=[],
+        approved_tool_call_id="c1",
+        iteration=1,
+        tool_calls_made=1,
+        tokens_used=10,
+        redact_patterns=[],
+    )
+    llm = _Scripted(f"[Source]({_REAL})")
+    result = await _run(llm, resume_state=checkpoint)
+    assert result.unverified_links == []
+
+
+async def test_a_credential_bearing_pre_pause_argument_never_reaches_a_correction_message() -> None:
+    # HIGH-D: the checkpoint's assistant `tool_calls` carry the model's RAW, unredacted arguments —
+    # only `content`/`last_text` are stored redacted. A credential embedded in a pre-pause URL
+    # argument must not enter `fetched_urls` in the clear, because that list is echoed verbatim into
+    # a later correction message (`_link_correction`'s "you fetched: …" clause) whenever one fires.
+    checkpoint = LoopCheckpoint(
+        messages=[
+            {"role": "user", "content": "summarise this quarter's inference pricing"},
+            {
+                "role": "assistant",
+                "content": "reading",
+                "tool_calls": [
+                    {
+                        "id": "c1",
+                        "name": _READ.name,
+                        "args": {"url": "https://api.example.com/x?api_key=SECRET123"},
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "c1",
+                "name": _READ.name,
+                "content": '{"text": "page body"}\n[receipt: source_tool_call_id=c1 status=ok]',
+            },
+        ],
+        pending_tool_calls=[],
+        approved_tool_call_id="c1",
+        iteration=1,
+        tool_calls_made=1,
+        tokens_used=10,
+        redact_patterns=[r"SECRET123"],
+    )
+    # Cites something the resumed fetched set does not contain at all, so every link is invented and
+    # a correction fires — the path that echoes `fetched_urls` back to the model.
+    llm = _Scripted(f"[Source]({_FABRICATED})")
+    result = await _run(llm, resume_state=checkpoint)
+    assert len(_steps(result, _CORRECTION_STATUS)) >= 1
+    assert not any("SECRET123" in message for message in llm.user_messages)
