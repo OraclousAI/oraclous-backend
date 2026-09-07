@@ -552,3 +552,150 @@ async def test_a_resume_does_not_refuse_a_call_the_paused_run_never_made() -> No
         resume_state=_checkpoint(_paused_transcript(with_marker=True)),
     )
     assert len(dispatch.calls) == 2
+
+
+# --- a refusal is never read back as a success (#946 review round 2, C1) --------------------------
+#
+# The refusal writes its own message into the transcript. Two later readers parse that transcript at
+# a HITL resume, and they must BOTH classify it as "this call did not succeed":
+#
+#   * the fetched-URL set (#944) — otherwise a URL the run never fetched, on a call that was never
+#     even dispatched, enters the link-provenance set. That is the forgery path #944 review round 3
+#     closed for the never-dispatched JSON-repair correction, and it must stay closed: a model
+#     could otherwise legitimise any invented URL by re-sending a dead read(url=X) until it is
+#     refused, then waiting for a pause.
+#   * the repeated-failure ledger itself — otherwise the note prose is recorded as that call's
+#     "error", differs from the real one, resets the count, and the resumed run re-dispatches the
+#     call the bound had already proven dead.
+#
+# The two want opposite things from the same message, so both are pinned here.
+
+_READ = ToolSpec(
+    name="web_research__read",
+    description="read a URL",
+    parameters={"type": "object", "properties": {"url": {"type": "string"}}, "required": []},
+    binding="web-research",
+    operation="read",
+)
+_FABRICATED = "https://fabricated.example/page"
+
+
+async def _transcript_after_a_refusal() -> list[Message]:
+    """Drive the real loop until a call is refused, and hand back the transcript it wrote."""
+    llm = _StubbornLLM({"url": _FABRICATED}, tool=_READ.name)
+    await run_tool_use_loop(
+        llm=llm,
+        system="",
+        user_input="go",
+        tool_specs=[_READ],
+        dispatch=_Dispatcher(errors=["404 not found"]),
+        policy=_env(max_iterations=4),
+    )
+    return llm.seen
+
+
+@pytest.mark.security
+async def test_a_refused_calls_url_argument_is_never_credited_as_fetched() -> None:
+    from oraclous_harness_runtime_service.domain.loop.tool_use import (
+        _fetched_urls_from_transcript,
+    )
+
+    messages = await _transcript_after_a_refusal()
+    assert any(
+        "repeated" in str(m.get("content", "")).lower() for m in messages if m.get("role") == "tool"
+    )
+    fetched = _fetched_urls_from_transcript(messages, {_READ.name: _READ}, [])
+    assert _FABRICATED not in fetched
+
+
+async def test_a_refusal_in_the_transcript_does_not_renew_the_allowance() -> None:
+    messages = await _transcript_after_a_refusal()
+    dispatch = _Dispatcher(errors=["404 not found"])
+    await run_tool_use_loop(
+        llm=_StubbornLLM({"url": _FABRICATED}, tool=_READ.name),
+        system="",
+        user_input="go",
+        tool_specs=[_READ],
+        dispatch=dispatch,
+        policy=_env(max_iterations=4),
+        resume_state=_checkpoint(list(messages)),
+    )
+    assert dispatch.calls == []
+
+
+async def test_the_receipt_marker_keeps_the_two_values_every_transcript_uses() -> None:
+    """The marker vocabulary is ``ok``/``error`` and is persisted into checkpoints. A third value
+    is invisible to every existing reader, which is precisely how C1 happened."""
+    messages = await _transcript_after_a_refusal()
+    for message in messages:
+        if message.get("role") != "tool":
+            continue
+        content = str(message.get("content", ""))
+        assert "[receipt:" in content
+        assert "status=ok]" in content or "status=error]" in content
+
+
+# --- the terminal names the tool the way the rest of the run does (C4) -----------------------------
+
+
+async def test_the_terminal_names_the_tool_the_way_the_trace_does() -> None:
+    """The run already shows this tool as ``web-research.search`` in its step trace and on the run
+    page. Naming it by its provider-facing function name in the same run's failure text shows one
+    tool under two spellings, and the person-facing one would be the less readable."""
+    result = await run_tool_use_loop(
+        llm=_StubbornLLM(),
+        system="",
+        user_input="go",
+        tool_specs=[_SEARCH],
+        dispatch=_Dispatcher(),
+        policy=_env(max_iterations=8),
+    )
+    message = result.error_message or ""
+    assert "web-research.search" in message
+    assert _SEARCH.name not in message
+
+
+# --- a refused call costs no budget (C6) ------------------------------------------------------------
+
+
+async def test_a_refused_call_is_not_charged_to_the_tool_call_budget() -> None:
+    """Nothing was executed, so nothing is charged. Left unpinned, a refusal could quietly eat the
+    budget the member needs to try a DIFFERENT call — the opposite of what the bound is for."""
+    calls: list[dict] = []
+
+    class _ThenAdaptsLLM:
+        protocol_shape = "fake"
+
+        def __init__(self) -> None:
+            self.turns = 0
+
+        async def complete(
+            self, *, messages: list[Message], system: str, tools: list[ToolSpec]
+        ) -> LLMResponse:
+            self.turns += 1
+            if self.turns <= 4:
+                return LLMResponse(
+                    text="", tool_calls=[ToolCall(f"c{self.turns}", _SEARCH.name, dict(_DEAD_ARGS))]
+                )
+            return LLMResponse(
+                text="", tool_calls=[ToolCall("c9", _SEARCH.name, {"query": "different"})]
+            )
+
+    async def dispatch(spec: ToolSpec, args: dict) -> dict:
+        calls.append(dict(args))
+        if "provider" in args:
+            raise RuntimeError("unknown search provider 'The Verge'")
+        return {"hits": []}
+
+    await run_tool_use_loop(
+        llm=_ThenAdaptsLLM(),
+        system="",
+        user_input="go",
+        tool_specs=[_SEARCH],
+        dispatch=dispatch,
+        policy=_env(max_iterations=8, max_tool_calls=3),
+    )
+    # two dead dispatches + the later different one: the two refusals in between cost nothing, so
+    # the member still had budget left for a call that could work
+    assert len(calls) == 3
+    assert calls[-1] == {"query": "different"}
