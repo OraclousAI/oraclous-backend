@@ -994,6 +994,12 @@ async def run_tool_use_loop(
 
             tool_started: datetime | None = None
             tool_ended: datetime | None = None
+            # Hoisted above the chain (#946 review round 5, LOW-5). Two of the three branches below
+            # need it, and computing it twice inside the refusal condition read as if the two calls
+            # might differ. Binding it in only some branches was the real hazard: a later edit that
+            # read `signature` after the chain would have silently got the PREVIOUS iteration's
+            # value, which is a wrong-call bug that nothing here would have surfaced.
+            signature = _call_signature(tc["name"], tc["args"])
             if spec is None:
                 # #899: name what the model probably meant. The call is still never dispatched —
                 # the hint sits ALONGSIDE the fail-closed rule, never in place of it.
@@ -1011,10 +1017,7 @@ async def run_tool_use_loop(
                 status = "error"
                 step_name = tc["name"]
                 step_detail = content
-            elif (repeated_failures.get(_call_signature(tc["name"], tc["args"])) or ("", 0))[
-                1
-            ] >= _REPEATED_FAILURE_MAX:
-                signature = _call_signature(tc["name"], tc["args"])
+            elif (repeated_failures.get(signature) or ("", 0))[1] >= _REPEATED_FAILURE_MAX:
                 # #946 T2: this exact call already failed twice the same way. It is NOT dispatched —
                 # the member is handed the note instead, so the turn still gets its tool-role reply
                 # (a provider REJECTS a tool_call with no answering message, so skipping the reply
@@ -1061,7 +1064,6 @@ async def run_tool_use_loop(
                 step_detail = (repeated_failures.get(signature) or ("", 0))[0] or content
             else:
                 step_name = f"{spec.binding}.{spec.operation}"
-                signature = _call_signature(tc["name"], tc["args"])
                 tool_calls_made += 1
                 tool_started = datetime.now(UTC)
                 try:
