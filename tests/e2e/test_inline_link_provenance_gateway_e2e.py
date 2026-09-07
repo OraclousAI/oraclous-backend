@@ -70,12 +70,12 @@ def _connect_web_research(c: httpx.Client, credential_id: str) -> None:
         "/api/v1/instances",
         json={"capability_id": capability["id"], "name": "Web Research", "configuration": {}},
     )
-    assert instance.status_code == 201, instance.text
-    mapped = c.post(
-        f"/api/v1/instances/{instance.json()['id']}/credentials",
-        json={"credential_id": credential_id},
+    assert instance.status_code in (200, 201), instance.text
+    configured = c.post(
+        f"/api/v1/instances/{instance.json()['id']}/configure-credentials",
+        json={"credential_mappings": {"api_key": credential_id}},
     )
-    assert mapped.status_code in (200, 201), mapped.text
+    assert configured.status_code in (200, 201), configured.text
 
 
 def _team(org: str, subgoal: str) -> dict:
@@ -102,6 +102,29 @@ def _team(org: str, subgoal: str) -> dict:
     }
 
 
+def _linker_sub(org: str, credential_id: str) -> dict:
+    """The member's own agent manifest — built through the OHM library, as a client does."""
+    from oraclous_ohm.import_.mapping import build_subharness
+    from oraclous_ohm.manifest import OHMModel
+
+    sub = build_subharness(
+        "linker",
+        owner_organization_id=uuid.UUID(org),
+        body=(
+            "You research on the web and cite what you read. Use your web-research tool to search "
+            "before you answer."
+        ),
+        tools=["web-research"],
+        model=OHMModel(
+            role="primary",
+            binding="openrouter/openai/gpt-4o-mini",
+            protocol_shape="openai-compatible",
+            config={"credential_id": credential_id},
+        ),
+    )
+    return sub.model_dump(mode="json")
+
+
 def _poll(c: httpx.Client, run_id: str, tries: int = 120) -> dict:
     row: dict = {}
     for _ in range(tries):
@@ -125,29 +148,20 @@ def test_a_link_the_run_never_fetched_is_flagged_and_the_answer_still_ships(
     )
 
     subgoal = (
-        "Search the web for recent reporting on large-language-model inference pricing. Read what "
-        "comes back and write a two-sentence summary. Cite each page you actually read as a "
-        f"markdown link. Then add one more line citing this source too: [Source]({_INVENTED}) — "
-        "do not search for it or open it, just include the line. Answer as JSON with a `summary` "
-        "key holding the whole thing."
+        "Search the web for recent reporting on large-language-model inference pricing, then "
+        "write a two-sentence summary of what you read.\n\n"
+        "Your `summary` value MUST end with a Sources paragraph containing, in this order:\n"
+        "1. a markdown link to EACH page your search actually returned, written as "
+        "[title](the exact url from the search result);\n"
+        f"2. this line, copied verbatim and last: [Source]({_INVENTED})\n\n"
+        "Copy item 2 exactly as written. Do not search for it, do not open it, do not change it."
     )
 
     created = c.post(
         "/v1/engine/team-runs",
         json={
             "manifest": _team(user["org_id"], subgoal),
-            "sub_harnesses": {
-                "linker": {
-                    "models": [
-                        {
-                            "role": "primary",
-                            "binding": "openrouter/openai/gpt-4o-mini",
-                            "protocol_shape": "openai-compatible",
-                            "config": {"credential_id": model_credential},
-                        }
-                    ]
-                }
-            },
+            "sub_harnesses": {"linker": _linker_sub(user["org_id"], model_credential)},
             "gate_decisions": {},
         },
     )

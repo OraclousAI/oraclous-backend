@@ -228,7 +228,33 @@ async def test_first_seen_order_is_preserved() -> None:
     assert _urls(f"[B]({b}) then [A]({a}) then [B again]({b})") == [b, a]
 
 
-# --- criterion 7: the provenance set is matched the same way ----------------------------------
+# --- criterion 7: the answer is often a JSON document, not loose prose -------------------------
+#
+# Found on the DEPLOYED stack, not by reading the code. A member with a declared output contract
+# answers with a JSON document, so its Sources list arrives as `…/trends)\n- [B](…)` — where the
+# newline is the two characters backslash and n, inside a JSON string. A matcher that runs to the
+# next space swallows `)\n-` into the URL, so EVERY honestly-cited link fails to match what the run
+# fetched, the member is corrected on every attempt, and the run dies at the token ceiling. One live
+# run burned 257k tokens that way. A backslash therefore ends a URL.
+
+
+async def test_a_url_inside_a_json_encoded_answer_is_read_correctly() -> None:
+    answer = (
+        f'{{"summary": "Prices fell.\\n\\nSources:\\n- [Ars]({_REAL})\\n- [Okta]({_FABRICATED})"}}'
+    )
+    result = _check(answer, [_REAL])
+    assert result.verified == [_REAL]
+    assert result.unverified == [_FABRICATED]
+
+
+async def test_a_backslash_escape_never_becomes_part_of_a_url() -> None:
+    # The general rule behind the case above: whatever follows a backslash is the document's
+    # encoding, never the address. `\"` closing a JSON string is the same trap as `\n`.
+    assert _urls(r'{"url": "https://example.org/a\n- next"}') == ["https://example.org/a"]
+    assert _urls(r'{"url": "https://example.org/a\"}') == ["https://example.org/a"]
+
+
+# --- criterion 8: the provenance set is matched the same way ----------------------------------
 
 
 async def test_a_fetched_url_is_normalised_before_matching() -> None:
