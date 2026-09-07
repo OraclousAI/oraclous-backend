@@ -543,7 +543,8 @@ def _repeated_failures_from_transcript(messages: list[Message]) -> RepeatedFailu
         if not isinstance(raw_content, str) or not isinstance(call_id, str):
             continue
         explicit_status = _explicit_tool_status(raw_content)
-        content = raw_content.split("\n[receipt:", 1)[0]
+        # `rsplit`, not `split` (security audit finding 1) — see the sibling reader below.
+        content = raw_content.rsplit("\n[receipt:", 1)[0]
         failed = (
             explicit_status == "error"
             if explicit_status is not None
@@ -578,8 +579,22 @@ def _repeated_failures_from_transcript(messages: list[Message]) -> RepeatedFailu
 # recognise as failed, so its message's URL-named arguments — never credited live — WERE credited on
 # resume (LOW-H). The marker is optional on read: a checkpoint fixture or an older persisted
 # transcript that never carried one falls back to the previous content-shape heuristic.
+#
+# Security audit finding 1 (HIGH): ANCHORED to the end of the message, and matched with `fullmatch`
+# on the last line rather than searched for anywhere. The marker is plain text inside a message
+# whose body is `json.dumps({"error": ..., "detail": str(exc)})`, and a connector's error routinely
+# echoes the caller-supplied value that caused it. `json.dumps` escapes quotes and newlines and
+# nothing else — not `[`, `]`, `=`, `:` or spaces — so a model can put a whole fake receipt line
+# inside a tool ARGUMENT and have it persisted into the transcript verbatim.
+#
+# Searching found the FIRST such marker while the platform appends the genuine one LAST. A failed
+# call therefore read back as a SUCCESS on a resume, and both readers of this marker were fooled at
+# once: `_fetched_urls_from_transcript` credited a URL the run never fetched (the #944 forgery path,
+# reopened), and `_repeated_failures_from_transcript` recorded nothing, renewing the allowance for a
+# call already proven dead. A model can write the syntax; it cannot write past the platform's own
+# append, so the end is the one position that is not forgeable.
 _TOOL_STATUS_MARKER = re.compile(
-    r"\[receipt: source_tool_call_id=\S+ status=(?P<status>ok|error)\]"
+    r"\n\[receipt: source_tool_call_id=\S+ status=(?P<status>ok|error)\]\Z"
 )
 
 
@@ -625,7 +640,10 @@ def _fetched_urls_from_transcript(
         if not isinstance(raw_content, str):
             continue
         explicit_status = _explicit_tool_status(raw_content)
-        content = raw_content.split("\n[receipt:", 1)[0]  # strip the #642 receipt line
+        # `rsplit`, not `split` (security audit finding 1): a forged marker earlier in the body
+        # would otherwise truncate the content this function reads, hiding whatever follows it from
+        # URL extraction and from the ledger key.
+        content = raw_content.rsplit("\n[receipt:", 1)[0]
         failed = (
             explicit_status == "error"
             if explicit_status is not None
