@@ -50,7 +50,12 @@ def test_it_carries_no_exception_class_name() -> None:
         },
     )
     assert "RegistryError" not in text
-    assert "Error" not in text.replace("error", "")
+    # An explicit set, not `"Error" not in text.replace("error", "")`. That expression removes
+    # nothing a capital-E class name is made of, so it is identical to the plain check for every
+    # realistic input — except that it can SYNTHESIZE one: "Eerrorrror" collapses to "Error". It
+    # also misses every class name that does not end in "Error".
+    for class_name in ("RegistryError", "RuntimeError", "TimeoutError", "Exception", "Traceback"):
+        assert class_name not in text
 
 
 def test_it_carries_no_json_punctuation() -> None:
@@ -76,6 +81,36 @@ def test_the_useful_half_of_the_blob_survives() -> None:
     assert "unknown search provider 'The Verge'" in text
 
 
+def test_the_blob_is_unwrapped_where_production_actually_puts_it() -> None:
+    """The real recorded shape, not the convenient one.
+
+    By the time a member's failure reaches the curation, the orchestrator has wrapped it in its own
+    prose: ``member 'a' harness did not succeed: FAILED — {"error": …}`` (`orchestrate.py` records
+    `str(exc)`). An unwrapper that only matched a LEADING brace fires on none of these — the blob
+    reaches the run page untouched while every isolated unit test stays green. That is exactly what
+    happened, and it is why `test_team_run_service.py` also drives this through the real service.
+
+    The wrapper prose goes with the class name: it names our own internals and helps nobody.
+    """
+    text = summarise_failed_run(
+        failed=["a"],
+        blocked=[],
+        member_errors={
+            "a": "member 'a' harness did not succeed: FAILED — "
+            + _loop_error("RegistryError", "unknown search provider 'The Verge'")
+        },
+    )
+    assert "RegistryError" not in text
+    assert "harness did not succeed" not in text
+    assert "unknown search provider 'The Verge'" in text
+
+
+def test_a_sentence_containing_a_brace_is_not_mistaken_for_a_blob() -> None:
+    recorded = "the template placeholder {name} was never filled in"
+    text = summarise_failed_run(failed=["a"], blocked=[], member_errors={"a": recorded})
+    assert recorded in text
+
+
 def test_a_plain_string_error_is_passed_through_unharmed() -> None:
     # not every recorded failure is the loop's JSON shape — a dispatch error is already a sentence
     text = summarise_failed_run(
@@ -97,7 +132,7 @@ def test_a_blob_with_no_detail_still_says_something_useful() -> None:
     assert text.strip()
 
 
-# --- everything it carried before, it still carries ----------------------------------------------
+# --- everything it carried before, it still carries -----------------------------------------------
 
 
 def test_it_names_which_members_failed_and_which_were_blocked() -> None:
@@ -116,7 +151,9 @@ def test_it_still_reports_the_counts() -> None:
         blocked=["c"],
         member_errors={},
     )
-    assert "2" in text and "1" in text
+    # the rendered phrases, not bare digits — "2" alone is satisfied by a member named "member-2"
+    assert "2 of its members failed" in text
+    assert "1 could not start" in text
 
 
 def test_it_still_says_the_run_can_be_rerun() -> None:
@@ -147,9 +184,35 @@ def test_a_failure_with_no_recorded_detail_still_names_the_member() -> None:
     assert "ghost" in text
 
 
-# --- leak-safety is unchanged ---------------------------------------------------------------------
+def test_truncation_keeps_the_counts_and_the_rerunnable_statement() -> None:
+    # T3 says the counts and the re-runnable statement STAY. A cap that cut the front of the text
+    # to fit the reasons would satisfy the length assertion and drop both.
+    text = summarise_failed_run(
+        failed=[f"member-{i}" for i in range(200)],
+        blocked=[f"blocked-{i}" for i in range(200)],
+        member_errors={f"member-{i}": _loop_error("RegistryError", "x" * 400) for i in range(200)},
+    )
+    assert "200 of its members failed" in text
+    assert "re-run" in text.lower()
+    assert "member-0" in text
 
 
+def test_the_curation_never_mutates_what_it_was_handed() -> None:
+    # T3 criterion 4: the raw per-member detail stays available for debugging. The step trace is
+    # written elsewhere and is not this function's to keep — but a curation that edited the mapping
+    # in place would destroy the raw detail at its source, which is the one way this function could
+    # break that criterion.
+    recorded = _loop_error("RegistryError", "unknown search provider 'The Verge'")
+    member_errors = {"researcher": recorded}
+    summarise_failed_run(failed=["researcher"], blocked=[], member_errors=member_errors)
+    assert member_errors == {"researcher": recorded}
+
+
+# --- leak-safety is unchanged --------------------------------------------------------------------
+
+
+@pytest.mark.security
+@pytest.mark.operator_separation
 def test_an_upstream_body_is_not_reconstructed_by_the_curation() -> None:
     # the curation only ever removes; it must never add a field the recorded error did not carry
     detail = "the search provider returned 503"
