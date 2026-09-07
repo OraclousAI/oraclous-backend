@@ -788,3 +788,82 @@ async def test_the_run_page_names_the_real_cause_not_the_advice_to_the_model() -
     assert "unknown search provider 'The Verge'" in message
     assert "change the arguments" not in message
     assert "drop this call" not in message
+
+
+# --- the note claims only what is true (#946 review round 5, MEDIUM-4) ---------------------------
+#
+# The bound keys on an identical (tool, arguments, error) triple. A COARSE transient class renders a
+# fixed sentence — `search_providers._STATUS_CLASSES` maps 429 and 433 to one string, and so does
+# PROVIDER_UNREACHABLE — so a throttle produces byte-identical errors by construction and trips the
+# bound in two calls. Ruled by the owner 2026-09-07: the BOUND STAYS exactly as it is (plumbing a
+# transient signal across the connector/MCP boundary was the rejected option, and it is the boundary
+# D2 exists to avoid depending on). What comes out is the false CLAIM: for a throttle that clears in
+# seconds, "sending it a third time cannot work" is simply not true.
+
+#: The note as it read before the reword. A checkpoint persisted then still carries this string, and
+#: such a run resumes today.
+_PRE_REWORD_NOTE = (
+    "This exact call has already failed twice with the same error, so it was not sent again. "
+    "Sending it a third time cannot work. Either change the arguments — a different value, or the "
+    "same call without the argument that is being rejected — or drop this call and answer with "
+    "what you already have."
+)
+
+
+async def test_the_note_does_not_claim_a_third_attempt_could_never_work() -> None:
+    """It says what happened and what to do about it; it does not predict the future.
+
+    A member told "this cannot work" and handed a throttle has been misinformed about its own run.
+    Everything actionable stays — the refusal is still stated, and both ways out are still named.
+    """
+    llm = _StubbornLLM()
+    await run_tool_use_loop(
+        llm=llm,
+        system="",
+        user_input="go",
+        tool_specs=[_SEARCH],
+        dispatch=_Dispatcher(),
+        policy=_env(max_iterations=8),
+    )
+    refusal = _tool_replies(llm)[-1]["content"]
+    assert "cannot work" not in refusal
+    assert "was not sent again" in refusal
+    assert "change the arguments" in refusal
+    assert "drop this call" in refusal
+
+
+async def test_a_transcript_carrying_the_pre_reword_note_still_resumes_as_a_refusal() -> None:
+    """The note's OPENING is a wire format, and this is the guard on it.
+
+    A refusal is recognised in a restored transcript by its opening alone. Reword past that opening
+    without a compatibility branch and a resumed run reads the note prose as that call's error —
+    which differs from the real one, so the count resets and the call the bound already proved dead
+    is dispatched again. Green before the reword and green after it: that is the whole point.
+    """
+    messages = _paused_transcript(with_marker=True)
+    messages.append(
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{"id": "p3", "name": _SEARCH.name, "args": dict(_DEAD_ARGS)}],
+        }
+    )
+    messages.append(
+        {
+            "role": "tool",
+            "tool_call_id": "p3",
+            "name": _SEARCH.name,
+            "content": f"{_PRE_REWORD_NOTE}\n[receipt: source_tool_call_id=p3 status=error]",
+        }
+    )
+    dispatch = _Dispatcher()
+    await run_tool_use_loop(
+        llm=_StubbornLLM(),
+        system="",
+        user_input="go",
+        tool_specs=[_SEARCH],
+        dispatch=dispatch,
+        policy=_env(max_iterations=8),
+        resume_state=_checkpoint(messages),
+    )
+    assert dispatch.calls == []
