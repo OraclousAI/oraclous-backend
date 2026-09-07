@@ -396,6 +396,103 @@ class TeamRunStatus:
     has_unverified_links: bool = False
 
 
+# ── #946 T3: a failed run's message reads as a sentence, not as an exception ──────────────────────
+#
+# When a member fails, the tool-use loop records the failure as the JSON blob it fed BACK TO THE
+# MODEL — ``{"error": "RegistryError", "detail": "..."}``. That shape is right for its audience: the
+# model needs a machine-shaped observation it can react to. It is wrong for the run's
+# ``error_message``, which is what a person reads on the run page, and which used to interpolate the
+# blob verbatim — so someone who asked for a digest of the week's AI news read ``RegistryError`` and
+# a pair of braces.
+#
+# Curate here, at the seam between the two audiences. Nothing is added: the curation only ever
+# unwraps and drops. The full per-member detail stays untouched where a debugging operator reads it,
+# on the run's step trace. Everything the text already carried it still carries — the counts, the
+# re-runnable statement, which members failed and which were blocked, the leak-safety rule (no
+# upstream body, ever) and the 2000-character cap.
+_FAILURE_SUMMARY_CAP = 2000
+#: How many member names each list may spell out before it collapses into a count. A message longer
+#: than the answer helps nobody, and 200 names is a wall of text, not information.
+_FAILURE_SUMMARY_MAX_NAMED = 10
+#: How many members get their own "why" line, and how long each one may be.
+_FAILURE_SUMMARY_MAX_DETAILS = 5
+_FAILURE_SUMMARY_MAX_DETAIL_CHARS = 200
+
+
+def _plain_reason(recorded: str) -> str | None:
+    """The human half of one member's recorded failure, or ``None`` if there is no human half.
+
+    The loop's shape is ``{"error": <class name>, "detail": <sentence>}``. The class name is an
+    implementation detail of this codebase and means nothing to the person reading the run page, so
+    it is dropped and only ``detail`` survives. Anything that is not that shape — a dispatch error
+    recorded as a plain sentence — is already the right thing and passes through untouched. Only
+    ``detail`` is read, never a sibling key: a blob that somehow carried an upstream body must not
+    have it promoted into the person-facing text (ADR-008).
+    """
+    text = recorded.strip()
+    if not text.startswith("{"):
+        return text or None
+    try:
+        parsed = json.loads(text)
+    except ValueError:
+        return None  # a brace-shaped thing that is not JSON is not something to show a person
+    if not isinstance(parsed, dict):
+        return None
+    detail = parsed.get("detail")
+    if isinstance(detail, str) and detail.strip():
+        cleaned = detail.strip()
+        return (
+            cleaned[: _FAILURE_SUMMARY_MAX_DETAIL_CHARS - 1] + "…"
+            if len(cleaned) > _FAILURE_SUMMARY_MAX_DETAIL_CHARS
+            else cleaned
+        )
+    return None
+
+
+def _named_members(names: list[str]) -> str:
+    """The first few names spelled out, the rest counted."""
+    shown = names[:_FAILURE_SUMMARY_MAX_NAMED]
+    if len(names) > len(shown):
+        return f"{', '.join(shown)} and {len(names) - len(shown)} more"
+    return ", ".join(shown)
+
+
+def summarise_failed_run(
+    *, failed: list[str], blocked: list[str], member_errors: Mapping[str, str]
+) -> str:
+    """The sentence a person reads when a team run did not finish.
+
+    A member that FAILED tried and could not; a member that was BLOCKED never got to try, because
+    something it depended on failed first. Both are named, because "re-run it" is only actionable
+    if you can see what will be re-run.
+    """
+    parts = [
+        f"This run did not finish: {len(failed)} of its members failed and "
+        f"{len(blocked)} could not start. It can be re-run."
+    ]
+    if failed:
+        parts.append(f"Failed: {_named_members(failed)}.")
+    if blocked:
+        parts.append(f"Could not start: {_named_members(blocked)}.")
+    reasons: list[str] = []
+    for role in failed:
+        if len(reasons) >= _FAILURE_SUMMARY_MAX_DETAILS:
+            break
+        recorded = member_errors.get(role)
+        reason = _plain_reason(recorded) if isinstance(recorded, str) else None
+        if reason:
+            reasons.append(f"{role} stopped because {reason}")
+    if reasons:
+        parts.append("; ".join(reasons) + ".")
+    summary = " ".join(parts)
+    if len(summary) <= _FAILURE_SUMMARY_CAP:
+        return summary
+    # A last-resort cut. Every list above is already bounded, so reaching this means a single
+    # member name was pathologically long; end on an ellipsis so the text never trails off
+    # mid-word as if it had been corrupted.
+    return summary[: _FAILURE_SUMMARY_CAP - 1] + "…"
+
+
 def _verdict_score(verdict: Any) -> float | None:
     """A 0–1 attainment from a stored verdict (#477): a prose Verdict's ``score``, or a battery
     verdict's passed-fraction over its checks. ``None`` when absent/unparseable (fail-closed)."""
@@ -2046,15 +2143,14 @@ class TeamRunService:
         if result.status == "failed":
             failed = sorted(r for r, s in member_status.items() if s == "failed")
             blocked = sorted(r for r, s in member_status.items() if s == "blocked")
-            # surface each failed member's leak-safe detail (the harness error / dispatch error the
-            # orchestrator recorded) so a FAILED run is debuggable + the re-run target is clear
-            detail = "; ".join(
-                f"{r}: {result.member_errors[r]}" for r in failed if result.member_errors.get(r)
+            # #946 T3: curate at this seam. The recorded per-member error is the JSON blob the loop
+            # fed back to the MODEL; this text is read by a PERSON. `summarise_failed_run` unwraps
+            # it — dropping the exception class name, keeping the sentence — and stays leak-safe:
+            # only `detail` is ever read, never a sibling key. The untouched raw detail is still on
+            # the run's step trace, which is what a debugging operator reads.
+            failed_summary = summarise_failed_run(
+                failed=failed, blocked=blocked, member_errors=result.member_errors
             )
-            failed_summary = (
-                f"team run incomplete: {len(failed)} member(s) failed, {len(blocked)} blocked — "
-                f"re-runnable. failures: {detail or ', '.join(failed) or 'none'}"
-            )[:2000]
         with org_scope(org):
             updated, _ = await self._team_runs.transition(
                 row.id,
