@@ -442,25 +442,54 @@ def _plain_reason(recorded: str) -> str | None:
         return None
     start = text.find("{")
     if start == -1:
-        return text
+        return _without_a_bare_class_name(text)
+    prefix = text[:start].strip().rstrip("-—:").strip()
     try:
         parsed, _ = json.JSONDecoder().raw_decode(text[start:])
     except ValueError:
         # a brace that does not open valid JSON is part of the sentence, not a blob around it
-        return text
+        return _without_a_bare_class_name(text)
     if not isinstance(parsed, dict) or "detail" not in parsed:
-        # a JSON object we do not recognise: show nothing rather than guess which key is safe.
-        # Falling back to the raw text here would put the blob straight back on the run page.
-        return None
+        # A JSON object we do not recognise. Its keys are not ours to promote — falling back to the
+        # raw text would put the object straight back on the run page.
+        #
+        # #946 review round 2, C3: but the PROSE around it is kept when there is any. A grounding
+        # error quoting a member's claim, or an output-contract error quoting a payload fragment,
+        # is a real diagnostic that happens to embed valid JSON; dropping the whole reason leaves
+        # the run page saying only that the member failed, which is worse than the blob this
+        # function exists to remove. Nothing to keep means nothing is shown, as before.
+        return _without_a_bare_class_name(prefix) if prefix else None
     detail = parsed.get("detail")
     if not isinstance(detail, str) or not detail.strip():
-        return None
+        return _without_a_bare_class_name(prefix) if prefix else None
     cleaned = detail.strip()
     return (
         cleaned[: _FAILURE_SUMMARY_MAX_DETAIL_CHARS - 1] + "…"
         if len(cleaned) > _FAILURE_SUMMARY_MAX_DETAIL_CHARS
         else cleaned
     )
+
+
+#: A recorded failure that is nothing but a class name. ``orchestrate.py`` records
+#: ``str(exc) or type(exc).__name__``, so an exception raised with no message — ``RegistryError()``,
+#: ``KeyError()``, a cancelled task — is recorded as its class name and nothing else. There is no
+#: blob to unwrap, so it used to reach the run page verbatim: the exact text #946 was filed about,
+#: arriving by a different door (#946 review round 2, C2). Matched structurally rather than against
+#: a list of known names, because the set is every exception type in the process and its
+#: dependencies. A real sentence has a space in it, so this cannot swallow one.
+_BARE_CLASS_NAME = re.compile(r"^[A-Z][A-Za-z0-9_]*(Error|Exception|Interrupt|Warning)?$")
+_NO_REASON_RECORDED = "it stopped without reporting a reason"
+
+
+def _without_a_bare_class_name(text: str) -> str:
+    """``text`` unless it is only a class name, in which case a sentence a person can read.
+
+    Deleting it outright would be worse than replacing it: the member is named separately, so an
+    empty reason reads as if the platform simply lost track of what happened. Saying that no reason
+    was recorded is both true and actionable — it points at the step trace.
+    """
+    stripped = text.strip()
+    return _NO_REASON_RECORDED if _BARE_CLASS_NAME.match(stripped) else stripped
 
 
 def _named_members(names: list[str]) -> str:
