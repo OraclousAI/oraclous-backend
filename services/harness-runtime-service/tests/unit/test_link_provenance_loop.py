@@ -114,15 +114,6 @@ _ENVELOPE = PolicyEnvelope(
 _TIGHT = PolicyEnvelope(
     max_iterations=4, max_tool_calls=None, max_wall_time_seconds=None, max_tokens=None
 )
-# The same short budget on a member that asked to ESCALATE when a budget trips (#587). The default
-# already escalates, so this is the configuration that would restore the rejected hard-fail option.
-_TIGHT_ESCALATE = PolicyEnvelope(
-    max_iterations=4,
-    max_tool_calls=None,
-    max_wall_time_seconds=None,
-    max_tokens=None,
-    on_exhaustion="escalate",
-)
 # #944 review, HIGH-2: tight enough that the budget runs out DURING a correction — before the
 # 2-correction bound is ever reached — so the degrade/PARTIAL terminal still has a scenario that
 # exercises it now the bound exists. One search turn, one corrected attempt, then no turns left.
