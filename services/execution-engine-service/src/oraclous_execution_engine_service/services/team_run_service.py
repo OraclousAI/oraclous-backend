@@ -486,11 +486,22 @@ def _plain_reason(recorded: str) -> str | None:
 #: rediscovered (#946 review round 3, N3). A lowercase one-word value is kept.
 _BARE_CLASS_NAME = re.compile(r"^[A-Z][A-Za-z0-9_]*(Error|Exception|Interrupt|Warning)?$")
 #: The orchestrator's own wrapper around a member's failure — ``team_run.py`` builds
-#: ``member 'x' harness did not succeed: <STATUS>`` and the blob, if any, follows it. Keeping the
-#: prose around an unrecognised fragment (round 2, C3) made this wrapper the reason: it names the
-#: member a second time and tells the reader nothing the "Failed: x." line above did not
-#: (#946 review round 3, N2). It is internal phrasing, which is what this curation removes.
-_ORCHESTRATOR_WRAPPER = re.compile(r"^member\s+.+?\s+harness did not succeed:\s*\w*$")
+#: ``member 'x' harness did not succeed: <STATUS>`` and appends ``" — <detail>"`` whenever the
+#: harness reported one. It names the member a second time and adds an internal status word, telling
+#: the reader nothing the "Failed: x." line above did not (#946 review round 3, N2).
+#:
+#: Matched as a PREFIX, not as the whole value (#946 review round 4, R1). Anchoring it to the whole
+#: value meant it fired almost nowhere in production, because a detail is usually appended — and
+#: after this issue's own loop change that detail is the new terminal message, so the most likely
+#: route for the very scenario #946 describes stayed uncurated. The remainder is kept; only when
+#: nothing survives the strip does the reason fall through to ``_NO_REASON_RECORDED``.
+#:
+#: ``(simulated LLM)`` is deliberately NOT consumed. #907 adds it so a reader knows the model was a
+#: stand-in, which changes how the whole result should be read; swallowing it with the wrapper would
+#: drop that warning.
+_ORCHESTRATOR_WRAPPER = re.compile(
+    r"^member\s+.+?\s+harness did not succeed:\s*\w*\s*(—|-{1,2})?\s*"
+)
 _NO_REASON_RECORDED = "it stopped without reporting a reason"
 
 
@@ -503,9 +514,13 @@ def _without_a_bare_class_name(text: str) -> str:
     reason was recorded is both true and actionable: it points at the step trace.
     """
     stripped = text.strip()
-    if _BARE_CLASS_NAME.match(stripped) or _ORCHESTRATOR_WRAPPER.match(stripped):
+    if _BARE_CLASS_NAME.match(stripped):
         return _NO_REASON_RECORDED
-    return stripped
+    unwrapped = _ORCHESTRATOR_WRAPPER.sub("", stripped, count=1).strip()
+    if not unwrapped:
+        return _NO_REASON_RECORDED
+    # a wrapper whose remainder is itself only a class name says nothing either
+    return _NO_REASON_RECORDED if _BARE_CLASS_NAME.match(unwrapped) else unwrapped
 
 
 def _named_members(names: list[str]) -> str:
