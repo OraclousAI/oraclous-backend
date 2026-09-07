@@ -424,29 +424,43 @@ def _plain_reason(recorded: str) -> str | None:
 
     The loop's shape is ``{"error": <class name>, "detail": <sentence>}``. The class name is an
     implementation detail of this codebase and means nothing to the person reading the run page, so
-    it is dropped and only ``detail`` survives. Anything that is not that shape — a dispatch error
+    it is dropped and only ``detail`` survives. Anything with no such blob in it — a dispatch error
     recorded as a plain sentence — is already the right thing and passes through untouched. Only
     ``detail`` is read, never a sibling key: a blob that somehow carried an upstream body must not
     have it promoted into the person-facing text (ADR-008).
+
+    The blob is EMBEDDED, not leading. By the time a member's failure reaches this function the
+    orchestrator has wrapped it in its own prose — ``member 'a' harness did not succeed: FAILED —
+    {"error": …}`` (`orchestrate.py`, `member_errors[role] = str(exc)`). An unwrapper that only
+    matched a leading brace therefore never fired on a single real failure, and the blob reached the
+    run page exactly as before. That wrapper prose is itself internal phrasing, so when a blob is
+    found, the prose around it goes with the class name; a recorded error with no blob keeps its
+    text.
     """
     text = recorded.strip()
-    if not text.startswith("{"):
-        return text or None
+    if not text:
+        return None
+    start = text.find("{")
+    if start == -1:
+        return text
     try:
-        parsed = json.loads(text)
+        parsed, _ = json.JSONDecoder().raw_decode(text[start:])
     except ValueError:
-        return None  # a brace-shaped thing that is not JSON is not something to show a person
-    if not isinstance(parsed, dict):
+        # a brace that does not open valid JSON is part of the sentence, not a blob around it
+        return text
+    if not isinstance(parsed, dict) or "detail" not in parsed:
+        # a JSON object we do not recognise: show nothing rather than guess which key is safe.
+        # Falling back to the raw text here would put the blob straight back on the run page.
         return None
     detail = parsed.get("detail")
-    if isinstance(detail, str) and detail.strip():
-        cleaned = detail.strip()
-        return (
-            cleaned[: _FAILURE_SUMMARY_MAX_DETAIL_CHARS - 1] + "…"
-            if len(cleaned) > _FAILURE_SUMMARY_MAX_DETAIL_CHARS
-            else cleaned
-        )
-    return None
+    if not isinstance(detail, str) or not detail.strip():
+        return None
+    cleaned = detail.strip()
+    return (
+        cleaned[: _FAILURE_SUMMARY_MAX_DETAIL_CHARS - 1] + "…"
+        if len(cleaned) > _FAILURE_SUMMARY_MAX_DETAIL_CHARS
+        else cleaned
+    )
 
 
 def _named_members(names: list[str]) -> str:
