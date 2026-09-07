@@ -416,14 +416,28 @@ _FAILURE_SUMMARY_CAP = 2000
 _FAILURE_SUMMARY_MAX_NAMED = 10
 #: How many members get their own "why" line, and how long each one may be.
 _FAILURE_SUMMARY_MAX_DETAILS = 5
-_FAILURE_SUMMARY_MAX_DETAIL_CHARS = 200
+#: At least ``envelope._MESSAGE_CAP``, and for a reason (#946 review round 5, MEDIUM-1).
+#: ``packages/ohm`` sizes a grounding message at 280 characters ON PURPOSE, so it fits a
+#: 300-character whole on the run page (#685), and several such messages are joined before they
+#: reach this seam. A 200-character limit here silently overrode that decision from a different
+#: file — and it cut off the tail, which is the payload: the invented location a member named is
+#: appended LAST, after the rule it broke. The page then said a rule was broken and refused to say
+#: by what, which is #946's own symptom rebuilt at another seam.
+#:
+#: Widening is free rather than a trade: the worst realistic shape — ten named failed members, five
+#: of them at full length — measures 1792 against the 2000-character whole, and the case that
+#: exposed this was spending 326 of 2000 while throwing information away. Derived from the other
+#: cap. Deliberately a plain number rather than an import of ``envelope``'s private constant —
+#: reaching into another package's private name to stay in step would be worse than the drift it
+#: prevents. A test asserts the relationship instead, which is where that guard belongs.
+_FAILURE_SUMMARY_MAX_DETAIL_CHARS = 300
 
 
 #: #907's marker. ``team_run.py`` appends it AFTER the detail, so on the blob path it sits past the
 #: closing brace ``raw_decode`` stops at — and every branch that returns something read out of the
 #: parsed object silently dropped it (#946 review round 5, HIGH-1). It says the model was a
-#: stand-in,
-#: which changes how the whole result should be read, so it is handled ONCE, around the curation,
+#: stand-in, which changes how the whole result should be read, so it is handled ONCE, around the
+#: curation,
 #: rather than on each of the five returns: which internal branch ran must not decide whether the
 #: reader is told.
 _SIMULATED_MARKER = "(simulated LLM)"
@@ -437,7 +451,7 @@ _MAX_BLOB_SCAN_ATTEMPTS = 8
 def _plain_reason(recorded: str) -> str | None:
     """The human half of one member's recorded failure, or ``None`` if there is no human half.
 
-    Three things happen here that are deliberately NOT delegated to the branches in
+    Two things happen here that are deliberately NOT delegated to the branches in
     ``_curated_reason`` below: the ``(simulated LLM)`` marker is lifted off the front of the
     curation and put back on the end of it, and the per-member length cap is applied once to
     whatever came back. Both were per-branch before, and both were therefore wrong on some branches
@@ -478,9 +492,18 @@ def _first_blob(text: str) -> tuple[int, Any]:
     caller fell back to the whole recorded value, and the raw blob this curation exists to remove
     reached the run page anyway.
 
+    It is the first brace that opens the RECORDED-FAILURE shape, not merely the first that opens
+    valid JSON (#946 review round 5, PLAUSIBLE-1). Scanning past an undecodable stray but stopping
+    at a decodable one closes only half the door: quoted model output like ``the model wrote
+    {"city": "Paris"} then {"error": ..., "detail": ...}`` would hand back the wrong object, and the
+    real reason is dropped exactly as before. So a decodable object that is not the shape we are
+    looking for is remembered and the scan continues; it is used only if nothing better turns up,
+    which keeps every previous outcome for a value that carries one object and no more.
+
     Bounded rather than exhaustive, and the fallback is unchanged: when no brace within the bound
     opens valid JSON, every brace in the text is prose and the sentence is kept whole.
     """
+    fallback: tuple[int, Any] = (-1, None)
     start = text.find("{")
     for _ in range(_MAX_BLOB_SCAN_ATTEMPTS):
         if start == -1:
@@ -490,8 +513,12 @@ def _first_blob(text: str) -> tuple[int, Any]:
         except ValueError:
             start = text.find("{", start + 1)
             continue
-        return start, parsed
-    return -1, None
+        if isinstance(parsed, dict) and "detail" in parsed:
+            return start, parsed
+        if fallback[0] == -1:
+            fallback = (start, parsed)
+        start = text.find("{", start + 1)
+    return fallback
 
 
 def _curated_reason(text: str) -> str | None:
