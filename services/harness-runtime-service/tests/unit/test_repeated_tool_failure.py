@@ -439,7 +439,8 @@ async def test_the_terminal_names_the_call_the_member_kept_repeating() -> None:
         policy=_env(max_iterations=8),
     )
     message = result.error_message or ""
-    assert _SEARCH.name in message
+    # named the way the step trace and the run page name it — see the C4 test below
+    assert "web-research.search" in message
     assert message != "tool-use loop did not converge"
 
 
@@ -601,8 +602,12 @@ async def test_a_refused_calls_url_argument_is_never_credited_as_fetched() -> No
     )
 
     messages = await _transcript_after_a_refusal()
+    # guard: the transcript really does contain a refusal, so a green result means the reader
+    # classified it correctly rather than that the fixture never produced one
     assert any(
-        "repeated" in str(m.get("content", "")).lower() for m in messages if m.get("role") == "tool"
+        "was not sent again" in str(m.get("content", ""))
+        for m in messages
+        if m.get("role") == "tool"
     )
     fetched = _fetched_urls_from_transcript(messages, {_READ.name: _READ}, [])
     assert _FABRICATED not in fetched
