@@ -506,6 +506,14 @@ def _repeated_failures_from_transcript(messages: list[Message]) -> RepeatedFailu
         )
         if not failed:
             continue
+        # #946 review round 2, C1: a REFUSAL is not a failure of the call — nothing was dispatched,
+        # so there is no error to count. It is written with `status=error` so the fetched-URL reader
+        # never credits it (see the receipt line in `_run_tool_calls`), which brings it here too.
+        # Counting it would record the note prose as that call's error; the note differs from the
+        # real error, `_record_failure` would reset the count to one, and the resumed run would
+        # re-dispatch the very call the bound had already proven dead.
+        if content.strip() == _REPEATED_FAILURE_NOTE:
+            continue
         name = names_by_call_id.get(call_id)
         if name is None:
             message_name = message.get("name")
@@ -750,10 +758,9 @@ async def run_tool_use_loop(
         if resume_state is not None
         else {}
     )
-    # Which call signatures have been refused as unfixable repeats, and the TOOL NAMES behind them.
-    # The names are what the terminal reports: a signature carries the model's raw arguments, which
-    # may hold anything the model put there, and a run's error message is a person-facing surface.
-    repeated_failure_told: set[str] = set()
+    # The tools behind the calls refused as unfixable repeats, named the way the rest of the run
+    # names them (`binding.operation`). Only the tool: a call signature carries the model's raw
+    # arguments, which hold whatever the model put there, and the terminal below is person-facing.
     repeated_failure_names: list[str] = []
     # #944 review, HIGH-2 fix B: how many corrections THIS run has already spent — bounded by
     # `_LINK_CORRECTION_MAX`, see its docstring. A fresh count on a resume, matching `nudged`: the
@@ -1004,13 +1011,15 @@ async def run_tool_use_loop(
                 # spends its whole ITERATION budget. So the terminal at the bottom of this function
                 # NAMES the repeated call rather than reporting an anonymous "did not converge" —
                 # the budget is spent either way, but the operator learns why.
-                signature = _call_signature(tc["name"], tc["args"])
-                repeated_failure_told.add(signature)
-                if tc["name"] not in repeated_failure_names:
-                    repeated_failure_names.append(tc["name"])
+                step_name = f"{spec.binding}.{spec.operation}"
+                # #946 review round 2, C4: `binding.operation` is how the step trace and the run
+                # page already name this tool. Reporting the provider-facing function name here as
+                # well showed one tool under two spellings in one run, and the person-facing half
+                # was the less readable of the two.
+                if step_name not in repeated_failure_names:
+                    repeated_failure_names.append(step_name)
                 content = _REPEATED_FAILURE_NOTE
                 status = _REPEATED_FAILURE_STATUS
-                step_name = f"{spec.binding}.{spec.operation}"
             else:
                 step_name = f"{spec.binding}.{spec.operation}"
                 signature = _call_signature(tc["name"], tc["args"])
@@ -1104,13 +1113,27 @@ async def run_tool_use_loop(
             # transcript reads back via `_explicit_tool_status`, rather than guessing failed/ok from
             # the shape of `content` (a guess that disagreed with this line's own classification in
             # both directions — see that function's docstring).
+            #
+            # #946 review round 2, C1 (security): the marker vocabulary stays `ok`/`error`. The
+            # #946 refusal has its OWN step status, which is right for the trace an operator reads,
+            # but writing that third value into the RECEIPT made every existing reader of a
+            # persisted transcript fail to recognise it: `_TOOL_STATUS_MARKER` matches only the two
+            # known values, so `_explicit_tool_status` returned None, the content-shape fallback saw
+            # prose rather than the JSON error shape, and the refused call was read back as a
+            # SUCCESS. `_fetched_urls_from_transcript` then credited its URL-named arguments — a URL
+            # the run never fetched, on a call that was never even dispatched, entering the #944
+            # link-provenance set at a resume. That is the forgery path #944 review round 3 closed
+            # for the never-dispatched JSON-repair correction (which writes `status=error` for
+            # exactly this reason), and it stays closed.
+            receipt_status = "error" if status == _REPEATED_FAILURE_STATUS else status
             messages.append(
                 {
                     "role": "tool",
                     "tool_call_id": tc["id"],
                     "name": tc["name"],
                     "content": (
-                        f"{content}\n[receipt: source_tool_call_id={tc['id']} status={status}]"
+                        f"{content}\n[receipt: source_tool_call_id={tc['id']} "
+                        f"status={receipt_status}]"
                     ),
                 }
             )
