@@ -39,6 +39,23 @@ actually succeed against the fabricated URL, which is most of the way to the URL
 because #746 has not yet settled which web/MCP bindings are trusted. Narrowing the harvest to that
 set once it exists is a follow-up, not an implementer's choice.
 
+**Reviewed and tightened, 2026-09-07 (#944 review, HIGH-2).** The correction described above is
+gated on there being a REAL fetched set to measure against — not merely on the member HAVING tools.
+A member whose every tool call errored (a spent search key, a rate-limited provider, a connector
+outage — this repo has already hit a spent Tavily key on ``main``) has an EMPTY fetched set, and
+under the plain ``tool_specs`` gate every one of its answers read as "every link invented", forever,
+until the budget died. An empty fetched set now ships flagged on the FIRST attempt rather than
+looping — there is nothing to measure the draft against, the same rationale criterion 1 already
+applies to a tool-less member. And even with a real, non-empty fetched set, the correction is capped
+at 2: past the cap the next attempt ships flagged rather than being sent back again, so a member
+that keeps failing for its own reasons (an adversarial page instructing it to cite URLs it never
+retrieved) cannot be walked through its whole iteration budget one correction at a time.
+``test_a_member_that_never_stops_inventing_ships_flagged_after_the_correction_bound`` (formerly
+"...degrades_rather_than_fails") and ``test_an_escalate_configured_member_still_only_degrades_on_
+unverified_links`` were both rewritten for the bound; the degrade/PARTIAL terminal still exists —
+it fires when the budget runs out mid-correction, before the bound is reached, never encoding "the
+member never stops" as an unbounded loop.
+
 ``run_tool_use_loop``'s new keyword-free behaviour is additive, so every module-level import here is
 a shipped seam and collection stays clean (``.claude/rules/tests-seam-imports.md``). The tests fail
 RED on the ASSERTIONS until the ``[impl]`` lands, which is the intended shape for a change to an
@@ -51,7 +68,7 @@ from typing import Any
 
 import pytest
 from oraclous_harness_runtime_service.domain.llm.base import LLMResponse, ToolCall, ToolSpec
-from oraclous_harness_runtime_service.domain.loop.tool_use import run_tool_use_loop
+from oraclous_harness_runtime_service.domain.loop.tool_use import LoopCheckpoint, run_tool_use_loop
 from oraclous_harness_runtime_service.domain.policy import PolicyEnvelope
 from oraclous_harness_runtime_service.models.enums import HarnessStatus, StepKind
 
@@ -101,6 +118,19 @@ _TIGHT = PolicyEnvelope(
 # already escalates, so this is the configuration that would restore the rejected hard-fail option.
 _TIGHT_ESCALATE = PolicyEnvelope(
     max_iterations=4,
+    max_tool_calls=None,
+    max_wall_time_seconds=None,
+    max_tokens=None,
+    on_exhaustion="escalate",
+)
+# #944 review, HIGH-2: tight enough that the budget runs out DURING a correction — before the
+# 2-correction bound is ever reached — so the degrade/PARTIAL terminal still has a scenario that
+# exercises it now the bound exists. One search turn, one corrected attempt, then no turns left.
+_TIGHTER = PolicyEnvelope(
+    max_iterations=2, max_tool_calls=None, max_wall_time_seconds=None, max_tokens=None
+)
+_TIGHTER_ESCALATE = PolicyEnvelope(
+    max_iterations=2,
     max_tool_calls=None,
     max_wall_time_seconds=None,
     max_tokens=None,
@@ -300,16 +330,21 @@ async def test_a_url_the_run_read_by_argument_counts_as_fetched() -> None:
 
 
 async def test_a_url_from_an_ERRORED_call_does_not_count_as_fetched() -> None:
-    # A call that failed is the check working, not provenance. Counting it would let a member
-    # legitimise any URL by calling a tool with it and ignoring the error.
+    # A call that failed is the check working, not provenance: _REAL must never be VERIFIED. But
+    # #944 review (HIGH-2, 2026-09-07) changed the REMEDY when the fetched set is empty because
+    # every call failed — there is no fetched set to measure a correction against, so the draft
+    # ships flagged on the first attempt rather than being looped through a correction it
+    # structurally cannot satisfy (the same rationale criterion 1 already applies to a tool-less
+    # member).
     async def dispatch(_spec: ToolSpec, _args: dict[str, Any]) -> dict[str, Any]:
         raise RuntimeError(f"404 fetching {_REAL}")
 
-    llm = _Scripted(_Scripted.READ, f"[Source]({_REAL})", "I could not retrieve that page.")
+    llm = _Scripted(_Scripted.READ, f"[Source]({_REAL})")
     result = await _run(llm, dispatch)
     assert result.status is HarnessStatus.SUCCEEDED
-    assert len(_steps(result, _CORRECTION_STATUS)) == 1
-    assert result.output == "I could not retrieve that page."
+    assert result.output == f"[Source]({_REAL})"
+    assert _steps(result, _CORRECTION_STATUS) == []
+    assert result.unverified_links == [_REAL]  # flagged — never silently trusted
 
 
 async def test_urls_fetched_across_several_turns_all_count() -> None:
@@ -330,12 +365,58 @@ async def test_urls_fetched_across_several_turns_all_count() -> None:
     assert result.unverified_links == []
 
 
+async def test_a_non_dict_tool_result_is_still_harvested() -> None:
+    # A generic REST/imported-MCP tool can return a bare list, string, or scalar — `json.dumps` on
+    # any of those is still a string the harvester reads the same way as a dict result. Nothing in
+    # the harvest path may assume `result` is a mapping.
+    async def dispatch(_spec: ToolSpec, _args: dict[str, Any]) -> Any:
+        return [_REAL]
+
+    llm = _Scripted(_Scripted.READ, f"[Source]({_REAL})")
+    result = await _run(llm, dispatch)
+    assert result.status is HarnessStatus.SUCCEEDED
+    assert result.unverified_links == []
+    assert _steps(result, _CORRECTION_STATUS) == []
+
+
+async def test_a_url_past_the_persisted_truncation_boundary_still_counts_as_fetched() -> None:
+    # The trace's persisted step `detail` is truncated at 500 characters (`_truncate`), but that
+    # truncation must apply ONLY to what gets PERSISTED — the harvester reads the FULL tool result,
+    # never the shortened copy, or a real citation buried in a long page would read as invented.
+    async def dispatch(_spec: ToolSpec, _args: dict[str, Any]) -> dict[str, Any]:
+        return {"text": "x" * 600 + f" {_REAL} " + "y" * 600}
+
+    llm = _Scripted(_Scripted.READ, f"[Source]({_REAL})")
+    result = await _run(llm, dispatch)
+    assert result.status is HarnessStatus.SUCCEEDED
+    assert result.unverified_links == []
+    assert _steps(result, _CORRECTION_STATUS) == []
+
+
 # --- criterion 5: the terminal when the member never converges -----------------------------------
 
 
-async def test_a_member_that_never_stops_inventing_degrades_rather_than_fails() -> None:
+async def test_a_member_that_never_stops_inventing_ships_flagged_after_the_bound() -> None:
+    # #944 review, HIGH-2 (ruled 2026-09-07): the correction is bounded at 2, not unbounded. A
+    # member whose every tool call errors, or that keeps failing for its own reasons (an
+    # adversarial page instructing it to cite URLs it never retrieved), has no way to ever converge
+    # — an unbounded loop would spend the WHOLE iteration budget correcting a defect the member
+    # structurally cannot fix. Past the bound the next attempt SHIPS FLAGGED instead of being sent
+    # back again. `_TIGHT` (4 iterations) is exactly search + 2 corrections + the shipped attempt.
     llm = _Scripted(_Scripted.SEARCH, f"[Source]({_FABRICATED})")
     result = await _run(llm, _returning(_REAL), policy=_TIGHT)
+    assert result.status is HarnessStatus.SUCCEEDED
+    assert result.output == f"[Source]({_FABRICATED})"
+    assert result.unverified_links == [_FABRICATED]  # flagged — never silently trusted
+    assert len(_steps(result, _CORRECTION_STATUS)) == 2  # bounded, not one per iteration
+
+
+async def test_a_budget_that_runs_out_mid_correction_still_degrades_rather_than_fails() -> None:
+    # The degrade/PARTIAL terminal still exists — it fires when the budget runs out DURING a
+    # correction, before the bound above is ever reached, not when "the member never stops"
+    # (unbounded correction was itself the HIGH-2 defect; see the test above).
+    llm = _Scripted(_Scripted.SEARCH, f"[Source]({_FABRICATED})")
+    result = await _run(llm, _returning(_REAL), policy=_TIGHTER)
     assert result.status is _EXHAUSTED_STATUS
     assert result.error_type == _EXHAUSTED_ERROR_TYPE
     assert result.output is not None  # the last draft is carried out, flagged, never discarded
@@ -344,9 +425,11 @@ async def test_a_member_that_never_stops_inventing_degrades_rather_than_fails() 
 
 async def test_an_escalate_configured_member_still_only_degrades_on_unverified_links() -> None:
     # Guards the ruling against a per-member on_exhaustion quietly restoring the rejected hard-fail.
-    # #944 asks for the link to be FLAGGED, not for the answer to be refused.
+    # #944 asks for the link to be FLAGGED, not for the answer to be refused. A budget too tight
+    # to even reach the correction bound (see above) must still degrade, never escalate, on this
+    # defect.
     llm = _Scripted(_Scripted.SEARCH, f"[Source]({_FABRICATED})")
-    result = await _run(llm, _returning(_REAL), policy=_TIGHT_ESCALATE)
+    result = await _run(llm, _returning(_REAL), policy=_TIGHTER_ESCALATE)
     assert result.status is _EXHAUSTED_STATUS
     assert result.error_type == _EXHAUSTED_ERROR_TYPE
 
@@ -363,3 +446,71 @@ async def test_a_corrected_run_failing_later_for_another_reason_is_not_reported_
     )
     result = await _run(llm, _returning(_REAL), policy=_TIGHT)
     assert result.error_type != _EXHAUSTED_ERROR_TYPE
+
+
+# --- criterion 6: a mid-run HITL pause must not lose provenance already established ---------------
+#
+# #944 review, MEDIUM-3 (2026-09-07): `fetched_urls` used to start EMPTY on every resume, the same
+# way `retrieval_empty` deliberately does. But a link the member genuinely fetched BEFORE a pause is
+# real provenance whether or not the run was ever paused — starting fresh corrected an honest member
+# for citing honestly, and published its honest links to the reader as fabricated. Modeled on how
+# `test_citation_gate_loop.py` proves `prior_served_citation_ids` — but this needs no service-layer
+# parameter and no persisted column: the tool-role message the member's pre-pause call produced is
+# already sitting in the restored transcript.
+
+
+def _paused_after_a_read(*, content: str) -> LoopCheckpoint:
+    """A checkpoint whose transcript already carries one completed READ call, nothing left to
+    dispatch — the resume goes straight to the model."""
+    return LoopCheckpoint(
+        messages=[
+            {"role": "user", "content": "summarise this quarter's inference pricing"},
+            {
+                "role": "assistant",
+                "content": "reading",
+                "tool_calls": [{"id": "c1", "name": _READ.name, "args": {"url": _REAL}}],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "c1",
+                "name": _READ.name,
+                "content": f"{content}\n[receipt: source_tool_call_id=c1]",
+            },
+        ],
+        pending_tool_calls=[],
+        approved_tool_call_id="c1",
+        iteration=1,
+        tool_calls_made=1,
+        tokens_used=10,
+        redact_patterns=[],
+    )
+
+
+async def test_a_link_fetched_before_a_hitl_pause_still_counts_as_fetched_after_resume() -> None:
+    checkpoint = _paused_after_a_read(content='{"text": "page body"}')
+    llm = _Scripted(f"Prices fell. [Source]({_REAL})")
+    result = await _run(llm, resume_state=checkpoint)
+    assert result.status is HarnessStatus.SUCCEEDED
+    assert _steps(result, _CORRECTION_STATUS) == []
+    assert result.unverified_links == []
+
+
+async def test_a_pre_pause_call_credits_its_url_named_argument_too() -> None:
+    # Mirrors criterion 4's live-dispatch property (the READ's own `url` argument counts) across a
+    # resume — the result of a read is page TEXT and need not repeat its own URL.
+    checkpoint = _paused_after_a_read(content='{"text": "no url in the body at all"}')
+    llm = _Scripted(f"Prices fell. [Source]({_REAL})")
+    result = await _run(llm, resume_state=checkpoint)
+    assert result.unverified_links == []
+
+
+async def test_an_errored_pre_pause_call_is_not_credited_after_resume() -> None:
+    # The resume-side re-derivation rejects a FAILED pre-pause call the same way live dispatch does
+    # — crediting it would let a member legitimise any URL by having called a tool with it and
+    # having the call fail, same as the live #944 rule this mirrors.
+    checkpoint = _paused_after_a_read(content='{"error": "RuntimeError", "detail": "404"}')
+    llm = _Scripted(f"[Source]({_REAL})")
+    result = await _run(llm, resume_state=checkpoint)
+    assert result.status is HarnessStatus.SUCCEEDED
+    assert _steps(result, _CORRECTION_STATUS) == []  # HIGH-2: no fetched set → flag, never loop
+    assert result.unverified_links == [_REAL]
