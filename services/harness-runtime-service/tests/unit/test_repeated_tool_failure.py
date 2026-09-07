@@ -1115,7 +1115,8 @@ def test_the_receipt_written_before_a_status_existed_keeps_the_fallback() -> Non
     """The one remaining path that returns "no status" and falls back to reading the content's
     shape, pinned directly rather than only through the link-provenance suite.
 
-    A receipt was written before #944 added a status to it, and a transcript from then still resumes.
+    A receipt was written before #944 added a status to it, and a transcript from then still
+    resumes.
     That shape is WELL FORMED — it simply predates the status — so it must keep the fallback, while
     a receipt that is neither shape is corrupted and reads as a failure. The first version of the
     fail-closed change got this wrong and treated it as corrupted; only the older suite caught it.

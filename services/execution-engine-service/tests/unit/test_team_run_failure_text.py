@@ -745,8 +745,8 @@ def test_truncation_cuts_the_members_words_and_keeps_the_platforms_verdict() -> 
 #
 # Reverting the bounded quantifier passed the entire suite — 2095 tests, zero failures. The pattern
 # runs on the recorded member error, whose wrapper interpolates a MANIFEST-AUTHORED role name capped
-# at 2000 characters, so any authenticated user could spend ~2.8 seconds of processor time per failed
-# member, up to five per run, repeatably, on the run-completion path.
+# at 2000 characters, so any authenticated user could spend ~2.8 seconds of processor time per
+# failed member, up to five per run, repeatably, on the run-completion path.
 #
 # Pinned two ways on purpose. The structural assertion is the reliable one — it cannot flake and it
 # names the exact defect. The timing one is the honest one: it measures the property that actually
