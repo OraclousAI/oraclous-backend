@@ -431,6 +431,12 @@ def _accumulate_fetched(urls: list[str], fetched_urls: list[str], seen: set[str]
 # settles instead of spending the rest of its budget discovering the same thing.
 _REPEATED_FAILURE_MAX = 2
 _REPEATED_FAILURE_STATUS = "repeated_failure"
+#: The stable opening of the note, and the ONLY part a transcript reader matches on. The note is
+#: persisted into checkpoints, so a run paused before a reword resumes carrying the old wording; a
+#: full-string comparison would miss it, record the note prose as that call's error, reset the count
+#: and re-dispatch the dead call — C1 by a slower route (#946 review round 3, N4). Never change this
+#: prefix without a compatibility branch for transcripts that already carry the old one.
+_REPEATED_FAILURE_NOTE_PREFIX = "This exact call has already failed"
 _REPEATED_FAILURE_NOTE = (
     "This exact call has already failed twice with the same error, so it was not sent again. "
     "Sending it a third time cannot work. Either change the arguments — a different value, or the "
@@ -512,7 +518,7 @@ def _repeated_failures_from_transcript(messages: list[Message]) -> RepeatedFailu
         # Counting it would record the note prose as that call's error; the note differs from the
         # real error, `_record_failure` would reset the count to one, and the resumed run would
         # re-dispatch the very call the bound had already proven dead.
-        if content.strip() == _REPEATED_FAILURE_NOTE:
+        if content.strip().startswith(_REPEATED_FAILURE_NOTE_PREFIX):
             continue
         name = names_by_call_id.get(call_id)
         if name is None:
@@ -991,9 +997,11 @@ async def run_tool_use_loop(
                 content = _redact(json.dumps(unknown), redactors)
                 status = "error"
                 step_name = tc["name"]
+                step_detail = content
             elif (repeated_failures.get(_call_signature(tc["name"], tc["args"])) or ("", 0))[
                 1
             ] >= _REPEATED_FAILURE_MAX:
+                signature = _call_signature(tc["name"], tc["args"])
                 # #946 T2: this exact call already failed twice the same way. It is NOT dispatched —
                 # the member is handed the note instead, so the turn still gets its tool-role reply
                 # (a provider REJECTS a tool_call with no answering message, so skipping the reply
@@ -1018,8 +1026,26 @@ async def run_tool_use_loop(
                 # was the less readable of the two.
                 if step_name not in repeated_failure_names:
                     repeated_failure_names.append(step_name)
+                # Not passed through `_redact`, unlike every sibling branch, and deliberately:
+                # this is platform-authored text with nothing in it to redact, and the stored form
+                # has to stay byte-identical for the transcript reader above to recognise it.
                 content = _REPEATED_FAILURE_NOTE
                 status = _REPEATED_FAILURE_STATUS
+                # #946 review round 3, N1: the STEP records why the call failed; the MESSAGE
+                # carries the advice. They have different readers and they must not be the same
+                # string.
+                #
+                # The note is written for the model — "change the arguments", "drop this call". The
+                # step trace is what a run's failure text is built from (`envelope`'s grounding
+                # check excerpts the last non-ok step's detail), so a refusal step carrying the note
+                # put instructions for the model in front of a PERSON, and — worse — replaced the
+                # real cause. The run page then never said the search vendor was wrong, which is the
+                # one thing #946 exists to make it say: this half of the fix was cancelling out the
+                # other half. The original error is still in the ledger, so recording it here costs
+                # nothing. Precedent for a step detail diverging from its message: the #853
+                # JSON-repair branch records the parse error while its message carries the
+                # correction prose.
+                step_detail = (repeated_failures.get(signature) or ("", 0))[0] or content
             else:
                 step_name = f"{spec.binding}.{spec.operation}"
                 signature = _call_signature(tc["name"], tc["args"])
@@ -1074,6 +1100,7 @@ async def run_tool_use_loop(
                     _record_failure(repeated_failures, signature, content)
                 finally:
                     tool_ended = datetime.now(UTC)
+                step_detail = content
             # #944: the run's own link provenance. An OK call contributes the URLs in its RESULT
             # and the URLs in the URL-NAMED ARGUMENTS the model passed it. The arguments count for a
             # real reason: `web-research.read(url=X)` returning ok is the strongest evidence we will
@@ -1143,7 +1170,7 @@ async def run_tool_use_loop(
                     StepKind.TOOL,
                     step_name,
                     status,
-                    _truncate(content),
+                    _truncate(step_detail),
                     tool_call_id=tc["id"],
                     started_at=tool_started,
                     ended_at=tool_ended,
