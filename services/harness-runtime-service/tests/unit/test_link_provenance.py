@@ -359,3 +359,76 @@ async def test_percent_escape_case_is_folded() -> None:
     # disagree about the case constantly.
     result = _check("[Source](https://example.org/a%2f)", ["https://example.org/a%2F"])
     assert result.unverified == []
+
+
+# --- #944 review round 3: two of round 2's own fixes reopened what they had just closed -----------
+
+
+async def test_an_over_length_url_is_reported_unverified_never_a_verified_prefix() -> None:
+    # HIGH-A: round 2 bounded the regex ITSELF at 2048 characters. A URL longer than the cap then
+    # matched only a PREFIX of what the reader would actually click — `_trim` shaved that prefix,
+    # and the checker verified a STRING THAT WAS NEVER THE DESTINATION. Concretely: this userinfo-
+    # phishing URL's first 18 characters equal a URL the run genuinely fetched, so the truncated
+    # match read as VERIFIED — reopening the exact userinfo hole `test_a_url_with_userinfo_never_
+    # verifies_even_against_the_real_host` above closes, only now returning an AFFIRMATIVE "verified"
+    # instead of no signal at all. The fix must report the FULL, untruncated string, unverified.
+    fetched = ["https://arxiv.org"]
+    smuggled = "https://arxiv.org" + ("." * 2041) + "@evil.example/pwn"
+    result = _check(f"[Source]({smuggled})", fetched)
+    assert result.verified == []
+    assert result.unverified == [smuggled]
+
+
+async def test_a_userinfo_host_collision_within_the_cap_still_verifies_when_genuinely_fetched() -> (
+    None
+):
+    # The companion property to the test above: an ordinary, WITHIN-CAP URL must still verify
+    # normally — the fix must not turn every long-ish URL unverified, only ones the module cannot
+    # safely canonicalise (over the cap, or userinfo-bearing).
+    result = _check(f"[Source]({_REAL})", [_REAL])
+    assert result.unverified == []
+    assert result.verified == [_REAL]
+
+
+async def test_an_ss_domain_does_not_collide_with_its_eszett_lookalike() -> None:
+    # HIGH-B: the stdlib `idna` codec is IDNA2003 + nameprep, not the UTS-46 (WHATWG) folding a
+    # browser actually performs. The two disagree on the German eszett: the stdlib codec folds
+    # `faß.de` to the ASCII string `fass.de`, IDENTICAL to the unrelated real domain `fass.de`,
+    # while a browser resolves `faß.de` to a DIFFERENT registrable domain, `xn--fa-hia.de`. Any real
+    # target containing "ss" (`businessinsider.com`, `press.*`, `assets.*`) has such a colliding
+    # pre-image, so a URL on an attacker's `faß.de` compared equal to a legitimately fetched
+    # `fass.de` and reported VERIFIED. Fetching the real ASCII `fass.de` must never verify prose
+    # that cites the attacker's `faß.de`.
+    result = _check("[Source](https://faß.de/x)", ["https://fass.de/x"])
+    assert result.unverified == ["https://faß.de/x"]
+    assert result.verified == []
+
+
+async def test_a_bracketed_ipv6_link_is_reported_unverified_never_dropped() -> None:
+    # MEDIUM-G: the answer-extraction regex excludes `]` (so a markdown label's own bracket never
+    # bleeds into a URL target), which means a bracketed IPv6 literal used to match only up to the
+    # unterminated `[`, fail to parse, and VANISH from `extract_answer_urls` entirely — the answer
+    # shipped with a clickable anchor and NO warning at all, worse than reporting it unverified.
+    result = _check("[Source](https://[2606:4700::1]/evil)", [])
+    assert result.unverified == ["https://[2606:4700::1]/evil"]
+    assert result.verified == []
+
+
+async def test_a_bracketed_ipv6_link_verifies_against_the_same_literal_fetched() -> None:
+    # The companion property: a bracketed IPv6 literal the run genuinely fetched must still verify,
+    # not merely fail to vanish.
+    ipv6 = "https://[2606:4700::1]/status"
+    result = _check(f"[Source]({ipv6})", [ipv6])
+    assert result.unverified == []
+    assert result.verified == [ipv6]
+
+
+async def test_a_trailing_dot_host_matches_the_same_host_without_one() -> None:
+    # LOW-J: `example.org.` names the DNS root the same as `example.org` — the same host. Left
+    # un-stripped, a fetched URL using either form reads as a mismatch against an honest citation
+    # using the other and costs the member a correction over punctuation, not provenance. The dot
+    # sits right after the HOST label, before the path — not sentence punctuation `_trim` would
+    # shave off the end of the URL, which is why the pinned bare-URL/paren tests above don't already
+    # cover this.
+    result = _check("[Source](https://example.org./a)", ["https://example.org/a"])
+    assert result.unverified == []
