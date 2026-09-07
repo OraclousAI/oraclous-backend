@@ -48,10 +48,14 @@ from collections.abc import Collection, Iterable
 from dataclasses import dataclass, field
 from urllib.parse import urlsplit
 
+import idna
+
 # Candidate URLs. Deliberately only `http`/`https` (the allow-list above), and deliberately greedy
 # to the next delimiter — the trailing characters a URL cannot really end with are shaved off by
-# `_trim` below, which is the only place that judgement lives. `]` is excluded so a markdown label
-# never bleeds into the target; whitespace and quote characters end a URL in every real rendering.
+# `_trim` below, which is the only place that judgement lives. `]` is excluded from the ORDINARY
+# branch so a markdown label never bleeds into the target; whitespace and quote characters end a URL
+# in every real rendering. The BRACKETED branch (below) is the one narrow exception, scoped to the
+# authority position only — see #944 review round 3, MEDIUM-G.
 #
 # A BACKSLASH ends a URL, and that one character is load-bearing. A member with a declared output
 # contract answers with a JSON document, so its Sources list arrives as `…/trends)\n- [B](…)` where
@@ -62,15 +66,21 @@ from urllib.parse import urlsplit
 # read and died at the token ceiling, 257k tokens spent. Whatever follows a backslash is the
 # document's encoding, never part of the address.
 #
-# BOUNDED (#944 review, HIGH-1): no real citation is anywhere near this long, and the text scanned
-# here is the FULL tool result — `_truncate` only shortens what gets PERSISTED, never what this
-# regex reads. An unbounded quantifier on attacker-supplied text (a page the member's tool read)
-# made `_trim` below quadratic in the match length: 32k trailing `)` measured at 268ms of blocking
-# CPU on this loop's own async call stack, with no `await` to yield it — one crafted page stalls
-# every concurrent run sharing the worker. The cap removes the unbounded input, and `_trim` below is
-# now linear regardless, so neither half of the old quadratic blowup remains.
+# #944 review round 3, HIGH-A: the quantifier is UNBOUNDED, not capped. A cap on the regex itself
+# made the cap load-bearing for CORRECTNESS, not just performance: a URL longer than the cap matched
+# only a PREFIX of what the reader would actually click (`https://arxiv.org<2041 dots>@evil.example
+# /pwn` matched as `https://arxiv.org`), `_trim` shaved that prefix, and the checker verified a
+# string that was never the destination — reopening the userinfo phishing hole MEDIUM-5 closed, only
+# now returning an affirmative "verified" instead of no signal at all. `_trim` is O(n) on its own
+# merits (HIGH-1), so an unbounded quantifier here costs nothing extra; `_MAX_URL_LENGTH` is
+# enforced in `_canonical` below instead, where an over-length match fails closed to unverified
+# rather than being silently truncated into something else.
 _MAX_URL_LENGTH = 2048
-_URL = re.compile(rf"https?://[^\s<>\"'`\\\]]{{1,{_MAX_URL_LENGTH}}}", re.IGNORECASE)
+_URL = re.compile(
+    r"https?://\[[0-9A-Fa-f:.]+\][^\s<>\"'`\\\]]*"  # a bracketed IPv6/IPvFuture authority
+    r"|https?://[^\s<>\"'`\\\]]+",  # the ordinary case — unchanged apart from the removed cap
+    re.IGNORECASE,
+)
 
 # Sentence punctuation a URL may sit in front of but never end with. `)` is NOT here: it is the
 # markdown link's own closing bracket AND a legitimate character inside a URL
@@ -156,6 +166,11 @@ def _canonical(url: str) -> str | None:
     and outright junk. The fetched set is harvested from whatever a third-party tool returned, so
     this has to be total — a malformed entry may not take the run down and may not match either.
     """
+    # #944 review round 3, HIGH-A: an over-length match is EXTRACTED (so it still shows up in the
+    # answer's own URL list) but never CANONICALISED — it fails closed to unverified rather than
+    # being silently truncated into a prefix and verified as if that prefix were the whole address.
+    if len(url) > _MAX_URL_LENGTH:
+        return None
     try:
         parts = urlsplit(url)
         host = parts.hostname or ""
@@ -171,23 +186,39 @@ def _canonical(url: str) -> str | None:
     # Fail closed, like every other unreadable input this function refuses rather than guesses at.
     if parts.username or parts.password:
         return None
-    try:
-        # #944 review, LOW-7: fold to the ASCII form a browser would actually resolve (IDNA/UTS-46),
-        # not a bare `.lower()` — a fetched URL in punycode and the same host written in Unicode in
-        # the answer must compare equal, or an honest citation spends a correction over encoding. A
-        # host that will not encode is not one a browser would resolve either — reject it, same as
-        # any other unparseable authority above.
-        host = host.encode("idna").decode("ascii")
-    except ValueError:
-        return None
-    # The stdlib `idna` codec does not itself case-fold a label that is already all-ASCII (e.g.
-    # "Example.com" round-trips unchanged); the explicit `.lower()` is still required after it.
-    host = host.lower().removeprefix("www.")
     if ":" in host:
-        # #944 review, LOW-6: an IPv6 literal — `urlsplit` strips the brackets it arrived in, so
-        # `http://[::1]:80/x` and `http://[::1:80]/x` would otherwise canonicalise to the identical
-        # (wrong) authority `::1:80`. Re-bracket so the literal and an explicit port cannot collide.
-        host = f"[{host}]"
+        # #944 review, LOW-6: an IPv6/IPvFuture literal — `urlsplit` strips the brackets it arrived
+        # in, so `http://[::1]:80/x` and `http://[::1:80]/x` would otherwise canonicalise to the
+        # identical (wrong) authority `::1:80`. Re-bracket so the literal and an explicit port
+        # cannot collide. IDNA does not apply to an IP literal at all (a colon is never a valid DNS
+        # label character), so this branch skips the `idna` encode below entirely rather than
+        # feeding it a string it can only reject.
+        host = f"[{host.lower()}]"
+    else:
+        try:
+            # #944 review, LOW-7 / round 3 HIGH-B: fold to the ASCII form a BROWSER would actually
+            # resolve — UTS-46 non-transitional (the WHATWG URL Standard), via the third-party
+            # `idna` package, not the stdlib `idna` codec (IDNA2003 + nameprep). The two standards
+            # disagree on a registrable class of characters: the stdlib codec folds `faß.de` to the
+            # ASCII string `fass.de`, identical to the unrelated real domain `fass.de`, while a
+            # browser resolves `faß.de` to `xn--fa-hia.de` — a DIFFERENT registrable domain. Any
+            # real target containing `ss` (`businessinsider.com`, `press.*`, `assets.*`) has such a
+            # pre-image, so a URL pointing at an attacker-controlled domain compared equal to a
+            # legitimately fetched one and reported VERIFIED. A host this codec refuses is not one a
+            # browser would resolve either — reject it, same as any other unparseable authority.
+            host = idna.encode(host, uts46=True, transitional=False).decode("ascii")
+        except UnicodeError:
+            return None
+        # The `idna` codec already case-folds during encoding, but a host it passed through
+        # unencoded (already all-ASCII) does not get folded by the encode step itself — the
+        # explicit `.lower()` is still required.
+        #
+        # #944 review round 3, LOW-J: a single trailing dot names the DNS root and is the same host
+        # as the same name without one (`example.com.` == `example.com`); left un-stripped an
+        # honest citation using either form reads as a mismatch against a fetched URL using the
+        # other. Stripped after folding, not before — folding a name that already ends in a dot
+        # behaves the same either way, but the strip belongs next to the other host normalisation.
+        host = host.lower().removeprefix("www.").removesuffix(".")
     path = parts.path.removesuffix("/") if parts.path != "/" else ""
     path = _fold_percent_escapes(path)
     if port is not None and port != _DEFAULT_PORT.get(scheme):
@@ -198,37 +229,30 @@ def _canonical(url: str) -> str | None:
     return f"{scheme}://{authority}{path}{query}"
 
 
-def _looks_like_a_link(url: str) -> bool:
-    """A minimal, LENIENT check for "is this text a link at all" — scheme is http(s) and a hostname
-    is present. Deliberately separate from ``_canonical`` (#944 review, MEDIUM-5 fix): a URL that
-    fails ``_canonical``'s stricter checks (userinfo, an unencodable host) is not junk prose — it is
-    exactly the kind of link this whole module exists to catch, and it must still be extracted and
-    reported as UNVERIFIED. Folding the two together silently dropped a userinfo phishing URL from
-    the answer's own extracted-links list — worse than the bug it was meant to fix, because nothing
-    downstream ever saw it to flag.
-    """
-    try:
-        parts = urlsplit(url)
-    except ValueError:
-        return False
-    return parts.scheme.lower() in ("http", "https") and bool(parts.hostname)
-
-
 def extract_answer_urls(text: str) -> list[str]:
     """Every http(s) URL occurring in ``text``, as written, first-seen order, deduplicated.
 
-    Deduplication is by CANONICAL form when one exists; a URL ``_canonical`` refuses (userinfo, an
-    unencodable host) dedupes on its own written form instead — it still has to appear in the
-    output, just without the benefit of canonical-form dedup, because there is no comparable form to
-    dedup ON. Citing one real page twice — once with a fragment, once without — is one citation, and
-    reporting it twice would inflate what a reader is warned about.
+    Every regex match is reported — there is no longer a lenient pre-filter that can silently drop
+    one (#944 review round 3, policy point). The regex only ever matches something starting with
+    ``https?://``, so anything it finds is a link this module exists to catch; whether it is one the
+    run actually fetched is `_canonical`'s question, not extraction's, and something `_canonical`
+    refuses (userinfo, an unencodable host, an over-length match) is not junk prose to be dropped —
+    it is exactly the shape that must come back UNVERIFIED rather than vanish. Silently dropping it
+    here was the same mistake HIGH-A and MEDIUM-G each made in their own way: a control whose
+    default for "I cannot parse this" was a skip rather than a warning.
+
+    Deduplication is by CANONICAL form when one exists; a URL ``_canonical`` refuses dedupes on its
+    own written form instead — it still has to appear in the output, just without the benefit of
+    canonical-form dedup, because there is no comparable form to dedup ON. Citing one real page
+    twice — once with a fragment, once without — is one citation, and reporting it twice would
+    inflate what a reader is warned about.
     """
     out: list[str] = []
     seen: set[str] = set()
     for match in _URL.finditer(text or ""):
         written = _trim(match.group(0))
-        if not _looks_like_a_link(written):
-            continue
+        if not written:
+            continue  # `_trim` reduced it to nothing — not a link the answer actually wrote
         key = _canonical(written) or written
         if key in seen:
             continue
