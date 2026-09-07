@@ -374,3 +374,64 @@ def test_a_one_word_capitalised_diagnostic_is_treated_as_a_class_name() -> None:
 def test_a_lowercase_one_word_diagnostic_is_kept() -> None:
     text = summarise_failed_run(failed=["a"], blocked=[], member_errors={"a": "cancelled"})
     assert "cancelled" in text
+
+
+# --- the wrapper is a PREFIX, not the whole value (#946 review round 4, R1) -----------------------
+#
+# The round-3 fix only fired when the orchestrator's wrapper was the entire recorded value, which in
+# production it almost never is: a detail is appended whenever the harness reported one, and after
+# this issue's own loop change that detail is the new terminal message. So the most likely route for
+# the #946 scenario — a member that never adapts, escalating at the iteration cap — was still
+# rendering the wrapper.
+
+
+def test_the_wrapper_is_stripped_when_a_real_detail_follows_it() -> None:
+    text = summarise_failed_run(
+        failed=["researcher"],
+        blocked=[],
+        member_errors={
+            "researcher": "member 'researcher' harness did not succeed: ESCALATED — tool-use loop "
+            "did not converge — it kept re-sending a call that could not work (web-research.search)"
+        },
+    )
+    assert "harness did not succeed" not in text
+    assert "ESCALATED" not in text
+    assert "it kept re-sending a call that could not work (web-research.search)" in text
+    # the member is named once, by the "Failed:" line — not a second time inside its own reason
+    assert text.count("researcher") == 2  # "Failed: researcher." + "researcher stopped because"
+
+
+def test_the_simulated_model_warning_survives_the_strip() -> None:
+    """#907 added this marker deliberately, so a reader knows the model was a stand-in. Swallowing
+    it with the wrapper would lose a warning that changes how the result should be read."""
+    text = summarise_failed_run(
+        failed=["a"],
+        blocked=[],
+        member_errors={"a": "member 'a' harness did not succeed: FAILED — boom (simulated LLM)"},
+    )
+    assert "simulated LLM" in text
+    assert "boom" in text
+    assert "harness did not succeed" not in text
+
+
+def test_the_simulated_marker_alone_is_still_worth_showing() -> None:
+    text = summarise_failed_run(
+        failed=["a"],
+        blocked=[],
+        member_errors={"a": "member 'a' harness did not succeed: FAILED (simulated LLM)"},
+    )
+    assert "simulated LLM" in text
+    assert "harness did not succeed" not in text
+
+
+def test_a_wrapper_with_nothing_after_it_still_says_no_reason_was_recorded() -> None:
+    # every shape the round-3 fix already handled must keep its behaviour
+    for recorded in (
+        "member 'a' harness did not succeed: FAILED",
+        "member 'a' harness did not succeed: ESCALATED",
+        "member 'a' harness did not succeed:",
+        "member 'the lead researcher' harness did not succeed: FAILED",
+    ):
+        text = summarise_failed_run(failed=["a"], blocked=[], member_errors={"a": recorded})
+        assert "harness did not succeed" not in text
+        assert "without reporting a reason" in text
