@@ -445,7 +445,14 @@ _SIMULATED_MARKER = "(simulated LLM)"
 #: or very nearly — the orchestrator's prose comes before it — so a small bound covers a reason that
 #: quotes the model's own braces without letting a pathological value walk the whole string
 #: (#946 review round 5, MEDIUM-2).
-_MAX_BLOB_SCAN_ATTEMPTS = 8
+#:
+#: Raised from 8 (#946 review round 6). Past the bound the raw blob reaches the run page, which is
+#: this issue's own symptom, and a decodable brace the scan passes over now spends an attempt too —
+#: so 8 was reachable by a reason quoting a handful of the model's own objects. Measured over a
+#: 200,000-brace input the bound costs 0.0001s at 8 and 0.0004s at 32: it exists to stop a
+#: pathological walk, not to be tight, and a failing decode on a non-JSON brace bails at the first
+#: character.
+_MAX_BLOB_SCAN_ATTEMPTS = 32
 
 
 def _plain_reason(recorded: str) -> str | None:
@@ -500,6 +507,13 @@ def _first_blob(text: str) -> tuple[int, Any]:
     looking for is remembered and the scan continues; it is used only if nothing better turns up,
     which keeps every previous outcome for a value that carries one object and no more.
 
+    The shape is ``error`` AND ``detail`` together, never ``detail`` alone (#946 review round 6,
+    PLAUSIBLE-2). Because this scan HUNTS, matching on ``detail`` alone let a later object beat an
+    earlier legitimate one — so text the model wrote could become the platform's own explanation of
+    why the run failed. No production route reaches that today, and all three producers of the real
+    blob always emit both keys, so requiring both costs nothing and makes the rule above literally
+    true rather than approximately true.
+
     Bounded rather than exhaustive, and the fallback is unchanged: when no brace within the bound
     opens valid JSON, every brace in the text is prose and the sentence is kept whole.
     """
@@ -513,7 +527,7 @@ def _first_blob(text: str) -> tuple[int, Any]:
         except ValueError:
             start = text.find("{", start + 1)
             continue
-        if isinstance(parsed, dict) and "detail" in parsed:
+        if isinstance(parsed, dict) and "error" in parsed and "detail" in parsed:
             return start, parsed
         if fallback[0] == -1:
             fallback = (start, parsed)
