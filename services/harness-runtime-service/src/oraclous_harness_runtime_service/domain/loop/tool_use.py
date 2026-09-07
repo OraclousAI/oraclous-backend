@@ -328,33 +328,127 @@ def _link_correction(unverified: list[str], fetched: list[str]) -> str:
 # are trusted, which is the (separately ruled, still-open per #746) binding-trust question the
 # tests' own docstring already records as a deliberate limit, not an oversight.
 _URL_ARG_NAME_TOKENS = frozenset({"url", "urls", "uri", "uris"})
-_CAMEL_BOUNDARY = re.compile(r"(?<!^)(?=[A-Z])")
+# #944 review round 3, MEDIUM-F: a boundary BEFORE an uppercase letter that follows a lowercase/
+# digit ("target" | "URL"), OR before the last uppercase letter of a run that is followed by a
+# lowercase letter ("HTTP" | "Url" inside "HTTPUrl"). The original `(?<!^)(?=[A-Z])` split every
+# capital individually, so a run of consecutive capitals — "URL", "URI", "targetURL", "webURL" —
+# came out as single letters ("u", "r", "l") that match no token. All-caps is the ordinary REST/MCP
+# convention for these two words, so this was a real miss, always in the SAFE direction (an honestly
+# fetched URL went uncredited and cost a correction, never the reverse) but a bug regardless.
+_CAMEL_BOUNDARY = re.compile(r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
 _NON_ALNUM = re.compile(r"[^a-z0-9]+")
 
 
-def _url_valued_args(args: dict[str, Any]) -> dict[str, Any]:
-    """The subset of ``args`` whose NAME denotes a URL. See the module note above."""
-    out: dict[str, Any] = {}
+def _url_named(key: object) -> bool:
+    """Whether ``key`` (an argument name) denotes a URL. See the module note above."""
+    snake = _CAMEL_BOUNDARY.sub("_", str(key)).lower()
+    tokens = [t for t in _NON_ALNUM.split(snake) if t]
+    return bool(_URL_ARG_NAME_TOKENS.intersection(tokens))
+
+
+def _url_valued_args(args: dict[str, Any], parameters: dict[str, Any] | None) -> list[str]:
+    """The URLs carried by ``args``' URL-NAMED, string-valued entries — at most one per entry.
+
+    ``parameters`` is the dispatched ``ToolSpec``'s own JSON schema (``None`` when the call cannot
+    be resolved to a spec, e.g. an already-unknown tool). ``args`` is authored ENTIRELY by the
+    model and forwarded to ``dispatch`` with no schema validation in the harness (#944 review round
+    3, MEDIUM-E) — a schema-blind name check alone lets a model attach ``url=`` to ANY call that
+    happens to return ok (a search whose extra ``url`` argument the connector silently ignores) and
+    have it credited, laundering a fabricated URL into the set that judges its own answer. Two
+    independent narrowings close this without touching the still-open, separately-ruled #746
+    question of WHICH bindings are trusted at all:
+
+    * **Declared-schema gate.** When the spec's schema declares a non-empty ``properties`` object,
+      an argument name absent from it was never a parameter the tool's own operation reads, no
+      matter what the model called it — the model invented an out-of-schema argument and it is
+      never credited. A schema with EMPTY (or missing) ``properties`` carries no information either
+      way (the flat legacy hint map and a bare descriptor both produce one), so this gate is skipped
+      rather than rejecting every argument of every such tool.
+    * **One URL per value, strings only.** A value that is not a ``str`` (a nested object, a list)
+      is never credited at all — `{"url": {"nested": {"deep": "https://…"}}}` no longer launders a
+      URL through a value the tool would have to introspect to even find, and `{"urls": ["https://a",
+      "https://b"]}` credits neither entry rather than crediting a whole array on one name match.
+      Within one string value, only the FIRST URL found is credited — `{"url": "https://real/a
+      https://smuggled/b"}` no longer credits the smuggled second address just because it shares an
+      argument with a real one.
+    """
+    declared: set[str] | None = None
+    if isinstance(parameters, dict):
+        properties = parameters.get("properties")
+        if isinstance(properties, dict) and properties:
+            declared = set(properties)
+    out: list[str] = []
     for key, value in args.items():
-        snake = _CAMEL_BOUNDARY.sub("_", str(key)).lower()
-        tokens = [t for t in _NON_ALNUM.split(snake) if t]
-        if _URL_ARG_NAME_TOKENS.intersection(tokens):
-            out[key] = value
+        if not isinstance(value, str) or not _url_named(key):
+            continue
+        if declared is not None and key not in declared:
+            continue
+        urls = extract_answer_urls(value)
+        if urls:
+            out.append(urls[0])
     return out
 
 
-def _fetched_urls_from_transcript(messages: list[Message]) -> list[str]:
+# #944 review round 3, HIGH-C: `fetched_urls` must stay a DEDUPED, BOUNDED accumulator. Round 2's
+# fix (`if url not in fetched_urls: fetched_urls.append(url)`) scanned the whole list on every
+# insert — quadratic in the number of distinct URLs one tool result can harvest, over text that is
+# the FULL (untruncated) tool result an attacker-controlled page fully controls, on this loop's own
+# async call stack with no `await` to yield it. Measured: 4.58s of blocking CPU harvesting 40k URLs
+# from one 1.3MB page — the exact HIGH-1 shape, moved from `_trim` to this accumulation rather than
+# removed. A parallel `set` makes membership O(1) (mirroring the `seen` set below, which already got
+# this right); the cap bounds the worst case regardless of how large a single crafted page is, and
+# also bounds what `check_answer_links` pays re-canonicalising the accumulated set on every LLM
+# turn. Past the cap a real fetch is never un-credited — accumulation just stops taking NEW ones,
+# which is the safe direction (more URLs never verifies more, only ever fewer).
+_MAX_FETCHED_URLS = 2000
+
+
+def _accumulate_fetched(urls: list[str], fetched_urls: list[str], seen: set[str]) -> None:
+    for url in urls:
+        if len(fetched_urls) >= _MAX_FETCHED_URLS:
+            return
+        if url not in seen:
+            seen.add(url)
+            fetched_urls.append(url)
+
+
+# #944 review round 3, LOW-H/LOW-I: the explicit marker a `tool`-role message's receipt line carries
+# (``status=ok``/``status=error``), so a transcript reader can classify a call the same way the live
+# path did rather than GUESSING from the shape of its content. A guess disagrees with the live
+# classification in both directions: an ``{"error": …}`` object that is a connector's genuine OK
+# payload (LOW-I) reads as failed on resume though it was credited live, and the #853 JSON-repair
+# correction (prose, never dispatched, always excluded live) has no JSON shape for the guess to
+# recognise as failed, so its message's URL-named arguments — never credited live — WERE credited on
+# resume (LOW-H). The marker is optional on read: a checkpoint fixture or an older persisted
+# transcript that never carried one falls back to the previous content-shape heuristic.
+_TOOL_STATUS_MARKER = re.compile(
+    r"\[receipt: source_tool_call_id=\S+ status=(?P<status>ok|error)\]"
+)
+
+
+def _explicit_tool_status(raw_content: str) -> str | None:
+    match = _TOOL_STATUS_MARKER.search(raw_content)
+    return match.group("status") if match else None
+
+
+def _fetched_urls_from_transcript(
+    messages: list[Message], by_name: dict[str, ToolSpec], redactors: list[re.Pattern[str]]
+) -> list[str]:
     """Re-derive the run's fetched-URL set from an already-restored transcript (#944 review,
     MEDIUM-3). Used only at a HITL resume, where the loop's own ``fetched_urls`` accumulator would
     otherwise restart empty and correct a member for links it genuinely fetched before the pause.
 
-    Mirrors the live dispatch path (``status == "ok"`` credits the result AND the URL-named
-    arguments; a failed call credits neither) as closely as a persisted transcript allows: a
-    checkpoint carries no per-call status, so a ``tool`` message is treated as failed when its
-    content is EXACTLY the shape the loop's own error/denial paths write — a JSON object whose keys
-    are a subset of ``{"error", "detail", "did_you_mean", "available_tools"}`` and that includes
-    ``"error"``. A genuine result shaped identically by coincidence is not a realistic false
-    positive; crediting a genuinely failed call would be the unsafe direction to be wrong in.
+    Mirrors the live dispatch path as closely as a persisted transcript allows: an explicit
+    ``status`` marker on the message (see ``_explicit_tool_status``) classifies ok/failed when
+    present; a message written before that marker existed falls back to the same content-shape
+    heuristic this function always used. A failed call credits nothing, in either direction.
+
+    #944 review round 3, HIGH-D: the args dump is redacted before harvesting, matching the live
+    path (``tool_use.py`` redacts ``url_args`` before extraction). The checkpoint's assistant
+    ``tool_calls`` carry the model's RAW, unredacted arguments (only ``content``/``last_text`` are
+    stored redacted) — a credential-bearing URL argument restored from a paused run must not enter
+    ``fetched_urls`` unredacted, because that list is echoed verbatim into a later correction
+    message if one fires.
     """
     args_by_call_id: dict[str, dict[str, Any]] = {}
     for message in messages:
@@ -370,21 +464,27 @@ def _fetched_urls_from_transcript(messages: list[Message]) -> list[str]:
     for message in messages:
         if message.get("role") != "tool":
             continue
-        content = message.get("content")
-        if not isinstance(content, str):
+        raw_content = message.get("content")
+        if not isinstance(raw_content, str):
             continue
-        content = content.split("\n[receipt:", 1)[0]  # strip the #642 receipt line before parsing
-        if _is_failed_tool_content(content):
+        explicit_status = _explicit_tool_status(raw_content)
+        content = raw_content.split("\n[receipt:", 1)[0]  # strip the #642 receipt line
+        failed = (
+            explicit_status == "error"
+            if explicit_status is not None
+            else _is_failed_tool_content(content)
+        )
+        if failed:
             continue
         call_id = message.get("tool_call_id")
         args = args_by_call_id.get(call_id, {}) if isinstance(call_id, str) else {}
-        harvested = extract_answer_urls(content) + extract_answer_urls(
-            json.dumps(_url_valued_args(args), default=str)
-        )
-        for url in harvested:
-            if url not in seen:
-                seen.add(url)
-                out.append(url)
+        message_name = message.get("name")
+        spec = by_name.get(message_name) if isinstance(message_name, str) else None
+        arg_urls = [
+            _redact(url, redactors)
+            for url in _url_valued_args(args, spec.parameters if spec else None)
+        ]
+        _accumulate_fetched(extract_answer_urls(content) + arg_urls, out, seen)
     return out
 
 
@@ -532,8 +632,12 @@ async def run_tool_use_loop(
     # already sitting in the restored transcript, so the resumed segment re-derives its own fetched
     # set from `resume_state.messages` rather than being handed one.
     fetched_urls: list[str] = (
-        _fetched_urls_from_transcript(resume_state.messages) if resume_state is not None else []
+        _fetched_urls_from_transcript(resume_state.messages, by_name, redactors)
+        if resume_state is not None
+        else []
     )
+    # #944 review round 3, HIGH-C: the parallel membership set — see `_accumulate_fetched` above.
+    fetched_urls_seen: set[str] = set(fetched_urls)
     # #944 review, HIGH-2 fix B: how many corrections THIS run has already spent — bounded by
     # `_LINK_CORRECTION_MAX`, see its docstring. A fresh count on a resume, matching `nudged`: the
     # checkpoint carries the transcript, not this counter, so a run that had already used one
@@ -710,12 +814,20 @@ async def run_tool_use_loop(
                     # A `tool` turn, not a bare `user` one: the assistant turn already carries this
                     # tool_call_id, and a provider transcript with a call and no matching result is
                     # malformed. The member reads the correction where it expects the result.
+                    #
+                    # #944 review round 3, LOW-H: this call is never dispatched (`continue`s below
+                    # before the harvest block), so it credits nothing live. Without an explicit
+                    # `status=error` marker a HITL resume's content-shape heuristic does not
+                    # recognise this prose as failed (it is not the JSON error shape at all) and
+                    # DID credit its URL-named arguments — a document `source_url` the model
+                    # supplied but the run never actually fetched, credited only on resume.
                     messages.append(
                         {
                             "role": "tool",
                             "tool_call_id": tc["id"],
                             "name": tc["name"],
-                            "content": correction,
+                            "content": f"{correction}\n[receipt: source_tool_call_id={tc['id']} "
+                            "status=error]",
                         }
                     )
                     steps.append(
@@ -812,31 +924,45 @@ async def run_tool_use_loop(
             # composed URL is the check working, and crediting it would let a member legitimise any
             # URL by calling a tool with it and ignoring the error.
             #
-            # #944 review, MEDIUM-4: only URL-NAMED arguments are scanned — see `_url_valued_args`.
-            # Dumping the WHOLE args object credited a search whose QUERY happened to be the
-            # fabricated URL, or an ingest whose CONTENT merely mentioned it: neither call is
-            # evidence the run fetched anything, and both are the obvious next move for a model
-            # told (by `_link_correction` below) which URLs it must stop citing. The dump is also
-            # redacted before harvesting, matching `content` two lines above it — a credential-
-            # bearing URL in a tool argument must not enter `fetched_urls` (and, downstream, a
-            # persisted trace or a correction message) unredacted.
+            # #944 review, MEDIUM-4 / round 3 MEDIUM-E: only URL-NAMED arguments are scanned, and
+            # only ones the dispatched tool's OWN schema declares (when it declares any) — see
+            # `_url_valued_args`. Dumping the WHOLE args object credited a search whose QUERY
+            # happened to be the fabricated URL, or an ingest whose CONTENT merely mentioned it:
+            # neither call is evidence the run fetched anything, and both are the obvious next move
+            # for a model told (by `_link_correction` below) which URLs it must stop citing. Each
+            # credited URL is redacted before harvesting, matching `content` two lines above it — a
+            # credential-bearing URL in a tool argument must not enter `fetched_urls` (and,
+            # downstream, a persisted trace or a correction message) unredacted.
             if status == "ok":
-                url_args = _redact(json.dumps(_url_valued_args(tc["args"]), default=str), redactors)
-                harvested = extract_answer_urls(content) + extract_answer_urls(url_args)
-                for url in harvested:
-                    if url not in fetched_urls:
-                        fetched_urls.append(url)
+                arg_urls = [
+                    _redact(url, redactors)
+                    for url in _url_valued_args(tc["args"], spec.parameters if spec else None)
+                ]
+                # #944 review round 3, HIGH-C: capped, set-backed accumulation — see
+                # `_accumulate_fetched` above. Replaces the round-2 `if url not in fetched_urls:
+                # fetched_urls.append(url)` linear scan, which was quadratic in the number of
+                # distinct URLs one tool result could harvest.
+                _accumulate_fetched(
+                    extract_answer_urls(content) + arg_urls, fetched_urls, fetched_urls_seen
+                )
             # #642: show the receipt id INSIDE the tool result the model reads. The provider's
             # `tool_call_id` field is transport metadata the model never sees, so a member asked to
             # cite its receipts could only guess — real models cited the tool NAME, a chunk id, or
             # "1", and were failed for it despite having really made the call. The visible receipt
             # line is what makes the grounding contract satisfiable rather than a trap.
+            #
+            # #944 review round 3, LOW-H/LOW-I: `status=` is the explicit marker a HITL-resumed
+            # transcript reads back via `_explicit_tool_status`, rather than guessing failed/ok from
+            # the shape of `content` (a guess that disagreed with this line's own classification in
+            # both directions — see that function's docstring).
             messages.append(
                 {
                     "role": "tool",
                     "tool_call_id": tc["id"],
                     "name": tc["name"],
-                    "content": f"{content}\n[receipt: source_tool_call_id={tc['id']}]",
+                    "content": (
+                        f"{content}\n[receipt: source_tool_call_id={tc['id']} status={status}]"
+                    ),
                 }
             )
             steps.append(
