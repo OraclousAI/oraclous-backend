@@ -477,19 +477,35 @@ def _plain_reason(recorded: str) -> str | None:
 #: arriving by a different door (#946 review round 2, C2). Matched structurally rather than against
 #: a list of known names, because the set is every exception type in the process and its
 #: dependencies. A real sentence has a space in it, so this cannot swallow one.
+#:
+#: Matched structurally, and DELIBERATELY broader than its name suggests: the suffix group is
+#: optional, so any single capitalised token qualifies — ``Forbidden``, ``Timeout``, a Postgres code
+#: like ``P0001``. That accepts swallowing a real one-word diagnostic, which is the right bias here:
+#: requiring the suffix would let a custom ``RegistryFault`` straight through, which is exactly
+#: the shape #946 is about. The accepted loss is pinned by its own test rather than left to be
+#: rediscovered (#946 review round 3, N3). A lowercase one-word value is kept.
 _BARE_CLASS_NAME = re.compile(r"^[A-Z][A-Za-z0-9_]*(Error|Exception|Interrupt|Warning)?$")
+#: The orchestrator's own wrapper around a member's failure — ``team_run.py`` builds
+#: ``member 'x' harness did not succeed: <STATUS>`` and the blob, if any, follows it. Keeping the
+#: prose around an unrecognised fragment (round 2, C3) made this wrapper the reason: it names the
+#: member a second time and tells the reader nothing the "Failed: x." line above did not
+#: (#946 review round 3, N2). It is internal phrasing, which is what this curation removes.
+_ORCHESTRATOR_WRAPPER = re.compile(r"^member\s+.+?\s+harness did not succeed:\s*\w*$")
 _NO_REASON_RECORDED = "it stopped without reporting a reason"
 
 
 def _without_a_bare_class_name(text: str) -> str:
-    """``text`` unless it is only a class name, in which case a sentence a person can read.
+    """``text`` unless it says nothing a person can use, in which case a sentence that does.
 
-    Deleting it outright would be worse than replacing it: the member is named separately, so an
-    empty reason reads as if the platform simply lost track of what happened. Saying that no reason
-    was recorded is both true and actionable — it points at the step trace.
+    Two shapes say nothing: a bare exception class name, and the orchestrator's own wrapper prose.
+    Deleting either outright would be worse than replacing it — the member is named separately, so
+    an empty reason reads as if the platform simply lost track of what happened. Saying that no
+    reason was recorded is both true and actionable: it points at the step trace.
     """
     stripped = text.strip()
-    return _NO_REASON_RECORDED if _BARE_CLASS_NAME.match(stripped) else stripped
+    if _BARE_CLASS_NAME.match(stripped) or _ORCHESTRATOR_WRAPPER.match(stripped):
+        return _NO_REASON_RECORDED
+    return stripped
 
 
 def _named_members(names: list[str]) -> str:
