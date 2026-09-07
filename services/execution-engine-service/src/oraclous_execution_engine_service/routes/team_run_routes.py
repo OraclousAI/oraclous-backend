@@ -176,6 +176,8 @@ async def get_team_run_status(
         member_status=s.member_status or {},
         member_timings=s.member_timings or {},
         simulated=s.simulated,
+        # #944 review, OPTIONAL-13: mirrors `simulated` immediately above.
+        has_unverified_links=s.has_unverified_links,
     )
 
 

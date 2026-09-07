@@ -645,6 +645,10 @@ class TeamRunStatusOut(BaseModel):
     # #907: mirrors TeamRunOut.simulated — True when any member's result was produced by the
     # scripted stand-in LLM. Computed by the service (TeamRunStatus/status()), not derived here.
     simulated: bool = False
+    # #944 review, OPTIONAL-13: mirrors TeamRunOut.has_unverified_links, following the `simulated`
+    # precedent immediately above — a caller polling this light status must not disagree with one
+    # reading the full run detail about whether an answer is trustworthy. Computed by the service.
+    has_unverified_links: bool = False
 
     # A real flushed row holds {} (the migration 0025 server_default); this coerces None from a
     # pre-migration row / a hypothetical unflushed row — fail-soft, mirroring TeamRunOut's precedent

@@ -390,6 +390,10 @@ class TeamRunStatus:
     member_timings: dict[str, Any] | None = None
     # #907: True when any member's result says the harness that ran it was the scripted stand-in.
     simulated: bool = False
+    # #944 review, OPTIONAL-13: mirrors TeamRunOut.has_unverified_links (derived from `results`,
+    # same guard as `simulated`) — a caller polling this light status must not disagree with one
+    # reading the full run detail about whether an answer is trustworthy.
+    has_unverified_links: bool = False
 
 
 def _verdict_score(verdict: Any) -> float | None:
@@ -1225,6 +1229,11 @@ class TeamRunService:
             # #907: mirrors TeamRunOut._derive_partial's derivation from `results`.
             simulated=any(
                 isinstance(r, dict) and r.get("simulated") for r in (row.results or {}).values()
+            ),
+            # #944 review, OPTIONAL-13: same derivation, same guard, mirroring TeamRunOut.
+            has_unverified_links=any(
+                isinstance(r, dict) and r.get("unverified_links")
+                for r in (row.results or {}).values()
             ),
         )
 
