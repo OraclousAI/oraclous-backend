@@ -750,10 +750,11 @@ async def run_tool_use_loop(
         if resume_state is not None
         else {}
     )
-    # Which signatures the member has already been TOLD about. Told once, plainly; a member that
-    # sends a refused call again anyway has ignored an instruction it could act on, and the run
-    # settles rather than spending the rest of its budget rediscovering the same dead call.
+    # Which call signatures have been refused as unfixable repeats, and the TOOL NAMES behind them.
+    # The names are what the terminal reports: a signature carries the model's raw arguments, which
+    # may hold anything the model put there, and a run's error message is a person-facing surface.
     repeated_failure_told: set[str] = set()
+    repeated_failure_names: list[str] = []
     # #944 review, HIGH-2 fix B: how many corrections THIS run has already spent — bounded by
     # `_LINK_CORRECTION_MAX`, see its docstring. A fresh count on a resume, matching `nudged`: the
     # checkpoint carries the transcript, not this counter, so a run that had already used one
@@ -965,21 +966,6 @@ async def run_tool_use_loop(
                     "budget", "tool_call_budget", "tool-call budget exhausted", iteration
                 )
 
-            # #946 T2: the member has already been told, in a sentence it could act on, that this
-            # exact call is dead. Sending it again is not a call worth refusing one more time — it
-            # is the member declining to adapt, and the honest outcome is to settle on what it has
-            # rather than spend the rest of the budget rediscovering the same failure.
-            already_told = spec is not None and (
-                _call_signature(tc["name"], tc["args"]) in repeated_failure_told
-            )
-            if already_told:
-                return _degrade(
-                    "tool_repeat",
-                    "repeated_tool_failure",
-                    "a tool call that had already failed twice was sent again unchanged after the "
-                    "member was told it could not work",
-                    iteration,
-                )
             tool_started: datetime | None = None
             tool_ended: datetime | None = None
             if spec is None:
@@ -1003,10 +989,25 @@ async def run_tool_use_loop(
             ] >= _REPEATED_FAILURE_MAX:
                 # #946 T2: this exact call already failed twice the same way. It is NOT dispatched —
                 # the member is handed the note instead, so the turn still gets its tool-role reply
-                # (a provider rejects a tool_call with no answering message) but costs no real call.
-                # Deliberately not charged to `tool_calls_made`: nothing was executed.
+                # (a provider REJECTS a tool_call with no answering message, so skipping the reply
+                # would corrupt the transcript) but costs no real call. Deliberately not charged to
+                # `tool_calls_made`: nothing was executed.
+                #
+                # Ruled by the owner 2026-09-07: the run KEEPS GOING. Refusing the call frees the
+                # member's remaining turns to fix the value or answer without that tool, which is
+                # the outcome worth having; stopping the run here would deny a member that was one
+                # turn from recovering. The refusal repeats for as long as the member does, and
+                # every refused attempt is recorded as its own step — a model tool call that
+                # vanished from the trace is a run an operator cannot reconstruct.
+                #
+                # The cost the owner accepted with that ruling: a member that never adapts still
+                # spends its whole ITERATION budget. So the terminal at the bottom of this function
+                # NAMES the repeated call rather than reporting an anonymous "did not converge" —
+                # the budget is spent either way, but the operator learns why.
                 signature = _call_signature(tc["name"], tc["args"])
                 repeated_failure_told.add(signature)
+                if tc["name"] not in repeated_failure_names:
+                    repeated_failure_names.append(tc["name"])
                 content = _REPEATED_FAILURE_NOTE
                 status = _REPEATED_FAILURE_STATUS
                 step_name = f"{spec.binding}.{spec.operation}"
@@ -1424,9 +1425,24 @@ async def run_tool_use_loop(
             policy.max_iterations + json_repair_grant,
         )
     # iteration cap reached without a final answer → escalate or degrade (#587).
+    #
+    # #946 T2: when a call was refused as an unfixable repeat, SAY SO. The owner ruled the run keeps
+    # going after a refusal (a member one turn from recovering must get that turn), and accepted the
+    # cost: a member that never adapts still spends its whole iteration budget and lands here. An
+    # anonymous "did not converge" is precisely the report #946 was filed about — #692 is the record
+    # of what an untyped failure costs an operator. The budget is spent either way; naming the call
+    # the member kept repeating turns a dead end into something someone can go and fix.
+    #
+    # Only the TOOL NAME is named, never the arguments: the signature carries whatever the model put
+    # in them, and this message reaches a person-facing surface.
+    repeat_note = (
+        f" — it kept re-sending a call that could not work ({', '.join(repeated_failure_names)})"
+        if repeated_failure_names
+        else ""
+    )
     return _budget_gate(
         "budget",
         "iteration_cap",
-        "tool-use loop did not converge",
+        f"tool-use loop did not converge{repeat_note}",
         policy.max_iterations + json_repair_grant,
     )
