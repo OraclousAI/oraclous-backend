@@ -1033,14 +1033,18 @@ async def test_a_failed_members_error_reaches_the_run_page_as_a_sentence() -> No
     repo = FakeTeamRunRepo()
     svc, _ = _svc(repo, _BlobHarness())
     row = await _run(
-        svc, _principal(), manifest=_team([_agent("a")]), sub_harnesses={}, gate_decisions={}
+        svc,
+        _principal(),
+        manifest=_team([_agent("researcher")]),
+        sub_harnesses={},
+        gate_decisions={},
     )
     message = row.error_message or ""
     assert row.state == "FAILED"
     assert "RegistryError" not in message  # the class name never reaches the run page
     assert '{"' not in message and '":' not in message  # nor does the JSON punctuation
     assert "unknown search provider 'The Verge'" in message  # the useful half survives
-    assert "a" in message  # the failed member is still named
+    assert "researcher" in message  # the failed member is still named
 
 
 async def test_rerun_redispatches_only_the_failed_member_and_reaches_succeeded() -> None:

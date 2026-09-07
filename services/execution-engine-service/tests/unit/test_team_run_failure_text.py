@@ -227,3 +227,84 @@ def test_an_upstream_body_is_not_reconstructed_by_the_curation() -> None:
     )
     assert "secret" not in text
     assert detail in text
+
+
+# --- the shapes production actually records (#946 review round 2, C2/C3) --------------------------
+#
+# Four distinct shapes reach this function, from six sites in the orchestrator. The wrapped blob is
+# covered above. These are the remaining two that were wrong.
+
+
+def test_a_bare_exception_class_name_does_not_survive() -> None:
+    """The original defect, by a route the other tests never took.
+
+    The orchestrator records ``str(exc) or type(exc).__name__``, so an exception raised with no
+    message — ``RegistryError()``, ``KeyError()``, a cancelled task — is recorded as nothing but its
+    class name. There is no blob to unwrap, so it passed straight through onto the run page: exactly
+    the text #946 was filed about, arriving by a different door.
+    """
+    text = summarise_failed_run(
+        failed=["researcher"], blocked=[], member_errors={"researcher": "RegistryError"}
+    )
+    assert "RegistryError" not in text
+    assert "researcher" in text  # the member is still named
+    assert text.strip().endswith((".", "…"))
+
+
+def test_a_class_name_is_replaced_by_something_a_person_can_read() -> None:
+    text = summarise_failed_run(
+        failed=["researcher"], blocked=[], member_errors={"researcher": "TimeoutError"}
+    )
+    # not simply deleted — a member that failed with no reason recorded should say so
+    tail = text.split("It can be re-run.", 1)[-1]
+    assert "researcher" in tail
+    assert len(tail.split()) > 3
+
+
+def test_a_real_sentence_that_merely_ends_in_error_is_not_mistaken_for_a_class_name() -> None:
+    recorded = "the workspace could not be reached because of a network error"
+    text = summarise_failed_run(failed=["a"], blocked=[], member_errors={"a": recorded})
+    assert recorded in text
+
+
+def test_prose_carrying_an_unrecognised_json_fragment_keeps_its_prose() -> None:
+    """C3. ``grounding:`` and output-contract errors quote the member's own material, which can be
+    valid JSON. Dropping the whole reason because a brace parsed leaves the run page saying only
+    that the member failed — strictly worse than the blob it was meant to remove.
+    """
+    text = summarise_failed_run(
+        failed=["analyst"],
+        blocked=[],
+        member_errors={"analyst": 'grounding: claim not supported: {"n": 1}'},
+    )
+    assert "grounding: claim not supported" in text
+
+
+def test_the_unrecognised_json_fragment_itself_is_still_dropped() -> None:
+    text = summarise_failed_run(
+        failed=["analyst"],
+        blocked=[],
+        member_errors={"analyst": 'grounding: claim not supported: {"n": 1}'},
+    )
+    assert '{"n": 1}' not in text
+
+
+def test_a_bare_unrecognised_json_object_still_shows_nothing() -> None:
+    """Unchanged: a recorded value that is ONLY a blob has no prose to keep, and falling back to
+    the raw text would put the blob straight back on the page."""
+    text = summarise_failed_run(
+        failed=["a"], blocked=[], member_errors={"a": '{"payload": {"rows": 12}}'}
+    )
+    assert "payload" not in text
+
+
+def test_the_other_recorded_shapes_pass_through_intact() -> None:
+    # the two orchestrator shapes that were already sentences, pinned so a later change to the
+    # curation cannot quietly swallow them
+    for recorded in (
+        "grounding: claim 1 has no receipt; claim 2 has no receipt",
+        "member 'a' declared an output contract it did not deliver: missing 'digest'",
+        "loop did not converge: ESCALATED",
+    ):
+        text = summarise_failed_run(failed=["a"], blocked=[], member_errors={"a": recorded})
+        assert recorded in text

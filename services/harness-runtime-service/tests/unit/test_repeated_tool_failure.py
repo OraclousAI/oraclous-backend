@@ -635,7 +635,7 @@ async def test_the_receipt_marker_keeps_the_two_values_every_transcript_uses() -
         assert "status=ok]" in content or "status=error]" in content
 
 
-# --- the terminal names the tool the way the rest of the run does (C4) -----------------------------
+# --- the terminal names the tool the way the rest of the run does (C4) ----------------------------
 
 
 async def test_the_terminal_names_the_tool_the_way_the_trace_does() -> None:
@@ -655,7 +655,7 @@ async def test_the_terminal_names_the_tool_the_way_the_trace_does() -> None:
     assert _SEARCH.name not in message
 
 
-# --- a refused call costs no budget (C6) ------------------------------------------------------------
+# --- a refused call costs no budget (C6) ----------------------------------------------------------
 
 
 async def test_a_refused_call_is_not_charged_to_the_tool_call_budget() -> None:
