@@ -49,6 +49,7 @@ a module-level import would abort collection for every suite in the repo.
 
 from __future__ import annotations
 
+import time
 from typing import Any
 
 import pytest
@@ -271,3 +272,90 @@ async def test_a_malformed_entry_in_the_fetched_set_is_ignored_not_crashed() -> 
     # to take the run down, and a junk entry must never accidentally match anything.
     result = _check(f"[Source]({_FABRICATED})", ["", "not a url", "://broken", _REAL])
     assert result.unverified == [_FABRICATED]
+
+
+async def test_an_invalid_port_in_the_fetched_set_is_ignored_not_crashed() -> None:
+    # `urlsplit(...).port` itself raises ValueError for a port that does not fit — the specific
+    # branch `_canonical`'s `except ValueError` exists to catch, exercised directly rather than only
+    # folded into the general malformed-entry case above.
+    result = _check(f"[Source]({_REAL})", ["https://example.org:99999/x"])
+    assert result.unverified == [_REAL]
+
+
+# --- #944 review, HIGH-1: `_trim` must stay bounded on attacker-supplied text -------------------
+
+
+async def test_a_url_containing_a_balanced_parenthesis_pair_keeps_its_closing_paren() -> None:
+    # `_trim`'s own comment cites this exact case: a `)` is stripped only when the URL carries MORE
+    # closes than opens. Wikipedia's disambiguation suffix is the canonical real-world example, and
+    # the KEEP path this exercises had no direct test before this change.
+    wiki = "https://en.wikipedia.org/wiki/Mercury_(planet)"
+    result = _check(f"[Source]({wiki})", [wiki])
+    assert result.verified == [wiki]
+    assert result.unverified == []
+
+
+async def test_a_long_run_of_trailing_punctuation_is_trimmed_in_bounded_time() -> None:
+    # HIGH-1: `_trim` counted `)`/`(` over the WHOLE shrinking string on every character it removed
+    # — quadratic in the match length. A page a member's tool reads is attacker-supplied text with
+    # no length bound, and this loop's own call stack has no `await` on this path, so a crafted page
+    # stalled every concurrent run sharing the worker (measured: 268ms at 32k trailing `)`). Bounded
+    # now on both sides (a linear `_trim`, and the regex capped at `_MAX_URL_LENGTH`) — this must
+    # stay fast and must not corrupt an ordinary URL sitting in front of the run of punctuation.
+    long_answer = f"[Source]({_REAL}{')' * 20000}"
+    started = time.monotonic()
+    result = _check(long_answer, [_REAL])
+    assert time.monotonic() - started < 0.5
+    assert result.verified == [_REAL]
+    assert result.unverified == []
+
+
+# --- #944 review, MEDIUM-5 / LOW-6/7/8: normalisation collisions found at review -----------------
+
+
+async def test_a_url_with_userinfo_never_verifies_even_against_the_real_host() -> None:
+    # MEDIUM-5: `urlsplit(...).hostname` silently drops userinfo, so `https://arxiv.org@evil.example
+    # /paper` would otherwise VERIFY against a fetched `https://evil.example/paper` while the
+    # console renders an anchor that visibly BEGINS "https://arxiv.org@" — the classic userinfo
+    # phishing shape, blessed by the platform's own provenance signal. Fail closed instead, exactly
+    # like every other unreadable input this function refuses rather than guesses at.
+    phishing = "https://arxiv.org@evil.example/paper"
+    result = _check(f"[Source]({phishing})", ["https://evil.example/paper"])
+    assert result.unverified == [phishing]
+
+
+async def test_an_ipv6_literal_and_a_bracket_smuggled_port_do_not_collide() -> None:
+    # LOW-6: `urlsplit` strips the brackets an IPv6 literal arrived in. Without re-bracketing them,
+    # `http://[::1]:80/x` (host `::1`, port 80) and `http://[::1:80]/x` (host `::1:80`, no port)
+    # canonicalise to the identical (wrong) authority `::1:80` and would cross-verify. Exercised
+    # directly against `canonical_urls` (the fetched-set path this collision is about) — the
+    # answer-extraction regex has its own, unrelated blind spot for a bracketed literal (`]` ends a
+    # candidate match so a markdown label's own closing bracket never bleeds into a URL), which this
+    # test is not about.
+    from oraclous_harness_runtime_service.domain.link_provenance import canonical_urls
+
+    canon = canonical_urls(["http://[::1]:80/x", "http://[::1:80]/x"])
+    assert canon == {"http://[::1]/x", "http://[::1:80]/x"}
+
+
+async def test_a_punycode_fetch_matches_the_same_host_written_in_unicode() -> None:
+    # LOW-7: a bare `.lower()` folds ASCII case but not IDNA — a fetched URL in punycode and the
+    # same host written in Unicode in the answer must compare equal, or an honest citation spends a
+    # correction over encoding rather than provenance.
+    result = _check("[Source](https://münchen.de/a)", ["https://xn--mnchen-3ya.de/a"])
+    assert result.unverified == []
+
+
+async def test_the_default_port_is_folded() -> None:
+    # LOW-8: `https://example.org:443/a` and `https://example.org/a` are the same origin. Search
+    # connectors routinely hand back the ported form; left un-folded that costs an honest citation
+    # a correction.
+    result = _check("[Source](https://example.org:443/a)", ["https://example.org/a"])
+    assert result.unverified == []
+
+
+async def test_percent_escape_case_is_folded() -> None:
+    # LOW-8: `%2f` and `%2F` name the same octet (RFC 3986). A fetched URL and the model's own prose
+    # disagree about the case constantly.
+    result = _check("[Source](https://example.org/a%2f)", ["https://example.org/a%2F"])
+    assert result.unverified == []
