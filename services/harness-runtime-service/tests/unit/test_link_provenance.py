@@ -369,9 +369,9 @@ async def test_an_over_length_url_is_reported_unverified_never_a_verified_prefix
     # matched only a PREFIX of what the reader would actually click — `_trim` shaved that prefix,
     # and the checker verified a STRING THAT WAS NEVER THE DESTINATION. Concretely: this userinfo-
     # phishing URL's first 18 characters equal a URL the run genuinely fetched, so the truncated
-    # match read as VERIFIED — reopening the exact userinfo hole `test_a_url_with_userinfo_never_
-    # verifies_even_against_the_real_host` above closes, only now returning an AFFIRMATIVE "verified"
-    # instead of no signal at all. The fix must report the FULL, untruncated string, unverified.
+    # match read as VERIFIED — reopening the exact userinfo hole the test above (userinfo never
+    # verifies) closes, only now returning an AFFIRMATIVE "verified" instead of no signal at all.
+    # The fix must report the FULL, untruncated string, unverified.
     fetched = ["https://arxiv.org"]
     smuggled = "https://arxiv.org" + ("." * 2041) + "@evil.example/pwn"
     result = _check(f"[Source]({smuggled})", fetched)

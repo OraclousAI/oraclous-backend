@@ -507,7 +507,7 @@ async def test_an_errored_pre_pause_call_is_not_credited_after_resume() -> None:
     assert result.unverified_links == [_REAL]
 
 
-# --- #944 review round 3: harvest-pipeline defects found reviewing round 2's own fixes -------------
+# --- #944 review round 3: harvest-pipeline defects found reviewing round 2's own fixes ------------
 
 
 async def test_an_all_caps_argument_name_still_counts_as_fetched() -> None:
