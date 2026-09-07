@@ -441,136 +441,74 @@ _FAILURE_SUMMARY_MAX_DETAIL_CHARS = 300
 #: rather than on each of the five returns: which internal branch ran must not decide whether the
 #: reader is told.
 _SIMULATED_MARKER = "(simulated LLM)"
-#: How many braces the blob scan may try before giving up. In production the blob is the first brace
-#: or very nearly — the orchestrator's prose comes before it — so a small bound covers a reason that
-#: quotes the model's own braces without letting a pathological value walk the whole string
-#: (#946 review round 5, MEDIUM-2).
-#:
-#: Raised from 8 (#946 review round 6). Past the bound the raw blob reaches the run page, which is
-#: this issue's own symptom, and a decodable brace the scan passes over now spends an attempt too —
-#: so 8 was reachable by a reason quoting a handful of the model's own objects. Measured over a
-#: 200,000-brace input the bound costs 0.0001s at 8 and 0.0004s at 32: it exists to stop a
-#: pathological walk, not to be tight, and a failing decode on a non-JSON brace bails at the first
-#: character.
-_MAX_BLOB_SCAN_ATTEMPTS = 32
+
+
+def _curated_reason(text: str) -> str | None:
+    """The human half of one recorded failure, or ``None`` when there is no human half.
+
+    The blob is read WHERE THE ORCHESTRATOR PUTS IT, never searched for (security audit, finding 2).
+    ``team_run.py`` builds exactly one shape — ``member 'x' harness did not succeed: <STATUS> —
+    <blob>`` — so once the wrapper is stripped, a blob is either at offset 0 of what remains or
+    there is no blob.
+
+    Searching was the defect. A recorded failure mixes platform prose with the member's own words —
+    a grounding error quotes the location the member claimed, an output-contract error quotes its
+    payload — so whoever emits a matching object first owns this sentence, and the model writes into
+    the same string. Narrowing the shape from one key to two raised the bar by nothing: a model
+    writes two keys as easily as one. Demonstrated before the fix: a grounding failure with a
+    model-authored object appended DELETED the real violation and rendered the model's sentence as
+    the platform's own explanation of why the run failed.
+
+    The accepted cost is a value that is prose FOLLOWED by a blob: its blob stays in the text. No
+    producer builds that shape, and a raw blob on the page is a presentation defect where model text
+    passed off as the platform's own reason is not.
+
+    Only ``detail`` is ever read from the blob, never a sibling key, so an upstream response body
+    cannot be promoted into person-facing text (ADR-008).
+    """
+    stripped = text.strip()
+    if not stripped:
+        return None
+    unwrapped = _ORCHESTRATOR_WRAPPER.sub("", stripped, count=1).strip()
+    if not unwrapped:
+        return _NO_REASON_RECORDED
+    if not unwrapped.startswith("{"):
+        return _without_a_bare_class_name(unwrapped)
+    try:
+        parsed, _ = json.JSONDecoder().raw_decode(unwrapped)
+    except ValueError:
+        # a leading brace that opens no valid JSON is part of the sentence, not a blob
+        return _without_a_bare_class_name(unwrapped)
+    if not isinstance(parsed, dict):
+        return None
+    detail = parsed.get("detail")
+    if not isinstance(detail, str) or not detail.strip():
+        return _NO_REASON_RECORDED
+    return detail.strip()
 
 
 def _plain_reason(recorded: str) -> str | None:
     """The human half of one member's recorded failure, or ``None`` if there is no human half.
 
     Two things happen here that are deliberately NOT delegated to the branches in
-    ``_curated_reason`` below: the ``(simulated LLM)`` marker is lifted off the front of the
+    ``_curated_reason`` above: the ``(simulated LLM)`` marker is lifted off the front of the
     curation and put back on the end of it, and the per-member length cap is applied once to
-    whatever came back. Both were per-branch before, and both were therefore wrong on some branches
-    — the marker on all four that read the parsed blob, the cap on four of five (#946 review
-    round 5, HIGH-1 and MEDIUM-3). One choke point makes each of them a property of this function
-    rather than of the branch that happened to run.
+    whatever came back. Both were per-branch before, and both were therefore wrong on some
+    branches — the marker on every branch that read the parsed blob, the cap on four of five
+    (#946 review round 5, HIGH-1 and MEDIUM-3). One choke point makes each of them a property of
+    this function rather than an accident of which internal branch happened to run.
 
-    The cap matters one seam up: ``summarise_failed_run`` gives up to
-    ``_FAILURE_SUMMARY_MAX_DETAILS`` members a "why" line inside a single 2000-character summary, so
-    an uncapped reason does not merely run long — it pushes the LATER members' reasons past the
-    last-resort cut and off the page entirely. The accepted cost of the cap is the mirror image: a
-    ``grounding:`` message that carries two claims can exceed 200 characters and lose its tail,
-    which is a smaller loss than losing a whole member.
+    The marker is re-appended AFTER the cap, so a long reason cannot push #907's warning off the
+    end — losing it would tell the reader the model was real when it was a stand-in.
     """
-    text = recorded.strip()
-    if not text:
-        return None
-    simulated = text.endswith(_SIMULATED_MARKER)
-    if simulated:
-        text = text[: -len(_SIMULATED_MARKER)].strip()
-    reason = _curated_reason(text) if text else None
+    simulated = recorded.rstrip().endswith(_SIMULATED_MARKER)
+    body = recorded.rstrip()[: -len(_SIMULATED_MARKER)] if simulated else recorded
+    reason = _curated_reason(body.strip())
     if reason is None:
-        # Nothing a person can use. Normally that means no reason line at all — but a stand-in model
-        # is a warning in its own right, so when the marker was there the line is still worth
-        # printing, saying honestly that nothing else was recorded.
         return f"{_NO_REASON_RECORDED} {_SIMULATED_MARKER}" if simulated else None
     if len(reason) > _FAILURE_SUMMARY_MAX_DETAIL_CHARS:
         reason = reason[: _FAILURE_SUMMARY_MAX_DETAIL_CHARS - 1] + "…"
     return f"{reason} {_SIMULATED_MARKER}" if simulated else reason
-
-
-def _first_blob(text: str) -> tuple[int, Any]:
-    """The offset and value of the first brace in ``text`` that opens valid JSON, or ``(-1, None)``.
-
-    Not simply the first brace (#946 review round 5, MEDIUM-2). A grounding or output-contract error
-    quotes the model's own words, and those can contain a brace that opens nothing — ``the model
-    wrote {oops} then {"error": ...}``. Anchoring on that first brace made ``raw_decode`` fail, the
-    caller fell back to the whole recorded value, and the raw blob this curation exists to remove
-    reached the run page anyway.
-
-    It is the first brace that opens the RECORDED-FAILURE shape, not merely the first that opens
-    valid JSON (#946 review round 5, PLAUSIBLE-1). Scanning past an undecodable stray but stopping
-    at a decodable one closes only half the door: quoted model output like ``the model wrote
-    {"city": "Paris"} then {"error": ..., "detail": ...}`` would hand back the wrong object, and the
-    real reason is dropped exactly as before. So a decodable object that is not the shape we are
-    looking for is remembered and the scan continues; it is used only if nothing better turns up,
-    which keeps every previous outcome for a value that carries one object and no more.
-
-    The shape is ``error`` AND ``detail`` together, never ``detail`` alone (#946 review round 6,
-    PLAUSIBLE-2). Because this scan HUNTS, matching on ``detail`` alone let a later object beat an
-    earlier legitimate one — so text the model wrote could become the platform's own explanation of
-    why the run failed. No production route reaches that today, and all three producers of the real
-    blob always emit both keys, so requiring both costs nothing and makes the rule above literally
-    true rather than approximately true.
-
-    Bounded rather than exhaustive, and the fallback is unchanged: when no brace within the bound
-    opens valid JSON, every brace in the text is prose and the sentence is kept whole.
-    """
-    fallback: tuple[int, Any] = (-1, None)
-    start = text.find("{")
-    for _ in range(_MAX_BLOB_SCAN_ATTEMPTS):
-        if start == -1:
-            break
-        try:
-            parsed, _ = json.JSONDecoder().raw_decode(text[start:])
-        except ValueError:
-            start = text.find("{", start + 1)
-            continue
-        if isinstance(parsed, dict) and "error" in parsed and "detail" in parsed:
-            return start, parsed
-        if fallback[0] == -1:
-            fallback = (start, parsed)
-        start = text.find("{", start + 1)
-    return fallback
-
-
-def _curated_reason(text: str) -> str | None:
-    """``text`` with the loop's error blob and the orchestrator's internal phrasing taken out.
-
-    The loop's shape is ``{"error": <class name>, "detail": <sentence>}``. The class name is an
-    implementation detail of this codebase and means nothing to the person reading the run page, so
-    it is dropped and only ``detail`` survives. Anything with no such blob in it — a dispatch error
-    recorded as a plain sentence — is already the right thing and passes through untouched. Only
-    ``detail`` is read, never a sibling key: a blob that somehow carried an upstream body must not
-    have it promoted into the person-facing text (ADR-008).
-
-    The blob is EMBEDDED, not leading. By the time a member's failure reaches this function the
-    orchestrator has wrapped it in its own prose — ``member 'a' harness did not succeed: FAILED —
-    {"error": …}`` (`orchestrate.py`, `member_errors[role] = str(exc)`). An unwrapper that only
-    matched a leading brace therefore never fired on a single real failure, and the blob reached the
-    run page exactly as before. That wrapper prose is itself internal phrasing, so when a blob is
-    found, the prose around it goes with the class name; a recorded error with no blob keeps its
-    text.
-    """
-    start, parsed = _first_blob(text)
-    if start == -1:
-        return _without_a_bare_class_name(text)
-    prefix = text[:start].strip().rstrip("-—:").strip()
-    if not isinstance(parsed, dict) or "detail" not in parsed:
-        # A JSON object we do not recognise. Its keys are not ours to promote — falling back to the
-        # raw text would put the object straight back on the run page.
-        #
-        # #946 review round 2, C3: but the PROSE around it is kept when there is any. A grounding
-        # error quoting a member's claim, or an output-contract error quoting a payload fragment,
-        # is a real diagnostic that happens to embed valid JSON; dropping the whole reason leaves
-        # the run page saying only that the member failed, which is worse than the blob this
-        # function exists to remove. Nothing to keep means nothing is shown, as before.
-        return _without_a_bare_class_name(prefix) if prefix else None
-    detail = parsed.get("detail")
-    if not isinstance(detail, str) or not detail.strip():
-        return _without_a_bare_class_name(prefix) if prefix else None
-    return detail.strip()
 
 
 #: A recorded failure that is nothing but a class name. ``orchestrate.py`` records
@@ -599,6 +537,12 @@ _BARE_CLASS_NAME = re.compile(r"^[A-Z][A-Za-z0-9_]*(Error|Exception|Interrupt|Wa
 #: route for the very scenario #946 describes stayed uncurated. The remainder is kept; only when
 #: nothing survives the strip does the reason fall through to ``_NO_REASON_RECORDED``.
 #:
+#: Literal single spaces and a bounded quantifier (security audit, finding 3). The lazy ``.+?``
+#: it replaces also matched whitespace, and with the ``\s+`` after it every offset was an
+#: ambiguous split — measured 0.047s at 500 characters, 0.36s at 1000, 2.83s at 2000, roughly
+#: 8x per doubling, on a value a member's role name reaches into. The builder always emits
+#: single spaces, so nothing is lost.
+#:
 #: ``(simulated LLM)`` is deliberately NOT consumed. #907 adds it so a reader knows the model was a
 #: stand-in, which changes how the whole result should be read; swallowing it with the wrapper would
 #: drop that warning.
@@ -609,7 +553,7 @@ _BARE_CLASS_NAME = re.compile(r"^[A-Z][A-Za-z0-9_]*(Error|Exception|Interrupt|Wa
 #: not a thing to leave armed in text a person reads, and the strict form fails in the safe
 #: direction (it shows one word too many, never one too few).
 _ORCHESTRATOR_WRAPPER = re.compile(
-    r"^member\s+.+?\s+harness did not succeed:\s*(?:[A-Z][A-Z_]*\b)?\s*(?:—|-{1,2})?\s*"
+    r"^member .{0,200}? harness did not succeed:\s*(?:[A-Z][A-Z_]*\b)?\s*(?:—|-{1,2})?\s*"
 )
 _NO_REASON_RECORDED = "it stopped without reporting a reason"
 
