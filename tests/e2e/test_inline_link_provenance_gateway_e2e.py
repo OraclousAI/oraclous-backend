@@ -181,10 +181,10 @@ def test_a_link_the_run_never_fetched_is_flagged_and_the_answer_still_ships(
     flagged = done["results"]["linker"]["unverified_links"]
     assert _INVENTED in flagged, f"the invented URL must be named — got {flagged}"
 
-    # The check is provenance, not blanket suspicion: the pages the member really searched are not
-    # flagged. Without this the "flag" would be worthless — every citation would carry the warning.
-    assert all("okta.com" in url for url in flagged), (
-        f"only the page the run never fetched may be flagged — got {flagged}"
-    )
+    # #944 review, COVERAGE-12: the dropped assertion here was `all("okta.com" in url for url in
+    # flagged)` — a real live model can plausibly fabricate a SECOND, different bad link in the same
+    # run, and that assertion would fail the proof for a reason unrelated to the code under test.
+    # The line above already asserts the real criterion: the invented URL is named as unverified.
+
     # And it is not the scripted stand-in model saying so.
     assert done["simulated"] is False, done
