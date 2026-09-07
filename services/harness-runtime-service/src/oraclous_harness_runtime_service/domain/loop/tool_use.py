@@ -496,6 +496,47 @@ def _record_failure(ledger: RepeatedFailures, signature: str, error: str) -> Non
     )
 
 
+#: The receipt's TAIL, matched in full against the last line rather than searched for anywhere
+#: (security audit rounds 1 and 2).
+_RECEIPT_OPENER = "\n[receipt: "
+_RECEIPT_TAIL = re.compile(r"source_tool_call_id=\S+ status=(?P<status>ok|error)\]")
+#: The #642-era receipt, written before #944 added a status. A transcript persisted then still
+#: resumes, and it is WELL FORMED — it simply predates the status. It keeps the content-shape
+#: fallback; only a receipt that is neither shape is treated as corrupted.
+_RECEIPT_TAIL_LEGACY = re.compile(r"source_tool_call_id=\S+\]")
+
+
+def _split_receipt(raw_content: str) -> tuple[str, str | None]:
+    """``(content, status)`` for one persisted ``tool``-role message.
+
+    ``status`` is ``None`` for the two shapes that carry no status to read: no receipt at all, and
+    the #642-era receipt written before #944 added one. Both still resume today and both keep the
+    documented content-shape fallback. A receipt that is neither shape is CORRUPTED, and reads as
+    ``"error"``: a classifier deciding whether a call succeeded must never read an unparseable
+    record as a success (§3.5).
+
+    That distinction is the round-2 finding. The receipt line interpolates the tool call's id
+    unescaped, and the id is taken verbatim from the model endpoint's response — so an id carrying a
+    line break and a receipt opener splits the real line in two. The anchored pattern then does not
+    match, the content is cut in the wrong place, and the shape heuristic reads the truncated
+    remainder as a SUCCESS. Same asset as round 1: an invented URL enters the run's provenance and a
+    dead call's allowance is renewed. Not reachable by prompt alone against a well-behaved endpoint,
+    which generates the id, but bring-your-own-endpoint makes an untrusted one ordinary.
+
+    ``rpartition`` takes the LAST opener, so a forged one earlier in the body can neither win the
+    classification nor truncate the content this returns.
+    """
+    head, separator, tail = raw_content.rpartition(_RECEIPT_OPENER)
+    if not separator:
+        return raw_content, None
+    match = _RECEIPT_TAIL.fullmatch(tail)
+    if match is not None:
+        return head, match.group("status")
+    if _RECEIPT_TAIL_LEGACY.fullmatch(tail):
+        return head, None  # a well-formed pre-#944 receipt: no status to read, fall back on shape
+    return head, "error"
+
+
 def _repeated_failures_from_transcript(messages: list[Message]) -> RepeatedFailures:
     """Re-derive the ledger from an already-restored transcript, at a HITL resume.
 
@@ -542,9 +583,7 @@ def _repeated_failures_from_transcript(messages: list[Message]) -> RepeatedFailu
         call_id = message.get("tool_call_id")
         if not isinstance(raw_content, str) or not isinstance(call_id, str):
             continue
-        explicit_status = _explicit_tool_status(raw_content)
-        # `rsplit`, not `split` (security audit finding 1) — see the sibling reader below.
-        content = raw_content.rsplit("\n[receipt:", 1)[0]
+        content, explicit_status = _split_receipt(raw_content)
         failed = (
             explicit_status == "error"
             if explicit_status is not None
@@ -593,14 +632,8 @@ def _repeated_failures_from_transcript(messages: list[Message]) -> RepeatedFailu
 # reopened), and `_repeated_failures_from_transcript` recorded nothing, renewing the allowance for a
 # call already proven dead. A model can write the syntax; it cannot write past the platform's own
 # append, so the end is the one position that is not forgeable.
-_TOOL_STATUS_MARKER = re.compile(
-    r"\n\[receipt: source_tool_call_id=\S+ status=(?P<status>ok|error)\]\Z"
-)
-
-
 def _explicit_tool_status(raw_content: str) -> str | None:
-    match = _TOOL_STATUS_MARKER.search(raw_content)
-    return match.group("status") if match else None
+    return _split_receipt(raw_content)[1]
 
 
 def _fetched_urls_from_transcript(
@@ -639,11 +672,7 @@ def _fetched_urls_from_transcript(
         raw_content = message.get("content")
         if not isinstance(raw_content, str):
             continue
-        explicit_status = _explicit_tool_status(raw_content)
-        # `rsplit`, not `split` (security audit finding 1): a forged marker earlier in the body
-        # would otherwise truncate the content this function reads, hiding whatever follows it from
-        # URL extraction and from the ledger key.
-        content = raw_content.rsplit("\n[receipt:", 1)[0]
+        content, explicit_status = _split_receipt(raw_content)
         failed = (
             explicit_status == "error"
             if explicit_status is not None
