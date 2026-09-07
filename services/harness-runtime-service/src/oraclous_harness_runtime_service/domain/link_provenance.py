@@ -52,7 +52,16 @@ from urllib.parse import urlsplit
 # to the next delimiter — the trailing characters a URL cannot really end with are shaved off by
 # `_trim` below, which is the only place that judgement lives. `]` is excluded so a markdown label
 # never bleeds into the target; whitespace and quote characters end a URL in every real rendering.
-_URL = re.compile(r"https?://[^\s<>\"'`\]]+", re.IGNORECASE)
+#
+# A BACKSLASH ends a URL, and that one character is load-bearing. A member with a declared output
+# contract answers with a JSON document, so its Sources list arrives as `…/trends)\n- [B](…)` where
+# the newline is the two characters backslash and n, inside a JSON string — not whitespace, and so
+# not a delimiter unless it is named one. Without this, every honestly cited link in such an answer
+# reads as `…/trends)\n-`, matches nothing the run fetched, and lands in the all-invented case that
+# sends the draft back. Live run bc229dd8 was corrected four times for four real pages it had just
+# read and died at the token ceiling, 257k tokens spent. Whatever follows a backslash is the
+# document's encoding, never part of the address.
+_URL = re.compile(r"https?://[^\s<>\"'`\\\]]+", re.IGNORECASE)
 
 # Sentence punctuation a URL may sit in front of but never end with. `)` is NOT here: it is the
 # markdown link's own closing bracket AND a legitimate character inside a URL
