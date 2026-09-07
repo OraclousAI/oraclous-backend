@@ -1,0 +1,434 @@
+"""#944 — the inline-link provenance check's VERDICTS, as a pure function.
+
+The gap this closes is not the one ``citation_gate.py`` closes. That gate governs the platform's own
+``cit_`` ids: an id the platform minted, served to the run, and can therefore recognise. A member's
+free-text answer carries no such id. It writes ``[Source](https://www.okta.com/blog/…)`` in its own
+prose, and until this lands **nothing anywhere in the pipeline reads that URL**. The frontend now
+renders those as real anchors (oraclous-frontend #281 follow-up), so a URL the model composed from
+training data reaches a person's screen wearing the same clothes as a URL the run actually fetched.
+
+**Provenance match, not reachability — RULED by the owner on #944 (2026-09-07).** The check compares
+the URLs in the answer against the URLs the run's OWN tool calls actually returned. It makes no
+network request of its own. Two reasons the rejected alternative (asking each URL whether it loads)
+lost:
+
+* A load check passes any real page the run never read, which is most of what a model fabricates —
+  it composes plausible URLs on real domains, and a CMS that 200s an unknown slug launders them all.
+* Loading a URL a model composed points OUR server at an address the model chose. That is a
+  server-side request forgery surface aimed at internal addresses and cloud metadata endpoints, and
+  it is not worth opening for a weaker signal.
+
+**What this file does NOT decide.** What a failed match DOES is loop behaviour — the correction, the
+flag, the terminal — and lives in ``test_link_provenance_loop.py``. This file is the pure function
+over (the answer, the URLs the run fetched), with no loop, no model, and no I/O, the same posture
+``check_answer_citations`` has and for the same reason: a gate implemented as a model instruction is
+a gate that can be talked out of.
+
+Five normalisation rules are pinned here because a false mismatch is expensive under the ruled
+consequence. An answer whose every link fails goes BACK to the member and costs it an iteration, so
+a check that calls ``https://Example.com/a/`` and ``https://example.com/a`` different URLs would
+spend real budget punishing a member that cited honestly:
+
+1. **Scheme and host are case-insensitive; the path is not.** Hosts are case-insensitive by
+   specification and paths are not — ``/A`` and ``/a`` are different pages on most servers.
+2. **A leading ``www.`` is stripped from the host.** Search results and canonical URLs disagree
+   about it constantly, and they are the same page every time.
+3. **The fragment is dropped.** ``#section-3`` names a position within a page the run did fetch.
+4. **One trailing slash is stripped from the path.** ``/blog/`` and ``/blog`` are the same page.
+5. **The query string is KEPT.** ``?id=7`` and ``?id=9`` are different pages, and dropping it would
+   let a member change the article and keep the provenance.
+
+**The scheme allow-list is ``http`` and ``https``, and nothing else.** ``mailto:``, a relative path,
+and a bare domain with no scheme are not links a person clicks through to a cited article, and
+sweeping them in would flag ordinary prose that happens to mention a domain name.
+
+``link_provenance`` is imported function-locally, never at module level
+(``.claude/rules/tests-seam-imports.md``): the module does not exist until the ``[impl]`` lands, and
+a module-level import would abort collection for every suite in the repo.
+"""
+
+from __future__ import annotations
+
+import time
+from typing import Any
+
+import pytest
+
+pytestmark = [pytest.mark.unit, pytest.mark.security]
+
+# The real fabricated citation from team run 8ef18ab0 (the `linker` role, "Daily AI News Digest").
+# It is a well-formed URL on a real company's real blog host, and it is exactly what this check has
+# to catch: nothing about its SHAPE is wrong, so only provenance can tell it from a real one.
+_FABRICATED = "https://www.okta.com/blog/2023/10/okta-ai-token-costs"
+_REAL = "https://arstechnica.com/ai/2026/09/model-costs-fall-again/"
+
+
+def _check(answer: str, fetched: Any) -> Any:
+    from oraclous_harness_runtime_service.domain.link_provenance import check_answer_links
+
+    return check_answer_links(answer, fetched)
+
+
+def _urls(answer: str) -> Any:
+    from oraclous_harness_runtime_service.domain.link_provenance import extract_answer_urls
+
+    return extract_answer_urls(answer)
+
+
+# --- criterion 1: the shape the issue reports — a markdown link the run never fetched ---------
+
+
+async def test_a_markdown_link_the_run_never_fetched_is_unverified() -> None:
+    answer = f"Token costs fell sharply this quarter. [Source]({_FABRICATED})"
+    result = _check(answer, [_REAL])
+    assert result.unverified == [_FABRICATED]
+    assert result.verified == []
+    assert result.passed is False
+
+
+async def test_a_markdown_link_the_run_did_fetch_is_verified() -> None:
+    answer = f"Token costs fell sharply this quarter. [Source]({_REAL})"
+    result = _check(answer, [_REAL])
+    assert result.verified == [_REAL]
+    assert result.unverified == []
+    assert result.passed is True
+
+
+# --- criterion 2: an answer with no links at all is never a violation ------------------------
+
+
+async def test_an_answer_with_no_links_passes_even_though_the_run_fetched_pages() -> None:
+    # The mirror of the citation gate's most important property. A member that reasons without
+    # linking has not fabricated anything, and a check that punishes it would push every member
+    # toward inventing a link to look compliant — the exact failure this exists to prevent.
+    result = _check("The two figures do not contradict each other.", [_REAL])
+    assert result.passed is True
+    assert result.unverified == []
+    assert result.verified == []
+
+
+async def test_an_answer_with_no_links_and_no_fetches_passes() -> None:
+    result = _check("A 30-day notice period is the market standard.", [])
+    assert result.passed is True
+    assert result.unverified == []
+
+
+# --- criterion 3: a bare URL in prose counts, not only a markdown link -----------------------
+
+
+async def test_a_bare_url_in_prose_is_checked_too() -> None:
+    # A model does not always reach for markdown. An unwrapped URL is the same claim and the
+    # frontend linkifies it the same way, so a markdown-only reader would miss half the surface.
+    result = _check(f"See {_FABRICATED} for the breakdown.", [_REAL])
+    assert result.unverified == [_FABRICATED]
+
+
+async def test_sentence_punctuation_after_a_bare_url_is_not_part_of_it() -> None:
+    # "…costs." — the full stop ends the sentence, not the URL. Without this the URL never matches
+    # anything the run fetched and every honestly-cited answer is flagged.
+    result = _check(f"The breakdown is at {_REAL}.", [_REAL])
+    assert result.verified == [_REAL]
+    assert result.unverified == []
+
+
+async def test_a_trailing_close_paren_after_a_bare_url_is_not_part_of_it() -> None:
+    result = _check(f"The breakdown (see {_REAL}) is clear.", [_REAL])
+    assert result.unverified == []
+
+
+# --- criterion 4: the five normalisation rules -----------------------------------------------
+
+
+async def test_the_host_matches_case_insensitively() -> None:
+    result = _check("[Source](https://ArsTechnica.com/ai/2026/09/model-costs-fall-again/)", [_REAL])
+    assert result.unverified == []
+
+
+async def test_the_path_matches_case_SENSITIVELY() -> None:
+    # /Ai/ is a different page from /ai/ on most servers. Folding case here would let a member
+    # mutate a real path into a wrong one and keep the provenance.
+    result = _check("[Source](https://arstechnica.com/AI/2026/09/model-costs-fall-again/)", [_REAL])
+    assert len(result.unverified) == 1
+
+
+async def test_a_leading_www_is_stripped_from_the_host() -> None:
+    fetched = "https://okta.com/blog/2023/10/real-post"
+    result = _check("[Source](https://www.okta.com/blog/2023/10/real-post)", [fetched])
+    assert result.unverified == []
+
+
+async def test_a_fragment_is_dropped() -> None:
+    result = _check(f"[Source]({_REAL}#cost-table)", [_REAL])
+    assert result.unverified == []
+
+
+async def test_one_trailing_slash_is_stripped_from_the_path() -> None:
+    result = _check(
+        "[Source](https://arstechnica.com/ai/2026)", ["https://arstechnica.com/ai/2026/"]
+    )
+    assert result.unverified == []
+
+
+async def test_the_query_string_is_KEPT() -> None:
+    # ?id=7 and ?id=9 are different articles. Dropping the query would let a member keep the
+    # provenance of a page the run really read while pointing the reader at a different one.
+    result = _check(
+        "[Source](https://example.org/article?id=9)", ["https://example.org/article?id=7"]
+    )
+    assert len(result.unverified) == 1
+
+
+# --- criterion 5: the scheme allow-list ------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        "Write to sales at mailto:team@example.org for the figures.",
+        "The file is at ftp://files.example.org/report.pdf",
+        "See the archive at /reports/2026/q3 for the breakdown.",
+        "Coverage came from arstechnica.com and okta.com this quarter.",
+    ],
+)
+async def test_a_non_http_target_is_not_a_link_this_check_reads(answer: str) -> None:
+    result = _check(answer, [])
+    assert result.passed is True
+    assert result.unverified == []
+
+
+# --- criterion 6: reporting shape -------------------------------------------------------------
+
+
+async def test_every_unverified_url_is_reported_not_just_the_first() -> None:
+    # The reader's screen has to say WHICH links are unverified. Stopping at the first would
+    # understate the problem on precisely the worst answers — the ones that invented several.
+    second = "https://www.forbes.com/sites/nobody/2026/01/01/invented/"
+    answer = f"[A]({_FABRICATED}) and [B]({second}) and [C]({_REAL})"
+    result = _check(answer, [_REAL])
+    assert result.unverified == [_FABRICATED, second]
+    assert result.verified == [_REAL]
+
+
+async def test_a_url_cited_twice_is_reported_once() -> None:
+    answer = f"[Source]({_FABRICATED}) … and again at {_FABRICATED}"
+    result = _check(answer, [])
+    assert result.unverified == [_FABRICATED]
+
+
+async def test_a_url_is_reported_as_the_member_wrote_it() -> None:
+    # A correction that names the URL has to name the one the member can find in its own draft.
+    # Reporting the normalised form would send it hunting for a string that is not there.
+    written = "https://WWW.Okta.com/blog/2023/10/okta-ai-token-costs#intro"
+    result = _check(f"[Source]({written})", [])
+    assert result.unverified == [written]
+
+
+async def test_first_seen_order_is_preserved() -> None:
+    a = "https://example.org/a"
+    b = "https://example.org/b"
+    assert _urls(f"[B]({b}) then [A]({a}) then [B again]({b})") == [b, a]
+
+
+# --- criterion 7: the answer is often a JSON document, not loose prose -------------------------
+#
+# Found on the DEPLOYED stack, not by reading the code. A member with a declared output contract
+# answers with a JSON document, so its Sources list arrives as `…/trends)\n- [B](…)` — where the
+# newline is the two characters backslash and n, inside a JSON string. A matcher that runs to the
+# next space swallows `)\n-` into the URL, so EVERY honestly-cited link fails to match what the run
+# fetched, the member is corrected on every attempt, and the run dies at the token ceiling. One live
+# run burned 257k tokens that way. A backslash therefore ends a URL.
+
+
+async def test_a_url_inside_a_json_encoded_answer_is_read_correctly() -> None:
+    answer = (
+        f'{{"summary": "Prices fell.\\n\\nSources:\\n- [Ars]({_REAL})\\n- [Okta]({_FABRICATED})"}}'
+    )
+    result = _check(answer, [_REAL])
+    assert result.verified == [_REAL]
+    assert result.unverified == [_FABRICATED]
+
+
+async def test_a_backslash_escape_never_becomes_part_of_a_url() -> None:
+    # The general rule behind the case above: whatever follows a backslash is the document's
+    # encoding, never the address. `\"` closing a JSON string is the same trap as `\n`.
+    assert _urls(r'{"url": "https://example.org/a\n- next"}') == ["https://example.org/a"]
+    assert _urls(r'{"url": "https://example.org/a\"}') == ["https://example.org/a"]
+
+
+# --- criterion 8: the provenance set is matched the same way ----------------------------------
+
+
+async def test_a_fetched_url_is_normalised_before_matching() -> None:
+    # The run's own tool results are no tidier than the model's prose. A fetched URL carrying a
+    # tracking fragment and a trailing slash still has to match the clean one in the answer.
+    result = _check(
+        f"[Source]({_REAL})", ["https://ArsTechnica.com/ai/2026/09/model-costs-fall-again/#top"]
+    )
+    assert result.unverified == []
+
+
+async def test_a_malformed_entry_in_the_fetched_set_is_ignored_not_crashed() -> None:
+    # The fetched set is harvested from whatever a third-party tool returned. It must never be able
+    # to take the run down, and a junk entry must never accidentally match anything.
+    result = _check(f"[Source]({_FABRICATED})", ["", "not a url", "://broken", _REAL])
+    assert result.unverified == [_FABRICATED]
+
+
+async def test_an_invalid_port_in_the_fetched_set_is_ignored_not_crashed() -> None:
+    # `urlsplit(...).port` itself raises ValueError for a port that does not fit — the specific
+    # branch `_canonical`'s `except ValueError` exists to catch, exercised directly rather than only
+    # folded into the general malformed-entry case above.
+    result = _check(f"[Source]({_REAL})", ["https://example.org:99999/x"])
+    assert result.unverified == [_REAL]
+
+
+# --- #944 review, HIGH-1: `_trim` must stay bounded on attacker-supplied text -------------------
+
+
+async def test_a_url_containing_a_balanced_parenthesis_pair_keeps_its_closing_paren() -> None:
+    # `_trim`'s own comment cites this exact case: a `)` is stripped only when the URL carries MORE
+    # closes than opens. Wikipedia's disambiguation suffix is the canonical real-world example, and
+    # the KEEP path this exercises had no direct test before this change.
+    wiki = "https://en.wikipedia.org/wiki/Mercury_(planet)"
+    result = _check(f"[Source]({wiki})", [wiki])
+    assert result.verified == [wiki]
+    assert result.unverified == []
+
+
+async def test_a_long_run_of_trailing_punctuation_is_trimmed_in_bounded_time() -> None:
+    # HIGH-1: `_trim` counted `)`/`(` over the WHOLE shrinking string on every character it removed
+    # — quadratic in the match length. A page a member's tool reads is attacker-supplied text with
+    # no length bound, and this loop's own call stack has no `await` on this path, so a crafted page
+    # stalled every concurrent run sharing the worker (measured: 268ms at 32k trailing `)`). Bounded
+    # now on both sides (a linear `_trim`, and the regex capped at `_MAX_URL_LENGTH`) — this must
+    # stay fast and must not corrupt an ordinary URL sitting in front of the run of punctuation.
+    long_answer = f"[Source]({_REAL}{')' * 20000}"
+    started = time.monotonic()
+    result = _check(long_answer, [_REAL])
+    assert time.monotonic() - started < 0.5
+    assert result.verified == [_REAL]
+    assert result.unverified == []
+
+
+# --- #944 review, MEDIUM-5 / LOW-6/7/8: normalisation collisions found at review -----------------
+
+
+async def test_a_url_with_userinfo_never_verifies_even_against_the_real_host() -> None:
+    # MEDIUM-5: `urlsplit(...).hostname` silently drops userinfo, so `https://arxiv.org@evil.example
+    # /paper` would otherwise VERIFY against a fetched `https://evil.example/paper` while the
+    # console renders an anchor that visibly BEGINS "https://arxiv.org@" — the classic userinfo
+    # phishing shape, blessed by the platform's own provenance signal. Fail closed instead, exactly
+    # like every other unreadable input this function refuses rather than guesses at.
+    phishing = "https://arxiv.org@evil.example/paper"
+    result = _check(f"[Source]({phishing})", ["https://evil.example/paper"])
+    assert result.unverified == [phishing]
+
+
+async def test_an_ipv6_literal_and_a_bracket_smuggled_port_do_not_collide() -> None:
+    # LOW-6: `urlsplit` strips the brackets an IPv6 literal arrived in. Without re-bracketing them,
+    # `http://[::1]:80/x` (host `::1`, port 80) and `http://[::1:80]/x` (host `::1:80`, no port)
+    # canonicalise to the identical (wrong) authority `::1:80` and would cross-verify. Exercised
+    # directly against `canonical_urls` (the fetched-set path this collision is about) — the
+    # answer-extraction regex has its own, unrelated blind spot for a bracketed literal (`]` ends a
+    # candidate match so a markdown label's own closing bracket never bleeds into a URL), which this
+    # test is not about.
+    from oraclous_harness_runtime_service.domain.link_provenance import canonical_urls
+
+    canon = canonical_urls(["http://[::1]:80/x", "http://[::1:80]/x"])
+    assert canon == {"http://[::1]/x", "http://[::1:80]/x"}
+
+
+async def test_a_punycode_fetch_matches_the_same_host_written_in_unicode() -> None:
+    # LOW-7: a bare `.lower()` folds ASCII case but not IDNA — a fetched URL in punycode and the
+    # same host written in Unicode in the answer must compare equal, or an honest citation spends a
+    # correction over encoding rather than provenance.
+    result = _check("[Source](https://münchen.de/a)", ["https://xn--mnchen-3ya.de/a"])
+    assert result.unverified == []
+
+
+async def test_the_default_port_is_folded() -> None:
+    # LOW-8: `https://example.org:443/a` and `https://example.org/a` are the same origin. Search
+    # connectors routinely hand back the ported form; left un-folded that costs an honest citation
+    # a correction.
+    result = _check("[Source](https://example.org:443/a)", ["https://example.org/a"])
+    assert result.unverified == []
+
+
+async def test_percent_escape_case_is_folded() -> None:
+    # LOW-8: `%2f` and `%2F` name the same octet (RFC 3986). A fetched URL and the model's own prose
+    # disagree about the case constantly.
+    result = _check("[Source](https://example.org/a%2f)", ["https://example.org/a%2F"])
+    assert result.unverified == []
+
+
+# --- #944 review round 3: two of round 2's own fixes reopened what they had just closed -----------
+
+
+async def test_an_over_length_url_is_reported_unverified_never_a_verified_prefix() -> None:
+    # HIGH-A: round 2 bounded the regex ITSELF at 2048 characters. A URL longer than the cap then
+    # matched only a PREFIX of what the reader would actually click — `_trim` shaved that prefix,
+    # and the checker verified a STRING THAT WAS NEVER THE DESTINATION. Concretely: this userinfo-
+    # phishing URL's first 18 characters equal a URL the run genuinely fetched, so the truncated
+    # match read as VERIFIED — reopening the exact userinfo hole the test above (userinfo never
+    # verifies) closes, only now returning an AFFIRMATIVE "verified" instead of no signal at all.
+    # The fix must report the FULL, untruncated string, unverified.
+    fetched = ["https://arxiv.org"]
+    smuggled = "https://arxiv.org" + ("." * 2041) + "@evil.example/pwn"
+    result = _check(f"[Source]({smuggled})", fetched)
+    assert result.verified == []
+    assert result.unverified == [smuggled]
+
+
+async def test_a_userinfo_host_collision_within_the_cap_still_verifies_when_genuinely_fetched() -> (
+    None
+):
+    # The companion property to the test above: an ordinary, WITHIN-CAP URL must still verify
+    # normally — the fix must not turn every long-ish URL unverified, only ones the module cannot
+    # safely canonicalise (over the cap, or userinfo-bearing).
+    result = _check(f"[Source]({_REAL})", [_REAL])
+    assert result.unverified == []
+    assert result.verified == [_REAL]
+
+
+async def test_an_ss_domain_does_not_collide_with_its_eszett_lookalike() -> None:
+    # HIGH-B: the stdlib `idna` codec is IDNA2003 + nameprep, not the UTS-46 (WHATWG) folding a
+    # browser actually performs. The two disagree on the German eszett: the stdlib codec folds
+    # `faß.de` to the ASCII string `fass.de`, IDENTICAL to the unrelated real domain `fass.de`,
+    # while a browser resolves `faß.de` to a DIFFERENT registrable domain, `xn--fa-hia.de`. Any real
+    # target containing "ss" (`businessinsider.com`, `press.*`, `assets.*`) has such a colliding
+    # pre-image, so a URL on an attacker's `faß.de` compared equal to a legitimately fetched
+    # `fass.de` and reported VERIFIED. Fetching the real ASCII `fass.de` must never verify prose
+    # that cites the attacker's `faß.de`.
+    result = _check("[Source](https://faß.de/x)", ["https://fass.de/x"])
+    assert result.unverified == ["https://faß.de/x"]
+    assert result.verified == []
+
+
+async def test_a_bracketed_ipv6_link_is_reported_unverified_never_dropped() -> None:
+    # MEDIUM-G: the answer-extraction regex excludes `]` (so a markdown label's own bracket never
+    # bleeds into a URL target), which means a bracketed IPv6 literal used to match only up to the
+    # unterminated `[`, fail to parse, and VANISH from `extract_answer_urls` entirely — the answer
+    # shipped with a clickable anchor and NO warning at all, worse than reporting it unverified.
+    result = _check("[Source](https://[2606:4700::1]/evil)", [])
+    assert result.unverified == ["https://[2606:4700::1]/evil"]
+    assert result.verified == []
+
+
+async def test_a_bracketed_ipv6_link_verifies_against_the_same_literal_fetched() -> None:
+    # The companion property: a bracketed IPv6 literal the run genuinely fetched must still verify,
+    # not merely fail to vanish.
+    ipv6 = "https://[2606:4700::1]/status"
+    result = _check(f"[Source]({ipv6})", [ipv6])
+    assert result.unverified == []
+    assert result.verified == [ipv6]
+
+
+async def test_a_trailing_dot_host_matches_the_same_host_without_one() -> None:
+    # LOW-J: `example.org.` names the DNS root the same as `example.org` — the same host. Left
+    # un-stripped, a fetched URL using either form reads as a mismatch against an honest citation
+    # using the other and costs the member a correction over punctuation, not provenance. The dot
+    # sits right after the HOST label, before the path — not sentence punctuation `_trim` would
+    # shave off the end of the URL, which is why the pinned bare-URL/paren tests above don't already
+    # cover this.
+    result = _check("[Source](https://example.org./a)", ["https://example.org/a"])
+    assert result.unverified == []

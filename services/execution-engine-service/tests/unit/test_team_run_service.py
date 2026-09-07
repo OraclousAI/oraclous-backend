@@ -1008,6 +1008,9 @@ async def test_member_failure_persists_per_member_status_and_keeps_independent_o
         "output": "ok",
         "status": "SUCCEEDED",
         "simulated": False,  # #907: additive — a harness response with no "simulated" key defaults
+        # #944: additive in the same way — a harness response with no "unverified_links" key means
+        # the run linked nothing it had not fetched, which is an empty list, never an absent one.
+        "unverified_links": [],
     }  # the peer's work is kept
     assert "b blew up" in (row.error_message or "")  # the failed member's detail is surfaced
 
