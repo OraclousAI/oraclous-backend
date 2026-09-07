@@ -717,3 +717,23 @@ def test_a_genuine_recorded_failure_is_still_unwrapped() -> None:
     )
     assert "the vendor said no" in text
     assert "RegistryError" not in text
+
+
+def test_truncation_cuts_the_members_words_and_keeps_the_platforms_verdict() -> None:
+    """A load-bearing safety property, pinned because it is easy to lose (security audit, round 2).
+
+    A grounding error quotes the member, so the member's words trail the platform's verdict. The
+    length limit cuts from the END — which is exactly the trailing half — so a long model tail is
+    what gets removed and the verdict survives whole. Reverse the cut, or move the quote in front of
+    the verdict, and the run page starts leading with text the member wrote.
+    """
+    verdict = "grounding: named a location it had no tool to reach"
+    text = summarise_failed_run(
+        failed=["liar"],
+        blocked=[],
+        member_errors={"liar": f"{verdict}; the member wrote " + "z" * 400},
+    )
+    reason = text.split("liar stopped because ", 1)[1]
+    assert reason.startswith(verdict)
+    assert reason.rstrip(".").endswith("…")
+    assert "z" * 400 not in reason
