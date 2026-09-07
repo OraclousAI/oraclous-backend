@@ -419,8 +419,82 @@ _FAILURE_SUMMARY_MAX_DETAILS = 5
 _FAILURE_SUMMARY_MAX_DETAIL_CHARS = 200
 
 
+#: #907's marker. ``team_run.py`` appends it AFTER the detail, so on the blob path it sits past the
+#: closing brace ``raw_decode`` stops at — and every branch that returns something read out of the
+#: parsed object silently dropped it (#946 review round 5, HIGH-1). It says the model was a stand-in,
+#: which changes how the whole result should be read, so it is handled ONCE, around the curation,
+#: rather than on each of the five returns: which internal branch ran must not decide whether the
+#: reader is told.
+_SIMULATED_MARKER = "(simulated LLM)"
+#: How many braces the blob scan may try before giving up. In production the blob is the first brace
+#: or very nearly — the orchestrator's prose comes before it — so a small bound covers a reason that
+#: quotes the model's own braces without letting a pathological value walk the whole string
+#: (#946 review round 5, MEDIUM-2).
+_MAX_BLOB_SCAN_ATTEMPTS = 8
+
+
 def _plain_reason(recorded: str) -> str | None:
     """The human half of one member's recorded failure, or ``None`` if there is no human half.
+
+    Three things happen here that are deliberately NOT delegated to the branches in
+    ``_curated_reason`` below: the ``(simulated LLM)`` marker is lifted off the front of the
+    curation and put back on the end of it, and the per-member length cap is applied once to
+    whatever came back. Both were per-branch before, and both were therefore wrong on some branches
+    — the marker on all four that read the parsed blob, the cap on four of five (#946 review
+    round 5, HIGH-1 and MEDIUM-3). One choke point makes each of them a property of this function
+    rather than of the branch that happened to run.
+
+    The cap matters one seam up: ``summarise_failed_run`` gives up to
+    ``_FAILURE_SUMMARY_MAX_DETAILS`` members a "why" line inside a single 2000-character summary, so
+    an uncapped reason does not merely run long — it pushes the LATER members' reasons past the
+    last-resort cut and off the page entirely. The accepted cost of the cap is the mirror image: a
+    ``grounding:`` message that carries two claims can exceed 200 characters and lose its tail,
+    which is a smaller loss than losing a whole member.
+    """
+    text = recorded.strip()
+    if not text:
+        return None
+    simulated = text.endswith(_SIMULATED_MARKER)
+    if simulated:
+        text = text[: -len(_SIMULATED_MARKER)].strip()
+    reason = _curated_reason(text) if text else None
+    if reason is None:
+        # Nothing a person can use. Normally that means no reason line at all — but a stand-in model
+        # is a warning in its own right, so when the marker was there the line is still worth
+        # printing, saying honestly that nothing else was recorded.
+        return f"{_NO_REASON_RECORDED} {_SIMULATED_MARKER}" if simulated else None
+    if len(reason) > _FAILURE_SUMMARY_MAX_DETAIL_CHARS:
+        reason = reason[: _FAILURE_SUMMARY_MAX_DETAIL_CHARS - 1] + "…"
+    return f"{reason} {_SIMULATED_MARKER}" if simulated else reason
+
+
+def _first_blob(text: str) -> tuple[int, Any]:
+    """The offset and value of the first brace in ``text`` that opens valid JSON, or ``(-1, None)``.
+
+    Not simply the first brace (#946 review round 5, MEDIUM-2). A grounding or output-contract error
+    quotes the model's own words, and those can contain a brace that opens nothing — ``the model
+    wrote {oops} then {"error": ...}``. Anchoring on that first brace made ``raw_decode`` fail, the
+    caller fell back to the whole recorded value, and the raw blob this curation exists to remove
+    reached the run page anyway.
+
+    Bounded rather than exhaustive, and the fallback is unchanged: when no brace within the bound
+    opens valid JSON, every brace in the text is prose and the sentence is kept whole.
+    """
+    start = text.find("{")
+    for _ in range(_MAX_BLOB_SCAN_ATTEMPTS):
+        if start == -1:
+            break
+        try:
+            parsed, _ = json.JSONDecoder().raw_decode(text[start:])
+        except ValueError:
+            start = text.find("{", start + 1)
+            continue
+        return start, parsed
+    return -1, None
+
+
+def _curated_reason(text: str) -> str | None:
+    """``text`` with the loop's error blob and the orchestrator's internal phrasing taken out.
 
     The loop's shape is ``{"error": <class name>, "detail": <sentence>}``. The class name is an
     implementation detail of this codebase and means nothing to the person reading the run page, so
@@ -437,18 +511,10 @@ def _plain_reason(recorded: str) -> str | None:
     found, the prose around it goes with the class name; a recorded error with no blob keeps its
     text.
     """
-    text = recorded.strip()
-    if not text:
-        return None
-    start = text.find("{")
+    start, parsed = _first_blob(text)
     if start == -1:
         return _without_a_bare_class_name(text)
     prefix = text[:start].strip().rstrip("-—:").strip()
-    try:
-        parsed, _ = json.JSONDecoder().raw_decode(text[start:])
-    except ValueError:
-        # a brace that does not open valid JSON is part of the sentence, not a blob around it
-        return _without_a_bare_class_name(text)
     if not isinstance(parsed, dict) or "detail" not in parsed:
         # A JSON object we do not recognise. Its keys are not ours to promote — falling back to the
         # raw text would put the object straight back on the run page.
@@ -462,12 +528,8 @@ def _plain_reason(recorded: str) -> str | None:
     detail = parsed.get("detail")
     if not isinstance(detail, str) or not detail.strip():
         return _without_a_bare_class_name(prefix) if prefix else None
-    cleaned = detail.strip()
-    return (
-        cleaned[: _FAILURE_SUMMARY_MAX_DETAIL_CHARS - 1] + "…"
-        if len(cleaned) > _FAILURE_SUMMARY_MAX_DETAIL_CHARS
-        else cleaned
-    )
+    return detail.strip()
+
 
 
 #: A recorded failure that is nothing but a class name. ``orchestrate.py`` records
@@ -499,8 +561,14 @@ _BARE_CLASS_NAME = re.compile(r"^[A-Z][A-Za-z0-9_]*(Error|Exception|Interrupt|Wa
 #: ``(simulated LLM)`` is deliberately NOT consumed. #907 adds it so a reader knows the model was a
 #: stand-in, which changes how the whole result should be read; swallowing it with the wrapper would
 #: drop that warning.
+#: The status group is UPPERCASE-only, not ``\w*`` (#946 review round 5, LOW-8). ``\w*`` matches a
+#: detail's first word just as happily as a status word, so a wrapper with no status in it —
+#: ``harness did not succeed:  timeout after 30s`` — silently lost the word "timeout". Unreachable
+#: through ``team_run.py`` today, which always interpolates a status; a silent word-eater is still
+#: not a thing to leave armed in text a person reads, and the strict form fails in the safe
+#: direction (it shows one word too many, never one too few).
 _ORCHESTRATOR_WRAPPER = re.compile(
-    r"^member\s+.+?\s+harness did not succeed:\s*\w*\s*(—|-{1,2})?\s*"
+    r"^member\s+.+?\s+harness did not succeed:\s*(?:[A-Z][A-Z_]*\b)?\s*(?:—|-{1,2})?\s*"
 )
 _NO_REASON_RECORDED = "it stopped without reporting a reason"
 
