@@ -969,3 +969,50 @@ def test_the_genuine_marker_is_read_from_the_end_not_the_first_match() -> None:
     body = json.dumps({"ok": True, "note": "[receipt: source_tool_call_id=x status=error]"})
     content = f"{body}\n[receipt: source_tool_call_id=r1 status=ok]"
     assert _explicit_tool_status(content) == "ok"
+
+
+# --- the two harness readers of the new step status (security audit, findings 5 and 6) ------------
+
+
+def test_a_refused_call_is_not_recorded_as_a_capability_invocation() -> None:
+    """A refusal never left the harness — no capability was invoked. Recording it under the
+    invocation verb makes provenance say a capability ran when none did, and a consumer counting
+    invocations cannot tell the two apart (§3.7's reverse direction).
+
+    It matters more here than for the two branches that already did it. Those are rare; a refusal is
+    model-triggered, repeatable, and deliberately NOT charged to the tool-call budget, so a model
+    can mint records at no cost — the live proof on this issue shows eight refusals against two real
+    calls.
+    """
+    from oraclous_harness_runtime_service.models.enums import StepKind
+    from oraclous_harness_runtime_service.services.harness_execution_service import (
+        provenance_action_for,
+    )
+
+    invoked = provenance_action_for(StepKind.TOOL, "ok")
+    refused = provenance_action_for(StepKind.TOOL, "repeated_failure")
+    assert invoked == "capability.invoke"
+    assert refused != invoked
+    # a real failed dispatch DID invoke the capability, so it keeps the verb
+    assert provenance_action_for(StepKind.TOOL, "error") == invoked
+
+
+def test_a_refused_call_still_feeds_the_repeated_failure_classifier() -> None:
+    """The classifier exists to notice the same tool failing again and again. Filtering strictly on
+    the errored status made every refusal invisible to it — so from the moment the bound engaged,
+    the signal it was built to raise stopped arriving."""
+    from oraclous_harness_runtime_service.domain.loop.tool_use import LoopStep
+    from oraclous_harness_runtime_service.models.enums import StepKind
+    from oraclous_harness_runtime_service.services.harness_execution_service import (
+        _tool_step_errors,
+    )
+
+    steps = [
+        LoopStep(0, StepKind.TOOL, "web-research.search", "error", "boom"),
+        LoopStep(1, StepKind.TOOL, "web-research.search", "error", "boom"),
+        LoopStep(2, StepKind.TOOL, "web-research.search", "repeated_failure", "boom"),
+        LoopStep(3, StepKind.TOOL, "web-research.read", "ok", "fine"),
+    ]
+    names = _tool_step_errors(steps)
+    assert names.count("web-research.search") == 3
+    assert "web-research.read" not in names
