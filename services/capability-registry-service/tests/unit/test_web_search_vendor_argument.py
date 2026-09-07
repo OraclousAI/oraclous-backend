@@ -111,6 +111,7 @@ async def test_an_explicitly_passed_vendor_still_selects_that_vendor() -> None:
     assert seen["host"] == "api.tavily.com"
 
 
+@pytest.mark.security
 async def test_an_unrecognised_vendor_still_fails_closed_and_never_searches() -> None:
     called = {"n": 0}
 
@@ -137,6 +138,7 @@ def test_the_refusal_names_the_registered_vendors() -> None:
         assert name in message
 
 
+@pytest.mark.security
 def test_the_refusal_is_still_typed_unknown_provider() -> None:
     with pytest.raises(SearchProviderError) as exc:
         get_search_provider("nope")
@@ -151,3 +153,21 @@ async def test_the_refusal_reaches_the_caller_naming_the_registered_vendors() ->
     res = await ex.execute({"operation": "search", "query": "q", "provider": "bbc.co.uk"}, _ctx())
     assert not res.success
     assert "tavily" in (res.error_message or "")
+
+
+# --- the model-facing schema, not just the hint map behind it ------------------------------------
+#
+# The tests above assert on `CAPABILITIES[...]["parameters"]`, which is the descriptor's flat hint
+# map. The criterion is about the SCHEMA a member is handed, one hop further on. The hop is short —
+# `tool_schemas._parameters_for` is the map's only consumer repo-wide — but it is the hop that
+# matters, and the two services cannot import each other, so the schema half is pinned by shape.
+
+
+def test_the_schema_built_from_this_descriptor_declares_no_vendor_property() -> None:
+    """Mirrors `harness-runtime`'s `_json_schema`: one property per hint-map key. Kept here rather
+    than left implicit, so removing the key from the map is demonstrably enough to remove the
+    property from what a model sees."""
+    parameters = _search_operation(WebResearchPlugin)["parameters"]
+    properties = {str(key): {"type": "string"} for key in parameters}
+    assert "provider" not in properties
+    assert {"query", "max_results"} <= set(properties)
