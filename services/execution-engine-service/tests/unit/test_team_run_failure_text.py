@@ -565,3 +565,63 @@ def test_a_wrapper_with_no_status_word_keeps_the_whole_detail() -> None:
         member_errors={"a": "member 'a' harness did not succeed:  timeout after 30s"},
     )
     assert "timeout after 30s" in text
+
+
+# --- the per-member limit must not undercut the grounding budget (#946 review round 5, MEDIUM-1) --
+#
+# `packages/ohm`'s grounding message is sized at 280 characters ON PURPOSE, so it fits inside a
+# 300-character whole on the run page (#685), and several such errors are joined before they reach
+# this function. Cutting a member's reason at 200 throws away the tail of a message that was
+# deliberately built to fit — and the tail is the payload: the invented location the member named
+# is appended LAST, after the rule that was broken.
+#
+# The result is the #946 symptom rebuilt at a different seam: the page says a rule was broken and
+# refuses to say by what. It is not a space problem — the whole summary was using 326 of its 2000
+# characters while throwing information away.
+
+_TWO_GROUNDING_ERRORS = (
+    "grounding: artifact_refs names 2 location(s), 0 of which any tool call returned; "
+    "named a location it had no tool to reach and was never handed: "
+    "Interrail_B.V./Identified_Risks/regulatory-exposure-2026.md"
+)
+
+
+def test_a_grounding_message_keeps_the_location_it_names() -> None:
+    text = summarise_failed_run(
+        failed=["analyst"], blocked=[], member_errors={"analyst": _TWO_GROUNDING_ERRORS}
+    )
+    # the whole recorded message survives — the tail is the actionable half
+    assert "Interrail_B.V./Identified_Risks/regulatory-exposure-2026.md" in text
+    assert "…" not in text
+
+
+def test_the_per_member_limit_is_at_least_the_grounding_budget() -> None:
+    """A regression guard on the number itself. `packages/ohm` sizes its message to fit a
+    300-character whole; a per-member limit below that silently overrides another team's decision
+    from a different file, where nobody looking at either one would see the conflict."""
+    from oraclous_execution_engine_service.services.team_run_service import (
+        _FAILURE_SUMMARY_MAX_DETAIL_CHARS,
+    )
+    from oraclous_ohm.envelope import _MESSAGE_CAP
+
+    assert _FAILURE_SUMMARY_MAX_DETAIL_CHARS >= _MESSAGE_CAP
+
+
+def test_the_widened_limit_still_fits_a_full_run_inside_the_page_cap() -> None:
+    """The reason the widening is safe, computed rather than asserted by hand: the worst realistic
+    shape — ten named failed members, five of them carrying a maximum-length reason — must still
+    fit the 2000-character whole."""
+    long_reason = "x" * 400
+    text = summarise_failed_run(
+        failed=[f"member-{i}" for i in range(10)],
+        blocked=[],
+        member_errors={f"member-{i}": long_reason for i in range(10)},
+    )
+    assert len(text) <= 2000
+
+
+def test_a_reason_longer_than_the_limit_is_still_cut() -> None:
+    # widening is not removing: a runaway reason must still be bounded
+    text = summarise_failed_run(failed=["a"], blocked=[], member_errors={"a": "y" * 5000})
+    assert len(text) <= 2000
+    assert "…" in text
