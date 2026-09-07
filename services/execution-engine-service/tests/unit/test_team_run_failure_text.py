@@ -173,18 +173,20 @@ def test_it_still_fits_the_existing_cap() -> None:
 
 
 def test_the_cap_never_cuts_mid_word_leaving_a_dangling_fragment() -> None:
-    """The role names are 13 characters, not 8, on purpose (qa-engineer CONFIRMED-1). At 8 the
-    summary lands 11 characters short of the 2000-character whole, so this test and its two
-    neighbours never reached the cut they are named after — deleting the cap outright left all
-    three green. A 9-character role name is enough to reach it, and `researcher` is 10."""
+    """The role names are 13 characters and the blocked list is populated, both on purpose
+    (qa-engineer, rounds 1 and 2). Without the long names the summary lands 11 characters short of
+    the 2000-character whole; without the blocked list it lands short again, at 1907. Either way
+    this test never reached the cut it is named for, and its assertion saw a full stop rather than
+    the ellipsis it exists to check."""
     text = summarise_failed_run(
         failed=[f"researcher-{i}" for i in range(200)],
-        blocked=[],
+        blocked=[f"blocked-{i}" for i in range(200)],
         member_errors={
             f"researcher-{i}": _loop_error("RegistryError", "x" * 400) for i in range(200)
         },
     )
-    assert text.endswith((".", "…"))
+    assert len(text) == 2000  # the cut really fires
+    assert text.endswith("…")
 
 
 def test_a_failure_with_no_recorded_detail_still_names_the_member() -> None:
@@ -737,3 +739,36 @@ def test_truncation_cuts_the_members_words_and_keeps_the_platforms_verdict() -> 
     assert reason.startswith(verdict)
     assert reason.rstrip(".").endswith("…")
     assert "z" * 400 not in reason
+
+
+# --- the runaway-pattern fix must not be revertible in silence (qa-engineer round 2, M5) ----------
+#
+# Reverting the bounded quantifier passed the entire suite — 2095 tests, zero failures. The pattern
+# runs on the recorded member error, whose wrapper interpolates a MANIFEST-AUTHORED role name capped
+# at 2000 characters, so any authenticated user could spend ~2.8 seconds of processor time per failed
+# member, up to five per run, repeatably, on the run-completion path.
+#
+# Pinned two ways on purpose. The structural assertion is the reliable one — it cannot flake and it
+# names the exact defect. The timing one is the honest one: it measures the property that actually
+# matters, with enough headroom that only a genuine regression trips it.
+
+
+def test_the_wrapper_pattern_carries_no_unbounded_lazy_quantifier() -> None:
+    from oraclous_execution_engine_service.services.team_run_service import _ORCHESTRATOR_WRAPPER
+
+    assert ".+?" not in _ORCHESTRATOR_WRAPPER.pattern
+    assert ".*?" not in _ORCHESTRATOR_WRAPPER.pattern
+
+
+def test_a_long_whitespace_run_does_not_stall_the_run_page() -> None:
+    import time
+
+    from oraclous_execution_engine_service.services.team_run_service import _ORCHESTRATOR_WRAPPER
+
+    # the shape that made it quadratic: opens like the wrapper, never completes it
+    hostile = "member " + " " * 2000 + "x"
+    started = time.monotonic()
+    _ORCHESTRATOR_WRAPPER.sub("", hostile, count=1)
+    elapsed = time.monotonic() - started
+    # measured at 0.00001s bounded against 2.8s lazy; 0.5s is a regression, not a slow machine
+    assert elapsed < 0.5

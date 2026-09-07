@@ -974,6 +974,7 @@ def test_the_genuine_marker_is_read_from_the_end_not_the_first_match() -> None:
 # --- the two harness readers of the new step status (security audit, findings 5 and 6) ------------
 
 
+@pytest.mark.security
 def test_a_refused_call_is_not_recorded_as_a_capability_invocation() -> None:
     """A refusal never left the harness — no capability was invoked. Recording it under the
     invocation verb makes provenance say a capability ran when none did, and a consumer counting
@@ -997,6 +998,7 @@ def test_a_refused_call_is_not_recorded_as_a_capability_invocation() -> None:
     assert provenance_action_for(StepKind.TOOL, "error") == invoked
 
 
+@pytest.mark.security
 def test_a_refused_call_still_feeds_the_repeated_failure_classifier() -> None:
     """The classifier exists to notice the same tool failing again and again. Filtering strictly on
     the errored status made every refusal invisible to it — so from the moment the bound engaged,
@@ -1107,3 +1109,31 @@ def test_a_tool_call_id_from_the_endpoint_cannot_carry_receipt_syntax() -> None:
     assert "[" not in _safe_tool_call_id(_POISON_ID)
     assert _safe_tool_call_id("call_abc123") == "call_abc123"
     assert _safe_tool_call_id("")
+
+
+def test_the_receipt_written_before_a_status_existed_keeps_the_fallback() -> None:
+    """The one remaining path that returns "no status" and falls back to reading the content's
+    shape, pinned directly rather than only through the link-provenance suite.
+
+    A receipt was written before #944 added a status to it, and a transcript from then still resumes.
+    That shape is WELL FORMED — it simply predates the status — so it must keep the fallback, while
+    a receipt that is neither shape is corrupted and reads as a failure. The first version of the
+    fail-closed change got this wrong and treated it as corrupted; only the older suite caught it.
+    """
+    from oraclous_harness_runtime_service.domain.loop.tool_use import _split_receipt
+
+    body = '{"text": "page body"}'
+    content, status = _split_receipt(f"{body}\n[receipt: source_tool_call_id=c1]")
+    assert content == body
+    assert status is None
+
+
+@pytest.mark.security
+def test_a_status_word_that_is_neither_value_is_corrupted_not_legacy() -> None:
+    """The legacy allowance must not become a door. Its pattern cannot span a space, and every
+    receipt the platform writes today contains one before `status=`, so a modern line can never be
+    mistaken for the older shape."""
+    from oraclous_harness_runtime_service.domain.loop.tool_use import _split_receipt
+
+    _, status = _split_receipt('{"text": "x"}\n[receipt: source_tool_call_id=c1 status=maybe]')
+    assert status == "error"
