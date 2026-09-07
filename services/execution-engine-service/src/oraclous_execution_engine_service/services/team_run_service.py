@@ -421,7 +421,8 @@ _FAILURE_SUMMARY_MAX_DETAIL_CHARS = 200
 
 #: #907's marker. ``team_run.py`` appends it AFTER the detail, so on the blob path it sits past the
 #: closing brace ``raw_decode`` stops at — and every branch that returns something read out of the
-#: parsed object silently dropped it (#946 review round 5, HIGH-1). It says the model was a stand-in,
+#: parsed object silently dropped it (#946 review round 5, HIGH-1). It says the model was a
+#: stand-in,
 #: which changes how the whole result should be read, so it is handled ONCE, around the curation,
 #: rather than on each of the five returns: which internal branch ran must not decide whether the
 #: reader is told.
@@ -529,7 +530,6 @@ def _curated_reason(text: str) -> str | None:
     if not isinstance(detail, str) or not detail.strip():
         return _without_a_bare_class_name(prefix) if prefix else None
     return detail.strip()
-
 
 
 #: A recorded failure that is nothing but a class name. ``orchestrate.py`` records

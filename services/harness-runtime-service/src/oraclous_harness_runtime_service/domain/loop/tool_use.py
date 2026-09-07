@@ -430,6 +430,14 @@ def _accumulate_fetched(urls: list[str], fetched_urls: list[str], seen: set[str]
 # repair): the member is told ONCE, plainly, and if it sends the refused call again anyway the run
 # settles instead of spending the rest of its budget discovering the same thing.
 #
+# What "bounded" covers here is the DISPATCH count, not the ledger dict that holds it — the ledger
+# is the one accumulator in this file with no explicit cap, and reading the sentence above as
+# covering it would be reading too much into it (#946 review round 5, LOW-7). It needs none: live
+# entries are bounded by the tool-call budget, and the resume derivation reads an in-memory
+# transcript that the previous segments' iteration cap already bounded. Capping it would trade a
+# fail-closed guarantee for no real memory saving, because past the cap a call already proven dead
+# would get a fresh allowance.
+#
 # THE COST THIS BOUND ACCEPTS, recorded rather than left to be rediscovered (#946 review round 5,
 # MEDIUM-4, ruled by the owner 2026-09-07). D2 keys on the (tool, arguments, error) triple, and an
 # error CLASS that renders a fixed sentence makes two throttled calls byte-identical:
@@ -495,6 +503,24 @@ def _repeated_failures_from_transcript(messages: list[Message]) -> RepeatedFailu
     which is the retry loop the bound exists to stop. Mirrors ``_fetched_urls_from_transcript``:
     the checkpoint carries the transcript rather than the loop's own counters, so the resumed
     segment reads its own history back out of the messages instead of being handed one.
+
+    NOT a byte-faithful re-derivation, and the difference is deliberate (#946 review round 5,
+    LOW-6). The live path records a failure in ONE place — the dispatch ``except`` — while this
+    reader counts every ``tool``-role message that classifies as failed, which also picks up three
+    kinds the live path never counted: a ceiling denial, an unknown tool, and the #853 JSON-repair
+    correction. Only the refusal note is filtered out explicitly, because only it can do harm.
+    None of the other three can reach the refusal branch on the resumed segment:
+
+    * a ceiling denial and an unknown tool are decided from the policy envelope and the tool set,
+      both fixed for the run, so their own branches short-circuit ahead of the refusal check every
+      time that signature comes round again;
+    * the JSON repair is one-shot per RUN (``json_repair_used`` rides the checkpoint), so it can
+      contribute at most one entry — below ``_REPEATED_FAILURE_MAX`` — and its prose differs from
+      any dispatch error, so mixing it with a real failure resets the count rather than adding to
+      it.
+
+    Filtering them here would therefore be three more content-sniffing prefix checks buying nothing,
+    and each one a new way for the reader to disagree with the live path.
     """
     args_by_call_id: dict[str, dict[str, Any]] = {}
     names_by_call_id: dict[str, str] = {}
