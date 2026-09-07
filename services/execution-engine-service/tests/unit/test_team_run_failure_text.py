@@ -435,3 +435,133 @@ def test_a_wrapper_with_nothing_after_it_still_says_no_reason_was_recorded() -> 
         text = summarise_failed_run(failed=["a"], blocked=[], member_errors={"a": recorded})
         assert "harness did not succeed" not in text
         assert "without reporting a reason" in text
+
+
+# --- #946 review round 5: the marker, the stray brace, and the cap -------------------------------
+#
+# Round 4 put the wrapper strip on a prefix, which is the shape production actually records. Three
+# things the round-4 tests did not reach, because every one of them used an input with NO error blob
+# in it — and the blob path is the one the #946 scenario itself takes.
+
+
+def test_the_simulated_marker_survives_the_blob_path_too() -> None:
+    """HIGH-1. ``team_run.py`` appends ``(simulated LLM)`` AFTER the detail, so on the blob path the
+    marker sits past the blob's closing brace. ``raw_decode`` stops at that brace and the remainder
+    is discarded, taking #907's warning with it — the exact shape a stand-in model produces whenever
+    a member failed on a tool error, which is most of them.
+    """
+    text = summarise_failed_run(
+        failed=["a"],
+        blocked=[],
+        member_errors={
+            "a": "member 'a' harness did not succeed: FAILED — "
+            + _loop_error("RegistryError", "unknown search provider")
+            + " (simulated LLM)"
+        },
+    )
+    assert "unknown search provider" in text
+    assert "simulated LLM" in text
+    assert "RegistryError" not in text
+
+
+@pytest.mark.parametrize(
+    "recorded",
+    [
+        # no brace anywhere
+        "grounding: claim 1 has no receipt (simulated LLM)",
+        # a brace that opens no valid JSON
+        "the model wrote {oops and stopped (simulated LLM)",
+        # prose around a JSON object with no `detail` key
+        'grounding: claim not supported: {"n": 1} (simulated LLM)',
+        # the wrapper and nothing else
+        "member 'a' harness did not succeed: FAILED (simulated LLM)",
+        # the wrapper, a real detail, no blob
+        "member 'a' harness did not succeed: FAILED — boom (simulated LLM)",
+    ],
+)
+def test_the_marker_survives_every_reason_path(recorded: str) -> None:
+    """One marker rule, not five. The warning changes how the whole result should be read, so which
+    internal branch produced the reason must not decide whether the reader is told."""
+    text = summarise_failed_run(failed=["a"], blocked=[], member_errors={"a": recorded})
+    assert "simulated LLM" in text, recorded
+
+
+def test_the_marker_is_not_repeated() -> None:
+    text = summarise_failed_run(
+        failed=["a"],
+        blocked=[],
+        member_errors={"a": "member 'a' harness did not succeed: FAILED — boom (simulated LLM)"},
+    )
+    assert text.count("(simulated LLM)") == 1
+
+
+def test_a_stray_brace_before_the_blob_does_not_defeat_the_unwrapper() -> None:
+    """MEDIUM-2. The unwrapper takes the FIRST brace in the text, not the blob's. A grounding or
+    output-contract error that quotes the model's own words can put a brace in front of the blob;
+    ``raw_decode`` then fails on that fragment and the whole recorded value — blob included — is
+    returned, so the raw blob #946 exists to remove lands on the run page anyway.
+    """
+    text = summarise_failed_run(
+        failed=["a"],
+        blocked=[],
+        member_errors={
+            "a": "member 'a' harness did not succeed: FAILED — the model wrote {oops} then "
+            + _loop_error("RegistryError", "unknown search provider 'BBC'")
+        },
+    )
+    assert "unknown search provider 'BBC'" in text
+    assert "RegistryError" not in text
+    assert '{"error"' not in text
+
+
+def test_a_brace_that_opens_no_json_at_all_is_still_part_of_the_sentence() -> None:
+    """The behaviour a forward scan must not cost: when NO brace in the text opens valid JSON,
+    every brace is prose and the sentence is kept whole."""
+    recorded = "grounding: the member claimed {the brief} was saved and it was not"
+    text = summarise_failed_run(failed=["a"], blocked=[], member_errors={"a": recorded})
+    assert recorded in text
+
+
+@pytest.mark.parametrize(
+    "recorded",
+    [
+        "the workspace could not be reached: " + "y" * 900,
+        "the model wrote {oops and then " + "y" * 900,
+        'grounding: {"n": 1} was claimed: ' + "y" * 900,
+        "member 'a' harness did not succeed: FAILED — " + "y" * 900,
+    ],
+)
+def test_every_reason_path_respects_the_per_member_cap(recorded: str) -> None:
+    """MEDIUM-3. Only the ``detail`` path truncates today; the other four return whatever they were
+    handed. One choke point, so the cap is a property of the function rather than of the branch that
+    happened to run."""
+    text = summarise_failed_run(failed=["a"], blocked=[], member_errors={"a": recorded})
+    assert "y" * 300 not in text
+
+
+def test_five_long_reasons_all_still_reach_the_page() -> None:
+    """Why the cap matters. Five members each get a "why" line; uncapped, five long ones blow the
+    2000-character summary cap and the last-resort cut silently drops the later members' reasons
+    entirely — which is the trap ``envelope._no_successful_call_message`` warns about one seam up.
+    """
+    roles = ["a", "b", "c", "d", "e"]
+    text = summarise_failed_run(
+        failed=roles,
+        blocked=[],
+        member_errors={r: f"the {r} workspace could not be reached: " + "y" * 900 for r in roles},
+    )
+    for role in roles:
+        assert f"{role} stopped because" in text, role
+
+
+def test_a_wrapper_with_no_status_word_keeps_the_whole_detail() -> None:
+    """LOW-8. The wrapper pattern's status-word group is ``\\w*``, which matches a detail's first
+    WORD just as happily when the status is missing. Unreachable through ``team_run.py`` today, and
+    a silent word-eater is not a thing to leave armed in text a person reads.
+    """
+    text = summarise_failed_run(
+        failed=["a"],
+        blocked=[],
+        member_errors={"a": "member 'a' harness did not succeed:  timeout after 30s"},
+    )
+    assert "timeout after 30s" in text
