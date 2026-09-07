@@ -38,6 +38,13 @@ from oraclous_harness_runtime_service.domain.citation_gate import (
     CitationViolation,
     check_answer_citations,
 )
+from oraclous_harness_runtime_service.domain.link_provenance import (
+    LINK_CORRECTION_STATUS,
+    LINK_FLAG_STATUS,
+    LINK_GATE_NAME,
+    check_answer_links,
+    extract_answer_urls,
+)
 from oraclous_harness_runtime_service.domain.llm.base import LLMClient, Message, ToolSpec
 from oraclous_harness_runtime_service.domain.policy import PolicyEnvelope
 from oraclous_harness_runtime_service.models.enums import HarnessStatus, StepKind
@@ -151,6 +158,11 @@ class LoopResult:
     # every run, and a None would make "served nothing" indistinguishable from "the loop forgot to
     # record" at the one moment it matters.
     served_citation_ids: list[str] = field(default_factory=list)
+    # #944: the URLs the member's own answer links that this run never fetched — the inline-link
+    # half of the citation story, which no `cit_` id can cover because the member composed these
+    # itself. EMPTY, never None, for the reason `served_citation_ids` is: a caller reads it on every
+    # run, and None would make "nothing was wrong" indistinguishable from "the loop never checked".
+    unverified_links: list[str] = field(default_factory=list)
     # #907: which LLM client actually ran this segment (the client's own `protocol_shape`, e.g.
     # "fake"/"openai-compatible") — recorded once per run, not per step, because the loop's client
     # never changes mid-run. None only for a client that declares no protocol_shape at all.
@@ -266,6 +278,32 @@ _JSON_REPAIR_MESSAGE = (
     "JSON document itself — no prose around it and no markdown fence. This is your one correction: "
     "a second malformed document is saved exactly as written."
 )
+
+
+# #944: what a draft whose EVERY link was invented tells the member. Same posture as the citation
+# corrections — it names the offending URLs, because "one of your links is wrong" is not actionable,
+# and it names what the member MAY link, because a remedy it cannot perform is #692/#693 again.
+_LINK_CORRECTION = (
+    "Your answer links pages this run never fetched: {bad}. Link only pages you actually "
+    "retrieved with your tools{allowed}. Remove or replace the others, or state the claim on your "
+    "own account."
+)
+# Bounded for the same reason the citation ids are: every URL a model invents would otherwise be
+# echoed back into its context, and a correction longer than the answer teaches it nothing.
+_LINK_CORRECTION_MAX_NAMED = 5
+
+
+def _named(urls: list[str]) -> str:
+    named = urls[:_LINK_CORRECTION_MAX_NAMED]
+    if len(urls) > len(named):
+        named = [*named, f"and {len(urls) - len(named)} more"]
+    return ", ".join(named)
+
+
+def _link_correction(unverified: list[str], fetched: list[str]) -> str:
+    """The message a member reads when every link in its draft was invented."""
+    allowed = f" — you fetched: {_named(fetched)}" if fetched else ""
+    return _LINK_CORRECTION.format(bad=_named(unverified), allowed=allowed)
 
 
 def _citation_correction(
@@ -387,6 +425,17 @@ async def run_tool_use_loop(
     # precedence SPLITS BY RULE, so the flag has to carry which defect it recorded. Cleared
     # wherever `citation_blocked` is.
     citation_blocked_rule2 = False
+    # #944: every http(s) URL this run's own tool calls really returned or really read, first-seen
+    # order, deduplicated. The loop is the only place that can build this — a persisted step's
+    # detail is truncated, so the full tool result exists here and nowhere else afterwards.
+    fetched_urls: list[str] = []
+    # #944: the unverified URLs of the last draft the link check sent BACK to the member, or None if
+    # it never fired. Like `citation_blocked` it is what turns a spent budget into a typed terminal
+    # rather than an anonymous "did not converge", and it is cleared wherever that one is.
+    links_blocked: list[str] | None = None
+    # #944: the unverified URLs of an answer that was ACCEPTED carrying some. Distinct from
+    # `links_blocked` on purpose: one is a draft that was rejected, the other is what shipped.
+    unverified_links: list[str] = []
     # Gate the nudge to PRODUCING members — those with a graph-ingest ("ingest") tool that are meant
     # to persist output. A reasoning/retrieval-only member that legitimately answers without a tool
     # is never re-prompted (so the completion contract can't add a spurious turn to it).
@@ -442,6 +491,10 @@ async def run_tool_use_loop(
             # #580 + #743: a run that degrades on a LATER empty retrieval still served what it
             # served, and the answer may legitimately cite it. Carry it out.
             served_citation_ids=list(served_citation_ids),
+            # #944: the degraded output is the last draft, so whatever was wrong with its links is
+            # what a reader of THIS answer needs warning about — the blocked set when the run ran
+            # out of correction budget, the accepted set otherwise.
+            unverified_links=list(links_blocked or unverified_links),
             protocol_shape=protocol_shape,
         )
 
@@ -640,6 +693,20 @@ async def run_tool_use_loop(
                     status = "error"
                 finally:
                     tool_ended = datetime.now(UTC)
+            # #944: the run's own link provenance. An OK call contributes the URLs in its RESULT
+            # and the URLs in the ARGUMENTS the model passed it. The arguments count for a real
+            # reason: `web-research.read(url=X)` returning ok is the strongest evidence we will
+            # ever have that X was fetched, and a read's result is page text that need not repeat
+            # its own URL. An ERRORED call contributes nothing in either direction — a 404 on a
+            # composed URL is the check working, and crediting it would let a member legitimise any
+            # URL by calling a tool with it and ignoring the error.
+            if status == "ok":
+                harvested = extract_answer_urls(content) + extract_answer_urls(
+                    json.dumps(tc["args"], default=str)
+                )
+                for url in harvested:
+                    if url not in fetched_urls:
+                        fetched_urls.append(url)
             # #642: show the receipt id INSIDE the tool result the model reads. The provider's
             # `tool_call_id` field is transport metadata the model never sees, so a member asked to
             # cite its receipts could only guess — real models cited the tool NAME, a chunk id, or
@@ -793,6 +860,56 @@ async def run_tool_use_loop(
                     )
                 )
                 continue
+            # #944: the inline-link provenance check, in the same place and for the same reason
+            # as the citation gate above — a draft sent back has to go back to the MEMBER, so this
+            # runs before the answer is accepted rather than after this function returns.
+            #
+            # Gated on the member HAVING tools. Under a strict reading every link in a tool-less
+            # member's answer is unverified, which is not the intent: there is no fetched set to
+            # measure it against, and inserting a correction turn into every reasoning-only member
+            # is a cost with no signal behind it.
+            #
+            # The consequence SPLITS (ruled on #944, 2026-09-07): every link invented sends the
+            # draft back, some-good-some-bad ships flagged. The split is the whole ruling — a
+            # member that fabricated all of its links answered from training data while holding
+            # real fetched pages and can fix that, whereas re-running a whole answer over one bad
+            # link among good ones throws away real work.
+            if tool_specs:
+                link_check = check_answer_links(last_text, fetched_urls)
+                if link_check.unverified and not link_check.verified:
+                    links_blocked = list(link_check.unverified)
+                    messages.append({"role": "assistant", "content": last_text})
+                    messages.append(
+                        {
+                            "role": "user",
+                            "content": _link_correction(link_check.unverified, fetched_urls),
+                        }
+                    )
+                    steps.append(
+                        LoopStep(
+                            len(steps),
+                            StepKind.GATE,
+                            LINK_GATE_NAME,
+                            LINK_CORRECTION_STATUS,
+                            _truncate(json.dumps(links_blocked)),
+                        )
+                    )
+                    continue
+                unverified_links = list(link_check.unverified)
+                if unverified_links:
+                    # Accepted, and flagged. The detail is the machine-readable list a consumer
+                    # reads; the STATUS carries the boolean, because the detail is truncated at
+                    # persistence and a reader told nothing because the list would not fit is the
+                    # silent trust #944 exists to remove.
+                    steps.append(
+                        LoopStep(
+                            len(steps),
+                            StepKind.GATE,
+                            LINK_GATE_NAME,
+                            LINK_FLAG_STATUS,
+                            _truncate(json.dumps(unverified_links)),
+                        )
+                    )
             if retrieval_empty:
                 # #580: the member completed, but a retrieval reported data-absence — degrade to a
                 # flagged PARTIAL (never a silent SUCCEEDED) via #587's _degrade, so the data gap
@@ -812,6 +929,7 @@ async def run_tool_use_loop(
                 input_tokens=input_used,
                 output_tokens=output_used,
                 served_citation_ids=list(served_citation_ids),
+                unverified_links=list(unverified_links),
                 protocol_shape=protocol_shape,
             )
 
@@ -823,6 +941,10 @@ async def run_tool_use_loop(
         # blocked answer.
         citation_blocked = None
         citation_blocked_rule2 = False
+        # #944: the same clear, for the same reason. Without it the flag is sticky and a run
+        # corrected once and then failing to converge for an unrelated reason is reported as a link
+        # failure — the bug shape the citation terminal above already had to fix once.
+        links_blocked = None
         steps.append(
             LoopStep(
                 len(steps),
@@ -871,6 +993,25 @@ async def run_tool_use_loop(
             "citation",
             "citation_unresolved",
             f"the member could not produce a citable answer within the budget ({citation_blocked})",
+            policy.max_iterations + json_repair_grant,
+        )
+    # #944: the member spent the budget without producing an answer whose links it actually
+    # fetched. This DEGRADES — PARTIAL, typed, carrying the last draft — and deliberately does NOT
+    # follow the citation terminal above, which escalates.
+    #
+    # The two are not the same defect. A forged `cit_` id claims the PLATFORM served something it
+    # never served, which is a lie about us and must not reach a user. An unverified inline link is
+    # the model's own prose, and #944's acceptance criterion asks for it to be "flagged as
+    # unverified rather than silently trusted" — flagged, not refused. Shipping the answer with the
+    # bad link named is the requested outcome, so this is unconditional rather than a
+    # `_budget_gate` call: a per-member `on_exhaustion="escalate"` must not turn a flag into a
+    # refusal, the same way the citation terminal refuses to let `degrade` soften an escalation.
+    if links_blocked:
+        return _degrade(
+            LINK_GATE_NAME,
+            LINK_FLAG_STATUS,
+            "the member could not link only pages it fetched within the budget "
+            f"({_named(links_blocked)})",
             policy.max_iterations + json_repair_grant,
         )
     # iteration cap reached without a final answer → escalate or degrade (#587).
