@@ -7,12 +7,17 @@ resolution against the registry lands in slice 2.
 
 from __future__ import annotations
 
+import json
 import uuid
 from datetime import datetime
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, computed_field, model_validator
 
+from oraclous_harness_runtime_service.domain.link_provenance import (
+    LINK_FLAG_STATUS,
+    LINK_GATE_NAME,
+)
 from oraclous_harness_runtime_service.models.enums import HarnessStatus, StepKind
 
 
@@ -156,6 +161,56 @@ class HarnessExecutionOut(BaseModel):
             for s in self.steps
             if s.kind is StepKind.TOOL and s.status == "ok" and s.tool_call_id
         ]
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def has_unverified_links(self) -> bool:
+        """#944: True when this run's answer links a page the run never fetched.
+
+        Read from the gate step's STATUS rather than its detail, and that is deliberate. A step's
+        detail is truncated at persistence, so an answer that invented twenty links has a shortened
+        list — but the status is a short fixed token, so the warning itself always survives. A
+        reader that only needs "do not trust the links here" is never misled by truncation; a
+        reader that wants the specific URLs may get fewer than there were, which is the right way
+        round. A CORRECTION step does not count: a member that was corrected and then linked
+        honestly shipped a clean answer.
+        """
+        return any(
+            step.kind is StepKind.GATE
+            and step.name == LINK_GATE_NAME
+            and step.status == LINK_FLAG_STATUS
+            for step in self.steps
+        )
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def unverified_links(self) -> list[str]:
+        """#944: the URLs this run's answer links that it never fetched, best-effort.
+
+        Derived from the trace, never stored beside it — the ``driving_signals``/``simulated``
+        posture, and no migration. A computed field cannot drift from the trace it is computed
+        from, whereas a column written alongside can, and a run whose column says "clean" over a
+        trace that says otherwise is worse than no flag at all.
+
+        EMPTY, never None: a caller reads this on every run, and None would make "nothing was
+        wrong" indistinguishable from "the harness never checked". Empty is also what a TRUNCATED
+        detail yields — the list did not fit, the warning did; ``has_unverified_links`` is the
+        field to branch on.
+        """
+        for step in self.steps:
+            if (
+                step.kind is StepKind.GATE
+                and step.name == LINK_GATE_NAME
+                and step.status == LINK_FLAG_STATUS
+                and step.detail
+            ):
+                try:
+                    parsed = json.loads(step.detail)
+                except ValueError:
+                    continue  # truncated mid-string — the flag still stands, the list is lost
+                if isinstance(parsed, list):
+                    return [url for url in parsed if isinstance(url, str)]
+        return []
 
     @computed_field  # type: ignore[prop-decorator]
     @property

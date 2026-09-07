@@ -629,6 +629,15 @@ def make_harness_dispatch(
             # #907: lifted from the harness response so TeamRunOut/TeamRunStatus can derive the
             # run-level flag from `results` without re-reading the harness.
             "simulated": simulated,
+            # #944: the URLs this member's own answer links that its run never fetched. Lifted the
+            # same way and for the same reason — the console warns per member and at run level, and
+            # neither should have to re-read the harness to find out. A list, EMPTY when clean and
+            # never absent: a consumer reads it on every member, so a missing key would make
+            # "clean" indistinguishable from "not checked". Absent on a pre-#944 harness response
+            # (back-compat, the #907 posture).
+            "unverified_links": [
+                url for url in (result.get("unverified_links") or []) if isinstance(url, str)
+            ],
         }
         # #697: the member's DECLARED keys join the payload the next member receives. Without this
         # the declaration can never be satisfied — what a producer hands on is this envelope, and

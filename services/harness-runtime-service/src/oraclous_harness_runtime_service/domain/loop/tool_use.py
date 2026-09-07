@@ -38,6 +38,13 @@ from oraclous_harness_runtime_service.domain.citation_gate import (
     CitationViolation,
     check_answer_citations,
 )
+from oraclous_harness_runtime_service.domain.link_provenance import (
+    LINK_CORRECTION_STATUS,
+    LINK_FLAG_STATUS,
+    LINK_GATE_NAME,
+    check_answer_links,
+    extract_answer_urls,
+)
 from oraclous_harness_runtime_service.domain.llm.base import LLMClient, Message, ToolSpec
 from oraclous_harness_runtime_service.domain.policy import PolicyEnvelope
 from oraclous_harness_runtime_service.models.enums import HarnessStatus, StepKind
@@ -151,6 +158,11 @@ class LoopResult:
     # every run, and a None would make "served nothing" indistinguishable from "the loop forgot to
     # record" at the one moment it matters.
     served_citation_ids: list[str] = field(default_factory=list)
+    # #944: the URLs the member's own answer links that this run never fetched — the inline-link
+    # half of the citation story, which no `cit_` id can cover because the member composed these
+    # itself. EMPTY, never None, for the reason `served_citation_ids` is: a caller reads it on every
+    # run, and None would make "nothing was wrong" indistinguishable from "the loop never checked".
+    unverified_links: list[str] = field(default_factory=list)
     # #907: which LLM client actually ran this segment (the client's own `protocol_shape`, e.g.
     # "fake"/"openai-compatible") — recorded once per run, not per step, because the loop's client
     # never changes mid-run. None only for a client that declares no protocol_shape at all.
@@ -266,6 +278,227 @@ _JSON_REPAIR_MESSAGE = (
     "JSON document itself — no prose around it and no markdown fence. This is your one correction: "
     "a second malformed document is saved exactly as written."
 )
+
+
+# #944: what a draft whose EVERY link was invented tells the member. Same posture as the citation
+# corrections — it names the offending URLs, because "one of your links is wrong" is not actionable,
+# and it names what the member MAY link, because a remedy it cannot perform is #692/#693 again.
+_LINK_CORRECTION = (
+    "Your answer links pages this run never fetched: {bad}. Link only pages you actually "
+    "retrieved with your tools{allowed}. Remove or replace the others, or state the claim on your "
+    "own account."
+)
+# Bounded for the same reason the citation ids are: every URL a model invents would otherwise be
+# echoed back into its context, and a correction longer than the answer teaches it nothing.
+_LINK_CORRECTION_MAX_NAMED = 5
+
+# #944 review, HIGH-2: the correction loop itself has to be bounded. Gating it on the member HAVING
+# tools (rather than on there being anything fetched to check against) meant a member whose EVERY
+# tool call errored — a spent search key, a rate-limited provider, a connector outage, all real and
+# already hit on `main` — had an empty fetched set, so every link is unverified with none verified:
+# the all-invented branch, EVERY iteration, until the budget died. Two things fix it together, both
+# below: the correction only fires when there is a real fetched set to measure against (an empty one
+# ships flagged instead — the same remedy #944 already applies to a some-good/some-bad draft), and
+# even with a real fetched set the correction is capped, so a member that keeps failing for its OWN
+# reasons (an adversarial page instructing it to cite a list of URLs it never retrieved) cannot be
+# walked through its entire iteration budget one correction at a time. #944's criterion asks for the
+# link to be flagged, never for the run to be refused — a bound serves that better than no bound.
+_LINK_CORRECTION_MAX = 2
+
+
+def _named(urls: list[str]) -> str:
+    named = urls[:_LINK_CORRECTION_MAX_NAMED]
+    if len(urls) > len(named):
+        named = [*named, f"and {len(urls) - len(named)} more"]
+    return ", ".join(named)
+
+
+def _link_correction(unverified: list[str], fetched: list[str]) -> str:
+    """The message a member reads when every link in its draft was invented."""
+    allowed = f" — you fetched: {_named(fetched)}" if fetched else ""
+    return _LINK_CORRECTION.format(bad=_named(unverified), allowed=allowed)
+
+
+# #944 review, MEDIUM-4: NAME tokens that mark an argument as carrying a URL, not the argument's
+# position or type. Matched on the SNAKE-cased key so "url", "source_url", and "pageUrl" all count
+# and "query"/"content"/"document" do not — crediting the WHOLE args object let a first-party tool
+# launder any string through an unrelated argument (a search whose QUERY happened to be the
+# fabricated URL, an ingest whose CONTENT merely mentioned it), which is not evidence the run
+# fetched anything. This narrows WHAT of a trusted call is credited; it does not touch WHICH calls
+# are trusted, which is the (separately ruled, still-open per #746) binding-trust question the
+# tests' own docstring already records as a deliberate limit, not an oversight.
+_URL_ARG_NAME_TOKENS = frozenset({"url", "urls", "uri", "uris"})
+# #944 review round 3, MEDIUM-F: a boundary BEFORE an uppercase letter that follows a lowercase/
+# digit ("target" | "URL"), OR before the last uppercase letter of a run that is followed by a
+# lowercase letter ("HTTP" | "Url" inside "HTTPUrl"). The original `(?<!^)(?=[A-Z])` split every
+# capital individually, so a run of consecutive capitals — "URL", "URI", "targetURL", "webURL" —
+# came out as single letters ("u", "r", "l") that match no token. All-caps is the ordinary REST/MCP
+# convention for these two words, so this was a real miss, always in the SAFE direction (an honestly
+# fetched URL went uncredited and cost a correction, never the reverse) but a bug regardless.
+_CAMEL_BOUNDARY = re.compile(r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
+_NON_ALNUM = re.compile(r"[^a-z0-9]+")
+
+
+def _url_named(key: object) -> bool:
+    """Whether ``key`` (an argument name) denotes a URL. See the module note above."""
+    snake = _CAMEL_BOUNDARY.sub("_", str(key)).lower()
+    tokens = [t for t in _NON_ALNUM.split(snake) if t]
+    return bool(_URL_ARG_NAME_TOKENS.intersection(tokens))
+
+
+def _url_valued_args(args: dict[str, Any], parameters: dict[str, Any] | None) -> list[str]:
+    """The URLs carried by ``args``' URL-NAMED, string-valued entries — at most one per entry.
+
+    ``parameters`` is the dispatched ``ToolSpec``'s own JSON schema (``None`` when the call cannot
+    be resolved to a spec, e.g. an already-unknown tool). ``args`` is authored ENTIRELY by the
+    model and forwarded to ``dispatch`` with no schema validation in the harness (#944 review round
+    3, MEDIUM-E) — a schema-blind name check alone lets a model attach ``url=`` to ANY call that
+    happens to return ok (a search whose extra ``url`` argument the connector silently ignores) and
+    have it credited, laundering a fabricated URL into the set that judges its own answer. Two
+    independent narrowings close this without touching the still-open, separately-ruled #746
+    question of WHICH bindings are trusted at all:
+
+    * **Declared-schema gate.** When the spec's schema declares a non-empty ``properties`` object,
+      an argument name absent from it was never a parameter the tool's own operation reads, no
+      matter what the model called it — the model invented an out-of-schema argument and it is
+      never credited. A schema with EMPTY (or missing) ``properties`` carries no information either
+      way (the flat legacy hint map and a bare descriptor both produce one), so this gate is skipped
+      rather than rejecting every argument of every such tool.
+    * **One URL per value, strings only.** A value that is not a ``str`` (a nested object, a list)
+      is never credited at all — `{"url": {"nested": {"deep": "https://…"}}}` no longer launders a
+      URL through a value the tool would have to introspect to even find, and `{"urls": ["https://a",
+      "https://b"]}` credits neither entry rather than crediting a whole array on one name match.
+      Within one string value, only the FIRST URL found is credited — `{"url": "https://real/a
+      https://smuggled/b"}` no longer credits the smuggled second address just because it shares an
+      argument with a real one.
+    """
+    declared: set[str] | None = None
+    if isinstance(parameters, dict):
+        properties = parameters.get("properties")
+        if isinstance(properties, dict) and properties:
+            declared = set(properties)
+    out: list[str] = []
+    for key, value in args.items():
+        if not isinstance(value, str) or not _url_named(key):
+            continue
+        if declared is not None and key not in declared:
+            continue
+        urls = extract_answer_urls(value)
+        if urls:
+            out.append(urls[0])
+    return out
+
+
+# #944 review round 3, HIGH-C: `fetched_urls` must stay a DEDUPED, BOUNDED accumulator. Round 2's
+# fix (`if url not in fetched_urls: fetched_urls.append(url)`) scanned the whole list on every
+# insert — quadratic in the number of distinct URLs one tool result can harvest, over text that is
+# the FULL (untruncated) tool result an attacker-controlled page fully controls, on this loop's own
+# async call stack with no `await` to yield it. Measured: 4.58s of blocking CPU harvesting 40k URLs
+# from one 1.3MB page — the exact HIGH-1 shape, moved from `_trim` to this accumulation rather than
+# removed. A parallel `set` makes membership O(1) (mirroring the `seen` set below, which already got
+# this right); the cap bounds the worst case regardless of how large a single crafted page is, and
+# also bounds what `check_answer_links` pays re-canonicalising the accumulated set on every LLM
+# turn. Past the cap a real fetch is never un-credited — accumulation just stops taking NEW ones,
+# which is the safe direction (more URLs never verifies more, only ever fewer).
+_MAX_FETCHED_URLS = 2000
+
+
+def _accumulate_fetched(urls: list[str], fetched_urls: list[str], seen: set[str]) -> None:
+    for url in urls:
+        if len(fetched_urls) >= _MAX_FETCHED_URLS:
+            return
+        if url not in seen:
+            seen.add(url)
+            fetched_urls.append(url)
+
+
+# #944 review round 3, LOW-H/LOW-I: the explicit marker a `tool`-role message's receipt line carries
+# (``status=ok``/``status=error``), so a transcript reader can classify a call the same way the live
+# path did rather than GUESSING from the shape of its content. A guess disagrees with the live
+# classification in both directions: an ``{"error": …}`` object that is a connector's genuine OK
+# payload (LOW-I) reads as failed on resume though it was credited live, and the #853 JSON-repair
+# correction (prose, never dispatched, always excluded live) has no JSON shape for the guess to
+# recognise as failed, so its message's URL-named arguments — never credited live — WERE credited on
+# resume (LOW-H). The marker is optional on read: a checkpoint fixture or an older persisted
+# transcript that never carried one falls back to the previous content-shape heuristic.
+_TOOL_STATUS_MARKER = re.compile(
+    r"\[receipt: source_tool_call_id=\S+ status=(?P<status>ok|error)\]"
+)
+
+
+def _explicit_tool_status(raw_content: str) -> str | None:
+    match = _TOOL_STATUS_MARKER.search(raw_content)
+    return match.group("status") if match else None
+
+
+def _fetched_urls_from_transcript(
+    messages: list[Message], by_name: dict[str, ToolSpec], redactors: list[re.Pattern[str]]
+) -> list[str]:
+    """Re-derive the run's fetched-URL set from an already-restored transcript (#944 review,
+    MEDIUM-3). Used only at a HITL resume, where the loop's own ``fetched_urls`` accumulator would
+    otherwise restart empty and correct a member for links it genuinely fetched before the pause.
+
+    Mirrors the live dispatch path as closely as a persisted transcript allows: an explicit
+    ``status`` marker on the message (see ``_explicit_tool_status``) classifies ok/failed when
+    present; a message written before that marker existed falls back to the same content-shape
+    heuristic this function always used. A failed call credits nothing, in either direction.
+
+    #944 review round 3, HIGH-D: the args dump is redacted before harvesting, matching the live
+    path (``tool_use.py`` redacts ``url_args`` before extraction). The checkpoint's assistant
+    ``tool_calls`` carry the model's RAW, unredacted arguments (only ``content``/``last_text`` are
+    stored redacted) — a credential-bearing URL argument restored from a paused run must not enter
+    ``fetched_urls`` unredacted, because that list is echoed verbatim into a later correction
+    message if one fires.
+    """
+    args_by_call_id: dict[str, dict[str, Any]] = {}
+    for message in messages:
+        if message.get("role") != "assistant":
+            continue
+        for call in message.get("tool_calls") or []:
+            call_id = call.get("id")
+            if isinstance(call_id, str):
+                args_by_call_id[call_id] = call.get("args") or {}
+
+    out: list[str] = []
+    seen: set[str] = set()
+    for message in messages:
+        if message.get("role") != "tool":
+            continue
+        raw_content = message.get("content")
+        if not isinstance(raw_content, str):
+            continue
+        explicit_status = _explicit_tool_status(raw_content)
+        content = raw_content.split("\n[receipt:", 1)[0]  # strip the #642 receipt line
+        failed = (
+            explicit_status == "error"
+            if explicit_status is not None
+            else _is_failed_tool_content(content)
+        )
+        if failed:
+            continue
+        call_id = message.get("tool_call_id")
+        args = args_by_call_id.get(call_id, {}) if isinstance(call_id, str) else {}
+        message_name = message.get("name")
+        spec = by_name.get(message_name) if isinstance(message_name, str) else None
+        arg_urls = [
+            _redact(url, redactors)
+            for url in _url_valued_args(args, spec.parameters if spec else None)
+        ]
+        _accumulate_fetched(extract_answer_urls(content) + arg_urls, out, seen)
+    return out
+
+
+_FAILED_TOOL_CONTENT_KEYS = frozenset({"error", "detail", "did_you_mean", "available_tools"})
+
+
+def _is_failed_tool_content(content: str) -> bool:
+    try:
+        data = json.loads(content)
+    except ValueError:
+        return False  # not JSON at all (e.g. the #853 repair prompt) — never the error shape
+    return (
+        isinstance(data, dict) and "error" in data and set(data.keys()) <= _FAILED_TOOL_CONTENT_KEYS
+    )
 
 
 def _citation_correction(
@@ -387,6 +620,37 @@ async def run_tool_use_loop(
     # precedence SPLITS BY RULE, so the flag has to carry which defect it recorded. Cleared
     # wherever `citation_blocked` is.
     citation_blocked_rule2 = False
+    # #944: every http(s) URL this run's own tool calls really returned or really read, first-seen
+    # order, deduplicated. The loop is the only place that can build this — a persisted step's
+    # detail is truncated, so the full tool result exists here and nowhere else afterwards.
+    #
+    # #944 review, MEDIUM-3: on a HITL resume this cannot start empty the way `retrieval_empty`
+    # does. A link the member genuinely fetched BEFORE the pause is real provenance whether or not
+    # the run was ever paused — starting fresh here corrects the member for citing honestly. Unlike
+    # the citation gate's `prior_served_citation_ids` (a service-layer parameter sourced from a
+    # persisted column), this needs neither: the tool-role messages the member's calls produced are
+    # already sitting in the restored transcript, so the resumed segment re-derives its own fetched
+    # set from `resume_state.messages` rather than being handed one.
+    fetched_urls: list[str] = (
+        _fetched_urls_from_transcript(resume_state.messages, by_name, redactors)
+        if resume_state is not None
+        else []
+    )
+    # #944 review round 3, HIGH-C: the parallel membership set — see `_accumulate_fetched` above.
+    fetched_urls_seen: set[str] = set(fetched_urls)
+    # #944 review, HIGH-2 fix B: how many corrections THIS run has already spent — bounded by
+    # `_LINK_CORRECTION_MAX`, see its docstring. A fresh count on a resume, matching `nudged`: the
+    # checkpoint carries the transcript, not this counter, so a run that had already used one
+    # correction before a HITL pause gets its full allowance again after — a known, accepted minor
+    # generosity (never a cost — degrade-not-crash), not a cascade.
+    link_corrections_used = 0
+    # #944: the unverified URLs of the last draft the link check sent BACK to the member, or None if
+    # it never fired. Like `citation_blocked` it is what turns a spent budget into a typed terminal
+    # rather than an anonymous "did not converge", and it is cleared wherever that one is.
+    links_blocked: list[str] | None = None
+    # #944: the unverified URLs of an answer that was ACCEPTED carrying some. Distinct from
+    # `links_blocked` on purpose: one is a draft that was rejected, the other is what shipped.
+    unverified_links: list[str] = []
     # Gate the nudge to PRODUCING members — those with a graph-ingest ("ingest") tool that are meant
     # to persist output. A reasoning/retrieval-only member that legitimately answers without a tool
     # is never re-prompted (so the completion contract can't add a spurious turn to it).
@@ -442,6 +706,10 @@ async def run_tool_use_loop(
             # #580 + #743: a run that degrades on a LATER empty retrieval still served what it
             # served, and the answer may legitimately cite it. Carry it out.
             served_citation_ids=list(served_citation_ids),
+            # #944: the degraded output is the last draft, so whatever was wrong with its links is
+            # what a reader of THIS answer needs warning about — the blocked set when the run ran
+            # out of correction budget, the accepted set otherwise.
+            unverified_links=list(links_blocked or unverified_links),
             protocol_shape=protocol_shape,
         )
 
@@ -546,12 +814,20 @@ async def run_tool_use_loop(
                     # A `tool` turn, not a bare `user` one: the assistant turn already carries this
                     # tool_call_id, and a provider transcript with a call and no matching result is
                     # malformed. The member reads the correction where it expects the result.
+                    #
+                    # #944 review round 3, LOW-H: this call is never dispatched (`continue`s below
+                    # before the harvest block), so it credits nothing live. Without an explicit
+                    # `status=error` marker a HITL resume's content-shape heuristic does not
+                    # recognise this prose as failed (it is not the JSON error shape at all) and
+                    # DID credit its URL-named arguments — a document `source_url` the model
+                    # supplied but the run never actually fetched, credited only on resume.
                     messages.append(
                         {
                             "role": "tool",
                             "tool_call_id": tc["id"],
                             "name": tc["name"],
-                            "content": correction,
+                            "content": f"{correction}\n[receipt: source_tool_call_id={tc['id']} "
+                            "status=error]",
                         }
                     )
                     steps.append(
@@ -640,17 +916,53 @@ async def run_tool_use_loop(
                     status = "error"
                 finally:
                     tool_ended = datetime.now(UTC)
+            # #944: the run's own link provenance. An OK call contributes the URLs in its RESULT
+            # and the URLs in the URL-NAMED ARGUMENTS the model passed it. The arguments count for a
+            # real reason: `web-research.read(url=X)` returning ok is the strongest evidence we will
+            # ever have that X was fetched, and a read's result is page text that need not repeat
+            # its own URL. An ERRORED call contributes nothing in either direction — a 404 on a
+            # composed URL is the check working, and crediting it would let a member legitimise any
+            # URL by calling a tool with it and ignoring the error.
+            #
+            # #944 review, MEDIUM-4 / round 3 MEDIUM-E: only URL-NAMED arguments are scanned, and
+            # only ones the dispatched tool's OWN schema declares (when it declares any) — see
+            # `_url_valued_args`. Dumping the WHOLE args object credited a search whose QUERY
+            # happened to be the fabricated URL, or an ingest whose CONTENT merely mentioned it:
+            # neither call is evidence the run fetched anything, and both are the obvious next move
+            # for a model told (by `_link_correction` below) which URLs it must stop citing. Each
+            # credited URL is redacted before harvesting, matching `content` two lines above it — a
+            # credential-bearing URL in a tool argument must not enter `fetched_urls` (and,
+            # downstream, a persisted trace or a correction message) unredacted.
+            if status == "ok":
+                arg_urls = [
+                    _redact(url, redactors)
+                    for url in _url_valued_args(tc["args"], spec.parameters if spec else None)
+                ]
+                # #944 review round 3, HIGH-C: capped, set-backed accumulation — see
+                # `_accumulate_fetched` above. Replaces the round-2 `if url not in fetched_urls:
+                # fetched_urls.append(url)` linear scan, which was quadratic in the number of
+                # distinct URLs one tool result could harvest.
+                _accumulate_fetched(
+                    extract_answer_urls(content) + arg_urls, fetched_urls, fetched_urls_seen
+                )
             # #642: show the receipt id INSIDE the tool result the model reads. The provider's
             # `tool_call_id` field is transport metadata the model never sees, so a member asked to
             # cite its receipts could only guess — real models cited the tool NAME, a chunk id, or
             # "1", and were failed for it despite having really made the call. The visible receipt
             # line is what makes the grounding contract satisfiable rather than a trap.
+            #
+            # #944 review round 3, LOW-H/LOW-I: `status=` is the explicit marker a HITL-resumed
+            # transcript reads back via `_explicit_tool_status`, rather than guessing failed/ok from
+            # the shape of `content` (a guess that disagreed with this line's own classification in
+            # both directions — see that function's docstring).
             messages.append(
                 {
                     "role": "tool",
                     "tool_call_id": tc["id"],
                     "name": tc["name"],
-                    "content": f"{content}\n[receipt: source_tool_call_id={tc['id']}]",
+                    "content": (
+                        f"{content}\n[receipt: source_tool_call_id={tc['id']} status={status}]"
+                    ),
                 }
             )
             steps.append(
@@ -793,6 +1105,72 @@ async def run_tool_use_loop(
                     )
                 )
                 continue
+            # #944: the inline-link provenance check, in the same place and for the same reason
+            # as the citation gate above — a draft sent back has to go back to the MEMBER, so this
+            # runs before the answer is accepted rather than after this function returns.
+            #
+            # Gated on the member HAVING tools. Under a strict reading every link in a tool-less
+            # member's answer is unverified, which is not the intent: there is no fetched set to
+            # measure it against, and inserting a correction turn into every reasoning-only member
+            # is a cost with no signal behind it.
+            #
+            # The consequence SPLITS (ruled on #944, 2026-09-07): every link invented sends the
+            # draft back, some-good-some-bad ships flagged. The split is the whole ruling — a
+            # member that fabricated all of its links answered from training data while holding
+            # real fetched pages and can fix that, whereas re-running a whole answer over one bad
+            # link among good ones throws away real work.
+            #
+            # #944 review, HIGH-2: "every link invented" is gated on there being a REAL fetched set
+            # to have measured against (`fetched_urls`), not merely on `tool_specs` being non-empty.
+            # A member whose every tool call errored (a spent key, a rate-limited provider, a
+            # connector outage) has an empty fetched set, so under the plain-`tool_specs` gate every
+            # answer with any link at all read as "every link invented" and looped until the budget
+            # died — the same rationale already applied to a tool-less member, above, now applied
+            # to a tooled member with nothing successfully fetched. And even with a real fetched set
+            # the correction is capped at `_LINK_CORRECTION_MAX`: past the cap the next attempt
+            # ships flagged rather than being sent back again, so a member that keeps failing for
+            # its own reasons cannot be walked through its whole iteration budget one correction at
+            # a time.
+            if tool_specs:
+                link_check = check_answer_links(last_text, fetched_urls)
+                all_invented = (
+                    bool(fetched_urls) and link_check.unverified and not link_check.verified
+                )
+                if all_invented and link_corrections_used < _LINK_CORRECTION_MAX:
+                    link_corrections_used += 1
+                    links_blocked = list(link_check.unverified)
+                    messages.append({"role": "assistant", "content": last_text})
+                    messages.append(
+                        {
+                            "role": "user",
+                            "content": _link_correction(link_check.unverified, fetched_urls),
+                        }
+                    )
+                    steps.append(
+                        LoopStep(
+                            len(steps),
+                            StepKind.GATE,
+                            LINK_GATE_NAME,
+                            LINK_CORRECTION_STATUS,
+                            _truncate(json.dumps(links_blocked)),
+                        )
+                    )
+                    continue
+                unverified_links = list(link_check.unverified)
+                if unverified_links:
+                    # Accepted, and flagged. The detail is the machine-readable list a consumer
+                    # reads; the STATUS carries the boolean, because the detail is truncated at
+                    # persistence and a reader told nothing because the list would not fit is the
+                    # silent trust #944 exists to remove.
+                    steps.append(
+                        LoopStep(
+                            len(steps),
+                            StepKind.GATE,
+                            LINK_GATE_NAME,
+                            LINK_FLAG_STATUS,
+                            _truncate(json.dumps(unverified_links)),
+                        )
+                    )
             if retrieval_empty:
                 # #580: the member completed, but a retrieval reported data-absence — degrade to a
                 # flagged PARTIAL (never a silent SUCCEEDED) via #587's _degrade, so the data gap
@@ -812,6 +1190,7 @@ async def run_tool_use_loop(
                 input_tokens=input_used,
                 output_tokens=output_used,
                 served_citation_ids=list(served_citation_ids),
+                unverified_links=list(unverified_links),
                 protocol_shape=protocol_shape,
             )
 
@@ -823,6 +1202,10 @@ async def run_tool_use_loop(
         # blocked answer.
         citation_blocked = None
         citation_blocked_rule2 = False
+        # #944: the same clear, for the same reason. Without it the flag is sticky and a run
+        # corrected once and then failing to converge for an unrelated reason is reported as a link
+        # failure — the bug shape the citation terminal above already had to fix once.
+        links_blocked = None
         steps.append(
             LoopStep(
                 len(steps),
@@ -871,6 +1254,25 @@ async def run_tool_use_loop(
             "citation",
             "citation_unresolved",
             f"the member could not produce a citable answer within the budget ({citation_blocked})",
+            policy.max_iterations + json_repair_grant,
+        )
+    # #944: the member spent the budget without producing an answer whose links it actually
+    # fetched. This DEGRADES — PARTIAL, typed, carrying the last draft — and deliberately does NOT
+    # follow the citation terminal above, which escalates.
+    #
+    # The two are not the same defect. A forged `cit_` id claims the PLATFORM served something it
+    # never served, which is a lie about us and must not reach a user. An unverified inline link is
+    # the model's own prose, and #944's acceptance criterion asks for it to be "flagged as
+    # unverified rather than silently trusted" — flagged, not refused. Shipping the answer with the
+    # bad link named is the requested outcome, so this is unconditional rather than a
+    # `_budget_gate` call: a per-member `on_exhaustion="escalate"` must not turn a flag into a
+    # refusal, the same way the citation terminal refuses to let `degrade` soften an escalation.
+    if links_blocked:
+        return _degrade(
+            LINK_GATE_NAME,
+            LINK_FLAG_STATUS,
+            "the member could not link only pages it fetched within the budget "
+            f"({_named(links_blocked)})",
             policy.max_iterations + json_repair_grant,
         )
     # iteration cap reached without a final answer → escalate or degrade (#587).
