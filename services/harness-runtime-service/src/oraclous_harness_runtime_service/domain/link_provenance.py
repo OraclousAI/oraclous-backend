@@ -61,7 +61,16 @@ from urllib.parse import urlsplit
 # sends the draft back. Live run bc229dd8 was corrected four times for four real pages it had just
 # read and died at the token ceiling, 257k tokens spent. Whatever follows a backslash is the
 # document's encoding, never part of the address.
-_URL = re.compile(r"https?://[^\s<>\"'`\\\]]+", re.IGNORECASE)
+#
+# BOUNDED (#944 review, HIGH-1): no real citation is anywhere near this long, and the text scanned
+# here is the FULL tool result — `_truncate` only shortens what gets PERSISTED, never what this
+# regex reads. An unbounded quantifier on attacker-supplied text (a page the member's tool read)
+# made `_trim` below quadratic in the match length: 32k trailing `)` measured at 268ms of blocking
+# CPU on this loop's own async call stack, with no `await` to yield it — one crafted page stalls
+# every concurrent run sharing the worker. The cap removes the unbounded input, and `_trim` below is
+# now linear regardless, so neither half of the old quadratic blowup remains.
+_MAX_URL_LENGTH = 2048
+_URL = re.compile(rf"https?://[^\s<>\"'`\\\]]{{1,{_MAX_URL_LENGTH}}}", re.IGNORECASE)
 
 # Sentence punctuation a URL may sit in front of but never end with. `)` is NOT here: it is the
 # markdown link's own closing bracket AND a legitimate character inside a URL
@@ -102,17 +111,42 @@ def _trim(url: str) -> str:
     the three ever matches anything the run fetched and every honestly-cited answer is flagged.
     A closing parenthesis is removed only when the URL has more of them than it opened, so
     ``…/Mercury_(planet)`` survives intact.
+
+    O(n), not O(n²) (#944 review, HIGH-1). The original counted ``)``/``(`` over the WHOLE
+    (shrinking) string on every character removed, and sliced a new string each time — quadratic in
+    the match length, measured at 268ms for a 32k-character run of trailing ``)``. Both counts are
+    now taken ONCE, decremented as a ``)`` is walked off, and the string is sliced once at the end.
     """
-    while url:
-        if url[-1] == ")":
-            if url.count(")") <= url.count("("):
+    close_parens = url.count(")")
+    open_parens = url.count("(")
+    end = len(url)
+    while end > 0:
+        ch = url[end - 1]
+        if ch == ")":
+            if close_parens <= open_parens:
                 break
-            url = url[:-1]
-        elif url[-1] in _TRAILING_PUNCTUATION:
-            url = url[:-1]
+            close_parens -= 1
+            end -= 1
+        elif ch in _TRAILING_PUNCTUATION:
+            end -= 1
         else:
             break
-    return url
+    return url[:end]
+
+
+# The scheme's own default port (#944 review, LOW-8). `https://example.com:443/x` and
+# `https://example.com/x` are the same origin, and search connectors routinely hand back the ported
+# form; folding it keeps an honest citation from reading as a mismatch and spending a correction.
+_DEFAULT_PORT = {"http": 80, "https": 443}
+
+# A percent-escape triplet, so its hex digits can be case-folded (#944 review, LOW-8). RFC 3986
+# treats `%2F` and `%2f` as the same octet; a fetched URL and the model's own prose disagree about
+# the case constantly, and left un-folded that costs the member a correction for honest provenance.
+_PERCENT_ESCAPE = re.compile(r"%[0-9A-Fa-f]{2}")
+
+
+def _fold_percent_escapes(value: str) -> str:
+    return _PERCENT_ESCAPE.sub(lambda m: m.group(0).upper(), value)
 
 
 def _canonical(url: str) -> str | None:
