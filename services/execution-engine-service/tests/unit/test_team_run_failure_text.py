@@ -308,3 +308,69 @@ def test_the_other_recorded_shapes_pass_through_intact() -> None:
     ):
         text = summarise_failed_run(failed=["a"], blocked=[], member_errors={"a": recorded})
         assert recorded in text
+
+
+# --- the orchestrator's own wrapper prose is not a reason (#946 review round 3, N2) ---------------
+
+
+def test_the_wrapper_prose_is_not_promoted_into_the_reason() -> None:
+    """Keeping the prose around an unrecognised fragment (round 2, C3) had a side effect: when the
+    prose IS the orchestrator's own wrapper, it became the reason.
+
+    "member 'a' harness did not succeed: FAILED" names the member a second time and tells the reader
+    nothing they did not get from "Failed: a." one sentence earlier. It is internal phrasing, which
+    is exactly what this curation exists to remove.
+    """
+    text = summarise_failed_run(
+        failed=["a"],
+        blocked=[],
+        member_errors={
+            "a": "member 'a' harness did not succeed: FAILED — " + json.dumps({"error": "KeyError"})
+        },
+    )
+    assert "harness did not succeed" not in text
+    assert "FAILED" not in text
+    assert "KeyError" not in text
+
+
+def test_the_wrapper_with_no_blob_at_all_is_also_not_a_reason() -> None:
+    text = summarise_failed_run(
+        failed=["a"],
+        blocked=[],
+        member_errors={"a": "member 'a' harness did not succeed: ESCALATED"},
+    )
+    assert "harness did not succeed" not in text
+    assert "ESCALATED" not in text
+
+
+def test_real_prose_around_a_fragment_is_still_kept() -> None:
+    # the C3 behaviour must survive the N2 fix — only the WRAPPER is recognised and dropped
+    text = summarise_failed_run(
+        failed=["analyst"],
+        blocked=[],
+        member_errors={"analyst": 'grounding: claim not supported: {"n": 1}'},
+    )
+    assert "grounding: claim not supported" in text
+
+
+# --- the accepted loss in the class-name guard (#946 review round 3, N3) --------------------------
+
+
+def test_a_one_word_capitalised_diagnostic_is_treated_as_a_class_name() -> None:
+    """A recorded loss, pinned so it is a decision rather than a surprise.
+
+    The guard matches ANY single capitalised token, not only names ending in 'Error'. That swallows
+    real one-word diagnostics — 'Forbidden', 'Timeout', a Postgres code like 'P0001'. The bias is
+    deliberate: #946 is about a class name reaching the page, so failing safe is the right
+    direction, and requiring the 'Error' suffix would let a custom 'RegistryFault' straight through
+    — failing open on precisely the thing the issue is about.
+    """
+    for value in ("Timeout", "Forbidden", "QuotaExceeded", "P0001", "StopIteration"):
+        text = summarise_failed_run(failed=["a"], blocked=[], member_errors={"a": value})
+        assert value not in text
+        assert "without reporting a reason" in text
+
+
+def test_a_lowercase_one_word_diagnostic_is_kept() -> None:
+    text = summarise_failed_run(failed=["a"], blocked=[], member_errors={"a": "cancelled"})
+    assert "cancelled" in text

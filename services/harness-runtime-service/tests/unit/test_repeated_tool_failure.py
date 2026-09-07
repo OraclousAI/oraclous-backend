@@ -343,9 +343,46 @@ async def test_the_refusal_is_recorded_as_its_own_outcome_in_the_trace() -> None
     )
     refusals = _refusals(result)
     assert refusals
-    detail = refusals[0].detail or ""
-    assert "change the arguments" in detail
-    assert "RuntimeError" not in detail
+    assert refusals[0].tool_call_id  # it is attributable to the call the model made
+
+
+async def test_the_trace_records_why_the_call_failed_not_the_advice_to_the_model() -> None:
+    """#946 review round 3, N1. The step trace and the transcript have different readers, and the
+    refusal note is written for the MODEL — 'change the arguments', 'drop this call'. Instructions
+    addressed to nobody the reader can be.
+
+    It matters more than presentation. The step trace is what the run's failure text is built from,
+    so a refusal step carrying the note REPLACES the real cause on the run page: the person reads
+    advice for the model and never learns that the search vendor was wrong. T3 produces exactly the
+    right sentence from a trace without refusal steps, so this defect is T2 undoing T3.
+    """
+    result = await run_tool_use_loop(
+        llm=_StubbornLLM(),
+        system="",
+        user_input="go",
+        tool_specs=[_SEARCH],
+        dispatch=_Dispatcher(),
+        policy=_env(max_iterations=8),
+    )
+    detail = (_refusals(result)[0].detail) or ""
+    assert "unknown search provider 'The Verge'" in detail
+    assert "change the arguments" not in detail
+    assert "drop this call" not in detail
+
+
+async def test_the_member_still_reads_the_advice_even_though_the_trace_does_not() -> None:
+    """The other half of N1: moving the real error into the trace must not take the note away from
+    the member, which is the only thing that can make it change course."""
+    llm = _StubbornLLM()
+    await run_tool_use_loop(
+        llm=llm,
+        system="",
+        user_input="go",
+        tool_specs=[_SEARCH],
+        dispatch=_Dispatcher(),
+        policy=_env(max_iterations=8),
+    )
+    assert "change the arguments" in _tool_replies(llm)[-1]["content"]
 
 
 async def test_no_attempt_vanishes_from_the_trace() -> None:
@@ -704,3 +741,50 @@ async def test_a_refused_call_is_not_charged_to_the_tool_call_budget() -> None:
     # the member still had budget left for a call that could work
     assert len(calls) == 3
     assert calls[-1] == {"query": "different"}
+
+
+# --- the run page a person actually reads (#946 review round 3, N1) -------------------------------
+#
+# Nothing in the suite crossed this boundary, which is how an 8-step scenario with the whole suite
+# green still produced a run page telling the USER to "change the arguments". The step trace this
+# loop writes is the input to the run's failure text, so the two halves of #946 have to be checked
+# together or they can silently undo each other.
+
+
+def _serialised(result: LoopResult) -> list[dict]:
+    """The member's steps in the shape the trace stores them — what the grounding check reads."""
+    return [
+        {
+            "kind": step.kind.value,
+            "name": step.name,
+            "status": step.status,
+            "detail": step.detail,
+            "tool_call_id": step.tool_call_id,
+        }
+        for step in result.steps
+    ]
+
+
+async def test_the_run_page_names_the_real_cause_not_the_advice_to_the_model() -> None:
+    """End to end across the boundary: loop → grounding check → the sentence a person reads.
+
+    T3 produces exactly the right sentence from a trace with no refusal steps in it. Feeding the
+    note into the trace replaced that sentence with instructions written for the model, so the
+    person never learned that the search vendor was the problem. This test is what catches T2
+    undoing T3.
+    """
+    from oraclous_ohm.envelope import validate_grounding
+
+    result = await run_tool_use_loop(
+        llm=_StubbornLLM(),
+        system="",
+        user_input="go",
+        tool_specs=[_SEARCH],
+        dispatch=_Dispatcher(),
+        policy=_env(max_iterations=8),
+    )
+    errors = validate_grounding([], _serialised(result))
+    message = " ".join(errors)
+    assert "unknown search provider 'The Verge'" in message
+    assert "change the arguments" not in message
+    assert "drop this call" not in message
