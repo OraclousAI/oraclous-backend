@@ -226,3 +226,72 @@ def test_the_rest_of_the_field_contract_is_untouched() -> None:
         assert field_type in APP_FORM_DRAFTER_PROMPT, (
             f"APP_FORM_DRAFTER_PROMPT no longer offers the {field_type!r} field type"
         )
+
+
+# ── #961 ruling 4: the website box declares itself ──────────────────────────────────────────────
+#
+# Ruled 2026-09-08. A generated form's website box now carries a marker saying that is what it is,
+# because the run has to FIND the restriction in order to be held to it, and guessing which box is
+# about websites from its label was offered to the owner and refused.
+#
+# The marker is the model's own declaration. It is the only party that knows what it just wrote, so
+# nothing downstream has to infer anything — which is the whole point of ruling 4, and also what
+# finally makes #963 fixable: an example can be checked against the person's request only once
+# something says which example to check.
+#
+# **The shape these tests guard against is a REPEAT of #953's own failure.** A third field was added
+# to the output template at code review to demonstrate an empty example. It worked — and the model
+# then copied that field, name and hint character for character, into a form for a request that
+# named no websites at all. A demonstration of a website field teaches "always propose one", and the
+# sentence forbidding that did not hold. So the marker must be taught as a RULE, not shown as a
+# field the model can copy.
+
+
+def test_the_drafter_is_told_to_mark_a_website_field_as_one() -> None:
+    """Ruling 4. Without the marker the run cannot find the restriction, and #963 cannot be fixed
+    mechanically at all — both halves of this work rest on this one instruction."""
+    rule = _website_rule(APP_FORM_DRAFTER_PROMPT)
+    assert "binds" in rule, (
+        "the website rule never asks the drafter to mark the field, so nothing downstream can tell "
+        f"which box holds a site restriction. Rule was: {rule!r}"
+    )
+    assert "sites" in rule
+
+
+def test_the_marker_is_scoped_to_the_website_field() -> None:
+    """A marker on every field binds every field, which would make an app's time-frame box a site
+    restriction. The instruction has to say it belongs to this one field and no other."""
+    rule = _website_rule(APP_FORM_DRAFTER_PROMPT)
+    marker_sentences = [s for s in _sentences(rule) if "binds" in s]
+    assert marker_sentences, f"no sentence introduces the marker. Rule was: {rule!r}"
+    assert any(
+        re.search(r"\b(only|this field|that field|no other)\b", s, re.IGNORECASE)
+        for s in marker_sentences
+    ), (
+        "the marker instruction never says it is confined to the website field, so it reads as "
+        f"advice about every field. Sentences were: {marker_sentences!r}"
+    )
+
+
+def test_no_website_field_is_demonstrated_in_the_output_template() -> None:
+    """The #953 code-review regression, pinned so nobody reintroduces it.
+
+    The template is the last thing the model reads before it commits to an answer, so a field shown
+    there is a field it emits — including for a request that named no websites, which breaks #953's
+    third acceptance criterion and puts a canned box on every form the platform generates. The rule
+    may be stated; the field may not be shown.
+    """
+    template = APP_FORM_DRAFTER_PROMPT[APP_FORM_DRAFTER_PROMPT.index('{"fields"') :]
+    demonstrated = template[: template.index("]}") + 2]
+    assert not _WEBSITE_WORD.search(demonstrated), (
+        "the output template demonstrates a field about websites, which the drafter copies "
+        f"wholesale into forms that asked for none. Template was: {demonstrated!r}"
+    )
+
+
+def test_the_marker_is_never_demonstrated_as_a_value_to_copy() -> None:
+    """Same failure, one level down: a ``binds`` key sitting in the template is copied onto every
+    field in the answer, which would bind an app to whatever a person typed in an unrelated box."""
+    template = APP_FORM_DRAFTER_PROMPT[APP_FORM_DRAFTER_PROMPT.index('{"fields"') :]
+    demonstrated = template[: template.index("]}") + 2]
+    assert "binds" not in demonstrated
