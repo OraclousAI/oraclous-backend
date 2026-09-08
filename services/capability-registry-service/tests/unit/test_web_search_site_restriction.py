@@ -68,6 +68,8 @@ _EXPECTED_SITE_CAP = 20
 def _settings(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     monkeypatch.setenv("DATABASE_URL", "postgresql+asyncpg://x:x@localhost/x")
     monkeypatch.setenv("INTERNAL_SERVICE_KEY", "dev-internal-key")
+    # pinned so an ambient value cannot flip the `provider` this file asserts on
+    monkeypatch.setenv("WEB_SEARCH_PROVIDER", "tavily")
     get_settings.cache_clear()
     yield
     get_settings.cache_clear()
@@ -263,7 +265,6 @@ def test_credentials_pasted_into_an_address_never_reach_the_vendor() -> None:
 
     cleaned = normalise_sites(["https://alice:hunter2@theverge.com/tech"])
     assert cleaned == ["theverge.com"]
-    assert "hunter2" not in json.dumps(cleaned)
 
 
 # --- T4: the restriction reaches the vendor ------------------------------------------------------
@@ -360,6 +361,50 @@ async def test_a_bad_address_is_refused_before_any_request_is_made() -> None:
     assert not res.success
     assert res.error_type == "INVALID_INPUT"
     assert "BBC News" in (res.error_message or "")
+    assert calls["n"] == 0
+
+
+@pytest.mark.security
+async def test_credentials_pasted_into_an_address_reach_neither_the_vendor_nor_the_caller() -> None:
+    """The wire half of the same threat: it is not enough that the cleaner drops the secret, the
+    request that leaves the process and every field the caller reads must be free of it too."""
+    seen: dict = {}
+    ex = _connector(_recording_handler(seen))
+    res = await ex.execute(
+        {
+            "operation": "search",
+            "query": "ai news",
+            "sites": ["https://alice:hunter2@theverge.com/tech"],
+        },
+        _ctx(),
+    )
+    assert res.success
+    assert seen["body"]["include_domains"] == ["theverge.com"]
+    assert "hunter2" not in json.dumps(seen["body"])
+    rendered = json.dumps({"data": res.data, "metadata": res.metadata, "err": res.error_message})
+    assert "hunter2" not in rendered
+    assert "alice" not in rendered
+
+
+async def test_an_over_long_list_is_refused_before_any_request_is_made() -> None:
+    calls = {"n": 0}
+
+    def handler(_req: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        return httpx.Response(200, json={"results": []})
+
+    ex = _connector(handler)
+    res = await ex.execute(
+        {
+            "operation": "search",
+            "query": "ai news",
+            "sites": [f"site{n}.example.com" for n in range(_EXPECTED_SITE_CAP + 1)],
+        },
+        _ctx(),
+    )
+    assert not res.success
+    assert res.error_type == "INVALID_INPUT"
+    assert str(_EXPECTED_SITE_CAP) in (res.error_message or "")
     assert calls["n"] == 0
 
 
@@ -490,6 +535,14 @@ def test_the_search_operation_declares_a_real_schema_for_the_model() -> None:
     assert set(schema["properties"]) == {"query", "max_results", "sites"}
 
 
+def test_naming_sites_stays_optional() -> None:
+    """Only ``query`` is required. If ``sites`` were required, every model call would have to name
+    websites and an ordinary unrestricted search would become impossible — a change no other test
+    in this file would notice, because they all reach the connector directly and skip the schema."""
+    for plugin in (WebResearchPlugin, WebSearchToolPlugin):
+        assert _search_operation(plugin)["parameters_schema"]["required"] == ["query"]
+
+
 def test_every_argument_the_model_is_offered_carries_a_description() -> None:
     for plugin in (WebResearchPlugin, WebSearchToolPlugin):
         schema = _search_operation(plugin)["parameters_schema"]
@@ -510,7 +563,8 @@ def test_the_sites_description_asks_for_an_address_not_a_publication_name() -> N
     guessing, and show what one looks like."""
     for plugin in (WebResearchPlugin, WebSearchToolPlugin):
         text = _search_operation(plugin)["parameters_schema"]["properties"]["sites"]["description"]
-        assert "." in text
+        # a bar a bare type name or a restated argument name cannot clear
+        assert len(text) > 80, text
         lowered = text.lower()
         assert "hostname" in lowered or "address" in lowered
         # an example is what stops a model inventing a shape
