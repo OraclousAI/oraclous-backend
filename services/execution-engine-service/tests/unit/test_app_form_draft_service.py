@@ -287,6 +287,33 @@ async def test_the_drafter_is_handed_the_request_the_run_was_started_with() -> N
     )
 
 
+async def test_the_drafter_is_told_to_ask_for_a_website_address_not_a_name() -> None:
+    """#953 — at the seam, not at the constant.
+
+    The rule itself is pinned in ``packages/ohm``'s prompt tests. This asserts it survives the trip
+    to the model: the document actually submitted for the drafting run has to carry it. A prompt
+    updated in one place and assembled from another would pass there and fail a person here.
+
+    Deliberately written without importing the prompt, so it is a claim about the model-facing
+    document rather than an echo of a constant. Neither word appears anywhere else in this
+    fixture's manifest or request text.
+    """
+    svc, team_runs, repo = _service()
+    run = _source(repo)
+
+    await svc.suggest(_principal(), team_run_id=run.id, models=_MODELS)
+
+    submitted = json.dumps(team_runs.created[-1], ensure_ascii=False).lower()
+    assert "address" in submitted, (
+        "nothing in the document handed to the drafter asks for a website's address, so it is "
+        "free to invent a field asking for a publication name — a value a search cannot honour"
+    )
+    assert "paste" in submitted or "link" in submitted, (
+        "the document handed to the drafter never says a pasted full link is accepted, so the "
+        "hint a person reads will not say it either"
+    )
+
+
 async def test_the_drafting_run_spends_the_callers_own_model() -> None:
     """ADR-008: the engine never holds a key, and the drafting call is not an exception to that."""
     svc, runs, repo = _service()
