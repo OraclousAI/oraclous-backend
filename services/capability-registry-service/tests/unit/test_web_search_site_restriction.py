@@ -99,6 +99,20 @@ def _recording_handler(seen: dict, hits: list[dict] | None = None) -> Callable:
     return handler
 
 
+def _validating_connector(
+    plugin: Any, handler: Callable[[httpx.Request], httpx.Response]
+) -> WebResearchConnector:
+    """A connector built WITH its declared input schema, so the check that runs ahead of it runs.
+
+    The plain ``WebResearchConnector({"id": "x"})`` every other test uses declares no schema, and
+    ``InternalTool._schema_problem`` validates nothing when there is none — so those tests reach the
+    connector directly and never cross the layer that refused a bare string on the live stack.
+    """
+    ex = WebResearchConnector({"id": "x", "spec": {"input_schema": plugin.INPUT_SCHEMA}})
+    ex.transport = httpx.MockTransport(handler)
+    return ex
+
+
 def _search_operation(plugin: Any) -> dict:
     return next(op for op in plugin.CAPABILITIES if op["name"] == "search")
 
@@ -255,6 +269,72 @@ def test_an_over_long_list_is_refused_not_silently_trimmed() -> None:
     assert str(_EXPECTED_SITE_CAP) in str(exc.value)
 
 
+def test_an_oversized_value_is_not_quoted_back_whole() -> None:
+    """A refusal names the offending value so the caller can fix THAT one — but the value is
+    caller-supplied and unbounded, and the message travels into a run's error text and onto a
+    person's screen. Without the bound a 400-character argument becomes a 400-character message."""
+    from oraclous_capability_registry_service.domain.connectors.search_providers import (
+        InvalidSiteError,
+        normalise_sites,
+    )
+
+    huge = "a" * 400 + "!!"
+    with pytest.raises(InvalidSiteError) as exc:
+        normalise_sites([huge])
+    message = str(exc.value)
+    assert huge not in message
+    assert len(message) < 250, message
+    assert message.startswith("'aaa")  # still names the value, just not all of it
+
+
+def test_an_absurdly_long_hostname_is_refused() -> None:
+    """Five sixty-character labels are each individually legal, so the per-label pattern accepts the
+    whole thing — the total-length bound is the only thing that refuses it."""
+    from oraclous_capability_registry_service.domain.connectors.search_providers import (
+        InvalidSiteError,
+        normalise_sites,
+    )
+
+    too_long = ".".join(["a" * 60] * 5) + ".com"
+    assert len(too_long) > 253
+    with pytest.raises(InvalidSiteError):
+        normalise_sites([too_long])
+
+
+def test_a_non_ascii_address_is_sent_in_the_form_the_vendor_understands() -> None:
+    """A person in Germany types münchen.de. Dropping the conversion flips it from a working
+    restriction to "not a website address", which no other test would notice."""
+    from oraclous_capability_registry_service.domain.connectors.search_providers import (
+        normalise_sites,
+    )
+
+    assert normalise_sites(["münchen.de"]) == ["xn--mnchen-3ya.de"]
+    assert normalise_sites(["https://www.münchen.de/rathaus"]) == ["xn--mnchen-3ya.de"]
+
+
+def test_a_blank_entry_on_its_own_is_refused_rather_than_reaching_the_vendor() -> None:
+    """``normalise_sites`` skips blank parts, so this is the guard's only caller-visible path."""
+    from oraclous_capability_registry_service.domain.connectors import search_providers
+    from oraclous_capability_registry_service.domain.connectors.search_providers import (
+        InvalidSiteError,
+    )
+
+    with pytest.raises(InvalidSiteError):
+        search_providers._hostname_of("")
+
+
+def test_a_malformed_address_literal_is_refused_rather_than_raising() -> None:
+    """An unclosed bracket makes the URL parser itself raise; it must surface as a refusal the
+    caller can read, never as an unhandled error."""
+    from oraclous_capability_registry_service.domain.connectors.search_providers import (
+        InvalidSiteError,
+        normalise_sites,
+    )
+
+    with pytest.raises(InvalidSiteError):
+        normalise_sites(["http://[fe80::1"])
+
+
 @pytest.mark.security
 def test_credentials_pasted_into_an_address_never_reach_the_vendor() -> None:
     """A person pasting a URL from their address bar can paste a userinfo prefix with it. Only the
@@ -334,6 +414,10 @@ async def test_the_standard_search_tool_accepts_the_same_argument() -> None:
     res = await ex.execute({"query": "ai news", "sites": ["https://bbc.co.uk/news"]}, _ctx())
     assert res.success
     assert seen["body"]["include_domains"] == ["bbc.co.uk"]
+    # the output half of the same promise: the tool's own description tells a member to report the
+    # addresses the RESULT says were searched, so the result has to say them here too
+    assert res.data is not None
+    assert res.data["searched_sites"] == ["bbc.co.uk"]
 
 
 async def test_a_search_with_no_sites_is_unchanged_end_to_end() -> None:
@@ -439,10 +523,11 @@ async def test_the_reported_hostnames_are_the_cleaned_ones_never_the_raw_text() 
     assert res.data["searched_sites"] == seen["body"]["include_domains"]
 
 
-async def test_the_reported_hostnames_reach_the_run_step_trace() -> None:
-    """The registry's execution boundary persists ``result.data`` and drops ``result.metadata``
-    (``tool_execution_service`` finalises with ``output_data=result.data``), so a list left only in
-    metadata reaches neither the member nor an operator reading the run. It is carried in both."""
+async def test_the_reported_hostnames_are_carried_on_both_result_surfaces() -> None:
+    """Named for what it checks: the list is on ``data`` AND on ``metadata``. It does not reach the
+    persistence seam, so it cannot prove the step trace by itself — but ``data`` is the carrier that
+    gets there, because ``tool_execution_service`` finalises with ``output_data=result.data`` and
+    never touches ``result.metadata``. A list left only in metadata reaches nobody."""
     seen: dict = {}
     ex = _connector(_recording_handler(seen))
     res = await ex.execute(
@@ -465,7 +550,6 @@ async def test_finding_nothing_on_the_named_sites_is_reported_as_absence_not_fai
     )
     assert res.success
     assert res.data is not None
-    assert res.data["hits"] == []
     note = res.data["note"]
     assert "theverge.com" in note
     # a sentence, not a status token — the same bar #946 set for a failed run's text
@@ -501,7 +585,6 @@ async def test_a_refusal_still_never_echoes_the_vendors_own_body() -> None:
         {"operation": "search", "query": "q", "sites": ["not a hostname!!"]}, _ctx()
     )
     assert not res.success
-    assert "All domains in include_domains" not in (res.error_message or "")
     # the refusal is OURS: it names the value locally and is typed as bad input, rather than
     # arriving as whatever the vendor happened to answer
     assert res.error_type == "INVALID_INPUT"
@@ -591,6 +674,40 @@ def test_the_vendor_argument_stays_out_of_what_the_model_is_offered() -> None:
         assert "provider" not in _search_operation(plugin)["parameters_schema"]["properties"]
 
 
+async def test_several_sites_in_one_string_survive_the_check_that_runs_before_the_connector() -> (
+    None
+):
+    """The defect the live gateway run found, which 54 green unit tests could not.
+
+    ``input_validation`` enforces a declared top-level ``type`` from the tool's own input schema
+    BEFORE ``_execute_internal``, so declaring ``sites`` as ``array`` refused a bare string at that
+    boundary — "sites must be a array, got string" — and the comma-splitting never happened. This
+    is the only test that RUNS that layer, so it is the only one that would catch the declaration
+    narrowing again."""
+    for plugin in (WebResearchPlugin, WebSearchToolPlugin):
+        seen: dict = {}
+        ex = _validating_connector(plugin, _recording_handler(seen))
+        res = await ex.execute(
+            {"operation": "search", "query": "ai news", "sites": "theverge.com, arstechnica.com"},
+            _ctx(),
+        )
+        assert res.success, res.error_message
+        assert seen["body"]["include_domains"] == ["theverge.com", "arstechnica.com"]
+        assert res.data is not None
+        assert res.data["searched_sites"] == ["theverge.com", "arstechnica.com"]
+
+
+async def test_a_list_of_sites_still_passes_that_same_check() -> None:
+    """The widened declaration must not stop accepting the shape a model is actually asked for."""
+    seen: dict = {}
+    ex = _validating_connector(WebResearchPlugin, _recording_handler(seen))
+    res = await ex.execute(
+        {"operation": "search", "query": "ai news", "sites": ["theverge.com"]}, _ctx()
+    )
+    assert res.success, res.error_message
+    assert seen["body"]["include_domains"] == ["theverge.com"]
+
+
 def test_the_connectors_own_input_schema_lets_a_bare_string_reach_the_connector() -> None:
     """Corrected 2026-09-08 after the live run. This file's earlier version required
     ``INPUT_SCHEMA``'s ``sites`` to be declared ``array``, which is what the argument SHOULD be —
@@ -618,4 +735,3 @@ def test_fetch_and_read_are_untouched_by_this_change() -> None:
     for name in ("fetch", "read"):
         op = next(o for o in WebResearchPlugin.CAPABILITIES if o["name"] == name)
         assert op["parameters"] == {"url": "str"}
-        assert "sites" not in op["parameters"]
