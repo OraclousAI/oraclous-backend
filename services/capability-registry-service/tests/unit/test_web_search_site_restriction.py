@@ -591,11 +591,22 @@ def test_the_vendor_argument_stays_out_of_what_the_model_is_offered() -> None:
         assert "provider" not in _search_operation(plugin)["parameters_schema"]["properties"]
 
 
-def test_the_connectors_own_input_schema_declares_the_new_argument() -> None:
-    sites = WebResearchPlugin.INPUT_SCHEMA["properties"]["sites"]
-    assert sites["type"] == "array"
-    assert sites["items"] == {"type": "string"}
-    assert WebSearchToolPlugin.INPUT_SCHEMA["properties"]["sites"]["type"] == "array"
+def test_the_connectors_own_input_schema_lets_a_bare_string_reach_the_connector() -> None:
+    """Corrected 2026-09-08 after the live run. This file's earlier version required
+    ``INPUT_SCHEMA``'s ``sites`` to be declared ``array``, which is what the argument SHOULD be —
+    but ``input_validation`` enforces a declared top-level ``type`` BEFORE the connector runs, so
+    that declaration refused a bare string at the boundary with "sites must be a array, got
+    string". The comma-splitting ruled on 2026-09-08 was then unreachable, and the caller got an
+    ungrammatical message that never says what to send instead.
+
+    So the connector's own input schema declares BOTH accepted shapes. The model-facing
+    ``parameters_schema`` still asks for an array — that is what a model should send — and the
+    connector, not a type check two layers up, is what handles a string and says why."""
+    for plugin in (WebResearchPlugin, WebSearchToolPlugin):
+        sites = plugin.INPUT_SCHEMA["properties"]["sites"]
+        assert "type" not in sites, sites  # a declared type here refuses the string at the boundary
+        assert {"type": "array", "items": {"type": "string"}} in sites["anyOf"]
+        assert {"type": "string"} in sites["anyOf"]
 
 
 def test_the_operations_a_model_can_reach_are_still_the_same_three() -> None:

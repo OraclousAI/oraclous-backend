@@ -137,6 +137,28 @@ def test_a_pasted_link_is_reduced_to_its_address_and_the_restriction_still_holds
 
 
 @_needs_key
+def test_several_sites_sent_as_one_string_are_split_rather_than_refused(
+    register: Callable[..., dict], gateway_client: Callable[[str], httpx.Client]
+) -> None:
+    """Ruled 2026-09-08. A member sending "theverge.com, bbc.co.uk" is asking for a restriction in
+    the wrong container, and dropping that silently would be this issue's own bug in a new place.
+
+    It lives here rather than only in the unit suite because the connector is not the first thing
+    the value meets: the declared input schema is type-checked BEFORE the connector runs, so an
+    ``array`` declaration refuses the string at the boundary and the splitting never happens. Only
+    a call through the gateway crosses that layer."""
+    user = register(f"onestring{uuid.uuid4().hex[:10]} user")
+    c = gateway_client(user["token"])
+    iid = _search_ready_instance(c, user["user_id"])
+
+    out = _search(c, iid, sites="theverge.com, arstechnica.com")
+    assert out["status"] == "SUCCESS", out
+    assert out["output_data"]["searched_sites"] == _SITES, out["output_data"]
+    off_site = [h["url"] for h in out["output_data"]["hits"] if not _from_one_of(h["url"], _SITES)]
+    assert not off_site, f"results escaped the named sites: {off_site}"
+
+
+@_needs_key
 def test_the_same_search_with_no_sites_still_ranges_over_the_whole_web(
     register: Callable[..., dict], gateway_client: Callable[[str], httpx.Client]
 ) -> None:
