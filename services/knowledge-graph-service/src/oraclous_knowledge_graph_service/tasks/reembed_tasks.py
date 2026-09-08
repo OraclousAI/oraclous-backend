@@ -43,6 +43,9 @@ from oraclous_knowledge_graph_service.core.redis import (
     RedisLockClient,
     make_redis_lock_client,
 )
+from oraclous_knowledge_graph_service.repositories.graph_generation_repository import (
+    GraphGenerationRepository,
+)
 from oraclous_knowledge_graph_service.repositories.reembed_repository import (
     ReembedRepository,
     enumerate_graphs_needing_reembed,
@@ -178,6 +181,17 @@ def reembed_chunks_task(graph_id: str, organisation_id: str) -> dict[str, Any]:
                 embedder_id=embedder_identity(settings),
                 embedding_dim=settings.embedding_dim,
             )
+            if stats["reembedded"]:
+                # Bump the per-graph generation (#308), exactly as a completed ingest does. Every
+                # chunk in this graph just moved to a different vector space, so a semantic or
+                # hybrid response cached before the pass is now an answer computed in the OLD space
+                # — and it would keep being served for the rest of the cache TTL. That is the same
+                # stale-space output the whole re-embed exists to remove, arriving through the
+                # cache instead of the store. Only on a pass that actually wrote something: a sweep
+                # that found nothing stale has invalidated nothing.
+                _bump_generation(
+                    settings.redis_url, organisation_id=organisation_id, graph_id=graph_id
+                )
         finally:
             driver.close()
             lock.release(token)
@@ -210,6 +224,28 @@ def reembed_all_graphs_task() -> dict[str, Any]:
     for org, graph in pairs:
         reembed_chunks_task.delay(graph, org)
     return {"dispatched": len(pairs)}
+
+
+def _bump_generation(redis_url: str, *, organisation_id: str, graph_id: str) -> None:
+    """Signal the retriever that this graph's cached reads are stale (#308) — advisory.
+
+    The bump itself already swallows Redis errors, but opening the short-lived client can fail on
+    its own (an unreachable or malformed URL). A re-embed pass that has already written its vectors
+    must not be reported as failed over an invalidation hint: the cache falls back to TTL expiry,
+    which is a bounded delay, whereas a raised error here would re-run a pass that is idempotent
+    but not free.
+    """
+    try:
+        GraphGenerationRepository.bump_for(
+            redis_url=redis_url, organisation_id=organisation_id, graph_id=graph_id
+        )
+    except Exception as exc:  # noqa: BLE001 — advisory: a failed bump falls back to TTL expiry
+        logger.warning(
+            "chunk re-embed: generation bump skipped (graph=%s): %s — retriever cache will "
+            "TTL-expire instead",
+            graph_id,
+            exc,
+        )
 
 
 def _close(lock_client: RedisLockClient) -> None:
