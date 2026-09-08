@@ -130,16 +130,40 @@ _TOOL_CALL_ID_MAX = 128
 
 
 def _safe_tool_call_id(raw: object) -> str:
-    """The endpoint's id reduced to characters a receipt token may hold, bounded, never empty.
+    """One endpoint id reduced to characters a receipt token may hold, bounded, never empty.
 
-    Sanitised rather than rejected: an id that fails this is a malformed response, not an attack we
-    can attribute, and killing the whole run over it would be a worse outcome than dispatching the
-    call under a safe handle. Deterministic, because a resumed run dispatches by the id it was
-    offered.
+    Sanitised rather than rejected: an id that fails this is a malformed response, not an attack
+    anyone can attribute, and killing the whole run over it would be a worse outcome than
+    dispatching the call under a safe handle.
     """
     text = raw if isinstance(raw, str) else ""
     cleaned = _UNSAFE_TOOL_CALL_ID.sub("", text)[:_TOOL_CALL_ID_MAX]
     return cleaned or "call"
+
+
+def _safe_tool_call_ids(raws: list[object]) -> list[str]:
+    """Every id of ONE response, cleaned and made distinct within it.
+
+    Cleaning strips characters, so distinct ids can reduce to one value — ``call 1``, ``call#1`` and
+    ``call*1`` all become ``call1`` — and that value is a LOOKUP KEY when a paused run is rebuilt
+    from its transcript. Two calls in one turn sharing a handle let a failed call's arguments be
+    attributed to a successful one, which is how an address the run never fetched enters its own
+    provenance. Before the cleaning existed the ids passed through verbatim and stayed distinct, so
+    this collision class came in with the fix and goes out with it (the same shape reaching the
+    readers by other routes is #958).
+
+    Disambiguated by POSITION, never by a counter or a hash, because a resumed run dispatches by the
+    id it was originally offered: the same response must always produce the same handles.
+    """
+    seen: set[str] = set()
+    out: list[str] = []
+    for index, raw in enumerate(raws):
+        candidate = _safe_tool_call_id(raw)
+        if candidate in seen:
+            candidate = f"{candidate[: _TOOL_CALL_ID_MAX - 12]}_{index}"
+        seen.add(candidate)
+        out.append(candidate)
+    return out
 
 
 class OpenAICompatibleClient:
@@ -201,20 +225,19 @@ class OpenAICompatibleClient:
         data = resp.json()
         choice = (data.get("choices") or [{}])[0]
         msg = choice.get("message") or {}
+        raw_calls = list(msg.get("tool_calls") or [])
+        # the ids are cleaned across the WHOLE response, not one at a time: cleaning can collapse
+        # two distinct ids into one handle, and the handle is a lookup key when a paused run is
+        # rebuilt. See `_safe_tool_call_ids`.
+        ids = _safe_tool_call_ids([raw.get("id") for raw in raw_calls])
         calls: list[ToolCall] = []
-        for raw in msg.get("tool_calls") or []:
+        for call_id, raw in zip(ids, raw_calls, strict=True):
             fn = raw.get("function") or {}
             try:
                 args = json.loads(fn.get("arguments") or "{}")
             except (json.JSONDecodeError, TypeError):
                 args = {}
-            calls.append(
-                ToolCall(
-                    id=_safe_tool_call_id(raw.get("id")),
-                    name=fn.get("name") or "",
-                    args=args,
-                )
-            )
+            calls.append(ToolCall(id=call_id, name=fn.get("name") or "", args=args))
         usage = data.get("usage") or {}
 
         def _usage(key: str) -> int:
