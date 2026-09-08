@@ -16,11 +16,22 @@ ordinary 200 whose results are completely unrestricted, with no error and no war
 invites the wrong kind of value therefore does not fail loudly. It produces a run that looks fine
 and quietly dropped the restriction.
 
-These are static assertions on the prompt, the same shape as ``test_prompts.py`` (#750), because a
-prompt is the whole deliverable here — no code path branches on it. They are written against the
-prompt's MEANING rather than its exact sentences: each one pulls out the prompt's own
-website-related sentences and asserts a property of them, so the implementation is free to word
-the rule its own way and a later rewrite that drops the substance still fails.
+These are static assertions on the prompt, because a prompt is the whole deliverable here — no
+code path branches on it. ``test_prompts.py`` (#750) is the precedent for testing a prompt at all,
+but it matches plain substrings; this file goes further and asserts properties of the prompt's own
+website paragraph, so the implementation is free to word the rule its own way and a later rewrite
+that drops the substance still fails. That extra machinery is new here, so it is kept small and
+its two failure modes are guarded deliberately:
+
+- **A correct rule must not be rejected.** The rule is extracted a PARAGRAPH at a time, never a
+  sentence at a time. A writer who puts one idea per sentence leaves sentences that name no
+  website word at all ("Never ask for a publication's name."), and a sentence-level extractor
+  drops exactly those — failing a prompt that satisfies every acceptance criterion, and quietly
+  pressuring the implementer into one contorted run-on sentence. Raised at the Tests Review gate.
+- **A wrong rule must not be accepted.** Where two words have to appear TOGETHER to mean anything
+  (a refusal, and the thing refused), they are required in the SAME sentence. Checked against the
+  joined paragraph instead, a prompt whose "name" is the field's own ``name`` key and whose "not"
+  belongs to an unrelated instruction passes while refusing nothing. Also raised at that gate.
 """
 
 from __future__ import annotations
@@ -36,29 +47,42 @@ pytestmark = pytest.mark.unit
 #: hold one out as the shape of an example value.
 _SCHEME = re.compile(r"https?://", re.IGNORECASE)
 
-#: A bare hostname: labels joined by dots, no scheme, no path, no spaces. This is the ONLY shape a
-#: search can actually be restricted by.
-_BARE_HOSTNAME = re.compile(r"\b[a-z0-9][a-z0-9-]*(?:\.[a-z0-9-]+)+\b", re.IGNORECASE)
+#: A bare hostname: labels joined by dots, no scheme, no path, no spaces — the ONLY shape a search
+#: can actually be restricted by. Every label needs at least two characters, so the sentence
+#: abbreviations that share this shape ("e.g.", "i.e.", "U.S.") cannot satisfy a test that wants a
+#: real address. Raised at the Tests Review gate.
+_BARE_HOSTNAME = re.compile(r"\b[a-z0-9][a-z0-9-]+(?:\.[a-z0-9-]{2,})+\b", re.IGNORECASE)
 
-#: The words that mark a sentence as being about which websites to use.
-_WEBSITE_WORDS = ("website", "web site", "site", "hostname", "domain")
+#: The words that mark a passage as being about which websites to use. Matched on word boundaries:
+#: a plain substring test for "site" also fires on "opposite" and "composite".
+_WEBSITE_WORDS = ("website", "websites", "web site", "site", "sites", "hostname", "domain")
+_WEBSITE_WORD = re.compile(
+    r"\b(?:" + "|".join(re.escape(w) for w in _WEBSITE_WORDS) + r")\b", re.IGNORECASE
+)
+
+#: What it takes to REFUSE something rather than merely prefer it.
+_REFUSAL = re.compile(r"\b(?:never|not|rather than|instead of|no longer)\b", re.IGNORECASE)
 
 
-def _sentences(prompt: str) -> list[str]:
-    """Split the prompt into sentence-ish chunks. Deliberately crude: it only has to be good
-    enough to isolate the website rule from the rest of the instructions."""
-    return [s.strip() for s in re.split(r"(?<=[.:])\s+|\n", prompt) if s.strip()]
+def _paragraphs(prompt: str) -> list[str]:
+    """The prompt's own line-delimited blocks. ``APP_FORM_DRAFTER_PROMPT`` is assembled as one
+    string whose logical instructions each end in ``\\n``, so a paragraph is the natural unit of a
+    rule — and it keeps a rule's sentences together whichever way the author breaks them up."""
+    return [p.strip() for p in prompt.split("\n") if p.strip()]
+
+
+def _sentences(text: str) -> list[str]:
+    """Split a paragraph into sentences. Crude on purpose: it exists only to check that two words
+    which must travel together actually do."""
+    return [s.strip() for s in re.split(r"(?<=[.;:])\s+", text) if s.strip()]
 
 
 def _website_rule(prompt: str) -> str:
-    """The prompt's own sentences about which websites to use, joined back together.
+    """Every paragraph of the prompt that talks about which websites to use, joined.
 
-    Every assertion below reads THIS rather than the whole prompt, so a stray "site" elsewhere in
-    the instructions cannot accidentally satisfy a test.
+    Whole paragraphs, so a correctly worded rule split across several sentences survives intact.
     """
-    lowered_words = _WEBSITE_WORDS
-    hits = [s for s in _sentences(prompt) if any(w in s.lower() for w in lowered_words)]
-    return " ".join(hits)
+    return " ".join(p for p in _paragraphs(prompt) if _WEBSITE_WORD.search(p))
 
 
 def test_the_drafter_is_told_a_website_field_asks_for_an_address() -> None:
@@ -69,7 +93,7 @@ def test_the_drafter_is_told_a_website_field_asks_for_an_address() -> None:
         "APP_FORM_DRAFTER_PROMPT says nothing about fields that name which websites to use, so "
         "the drafter is free to ask a person for a publication name"
     )
-    assert "address" in rule.lower() or "hostname" in rule.lower(), (
+    assert re.search(r"\b(address|addresses|hostname|hostnames)\b", rule, re.IGNORECASE), (
         "the website rule never asks for an ADDRESS — a search can only be restricted by one, so "
         f"a field asking for anything else has to be guessed at. Rule was: {rule!r}"
     )
@@ -77,15 +101,22 @@ def test_the_drafter_is_told_a_website_field_asks_for_an_address() -> None:
 
 def test_the_drafter_is_told_a_publication_name_is_not_what_to_ask_for() -> None:
     """The rule has to REFUSE the name, not merely prefer the address. A drafter told only that
-    addresses are good still writes "News Websites" and lets a person answer with a name."""
-    rule = _website_rule(APP_FORM_DRAFTER_PROMPT).lower()
-    assert "name" in rule, (
-        "the website rule never mentions a publication NAME, so nothing in it rules the name out "
-        "— the guess this issue exists to remove survives"
-    )
-    assert re.search(r"\b(never|not|rather than|instead of|no[t]? its)\b", rule), (
-        "the website rule mentions a name but never rules it out; it reads as a preference, and a "
-        f"preference leaves the guess in place. Rule was: {rule!r}"
+    addresses are good still writes "News Websites" and lets a person answer with a name.
+
+    The refusal and the thing refused are required in the SAME sentence. Spread across a whole
+    paragraph they prove nothing: "name" is also the field's own key, and "not" attaches to any
+    instruction at all.
+    """
+    rule = _website_rule(APP_FORM_DRAFTER_PROMPT)
+    refusals = [
+        s
+        for s in _sentences(rule)
+        if _REFUSAL.search(s) and re.search(r"\bnames?\b", s, re.IGNORECASE)
+    ]
+    assert refusals, (
+        "no sentence of the website rule refuses a NAME — the drafter is told an address is "
+        "wanted but never that a publication name is the wrong answer, so the guess this issue "
+        f"exists to remove survives. Rule was: {rule!r}"
     )
 
 
@@ -93,14 +124,17 @@ def test_the_drafter_is_told_the_hint_accepts_a_pasted_full_link() -> None:
     """Acceptance criterion 2. A person's first instinct is to copy the address bar. #951 reduces
     a pasted link to its hostname in the connector, so accepting one costs nothing — but the
     person only knows that if the hint they are shown says so."""
-    rule = _website_rule(APP_FORM_DRAFTER_PROMPT).lower()
-    assert re.search(r"\b(link|url|address bar)\b", rule), (
-        "the website rule never tells the drafter that a pasted full link is accepted, so the "
-        f"hint a person reads will not say it either. Rule was: {rule!r}"
-    )
-    assert re.search(r"\b(paste[d]?|copy|copied|full)\b", rule), (
-        "the website rule mentions a link but never that a PASTED, whole one is fine — a hint "
-        f"that only names an address reads as a refusal of what a person will actually do: {rule!r}"
+    rule = _website_rule(APP_FORM_DRAFTER_PROMPT)
+    accepted = [
+        s
+        for s in _sentences(rule)
+        if re.search(r"\b(link|links|url|urls|address bar)\b", s, re.IGNORECASE)
+        and re.search(r"\b(paste|pasted|pasting|copy|copied|full|whole|entire)\b", s, re.IGNORECASE)
+    ]
+    assert accepted, (
+        "no sentence of the website rule tells the drafter that a PASTED, whole link is accepted. "
+        "A hint that only names an address reads as a refusal of what a person will actually do, "
+        f"which is copy the address bar. Rule was: {rule!r}"
     )
 
 
@@ -108,8 +142,7 @@ def test_no_full_link_is_held_out_as_the_shape_of_an_example() -> None:
     """The #951 live finding, encoded. ``https://theverge.com/tech`` returns an ordinary 200 whose
     results are UNRESTRICTED — no error, no warning. An example in that shape teaches the drafter
     to write one into the field's ``example``, which is the value a person copies."""
-    leaks = _SCHEME.findall(APP_FORM_DRAFTER_PROMPT)
-    assert not leaks, (
+    assert not _SCHEME.findall(APP_FORM_DRAFTER_PROMPT), (
         "APP_FORM_DRAFTER_PROMPT shows a scheme-prefixed link. The search vendor silently ignores "
         "one — a normal 200 with unrestricted results — so an example in that shape produces a "
         "run that looks fine and quietly dropped the restriction"
@@ -121,8 +154,7 @@ def test_the_website_rule_carries_a_bare_address_example() -> None:
     description). A rule stated in the abstract leaves the drafter to decide what an address looks
     like, and "BBC News" is what it decides."""
     rule = _website_rule(APP_FORM_DRAFTER_PROMPT)
-    examples = _BARE_HOSTNAME.findall(rule)
-    assert examples, (
+    assert _BARE_HOSTNAME.findall(rule), (
         "the website rule states the requirement but shows no address, so the drafter has to "
         f"infer what one looks like. Rule was: {rule!r}"
     )
@@ -131,9 +163,14 @@ def test_the_website_rule_carries_a_bare_address_example() -> None:
 def test_the_rule_is_scoped_to_fields_about_which_websites_to_use() -> None:
     """Acceptance criterion 3. An unscoped rule bleeds: a drafter told "ask for addresses" starts
     proposing address fields for a brief about a company, which is a different defect in the same
-    place."""
-    rule = _website_rule(APP_FORM_DRAFTER_PROMPT).lower()
-    assert re.search(r"\b(only|other|unaffected|unchanged|else)\b", rule), (
+    place.
+
+    A hedge word is the most a static test can ask for here — whether the drafter actually leaves
+    other fields alone is a live-run question, answered in the end-to-end proof. Named as a known
+    gap at the Tests Review gate rather than papered over.
+    """
+    rule = _website_rule(APP_FORM_DRAFTER_PROMPT)
+    assert re.search(r"\b(only|other|others|unaffected|unchanged|else)\b", rule, re.IGNORECASE), (
         "the website rule never says which fields it does NOT cover, so it reads as advice about "
         f"every field. Rule was: {rule!r}"
     )
@@ -142,7 +179,7 @@ def test_the_rule_is_scoped_to_fields_about_which_websites_to_use() -> None:
 def test_the_rest_of_the_field_contract_is_untouched() -> None:
     """Acceptance criterion 3, from the other side: adding the website rule must not disturb what
     the drafter is asked for generally. Mechanical, so a prompt rewrite that quietly drops a key
-    or a type fails here rather than at a person's screen."""
+    or a type fails here rather than at a person's screen. Green today — a guard, not scope."""
     for key in ("name", "hint", "type", "options", "example", "required"):
         assert f"'{key}'" in APP_FORM_DRAFTER_PROMPT, (
             f"APP_FORM_DRAFTER_PROMPT no longer names the {key!r} key of a field"
