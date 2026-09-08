@@ -24,6 +24,7 @@ from neo4j_graphrag.experimental.components.types import (
     Neo4jRelationship,
 )
 from oraclous_citation import Citation
+from oraclous_embedding import LEGACY_NULL_EMBEDDER_ID
 from oraclous_substrate.access import enforced_organisation_id
 
 from oraclous_knowledge_graph_service.multi_tenant import OrganisationScopedKGWriter
@@ -69,7 +70,7 @@ def build_document_graph(
     embeddings: list[list[float]],
     title: str | None = None,
     entity_graph: Neo4jGraph | None = None,
-    embedder_id: str = "hashing:512",
+    embedder_id: str = LEGACY_NULL_EMBEDDER_ID,
     embedding_dim: int = 512,
 ) -> Neo4jGraph:
     """Build a lexical :Document + N :Chunk graph (FROM_DOCUMENT + NEXT_CHUNK).
@@ -88,9 +89,9 @@ def build_document_graph(
     (C3's other half) filter on identity instead of comparing vectors across incompatible spaces,
     and what lets a re-embed pass (C6) tell which chunks are still in the old space. Only `:Chunk`
     carries it — the `:Document` node holds no vector, so stamping it there would be a second, easy-
-    to-miss place a mismatch could hide. The default (`hashing:512`) covers every existing caller
-    that has not been updated to pass its real identity yet — never a silent decision at a real
-    call site.
+    to-miss place a mismatch could hide. The default is the SHARED `LEGACY_NULL_EMBEDDER_ID`, not a
+    literal: it covers callers not yet updated to pass their real identity, and spelling it by hand
+    here is the exact drift the shared constant exists to prevent.
     """
     doc_id = _node_id(graph_id, document, None)
     doc_node = Neo4jNode(
@@ -184,7 +185,7 @@ class GraphWriteRepository:
         ontology_violations: int = 0,
         ontology_coercions: int = 0,
         citation: Citation | None = None,
-        embedder_id: str = "hashing:512",
+        embedder_id: str = LEGACY_NULL_EMBEDDER_ID,
         embedding_dim: int = 512,
     ) -> WriteResult:
         # Replace-document semantics -> idempotent re-ingest. The neo4j_graphrag lexical writer does
