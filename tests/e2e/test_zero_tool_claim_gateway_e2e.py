@@ -158,5 +158,6 @@ def test_a_tool_less_member_that_claims_it_wrote_files_fails_and_an_honest_one_s
     assert status["honest"] == "succeeded", done
     assert done["state"] == "FAILED", done
     message = str(done.get("error_message") or "")
-    assert "liar: grounding:" in message, message
+    # #946: the run page names the member and its cause as a sentence, not as "role: <recorded>"
+    assert "liar stopped because grounding:" in message, message
     assert _INVENTED in message, message  # the invented location is named on the run page

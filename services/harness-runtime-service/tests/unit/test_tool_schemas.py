@@ -184,3 +184,41 @@ def test_the_operation_stays_the_real_tool_name_after_sanitisation() -> None:
     what the external server expects, so it must keep the server's own spelling."""
     spec = tool_specs_for("gh", _long_name_descriptor("read pull request"))[0]
     assert spec.operation == "read pull request"
+
+
+# ── #946 T1: the model-facing schema for a first-party search operation ───────────────────────────
+#
+# The capability registry drops `provider` from the `search` operation's hint map, because that
+# argument names the search VENDOR (an operator setting) and reached models as a bare unexplained
+# string they filled with website names. This is the other end of that change: the schema built
+# from such a descriptor must carry no `provider` property, because THIS is the surface a model
+# actually reads. Asserting only on the registry's hint map leaves the hop untested.
+
+_WEB_RESEARCH_DESCRIPTOR = {
+    "id": "0f9a4d02-6c1a-5b7e-9a3d-2f6c8e1b4a70",
+    "metadata": {"name": "Web Research"},
+    "spec": {
+        "type": "API",
+        "capabilities": [
+            {
+                "name": "search",
+                "description": "Search the live web and return ranked hits (BYOM api_key).",
+                "parameters": {"query": "str", "max_results": "int"},
+            },
+            {"name": "read", "description": "Read a URL", "parameters": {"url": "str"}},
+        ],
+    },
+}
+
+
+def test_a_search_operation_offers_the_model_no_vendor_property() -> None:
+    specs = {s.name: s for s in tool_specs_for("web-research", _WEB_RESEARCH_DESCRIPTOR)}
+    properties = specs["web-research__search"].parameters["properties"]
+    assert "provider" not in properties
+
+
+def test_the_arguments_a_model_does_need_are_still_there() -> None:
+    specs = {s.name: s for s in tool_specs_for("web-research", _WEB_RESEARCH_DESCRIPTOR)}
+    properties = specs["web-research__search"].parameters["properties"]
+    assert properties["query"]["type"] == "string"
+    assert properties["max_results"]["type"] == "integer"

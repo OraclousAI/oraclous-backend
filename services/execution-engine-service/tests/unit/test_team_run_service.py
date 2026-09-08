@@ -1015,6 +1015,38 @@ async def test_member_failure_persists_per_member_status_and_keeps_independent_o
     assert "b blew up" in (row.error_message or "")  # the failed member's detail is surfaced
 
 
+async def test_a_failed_members_error_reaches_the_run_page_as_a_sentence() -> None:
+    # #946 T3, the wiring: the pure curation helper is unit-tested in test_team_run_failure_text.py,
+    # but a helper that is written perfectly and never CALLED leaves the defect exactly where it
+    # was. This drives the real service and asserts the persisted error_message — the string the
+    # run page renders — so the seam cannot be curated in isolation and left unplugged.
+    #
+    # The member error here is the literal shape the tool-use loop records: the JSON blob it fed
+    # back to the MODEL. The test above uses a plain sentence, so it passes with or without the
+    # curation and cannot catch this.
+    blob = '{"error": "RegistryError", "detail": "unknown search provider \'The Verge\'"}'
+
+    class _BlobHarness:
+        async def execute(self, **kw: Any) -> dict[str, Any]:
+            return {"status": "FAILED", "output": None, "error_message": blob}
+
+    repo = FakeTeamRunRepo()
+    svc, _ = _svc(repo, _BlobHarness())
+    row = await _run(
+        svc,
+        _principal(),
+        manifest=_team([_agent("researcher")]),
+        sub_harnesses={},
+        gate_decisions={},
+    )
+    message = row.error_message or ""
+    assert row.state == "FAILED"
+    assert "RegistryError" not in message  # the class name never reaches the run page
+    assert '{"' not in message and '":' not in message  # nor does the JSON punctuation
+    assert "unknown search provider 'The Verge'" in message  # the useful half survives
+    assert "researcher" in message  # the failed member is still named
+
+
 async def test_rerun_redispatches_only_the_failed_member_and_reaches_succeeded() -> None:
     # ADR-042 (#551): first drive — 'b' fails (a transient that has cleared by the re-run), 'a'
     # succeeds. rerun() re-drives ONLY 'b' (now succeeds) and KEEPS 'a' (never re-dispatched), so
