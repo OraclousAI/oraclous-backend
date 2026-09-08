@@ -29,6 +29,14 @@ from typing import Any, Protocol, runtime_checkable
 # and `make_embedder` can never disagree on the model string.
 _DEFAULT_OPENAI_MODEL = "text-embedding-3-small"
 
+#: What a chunk with NO recorded `embedder_id` is read as. Such a chunk predates the identity stamp
+#: and was written by the original hashing embedder, so it lives in the `hashing:512` space. Three
+#: places have to agree on that reading — the read-side identity filter, the re-embed pass's
+#: stale-chunk scan, and anything that backfills — so it is spelled once, here, alongside the
+#: identity function itself. It stops being true if the hashing dimension is ever changed, which is
+#: exactly why it is a named constant with this note rather than a literal at three call sites.
+LEGACY_NULL_EMBEDDER_ID = "hashing:512"
+
 
 @runtime_checkable
 class Embedder(Protocol):

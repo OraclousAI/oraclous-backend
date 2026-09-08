@@ -8,6 +8,7 @@ the two can never drift apart again.
 """
 
 from oraclous_embedding.embedder import (
+    LEGACY_NULL_EMBEDDER_ID,
     Embedder,
     EmbedderCredentialRequired,
     HashingEmbedder,
@@ -17,6 +18,7 @@ from oraclous_embedding.embedder import (
 )
 
 __all__ = [
+    "LEGACY_NULL_EMBEDDER_ID",
     "Embedder",
     "EmbedderCredentialRequired",
     "HashingEmbedder",

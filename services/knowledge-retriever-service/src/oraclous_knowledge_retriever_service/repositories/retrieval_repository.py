@@ -13,15 +13,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from neo4j import Driver
+from oraclous_embedding import LEGACY_NULL_EMBEDDER_ID
 
 _COSINE = "reduce(s = 0.0, i IN range(0, size(c.embedding) - 1) | s + c.embedding[i] * $qvec[i])"
 
-# #949 Q3: a chunk written before the embedder-identity stamp landed carries NO `embedder_id` at
-# all. It was written by the ORIGINAL hashing embedder, so a NULL is read as this identity — an
-# explicit assumption that breaks if the hashing dimension ever changes, so it is pinned here
-# (and nowhere else) rather than left implicit.
-LEGACY_NULL_EMBEDDER_ID = "hashing:512"
-
+# A chunk written before the identity stamp carries no `embedder_id` at all; it is read as
+# `hashing:512`. The constant lives in the SHARED package because the graph service's re-embed
+# scan has to make the same assumption — see its note there for why it is a named constant.
 _IDENTITY_PREDICATE = (
     "(c.embedder_id = $embedder_id "
     "OR (c.embedder_id IS NULL AND $embedder_id = $legacy_embedder_id))"
@@ -57,7 +55,12 @@ class RetrievalRepository:
         return [r.data() for r in records]
 
     def semantic(
-        self, *, graph_id: str, qvec: list[float], top_k: int, embedder_id: str = LEGACY_NULL_EMBEDDER_ID
+        self,
+        *,
+        graph_id: str,
+        qvec: list[float],
+        top_k: int,
+        embedder_id: str = LEGACY_NULL_EMBEDDER_ID,
     ) -> list[dict]:
         # #949 Q3: filtered on embedder_id (never compared across spaces), not pre-checked — a
         # graph mid-re-embed (C6) is legitimately MIXED, and the filter is what keeps that honest.

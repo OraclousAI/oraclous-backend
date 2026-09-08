@@ -167,6 +167,25 @@ class Settings(BaseSettings):
     # candidate pool the service then re-ranks is far smaller than this; the cap is the safety net.
     memory_vector_candidate_cap: int = 1_000
 
+    # --- chunk re-embed (#949 Q2) ---
+    # Chunks fetched, embedded and rewritten per batch. A workspace's chunk count is unbounded, so
+    # the pass never reads all of it at once; the batch is also one embedder call, and the OpenAI
+    # embedder already batches internally at 256, so a larger value buys nothing.
+    reembed_batch_size: int = 128
+    # Per-(org,graph) advisory Redis lock TTL across one re-embed pass (#303/#305 pattern). Longer
+    # than the consolidation lock: this pass makes a network embedder call per batch, so a large
+    # workspace legitimately runs longer than a purely local computation.
+    reembed_lock_ttl_seconds: int = 30 * 60
+    # Max distinct (org, graph) graphs the beat sweep dispatches per cadence. 0 disables the bound.
+    # A graph missed by the cap is picked up next cadence — the scan is a fact about the store, not
+    # a queue position, so nothing is lost by capping.
+    reembed_sweep_max_graphs: int = 1_000
+    # Cadence (seconds) for the beat re-embed sweep. Only runs when an operator deploys a
+    # `celery beat` process; a worker-only deploy ignores it. Hourly, not daily: a workspace whose
+    # embedder just changed cannot answer meaning-based search until its pass completes, and a day
+    # of that is indistinguishable to a user from the feature being broken.
+    reembed_sweep_interval_seconds: int = 3_600
+
     # --- similarity auto-trigger (#310, legacy SIMILARITY_AUTO_TRIGGER_ON_INGEST) ---
     # When True, a structured ingest with NO authored `similarities[]` rule still runs the content-
     # similarity pass: one default SIMILAR_TO rule is synthesised per node rule over the node's best
