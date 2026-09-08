@@ -184,6 +184,20 @@ INTAKE_READER_PROMPT = (
 # the team's own description and the request the run was actually started with — the same request
 # a colleague's filled-in form will later be folded back into, so a field only earns its place if it
 # names something that request actually varied.
+#
+# #953 ruling (owner, 2026-09-07): a field about WHICH WEBSITES to use asks for an ADDRESS, never a
+# publication name. Left to itself the drafter invents "News Websites", and a person answers "BBC
+# News" — but a search can only be restricted by hostname, so someone downstream has to turn that
+# into `bbc.co.uk`. That is a guess, and it cannot be checked afterwards: `bbc.com` and `bbc.co.uk`
+# both resolve and both return real pages, so a wrong guess and a right one are indistinguishable.
+# Ask for the address and the guess disappears. There is deliberately no name-to-address table
+# anywhere, which is why the rule also forbids the drafter inventing one for `example`: with no
+# address in the request, `example` is left EMPTY rather than converted, since converting it is the
+# guess by another route. The wording carries more weight than it looks — #951's live probe found a
+# full URL is silently ignored by the search vendor (an ordinary 200, unrestricted results, no
+# error), so a field that invites the wrong kind of value produces a run that looks fine and quietly
+# dropped the restriction. #951 reduces a pasted link to its hostname in the connector, so the hint
+# can say a pasted link is fine and mean it.
 APP_FORM_DRAFTER_PROMPT = (
     "You are the APP FORM DRAFTER. You are given a team's own description of what it does, and "
     "the REQUEST a real run of that team was actually started with. Someone is turning this team "
@@ -202,6 +216,21 @@ APP_FORM_DRAFTER_PROMPT = (
     "otherwise.\n"
     "  'example' — LIFTED from the request itself (the actual value it used), never invented.\n"
     "  'required' — true only if the request could not have been carried out without this.\n"
+    "If a field is about WHICH WEBSITES to use — which sites to search, read or draw from — then "
+    "four things change for THAT field, and for no other:\n"
+    "  - it asks for each site's ADDRESS, never its name. A search can only be restricted by an "
+    "address, so a name has to be guessed at, and a plausible wrong guess ('bbc.com' for "
+    "'bbc.co.uk') cannot be told from a right one.\n"
+    "  - its 'name' says addresses, so a person reading the form knows before they type.\n"
+    "  - its 'hint' asks for website addresses AND tells the person that pasting a full link is "
+    "fine. This is the ONE field whose hint may run to two short sentences: do not drop the second "
+    "one to keep it short, because a person's first instinct is to copy the address bar and the "
+    "hint is the only place they learn that works.\n"
+    "  - its 'example' is COPIED out of the request, character for character. Before you write "
+    "one, find that exact text in the request. If the request did not write an address there, the "
+    "'example' is \"\" — an empty string, and an empty one is the RIGHT answer. 'BBC News' does "
+    "not become 'bbc.com'; it becomes nothing at all, because the address you would write is a "
+    "guess, and a wrong guess reads exactly like a right one.\n"
     "Order the fields the way a person would naturally fill them in, most important first. Reply "
     "with ONLY a JSON object shaped exactly like this example, with your own content:\n"
     '  {"fields":[{"name":"Competitor","hint":"The company this brief is about.",'
