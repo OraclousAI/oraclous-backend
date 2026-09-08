@@ -34,6 +34,8 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
+from oraclous_ohm.sites import InvalidSiteError, normalise_sites
+
 from oraclous_harness_runtime_service.domain.citation_gate import (
     CitationViolation,
     check_answer_citations,
@@ -317,6 +319,124 @@ def _link_correction(unverified: list[str], fetched: list[str]) -> str:
     """The message a member reads when every link in its draft was invented."""
     allowed = f" — you fetched: {_named(fetched)}" if fetched else ""
     return _LINK_CORRECTION.format(bad=_named(unverified), allowed=allowed)
+
+
+# ── #961: a person's list of websites BINDS the run ──────────────────────────────────────────────
+#
+# Ruled 2026-09-08. A person can name the websites a run may search; until now that list reached the
+# member as one line of prose inside a larger request, so it could be read, acted on, or silently
+# dropped — and #951's original report is a run that dropped it while satisfying every gate the run
+# has. Leaving it advisory, and checking but only warning, were both offered to the owner and
+# refused.
+#
+# Enforced BEFORE each dispatch, never on the finished run: a terminal check was offered and refused
+# because by then the unrestricted work is already paid for and the person has already waited for
+# it. The refused call is not dispatched at all, so it costs no vendor quota — only the turn.
+#
+# What passes (ruled the same day): a NON-EMPTY SUBSET of the sites the person named. Working
+# through a list one site at a time is a legitimate way to research, so demanding every site on
+# every call would refuse honest searches; naming a site the person did not is refused, because
+# "only use these" is what they wrote.
+#
+# What this can never prove: that the person named the RIGHT sites. Nothing tells `bbc.com` from
+# `bbc.co.uk` — both resolve and both return real pages (#951's standing limit). The gate proves a
+# restriction was applied and that it stayed inside the person's list. That is all it can prove.
+_SITE_GATE_NAME = "site_restriction"
+_SITE_GATE_STATUS = "unrestricted_search"
+#: The operation the restriction binds. `search` reaches the live web; `fetch`/`read` return a page
+#: the run already found, and gating those would refuse the member's own follow-up reads.
+_SITE_RESTRICTED_OPERATION = "search"
+#: The argument a search carries its restriction in — the registry's own name for it (#951).
+_SITES_ARG = "sites"
+# What a refused search tells the member. It NAMES the sites, because a member told only "refused"
+# can do nothing but retry blindly — the #692/#693 failure, where a member handed "409" repeated the
+# identical call until its budget was gone. It also says a subset is fine, so a member working
+# through a long list does not read the refusal as "send all of them every time".
+_SITE_CORRECTION = (
+    "This run may only search the websites the person named: {named}. Call the search again with "
+    "`sites` set to those addresses — one or several of them, but nothing else. Your call was not "
+    "sent, so nothing has been searched yet."
+)
+_SITE_CORRECTION_OUTSIDE = (
+    "This run may only search the websites the person named: {named}. You asked for {bad}, which "
+    "{is_are} not among them. Call the search again using only the named addresses. Your call was "
+    "not sent, so nothing has been searched yet."
+)
+#: How many offending addresses a refusal names. Bounded for the reason the citation and link
+#: corrections are: every address a model invents would otherwise ride into the prompt and the step
+#: detail, once per turn, unbounded.
+_SITE_CORRECTION_MAX_NAMED = 5
+# #961 ruling 3: the reserved key a first-party search sets when the restriction came back EMPTY.
+# Popped from every result — trusted or not — so the name never reaches the model, and believed only
+# from a trusted search binding. Both halves are needed, and for the reason #781 learned the hard
+# way: a key a model can read is a key a model can learn to write, and a forged one here would buy a
+# softer terminal on demand.
+_SITES_EMPTY_KEY = "sites_yielded_nothing"
+# What that flag does to the run: it FINISHES, marked incomplete, with a plain sentence — #580's
+# shape, reused deliberately so no new failure mode is invented. Failing the run was offered and
+# refused: the vendor's search is semantic, so a genuinely empty restricted result is rare, and
+# throwing away a whole run over a rare data-absence is the wrong trade.
+_SITES_EMPTY_ERROR_TYPE = "restricted_search_empty"
+_SITES_EMPTY_MESSAGE = (
+    "the websites this run was restricted to returned nothing for one of its searches; the member "
+    "finished with what it had"
+)
+# The terminal for a member that never complies. It can spend its whole budget re-sending
+# unrestricted searches, and that must not settle as an anonymous "did not converge" — #946's own
+# lesson, where a run that failed for a nameable reason reported nothing a person could act on.
+_SITE_BLOCKED_ERROR_TYPE = "site_restriction_unmet"
+
+
+def _clean_site(value: object) -> str | None:
+    """One entry as its bare hostname, or ``None`` when it is not a website address at all.
+
+    The SAME shared-kernel cleaner the engine used on the person's answer and the registry uses at
+    the vendor hop. That is the whole reason it lives in the kernel: a person pastes
+    ``https://www.theverge.com/`` and a model calls the tool with ``theverge.com``, and a check that
+    read those as different sites would refuse a search that was perfectly correct.
+    """
+    if not isinstance(value, str):
+        return None
+    try:
+        cleaned = normalise_sites([value])
+    except InvalidSiteError:
+        return None
+    return cleaned[0] if cleaned else None
+
+
+def _site_violation(args: dict[str, Any], required: tuple[str, ...]) -> str | None:
+    """The correction a search call earns, or ``None`` when it honours the restriction.
+
+    Three outcomes, and the middle one is the whole issue:
+
+    * no ``sites`` at all, an empty one, or one whose every entry is unreadable → the unrestricted
+      search this gate exists to stop. An empty list is what the connector already treats as "do not
+      restrict", so it is the same search under another name.
+    * an entry outside the person's list → refused, and the offending entries are named.
+    * a non-empty subset of the list → dispatched unchanged.
+    """
+    raw = args.get(_SITES_ARG)
+    entries = raw if isinstance(raw, list) else ([raw] if isinstance(raw, str) else [])
+    asked: list[str] = []
+    for entry in entries:
+        # A model may put the whole list in one string ("theverge.com, bbc.co.uk"); the kernel
+        # cleaner splits on commas for exactly that reason, so each part is cleaned on its own.
+        for part in str(entry).split(","):
+            cleaned = _clean_site(part.strip())
+            if cleaned is not None and cleaned not in asked:
+                asked.append(cleaned)
+    named = ", ".join(required)
+    if not asked:
+        return _SITE_CORRECTION.format(named=named)
+    outside = [site for site in asked if site not in required]
+    if outside:
+        shown = outside[:_SITE_CORRECTION_MAX_NAMED]
+        if len(outside) > len(shown):
+            shown = [*shown, f"and {len(outside) - len(shown)} more"]
+        return _SITE_CORRECTION_OUTSIDE.format(
+            named=named, bad=", ".join(shown), is_are="is" if len(outside) == 1 else "are"
+        )
+    return None
 
 
 # #944 review, MEDIUM-4: NAME tokens that mark an argument as carrying a URL, not the argument's
@@ -752,6 +872,7 @@ async def run_tool_use_loop(
     memory_context: Callable[[], Awaitable[str | None]] | None = None,
     citation_bindings: frozenset[str] | None = None,
     data_absent_bindings: frozenset[str] | None = None,
+    web_search_bindings: frozenset[str] | None = None,
     prior_served_citation_ids: Collection[str] | None = None,
 ) -> LoopResult:
     by_name = {s.name: s for s in tool_specs}
@@ -761,6 +882,11 @@ async def run_tool_use_loop(
     trusted_data_absent_bindings = (
         _DEFAULT_DATA_ABSENT_BINDINGS if data_absent_bindings is None else data_absent_bindings
     )
+    # #961: which bindings the site-restriction gate fires on. NO default set, unlike the two above:
+    # a manifest alias proves nothing, and defaulting to a literal name would let an author dodge
+    # the gate by renaming their tool AND fire it on an unrelated tool that borrowed the name. The
+    # service always passes the registry's own resolution (`TrustedBindings.web_search`).
+    trusted_web_search_bindings = web_search_bindings or frozenset()
     if resume_state is not None:
         redactors = [re.compile(p) for p in resume_state.redact_patterns]
         messages: list[Message] = list(resume_state.messages)
@@ -805,6 +931,15 @@ async def run_tool_use_loop(
     # paused run that resumes to completion reports SUCCEEDED — acceptable (degrade-not-crash; the
     # model still saw the "no data" note), a known minor fidelity gap, never a cascade.
     retrieval_empty = False
+    # #961 ruling 3: set when a RESTRICTED search came back with nothing on the named sites. Like
+    # `retrieval_empty` it degrades the run to a flagged PARTIAL rather than failing it, and for the
+    # same reason — this is data-absence, not a fault. A fresh flag on a HITL resume, matching
+    # `retrieval_empty`'s own accepted fidelity gap.
+    restricted_search_empty = False
+    # #961 ruling 2: the last refusal the site gate issued, or None if it never fired. It is what
+    # turns a spent budget into a TYPED terminal rather than an anonymous "did not converge" —
+    # #946's lesson, where a run that failed for a nameable reason said nothing a person could use.
+    site_blocked: str | None = None
     # #743: the run's served set — what the PLATFORM handed this member, in first-seen order. Like
     # `retrieval_empty` it is a fresh list on a HITL resume, because the checkpoint carries the
     # transcript rather than platform counters. That loses nothing durable: the resume path UNIONS
@@ -936,6 +1071,18 @@ async def run_tool_use_loop(
         # on missing data — degrade (PARTIAL) regardless of on_exhaustion, so a from-scratch/empty-
         # graph member never hard-fails the team on missing data (ADR-021). A token/wall/tool-call
         # overrun is real work, NOT data-absence churn → it still honours on_exhaustion (escalate).
+        if site_blocked is not None and reason == "iteration_cap":
+            # #961: the member spent its whole budget re-sending searches that ignored the person's
+            # list. That is a nameable failure and must not settle as an anonymous "did not
+            # converge" — #946's own lesson. ESCALATED rather than degraded, unlike the empty-sites
+            # case above: nothing was searched, so there is no thin-but-honest answer to ship, and
+            # a member that would not honour the restriction is not a data-absence.
+            return _escalate(
+                _SITE_GATE_NAME,
+                _SITE_BLOCKED_ERROR_TYPE,
+                "the member never restricted its search to the websites the person named",
+                iterations,
+            )
         if retrieval_empty and reason == "iteration_cap":
             return _degrade(
                 "dependency", "empty_retrieval", "did not converge on missing data", iterations
@@ -949,6 +1096,7 @@ async def run_tool_use_loop(
         """Dispatch a turn's tool calls. Returns an escalation LoopResult (pause/budget) or None to
         continue. ``approved_id`` (resume only) bypasses the HITL gate for exactly that one call."""
         nonlocal tool_calls_made, retrieval_empty, json_repair_used, json_repair_grant
+        nonlocal restricted_search_empty, site_blocked
         for i, tc in enumerate(tool_calls):
             spec = by_name.get(tc["name"])
             # Coded governance — enforced BEFORE any dispatch, regardless of what the prose said.
@@ -1003,6 +1151,49 @@ async def run_tool_use_loop(
                     iteration,
                     checkpoint=checkpoint,
                 )
+            # #961 rulings 1+2: a person's list of websites BINDS this run, and the check happens
+            # HERE — before the tool-call budget gate, and before any dispatch — so the
+            # unrestricted search is never paid for. See the module note above for what passes.
+            #
+            # Every clause narrows: only when the run HAS a restriction (most runs do not and are
+            # untouched), only for a binding the REGISTRY confirmed is the platform's own web search
+            # (an alias proves nothing — #780), and only for the `search` operation (`fetch`/`read`
+            # return a page the run already found).
+            if (
+                spec is not None
+                and policy.required_sites
+                and spec.binding in trusted_web_search_bindings
+                and spec.operation == _SITE_RESTRICTED_OPERATION
+            ):
+                violation = _site_violation(tc["args"], policy.required_sites)
+                if violation is not None:
+                    site_blocked = violation
+                    correction = _redact(violation, redactors)
+                    # A `tool` turn, not a bare `user` one: the assistant turn already carries this
+                    # tool_call_id and a provider transcript with a call and no matching result is
+                    # malformed. The explicit `status=error` marker keeps a HITL resume's
+                    # content-shape heuristic from crediting the call's arguments as real
+                    # provenance — the #853 branch learned that one the hard way (#944 LOW-H).
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": tc["id"],
+                            "name": tc["name"],
+                            "content": f"{correction}\n[receipt: source_tool_call_id={tc['id']} "
+                            "status=error]",
+                        }
+                    )
+                    steps.append(
+                        LoopStep(
+                            len(steps),
+                            StepKind.GATE,
+                            _SITE_GATE_NAME,
+                            _SITE_GATE_STATUS,
+                            _truncate(violation),
+                            tool_call_id=tc["id"],
+                        )
+                    )
+                    continue  # never dispatched — no vendor call, no quota, nothing searched
             # #853: the structured-output check, BEFORE the tool-call budget gate on purpose. The
             # member this fix exists for spends its budget on real work and only then writes the
             # broken brief, so a check placed after the gate would never run on the call that
@@ -1159,6 +1350,16 @@ async def run_tool_use_loop(
                         if absent and spec.binding in trusted_data_absent_bindings:
                             retrieval_empty = True
                             result["note"] = _EMPTY_RETRIEVAL_NOTE
+                    # #961 ruling 3: the same treatment for a RESTRICTED search that came back with
+                    # nothing on the named sites. Popped from every result so the model never learns
+                    # the key is live; believed only from a search binding the registry confirmed,
+                    # so it cannot be forged through an echo-shaped tool (#781). The member already
+                    # has the connector's own sentence in `note` — this flag is for the runtime, and
+                    # the two say the same thing to different readers.
+                    if isinstance(result, dict):
+                        sites_empty = result.pop(_SITES_EMPTY_KEY, False)
+                        if sites_empty and spec.binding in trusted_web_search_bindings:
+                            restricted_search_empty = True
                     # #743 (§CITE): pop the served-ids key from EVERY tool result, then accumulate
                     # it only from a TRUSTED retrieval binding. A model-supplied key of the same
                     # name — pushed through a generic REST call or an imported MCP server — is
@@ -1461,6 +1662,15 @@ async def run_tool_use_loop(
                     "retrieval returned no data; the member proceeded with what was available",
                     iteration,
                 )
+            if restricted_search_empty:
+                # #961 ruling 3: the member finished, but the websites the person named carried
+                # nothing for one of its searches. Marked INCOMPLETE, not failed — the same shape,
+                # via the same primitive, for the same reason. A person reading the run learns why
+                # it is thin and can correct their addresses, which is the only remedy available:
+                # a wrong-but-plausible address can be shown, never detected.
+                return _degrade(
+                    "dependency", _SITES_EMPTY_ERROR_TYPE, _SITES_EMPTY_MESSAGE, iteration
+                )
             return LoopResult(
                 HarnessStatus.SUCCEEDED,
                 last_text,
@@ -1482,6 +1692,10 @@ async def run_tool_use_loop(
         # blocked answer.
         citation_blocked = None
         citation_blocked_rule2 = False
+        # #961: and the same clear, for the same reason. A member corrected once and then failing to
+        # converge for an unrelated reason must not be reported as a restriction failure — that is
+        # the sticky-flag bug the citation terminal above already had to fix once.
+        site_blocked = None
         # #944: the same clear, for the same reason. Without it the flag is sticky and a run
         # corrected once and then failing to converge for an unrelated reason is reported as a link
         # failure — the bug shape the citation terminal above already had to fix once.

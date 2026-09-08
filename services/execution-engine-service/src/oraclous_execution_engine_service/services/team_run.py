@@ -50,8 +50,10 @@ from oraclous_ohm.orchestrate import (
     run_loop_seam,
     run_team,
 )
+from oraclous_ohm.sites import InvalidSiteError, normalise_sites
 
 from oraclous_execution_engine_service.domain.app_answers import parse_answers
+from oraclous_execution_engine_service.domain.app_form import SITE_RESTRICTION_KEY
 from oraclous_execution_engine_service.domain.refresh import REFRESH_SEED_KEY
 from oraclous_execution_engine_service.services.harness_client import HarnessClientError
 
@@ -261,6 +263,28 @@ def resolve_run_answers(
         return parse_answers(inputs)
     except ValueError:  # unreachable via create; a stored pre-validation row must not kill a drive
         return None
+
+
+def resolve_run_sites(inputs: dict[str, Any] | None) -> list[str]:
+    """#961: the websites this run is restricted to, cleaned, or ``[]`` for a run with no
+    restriction at all.
+
+    Read-side only — the SHAPE was already fail-closed at create (``validate_site_restriction``), so
+    a bad address never reaches a dispatch. A stored pre-validation row must not kill a drive
+    either, which is why an unreadable value degrades to "no restriction" here rather than raising:
+    the alternative is a run that cannot start and cannot say why, for a row nobody can edit.
+
+    The clean happens ONCE, here, and the harness compares the model's own ``sites`` argument
+    against this cleaned list using the same shared-kernel function. Sending the raw text instead
+    would put the rule in two services, which is #946's two-cleaning-passes defect one layer up.
+    """
+    raw = (inputs or {}).get(SITE_RESTRICTION_KEY)
+    if raw is None:
+        return []
+    try:
+        return normalise_sites(raw)
+    except InvalidSiteError:  # unreachable via create; never fail a drive over a stored row
+        return []
 
 
 def resolve_run_task(manifest: OHMManifest, inputs: dict[str, Any] | None) -> str | None:
@@ -500,6 +524,7 @@ def make_harness_dispatch(
     refresh_sink_role: str | None = None,
     task: str | None = None,
     answers: tuple[list[dict[str, Any]], list[dict[str, Any]]] | None = None,
+    required_sites: list[str] | None = None,
 ) -> DispatchFn:
     """Build a ``run_team`` dispatch that runs each member as a real harness execution.
 
@@ -535,6 +560,13 @@ def make_harness_dispatch(
         declared_keys = _declared_output_keys(member)
         if member.requires_valid_json or declared_keys:
             caps["requires_valid_json"] = True
+        # #961 rulings 1+2: the websites this run is restricted to, so the harness can refuse a
+        # search that leaves the restriction out. Sent ONLY when the person actually named some —
+        # the #576 send-only-when-set pattern, and here it is load-bearing rather than tidy: most
+        # runs name no sites, and an empty list arriving downstream is one refactor away from
+        # reading as "restrict to no sites", which would refuse every search in the platform.
+        if required_sites:
+            caps["required_sites"] = list(required_sites)
         result = await harness.execute(
             input_text=render_member_input(
                 member,
@@ -719,6 +751,7 @@ async def run_team_harness(
         refresh_sink_role=refresh_sink,
         task=resolve_run_task(manifest, inputs),  # Contract §TASK (#674): to every member
         answers=resolve_run_answers(inputs),  # #846: the app's intake answers, to every member
+        required_sites=resolve_run_sites(inputs),  # #961: the sites this run is held to
     )
     return await run_team(
         manifest,
@@ -873,6 +906,7 @@ async def run_team_hybrid(
         refresh_sink_role=refresh_sink,
         task=resolve_run_task(manifest, inputs),  # Contract §TASK (#674): to every member
         answers=resolve_run_answers(inputs),  # #846: the app's intake answers, to every member
+        required_sites=resolve_run_sites(inputs),  # #961: the sites this run is held to
     )
     termination = manifest.orchestration.termination if manifest.orchestration else None
     max_rounds = (termination.max_rounds if termination else None) or _DEFAULT_MAX_ROUNDS

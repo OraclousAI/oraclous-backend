@@ -17,15 +17,18 @@ from dataclasses import asdict
 from typing import Any
 
 from oraclous_governance import Principal
+from oraclous_ohm.sites import InvalidSiteError
 
 from oraclous_execution_engine_service.core.rls import org_scope
 from oraclous_execution_engine_service.domain.app_form import (
+    SITE_RESTRICTION_KEY,
     FormField,
     FormShapeError,
     fallback_fields,
     fan_out_keys,
     missing_required,
     parse_form_draft,
+    run_site_restriction,
     to_run_inputs,
 )
 from oraclous_execution_engine_service.domain.apps import (
@@ -347,6 +350,23 @@ class AppService:
             # The fold covers the drafted fields; a fan-out key is a list the person supplies
             # and travels as itself. Passing nothing here dropped it silently (code review).
             carried = {k: values[k] for k in fan_out_keys(row.manifest) if k in values}
+            # #961 rulings 1+4: the answer to a box that DECLARED itself a site restriction also
+            # travels as a list of addresses, so the run can be held to it. It still folds into the
+            # request as prose below — a member that was never told which sites it may use cannot
+            # ask for them, and enforcing a promise nobody heard is #697's mistake.
+            #
+            # An InvalidSiteError here is a curated 422 rather than a 500: a publication name typed
+            # into an address box is an expected thing for a person to do, and the refusal has to
+            # reach them while they are still looking at the form. It cannot wait for the run —
+            # #951's live probe found the search vendor accepts a full URL with an ordinary 200 and
+            # silently drops the restriction, so a bad value produces a normal-looking run that
+            # searched the whole web.
+            try:
+                sites = run_site_restriction(fields, values)
+            except InvalidSiteError as exc:
+                raise TeamRunError(str(exc), 422, error_type="invalid_site_restriction") from exc
+            if sites:
+                carried[SITE_RESTRICTION_KEY] = sites
             run_inputs = to_run_inputs(row.manifest, fields, values, passthrough=carried)
 
         run_manifest, run_subs = bind_run_documents(

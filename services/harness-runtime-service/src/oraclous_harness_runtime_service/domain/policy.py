@@ -60,6 +60,16 @@ class PolicyEnvelope:
     # exactly one repair turn (the parser's own error handed back to the member) instead of losing
     # the whole run. Default False so an envelope built the old way is byte-for-byte unchanged.
     requires_valid_json: bool = False
+    # #961 rulings 1+2: the websites this RUN is restricted to — a person's own list, arriving from
+    # the app form the run was started from, already cleaned to bare hostnames. When set, the loop
+    # refuses a first-party web search whose `sites` argument does not honour it, BEFORE the call is
+    # dispatched. Empty = no restriction, which is most runs; an empty tuple must never read as
+    # "restrict to nothing" or every ordinary search in the platform would be refused.
+    #
+    # Unlike everything above it, this is not a governance CEILING the author or operator chose —
+    # it is the run's own caller speaking. It lives here because this is the envelope the loop
+    # enforces, and #961's ruling is precisely that a person's list stops being advice.
+    required_sites: tuple[str, ...] = ()
 
 
 # Built-in catalogue (Structured Governance Taxonomy v1.0 §2). The single source until a policy
@@ -215,6 +225,7 @@ def build_envelope(
     max_tool_calls_ceiling: int | None = None,
     member_on_exhaustion: Literal["escalate", "degrade"] | None = None,
     member_requires_valid_json: bool | None = None,
+    required_sites: tuple[str, ...] = (),
 ) -> PolicyEnvelope:
     """Build the effective runtime envelope. The iteration cap is a safety backstop derived from the
     policy's tool-call budget (so a stricter tier's smaller budget actually binds), bounded by the
@@ -262,4 +273,5 @@ def build_envelope(
         redact_patterns=redact,
         on_exhaustion=member_on_exhaustion or "escalate",  # #587: degrade vs escalate at a gate
         requires_valid_json=bool(member_requires_valid_json),  # #853: one repair turn on bad JSON
+        required_sites=required_sites,  # #961: the websites this run is held to
     )

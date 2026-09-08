@@ -47,6 +47,13 @@ from oraclous_execution_engine_service.services.team_run_service import (
 DRAFTER_TEAM_NAME = "app-form-drafter"
 DRAFTER_ROLE = "drafter"
 
+#: The label the drafting team's subgoal puts in front of the request text. #963's mechanical check
+#: needs that request back at PEEL time, and the peel may happen on a later call (the collect path,
+#: where the original run id was never supplied), so it is recovered from the drafting run's own
+#: manifest rather than carried in memory. The subgoal is built two functions below; the two must
+#: agree, which is why the marker is a constant rather than a literal in each place.
+_REQUEST_MARKER = "REQUEST THIS RUN WAS STARTED WITH:\n"
+
 _TERMINAL_RUN_STATES = frozenset({"SUCCEEDED", "FAILED", "REJECTED", "COST_BUDGET"})
 
 
@@ -195,10 +202,7 @@ class AppFormDraftService:
                     # Both the team's own description AND the request this run was actually
                     # started with, unsummarised — the request is what makes the invented fields
                     # SPECIFIC rather than generic, and it is the one input the fold exists for.
-                    subgoal=(
-                        f"TEAM DESCRIPTION:\n{description}\n\nREQUEST THIS RUN WAS STARTED "
-                        f"WITH:\n{request_text}"
-                    ),
+                    subgoal=f"TEAM DESCRIPTION:\n{description}\n\n{_REQUEST_MARKER}{request_text}",
                 )
             ],
             runtime=OHMRuntime(entrypoint=DRAFTER_ROLE),
@@ -253,11 +257,33 @@ class AppFormDraftService:
     # ── the answer ───────────────────────────────────────────────────────────
 
     @staticmethod
-    def _peel(run: Any, run_id: uuid.UUID) -> DraftedForm:
+    def _request_text(run: Any) -> str:
+        """The request the ORIGINAL run was started with, recovered from the drafting run itself.
+
+        #963's check compares a website field's example against what the person actually wrote, and
+        the peel is the only place that has the drafted form — but not, on the collect path, the
+        original run id. The drafting team's own subgoal carries the request verbatim (it is what
+        makes the invented fields specific rather than generic), so it is read back from there.
+
+        Returns ``""`` when the marker is absent, and an empty request means the example is kept as
+        given: an absent comparison is no evidence the example was invented.
+        """
+        for member in (run.manifest or {}).get("members") or []:
+            subgoal = member.get("subgoal") if isinstance(member, dict) else None
+            if isinstance(subgoal, str) and _REQUEST_MARKER in subgoal:
+                return subgoal.split(_REQUEST_MARKER, 1)[1].strip()
+        return ""
+
+    @classmethod
+    def _peel(cls, run: Any, run_id: uuid.UUID) -> DraftedForm:
         """Peel the drafter's JSON answer and hold it to ``domain.app_form``'s contract.
 
         A model answering in prose is an expected outcome of asking a model — a curated 422, never
         a 500.
+
+        #963: the run's own request text goes in with the draft, so a website field's example can be
+        checked against what the person really wrote. Only a field that DECLARED itself a site
+        restriction is checked (#961 ruling 4); everything else is untouched.
         """
         raw = (run.results or {}).get(DRAFTER_ROLE)
         text = raw.get("output") if isinstance(raw, dict) else raw
@@ -273,7 +299,7 @@ class AppFormDraftService:
                 error_type="drafter_output_unparseable",
             )
         try:
-            fields = parse_form_draft(parsed)
+            fields = parse_form_draft(parsed, request_text=cls._request_text(run))
         except FormShapeError as exc:
             raise AppFormDraftError(
                 "the drafter's answer does not fit the form contract",

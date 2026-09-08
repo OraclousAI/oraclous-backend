@@ -88,6 +88,16 @@ _CITATION_MINTING_CAPABILITIES = frozenset(
 # both and states which one it means.
 _DATA_ABSENCE_CAPABILITIES = frozenset({"knowledge-retriever"})
 
+# #961: the capabilities the site-restriction gate fires on. TWO, not one: the platform ships its
+# web search under `Web Research`'s `search` operation and under the standard `WebSearch` tool, and
+# they share one code path. A set naming only the first would leave every team built from the
+# standard toolset unenforced, with nothing to say why.
+#
+# A THIRD set rather than a widening of the two above, for #781's reason: each reserved behaviour
+# trusts the capabilities that actually carry it. The web search neither mints citations nor flags
+# graph data-absence, and a shape that folded these together would silently grant it both.
+_WEB_SEARCH_CAPABILITIES = frozenset({"web-research", "websearch"})
+
 # #780 item 1 (security): the second predicate, alongside the row's name slug. A registry row's
 # `name` is a DISPLAY string — for an imported MCP tool it is `<admin label>-<server tool name>`,
 # both halves chosen outside the platform, so an admin importing a server labelled `knowledge` with
@@ -109,6 +119,7 @@ class TrustedBindings(NamedTuple):
 
     citation: frozenset[str]  # #743 §CITE: may mint `served_citation_ids`
     data_absence: frozenset[str]  # #580/#781: may flag `data_absent`
+    web_search: frozenset[str]  # #961: bound by a run's site restriction; may flag an empty one
 
 
 def _trusted_bindings(
@@ -130,6 +141,7 @@ def _trusted_bindings(
     """
     citation: set[str] = set()
     data_absence: set[str] = set()
+    web_search: set[str] = set()
     for cap in manifest.capabilities:
         row = resolved.get(cap.binding) or {}
         descriptor = row.get("descriptor") or {}
@@ -141,7 +153,13 @@ def _trusted_bindings(
             citation.add(cap.binding)
         if slug in _DATA_ABSENCE_CAPABILITIES:
             data_absence.add(cap.binding)
-    return TrustedBindings(citation=frozenset(citation), data_absence=frozenset(data_absence))
+        if slug in _WEB_SEARCH_CAPABILITIES:
+            web_search.add(cap.binding)
+    return TrustedBindings(
+        citation=frozenset(citation),
+        data_absence=frozenset(data_absence),
+        web_search=frozenset(web_search),
+    )
 
 
 # #663 — the credential types whose broker resolution READS an instance's credential_mappings.
@@ -252,7 +270,8 @@ def _cursor(
     member_requires_valid_json: bool = False,
     json_repair_used: bool = False,
     json_repair_grant: int = 0,
-) -> dict[str, int | str | None]:
+    required_sites: tuple[str, ...] = (),
+) -> dict[str, Any]:
     return {
         "iteration": checkpoint.iteration,
         "tool_calls_made": checkpoint.tool_calls_made,
@@ -269,6 +288,10 @@ def _cursor(
         "member_requires_valid_json": member_requires_valid_json,
         "json_repair_used": json_repair_used,
         "json_repair_grant": json_repair_grant,
+        # #961: the run's restriction survives a HITL pause. Without it a paused run comes back
+        # unrestricted, which is the same silent drop the whole issue exists to close — and it would
+        # be reachable by any member whose search sits behind a human gate.
+        "required_sites": list(required_sites),
     }
 
 
@@ -416,6 +439,7 @@ class HarnessExecutionService:
         max_tool_calls: int | None = None,
         on_exhaustion: Literal["escalate", "degrade"] | None = None,
         requires_valid_json: bool = False,
+        required_sites: list[str] | None = None,
         producer: dict[str, Any] | None = None,
     ) -> HarnessExecution:
         # Fail-closed tenancy (ADR-006/T1-M1): org is the principal's ONLY, never the manifest's.
@@ -462,6 +486,7 @@ class HarnessExecutionService:
             member_max_tool_calls=max_tool_calls,
             member_on_exhaustion=on_exhaustion,
             member_requires_valid_json=requires_valid_json,  # #853: one repair turn on bad JSON
+            required_sites=tuple(required_sites or ()),  # #961: the websites this run is held to
             producer=(
                 {**producer, "execution_id": str(execution_id)} if producer is not None else None
             ),
@@ -495,6 +520,9 @@ class HarnessExecutionService:
                 # knowledge-retriever connector emits `data_absent`, so its set is the narrower.
                 citation_bindings=trust.citation,
                 data_absent_bindings=trust.data_absence,
+                # #961: which bindings the site-restriction gate fires on — resolved by the
+                # registry, never taken from the manifest author's alias (#780's predicate).
+                web_search_bindings=trust.web_search,
             )
         finally:
             await self._aclose_llm(llm)
@@ -538,6 +566,7 @@ class HarnessExecutionService:
                     requires_valid_json,
                     cp.json_repair_used,
                     cp.json_repair_grant,
+                    tuple(required_sites or ()),  # #961: across the pause
                 ),
                 redact_patterns=cp.redact_patterns,
             )
@@ -769,6 +798,9 @@ class HarnessExecutionService:
             member_on_exhaustion=cursor.get("member_on_exhaustion"),  # #587: re-apply on resume
             # #853: re-apply on resume. Old checkpoints lack the key → False → unchanged.
             member_requires_valid_json=bool(cursor.get("member_requires_valid_json")),
+            # #961: re-apply the run's site restriction. Old checkpoints lack the key → () → a
+            # pre-#961 paused run is unchanged.
+            required_sites=tuple(cursor.get("required_sites") or ()),
         )
         resume_state = LoopCheckpoint(
             messages=checkpoint.resume_messages,
@@ -796,6 +828,9 @@ class HarnessExecutionService:
                 # knowledge-retriever connector emits `data_absent`, so its set is the narrower.
                 citation_bindings=trust.citation,
                 data_absent_bindings=trust.data_absence,
+                # #961: which bindings the site-restriction gate fires on — resolved by the
+                # registry, never taken from the manifest author's alias (#780's predicate).
+                web_search_bindings=trust.web_search,
                 # #782 (§CITE): the answer-time gate checks against the PERSISTED UNION, not this
                 # segment alone. The loop's own served set is a FRESH list on a HITL resume (the
                 # checkpoint carries the transcript, not platform counters), so without this a
@@ -832,6 +867,7 @@ class HarnessExecutionService:
                     bool(cursor.get("member_requires_valid_json")),  # #853: across a chained gate
                     new_cp.json_repair_used,
                     new_cp.json_repair_grant,
+                    tuple(cursor.get("required_sites") or ()),  # #961: across a chained gate
                 ),
                 redact_patterns=new_cp.redact_patterns,
             )
@@ -969,6 +1005,7 @@ class HarnessExecutionService:
         member_max_tool_calls: int | None = None,
         member_on_exhaustion: Literal["escalate", "degrade"] | None = None,
         member_requires_valid_json: bool = False,
+        required_sites: tuple[str, ...] = (),
         producer: dict[str, Any] | None = None,
     ) -> tuple[Any, list[ToolSpec], Any, LLMClient, TrustedBindings]:
         """Resolve + materialise the manifest's capabilities, build the dispatch + the LLM + the
@@ -987,6 +1024,7 @@ class HarnessExecutionService:
             max_tool_calls_ceiling=self._max_tool_calls_per_member_ceiling,
             member_on_exhaustion=member_on_exhaustion,  # #587: degrade vs escalate at a budget gate
             member_requires_valid_json=member_requires_valid_json,  # #853: one JSON repair turn
+            required_sites=required_sites,  # #961: the websites this run is held to
         )
         instance_by_binding, tool_specs = await self._materialise(
             manifest,

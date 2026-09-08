@@ -55,6 +55,12 @@ _MAX_BODY_BYTES = 10 * 1024 * 1024
 _MAX_REDIRECTS = 4
 _USER_AGENT = "OraclousWebResearch/1.0"
 _OPERATIONS = frozenset({"search", "fetch", "read"})
+#: #961 ruling 3: set on a RESTRICTED search that came back with nothing. Named for what it MEANS,
+#: not for the status it produces — the runtime decides what an empty restricted search does to a
+#: run; this connector only reports what happened. In ``data`` rather than ``metadata`` for the
+#: reason ``searched_sites`` is: the execution boundary persists ``result.data`` and drops
+#: ``result.metadata`` entirely, so a flag left in metadata would reach nobody.
+_SITES_EMPTY_KEY = "sites_yielded_nothing"
 
 # #820: a non-text response is refused rather than decoded — a PDF/image/archive run through
 # resp.text (and, worse, the HTML parser on `read`) produces mojibake with the shape of prose,
@@ -211,6 +217,14 @@ class WebResearchConnector(InternalTool):
             data["searched_sites"] = list(sites)
             metadata["searched_sites"] = list(sites)
             if not hits:
+                # #961 ruling 3: a reserved key the RUNTIME reads. The sentence below is for the
+                # MODEL — it stops the member re-running the identical search — and until now that
+                # was all there was, so the run itself settled as an ordinary success and a person
+                # never learned their addresses came back empty. This flag is what lets the harness
+                # finish the run marked incomplete instead. The harness pops it before the model
+                # sees it and believes it only from a first-party search row (#781's posture),
+                # which is why it is safe for the two to share one result.
+                data[_SITES_EMPTY_KEY] = True
                 # Data-absence, not a fault (ADR-021 degrade-not-crash): the named sites simply
                 # carry nothing matching. Said as a sentence the member can act on, so it proceeds
                 # instead of re-running the identical search. Deliberately NOT the retriever's

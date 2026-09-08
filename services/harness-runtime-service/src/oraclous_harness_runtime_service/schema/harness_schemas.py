@@ -79,6 +79,12 @@ class ExecuteHarnessRequest(BaseModel):
     # a JSON graph-ingest call before dispatching it and grants exactly one repair turn on a
     # malformed one. False ⇒ unchanged behaviour (every pre-#853 caller omits the key).
     requires_valid_json: bool = Field(default=False)
+    # #961 rulings 1+2: the websites this run is restricted to, as bare hostnames the engine already
+    # cleaned. The tool-use loop refuses a web search that leaves the restriction out, BEFORE the
+    # call is dispatched — checking the finished run was offered to the owner and refused, because
+    # by then the unrestricted work is paid for and the person has already waited for it. Empty ⇒
+    # no restriction, which is most runs and which must behave exactly as it does today.
+    required_sites: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def _exactly_one_manifest(self) -> ExecuteHarnessRequest:

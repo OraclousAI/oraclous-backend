@@ -25,6 +25,7 @@ from dataclasses import dataclass
 from typing import Any, Final
 
 from oraclous_ohm._slug import basic_slug
+from oraclous_ohm.sites import normalise_sites
 
 #: The cap belongs to the ENDPOINT, not the model — a chatty answer still yields a usable form, and
 #: refusing outright would send the person back to a run they cannot convert.
@@ -32,7 +33,24 @@ MAX_FIELDS: Final[int] = 8
 
 _FIELD_TYPES: Final[frozenset[str]] = frozenset({"short_text", "long_text", "choice"})
 
+#: #961 ruling 4 — the one thing a field may DECLARE about itself: that it holds the list of
+#: websites the run is restricted to. The model that invented the field sets it; nothing downstream
+#: infers it. Guessing from a field's label was offered to the owner and refused, because a wrong
+#: guess either misses a restriction the person meant or invents one they never wrote.
+BINDS_SITES: Final[str] = "sites"
+_BINDS_VALUES: Final[frozenset[str]] = frozenset({BINDS_SITES})
+
+#: The ``inputs`` key the site restriction rides under, engine-reserved like ``_refresh_seed``
+#: (#602). Underscore-prefixed on purpose: a team could plausibly declare its own input called
+#: "sites", and this is not the team's key — it is the engine's, read on every team's behalf and
+#: handed to the harness as a run-level binding.
+SITE_RESTRICTION_KEY: Final[str] = "_site_restriction"
+
 _WHITESPACE = re.compile(r"\s+")
+
+#: How the ``example`` of a website field is broken into candidate addresses. A model writes them
+#: as a comma list, a newline list, or a space-separated run, so all three split the same way.
+_EXAMPLE_SEPARATORS = re.compile(r"[,\s]+")
 
 
 class FormShapeError(ValueError):
@@ -56,6 +74,11 @@ class FormField:
     options: list[str]
     example: str
     required: bool
+    #: #961 ruling 4: what this field BINDS about the run, or ``""`` for the ordinary field that
+    #: binds nothing. ``"sites"`` is the only value, and it is what lets the run find the person's
+    #: website restriction at all — a form is prose to the team otherwise. Defaulted so every form
+    #: stored before this change reads back unchanged.
+    binds: str = ""
 
 
 def _collapse(value: Any) -> str:
@@ -83,13 +106,85 @@ def _unique_id(name: str, seen: set[str], index: int) -> str:
     return candidate
 
 
-def parse_form_draft(payload: Any) -> list[FormField]:
+def _kept_example(example: str, request_text: str) -> str:
+    """#963 — an address in a website field's example must appear in the person's OWN request.
+
+    The defect this removes: eight live runs through the gateway with a real model produced eight
+    INVENTED addresses from a request that named publications rather than addresses, including both
+    ``bbc.com`` and ``bbc.co.uk`` from one input — the two addresses #951 established are
+    mechanically indistinguishable. The example is shown as a placeholder beside the box, so a
+    person who accepts it has silently taken the model's guess as their own answer. Two rounds of
+    prompt wording did not stop it and a third made things worse, so the fix is mechanical.
+
+    It could not BE mechanical until #961's ruling 4 said which field to check — which is why the
+    two issues ship together. Only a field that declared itself gets here.
+
+    **Per entry, not all-or-nothing** (ruled 2026-09-08). A request that names one source by address
+    and one by name makes the model copy the first and invent the second INTO THE SAME VALUE, with
+    nothing marking which half is which — the worst form of the defect, because the correct half
+    lends the invented half its credibility. Dropping only the invented entry keeps a value the
+    person actually typed and removes the one nobody wrote down.
+
+    **Comparison is on the CLEANED address, both sides.** A person who pasted a full link wrote that
+    address, in the shape #953's hint invites them to use; a check that only recognised bare
+    hostnames would delete the example of the person who took that advice.
+
+    An empty ``request_text`` keeps the example as given: an absent comparison is no evidence the
+    example was invented, and deleting on no evidence is its own defect.
+    """
+    if not example or not request_text:
+        return example
+    written = set(_addresses_in(request_text))
+    kept = [
+        entry
+        for entry in _EXAMPLE_SEPARATORS.split(example.strip())
+        if entry and _cleaned_or_none(entry) in written
+    ]
+    return ", ".join(kept)
+
+
+def _cleaned_or_none(entry: str) -> str | None:
+    """One entry as its bare hostname, or ``None`` when it is not an address at all.
+
+    A publication name has no hostname, so it matches nothing and is dropped — which is the right
+    answer either way: a name in an address box is not a value the run could ever have honoured.
+    """
+    try:
+        cleaned = normalise_sites([entry])
+    except ValueError:
+        return None
+    return cleaned[0] if cleaned else None
+
+
+def _addresses_in(request_text: str) -> list[str]:
+    """Every bare hostname the person's own request actually wrote down.
+
+    Deliberately generous about SHAPE and strict about SOURCE: any token in the request that cleans
+    to a hostname counts, however they wrote it, but nothing that is not in the request counts at
+    all. That asymmetry is the whole point — the check can only ever remove what nobody wrote, and
+    it can never tell a right address from a wrong one (#951's standing limit).
+    """
+    found: list[str] = []
+    for token in _EXAMPLE_SEPARATORS.split(request_text):
+        cleaned = _cleaned_or_none(token.strip(".,;:!?()[]\"'"))
+        if cleaned is not None:
+            found.append(cleaned)
+    return found
+
+
+def parse_form_draft(payload: Any, *, request_text: str = "") -> list[FormField]:
     """Hold a model's proposed form to the endpoint's contract.
 
     ``payload`` is ``{"fields": [...]}``. Anything the screen could not render honestly —
     a field with no usable name, an unknown type, a choice with no options, a text field carrying
     options — raises ``FormShapeError``. More than ``MAX_FIELDS`` proposals are truncated rather
     than refused; an empty answer is refused, because an empty form is not a form.
+
+    ``request_text`` is the request the run was actually started with. It is used for exactly one
+    thing: checking the ``example`` of a field that DECLARED itself a site restriction against what
+    the person really wrote (#963, see ``_kept_example``). Every other field's example is left
+    alone — an ordinary example is prose lifted from the request, and checking those would delete
+    honest examples that were summarised rather than copied.
     """
     if not isinstance(payload, dict):
         raise FormShapeError("a form draft must be a JSON object")
@@ -99,6 +194,7 @@ def parse_form_draft(payload: Any) -> list[FormField]:
 
     fields: list[FormField] = []
     seen_ids: set[str] = set()
+    bound_sites_seen = False
     for index, item in enumerate(raw[:MAX_FIELDS]):
         if not isinstance(item, dict):
             raise FormShapeError("each proposed field must be an object")
@@ -123,6 +219,24 @@ def parse_form_draft(payload: Any) -> list[FormField]:
                 raise FormShapeError("only a 'choice' field carries options")
             options = []
 
+        binds = _collapse(item.get("binds"))
+        if binds and binds not in _BINDS_VALUES:
+            # Fail-closed (CLAUDE.md §3.5). Ignoring an unknown marker is the worse half of both
+            # options: the person sees a box that reads like a restriction and the run is bound by
+            # nothing at all.
+            raise FormShapeError(
+                f"a field's 'binds' must be one of {sorted(_BINDS_VALUES)}, got {binds!r}"
+            )
+        if binds == BINDS_SITES and bound_sites_seen:
+            # Two boxes both claiming the restriction is not a form a person can fill in honestly —
+            # one of the two answers would silently lose. Refused where it is drafted.
+            raise FormShapeError("only one field may bind the run's website restriction")
+        bound_sites_seen = bound_sites_seen or binds == BINDS_SITES
+
+        example = item.get("example") or ""
+        if binds == BINDS_SITES:
+            example = _kept_example(example, request_text)
+
         field_id = _unique_id(name, seen_ids, index)
         seen_ids.add(field_id)
         fields.append(
@@ -132,8 +246,9 @@ def parse_form_draft(payload: Any) -> list[FormField]:
                 hint=item.get("hint") or "",
                 type=field_type,
                 options=options,
-                example=item.get("example") or "",
+                example=example,
                 required=bool(item.get("required", False)),
+                binds=binds,
             )
         )
     return fields
@@ -203,6 +318,38 @@ def fold(fields: list[FormField], values: dict[str, Any]) -> str:
             lines.append(f"{f.name}:")
             lines.extend(f"  {part}" for part in parts)
     return "\n".join(lines)
+
+
+def run_site_restriction(fields: list[FormField], values: dict[str, Any]) -> list[str]:
+    """The websites this run is restricted to — the cleaned addresses from the field that DECLARED
+    itself a site restriction (#961 ruling 4), or ``[]`` when the form has no such field.
+
+    This is the join between #961's two halves. Ruling 4's marker is what lets the run path find the
+    person's answer at all; rulings 1 and 2 are what the runtime then does with it — a search that
+    leaves the restriction out is refused before it is dispatched.
+
+    The answer still reaches the team as PROSE as well (``fold`` is untouched). Both are needed and
+    for opposite reasons: a member that was never TOLD which sites it may use cannot ask for them,
+    and enforcing a promise a member never heard is #697's mistake — it turns a member that worked
+    into one that fails.
+
+    A blank answer binds nothing, agreeing with ``fold``, which drops a blank value from the request
+    text. A run held to a list the person never gave would be worse than no restriction at all.
+
+    Raises ``InvalidSiteError`` (the shared kernel's) on a value that is not a website address, so
+    the refusal happens where the person is still looking at the form. It cannot wait for the run:
+    #951's live probe found the search vendor accepts a full URL with an ordinary 200 and silently
+    drops the restriction, so a bad value does not fail loudly downstream — it produces a
+    normal-looking run that searched the whole web.
+    """
+    for f in fields:
+        if f.binds != BINDS_SITES:
+            continue
+        value = values.get(f.id)
+        if not isinstance(value, str) or not value.strip():
+            return []
+        return normalise_sites(value)
+    return []
 
 
 def missing_required(fields: list[FormField], values: dict[str, Any]) -> list[str]:

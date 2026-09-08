@@ -55,6 +55,7 @@ from oraclous_execution_engine_service.services.team_run_service import (
     thread_refresh_seed,
     validate_answers,
     validate_input_keys,
+    validate_site_restriction,
     validate_task_input,
 )
 
@@ -199,6 +200,9 @@ class ScheduleService:
                     # #846: same reasoning for a malformed app-answers payload — on a cron it
                     # would mis-frame the founder's assumptions on every fire, not just once.
                     validate_answers((input_data or {}).get("inputs"))
+                    # #961: and a website address the run could never honour. On a cron this is the
+                    # worst place to discover it — the restriction would be dropped on every fire.
+                    validate_site_restriction((input_data or {}).get("inputs"))
                 except TeamRunError as exc:
                     raise ScheduleError(str(exc)) from exc
         else:
