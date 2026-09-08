@@ -19,6 +19,11 @@ import pytest
 from oraclous_knowledge_graph_service.core.config import Settings
 from oraclous_knowledge_graph_service.domain.structural import ExtractionMode
 from oraclous_knowledge_graph_service.services import recipes
+
+# #949 (C7 / blocker B5): the resolved caller credential, imported here rather than at the top of
+# the shared block above because it is only used by the one B5 regression test appended at the
+# bottom of this file — every other test in this module runs in key-free `hashing` mode.
+from oraclous_knowledge_graph_service.services.model_credential import ModelCredential
 from oraclous_knowledge_graph_service.services.recipes import similarity_pass
 from oraclous_knowledge_graph_service.services.recipes.engine import (
     RecipeValidationError,
@@ -462,3 +467,100 @@ def test_per_type_min_score_rejects_out_of_range_value() -> None:
     recipe["similarities"][0]["per_type_min_score"] = {"Item": 1.5}
     with pytest.raises(RecipeValidationError):
         get_recipe_engine().validate(recipe)
+
+
+# --- #949 (C7 / blocker B5): the live defect the defaults flip would expose ----------------------
+#
+# `run_similarity_pass` already RECEIVES a resolved `credential: ModelCredential | None = None`
+# parameter (the caller — `structured_service.py` — resolves it via `credential_for_graph` exactly
+# like every other model call site since #724) but line 119's `make_embedder(settings).embed(texts)`
+# never passes it on. In `hashing` mode that is invisible (`make_embedder` ignores `credential`
+# entirely for the key-free embedder). The moment `KGS_EMBEDDER` defaults to `openai` (#949's own
+# C7), `make_embedder(settings)` with no credential raises `ModelCredentialUnavailable`, and the
+# pass's own fail-soft `except Exception` (by design, for a genuine embedder outage) catches it and
+# logs a warning — so the content-similarity pass goes silently, permanently dark for every
+# ingest, even when the caller resolved a perfectly good credential one line away. This is caused
+# BY the flip, not a paired concern with it, which is why it rides in the same commit (C7) rather
+# than #310.
+
+
+def test_similarity_pass_threads_the_resolved_credential_into_make_embedder(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[ModelCredential | None] = []
+
+    def _spy_make_embedder(settings, *, credential=None):  # noqa: ANN001, ANN202
+        calls.append(credential)
+        return _FakeEmbedder({"alpha": [1.0, 0.0, 0.0], "beta": [1.0, 0.0, 0.0]})
+
+    monkeypatch.setattr(similarity_pass, "make_embedder", _spy_make_embedder)
+
+    records = [{"id": "a", "text": "alpha"}, {"id": "b", "text": "beta"}]
+    rep = _json_rep(records, "items.json")
+    recipe = _recipe(rep.shape_signature)
+    writer = _StatefulWriter()
+    engine = get_recipe_engine()
+    result = engine.execute(recipe, rep, writer)
+
+    resolved = ModelCredential(api_key="sk-resolved-by-the-caller", credential_id="cred-1")
+    run_similarity_pass(
+        recipe=recipe,
+        representation=rep,
+        writer=writer,
+        node_index_by_rule=result.node_index_by_rule,
+        settings=Settings(embedder="openai"),
+        engine=engine,
+        meta=_META,
+        source_id=result.source_id,
+        credential=resolved,
+    )
+
+    assert calls == [resolved], (
+        "run_similarity_pass received a resolved credential but did not pass it to "
+        "make_embedder() — in openai mode this makes make_embedder() raise "
+        "ModelCredentialUnavailable, which the pass's fail-soft catch then silently turns into "
+        "'the content-similarity pass is off', with only a log line nobody reads (#949 B5)"
+    )
+
+
+def test_similarity_pass_does_not_silently_go_dark_when_a_credential_was_resolved(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The behavioural half of the same defect: with the real (unpatched) `make_embedder` and a
+    resolved credential, the pass must actually PRODUCE the similarity edge — not fail-soft-skip
+    it. Patches only the embedder's `embed()` call (via `OpenAIEmbedder`), never the credential
+    threading itself, so this fails for the real reason if `credential` is dropped on the floor."""
+    from oraclous_knowledge_graph_service.services import embedder as embedder_module
+
+    def _fake_openai_embed(self, texts: list[str]) -> list[list[float]]:  # noqa: ANN001
+        vectors = {"alpha": [1.0, 0.0, 0.0], "beta": [1.0, 0.0, 0.0]}
+        return [vectors[t] for t in texts]
+
+    monkeypatch.setattr(embedder_module.OpenAIEmbedder, "embed", _fake_openai_embed)
+
+    records = [{"id": "a", "text": "alpha"}, {"id": "b", "text": "beta"}]
+    rep = _json_rep(records, "items.json")
+    recipe = _recipe(rep.shape_signature)
+    writer = _StatefulWriter()
+    engine = get_recipe_engine()
+    result = engine.execute(recipe, rep, writer)
+
+    resolved = ModelCredential(api_key="sk-resolved-by-the-caller", credential_id="cred-1")
+    stats = run_similarity_pass(
+        recipe=recipe,
+        representation=rep,
+        writer=writer,
+        node_index_by_rule=result.node_index_by_rule,
+        settings=Settings(embedder="openai", embedding_dim=3),
+        engine=engine,
+        meta=_META,
+        source_id=result.source_id,
+        credential=resolved,
+    )
+
+    assert stats.similarity_edges == 1, (
+        "with a resolved credential and openai mode, the pass must produce the edge — a 0 here "
+        "means make_embedder() still raised ModelCredentialUnavailable and the fail-soft catch "
+        "silently swallowed it (#949 B5)"
+    )
+    assert stats.warnings == []
