@@ -42,10 +42,12 @@ from oraclous_ohm.gate_battery import (
 from oraclous_ohm.manifest import OHMLoop, OHMManifest
 from oraclous_ohm.orchestrate import DoneCheckFn, TeamRunResult
 from oraclous_ohm.parse import load_ohm
+from oraclous_ohm.sites import InvalidSiteError, normalise_sites
 
 from oraclous_execution_engine_service.core.rls import org_scope
 from oraclous_execution_engine_service.domain import verdict_consumption as vc
 from oraclous_execution_engine_service.domain.app_answers import ANSWERS_KEY, parse_answers
+from oraclous_execution_engine_service.domain.app_form import SITE_RESTRICTION_KEY
 from oraclous_execution_engine_service.domain.refresh import (
     REFRESH_SEED_KEY,
     compute_delta,
@@ -260,7 +262,7 @@ def validate_task_input(manifest: OHMManifest, inputs: dict[str, Any] | None) ->
 #: kept out of the 422's "it consumes …" list: that list exists to tell a caller which of THEIR
 #: team's keys to use, and naming an engine-internal one there would just teach them to reach for
 #: it. That matters most for ``ANSWERS_KEY``, which ADR-052 schedules for removal.
-_ENGINE_RESERVED_KEYS = frozenset({REFRESH_SEED_KEY, ANSWERS_KEY})
+_ENGINE_RESERVED_KEYS = frozenset({REFRESH_SEED_KEY, ANSWERS_KEY, SITE_RESTRICTION_KEY})
 
 
 def _declared_input_keys(manifest: OHMManifest) -> set[str]:
@@ -293,6 +295,10 @@ def _consumed_input_keys(manifest: OHMManifest) -> set[str]:
       delivers to every member. A ONE-OFF for that one app: ADR-052 decision 3 ships it now and
       migrates it onto the app-descriptor layer (#845) once that exists. Unlike the refresh seed,
       it is NOT stripped at create — here the caller is the intended source.
+    - ``SITE_RESTRICTION_KEY`` (#961) — the websites this run is restricted to, read by
+      ``team_run.resolve_run_sites`` and handed to the harness, which refuses a search that leaves
+      the restriction out. Like the answers it is not stripped: the app's own form is what puts it
+      there.
 
     Those are the ONLY readers of team state; nothing else in the runtime looks at it.
     """
@@ -328,6 +334,30 @@ def validate_input_keys(manifest: OHMManifest, inputs: dict[str, Any] | None) ->
         422,
         error_type="undeclared_input_key",
     )
+
+
+def validate_site_restriction(inputs: dict[str, Any] | None) -> None:
+    """#961, fail-closed at create: an unreadable website address is a 422, never a silent drop.
+
+    This runs BEFORE the run is persisted or enqueued, so a mistyped address costs one message and
+    no tokens. It cannot wait for the run: #951's live probe (2026-09-07) established that the
+    search vendor accepts a full URL in its domain restriction with an ordinary 200 and then
+    silently drops the restriction entirely, so a bad value does not fail loudly downstream — it
+    produces a normal-looking run that searched the whole web, which is the exact silent no-op #951
+    and #961 exist to remove.
+
+    The message NAMES the offending entry (the shared cleaner bounds and de-secrets what it quotes),
+    because a refusal that does not say which of several addresses was wrong leaves the caller
+    guessing across their whole list — the #692/#693 shape, where a member told "409" could only
+    retry blindly.
+    """
+    raw = (inputs or {}).get(SITE_RESTRICTION_KEY)
+    if raw is None:
+        return
+    try:
+        normalise_sites(raw)
+    except InvalidSiteError as exc:
+        raise TeamRunError(str(exc), 422, error_type="invalid_site_restriction") from exc
 
 
 def validate_answers(inputs: dict[str, Any] | None) -> None:
@@ -1347,6 +1377,9 @@ class TeamRunService:
         validate_answers(
             inputs
         )  # #846: a malformed app-answers payload → 422 (never half-rendered)
+        # #961: an unreadable website address → 422 here, where the person is still looking at the
+        # form, rather than as a run that silently searched the whole web.
+        validate_site_restriction(inputs)
         if (
             workspace_root is not None
         ):  # file-native (#518): org-scoped, fail-fast 422 (not mid-run)

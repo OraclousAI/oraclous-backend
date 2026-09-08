@@ -118,6 +118,7 @@ class HarnessClient:
         max_tool_calls: int | None = None,
         on_exhaustion: str | None = None,  # #587: "degrade" → the loop finishes PARTIAL at a gate
         requires_valid_json: bool = False,  # #853: one repair turn on a malformed JSON document
+        required_sites: list[str] | None = None,  # #961: the websites this run is restricted to
         timeout: float | None = None,  # noqa: ASYNC109 — forwarded to httpx, not an asyncio cancel
     ) -> dict[str, Any]:
         """Run a harness to completion/escalation and return its ``HarnessExecutionOut`` JSON.
@@ -177,6 +178,11 @@ class HarnessClient:
         # member adds zero keys and behaves exactly as it does today (the #576 pattern).
         if requires_valid_json:
             body["requires_valid_json"] = True
+        # #961 rulings 1+2: the person's own list of websites, already cleaned to bare hostnames by
+        # the shared kernel. The harness refuses a web search that leaves the restriction out.
+        # Sent only when there IS one — most runs name no sites and add zero keys.
+        if required_sites:
+            body["required_sites"] = list(required_sites)
         kwargs: dict[str, Any] = {"json": body}
         if timeout is not None:
             kwargs["timeout"] = timeout
