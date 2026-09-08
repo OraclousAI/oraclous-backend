@@ -230,6 +230,10 @@ async def get_federated_service(
         driver,
         await _embedder_for_request(settings),
         registry,
+        # #949 Q3: the SAME identity the single-graph read binds. Without it the fan-out filters on
+        # the legacy hashing space while embedding the query with a real embedder — every graph
+        # matches nothing, and federated search returns an empty 200 forever.
+        embedder_id=embedder_identity(settings),
         database=settings.neo4j_database,
         max_graphs=settings.federated_max_graphs,
         max_per_graph_k=settings.federated_max_per_graph_k,

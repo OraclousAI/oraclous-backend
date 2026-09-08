@@ -60,8 +60,16 @@ class RetrievalRepository:
         graph_id: str,
         qvec: list[float],
         top_k: int,
-        embedder_id: str = LEGACY_NULL_EMBEDDER_ID,
+        embedder_id: str,
     ) -> list[dict]:
+        # `embedder_id` is REQUIRED, deliberately. It used to default to LEGACY_NULL_EMBEDDER_ID,
+        # and that default is precisely how the federated fan-out came to filter on the legacy
+        # hashing space while the query vector was produced by a real embedder: the call site was
+        # simply missed, and nothing said so — the search returned zero rows, which is
+        # indistinguishable from a genuine miss. A wrong identity here is silent by nature, so the
+        # only safe spelling is one mypy has to see at every call site. LEGACY_NULL_EMBEDDER_ID
+        # stays the value a caller passes when it genuinely means the legacy space; it must never
+        # be reachable by omission.
         # #949 Q3: filtered on embedder_id (never compared across spaces), not pre-checked — a
         # graph mid-re-embed (C6) is legitimately MIXED, and the filter is what keeps that honest.
         return self._query(

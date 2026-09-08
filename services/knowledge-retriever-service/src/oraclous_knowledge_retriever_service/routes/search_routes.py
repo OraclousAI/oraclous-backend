@@ -14,24 +14,20 @@ from oraclous_knowledge_retriever_service.schema.search_schemas import (
     SearchRequest,
 )
 from oraclous_knowledge_retriever_service.services.retrieval_service import (
+    IDENTITY_MISMATCH_DETAIL,
     EmbedderIdentityMismatch,
 )
 
 router = APIRouter(prefix="/v1/search", tags=["search"])
 
+
 # #949 Q3: the graph holds chunks, but none in the space this deployment's query embedder produces
 # — mid re-embed, or written by a different model. 409, because nothing about the REQUEST is wrong;
 # it is the graph's current state that cannot serve it, and it becomes servable on its own once the
-# re-embed pass finishes. The message names no graph id or identity string: the gateway drains an
-# upstream body anyway, and a curated line is what a retry would be based on.
-_IDENTITY_MISMATCH = (
-    "this graph's stored embeddings were produced by a different embedder than this search uses,"
-    " so they cannot be compared; re-embedding is in progress — try again shortly."
-)
-
-
+# re-embed pass finishes. The sentence itself lives beside the exception in the services layer, so
+# the federated route renders the identical refusal rather than a second copy of the same copy.
 def _identity_mismatch() -> HTTPException:
-    return HTTPException(status_code=status.HTTP_409_CONFLICT, detail=_IDENTITY_MISMATCH)
+    return HTTPException(status_code=status.HTTP_409_CONFLICT, detail=IDENTITY_MISMATCH_DETAIL)
 
 
 def _precedence(body: SearchRequest) -> tuple[list[str] | None, bool]:

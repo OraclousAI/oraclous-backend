@@ -40,6 +40,18 @@ class EmbedderIdentityMismatch(Exception):
     """
 
 
+#: The one curated sentence a caller reads when the refusal above reaches HTTP. Spelled once, here
+#: beside the exception it explains, because BOTH read surfaces raise it — single-graph search and
+#: the federated fan-out — and two route modules each holding their own copy is the same
+#: duplicated-spelling drift this whole change exists to remove. It names no graph id and no
+#: identity string: the gateway drains an upstream body anyway, and a curated line is what a retry
+#: would be based on.
+IDENTITY_MISMATCH_DETAIL = (
+    "this graph's stored embeddings were produced by a different embedder than this search uses,"
+    " so they cannot be compared; re-embedding is in progress — try again shortly."
+)
+
+
 def _jsonable(value):
     """Coerce Neo4j-native values (e.g. neo4j.time.DateTime) to JSON-serialisable forms."""
     if isinstance(value, (str, int, float, bool, type(None))):
