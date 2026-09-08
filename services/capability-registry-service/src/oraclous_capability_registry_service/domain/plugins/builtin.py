@@ -530,6 +530,43 @@ class FederatedSearchPlugin(_ConnectorToolPlugin):
     }
 
 
+# The model-facing schema for a web search, shared by `core/web-research`'s `search` operation and
+# the standard `WebSearch` tool so the two can never drift into offering different arguments.
+#
+# #951 ruling 3: `sites` asks for a website's ADDRESS, never its name. Turning "BBC News" into a
+# hostname is a guess, and a plausible wrong guess (`bbc.com` for `bbc.co.uk`) cannot be told from a
+# right one — both return real pages — so there is deliberately no name-to-hostname table anywhere.
+# The description carries an example because an example is what stops a model inventing a shape.
+_WEB_SEARCH_PARAMETERS_SCHEMA = {
+    "type": "object",
+    "required": ["query"],
+    "properties": {
+        "query": {
+            "type": "string",
+            "description": "What to search the live web for.",
+        },
+        "max_results": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 20,
+            "description": "How many results to return. Defaults to 5.",
+        },
+        "sites": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": (
+                "Optional. Website addresses to search within, so the results can only come from "
+                'those sites — for example ["theverge.com", "bbc.co.uk"]. Give each site\'s '
+                "address (its hostname), never its name: 'BBC News' is a guess, 'bbc.co.uk' is "
+                "not. A pasted link works too and is reduced to its address. Leave it out to "
+                "search the whole web. At most 20 sites. The result tells you which addresses "
+                "were actually searched — report those, not the ones you were asked for."
+            ),
+        },
+    },
+}
+
+
 @plugin_registry.register
 class WebResearchPlugin(_ConnectorToolPlugin):
     """Pre-registered live-web research tool group (#486 / ADR-039 D1) — bound as
@@ -558,7 +595,13 @@ class WebResearchPlugin(_ConnectorToolPlugin):
             # UNKNOWN_PROVIDER and the model re-sent it until the budget was gone. It is dropped
             # from the MODEL-facing operation only: `INPUT_SCHEMA` below still declares it, and
             # `_search()` still honours an explicitly-passed value for an internal caller.
-            "parameters": {"query": "str", "max_results": "int"},
+            "parameters": {"query": "str", "max_results": "int", "sites": "list"},
+            # #951 T6: the flat hint map above can express ONLY a type — no sentence, no `items`,
+            # no example. That is exactly how `provider` reached a model as a bare unexplained
+            # string. A declared `parameters_schema` is handed to the model UNCHANGED (#698 D1), so
+            # this is where an argument gets told what it is for. Both are kept and must agree:
+            # the map is the descriptor's older surface, the schema is what a member actually sees.
+            "parameters_schema": _WEB_SEARCH_PARAMETERS_SCHEMA,
             # §CITE rev6 names `core/web-research.search` as THE collection case
             "result_kind": "collection",
         },
@@ -587,6 +630,7 @@ class WebResearchPlugin(_ConnectorToolPlugin):
             "query": {"type": "string"},
             "max_results": {"type": "integer", "minimum": 1, "maximum": 20},
             "provider": {"type": "string"},
+            "sites": {"type": "array", "items": {"type": "string"}},
             "url": {"type": "string"},
         },
     }
@@ -1068,7 +1112,10 @@ class WebSearchToolPlugin(_ConnectorToolPlugin):
         {
             "name": "search",
             "description": "Search the live web and return ranked hits.",
-            "parameters": {"query": "str", "max_results": "int"},
+            "parameters": {"query": "str", "max_results": "int", "sites": "list"},
+            # #951: the same declared schema Web Research's `search` uses, so the two curated
+            # search tools can never offer a member a different set of arguments.
+            "parameters_schema": _WEB_SEARCH_PARAMETERS_SCHEMA,
             "result_kind": "collection",
         },
     ]
@@ -1081,6 +1128,7 @@ class WebSearchToolPlugin(_ConnectorToolPlugin):
         "properties": {
             "query": {"type": "string", "minLength": 1},
             "max_results": {"type": "integer", "minimum": 1, "maximum": 20},
+            "sites": {"type": "array", "items": {"type": "string"}},
         },
     }
     OUTPUT_SCHEMA = _TEXT_OUTPUT
