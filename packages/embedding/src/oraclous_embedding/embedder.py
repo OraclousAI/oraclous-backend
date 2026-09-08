@@ -38,6 +38,36 @@ _DEFAULT_OPENAI_MODEL = "text-embedding-3-small"
 LEGACY_NULL_EMBEDDER_ID = "hashing:512"
 
 
+#: Provider answers that mean OUR credential is the problem, not the content we sent: 401/403
+#: (rejected or revoked) and 429 (quota exhausted). Matched on the stringified error because the
+#: provider SDKs and the extraction library both wrap the original exception in their own type, so
+#: the status code survives only in the message.
+CREDENTIAL_FAULT_MARKERS = (
+    "401",
+    "403",
+    "429",
+    "permissiondenied",
+    "authenticationerror",
+    "invalid_api_key",
+    "quota",
+    "insufficient_quota",
+    "key limit exceeded",
+)
+
+
+def is_credential_failure(error: BaseException) -> bool:
+    """True when a model call failed because the CREDENTIAL is bad, not because the input is.
+
+    Shared, because both sides act on the same answer: the write side fails the run rather than
+    reporting a plausible entity count, the read side refuses the search rather than 500ing, and
+    both drop the cached credential so a rotation heals within one call instead of one TTL. Two
+    copies of this list would drift, and a marker missing from one copy is a whole class of
+    credential fault silently reclassified as "the content was bad".
+    """
+    text = f"{type(error).__name__}: {error}".lower()
+    return any(marker in text for marker in CREDENTIAL_FAULT_MARKERS)
+
+
 @runtime_checkable
 class Embedder(Protocol):
     dim: int

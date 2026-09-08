@@ -8,21 +8,25 @@ the two can never drift apart again.
 """
 
 from oraclous_embedding.embedder import (
+    CREDENTIAL_FAULT_MARKERS,
     LEGACY_NULL_EMBEDDER_ID,
     Embedder,
     EmbedderCredentialRequired,
     HashingEmbedder,
     OpenAIEmbedder,
     embedder_identity,
+    is_credential_failure,
     make_embedder,
 )
 
 __all__ = [
+    "CREDENTIAL_FAULT_MARKERS",
     "LEGACY_NULL_EMBEDDER_ID",
     "Embedder",
     "EmbedderCredentialRequired",
     "HashingEmbedder",
     "OpenAIEmbedder",
     "embedder_identity",
+    "is_credential_failure",
     "make_embedder",
 ]

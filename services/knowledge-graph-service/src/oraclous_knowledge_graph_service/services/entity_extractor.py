@@ -37,6 +37,7 @@ from neo4j_graphrag.experimental.components.types import (
     TextChunk,
 )
 from neo4j_graphrag.llm import LLMInterface
+from oraclous_embedding import is_credential_failure
 
 from oraclous_knowledge_graph_service.core.config import Settings
 from oraclous_knowledge_graph_service.services import credential_cache
@@ -51,27 +52,12 @@ logger = logging.getLogger(__name__)
 _FROM_CHUNK = LexicalGraphConfig().node_to_chunk_relationship_type
 
 
-#: Provider answers that mean OUR credential is the problem, not this chunk's content: 401/403
-#: (rejected or revoked) and 429 (quota exhausted). Matched on the stringified error because the
-#: extraction library wraps provider exceptions in its own LLMGenerationError, so the status code
-#: survives only in the message.
-_CREDENTIAL_FAULT_MARKERS = (
-    "401",
-    "403",
-    "429",
-    "permissiondenied",
-    "authenticationerror",
-    "invalid_api_key",
-    "quota",
-    "insufficient_quota",
-    "key limit exceeded",
-)
-
-
-def _is_credential_failure(error: BaseException) -> bool:
-    """True when a chunk failed because the CREDENTIAL is bad, not because the chunk is."""
-    text = f"{type(error).__name__}: {error}".lower()
-    return any(marker in text for marker in _CREDENTIAL_FAULT_MARKERS)
+#: True when a chunk failed because the CREDENTIAL is bad, not because the chunk is. The markers
+#: and the matching now live in the SHARED embedder seam (`packages/embedding`), because the read
+#: side has to classify the very same provider answers on its own embed call — and a marker present
+#: in one copy but not the other would silently reclassify a whole class of credential fault as
+#: "the content was bad" on one side only.
+_is_credential_failure = is_credential_failure
 
 
 class ExtractionCredentialRejected(RuntimeError):
