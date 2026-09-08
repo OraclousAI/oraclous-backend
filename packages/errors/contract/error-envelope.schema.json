@@ -31,7 +31,8 @@
             "SERVICE_UNAVAILABLE",
             "GATEWAY_TIMEOUT",
             "MODEL_NOT_CONNECTED",
-            "IDEA_TOO_VAGUE"
+            "IDEA_TOO_VAGUE",
+            "MODEL_CREDENTIAL_REQUIRED"
           ]
         },
         "message": {
