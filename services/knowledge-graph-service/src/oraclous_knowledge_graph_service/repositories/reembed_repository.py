@@ -33,6 +33,17 @@ _IS_CURRENT = (
     "OR (c.embedder_id IS NULL AND $embedder_id = $legacy_embedder_id))"
 )
 
+# Stale = not current — but `NOT` alone is wrong here, and wrong in the one direction that matters.
+# Cypher is three-valued: for a chunk with NO `embedder_id` and a non-legacy target, the first
+# comparison is NULL = 'openai:…' → NULL, the second is false, and `NULL OR false` is NULL. `NOT
+# NULL` is NULL, and a WHERE that evaluates to NULL drops the row. So a bare `NOT _IS_CURRENT` finds
+# every chunk EXCEPT the legacy ones — and the legacy ones are precisely the corpus this migration
+# exists for: every chunk written before the identity stamp carries no `embedder_id` at all. The
+# sweep would have reported success forever while never dispatching them, and their workspaces would
+# have gone on refusing every meaning-based search. `coalesce(…, false)` collapses the unknown to
+# "not current", the fail-safe reading: an ambiguous identity is re-embedded, never skipped.
+_IS_STALE = f"NOT coalesce({_IS_CURRENT}, false)"
+
 
 class ReembedRepository:
     def __init__(
@@ -70,7 +81,7 @@ class ReembedRepository:
             "MATCH (c:Chunk) "
             "WHERE c.graph_id = $graph_id AND c.organisation_id = $organisation_id "
             "AND c.text IS NOT NULL "
-            f"AND NOT {_IS_CURRENT} "
+            f"AND {_IS_STALE} "
             "RETURN c.id AS id, c.text AS text "
             "ORDER BY c.id LIMIT $limit",
             embedder_id=embedder_id,
@@ -117,7 +128,7 @@ def enumerate_graphs_needing_reembed(
         "MATCH (c:Chunk) "
         "WHERE c.organisation_id IS NOT NULL AND c.graph_id IS NOT NULL "
         "AND c.text IS NOT NULL "
-        f"AND NOT {_IS_CURRENT} "
+        f"AND {_IS_STALE} "
         "RETURN DISTINCT c.organisation_id AS org, c.graph_id AS graph "
         "ORDER BY org, graph"
     )
