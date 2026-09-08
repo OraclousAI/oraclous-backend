@@ -29,9 +29,11 @@ import httpx
 
 from oraclous_capability_registry_service.core.config import get_settings
 from oraclous_capability_registry_service.domain.connectors.search_providers import (
+    InvalidSiteError,
     SearchProviderError,
     clamp_max_results,
     get_search_provider,
+    normalise_sites,
 )
 from oraclous_capability_registry_service.domain.egress import egress_allowed, pinned_request
 from oraclous_capability_registry_service.domain.executors.base import (
@@ -151,6 +153,16 @@ class WebResearchConnector(InternalTool):
             return ExecutionResult(
                 success=False, error_message="'query' is required", error_type="INVALID_INPUT"
             )
+        try:
+            # Validated BEFORE the credential is resolved and long before the network: a bad address
+            # is a bad argument whatever else is true, and the refusal names the offending value so
+            # the caller fixes that one rather than guessing. It also means the vendor's own 400
+            # (whose body names the value, and which must never be echoed — ADR-008) is not reached.
+            sites = normalise_sites(input_data.get("sites"))
+        except InvalidSiteError as exc:
+            return ExecutionResult(
+                success=False, error_message=str(exc), error_type="INVALID_INPUT"
+            )
         creds = self.get_credentials(context, "api_key")
         api_key = creds.get("api_key") if isinstance(creds, dict) else None
         if not api_key:
@@ -166,18 +178,43 @@ class WebResearchConnector(InternalTool):
         try:
             provider = get_search_provider(str(provider_name))
             hits = await provider.search(
-                query, api_key=str(api_key), max_results=max_results, transport=self.transport
+                query,
+                api_key=str(api_key),
+                max_results=max_results,
+                sites=sites,
+                transport=self.transport,
             )
         except SearchProviderError as exc:
             meta = {"status_code": exc.status_code} if exc.status_code is not None else {}
             return ExecutionResult(
                 success=False, error_message=str(exc), error_type=exc.error_type, metadata=meta
             )
-        return ExecutionResult(
-            success=True,
-            data={"hits": [hit.model_dump() for hit in hits]},
-            metadata={"provider": provider.name, "hit_count": len(hits)},
-        )
+        data: dict[str, Any] = {"hits": [hit.model_dump() for hit in hits]}
+        metadata: dict[str, Any] = {"provider": provider.name, "hit_count": len(hits)}
+        if sites:
+            # #951 D4b: the run says which hostnames it ACTUALLY searched. No mechanical check can
+            # tell `bbc.com` from `bbc.co.uk` — both return real pages — so the only honest answer
+            # to a wrong-but-plausible address is to show what was used. These are the CLEANED
+            # hostnames, never the raw text supplied, or the mismatch this exists to surface stays
+            # hidden. It lives in `data` and not only in `metadata` because the registry's execution
+            # boundary persists `result.data` and drops `result.metadata` entirely
+            # (`tool_execution_service` finalises with `output_data=result.data`) — a list left in
+            # metadata alone would reach neither the member nor the run's step trace.
+            data["searched_sites"] = list(sites)
+            metadata["searched_sites"] = list(sites)
+            if not hits:
+                # Data-absence, not a fault (ADR-021 degrade-not-crash): the named sites simply
+                # carry nothing matching. Said as a sentence the member can act on, so it proceeds
+                # instead of re-running the identical search. Deliberately NOT the retriever's
+                # reserved `data_absent` key: #781 made the runtime believe that only from a trusted
+                # retrieval binding, and emitting it here would be exactly the forgery it closed.
+                data["note"] = (
+                    "No results were found on the sites this search was restricted to "
+                    f"({', '.join(sites)}). Those sites carry nothing matching this query, so "
+                    "proceed with what you have rather than repeating the same search. If the "
+                    "addresses look wrong, correct them and search once more."
+                )
+        return ExecutionResult(success=True, data=data, metadata=metadata)
 
     async def _fetch(self, input_data: dict[str, Any], *, read: bool) -> ExecutionResult:
         url = input_data.get("url")
