@@ -38,6 +38,7 @@ from oraclous_knowledge_retriever_service.core.config import Settings, get_setti
 from oraclous_knowledge_retriever_service.services.broker_client import BrokerError
 from oraclous_knowledge_retriever_service.services.embedder import (
     Embedder,
+    embedder_identity,
     make_embedder,
     resolve_embedder_for_org,
 )
@@ -179,6 +180,9 @@ async def get_retrieval_service(
     return RetrievalService(
         driver,
         await _embedder_for_request(settings),
+        # #949 Q3: the identity this deployment's query vectors live in, from the ONE shared
+        # function the write side stamps chunks with — so read and write cannot spell it apart.
+        embedder_id=embedder_identity(settings),
         database=settings.neo4j_database,
         redis_client=get_redis_client(request),
         cache_ttl=settings.query_cache_ttl,

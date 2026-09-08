@@ -22,11 +22,22 @@ from oraclous_knowledge_retriever_service.repositories.query_cache_repository im
     QueryCacheRepository,
 )
 from oraclous_knowledge_retriever_service.repositories.retrieval_repository import (
+    LEGACY_NULL_EMBEDDER_ID,
     RetrievalRepository,
 )
 from oraclous_knowledge_retriever_service.services.embedder import Embedder
 
 _RRF_K = 60
+
+
+class EmbedderIdentityMismatch(Exception):
+    """The graph holds chunks, but none under the query embedder's identity (#949 Q3).
+
+    Fail-closed (§3.5): a graph mid-re-embed, or one written by a different model, holds vectors in
+    a space this query embedder cannot be compared against. That is the core #643 failure mode — a
+    plausible-looking cosine computed across two unrelated spaces — so it surfaces as a refusal the
+    caller can act on, never as a silently empty result indistinguishable from a genuine miss.
+    """
 
 
 def _jsonable(value):
@@ -144,12 +155,18 @@ class RetrievalService:
         driver,
         embedder: Embedder,
         *,
+        embedder_id: str = LEGACY_NULL_EMBEDDER_ID,
         database: str | None = None,
         redis_client=None,
         cache_ttl: int = 300,
     ) -> None:
         self._driver = driver
         self._embedder = embedder
+        # #949 Q3: the identity of the space `embedder` produces vectors in — the ONE shared
+        # `embedder_identity` string, the same function the write side stamps onto every :Chunk.
+        # Never derived here from the embedder object, or the two sides could spell it differently
+        # again, which is the whole of #643.
+        self._embedder_id = embedder_id
         self._db = database
         # Advisory query cache (#308): a None client (cache disabled / no Redis) makes the cache a
         # no-op, so the read path is identical with the flag off. Built per-request like _repo() so
@@ -206,7 +223,22 @@ class RetrievalService:
         # One query is a one-element batch; the write side has always called it this way.
         (qvec,) = self._embedder.embed([query])
         repo = self._repo()
-        rows = await asyncio.to_thread(repo.semantic, graph_id=graph_id, qvec=qvec, top_k=top_k)
+        rows = await asyncio.to_thread(
+            repo.semantic,
+            graph_id=graph_id,
+            qvec=qvec,
+            top_k=top_k,
+            embedder_id=self._embedder_id,
+        )
+        if not rows and await asyncio.to_thread(repo.has_any_chunk, graph_id=graph_id):
+            # The graph holds chunks, but the identity filter matched none of them: every vector in
+            # it lives in a space this query cannot be compared against. Refuse. Returning [] here
+            # would be indistinguishable from a genuine miss, and a caller cannot act on that — the
+            # probe exists only to tell those two apart, and only runs when the filter came back
+            # empty, so an ordinary search pays nothing for it.
+            raise EmbedderIdentityMismatch(
+                f"graph {graph_id} holds no chunks embedded by {self._embedder_id}"
+            )
         results = [_to_node_result(r) for r in rows]
         await self._cache_set(
             graph_id=graph_id,

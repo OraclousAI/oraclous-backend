@@ -156,11 +156,16 @@ class IngestionService:
         embedder: Embedder,
         extractor: EntityExtractor | None = None,
         ontology: Ontology | None = None,
+        embedder_id: str = "hashing:512",
     ) -> None:
         self._write_repo = write_repo
         self._embedder = embedder
         self._extractor = extractor
         self._ontology = ontology
+        # #949 Q3: the identity string (`packages/embedding.embedder_identity`) stamped on every
+        # `:Chunk` this ingest writes — must be computed from the SAME settings `embedder` was
+        # built from, never guessed here.
+        self._embedder_id = embedder_id
 
     async def ingest(
         self,
@@ -225,4 +230,6 @@ class IngestionService:
             ontology_violations=violations,
             ontology_coercions=coercions,
             citation=citation,
+            embedder_id=self._embedder_id,
+            embedding_dim=self._embedder.dim,
         )

@@ -14,6 +14,17 @@ from neo4j import Driver
 
 _COSINE = "reduce(s = 0.0, i IN range(0, size(c.embedding) - 1) | s + c.embedding[i] * $qvec[i])"
 
+# #949 Q3: a chunk written before the embedder-identity stamp landed carries NO `embedder_id` at
+# all. It was written by the ORIGINAL hashing embedder, so a NULL is read as this identity — an
+# explicit assumption that breaks if the hashing dimension ever changes, so it is pinned here
+# (and nowhere else) rather than left implicit.
+LEGACY_NULL_EMBEDDER_ID = "hashing:512"
+
+_IDENTITY_PREDICATE = (
+    "(c.embedder_id = $embedder_id "
+    "OR (c.embedder_id IS NULL AND $embedder_id = $legacy_embedder_id))"
+)
+
 
 class RetrievalRepository:
     def __init__(
@@ -29,18 +40,36 @@ class RetrievalRepository:
         )
         return [r.data() for r in records]
 
-    def semantic(self, *, graph_id: str, qvec: list[float], top_k: int) -> list[dict]:
+    def semantic(
+        self, *, graph_id: str, qvec: list[float], top_k: int, embedder_id: str = LEGACY_NULL_EMBEDDER_ID
+    ) -> list[dict]:
+        # #949 Q3: filtered on embedder_id (never compared across spaces), not pre-checked — a
+        # graph mid-re-embed (C6) is legitimately MIXED, and the filter is what keeps that honest.
         return self._query(
             "MATCH (c:Chunk) "
             "WHERE c.graph_id = $graph_id AND c.organisation_id = $organisation_id "
             "AND c.embedding IS NOT NULL "
+            f"AND {_IDENTITY_PREDICATE} "
             f"WITH c, {_COSINE} AS score "
             "RETURN elementId(c) AS id, labels(c) AS labels, properties(c) AS props, score "
             "ORDER BY score DESC LIMIT $top_k",
             graph_id=graph_id,
             qvec=qvec,
             top_k=top_k,
+            embedder_id=embedder_id,
+            legacy_embedder_id=LEGACY_NULL_EMBEDDER_ID,
         )
+
+    def has_any_chunk(self, *, graph_id: str) -> bool:
+        """Cheap org+graph-scoped existence probe, UNDER ANY IDENTITY — distinguishes "REFUSED
+        (chunks exist, in a space this query can't compare against)" from "genuinely empty" (#949
+        Q3). LIMIT 1: this never needs to count, only to know whether anything is there."""
+        rows = self._query(
+            "MATCH (c:Chunk) WHERE c.graph_id = $graph_id AND c.organisation_id = $organisation_id "
+            "RETURN elementId(c) AS id LIMIT 1",
+            graph_id=graph_id,
+        )
+        return bool(rows)
 
     def fulltext(self, *, graph_id: str, query: str, top_k: int) -> list[dict]:
         # Index-free, read-only lexical match (T6: KRS issues no write Cypher, so it never

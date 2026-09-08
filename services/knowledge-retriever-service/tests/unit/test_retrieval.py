@@ -30,9 +30,11 @@ def _ctx():
 
 # --- embedder -----------------------------------------------------------------
 def test_embedder_deterministic_dim_normalised() -> None:
+    # #643: the shared seam is batch-shaped — `embed(texts) -> vectors`. One text is a one-element
+    # batch (`tests/contract/test_shared_embedder_contract.py` pins the shape).
     e = HashingEmbedder(dim=64)
-    v1 = e.embed("ada lovelace")
-    assert v1 == e.embed("ada lovelace")
+    (v1,) = e.embed(["ada lovelace"])
+    assert [v1] == e.embed(["ada lovelace"])
     assert len(v1) == 64
     assert abs(math.sqrt(sum(x * x for x in v1)) - 1.0) < 1e-9
 
