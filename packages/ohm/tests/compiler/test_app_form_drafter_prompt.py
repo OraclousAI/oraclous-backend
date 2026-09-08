@@ -19,19 +19,27 @@ and quietly dropped the restriction.
 These are static assertions on the prompt, because a prompt is the whole deliverable here — no
 code path branches on it. ``test_prompts.py`` (#750) is the precedent for testing a prompt at all,
 but it matches plain substrings; this file goes further and asserts properties of the prompt's own
-website paragraph, so the implementation is free to word the rule its own way and a later rewrite
-that drops the substance still fails. That extra machinery is new here, so it is kept small and
-its two failure modes are guarded deliberately:
+website rule, so the implementation is free to word that rule its own way and a later rewrite that
+drops the substance still fails. That extra machinery is new here, so it is kept small and both of
+its failure modes are guarded deliberately. Every guard below was raised at the Tests Review gate,
+with a counterexample, and each is re-checked in the ``[impl]`` PR against the wording that shipped.
 
-- **A correct rule must not be rejected.** The rule is extracted a PARAGRAPH at a time, never a
-  sentence at a time. A writer who puts one idea per sentence leaves sentences that name no
-  website word at all ("Never ask for a publication's name."), and a sentence-level extractor
-  drops exactly those — failing a prompt that satisfies every acceptance criterion, and quietly
-  pressuring the implementer into one contorted run-on sentence. Raised at the Tests Review gate.
-- **A wrong rule must not be accepted.** Where two words have to appear TOGETHER to mean anything
-  (a refusal, and the thing refused), they are required in the SAME sentence. Checked against the
-  joined paragraph instead, a prompt whose "name" is the field's own ``name`` key and whose "not"
-  belongs to an unrelated instruction passes while refusing nothing. Also raised at that gate.
+**A correct rule must not be rejected.** Three ways that nearly happened:
+
+- The rule is extracted a BLOCK at a time, never a sentence at a time. A writer who puts one idea
+  per sentence leaves sentences naming no website word at all ("Never ask for a publication's
+  name."), and a sentence-level extractor drops exactly those — failing a prompt that satisfies
+  every acceptance criterion, and quietly pressuring the implementer into one contorted run-on.
+- A block absorbs the bulleted or indented lines under it. This prompt already writes its field
+  contract as one bullet per line, so a rule in its own house style — a lead-in and a bullet per
+  requirement — would otherwise be reduced to the lead-in alone.
+- A refusal is any of the words a person actually reaches for, "avoid" and "don't" included. A test
+  that recognises only "never" rejects a rule that plainly refuses.
+
+**A wrong rule must not be accepted.** Where two words have to appear TOGETHER to mean anything
+(a refusal, and the thing refused), they are required in the SAME sentence. Checked against the
+joined rule instead, a prompt whose "name" is the field's own ``name`` key and whose "not" belongs
+to an unrelated instruction passes while refusing nothing at all.
 """
 
 from __future__ import annotations
@@ -60,29 +68,59 @@ _WEBSITE_WORD = re.compile(
     r"\b(?:" + "|".join(re.escape(w) for w in _WEBSITE_WORDS) + r")\b", re.IGNORECASE
 )
 
-#: What it takes to REFUSE something rather than merely prefer it.
-_REFUSAL = re.compile(r"\b(?:never|not|rather than|instead of|no longer)\b", re.IGNORECASE)
+#: What it takes to REFUSE something rather than merely prefer it. Wide on purpose: "avoid" and
+#: "don't" refuse a thing just as plainly as "never", and a test that accepts only some of the
+#: words a person might reach for rejects a correct rule. Note "don't" is why a bare ``\bnot\b``
+#: is not enough — the apostrophe means it never appears as a substring there.
+_REFUSAL = re.compile(
+    r"\b(?:never|not|n't|do not|don't|avoid|rather than|instead of|as opposed to|no longer)\b",
+    re.IGNORECASE,
+)
+
+#: A line that continues the block above it rather than starting a new instruction: a bullet, or
+#: an indented run-on. ``APP_FORM_DRAFTER_PROMPT`` already writes its field contract this way.
+_CONTINUATION = re.compile(r"^\s*(?:[-*\u2022]|\s{2,}\S)")
 
 
-def _paragraphs(prompt: str) -> list[str]:
-    """The prompt's own line-delimited blocks. ``APP_FORM_DRAFTER_PROMPT`` is assembled as one
-    string whose logical instructions each end in ``\\n``, so a paragraph is the natural unit of a
-    rule — and it keeps a rule's sentences together whichever way the author breaks them up."""
-    return [p.strip() for p in prompt.split("\n") if p.strip()]
+def _blocks(prompt: str) -> list[str]:
+    """The prompt's own instruction blocks. ``APP_FORM_DRAFTER_PROMPT`` is assembled as one string
+    whose logical instructions each end in ``\\n``, so a line is the natural unit — except where an
+    instruction runs on as a bulleted or indented list, which this prompt already does for the
+    field contract. Such continuation lines are folded back into the line that introduced them.
+
+    Without the fold, a rule written in this prompt's OWN house style — a lead-in line and a bullet
+    per requirement — is reduced to its lead-in, and a substance-preserving reformat fails five of
+    the six tests below. Raised at the Tests Review gate.
+    """
+    blocks: list[str] = []
+    for raw in prompt.split("\n"):
+        if not raw.strip():
+            continue
+        if blocks and _CONTINUATION.match(raw):
+            blocks[-1] = f"{blocks[-1]} {raw.strip()}"
+        else:
+            blocks.append(raw.strip())
+    return blocks
 
 
 def _sentences(text: str) -> list[str]:
-    """Split a paragraph into sentences. Crude on purpose: it exists only to check that two words
-    which must travel together actually do."""
-    return [s.strip() for s in re.split(r"(?<=[.;:])\s+", text) if s.strip()]
+    """Split a block into sentences. Crude on purpose: it exists only to check that two words which
+    must travel together actually do.
+
+    Deliberately NOT split on a colon. A colon introduces rather than separates, so splitting there
+    cuts a lead-in away from the clause that completes it — "Whether pasted or typed: a link to the
+    address is accepted." would stop counting as one statement. Raised at the Tests Review gate.
+    """
+    return [s.strip() for s in re.split(r"(?<=[.;])\s+", text) if s.strip()]
 
 
 def _website_rule(prompt: str) -> str:
-    """Every paragraph of the prompt that talks about which websites to use, joined.
+    """Every block of the prompt that talks about which websites to use, joined.
 
-    Whole paragraphs, so a correctly worded rule split across several sentences survives intact.
+    Whole blocks, so a correctly worded rule survives however its author breaks it up — several
+    sentences, or a lead-in and a list.
     """
-    return " ".join(p for p in _paragraphs(prompt) if _WEBSITE_WORD.search(p))
+    return " ".join(b for b in _blocks(prompt) if _WEBSITE_WORD.search(b))
 
 
 def test_the_drafter_is_told_a_website_field_asks_for_an_address() -> None:
