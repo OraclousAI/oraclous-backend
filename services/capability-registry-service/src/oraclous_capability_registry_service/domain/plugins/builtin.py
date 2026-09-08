@@ -530,6 +530,17 @@ class FederatedSearchPlugin(_ConnectorToolPlugin):
     }
 
 
+# What the CONNECTOR accepts for `sites`, which is deliberately wider than what a model is asked
+# for below. `input_validation` enforces a declared top-level `type` from this schema BEFORE
+# `_execute_internal` runs, so declaring `array` here refuses a bare string at the boundary with
+# "sites must be a array, got string" — an ungrammatical message that never says what to send, and
+# it makes the connector's own comma-splitting unreachable. Declaring both shapes under `anyOf`
+# (which that validator does not model, so it passes the value through) puts the handling and the
+# explanation in the connector, where the message can name the offending value. Found by the live
+# gateway run; every unit test reached the connector directly and never crossed this layer.
+_SITES_INPUT = {"anyOf": [{"type": "array", "items": {"type": "string"}}, {"type": "string"}]}
+
+
 # The model-facing schema for a web search, shared by `core/web-research`'s `search` operation and
 # the standard `WebSearch` tool so the two can never drift into offering different arguments.
 #
@@ -630,7 +641,7 @@ class WebResearchPlugin(_ConnectorToolPlugin):
             "query": {"type": "string"},
             "max_results": {"type": "integer", "minimum": 1, "maximum": 20},
             "provider": {"type": "string"},
-            "sites": {"type": "array", "items": {"type": "string"}},
+            "sites": _SITES_INPUT,
             "url": {"type": "string"},
         },
     }
@@ -1128,7 +1139,7 @@ class WebSearchToolPlugin(_ConnectorToolPlugin):
         "properties": {
             "query": {"type": "string", "minLength": 1},
             "max_results": {"type": "integer", "minimum": 1, "maximum": 20},
-            "sites": {"type": "array", "items": {"type": "string"}},
+            "sites": _SITES_INPUT,
         },
     }
     OUTPUT_SCHEMA = _TEXT_OUTPUT
