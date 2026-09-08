@@ -98,6 +98,23 @@ _DATA_ABSENCE_CAPABILITIES = frozenset({"knowledge-retriever"})
 # graph data-absence, and a shape that folded these together would silently grant it both.
 _WEB_SEARCH_CAPABILITIES = frozenset({"web-research", "websearch"})
 
+# #968: and the predicate that pairs with it, which is deliberately NOT the one above.
+#
+# The two sets guard risks that point in OPPOSITE directions, and the fix for #968 is to stop
+# pretending otherwise. For citations, believing a row that should not be believed mints forged
+# provenance, so the dangerous direction is too WIDE and a positive `INTERNAL` allow-list is right.
+# For the site restriction, a row that is NOT believed is simply not enforced — so the dangerous
+# direction is too NARROW, and that is exactly what shipped: both search tools are registered
+# `TYPE = "API"` (builtin.py), the `INTERNAL` allow-list matched neither, and a person's list of
+# websites was ignored on every real run while every test stayed green.
+#
+# What #780 actually established is that an MCP-imported row must never be trusted on a name it
+# borrowed, and `spec.type == "mcp"` is the reliable marker of one (the registry stamps it at
+# import and gates such rows `pending_approval`). Excluding that keeps #780's property intact
+# without coupling this gate to which of the platform's several first-party types a particular
+# plugin happens to declare — the coupling that broke it.
+_MCP_SPEC_TYPE = "mcp"
+
 # #780 item 1 (security): the second predicate, alongside the row's name slug. A registry row's
 # `name` is a DISPLAY string — for an imported MCP tool it is `<admin label>-<server tool name>`,
 # both halves chosen outside the platform, so an admin importing a server labelled `knowledge` with
@@ -146,15 +163,19 @@ def _trusted_bindings(
         row = resolved.get(cap.binding) or {}
         descriptor = row.get("descriptor") or {}
         spec = descriptor.get("spec") or {}
-        if not isinstance(spec, dict) or spec.get("type") != _FIRST_PARTY_SPEC_TYPE:
-            continue
+        if not isinstance(spec, dict):
+            continue  # fail-closed: a row with no readable descriptor is trusted for nothing
         slug = capability_slug(str(row.get("name") or ""))
+        # #968: the web-search set uses the not-an-import predicate; see its note above. It is
+        # evaluated BEFORE the `INTERNAL` gate below, because that gate is what excluded it.
+        if slug in _WEB_SEARCH_CAPABILITIES and spec.get("type") != _MCP_SPEC_TYPE:
+            web_search.add(cap.binding)
+        if spec.get("type") != _FIRST_PARTY_SPEC_TYPE:
+            continue
         if slug in _CITATION_MINTING_CAPABILITIES:
             citation.add(cap.binding)
         if slug in _DATA_ABSENCE_CAPABILITIES:
             data_absence.add(cap.binding)
-        if slug in _WEB_SEARCH_CAPABILITIES:
-            web_search.add(cap.binding)
     return TrustedBindings(
         citation=frozenset(citation),
         data_absence=frozenset(data_absence),

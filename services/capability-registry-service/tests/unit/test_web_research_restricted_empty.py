@@ -168,3 +168,50 @@ def test_the_declared_input_shape_is_unchanged() -> None:
 
     sites = WebResearchPlugin.INPUT_SCHEMA["properties"]["sites"]
     assert sites == {"anyOf": [{"type": "array", "items": {"type": "string"}}, {"type": "string"}]}
+
+
+# ── #968: what the harness's site-restriction gate assumes about these rows ──────────────────────
+#
+# The gate lives in another service and decides which tool it fires on from the registry's own
+# descriptor. It shipped dead because it assumed a descriptor type neither search tool has, and its
+# own test asserted the assumption rather than the fact. These two pin the fact where it is defined,
+# so a change here fails HERE, rather than silently switching enforcement off in a run
+# nobody is watching.
+
+
+def test_neither_search_tool_is_an_imported_row() -> None:
+    """The one property the gate now depends on: these are the platform's own tools, not imports.
+
+    An MCP-imported row is stamped ``spec.type == "mcp"`` and must never be trusted on a name it
+    borrowed (#780). Everything else about the type is deliberately no longer the gate's business —
+    depending on WHICH first-party type a plugin picked is what broke it.
+    """
+    from oraclous_capability_registry_service.domain.plugins.builtin import (
+        WebResearchPlugin,
+        WebSearchToolPlugin,
+    )
+
+    for plugin in (WebResearchPlugin, WebSearchToolPlugin):
+        assert plugin.TYPE != "mcp", (
+            f"{plugin.__name__} now looks like an imported row, so the harness would stop "
+            "enforcing a person's website restriction on it"
+        )
+
+
+def test_both_search_tools_keep_the_names_the_gate_matches_on() -> None:
+    """The other half: the gate matches on the row's slugified name.
+
+    Renaming either plugin silently unbinds every site restriction in the platform, and nothing in
+    that service could tell you why. The slugifier itself lives in the harness, so the mapping from
+    these names to the slugs it matches is asserted there; what is asserted HERE is the names,
+    because this is where they can change.
+
+    ``WebSearch`` is one word on purpose — it slugifies to ``websearch``, never ``web-search``.
+    """
+    from oraclous_capability_registry_service.domain.plugins.builtin import (
+        WebResearchPlugin,
+        WebSearchToolPlugin,
+    )
+
+    assert WebResearchPlugin.NAME == "Web Research"
+    assert WebSearchToolPlugin.NAME == "WebSearch"
