@@ -201,9 +201,93 @@ def test_a_mixed_graph_leaves_the_already_current_chunk_untouched(real_neo4j_dri
     assert stats["reembedded"] == 1
 
 
+def test_a_chunk_with_no_recorded_identity_is_stale_for_a_real_embedder(real_neo4j_driver) -> None:
+    """A chunk written BEFORE the identity stamp existed carries no `embedder_id` at all — and
+    those chunks are the ENTIRE corpus this migration exists for. Every pre-existing workspace is
+    made of them.
+
+    They are also the case the obvious predicate silently loses. Cypher is three-valued, so for an
+    unstamped chunk and a non-legacy target, `c.embedder_id = 'openai:…'` is NULL, the legacy arm is
+    false, `NULL OR false` is NULL, `NOT NULL` is NULL — and a `WHERE` that evaluates to NULL drops
+    the row. A scan written that way finds every stale chunk EXCEPT the legacy ones: the sweep
+    reports success on every cadence while never re-embedding a single pre-existing workspace, and
+    those workspaces go on refusing meaning-based search with a message saying re-embedding is in
+    progress when it is not, forever, with nothing anywhere saying so.
+
+    The unknown identity must therefore read as "not current". That is the fail-safe direction
+    (§3.5): re-embedding a chunk that did not need it costs one model call, skipping one that did
+    costs that workspace its search.
+    """
+    _wipe(real_neo4j_driver)
+    graph_id = str(uuid.uuid4())
+    # Neo4j stores no property at all for a NULL value, so this chunk genuinely has no
+    # `embedder_id` — the shape of every chunk ingested before the stamp, not a simulation of it.
+    _seed_chunk(
+        real_neo4j_driver, chunk_id="never-stamped", graph_id=graph_id, text="a", embedder_id=None
+    )
+    _seed_chunk(
+        real_neo4j_driver,
+        chunk_id="stamped-legacy",
+        graph_id=graph_id,
+        text="b",
+        embedder_id=_HASHING_ID,
+    )
+    assert _stored_embedder_ids(real_neo4j_driver, graph_id=graph_id)["never-stamped"] is None
+
+    run_reembed = _run_reembed()
+    stats = run_reembed(
+        _repo(real_neo4j_driver, graph_id=graph_id),
+        _FakeEmbedder(),
+        embedder_id=_OPENAI_ID,
+        embedding_dim=512,
+    )
+
+    # BOTH, not just the explicitly-stamped one. A count of 1 here is the bug above.
+    assert stats["reembedded"] == 2
+    assert _stored_embedder_ids(real_neo4j_driver, graph_id=graph_id) == {
+        "never-stamped": _OPENAI_ID,
+        "stamped-legacy": _OPENAI_ID,
+    }
+
+
+def test_a_chunk_with_no_recorded_identity_is_current_for_the_legacy_target(
+    real_neo4j_driver,
+) -> None:
+    """The other direction, and the reason "unknown is stale" cannot be spelled as a blanket
+    `c.embedder_id IS NULL OR c.embedder_id <> $target`.
+
+    An unstamped chunk predates the stamp, which means the keyless hashing embedder produced it.
+    For a deployment still ON that embedder it is already in the target space, so it is CURRENT and
+    must be left alone. Read the other way, every key-free deployment would re-embed its whole
+    corpus on every sweep, forever, and never converge — the pass would have no fixed point.
+    """
+    _wipe(real_neo4j_driver)
+    graph_id = str(uuid.uuid4())
+    _seed_chunk(
+        real_neo4j_driver, chunk_id="never-stamped", graph_id=graph_id, text="a", embedder_id=None
+    )
+
+    run_reembed = _run_reembed()
+    stats = run_reembed(
+        _repo(real_neo4j_driver, graph_id=graph_id),
+        _FakeEmbedder(),
+        embedder_id=_HASHING_ID,
+        embedding_dim=512,
+    )
+
+    assert stats["reembedded"] == 0
+    # Left exactly as found — not re-stamped with the identity it already implicitly carries.
+    assert _stored_embedder_ids(real_neo4j_driver, graph_id=graph_id) == {"never-stamped": None}
+
+
 def test_organisation_isolation_holds_for_the_stale_chunk_scan(real_neo4j_driver) -> None:
     """The re-embed repository is org-scoped like every other read/write in this service
-    (CLAUDE.md §3.3) — another organisation's stale chunk must never be picked up."""
+    (CLAUDE.md §3.3) — another organisation's stale chunk must never be picked up.
+
+    The graph id is deliberately SHARED with the foreign chunk: a colliding graph id is the only
+    thing that could make an org-blind scan look correct, so it is exactly the condition worth
+    seeding. `organisation_id` is what has to do the isolating here, not the graph id.
+    """
     _wipe(real_neo4j_driver)
     graph_id = str(uuid.uuid4())
     other_org = "99999999-9999-9999-9999-999999999999"
@@ -224,4 +308,19 @@ def test_organisation_isolation_holds_for_the_stale_chunk_scan(real_neo4j_driver
     )
 
     assert stats["reembedded"] == 0
-    assert _stored_embedder_ids(real_neo4j_driver, graph_id=graph_id) == {}
+
+    # `_stored_embedder_ids` reads back WITHOUT an organisation filter, on purpose: an org-scoped
+    # read-back could not see the foreign row at all, so it could not tell "left alone" apart from
+    # "deleted". Reading org-blind, the foreign chunk must still be there and must still carry the
+    # identity it was seeded with. An empty read-back would mean the pass had removed another
+    # organisation's data — the isolation VIOLATION this test exists to rule out, not the proof of
+    # isolation. The equality also pins that no extra chunk appeared under this graph id.
+    assert _stored_embedder_ids(real_neo4j_driver, graph_id=graph_id) == {"foreign": _HASHING_ID}
+
+    # ...and the vector itself is untouched, not merely the stamp. A pass that rewrote a foreign
+    # chunk's embedding while leaving its identity alone would still be a cross-tenant write, and
+    # the identity check above would not catch it.
+    records, _, _ = real_neo4j_driver.execute_query(
+        "MATCH (c:Chunk {id: 'foreign'}) RETURN c.embedding AS v, c.organisation_id AS o"
+    )
+    assert [(r["v"], r["o"]) for r in records] == [([0.0], other_org)]
