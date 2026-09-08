@@ -40,6 +40,7 @@ from oraclous_harness_runtime_service.domain.llm.factory import (
     build_live_client,
 )
 from oraclous_harness_runtime_service.domain.loop.tool_use import (
+    _REPEATED_FAILURE_STATUS,
     LoopCheckpoint,
     LoopResult,
     LoopStep,
@@ -298,10 +299,14 @@ def _tool_step_names(steps: list[LoopStep]) -> list[str]:
 #: A TOOL step that did not succeed. ``error`` is a call that ran and failed; ``repeated_failure``
 #: is #946's refusal — a call that was never dispatched because the identical call had already
 #: failed identically twice.
-_TOOL_FAILURE_STATUSES = frozenset({"error", "repeated_failure"})
-#: The #946 refusal's own status, named here so the two readers below do not have to know how the
-#: loop spells it twice over.
-_REFUSED_STATUS = "repeated_failure"
+_TOOL_FAILURE_STATUSES = frozenset({"error", _REPEATED_FAILURE_STATUS})
+
+
+_PROVENANCE_ACTION = {
+    StepKind.LLM: "llm.complete",
+    StepKind.TOOL: "capability.invoke",
+    StepKind.GATE: "governance.gate",
+}
 
 
 def provenance_action_for(kind: StepKind, status: str | None) -> str:
@@ -318,16 +323,9 @@ def provenance_action_for(kind: StepKind, status: str | None) -> str:
     own live proof shows eight refusals against two real calls. The wider question of what a
     provenance record should mean for the other two branches is filed separately.
     """
-    if kind is StepKind.TOOL and status == _REFUSED_STATUS:
+    if kind is StepKind.TOOL and status == _REPEATED_FAILURE_STATUS:
         return "capability.refused"
     return _PROVENANCE_ACTION.get(kind, "capability.invoke")
-
-
-_PROVENANCE_ACTION = {
-    StepKind.LLM: "llm.complete",
-    StepKind.TOOL: "capability.invoke",
-    StepKind.GATE: "governance.gate",
-}
 
 
 def _tool_step_errors(steps: list[LoopStep]) -> list[str]:

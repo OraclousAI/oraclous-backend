@@ -1229,17 +1229,10 @@ async def run_tool_use_loop(
             # the shape of `content` (a guess that disagreed with this line's own classification in
             # both directions — see that function's docstring).
             #
-            # #946 review round 2, C1 (security): the marker vocabulary stays `ok`/`error`. The
-            # #946 refusal has its OWN step status, which is right for the trace an operator reads,
-            # but writing that third value into the RECEIPT made every existing reader of a
-            # persisted transcript fail to recognise it: `_TOOL_STATUS_MARKER` matches only the two
-            # known values, so `_explicit_tool_status` returned None, the content-shape fallback saw
-            # prose rather than the JSON error shape, and the refused call was read back as a
-            # SUCCESS. `_fetched_urls_from_transcript` then credited its URL-named arguments — a URL
-            # the run never fetched, on a call that was never even dispatched, entering the #944
-            # link-provenance set at a resume. That is the forgery path #944 review round 3 closed
-            # for the never-dispatched JSON-repair correction (which writes `status=error` for
-            # exactly this reason), and it stays closed.
+            # The receipt vocabulary is `ok`/`error` ONLY. The refusal has its own STEP status,
+            # which is right for the trace an operator reads, but a third value here is invisible to
+            # every reader of a persisted transcript — and a call it cannot classify was read as a
+            # SUCCESS, crediting a URL the run never fetched. See `_split_receipt`.
             receipt_status = "error" if status == _REPEATED_FAILURE_STATUS else status
             messages.append(
                 {

@@ -424,12 +424,11 @@ _FAILURE_SUMMARY_MAX_DETAILS = 5
 #: appended LAST, after the rule it broke. The page then said a rule was broken and refused to say
 #: by what, which is #946's own symptom rebuilt at another seam.
 #:
-#: Widening is free rather than a trade: the worst realistic shape — ten named failed members, five
-#: of them at full length — measures 1792 against the 2000-character whole, and the case that
-#: exposed this was spending 326 of 2000 while throwing information away. Derived from the other
-#: cap. Deliberately a plain number rather than an import of ``envelope``'s private constant —
-#: reaching into another package's private name to stay in step would be worse than the drift it
-#: prevents. A test asserts the relationship instead, which is where that guard belongs.
+#: Widening is free rather than a trade — the worst realistic shape still fits the 2000-character
+#: whole with room, which its own test computes rather than restating here, because a number in
+#: a comment drifts. Deliberately a plain number rather than an import of ``envelope``'s private
+#: constant: reaching into another package's private name to stay in step would be worse than the
+#: drift it prevents. A test asserts the relationship instead, which is where that guard belongs.
 _FAILURE_SUMMARY_MAX_DETAIL_CHARS = 300
 
 
@@ -543,15 +542,6 @@ _BARE_CLASS_NAME = re.compile(r"^[A-Z][A-Za-z0-9_]*(Error|Exception|Interrupt|Wa
 #: 8x per doubling, on a value a member's role name reaches into. The builder always emits
 #: single spaces, so nothing is lost.
 #:
-#: ``(simulated LLM)`` is deliberately NOT consumed. #907 adds it so a reader knows the model was a
-#: stand-in, which changes how the whole result should be read; swallowing it with the wrapper would
-#: drop that warning.
-#: The status group is UPPERCASE-only, not ``\w*`` (#946 review round 5, LOW-8). ``\w*`` matches a
-#: detail's first word just as happily as a status word, so a wrapper with no status in it —
-#: ``harness did not succeed:  timeout after 30s`` — silently lost the word "timeout". Unreachable
-#: through ``team_run.py`` today, which always interpolates a status; a silent word-eater is still
-#: not a thing to leave armed in text a person reads, and the strict form fails in the safe
-#: direction (it shows one word too many, never one too few).
 _ORCHESTRATOR_WRAPPER = re.compile(
     r"^member .{0,200}? harness did not succeed:\s*(?:[A-Z][A-Z_]*\b)?\s*(?:—|-{1,2})?\s*"
 )
@@ -561,7 +551,9 @@ _NO_REASON_RECORDED = "it stopped without reporting a reason"
 def _without_a_bare_class_name(text: str) -> str:
     """``text`` unless it says nothing a person can use, in which case a sentence that does.
 
-    Two shapes say nothing: a bare exception class name, and the orchestrator's own wrapper prose.
+    Two shapes say nothing: a bare exception class name, and a NESTED orchestrator wrapper. The
+    caller strips the outer wrapper before this runs, so what reaches here is either a real reason
+    or a value that was wrapped twice.
     Deleting either outright would be worse than replacing it — the member is named separately, so
     an empty reason reads as if the platform simply lost track of what happened. Saying that no
     reason was recorded is both true and actionable: it points at the step trace.
