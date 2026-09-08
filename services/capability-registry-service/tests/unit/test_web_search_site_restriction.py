@@ -313,14 +313,19 @@ def test_a_non_ascii_address_is_sent_in_the_form_the_vendor_understands() -> Non
 
 
 def test_a_blank_entry_on_its_own_is_refused_rather_than_reaching_the_vendor() -> None:
-    """``normalise_sites`` skips blank parts, so this is the guard's only caller-visible path."""
-    from oraclous_capability_registry_service.domain.connectors import search_providers
-    from oraclous_capability_registry_service.domain.connectors.search_providers import (
-        InvalidSiteError,
-    )
+    """``normalise_sites`` skips blank parts, so this is the guard's only caller-visible path.
+
+    #961 moved the cleaner into the shared kernel — three services now compare addresses with each
+    other, and a second copy of the rule would put the disagreement between two services rather
+    than two functions (#946). The private helper travelled with it; the assertion is unchanged and
+    only its address follows the move. The public names (``normalise_sites``, ``InvalidSiteError``)
+    are still importable from the registry module, which is why every other test here is untouched.
+    """
+    from oraclous_ohm import sites
+    from oraclous_ohm.sites import InvalidSiteError
 
     with pytest.raises(InvalidSiteError):
-        search_providers._hostname_of("")
+        sites._hostname_of("")
 
 
 def test_a_malformed_address_literal_is_refused_rather_than_raising() -> None:
