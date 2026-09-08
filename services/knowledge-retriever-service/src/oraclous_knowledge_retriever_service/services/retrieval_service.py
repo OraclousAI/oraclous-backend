@@ -140,6 +140,33 @@ def _apply_precedence(
     ]
 
 
+def _degraded(node: NodeResult) -> NodeResult:
+    """A combined-mode hit that was NOT fused, marked as such (#950 Q3).
+
+    The mode has to be visible or the degradation is an invisible behaviour change. It rides in
+    ``properties`` beside ``score``/``rrf_score``/``precedence_tier`` rather than as a sibling
+    response field: the route's response model is a bare list, so a new envelope would be a
+    cross-repo shape (§12) for something the existing free dict already carries. Deliberately no
+    ``rrf_score`` — there was no fusion, and a score claiming otherwise would be a lie.
+    """
+    return NodeResult(
+        id=node["id"],
+        type=node["type"],
+        properties={**node["properties"], "fusion_mode": "semantic_only"},
+        citation=node["citation"],
+    )
+
+
+def _fused(node: NodeResult, rrf: float) -> NodeResult:
+    """A genuinely fused combined-mode hit: its RRF score, and the mode that produced it."""
+    return NodeResult(
+        id=node["id"],
+        type=node["type"],
+        properties={**node["properties"], "rrf_score": rrf, "fusion_mode": "rrf"},
+        citation=node["citation"],
+    )
+
+
 def _to_edge_result(row: dict) -> EdgeResult:
     # Mirror the node side: carry the edge property bag through (JSON-coerced) so edge-level
     # data — e.g. `score` on SIMILAR_TO/SAME_AS_CANDIDATE — reaches the FE explorer.
@@ -300,24 +327,25 @@ class RetrievalService:
             )
         # the fusion inputs stay UNRANKED (no precedence) — precedence applies to the fused result
         sem = await self.semantic(graph_id=graph_id, query=query, top_k=top_k * 2)
-        ful = await self.fulltext(graph_id=graph_id, query=query, top_k=top_k * 2)
-        fused: dict[str, dict] = {}
-        for ranked in (sem, ful):
-            for rank, node in enumerate(ranked, start=1):
-                entry = fused.setdefault(node["id"], {"rrf": 0.0, "node": node})
-                entry["rrf"] += 1.0 / (_RRF_K + rank)
-        ordered = sorted(fused.values(), key=lambda e: e["rrf"], reverse=True)[:top_k]
-        results: list[NodeResult] = []
-        for entry in ordered:
-            node = entry["node"]
-            results.append(
-                NodeResult(
-                    id=node["id"],
-                    type=node["type"],
-                    properties={**node["properties"], "rrf_score": entry["rrf"]},
-                    citation=node["citation"],
-                )
-            )
+        word_search = await asyncio.to_thread(
+            self._repo().fulltext_ranked, graph_id=graph_id, query=query, top_k=top_k * 2
+        )
+        if not word_search.ranked:
+            # #950 Q3: RRF only means something when BOTH inputs are genuinely ranked. Today's
+            # word search returns a constant score in storage order, so fusing it in does not add
+            # relevance — it dilutes the one ranking that has any. Now that meaning-based search
+            # is real, that would make combined mode look worse than semantic alone, and the new
+            # embedder would get the blame. Degrade to the semantic list rather than refuse: a
+            # caller asking for the best results still gets the best available ones.
+            results = [_degraded(node) for node in sem[:top_k]]
+        else:
+            fused: dict[str, dict] = {}
+            for ranked in (sem, [_to_node_result(r) for r in word_search.rows]):
+                for rank, node in enumerate(ranked, start=1):
+                    entry = fused.setdefault(node["id"], {"rrf": 0.0, "node": node})
+                    entry["rrf"] += 1.0 / (_RRF_K + rank)
+            ordered = sorted(fused.values(), key=lambda e: e["rrf"], reverse=True)[:top_k]
+            results = [_fused(entry["node"], entry["rrf"]) for entry in ordered]
         await self._cache_set(
             graph_id=graph_id,
             query=cache_query,
