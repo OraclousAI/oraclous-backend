@@ -134,7 +134,7 @@ def get_redis_client(request: Request):
 # refusals use. An upstream service names its refusal in a string; the closed taxonomy
 # (`packages/errors`) and the gateway's `_RELAYABLE_CODES` allow-list are what decide whether that
 # name reaches a browser, and both carry MODEL_CREDENTIAL_REQUIRED as of this change.
-_MODEL_CREDENTIAL_REQUIRED = {
+MODEL_CREDENTIAL_REQUIRED_DETAIL = {
     "error_code": "MODEL_CREDENTIAL_REQUIRED",
     "type": "model_credential_required",
     "msg": (
@@ -167,7 +167,7 @@ async def _embedder_for_request(settings: Settings) -> Embedder:
     except BrokerError as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=_MODEL_CREDENTIAL_REQUIRED,
+            detail=MODEL_CREDENTIAL_REQUIRED_DETAIL,
         ) from exc
 
 

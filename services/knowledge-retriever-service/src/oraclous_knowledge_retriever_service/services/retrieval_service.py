@@ -11,9 +11,11 @@ the event loop via `asyncio.to_thread`.
 from __future__ import annotations
 
 import asyncio
+import uuid
 
 from oraclous_citation import Citation, citation_from_properties
 from oraclous_citation.graph_properties import is_citation_property
+from oraclous_embedding import is_credential_failure
 from oraclous_ohm.precedence_resolution import rank_hits_by_precedence
 from oraclous_substrate.access import enforced_organisation_id
 
@@ -25,6 +27,7 @@ from oraclous_knowledge_retriever_service.repositories.retrieval_repository impo
     LEGACY_NULL_EMBEDDER_ID,
     RetrievalRepository,
 )
+from oraclous_knowledge_retriever_service.services import credential_cache
 from oraclous_knowledge_retriever_service.services.embedder import Embedder
 
 _RRF_K = 60
@@ -37,6 +40,28 @@ class EmbedderIdentityMismatch(Exception):
     a space this query embedder cannot be compared against. That is the core #643 failure mode — a
     plausible-looking cosine computed across two unrelated spaces — so it surfaces as a refusal the
     caller can act on, never as a silently empty result indistinguishable from a genuine miss.
+    """
+
+
+class QueryEmbeddingUnavailable(Exception):
+    """The embed CALL failed, as opposed to the credential RESOLUTION failing (#643).
+
+    The DI layer already refuses cleanly when an organisation has no credential to embed with. This
+    is the other half: the credential resolved, and the provider then failed — it was unreachable,
+    it rate-limited us, or it rejected the key mid-TTL. Unhandled, that reached the caller as a bare
+    500 carrying a raw provider/httpx error, which is both a leak (rule 8: provider text can name
+    internal hosts) and a lie about whose fault it is. Fail closed as a typed refusal instead, so
+    the whole meaning-based path refuses honestly rather than only its resolution step.
+    """
+
+
+class QueryEmbeddingCredentialRejected(QueryEmbeddingUnavailable):
+    """The provider REJECTED this organisation's credential during the embed call (401/403/429).
+
+    Split from its parent because the two need different answers: an unreachable provider is a
+    transient platform fault the caller can only retry, while a rejected key is something the
+    organisation itself must fix, and it is the one case where the cached credential is now
+    known-bad and has to be dropped.
     """
 
 
@@ -218,6 +243,33 @@ class RetrievalService:
             self._driver, organisation_id=enforced_organisation_id(), database=self._db
         )
 
+    def _embed_query(self, query: str) -> list[float]:
+        """Embed the query, or refuse — never let a provider error out as a bare 500.
+
+        The shared seam (`packages/embedding`) is batch-shaped — `embed(texts) -> vectors`. One
+        query is a one-element batch; the write side has always called it this way.
+
+        A rejection (401/403/429) also DROPS this organisation's cached credential. The cache
+        documents itself as flushed-on-rejection, and the write side has always honoured that; the
+        read side did not, so a rotated or revoked key kept being reused on the hottest path in the
+        service for the rest of the TTL. Classified by the SAME shared helper the write side uses,
+        so the two sides cannot disagree about what counts as a credential fault.
+        """
+        try:
+            (qvec,) = self._embedder.embed([query])
+        except Exception as exc:
+            if is_credential_failure(exc):
+                credential_cache.invalidate(uuid.UUID(enforced_organisation_id()))
+                raise QueryEmbeddingCredentialRejected(
+                    "the model provider rejected this organisation's model credential"
+                ) from exc
+            # The provider's own text is deliberately not relayed — it can name internal hosts
+            # (rule 8). The route renders a curated line.
+            raise QueryEmbeddingUnavailable(
+                "the embedding provider could not be reached for this query"
+            ) from exc
+        return qvec
+
     def _cache(self) -> QueryCacheRepository:
         return QueryCacheRepository(
             self._redis, organisation_id=enforced_organisation_id(), ttl=self._cache_ttl
@@ -258,9 +310,7 @@ class RetrievalService:
                 precedence_order,
                 graph_authoritative=graph_authoritative,
             )
-        # The shared seam (`packages/embedding`) is batch-shaped — `embed(texts) -> vectors`.
-        # One query is a one-element batch; the write side has always called it this way.
-        (qvec,) = self._embedder.embed([query])
+        qvec = self._embed_query(query)
         repo = self._repo()
         rows = await asyncio.to_thread(
             repo.semantic,
