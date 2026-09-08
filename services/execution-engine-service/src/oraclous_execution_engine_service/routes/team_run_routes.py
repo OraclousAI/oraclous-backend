@@ -267,6 +267,9 @@ async def suggest_app_form(
                 options=f.options,
                 example=f.example,
                 required=f.required,
+                # #961 ruling 4: the console sends this form straight back to be saved, so the
+                # marker has to survive the round trip or nothing ever binds a run.
+                binds=f.binds,
             )
             for f in outcome.fields
         ]

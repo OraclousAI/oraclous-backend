@@ -959,6 +959,14 @@ class AppFormField(BaseModel):
     options: list[str] = Field(default_factory=list)
     example: str = ""
     required: bool = False
+    #: #961 ruling 4: what this field BINDS about a run — ``"sites"`` for the box holding the
+    #: website restriction, ``""`` for every ordinary field.
+    #:
+    #: It has to travel on the WAY OUT, not only into the parser. The console reads the drafted form
+    #: here and sends it straight back to be saved, so a marker dropped at this boundary is a marker
+    #: that never reaches the stored form — every run would then bind nothing, with the whole
+    #: enforcement chain intact and dead. Found on the deployed stack, not by any test.
+    binds: str = ""
 
 
 class AppOut(BaseModel):

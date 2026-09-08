@@ -397,3 +397,47 @@ def test_a_bad_address_in_the_box_is_refused_where_the_person_can_still_fix_it()
 
     with pytest.raises(InvalidSiteError):
         run_site_restriction(fields, {fields[0].id: "BBC News"})
+
+
+# ── the boundary no test covered, found on the deployed stack ────────────────────────────────────
+#
+# The first live run through the gateway drafted a form whose website box was CORRECT in every way
+# the suite above checks — the invented example was gone, the scope guard held — and the marker was
+# missing from the response entirely. The API schema did not carry it, so it was stripped on the way
+# out.
+#
+# That is not a cosmetic loss. The console reads the drafted form from this endpoint and sends it
+# straight back to be saved, so a marker dropped here never reaches the stored form: every run would
+# then bind nothing, with the enforcement chain in the harness intact and permanently unreachable.
+# CI-green, and dead in the only flow that matters.
+#
+# Owed to test-author: the `[tests]` PR asserted the marker at the domain boundary and never at the
+# API one, and no test in the suite crosses a response schema. These two are the gap it left,
+# written here so the fix is not shipped bare.
+
+
+def test_the_marker_survives_the_drafted_forms_response_schema() -> None:
+    """What the console is handed. The field carries its own marker or the save loses it."""
+    from oraclous_execution_engine_service.schema.engine_schemas import AppFormField
+
+    out = AppFormField(
+        id="sources",
+        name="Source addresses",
+        hint="Which sites to draw from.",
+        type="short_text",
+        example="",
+        required=False,
+        binds="sites",
+    )
+
+    assert out.model_dump()["binds"] == "sites"
+
+
+def test_an_ordinary_field_still_serialises_without_a_marker() -> None:
+    """The scope guard at the same boundary: every form that predates this reads back unchanged,
+    and a field that binds nothing says so rather than being absent."""
+    from oraclous_execution_engine_service.schema.engine_schemas import AppFormField
+
+    out = AppFormField(id="time-frame", name="Time frame", type="short_text")
+
+    assert out.model_dump()["binds"] == ""
