@@ -335,6 +335,103 @@ def test_a_malformed_address_literal_is_refused_rather_than_raising() -> None:
         normalise_sites(["http://[fe80::1"])
 
 
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("www.www.theverge.com", ["theverge.com"]),
+        ("https://www.www.bbc.co.uk/news", ["bbc.co.uk"]),
+        ("www.www.www.example.com", ["example.com"]),
+    ],
+)
+def test_cleaning_an_address_twice_is_the_same_as_cleaning_it_once(
+    raw: str, expected: list[str]
+) -> None:
+    """The cleaning runs TWICE — once where the connector records what it searched, once at the
+    last hop before the vendor. Stripping only one ``www.`` per call made those two passes
+    disagree, so the run reported one hostname and searched a different, broader one. Reporting
+    honestly what was searched is this feature's whole justification, so the clean has to be a
+    fixed point rather than merely tidy."""
+    from oraclous_capability_registry_service.domain.connectors.search_providers import (
+        normalise_sites,
+    )
+
+    once = normalise_sites([raw])
+    assert once == expected
+    assert normalise_sites(once) == once
+
+
+async def test_the_hostnames_reported_are_the_hostnames_sent() -> None:
+    """The same defect where it is visible to a person: a report that disagrees with the request.
+    Asserted through the connector, because that is where the two passes meet."""
+    seen: dict = {}
+    ex = _connector(_recording_handler(seen))
+    res = await ex.execute(
+        {"operation": "search", "query": "ai news", "sites": ["www.www.theverge.com"]}, _ctx()
+    )
+    assert res.success
+    assert res.data is not None
+    assert res.data["searched_sites"] == seen["body"]["include_domains"]
+    assert res.data["searched_sites"] == ["theverge.com"]
+
+
+@pytest.mark.security
+@pytest.mark.parametrize(
+    ("pasted", "secret"),
+    [
+        ("https://alice:hunter2@localhost/x", "hunter2"),
+        ("https://theverge.com/x?token=SEKRET-abc and more", "SEKRET-abc"),
+        ("http://svc:p4ssw0rd@not a host", "p4ssw0rd"),
+    ],
+)
+def test_a_refusal_never_writes_down_a_secret_the_caller_pasted(pasted: str, secret: str) -> None:
+    """The REFUSE path is the one that writes the value down: the message becomes the execution
+    row's ``error_message`` and is rendered on a person's screen. The accept path was already safe
+    — only the hostname is ever sent — so covering only that hid this entirely."""
+    from oraclous_capability_registry_service.domain.connectors.search_providers import (
+        InvalidSiteError,
+        normalise_sites,
+    )
+
+    with pytest.raises(InvalidSiteError) as exc:
+        normalise_sites([pasted])
+    assert secret not in str(exc.value)
+
+
+@pytest.mark.security
+async def test_a_pasted_secret_stays_out_of_the_failure_the_caller_reads() -> None:
+    """The same threat one layer out, where the value actually reaches a person."""
+    ex = _connector(_recording_handler({}))
+    res = await ex.execute(
+        {
+            "operation": "search",
+            "query": "ai news",
+            "sites": ["https://alice:hunter2@not a host"],
+        },
+        _ctx(),
+    )
+    assert not res.success
+    assert res.error_type == "INVALID_INPUT"
+    assert "hunter2" not in (res.error_message or "")
+
+
+@pytest.mark.security
+async def test_a_vendor_refusal_on_valid_sites_still_never_echoes_its_body() -> None:
+    """ADR-008. The sites are well-formed, so our own check passes them and the VENDOR is the one
+    that refuses — with a body that names the domains. That body must not reach the caller.
+
+    This is the shape the earlier version of this test could not reach: it used a bad address, so
+    the local refusal fired first and the vendor was never asked."""
+    ex = _connector(
+        lambda _req: httpx.Response(
+            400, json={"detail": "All domains in include_domains are invalid: ['theverge.com']"}
+        )
+    )
+    res = await ex.execute({"operation": "search", "query": "q", "sites": ["theverge.com"]}, _ctx())
+    assert not res.success
+    assert "All domains in include_domains" not in (res.error_message or "")
+    assert "PROVIDER" in (res.error_type or "")
+
+
 @pytest.mark.security
 def test_credentials_pasted_into_an_address_never_reach_the_vendor() -> None:
     """A person pasting a URL from their address bar can paste a userinfo prefix with it. Only the
