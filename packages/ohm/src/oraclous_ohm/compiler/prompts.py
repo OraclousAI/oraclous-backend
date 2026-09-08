@@ -230,6 +230,11 @@ APP_FORM_DRAFTER_PROMPT = (
     "is \"\" — an empty string, and an empty one is the RIGHT answer. 'BBC News' does not become "
     "'bbc.com'; it becomes nothing at all, because the address you would write is a guess, and a "
     "wrong guess reads exactly like a right one.\n"
+    '  \'binds\' — add the key "binds":"sites" to THAT field and to no other field. It is how '
+    "the run knows which box holds the website restriction, so it can hold itself to what the "
+    "person typed there instead of treating it as a suggestion. Every other field leaves 'binds' "
+    "out "
+    "entirely. Only one field in a form may carry it.\n"
     "Order the fields the way a person would naturally fill them in, most important first. Reply "
     "with ONLY a JSON object shaped exactly like this example, with your own content:\n"
     '  {"fields":[{"name":"Competitor","hint":"The company this brief is about.",'
