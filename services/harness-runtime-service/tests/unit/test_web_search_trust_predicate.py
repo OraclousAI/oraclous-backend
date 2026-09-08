@@ -37,6 +37,7 @@ from typing import Any
 import pytest
 from oraclous_harness_runtime_service.domain.policy import resolve_policy_set
 from oraclous_harness_runtime_service.services.harness_execution_service import (
+    _WEB_SEARCH_CAPABILITIES,
     HarnessExecutionService,
 )
 from oraclous_ohm.manifest import OHMCapability, OHMManifest, OHMMetadata, OHMRuntime
@@ -70,17 +71,25 @@ def _row(*, row_id: str, name: str, spec_type: str) -> dict[str, Any]:
     }
 
 
-# `WebResearchPlugin.NAME` is "Web Research" (slug `web-research`), TYPE "INTERNAL".
-_WEB_RESEARCH = _row(row_id="cap-wr", name="Web Research", spec_type="INTERNAL")
+# #968: the type both search plugins ACTUALLY declare (`builtin.py`: `WebResearchPlugin.TYPE` and
+# `WebSearchToolPlugin.TYPE`). This file originally wrote "INTERNAL" here — borrowed from the
+# citation predicate's own row — and that one wrong literal is the whole of #968: the positive case
+# proved only that the predicate agreed with itself, while the gate was dead on every real run and
+# a person's list of websites was ignored. A hand-built row is only worth as much as its fidelity
+# to the one the registry really stores.
+_REAL_SEARCH_SPEC_TYPE = "API"
+
+# `WebResearchPlugin.NAME` is "Web Research" (slug `web-research`).
+_WEB_RESEARCH = _row(row_id="cap-wr", name="Web Research", spec_type=_REAL_SEARCH_SPEC_TYPE)
 # `WebSearchToolPlugin.NAME` is the single word "WebSearch" (slug `websearch`) — the standard
 # toolset's search, sharing Web Research's code path. Both must be enforced or a whole family of
 # teams silently escapes the gate.
-_WEBSEARCH_TOOL = _row(row_id="cap-ws", name="WebSearch", spec_type="INTERNAL")
+_WEBSEARCH_TOOL = _row(row_id="cap-ws", name="WebSearch", spec_type=_REAL_SEARCH_SPEC_TYPE)
 # The collision, built the way the registry would: an admin imports a server labelled "web" with a
 # tool named "research". Same slug as the first-party row; only `spec.type` differs.
 _MCP_COLLIDER = _row(row_id="cap-mcp", name="web-research", spec_type="mcp")
 # A first-party row that is not a search at all — the ordinary case the set must exclude.
-_FETCH = _row(row_id="cap-wf", name="WebFetch", spec_type="INTERNAL")
+_FETCH = _row(row_id="cap-wf", name="WebFetch", spec_type=_REAL_SEARCH_SPEC_TYPE)
 
 
 class _Registry:
@@ -187,6 +196,41 @@ async def test_a_first_party_tool_that_is_not_a_search_is_not_enforced() -> None
     assert trust.web_search == frozenset()
 
 
+async def test_a_first_party_type_this_gate_did_not_expect_is_still_enforced() -> None:
+    """#968, the defect in one line: the platform has several first-party descriptor types, and
+    this gate must not depend on which one a given plugin picked.
+
+    An allow-list of one type is how the gate shipped dead — the searches are ``API`` and the list
+    said ``INTERNAL``. Any non-imported type is enforced now, so a plugin that changes its type, or
+    a fourth first-party type nobody has written yet, cannot silently switch the restriction off.
+    """
+    for spec_type in ("API", "INTERNAL", "CONNECTOR"):
+        trust = await _trust(
+            _manifest(("core/web-research@1.0.0", "research")),
+            {"research": _row(row_id="cap-wr", name="Web Research", spec_type=spec_type)},
+        )
+        assert trust.web_search == frozenset({"research"}), (
+            f"a first-party row typed {spec_type!r} is not enforced, so a person's list of "
+            "websites would be ignored on every run using it — #968 exactly"
+        )
+
+
+async def test_the_citation_set_keeps_its_narrower_predicate() -> None:
+    """The two sets guard risks pointing in opposite directions, and #968's fix must not level them.
+
+    Believing a row that should not be believed MINTS a forged citation, so that set stays on the
+    positive ``INTERNAL`` allow-list. Not believing a row here merely fails to enforce, which is the
+    defect being fixed. A retriever row typed anything else is still trusted for nothing.
+    """
+    trust = await _trust(
+        _manifest(("core/knowledge-retriever@1.0.0", "Read")),
+        {"Read": _row(row_id="cap-kr", name="Knowledge Retriever", spec_type="API")},
+    )
+
+    assert trust.citation == frozenset()
+    assert trust.data_absence == frozenset()
+
+
 async def test_the_three_trust_sets_stay_separate() -> None:
     """#781's rule, extended rather than diluted: each reserved behaviour trusts the capabilities
     that actually carry it. The web search neither mints citations nor flags graph data-absence, and
@@ -197,3 +241,22 @@ async def test_the_three_trust_sets_stay_separate() -> None:
 
     assert trust.web_search == frozenset({"research"})
     assert trust.data_absence == frozenset()
+
+
+def test_the_plugin_names_slugify_to_what_this_gate_matches() -> None:
+    """The other half of #968's blind spot, asserted where the slugifier lives.
+
+    The registry suite pins the two plugin NAMES; this pins what they become. Split across the two
+    services on purpose: each side asserts the half it can actually change, and neither can drift
+    without a red test somewhere.
+    """
+    from oraclous_harness_runtime_service.services.registry_client import capability_slug
+
+    assert capability_slug("Web Research") in _WEB_SEARCH_CAPABILITIES
+    assert capability_slug("WebSearch") in _WEB_SEARCH_CAPABILITIES
+
+
+def test_the_capability_set_is_exactly_the_two_search_tools() -> None:
+    """A third name added here would start enforcing a restriction on a tool nobody decided about.
+    Small and explicit, so widening it is a deliberate act."""
+    assert _WEB_SEARCH_CAPABILITIES == frozenset({"web-research", "websearch"})
