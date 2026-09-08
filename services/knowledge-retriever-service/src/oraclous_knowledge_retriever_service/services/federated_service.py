@@ -45,7 +45,7 @@ from oraclous_knowledge_retriever_service.contracts import (
 from oraclous_knowledge_retriever_service.repositories.retrieval_repository import (
     RetrievalRepository,
 )
-from oraclous_knowledge_retriever_service.services.embedder import HashingEmbedder
+from oraclous_knowledge_retriever_service.services.embedder import Embedder
 from oraclous_knowledge_retriever_service.services.graph_registry_client import (
     GraphInfo,
     GraphRegistryClient,
@@ -179,7 +179,7 @@ class FederatedRetrievalService:
     def __init__(
         self,
         driver,
-        embedder: HashingEmbedder,
+        embedder: Embedder,
         registry: GraphRegistryClient,
         *,
         database: str | None = None,
@@ -349,7 +349,9 @@ class FederatedRetrievalService:
         """The ONE query embedding shared by every semantic branch (existing 512-dim embedder
         config). None on failure — semantic degrades cleanly instead of failing the query."""
         try:
-            qvec = self._embedder.embed(query)
+            # The shared seam (`packages/embedding`) is batch-shaped — `embed(texts) -> vectors`.
+            # One query is a one-element batch; the write side has always called it this way.
+            (qvec,) = self._embedder.embed([query])
         except Exception:  # noqa: BLE001 — degrade-don't-crash: fulltext/entity still serve.
             return None
         if not qvec or all(v == 0.0 for v in qvec):

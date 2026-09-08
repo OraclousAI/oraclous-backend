@@ -36,7 +36,11 @@ from oraclous_knowledge_retriever_service.core.auth import (
 )
 from oraclous_knowledge_retriever_service.core.config import Settings, get_settings
 from oraclous_knowledge_retriever_service.services.broker_client import BrokerError
-from oraclous_knowledge_retriever_service.services.embedder import HashingEmbedder
+from oraclous_knowledge_retriever_service.services.embedder import (
+    Embedder,
+    make_embedder,
+    resolve_embedder_for_org,
+)
 from oraclous_knowledge_retriever_service.services.eval_judge import (
     EvalJudge,
     resolve_judge_for_org,
@@ -125,7 +129,48 @@ def get_redis_client(request: Request):
     return getattr(request.app.state, "redis_client", None)
 
 
-def get_retrieval_service(
+# The literal token, not an `oraclous_errors` import — the same shape the execution-engine's #866
+# refusals use. An upstream service names its refusal in a string; the closed taxonomy
+# (`packages/errors`) and the gateway's `_RELAYABLE_CODES` allow-list are what decide whether that
+# name reaches a browser, and both carry MODEL_CREDENTIAL_REQUIRED as of this change.
+_MODEL_CREDENTIAL_REQUIRED = {
+    "error_code": "MODEL_CREDENTIAL_REQUIRED",
+    "type": "model_credential_required",
+    "msg": (
+        "meaning-based search needs a model credential owned by your organisation: store one"
+        " through the credentials API and designate it the organisation default."
+    ),
+}
+
+
+async def _embedder_for_request(settings: Settings) -> Embedder:
+    """The query embedder for THIS request's organisation, or the typed 422 refusal (#949 Q4).
+
+    `hashing` is the key-free offline/CI selection and never consults the broker at all — it does
+    not even reach the resolver. `openai` resolves the organisation's own model credential; when
+    nothing resolves the search REFUSES rather than degrading to word-overlap under a "semantic"
+    label, which is the exact silent failure #643/#949 exist to close.
+
+    The refusal body is the dict-`detail` shape carrying a top-level `error_code`, so the gateway's
+    allow-listed `extract_error_code` (#866) relays `MODEL_CREDENTIAL_REQUIRED` to the browser
+    instead of collapsing it into a generic VALIDATION_FAILED envelope. The BrokerError's own text
+    is deliberately NOT relayed — it can name internal hosts (rule 8); the curated message above is
+    what the user reads.
+    """
+    if settings.embedder != "openai":
+        return make_embedder(settings)
+    try:
+        return await resolve_embedder_for_org(
+            settings, organisation_id=uuid.UUID(enforced_organisation_id())
+        )
+    except BrokerError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=_MODEL_CREDENTIAL_REQUIRED,
+        ) from exc
+
+
+async def get_retrieval_service(
     request: Request,
     driver: Annotated[Driver, Depends(get_neo4j_driver)],
     _org: Annotated[OrganisationContext, Depends(bind_org_context)],
@@ -133,14 +178,14 @@ def get_retrieval_service(
     settings = get_settings()
     return RetrievalService(
         driver,
-        HashingEmbedder(dim=settings.embedding_dim),
+        await _embedder_for_request(settings),
         database=settings.neo4j_database,
         redis_client=get_redis_client(request),
         cache_ttl=settings.query_cache_ttl,
     )
 
 
-def get_federated_service(
+async def get_federated_service(
     request: Request,
     driver: Annotated[Driver, Depends(get_neo4j_driver)],
     _org: Annotated[OrganisationContext, Depends(bind_org_context)],
@@ -179,7 +224,7 @@ def get_federated_service(
         )
     return FederatedRetrievalService(
         driver,
-        HashingEmbedder(dim=settings.embedding_dim),
+        await _embedder_for_request(settings),
         registry,
         database=settings.neo4j_database,
         max_graphs=settings.federated_max_graphs,

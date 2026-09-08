@@ -24,7 +24,7 @@ from oraclous_knowledge_retriever_service.repositories.query_cache_repository im
 from oraclous_knowledge_retriever_service.repositories.retrieval_repository import (
     RetrievalRepository,
 )
-from oraclous_knowledge_retriever_service.services.embedder import HashingEmbedder
+from oraclous_knowledge_retriever_service.services.embedder import Embedder
 
 _RRF_K = 60
 
@@ -142,7 +142,7 @@ class RetrievalService:
     def __init__(
         self,
         driver,
-        embedder: HashingEmbedder,
+        embedder: Embedder,
         *,
         database: str | None = None,
         redis_client=None,
@@ -202,7 +202,9 @@ class RetrievalService:
                 precedence_order,
                 graph_authoritative=graph_authoritative,
             )
-        qvec = self._embedder.embed(query)
+        # The shared seam (`packages/embedding`) is batch-shaped — `embed(texts) -> vectors`.
+        # One query is a one-element batch; the write side has always called it this way.
+        (qvec,) = self._embedder.embed([query])
         repo = self._repo()
         rows = await asyncio.to_thread(repo.semantic, graph_id=graph_id, qvec=qvec, top_k=top_k)
         results = [_to_node_result(r) for r in rows]
