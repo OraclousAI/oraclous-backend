@@ -1138,3 +1138,29 @@ def test_a_status_word_that_is_neither_value_is_corrupted_not_legacy() -> None:
 
     _, status = _split_receipt('{"text": "x"}\n[receipt: source_tool_call_id=c1 status=maybe]')
     assert status == "error"
+
+
+@pytest.mark.security
+def test_two_endpoint_ids_do_not_collapse_into_one_handle() -> None:
+    """The cleaner strips characters, so distinct ids can reduce to one value — and that value is a
+    LOOKUP KEY (code review round 5). Before the cleaner existed they passed through verbatim and
+    stayed distinct, so this collision class is new.
+
+    Two calls in one turn under one handle let a failed call's arguments be attributed to a
+    successful one when a paused run is rebuilt. De-duplication is positional, so it stays
+    deterministic: a resumed run dispatches by the id it was originally offered.
+    """
+    from oraclous_harness_runtime_service.domain.llm.openai_compatible import (
+        _safe_tool_call_ids,
+    )
+
+    assert len(set(_safe_tool_call_ids(["call 1", "call#1", "call*1"]))) == 3
+    assert len(set(_safe_tool_call_ids(["!!!", "???"]))) == 2
+
+
+def test_an_ordinary_response_keeps_its_ids_untouched() -> None:
+    from oraclous_harness_runtime_service.domain.llm.openai_compatible import (
+        _safe_tool_call_ids,
+    )
+
+    assert _safe_tool_call_ids(["call_abc123", "call_def456"]) == ["call_abc123", "call_def456"]
