@@ -216,27 +216,31 @@ APP_FORM_DRAFTER_PROMPT = (
     "otherwise.\n"
     "  'example' — LIFTED from the request itself (the actual value it used), never invented.\n"
     "  'required' — true only if the request could not have been carried out without this.\n"
-    "If a field is about WHICH WEBSITES to use — which sites to search, read or draw from — then "
-    "four things change for THAT field, and for no other:\n"
-    "  - it asks for each site's ADDRESS, never its name. A search can only be restricted by an "
-    "address, so a name has to be guessed at, and a plausible wrong guess ('bbc.com' for "
-    "'bbc.co.uk') cannot be told from a right one.\n"
-    "  - its 'name' says addresses, so a person reading the form knows before they type.\n"
-    "  - its 'hint' asks for website addresses AND tells the person that pasting a full link is "
-    "fine. This is the ONE field whose hint may run to two short sentences: do not drop the second "
-    "one to keep it short, because a person's first instinct is to copy the address bar and the "
-    "hint is the only place they learn that works.\n"
-    "  - its 'example' is COPIED out of the request, character for character. Before you write "
-    "one, find that exact text in the request. If the request did not write an address there, the "
-    "'example' is \"\" — an empty string, and an empty one is the RIGHT answer. 'BBC News' does "
-    "not become 'bbc.com'; it becomes nothing at all, because the address you would write is a "
-    "guess, and a wrong guess reads exactly like a right one.\n"
+    "If a field is about WHICH WEBSITES to use — which sites to search, read or draw from — it "
+    "asks for each site's ADDRESS, never its name. A search can only be restricted by an address, "
+    "so a name has to be guessed at, and a plausible wrong guess ('bbc.com' for 'bbc.co.uk') "
+    "cannot be told from a right one. Three of its keys change, and only for THAT field:\n"
+    "  'name' — says addresses, so a person reading the form knows before they type.\n"
+    "  'hint' — asks for website addresses AND tells the person that pasting a full link is fine. "
+    "This is the ONE field whose hint may run to two short sentences: do not drop the second one "
+    "to keep it short, because a person's first instinct is to copy the address bar and the hint "
+    "is the only place they learn that works.\n"
+    "  'example' — COPIED out of the request, character for character. Before you write one, find "
+    "that exact text in the request. If the request did not write an address there, the 'example' "
+    "is \"\" — an empty string, and an empty one is the RIGHT answer. 'BBC News' does not become "
+    "'bbc.com'; it becomes nothing at all, because the address you would write is a guess, and a "
+    "wrong guess reads exactly like a right one.\n"
     "Order the fields the way a person would naturally fill them in, most important first. Reply "
     "with ONLY a JSON object shaped exactly like this example, with your own content:\n"
     '  {"fields":[{"name":"Competitor","hint":"The company this brief is about.",'
     '"type":"short_text","example":"Acme Cloud","required":true,"options":[]},'
     '{"name":"Depth","hint":"How much ground to cover.","type":"choice",'
     '"options":["quick","thorough"],"example":"quick","required":false}]}\n'
+    # A THIRD demo field showing the empty 'example' was tried here at code review (#953) and
+    # reverted. It did fix the invented address — but the model copied the demo field wholesale
+    # into every form, including a request that named no websites at all, which breaks the rule's
+    # scope. A demonstration of a website field teaches "always propose one", and the sentence
+    # forbidding that did not hold. Recorded on #963; it needs a shape that cannot be copied.
     "Never invent a field the request gives no evidence for, and never propose a field named after "
     "something the team's description already fixes for every run."
 )
