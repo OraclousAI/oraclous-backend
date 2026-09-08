@@ -78,6 +78,7 @@ root_packages = [
     "oraclous_telemetry",
     "oraclous_errors",
     "oraclous_ohm",
+    "oraclous_embedding",
     "oraclous_auth_service",
     "oraclous_credential_broker_service",
     "oraclous_knowledge_graph_service",
@@ -108,6 +109,12 @@ source_modules = [
     "oraclous_telemetry",
     "oraclous_errors",
     "oraclous_ohm",
+    # #643: the shared embedder seam sits BELOW both knowledge services. Importing either one's
+    # concrete `Settings`/credential type from here would make the OTHER service's use of this
+    # package an indirect upward dependency on its sibling (§3.1) — which is exactly why
+    # `make_embedder`/`embedder_identity` duck-type their settings argument. Contract-enforced so
+    # the next edit cannot quietly reach for a real `Settings` import.
+    "oraclous_embedding",
 ]
 forbidden_modules = [
     "oraclous_auth_service",

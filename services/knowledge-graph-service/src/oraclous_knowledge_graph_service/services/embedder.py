@@ -1,19 +1,20 @@
-"""Embedding seam (services layer).
+"""Embedding seam (services layer) — thin KGS wiring over the SHARED `oraclous_embedding` package.
 
-`Embedder` Protocol with two implementations:
-  - HashingEmbedder (DEFAULT, key-free): deterministic signed feature-hashing into a fixed-dim,
-    L2-normalised vector. Pure stdlib, reproducible across machines — the CI/dev path needs no API
-    key and no network. Good enough for the write side + similarity smoke.
-  - OpenAIEmbedder (optional): real embeddings when `KGS_OPENAI_API_KEY` is set. Ports the legacy
-    batching (256) and the load-bearing `response.data`-by-`.index` re-sort (never trust order).
-Selected by `KGS_EMBEDDER`; the default never imports `openai`.
+#643: this service used to carry its OWN copy of `Embedder`/`HashingEmbedder`/`OpenAIEmbedder`, and
+knowledge-retriever-service carried a second, hand-duplicated copy of `HashingEmbedder` — nothing
+enforced the two stayed byte-identical. Both classes are now IMPORTED (not re-implemented) from
+`packages/embedding` (`oraclous_embedding`), the one shared implementation both services build
+their embedder from — a spelling drift becomes a merge conflict, not a silent divergence.
+
+`make_embedder` stays defined here (not re-exported) because it must keep raising THIS service's
+own `ModelCredentialUnavailable` (matching every other #724 call site's refusal shape), not the
+shared package's generic `EmbedderCredentialRequired`.
 """
 
 from __future__ import annotations
 
-import hashlib
-import math
-from typing import Protocol, runtime_checkable
+from oraclous_embedding import Embedder, HashingEmbedder, OpenAIEmbedder
+from oraclous_embedding import embedder_identity as embedder_identity
 
 from oraclous_knowledge_graph_service.core.config import Settings
 from oraclous_knowledge_graph_service.services.model_credential import (
@@ -21,69 +22,13 @@ from oraclous_knowledge_graph_service.services.model_credential import (
     ModelCredentialUnavailable,
 )
 
-
-@runtime_checkable
-class Embedder(Protocol):
-    dim: int
-
-    def embed(self, texts: list[str]) -> list[list[float]]: ...
-
-
-class HashingEmbedder:
-    """Deterministic, key-free signed feature-hashing embedder."""
-
-    def __init__(self, dim: int = 512) -> None:
-        self.dim = dim
-
-    def _embed_one(self, text: str) -> list[float]:
-        vec = [0.0] * self.dim
-        for token in text.lower().split():
-            digest = hashlib.blake2b(token.encode("utf-8"), digest_size=8).digest()
-            h = int.from_bytes(digest, "big")
-            bucket = h % self.dim
-            sign = 1.0 if (h >> 16) & 1 else -1.0
-            vec[bucket] += sign
-        norm = math.sqrt(sum(v * v for v in vec))
-        if norm == 0.0:
-            return vec
-        return [v / norm for v in vec]
-
-    def embed(self, texts: list[str]) -> list[list[float]]:
-        return [self._embed_one(t) for t in texts]
-
-
-class OpenAIEmbedder:
-    """Real OpenAI embeddings (optional; constructed only when an API key is present).
-
-    `base_url` is optional so the same client can reach an OpenAI-compatible endpoint (e.g.
-    OpenRouter) — when None the openai client uses its own default (api.openai.com).
-    """
-
-    def __init__(
-        self,
-        *,
-        api_key: str,
-        model: str = "text-embedding-3-small",
-        dim: int = 512,
-        base_url: str | None = None,
-    ):
-        self.dim = dim
-        self._model = model
-        self._api_key = api_key
-        self._base_url = base_url
-
-    def embed(self, texts: list[str]) -> list[list[float]]:
-        from openai import OpenAI
-
-        client = OpenAI(api_key=self._api_key, base_url=self._base_url)
-        out: list[list[float]] = []
-        for start in range(0, len(texts), 256):
-            batch = texts[start : start + 256]
-            response = client.embeddings.create(model=self._model, input=batch, dimensions=self.dim)
-            # never trust response order — re-sort by .index before zipping back
-            ordered = sorted(response.data, key=lambda d: d.index)
-            out.extend([d.embedding for d in ordered])
-        return out
+__all__ = [
+    "Embedder",
+    "HashingEmbedder",
+    "OpenAIEmbedder",
+    "embedder_identity",
+    "make_embedder",
+]
 
 
 def make_embedder(settings: Settings, *, credential: ModelCredential | None = None) -> Embedder:
