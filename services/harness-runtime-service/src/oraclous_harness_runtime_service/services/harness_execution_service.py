@@ -40,6 +40,7 @@ from oraclous_harness_runtime_service.domain.llm.factory import (
     build_live_client,
 )
 from oraclous_harness_runtime_service.domain.loop.tool_use import (
+    _REPEATED_FAILURE_STATUS,
     LoopCheckpoint,
     LoopResult,
     LoopStep,
@@ -295,12 +296,55 @@ def _tool_step_names(steps: list[LoopStep]) -> list[str]:
         return []
 
 
+#: A TOOL step that did not succeed. ``error`` is a call that ran and failed; ``repeated_failure``
+#: is #946's refusal — a call that was never dispatched because the identical call had already
+#: failed identically twice.
+_TOOL_FAILURE_STATUSES = frozenset({"error", _REPEATED_FAILURE_STATUS})
+
+
+_PROVENANCE_ACTION = {
+    StepKind.LLM: "llm.complete",
+    StepKind.TOOL: "capability.invoke",
+    StepKind.GATE: "governance.gate",
+}
+
+
+def provenance_action_for(kind: StepKind, status: str | None) -> str:
+    """The provenance verb for one step.
+
+    A TOOL step normally means a capability was invoked. A #946 refusal does NOT (security audit,
+    finding 5): the call never left the harness, so recording it under the invocation verb makes
+    provenance assert something that did not happen, and a consumer counting invocations cannot
+    tell the two apart. §3.7's forward direction is unaffected — every real dispatch still emits.
+
+    It matters more for a refusal than for the two pre-existing branches that share the shape (a
+    ceiling denial, an unknown tool). Those are rare; a refusal is model-triggered, repeatable, and
+    deliberately not charged to the tool-call budget, so the records are free to mint — this issue's
+    own live proof shows eight refusals against two real calls. The wider question of what a
+    provenance record should mean for the other two branches is filed separately.
+    """
+    if kind is StepKind.TOOL and status == _REPEATED_FAILURE_STATUS:
+        return "capability.refused"
+    return _PROVENANCE_ACTION.get(kind, "capability.invoke")
+
+
 def _tool_step_errors(steps: list[LoopStep]) -> list[str]:
-    """The names of TOOL steps that ERRORED (#554) — fed to the consciousness classifier so a
-    recurring in-run failure (the same tool erroring twice) surfaces as ``repetitive_failures``.
-    Fail-soft: a future shape change must never raise into the run path (best-effort)."""
+    """The names of TOOL steps that did NOT succeed (#554) — fed to the consciousness classifier so
+    a recurring in-run failure (the same tool failing twice) surfaces as ``repetitive_failures``.
+    Fail-soft: a future shape change must never raise into the run path (best-effort).
+
+    #946 refusals count (security audit, finding 6). Filtering strictly on ``error`` made every
+    refused repeat invisible to the one classifier whose whole purpose is spotting the same tool
+    failing again and again — so from the moment the #946 bound engaged, the signal it was built to
+    raise stopped arriving. A refusal is that failure recurring; it is the strongest case the
+    classifier has.
+    """
     try:
-        return [s.name for s in steps if s.kind is StepKind.TOOL and s.status == "error" and s.name]
+        return [
+            s.name
+            for s in steps
+            if s.kind is StepKind.TOOL and s.status in _TOOL_FAILURE_STATUSES and s.name
+        ]
     except Exception:  # noqa: BLE001 — fail-soft: the hook never hurts a run
         return []
 
@@ -1295,13 +1339,8 @@ class HarnessExecutionService:
         """One provenance event per step + a closure event (the single write-through path). On a
         resume, ``steps`` is the new segment only (the loop reset its trace), so the replayed prefix
         is never re-emitted — preserving the per-step audit ordering across the pause."""
-        _action = {
-            StepKind.LLM: "llm.complete",
-            StepKind.TOOL: "capability.invoke",
-            StepKind.GATE: "governance.gate",
-        }
         for step in steps:
-            action = _action.get(step.kind, "capability.invoke")
+            action = provenance_action_for(step.kind, step.status)
             # coalesce so a model-supplied (possibly empty) tool name can't fail the required-field
             # contract on the substrate collector.
             outcome = f"{step.name or '<unnamed>'}:{step.status or 'unknown'}"

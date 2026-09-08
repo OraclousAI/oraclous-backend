@@ -551,7 +551,14 @@ class WebResearchPlugin(_ConnectorToolPlugin):
         {
             "name": "search",
             "description": "Search the live web and return ranked hits (BYOM api_key).",
-            "parameters": {"query": "str", "max_results": "int", "provider": "str"},
+            # #946 D1: `provider` names the search VENDOR and is an OPERATOR setting
+            # (`WEB_SEARCH_PROVIDER`), never a model's choice. The flat hint map can carry only a
+            # type, so it reached a model as a bare unexplained string — and models filled it with
+            # the thing they actually wanted to control, a website name. Every such call failed
+            # UNKNOWN_PROVIDER and the model re-sent it until the budget was gone. It is dropped
+            # from the MODEL-facing operation only: `INPUT_SCHEMA` below still declares it, and
+            # `_search()` still honours an explicitly-passed value for an internal caller.
+            "parameters": {"query": "str", "max_results": "int"},
             # §CITE rev6 names `core/web-research.search` as THE collection case
             "result_kind": "collection",
         },

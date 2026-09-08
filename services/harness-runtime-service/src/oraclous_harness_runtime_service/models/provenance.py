@@ -1,7 +1,10 @@
 """HarnessProvenanceEvent ORM model (models layer; CLAUDE.md §3.7, T7-M1).
 
 The durable sink behind the substrate ``ProvenanceCollector``. Stores the five required provenance
-fields per step (llm.complete / capability.invoke / governance.gate / human.assign). The owning
+fields per step (llm.complete / capability.invoke / capability.refused / governance.gate /
+human.assign). ``capability.refused`` is a call the harness never dispatched — see
+``provenance_action_for``; the record exists so the trace is complete, and the verb differs so a
+consumer counting invocations is not told a capability ran when none did (#946). The owning
 execution id is embedded in ``resource`` (e.g. ``harness_execution:<id>``) so the audit trail
 cross-references the harness row + the registry's per-tool rows without a schema coupling.
 

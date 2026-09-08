@@ -412,6 +412,203 @@ def _accumulate_fetched(urls: list[str], fetched_urls: list[str], seen: set[str]
             fetched_urls.append(url)
 
 
+# ── #946 T2: an identical failing call is not dispatched a third time ─────────────────────────────
+#
+# A model handed an argument it can never satisfy does not learn from the failure — it re-sends the
+# identical call until the tool-call budget is gone. The #946 shape: `web-research.search` offered
+# the model a `provider` argument naming the search VENDOR, models filled it with a website name,
+# every call failed UNKNOWN_PROVIDER, and the run ended as an anonymous "did not converge" that cost
+# a whole budget of real dispatches to discover.
+#
+# D2 (tasks/plan.md): the bound keys on the REPEATED CALL, not on an error taxonomy. This loop
+# dispatches to first-party connectors and imported MCP servers alike, and no shared "this was a
+# validation error" signal crosses that boundary — an identical (tool, arguments, error) triple
+# repeating is the one signal that is honest for both sides. Two dispatches are allowed: the first
+# could be transient, the second proves it is not.
+#
+# Bounded like every other correction in this file (`_LINK_CORRECTION_MAX`, the #853 one-shot
+# repair): the member is told ONCE, plainly, and if it sends the refused call again anyway the run
+# settles instead of spending the rest of its budget discovering the same thing.
+#
+# What "bounded" covers here is the DISPATCH count, not the ledger dict that holds it — the ledger
+# is the one accumulator in this file with no explicit cap, and reading the sentence above as
+# covering it would be reading too much into it (#946 review round 5, LOW-7). It needs none: live
+# entries are bounded by the tool-call budget, and the resume derivation reads an in-memory
+# transcript that the previous segments' iteration cap already bounded. Capping it would trade a
+# fail-closed guarantee for no real memory saving, because past the cap a call already proven dead
+# would get a fresh allowance.
+#
+# THE COST THIS BOUND ACCEPTS, recorded rather than left to be rediscovered (#946 review round 5,
+# MEDIUM-4, ruled by the owner 2026-09-07). D2 keys on the (tool, arguments, error) triple, and an
+# error CLASS that renders a fixed sentence makes two throttled calls byte-identical:
+# `search_providers._STATUS_CLASSES` maps 429 and 433 to one string, and PROVIDER_UNREACHABLE does
+# the same. So a transient failure that would clear in seconds locks that exact argument set out for
+# the rest of the run, and across a pause. The bound stays as it is anyway: the alternative is
+# plumbing a transient signal across the connector/MCP boundary, which is precisely the boundary D2
+# exists not to depend on. What does NOT stay is a note claiming a third attempt "cannot work" —
+# false for a throttle, and the one part of this that cost nothing to correct.
+_REPEATED_FAILURE_MAX = 2
+_REPEATED_FAILURE_STATUS = "repeated_failure"
+#: The stable opening of the note, and the ONLY part a transcript reader matches on. The note is
+#: persisted into checkpoints, so a run paused before a reword resumes carrying the old wording; a
+#: full-string comparison would miss it, record the note prose as that call's error, reset the count
+#: and re-dispatch the dead call — C1 by a slower route (#946 review round 3, N4). Never change this
+#: prefix without a compatibility branch for transcripts that already carry the old one.
+_REPEATED_FAILURE_NOTE_PREFIX = "This exact call has already failed"
+#: Reworded in #946 review round 5, MEDIUM-4, KEEPING the prefix above byte-identical. What came
+#: out is a claim about the future the bound cannot support — see the accepted cost in the D2 block
+#: above. What stays is what is true and what is actionable: the call failed twice the same way, it
+#: was not sent again, and here are the two ways out.
+_REPEATED_FAILURE_NOTE = (
+    "This exact call has already failed twice with the same error, so it was not sent again. "
+    "Either change the arguments — a different value, or the same call without the argument that "
+    "is being rejected — or drop this call and answer with what you already have."
+)
+#: The per-member ledger: a call signature → (the error it produced, how many times in a row).
+RepeatedFailures = dict[str, tuple[str, int]]
+
+
+def _call_signature(name: str, args: Any) -> str:
+    """A stable identity for "the same call again", independent of key ORDER in the arguments.
+
+    Providers do not guarantee argument order between turns, so a raw dump would read a re-sent
+    identical call as a new one and the bound would never fire. Unserialisable arguments fall back
+    to ``repr`` rather than raising — the bound is a courtesy, never a thing that can fail a run.
+    """
+    try:
+        rendered = json.dumps(args, sort_keys=True, default=str)
+    except (TypeError, ValueError):  # pragma: no cover - json.dumps(default=str) is total
+        rendered = repr(args)
+    return f"{name}\x00{rendered}"
+
+
+def _record_failure(ledger: RepeatedFailures, signature: str, error: str) -> None:
+    """Count consecutive identical failures. A DIFFERENT error resets the count to one — the call
+    is the same but the world changed, and the second failure has not yet proven anything."""
+    prior = ledger.get(signature)
+    ledger[signature] = (
+        (error, prior[1] + 1)
+        if prior is not None and prior[0] == error
+        else (
+            error,
+            1,
+        )
+    )
+
+
+#: The receipt's TAIL, matched in full against the last line rather than searched for anywhere
+#: (security audit rounds 1 and 2).
+_RECEIPT_OPENER = "\n[receipt: "
+_RECEIPT_TAIL = re.compile(r"source_tool_call_id=\S+ status=(?P<status>ok|error)\]")
+#: The #642-era receipt, written before #944 added a status. A transcript persisted then still
+#: resumes, and it is WELL FORMED — it simply predates the status. It keeps the content-shape
+#: fallback; only a receipt that is neither shape is treated as corrupted.
+_RECEIPT_TAIL_LEGACY = re.compile(r"source_tool_call_id=\S+\]")
+
+
+def _split_receipt(raw_content: str) -> tuple[str, str | None]:
+    """``(content, status)`` for one persisted ``tool``-role message.
+
+    ``status`` is ``None`` for the two shapes that carry no status to read: no receipt at all, and
+    the #642-era receipt written before #944 added one. Both still resume today and both keep the
+    documented content-shape fallback. A receipt that is neither shape is CORRUPTED, and reads as
+    ``"error"``: a classifier deciding whether a call succeeded must never read an unparseable
+    record as a success (§3.5).
+
+    That distinction is the round-2 finding. The receipt line interpolates the tool call's id
+    unescaped, and the id is taken verbatim from the model endpoint's response — so an id carrying a
+    line break and a receipt opener splits the real line in two. The anchored pattern then does not
+    match, the content is cut in the wrong place, and the shape heuristic reads the truncated
+    remainder as a SUCCESS. Same asset as round 1: an invented URL enters the run's provenance and a
+    dead call's allowance is renewed. Not reachable by prompt alone against a well-behaved endpoint,
+    which generates the id, but bring-your-own-endpoint makes an untrusted one ordinary.
+
+    ``rpartition`` takes the LAST opener, so a forged one earlier in the body can neither win the
+    classification nor truncate the content this returns.
+    """
+    head, separator, tail = raw_content.rpartition(_RECEIPT_OPENER)
+    if not separator:
+        return raw_content, None
+    match = _RECEIPT_TAIL.fullmatch(tail)
+    if match is not None:
+        return head, match.group("status")
+    if _RECEIPT_TAIL_LEGACY.fullmatch(tail):
+        return head, None  # a well-formed pre-#944 receipt: no status to read, fall back on shape
+    return head, "error"
+
+
+def _repeated_failures_from_transcript(messages: list[Message]) -> RepeatedFailures:
+    """Re-derive the ledger from an already-restored transcript, at a HITL resume.
+
+    Without this every pause hands the member a fresh allowance for a call already proven dead,
+    which is the retry loop the bound exists to stop. Mirrors ``_fetched_urls_from_transcript``:
+    the checkpoint carries the transcript rather than the loop's own counters, so the resumed
+    segment reads its own history back out of the messages instead of being handed one.
+
+    NOT a byte-faithful re-derivation, and the difference is deliberate (#946 review round 5,
+    LOW-6). The live path records a failure in ONE place — the dispatch ``except`` — while this
+    reader counts every ``tool``-role message that classifies as failed, which also picks up three
+    kinds the live path never counted: a ceiling denial, an unknown tool, and the #853 JSON-repair
+    correction. Only the refusal note is filtered out explicitly, because only it can do harm.
+    None of the other three can reach the refusal branch on the resumed segment:
+
+    * a ceiling denial and an unknown tool are decided from the policy envelope and the tool set,
+      both fixed for the run, so their own branches short-circuit ahead of the refusal check every
+      time that signature comes round again;
+    * the JSON repair is one-shot per RUN (``json_repair_used`` rides the checkpoint), so it can
+      contribute at most one entry — below ``_REPEATED_FAILURE_MAX`` — and its prose differs from
+      any dispatch error, so mixing it with a real failure resets the count rather than adding to
+      it.
+
+    Filtering them here would therefore be three more content-sniffing prefix checks buying nothing,
+    and each one a new way for the reader to disagree with the live path.
+    """
+    args_by_call_id: dict[str, dict[str, Any]] = {}
+    names_by_call_id: dict[str, str] = {}
+    for message in messages:
+        if message.get("role") != "assistant":
+            continue
+        for call in message.get("tool_calls") or []:
+            call_id = call.get("id")
+            if isinstance(call_id, str):
+                args_by_call_id[call_id] = call.get("args") or {}
+                if isinstance(call.get("name"), str):
+                    names_by_call_id[call_id] = call["name"]
+
+    ledger: RepeatedFailures = {}
+    for message in messages:
+        if message.get("role") != "tool":
+            continue
+        raw_content = message.get("content")
+        call_id = message.get("tool_call_id")
+        if not isinstance(raw_content, str) or not isinstance(call_id, str):
+            continue
+        content, explicit_status = _split_receipt(raw_content)
+        failed = (
+            explicit_status == "error"
+            if explicit_status is not None
+            else _is_failed_tool_content(content)
+        )
+        if not failed:
+            continue
+        # #946 review round 2, C1: a REFUSAL is not a failure of the call — nothing was dispatched,
+        # so there is no error to count. It is written with `status=error` so the fetched-URL reader
+        # never credits it (see the receipt line in `_run_tool_calls`), which brings it here too.
+        # Counting it would record the note prose as that call's error; the note differs from the
+        # real error, `_record_failure` would reset the count to one, and the resumed run would
+        # re-dispatch the very call the bound had already proven dead.
+        if content.strip().startswith(_REPEATED_FAILURE_NOTE_PREFIX):
+            continue
+        name = names_by_call_id.get(call_id)
+        if name is None:
+            message_name = message.get("name")
+            if not isinstance(message_name, str):
+                continue
+            name = message_name
+        _record_failure(ledger, _call_signature(name, args_by_call_id.get(call_id, {})), content)
+    return ledger
+
+
 # #944 review round 3, LOW-H/LOW-I: the explicit marker a `tool`-role message's receipt line carries
 # (``status=ok``/``status=error``), so a transcript reader can classify a call the same way the live
 # path did rather than GUESSING from the shape of its content. A guess disagrees with the live
@@ -421,14 +618,22 @@ def _accumulate_fetched(urls: list[str], fetched_urls: list[str], seen: set[str]
 # recognise as failed, so its message's URL-named arguments — never credited live — WERE credited on
 # resume (LOW-H). The marker is optional on read: a checkpoint fixture or an older persisted
 # transcript that never carried one falls back to the previous content-shape heuristic.
-_TOOL_STATUS_MARKER = re.compile(
-    r"\[receipt: source_tool_call_id=\S+ status=(?P<status>ok|error)\]"
-)
-
-
+#
+# Security audit finding 1 (HIGH): ANCHORED to the end of the message, and matched with `fullmatch`
+# on the last line rather than searched for anywhere. The marker is plain text inside a message
+# whose body is `json.dumps({"error": ..., "detail": str(exc)})`, and a connector's error routinely
+# echoes the caller-supplied value that caused it. `json.dumps` escapes quotes and newlines and
+# nothing else — not `[`, `]`, `=`, `:` or spaces — so a model can put a whole fake receipt line
+# inside a tool ARGUMENT and have it persisted into the transcript verbatim.
+#
+# Searching found the FIRST such marker while the platform appends the genuine one LAST. A failed
+# call therefore read back as a SUCCESS on a resume, and both readers of this marker were fooled at
+# once: `_fetched_urls_from_transcript` credited a URL the run never fetched (the #944 forgery path,
+# reopened), and `_repeated_failures_from_transcript` recorded nothing, renewing the allowance for a
+# call already proven dead. A model can write the syntax; it cannot write past the platform's own
+# append, so the end is the one position that is not forgeable.
 def _explicit_tool_status(raw_content: str) -> str | None:
-    match = _TOOL_STATUS_MARKER.search(raw_content)
-    return match.group("status") if match else None
+    return _split_receipt(raw_content)[1]
 
 
 def _fetched_urls_from_transcript(
@@ -467,8 +672,7 @@ def _fetched_urls_from_transcript(
         raw_content = message.get("content")
         if not isinstance(raw_content, str):
             continue
-        explicit_status = _explicit_tool_status(raw_content)
-        content = raw_content.split("\n[receipt:", 1)[0]  # strip the #642 receipt line
+        content, explicit_status = _split_receipt(raw_content)
         failed = (
             explicit_status == "error"
             if explicit_status is not None
@@ -638,6 +842,18 @@ async def run_tool_use_loop(
     )
     # #944 review round 3, HIGH-C: the parallel membership set — see `_accumulate_fetched` above.
     fetched_urls_seen: set[str] = set(fetched_urls)
+    # #946 T2: the repeated-failure ledger — see `_REPEATED_FAILURE_MAX` above. Re-derived from the
+    # restored transcript on a resume, for the same reason `fetched_urls` is: a member that already
+    # proved a call dead must not get a fresh allowance for it just because the run was paused.
+    repeated_failures: RepeatedFailures = (
+        _repeated_failures_from_transcript(resume_state.messages)
+        if resume_state is not None
+        else {}
+    )
+    # The tools behind the calls refused as unfixable repeats, named the way the rest of the run
+    # names them (`binding.operation`). Only the tool: a call signature carries the model's raw
+    # arguments, which hold whatever the model put there, and the terminal below is person-facing.
+    repeated_failure_names: list[str] = []
     # #944 review, HIGH-2 fix B: how many corrections THIS run has already spent — bounded by
     # `_LINK_CORRECTION_MAX`, see its docstring. A fresh count on a resume, matching `nudged`: the
     # checkpoint carries the transcript, not this counter, so a run that had already used one
@@ -851,6 +1067,12 @@ async def run_tool_use_loop(
 
             tool_started: datetime | None = None
             tool_ended: datetime | None = None
+            # Hoisted above the chain (#946 review round 5, LOW-5). Two of the three branches below
+            # need it, and computing it twice inside the refusal condition read as if the two calls
+            # might differ. Binding it in only some branches was the real hazard: a later edit that
+            # read `signature` after the chain would have silently got the PREVIOUS iteration's
+            # value, which is a wrong-call bug that nothing here would have surfaced.
+            signature = _call_signature(tc["name"], tc["args"])
             if spec is None:
                 # #899: name what the model probably meant. The call is still never dispatched —
                 # the hint sits ALONGSIDE the fail-closed rule, never in place of it.
@@ -867,6 +1089,52 @@ async def run_tool_use_loop(
                 content = _redact(json.dumps(unknown), redactors)
                 status = "error"
                 step_name = tc["name"]
+                step_detail = content
+            elif (repeated_failures.get(signature) or ("", 0))[1] >= _REPEATED_FAILURE_MAX:
+                # #946 T2: this exact call already failed twice the same way. It is NOT dispatched —
+                # the member is handed the note instead, so the turn still gets its tool-role reply
+                # (a provider REJECTS a tool_call with no answering message, so skipping the reply
+                # would corrupt the transcript) but costs no real call. Deliberately not charged to
+                # `tool_calls_made`: nothing was executed.
+                #
+                # Ruled by the owner 2026-09-07: the run KEEPS GOING. Refusing the call frees the
+                # member's remaining turns to fix the value or answer without that tool, which is
+                # the outcome worth having; stopping the run here would deny a member that was one
+                # turn from recovering. The refusal repeats for as long as the member does, and
+                # every refused attempt is recorded as its own step — a model tool call that
+                # vanished from the trace is a run an operator cannot reconstruct.
+                #
+                # The cost the owner accepted with that ruling: a member that never adapts still
+                # spends its whole ITERATION budget. So the terminal at the bottom of this function
+                # NAMES the repeated call rather than reporting an anonymous "did not converge" —
+                # the budget is spent either way, but the operator learns why.
+                step_name = f"{spec.binding}.{spec.operation}"
+                # #946 review round 2, C4: `binding.operation` is how the step trace and the run
+                # page already name this tool. Reporting the provider-facing function name here as
+                # well showed one tool under two spellings in one run, and the person-facing half
+                # was the less readable of the two.
+                if step_name not in repeated_failure_names:
+                    repeated_failure_names.append(step_name)
+                # Not passed through `_redact`, unlike every sibling branch, and deliberately:
+                # this is platform-authored text with nothing in it to redact, and the stored form
+                # has to stay byte-identical for the transcript reader above to recognise it.
+                content = _REPEATED_FAILURE_NOTE
+                status = _REPEATED_FAILURE_STATUS
+                # #946 review round 3, N1: the STEP records why the call failed; the MESSAGE
+                # carries the advice. They have different readers and they must not be the same
+                # string.
+                #
+                # The note is written for the model — "change the arguments", "drop this call". The
+                # step trace is what a run's failure text is built from (`envelope`'s grounding
+                # check excerpts the last non-ok step's detail), so a refusal step carrying the note
+                # put instructions for the model in front of a PERSON, and — worse — replaced the
+                # real cause. The run page then never said the search vendor was wrong, which is the
+                # one thing #946 exists to make it say: this half of the fix was cancelling out the
+                # other half. The original error is still in the ledger, so recording it here costs
+                # nothing. Precedent for a step detail diverging from its message: the #853
+                # JSON-repair branch records the parse error while its message carries the
+                # correction prose.
+                step_detail = (repeated_failures.get(signature) or ("", 0))[0] or content
             else:
                 step_name = f"{spec.binding}.{spec.operation}"
                 tool_calls_made += 1
@@ -914,8 +1182,13 @@ async def run_tool_use_loop(
                         json.dumps({"error": type(exc).__name__, "detail": str(exc)}), redactors
                     )
                     status = "error"
+                    # #946 T2: count it against this exact call. A DIFFERENT error resets the count
+                    # — see `_record_failure`. Recorded on the redacted content, so the ledger key
+                    # is the same string a resumed run reads back out of the transcript.
+                    _record_failure(repeated_failures, signature, content)
                 finally:
                     tool_ended = datetime.now(UTC)
+                step_detail = content
             # #944: the run's own link provenance. An OK call contributes the URLs in its RESULT
             # and the URLs in the URL-NAMED ARGUMENTS the model passed it. The arguments count for a
             # real reason: `web-research.read(url=X)` returning ok is the strongest evidence we will
@@ -955,13 +1228,20 @@ async def run_tool_use_loop(
             # transcript reads back via `_explicit_tool_status`, rather than guessing failed/ok from
             # the shape of `content` (a guess that disagreed with this line's own classification in
             # both directions — see that function's docstring).
+            #
+            # The receipt vocabulary is `ok`/`error` ONLY. The refusal has its own STEP status,
+            # which is right for the trace an operator reads, but a third value here is invisible to
+            # every reader of a persisted transcript — and a call it cannot classify was read as a
+            # SUCCESS, crediting a URL the run never fetched. See `_split_receipt`.
+            receipt_status = "error" if status == _REPEATED_FAILURE_STATUS else status
             messages.append(
                 {
                     "role": "tool",
                     "tool_call_id": tc["id"],
                     "name": tc["name"],
                     "content": (
-                        f"{content}\n[receipt: source_tool_call_id={tc['id']} status={status}]"
+                        f"{content}\n[receipt: source_tool_call_id={tc['id']} "
+                        f"status={receipt_status}]"
                     ),
                 }
             )
@@ -971,7 +1251,7 @@ async def run_tool_use_loop(
                     StepKind.TOOL,
                     step_name,
                     status,
-                    _truncate(content),
+                    _truncate(step_detail),
                     tool_call_id=tc["id"],
                     started_at=tool_started,
                     ended_at=tool_ended,
@@ -1276,9 +1556,24 @@ async def run_tool_use_loop(
             policy.max_iterations + json_repair_grant,
         )
     # iteration cap reached without a final answer → escalate or degrade (#587).
+    #
+    # #946 T2: when a call was refused as an unfixable repeat, SAY SO. The owner ruled the run keeps
+    # going after a refusal (a member one turn from recovering must get that turn), and accepted the
+    # cost: a member that never adapts still spends its whole iteration budget and lands here. An
+    # anonymous "did not converge" is precisely the report #946 was filed about — #692 is the record
+    # of what an untyped failure costs an operator. The budget is spent either way; naming the call
+    # the member kept repeating turns a dead end into something someone can go and fix.
+    #
+    # Only the TOOL NAME is named, never the arguments: the signature carries whatever the model put
+    # in them, and this message reaches a person-facing surface.
+    repeat_note = (
+        f" — it kept re-sending a call that could not work ({', '.join(repeated_failure_names)})"
+        if repeated_failure_names
+        else ""
+    )
     return _budget_gate(
         "budget",
         "iteration_cap",
-        "tool-use loop did not converge",
+        f"tool-use loop did not converge{repeat_note}",
         policy.max_iterations + json_repair_grant,
     )

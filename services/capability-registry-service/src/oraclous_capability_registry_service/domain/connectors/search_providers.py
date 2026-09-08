@@ -70,11 +70,21 @@ def register_search_provider(cls: type[SearchProvider]) -> type[SearchProvider]:
 
 
 def get_search_provider(name: str) -> SearchProvider:
-    """Build the provider registered under ``name``; fail-closed on an unknown name."""
+    """Build the provider registered under ``name``; fail-closed on an unknown name.
+
+    #946: the refusal NAMES what is registered, in the spirit of #899's near-match hint on an
+    unknown tool. A bare "unknown search provider 'The Verge'" tells a caller that its value was
+    wrong and nothing about what a right one looks like, so the obvious next move is to try another
+    website name — which is the retry loop #946 exists to end. Still fail-closed: an unrecognised
+    name never falls back to the default vendor (CLAUDE.md §3.5).
+    """
     cls = _PROVIDERS.get(name)
     if cls is None:
+        registered = ", ".join(available_providers()) or "none"
         raise SearchProviderError(
-            f"unknown search provider '{name}'", error_type="UNKNOWN_PROVIDER"
+            f"unknown search provider '{name}' — this argument names the search service to use, "
+            f"and the registered ones are: {registered}",
+            error_type="UNKNOWN_PROVIDER",
         )
     return cls()
 

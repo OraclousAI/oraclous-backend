@@ -396,6 +396,222 @@ class TeamRunStatus:
     has_unverified_links: bool = False
 
 
+# ── #946 T3: a failed run's message reads as a sentence, not as an exception ──────────────────────
+#
+# When a member fails, the tool-use loop records the failure as the JSON blob it fed BACK TO THE
+# MODEL — ``{"error": "RegistryError", "detail": "..."}``. That shape is right for its audience: the
+# model needs a machine-shaped observation it can react to. It is wrong for the run's
+# ``error_message``, which is what a person reads on the run page, and which used to interpolate the
+# blob verbatim — so someone who asked for a digest of the week's AI news read ``RegistryError`` and
+# a pair of braces.
+#
+# Curate here, at the seam between the two audiences. Nothing is added: the curation only ever
+# unwraps and drops. The full per-member detail stays untouched where a debugging operator reads it,
+# on the run's step trace. Everything the text already carried it still carries — the counts, the
+# re-runnable statement, which members failed and which were blocked, the leak-safety rule (no
+# upstream body, ever) and the 2000-character cap.
+_FAILURE_SUMMARY_CAP = 2000
+#: How many member names each list may spell out before it collapses into a count. A message longer
+#: than the answer helps nobody, and 200 names is a wall of text, not information.
+_FAILURE_SUMMARY_MAX_NAMED = 10
+#: How many members get their own "why" line, and how long each one may be.
+_FAILURE_SUMMARY_MAX_DETAILS = 5
+#: At least ``envelope._MESSAGE_CAP``, and for a reason (#946 review round 5, MEDIUM-1).
+#: ``packages/ohm`` sizes a grounding message at 280 characters ON PURPOSE, so it fits a
+#: 300-character whole on the run page (#685), and several such messages are joined before they
+#: reach this seam. A 200-character limit here silently overrode that decision from a different
+#: file — and it cut off the tail, which is the payload: the invented location a member named is
+#: appended LAST, after the rule it broke. The page then said a rule was broken and refused to say
+#: by what, which is #946's own symptom rebuilt at another seam.
+#:
+#: Widening is free rather than a trade — the worst realistic shape still fits the 2000-character
+#: whole with room, which its own test computes rather than restating here, because a number in
+#: a comment drifts. Deliberately a plain number rather than an import of ``envelope``'s private
+#: constant: reaching into another package's private name to stay in step would be worse than the
+#: drift it prevents. A test asserts the relationship instead, which is where that guard belongs.
+_FAILURE_SUMMARY_MAX_DETAIL_CHARS = 300
+
+
+#: #907's marker. ``team_run.py`` appends it AFTER the detail, so on the blob path it sits past the
+#: closing brace ``raw_decode`` stops at — and every branch that returns something read out of the
+#: parsed object silently dropped it (#946 review round 5, HIGH-1). It says the model was a
+#: stand-in, which changes how the whole result should be read, so it is handled ONCE, around the
+#: curation,
+#: rather than on each of the five returns: which internal branch ran must not decide whether the
+#: reader is told.
+_SIMULATED_MARKER = "(simulated LLM)"
+
+
+def _curated_reason(text: str) -> str | None:
+    """The human half of one recorded failure, or ``None`` when there is no human half.
+
+    The blob is read WHERE THE ORCHESTRATOR PUTS IT, never searched for (security audit, finding 2).
+    ``team_run.py`` builds exactly one shape — ``member 'x' harness did not succeed: <STATUS> —
+    <blob>`` — so once the wrapper is stripped, a blob is either at offset 0 of what remains or
+    there is no blob.
+
+    Searching was the defect. A recorded failure mixes platform prose with the member's own words —
+    a grounding error quotes the location the member claimed, an output-contract error quotes its
+    payload — so whoever emits a matching object first owns this sentence, and the model writes into
+    the same string. Narrowing the shape from one key to two raised the bar by nothing: a model
+    writes two keys as easily as one. Demonstrated before the fix: a grounding failure with a
+    model-authored object appended DELETED the real violation and rendered the model's sentence as
+    the platform's own explanation of why the run failed.
+
+    The accepted cost is a value that is prose FOLLOWED by a blob: its blob stays in the text. No
+    producer builds that shape, and a raw blob on the page is a presentation defect where model text
+    passed off as the platform's own reason is not.
+
+    Only ``detail`` is ever read from the blob, never a sibling key, so an upstream response body
+    cannot be promoted into person-facing text (ADR-008).
+    """
+    stripped = text.strip()
+    if not stripped:
+        return None
+    unwrapped = _ORCHESTRATOR_WRAPPER.sub("", stripped, count=1).strip()
+    if not unwrapped:
+        return _NO_REASON_RECORDED
+    if not unwrapped.startswith("{"):
+        return _without_a_bare_class_name(unwrapped)
+    try:
+        parsed, _ = json.JSONDecoder().raw_decode(unwrapped)
+    except ValueError:
+        # a leading brace that opens no valid JSON is part of the sentence, not a blob
+        return _without_a_bare_class_name(unwrapped)
+    if not isinstance(parsed, dict):
+        return None
+    detail = parsed.get("detail")
+    if not isinstance(detail, str) or not detail.strip():
+        return _NO_REASON_RECORDED
+    return detail.strip()
+
+
+def _plain_reason(recorded: str) -> str | None:
+    """The human half of one member's recorded failure, or ``None`` if there is no human half.
+
+    Two things happen here that are deliberately NOT delegated to the branches in
+    ``_curated_reason`` above: the ``(simulated LLM)`` marker is lifted off the front of the
+    curation and put back on the end of it, and the per-member length cap is applied once to
+    whatever came back. Both were per-branch before, and both were therefore wrong on some
+    branches — the marker on every branch that read the parsed blob, the cap on four of five
+    (#946 review round 5, HIGH-1 and MEDIUM-3). One choke point makes each of them a property of
+    this function rather than an accident of which internal branch happened to run.
+
+    The marker is re-appended AFTER the cap, so a long reason cannot push #907's warning off the
+    end — losing it would tell the reader the model was real when it was a stand-in.
+    """
+    simulated = recorded.rstrip().endswith(_SIMULATED_MARKER)
+    body = recorded.rstrip()[: -len(_SIMULATED_MARKER)] if simulated else recorded
+    reason = _curated_reason(body.strip())
+    if reason is None:
+        return f"{_NO_REASON_RECORDED} {_SIMULATED_MARKER}" if simulated else None
+    if len(reason) > _FAILURE_SUMMARY_MAX_DETAIL_CHARS:
+        reason = reason[: _FAILURE_SUMMARY_MAX_DETAIL_CHARS - 1] + "…"
+    return f"{reason} {_SIMULATED_MARKER}" if simulated else reason
+
+
+#: A recorded failure that is nothing but a class name. ``orchestrate.py`` records
+#: ``str(exc) or type(exc).__name__``, so an exception raised with no message — ``RegistryError()``,
+#: ``KeyError()``, a cancelled task — is recorded as its class name and nothing else. There is no
+#: blob to unwrap, so it used to reach the run page verbatim: the exact text #946 was filed about,
+#: arriving by a different door (#946 review round 2, C2). Matched structurally rather than against
+#: a list of known names, because the set is every exception type in the process and its
+#: dependencies. A real sentence has a space in it, so this cannot swallow one.
+#:
+#: Matched structurally, and DELIBERATELY broader than its name suggests: the suffix group is
+#: optional, so any single capitalised token qualifies — ``Forbidden``, ``Timeout``, a Postgres code
+#: like ``P0001``. That accepts swallowing a real one-word diagnostic, which is the right bias here:
+#: requiring the suffix would let a custom ``RegistryFault`` straight through, which is exactly
+#: the shape #946 is about. The accepted loss is pinned by its own test rather than left to be
+#: rediscovered (#946 review round 3, N3). A lowercase one-word value is kept.
+_BARE_CLASS_NAME = re.compile(r"^[A-Z][A-Za-z0-9_]*(Error|Exception|Interrupt|Warning)?$")
+#: The orchestrator's own wrapper around a member's failure — ``team_run.py`` builds
+#: ``member 'x' harness did not succeed: <STATUS>`` and appends ``" — <detail>"`` whenever the
+#: harness reported one. It names the member a second time and adds an internal status word, telling
+#: the reader nothing the "Failed: x." line above did not (#946 review round 3, N2).
+#:
+#: Matched as a PREFIX, not as the whole value (#946 review round 4, R1). Anchoring it to the whole
+#: value meant it fired almost nowhere in production, because a detail is usually appended — and
+#: after this issue's own loop change that detail is the new terminal message, so the most likely
+#: route for the very scenario #946 describes stayed uncurated. The remainder is kept; only when
+#: nothing survives the strip does the reason fall through to ``_NO_REASON_RECORDED``.
+#:
+#: Literal single spaces and a bounded quantifier (security audit, finding 3). The lazy ``.+?``
+#: it replaces also matched whitespace, and with the ``\s+`` after it every offset was an
+#: ambiguous split — measured 0.047s at 500 characters, 0.36s at 1000, 2.83s at 2000, roughly
+#: 8x per doubling, on a value a member's role name reaches into. The builder always emits
+#: single spaces, so nothing is lost.
+#:
+_ORCHESTRATOR_WRAPPER = re.compile(
+    r"^member .{0,200}? harness did not succeed:\s*(?:[A-Z][A-Z_]*\b)?\s*(?:—|-{1,2})?\s*"
+)
+_NO_REASON_RECORDED = "it stopped without reporting a reason"
+
+
+def _without_a_bare_class_name(text: str) -> str:
+    """``text`` unless it says nothing a person can use, in which case a sentence that does.
+
+    Two shapes say nothing: a bare exception class name, and a NESTED orchestrator wrapper. The
+    caller strips the outer wrapper before this runs, so what reaches here is either a real reason
+    or a value that was wrapped twice.
+    Deleting either outright would be worse than replacing it — the member is named separately, so
+    an empty reason reads as if the platform simply lost track of what happened. Saying that no
+    reason was recorded is both true and actionable: it points at the step trace.
+    """
+    stripped = text.strip()
+    if _BARE_CLASS_NAME.match(stripped):
+        return _NO_REASON_RECORDED
+    unwrapped = _ORCHESTRATOR_WRAPPER.sub("", stripped, count=1).strip()
+    if not unwrapped:
+        return _NO_REASON_RECORDED
+    # a wrapper whose remainder is itself only a class name says nothing either
+    return _NO_REASON_RECORDED if _BARE_CLASS_NAME.match(unwrapped) else unwrapped
+
+
+def _named_members(names: list[str]) -> str:
+    """The first few names spelled out, the rest counted."""
+    shown = names[:_FAILURE_SUMMARY_MAX_NAMED]
+    if len(names) > len(shown):
+        return f"{', '.join(shown)} and {len(names) - len(shown)} more"
+    return ", ".join(shown)
+
+
+def summarise_failed_run(
+    *, failed: list[str], blocked: list[str], member_errors: Mapping[str, str]
+) -> str:
+    """The sentence a person reads when a team run did not finish.
+
+    A member that FAILED tried and could not; a member that was BLOCKED never got to try, because
+    something it depended on failed first. Both are named, because "re-run it" is only actionable
+    if you can see what will be re-run.
+    """
+    parts = [
+        f"This run did not finish: {len(failed)} of its members failed and "
+        f"{len(blocked)} could not start. It can be re-run."
+    ]
+    if failed:
+        parts.append(f"Failed: {_named_members(failed)}.")
+    if blocked:
+        parts.append(f"Could not start: {_named_members(blocked)}.")
+    reasons: list[str] = []
+    for role in failed:
+        if len(reasons) >= _FAILURE_SUMMARY_MAX_DETAILS:
+            break
+        recorded = member_errors.get(role)
+        reason = _plain_reason(recorded) if isinstance(recorded, str) else None
+        if reason:
+            reasons.append(f"{role} stopped because {reason}")
+    if reasons:
+        parts.append("; ".join(reasons) + ".")
+    summary = " ".join(parts)
+    if len(summary) <= _FAILURE_SUMMARY_CAP:
+        return summary
+    # A last-resort cut. Every list above is already bounded, so reaching this means a single
+    # member name was pathologically long; end on an ellipsis so the text never trails off
+    # mid-word as if it had been corrupted.
+    return summary[: _FAILURE_SUMMARY_CAP - 1] + "…"
+
+
 def _verdict_score(verdict: Any) -> float | None:
     """A 0–1 attainment from a stored verdict (#477): a prose Verdict's ``score``, or a battery
     verdict's passed-fraction over its checks. ``None`` when absent/unparseable (fail-closed)."""
@@ -2046,15 +2262,14 @@ class TeamRunService:
         if result.status == "failed":
             failed = sorted(r for r, s in member_status.items() if s == "failed")
             blocked = sorted(r for r, s in member_status.items() if s == "blocked")
-            # surface each failed member's leak-safe detail (the harness error / dispatch error the
-            # orchestrator recorded) so a FAILED run is debuggable + the re-run target is clear
-            detail = "; ".join(
-                f"{r}: {result.member_errors[r]}" for r in failed if result.member_errors.get(r)
+            # #946 T3: curate at this seam. The recorded per-member error is the JSON blob the loop
+            # fed back to the MODEL; this text is read by a PERSON. `summarise_failed_run` unwraps
+            # it — dropping the exception class name, keeping the sentence — and stays leak-safe:
+            # only `detail` is ever read, never a sibling key. The untouched raw detail is still on
+            # the run's step trace, which is what a debugging operator reads.
+            failed_summary = summarise_failed_run(
+                failed=failed, blocked=blocked, member_errors=result.member_errors
             )
-            failed_summary = (
-                f"team run incomplete: {len(failed)} member(s) failed, {len(blocked)} blocked — "
-                f"re-runnable. failures: {detail or ', '.join(failed) or 'none'}"
-            )[:2000]
         with org_scope(org):
             updated, _ = await self._team_runs.transition(
                 row.id,
