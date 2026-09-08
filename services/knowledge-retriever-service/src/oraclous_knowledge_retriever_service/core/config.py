@@ -42,8 +42,10 @@ class Settings(BaseSettings):
     # a graph's stored chunks (`embedder_identity`, `packages/embedding`) — the read-side identity
     # filter is what actually enforces convergence at query time; this setting only selects WHICH
     # embedder this deployment builds. `openai` resolves the organisation's own model credential
-    # (#724: no platform key); `hashing` is the key-free offline/CI selection.
-    embedder: Literal["hashing", "openai"] = "hashing"
+    # (#724: no platform key) and is the default (#949); `hashing` is demoted to an EXPLICIT
+    # offline/CI selection — the same flip the write side makes, and the two must agree or every
+    # query is refused on identity mismatch.
+    embedder: Literal["hashing", "openai"] = "openai"
     embedding_dim: int = 512
     default_top_k: int = 10
 

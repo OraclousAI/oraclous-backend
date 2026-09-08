@@ -49,7 +49,10 @@ from oraclous_knowledge_graph_service.repositories.reembed_repository import (
 )
 from oraclous_knowledge_graph_service.services.credential_client import make_credential_broker
 from oraclous_knowledge_graph_service.services.embedder import make_embedder
-from oraclous_knowledge_graph_service.services.model_credential import credential_for_graph
+from oraclous_knowledge_graph_service.services.model_credential import (
+    ModelCredentialUnavailable,
+    credential_for_graph,
+)
 from oraclous_knowledge_graph_service.services.reembed_service import reembed_lock_key
 from oraclous_knowledge_graph_service.tasks.celery_app import AsyncTaskExecutor, celery_app
 
@@ -149,7 +152,20 @@ def reembed_chunks_task(graph_id: str, organisation_id: str) -> dict[str, Any]:
         )
         driver = make_neo4j_driver(settings)
         try:
-            embedder = make_embedder(settings, credential=credential)
+            try:
+                embedder = make_embedder(settings, credential=credential)
+            except ModelCredentialUnavailable:
+                # This organisation has designated no model credential, so there is nothing to
+                # re-embed WITH. Skip quietly rather than raise: the sweep visits every graph of
+                # every organisation, and an unconfigured one would otherwise fail loudly once per
+                # graph per cadence, forever. Nothing is lost — the workspace stays in its old
+                # space and its searches refuse with a message that names the fix, and the next
+                # sweep after they connect a model picks it up.
+                logger.info(
+                    "chunk re-embed skipped: graph=%s has no model credential to embed with",
+                    graph_id,
+                )
+                return {"graph_id": graph_id, "reembedded": 0, "skipped": "no_model_credential"}
             repo = ReembedRepository(
                 driver,
                 organisation_id=organisation_id,

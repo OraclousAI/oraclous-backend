@@ -162,6 +162,10 @@ class _CapturingWriteRepo:
         ontology_violations=0,
         ontology_coercions=0,
         citation=None,
+        # #949 Q3: the write repository now also receives the identity + dimension of the embedder
+        # that produced `embeddings`, so every :Chunk can record which vector space it lives in.
+        embedder_id="hashing:512",
+        embedding_dim=512,
     ):
         self.last_entity_graph = entity_graph
         self.last_violations = ontology_violations

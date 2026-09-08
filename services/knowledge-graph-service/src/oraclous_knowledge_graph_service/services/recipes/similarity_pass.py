@@ -116,7 +116,11 @@ def run_similarity_pass(
             continue
 
         try:
-            vectors = make_embedder(settings).embed(texts)
+            # #949 B5: `credential` was received but never threaded through — in `openai` mode
+            # (now the default) `make_embedder(settings)` alone raised `ModelCredentialUnavailable`
+            # and this fail-soft catch silently turned the content-similarity pass off, even when
+            # the caller had already resolved a perfectly good credential one line away.
+            vectors = make_embedder(settings, credential=credential).embed(texts)
         except Exception:  # noqa: BLE001 — fail-soft: a failed embed never sinks the ingest.
             logger.warning(
                 "similarity rule %r: embedder failed; skipping the similarity pass "

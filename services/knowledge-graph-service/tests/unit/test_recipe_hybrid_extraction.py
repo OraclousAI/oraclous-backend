@@ -183,7 +183,10 @@ def _project_and_extract(recipe, rep, writer, monkeypatch, extractor, *, setting
         representation=rep,
         writer=writer,
         node_index_by_rule=result.node_index_by_rule,
-        settings=settings or Settings(extractor="openai", openai_api_key="sk-test"),
+        # #949: `embedder` is spelled out because its default is now `openai`, which would
+        # make this network-free test try to resolve a real model credential.
+        settings=settings
+        or Settings(extractor="openai", openai_api_key="sk-test", embedder="hashing"),
         engine=engine,
         meta=_META,
         source_id=result.source_id,
@@ -281,7 +284,7 @@ def test_extractor_none_skips_pass_and_warns(monkeypatch: pytest.MonkeyPatch) ->
         writer,
         monkeypatch,
         extractor=None,  # KGS_EXTRACTOR=null
-        settings=Settings(extractor="null"),
+        settings=Settings(extractor="null", embedder="hashing"),  # #949: key-free, said out loud
     )
     # The deterministic projection still completed: the Item node exists.
     assert writer.labels().count("Item") == 1

@@ -51,10 +51,14 @@ x-kgs-env: &kgs-env
   KGS_NEO4J_USER: "neo4j"
   KGS_NEO4J_PASSWORD: "password"
   KGS_REDIS_URL: "redis://redis:6379/0"
-  # Embeddings for similarity edges + the free-text/retrieval path. "hashing" (default) is keyless +
-  # deterministic — so the knowledge path works with NO key (local/CI) and never 503s on an embeddings
-  # cold-start. Set KGS_EMBEDDER=openai (with a key) for real semantic embeddings (text-embedding via
-  # OpenRouter; the openai_api_key + base_url below are already wired).
+  # Embeddings for similarity edges + the free-text/retrieval path. Since #949 the CODE default is
+  # "openai" (real embeddings on the organisation's own model credential); this stack pins "hashing"
+  # OUT LOUD instead, so a keyless local/CI run stays keyless and deterministic rather than silently
+  # inheriting whichever default the code happens to carry. Set KGS_EMBEDDER=openai in deploy/.env
+  # for the real path (base_url below is already wired; the key is the org's, via the broker).
+  #
+  # KRS_EMBEDDER (the read side, further down) MUST be set to the same value: the query vector and
+  # the stored chunk vectors have to live in the same space, and a mismatch is refused, not scored.
   KGS_EMBEDDER: "${KGS_EMBEDDER:-hashing}"
   # Free-text entity/relation extraction. "null" (default) = lexical only (:Document/:Chunk),
   # key-free CI. "openai" = LLM extraction over an OpenAI-compatible endpoint (OpenRouter) using the
@@ -408,6 +412,10 @@ services:
       KRS_NEO4J_USER: "neo4j"
       KRS_NEO4J_PASSWORD: "password"
       KRS_EMBEDDING_DIM: "512"
+      # Pinned "hashing" OUT LOUD to match KGS_EMBEDDER above — same value, same reason (#949: the
+      # code default is now "openai"). If you flip one, flip both: the read side refuses to compare
+      # a query vector against chunks embedded by a different embedder.
+      KRS_EMBEDDER: "${KRS_EMBEDDER:-hashing}"
       # Redis query cache (#308): OFF by default for the standalone smoke; the full stack flips
       # KRS_QUERY_CACHE=true in deploy/.env. KRS_REDIS_URL points at db/0 — the SAME Redis DB the
       # KGS writes the per-graph generation counter (graphgen:) to, so ingest invalidation is wired.

@@ -30,6 +30,29 @@ APP_PASSWORD = "app"  # noqa: S105 — ephemeral test-container role, not a real
 RLS_TABLES = ("knowledge_graphs", "ingestion_jobs", "recipes", "entity_resolutions")
 
 
+@pytest.fixture(autouse=True)
+def key_free_embedder(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """This suite runs key-free, and says so OUT LOUD (#949).
+
+    `KGS_EMBEDDER`'s code default is `openai` since #949, which makes `model_call_is_configured`
+    true for the whole deployment — so any path that resolves a model credential reaches for the
+    real broker. These tests have no broker and want none: they are network-free by design.
+    Declaring `hashing` here is the explicit key-free selection the flip deliberately preserved,
+    rather than leaving a suite-wide assumption to whatever the code default happens to be.
+
+    A test that is ABOUT the default (`test_kgs_embedder_default_flip.py`) deletes this variable in
+    its own fixture, which runs after this one, so the flip itself is still pinned honestly.
+
+    The cached `Settings` is cleared on both sides so no test inherits another's environment.
+    """
+    from oraclous_knowledge_graph_service.core.config import get_settings
+
+    monkeypatch.setenv("KGS_EMBEDDER", "hashing")
+    get_settings.cache_clear()
+    yield
+    get_settings.cache_clear()
+
+
 @pytest.fixture(scope="session")
 def postgres_dsn() -> Iterator[str]:
     """A libpq DSN for an ephemeral Postgres container (the SUPERUSER owner)."""
