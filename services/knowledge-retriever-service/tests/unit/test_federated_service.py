@@ -51,6 +51,7 @@ class _FakeRepo:
 
     def __init__(self, rows_by_graph: dict[str, list[dict]] | None = None) -> None:
         self.calls: list[tuple[str, str]] = []
+        self.semantic_embedder_ids: list[str] = []
         self._rows = rows_by_graph or {}
 
     def _rows_for(self, method: str, graph_id: str) -> list[dict]:
@@ -63,8 +64,21 @@ class _FakeRepo:
     def fulltext(self, *, graph_id, query, top_k):
         return self._rows_for("fulltext", graph_id)[:top_k]
 
-    def semantic(self, *, graph_id, qvec, top_k):
+    # #643: `embedder_id` is REQUIRED, with no default, on purpose. A stored chunk is only
+    # comparable to a query vector from the same embedder, so the fan-out has to say which space it
+    # is asking about. Defaulted — here or on the real repository — an omission reads as "the legacy
+    # hashing space" and the branch returns an empty list rather than an error: search silently
+    # stops working instead of saying so, which is the whole #643 failure class. Required, the same
+    # omission is a TypeError at the first call.
+    def semantic(self, *, graph_id, qvec, top_k, embedder_id):
+        self.semantic_embedder_ids.append(embedder_id)
         return self._rows_for("semantic", graph_id)[:top_k]
+
+    def has_any_chunk(self, *, graph_id):
+        """No chunk at all in this graph — so an empty semantic branch here means GENUINELY empty,
+        never an identity mismatch. The tests below are about merging and branch faults; a fake
+        claiming otherwise would turn them into mismatch tests by accident."""
+        return False
 
     def entity_neighborhood(self, *, graph_id, node_ids, limit):
         self.calls.append(("neighborhood", graph_id))
@@ -218,6 +232,10 @@ async def test_results_are_labeled_with_their_source_graph() -> None:
     assert by_id["b"]["source_graph_id"] == _G2.id
     # higher cosine first across graphs
     assert [r["id"] for r in out["results"]] == ["b", "a"]
+    # Every graph's semantic branch was asked about a NAMED embedder space — one identity, and one
+    # per queried graph. A fan-out that dropped it on the way would not reach this assertion at all.
+    assert len(repo.semantic_embedder_ids) == 3  # _G1, _G2, _G3
+    assert len(set(repo.semantic_embedder_ids)) == 1
 
 
 def test_merge_score_desc_applies_the_total_cap_deterministically() -> None:
@@ -380,11 +398,14 @@ class _SemanticOnlyFailsRepo(_FakeRepo):
     def __init__(self, rows_by_graph, failing_graph_id: str) -> None:
         super().__init__(rows_by_graph)
         self._failing = failing_graph_id
+        self.semantic_served: list[str] = []
 
-    def semantic(self, *, graph_id, qvec, top_k):
+    def semantic(self, *, graph_id, qvec, top_k, embedder_id):
         self.calls.append(("semantic", graph_id))
+        self.semantic_embedder_ids.append(embedder_id)
         if graph_id == self._failing:
             raise RuntimeError("semantic branch error")
+        self.semantic_served.append(graph_id)
         return list(self._rows.get(graph_id, []))[:top_k]
 
 
@@ -401,6 +422,14 @@ async def test_hybrid_graph_failing_one_branch_but_serving_the_other_is_not_repo
     out = await _svc(repo).search(
         principal=None, query="x", mode="hybrid", graph_ids=None, per_graph_k=5, total_k=50
     )
+    # The half-branch fault is real and is exactly one: _G1's semantic arm raised, _G2's SERVED.
+    # Asserted first, because everything below holds vacuously if every semantic branch is failing
+    # for some other reason (a stale fake signature raising TypeError, say) — the results would
+    # still be {_G1, _G2} off the fulltext arms alone, and graphs_failed would still be empty, so
+    # the test would keep passing while testing nothing it is named for.
+    assert {g for m, g in repo.calls if m == "semantic"} == {_G1.id, _G2.id, _G3.id}
+    assert _G1.id not in repo.semantic_served  # its semantic arm is the one that raised
+    assert set(repo.semantic_served) == {_G2.id, _G3.id}  # the other arms really ran and returned
     # _G1 served fulltext though semantic failed → contributed → NOT failed
     assert out["meta"]["graphs_failed"] == []
     assert {r["source_graph_id"] for r in out["results"]} == {_G1.id, _G2.id}
