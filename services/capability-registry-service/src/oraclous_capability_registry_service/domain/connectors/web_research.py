@@ -184,6 +184,14 @@ class WebResearchConnector(InternalTool):
                 sites=sites,
                 transport=self.transport,
             )
+        except InvalidSiteError as exc:
+            # The provider cleans the sites again at the last hop before the vendor. That pass
+            # cannot refuse anything this one already accepted, but the guard is what keeps a
+            # future caller of the provider from turning a bad argument into a Python class name
+            # in the error taxonomy — the exact shape #946 curated away.
+            return ExecutionResult(
+                success=False, error_message=str(exc), error_type="INVALID_INPUT"
+            )
         except SearchProviderError as exc:
             meta = {"status_code": exc.status_code} if exc.status_code is not None else {}
             return ExecutionResult(
@@ -208,6 +216,11 @@ class WebResearchConnector(InternalTool):
                 # instead of re-running the identical search. Deliberately NOT the retriever's
                 # reserved `data_absent` key: #781 made the runtime believe that only from a trusted
                 # retrieval binding, and emitting it here would be exactly the forgery it closed.
+                # `note` is also what the runtime writes for a knowledge-retrieval that came back
+                # empty. Nothing reads either one — both exist to be READ BY THE MODEL — so the
+                # shared name is harmless today, and deliberately so: to a member both mean the
+                # same thing, "there was nothing there, carry on". If anything ever starts reading
+                # `note`, these two need separating first.
                 data["note"] = (
                     "No results were found on the sites this search was restricted to "
                     f"({', '.join(sites)}). Those sites carry nothing matching this query, so "

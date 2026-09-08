@@ -278,7 +278,7 @@ class BashConnector(InternalTool):
 class WebSearchConnector(WebResearchConnector):
     """``WebSearch`` — the standard search tool. Delegates to the web-research ``search`` path (same
     BYOM key, same provider factory) so live-web search is shared, not reimplemented. Params
-    ``{query, max_results?}`` are forwarded; the operation is forced to ``search``."""
+    ``{query, max_results?, sites?}`` are forwarded; the operation is forced to ``search``."""
 
     async def _execute_internal(
         self, input_data: dict[str, Any], context: ExecutionContext

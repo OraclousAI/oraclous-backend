@@ -76,11 +76,26 @@ class InvalidSiteError(ValueError):
 #: and this message travels into a run's error text and a person's screen. So it is bounded here,
 #: at the one place a caller-supplied value enters a message.
 _SHOWN_VALUE_CHARS = 120
+#: A ``user:password@`` prefix inside a pasted address. Matched before any parsing, because the
+#: value being quoted is precisely the one that FAILED to parse.
+_USERINFO_RE = re.compile(r"[^\s/@]*@")
 
 
 def _shown(value: object) -> str:
-    """A caller-supplied value, rendered short enough to sit inside an error message."""
+    """A caller-supplied value, rendered safe and short enough to sit inside an error message.
+
+    A refusal is written down: it becomes the execution row's ``error_message`` and is rendered on
+    a person's screen. So it must never carry a secret the caller pasted. A person copying an
+    address out of their browser can bring a ``user:password@`` prefix or a ``?token=`` query with
+    it — the ACCEPT path already drops both, because only the hostname is ever sent, but the
+    REFUSE path is the one that writes the value down, so it has to drop them too.
+
+    What survives is the part that has to change for the call to work, which is what the caller
+    needs to see.
+    """
     text = value if isinstance(value, str) else repr(value)
+    text = text.split("?", 1)[0].split("#", 1)[0]  # a query or fragment can carry a token
+    text = _USERINFO_RE.sub("", text)
     if len(text) > _SHOWN_VALUE_CHARS:
         return f"{text[:_SHOWN_VALUE_CHARS]}…"
     return text
@@ -101,11 +116,12 @@ def _hostname_of(entry: str) -> str:
         # silent-loss bug in a new place, so it is refused and named instead.
         raise InvalidSiteError(
             f"'{_shown(entry)}' is not a single website address — give one address per entry, "
-            "like theverge.com"
+            "with nothing else in it, like theverge.com"
         )
     # A bare hostname has no scheme, so `urlsplit` would read it as a path. Prefixing `//` makes it
-    # parse as an authority; anything that already carries a scheme is left alone, so `file:///…`
-    # and `javascript:…` still resolve to no usable host and are refused below.
+    # parse as an authority; a value that already carries `://` is left alone, so `file:///…`
+    # resolves to no host at all. A scheme without `//` (`javascript:alert(1)`) does get the prefix
+    # and parses to a single-label host, which the pattern below refuses.
     try:
         host = urlsplit(entry if "://" in entry else f"//{entry}").hostname
     except ValueError as exc:  # a malformed authority (an unclosed IPv6 bracket, say)
