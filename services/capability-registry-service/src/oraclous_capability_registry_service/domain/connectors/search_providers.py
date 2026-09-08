@@ -120,10 +120,17 @@ def _hostname_of(entry: str) -> str:
             host = host.encode("idna").decode("ascii")
         except UnicodeError as exc:
             raise InvalidSiteError(f"'{_shown(entry)}' is not a website address") from exc
-    if host.startswith("www.") and host.count(".") > 1:
+    while host.startswith("www.") and host.count(".") > 1:
         # `www.` is a subdomain the vendor treats as equivalent; dropping it is what makes the three
         # forms of one address collapse to a single value. Guarded so `www.com` is not reduced to a
         # single label that then fails for a confusing reason.
+        #
+        # A LOOP, not an `if`: this function is applied twice — once by the connector to report what
+        # it searched, once at the vendor hop — and stripping only one label per call would make
+        # those two passes disagree. `www.www.theverge.com` reported as `www.theverge.com` while
+        # `theverge.com` was actually sent is a report that misstates the search that ran, which is
+        # the dishonesty this whole issue exists to remove. Looping makes the clean a fixed point,
+        # so applying it twice provably equals applying it once.
         host = host[4:]
     if len(host) > _MAX_HOSTNAME_CHARS or not _HOSTNAME_RE.match(host):
         raise InvalidSiteError(f"'{_shown(entry)}' is not a website address, like theverge.com")
