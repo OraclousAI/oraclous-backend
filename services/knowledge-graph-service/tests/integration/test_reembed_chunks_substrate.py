@@ -203,7 +203,12 @@ def test_a_mixed_graph_leaves_the_already_current_chunk_untouched(real_neo4j_dri
 
 def test_organisation_isolation_holds_for_the_stale_chunk_scan(real_neo4j_driver) -> None:
     """The re-embed repository is org-scoped like every other read/write in this service
-    (CLAUDE.md §3.3) — another organisation's stale chunk must never be picked up."""
+    (CLAUDE.md §3.3) — another organisation's stale chunk must never be picked up.
+
+    The graph id is deliberately SHARED with the foreign chunk: a colliding graph id is the only
+    thing that could make an org-blind scan look correct, so it is exactly the condition worth
+    seeding. `organisation_id` is what has to do the isolating here, not the graph id.
+    """
     _wipe(real_neo4j_driver)
     graph_id = str(uuid.uuid4())
     other_org = "99999999-9999-9999-9999-999999999999"
@@ -224,4 +229,19 @@ def test_organisation_isolation_holds_for_the_stale_chunk_scan(real_neo4j_driver
     )
 
     assert stats["reembedded"] == 0
-    assert _stored_embedder_ids(real_neo4j_driver, graph_id=graph_id) == {}
+
+    # `_stored_embedder_ids` reads back WITHOUT an organisation filter, on purpose: an org-scoped
+    # read-back could not see the foreign row at all, so it could not tell "left alone" apart from
+    # "deleted". Reading org-blind, the foreign chunk must still be there and must still carry the
+    # identity it was seeded with. An empty read-back would mean the pass had removed another
+    # organisation's data — the isolation VIOLATION this test exists to rule out, not the proof of
+    # isolation. The equality also pins that no extra chunk appeared under this graph id.
+    assert _stored_embedder_ids(real_neo4j_driver, graph_id=graph_id) == {"foreign": _HASHING_ID}
+
+    # ...and the vector itself is untouched, not merely the stamp. A pass that rewrote a foreign
+    # chunk's embedding while leaving its identity alone would still be a cross-tenant write, and
+    # the identity check above would not catch it.
+    records, _, _ = real_neo4j_driver.execute_query(
+        "MATCH (c:Chunk {id: 'foreign'}) RETURN c.embedding AS v, c.organisation_id AS o"
+    )
+    assert [(r["v"], r["o"]) for r in records] == [([0.0], other_org)]
