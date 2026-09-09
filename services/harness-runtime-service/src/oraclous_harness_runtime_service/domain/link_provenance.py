@@ -416,6 +416,12 @@ def strip_unverified_links(text: str, unverified: Collection[str]) -> str:
     if not text or not unverified:
         return text
     unverified_set = set(unverified)
+    # MINOR (code-reviewer, PR #977): terminates because every pass either strictly SHORTENS the
+    # text (a stripped label/target/URL always removes at least one character) or makes NO CHANGE
+    # at all, in which case the loop returns immediately — it can never cycle between two distinct
+    # non-fixpoint states. Bounded by the number of spans `_STRIP_SCAN` can ever extract from the
+    # (monotonically shrinking) text, so the pass count is finite even for a pathologically nested
+    # shape like `[[[Source](url)](url)](url)`.
     while True:
         stripped = _strip_pass(text, unverified_set)
         if stripped == text:
