@@ -1229,4 +1229,23 @@ async def test_a_poisoned_prior_fetched_url_is_never_registered_and_citing_it_is
     assert poison not in result.fetched_urls
     assert result.fetched_urls == []
     assert "evil" not in (result.output or "")
+
+
+# --- N1 (security round 2, review 5156136217): an unusable target ships nowhere, at the loop's own
+# real acceptance site, not only in the pure function --------------------------------------------
+
+
+async def test_a_scheme_relative_target_never_ships_with_a_non_empty_registry() -> None:
+    # `//evil.example/phish` is not `_canonical`-accepted (no http(s) scheme), so it has no
+    # canonical form ever present in a real registry. Every browser (and react-markdown's default
+    # urlTransform) resolves a colon-free, protocol-relative target to `https://evil.example/phish`
+    # regardless of what scheme the model typed — a working, clickable anchor. The loop's
+    # acceptance pass has to run `strip_unverified_links` with its OWN registry (`fetched=`) so
+    # this fail-closed rule actually reaches a shipped answer, not just the pure function it lives
+    # in.
+    answer = "[Source](//evil.example/phish)"
+    llm = _Scripted(_Scripted.SEARCH, answer)
+    result = await _run(llm, _returning(_REAL))
+    assert result.status is HarnessStatus.SUCCEEDED
+    assert "evil" not in (result.output or "")
     assert "[S1]" not in (result.output or "")
