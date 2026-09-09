@@ -64,6 +64,7 @@ existing function.
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 import pytest
@@ -128,6 +129,13 @@ _TIGHTER_ESCALATE = PolicyEnvelope(
     on_exhaustion="escalate",
 )
 
+# #975: two forged `cit_` ids for the citation-vs-link ordering tests below. Never served by any
+# dispatch in this file unless a test's own dispatch explicitly serves one — citing either is then
+# automatically a rule-2 violation, which is exactly the "fails the citation gate too" shape those
+# tests need.
+_CIT_ID_A = "cit_" + "a" * 32
+_CIT_ID_B = "cit_" + "b" * 32
+
 
 class _Scripted:
     """One scripted entry per model turn; the LAST entry repeats forever, which is what a member
@@ -160,6 +168,21 @@ class _Scripted:
                 tool_calls=[ToolCall(f"c{self.turns}", _READ.name, {"url": _REAL})],
             )
         return LLMResponse(text=entry, tool_calls=[])
+
+
+class _CapturingScripted(_Scripted):
+    """Like ``_Scripted``, but also keeps the FULL message list of the LAST call — not just the
+    user-role text ``_Scripted.user_messages`` extracts. Needed to inspect a ``tool``-role message's
+    own content (the SOURCES block, its position relative to the receipt line), which is invisible
+    to every existing helper in this file."""
+
+    def __init__(self, *script: str) -> None:
+        super().__init__(*script)
+        self.last_messages: list[Any] = []
+
+    async def complete(self, *, messages: Any, system: str, tools: list[ToolSpec]) -> LLMResponse:
+        self.last_messages = list(messages)
+        return await super().complete(messages=messages, system=system, tools=tools)
 
 
 def _returning(*urls: str) -> Any:
@@ -222,15 +245,20 @@ async def test_an_answer_with_no_links_at_all_succeeds_untouched() -> None:
     assert result.unverified_links == []
 
 
-async def test_a_member_with_no_tools_is_never_checked() -> None:
-    # Nothing was fetched, so under a strict reading every link would be unverified. That is not
-    # the intent: a reasoning-only member has no fetched set to be measured against, and inserting
-    # a correction turn into every tool-less member is a cost with no signal behind it.
+async def test_a_tool_less_members_fabricated_raw_url_is_stripped_and_flagged() -> None:
+    # #975 ruling 5 supersedes this test's ORIGINAL premise ("never checked"): the protocol now
+    # applies to EVERY member, tools or not — the whole point of #975 is that a tool-less member
+    # (the `linker` role) no longer gets a free pass to fabricate. Its registry is still empty
+    # (nothing was fetched, and this member seeds none), so ruling 3 ships on the FIRST pass —
+    # there is nothing to correct against — but ruling 2 hardens the consequence: the fabricated
+    # raw URL is STRIPPED, not shipped intact the way #944 did.
     llm = _Scripted(f"The standard reference is [here]({_REAL}).")
     result = await _run(llm, specs=[])
     assert result.status is HarnessStatus.SUCCEEDED
-    assert _steps(result, _CORRECTION_STATUS) == []
-    assert result.unverified_links == []
+    assert _steps(result, _CORRECTION_STATUS) == []  # empty registry — nothing to correct against
+    assert result.unverified_links == [_REAL]  # flagged — never silently trusted
+    assert _REAL not in (result.output or "")  # stripped — #944 shipped this intact
+    assert result.output == "The standard reference is here."
 
 
 # --- criterion 2: every link invented → back to the member --------------------------------------
@@ -280,17 +308,24 @@ async def test_each_correction_consumes_an_iteration_rather_than_being_one_shot(
 # --- criterion 3: some verified → accepted AND flagged, never sent back -------------------------
 
 
-async def test_an_answer_with_one_bad_link_among_good_ones_is_accepted_and_flagged() -> None:
-    # This is the ruled split. Real work with one bad link is not thrown away; it is shipped with
-    # the bad link named, which is what the reader's screen needs to warn about.
+async def test_an_answer_with_one_bad_link_among_good_ones_is_corrected_then_ships_stripped() -> (
+    None
+):
+    # #944's ruled split (real work with one bad link is not thrown away) still holds, but #975
+    # ruling 7 supersedes "shipped intact, never rewritten, no correction spent": with a NON-EMPTY
+    # registry, ANY offence — even one bad link among two good ones — spends a correction turn
+    # first, bounded at `_LINK_CORRECTION_MAX`. This member never fixes its own draft (the script
+    # repeats it forever), so after the bound the SAME draft ships — and ruling 2 hardens the
+    # consequence: the bad link is STRIPPED, never shipped intact, while the two good links survive
+    # byte-identical.
     answer = f"[A]({_REAL}) and [B]({_FABRICATED}) and [C]({_ALSO_REAL})"
     llm = _Scripted(_Scripted.SEARCH, answer)
-    result = await _run(llm, _returning(_REAL, _ALSO_REAL))
+    result = await _run(llm, _returning(_REAL, _ALSO_REAL), policy=_TIGHT)
     assert result.status is HarnessStatus.SUCCEEDED
-    assert result.output == answer  # shipped intact, never rewritten
-    assert _steps(result, _CORRECTION_STATUS) == []
+    assert len(_steps(result, _CORRECTION_STATUS)) == 2  # bounded, not shipped on the first offence
     assert result.unverified_links == [_FABRICATED]
-    assert llm.turns == 2  # the member was not asked to retry
+    assert _FABRICATED not in (result.output or "")  # stripped — #944 shipped this intact
+    assert result.output == f"[A]({_REAL}) and B and [C]({_ALSO_REAL})"
 
 
 async def test_the_flag_is_recorded_as_a_gate_step_naming_the_bad_link() -> None:
@@ -327,15 +362,21 @@ async def test_a_url_from_an_ERRORED_call_does_not_count_as_fetched() -> None:
     # ships flagged on the first attempt rather than being looped through a correction it
     # structurally cannot satisfy (the same rationale criterion 1 already applies to a tool-less
     # member).
+    #
+    # #975: the errored call leaves the registry EMPTY, so ruling 3 still ships on the first pass —
+    # and ruling 2 hardens the consequence: the invented URL is STRIPPED, absent from
+    # `fetched_urls` too, not shipped intact the way #944 did.
     async def dispatch(_spec: ToolSpec, _args: dict[str, Any]) -> dict[str, Any]:
         raise RuntimeError(f"404 fetching {_REAL}")
 
     llm = _Scripted(_Scripted.READ, f"[Source]({_REAL})")
     result = await _run(llm, dispatch)
     assert result.status is HarnessStatus.SUCCEEDED
-    assert result.output == f"[Source]({_REAL})"
     assert _steps(result, _CORRECTION_STATUS) == []
     assert result.unverified_links == [_REAL]  # flagged — never silently trusted
+    assert _REAL not in (result.output or "")  # stripped — #944 shipped this intact
+    assert result.output == "Source"
+    assert _REAL not in result.fetched_urls
 
 
 async def test_urls_fetched_across_several_turns_all_count() -> None:
@@ -394,10 +435,13 @@ async def test_a_member_that_never_stops_inventing_ships_flagged_after_the_bound
     # — an unbounded loop would spend the WHOLE iteration budget correcting a defect the member
     # structurally cannot fix. Past the bound the next attempt SHIPS FLAGGED instead of being sent
     # back again. `_TIGHT` (4 iterations) is exactly search + 2 corrections + the shipped attempt.
+    # #975 ruling 2 hardens the consequence: past the bound the invented URL no longer reaches the
+    # reader at all — only the flag survives. #944 shipped this raw fabrication intact.
     llm = _Scripted(_Scripted.SEARCH, f"[Source]({_FABRICATED})")
     result = await _run(llm, _returning(_REAL), policy=_TIGHT)
     assert result.status is HarnessStatus.SUCCEEDED
-    assert result.output == f"[Source]({_FABRICATED})"
+    assert _FABRICATED not in (result.output or "")  # stripped — #944 shipped this intact
+    assert result.output == "Source"
     assert result.unverified_links == [_FABRICATED]  # flagged — never silently trusted
     assert len(_steps(result, _CORRECTION_STATUS)) == 2  # bounded, not one per iteration
 
@@ -406,11 +450,17 @@ async def test_a_budget_that_runs_out_mid_correction_still_degrades_rather_than_
     # The degrade/PARTIAL terminal still exists — it fires when the budget runs out DURING a
     # correction, before the bound above is ever reached, not when "the member never stops"
     # (unbounded correction was itself the HIGH-2 defect; see the test above).
+    #
+    # #975 (A1/T3): the degraded draft goes through the SAME expand+strip pass every other terminal
+    # does — ruling 2 means the invented URL must not reach the reader here either, so what ships
+    # is stripped and marker-free; only the flag survives.
     llm = _Scripted(_Scripted.SEARCH, f"[Source]({_FABRICATED})")
     result = await _run(llm, _returning(_REAL), policy=_TIGHTER)
     assert result.status is _EXHAUSTED_STATUS
     assert result.error_type == _EXHAUSTED_ERROR_TYPE
     assert result.output is not None  # the last draft is carried out, flagged, never discarded
+    assert _FABRICATED not in result.output  # stripped — #944 shipped this intact
+    assert result.output == "Source"
     assert result.unverified_links == [_FABRICATED]
 
 
@@ -564,10 +614,16 @@ async def test_a_url_smuggled_through_a_non_url_named_argument_is_not_credited()
 
     result = await _run(_QueryLaunderLLM(), dispatch)
     assert result.status is HarnessStatus.SUCCEEDED
-    # HIGH-2: nothing was ever credited, so the draft ships flagged on the first attempt rather than
-    # looping — the same remedy an all-tool-calls-errored member gets.
+    # HIGH-2 / #975 ruling 3: nothing was ever credited, so the registry is EMPTY and the draft
+    # ships on the first attempt rather than looping — the same remedy an all-tool-calls-errored
+    # member gets.
     assert _steps(result, _CORRECTION_STATUS) == []
     assert result.unverified_links == [_FABRICATED]
+    # #975 ruling 2 hardens the consequence: the smuggled URL is STRIPPED, absent from
+    # `fetched_urls`, not shipped intact the way #944 did.
+    assert _FABRICATED not in (result.output or "")  # stripped — #944 shipped this intact
+    assert result.output == "Source"
+    assert _FABRICATED not in result.fetched_urls
 
 
 async def test_the_json_repair_corrections_own_prose_is_never_credited_after_resume() -> None:
@@ -688,3 +744,354 @@ async def test_a_credential_bearing_pre_pause_argument_never_reaches_a_correctio
     result = await _run(llm, resume_state=checkpoint)
     assert len(_steps(result, _CORRECTION_STATUS)) >= 1
     assert not any("SECRET123" in message for message in llm.user_messages)
+
+
+# =================================================================================================
+# #975 — cite-by-reference: LOOP behaviour (T2, new coverage).
+#
+# The registry (the loop's existing `fetched_urls` accumulator) becomes the numbered SOURCES list
+# every member is shown, tools or not (ruling 5); `[Sn]` markers expand to the real URL; the #944
+# raw-URL backstop stays, but its consequence hardens — a survivor is STRIPPED, never shipped
+# intact (ruling 2); an unknown marker is a new offence, corrected the same bounded way a raw
+# fabrication is (ruling 7).
+#
+# `run_tool_use_loop` does not accept `prior_fetched_urls`/`person_supplied_text` yet, and
+# `LoopResult` has no `fetched_urls` attribute yet — so most of what follows is RED on
+# `TypeError`/`AttributeError` today. Every test also carries an assertion that fails on BEHAVIOUR
+# alone once both exist (T13): today's code ships a fabricated raw URL and a literal `[Sn]` intact,
+# never expands a marker, and never gates a harvested URL through the registration rule.
+# =================================================================================================
+
+
+# --- a tool-less member is SHOWN its numbers before it can cite them (ruling 5) -------------------
+
+
+async def test_a_tool_less_member_is_shown_a_numbered_sources_block_and_can_cite_it() -> None:
+    # Ruling 5: the protocol applies to EVERY member, tools or not — the whole point of #975 is that
+    # the `linker` role (no tools at all) gets a real citable number instead of nothing. It cannot
+    # cite what it is never shown, so the block has to reach the FIRST (and, here, only) user turn.
+    llm = _Scripted("Costs fell again [S1].")
+    result = await _run(llm, specs=[], prior_fetched_urls=[_REAL])
+    shown = "\n".join(llm.user_messages)
+    assert f"[S1] {_REAL}" in shown  # the numbered SOURCES line, shown before it ever answers
+    assert result.status is HarnessStatus.SUCCEEDED
+    assert result.output == f"Costs fell again [S1](<{_REAL}>)."
+
+
+async def test_a_url_inside_person_supplied_text_is_a_citable_registry_seed() -> None:
+    # Ruling 4: a URL the PERSON supplied (task text, intake answers) is a citable seed too, not
+    # only a fetched one — a tool-less member can cite the address the person pasted into the task.
+    llm = _Scripted("As requested, see [S1].")
+    result = await _run(llm, specs=[], person_supplied_text=f"Please summarise {_REAL}")
+    assert result.status is HarnessStatus.SUCCEEDED
+    assert result.output == f"As requested, see [S1](<{_REAL}>)."
+
+
+async def test_seed_order_is_person_then_prior_then_harvested_composed_all_three_at_once() -> None:
+    # MINOR 2 (be-test-reviewer, PR #976): the seed-order ruling (person-supplied first, then prior
+    # entries, then the member's own harvests) is only ever proven pairwise elsewhere in this file —
+    # `test_fetched_urls_is_populated_on_a_degrade_terminal` proves prior-then-harvest,
+    # `test_a_url_inside_person_supplied_text_is_a_citable_registry_seed` proves person-supplied
+    # alone. A wrong implementation that puts `prior_fetched_urls` ahead of `person_supplied_text`
+    # would still pass every existing test in this file, so compose all three sources together.
+    person_seed = "https://person.test/seed-doc"
+    llm = _Scripted(_Scripted.SEARCH, "No further links needed.")
+    result = await _run(
+        llm,
+        _returning(_REAL),
+        person_supplied_text=f"See {person_seed} for background.",
+        prior_fetched_urls=[_ALSO_REAL],
+    )
+    assert result.status is HarnessStatus.SUCCEEDED
+    assert result.fetched_urls == [person_seed, _ALSO_REAL, _REAL]
+
+
+# --- the raw-URL backstop hardens: stripped, never shipped intact (ruling 2) ----------------------
+
+
+async def test_a_persistent_raw_fabricated_url_is_stripped_and_the_flag_step_is_recorded() -> None:
+    # Ruling 2: #944's "ships flagged, never rewritten" hardens. Past the correction bound the raw
+    # fabrication no longer reaches the reader at all — only the flag does.
+    llm = _Scripted(_Scripted.SEARCH, f"Prices fell. [Source]({_FABRICATED})")
+    result = await _run(llm, _returning(_REAL), policy=_TIGHT, prior_fetched_urls=[_ALSO_REAL])
+    assert result.status is HarnessStatus.SUCCEEDED
+    assert result.output == "Prices fell. Source"  # stripped — #944 shipped this intact
+    assert result.unverified_links == [_FABRICATED]
+    flags = _steps(result, _FLAG_STATUS)
+    assert len(flags) == 1
+    assert flags[0].name == _GATE_NAME
+    assert _FABRICATED in (flags[0].detail or "")
+
+
+async def test_a_registry_matching_raw_url_survives_byte_identical() -> None:
+    # The #944 backstop still credits an honestly-cited raw URL — cite-by-reference does not force
+    # every citation through a marker. Written with tracking cruft the run's own fetch lacks
+    # (canonical-equal, not byte-equal), so this also proves the surviving text is untouched.
+    written = f"{_REAL}#pricing-table"
+    llm = _Scripted(_Scripted.SEARCH, f"See {written} for detail.")
+    result = await _run(llm, _returning(_REAL))
+    assert result.output == f"See {written} for detail."
+    assert result.unverified_links == []
+    assert result.fetched_urls == [_REAL]
+
+
+# --- an unknown marker is a NEW offence, corrected the same bounded way (ruling 7) ----------------
+
+
+async def test_an_unknown_marker_triggers_a_correction_naming_it_then_is_stripped() -> None:
+    # An unknown marker is a new offence class the raw-URL backstop never had to catch — it names
+    # neither a real link nor "no link at all". Ruling 7 corrects it the same bounded way
+    # (`_LINK_CORRECTION_MAX`), and it must never survive into what ships (the T3 invariant).
+    llm = _Scripted(_Scripted.SEARCH, "Prices fell [S9].")
+    result = await _run(llm, _returning(_REAL), policy=_TIGHT)
+    assert result.status is HarnessStatus.SUCCEEDED
+    assert len(_steps(result, _CORRECTION_STATUS)) == 2  # bounded at _LINK_CORRECTION_MAX
+    correction = llm.user_messages[-1]
+    assert "S9" in correction  # names the offending marker, not an anonymous "you cited wrongly"
+    assert "[S9]" not in (result.output or "")
+
+
+# --- a budget-exhausted degrade still ships through the same pass (A1/T3) -------------------------
+
+
+async def test_a_budget_exhausted_degrade_ships_the_draft_stripped_and_marker_free() -> None:
+    # A1/T3: `_degrade` carries the LAST DRAFT out as `.output`. That text goes through the same
+    # expand+strip pass every other terminal does — a member that ran out of budget mid-correction
+    # must never ship a raw fabrication, or a literal `[Sn]` naming nothing.
+    llm = _Scripted(_Scripted.SEARCH, f"[Source]({_FABRICATED}) and [S9]")
+    result = await _run(llm, _returning(_REAL), policy=_TIGHTER)
+    assert result.status is _EXHAUSTED_STATUS
+    assert _FABRICATED not in (result.output or "")
+    assert "[S9]" not in (result.output or "")
+    assert result.unverified_links == [_FABRICATED]
+
+
+# --- `LoopResult.fetched_urls` is set on all FIVE return paths (A1) -------------------------------
+
+
+async def test_fetched_urls_is_populated_on_a_succeeded_terminal() -> None:
+    llm = _Scripted(_Scripted.SEARCH, "Prices fell, no links needed.")
+    result = await _run(llm, _returning(_REAL, _ALSO_REAL))
+    assert result.status is HarnessStatus.SUCCEEDED
+    assert result.fetched_urls == [_REAL, _ALSO_REAL]
+
+
+async def test_fetched_urls_is_populated_on_a_degrade_terminal() -> None:
+    llm = _Scripted(_Scripted.SEARCH, f"[Source]({_FABRICATED})")
+    result = await _run(llm, _returning(_REAL), policy=_TIGHTER, prior_fetched_urls=[_ALSO_REAL])
+    assert result.status is _EXHAUSTED_STATUS
+    assert result.fetched_urls == [_ALSO_REAL, _REAL]  # seed first, then the harvest (seed order)
+
+
+async def test_fetched_urls_is_populated_on_an_escalated_terminal() -> None:
+    gated = PolicyEnvelope(
+        max_iterations=6,
+        max_tool_calls=None,
+        max_wall_time_seconds=None,
+        max_tokens=None,
+        gated_bindings=frozenset({"web-research"}),
+    )
+    llm = _Scripted(_Scripted.SEARCH)
+    result = await _run(llm, _returning(_REAL), policy=gated, prior_fetched_urls=[_ALSO_REAL])
+    assert result.status is HarnessStatus.ESCALATED
+    assert result.error_type == "hitl_required"
+    assert result.fetched_urls == [_ALSO_REAL]  # nothing dispatched yet — only the seed is in it
+
+
+async def test_fetched_urls_is_populated_on_a_failed_terminal() -> None:
+    class _BoomLLM:
+        protocol_shape = "fake"
+
+        async def complete(self, *, messages: Any, system: str, tools: list[ToolSpec]) -> Any:
+            raise RuntimeError("model endpoint down")
+
+    result = await _run(_BoomLLM(), specs=[], prior_fetched_urls=[_REAL])
+    assert result.status is HarnessStatus.FAILED
+    assert result.fetched_urls == [_REAL]
+
+
+async def test_fetched_urls_is_populated_on_a_budget_terminal() -> None:
+    policy = PolicyEnvelope(
+        max_iterations=6, max_tool_calls=0, max_wall_time_seconds=None, max_tokens=None
+    )
+    llm = _Scripted(_Scripted.SEARCH)
+    result = await _run(llm, _returning(_REAL), policy=policy, prior_fetched_urls=[_ALSO_REAL])
+    assert result.status is HarnessStatus.ESCALATED
+    assert result.error_type == "tool_call_budget"
+    assert result.fetched_urls == [_ALSO_REAL]
+
+
+# --- a JSON answer stays parseable through the pass (T8) ------------------------------------------
+
+
+async def test_a_json_answer_with_a_marker_stays_parseable_through_the_pass() -> None:
+    # T8: a member with a declared output contract answers with JSON — the engine parses the
+    # declared keys OUT OF THE REWRITTEN TEXT (team_run.py). Expansion must not break the encoding.
+    import json
+
+    llm = _Scripted(_Scripted.SEARCH, '{"summary": "Costs fell [S1]."}')
+    result = await _run(llm, _returning(_REAL), prior_fetched_urls=[_ALSO_REAL])
+    assert result.status is HarnessStatus.SUCCEEDED
+    parsed = json.loads(result.output or "")
+    assert parsed["summary"] == f"Costs fell [S1](<{_ALSO_REAL}>)."
+
+
+# --- citation-then-link order; `cit_` ids survive the strip (T10) ---------------------------------
+
+
+async def test_a_draft_failing_both_gates_is_corrected_citation_first() -> None:
+    # #792's terminal precedence is older and unchanged by #975; this is the TURN-level ordering —
+    # the citation gate runs and `continue`s before the link pass ever sees the draft, so one turn
+    # failing both never spends two corrections at once.
+    llm = _Scripted(
+        _Scripted.SEARCH,
+        f"See {_CIT_ID_A} and also [Source]({_FABRICATED}).",
+        "Prices fell, no further detail.",
+    )
+    result = await _run(llm, _returning(_REAL))
+    assert result.status is HarnessStatus.SUCCEEDED
+    citation_steps = [s for s in result.steps if s.kind is StepKind.GATE and s.name == "citation"]
+    assert len(citation_steps) == 1
+    assert _steps(result, _CORRECTION_STATUS) == []  # the link pass never got a turn of its own
+    assert result.output == "Prices fell, no further detail."
+    assert result.fetched_urls == [_REAL]
+
+
+async def test_cit_ids_in_the_shipped_answer_survive_the_strip() -> None:
+    # The strip pass targets URLs, never `cit_` tokens — a served, valid citation sitting next to an
+    # unverified raw URL in the SAME accepted draft must come out untouched.
+    async def dispatch(_spec: ToolSpec, _args: dict[str, Any]) -> dict[str, Any]:
+        return {"results": [{"url": _REAL}], "served_citation_ids": [_CIT_ID_B]}
+
+    llm = _Scripted(_Scripted.SEARCH, f"See {_CIT_ID_B} and also [Source]({_FABRICATED}).")
+    result = await _run(llm, dispatch, citation_bindings=frozenset({"web-research"}), policy=_TIGHT)
+    assert result.status is HarnessStatus.SUCCEEDED
+    assert _CIT_ID_B in (result.output or "")
+    assert _FABRICATED not in (result.output or "")
+
+
+# --- resume seeds `prior_fetched_urls` FIRST — no renumbering across a pause (A3) -----------------
+
+
+async def test_resume_seeds_prior_fetched_urls_first_so_numbers_do_not_shift() -> None:
+    # A3: the service passes the PERSISTED union as `prior_fetched_urls` on a resume, the same
+    # pattern as `prior_served_citation_ids`. It must seed BEFORE the transcript's own re-derived
+    # entries, or a number a member is shown after resume would point at a different URL than before
+    # the pause.
+    checkpoint = _paused_after_a_read(content='{"text": "page body"}')
+    llm = _Scripted("Costs fell [S1] and [S2].")
+    result = await _run(llm, resume_state=checkpoint, prior_fetched_urls=[_ALSO_REAL])
+    assert result.status is HarnessStatus.SUCCEEDED
+    assert result.output == f"Costs fell [S1](<{_ALSO_REAL}>) and [S2](<{_REAL}>)."
+
+
+# --- the registration gate: a refused entry never earns a number, but still gets flagged (S1) -----
+
+
+async def test_a_gate_refused_harvested_url_is_never_registered_but_is_still_flagged_if_cited() -> (
+    None
+):
+    # S1: the registration gate applies to every SOURCE, including a tool's own harvest — a
+    # userinfo phishing shape or an over-length string must never earn a real [Sn] number just
+    # because a tool happened to return it. The #944 raw-URL backstop still catches it when the
+    # member cites it raw anyway.
+    phishing = "https://arxiv.org@evil.example/paper"
+    oversized = "https://example.org/" + ("a" * 2048)
+    llm = _Scripted(_Scripted.SEARCH, f"[A]({phishing}) [B]({_REAL})")
+    result = await _run(llm, _returning(phishing, oversized, _REAL), policy=_TIGHT)
+    assert result.status is HarnessStatus.SUCCEEDED
+    assert phishing not in result.fetched_urls
+    assert oversized not in result.fetched_urls
+    assert _REAL in result.fetched_urls
+    assert result.unverified_links == [phishing]
+    assert phishing not in (result.output or "")
+
+
+# --- SOURCES lines sit before the receipt line (A6); the per-call cap holds (A7) ------------------
+
+
+async def test_sources_lines_sit_before_the_receipt_line_in_the_tool_result_message() -> None:
+    # A6: `_split_receipt` classifies anything AFTER the receipt as corruption — a SOURCES block
+    # this run adds to a tool result has to land before it, never after.
+    llm = _CapturingScripted(_Scripted.SEARCH, "no links here")
+    result = await _run(llm, _returning(_REAL))
+    assert result.status is HarnessStatus.SUCCEEDED
+    tool_message = next(m for m in llm.last_messages if m.get("role") == "tool")
+    content = tool_message["content"]
+    assert f"[S1] {_REAL}" in content
+    assert content.index(f"[S1] {_REAL}") < content.index("\n[receipt: ")
+
+
+async def test_a_sources_line_carries_nothing_but_the_marker_and_the_url() -> None:
+    # MINOR 1 (be-test-reviewer, PR #976): the test above only asserts the `[S1] <url>` substring
+    # is present and precedes the receipt — it never proves S6's other half, that a SOURCES line
+    # is ONLY `[Sn] <url>` and never leaks the page title/snippet a tool result actually carries.
+    # Script a result with a distinctive title AND snippet and prove neither survives into a
+    # SOURCES line, while both are still visible earlier in the same tool-content string (S6:
+    # "no other text from the tool result").
+    title = "Cloud inference costs keep falling"
+    snippet = "Providers cut per-token pricing for the third quarter running."
+
+    async def dispatch(_spec: Any, _args: dict[str, Any]) -> dict[str, Any]:
+        return {"results": [{"title": title, "url": _REAL, "snippet": snippet}]}
+
+    llm = _CapturingScripted(_Scripted.SEARCH, "no links here")
+    result = await _run(llm, dispatch)
+    assert result.status is HarnessStatus.SUCCEEDED
+
+    tool_message = next(m for m in llm.last_messages if m.get("role") == "tool")
+    content = tool_message["content"]
+    source_lines = [ln for ln in content.splitlines() if ln.startswith("[S")]
+    assert source_lines  # the block really has at least one numbered line
+
+    for line in source_lines:
+        assert re.fullmatch(r"\[S\d+\] https?://\S+", line), line  # nothing but marker + url
+
+    # the title/snippet appear somewhere in the tool content (the raw result, pre-SOURCES-block) —
+    # but never inside a SOURCES line itself, and strictly before the block starts.
+    assert title in content
+    assert snippet in content
+    assert all(title not in line for line in source_lines)
+    assert all(snippet not in line for line in source_lines)
+    first_source_index = content.index(source_lines[0])
+    assert content.index(title) < first_source_index
+    assert content.index(snippet) < first_source_index
+
+
+async def test_the_per_call_sources_cap_holds() -> None:
+    # A7: uncapped SOURCES lines on one tool result would balloon every later turn's prompt in
+    # proportion to a single page's harvest. Naming the cap as a module constant makes changing it a
+    # decision, not a silent drift. Registration itself is NOT capped by this — only the displayed
+    # lines are (uncapped entries stay verifiable via the raw-URL match).
+    from oraclous_harness_runtime_service.domain.loop.tool_use import _SOURCES_PER_CALL_MAX
+
+    assert _SOURCES_PER_CALL_MAX == 20  # small, named, and pinned here
+
+    many_urls = [f"https://example.org/{i}" for i in range(_SOURCES_PER_CALL_MAX + 5)]
+    llm = _CapturingScripted(_Scripted.SEARCH, "no links here")
+    result = await _run(llm, _returning(*many_urls))
+    assert result.status is HarnessStatus.SUCCEEDED
+    tool_message = next(m for m in llm.last_messages if m.get("role") == "tool")
+    lines = [ln for ln in tool_message["content"].splitlines() if ln.startswith("[S")]
+    assert len(lines) == _SOURCES_PER_CALL_MAX  # first-registered win — the tail gets no line
+    assert f"[S1] {many_urls[0]}" in tool_message["content"]
+    assert result.fetched_urls[-1] == many_urls[-1]  # still REGISTERED, just never shown a line
+
+
+# --- an empty registry never loops (ruling 3) -----------------------------------------------------
+
+
+async def test_an_empty_registry_never_loops_first_pass_strips_and_flags() -> None:
+    # Ruling 3 keeps #944's HIGH-2 fix: a correction needs a REAL registry to measure against. An
+    # empty one ships flagged — and now stripped — on the very first attempt, never looped.
+    async def dispatch(_spec: ToolSpec, _args: dict[str, Any]) -> dict[str, Any]:
+        raise RuntimeError("404")
+
+    llm = _Scripted(_Scripted.READ, f"See {_REAL} for detail.")
+    result = await _run(llm, dispatch)
+    assert result.status is HarnessStatus.SUCCEEDED
+    assert _steps(result, _CORRECTION_STATUS) == []  # nothing to correct against — ships on pass 1
+    assert result.unverified_links == [_REAL]
+    assert _REAL not in (result.output or "")  # stripped, not merely flagged
+    assert "See" in (result.output or "")
+    assert result.fetched_urls == []

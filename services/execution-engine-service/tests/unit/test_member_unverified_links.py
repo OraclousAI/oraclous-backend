@@ -40,6 +40,7 @@ pytestmark = pytest.mark.unit
 
 _ORG = uuid.UUID("87654321-4321-8765-4321-876543210000")
 _FABRICATED = "https://www.okta.com/blog/2023/10/okta-ai-token-costs"
+_FETCHED = "https://www.example.com/report"
 
 
 class _ScriptedHarness:
@@ -124,6 +125,40 @@ async def test_a_member_cannot_clear_its_own_flag_by_answering_with_the_key() ->
     team = _team([_m("linker", outputs_schema={"required": ["unverified_links", "summary"]})])
     res = await run_team_harness(team, harness)
     assert res.results["linker"]["unverified_links"] == [_FABRICATED]
+
+
+# --- #975: the sibling `fetched_urls` key (RED — engine threading, plan §5, slice T5) -----------
+#
+# #975's cite-by-reference mechanism needs the run's fetch registry threaded member-to-member; the
+# full per-member registry a harness reports is lifted into `results` exactly like
+# `unverified_links` above — same key shape, same back-compat posture (a missing key reports
+# nothing, never crashes). The DIAMOND/delta/resume/bounds/client scenarios that exercise the
+# THREADING itself (not just this lift) live in the dedicated `test_member_fetched_urls.py`.
+
+
+async def test_a_members_fetched_urls_reach_its_stored_result() -> None:
+    class _WithFetched:
+        async def execute(self, **kwargs: Any) -> dict[str, Any]:
+            return {
+                "id": str(uuid.uuid4()),
+                "status": "SUCCEEDED",
+                "output": "ok",
+                "fetched_urls": [_FETCHED],
+            }
+
+    res = await run_team_harness(_team([_m("linker")]), _WithFetched())
+    assert res.results["linker"]["fetched_urls"] == [_FETCHED]
+
+
+async def test_a_harness_response_predating_fetched_urls_contributes_nothing() -> None:
+    # Back-compat, the #907/#944 posture: a response with no `fetched_urls` key at all must not
+    # crash the run and must not be reported as having fetched anything.
+    class _Old:
+        async def execute(self, **kwargs: Any) -> dict[str, Any]:
+            return {"id": str(uuid.uuid4()), "status": "SUCCEEDED", "output": "ok"}
+
+    res = await run_team_harness(_team([_m("linker")]), _Old())
+    assert res.results["linker"]["fetched_urls"] == []
 
 
 # --- the run-level flag -------------------------------------------------------------------------
