@@ -266,6 +266,154 @@ def canonical_urls(values: Iterable[str]) -> set[str]:
     return {c for c in (_canonical(v) for v in values if isinstance(v, str)) if c is not None}
 
 
+# ── #975: cite-by-reference — the two pure functions the acceptance pass is built from ───────────
+#
+# #944's check is gated on the member declaring tools, so a tool-less `linker` member — whose whole
+# job is attaching sources — ships URLs composed from training data, unflagged. The owner ruled
+# (2026-09-09) the strongest pattern: the model cites NUMBERED ENTRIES from a source registry the
+# platform holds (``[S1]``, ``[S2]``, …), and the platform prints the real URL. A fabricated link is
+# then impossible by construction. The #944 raw-URL check stays as the backstop, but its consequence
+# hardens: an unverified raw URL is STRIPPED from the shipped answer, never rendered.
+#
+# One upper-case ``S``, one or more digits with NO leading zero (``[1-9]\d*`` — ``[S0]``/``[S007]``
+# are ordinary text, never a marker), in exactly one pair of brackets.
+_MARKER = re.compile(r"\[S([1-9]\d*)\]")
+
+# A fenced code block, non-greedy across (possibly multi-line) content — a marker written as a code
+# EXAMPLE (`refs = ['[S1]']`) is not the member citing anything and must never be expanded/flagged.
+_FENCE = re.compile(r"```.*?```", re.DOTALL)
+
+
+def _inside_any(pos: int, spans: list[tuple[int, int]]) -> bool:
+    return any(start <= pos < end for start, end in spans)
+
+
+def expand_source_markers(text: str, registry: Collection[str]) -> tuple[str, list[int]]:
+    """Turn every well-formed ``[Sn]`` naming a usable registry entry into the inline link
+    ``[Sn](<url>)``; report every marker that names none as ``unknown`` (1-based, first-seen,
+    deduplicated) and remove it from the text — no literal ``[Sn]`` ever ships (the loop's T3
+    invariant). ``registry`` is the ordered list of URLs the run really fetched (or was seeded);
+    entry ``n`` is ``registry[n-1]``.
+
+    The label is the marker text itself, never page-derived (S5): nothing from a fetched page — not
+    its title, not its own anchor text — is ever placed where a reader can see it. The target is
+    written in CommonMark angle-bracket form (``<…>``) so a ``(``, ``)`` or ``[`` inside the URL can
+    never open or close a markdown construct (S1) — unlike a bare ``(url)`` target, which the
+    Wikipedia-disambiguation shape ``_trim`` exists for would break.
+
+    A marker naming NO usable entry — out of range, or an entry ``_canonical`` itself refuses (S1:
+    the registration gate should already have kept it out, but expansion re-checks rather than
+    trusting a caller-supplied list) — is unknown. Two positions are never markers at all, and are
+    left byte-for-byte alone, reported nowhere: inside a raw URL candidate (``[`` is a legal URL
+    character, so ``https://x/a[S1`` is one URL span as far as the raw-URL check is concerned, and
+    that check will judge the whole span) and inside a fenced code block. A marker written as
+    ``[[Sn]]`` (both a preceding and a following bracket) is ordinary text, not a marker, by the
+    same "exactly one pair of brackets" rule that makes the shapes above malformed. A marker already
+    immediately followed by ``(`` is already the label of an existing inline link — including one
+    THIS function itself just wrote — so re-running the pass is idempotent by construction. A marker
+    nested inside an existing link's own label (followed by ``]``, not preceded by ``[``) is not
+    valid markdown once nested, so it expands to the bare address instead, which the raw-URL pass
+    then judges on its own.
+    """
+    if not text:
+        return text, []
+    entries = list(registry)
+    url_spans = [(m.start(), m.end()) for m in _URL.finditer(text)]
+    fence_spans = [(m.start(), m.end()) for m in _FENCE.finditer(text)]
+
+    out: list[str] = []
+    unknown: list[int] = []
+    seen: set[int] = set()
+    last_end = 0
+    for match in _MARKER.finditer(text):
+        start, end = match.start(), match.end()
+        out.append(text[last_end:start])
+        before = text[start - 1] if start > 0 else ""
+        after = text[end] if end < len(text) else ""
+        if _inside_any(start, url_spans) or _inside_any(start, fence_spans):
+            out.append(match.group(0))  # a URL candidate or fenced code — not a marker here
+        elif before == "[" and after == "]":
+            out.append(match.group(0))  # `[[Sn]]` — malformed, ordinary text
+        elif after == "(":
+            out.append(match.group(0))  # already an inline link's own label — never re-expanded
+        else:
+            n = int(match.group(1))
+            usable = n - 1 < len(entries) and _canonical(entries[n - 1]) is not None
+            if usable:
+                url = entries[n - 1]
+                out.append(url if after == "]" else f"[S{n}](<{url}>)")
+            else:
+                if n not in seen:
+                    seen.add(n)
+                    unknown.append(n)
+                # removed — no literal marker naming nothing ever reaches a reader
+        last_end = end
+    out.append(text[last_end:])
+    return "".join(out), unknown
+
+
+# ``[label](target)`` in EITHER commonmark shape — a plain target or an angle-bracket one — matched
+# as ONE construct per pass so nested link shapes (`[[Source](url)](url)`) resolve from the inside
+# out across repeated passes, the same way the label class excluding `[`/`]` keeps a regex engine
+# from ever matching more than the innermost well-formed link. Combined with the bare-URL pattern in
+# one alternation so a single left-to-right scan handles both shapes without either double-matching
+# a URL that sits inside a link's own target or missing one that does not.
+_STRIP_SCAN = re.compile(
+    r"\[(?P<label>[^\[\]]*)\]\((?P<target><[^<>]*>|[^()]*)\)" + "|" + _URL.pattern,
+    re.IGNORECASE,
+)
+
+
+def _strip_pass(text: str, unverified: set[str]) -> str:
+    out: list[str] = []
+    last_end = 0
+    for match in _STRIP_SCAN.finditer(text):
+        out.append(text[last_end : match.start()])
+        label = match.group("label")
+        if label is not None:
+            target_raw = match.group("target")
+            target = (
+                target_raw[1:-1]
+                if target_raw.startswith("<") and target_raw.endswith(">")
+                else target_raw
+            )
+            if target in unverified:
+                # S4: a label that ITSELF carries an http(s) URL takes the whole link with it —
+                # `[https://fab](https://fab)` stripped to just its label would leave the
+                # fabricated address on the reader's screen as text, and the console linkifies a
+                # bare URL right back into an anchor. Ordinary prose in the label survives as that.
+                out.append("" if _URL.search(label) else label)
+            else:
+                out.append(match.group(0))  # a verified (or untouched) link survives byte-identical
+        else:
+            written = _trim(match.group(0))
+            out.append(match.group(0)[len(written) :] if written in unverified else match.group(0))
+        last_end = match.end()
+    out.append(text[last_end:])
+    return "".join(out)
+
+
+def strip_unverified_links(text: str, unverified: Collection[str]) -> str:
+    """Remove every occurrence of each URL in ``unverified`` (``LinkCheckResult.unverified`` — the
+    answer's URLs AS WRITTEN) from ``text``. A markdown link loses its target and keeps its label as
+    plain text, unless the label itself carries an http(s) URL, in which case the whole link goes
+    (S4); a bare URL is removed in place, any trailing sentence punctuation `_trim` would have
+    shaved off left untouched. Span-based over the same URL candidates ``extract_answer_urls``
+    reads, never ``str.replace`` (T7: stripping ``…/a`` must never damage the longer ``…/ab``).
+
+    Runs to a fixpoint before returning — a nested shape like ``[[Source](url)](url)`` only exposes
+    its outer link once the inner one is gone, so one linear scan is not enough on its own.
+    """
+    if not text or not unverified:
+        return text
+    unverified_set = set(unverified)
+    while True:
+        stripped = _strip_pass(text, unverified_set)
+        if stripped == text:
+            return text
+        text = stripped
+
+
 def check_answer_links(answer: str, fetched: Collection[str]) -> LinkCheckResult:
     """Split the answer's URLs into the ones the run really fetched and the ones it did not.
 
