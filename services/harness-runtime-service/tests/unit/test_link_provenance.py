@@ -432,3 +432,362 @@ async def test_a_trailing_dot_host_matches_the_same_host_without_one() -> None:
     # cover this.
     result = _check("[Source](https://example.org./a)", ["https://example.org/a"])
     assert result.unverified == []
+
+
+# =================================================================================================
+# #975 — cite-by-reference: the two pure functions the acceptance pass is built from.
+#
+# #944's check is gated on the member declaring tools, so a tool-less `linker` member — whose whole
+# job is attaching sources — ships URLs composed from training data, unflagged. The owner ruled
+# (2026-09-09) the strongest pattern: the model cites NUMBERED ENTRIES from a source registry the
+# platform holds (`[S1]`, `[S2]`, …), and the platform prints the real URL. A fabricated link is
+# then impossible by construction. The #944 raw-URL check stays as the backstop, but its consequence
+# hardens: an unverified raw URL is STRIPPED from the shipped answer, never rendered.
+#
+# Two pure functions carry that (same no-I/O posture as `check_answer_links`, same reason):
+#
+#   expand_source_markers(text, registry) -> (text, unknown)
+#     `registry` is the ordered list of URLs the run really fetched; entry n is `registry[n-1]`.
+#     Every well-formed marker `[Sn]` naming a registered, gate-passing entry becomes the inline
+#     link `[Sn](<url>)` — the label is the marker text (platform-authored, never page-derived:
+#     S5), and the target is written in CommonMark angle-bracket form so `(`, `)` and `[` inside a
+#     URL can never open or close a markdown construct (S1). A marker naming NO usable entry — out
+#     of range, or an entry `_canonical` refuses at expansion time (S1) — is REMOVED from the text
+#     and its number reported in `unknown` (1-based, first-seen order, deduplicated). The loop uses
+#     `unknown` to spend a correction turn on the ORIGINAL draft; what ships is this function's
+#     output, so no literal `[Sn]` ever reaches a reader.
+#
+#   strip_unverified_links(text, unverified) -> text
+#     `unverified` is `LinkCheckResult.unverified` — the answer's URLs AS WRITTEN. Every occurrence
+#     of each one is removed: a markdown link loses its target and keeps its label as plain text
+#     (`[Source](https://fab)` → `Source`), UNLESS the label itself contains an http(s) URL, in
+#     which case the whole link goes (S4 — `[https://fab](https://fab)` → nothing); a bare URL is
+#     removed in place. Matching is SPAN-based over `extract_answer_urls`'s own spans, never
+#     `str.replace` (T7: stripping `…/a` must not damage `…/ab`). Runs to a fixpoint; idempotent.
+#
+# Both are imported function-locally (`.claude/rules/tests-seam-imports.md`) — neither name exists
+# until the `[impl]` lands, so every test below is RED on `ImportError`, and each also carries an
+# assertion that fails on BEHAVIOUR alone once the names exist (T13).
+# =================================================================================================
+
+_REG_A = "https://arstechnica.com/ai/2026/09/model-costs-fall-again/"
+_REG_B = "https://www.theverge.com/2026/9/8/agents-pricing"
+_WIKI = "https://en.wikipedia.org/wiki/Mercury_(planet)"
+
+
+def _expand(text: str, registry: Any) -> Any:
+    from oraclous_harness_runtime_service.domain.link_provenance import expand_source_markers
+
+    return expand_source_markers(text, registry)
+
+
+def _strip(text: str, unverified: Any) -> Any:
+    from oraclous_harness_runtime_service.domain.link_provenance import strip_unverified_links
+
+    return strip_unverified_links(text, unverified)
+
+
+# --- expand: the substitution itself --------------------------------------------------------------
+
+
+async def test_a_marker_expands_to_an_inline_link_on_the_registered_url() -> None:
+    text, unknown = _expand("Token costs fell again [S1].", [_REG_A])
+    assert text == f"Token costs fell again [S1](<{_REG_A}>)."
+    assert unknown == []
+
+
+async def test_the_target_is_in_angle_bracket_form_so_a_paren_in_the_url_cannot_close_it() -> None:
+    # S1: `[S1](https://…/Mercury_(planet))` is ambiguous markdown — the URL's own `)` can end the
+    # link early. The CommonMark angle-bracket destination `<…>` has no such ambiguity, so a
+    # registry entry carrying `(`, `)` or `[` renders as exactly the address the run fetched.
+    text, unknown = _expand("Mercury is the smallest planet [S1].", [_WIKI])
+    assert text == f"Mercury is the smallest planet [S1](<{_WIKI}>)."
+    assert unknown == []
+
+
+async def test_the_label_is_the_marker_text_never_page_derived_content() -> None:
+    # S5: the label a reader clicks is authored by the platform. Nothing from the fetched page —
+    # not its title, not its own anchor text — is ever placed there, so page content cannot dress
+    # the link. The number is the whole label.
+    text, _ = _expand("[S2]", [_REG_A, _REG_B])
+    assert text == f"[S2](<{_REG_B}>)"
+    assert _REG_A not in text
+
+
+async def test_the_number_is_the_entry_position_plus_one() -> None:
+    text, unknown = _expand("[S1] then [S2]", [_REG_A, _REG_B])
+    assert text == f"[S1](<{_REG_A}>) then [S2](<{_REG_B}>)"
+    assert unknown == []
+
+
+async def test_the_same_marker_cited_twice_expands_both_times() -> None:
+    text, unknown = _expand("[S1] … and again [S1]", [_REG_A])
+    assert text == f"[S1](<{_REG_A}>) … and again [S1](<{_REG_A}>)"
+    assert unknown == []
+
+
+# --- expand: a marker that names no usable entry --------------------------------------------------
+
+
+async def test_an_out_of_range_marker_is_removed_and_reported() -> None:
+    # The model cited a number it was never shown. The number goes to `unknown` so the loop can
+    # spend a correction on the draft; the marker itself does not survive into the shipped text
+    # (the T3 invariant: no literal `[Sn]` ever reaches a reader).
+    text, unknown = _expand("Costs fell [S3].", [_REG_A, _REG_B])
+    assert unknown == [3]
+    assert "[S3]" not in text
+    assert "Costs fell" in text
+
+
+async def test_a_marker_against_an_empty_registry_is_unknown() -> None:
+    text, unknown = _expand("See [S1].", [])
+    assert unknown == [1]
+    assert "[S1]" not in text
+
+
+async def test_unknown_markers_are_reported_first_seen_deduplicated() -> None:
+    _, unknown = _expand("[S9] and [S9] and [S8] and [S1]", [_REG_A])
+    assert unknown == [9, 8]
+
+
+async def test_a_registry_entry_the_gate_refuses_expands_as_unknown() -> None:
+    # S1: the registration gate should never have admitted a userinfo-bearing entry, but the
+    # expansion re-checks with `_canonical` rather than trusting the list it was handed —
+    # `prior_fetched_urls` is caller-supplied, and a refused entry must not be printed as a real
+    # link with the platform's own provenance stamp on it.
+    phishing = "https://arxiv.org@evil.example/paper"
+    text, unknown = _expand("Read [S1] and [S2].", [phishing, _REG_A])
+    assert unknown == [1]
+    assert phishing not in text
+    assert text == f"Read  and [S2](<{_REG_A}>)."
+
+
+async def test_an_over_length_registry_entry_expands_as_unknown() -> None:
+    oversize = "https://example.org/" + ("a" * 2048)
+    text, unknown = _expand("[S1]", [oversize])
+    assert unknown == [1]
+    assert oversize not in text
+
+
+# --- expand: the T6 edge matrix -------------------------------------------------------------------
+
+
+async def test_digits_are_greedy_so_S12_is_entry_twelve_not_entry_one_followed_by_2() -> None:
+    registry = [f"https://example.org/{i}" for i in range(1, 13)]
+    text, unknown = _expand("[S12]", registry)
+    assert text == "[S12](<https://example.org/12>)"
+    assert unknown == []
+
+
+async def test_S12_against_a_one_entry_registry_is_unknown_twelve_not_S1_plus_a_digit() -> None:
+    text, unknown = _expand("[S12]", [_REG_A])
+    assert unknown == [12]
+    assert _REG_A not in text
+
+
+async def test_adjacent_markers_never_form_a_reference_style_link() -> None:
+    # In markdown `[S1][S2]` is a REFERENCE link (label S1, reference S2). Expanded one at a time
+    # into inline links, each keeps its own target and the pair cannot collapse into one anchor.
+    text, unknown = _expand("[S1][S2]", [_REG_A, _REG_B])
+    assert text == f"[S1](<{_REG_A}>)[S2](<{_REG_B}>)"
+    assert unknown == []
+
+
+@pytest.mark.parametrize("marker", ["[s1]", "[S007]", "[S0]", "[[S1]]", "[S 1]", "[S1 ]", "[S]"])
+async def test_a_malformed_marker_is_left_alone_and_not_reported(marker: str) -> None:
+    # The protocol is exact: an upper-case S, one or more digits with no leading zero, in one pair
+    # of brackets. Anything else is ordinary text the member wrote — not expanded, not an offence.
+    text, unknown = _expand(f"see {marker} here", [_REG_A])
+    assert text == f"see {marker} here"
+    assert unknown == []
+
+
+async def test_a_marker_inside_a_url_span_is_left_alone() -> None:
+    # `[` is a legal URL character and the extraction regex admits it, so `https://x/a[S1` is one
+    # URL candidate as far as the raw-URL check is concerned. Expanding inside it would rewrite an
+    # address; the raw-URL pass will judge the whole span instead.
+    raw = "https://example.org/path[S1]/more"
+    text, unknown = _expand(f"see {raw}", [_REG_A])
+    assert text == f"see {raw}"
+    assert unknown == []
+
+
+async def test_a_marker_inside_a_fenced_code_block_is_left_alone() -> None:
+    fenced = "```python\nrefs = ['[S1]']\n```"
+    text, unknown = _expand(fenced, [_REG_A])
+    assert text == fenced
+    assert unknown == []
+
+
+async def test_a_marker_inside_an_existing_link_label_expands_to_the_bare_url() -> None:
+    # `[Report [S1]](https://example.org/r)` — nesting an inline link inside a label is not valid
+    # markdown, so the marker becomes the bare address instead. The raw-URL pass then sees a
+    # registry URL it will verify, and the outer link is judged on its own target.
+    text, unknown = _expand("[Report [S1]](https://example.org/r)", [_REG_A])
+    assert text == f"[Report {_REG_A}](https://example.org/r)"
+    assert unknown == []
+
+
+async def test_expansion_is_idempotent() -> None:
+    # The expanded form `[S1](<url>)` contains the bytes `[S1]` — running the pass again must not
+    # turn it into `[S1](<url>)(<url>)`. What is already a link's own label is not a marker.
+    once, _ = _expand("Costs fell [S1] and [S9].", [_REG_A])
+    twice, unknown = _expand(once, [_REG_A])
+    assert twice == once
+    assert unknown == []
+
+
+async def test_empty_text_and_empty_registry_are_a_no_op() -> None:
+    assert _expand("", []) == ("", [])
+    assert _expand("no markers here", []) == ("no markers here", [])
+
+
+async def test_the_registry_may_be_any_collection_of_strings() -> None:
+    # The loop's accumulator is a list; a caller may hand a tuple. Order is what numbers it.
+    text, _ = _expand("[S2]", (_REG_A, _REG_B))
+    assert text == f"[S2](<{_REG_B}>)"
+
+
+# --- expand: a JSON answer must stay parseable (T8) -----------------------------------------------
+
+
+async def test_a_marker_inside_a_json_string_expands_and_the_document_still_parses() -> None:
+    # A member with a declared output contract answers with a JSON document, and the engine parses
+    # the declared keys OUT OF THE REWRITTEN TEXT (`team_run.py`). A substitution that breaks a
+    # string escape breaks every downstream consumer of that member's output.
+    import json
+
+    text, unknown = _expand('{"summary": "Costs fell [S1].\\n\\nMore below."}', [_REG_A])
+    parsed = json.loads(text)
+    assert parsed["summary"] == f"Costs fell [S1](<{_REG_A}>).\n\nMore below."
+    assert unknown == []
+
+
+# --- strip: the T7 matrix -------------------------------------------------------------------------
+
+
+async def test_a_markdown_link_with_an_unverified_target_keeps_its_label_as_plain_text() -> None:
+    # The reader keeps the sentence; the anchor is gone. `[Source](https://fab)` → `Source`.
+    result = _strip(f"Costs fell. [Source]({_FABRICATED})", [_FABRICATED])
+    assert result == "Costs fell. Source"
+
+
+async def test_a_link_whose_label_is_itself_the_url_is_removed_entirely() -> None:
+    # S4: the label is what the reader SEES. `[https://fab](https://fab)` stripped to `https://fab`
+    # would leave the fabricated address on the screen as text — and the console linkifies bare
+    # URLs, so it would be an anchor again. Label and target both go.
+    result = _strip(f"Sources:\n- [{_FABRICATED}]({_FABRICATED})\n- [Ars]({_REG_A})", [_FABRICATED])
+    assert _FABRICATED not in result
+    assert f"[Ars]({_REG_A})" in result
+
+
+async def test_a_link_whose_label_merely_contains_a_url_is_removed_entirely() -> None:
+    # The same rule when the URL is embedded in prose inside the label, and when the label carries
+    # a DIFFERENT url than the target — any http(s) URL in the label takes the whole link with it.
+    other = "https://www.forbes.com/sites/nobody/2026/01/01/invented/"
+    result = _strip(f"see [details at {other} today]({_FABRICATED}) now", [_FABRICATED, other])
+    assert _FABRICATED not in result
+    assert other not in result
+    assert result == "see  now"
+
+
+async def test_a_bare_unverified_url_is_removed_in_place() -> None:
+    result = _strip(f"See {_FABRICATED} for the breakdown.", [_FABRICATED])
+    assert _FABRICATED not in result
+    assert "See" in result
+    assert "for the breakdown." in result
+
+
+async def test_sentence_punctuation_after_a_stripped_bare_url_survives() -> None:
+    result = _strip(f"The breakdown is at {_FABRICATED}.", [_FABRICATED])
+    assert result == "The breakdown is at ."
+
+
+async def test_stripping_is_span_based_so_a_prefix_never_damages_a_longer_verified_url() -> None:
+    # T7, the prefix trap: `str.replace("https://example.org/a", "")` would turn the VERIFIED
+    # `https://example.org/ab` into `b`. Only a URL whose own extracted span equals an unverified
+    # entry is touched.
+    short = "https://example.org/a"
+    longer = "https://example.org/ab"
+    result = _strip(f"[A]({short}) and [B]({longer})", [short])
+    assert result == f"A and [B]({longer})"
+
+
+async def test_a_verified_url_survives_byte_identical_however_it_was_written() -> None:
+    written = "https://WWW.ArsTechnica.com/ai/2026/09/model-costs-fall-again/#cost-table"
+    answer = f"[Ars]({written}) and [Okta]({_FABRICATED})"
+    result = _strip(answer, [_FABRICATED])
+    assert result == f"[Ars]({written}) and Okta"
+
+
+async def test_the_same_url_written_as_markdown_and_bare_is_removed_in_both_places() -> None:
+    result = _strip(f"[Source]({_FABRICATED}) … and again at {_FABRICATED}", [_FABRICATED])
+    assert _FABRICATED not in result
+    assert result.startswith("Source")
+
+
+async def test_an_angle_bracket_target_is_stripped_the_same_way() -> None:
+    # A model may write the CommonMark form itself. The regex stops at `<`/`>`, so the extracted
+    # span is the bare address; the strip still has to take the whole `[label](<url>)` construct.
+    result = _strip(f"Costs fell [Source](<{_FABRICATED}>).", [_FABRICATED])
+    assert result == "Costs fell Source."
+
+
+async def test_stripping_runs_to_a_fixpoint_on_nested_link_shapes() -> None:
+    # `[[Source](https://fab)](https://fab)`: removing the inner link exposes an outer one that was
+    # not a well-formed link before. One pass is not enough; the result must contain the URL
+    # nowhere and be stable under a second pass.
+    nested = f"[[Source]({_FABRICATED})]({_FABRICATED})"
+    once = _strip(f"Costs fell. {nested}", [_FABRICATED])
+    assert _FABRICATED not in once
+    assert _strip(once, [_FABRICATED]) == once
+
+
+async def test_stripping_is_idempotent() -> None:
+    answer = f"[A]({_FABRICATED}) and [B]({_REG_A}) and {_FABRICATED}"
+    once = _strip(answer, [_FABRICATED])
+    assert _strip(once, [_FABRICATED]) == once
+
+
+async def test_an_empty_unverified_list_returns_the_text_byte_identical() -> None:
+    answer = f"[A]({_FABRICATED}) and {_REG_A}."
+    assert _strip(answer, []) == answer
+
+
+async def test_a_url_not_present_in_the_text_strips_nothing() -> None:
+    answer = f"[A]({_REG_A})."
+    assert _strip(answer, [_FABRICATED]) == answer
+
+
+async def test_a_gate_refused_url_is_stripped_too() -> None:
+    # `_canonical` refuses userinfo and over-length shapes, so `check_answer_links` reports them
+    # unverified as written. The strip must remove exactly that as-written string — these are the
+    # shapes a reader must never be handed.
+    phishing = "https://arxiv.org@evil.example/paper"
+    result = _strip(f"[paper]({phishing}) is the source.", [phishing])
+    assert result == "paper is the source."
+
+
+async def test_stripping_inside_a_json_string_leaves_the_document_parseable() -> None:
+    import json
+
+    answer = (
+        f'{{"summary": "Prices fell.\\n\\nSources:\\n- [Ars]({_REG_A})\\n- [Okta]({_FABRICATED})"}}'
+    )
+    result = _strip(answer, [_FABRICATED])
+    parsed = json.loads(result)
+    assert _FABRICATED not in parsed["summary"]
+    assert f"[Ars]({_REG_A})" in parsed["summary"]
+    assert parsed["summary"].endswith("- Okta")
+
+
+# --- the two passes composed: expansion output is never a strip target ----------------------------
+
+
+async def test_an_expanded_link_survives_a_strip_that_names_only_the_fabricated_url() -> None:
+    # The loop runs expand, then `check_answer_links` on what remains, then strip on the
+    # unverified survivors. A registry URL inserted by expansion is by construction fetched, so it
+    # is never in `unverified` — and the strip must leave the angle-bracket link intact.
+    expanded, _ = _expand(f"Costs fell [S1]. [Okta]({_FABRICATED})", [_REG_A])
+    result = _strip(expanded, [_FABRICATED])
+    assert result == f"Costs fell [S1](<{_REG_A}>). Okta"
