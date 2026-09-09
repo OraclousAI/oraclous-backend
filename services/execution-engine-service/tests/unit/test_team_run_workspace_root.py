@@ -43,6 +43,8 @@ class _RecordingHarness:
         producer: dict[str, Any] | None = None,
         precedence_order: list[str] | None = None,  # additive (#538) — accepted, ignored here
         graph_authoritative: bool = False,
+        prior_fetched_urls: list[str] | None = None,  # additive (#975) — accepted, ignored here
+        person_supplied_text: str | None = None,  # additive (#975) — accepted, ignored here
     ) -> dict[str, Any]:
         self.calls.append({"role_input": input_text, "workspace_root": workspace_root})
         return {"id": str(uuid.uuid4()), "status": "SUCCEEDED", "output": "ran"}

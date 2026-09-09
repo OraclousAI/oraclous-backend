@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import logging
 import uuid
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Collection
 from typing import Any, Literal, NamedTuple
 
 import yaml
@@ -462,11 +462,20 @@ class HarnessExecutionService:
         requires_valid_json: bool = False,
         required_sites: list[str] | None = None,
         producer: dict[str, Any] | None = None,
+        prior_fetched_urls: Collection[str] | None = None,
+        person_supplied_text: str | None = None,
     ) -> HarnessExecution:
         # Fail-closed tenancy (ADR-006/T1-M1): org is the principal's ONLY, never the manifest's.
         if principal.organisation_id is None:
             raise HarnessExecutionError("authenticated principal has no organisation scope")
         org_id = principal.organisation_id
+        # #975 (A8): the standalone default — a caller that supplies no `person_supplied_text` gets
+        # the run's own `user_input` as the seed text mined for registry URLs, so a single-agent run
+        # with no engine wiring still gets the property team members get from the engine's own
+        # `_render_answers` composition.
+        effective_person_supplied_text = (
+            person_supplied_text if person_supplied_text is not None else user_input
+        )
 
         # Source + harden the manifest (load-time, atomic; OHMError → 422). The policy set (from
         # governance.policy_set_ref) drives coded enforcement: signature requirement, capability
@@ -544,6 +553,11 @@ class HarnessExecutionService:
                 # #961: which bindings the site-restriction gate fires on — resolved by the
                 # registry, never taken from the manifest author's alias (#780's predicate).
                 web_search_bindings=trust.web_search,
+                # #975 (S2/ruling 6): both are caller-vouched provenance, trusted exactly as
+                # `user_input` already is — they mint nothing beyond registry entries and pass the
+                # SAME registration gate every other source does.
+                prior_fetched_urls=prior_fetched_urls,
+                person_supplied_text=effective_person_supplied_text,
             )
         finally:
             await self._aclose_llm(llm)
@@ -621,6 +635,9 @@ class HarnessExecutionService:
             # run. Without the durable record a fabricated citation is unfalsifiable once the loop
             # has exited — which is the whole gap #734 exposed.
             served_citation_ids=result.served_citation_ids,
+            # #975 (§CITE cite-by-reference, A3): persisted on BOTH the success path and the
+            # escalate/pause path — this single `create()` call handles both statuses.
+            fetched_urls=result.fetched_urls,
         )
         await self._emit_provenance(
             result.steps,
@@ -858,6 +875,10 @@ class HarnessExecutionService:
                 # post-pause answer citing a pre-pause source is failed by bookkeeping — a correct
                 # answer blocked. The fresh-run call site needs nothing: it has no prior segment.
                 prior_served_citation_ids=execution.served_citation_ids or [],
+                # #975 (A3): the persisted UNION, exactly the `prior_served_citation_ids` pattern —
+                # the loop seeds these first, then unions in the transcript's own re-derivation, so
+                # no already-numbered `[Sn]` marker from before the pause ever renumbers.
+                prior_fetched_urls=execution.fetched_urls or [],
             )
         finally:
             await self._aclose_llm(llm)
@@ -914,6 +935,9 @@ class HarnessExecutionService:
             # repository UNIONS it into what the pre-pause segment already recorded. A citation
             # served before the pause is still one this member was handed.
             served_citation_ids=result.served_citation_ids,
+            # #975 (§CITE cite-by-reference, A3): same UNION posture — the repository owns merging
+            # this segment's registry into what the pre-pause segment already recorded.
+            fetched_urls=result.fetched_urls,
         )
         await self._emit_provenance(
             result.steps,  # the new tail only

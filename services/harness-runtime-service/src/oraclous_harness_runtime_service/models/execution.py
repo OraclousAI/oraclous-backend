@@ -51,6 +51,14 @@ class HarnessExecution(BaseModel):
     served_citation_ids: Mapped[list[str]] = mapped_column(
         JSONB, nullable=False, default=list, server_default=text("'[]'::jsonb")
     )
+    # #975 (§CITE cite-by-reference): every http(s) URL this run's own segment really fetched
+    # (tool harvests, `prior_fetched_urls`, a mined `person_supplied_text`), first-seen order,
+    # deduplicated, capped at the loop's own `_MAX_FETCHED_URLS`. This is the registry cite-by-
+    # reference numbers `[Sn]` markers against. Same posture as `served_citation_ids` — empty and
+    # never NULL, or "fetched nothing" becomes indistinguishable from "not recorded".
+    fetched_urls: Mapped[list[str]] = mapped_column(
+        JSONB, nullable=False, default=list, server_default=text("'[]'::jsonb")
+    )
     # ── run-tree correlation (ADR-037 Decision 3 / #471; additive, nullable) ──────────────────
     # trace_id groups every execution in ONE logical run-tree; the root execution mints it to its
     # own id (mint-if-absent). parent_execution_id is the dispatching member's run (NULL at root).

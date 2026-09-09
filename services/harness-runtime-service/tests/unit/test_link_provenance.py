@@ -791,3 +791,527 @@ async def test_an_expanded_link_survives_a_strip_that_names_only_the_fabricated_
     expanded, _ = _expand(f"Costs fell [S1]. [Okta]({_FABRICATED})", [_REG_A])
     result = _strip(expanded, [_FABRICATED])
     assert result == f"Costs fell [S1](<{_REG_A}>). Okta"
+
+
+# =================================================================================================
+# PR #977 security review (review 5155075040) — fold-in findings, ruled on by the orchestrator
+# 2026-09-09. Every case below is reproduced live by `scratchpad/poc_975.py` before this commit:
+# each of the eight shapes in B1 leaks `evil.example` straight through
+# `expand -> check_answer_links -> strip` TODAY, because `strip_unverified_links` judges a markdown
+# link by comparing its raw, as-written TARGET STRING against tokens `extract_answer_urls` produced
+# from an INDEPENDENT scan of the same text — not by the URL(s) actually sitting inside that link's
+# own target/label spans. Two scans of the same text can tokenise it differently (a title, a
+# trailing space, a second link immediately adjacent), and whenever they do, the strip's string
+# equality silently fails and the "unverified" link ships intact.
+#
+# The fix judges a link by the URL(s) INSIDE it, canonicalised, against the canonical form of every
+# `unverified` token — never by string equality of the as-written target — and `extract_answer_urls`
+# / `check_answer_links` tokenise `[label](target)` spans first, so an adjacent link's own target is
+# never smeared into its neighbour's.
+# =================================================================================================
+
+
+def _pipeline(text: str, registry: Any) -> str:
+    # The exact sequence the loop runs at answer acceptance (`domain/loop/tool_use.py`): expand
+    # markers, check what remains against the registry, strip the survivors. `poc_975.py`'s
+    # `pipeline()` helper, reproduced here as a fixture rather than imported — a test file owns its
+    # own fixtures, and importing a one-off scratchpad script into a permanent suite is a mistake in
+    # the other direction.
+    from oraclous_harness_runtime_service.domain.link_provenance import (
+        check_answer_links,
+        expand_source_markers,
+        strip_unverified_links,
+    )
+
+    expanded, _ = expand_source_markers(text, registry)
+    check = check_answer_links(expanded, registry)
+    return strip_unverified_links(expanded, check.unverified) if check.unverified else expanded
+
+
+_B1_REG = ["https://real.example/report"]
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        pytest.param('See [Source](https://evil.example/report "ref").', id="commonmark_title"),
+        pytest.param("See [Source](https://evil.example/report ).", id="trailing_space_in_target"),
+        pytest.param("See [Source](https://evil.example/report)x", id="non_punct_after_paren"),
+        pytest.param("See [Source](https://evil.example/report)— more", id="em_dash_after_paren"),
+        pytest.param(
+            "[A](https://evil.example/a)[B](https://evil.example/b)", id="two_adjacent_links"
+        ),
+        pytest.param(
+            "[A](https://evil.example/a),[B](https://evil.example/b)",
+            id="comma_separated_adjacent_links",
+        ),
+        pytest.param(
+            'See [Source](<https://evil.example/report> "t").', id="angle_target_and_title"
+        ),
+    ],
+)
+async def test_b1_a_leaking_link_shape_never_survives_the_pipeline(text: str) -> None:
+    # security review 5155075040, PoC Area 1/4 — every one of these seven shapes leaked
+    # "https://evil.example/..." through the pipeline today; none of them is exotic, all seven are
+    # ordinary markdown a real model writes.
+    out = _pipeline(text, _B1_REG)
+    assert "evil" not in out
+
+
+async def test_b1_the_ok_control_still_strips_a_plain_unverified_link() -> None:
+    # The companion property: an ordinary, non-adversarial unverified link must still be stripped —
+    # the fix must not turn every link into a survivor, only the ones today's string-equality check
+    # cannot see.
+    out = _pipeline("See [Source](https://evil.example/report).", _B1_REG)
+    assert "evil" not in out
+    assert out == "See Source."
+
+
+async def test_b1_check_answer_links_reports_the_real_target_for_adjacent_links() -> None:
+    # The extraction-tokenisation half of B1: today `extract_answer_urls`'s own trimming reports
+    # the first adjacent link's "target" as `https://evil.example/a)[B` — a string that names no
+    # real link at all — because `_URL` is greedy across the second link's own opening bracket.
+    # `check_answer_links` must report the link's REAL target, `https://evil.example/a`, which is
+    # only possible if `[label](target)` spans are tokenised first, before any bare-URL scan runs.
+    from oraclous_harness_runtime_service.domain.link_provenance import check_answer_links
+
+    text = "[A](https://evil.example/a)[B](https://evil.example/b)"
+    result = check_answer_links(text, _B1_REG)
+    assert "https://evil.example/a" in result.unverified
+    assert "https://evil.example/b" in result.unverified
+    assert not any(u.startswith("https://evil.example/a)[B") for u in result.unverified)
+
+
+# --- property test: a hand-built grammar matrix (hypothesis is not a repo dependency) -------------
+#
+# `uv run python -c "import hypothesis"` fails with ModuleNotFoundError in both the repo root venv
+# and this service's own venv — not a dependency here. This is the hand-built matrix the plan calls
+# for instead: 30 compositions of {markdown link, title, trailing space, angle-bracket target,
+# adjacency, punctuation, a marker, a fenced code block} run through the same
+# `expand -> check_answer_links -> strip` pipeline. Every composition's fabricated material sits on
+# `evil.example`, never the registry's `real.example`, so the invariant collapses to one substring
+# check per composition: the host must never survive.
+
+_PROP_REG = ["https://real.example/report"]
+_PROP_TARGETS = [
+    "https://{h}/x",
+    'https://{h}/x "t"',
+    "https://{h}/x ",
+    "<https://{h}/x>",
+    '<https://{h}/x> "t"',
+]
+_PROP_SUFFIXES = [
+    "",
+    ".",
+    ")",
+    "— more",
+    "[Next](https://{h}/y)",
+    ",[Next](https://{h}/y)",
+]
+_PROP_PREFIXES = [
+    "",
+    "Plain sentence. ",
+    "[S1] ",
+    "```\nrefs = ['[S1]']\n```\n",
+]
+
+
+def _compose(i: int) -> str:
+    n_targets, n_suffixes = len(_PROP_TARGETS), len(_PROP_SUFFIXES)
+    target = _PROP_TARGETS[i % n_targets].format(h="evil.example")
+    suffix = _PROP_SUFFIXES[(i // n_targets) % n_suffixes].format(h="evil.example")
+    prefix = _PROP_PREFIXES[(i // (n_targets * n_suffixes)) % len(_PROP_PREFIXES)]
+    return f"{prefix}[Ev]({target}){suffix}"
+
+
+_PROP_COMPOSITIONS = [_compose(i) for i in range(30)]
+
+
+@pytest.mark.parametrize(
+    "text", _PROP_COMPOSITIONS, ids=[f"composition_{i}" for i in range(len(_PROP_COMPOSITIONS))]
+)
+async def test_property_no_fabricated_host_survives_any_grammar_composition(text: str) -> None:
+    out = _pipeline(text, _PROP_REG)
+    assert "evil.example" not in out
+
+
+# --- M1: a fabricated URL as the LABEL of a genuinely verified link -------------------------------
+
+
+async def test_a_fabricated_label_on_a_verified_link_is_dropped_whole_given_the_registry() -> None:
+    # security review 5155075040 (M1), PoC Area 1/4: `[https://evil.example/x](https://real.
+    # example/report)` ships TODAY — the TARGET verifies, so `unverified` is empty and
+    # `strip_unverified_links` is never even asked about this link. But the LABEL is what a reader
+    # SEES, and it names an address the run never fetched. Telling "fabricated" from "verified" for
+    # a LABEL url needs the registry (unlike a target, which `check_answer_links` already
+    # classified) — hence the new keyword-only `fetched` parameter.
+    from oraclous_harness_runtime_service.domain.link_provenance import strip_unverified_links
+
+    text = "[https://evil.example/x](https://real.example/report)"
+    result = strip_unverified_links(text, [], fetched=["https://real.example/report"])
+    assert "evil" not in result
+    assert result == ""
+
+
+# --- m2: a registry entry carrying `<`, `>`, whitespace or a control character is refused ---------
+
+_POISON_ENTRIES = [
+    pytest.param("https://real.example/>)[click](https://evil.example/phish)", id="angle_bracket"),
+    pytest.param("https://real.example/a\tb", id="tab"),
+    pytest.param("https://real.example/a\nb", id="newline"),
+    pytest.param("https://real.example/a\x00b", id="null_byte"),
+    pytest.param("https://real.example/a b", id="embedded_space"),
+]
+
+
+@pytest.mark.parametrize("entry", _POISON_ENTRIES)
+async def test_a_poisoned_registry_entry_is_never_canonicalised(entry: str) -> None:
+    # security review 5155075040 (m2), PoC Area 4: `_canonical` accepts a `>`-bearing entry today.
+    # Wrapped in `expand_source_markers`'s CommonMark angle-bracket target, the entry's OWN `>`
+    # closes the `<...>` early, and the rest of the string — `)[click](https://evil.example/
+    # phish)` — is read back as fresh, live markdown. A registry entry is never something a reader
+    # sees raw; it must fail the same canonicalisation gate every other source does.
+    from oraclous_harness_runtime_service.domain.link_provenance import canonical_urls
+
+    assert canonical_urls([entry]) == set()
+
+
+@pytest.mark.parametrize("entry", _POISON_ENTRIES)
+async def test_a_marker_citing_a_poisoned_registry_entry_is_unknown(entry: str) -> None:
+    text, unknown = _expand("Read [S1].", [entry])
+    assert unknown == [1]
+    assert "evil" not in text
+    assert "click" not in text
+
+
+async def test_check_answer_links_never_verifies_against_a_poisoned_fetched_entry() -> None:
+    # security review 5155075040 (m2): a poisoned registry entry must never let
+    # `check_answer_links` VERIFY anything against it, and the evil URL it smuggles in must still
+    # come back UNVERIFIED — neither silently dropped nor misclassified as fetched. Embedded via a
+    # plain (non-angle) `(...)` target, this poison string is not one link: B1's tokenisation
+    # (pinned by test_b1_check_answer_links_reports_the_real_target_for_adjacent_links, which
+    # requires the exact opposite — an adjacent link's own target must never bleed past its own
+    # close) correctly reads it as TWO adjacent, independently well-formed links, not one — the
+    # poisoned entry's own truncated target, and the `evil.example` URL immediately following it.
+    # That is a finer partition than the original single-entry shape expected, not a leak: both
+    # fragments still land in `unverified`, and neither ever reaches `verified`, so the m2 property
+    # this test exists to pin — a poisoned fetched entry verifies nothing, and the URL it smuggles
+    # in is never lost — holds regardless of how many pieces the tokeniser reports it as
+    # (backend-implementer, PR #977 comment 5603856386).
+    poison = "https://real.example/>)[click](https://evil.example/phish)"
+    result = _check(f"[Source]({poison})", [poison])
+    assert result.unverified == ["https://real.example/>", "https://evil.example/phish"]
+    assert result.verified == []
+
+
+# --- m1: expansion stays near-linear on attacker-supplied interleaving ----------------------------
+
+
+async def test_expansion_of_8000_interleaved_url_and_marker_pairs_stays_near_linear() -> None:
+    # security review 5155075040 (m1), PoC Area 7: `_inside_any` bisects `url_spans`/`fence_spans`
+    # LINEARLY per marker today — O(n*m) in the number of markers times the number of URL/fence
+    # spans — measured at 1.79s for 8000 interleaved "https://a.example/p [S1]" pairs. A page a
+    # member's tool reads is attacker-supplied text with no bound on how many URLs and markers it
+    # can interleave; this has to stay well under the same 0.5s bound `_trim`'s own bounded-time
+    # test already holds itself to.
+    text = " ".join("https://a.example/p [S1]" for _ in range(8000))
+    reg = ["https://a.example/p"]
+    started = time.monotonic()
+    expanded, unknown = _expand(text, reg)
+    assert time.monotonic() - started < 0.5
+    assert unknown == []
+    assert expanded.count("[S1](<https://a.example/p>)") == 8000
+
+
+# =================================================================================================
+# Security round 2 (review 5156136217, PoC `scratchpad/poc_975_round2.py`) — two fold-ins ruled by
+# the orchestrator into THIS PR: N2 (a regression 18d0b85's B1 rewrite introduced) and N1 (a new
+# bypass class in the same two functions). Both root causes are the same "a target that is not
+# literally `http(s)://` is treated as nothing to this check" gap, in `_iter_written_urls` (N2) and
+# `_strip_pass` (N1) — the exact two functions 18d0b85 rewrote for B1.
+# =================================================================================================
+
+_N2_REG = ["https://real.example/report"]
+
+
+# --- N2 (MAJOR, regression): a non-http(s) target hides the literal-scheme URL inside it ----------
+#
+# At bd350da (before 18d0b85's B1 rewrite) `check_answer_links` reported `https://evil.example/r`
+# unverified for this shape. 18d0b85's link-first tokenisation now consumes the whole
+# `[label](target)` span, finds the target does not start with `http(s)://`, and yields nothing from
+# the link branch — so the bare-URL scan, which used to see this address because nothing had
+# consumed it yet, never runs on it either. Not a valid CommonMark link (the target is not a URL),
+# so it renders as literal text carrying the fabricated `https://` address in full, and a working
+# anchor under GFM autolink literals.
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        pytest.param("[S](x https://evil.example/r)", id="leading_word_then_url"),
+        pytest.param("[S](<x> https://evil.example/r)", id="angle_non_url_target_then_url"),
+        pytest.param('[S](x https://evil.example/r "t")', id="leading_word_then_url_and_title"),
+    ],
+)
+async def test_n2_a_non_http_target_no_longer_hides_the_literal_url_it_carries(text: str) -> None:
+    # Every one of these leaked `evil.example` through `expand -> check_answer_links -> strip` at
+    # 18c387d. `check_answer_links` must go back to reporting the real address (as it did at
+    # bd350da), and the shipped pipeline must never carry it.
+    result = _check(text, _N2_REG)
+    assert result.unverified == ["https://evil.example/r"]
+    out = _pipeline(text, _N2_REG)
+    assert "evil" not in out
+
+
+async def test_n2_a_url_named_only_in_the_label_of_a_non_url_target_is_never_extracted() -> None:
+    # The sibling composition N2's fix must NOT start reaching into: a label is never scanned for
+    # the answer's OWN url list (`_iter_written_urls`'s own docstring) — a fabricated LABEL is
+    # `strip_unverified_links`'s `fetched=`/M1 concern, not extraction's. `check_answer_links` must
+    # keep reporting nothing here even once N2's fix touches the same target-scanning code path, and
+    # the fabricated address must still never ship, via M1's existing label defence.
+    text = "[https://evil.example/r](x)"
+    result = _check(text, _N2_REG)
+    assert result.unverified == []
+    assert result.verified == []
+    from oraclous_harness_runtime_service.domain.link_provenance import strip_unverified_links
+
+    assert "evil" not in strip_unverified_links(text, result.unverified, fetched=_N2_REG)
+
+
+# --- regression guard: the #944 detection shapes already pinned above must keep firing ------------
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        pytest.param(f"See {_FABRICATED} for the breakdown.", id="bare"),
+        pytest.param(
+            f"Token costs fell sharply this quarter. [Source]({_FABRICATED})", id="markdown"
+        ),
+        pytest.param(
+            f'{{"summary": "Prices fell.\\n\\nSources:\\n- '
+            f'[Ars]({_REAL})\\n- [Okta]({_FABRICATED})"}}',
+            id="json_escaped",
+        ),
+        pytest.param(f"The breakdown (see {_FABRICATED}) is clear.", id="parenthesised"),
+    ],
+)
+async def test_n2_regression_guard_the_944_shapes_still_report_the_literal_url(
+    answer: str,
+) -> None:
+    # N2 was a regression IN this exact family of shapes — a tokeniser rewrite hid a literal-scheme
+    # URL that used to be reported. Pinned as one parametrized list, not four separate tests
+    # scattered through this file, so a future tokeniser change can never silently narrow coverage
+    # back down to only the shapes someone remembered to keep testing.
+    result = _check(answer, [_REAL])
+    assert _FABRICATED in result.unverified
+
+
+# --- N1 (MAJOR, strip-only): a target `_canonical` never accepts still ships as a working anchor --
+#
+# Not a regression — bd350da shipped these too. But the invariant is "the shipped text contains only
+# registry URLs", and `strip_unverified_links`'s `fetched=` path (the loop's real acceptance path)
+# still passes every one of these through untouched today: a scheme-relative target, a
+# malformed-scheme target a browser's URL parser normalises back to `https://`, and a
+# backslash-as-slash target. Fixed by failing closed: with `fetched` given, a link whose target has
+# no canonical form IN THE REGISTRY is dropped whole (label included — same S4 reasoning B1/M1
+# already established for this file).
+
+_N1_REG = ["https://real.example/report"]
+
+
+@pytest.mark.parametrize(
+    "target",
+    [
+        pytest.param("//evil.example/phish", id="protocol_relative"),
+        pytest.param("https:/evil.example/x", id="single_slash_scheme"),
+        pytest.param("https:evil.example/x", id="no_slash_scheme"),
+        pytest.param("\\\\evil.example\\phish", id="backslash_protocol_relative"),
+        pytest.param("javascript:alert(1)", id="javascript_scheme"),
+    ],
+)
+async def test_n1_an_unusable_target_is_dropped_whole_when_fetched_is_given(target: str) -> None:
+    from oraclous_harness_runtime_service.domain.link_provenance import strip_unverified_links
+
+    text = f"[Source]({target})"
+    result = strip_unverified_links(text, [], fetched=_N1_REG)
+    assert result == ""
+
+
+async def test_n1_a_mailto_target_is_also_dropped_fail_closed_given_fetched() -> None:
+    # #944's own scheme allow-list ruling already keeps `mailto:` out of what this check reads as a
+    # link — it is not a clickable-to-article scheme, so there is no ruling under which it belongs
+    # in a citation registry. N1's fail-closed rule extends that ruling to the SHIPPED path: a
+    # `mailto:` target has no canonical http(s) form, so `fetched=` drops it whole, exactly like
+    # any other target the registry can never contain.
+    from oraclous_harness_runtime_service.domain.link_provenance import strip_unverified_links
+
+    text = "[Source](mailto:team@example.org)"
+    result = strip_unverified_links(text, [], fetched=_N1_REG)
+    assert result == ""
+
+
+async def test_n1_a_registered_target_survives_the_fetched_fail_closed_rule_byte_identical() -> (
+    None
+):
+    from oraclous_harness_runtime_service.domain.link_provenance import strip_unverified_links
+
+    text = f"[Source]({_N1_REG[0]})"
+    result = strip_unverified_links(text, [], fetched=_N1_REG)
+    assert result == text
+
+
+async def test_n1_the_two_argument_path_leaves_a_scheme_relative_link_untouched() -> None:
+    # T1's contract, unchanged: with no `fetched` given, `strip_unverified_links` only ever removes
+    # what `unverified` names. Flagging semantics for a target this check does not recognise as a
+    # link belong to `check_answer_links`, not to a fail-closed rule that exists only on the
+    # `fetched=` path the loop actually ships through.
+    from oraclous_harness_runtime_service.domain.link_provenance import strip_unverified_links
+
+    text = "[Source](//evil.example/phish)"
+    assert strip_unverified_links(text, []) == text
+
+
+# =================================================================================================
+# Security round 3 (review 5156579514, PoC `scratchpad/poc_975_round3.py`) — three NEW MAJOR
+# fold-ins, all three sharing one root cause with N1/N2: the shipped path still decides what
+# survives by membership in `unverified` (a scan of the PRE-strip text) rather than by membership in
+# the REGISTRY on the text that actually ships. Orchestrator ruling: `fetched` becomes an explicit
+# registry-mode switch (`Collection[str] | None = None`, `registry_mode = fetched is not None`) —
+# `fetched=None` stays the T1 two-argument path, byte-identical; `fetched=[]` (an EMPTY but
+# non-None registry) is now registry mode too, which is exactly N5. After this round: no further
+# security round; these tests are the verification the PoC calls for.
+# =================================================================================================
+
+_N3_REAL = "https://real.example/report"
+_N3_REG = [_N3_REAL]
+
+
+def _pipeline_registry(text: str, registry: Any) -> str:
+    # Unlike `_pipeline` above (T1/B1, two-argument strip), this mirrors the LOOP'S OWN acceptance
+    # path: `strip_unverified_links` is always called with `fetched=` there (`tool_use.py`), never
+    # bare. N3/N4/N5 are all bypasses of that `fetched=` path specifically.
+    from oraclous_harness_runtime_service.domain.link_provenance import (
+        check_answer_links,
+        expand_source_markers,
+        strip_unverified_links,
+    )
+
+    expanded, _ = expand_source_markers(text, registry)
+    check = check_answer_links(expanded, registry)
+    return strip_unverified_links(expanded, check.unverified, fetched=registry)
+
+
+# --- N3 (MAJOR): the strip's own rewrite composes a URL nothing ever checked ----------------------
+#
+# Pass 1 strips a link down to a label that carries no `://` of its own (S4 lets a plain-text label
+# like `https:` survive as text); that label then lands flush against the very next character in the
+# text, and pass 2's bare-URL scan judges the NEWLY COMPOSED span against `unverified_raw`/
+# `unverified_canonical` — sets computed from the text BEFORE pass 1 ever ran, which never contained
+# this string. The four inputs below are the review's own reproduction, each `LEAK`ing at 42dd983.
+
+_N3_CASES = [
+    pytest.param(
+        "[https:](https://evil.example/b)//evil.example/x",
+        "evil",
+        id="label_https_colon_then_scheme_relative_tail",
+    ),
+    pytest.param(
+        "https:/[](https://evil.example/b)/evil.example/x",
+        "evil",
+        id="prefix_https_slash_then_empty_label_link_then_tail",
+    ),
+    pytest.param(
+        "[https](https://evil.example/b)://evil.example/x",
+        "evil",
+        id="label_https_then_scheme_tail",
+    ),
+    pytest.param(
+        f"{_N3_REAL} [](https://evil.example/b)/phish",
+        "phish",
+        id="real_prefix_then_empty_label_link_then_phish_tail",
+    ),
+]
+
+
+@pytest.mark.parametrize("text,needle", _N3_CASES)
+async def test_n3_the_strips_own_rewrite_never_composes_a_url_nothing_checked(
+    text: str, needle: str
+) -> None:
+    out = _pipeline_registry(text, _N3_REG)
+    assert needle not in out
+
+
+@pytest.mark.parametrize("text,needle", _N3_CASES)
+async def test_n3_holds_even_when_the_registry_is_explicitly_empty(text: str, needle: str) -> None:
+    # `fetched=[]` is registry mode with nothing in it (the tool-less `linker` with no seeds) — N3's
+    # composed-URL bug has to stay fixed there too, not only once a real registry entry happens to
+    # be present. This is the review's own N3d probe, generalised to all four inputs.
+    out = _pipeline_registry(text, [])
+    assert needle not in out
+
+
+# --- N4 (MAJOR): a verified target hides every other URL in the same `(...)` from both scans ------
+#
+# `_iter_written_urls`'s link branch returns as soon as the trimmed target itself is a URL — it
+# never scans `target_raw` for a SECOND url sitting after that real target (a title, or plain text
+# after an angle-bracket destination that is not valid CommonMark and so renders as literal text a
+# GFM autolinker still turns into a working anchor).
+
+_N4_REG = [_N3_REAL]
+_N4_CASES = [
+    pytest.param(
+        f"[S](<{_N3_REAL}> https://evil.example/r)",
+        id="angle_real_target_then_bare_evil_url",
+    ),
+    pytest.param(
+        f'[S]({_N3_REAL} "https://evil.example/r")',
+        id="real_target_then_evil_url_in_double_quoted_title",
+    ),
+    pytest.param(
+        f"[S](<{_N3_REAL}> 'https://evil.example/r')",
+        id="angle_real_target_then_evil_url_in_single_quoted_title",
+    ),
+    pytest.param(
+        f'[S](<{_N3_REAL}> "see https://evil.example/r")',
+        id="angle_real_target_then_evil_url_inside_title_prose",
+    ),
+]
+
+
+@pytest.mark.parametrize("text", _N4_CASES)
+async def test_n4_check_answer_links_reports_the_url_hidden_beside_a_verified_target(
+    text: str,
+) -> None:
+    from oraclous_harness_runtime_service.domain.link_provenance import check_answer_links
+
+    result = check_answer_links(text, _N4_REG)
+    assert "https://evil.example/r" in result.unverified
+
+
+@pytest.mark.parametrize("text", _N4_CASES)
+async def test_n4_the_pipeline_never_ships_the_url_hidden_beside_a_verified_target(
+    text: str,
+) -> None:
+    out = _pipeline_registry(text, _N4_REG)
+    assert "evil" not in out
+
+
+# --- N5 (MAJOR): N1's fail-closed rule is keyed on `fetched` TRUTHINESS, so an EMPTY registry -----
+# switches it off — exactly the tool-less member #975 exists to protect ---------------------------
+
+
+async def test_n5_an_empty_but_non_none_registry_still_fails_closed_on_an_unusable_target() -> None:
+    from oraclous_harness_runtime_service.domain.link_provenance import strip_unverified_links
+
+    text = "[Source](//evil.example/phish)"
+    assert strip_unverified_links(text, [], fetched=[]) == ""
+
+
+async def test_n5_fetched_none_stays_the_two_argument_path_left_untouched() -> None:
+    # The control: `fetched=None` is NOT registry mode (the T1 two-argument contract), so it must
+    # stay exactly as unaffected by N5's fix as it already is by N1's.
+    from oraclous_harness_runtime_service.domain.link_provenance import strip_unverified_links
+
+    text = "[Source](//evil.example/phish)"
+    assert strip_unverified_links(text, [], fetched=None) == text

@@ -32,7 +32,13 @@ async def test_inline_manifest_marshalled_and_status_returned() -> None:
 
     out = await _client(handler).execute(input_text="go", manifest_inline={"ohm_version": "1.0"})
     assert captured["path"] == "/v1/harnesses/execute"
-    assert captured["body"] == {"input": "go", "manifest": {"ohm_version": "1.0"}}
+    assert captured["body"] == {
+        "input": "go",
+        "manifest": {"ohm_version": "1.0"},
+        # #975: NEVER omitted (ruling 6/S7) — an absent kwarg still sends the empty default.
+        "prior_fetched_urls": [],
+        "person_supplied_text": "",
+    }
     assert captured["internal"] == "k"
     assert out["status"] == "SUCCEEDED"
 
@@ -45,7 +51,13 @@ async def test_manifest_ref_marshalled() -> None:
         return httpx.Response(200, json={"id": "x", "status": "SUCCEEDED"})
 
     await _client(handler).execute(input_text="go", manifest_ref="cap-123")
-    assert captured["body"] == {"input": "go", "manifest_ref": "cap-123"}
+    assert captured["body"] == {
+        "input": "go",
+        "manifest_ref": "cap-123",
+        # #975: NEVER omitted (ruling 6/S7) — an absent kwarg still sends the empty default.
+        "prior_fetched_urls": [],
+        "person_supplied_text": "",
+    }
 
 
 async def test_no_manifest_raises() -> None:

@@ -104,7 +104,24 @@ def _has_link_gate_step(steps: list[object] | None) -> bool:
 
 
 def _no_marker_survives(text: str) -> bool:
-    return re.search(r"\[S\d+\]", text) is None
+    """A marker the platform did NOT expand (#980). A correctly expanded citation reads
+    ``[Sn](<url>)`` — the pinned label KEEPS the literal ``[Sn]`` text (`expand_source_markers`'s
+    label is the marker itself, never page-derived, S5) — so the bare substring ``[S\\d+]`` still
+    occurs in a fully-resolved answer and is not evidence anything survived unexpanded. Only a
+    marker with no trailing ``(`` is one the acceptance pass left as a literal, naming nothing."""
+    return re.search(r"\[S\d+\](?!\()", text) is None
+
+
+_EXPANDED_MARKER = re.compile(r"\[S\d+\]\(<([^<>]+)>\)")
+
+
+def _expanded_marker_urls(text: str) -> list[str]:
+    """Every target URL of an ``[Sn](<url>)``-shaped link actually shipped — the platform's own
+    deterministic expansion of a marker the model cited. Proves the cite-by-reference protocol
+    really ran WITHOUT depending on the model choosing to fabricate a planted URL itself (#980):
+    once a model cites any ``[Sn]``, the platform's expansion into ``[Sn](<url>)`` is mechanical
+    and always checkable, unlike a live model's willingness to reproduce an invented address."""
+    return _EXPANDED_MARKER.findall(text)
 
 
 def _poll(c: httpx.Client, run_id: str, tries: int = 120) -> dict:
@@ -376,21 +393,33 @@ def test_a_tool_less_member_never_ships_its_own_fabrication_and_carries_the_rese
         f"{linker_text[:400]}"
     )
 
-    # (2) the pass really ran on a member with no tools at all.
+    # (2) the pass really ran on a member with no tools at all — proven THREE ways (#980), only one
+    # of which depends on the model choosing to fabricate the planted URL itself: a correction-
+    # compliant live model may fix its own draft before the strip pass ever runs, or may simply
+    # never reproduce the invented address verbatim in the first place, and either leaves neither a
+    # GATE step nor an unverified_links entry. The always-checkable proof is the platform's OWN
+    # deterministic work: at least one `[Sn](<url>)`-shaped link the model actually cited resolved
+    # to a URL the researcher really fetched — that expansion never happens without the marker
+    # protocol having run. The gate-step / unverified_links pair stays an ADDITIONAL accepted proof
+    # for the case the model DID fabricate.
     steps = linker.get("steps") or []
     unverified = linker.get("unverified_links") or []
-    assert _has_link_gate_step(steps) or _INVENTED in unverified, (
-        f"neither a link_provenance gate step nor an unverified_links entry proves the strip pass "
-        f"ran on a tool-less member — steps={steps} unverified_links={unverified}"
-    )
-
-    # (3) T5 — the fetch registry crosses the member boundary: a URL the researcher actually
-    # fetched reaches the linker's shipped answer, so a reader gets a real citation, not nothing.
     fetched = [u for u in (researcher.get("fetched_urls") or []) if isinstance(u, str)]
     assert fetched, (
         f"the researcher's result carries no fetched_urls — the registry lift (#975) is not built "
         f"yet — researcher result: {researcher}"
     )
+    expanded = _expanded_marker_urls(linker_text)
+    assert (
+        any(u in fetched for u in expanded) or _has_link_gate_step(steps) or _INVENTED in unverified
+    ), (
+        f"neither an expanded [Sn](<url>) citation, a link_provenance gate step, nor an "
+        f"unverified_links entry proves the strip pass ran on a tool-less member — "
+        f"expanded={expanded} steps={steps} unverified_links={unverified}"
+    )
+
+    # (3) T5 — the fetch registry crosses the member boundary: a URL the researcher actually
+    # fetched reaches the linker's shipped answer, so a reader gets a real citation, not nothing.
     assert any(url in linker_text for url in fetched), (
         f"none of the researcher's own fetched URLs {fetched} reached the linker's shipped answer "
         f"— {linker_text[:400]}"

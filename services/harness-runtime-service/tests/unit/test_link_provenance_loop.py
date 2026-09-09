@@ -851,6 +851,31 @@ async def test_an_unknown_marker_triggers_a_correction_naming_it_then_is_strippe
     assert "[S9]" not in (result.output or "")
 
 
+async def test_an_unknown_marker_only_offence_past_the_bound_still_records_the_flag_step() -> None:
+    # MAJOR 1 (code-reviewer, PR #977): the test above only checks `result.output` and
+    # `_CORRECTION_STATUS` steps — it never checks the trace left on the SHIPPED terminal. Today
+    # `unverified_links` is built solely from `link_check.unverified` (raw URLs); when the only
+    # offence across every correction attempt is an unknown marker (no raw URL at all), that stays
+    # `[]`, the `if unverified_links:` guard never fires, and no GATE step is recorded — even though
+    # `expand_source_markers` really did delete "[S9]" from the shipped text. A raw-URL offence
+    # always leaves this trace; a marker-only offence must too, or a reader-facing consumer (the
+    # console's #294 warning) has no way to know text was removed.
+    llm = _Scripted(_Scripted.SEARCH, "Prices fell [S9].")
+    result = await _run(llm, _returning(_REAL), policy=_TIGHT)
+    assert result.status is HarnessStatus.SUCCEEDED
+    assert len(_steps(result, _CORRECTION_STATUS)) == 2  # bounded at _LINK_CORRECTION_MAX
+    assert "[S9]" not in (result.output or "")  # the marker really was stripped
+
+    # unverified_links stays a list of URLs — empty here, since no raw URL was ever offered.
+    assert result.unverified_links == []
+    # but the GATE step must still exist, naming the marker or the offence count.
+    flags = _steps(result, _FLAG_STATUS)
+    assert len(flags) == 1
+    assert flags[0].name == _GATE_NAME
+    detail = flags[0].detail or ""
+    assert "9" in detail  # names the marker (S9) or the unknown-marker count
+
+
 # --- a budget-exhausted degrade still ships through the same pass (A1/T3) -------------------------
 
 
@@ -1095,3 +1120,189 @@ async def test_an_empty_registry_never_loops_first_pass_strips_and_flags() -> No
     assert _REAL not in (result.output or "")  # stripped, not merely flagged
     assert "See" in (result.output or "")
     assert result.fetched_urls == []
+
+
+# =================================================================================================
+# PR #977 security review (review 5155075040) — fold-in findings, ruled on by the orchestrator
+# 2026-09-09. See `test_link_provenance.py`'s matching section for the pure-function half; these
+# prove the loop actually WIRES the registry into the fix (M1's `fetched=` keyword, M2's harvest
+# order, M3's seed-block cap, m2's registration refusal) — a fixed pure function nothing calls is
+# exactly the gap this whole issue exists to close.
+# =================================================================================================
+
+
+# --- M1: a fabricated label URL on a genuinely verified link never ships --------------------------
+
+
+async def test_a_fabricated_label_url_on_a_verified_target_link_never_ships() -> None:
+    # security review 5155075040 (M1): the loop's own acceptance pass only calls
+    # `strip_unverified_links` `if unverified_links` — and here the LINK'S TARGET verifies (it is
+    # `_REAL`, genuinely fetched), so `unverified_links` is empty and strip is never even called.
+    # The fabricated label ships untouched today. The loop has to pass its own registry through the
+    # new `fetched=` parameter, and run the strip pass even when nothing raw is unverified, or a
+    # verified-target/fabricated-label link sails through this exact gap.
+    fabricated_label = "https://www.okta.com/blog/2023/10/okta-ai-token-costs"
+    answer = f"[{fabricated_label}]({_REAL})"
+    llm = _Scripted(_Scripted.SEARCH, answer)
+    result = await _run(llm, _returning(_REAL))
+    assert result.status is HarnessStatus.SUCCEEDED
+    assert fabricated_label not in (result.output or "")
+    assert result.output == ""
+
+
+# --- M2: the URL the member actually OPENED is registered before its page's own body URLs ---------
+
+
+async def test_the_opened_url_is_registered_before_the_page_bodys_own_urls() -> None:
+    # security review 5155075040 (M2): live harvest order is `extract_answer_urls(content) +
+    # arg_urls` — the page's OWN body URLs register before the URL the member actually opened. A
+    # page that lists 25 unrelated URLs in its body buries the one strongest signal this check has
+    # ("we know this exact address was fetched", the `read(url=X)` argument) behind all 25 of them,
+    # so the opened URL is never `[S1]`.
+    opened = "https://opened.example/target"
+    body_urls = [f"https://body.example/{i}" for i in range(25)]
+    body_text = " ".join(body_urls)
+
+    class _OpenLLM:
+        protocol_shape = "fake"
+
+        def __init__(self) -> None:
+            self.turns = 0
+
+        async def complete(self, *, messages: Any, system: str, tools: list[ToolSpec]) -> Any:
+            self.turns += 1
+            if self.turns == 1:
+                return LLMResponse(
+                    text="reading", tool_calls=[ToolCall("c1", _READ.name, {"url": opened})]
+                )
+            return LLMResponse(text="Costs fell [S1].", tool_calls=[])
+
+    async def dispatch(_spec: ToolSpec, _args: dict[str, Any]) -> dict[str, Any]:
+        return {"text": body_text}
+
+    result = await _run(_OpenLLM(), dispatch)
+    assert result.status is HarnessStatus.SUCCEEDED
+    assert result.fetched_urls[0] == opened  # [S1] must be the URL the member actually opened
+    assert result.output == f"Costs fell [S1](<{opened}>)."
+
+
+# --- M3: the seed SOURCES block shown is capped; registration stays full --------------------------
+
+
+async def test_the_seed_sources_block_shown_is_capped_but_registration_still_covers_entry_300() -> (
+    None
+):
+    # security review 5155075040 (M3): `_sources_block(seed_urls, start=1)` is called with the
+    # WHOLE seed list today — 500 `prior_fetched_urls` puts 500 lines into the very first user
+    # turn. `_SOURCES_PER_CALL_MAX` already caps a single tool result's block (A7, pinned at 20);
+    # the seed block needs its own, equally-sized, equally-named cap — display only, never
+    # registration: a raw URL citing the 300th entry (well past the displayed cap) still verifies.
+    from oraclous_harness_runtime_service.domain.loop.tool_use import _SOURCES_SEED_MAX
+
+    assert _SOURCES_SEED_MAX == 20
+
+    seeds = [f"https://seed.example/{i}" for i in range(500)]
+    entry_300 = seeds[299]  # registry position 300 (1-based) — well past the displayed cap
+    llm = _CapturingScripted(f"See {entry_300} directly.")
+    result = await _run(llm, specs=[], prior_fetched_urls=seeds)
+    assert result.status is HarnessStatus.SUCCEEDED
+    user_message = next(m for m in llm.last_messages if m.get("role") == "user")
+    shown_lines = [ln for ln in user_message["content"].splitlines() if ln.startswith("[S")]
+    assert len(shown_lines) <= _SOURCES_SEED_MAX
+    assert result.fetched_urls == seeds  # the registry itself still holds everything
+    assert result.output == f"See {entry_300} directly."  # the raw-URL backstop still verifies it
+    assert result.unverified_links == []
+
+
+# --- m2: a poisoned `prior_fetched_urls` entry is never registered, citing it is unknown ----------
+
+
+async def test_a_poisoned_prior_fetched_url_is_never_registered_and_citing_it_is_unknown() -> None:
+    # security review 5155075040 (m2): today's `_canonical` accepts a `>`-bearing seed, so it earns
+    # a real `[S1]` and expands into a CommonMark angle-bracket target whose own `>` closes early —
+    # the rest of the poisoned string is read back as live markdown, reopening a phishing link the
+    # registration gate exists to keep out entirely.
+    poison = "https://real.example/>)[click](https://evil.example/phish)"
+    llm = _Scripted("Read [S1].")
+    result = await _run(llm, specs=[], prior_fetched_urls=[poison])
+    assert result.status is HarnessStatus.SUCCEEDED
+    assert poison not in result.fetched_urls
+    assert result.fetched_urls == []
+    assert "evil" not in (result.output or "")
+
+
+# --- N1 (security round 2, review 5156136217): an unusable target ships nowhere, at the loop's own
+# real acceptance site, not only in the pure function --------------------------------------------
+
+
+async def test_a_scheme_relative_target_never_ships_with_a_non_empty_registry() -> None:
+    # `//evil.example/phish` is not `_canonical`-accepted (no http(s) scheme), so it has no
+    # canonical form ever present in a real registry. Every browser (and react-markdown's default
+    # urlTransform) resolves a colon-free, protocol-relative target to `https://evil.example/phish`
+    # regardless of what scheme the model typed — a working, clickable anchor. The loop's
+    # acceptance pass has to run `strip_unverified_links` with its OWN registry (`fetched=`) so
+    # this fail-closed rule actually reaches a shipped answer, not just the pure function it lives
+    # in.
+    answer = "[Source](//evil.example/phish)"
+    llm = _Scripted(_Scripted.SEARCH, answer)
+    result = await _run(llm, _returning(_REAL))
+    assert result.status is HarnessStatus.SUCCEEDED
+    assert "evil" not in (result.output or "")
+    assert "[S1]" not in (result.output or "")
+
+
+# =================================================================================================
+# Security round 3 (review 5156579514, PoC `scratchpad/poc_975_round3.py`) — the loop-level twins of
+# the three NEW fold-ins pinned in `test_link_provenance.py`. The pure-function tests prove the bug;
+# these prove it reaches the loop's own real acceptance path (`tool_use.py`'s `fetched=` calls),
+# confirmed live by the PoC's own scripted-LLM probes.
+# =================================================================================================
+
+# --- N3: the strip's own rewrite composes a URL nothing ever checked ------------------------------
+
+_N3_COMPOSITION = "[https:](https://evil.example/b)//evil.example/x"
+
+
+async def test_n3_a_tool_less_member_with_no_registry_never_ships_the_composed_url() -> None:
+    # No tools, no seeds — the registry is empty, so `check_answer_links` reports the link's own
+    # target unverified and the FIRST acceptance pass strips it (ruling 3: nothing to correct
+    # against). The composed leftover — `https://evil.example/x` — must never survive that strip.
+    llm = _Scripted(_N3_COMPOSITION)
+    result = await _run(llm, specs=[])
+    assert result.status is HarnessStatus.SUCCEEDED
+    assert "evil" not in (result.output or "")
+
+
+async def test_n3_a_seeded_member_never_ships_the_composed_url_either() -> None:
+    # A non-empty registry (one real fetch) does not save this shape either — the composed URL is
+    # judged against the stale `unverified` set from before the strip's OWN rewrite, on every pass,
+    # registry-size notwithstanding. `_TIGHT`: search + 2 corrections + the flagged, stripped ship.
+    llm = _Scripted(_Scripted.SEARCH, _N3_COMPOSITION)
+    result = await _run(llm, _returning(_REAL), policy=_TIGHT)
+    assert result.status is HarnessStatus.SUCCEEDED
+    assert "evil" not in (result.output or "")
+
+
+# --- N5: N1's fail-closed rule is keyed on `fetched` TRUTHINESS, so an EMPTY registry -------------
+# switches it off — exactly the tool-less member #975 exists to protect ---------------------------
+
+
+@pytest.mark.parametrize(
+    "answer,needle",
+    [
+        pytest.param("[Source](//evil.example/phish)", "evil", id="scheme_relative_target"),
+        pytest.param("[Source](javascript:alert(1))", "javascript", id="javascript_target"),
+    ],
+)
+async def test_n5_a_tool_less_member_with_no_seeds_still_fails_closed(
+    answer: str, needle: str
+) -> None:
+    # No tools, no seeds: `fetched_urls` is `[]`, and today's `if fetched_canonical and
+    # target_canonical is None` reads that empty list as falsy and never fires N1's fail-closed
+    # rule at all — the very member #975 exists for (the `linker` role) is the one this disables
+    # for. `fetched` must become an explicit registry-mode switch so an EMPTY registry still fails
+    # closed on a target with no readable http(s) form.
+    llm = _Scripted(answer)
+    result = await _run(llm, specs=[])
+    assert result.status is not HarnessStatus.FAILED
+    assert needle not in (result.output or "")

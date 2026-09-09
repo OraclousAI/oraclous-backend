@@ -43,6 +43,8 @@ class _RecordingHarness:
         producer: dict[str, Any] | None = None,
         precedence_order: list[str] | None = None,
         graph_authoritative: bool = False,
+        prior_fetched_urls: list[str] | None = None,  # additive (#975) — accepted, ignored here
+        person_supplied_text: str | None = None,  # additive (#975) — accepted, ignored here
     ) -> dict[str, Any]:
         self.calls.append(
             {"precedence_order": precedence_order, "graph_authoritative": graph_authoritative}

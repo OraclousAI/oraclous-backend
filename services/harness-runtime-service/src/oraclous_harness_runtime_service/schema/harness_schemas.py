@@ -17,6 +17,7 @@ from pydantic import BaseModel, ConfigDict, Field, computed_field, model_validat
 from oraclous_harness_runtime_service.domain.link_provenance import (
     LINK_FLAG_STATUS,
     LINK_GATE_NAME,
+    MAX_FETCHED_URLS,
 )
 from oraclous_harness_runtime_service.models.enums import HarnessStatus, StepKind
 
@@ -85,6 +86,19 @@ class ExecuteHarnessRequest(BaseModel):
     # by then the unrestricted work is paid for and the person has already waited for it. Empty ⇒
     # no restriction, which is most runs and which must behave exactly as it does today.
     required_sites: list[str] = Field(default_factory=list)
+    # #975 (§CITE cite-by-reference), ruling 3: what a PRIOR segment of this run really fetched —
+    # threaded by the engine (per-role contribution, #975 slice T5) as a citable registry seed.
+    # Trusted exactly as `input`/`person_supplied_text` are (S2/ruling 6). Bounded at
+    # `MAX_FETCHED_URLS` (2000, the public constant in `domain.link_provenance` — never
+    # hand-derived): a run cannot seed past what its own registry could ever hold. None/absent ->
+    # no seed (a fresh run has no prior segment).
+    prior_fetched_urls: list[str] | None = Field(default=None, max_length=MAX_FETCHED_URLS)
+    # #975, ruling 4/6: URLs the PERSON supplied (task text, intake answers) are citable registry
+    # seeds too — mined loop-side from this text. Bounded at the tightest existing task/answer size
+    # cap in the codebase (`CreateCompilerRunRequest.objective`,
+    # execution-engine-service/schema/engine_schemas.py). None/absent -> the harness service
+    # defaults it to the run's own `user_input` (A8 standalone default).
+    person_supplied_text: str | None = Field(default=None, max_length=8000)
 
     @model_validator(mode="after")
     def _exactly_one_manifest(self) -> ExecuteHarnessRequest:
@@ -146,6 +160,12 @@ class HarnessExecutionOut(BaseModel):
     # the answer resolves only if it is in here — that is rule 2, and it is the property that tells
     # a real source from an invented one. Opaque platform-issued ids, never source content.
     served_citation_ids: list[str] = []
+    # #975 (§CITE cite-by-reference): every http(s) URL this run really fetched (or was seeded
+    # with) — the registry cite-by-reference numbers `[Sn]` markers against. Stored, not derived
+    # from the trace, same posture `served_citation_ids` has. EMPTY, never None, for the same
+    # reason: a caller reads this on every run and None would make "fetched nothing" indistinguish-
+    # able from "not recorded".
+    fetched_urls: list[str] = []
 
     @computed_field  # type: ignore[prop-decorator]
     @property
