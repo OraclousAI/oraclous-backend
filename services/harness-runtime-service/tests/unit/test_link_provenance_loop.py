@@ -851,6 +851,31 @@ async def test_an_unknown_marker_triggers_a_correction_naming_it_then_is_strippe
     assert "[S9]" not in (result.output or "")
 
 
+async def test_an_unknown_marker_only_offence_past_the_bound_still_records_the_flag_step() -> None:
+    # MAJOR 1 (code-reviewer, PR #977): the test above only checks `result.output` and
+    # `_CORRECTION_STATUS` steps — it never checks the trace left on the SHIPPED terminal. Today
+    # `unverified_links` is built solely from `link_check.unverified` (raw URLs); when the only
+    # offence across every correction attempt is an unknown marker (no raw URL at all), that stays
+    # `[]`, the `if unverified_links:` guard never fires, and no GATE step is recorded — even though
+    # `expand_source_markers` really did delete "[S9]" from the shipped text. A raw-URL offence
+    # always leaves this trace; a marker-only offence must too, or a reader-facing consumer (the
+    # console's #294 warning) has no way to know text was removed.
+    llm = _Scripted(_Scripted.SEARCH, "Prices fell [S9].")
+    result = await _run(llm, _returning(_REAL), policy=_TIGHT)
+    assert result.status is HarnessStatus.SUCCEEDED
+    assert len(_steps(result, _CORRECTION_STATUS)) == 2  # bounded at _LINK_CORRECTION_MAX
+    assert "[S9]" not in (result.output or "")  # the marker really was stripped
+
+    # unverified_links stays a list of URLs — empty here, since no raw URL was ever offered.
+    assert result.unverified_links == []
+    # but the GATE step must still exist, naming the marker or the offence count.
+    flags = _steps(result, _FLAG_STATUS)
+    assert len(flags) == 1
+    assert flags[0].name == _GATE_NAME
+    detail = flags[0].detail or ""
+    assert "9" in detail  # names the marker (S9) or the unknown-marker count
+
+
 # --- a budget-exhausted degrade still ships through the same pass (A1/T3) -------------------------
 
 

@@ -166,6 +166,29 @@ async def test_a_shared_url_is_deduped_only_when_composing_the_downstream_seed()
     assert harness.calls["d"].get("prior_fetched_urls") == [_B1, shared, _C1]
 
 
+async def test_a_composed_seed_over_the_cap_is_truncated_head_preserving_across_upstreams() -> None:
+    # BLOCKER (code-reviewer, PR #977): each upstream role's OWN contribution is independently
+    # bounded to 2000 (`_MAX_MEMBER_FETCHED_URLS`, applied via `_clean_fetched_urls`), but the
+    # COMPOSED seed for a member with TWO OR MORE direct upstreams is never capped before being sent
+    # to `HarnessClient.execute`. `ExecuteHarnessRequest.prior_fetched_urls` enforces
+    # `max_length=2000` at the harness-runtime route, so a member with two upstreams each near the
+    # cap (the exact #944 40k-URL-page shape this feature defends against) composes a seed over 2000
+    # and gets a 422 on its ENTIRE dispatch — worse than pre-#975 behaviour, where no such coupling
+    # existed. `d.depends_on=["b", "c"]` (manifest declaration order): the composed seed must be
+    # capped at exactly 2000, HEAD-PRESERVING — b's whole contribution survives, c's is truncated at
+    # the tail.
+    b_urls = [f"https://source.test/b/{i}" for i in range(1500)]
+    c_urls = [f"https://source.test/c/{i}" for i in range(1500)]
+    harness = _RecordingHarness(fetched_urls={"a": [], "b": b_urls, "c": c_urls})
+    await run_team_harness(_diamond_team(), harness)
+
+    seed = harness.calls["d"].get("prior_fetched_urls")
+    assert seed is not None
+    assert len(seed) == 2000  # never over the schema's max_length, whatever the true union size
+    assert seed[:1500] == b_urls  # the FIRST upstream's contribution survives whole (head)
+    assert seed[1500:] == c_urls[:500]  # the SECOND's is truncated at the tail, not dropped whole
+
+
 # ── 2. Delta collect, never re-seeded transitively (A10) ────────────────────────────────────────
 
 
