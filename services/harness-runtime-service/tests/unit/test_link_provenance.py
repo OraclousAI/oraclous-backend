@@ -1170,3 +1170,148 @@ async def test_n1_the_two_argument_path_leaves_a_scheme_relative_link_untouched(
 
     text = "[Source](//evil.example/phish)"
     assert strip_unverified_links(text, []) == text
+
+
+# =================================================================================================
+# Security round 3 (review 5156579514, PoC `scratchpad/poc_975_round3.py`) — three NEW MAJOR
+# fold-ins, all three sharing one root cause with N1/N2: the shipped path still decides what
+# survives by membership in `unverified` (a scan of the PRE-strip text) rather than by membership in
+# the REGISTRY on the text that actually ships. Orchestrator ruling: `fetched` becomes an explicit
+# registry-mode switch (`Collection[str] | None = None`, `registry_mode = fetched is not None`) —
+# `fetched=None` stays the T1 two-argument path, byte-identical; `fetched=[]` (an EMPTY but
+# non-None registry) is now registry mode too, which is exactly N5. After this round: no further
+# security round; these tests are the verification the PoC calls for.
+# =================================================================================================
+
+_N3_REAL = "https://real.example/report"
+_N3_REG = [_N3_REAL]
+
+
+def _pipeline_registry(text: str, registry: Any) -> str:
+    # Unlike `_pipeline` above (T1/B1, two-argument strip), this mirrors the LOOP'S OWN acceptance
+    # path: `strip_unverified_links` is always called with `fetched=` there (`tool_use.py`), never
+    # bare. N3/N4/N5 are all bypasses of that `fetched=` path specifically.
+    from oraclous_harness_runtime_service.domain.link_provenance import (
+        check_answer_links,
+        expand_source_markers,
+        strip_unverified_links,
+    )
+
+    expanded, _ = expand_source_markers(text, registry)
+    check = check_answer_links(expanded, registry)
+    return strip_unverified_links(expanded, check.unverified, fetched=registry)
+
+
+# --- N3 (MAJOR): the strip's own rewrite composes a URL nothing ever checked ----------------------
+#
+# Pass 1 strips a link down to a label that carries no `://` of its own (S4 lets a plain-text label
+# like `https:` survive as text); that label then lands flush against the very next character in the
+# text, and pass 2's bare-URL scan judges the NEWLY COMPOSED span against `unverified_raw`/
+# `unverified_canonical` — sets computed from the text BEFORE pass 1 ever ran, which never contained
+# this string. The four inputs below are the review's own reproduction, each `LEAK`ing at 42dd983.
+
+_N3_CASES = [
+    pytest.param(
+        "[https:](https://evil.example/b)//evil.example/x",
+        "evil",
+        id="label_https_colon_then_scheme_relative_tail",
+    ),
+    pytest.param(
+        "https:/[](https://evil.example/b)/evil.example/x",
+        "evil",
+        id="prefix_https_slash_then_empty_label_link_then_tail",
+    ),
+    pytest.param(
+        "[https](https://evil.example/b)://evil.example/x",
+        "evil",
+        id="label_https_then_scheme_tail",
+    ),
+    pytest.param(
+        f"{_N3_REAL} [](https://evil.example/b)/phish",
+        "phish",
+        id="real_prefix_then_empty_label_link_then_phish_tail",
+    ),
+]
+
+
+@pytest.mark.parametrize("text,needle", _N3_CASES)
+async def test_n3_the_strips_own_rewrite_never_composes_a_url_nothing_checked(
+    text: str, needle: str
+) -> None:
+    out = _pipeline_registry(text, _N3_REG)
+    assert needle not in out
+
+
+@pytest.mark.parametrize("text,needle", _N3_CASES)
+async def test_n3_holds_even_when_the_registry_is_explicitly_empty(text: str, needle: str) -> None:
+    # `fetched=[]` is registry mode with nothing in it (the tool-less `linker` with no seeds) — N3's
+    # composed-URL bug has to stay fixed there too, not only once a real registry entry happens to
+    # be present. This is the review's own N3d probe, generalised to all four inputs.
+    out = _pipeline_registry(text, [])
+    assert needle not in out
+
+
+# --- N4 (MAJOR): a verified target hides every other URL in the same `(...)` from both scans ------
+#
+# `_iter_written_urls`'s link branch returns as soon as the trimmed target itself is a URL — it
+# never scans `target_raw` for a SECOND url sitting after that real target (a title, or plain text
+# after an angle-bracket destination that is not valid CommonMark and so renders as literal text a
+# GFM autolinker still turns into a working anchor).
+
+_N4_REG = [_N3_REAL]
+_N4_CASES = [
+    pytest.param(
+        f"[S](<{_N3_REAL}> https://evil.example/r)",
+        id="angle_real_target_then_bare_evil_url",
+    ),
+    pytest.param(
+        f'[S]({_N3_REAL} "https://evil.example/r")',
+        id="real_target_then_evil_url_in_double_quoted_title",
+    ),
+    pytest.param(
+        f"[S](<{_N3_REAL}> 'https://evil.example/r')",
+        id="angle_real_target_then_evil_url_in_single_quoted_title",
+    ),
+    pytest.param(
+        f'[S](<{_N3_REAL}> "see https://evil.example/r")',
+        id="angle_real_target_then_evil_url_inside_title_prose",
+    ),
+]
+
+
+@pytest.mark.parametrize("text", _N4_CASES)
+async def test_n4_check_answer_links_reports_the_url_hidden_beside_a_verified_target(
+    text: str,
+) -> None:
+    from oraclous_harness_runtime_service.domain.link_provenance import check_answer_links
+
+    result = check_answer_links(text, _N4_REG)
+    assert "https://evil.example/r" in result.unverified
+
+
+@pytest.mark.parametrize("text", _N4_CASES)
+async def test_n4_the_pipeline_never_ships_the_url_hidden_beside_a_verified_target(
+    text: str,
+) -> None:
+    out = _pipeline_registry(text, _N4_REG)
+    assert "evil" not in out
+
+
+# --- N5 (MAJOR): N1's fail-closed rule is keyed on `fetched` TRUTHINESS, so an EMPTY registry -----
+# switches it off — exactly the tool-less member #975 exists to protect ---------------------------
+
+
+async def test_n5_an_empty_but_non_none_registry_still_fails_closed_on_an_unusable_target() -> None:
+    from oraclous_harness_runtime_service.domain.link_provenance import strip_unverified_links
+
+    text = "[Source](//evil.example/phish)"
+    assert strip_unverified_links(text, [], fetched=[]) == ""
+
+
+async def test_n5_fetched_none_stays_the_two_argument_path_left_untouched() -> None:
+    # The control: `fetched=None` is NOT registry mode (the T1 two-argument contract), so it must
+    # stay exactly as unaffected by N5's fix as it already is by N1's.
+    from oraclous_harness_runtime_service.domain.link_provenance import strip_unverified_links
+
+    text = "[Source](//evil.example/phish)"
+    assert strip_unverified_links(text, [], fetched=None) == text

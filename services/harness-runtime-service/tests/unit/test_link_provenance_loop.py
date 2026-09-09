@@ -1249,3 +1249,60 @@ async def test_a_scheme_relative_target_never_ships_with_a_non_empty_registry() 
     assert result.status is HarnessStatus.SUCCEEDED
     assert "evil" not in (result.output or "")
     assert "[S1]" not in (result.output or "")
+
+
+# =================================================================================================
+# Security round 3 (review 5156579514, PoC `scratchpad/poc_975_round3.py`) — the loop-level twins of
+# the three NEW fold-ins pinned in `test_link_provenance.py`. The pure-function tests prove the bug;
+# these prove it reaches the loop's own real acceptance path (`tool_use.py`'s `fetched=` calls),
+# confirmed live by the PoC's own scripted-LLM probes.
+# =================================================================================================
+
+# --- N3: the strip's own rewrite composes a URL nothing ever checked ------------------------------
+
+_N3_COMPOSITION = "[https:](https://evil.example/b)//evil.example/x"
+
+
+async def test_n3_a_tool_less_member_with_no_registry_never_ships_the_composed_url() -> None:
+    # No tools, no seeds — the registry is empty, so `check_answer_links` reports the link's own
+    # target unverified and the FIRST acceptance pass strips it (ruling 3: nothing to correct
+    # against). The composed leftover — `https://evil.example/x` — must never survive that strip.
+    llm = _Scripted(_N3_COMPOSITION)
+    result = await _run(llm, specs=[])
+    assert result.status is HarnessStatus.SUCCEEDED
+    assert "evil" not in (result.output or "")
+
+
+async def test_n3_a_seeded_member_never_ships_the_composed_url_either() -> None:
+    # A non-empty registry (one real fetch) does not save this shape either — the composed URL is
+    # judged against the stale `unverified` set from before the strip's OWN rewrite, on every pass,
+    # registry-size notwithstanding. `_TIGHT`: search + 2 corrections + the flagged, stripped ship.
+    llm = _Scripted(_Scripted.SEARCH, _N3_COMPOSITION)
+    result = await _run(llm, _returning(_REAL), policy=_TIGHT)
+    assert result.status is HarnessStatus.SUCCEEDED
+    assert "evil" not in (result.output or "")
+
+
+# --- N5: N1's fail-closed rule is keyed on `fetched` TRUTHINESS, so an EMPTY registry -------------
+# switches it off — exactly the tool-less member #975 exists to protect ---------------------------
+
+
+@pytest.mark.parametrize(
+    "answer,needle",
+    [
+        pytest.param("[Source](//evil.example/phish)", "evil", id="scheme_relative_target"),
+        pytest.param("[Source](javascript:alert(1))", "javascript", id="javascript_target"),
+    ],
+)
+async def test_n5_a_tool_less_member_with_no_seeds_still_fails_closed(
+    answer: str, needle: str
+) -> None:
+    # No tools, no seeds: `fetched_urls` is `[]`, and today's `if fetched_canonical and
+    # target_canonical is None` reads that empty list as falsy and never fires N1's fail-closed
+    # rule at all — the very member #975 exists for (the `linker` role) is the one this disables
+    # for. `fetched` must become an explicit registry-mode switch so an EMPTY registry still fails
+    # closed on a target with no readable http(s) form.
+    llm = _Scripted(answer)
+    result = await _run(llm, specs=[])
+    assert result.status is not HarnessStatus.FAILED
+    assert needle not in (result.output or "")
