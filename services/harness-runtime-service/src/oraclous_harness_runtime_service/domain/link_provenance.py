@@ -101,6 +101,15 @@ LINK_GATE_NAME = "link_provenance"
 LINK_CORRECTION_STATUS = "link_correction"
 LINK_FLAG_STATUS = "unverified_links"
 
+# MAJOR 2 (code-reviewer, PR #977): the registry cap the loop enforces (``domain/loop/tool_use
+# .py``'s ``_MAX_FETCHED_URLS``) is the SAME number two other layers need to bound against —
+# ``ExecuteHarnessRequest.prior_fetched_urls``'s ``max_length`` and the repository's ordered-union
+# truncation. Both used to import the loop's private name directly, reaching across a layer
+# boundary for it (the loop is not either layer's dependency). It lives here instead, alongside
+# the trace vocabulary above, for the same reason: this module is the shared home neither the loop
+# nor its downstream readers own alone. ``tool_use.py``'s ``_MAX_FETCHED_URLS`` aliases this.
+MAX_FETCHED_URLS = 2000
+
 
 @dataclass(frozen=True, slots=True)
 class LinkCheckResult:

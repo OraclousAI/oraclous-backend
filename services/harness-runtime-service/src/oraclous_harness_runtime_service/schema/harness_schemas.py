@@ -17,8 +17,8 @@ from pydantic import BaseModel, ConfigDict, Field, computed_field, model_validat
 from oraclous_harness_runtime_service.domain.link_provenance import (
     LINK_FLAG_STATUS,
     LINK_GATE_NAME,
+    MAX_FETCHED_URLS,
 )
-from oraclous_harness_runtime_service.domain.loop.tool_use import _MAX_FETCHED_URLS
 from oraclous_harness_runtime_service.models.enums import HarnessStatus, StepKind
 
 
@@ -88,10 +88,11 @@ class ExecuteHarnessRequest(BaseModel):
     required_sites: list[str] = Field(default_factory=list)
     # #975 (§CITE cite-by-reference), ruling 3: what a PRIOR segment of this run really fetched —
     # threaded by the engine (per-role contribution, #975 slice T5) as a citable registry seed.
-    # Trusted exactly as `input`/`person_supplied_text` are (S2/ruling 6). Bounded at the loop's own
-    # `_MAX_FETCHED_URLS` (2000, imported — never hand-derived): a run cannot seed past what its own
-    # registry could ever hold. None/absent -> no seed (a fresh run has no prior segment).
-    prior_fetched_urls: list[str] | None = Field(default=None, max_length=_MAX_FETCHED_URLS)
+    # Trusted exactly as `input`/`person_supplied_text` are (S2/ruling 6). Bounded at
+    # `MAX_FETCHED_URLS` (2000, the public constant in `domain.link_provenance` — never
+    # hand-derived): a run cannot seed past what its own registry could ever hold. None/absent ->
+    # no seed (a fresh run has no prior segment).
+    prior_fetched_urls: list[str] | None = Field(default=None, max_length=MAX_FETCHED_URLS)
     # #975, ruling 4/6: URLs the PERSON supplied (task text, intake answers) are citable registry
     # seeds too — mined loop-side from this text. Bounded at the tightest existing task/answer size
     # cap in the codebase (`CreateCompilerRunRequest.objective`,

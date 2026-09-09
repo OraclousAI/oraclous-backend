@@ -15,7 +15,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
 
 from oraclous_harness_runtime_service.core.rls import build_rls_engine, org_scope
-from oraclous_harness_runtime_service.domain.loop.tool_use import _MAX_FETCHED_URLS
+from oraclous_harness_runtime_service.domain.link_provenance import MAX_FETCHED_URLS
 from oraclous_harness_runtime_service.models.execution import HarnessExecution
 
 
@@ -184,9 +184,9 @@ class ExecutionRepository:
         #975 (§CITE cite-by-reference, T14): ``fetched_urls`` is UNIONED the same way and for the
         same reason — the loop's own accumulator covers the post-resume segment only. The union is
         ORDERED (append-only at the tail; an entry already present is never re-added and never
-        moves) and CAPPED at ``_MAX_FETCHED_URLS`` (imported from the loop's own registry cap, never
-        hand-derived): once the cap is reached, further new entries are simply dropped, so every
-        already-numbered ``[Sn]`` marker from a prior segment keeps resolving to the same URL.
+        moves) and CAPPED at ``MAX_FETCHED_URLS`` (the public constant in ``domain.link_provenance``
+        — never hand-derived): once the cap is reached, further new entries are simply dropped, so
+        every already-numbered ``[Sn]`` marker from a prior segment keeps resolving to the same URL.
         """
         with org_scope(organisation_id):
             async with self._session() as session:
@@ -222,7 +222,7 @@ class ExecutionRepository:
                         for url in fetched_urls:
                             if url in fetched_seen:
                                 continue
-                            if len(fetched_merged) >= _MAX_FETCHED_URLS:
+                            if len(fetched_merged) >= MAX_FETCHED_URLS:
                                 continue
                             fetched_merged.append(url)
                             fetched_seen.add(url)

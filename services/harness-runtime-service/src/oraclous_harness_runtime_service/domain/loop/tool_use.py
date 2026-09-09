@@ -44,6 +44,7 @@ from oraclous_harness_runtime_service.domain.link_provenance import (
     LINK_CORRECTION_STATUS,
     LINK_FLAG_STATUS,
     LINK_GATE_NAME,
+    MAX_FETCHED_URLS,
     canonical_urls,
     check_answer_links,
     expand_source_markers,
@@ -549,7 +550,12 @@ def _url_valued_args(args: dict[str, Any], parameters: dict[str, Any] | None) ->
 # also bounds what `check_answer_links` pays re-canonicalising the accumulated set on every LLM
 # turn. Past the cap a real fetch is never un-credited — accumulation just stops taking NEW ones,
 # which is the safe direction (more URLs never verifies more, only ever fewer).
-_MAX_FETCHED_URLS = 2000
+# MAJOR 2 (code-reviewer, PR #977): this used to be the canonical definition, reached across a
+# layer boundary by the repository and the request schema (each importing this PRIVATE name
+# straight out of the loop). It now aliases the public constant in ``domain.link_provenance`` —
+# the shared home for the two other layers that need the same number — kept as a module-local name
+# here only so this file's own reads of the cap stay unchanged.
+_MAX_FETCHED_URLS = MAX_FETCHED_URLS
 
 
 def _accumulate_fetched(urls: list[str], fetched_urls: list[str], seen: set[str]) -> None:
