@@ -15,6 +15,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
 
 from oraclous_harness_runtime_service.core.rls import build_rls_engine, org_scope
+from oraclous_harness_runtime_service.domain.loop.tool_use import _MAX_FETCHED_URLS
 from oraclous_harness_runtime_service.models.execution import HarnessExecution
 
 
@@ -68,6 +69,7 @@ class ExecutionRepository:
         trace_id: uuid.UUID | None = None,
         parent_execution_id: uuid.UUID | None = None,
         served_citation_ids: list[str] | None = None,
+        fetched_urls: list[str] | None = None,
     ) -> HarnessExecution:
         row = HarnessExecution(
             id=execution_id,
@@ -93,6 +95,9 @@ class ExecutionRepository:
             # #743 (§CITE): what the platform served this run. A caller that omits it records the
             # empty list, never NULL — the answer-time gate reads this on every run.
             served_citation_ids=list(served_citation_ids or []),
+            # #975 (§CITE cite-by-reference): the registry cite-by-reference numbers `[Sn]` markers
+            # against. Same posture — empty, never NULL.
+            fetched_urls=list(fetched_urls or []),
         )
         # ADR-030: bind the org so the engine begin-guard sets app.current_organisation_id; the
         # FORCE'd RLS WITH CHECK admits this INSERT only when the stamped org equals the bound one.
@@ -163,6 +168,7 @@ class ExecutionRepository:
         input_tokens: int | None = None,
         output_tokens: int | None = None,
         served_citation_ids: list[str] | None = None,
+        fetched_urls: list[str] | None = None,
     ) -> HarnessExecution | None:
         """Full in-place update of an org-scoped run — the S6 resume path overwrites status/output/
         error/iterations/tokens and REPLACES the step trace (caller appends the new tail). Unlike
@@ -174,6 +180,13 @@ class ExecutionRepository:
         served before a HITL pause is still one the member was handed, and an answer written after
         the pause may legitimately cite it — replacing would silently turn it into a rule 2
         violation.
+
+        #975 (§CITE cite-by-reference, T14): ``fetched_urls`` is UNIONED the same way and for the
+        same reason — the loop's own accumulator covers the post-resume segment only. The union is
+        ORDERED (append-only at the tail; an entry already present is never re-added and never
+        moves) and CAPPED at ``_MAX_FETCHED_URLS`` (imported from the loop's own registry cap, never
+        hand-derived): once the cap is reached, further new entries are simply dropped, so every
+        already-numbered ``[Sn]`` marker from a prior segment keeps resolving to the same URL.
         """
         with org_scope(organisation_id):
             async with self._session() as session:
@@ -203,6 +216,17 @@ class ExecutionRepository:
                         merged = list(row.served_citation_ids or [])
                         merged.extend(c for c in served_citation_ids if c not in merged)
                         row.served_citation_ids = merged
+                    if fetched_urls:
+                        fetched_merged = list(row.fetched_urls or [])
+                        fetched_seen = set(fetched_merged)
+                        for url in fetched_urls:
+                            if url in fetched_seen:
+                                continue
+                            if len(fetched_merged) >= _MAX_FETCHED_URLS:
+                                continue
+                            fetched_merged.append(url)
+                            fetched_seen.add(url)
+                        row.fetched_urls = fetched_merged
                     row.steps = steps
                 await session.refresh(row)
                 return row
