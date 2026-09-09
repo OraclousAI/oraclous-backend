@@ -119,6 +119,13 @@ class HarnessClient:
         on_exhaustion: str | None = None,  # #587: "degrade" → the loop finishes PARTIAL at a gate
         requires_valid_json: bool = False,  # #853: one repair turn on a malformed JSON document
         required_sites: list[str] | None = None,  # #961: the websites this run is restricted to
+        # #975 (cite-by-reference): the run's own fetch registry seed (this member's direct
+        # upstream contributions, composed engine-side) and the person-supplied citable text.
+        # Trusted exactly as `input_text` is (ruling 6/S2). NEVER omitted from the body — a
+        # version-skewed caller must not be able to launder a missing value into "not sent"
+        # (ruling 6/S7) — so an absent kwarg here still sends the empty default, not a missing key.
+        prior_fetched_urls: list[str] | None = None,
+        person_supplied_text: str | None = None,
         timeout: float | None = None,  # noqa: ASYNC109 — forwarded to httpx, not an asyncio cancel
     ) -> dict[str, Any]:
         """Run a harness to completion/escalation and return its ``HarnessExecutionOut`` JSON.
@@ -183,6 +190,14 @@ class HarnessClient:
         # Sent only when there IS one — most runs name no sites and add zero keys.
         if required_sites:
             body["required_sites"] = list(required_sites)
+        # #975: NEVER conditionally added (unlike the send-only-when-set fields above) — ruling 6/S7
+        # requires these two to always be present in the body, defaulting to the empty seed.
+        body["prior_fetched_urls"] = (
+            list(prior_fetched_urls) if prior_fetched_urls is not None else []
+        )
+        body["person_supplied_text"] = (
+            person_supplied_text if person_supplied_text is not None else ""
+        )
         kwargs: dict[str, Any] = {"json": body}
         if timeout is not None:
             kwargs["timeout"] = timeout

@@ -78,6 +78,10 @@ class _Harness(Protocol):
         graph_authoritative: bool = ...,
         max_tokens: int | None = ...,
         max_tool_calls: int | None = ...,
+        # #975 (cite-by-reference): the run's own fetch registry, threaded member-to-member, and
+        # the person-supplied task/answers text — both citable registry seeds (ruling 4/6).
+        prior_fetched_urls: list[str] | None = ...,
+        person_supplied_text: str | None = ...,
     ) -> dict[str, Any]: ...
 
 
@@ -251,6 +255,55 @@ def _render_answers(items: list[dict[str, Any]]) -> str:
         rendered = f'"{answer}"' if isinstance(answer, str) and answer.strip() else _NO_ANSWER
         lines.append(f"  - {item['question']} — {rendered}")
     return "\n".join(lines)
+
+
+# #975 (§CITE cite-by-reference), plan §5 / slice T5. ``person_supplied_text`` is the OTHER citable
+# registry seed (ruling 4): what the person themselves supplied — task text, then confirmed answers,
+# then hypotheses — never anything envelope- or member-authored (A10/S7), sent to EVERY member
+# including the entrypoint (the engine never mines URLs itself; that is the loop's job). Bounded
+# HEAD-PRESERVING to the harness-runtime schema's own cap (``ExecuteHarnessRequest.person_supplied
+# _text``, pinned at 8000 in slice T4) before ever calling ``HarnessClient.execute`` — a long intake
+# would otherwise 422 every member's dispatch. Accepted cost: a URL starting past the cap is not a
+# seed for this run.
+_PERSON_SUPPLIED_TEXT_MAX = 8000
+
+# #975 S3: the bounds applied to a member's own reported fetch registry, both when it is lifted
+# verbatim into that member's stored ``results[role]["fetched_urls"]`` and when a member's DELTA is
+# collected into the per-role contribution map for downstream seeding. A non-str entry is dropped
+# (never coerced); an entry over this length is dropped, never truncated (a truncated URL is not the
+# URL that was fetched); the survivors are capped head-stable — the same convention the persistence
+# layer's ordered union already uses (T14) — so the run's citable registry never grows unbounded.
+_MAX_FETCHED_URL_CHARS = 2048
+_MAX_MEMBER_FETCHED_URLS = 2000
+
+
+def _clean_fetched_urls(raw: Any) -> list[str]:
+    """The subset of ``raw`` fit to register as a fetch-registry contribution (#975 S3)."""
+    if not isinstance(raw, list):
+        return []
+    cleaned = [u for u in raw if isinstance(u, str) and len(u) <= _MAX_FETCHED_URL_CHARS]
+    return cleaned[:_MAX_MEMBER_FETCHED_URLS]
+
+
+def _person_supplied_text(
+    task: str | None,
+    answers: tuple[list[dict[str, Any]], list[dict[str, Any]]] | None,
+) -> str:
+    """#975 ruling 4/6: the person-supplied citable text — task, then confirmed answers, then
+    hypotheses, each present part blank-line separated, an absent part simply omitted (never
+    rendered empty). No directive headers: those exist to tell a MODEL how to treat a block inside
+    its normal input, not to shape this raw citable-URL-mining text. Truncated HEAD-PRESERVING to
+    ``_PERSON_SUPPLIED_TEXT_MAX`` before it ever reaches a dispatch."""
+    parts: list[str] = []
+    if task:
+        parts.append(task)
+    if answers is not None:
+        confirmed, hypotheses = answers
+        if confirmed:
+            parts.append(_render_answers(confirmed))
+        if hypotheses:
+            parts.append(_render_answers(hypotheses))
+    return "\n\n".join(parts)[:_PERSON_SUPPLIED_TEXT_MAX]
 
 
 def resolve_run_answers(
@@ -525,6 +578,8 @@ def make_harness_dispatch(
     task: str | None = None,
     answers: tuple[list[dict[str, Any]], list[dict[str, Any]]] | None = None,
     required_sites: list[str] | None = None,
+    contributions: dict[str, list[str]] | None = None,
+    person_supplied_text: str = "",
 ) -> DispatchFn:
     """Build a ``run_team`` dispatch that runs each member as a real harness execution.
 
@@ -533,7 +588,15 @@ def make_harness_dispatch(
     member's harness execution id is surfaced via ``on_child`` — with the role that produced it
     (#828 item 4) — so the engine records the tree.
     O4 metering (#472): each member's ``total_tokens`` is surfaced via ``on_cost`` so the engine
-    accumulates the run's RAW token cost from the harness's own metering (ADR-009)."""
+    accumulates the run's RAW token cost from the harness's own metering (ADR-009).
+
+    ``contributions`` (#975) is the run's per-role fetch-registry contribution map — SHARED and
+    mutated in place across every dispatch from this factory, so a caller that wants the map to
+    persist across the whole run (``run_team_harness``) passes its own dict; a caller that does not
+    care (an existing direct test of this factory) gets a private, per-call one. ``person_supplied
+    _text`` is the already-composed, already-truncated citable text (#975 ruling 4/6), sent
+    UNCHANGED to every member — the entrypoint included."""
+    contrib_map: dict[str, list[str]] = contributions if contributions is not None else {}
 
     async def dispatch(member: OHMMember, envelopes: list[HandoffEnvelope], fan_item: Any) -> Any:
         sub = sub_harnesses.get(member.role)
@@ -567,6 +630,19 @@ def make_harness_dispatch(
         # reading as "restrict to no sites", which would refuse every search in the platform.
         if required_sites:
             caps["required_sites"] = list(required_sites)
+        # #975 (cite-by-reference), ruling 3/A5: this member's citable seed is the UNION of its
+        # DIRECT upstream roles' own contributions. ``envelopes`` already arrives in MANIFEST
+        # DECLARATION ORDER (``depends_on``, never completion order — ``run_team``/``run_loop_seam``
+        # build it by iterating ``member.depends_on``), so composing by iterating it here preserves
+        # that order for free; deduped ONLY at this composition (A5b) — a role's own contribution
+        # list keeps every URL it reported, shared or not.
+        prior_fetched_urls: list[str] = []
+        seen_prior: set[str] = set()
+        for env in envelopes:
+            for url in contrib_map.get(env.from_role, []):
+                if url not in seen_prior:
+                    seen_prior.add(url)
+                    prior_fetched_urls.append(url)
         result = await harness.execute(
             input_text=render_member_input(
                 member,
@@ -616,6 +692,12 @@ def make_harness_dispatch(
             # each knowledge-retriever instance so a member's in-loop read is auto-ranked (#514).
             precedence_order=precedence_order,
             graph_authoritative=graph_authoritative,
+            # #975 (cite-by-reference): the run's fetch registry seed (this member's direct upstream
+            # contributions, composed above) and the person-supplied citable text — sent to EVERY
+            # member, the entrypoint included, and NEVER omitted (ruling 6/S7: a caller must not be
+            # able to launder a missing value into "not sent").
+            prior_fetched_urls=prior_fetched_urls,
+            person_supplied_text=person_supplied_text,
         )
         status = result.get("status")
         # #907: whether the harness's OWN LLM client was the scripted stand-in
@@ -670,7 +752,20 @@ def make_harness_dispatch(
             "unverified_links": [
                 url for url in (result.get("unverified_links") or []) if isinstance(url, str)
             ],
+            # #975 (cite-by-reference): this member's OWN full fetch registry (what it fetched PLUS
+            # every seed it was handed), lifted verbatim next to `unverified_links` for the same
+            # reason — a consumer reads it on every member, EMPTY when clean, never absent. Absent
+            # on a pre-#975 harness response (back-compat, the #907/#944 posture).
+            "fetched_urls": _clean_fetched_urls(result.get("fetched_urls")),
         }
+        # #975 A10: this member's CONTRIBUTION to a downstream member's seed is the DELTA it
+        # genuinely added — its reported registry minus what it was itself handed — never its full
+        # return. Without this, a downstream member would be re-seeded TRANSITIVELY with an
+        # ancestor's URL it never fetched itself, one hop removed from the member that actually did.
+        already_sent = set(prior_fetched_urls)
+        contrib_map[member.role] = [
+            url for url in payload["fetched_urls"] if url not in already_sent
+        ]
         # #697: the member's DECLARED keys join the payload the next member receives. Without this
         # the declaration can never be satisfied — what a producer hands on is this envelope, and
         # its answer sits under "output" as prose. Team run 76620efe: the Reviewer wrote a complete
@@ -734,6 +829,16 @@ async def run_team_harness(
 
     pooled_cost = cost_so_far if cost_so_far is not None else (lambda: sum(cost_deltas))
     refresh_records, refresh_sink = refresh_dispatch_args(manifest, inputs)  # #602 cost lever
+    task = resolve_run_task(manifest, inputs)  # Contract §TASK (#674): to every member
+    answers = resolve_run_answers(inputs)  # #846: the app's intake answers, to every member
+    # #975 (cite-by-reference), A4: the per-role fetch-registry contribution map. On a resume drive
+    # it is REBUILT from `completed` rather than re-dispatching — `fetched_urls` is lifted into
+    # every member's stored `results` payload next to `unverified_links`, so a member that already
+    # ran in a prior drive still contributes its registry to a downstream member dispatched now.
+    contributions: dict[str, list[str]] = {}
+    for role, prior_result in (completed or {}).items():
+        if isinstance(prior_result, dict):
+            contributions[role] = _clean_fetched_urls(prior_result.get("fetched_urls"))
     dispatch = make_harness_dispatch(
         harness,
         sub_harnesses or {},
@@ -749,9 +854,11 @@ async def run_team_harness(
         budget=manifest.budget,  # #576: per-member caps resolve from the team budget + members
         refresh_seed_records=refresh_records,  # #602: the sink's prior records (refresh only)
         refresh_sink_role=refresh_sink,
-        task=resolve_run_task(manifest, inputs),  # Contract §TASK (#674): to every member
-        answers=resolve_run_answers(inputs),  # #846: the app's intake answers, to every member
+        task=task,
+        answers=answers,
         required_sites=resolve_run_sites(inputs),  # #961: the sites this run is held to
+        contributions=contributions,  # #975: shared + mutated across every dispatch of this run
+        person_supplied_text=_person_supplied_text(task, answers),  # #975 ruling 4/6
     )
     return await run_team(
         manifest,
@@ -889,6 +996,14 @@ async def run_team_hybrid(
     by_role = {m.role: m for m in manifest.members}
     team_id = str(manifest.metadata.id)
     refresh_records, refresh_sink = refresh_dispatch_args(manifest, inputs)  # #602 cost lever
+    hybrid_task = resolve_run_task(manifest, inputs)  # Contract §TASK (#674): to every member
+    hybrid_answers = resolve_run_answers(inputs)  # #846: the app's intake answers, to every member
+    # #975 A4, same rebuild-from-`completed` posture as run_team_harness — a loop member that ran in
+    # a prior drive still contributes its registry to a downstream member dispatched now.
+    hybrid_contributions: dict[str, list[str]] = {}
+    for role, prior_result in (completed or {}).items():
+        if isinstance(prior_result, dict):
+            hybrid_contributions[role] = _clean_fetched_urls(prior_result.get("fetched_urls"))
     real_dispatch = make_harness_dispatch(
         harness,
         sub_harnesses or {},
@@ -904,8 +1019,10 @@ async def run_team_hybrid(
         budget=manifest.budget,  # #576: per-member caps resolve from the team budget + members
         refresh_seed_records=refresh_records,  # #602: the sink's prior records (refresh only)
         refresh_sink_role=refresh_sink,
-        task=resolve_run_task(manifest, inputs),  # Contract §TASK (#674): to every member
-        answers=resolve_run_answers(inputs),  # #846: the app's intake answers, to every member
+        contributions=hybrid_contributions,  # #975: shared + mutated across this run's dispatches
+        person_supplied_text=_person_supplied_text(hybrid_task, hybrid_answers),  # #975 ruling 4/6
+        task=hybrid_task,  # Contract §TASK (#674): to every member
+        answers=hybrid_answers,  # #846: the app's intake answers, to every member
         required_sites=resolve_run_sites(inputs),  # #961: the sites this run is held to
     )
     termination = manifest.orchestration.termination if manifest.orchestration else None

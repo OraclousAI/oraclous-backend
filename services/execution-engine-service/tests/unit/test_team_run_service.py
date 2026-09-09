@@ -112,6 +112,8 @@ class FakeHarness:
         producer: dict[str, Any] | None = None,
         precedence_order: list[str] | None = None,  # additive (#538) — accepted, ignored here
         graph_authoritative: bool = False,
+        prior_fetched_urls: list[str] | None = None,  # additive (#975) — accepted, ignored here
+        person_supplied_text: str | None = None,  # additive (#975) — accepted, ignored here
     ) -> dict[str, Any]:
         self.inputs.append(input_text)
         eid = uuid.uuid4()  # each member 'execution' gets an id → the engine records the tree
@@ -1011,6 +1013,9 @@ async def test_member_failure_persists_per_member_status_and_keeps_independent_o
         # #944: additive in the same way — a harness response with no "unverified_links" key means
         # the run linked nothing it had not fetched, which is an empty list, never an absent one.
         "unverified_links": [],
+        # #975: additive the same way again — a harness response with no "fetched_urls" key
+        # contributes nothing to the registry, never crashes, never renders as absent.
+        "fetched_urls": [],
     }  # the peer's work is kept
     assert "b blew up" in (row.error_message or "")  # the failed member's detail is surfaced
 

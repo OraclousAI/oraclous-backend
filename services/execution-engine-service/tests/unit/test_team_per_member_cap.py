@@ -46,6 +46,8 @@ class _RecordingHarness:
         graph_authoritative: bool = False,
         max_tokens: int | None = None,
         max_tool_calls: int | None = None,
+        prior_fetched_urls: list[str] | None = None,  # additive (#975) — accepted, ignored here
+        person_supplied_text: str | None = None,  # additive (#975) — accepted, ignored here
     ) -> dict[str, Any]:
         self.calls.append(
             {
