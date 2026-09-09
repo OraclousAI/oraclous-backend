@@ -44,8 +44,11 @@ from oraclous_harness_runtime_service.domain.link_provenance import (
     LINK_CORRECTION_STATUS,
     LINK_FLAG_STATUS,
     LINK_GATE_NAME,
+    canonical_urls,
     check_answer_links,
+    expand_source_markers,
     extract_answer_urls,
+    strip_unverified_links,
 )
 from oraclous_harness_runtime_service.domain.llm.base import LLMClient, Message, ToolSpec
 from oraclous_harness_runtime_service.domain.policy import PolicyEnvelope
@@ -169,6 +172,12 @@ class LoopResult:
     # "fake"/"openai-compatible") — recorded once per run, not per step, because the loop's client
     # never changes mid-run. None only for a client that declares no protocol_shape at all.
     protocol_shape: str | None = None
+    # #975 (A1): the final registry — every URL a `[Sn]` marker could have cited, in order. Set on
+    # ALL FIVE return paths (success, both degrade reasons, escalate, FAILED, every budget
+    # terminal), for the same reason `served_citation_ids` is: a caller (the service persists it;
+    # the engine threads it member-to-member) reads it on every run, and None would be
+    # indistinguishable from "the loop never populated it".
+    fetched_urls: list[str] = field(default_factory=list)
 
 
 def _truncate(text: str, limit: int = 500) -> str:
@@ -315,10 +324,30 @@ def _named(urls: list[str]) -> str:
     return ", ".join(named)
 
 
-def _link_correction(unverified: list[str], fetched: list[str]) -> str:
-    """The message a member reads when every link in its draft was invented."""
-    allowed = f" — you fetched: {_named(fetched)}" if fetched else ""
-    return _LINK_CORRECTION.format(bad=_named(unverified), allowed=allowed)
+# #975 ruling 7: an unknown `[Sn]` marker is corrected the SAME bounded way a raw fabrication is
+# (`_LINK_CORRECTION_MAX` now covers both offences together), and the message restates the marker
+# protocol rather than assuming the member remembers it — the same #692/#693 lesson every correction
+# in this file already applies: an error a member cannot act on is one it can only retry blindly.
+_MARKER_CORRECTION = (
+    "You cited {markers}, which does not name any source you were shown. Cite only the [Sn] "
+    "markers from the numbered SOURCES list you were given — never invent a number, and never "
+    "write a URL yourself."
+)
+
+
+def _link_correction(
+    unverified: list[str], fetched: list[str], unknown_markers: list[int] | None = None
+) -> str:
+    """The message a member reads when its draft carries a raw link this run never fetched, an
+    ``[Sn]`` marker naming no source it was shown, or both (#975 ruling 7)."""
+    parts: list[str] = []
+    if unverified:
+        allowed = f" — you fetched: {_named(fetched)}" if fetched else ""
+        parts.append(_LINK_CORRECTION.format(bad=_named(unverified), allowed=allowed))
+    if unknown_markers:
+        markers = ", ".join(f"[S{n}]" for n in unknown_markers)
+        parts.append(_MARKER_CORRECTION.format(markers=markers))
+    return "\n\n".join(parts)
 
 
 # ── #961: a person's list of websites BINDS the run ──────────────────────────────────────────────
@@ -524,12 +553,23 @@ _MAX_FETCHED_URLS = 2000
 
 
 def _accumulate_fetched(urls: list[str], fetched_urls: list[str], seen: set[str]) -> None:
+    """Register each candidate — from ANY source: a tool harvest, a person-supplied seed, a prior
+    run's carried-forward set — into the run's registry, fail-closed (#975 ruling 3, S1). An entry
+    the acceptance pass's own ``_canonical`` would refuse (userinfo, over-length, non-http) is
+    dropped here rather than earning a real ``[Sn]`` number just because a caller handed it in —
+    ``prior_fetched_urls`` and a mined ``person_supplied_text`` are caller-supplied and trusted
+    for PROVENANCE (#975 ruling 6), never for SHAPE. A refused entry is still visible to the #944
+    raw-URL backstop if the member cites it anyway; it is simply never registered as a number.
+    """
     for url in urls:
         if len(fetched_urls) >= _MAX_FETCHED_URLS:
             return
-        if url not in seen:
-            seen.add(url)
-            fetched_urls.append(url)
+        if url in seen:
+            continue
+        if not canonical_urls([url]):
+            continue
+        seen.add(url)
+        fetched_urls.append(url)
 
 
 # ── #946 T2: an identical failing call is not dispatched a third time ─────────────────────────────
@@ -860,6 +900,33 @@ def _citation_correction(
     return "\n\n".join(messages), "; ".join(detail) or "citation gate violation"
 
 
+# ── #975: cite-by-reference — the model is SHOWN its numbers before it can cite them ─────────────
+#
+# The protocol paragraph every member reads (ruling 5: tools or not), telling it the mechanism
+# exists and how to use it. Prose alone can never be the enforcement (a check implemented as a model
+# instruction is a check that can be talked out of) — this is the model's half of the contract; the
+# platform's half is `expand_source_markers`/`check_answer_links`/`strip_unverified_links` below,
+# which never trust that the model read this paragraph.
+_CITATION_MARKER_PROTOCOL = (
+    "\n\nWhen you cite a source, cite it as a numbered marker like [S1] naming an entry from the "
+    "numbered SOURCES list you are shown — never write a URL yourself, from memory or otherwise. A "
+    "number you were not shown names nothing; do not invent one."
+)
+
+#: How many newly-registered entries one tool result's SOURCES block names (A7). Uncapped
+#: registration would balloon every later turn's prompt in proportion to a single page's harvest;
+#: registration itself is NOT capped by this — an entry past the cap is still a real registry
+#: number, just never shown a line, and stays verifiable via the #944 raw-URL match.
+_SOURCES_PER_CALL_MAX = 20
+
+
+def _sources_block(entries: list[str], *, start: int) -> str:
+    """``SOURCES:`` followed by one ``[Sn] url`` line per entry, numbered from ``start`` (S6: no
+    other text from the tool result — no title, no snippet — ever rides inside this block)."""
+    lines = "\n".join(f"[S{start + i}] {url}" for i, url in enumerate(entries))
+    return f"SOURCES:\n{lines}"
+
+
 async def run_tool_use_loop(
     *,
     llm: LLMClient,
@@ -874,6 +941,8 @@ async def run_tool_use_loop(
     data_absent_bindings: frozenset[str] | None = None,
     web_search_bindings: frozenset[str] | None = None,
     prior_served_citation_ids: Collection[str] | None = None,
+    prior_fetched_urls: Collection[str] | None = None,
+    person_supplied_text: str | None = None,
 ) -> LoopResult:
     by_name = {s.name: s for s in tool_specs}
     trusted_citation_bindings = (
@@ -887,6 +956,16 @@ async def run_tool_use_loop(
     # the gate by renaming their tool AND fire it on an unrelated tool that borrowed the name. The
     # service always passes the registry's own resolution (`TrustedBindings.web_search`).
     trusted_web_search_bindings = web_search_bindings or frozenset()
+    # #975 rulings 3/4/6: the registry's SEEDS — a URL the PERSON supplied (task text, intake
+    # answers), then whatever a prior segment of this run already fetched (`prior_fetched_urls`,
+    # the `prior_served_citation_ids` pattern). Both are caller-vouched provenance, trusted exactly
+    # as `input_text` already is, and both pass the SAME registration gate (S1) every other source
+    # does — computed here, before the resume/fresh split below, because the fresh branch shows the
+    # seeds to the model in its very first turn.
+    seed_urls: list[str] = []
+    seed_seen: set[str] = set()
+    _accumulate_fetched(extract_answer_urls(person_supplied_text or ""), seed_urls, seed_seen)
+    _accumulate_fetched(list(prior_fetched_urls or []), seed_urls, seed_seen)
     if resume_state is not None:
         redactors = [re.compile(p) for p in resume_state.redact_patterns]
         messages: list[Message] = list(resume_state.messages)
@@ -908,6 +987,22 @@ async def run_tool_use_loop(
             block = await memory_context()
             if block:
                 system = f"{block}\n\n{system}" if system else block
+        # #975 (ruling 5, A2/T2): the seeded entries are shown as one platform-authored numbered
+        # SOURCES block in the FIRST user turn — a member cannot cite a number it is never shown,
+        # and the protocol applies to every member, tools or not. A resume never re-shows this: the
+        # restored transcript already carries whatever the member saw before the pause, and A3
+        # keeps the numbering stable by seeding `prior_fetched_urls` first, not by re-announcing it.
+        if seed_urls:
+            block = _sources_block(seed_urls, start=1)
+            messages[0] = {**messages[0], "content": f"{user_input}\n\n{block}"}
+    # #975: every member reads the marker protocol, tools or not (ruling 5) — appended once, so
+    # every turn's `system=` (the loop passes the same string on every iteration) carries it. Only
+    # when the registry could ever be non-empty (a seed now, or a tool that could harvest one
+    # later): a member with neither has nothing it could ever cite, so the instruction would be
+    # dead prose — and leaving `system` untouched here is what keeps a genuinely tool-less,
+    # seed-less run's context byte-identical to before #975 (the #513 back-compat property).
+    if seed_urls or tool_specs:
+        system = f"{system}{_CITATION_MARKER_PROTOCOL}"
     # The input/output split accumulates over THIS segment (the checkpoint cursor carries only the
     # cumulative total, so a resumed run's split reflects its post-resume turns).
     input_used = 0
@@ -970,13 +1065,18 @@ async def run_tool_use_loop(
     # persisted column), this needs neither: the tool-role messages the member's calls produced are
     # already sitting in the restored transcript, so the resumed segment re-derives its own fetched
     # set from `resume_state.messages` rather than being handed one.
-    fetched_urls: list[str] = (
-        _fetched_urls_from_transcript(resume_state.messages, by_name, redactors)
-        if resume_state is not None
-        else []
-    )
-    # #944 review round 3, HIGH-C: the parallel membership set — see `_accumulate_fetched` above.
-    fetched_urls_seen: set[str] = set(fetched_urls)
+    #
+    # #975 (A3): `seed_urls` (person-supplied, then `prior_fetched_urls`) goes in FIRST, so a number
+    # a member is shown after a resume never points at a different URL than it did before the pause
+    # — the resumed transcript's own re-derivation is unioned in AFTER, never ahead of the seed.
+    fetched_urls: list[str] = list(seed_urls)
+    fetched_urls_seen: set[str] = set(seed_seen)
+    if resume_state is not None:
+        _accumulate_fetched(
+            _fetched_urls_from_transcript(resume_state.messages, by_name, redactors),
+            fetched_urls,
+            fetched_urls_seen,
+        )
     # #946 T2: the repeated-failure ledger — see `_REPEATED_FAILURE_MAX` above. Re-derived from the
     # restored transcript on a resume, for the same reason `fetched_urls` is: a member that already
     # proved a call dead must not get a fresh allowance for it just because the run was paused.
@@ -999,6 +1099,11 @@ async def run_tool_use_loop(
     # it never fired. Like `citation_blocked` it is what turns a spent budget into a typed terminal
     # rather than an anonymous "did not converge", and it is cleared wherever that one is.
     links_blocked: list[str] | None = None
+    # #975 ruling 7: an unknown `[Sn]` marker is a SEPARATE offence from a raw unverified URL — it
+    # names no URL at all, so it cannot live in `links_blocked`'s list. Tracked only so the terminal
+    # fallback below (`if link_offense_blocked:`) still recognises a draft blocked on a marker-only
+    # offence, exactly as it already does for a raw-URL one.
+    link_offense_blocked = False
     # #944: the unverified URLs of an answer that was ACCEPTED carrying some. Distinct from
     # `links_blocked` on purpose: one is a draft that was rejected, the other is what shipped.
     unverified_links: list[str] = []
@@ -1016,6 +1121,18 @@ async def run_tool_use_loop(
             time.monotonic() - started > policy.max_wall_time_seconds
         )
 
+    def _shipped(text: str) -> str:
+        """#975 (A1/T3): the SAME expand-then-strip pass every terminal's output goes through — a
+        budget-exhausted PARTIAL, an escalation, a failure, must never ship a raw fabrication or a
+        literal ``[Sn]`` naming nothing, only because it happened to end the run mid-correction
+        rather than at the ordinary acceptance point below. Idempotent on text this loop already
+        shipped through the same pass (T1's pinned property), so calling it again here costs
+        nothing when the acceptance block already finished the job.
+        """
+        expanded, _ = expand_source_markers(text, fetched_urls)
+        check = check_answer_links(expanded, fetched_urls)
+        return strip_unverified_links(expanded, check.unverified) if check.unverified else expanded
+
     def _escalate(
         name: str,
         reason: str,
@@ -1026,7 +1143,7 @@ async def run_tool_use_loop(
         steps.append(LoopStep(len(steps), StepKind.GATE, name, reason, message))
         return LoopResult(
             status=HarnessStatus.ESCALATED,
-            output=last_text or None,
+            output=_shipped(last_text) if last_text else None,
             steps=steps,
             iterations=iterations,
             total_tokens=tokens_used,
@@ -1036,6 +1153,7 @@ async def run_tool_use_loop(
             error_message=message,
             checkpoint=checkpoint,
             served_citation_ids=list(served_citation_ids),
+            fetched_urls=list(fetched_urls),
             protocol_shape=protocol_shape,
         )
 
@@ -1045,7 +1163,7 @@ async def run_tool_use_loop(
         steps.append(LoopStep(len(steps), StepKind.GATE, name, reason, message))
         return LoopResult(
             status=HarnessStatus.PARTIAL,
-            output=last_text or None,
+            output=_shipped(last_text) if last_text else None,
             steps=steps,
             iterations=iterations,
             total_tokens=tokens_used,
@@ -1061,6 +1179,7 @@ async def run_tool_use_loop(
             # what a reader of THIS answer needs warning about — the blocked set when the run ran
             # out of correction budget, the accepted set otherwise.
             unverified_links=list(links_blocked or unverified_links),
+            fetched_urls=list(fetched_urls),
             protocol_shape=protocol_shape,
         )
 
@@ -1416,9 +1535,22 @@ async def run_tool_use_loop(
                 # `_accumulate_fetched` above. Replaces the round-2 `if url not in fetched_urls:
                 # fetched_urls.append(url)` linear scan, which was quadratic in the number of
                 # distinct URLs one tool result could harvest.
+                registered_before = len(fetched_urls)
                 _accumulate_fetched(
                     extract_answer_urls(content) + arg_urls, fetched_urls, fetched_urls_seen
                 )
+                # #975 (A6/A7): show the member the numbers it just earned. Every entry registered
+                # THIS call gets a real `[Sn]` — but only the first `_SOURCES_PER_CALL_MAX` earn a
+                # displayed line (first-registered win); registration itself is uncapped by this,
+                # so an entry past the cap is still a real number, verifiable via the raw-URL match.
+                # Appended to `content` — AFTER it was captured into `step_detail` above, so the
+                # persisted trace is unaffected — and BEFORE the receipt line is built below (A6):
+                # `_split_receipt` classifies anything after the receipt as corruption.
+                newly_registered = fetched_urls[registered_before:]
+                if newly_registered:
+                    shown = newly_registered[:_SOURCES_PER_CALL_MAX]
+                    block = _sources_block(shown, start=registered_before + 1)
+                    content = f"{content}\n{block}"
             # #642: show the receipt id INSIDE the tool result the model reads. The provider's
             # `tool_call_id` field is transport metadata the model never sees, so a member asked to
             # cite its receipts could only guess — real models cited the tool NAME, a chunk id, or
@@ -1515,7 +1647,7 @@ async def run_tool_use_loop(
             )
             return LoopResult(
                 status=HarnessStatus.FAILED,
-                output=last_text or None,
+                output=_shipped(last_text) if last_text else None,
                 steps=steps,
                 iterations=iteration,
                 total_tokens=tokens_used,
@@ -1524,6 +1656,7 @@ async def run_tool_use_loop(
                 error_type=type(exc).__name__,
                 error_message=str(exc),
                 served_citation_ids=list(served_citation_ids),
+                fetched_urls=list(fetched_urls),
                 protocol_shape=protocol_shape,
             )
         llm_ended = datetime.now(UTC)
@@ -1586,72 +1719,73 @@ async def run_tool_use_loop(
                     )
                 )
                 continue
-            # #944: the inline-link provenance check, in the same place and for the same reason
-            # as the citation gate above — a draft sent back has to go back to the MEMBER, so this
-            # runs before the answer is accepted rather than after this function returns.
+            # #975: cite-by-reference, in the same place and for the same reason the citation gate
+            # runs above — a draft sent back has to go back to the MEMBER, so this runs before the
+            # answer is accepted rather than after this function returns. Applies to EVERY member,
+            # tools or not (ruling 5) — the `if tool_specs:` gate #944 had is gone: the whole point
+            # of #975 is that a tool-less `linker` member, whose entire job is attaching sources,
+            # no longer gets a free pass to fabricate.
             #
-            # Gated on the member HAVING tools. Under a strict reading every link in a tool-less
-            # member's answer is unverified, which is not the intent: there is no fetched set to
-            # measure it against, and inserting a correction turn into every reasoning-only member
-            # is a cost with no signal behind it.
-            #
-            # The consequence SPLITS (ruled on #944, 2026-09-07): every link invented sends the
-            # draft back, some-good-some-bad ships flagged. The split is the whole ruling — a
-            # member that fabricated all of its links answered from training data while holding
-            # real fetched pages and can fix that, whereas re-running a whole answer over one bad
-            # link among good ones throws away real work.
-            #
-            # #944 review, HIGH-2: "every link invented" is gated on there being a REAL fetched set
-            # to have measured against (`fetched_urls`), not merely on `tool_specs` being non-empty.
-            # A member whose every tool call errored (a spent key, a rate-limited provider, a
-            # connector outage) has an empty fetched set, so under the plain-`tool_specs` gate every
-            # answer with any link at all read as "every link invented" and looped until the budget
-            # died — the same rationale already applied to a tool-less member, above, now applied
-            # to a tooled member with nothing successfully fetched. And even with a real fetched set
-            # the correction is capped at `_LINK_CORRECTION_MAX`: past the cap the next attempt
-            # ships flagged rather than being sent back again, so a member that keeps failing for
-            # its own reasons cannot be walked through its whole iteration budget one correction at
-            # a time.
-            if tool_specs:
-                link_check = check_answer_links(last_text, fetched_urls)
-                all_invented = (
-                    bool(fetched_urls) and link_check.unverified and not link_check.verified
+            # 1. Expand `[Sn]` markers against the registry — a marker naming no usable entry is
+            #    removed and its number reported in `unknown_markers` (never shipped: T3).
+            # 2. Run the #944 raw-URL backstop on what remains. A URL expansion just inserted is, by
+            #    construction, a registry entry, so it verifies trivially — never re-flagged (T10).
+            # 3. Either offence, with a REAL registry to measure against, spends a correction turn
+            #    — ruling 7 supersedes #944's "only when EVERY link is invented": now any offence
+            #    does, bounded the same way (`_LINK_CORRECTION_MAX`). An EMPTY registry never loops
+            #    (ruling 3, #944's HIGH-2 fix kept): there is nothing to correct against, so the
+            #    draft ships — stripped — on the very first pass.
+            # 4. Past the bound, or with an empty registry: strip the survivors, record
+            #    `unverified_links`, record the existing GATE step. The shipped text is
+            #    post-expansion, post-strip — never the raw draft.
+            expanded_text, unknown_markers = expand_source_markers(last_text, fetched_urls)
+            link_check = check_answer_links(expanded_text, fetched_urls)
+            offending = bool(unknown_markers) or bool(link_check.unverified)
+            if offending and fetched_urls and link_corrections_used < _LINK_CORRECTION_MAX:
+                link_corrections_used += 1
+                links_blocked = list(link_check.unverified)
+                link_offense_blocked = True
+                messages.append({"role": "assistant", "content": last_text})
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": _link_correction(
+                            link_check.unverified, fetched_urls, unknown_markers
+                        ),
+                    }
                 )
-                if all_invented and link_corrections_used < _LINK_CORRECTION_MAX:
-                    link_corrections_used += 1
-                    links_blocked = list(link_check.unverified)
-                    messages.append({"role": "assistant", "content": last_text})
-                    messages.append(
-                        {
-                            "role": "user",
-                            "content": _link_correction(link_check.unverified, fetched_urls),
-                        }
+                steps.append(
+                    LoopStep(
+                        len(steps),
+                        StepKind.GATE,
+                        LINK_GATE_NAME,
+                        LINK_CORRECTION_STATUS,
+                        _truncate(
+                            json.dumps({"unverified": links_blocked, "unknown": unknown_markers})
+                        ),
                     )
-                    steps.append(
-                        LoopStep(
-                            len(steps),
-                            StepKind.GATE,
-                            LINK_GATE_NAME,
-                            LINK_CORRECTION_STATUS,
-                            _truncate(json.dumps(links_blocked)),
-                        )
+                )
+                continue
+            unverified_links = list(link_check.unverified)
+            last_text = (
+                strip_unverified_links(expanded_text, unverified_links)
+                if unverified_links
+                else expanded_text
+            )
+            if unverified_links:
+                # Accepted, and flagged. The detail is the machine-readable list a consumer
+                # reads; the STATUS carries the boolean, because the detail is truncated at
+                # persistence and a reader told nothing because the list would not fit is the
+                # silent trust #944 exists to remove.
+                steps.append(
+                    LoopStep(
+                        len(steps),
+                        StepKind.GATE,
+                        LINK_GATE_NAME,
+                        LINK_FLAG_STATUS,
+                        _truncate(json.dumps(unverified_links)),
                     )
-                    continue
-                unverified_links = list(link_check.unverified)
-                if unverified_links:
-                    # Accepted, and flagged. The detail is the machine-readable list a consumer
-                    # reads; the STATUS carries the boolean, because the detail is truncated at
-                    # persistence and a reader told nothing because the list would not fit is the
-                    # silent trust #944 exists to remove.
-                    steps.append(
-                        LoopStep(
-                            len(steps),
-                            StepKind.GATE,
-                            LINK_GATE_NAME,
-                            LINK_FLAG_STATUS,
-                            _truncate(json.dumps(unverified_links)),
-                        )
-                    )
+                )
             if retrieval_empty:
                 # #580: the member completed, but a retrieval reported data-absence — degrade to a
                 # flagged PARTIAL (never a silent SUCCEEDED) via #587's _degrade, so the data gap
@@ -1681,6 +1815,7 @@ async def run_tool_use_loop(
                 output_tokens=output_used,
                 served_citation_ids=list(served_citation_ids),
                 unverified_links=list(unverified_links),
+                fetched_urls=list(fetched_urls),
                 protocol_shape=protocol_shape,
             )
 
@@ -1700,6 +1835,7 @@ async def run_tool_use_loop(
         # corrected once and then failing to converge for an unrelated reason is reported as a link
         # failure — the bug shape the citation terminal above already had to fix once.
         links_blocked = None
+        link_offense_blocked = False
         steps.append(
             LoopStep(
                 len(steps),
@@ -1761,12 +1897,12 @@ async def run_tool_use_loop(
     # bad link named is the requested outcome, so this is unconditional rather than a
     # `_budget_gate` call: a per-member `on_exhaustion="escalate"` must not turn a flag into a
     # refusal, the same way the citation terminal refuses to let `degrade` soften an escalation.
-    if links_blocked:
+    if link_offense_blocked:
         return _degrade(
             LINK_GATE_NAME,
             LINK_FLAG_STATUS,
             "the member could not link only pages it fetched within the budget "
-            f"({_named(links_blocked)})",
+            f"({_named(links_blocked or [])})",
             policy.max_iterations + json_repair_grant,
         )
     # iteration cap reached without a final answer → escalate or degrade (#587).
