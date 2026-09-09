@@ -244,15 +244,20 @@ async def test_an_answer_with_no_links_at_all_succeeds_untouched() -> None:
     assert result.unverified_links == []
 
 
-async def test_a_member_with_no_tools_is_never_checked() -> None:
-    # Nothing was fetched, so under a strict reading every link would be unverified. That is not
-    # the intent: a reasoning-only member has no fetched set to be measured against, and inserting
-    # a correction turn into every tool-less member is a cost with no signal behind it.
+async def test_a_tool_less_members_fabricated_raw_url_is_stripped_and_flagged() -> None:
+    # #975 ruling 5 supersedes this test's ORIGINAL premise ("never checked"): the protocol now
+    # applies to EVERY member, tools or not — the whole point of #975 is that a tool-less member
+    # (the `linker` role) no longer gets a free pass to fabricate. Its registry is still empty
+    # (nothing was fetched, and this member seeds none), so ruling 3 ships on the FIRST pass —
+    # there is nothing to correct against — but ruling 2 hardens the consequence: the fabricated
+    # raw URL is STRIPPED, not shipped intact the way #944 did.
     llm = _Scripted(f"The standard reference is [here]({_REAL}).")
     result = await _run(llm, specs=[])
     assert result.status is HarnessStatus.SUCCEEDED
-    assert _steps(result, _CORRECTION_STATUS) == []
-    assert result.unverified_links == []
+    assert _steps(result, _CORRECTION_STATUS) == []  # empty registry — nothing to correct against
+    assert result.unverified_links == [_REAL]  # flagged — never silently trusted
+    assert _REAL not in (result.output or "")  # stripped — #944 shipped this intact
+    assert result.output == "The standard reference is here."
 
 
 # --- criterion 2: every link invented → back to the member --------------------------------------
@@ -302,17 +307,24 @@ async def test_each_correction_consumes_an_iteration_rather_than_being_one_shot(
 # --- criterion 3: some verified → accepted AND flagged, never sent back -------------------------
 
 
-async def test_an_answer_with_one_bad_link_among_good_ones_is_accepted_and_flagged() -> None:
-    # This is the ruled split. Real work with one bad link is not thrown away; it is shipped with
-    # the bad link named, which is what the reader's screen needs to warn about.
+async def test_an_answer_with_one_bad_link_among_good_ones_is_corrected_then_ships_stripped() -> (
+    None
+):
+    # #944's ruled split (real work with one bad link is not thrown away) still holds, but #975
+    # ruling 7 supersedes "shipped intact, never rewritten, no correction spent": with a NON-EMPTY
+    # registry, ANY offence — even one bad link among two good ones — spends a correction turn
+    # first, bounded at `_LINK_CORRECTION_MAX`. This member never fixes its own draft (the script
+    # repeats it forever), so after the bound the SAME draft ships — and ruling 2 hardens the
+    # consequence: the bad link is STRIPPED, never shipped intact, while the two good links survive
+    # byte-identical.
     answer = f"[A]({_REAL}) and [B]({_FABRICATED}) and [C]({_ALSO_REAL})"
     llm = _Scripted(_Scripted.SEARCH, answer)
-    result = await _run(llm, _returning(_REAL, _ALSO_REAL))
+    result = await _run(llm, _returning(_REAL, _ALSO_REAL), policy=_TIGHT)
     assert result.status is HarnessStatus.SUCCEEDED
-    assert result.output == answer  # shipped intact, never rewritten
-    assert _steps(result, _CORRECTION_STATUS) == []
+    assert len(_steps(result, _CORRECTION_STATUS)) == 2  # bounded, not shipped on the first offence
     assert result.unverified_links == [_FABRICATED]
-    assert llm.turns == 2  # the member was not asked to retry
+    assert _FABRICATED not in (result.output or "")  # stripped — #944 shipped this intact
+    assert result.output == f"[A]({_REAL}) and B and [C]({_ALSO_REAL})"
 
 
 async def test_the_flag_is_recorded_as_a_gate_step_naming_the_bad_link() -> None:
@@ -349,15 +361,21 @@ async def test_a_url_from_an_ERRORED_call_does_not_count_as_fetched() -> None:
     # ships flagged on the first attempt rather than being looped through a correction it
     # structurally cannot satisfy (the same rationale criterion 1 already applies to a tool-less
     # member).
+    #
+    # #975: the errored call leaves the registry EMPTY, so ruling 3 still ships on the first pass —
+    # and ruling 2 hardens the consequence: the invented URL is STRIPPED, absent from
+    # `fetched_urls` too, not shipped intact the way #944 did.
     async def dispatch(_spec: ToolSpec, _args: dict[str, Any]) -> dict[str, Any]:
         raise RuntimeError(f"404 fetching {_REAL}")
 
     llm = _Scripted(_Scripted.READ, f"[Source]({_REAL})")
     result = await _run(llm, dispatch)
     assert result.status is HarnessStatus.SUCCEEDED
-    assert result.output == f"[Source]({_REAL})"
     assert _steps(result, _CORRECTION_STATUS) == []
     assert result.unverified_links == [_REAL]  # flagged — never silently trusted
+    assert _REAL not in (result.output or "")  # stripped — #944 shipped this intact
+    assert result.output == "Source"
+    assert _REAL not in result.fetched_urls
 
 
 async def test_urls_fetched_across_several_turns_all_count() -> None:
@@ -416,10 +434,13 @@ async def test_a_member_that_never_stops_inventing_ships_flagged_after_the_bound
     # — an unbounded loop would spend the WHOLE iteration budget correcting a defect the member
     # structurally cannot fix. Past the bound the next attempt SHIPS FLAGGED instead of being sent
     # back again. `_TIGHT` (4 iterations) is exactly search + 2 corrections + the shipped attempt.
+    # #975 ruling 2 hardens the consequence: past the bound the invented URL no longer reaches the
+    # reader at all — only the flag survives. #944 shipped this raw fabrication intact.
     llm = _Scripted(_Scripted.SEARCH, f"[Source]({_FABRICATED})")
     result = await _run(llm, _returning(_REAL), policy=_TIGHT)
     assert result.status is HarnessStatus.SUCCEEDED
-    assert result.output == f"[Source]({_FABRICATED})"
+    assert _FABRICATED not in (result.output or "")  # stripped — #944 shipped this intact
+    assert result.output == "Source"
     assert result.unverified_links == [_FABRICATED]  # flagged — never silently trusted
     assert len(_steps(result, _CORRECTION_STATUS)) == 2  # bounded, not one per iteration
 
@@ -428,11 +449,17 @@ async def test_a_budget_that_runs_out_mid_correction_still_degrades_rather_than_
     # The degrade/PARTIAL terminal still exists — it fires when the budget runs out DURING a
     # correction, before the bound above is ever reached, not when "the member never stops"
     # (unbounded correction was itself the HIGH-2 defect; see the test above).
+    #
+    # #975 (A1/T3): the degraded draft goes through the SAME expand+strip pass every other terminal
+    # does — ruling 2 means the invented URL must not reach the reader here either, so what ships
+    # is stripped and marker-free; only the flag survives.
     llm = _Scripted(_Scripted.SEARCH, f"[Source]({_FABRICATED})")
     result = await _run(llm, _returning(_REAL), policy=_TIGHTER)
     assert result.status is _EXHAUSTED_STATUS
     assert result.error_type == _EXHAUSTED_ERROR_TYPE
     assert result.output is not None  # the last draft is carried out, flagged, never discarded
+    assert _FABRICATED not in result.output  # stripped — #944 shipped this intact
+    assert result.output == "Source"
     assert result.unverified_links == [_FABRICATED]
 
 
@@ -586,10 +613,16 @@ async def test_a_url_smuggled_through_a_non_url_named_argument_is_not_credited()
 
     result = await _run(_QueryLaunderLLM(), dispatch)
     assert result.status is HarnessStatus.SUCCEEDED
-    # HIGH-2: nothing was ever credited, so the draft ships flagged on the first attempt rather than
-    # looping — the same remedy an all-tool-calls-errored member gets.
+    # HIGH-2 / #975 ruling 3: nothing was ever credited, so the registry is EMPTY and the draft
+    # ships on the first attempt rather than looping — the same remedy an all-tool-calls-errored
+    # member gets.
     assert _steps(result, _CORRECTION_STATUS) == []
     assert result.unverified_links == [_FABRICATED]
+    # #975 ruling 2 hardens the consequence: the smuggled URL is STRIPPED, absent from
+    # `fetched_urls`, not shipped intact the way #944 did.
+    assert _FABRICATED not in (result.output or "")  # stripped — #944 shipped this intact
+    assert result.output == "Source"
+    assert _FABRICATED not in result.fetched_urls
 
 
 async def test_the_json_repair_corrections_own_prose_is_never_credited_after_resume() -> None:
