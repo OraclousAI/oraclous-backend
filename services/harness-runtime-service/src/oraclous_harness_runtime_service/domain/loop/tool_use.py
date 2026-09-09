@@ -854,7 +854,9 @@ def _fetched_urls_from_transcript(
             _redact(url, redactors)
             for url in _url_valued_args(args, spec.parameters if spec else None)
         ]
-        _accumulate_fetched(extract_answer_urls(content) + arg_urls, out, seen)
+        # security review 5155075040 (M2): `arg_urls` first, mirroring the live dispatch path (see
+        # the matching comment there) — the opened URL outranks the page's own body URLs here too.
+        _accumulate_fetched(arg_urls + extract_answer_urls(content), out, seen)
     return out
 
 
@@ -924,6 +926,13 @@ _CITATION_MARKER_PROTOCOL = (
 #: registration itself is NOT capped by this — an entry past the cap is still a real registry
 #: number, just never shown a line, and stays verifiable via the #944 raw-URL match.
 _SOURCES_PER_CALL_MAX = 20
+
+# security review 5155075040 (M3), PoC Area 2: the seed block shown in the FIRST user turn used to
+# be built from the WHOLE seed list — 500 `prior_fetched_urls` put 500 lines into that very first
+# turn. Same cap, same name pattern as the per-call block above: display only, never registration
+# — `seed_urls` itself (and therefore `fetched_urls`) still carries every seed, and a raw URL
+# naming an entry past this displayed cap still verifies via the #944 raw-URL backstop.
+_SOURCES_SEED_MAX = _SOURCES_PER_CALL_MAX
 
 
 def _sources_block(entries: list[str], *, start: int) -> str:
@@ -999,7 +1008,9 @@ async def run_tool_use_loop(
         # restored transcript already carries whatever the member saw before the pause, and A3
         # keeps the numbering stable by seeding `prior_fetched_urls` first, not by re-announcing it.
         if seed_urls:
-            block = _sources_block(seed_urls, start=1)
+            # M3: the DISPLAYED block is capped; `seed_urls` itself (below, `fetched_urls =
+            # list(seed_urls)`) still carries every seed, uncapped.
+            block = _sources_block(seed_urls[:_SOURCES_SEED_MAX], start=1)
             messages[0] = {**messages[0], "content": f"{user_input}\n\n{block}"}
     # #975: every member reads the marker protocol, tools or not (ruling 5) — appended once, so
     # every turn's `system=` (the loop passes the same string on every iteration) carries it. Only
@@ -1137,7 +1148,12 @@ async def run_tool_use_loop(
         """
         expanded, _ = expand_source_markers(text, fetched_urls)
         check = check_answer_links(expanded, fetched_urls)
-        return strip_unverified_links(expanded, check.unverified) if check.unverified else expanded
+        # security review 5155075040 (M1): strip runs UNCONDITIONALLY, not only `if
+        # check.unverified` — a link whose TARGET verifies but whose LABEL carries a fabricated URL
+        # never appears in `check.unverified` at all (a label is never scanned for the answer's own
+        # URL list), so gating the call on it skipped exactly the shape M1 exists to catch. Passing
+        # `fetched=fetched_urls` is what lets the label be judged on its own terms.
+        return strip_unverified_links(expanded, check.unverified, fetched=fetched_urls)
 
     def _escalate(
         name: str,
@@ -1542,8 +1558,12 @@ async def run_tool_use_loop(
                 # fetched_urls.append(url)` linear scan, which was quadratic in the number of
                 # distinct URLs one tool result could harvest.
                 registered_before = len(fetched_urls)
+                # security review 5155075040 (M2): `arg_urls` FIRST — `web-research.read(url=X)`
+                # returning ok is the strongest evidence this run will ever have that X was fetched,
+                # and registering the page's own (potentially dozens of) body URLs ahead of it meant
+                # the URL the member actually OPENED was never `[S1]`.
                 _accumulate_fetched(
-                    extract_answer_urls(content) + arg_urls, fetched_urls, fetched_urls_seen
+                    arg_urls + extract_answer_urls(content), fetched_urls, fetched_urls_seen
                 )
                 # #975 (A6/A7): show the member the numbers it just earned. Every entry registered
                 # THIS call gets a real `[Sn]` — but only the first `_SOURCES_PER_CALL_MAX` earn a
@@ -1773,10 +1793,12 @@ async def run_tool_use_loop(
                 )
                 continue
             unverified_links = list(link_check.unverified)
-            last_text = (
-                strip_unverified_links(expanded_text, unverified_links)
-                if unverified_links
-                else expanded_text
+            # security review 5155075040 (M1): unconditional, matching `_shipped` above — a
+            # verified-target/fabricated-label link never populates `unverified_links` (the label is
+            # never part of the answer's own URL list), so gating this call on it would ship that
+            # label untouched. `fetched=fetched_urls` lets the label be judged independently.
+            last_text = strip_unverified_links(
+                expanded_text, unverified_links, fetched=fetched_urls
             )
             if unverified_links or unknown_markers:
                 # MAJOR 1 (code-reviewer, PR #977): an unknown-marker-only offence past the
