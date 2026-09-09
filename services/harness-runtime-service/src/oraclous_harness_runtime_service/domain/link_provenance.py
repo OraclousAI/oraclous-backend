@@ -265,7 +265,16 @@ def _canonical(url: str) -> str | None:
 # dangling after the group, which is what let `See [Source](https://evil "ref").` leak) so
 # `_link_target_url` below can recover the link's real target for every one of markdown's several
 # equivalent spellings of the same construct.
-_LINK_TARGET = r"<[^<>]*>(?:\s*(?:\"[^\"]*\"|'[^']*'))?|[^()]*"
+#
+# #975 N1 (security round 2, review 5156136217): the ordinary (non-angle) branch allows ONE level
+# of a balanced, unescaped `(...)` pair inside the target — CommonMark's own destination grammar
+# does too — so `[Source](javascript:alert(1))` still tokenises as ONE link with target
+# `javascript:alert(1)`, rather than the old `[^()]*` splitting it at the first `(` and leaving the
+# real, dangerous target unrecognised as a link at all (and therefore unreachable by N1's
+# fail-closed rule below, which only ever sees a `label`/`target` match to judge). A pair containing
+# a NESTED paren is still not matched by this — the same one-level depth `_trim`'s own balance
+# check already lives with for a bare URL's trailing `)`.
+_LINK_TARGET = r"<[^<>]*>(?:\s*(?:\"[^\"]*\"|'[^']*'))?|(?:[^()]|\([^()]*\))*"
 _STRIP_SCAN = re.compile(
     r"\[(?P<label>[^\[\]]*)\]\((?P<target>" + _LINK_TARGET + r")\)" + "|" + _URL.pattern,
     re.IGNORECASE,
@@ -496,23 +505,52 @@ def _strip_pass(
             target_raw = match.group("target")
             target = _link_target_url(target_raw)
             target_is_url = target.lower().startswith(("http://", "https://"))
-            # security review 5155075040 (B1): judged by the URL's CANONICAL form against the
-            # canonical set of `unverified` — never raw string equality against a token a DIFFERENT
-            # scan produced, which is what let a title, a trailing space, a second adjacent link,
-            # or an angle-bracket-plus-title target leak straight through. A target `_canonical`
-            # itself refuses (userinfo, over-length) has no canonical form to compare, so it also
-            # falls back to the as-written set, matching `check_answer_links`'s report AS WRITTEN.
-            if target_is_url:
-                target_canonical = _canonical(target)
+            target_canonical = _canonical(target) if target_is_url else None
+            if fetched_canonical and target_canonical is None:
+                # #975 N1 (MAJOR, security round 2, review 5156136217): with a registry given —
+                # the loop's own real acceptance path — a target that is not itself a
+                # `_canonical`-accepted http(s) URL can never BE a registry entry, whether it is a
+                # scheme this check refuses outright (`javascript:`, `mailto:`) or a shape a
+                # browser's own more lenient URL parser resolves differently than a naive string
+                # read suggests (`//host/path`, `https:/host/path`, `https:host/path`, a backslash
+                # form). Not a regression — this shipped before too — but fixed the same way as
+                # every other unreadable input this module refuses: fail closed. The WHOLE link
+                # goes, label included — unlike an ordinary fabricated-but-well-formed URL (S4/M1
+                # below still keep that label as plain text), there is nothing here safe to leave
+                # visible, because the raw target may itself carry a differently-encoded working
+                # anchor a naive read would miss entirely (N2, above). The two-argument path
+                # (``fetched`` empty) is unchanged — this rule exists only where the loop's own
+                # registry is available to fail closed against.
+                out.append("")
+            elif target_is_url:
+                # security review 5155075040 (B1): judged by the URL's CANONICAL form against the
+                # canonical set of `unverified` — never raw string equality against a token a
+                # DIFFERENT scan produced, which is what let a title, a trailing space, a second
+                # adjacent link, or an angle-bracket-plus-title target leak straight through. A
+                # target `_canonical` itself refuses (userinfo, over-length) has no canonical form
+                # to compare, so it also falls back to the as-written set, matching
+                # `check_answer_links`'s report AS WRITTEN.
                 target_bad = target in unverified_raw or (
                     target_canonical is not None and target_canonical in unverified_canonical
                 )
+                if target_bad:
+                    # S4: a label that ITSELF carries an http(s) URL takes the whole link with it
+                    # — `[https://fab](https://fab)` stripped to just its label would leave the
+                    # fabricated address on the reader's screen as text, and the console linkifies
+                    # a bare URL right back into an anchor. Ordinary prose in the label survives.
+                    out.append("" if _URL.search(label) else label)
+                elif _label_carries_fabricated_url(label, fetched_canonical):
+                    out.append("")  # M1: verified target, fabricated label — whole link goes
+                else:
+                    out.append(match.group(0))  # a verified (or untouched) link survives intact
             else:
                 # #975 N2 (security round 2, review 5156136217): the target itself is not a URL,
                 # but the raw span between the parens may still CARRY a literal-scheme URL a naive
                 # reader would follow — the same gap `_iter_written_urls` closes for extraction,
                 # mirrored here so a span this tokeniser consumed as a link can never hide, on the
                 # SHIPPED text, what an un-consumed bare-URL scan would already have stripped.
+                # (Only reached with `fetched` empty — a non-empty registry already fails this
+                # whole shape closed above, N1.)
                 target_bad = any(
                     written in unverified_raw
                     or (
@@ -521,16 +559,12 @@ def _strip_pass(
                     for written in (_trim(m.group(0)) for m in _URL.finditer(target_raw))
                     if written
                 )
-            if target_bad:
-                # S4: a label that ITSELF carries an http(s) URL takes the whole link with it —
-                # `[https://fab](https://fab)` stripped to just its label would leave the
-                # fabricated address on the reader's screen as text, and the console linkifies a
-                # bare URL right back into an anchor. Ordinary prose in the label survives as that.
-                out.append("" if _URL.search(label) else label)
-            elif _label_carries_fabricated_url(label, fetched_canonical):
-                out.append("")  # M1: a verified target wearing a fabricated label — whole link goes
-            else:
-                out.append(match.group(0))  # a verified (or untouched) link survives byte-identical
+                if target_bad:
+                    out.append("" if _URL.search(label) else label)
+                elif _label_carries_fabricated_url(label, fetched_canonical):
+                    out.append("")
+                else:
+                    out.append(match.group(0))
         else:
             written = _trim(match.group(0))
             canonical = _canonical(written)
@@ -560,6 +594,23 @@ def strip_unverified_links(
     under target-only judgement, because that URL never appears in ``unverified`` at all (a label is
     never scanned for the answer's own URL list — see ``extract_answer_urls``). Passing the registry
     here is what lets the label be judged too, on its own terms, independent of the target.
+
+    **#975 N1 ruling (security round 2, review 5156136217).** With ``fetched`` given — the loop's
+    real, shipped acceptance path — a link whose target is not itself a ``_canonical``-accepted
+    http(s) URL present in ``fetched`` is dropped WHOLE, label included, regardless of what
+    ``unverified`` says about it: a scheme-relative target (``//host/path``), a malformed-scheme
+    target a browser's own URL parser normalises back to ``https://`` (``https:/host``,
+    ``https:host``), a backslash-as-slash target, and a refused scheme (``javascript:``,
+    ``mailto:``) are none of them ever extractable as an http(s) URL in the first place, so none of
+    them can ever appear in ``unverified`` — a check gated on ``unverified`` membership alone would
+    let every one of them through as a working anchor. This is the shipped path's own fail-closed
+    default, the same posture ``_canonical`` already takes for everything else it cannot read; it
+    is **not** a widening of when an ordinary, well-formed-but-unregistered URL's label survives
+    (S4 above, unchanged) — only a target with no readable http(s) form at all takes its label with
+    it. The **two-argument path** (``fetched`` empty, the default) is unaffected: this rule is
+    reachable only where a real registry exists to fail closed against, matching #944's original
+    ruling that flagging semantics without a registry are `check_answer_links`'s question, not this
+    function's.
 
     Runs to a fixpoint before returning — a nested shape like ``[[Source](url)](url)`` only exposes
     its outer link once the inner one is gone, so one linear scan is not enough on its own.
