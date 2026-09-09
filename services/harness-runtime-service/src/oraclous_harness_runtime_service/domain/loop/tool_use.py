@@ -1772,7 +1772,24 @@ async def run_tool_use_loop(
                 if unverified_links
                 else expanded_text
             )
-            if unverified_links:
+            if unverified_links or unknown_markers:
+                # MAJOR 1 (code-reviewer, PR #977): an unknown-marker-only offence past the
+                # correction bound strips text just like a raw-URL offence does, but used to
+                # leave NO trace at all — the `if unverified_links:` guard never fired when no
+                # raw URL was ever offered, so a reader-facing consumer (the console's #294
+                # warning) had no way to know anything was removed. The `unverified_links`
+                # FIELD stays URLs only (never polluted with marker text); the GATE step's
+                # detail is what names the marker(s). Kept as the existing plain JSON list of
+                # URLs whenever there IS an unverified URL (the read-side DTO,
+                # ``HarnessExecutionOut.unverified_links``, only ever treats a JSON *list* as a
+                # URL list); a marker-only offence records a small object instead, which reads
+                # side correctly resolves to an empty URL list while still naming the marker(s)
+                # for a raw trace reader.
+                detail = (
+                    json.dumps(unverified_links)
+                    if unverified_links
+                    else json.dumps({"unknown_markers": unknown_markers})
+                )
                 # Accepted, and flagged. The detail is the machine-readable list a consumer
                 # reads; the STATUS carries the boolean, because the detail is truncated at
                 # persistence and a reader told nothing because the list would not fit is the
@@ -1783,7 +1800,7 @@ async def run_tool_use_loop(
                         StepKind.GATE,
                         LINK_GATE_NAME,
                         LINK_FLAG_STATUS,
-                        _truncate(json.dumps(unverified_links)),
+                        _truncate(detail),
                     )
                 )
             if retrieval_empty:
