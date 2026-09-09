@@ -301,6 +301,18 @@ def _iter_written_urls(text: str) -> Iterable[str]:
     ``strip_unverified_links``'s ``fetched=`` concern (#975 M1), not this extraction's — reporting
     it here would flag (and spend a correction on) a member that wrote nothing false in its
     answer's own URL list, only in a link's cosmetic display text.
+
+    #975 N2 (security round 2, review 5156136217): a target that does not itself start with
+    ``http(s)://`` is not nothing to this check. ``[S](x https://evil.example/r)`` is not valid
+    CommonMark — its destination is not a URL — so this construct is not a link at all; it renders
+    as literal text carrying the address in full, and GFM autolink literals (what the console
+    actually renders through) turn a bare ``https://`` substring into a working anchor regardless
+    of what surrounds it. The link-first tokenisation above still consumes the whole
+    ``[label](target)`` span (so an adjacent link's own target is never smeared into this one's —
+    B1's fix must not regress), but a target it does not recognise as a URL is then scanned ON ITS
+    OWN — never the label, which stays outside this function's contract per the paragraph above —
+    for any bare literal-scheme URL hiding inside it, so a span the link branch consumed can never
+    hide what the un-consumed bare-URL branch would otherwise have caught.
     """
     for match in _STRIP_SCAN.finditer(text):
         label = match.group("label")
@@ -309,9 +321,15 @@ def _iter_written_urls(text: str) -> Iterable[str]:
             if written:
                 yield written
             continue
-        target = _link_target_url(match.group("target"))
+        target_raw = match.group("target")
+        target = _link_target_url(target_raw)
         if target.lower().startswith(("http://", "https://")):
             yield target
+            continue
+        for embedded in _URL.finditer(target_raw):
+            written = _trim(embedded.group(0))
+            if written:
+                yield written
 
 
 def extract_answer_urls(text: str) -> list[str]:
@@ -475,18 +493,34 @@ def _strip_pass(
         out.append(text[last_end : match.start()])
         label = match.group("label")
         if label is not None:
-            target = _link_target_url(match.group("target"))
+            target_raw = match.group("target")
+            target = _link_target_url(target_raw)
+            target_is_url = target.lower().startswith(("http://", "https://"))
             # security review 5155075040 (B1): judged by the URL's CANONICAL form against the
             # canonical set of `unverified` — never raw string equality against a token a DIFFERENT
             # scan produced, which is what let a title, a trailing space, a second adjacent link,
             # or an angle-bracket-plus-title target leak straight through. A target `_canonical`
             # itself refuses (userinfo, over-length) has no canonical form to compare, so it also
             # falls back to the as-written set, matching `check_answer_links`'s report AS WRITTEN.
-            target_canonical = _canonical(target)
-            target_bad = target.lower().startswith(("http://", "https://")) and (
-                target in unverified_raw
-                or (target_canonical is not None and target_canonical in unverified_canonical)
-            )
+            if target_is_url:
+                target_canonical = _canonical(target)
+                target_bad = target in unverified_raw or (
+                    target_canonical is not None and target_canonical in unverified_canonical
+                )
+            else:
+                # #975 N2 (security round 2, review 5156136217): the target itself is not a URL,
+                # but the raw span between the parens may still CARRY a literal-scheme URL a naive
+                # reader would follow — the same gap `_iter_written_urls` closes for extraction,
+                # mirrored here so a span this tokeniser consumed as a link can never hide, on the
+                # SHIPPED text, what an un-consumed bare-URL scan would already have stripped.
+                target_bad = any(
+                    written in unverified_raw
+                    or (
+                        (canon := _canonical(written)) is not None and canon in unverified_canonical
+                    )
+                    for written in (_trim(m.group(0)) for m in _URL.finditer(target_raw))
+                    if written
+                )
             if target_bad:
                 # S4: a label that ITSELF carries an http(s) URL takes the whole link with it —
                 # `[https://fab](https://fab)` stripped to just its label would leave the
