@@ -1120,3 +1120,113 @@ async def test_an_empty_registry_never_loops_first_pass_strips_and_flags() -> No
     assert _REAL not in (result.output or "")  # stripped, not merely flagged
     assert "See" in (result.output or "")
     assert result.fetched_urls == []
+
+
+# =================================================================================================
+# PR #977 security review (review 5155075040) — fold-in findings, ruled on by the orchestrator
+# 2026-09-09. See `test_link_provenance.py`'s matching section for the pure-function half; these
+# prove the loop actually WIRES the registry into the fix (M1's `fetched=` keyword, M2's harvest
+# order, M3's seed-block cap, m2's registration refusal) — a fixed pure function nothing calls is
+# exactly the gap this whole issue exists to close.
+# =================================================================================================
+
+
+# --- M1: a fabricated label URL on a genuinely verified link never ships --------------------------
+
+
+async def test_a_fabricated_label_url_on_a_verified_target_link_never_ships() -> None:
+    # security review 5155075040 (M1): the loop's own acceptance pass only calls
+    # `strip_unverified_links` `if unverified_links` — and here the LINK'S TARGET verifies (it is
+    # `_REAL`, genuinely fetched), so `unverified_links` is empty and strip is never even called.
+    # The fabricated label ships untouched today. The loop has to pass its own registry through the
+    # new `fetched=` parameter, and run the strip pass even when nothing raw is unverified, or a
+    # verified-target/fabricated-label link sails through this exact gap.
+    fabricated_label = "https://www.okta.com/blog/2023/10/okta-ai-token-costs"
+    answer = f"[{fabricated_label}]({_REAL})"
+    llm = _Scripted(_Scripted.SEARCH, answer)
+    result = await _run(llm, _returning(_REAL))
+    assert result.status is HarnessStatus.SUCCEEDED
+    assert fabricated_label not in (result.output or "")
+    assert result.output == ""
+
+
+# --- M2: the URL the member actually OPENED is registered before its page's own body URLs ---------
+
+
+async def test_the_opened_url_is_registered_before_the_page_bodys_own_urls() -> None:
+    # security review 5155075040 (M2): live harvest order is `extract_answer_urls(content) +
+    # arg_urls` — the page's OWN body URLs register before the URL the member actually opened. A
+    # page that lists 25 unrelated URLs in its body buries the one strongest signal this check has
+    # ("we know this exact address was fetched", the `read(url=X)` argument) behind all 25 of them,
+    # so the opened URL is never `[S1]`.
+    opened = "https://opened.example/target"
+    body_urls = [f"https://body.example/{i}" for i in range(25)]
+    body_text = " ".join(body_urls)
+
+    class _OpenLLM:
+        protocol_shape = "fake"
+
+        def __init__(self) -> None:
+            self.turns = 0
+
+        async def complete(self, *, messages: Any, system: str, tools: list[ToolSpec]) -> Any:
+            self.turns += 1
+            if self.turns == 1:
+                return LLMResponse(
+                    text="reading", tool_calls=[ToolCall("c1", _READ.name, {"url": opened})]
+                )
+            return LLMResponse(text="Costs fell [S1].", tool_calls=[])
+
+    async def dispatch(_spec: ToolSpec, _args: dict[str, Any]) -> dict[str, Any]:
+        return {"text": body_text}
+
+    result = await _run(_OpenLLM(), dispatch)
+    assert result.status is HarnessStatus.SUCCEEDED
+    assert result.fetched_urls[0] == opened  # [S1] must be the URL the member actually opened
+    assert result.output == f"Costs fell [S1](<{opened}>)."
+
+
+# --- M3: the seed SOURCES block shown is capped; registration stays full --------------------------
+
+
+async def test_the_seed_sources_block_shown_is_capped_but_registration_still_covers_entry_300() -> (
+    None
+):
+    # security review 5155075040 (M3): `_sources_block(seed_urls, start=1)` is called with the
+    # WHOLE seed list today — 500 `prior_fetched_urls` puts 500 lines into the very first user
+    # turn. `_SOURCES_PER_CALL_MAX` already caps a single tool result's block (A7, pinned at 20);
+    # the seed block needs its own, equally-sized, equally-named cap — display only, never
+    # registration: a raw URL citing the 300th entry (well past the displayed cap) still verifies.
+    from oraclous_harness_runtime_service.domain.loop.tool_use import _SOURCES_SEED_MAX
+
+    assert _SOURCES_SEED_MAX == 20
+
+    seeds = [f"https://seed.example/{i}" for i in range(500)]
+    entry_300 = seeds[299]  # registry position 300 (1-based) — well past the displayed cap
+    llm = _CapturingScripted(f"See {entry_300} directly.")
+    result = await _run(llm, specs=[], prior_fetched_urls=seeds)
+    assert result.status is HarnessStatus.SUCCEEDED
+    user_message = next(m for m in llm.last_messages if m.get("role") == "user")
+    shown_lines = [ln for ln in user_message["content"].splitlines() if ln.startswith("[S")]
+    assert len(shown_lines) <= _SOURCES_SEED_MAX
+    assert result.fetched_urls == seeds  # the registry itself still holds everything
+    assert result.output == f"See {entry_300} directly."  # the raw-URL backstop still verifies it
+    assert result.unverified_links == []
+
+
+# --- m2: a poisoned `prior_fetched_urls` entry is never registered, citing it is unknown ----------
+
+
+async def test_a_poisoned_prior_fetched_url_is_never_registered_and_citing_it_is_unknown() -> None:
+    # security review 5155075040 (m2): today's `_canonical` accepts a `>`-bearing seed, so it earns
+    # a real `[S1]` and expands into a CommonMark angle-bracket target whose own `>` closes early —
+    # the rest of the poisoned string is read back as live markdown, reopening a phishing link the
+    # registration gate exists to keep out entirely.
+    poison = "https://real.example/>)[click](https://evil.example/phish)"
+    llm = _Scripted("Read [S1].")
+    result = await _run(llm, specs=[], prior_fetched_urls=[poison])
+    assert result.status is HarnessStatus.SUCCEEDED
+    assert poison not in result.fetched_urls
+    assert result.fetched_urls == []
+    assert "evil" not in (result.output or "")
+    assert "[S1]" not in (result.output or "")
