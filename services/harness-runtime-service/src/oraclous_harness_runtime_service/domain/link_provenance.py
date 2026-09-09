@@ -559,13 +559,13 @@ def _strip_pass(
                 # resolves differently than a naive string read suggests (`//host/path`,
                 # `https:/host/path`, `https:host/path`, a backslash form). Not a regression — this
                 # shipped before too — but fixed the same way as every other unreadable input this
-                # module refuses: fail closed. The WHOLE link goes, label included — unlike an
-                # ordinary fabricated-but-well-formed URL (S4/M1 below still keep that label as
-                # plain text), there is nothing here safe to leave visible, because the raw target
-                # may itself carry a differently-encoded working anchor a naive read would miss
-                # entirely (N2, above). The two-argument path (``fetched=None``) is unchanged —
-                # this rule exists only where the loop's own registry is available to fail closed
-                # against.
+                # module refuses: fail closed. The WHOLE link goes, label included — issue #991
+                # (owner ruling, 2026-09-09) made that the outcome for every strip decision in this
+                # function, not only this one, because there is nothing here safe to leave visible:
+                # the raw target may itself carry a differently-encoded working anchor a naive read
+                # would miss entirely (N2, above). The two-argument path (``fetched=None``) is
+                # unaffected by THIS branch specifically (it never reaches registry-mode-only code),
+                # but shares the same whole-link-goes outcome below.
                 piece = ""
             elif target_is_url:
                 # security review 5155075040 (B1): judged by the URL's CANONICAL form against the
@@ -613,11 +613,14 @@ def _strip_pass(
                 if hidden_bad:
                     piece = ""
                 elif target_bad:
-                    # S4: a label that ITSELF carries an http(s) URL takes the whole link with it
-                    # — `[https://fab](https://fab)` stripped to just its label would leave the
-                    # fabricated address on the reader's screen as text, and the console linkifies
-                    # a bare URL right back into an anchor. Ordinary prose in the label survives.
-                    piece = "" if _URL.search(label) else label
+                    # Issue #991 (owner ruling, 2026-09-09): a stripped link takes its whole LABEL
+                    # with it too, not just an unverified target. A label left behind as plain text
+                    # — `[Source](https://fab)` -> `Source` — still reads as dead text once its link
+                    # is gone, and the console rendered that leftover word as its own bullet,
+                    # duplicating the real story (run 57eb8029, "Daily AI News Digest"). S4's rule
+                    # (a label carrying a URL takes the whole link with it) is now the general rule
+                    # for every strip decision here, not only that one shape.
+                    piece = ""
                 elif _label_carries_fabricated_url(label, fetched_canonical):
                     piece = ""  # M1: verified target, fabricated label — whole link goes
                 else:
@@ -639,7 +642,9 @@ def _strip_pass(
                     if written
                 )
                 if target_bad:
-                    piece = "" if _URL.search(label) else label
+                    # Issue #991 (owner ruling, 2026-09-09): the whole link goes, label included —
+                    # see the parallel comment on the URL-target branch above.
+                    piece = ""
                 elif _label_carries_fabricated_url(label, fetched_canonical):
                     piece = ""
                 else:
@@ -685,13 +690,17 @@ def strip_unverified_links(
     text: str, unverified: Collection[str], *, fetched: Collection[str] | None = None
 ) -> str:
     """Remove every occurrence of each URL in ``unverified`` (``LinkCheckResult.unverified`` — the
-    answer's URLs AS WRITTEN) from ``text``. A markdown link loses its target and keeps its label as
-    plain text, unless the label itself carries an http(s) URL, in which case the whole link goes
-    (S4); a bare URL is removed in place, any trailing sentence punctuation `_trim` would have
-    shaved off left untouched. Span-based, never ``str.replace`` (T7: stripping ``…/a`` must never
-    damage the longer ``…/ab``). A link/bare-URL is judged by the CANONICAL form of the URL(s) it
-    actually carries, never by raw string equality against a token a different scan produced
-    (security review 5155075040, B1).
+    answer's URLs AS WRITTEN) from ``text``. **Issue #991 ruling (owner, 2026-09-09): a markdown
+    link that gets stripped loses its label too — the whole link goes, never just the target.** A
+    label left behind as plain text (``[Source](https://fab)`` -> ``Source``) is still dead text
+    once its link is gone, and shipped that way it duplicated a story on the console (one bullet for
+    the dead-text line, one for the un-linked draft it came from). S4's rule — a label carrying an
+    http(s) URL takes the whole link with it — is now simply the rule, not a narrower exception to
+    "label survives". A bare URL (no markdown link around it) is removed in place, any trailing
+    sentence punctuation `_trim` would have shaved off left untouched. Span-based, never
+    ``str.replace`` (T7: stripping ``…/a`` must never damage the longer ``…/ab``). A link/bare-URL
+    is judged by the CANONICAL form of the URL(s) it actually carries, never by raw string equality
+    against a token a different scan produced (security review 5155075040, B1).
 
     ``fetched`` — the run's full registry, keyword-only, defaulting to ``None`` — is #975 M1: a link
     whose TARGET verifies but whose LABEL carries a different, unregistered URL ships untouched
@@ -716,10 +725,10 @@ def strip_unverified_links(
     ever extractable as an http(s) URL in the first place, so none of them can ever appear in
     ``unverified`` — a check gated on ``unverified`` membership alone would let every one of them
     through as a working anchor. This is the shipped path's own fail-closed default, the same
-    posture ``_canonical`` already takes for everything else it cannot read; it is **not** a
-    widening of when an ordinary, well-formed-but-unregistered URL's label survives (S4 above,
-    unchanged) — only a target with no readable http(s) form at all takes its label with it. The
-    two-argument path (``fetched=None``) is unaffected: this rule is reachable only where a real
+    posture ``_canonical`` already takes for everything else it cannot read — and since #991, an
+    ordinary well-formed-but-unregistered URL's link is dropped whole the same way (S4 is now the
+    general rule), so this N1 case was never a special widening to begin with. The two-argument path
+    (``fetched=None``) is unaffected by N1/N5 specifically: this rule is reachable only where a real
     registry exists (even an empty one) to fail closed against, matching #944's original ruling
     that flagging semantics without a registry are `check_answer_links`'s question, not this
     function's.
