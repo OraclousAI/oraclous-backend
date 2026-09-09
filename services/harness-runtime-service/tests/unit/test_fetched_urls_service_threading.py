@@ -156,6 +156,7 @@ def _stub_loop(
     fetched_urls: list[str] | None = None,
     status: str = "SUCCEEDED",
     error_type: str | None = None,
+    error_message: str | None = None,
     checkpoint: Any = None,
 ) -> None:
     from oraclous_harness_runtime_service.models.enums import HarnessStatus
@@ -166,7 +167,7 @@ def _stub_loop(
         return SimpleNamespace(
             status=HarnessStatus(status),
             error_type=error_type,
-            error_message=None,
+            error_message=error_message,
             checkpoint=checkpoint,
             output="done",
             steps=[],
@@ -345,4 +346,38 @@ async def test_person_supplied_text_is_never_logged(
         )  # TypeError today: execute() accepts no such kwarg
     assert sentinel not in caplog.text
     assert sentinel not in (row.output or "")
+    assert all(sentinel not in str(step) for step in row.steps)
+
+
+async def test_person_supplied_text_is_never_logged_or_surfaced_on_a_failed_run(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    # MINOR 1 (be-test-reviewer, PR #976): the test above only proves S7 on the SUCCEEDED path.
+    # Drive a FAILED run the same way the ESCALATED-path neighbour above
+    # (`test_execute_persists_fetched_urls_on_the_escalate_pause_path`) drives its status —
+    # `_stub_loop` with a non-SUCCEEDED status — and prove the sentinel is absent everywhere a
+    # failed run narrates itself: the caplog record, the persisted `error_message`, and every
+    # step's detail.
+    sentinel = "SENTINEL-do-not-leak-on-failure-a91cf76e"
+    captured: dict[str, Any] = {}
+    _stub_loop(
+        monkeypatch,
+        captured,
+        status="FAILED",
+        error_type="model_unavailable",
+        error_message="the model endpoint is unreachable",
+    )
+    execs = _FakeExecutions()
+    svc = _service(execs)
+    with caplog.at_level(logging.DEBUG):
+        row = await svc.execute(
+            manifest_inline=_manifest(),
+            manifest_ref=None,
+            user_input="go",
+            principal=_principal(),
+            person_supplied_text=sentinel,
+        )  # TypeError today: execute() accepts no such kwarg
+    assert row.status == "FAILED"
+    assert sentinel not in caplog.text
+    assert sentinel not in (row.error_message or "")
     assert all(sentinel not in str(step) for step in row.steps)

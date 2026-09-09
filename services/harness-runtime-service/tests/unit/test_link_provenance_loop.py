@@ -64,6 +64,7 @@ existing function.
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 import pytest
@@ -786,6 +787,25 @@ async def test_a_url_inside_person_supplied_text_is_a_citable_registry_seed() ->
     assert result.output == f"As requested, see [S1](<{_REAL}>)."
 
 
+async def test_seed_order_is_person_then_prior_then_harvested_composed_all_three_at_once() -> None:
+    # MINOR 2 (be-test-reviewer, PR #976): the seed-order ruling (person-supplied first, then prior
+    # entries, then the member's own harvests) is only ever proven pairwise elsewhere in this file —
+    # `test_fetched_urls_is_populated_on_a_degrade_terminal` proves prior-then-harvest,
+    # `test_a_url_inside_person_supplied_text_is_a_citable_registry_seed` proves person-supplied
+    # alone. A wrong implementation that puts `prior_fetched_urls` ahead of `person_supplied_text`
+    # would still pass every existing test in this file, so compose all three sources together.
+    person_seed = "https://person.test/seed-doc"
+    llm = _Scripted(_Scripted.SEARCH, "No further links needed.")
+    result = await _run(
+        llm,
+        _returning(_REAL),
+        person_supplied_text=f"See {person_seed} for background.",
+        prior_fetched_urls=[_ALSO_REAL],
+    )
+    assert result.status is HarnessStatus.SUCCEEDED
+    assert result.fetched_urls == [person_seed, _ALSO_REAL, _REAL]
+
+
 # --- the raw-URL backstop hardens: stripped, never shipped intact (ruling 2) ----------------------
 
 
@@ -1000,6 +1020,42 @@ async def test_sources_lines_sit_before_the_receipt_line_in_the_tool_result_mess
     content = tool_message["content"]
     assert f"[S1] {_REAL}" in content
     assert content.index(f"[S1] {_REAL}") < content.index("\n[receipt: ")
+
+
+async def test_a_sources_line_carries_nothing_but_the_marker_and_the_url() -> None:
+    # MINOR 1 (be-test-reviewer, PR #976): the test above only asserts the `[S1] <url>` substring
+    # is present and precedes the receipt — it never proves S6's other half, that a SOURCES line
+    # is ONLY `[Sn] <url>` and never leaks the page title/snippet a tool result actually carries.
+    # Script a result with a distinctive title AND snippet and prove neither survives into a
+    # SOURCES line, while both are still visible earlier in the same tool-content string (S6:
+    # "no other text from the tool result").
+    title = "Cloud inference costs keep falling"
+    snippet = "Providers cut per-token pricing for the third quarter running."
+
+    async def dispatch(_spec: Any, _args: dict[str, Any]) -> dict[str, Any]:
+        return {"results": [{"title": title, "url": _REAL, "snippet": snippet}]}
+
+    llm = _CapturingScripted(_Scripted.SEARCH, "no links here")
+    result = await _run(llm, dispatch)
+    assert result.status is HarnessStatus.SUCCEEDED
+
+    tool_message = next(m for m in llm.last_messages if m.get("role") == "tool")
+    content = tool_message["content"]
+    source_lines = [ln for ln in content.splitlines() if ln.startswith("[S")]
+    assert source_lines  # the block really has at least one numbered line
+
+    for line in source_lines:
+        assert re.fullmatch(r"\[S\d+\] https?://\S+", line), line  # nothing but marker + url
+
+    # the title/snippet appear somewhere in the tool content (the raw result, pre-SOURCES-block) —
+    # but never inside a SOURCES line itself, and strictly before the block starts.
+    assert title in content
+    assert snippet in content
+    assert all(title not in line for line in source_lines)
+    assert all(snippet not in line for line in source_lines)
+    first_source_index = content.index(source_lines[0])
+    assert content.index(title) < first_source_index
+    assert content.index(snippet) < first_source_index
 
 
 async def test_the_per_call_sources_cap_holds() -> None:

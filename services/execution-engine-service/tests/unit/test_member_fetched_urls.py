@@ -222,6 +222,29 @@ async def test_person_supplied_text_with_no_task_or_answers_is_empty_not_omitted
     assert harness.calls["solo"].get("person_supplied_text") == ""
 
 
+async def test_person_supplied_text_over_the_cap_is_truncated_head_preserving_before_send() -> None:
+    # MAJOR 1 (be-test-reviewer, PR #976), ruled by the orchestrator for this PR: confirmed answers
+    # and hypotheses are unbounded intake text, but the harness-runtime schema caps
+    # `ExecuteHarnessRequest.person_supplied_text` at 8000 chars
+    # (test_fetched_urls_request_schema.py) and would 422 a longer body. The ENGINE truncates the
+    # composed text HEAD-PRESERVING to that same cap before ever calling `HarnessClient.execute()`,
+    # so a long intake never makes every member fail. Accepted cost: a URL that starts past the cap
+    # is not a citable registry seed for this run.
+    from oraclous_execution_engine_service.services.team_run import _PERSON_SUPPLIED_TEXT_MAX
+
+    assert _PERSON_SUPPLIED_TEXT_MAX == 8000  # the same number the schema names (T4's pin)
+
+    long_task = "T" * 9000
+    manifest = _task_team([_m("p"), _m("q", depends_on=["p"])])
+    harness = _RecordingHarness()
+    await run_team_harness(manifest, harness, inputs={"task": long_task})
+
+    expected = long_task[:8000]
+    assert len(expected) == 8000
+    assert harness.calls["p"].get("person_supplied_text") == expected  # the entrypoint too
+    assert harness.calls["q"].get("person_supplied_text") == expected  # and every downstream member
+
+
 # ── 4. results lift survives a gate-resume rebuild without re-dispatching (A4) ─────────────────
 
 
