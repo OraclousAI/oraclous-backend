@@ -43,6 +43,7 @@ flag ordinary writing.
 
 from __future__ import annotations
 
+import bisect
 import re
 from collections.abc import Collection, Iterable
 from dataclasses import dataclass, field
@@ -168,6 +169,18 @@ def _fold_percent_escapes(value: str) -> str:
     return _PERCENT_ESCAPE.sub(lambda m: m.group(0).upper(), value)
 
 
+# security review 5155075040 (m2), PoC Area 4: a registry entry is never something a reader sees
+# raw — it is rendered inside a CommonMark angle-bracket target (`expand_source_markers`'s `<…>`)
+# specifically BECAUSE that shape cannot be broken out of by `(`, `)` or `[`. A `>` inside the
+# entry itself closes that bracket early regardless, and the rest of the string is read back as
+# fresh, live markdown — `https://real.example/>)[click](https://evil.example/phish)` reopens the
+# phishing shape the angle-bracket form exists to close off. Whitespace and control characters are
+# refused for the same reason a bare URL can never contain them (`_URL`'s own char class already
+# excludes them from anything EXTRACTED from text) — a registry entry arrives as a caller-supplied
+# string, never extracted, so nothing upstream of this function already enforces it.
+_FORBIDDEN_URL_CHARS = re.compile(r"[<>\s\x00-\x1f\x7f]")
+
+
 def _canonical(url: str) -> str | None:
     """The comparable form of one URL, or None when it is not a link this check reads.
 
@@ -179,6 +192,8 @@ def _canonical(url: str) -> str | None:
     # answer's own URL list) but never CANONICALISED — it fails closed to unverified rather than
     # being silently truncated into a prefix and verified as if that prefix were the whole address.
     if len(url) > _MAX_URL_LENGTH:
+        return None
+    if _FORBIDDEN_URL_CHARS.search(url):
         return None
     try:
         parts = urlsplit(url)
@@ -238,17 +253,77 @@ def _canonical(url: str) -> str | None:
     return f"{scheme}://{authority}{path}{query}"
 
 
+# ``[label](target)`` in EITHER CommonMark shape — a plain target or an angle-bracket one, each
+# optionally followed by a quoted title — matched as ONE construct per pass so nested link shapes
+# (`[[Source](url)](url)`) resolve from the inside out across repeated passes, the same way the
+# label class excluding `[`/`]` keeps a regex engine from ever matching more than the innermost
+# well-formed link. Combined with the bare-URL pattern in one alternation so a single scan handles
+# both shapes without either double-matching a URL that sits inside a link's own target or missing
+# one that does not.
+#
+# security review 5155075040 (B1): the title is captured INSIDE the target group (rather than left
+# dangling after the group, which is what let `See [Source](https://evil "ref").` leak) so
+# `_link_target_url` below can recover the link's real target for every one of markdown's several
+# equivalent spellings of the same construct.
+_LINK_TARGET = r"<[^<>]*>(?:\s*(?:\"[^\"]*\"|'[^']*'))?|[^()]*"
+_STRIP_SCAN = re.compile(
+    r"\[(?P<label>[^\[\]]*)\]\((?P<target>" + _LINK_TARGET + r")\)" + "|" + _URL.pattern,
+    re.IGNORECASE,
+)
+
+
+def _link_target_url(target_raw: str) -> str:
+    """The link's real, as-written target — a CommonMark title and any surrounding whitespace
+    removed, and an angle-bracket wrapper (if the model wrote one) stripped (#975 B1, security
+    review 5155075040). ``[Source](https://x "title")``, ``[Source](https://x )`` and
+    ``[Source](<https://x> "title")`` all report the identical target ``https://x`` — the string a
+    bare-URL scan of the same address would report — so a fabricated target can never dodge the
+    check just by picking a different one of markdown's equivalent spellings for the same link.
+    """
+    stripped = target_raw.strip()
+    if stripped.startswith("<"):
+        end = stripped.find(">")
+        return stripped[1:end] if end != -1 else stripped
+    title = re.search(r"""\s+(?:"[^"]*"|'[^']*')\s*$""", stripped)
+    return stripped[: title.start()].strip() if title else stripped
+
+
+def _iter_written_urls(text: str) -> Iterable[str]:
+    """Walk ``text`` left to right, tokenising ``[label](target)`` spans FIRST (#975 B1, security
+    review 5155075040): a link's own target is read within the link's own boundaries — trimmed of an
+    optional CommonMark title and surrounding whitespace — never re-scanned as a free-floating bare
+    URL past its own closing paren, which is what let a link immediately followed by ordinary prose
+    (no separating space), two adjacent links, or a titled/angle-bracket target report the WRONG
+    string as the link's target. Whatever the link branch does not consume — everything outside a
+    ``[label](target)`` span — is scanned by the bare-URL branch exactly as before.
+
+    A label is never scanned for a URL here: a fabricated LABEL on an otherwise-verified link is
+    ``strip_unverified_links``'s ``fetched=`` concern (#975 M1), not this extraction's — reporting
+    it here would flag (and spend a correction on) a member that wrote nothing false in its
+    answer's own URL list, only in a link's cosmetic display text.
+    """
+    for match in _STRIP_SCAN.finditer(text):
+        label = match.group("label")
+        if label is None:
+            written = _trim(match.group(0))
+            if written:
+                yield written
+            continue
+        target = _link_target_url(match.group("target"))
+        if target.lower().startswith(("http://", "https://")):
+            yield target
+
+
 def extract_answer_urls(text: str) -> list[str]:
     """Every http(s) URL occurring in ``text``, as written, first-seen order, deduplicated.
 
-    Every regex match is reported — there is no longer a lenient pre-filter that can silently drop
-    one (#944 review round 3, policy point). The regex only ever matches something starting with
-    ``https?://``, so anything it finds is a link this module exists to catch; whether it is one the
-    run actually fetched is `_canonical`'s question, not extraction's, and something `_canonical`
-    refuses (userinfo, an unencodable host, an over-length match) is not junk prose to be dropped —
-    it is exactly the shape that must come back UNVERIFIED rather than vanish. Silently dropping it
-    here was the same mistake HIGH-A and MEDIUM-G each made in their own way: a control whose
-    default for "I cannot parse this" was a skip rather than a warning.
+    Every candidate is reported — there is no longer a lenient pre-filter that can silently drop
+    one (#944 review round 3, policy point). Whether a candidate is one the run actually fetched
+    is `_canonical`'s question, not extraction's, and something `_canonical` refuses (userinfo, an
+    unencodable host, an over-length match) is not junk prose to be dropped — it is exactly the
+    shape that must come back UNVERIFIED rather than vanish. Silently dropping it here was the
+    same mistake HIGH-A and MEDIUM-G each made in their own way: a control whose default for "I
+    cannot parse this" was a skip rather than a warning.
 
     Deduplication is by CANONICAL form when one exists; a URL ``_canonical`` refuses dedupes on its
     own written form instead — it still has to appear in the output, just without the benefit of
@@ -258,10 +333,7 @@ def extract_answer_urls(text: str) -> list[str]:
     """
     out: list[str] = []
     seen: set[str] = set()
-    for match in _URL.finditer(text or ""):
-        written = _trim(match.group(0))
-        if not written:
-            continue  # `_trim` reduced it to nothing — not a link the answer actually wrote
+    for written in _iter_written_urls(text or ""):
         key = _canonical(written) or written
         if key in seen:
             continue
@@ -294,7 +366,21 @@ _FENCE = re.compile(r"```.*?```", re.DOTALL)
 
 
 def _inside_any(pos: int, spans: list[tuple[int, int]]) -> bool:
-    return any(start <= pos < end for start, end in spans)
+    """Whether ``pos`` falls inside one of ``spans``.
+
+    O(log n) via bisect (#975 m1, security review 5155075040 Area 7): ``spans`` comes straight from
+    ``re.finditer``, which always yields non-overlapping matches in increasing start order, so it is
+    sorted by construction — a fact this takes advantage of rather than re-deriving. The previous
+    linear scan cost this once PER CANDIDATE MARKER, making the whole pass O(n*m) in the number of
+    markers times URL/fence spans in the text; measured at 1.79s for 8000 interleaved
+    ``https://a.example/p [S1]`` pairs. A crafted page a member's tool reads is attacker-supplied
+    text with no bound on how many of each it can interleave.
+    """
+    idx = bisect.bisect_right(spans, pos, key=lambda span: span[0]) - 1
+    if idx < 0:
+        return False
+    start, end = spans[idx]
+    return start <= pos < end
 
 
 def expand_source_markers(text: str, registry: Collection[str]) -> tuple[str, list[int]]:
@@ -361,61 +447,94 @@ def expand_source_markers(text: str, registry: Collection[str]) -> tuple[str, li
     return "".join(out), unknown
 
 
-# ``[label](target)`` in EITHER commonmark shape — a plain target or an angle-bracket one — matched
-# as ONE construct per pass so nested link shapes (`[[Source](url)](url)`) resolve from the inside
-# out across repeated passes, the same way the label class excluding `[`/`]` keeps a regex engine
-# from ever matching more than the innermost well-formed link. Combined with the bare-URL pattern in
-# one alternation so a single left-to-right scan handles both shapes without either double-matching
-# a URL that sits inside a link's own target or missing one that does not.
-_STRIP_SCAN = re.compile(
-    r"\[(?P<label>[^\[\]]*)\]\((?P<target><[^<>]*>|[^()]*)\)" + "|" + _URL.pattern,
-    re.IGNORECASE,
-)
+def _label_carries_fabricated_url(label: str, fetched_canonical: set[str]) -> bool:
+    """#975 M1 (security review 5155075040): does ``label`` itself carry an http(s) URL whose
+    canonical form is not a registered entry? The TARGET of a link is what ``check_answer_links``
+    already judges; the LABEL is what a reader actually SEES, and a member can write
+    ``[https://fabricated](https://really-fetched)`` — a genuinely verified target wearing a
+    fabricated address as its display text — which ships untouched if only the target is ever
+    checked. An entry ``_canonical`` itself refuses is treated as fabricated (fail closed): it is
+    not a registered address either way.
+    """
+    for raw in (m.group(0) for m in _URL.finditer(label)):
+        canonical = _canonical(_trim(raw))
+        if canonical is None or canonical not in fetched_canonical:
+            return True
+    return False
 
 
-def _strip_pass(text: str, unverified: set[str]) -> str:
+def _strip_pass(
+    text: str,
+    unverified_raw: set[str],
+    unverified_canonical: set[str],
+    fetched_canonical: set[str],
+) -> str:
     out: list[str] = []
     last_end = 0
     for match in _STRIP_SCAN.finditer(text):
         out.append(text[last_end : match.start()])
         label = match.group("label")
         if label is not None:
-            target_raw = match.group("target")
-            target = (
-                target_raw[1:-1]
-                if target_raw.startswith("<") and target_raw.endswith(">")
-                else target_raw
+            target = _link_target_url(match.group("target"))
+            # security review 5155075040 (B1): judged by the URL's CANONICAL form against the
+            # canonical set of `unverified` — never raw string equality against a token a DIFFERENT
+            # scan produced, which is what let a title, a trailing space, a second adjacent link,
+            # or an angle-bracket-plus-title target leak straight through. A target `_canonical`
+            # itself refuses (userinfo, over-length) has no canonical form to compare, so it also
+            # falls back to the as-written set, matching `check_answer_links`'s report AS WRITTEN.
+            target_canonical = _canonical(target)
+            target_bad = target.lower().startswith(("http://", "https://")) and (
+                target in unverified_raw
+                or (target_canonical is not None and target_canonical in unverified_canonical)
             )
-            if target in unverified:
+            if target_bad:
                 # S4: a label that ITSELF carries an http(s) URL takes the whole link with it —
                 # `[https://fab](https://fab)` stripped to just its label would leave the
                 # fabricated address on the reader's screen as text, and the console linkifies a
                 # bare URL right back into an anchor. Ordinary prose in the label survives as that.
                 out.append("" if _URL.search(label) else label)
+            elif _label_carries_fabricated_url(label, fetched_canonical):
+                out.append("")  # M1: a verified target wearing a fabricated label — whole link goes
             else:
                 out.append(match.group(0))  # a verified (or untouched) link survives byte-identical
         else:
             written = _trim(match.group(0))
-            out.append(match.group(0)[len(written) :] if written in unverified else match.group(0))
+            canonical = _canonical(written)
+            bad = written in unverified_raw or (
+                canonical is not None and canonical in unverified_canonical
+            )
+            out.append(match.group(0)[len(written) :] if bad else match.group(0))
         last_end = match.end()
     out.append(text[last_end:])
     return "".join(out)
 
 
-def strip_unverified_links(text: str, unverified: Collection[str]) -> str:
+def strip_unverified_links(
+    text: str, unverified: Collection[str], *, fetched: Collection[str] = ()
+) -> str:
     """Remove every occurrence of each URL in ``unverified`` (``LinkCheckResult.unverified`` — the
     answer's URLs AS WRITTEN) from ``text``. A markdown link loses its target and keeps its label as
     plain text, unless the label itself carries an http(s) URL, in which case the whole link goes
     (S4); a bare URL is removed in place, any trailing sentence punctuation `_trim` would have
-    shaved off left untouched. Span-based over the same URL candidates ``extract_answer_urls``
-    reads, never ``str.replace`` (T7: stripping ``…/a`` must never damage the longer ``…/ab``).
+    shaved off left untouched. Span-based, never ``str.replace`` (T7: stripping ``…/a`` must never
+    damage the longer ``…/ab``). A link/bare-URL is judged by the CANONICAL form of the URL(s) it
+    actually carries, never by raw string equality against a token a different scan produced
+    (security review 5155075040, B1).
+
+    ``fetched`` — the run's full registry, keyword-only, defaulting to empty — is #975 M1: a link
+    whose TARGET verifies but whose LABEL carries a different, unregistered URL ships untouched
+    under target-only judgement, because that URL never appears in ``unverified`` at all (a label is
+    never scanned for the answer's own URL list — see ``extract_answer_urls``). Passing the registry
+    here is what lets the label be judged too, on its own terms, independent of the target.
 
     Runs to a fixpoint before returning — a nested shape like ``[[Source](url)](url)`` only exposes
     its outer link once the inner one is gone, so one linear scan is not enough on its own.
     """
-    if not text or not unverified:
+    if not text or (not unverified and not fetched):
         return text
-    unverified_set = set(unverified)
+    unverified_raw = set(unverified)
+    unverified_canonical = canonical_urls(unverified)
+    fetched_canonical = canonical_urls(fetched)
     # MINOR (code-reviewer, PR #977): terminates because every pass either strictly SHORTENS the
     # text (a stripped label/target/URL always removes at least one character) or makes NO CHANGE
     # at all, in which case the loop returns immediately — it can never cycle between two distinct
@@ -423,7 +542,7 @@ def strip_unverified_links(text: str, unverified: Collection[str]) -> str:
     # (monotonically shrinking) text, so the pass count is finite even for a pathologically nested
     # shape like `[[[Source](url)](url)](url)`.
     while True:
-        stripped = _strip_pass(text, unverified_set)
+        stripped = _strip_pass(text, unverified_raw, unverified_canonical, fetched_canonical)
         if stripped == text:
             return text
         text = stripped
