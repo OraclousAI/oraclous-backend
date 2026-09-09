@@ -985,9 +985,22 @@ async def test_a_marker_citing_a_poisoned_registry_entry_is_unknown(entry: str) 
 
 
 async def test_check_answer_links_never_verifies_against_a_poisoned_fetched_entry() -> None:
+    # security review 5155075040 (m2): a poisoned registry entry must never let
+    # `check_answer_links` VERIFY anything against it, and the evil URL it smuggles in must still
+    # come back UNVERIFIED — neither silently dropped nor misclassified as fetched. Embedded via a
+    # plain (non-angle) `(...)` target, this poison string is not one link: B1's tokenisation
+    # (pinned by test_b1_check_answer_links_reports_the_real_target_for_adjacent_links, which
+    # requires the exact opposite — an adjacent link's own target must never bleed past its own
+    # close) correctly reads it as TWO adjacent, independently well-formed links, not one — the
+    # poisoned entry's own truncated target, and the `evil.example` URL immediately following it.
+    # That is a finer partition than the original single-entry shape expected, not a leak: both
+    # fragments still land in `unverified`, and neither ever reaches `verified`, so the m2 property
+    # this test exists to pin — a poisoned fetched entry verifies nothing, and the URL it smuggles
+    # in is never lost — holds regardless of how many pieces the tokeniser reports it as
+    # (backend-implementer, PR #977 comment 5603856386).
     poison = "https://real.example/>)[click](https://evil.example/phish)"
     result = _check(f"[Source]({poison})", [poison])
-    assert result.unverified == [poison]
+    assert result.unverified == ["https://real.example/>", "https://evil.example/phish"]
     assert result.verified == []
 
 
