@@ -285,6 +285,44 @@ def _clean_fetched_urls(raw: Any) -> list[str]:
     return cleaned[:_MAX_MEMBER_FETCHED_URLS]
 
 
+# #989 (owner-approved 2026-09-09, supersedes the #975 direct-upstream-only composition). Live run
+# 57eb8029 ("Daily AI News Digest": researcher -> synthesizer -> linker) showed the gap: the
+# tool-less synthesizer's own contribution is empty, so the linker — seeded from its DIRECT upstream
+# only — got an empty registry and never saw the researcher's real URLs, two hops up. A member's
+# citable seed is now the union of the contributions of ALL its ancestors, transitive over
+# ``depends_on``, not only its direct upstreams.
+def _ancestor_roles(members: Sequence[OHMMember]) -> dict[str, list[str]]:
+    """For every role in ``members``, the FULL set of roles it transitively depends on (its
+    ancestors), ordered by MANIFEST DECLARATION ORDER — the role's position in ``members`` — never
+    edge-traversal order (A5/T11 unchanged: this is what makes ``d``'s composed seed put ``a``
+    before ``b`` before ``c`` regardless of which upstream finished first, or which edge is walked
+    first).
+
+    Cycle-safe: a genuine loop's members (ADR-043) declare intra-loop ``depends_on`` edges among
+    themselves, so the traversal below tracks ``seen`` per role and never revisits a role already in
+    that role's own closure — a cycle simply stops expanding rather than recursing forever. This is
+    the SAME ``by_role``/``depends_on`` structure ``_condense`` reads (the pre-condensing, real
+    manifest), so a loop member's ancestors correctly include everything upstream of the loop as a
+    whole, not only its condensed inter-SCC edge."""
+    by_role = {m.role: m for m in members}
+    declared_order = [m.role for m in members]
+
+    def _closure(role: str) -> set[str]:
+        seen: set[str] = set()
+        stack = list(by_role[role].depends_on) if role in by_role else []
+        while stack:
+            dep = stack.pop()
+            if dep in seen:
+                continue
+            seen.add(dep)
+            if dep in by_role:
+                stack.extend(by_role[dep].depends_on)
+        return seen
+
+    closures = {role: _closure(role) for role in by_role}
+    return {role: [r for r in declared_order if r in closures[role]] for role in by_role}
+
+
 def _person_supplied_text(
     task: str | None,
     answers: tuple[list[dict[str, Any]], list[dict[str, Any]]] | None,
@@ -579,6 +617,7 @@ def make_harness_dispatch(
     answers: tuple[list[dict[str, Any]], list[dict[str, Any]]] | None = None,
     required_sites: list[str] | None = None,
     contributions: dict[str, list[str]] | None = None,
+    ancestors: dict[str, list[str]] | None = None,
     person_supplied_text: str = "",
 ) -> DispatchFn:
     """Build a ``run_team`` dispatch that runs each member as a real harness execution.
@@ -589,6 +628,12 @@ def make_harness_dispatch(
     (#828 item 4) — so the engine records the tree.
     O4 metering (#472): each member's ``total_tokens`` is surfaced via ``on_cost`` so the engine
     accumulates the run's RAW token cost from the harness's own metering (ADR-009).
+
+    ``ancestors`` (#989) is the role -> ordered-ancestor-roles map (``_ancestor_roles``), computed
+    ONCE from the manifest and passed by every caller — a member's citable seed is composed from
+    ALL of it, not only its direct upstreams (the #975 gap a chain deeper than two exposed live).
+    ``None``/missing entry composes an empty seed (no ancestors known), matching a caller that has
+    not been updated (a direct unit test of this factory with no manifest to derive from).
 
     ``contributions`` (#975) is the run's per-role fetch-registry contribution map — SHARED and
     mutated in place across every dispatch from this factory, so a caller that wants the map to
@@ -630,25 +675,28 @@ def make_harness_dispatch(
         # reading as "restrict to no sites", which would refuse every search in the platform.
         if required_sites:
             caps["required_sites"] = list(required_sites)
-        # #975 (cite-by-reference), ruling 3/A5: this member's citable seed is the UNION of its
-        # DIRECT upstream roles' own contributions. ``envelopes`` already arrives in MANIFEST
-        # DECLARATION ORDER (``depends_on``, never completion order — ``run_team``/``run_loop_seam``
-        # build it by iterating ``member.depends_on``), so composing by iterating it here preserves
-        # that order for free; deduped ONLY at this composition (A5b) — a role's own contribution
-        # list keeps every URL it reported, shared or not.
+        # #989 ruling (owner-approved 2026-09-09, supersedes #975's direct-upstream-only
+        # composition): this member's citable seed is the UNION of the contributions of ALL its
+        # ANCESTORS, transitive over ``depends_on`` — not only its direct upstreams. ``ancestors``
+        # is precomputed once per run (``_ancestor_roles``) and already carries MANIFEST
+        # DECLARATION ORDER (a role's position in ``manifest.members``, never completion order and
+        # never edge-traversal order — A5/T11), so composing by iterating it here preserves that
+        # order for free; deduped ONLY at this composition (A5b) — a role's own contribution list
+        # keeps every URL it reported, shared or not. A tool-less pass-through member (empty own
+        # contribution) no longer empties a downstream member's seed — the run 57eb8029 defect.
         prior_fetched_urls: list[str] = []
         seen_prior: set[str] = set()
-        for env in envelopes:
-            for url in contrib_map.get(env.from_role, []):
+        for role in (ancestors or {}).get(member.role, []):
+            for url in contrib_map.get(role, []):
                 if url not in seen_prior:
                     seen_prior.add(url)
                     prior_fetched_urls.append(url)
-        # BLOCKER (code-reviewer, PR #977): each upstream's OWN contribution is already bounded at
+        # BLOCKER (code-reviewer, PR #977): each ancestor's OWN contribution is already bounded at
         # its source (``_clean_fetched_urls``), but the COMPOSED union above is not — a member with
-        # two-or-more direct upstreams each near the cap can compose a seed past
+        # two-or-more ancestors each near the cap can compose a seed past
         # ``ExecuteHarnessRequest.prior_fetched_urls``'s ``max_length=2000`` and 422 its entire
         # dispatch (worse than pre-#975 behaviour). Truncated HEAD-PRESERVING, the same convention
-        # ``person_supplied_text`` uses below: the first upstream (in manifest declaration order)
+        # ``person_supplied_text`` uses below: the first ancestor (in manifest declaration order)
         # survives whole; a later one is truncated at the tail rather than the seed being dropped.
         prior_fetched_urls = prior_fetched_urls[:_MAX_MEMBER_FETCHED_URLS]
         result = await harness.execute(
@@ -847,6 +895,9 @@ async def run_team_harness(
     for role, prior_result in (completed or {}).items():
         if isinstance(prior_result, dict):
             contributions[role] = _clean_fetched_urls(prior_result.get("fetched_urls"))
+    # #989: the role -> ordered-ancestor-roles map, computed ONCE from the manifest (static for the
+    # whole drive) — a resume rebuild composes the SAME closure from the same graph, no re-derive.
+    ancestors = _ancestor_roles(manifest.members)
     dispatch = make_harness_dispatch(
         harness,
         sub_harnesses or {},
@@ -866,6 +917,7 @@ async def run_team_harness(
         answers=answers,
         required_sites=resolve_run_sites(inputs),  # #961: the sites this run is held to
         contributions=contributions,  # #975: shared + mutated across every dispatch of this run
+        ancestors=ancestors,  # #989: the transitive-closure map every dispatch composes a seed from
         person_supplied_text=_person_supplied_text(task, answers),  # #975 ruling 4/6
     )
     return await run_team(
@@ -1012,6 +1064,9 @@ async def run_team_hybrid(
     for role, prior_result in (completed or {}).items():
         if isinstance(prior_result, dict):
             hybrid_contributions[role] = _clean_fetched_urls(prior_result.get("fetched_urls"))
+    # #989: computed from the REAL (pre-condensing) manifest — a loop member's ancestors correctly
+    # include everything upstream of the loop, cycle-safe over the loop's own intra-SCC edges.
+    hybrid_ancestors = _ancestor_roles(manifest.members)
     real_dispatch = make_harness_dispatch(
         harness,
         sub_harnesses or {},
@@ -1028,6 +1083,7 @@ async def run_team_hybrid(
         refresh_seed_records=refresh_records,  # #602: the sink's prior records (refresh only)
         refresh_sink_role=refresh_sink,
         contributions=hybrid_contributions,  # #975: shared + mutated across this run's dispatches
+        ancestors=hybrid_ancestors,  # #989: the transitive-closure map every dispatch composes from
         person_supplied_text=_person_supplied_text(hybrid_task, hybrid_answers),  # #975 ruling 4/6
         task=hybrid_task,  # Contract §TASK (#674): to every member
         answers=hybrid_answers,  # #846: the app's intake answers, to every member
