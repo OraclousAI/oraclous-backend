@@ -47,6 +47,7 @@ def _body(**overrides: Any) -> SimpleNamespace:
         on_exhaustion=None,
         requires_valid_json=False,
         required_sites=[],
+        declared_output_keys=[],
         prior_fetched_urls=[_A],
         person_supplied_text="the task",
     )

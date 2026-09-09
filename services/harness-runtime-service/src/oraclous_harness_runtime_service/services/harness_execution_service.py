@@ -292,6 +292,7 @@ def _cursor(
     json_repair_used: bool = False,
     json_repair_grant: int = 0,
     required_sites: tuple[str, ...] = (),
+    declared_output_keys: tuple[str, ...] = (),
 ) -> dict[str, Any]:
     return {
         "iteration": checkpoint.iteration,
@@ -313,6 +314,10 @@ def _cursor(
         # unrestricted, which is the same silent drop the whole issue exists to close — and it would
         # be reachable by any member whose search sits behind a human gate.
         "required_sites": list(required_sites),
+        # #993: the run's declared output keys survive a HITL pause the same way — a resumed run
+        # that came back undeclared would ship its answer unguaranteed, exactly the drop this issue
+        # exists to close.
+        "declared_output_keys": list(declared_output_keys),
     }
 
 
@@ -461,6 +466,7 @@ class HarnessExecutionService:
         on_exhaustion: Literal["escalate", "degrade"] | None = None,
         requires_valid_json: bool = False,
         required_sites: list[str] | None = None,
+        declared_output_keys: list[str] | None = None,
         producer: dict[str, Any] | None = None,
         prior_fetched_urls: Collection[str] | None = None,
         person_supplied_text: str | None = None,
@@ -517,6 +523,7 @@ class HarnessExecutionService:
             member_on_exhaustion=on_exhaustion,
             member_requires_valid_json=requires_valid_json,  # #853: one repair turn on bad JSON
             required_sites=tuple(required_sites or ()),  # #961: the websites this run is held to
+            declared_output_keys=tuple(declared_output_keys or ()),  # #993: guarantee their shape
             producer=(
                 {**producer, "execution_id": str(execution_id)} if producer is not None else None
             ),
@@ -602,6 +609,7 @@ class HarnessExecutionService:
                     cp.json_repair_used,
                     cp.json_repair_grant,
                     tuple(required_sites or ()),  # #961: across the pause
+                    tuple(declared_output_keys or ()),  # #993: across the pause
                 ),
                 redact_patterns=cp.redact_patterns,
             )
@@ -839,6 +847,9 @@ class HarnessExecutionService:
             # #961: re-apply the run's site restriction. Old checkpoints lack the key → () → a
             # pre-#961 paused run is unchanged.
             required_sites=tuple(cursor.get("required_sites") or ()),
+            # #993: re-apply the run's declared output keys. Old checkpoints lack the key → () → a
+            # pre-#993 paused run is unchanged.
+            declared_output_keys=tuple(cursor.get("declared_output_keys") or ()),
         )
         resume_state = LoopCheckpoint(
             messages=checkpoint.resume_messages,
@@ -910,6 +921,7 @@ class HarnessExecutionService:
                     new_cp.json_repair_used,
                     new_cp.json_repair_grant,
                     tuple(cursor.get("required_sites") or ()),  # #961: across a chained gate
+                    tuple(cursor.get("declared_output_keys") or ()),  # #993: across a chained gate
                 ),
                 redact_patterns=new_cp.redact_patterns,
             )
@@ -1051,6 +1063,7 @@ class HarnessExecutionService:
         member_on_exhaustion: Literal["escalate", "degrade"] | None = None,
         member_requires_valid_json: bool = False,
         required_sites: tuple[str, ...] = (),
+        declared_output_keys: tuple[str, ...] = (),
         producer: dict[str, Any] | None = None,
     ) -> tuple[Any, list[ToolSpec], Any, LLMClient, TrustedBindings]:
         """Resolve + materialise the manifest's capabilities, build the dispatch + the LLM + the
@@ -1070,6 +1083,7 @@ class HarnessExecutionService:
             member_on_exhaustion=member_on_exhaustion,  # #587: degrade vs escalate at a budget gate
             member_requires_valid_json=member_requires_valid_json,  # #853: one JSON repair turn
             required_sites=required_sites,  # #961: the websites this run is held to
+            declared_output_keys=declared_output_keys,  # #993: guarantee their shape on the way out
         )
         instance_by_binding, tool_specs = await self._materialise(
             manifest,

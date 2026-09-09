@@ -132,6 +132,29 @@ async def test_a_declared_contract_asks_the_harness_for_a_parseable_answer() -> 
     assert _call(harness, "reviewer").get("requires_valid_json") is True
 
 
+async def test_a_declared_key_holding_a_list_of_strings_reaches_the_result_unchanged() -> None:
+    # #993: the SHAPE guarantee is the harness loop's job (it owns the model + the correction
+    # machinery); the engine's lift stays a PLAIN READ — whatever shape the loop shipped under the
+    # key is exactly what a consumer sees, string or list of strings alike.
+    answer = json.dumps({"linked_summary": ["line one", "line two"], "artifact_refs": []})
+    harness = _ScriptedHarness({"linker": answer})
+    team = _team([_m("linker", outputs_schema={"required": ["linked_summary", "artifact_refs"]})])
+    res = await run_team_harness(team, harness)
+
+    assert res.results["linker"]["linked_summary"] == ["line one", "line two"]
+    assert res.results["linker"]["artifact_refs"] == []
+
+
+async def test_a_declared_contract_sends_its_keys_to_the_harness() -> None:
+    # #993: the harness loop can only guarantee a key's SHAPE if it knows which keys were
+    # declared — so the engine threads the same `declared_keys` it already lifts from, through to
+    # the harness call.
+    harness = _ScriptedHarness({"linker": json.dumps({"linked_summary": "s", "artifact_refs": []})})
+    team = _team([_m("linker", outputs_schema={"required": ["linked_summary", "artifact_refs"]})])
+    await run_team_harness(team, harness)
+    assert _call(harness, "linker")["declared_output_keys"] == ["linked_summary", "artifact_refs"]
+
+
 async def test_a_member_that_declares_nothing_is_unchanged() -> None:
     # Back-compat: every team compiled before this change declares nothing and must run as before,
     # with its prose reaching the consumer under `output`.
