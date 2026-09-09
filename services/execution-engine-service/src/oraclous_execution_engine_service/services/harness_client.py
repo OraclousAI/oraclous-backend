@@ -119,6 +119,9 @@ class HarnessClient:
         on_exhaustion: str | None = None,  # #587: "degrade" → the loop finishes PARTIAL at a gate
         requires_valid_json: bool = False,  # #853: one repair turn on a malformed JSON document
         required_sites: list[str] | None = None,  # #961: the websites this run is restricted to
+        # #993: this member's own declared output keys, so the harness loop can guarantee their
+        # SHAPE (string or list of strings) on the way out.
+        declared_output_keys: list[str] | None = None,
         # #975 (cite-by-reference): the run's own fetch registry seed (this member's direct
         # upstream contributions, composed engine-side) and the person-supplied citable text.
         # Trusted exactly as `input_text` is (ruling 6/S2). NEVER omitted from the body — a
@@ -190,6 +193,9 @@ class HarnessClient:
         # Sent only when there IS one — most runs name no sites and add zero keys.
         if required_sites:
             body["required_sites"] = list(required_sites)
+        # #993: sent only when there ARE declared keys — an undeclared member adds zero keys.
+        if declared_output_keys:
+            body["declared_output_keys"] = list(declared_output_keys)
         # #975: NEVER conditionally added (unlike the send-only-when-set fields above) — ruling 6/S7
         # requires these two to always be present in the body, defaulting to the empty seed.
         body["prior_fetched_urls"] = (

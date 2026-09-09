@@ -86,6 +86,10 @@ class ExecuteHarnessRequest(BaseModel):
     # by then the unrestricted work is paid for and the person has already waited for it. Empty ⇒
     # no restriction, which is most runs and which must behave exactly as it does today.
     required_sites: list[str] = Field(default_factory=list)
+    # #993: the keys the dispatching member DECLARED it will hand on (``outputs_schema.required`` —
+    # the engine's own #697 lift source). The loop guarantees each key's value ships as a string or
+    # list of strings, unwrapping/correcting/forcing as needed. Empty ⇒ no declaration, unchanged.
+    declared_output_keys: list[str] = Field(default_factory=list)
     # #975 (§CITE cite-by-reference), ruling 3: what a PRIOR segment of this run really fetched —
     # threaded by the engine (per-role contribution, #975 slice T5) as a citable registry seed.
     # Trusted exactly as `input`/`person_supplied_text` are (S2/ruling 6). Bounded at

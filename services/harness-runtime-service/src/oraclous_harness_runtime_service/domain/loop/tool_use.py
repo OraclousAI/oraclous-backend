@@ -351,6 +351,102 @@ def _link_correction(
     return "\n\n".join(parts)
 
 
+# ── #993: a declared output key holds the answer DIRECTLY, guaranteed on the way out ─────────────
+#
+# Contract ruling (owner, 2026-09-10, made in the issue's own terms — "whichever you judge right"):
+# a key in ``outputs_schema.required`` holds the member's answer as a string or a list of strings —
+# never a nested object. Live evidence: the SAME team, run twice, shipped
+# ``{"linked_summary": {"summary": [...], "artifact_refs": []}}`` once and
+# ``{"linked_summary": [...], "artifact_refs": []}`` the next — the console can read one shape,
+# never both, and the compiler's own directive (which tells a member "`summary` is what you would
+# have written") is exactly what invites a model to nest a literal ``summary`` key under whatever
+# the REAL declared key is named.
+#
+# So the shape is guaranteed here, not merely asked for: (a) a vacuous wrapper — every key besides
+# ``summary`` is an empty list or ``None`` — is unwrapped SILENTLY, no correction spent; (b)
+# anything still not a string/list-of-strings earns ONE bounded correction turn, and past that
+# budget ships JSON-serialised as a string, so the key ALWAYS reads as text rather than being
+# dropped or nested; (c) ``artifact_refs`` is exempt — a bookkeeping list of refs, never text, and
+# it stays wherever it was declared rather than being coerced.
+_ARTIFACT_REFS_KEY = "artifact_refs"
+_DECLARED_KEY_CORRECTION_MAX = 1
+_DECLARED_OUTPUT_GATE_NAME = "declared_output_shape"
+_DECLARED_OUTPUT_CORRECTION_STATUS = "declared_output_correction"
+_DECLARED_OUTPUT_FLAG_STATUS = "declared_output_forced"
+
+
+def _extract_answer_object(text: str) -> dict[str, Any]:
+    """The JSON object inside a member's free-form answer, or ``{}`` when there is none. The same
+    lenient "widest ``{...}``" peel the engine's ``_parse_member_object`` uses (a different service,
+    duplicated rather than imported — a real model wraps its JSON in prose or a fence)."""
+    match = re.search(r"\{.*\}", text, re.DOTALL)
+    if match is None:
+        return {}
+    try:
+        parsed = json.loads(match.group(0))
+    except ValueError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _is_text_shape(value: Any) -> bool:
+    """A string, or a list where every element is a string (an empty list included)."""
+    return isinstance(value, str) or (
+        isinstance(value, list) and all(isinstance(item, str) for item in value)
+    )
+
+
+def _unwrap_declared_value(value: Any) -> Any:
+    """Ruling (a): a ``{"summary": v}`` wrapper — or ``{"summary": v, "artifact_refs": [...]}``
+    where every OTHER key is an empty list or ``None`` — unwraps to ``v``. A wrapper carrying REAL
+    extra data is left exactly as it is; the shape check downstream routes it into a correction turn
+    instead of silently discarding whatever that data was."""
+    if not isinstance(value, dict) or "summary" not in value:
+        return value
+    others_vacuous = all(
+        v is None or (isinstance(v, list) and not v) for k, v in value.items() if k != "summary"
+    )
+    return value["summary"] if others_vacuous else value
+
+
+def _normalize_declared_output(
+    obj: dict[str, Any], declared_keys: tuple[str, ...], *, force: bool
+) -> tuple[list[str], bool]:
+    """Unwrap every declared key's value in place (ruling a); with ``force=True``, additionally
+    JSON-serialise whatever is still not a string/list-of-strings (ruling b's fallback — used once
+    the correction budget is spent, and on a terminal path that gets no correction turn at all).
+    Returns the keys still violating the shape (empty when ``force``, since it fixes them all) and
+    whether ``obj`` changed, so the caller re-serialises it only when something actually did.
+    ``artifact_refs`` (ruling c) is exempt — a list of refs, never text."""
+    violations: list[str] = []
+    changed = False
+    for key in declared_keys:
+        if key == _ARTIFACT_REFS_KEY or key not in obj:
+            continue
+        original = obj[key]
+        candidate = _unwrap_declared_value(original)
+        if candidate is not original:
+            obj[key] = candidate
+            changed = True
+        if not _is_text_shape(candidate):
+            if force:
+                obj[key] = json.dumps(candidate, default=str)
+                changed = True
+            else:
+                violations.append(key)
+    return violations, changed
+
+
+def _declared_output_correction(keys: list[str]) -> str:
+    named = ", ".join(repr(k) for k in keys)
+    plural = "s" if len(keys) > 1 else ""
+    return (
+        f"Your declared key{plural} {named} must hold your answer DIRECTLY as a JSON string or a "
+        "JSON array of strings — never a nested object. Rewrite your JSON reply so that value sits "
+        "plainly under the key, with no wrapper object around it."
+    )
+
+
 # ── #961: a person's list of websites BINDS the run ──────────────────────────────────────────────
 #
 # Ruled 2026-09-08. A person can name the websites a run may search; until now that list reached the
@@ -1112,6 +1208,9 @@ async def run_tool_use_loop(
     # correction before a HITL pause gets its full allowance again after — a known, accepted minor
     # generosity (never a cost — degrade-not-crash), not a cascade.
     link_corrections_used = 0
+    # #993: how many declared-output-shape corrections this run has already spent — bounded by
+    # `_DECLARED_KEY_CORRECTION_MAX`. A fresh count on a resume, matching `link_corrections_used`.
+    declared_key_corrections_used = 0
     # #944: the unverified URLs of the last draft the link check sent BACK to the member, or None if
     # it never fired. Like `citation_blocked` it is what turns a spent budget into a typed terminal
     # rather than an anonymous "did not converge", and it is cleared wherever that one is.
@@ -1153,7 +1252,19 @@ async def run_tool_use_loop(
         # never appears in `check.unverified` at all (a label is never scanned for the answer's own
         # URL list), so gating the call on it skipped exactly the shape M1 exists to catch. Passing
         # `fetched=fetched_urls` is what lets the label be judged on its own terms.
-        return strip_unverified_links(expanded, check.unverified, fetched=fetched_urls)
+        stripped = strip_unverified_links(expanded, check.unverified, fetched=fetched_urls)
+        # #993: a terminal that never reaches the ordinary acceptance block (an escalation, a
+        # degrade, a failure) still gets the shape guarantee — forced immediately (no correction
+        # turn to spend on a run that is already ending).
+        if policy.declared_output_keys:
+            obj = _extract_answer_object(stripped)
+            if obj:
+                _, changed = _normalize_declared_output(
+                    obj, policy.declared_output_keys, force=True
+                )
+                if changed:
+                    stripped = json.dumps(obj)
+        return stripped
 
     def _escalate(
         name: str,
@@ -1850,6 +1961,47 @@ async def run_tool_use_loop(
                 return _degrade(
                     "dependency", _SITES_EMPTY_ERROR_TYPE, _SITES_EMPTY_MESSAGE, iteration
                 )
+            # #993: the shape guarantee, last — the member's answer is otherwise settled (citation
+            # + link gates already ran, above). A genuine SUCCEEDED completion is the only path that
+            # gets the interactive correction turn; a degrade/escalation/failure gets the same
+            # guarantee for free, forced, via `_shipped` (no extra turn to spend on an ending run).
+            if policy.declared_output_keys:
+                answer_obj = _extract_answer_object(last_text)
+                if answer_obj:
+                    violations, changed = _normalize_declared_output(
+                        answer_obj, policy.declared_output_keys, force=False
+                    )
+                    if violations and declared_key_corrections_used < _DECLARED_KEY_CORRECTION_MAX:
+                        declared_key_corrections_used += 1
+                        messages.append({"role": "assistant", "content": last_text})
+                        messages.append(
+                            {"role": "user", "content": _declared_output_correction(violations)}
+                        )
+                        steps.append(
+                            LoopStep(
+                                len(steps),
+                                StepKind.GATE,
+                                _DECLARED_OUTPUT_GATE_NAME,
+                                _DECLARED_OUTPUT_CORRECTION_STATUS,
+                                _truncate(json.dumps({"keys": violations})),
+                            )
+                        )
+                        continue
+                    if violations:  # budget spent, still wrong → force it, never drop the key
+                        _, changed = _normalize_declared_output(
+                            answer_obj, policy.declared_output_keys, force=True
+                        )
+                        steps.append(
+                            LoopStep(
+                                len(steps),
+                                StepKind.GATE,
+                                _DECLARED_OUTPUT_GATE_NAME,
+                                _DECLARED_OUTPUT_FLAG_STATUS,
+                                _truncate(json.dumps({"keys": violations})),
+                            )
+                        )
+                    if changed:
+                        last_text = json.dumps(answer_obj)
             return LoopResult(
                 HarnessStatus.SUCCEEDED,
                 last_text,

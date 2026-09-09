@@ -70,6 +70,13 @@ class PolicyEnvelope:
     # it is the run's own caller speaking. It lives here because this is the envelope the loop
     # enforces, and #961's ruling is precisely that a person's list stops being advice.
     required_sites: tuple[str, ...] = ()
+    # #993: the keys the acting member DECLARED it will hand on (``OHMMember.outputs_schema
+    # .required`` — same source as the engine's own lift, #697). When set, the loop guarantees each
+    # key's VALUE ships as a string or a list of strings directly — unwrapping a vacuous nested
+    # wrapper silently, and forcing anything else through one bounded correction turn before it
+    # ships JSON-serialised as text. Empty = no declaration, which is most single-agent runs and
+    # every pre-#993 team; an envelope built the old way is byte-for-byte unchanged.
+    declared_output_keys: tuple[str, ...] = ()
 
 
 # Built-in catalogue (Structured Governance Taxonomy v1.0 §2). The single source until a policy
@@ -226,6 +233,7 @@ def build_envelope(
     member_on_exhaustion: Literal["escalate", "degrade"] | None = None,
     member_requires_valid_json: bool | None = None,
     required_sites: tuple[str, ...] = (),
+    declared_output_keys: tuple[str, ...] = (),
 ) -> PolicyEnvelope:
     """Build the effective runtime envelope. The iteration cap is a safety backstop derived from the
     policy's tool-call budget (so a stricter tier's smaller budget actually binds), bounded by the
@@ -274,4 +282,5 @@ def build_envelope(
         on_exhaustion=member_on_exhaustion or "escalate",  # #587: degrade vs escalate at a gate
         requires_valid_json=bool(member_requires_valid_json),  # #853: one repair turn on bad JSON
         required_sites=required_sites,  # #961: the websites this run is held to
+        declared_output_keys=declared_output_keys,  # #993: guarantee each key's own shape
     )

@@ -82,6 +82,9 @@ class _Harness(Protocol):
         # the person-supplied task/answers text — both citable registry seeds (ruling 4/6).
         prior_fetched_urls: list[str] | None = ...,
         person_supplied_text: str | None = ...,
+        # #993: this member's own declared keys, so the harness loop can guarantee their SHAPE
+        # (string or list of strings) on the way out — see `_declared_output_keys`.
+        declared_output_keys: list[str] | None = ...,
     ) -> dict[str, Any]: ...
 
 
@@ -668,6 +671,10 @@ def make_harness_dispatch(
         declared_keys = _declared_output_keys(member)
         if member.requires_valid_json or declared_keys:
             caps["requires_valid_json"] = True
+        # #993: the harness loop can only guarantee a declared key's SHAPE if it knows which keys
+        # were declared — sent only when there are any, the same send-only-when-set pattern.
+        if declared_keys:
+            caps["declared_output_keys"] = list(declared_keys)
         # #961 rulings 1+2: the websites this run is restricted to, so the harness can refuse a
         # search that leaves the restriction out. Sent ONLY when the person actually named some —
         # the #576 send-only-when-set pattern, and here it is load-bearing rather than tidy: most
