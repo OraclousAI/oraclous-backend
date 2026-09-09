@@ -643,6 +643,14 @@ def make_harness_dispatch(
                 if url not in seen_prior:
                     seen_prior.add(url)
                     prior_fetched_urls.append(url)
+        # BLOCKER (code-reviewer, PR #977): each upstream's OWN contribution is already bounded at
+        # its source (``_clean_fetched_urls``), but the COMPOSED union above is not — a member with
+        # two-or-more direct upstreams each near the cap can compose a seed past
+        # ``ExecuteHarnessRequest.prior_fetched_urls``'s ``max_length=2000`` and 422 its entire
+        # dispatch (worse than pre-#975 behaviour). Truncated HEAD-PRESERVING, the same convention
+        # ``person_supplied_text`` uses below: the first upstream (in manifest declaration order)
+        # survives whole; a later one is truncated at the tail rather than the seed being dropped.
+        prior_fetched_urls = prior_fetched_urls[:_MAX_MEMBER_FETCHED_URLS]
         result = await harness.execute(
             input_text=render_member_input(
                 member,
