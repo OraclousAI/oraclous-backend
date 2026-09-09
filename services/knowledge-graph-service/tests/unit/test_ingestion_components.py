@@ -88,8 +88,11 @@ def test_hashing_embedder_empty_is_zero_vector() -> None:
     assert HashingEmbedder(dim=8).embed([""])[0] == [0.0] * 8
 
 
-def test_make_embedder_default_is_hashing() -> None:
-    assert isinstance(make_embedder(Settings()), HashingEmbedder)
+def test_make_embedder_explicit_hashing_needs_no_credential() -> None:
+    """#949 flipped the DEFAULT to `openai` (pinned in test_kgs_embedder_default_flip.py), so this
+    now says `hashing` out loud — which is the point of the flip: the key-free embedder stays
+    available, it just stops being what you get without asking."""
+    assert isinstance(make_embedder(Settings(embedder="hashing")), HashingEmbedder)
 
 
 def test_make_embedder_openai_requires_the_org_credential() -> None:

@@ -50,6 +50,11 @@ EXPECTED_CODES = {
     # as different problems, which VALIDATION_FAILED and CREDENTIALS_REQUIRED cannot express.
     "MODEL_NOT_CONNECTED",
     "IDEA_TOO_VAGUE",
+    # #949: meaning-based search embeds the query with a real model, billed to the organisation's
+    # own credential. With none designated it refuses rather than degrading to word-overlap under a
+    # "semantic" label — and the screen has to send the user to credentials settings, which neither
+    # VALIDATION_FAILED nor MODEL_NOT_CONNECTED (a per-REQUEST model choice) can say.
+    "MODEL_CREDENTIAL_REQUIRED",
 }
 
 # A minimal valid (non-VALIDATION_FAILED) envelope inner object used as a base for

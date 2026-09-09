@@ -88,15 +88,16 @@ class _FakeRepo:
 class _FailingEmbedder:
     dim = 512
 
-    def embed(self, text: str) -> list[float]:
+    # #643: the shared `oraclous_embedding` seam is batch-shaped — `embed(texts) -> vectors`.
+    def embed(self, texts: list[str]) -> list[list[float]]:
         raise RuntimeError("embedder is off")
 
 
 class _OkEmbedder:
     dim = 4
 
-    def embed(self, text: str) -> list[float]:
-        return [1.0, 0.0, 0.0, 0.0]
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        return [[1.0, 0.0, 0.0, 0.0] for _ in texts]
 
 
 def _row(graph_id: str, ident: str, score: float = 1.0) -> dict:

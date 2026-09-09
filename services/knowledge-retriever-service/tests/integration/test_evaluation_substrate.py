@@ -80,14 +80,14 @@ def seeded_graphs(real_neo4j_driver) -> tuple[str, str]:
             g=graph_dev,
             o=_DEV_ORG,
             t=text,
-            e=embedder.embed(text),
+            e=embedder.embed([text])[0],  # #643: the shared seam is batch-shaped
         )
     real_neo4j_driver.execute_query(
         "CREATE (:Chunk {graph_id: $g, organisation_id: $o, text: $t, embedding: $e})",
         g=graph_other,
         o=_OTHER_ORG,
         t=_OTHER_ORG_TEXT,
-        e=embedder.embed(_OTHER_ORG_TEXT),
+        e=embedder.embed([_OTHER_ORG_TEXT])[0],  # #643: the shared seam is batch-shaped
     )
     return graph_dev, graph_other
 

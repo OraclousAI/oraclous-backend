@@ -41,6 +41,7 @@ celery_app = Celery(
         "oraclous_knowledge_graph_service.tasks.community_tasks",
         "oraclous_knowledge_graph_service.tasks.code_stale_tasks",
         "oraclous_knowledge_graph_service.tasks.memory_tasks",
+        "oraclous_knowledge_graph_service.tasks.reembed_tasks",
     ],
 )
 celery_app.conf.update(
@@ -73,6 +74,12 @@ celery_app.conf.beat_schedule = {
     "memory-consolidation-sweep": {
         "task": "kgs.consolidate_all_memory_graphs",
         "schedule": float(_settings.memory_consolidation_sweep_interval_seconds),
+    },
+    # #949 Q2: what makes the re-embed automatic. A workspace nobody searches still gets migrated,
+    # so its first search after an embedder change works instead of being what discovers the miss.
+    "chunk-reembed-sweep": {
+        "task": "kgs.reembed_all_graphs",
+        "schedule": float(_settings.reembed_sweep_interval_seconds),
     },
 }
 

@@ -91,7 +91,7 @@ def _seed(driver: Driver) -> None:
                 oid=str(org),
                 gid=gid,
                 suffix=suffix,
-                vec=_EMBEDDER.embed("ada lovelace wrote the first program"),
+                vec=_EMBEDDER.embed(["ada lovelace wrote the first program"])[0],
             )
         # the CROSS-BAIT: an org-B node deliberately stamped with org-A's g1 graph id, matchable by
         # EVERY mode — it is BOTH a canonical :__Entity__ (entity + neighborhood) AND a :Chunk with
@@ -104,7 +104,7 @@ def _seed(driver: Driver) -> None:
             "organisation_id: $oid, graph_id: $gid})",
             oid=str(_ORG_B),
             gid=_G1,
-            vec=_EMBEDDER.embed("ada lovelace wrote the first program"),
+            vec=_EMBEDDER.embed(["ada lovelace wrote the first program"])[0],
         )
         # g3 content that should not match an 'ada' query
         s.run(

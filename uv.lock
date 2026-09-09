@@ -10,6 +10,7 @@ members = [
     "oraclous-capability-registry-service",
     "oraclous-citation",
     "oraclous-credential-broker-service",
+    "oraclous-embedding",
     "oraclous-errors",
     "oraclous-eval",
     "oraclous-execution-engine-service",
@@ -1289,6 +1290,17 @@ requires-dist = [
 ]
 
 [[package]]
+name = "oraclous-embedding"
+version = "0.0.0"
+source = { editable = "packages/embedding" }
+dependencies = [
+    { name = "openai" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "openai", specifier = ">=1.40,<2.0" }]
+
+[[package]]
 name = "oraclous-errors"
 version = "0.0.0"
 source = { editable = "packages/errors" }
@@ -1422,6 +1434,7 @@ dependencies = [
     { name = "neo4j" },
     { name = "neo4j-graphrag", extra = ["openai"] },
     { name = "oraclous-citation" },
+    { name = "oraclous-embedding" },
     { name = "oraclous-governance" },
     { name = "oraclous-rebac" },
     { name = "oraclous-substrate" },
@@ -1455,6 +1468,7 @@ requires-dist = [
     { name = "neo4j", specifier = ">=5.23,<6.0" },
     { name = "neo4j-graphrag", extras = ["openai"], specifier = ">=1.0,<2.0" },
     { name = "oraclous-citation", editable = "packages/citation" },
+    { name = "oraclous-embedding", editable = "packages/embedding" },
     { name = "oraclous-governance", editable = "packages/governance" },
     { name = "oraclous-rebac", editable = "packages/rebac" },
     { name = "oraclous-substrate", editable = "packages/substrate" },
@@ -1486,6 +1500,7 @@ dependencies = [
     { name = "neo4j" },
     { name = "openai" },
     { name = "oraclous-citation" },
+    { name = "oraclous-embedding" },
     { name = "oraclous-eval" },
     { name = "oraclous-governance" },
     { name = "oraclous-ohm" },
@@ -1506,6 +1521,7 @@ requires-dist = [
     { name = "neo4j", specifier = ">=5.23,<6.0" },
     { name = "openai", specifier = ">=1.40,<2.0" },
     { name = "oraclous-citation", editable = "packages/citation" },
+    { name = "oraclous-embedding", editable = "packages/embedding" },
     { name = "oraclous-eval", editable = "packages/eval" },
     { name = "oraclous-governance", editable = "packages/governance" },
     { name = "oraclous-ohm", editable = "packages/ohm" },

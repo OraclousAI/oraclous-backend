@@ -30,9 +30,11 @@ def _ctx():
 
 # --- embedder -----------------------------------------------------------------
 def test_embedder_deterministic_dim_normalised() -> None:
+    # #643: the shared seam is batch-shaped — `embed(texts) -> vectors`. One text is a one-element
+    # batch (`tests/contract/test_shared_embedder_contract.py` pins the shape).
     e = HashingEmbedder(dim=64)
-    v1 = e.embed("ada lovelace")
-    assert v1 == e.embed("ada lovelace")
+    (v1,) = e.embed(["ada lovelace"])
+    assert [v1] == e.embed(["ada lovelace"])
     assert len(v1) == 64
     assert abs(math.sqrt(sum(x * x for x in v1)) - 1.0) < 1e-9
 
@@ -91,14 +93,27 @@ async def test_semantic_returns_node_results() -> None:
     assert results[0]["properties"]["text"] == "ada"
 
 
-async def test_hybrid_rrf_fuses_and_dedupes() -> None:
-    # semantic returns c1,c2 ; fulltext returns c2,c3 -> c2 appears in both -> ranks highest
-    driver = _FakeDriver(
-        [
-            [_chunk_row("c1", "a", 0.9), _chunk_row("c2", "b", 0.4)],  # semantic call
-            [_chunk_row("c2", "b", 3.1), _chunk_row("c3", "c", 1.0)],  # fulltext call
-        ]
-    )
+async def test_hybrid_rrf_fuses_and_dedupes(monkeypatch: pytest.MonkeyPatch) -> None:
+    # semantic returns c1,c2 ; fulltext returns c2,c3 -> c2 appears in both -> ranks highest.
+    #
+    # #950 Q3: hybrid only fuses when the word-search input reports a REAL ranking, and today's
+    # index-free CONTAINS scan reports False (that degraded branch is pinned in
+    # test_hybrid_semantic_fallback.py). This test is about the FUSION arithmetic, so it drives the
+    # ranked branch by reporting ranked=True at the repository boundary — the same seam #950's real
+    # index will eventually flip on its own.
+    import oraclous_knowledge_retriever_service.repositories.retrieval_repository as repo_module
+
+    class _RankedResult:
+        def __init__(self, rows: list[dict]) -> None:
+            self.rows = rows
+            self.ranked = True
+
+    def _ranked_fulltext(self, *, graph_id, query, top_k):  # noqa: ANN001, ANN202
+        return _RankedResult([_chunk_row("c2", "b", 3.1), _chunk_row("c3", "c", 1.0)])
+
+    monkeypatch.setattr(repo_module.RetrievalRepository, "fulltext_ranked", _ranked_fulltext)
+
+    driver = _FakeDriver([[_chunk_row("c1", "a", 0.9), _chunk_row("c2", "b", 0.4)]])
     svc = RetrievalService(driver, HashingEmbedder(8))
     with _ctx():
         results = await svc.hybrid(graph_id="g1", query="b", top_k=10)

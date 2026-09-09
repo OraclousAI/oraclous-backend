@@ -42,7 +42,16 @@ _MAX_BODY = 64 * 1024  # never parse an oversized body
 # value" — an upstream (or anything that can shape its body) must not get to pick what the browser
 # is told, e.g. turning a 409 into UNAUTHORIZED. Widening this set is a security decision.
 _RELAYABLE_CODES: frozenset[str] = frozenset(
-    {ErrorCode.MODEL_NOT_CONNECTED.value, ErrorCode.IDEA_TOO_VAGUE.value}
+    {
+        ErrorCode.MODEL_NOT_CONNECTED.value,
+        ErrorCode.IDEA_TOO_VAGUE.value,
+        # #949: meaning-based search refuses when the organisation has designated no model
+        # credential. Without this the console receives a bare VALIDATION_FAILED and cannot tell
+        # "connect a model" apart from any other invalid field — which is the silent failure the
+        # refusal was added to remove. Still just the token: the upstream's own message can name
+        # an internal host, and none of it crosses.
+        ErrorCode.MODEL_CREDENTIAL_REQUIRED.value,
+    }
 )
 _NON_TOKEN = re.compile(r"[^A-Z0-9_]")
 _NON_FIELD = re.compile(r"[^A-Za-z0-9_]")  # a loc part is a field name, never a value

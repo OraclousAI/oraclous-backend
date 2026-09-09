@@ -18,6 +18,7 @@ import uuid
 from typing import Any
 
 from oraclous_citation import SourceRef
+from oraclous_embedding import embedder_identity
 from oraclous_governance import OrganisationContext, PrincipalType, use_organisation_context
 from oraclous_substrate.access import enforced_organisation_id
 
@@ -165,6 +166,7 @@ async def _ingest_async(job_id_s: str, organisation_id_s: str) -> dict[str, Any]
                         make_embedder(settings, credential=credential),
                         extractor,
                         ontology=ontology,
+                        embedder_id=embedder_identity(settings),
                     )
                     result = await ingestion.ingest(
                         graph_id=str(payload.graph_id),

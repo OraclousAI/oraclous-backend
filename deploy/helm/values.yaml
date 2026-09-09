@@ -357,6 +357,10 @@ services:
     env:
       fromValues:
         KRS_AUTH_MODE: "gateway"
+        # Stated explicitly, and matching KGS_EMBEDDER above: the query vector and the stored chunk
+        # vectors have to live in the same space, and #949 makes a mismatch a refusal rather than a
+        # meaningless score. Never leave one side to a code default while the other is pinned.
+        KRS_EMBEDDER: "openai"
         KRS_EMBEDDING_DIM: "512"
         KRS_QUERY_CACHE: "true"
         KRS_QUERY_CACHE_TTL: "300"

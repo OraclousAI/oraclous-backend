@@ -32,6 +32,7 @@ from oraclous_citation import (
     SourceRef,
     mint_citation,
 )
+from oraclous_embedding import LEGACY_NULL_EMBEDDER_ID
 
 from oraclous_knowledge_graph_service.domain.artifact_naming import AGENT_PRODUCER_KINDS
 from oraclous_knowledge_graph_service.domain.ontology import Ontology, resolve_label
@@ -156,11 +157,16 @@ class IngestionService:
         embedder: Embedder,
         extractor: EntityExtractor | None = None,
         ontology: Ontology | None = None,
+        embedder_id: str = LEGACY_NULL_EMBEDDER_ID,
     ) -> None:
         self._write_repo = write_repo
         self._embedder = embedder
         self._extractor = extractor
         self._ontology = ontology
+        # #949 Q3: the identity string (`packages/embedding.embedder_identity`) stamped on every
+        # `:Chunk` this ingest writes — must be computed from the SAME settings `embedder` was
+        # built from, never guessed here.
+        self._embedder_id = embedder_id
 
     async def ingest(
         self,
@@ -225,4 +231,6 @@ class IngestionService:
             ontology_violations=violations,
             ontology_coercions=coercions,
             citation=citation,
+            embedder_id=self._embedder_id,
+            embedding_dim=self._embedder.dim,
         )

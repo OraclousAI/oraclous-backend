@@ -24,6 +24,7 @@ from neo4j_graphrag.experimental.components.types import (
     Neo4jRelationship,
 )
 from oraclous_citation import Citation
+from oraclous_embedding import LEGACY_NULL_EMBEDDER_ID
 from oraclous_substrate.access import enforced_organisation_id
 
 from oraclous_knowledge_graph_service.multi_tenant import OrganisationScopedKGWriter
@@ -69,6 +70,8 @@ def build_document_graph(
     embeddings: list[list[float]],
     title: str | None = None,
     entity_graph: Neo4jGraph | None = None,
+    embedder_id: str = LEGACY_NULL_EMBEDDER_ID,
+    embedding_dim: int = 512,
 ) -> Neo4jGraph:
     """Build a lexical :Document + N :Chunk graph (FROM_DOCUMENT + NEXT_CHUNK).
 
@@ -79,6 +82,16 @@ def build_document_graph(
     nodes + entity↔entity relationships + entity→chunk (`FROM_CHUNK`) edges are merged in. The
     extractor links entities to the same deterministic chunk ids built here, so the entity graph
     attaches to these chunk nodes.
+
+    #949 Q3: every `:Chunk` is stamped with `embedder_id` (the ONE shared `embedder_identity`
+    string, e.g. `hashing:512` / `openai:text-embedding-3-small:512`) and `embedding_dim` — the
+    identity of the embedder that produced its `embedding` vector. This is what lets the read side
+    (C3's other half) filter on identity instead of comparing vectors across incompatible spaces,
+    and what lets a re-embed pass (C6) tell which chunks are still in the old space. Only `:Chunk`
+    carries it — the `:Document` node holds no vector, so stamping it there would be a second, easy-
+    to-miss place a mismatch could hide. The default is the SHARED `LEGACY_NULL_EMBEDDER_ID`, not a
+    literal: it covers callers not yet updated to pass their real identity, and spelling it by hand
+    here is the exact drift the shared constant exists to prevent.
     """
     doc_id = _node_id(graph_id, document, None)
     doc_node = Neo4jNode(
@@ -93,7 +106,13 @@ def build_document_graph(
             Neo4jNode(
                 id=cid,
                 label="Chunk",
-                properties={"id": cid, "text": text, "index": idx},
+                properties={
+                    "id": cid,
+                    "text": text,
+                    "index": idx,
+                    "embedder_id": embedder_id,
+                    "embedding_dim": embedding_dim,
+                },
                 embedding_properties={"embedding": vector},
             )
         )
@@ -166,6 +185,8 @@ class GraphWriteRepository:
         ontology_violations: int = 0,
         ontology_coercions: int = 0,
         citation: Citation | None = None,
+        embedder_id: str = LEGACY_NULL_EMBEDDER_ID,
+        embedding_dim: int = 512,
     ) -> WriteResult:
         # Replace-document semantics -> idempotent re-ingest. The neo4j_graphrag lexical writer does
         # not MERGE across runs (its __tmp_internal_id is transient), so we delete this document's
@@ -178,6 +199,8 @@ class GraphWriteRepository:
             embeddings=embeddings,
             title=title,
             entity_graph=entity_graph,
+            embedder_id=embedder_id,
+            embedding_dim=embedding_dim,
         )
         base = Neo4jWriter(driver=self._driver, neo4j_database=self._database, clean_db=False)
         # The citation arrives ALREADY MINTED from the ingest service (§CITE mints once, at the

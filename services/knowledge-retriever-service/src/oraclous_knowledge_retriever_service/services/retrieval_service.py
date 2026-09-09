@@ -11,9 +11,11 @@ the event loop via `asyncio.to_thread`.
 from __future__ import annotations
 
 import asyncio
+import uuid
 
 from oraclous_citation import Citation, citation_from_properties
 from oraclous_citation.graph_properties import is_citation_property
+from oraclous_embedding import is_credential_failure
 from oraclous_ohm.precedence_resolution import rank_hits_by_precedence
 from oraclous_substrate.access import enforced_organisation_id
 
@@ -22,11 +24,57 @@ from oraclous_knowledge_retriever_service.repositories.query_cache_repository im
     QueryCacheRepository,
 )
 from oraclous_knowledge_retriever_service.repositories.retrieval_repository import (
+    LEGACY_NULL_EMBEDDER_ID,
     RetrievalRepository,
 )
-from oraclous_knowledge_retriever_service.services.embedder import HashingEmbedder
+from oraclous_knowledge_retriever_service.services import credential_cache
+from oraclous_knowledge_retriever_service.services.embedder import Embedder
 
 _RRF_K = 60
+
+
+class EmbedderIdentityMismatch(Exception):
+    """The graph holds chunks, but none under the query embedder's identity (#949 Q3).
+
+    Fail-closed (§3.5): a graph mid-re-embed, or one written by a different model, holds vectors in
+    a space this query embedder cannot be compared against. That is the core #643 failure mode — a
+    plausible-looking cosine computed across two unrelated spaces — so it surfaces as a refusal the
+    caller can act on, never as a silently empty result indistinguishable from a genuine miss.
+    """
+
+
+class QueryEmbeddingUnavailable(Exception):
+    """The embed CALL failed, as opposed to the credential RESOLUTION failing (#643).
+
+    The DI layer already refuses cleanly when an organisation has no credential to embed with. This
+    is the other half: the credential resolved, and the provider then failed — it was unreachable,
+    it rate-limited us, or it rejected the key mid-TTL. Unhandled, that reached the caller as a bare
+    500 carrying a raw provider/httpx error, which is both a leak (rule 8: provider text can name
+    internal hosts) and a lie about whose fault it is. Fail closed as a typed refusal instead, so
+    the whole meaning-based path refuses honestly rather than only its resolution step.
+    """
+
+
+class QueryEmbeddingCredentialRejected(QueryEmbeddingUnavailable):
+    """The provider REJECTED this organisation's credential during the embed call (401/403/429).
+
+    Split from its parent because the two need different answers: an unreachable provider is a
+    transient platform fault the caller can only retry, while a rejected key is something the
+    organisation itself must fix, and it is the one case where the cached credential is now
+    known-bad and has to be dropped.
+    """
+
+
+#: The one curated sentence a caller reads when the refusal above reaches HTTP. Spelled once, here
+#: beside the exception it explains, because BOTH read surfaces raise it — single-graph search and
+#: the federated fan-out — and two route modules each holding their own copy is the same
+#: duplicated-spelling drift this whole change exists to remove. It names no graph id and no
+#: identity string: the gateway drains an upstream body anyway, and a curated line is what a retry
+#: would be based on.
+IDENTITY_MISMATCH_DETAIL = (
+    "this graph's stored embeddings were produced by a different embedder than this search uses,"
+    " so they cannot be compared; re-embedding is in progress — try again shortly."
+)
 
 
 def _jsonable(value):
@@ -129,6 +177,33 @@ def _apply_precedence(
     ]
 
 
+def _degraded(node: NodeResult) -> NodeResult:
+    """A combined-mode hit that was NOT fused, marked as such (#950 Q3).
+
+    The mode has to be visible or the degradation is an invisible behaviour change. It rides in
+    ``properties`` beside ``score``/``rrf_score``/``precedence_tier`` rather than as a sibling
+    response field: the route's response model is a bare list, so a new envelope would be a
+    cross-repo shape (§12) for something the existing free dict already carries. Deliberately no
+    ``rrf_score`` — there was no fusion, and a score claiming otherwise would be a lie.
+    """
+    return NodeResult(
+        id=node["id"],
+        type=node["type"],
+        properties={**node["properties"], "fusion_mode": "semantic_only"},
+        citation=node["citation"],
+    )
+
+
+def _fused(node: NodeResult, rrf: float) -> NodeResult:
+    """A genuinely fused combined-mode hit: its RRF score, and the mode that produced it."""
+    return NodeResult(
+        id=node["id"],
+        type=node["type"],
+        properties={**node["properties"], "rrf_score": rrf, "fusion_mode": "rrf"},
+        citation=node["citation"],
+    )
+
+
 def _to_edge_result(row: dict) -> EdgeResult:
     # Mirror the node side: carry the edge property bag through (JSON-coerced) so edge-level
     # data — e.g. `score` on SIMILAR_TO/SAME_AS_CANDIDATE — reaches the FE explorer.
@@ -142,14 +217,20 @@ class RetrievalService:
     def __init__(
         self,
         driver,
-        embedder: HashingEmbedder,
+        embedder: Embedder,
         *,
+        embedder_id: str = LEGACY_NULL_EMBEDDER_ID,
         database: str | None = None,
         redis_client=None,
         cache_ttl: int = 300,
     ) -> None:
         self._driver = driver
         self._embedder = embedder
+        # #949 Q3: the identity of the space `embedder` produces vectors in — the ONE shared
+        # `embedder_identity` string, the same function the write side stamps onto every :Chunk.
+        # Never derived here from the embedder object, or the two sides could spell it differently
+        # again, which is the whole of #643.
+        self._embedder_id = embedder_id
         self._db = database
         # Advisory query cache (#308): a None client (cache disabled / no Redis) makes the cache a
         # no-op, so the read path is identical with the flag off. Built per-request like _repo() so
@@ -161,6 +242,33 @@ class RetrievalService:
         return RetrievalRepository(
             self._driver, organisation_id=enforced_organisation_id(), database=self._db
         )
+
+    def _embed_query(self, query: str) -> list[float]:
+        """Embed the query, or refuse — never let a provider error out as a bare 500.
+
+        The shared seam (`packages/embedding`) is batch-shaped — `embed(texts) -> vectors`. One
+        query is a one-element batch; the write side has always called it this way.
+
+        A rejection (401/403/429) also DROPS this organisation's cached credential. The cache
+        documents itself as flushed-on-rejection, and the write side has always honoured that; the
+        read side did not, so a rotated or revoked key kept being reused on the hottest path in the
+        service for the rest of the TTL. Classified by the SAME shared helper the write side uses,
+        so the two sides cannot disagree about what counts as a credential fault.
+        """
+        try:
+            (qvec,) = self._embedder.embed([query])
+        except Exception as exc:
+            if is_credential_failure(exc):
+                credential_cache.invalidate(uuid.UUID(enforced_organisation_id()))
+                raise QueryEmbeddingCredentialRejected(
+                    "the model provider rejected this organisation's model credential"
+                ) from exc
+            # The provider's own text is deliberately not relayed — it can name internal hosts
+            # (rule 8). The route renders a curated line.
+            raise QueryEmbeddingUnavailable(
+                "the embedding provider could not be reached for this query"
+            ) from exc
+        return qvec
 
     def _cache(self) -> QueryCacheRepository:
         return QueryCacheRepository(
@@ -202,9 +310,24 @@ class RetrievalService:
                 precedence_order,
                 graph_authoritative=graph_authoritative,
             )
-        qvec = self._embedder.embed(query)
+        qvec = self._embed_query(query)
         repo = self._repo()
-        rows = await asyncio.to_thread(repo.semantic, graph_id=graph_id, qvec=qvec, top_k=top_k)
+        rows = await asyncio.to_thread(
+            repo.semantic,
+            graph_id=graph_id,
+            qvec=qvec,
+            top_k=top_k,
+            embedder_id=self._embedder_id,
+        )
+        if not rows and await asyncio.to_thread(repo.has_any_chunk, graph_id=graph_id):
+            # The graph holds chunks, but the identity filter matched none of them: every vector in
+            # it lives in a space this query cannot be compared against. Refuse. Returning [] here
+            # would be indistinguishable from a genuine miss, and a caller cannot act on that — the
+            # probe exists only to tell those two apart, and only runs when the filter came back
+            # empty, so an ordinary search pays nothing for it.
+            raise EmbedderIdentityMismatch(
+                f"graph {graph_id} holds no chunks embedded by {self._embedder_id}"
+            )
         results = [_to_node_result(r) for r in rows]
         await self._cache_set(
             graph_id=graph_id,
@@ -266,24 +389,25 @@ class RetrievalService:
             )
         # the fusion inputs stay UNRANKED (no precedence) — precedence applies to the fused result
         sem = await self.semantic(graph_id=graph_id, query=query, top_k=top_k * 2)
-        ful = await self.fulltext(graph_id=graph_id, query=query, top_k=top_k * 2)
-        fused: dict[str, dict] = {}
-        for ranked in (sem, ful):
-            for rank, node in enumerate(ranked, start=1):
-                entry = fused.setdefault(node["id"], {"rrf": 0.0, "node": node})
-                entry["rrf"] += 1.0 / (_RRF_K + rank)
-        ordered = sorted(fused.values(), key=lambda e: e["rrf"], reverse=True)[:top_k]
-        results: list[NodeResult] = []
-        for entry in ordered:
-            node = entry["node"]
-            results.append(
-                NodeResult(
-                    id=node["id"],
-                    type=node["type"],
-                    properties={**node["properties"], "rrf_score": entry["rrf"]},
-                    citation=node["citation"],
-                )
-            )
+        word_search = await asyncio.to_thread(
+            self._repo().fulltext_ranked, graph_id=graph_id, query=query, top_k=top_k * 2
+        )
+        if not word_search.ranked:
+            # #950 Q3: RRF only means something when BOTH inputs are genuinely ranked. Today's
+            # word search returns a constant score in storage order, so fusing it in does not add
+            # relevance — it dilutes the one ranking that has any. Now that meaning-based search
+            # is real, that would make combined mode look worse than semantic alone, and the new
+            # embedder would get the blame. Degrade to the semantic list rather than refuse: a
+            # caller asking for the best results still gets the best available ones.
+            results = [_degraded(node) for node in sem[:top_k]]
+        else:
+            fused: dict[str, dict] = {}
+            for ranked in (sem, [_to_node_result(r) for r in word_search.rows]):
+                for rank, node in enumerate(ranked, start=1):
+                    entry = fused.setdefault(node["id"], {"rrf": 0.0, "node": node})
+                    entry["rrf"] += 1.0 / (_RRF_K + rank)
+            ordered = sorted(fused.values(), key=lambda e: e["rrf"], reverse=True)[:top_k]
+            results = [_fused(entry["node"], entry["rrf"]) for entry in ordered]
         await self._cache_set(
             graph_id=graph_id,
             query=cache_query,

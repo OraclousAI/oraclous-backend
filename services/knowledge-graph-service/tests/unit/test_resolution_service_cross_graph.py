@@ -160,7 +160,7 @@ def _service(write: _FakeWriteRepo, audit: _FakeAuditRepo) -> ResolutionService:
         graph_service=GraphService(_FakeGraphRepo(_OWNER)),
         write_repo=write,
         audit_repo=audit,
-        settings=Settings(),
+        settings=Settings(embedder="hashing"),  # #949: key-free path, said out loud
     )
 
 

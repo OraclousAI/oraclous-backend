@@ -1,9 +1,10 @@
 """Service configuration (core layer) — env → Settings (KRS read side).
 
 KRS is read-only: it queries the org-scoped Neo4j graph that knowledge-graph-service writes. Same
-dev-auth seam + same dev organisation as KGS (so it reads the data KGS wrote), and the SAME
-deterministic hashing embedder + dimension (512) so a query vector lives in the same space as the
-stored chunk embeddings — key-free semantic search. `neo4j_uri` has no hardcoded default.
+dev-auth seam + same dev organisation as KGS (so it reads the data KGS wrote). The query embedder
+(#643) must resolve to the SAME embedder identity the write side used for a graph's stored chunks —
+`openai` builds it from the organisation's own model credential, `hashing` is the key-free
+offline/CI selection. `neo4j_uri` has no hardcoded default.
 """
 
 from __future__ import annotations
@@ -37,7 +38,14 @@ class Settings(BaseSettings):
     neo4j_password: str = "krs-reader-pass"  # noqa: S105 — dev default; prod injects via secret
     neo4j_database: str | None = None
 
-    # --- retrieval embedder (MUST match the KGS write-side hashing embedder for convergence) ---
+    # --- retrieval embedder (#643). MUST resolve to the same identity the KGS write side used for
+    # a graph's stored chunks (`embedder_identity`, `packages/embedding`) — the read-side identity
+    # filter is what actually enforces convergence at query time; this setting only selects WHICH
+    # embedder this deployment builds. `openai` resolves the organisation's own model credential
+    # (#724: no platform key) and is the default (#949); `hashing` is demoted to an EXPLICIT
+    # offline/CI selection — the same flip the write side makes, and the two must agree or every
+    # query is refused on identity mismatch.
+    embedder: Literal["hashing", "openai"] = "openai"
     embedding_dim: int = 512
     default_top_k: int = 10
 

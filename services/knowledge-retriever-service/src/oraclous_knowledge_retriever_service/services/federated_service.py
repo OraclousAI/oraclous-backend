@@ -22,6 +22,13 @@ always live. Follow-up: a multi-graph generation vector key (noted on #330).
 
 Every result is labeled ``source_graph_id`` + ``source_graph_name``. Embedder failure degrades
 cleanly: semantic contributes nothing (flagged in meta), fulltext/entity still work.
+
+Every semantic branch is filtered by the query embedder's IDENTITY (#949 Q3) — a fan-out never
+compares vectors across embedder spaces. A graph whose vectors live in another space contributes
+nothing, so the two ways of contributing nothing are told apart rather than conflated: SOME graphs
+mismatched → their neighbours' hits are returned with ``semantic_degraded`` set; EVERY graph
+mismatched → the query refuses exactly as the single-graph path does, never an empty 200 a caller
+would read as "no matches".
 """
 
 from __future__ import annotations
@@ -31,6 +38,7 @@ import uuid
 from collections.abc import Callable
 from typing import Any
 
+from oraclous_embedding import LEGACY_NULL_EMBEDDER_ID
 from oraclous_substrate.access import (
     CrossOrganisationDenied,
     authorise_cross_org_traversal,
@@ -45,12 +53,15 @@ from oraclous_knowledge_retriever_service.contracts import (
 from oraclous_knowledge_retriever_service.repositories.retrieval_repository import (
     RetrievalRepository,
 )
-from oraclous_knowledge_retriever_service.services.embedder import HashingEmbedder
+from oraclous_knowledge_retriever_service.services.embedder import Embedder
 from oraclous_knowledge_retriever_service.services.graph_registry_client import (
     GraphInfo,
     GraphRegistryClient,
 )
-from oraclous_knowledge_retriever_service.services.retrieval_service import _to_node_result
+from oraclous_knowledge_retriever_service.services.retrieval_service import (
+    EmbedderIdentityMismatch,
+    _to_node_result,
+)
 
 _RRF_K = 60
 
@@ -179,9 +190,10 @@ class FederatedRetrievalService:
     def __init__(
         self,
         driver,
-        embedder: HashingEmbedder,
+        embedder: Embedder,
         registry: GraphRegistryClient,
         *,
+        embedder_id: str = LEGACY_NULL_EMBEDDER_ID,
         database: str | None = None,
         max_graphs: int,
         max_per_graph_k: int,
@@ -191,6 +203,13 @@ class FederatedRetrievalService:
     ) -> None:
         self._driver = driver
         self._embedder = embedder
+        # #949 Q3: the identity of the space `embedder` produces vectors in — the SAME
+        # `embedder_identity(settings)` string the write side stamps onto every :Chunk, threaded
+        # into every semantic branch of the fan-out. Federation is not exempt from the identity
+        # rule: a cross-graph cosine computed against another embedder's vectors is exactly the
+        # plausible-looking nonsense #643 exists to stop, and it is MORE likely here, because a
+        # fan-out spans graphs that were ingested at different times under different embedders.
+        self._embedder_id = embedder_id
         self._registry = registry
         self._db = database
         # The fail-closed cross-org access-decision client (#446). None = cross-org admission OFF:
@@ -345,11 +364,57 @@ class FederatedRetrievalService:
                 results.append((graph, outcome))
         return results
 
+    def _semantic_branch(
+        self, repo: RetrievalRepository, graph_id: str, *, qvec: list[float], top_k: int
+    ) -> tuple[list[dict], bool]:
+        """One graph's semantic branch: its rows, plus whether the graph is an IDENTITY MISMATCH.
+
+        The identity filter is what keeps a fan-out honest, but on its own it is silent: a graph
+        whose vectors live in another space simply contributes nothing, which looks exactly like a
+        graph that holds nothing. That is the #643 failure mode, so the two are told apart here the
+        same way the single-graph path tells them apart — an existence probe, run ONLY when the
+        filter came back empty, so an ordinary branch pays nothing for it.
+
+        Both statements run in the caller's one off-loop thread, so a probe costs no extra hop.
+        """
+        rows = repo.semantic(
+            graph_id=graph_id, qvec=qvec, top_k=top_k, embedder_id=self._embedder_id
+        )
+        if rows:
+            return rows, False
+        return rows, repo.has_any_chunk(graph_id=graph_id)
+
+    def _semantic_outcome(
+        self, branches: list[tuple[GraphInfo, tuple[list[dict], bool]]]
+    ) -> tuple[list[tuple[GraphInfo, list[dict]]], bool]:
+        """Split the fan-out's branches into (per-graph rows, semantic_degraded), refusing when
+        NOTHING could be compared.
+
+        Federation is a partial-result surface by design (ADR-026), so one graph mid-re-embed must
+        not sink a query the other graphs can still answer: those graphs' hits are returned and the
+        existing ``semantic_degraded`` flag says the semantic contribution was incomplete — the same
+        honest signal the embedder-off path already raises, never a silently short list.
+
+        When EVERY queried graph is a mismatch and none contributed, there is nothing partial about
+        it: the whole semantic answer is unavailable for the same reason the single-graph path
+        refuses, so it refuses identically rather than returning an empty list a caller would read
+        as "no matches".
+        """
+        per_graph = [(graph, rows) for graph, (rows, _) in branches]
+        mismatched = [graph.id for graph, (_, mismatch) in branches if mismatch]
+        if mismatched and not any(rows for _, rows in per_graph):
+            raise EmbedderIdentityMismatch(
+                f"no queried graph holds chunks embedded by {self._embedder_id}"
+            )
+        return per_graph, bool(mismatched)
+
     def _try_embed(self, query: str) -> list[float] | None:
         """The ONE query embedding shared by every semantic branch (existing 512-dim embedder
         config). None on failure — semantic degrades cleanly instead of failing the query."""
         try:
-            qvec = self._embedder.embed(query)
+            # The shared seam (`packages/embedding`) is batch-shaped — `embed(texts) -> vectors`.
+            # One query is a one-element batch; the write side has always called it this way.
+            (qvec,) = self._embedder.embed([query])
         except Exception:  # noqa: BLE001 — degrade-don't-crash: fulltext/entity still serve.
             return None
         if not qvec or all(v == 0.0 for v in qvec):
@@ -399,11 +464,14 @@ class FederatedRetrievalService:
                 results = []
             else:
                 qvec_nn = qvec
-                per_graph = await self._fan_out(
+                branches = await self._fan_out(
                     scope.graphs,
-                    lambda repo, gid: repo.semantic(graph_id=gid, qvec=qvec_nn, top_k=per_graph_k),
+                    lambda repo, gid: self._semantic_branch(
+                        repo, gid, qvec=qvec_nn, top_k=per_graph_k
+                    ),
                     failed=failed,
                 )
+                per_graph, semantic_degraded = self._semantic_outcome(branches)
                 results = merge_score_desc(per_graph, total_cap=total_k)
         elif mode == "hybrid":
             qvec = self._try_embed(query)
@@ -418,11 +486,19 @@ class FederatedRetrievalService:
             if qvec is None:
                 semantic_degraded = True
             else:
-                sem_rows = await self._fan_out(
+                qvec_nn = qvec
+                branches = await self._fan_out(
                     scope.graphs,
-                    lambda repo, gid: repo.semantic(graph_id=gid, qvec=qvec, top_k=per_graph_k),
+                    lambda repo, gid: self._semantic_branch(
+                        repo, gid, qvec=qvec_nn, top_k=per_graph_k
+                    ),
                     failed=sem_failed,
                 )
+                # Same refusal/degrade split as the semantic mode: a partial mismatch flags
+                # `semantic_degraded` so a caller is never handed a fulltext-only ranking wearing a
+                # `hybrid` label, and a total mismatch refuses exactly as the single-graph hybrid
+                # does (which raises through its own `semantic()` call).
+                sem_rows, semantic_degraded = self._semantic_outcome(branches)
                 sem_lists = self._per_graph_lists(sem_rows)
             ful_rows = await self._fan_out(
                 scope.graphs,

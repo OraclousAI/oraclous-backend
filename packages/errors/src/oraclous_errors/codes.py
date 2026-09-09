@@ -15,7 +15,7 @@ from enum import StrEnum
 
 
 class ErrorCode(StrEnum):
-    """The 16-value closed taxonomy. The frontend branches only on this code."""
+    """The 17-value closed taxonomy. The frontend branches only on this code."""
 
     VALIDATION_FAILED = "VALIDATION_FAILED"
     MALFORMED_REQUEST = "MALFORMED_REQUEST"
@@ -38,6 +38,13 @@ class ErrorCode(StrEnum):
     # say either one, and the screen has to render a different next step for each.
     MODEL_NOT_CONNECTED = "MODEL_NOT_CONNECTED"
     IDEA_TOO_VAGUE = "IDEA_TOO_VAGUE"
+    # #949 — meaning-based search embeds the query with a real model, billed to the organisation's
+    # own credential (#724: no platform key to borrow). With none configured the retriever refuses
+    # rather than degrading to word-overlap under a "semantic" label. Distinct from
+    # MODEL_NOT_CONNECTED, whose 409 says a *request* named no model: here the request is fine and
+    # the ORGANISATION's standing configuration is what is below the floor, so the screen has to
+    # send the user to the credentials settings rather than to a model picker.
+    MODEL_CREDENTIAL_REQUIRED = "MODEL_CREDENTIAL_REQUIRED"
 
 
 @dataclass(frozen=True)
@@ -85,6 +92,16 @@ CODE_POLICY: dict[ErrorCode, CodePolicy] = {
     # below the floor. A 400 would tell the caller the request was malformed, which it was not.
     ErrorCode.IDEA_TOO_VAGUE: CodePolicy(
         422, False, "There is not enough detail here to read back. Add more and try again."
+    ),
+    # 422, not 409 — the organisation IS the caller, so there is no cross-party conflict the way
+    # CREDENTIALS_REQUIRED has one; the request itself is well-formed and it is the organisation's
+    # current configuration that is below the floor (the same reasoning that put IDEA_TOO_VAGUE at
+    # 422 rather than 400). Not retryable: retrying without connecting a model cannot succeed.
+    ErrorCode.MODEL_CREDENTIAL_REQUIRED: CodePolicy(
+        422,
+        False,
+        "Meaning-based search needs a model connected to your organisation. Connect one and try "
+        "again.",
     ),
 }
 

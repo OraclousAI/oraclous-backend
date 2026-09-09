@@ -6,8 +6,9 @@ POST /v1/federated/subgraph  — the neighborhood slice around matched entities,
 
 Thin: parse → one service call → map domain errors to HTTP. Error map: an inaccessible/unknown id
 in an explicit subset → 403 (fail-closed, no partial results, no existence oracle); a cap breach
-OR an explicit empty graph_ids → 422; an un-enumerable accessible set (registry down/unconfigured)
-→ 503 (never "assume all").
+OR an explicit empty graph_ids → 422; NO queried graph holding vectors in the query embedder's
+space → 409 (the same refusal single-graph search gives, #949 Q3); an un-enumerable accessible set
+(registry down/unconfigured) → 503 (never "assume all").
 
 Partial-success semantics: a single graph's fan-out branch erroring (e.g. one graph's Neo4j fault)
 does NOT fail the whole query — that branch is dropped and its id reported in ``meta.graphs_failed``
@@ -35,11 +36,21 @@ from oraclous_knowledge_retriever_service.services.federated_service import (
     FederatedCapError,
 )
 from oraclous_knowledge_retriever_service.services.graph_registry_client import GraphRegistryError
+from oraclous_knowledge_retriever_service.services.retrieval_service import (
+    IDENTITY_MISMATCH_DETAIL,
+    EmbedderIdentityMismatch,
+)
 
 router = APIRouter(prefix="/v1/federated", tags=["federated"])
 
 
 def _map_error(exc: Exception) -> HTTPException:
+    if isinstance(exc, EmbedderIdentityMismatch):
+        # #949 Q3: NO queried graph holds vectors this search can be compared against — the same
+        # condition, and so the same 409, the single-graph route raises. A PARTIAL mismatch never
+        # reaches here: those graphs' results are returned with meta.semantic_degraded set, per the
+        # partial-result contract this surface already keeps for a failed branch.
+        return HTTPException(status_code=status.HTTP_409_CONFLICT, detail=IDENTITY_MISMATCH_DETAIL)
     if isinstance(exc, FederatedAccessError):
         return HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc))
     if isinstance(exc, FederatedCapError):
@@ -63,7 +74,12 @@ async def federated_search(
             per_graph_k=body.per_graph_k,
             total_k=body.total_k,
         )
-    except (FederatedAccessError, FederatedCapError, GraphRegistryError) as exc:
+    except (
+        FederatedAccessError,
+        FederatedCapError,
+        GraphRegistryError,
+        EmbedderIdentityMismatch,
+    ) as exc:
         raise _map_error(exc) from None
     return FederatedSearchResponse(
         results=data["results"], total=len(data["results"]), meta=data["meta"]
