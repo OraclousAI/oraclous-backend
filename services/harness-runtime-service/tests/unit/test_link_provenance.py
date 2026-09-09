@@ -459,11 +459,13 @@ async def test_a_trailing_dot_host_matches_the_same_host_without_one() -> None:
 #
 #   strip_unverified_links(text, unverified) -> text
 #     `unverified` is `LinkCheckResult.unverified` — the answer's URLs AS WRITTEN. Every occurrence
-#     of each one is removed: a markdown link loses its target and keeps its label as plain text
-#     (`[Source](https://fab)` → `Source`), UNLESS the label itself contains an http(s) URL, in
-#     which case the whole link goes (S4 — `[https://fab](https://fab)` → nothing); a bare URL is
-#     removed in place. Matching is SPAN-based over `extract_answer_urls`'s own spans, never
-#     `str.replace` (T7: stripping `…/a` must not damage `…/ab`). Runs to a fixpoint; idempotent.
+#     of each one is removed: a markdown link that gets stripped loses the WHOLE link, label
+#     included (`[Source](https://fab)` → nothing) — issue #991 (owner ruling, 2026-09-09) made S4's
+#     rule (a label carrying a URL takes the whole link with it, `[https://fab](https://fab)` →
+#     nothing) the general rule for every strip decision, superseding the earlier T1 pin that kept
+#     an ordinary label as plain text. A bare URL (no markdown link) is still removed in place.
+#     Matching is SPAN-based over `extract_answer_urls`'s own spans, never `str.replace` (T7:
+#     stripping `…/a` must not damage `…/ab`). Runs to a fixpoint; idempotent.
 #
 # Both are imported function-locally (`.claude/rules/tests-seam-imports.md`) — neither name exists
 # until the `[impl]` lands, so every test below is RED on `ImportError`, and each also carries an
@@ -666,10 +668,12 @@ async def test_a_marker_inside_a_json_string_expands_and_the_document_still_pars
 # --- strip: the T7 matrix -------------------------------------------------------------------------
 
 
-async def test_a_markdown_link_with_an_unverified_target_keeps_its_label_as_plain_text() -> None:
-    # The reader keeps the sentence; the anchor is gone. `[Source](https://fab)` → `Source`.
+async def test_a_markdown_link_with_an_unverified_target_is_removed_entirely() -> None:
+    # Issue #991 (owner ruling, 2026-09-09): a stripped link takes its label with it, not just its
+    # target. `[Source](https://fab)` → nothing — a bare "Source" left behind reads as dead text,
+    # and the console showed it as its own bullet, duplicating the real story (run 57eb8029).
     result = _strip(f"Costs fell. [Source]({_FABRICATED})", [_FABRICATED])
-    assert result == "Costs fell. Source"
+    assert result == "Costs fell. "
 
 
 async def test_a_link_whose_label_is_itself_the_url_is_removed_entirely() -> None:
@@ -706,31 +710,38 @@ async def test_sentence_punctuation_after_a_stripped_bare_url_survives() -> None
 async def test_stripping_is_span_based_so_a_prefix_never_damages_a_longer_verified_url() -> None:
     # T7, the prefix trap: `str.replace("https://example.org/a", "")` would turn the VERIFIED
     # `https://example.org/ab` into `b`. Only a URL whose own extracted span equals an unverified
-    # entry is touched.
+    # entry is touched. Issue #991: the stripped `[A]` link takes its label with it too, so only the
+    # verified `[B]` link survives.
     short = "https://example.org/a"
     longer = "https://example.org/ab"
     result = _strip(f"[A]({short}) and [B]({longer})", [short])
-    assert result == f"A and [B]({longer})"
+    assert result == f" and [B]({longer})"
 
 
 async def test_a_verified_url_survives_byte_identical_however_it_was_written() -> None:
+    # Issue #991: the unverified `[Okta]` link is removed WHOLE, label included; the verified
+    # `[Ars]` link is untouched.
     written = "https://WWW.ArsTechnica.com/ai/2026/09/model-costs-fall-again/#cost-table"
     answer = f"[Ars]({written}) and [Okta]({_FABRICATED})"
     result = _strip(answer, [_FABRICATED])
-    assert result == f"[Ars]({written}) and Okta"
+    assert result == f"[Ars]({written}) and "
 
 
 async def test_the_same_url_written_as_markdown_and_bare_is_removed_in_both_places() -> None:
+    # Issue #991: the markdown link's label ("Source") goes with its target; the bare URL is removed
+    # in place as before.
     result = _strip(f"[Source]({_FABRICATED}) … and again at {_FABRICATED}", [_FABRICATED])
     assert _FABRICATED not in result
-    assert result.startswith("Source")
+    assert "Source" not in result
+    assert result == " … and again at "
 
 
 async def test_an_angle_bracket_target_is_stripped_the_same_way() -> None:
     # A model may write the CommonMark form itself. The regex stops at `<`/`>`, so the extracted
-    # span is the bare address; the strip still has to take the whole `[label](<url>)` construct.
+    # span is the bare address; the strip still has to take the whole `[label](<url>)` construct —
+    # issue #991: label included.
     result = _strip(f"Costs fell [Source](<{_FABRICATED}>).", [_FABRICATED])
-    assert result == "Costs fell Source."
+    assert result == "Costs fell ."
 
 
 async def test_stripping_runs_to_a_fixpoint_on_nested_link_shapes() -> None:
@@ -762,10 +773,10 @@ async def test_a_url_not_present_in_the_text_strips_nothing() -> None:
 async def test_a_gate_refused_url_is_stripped_too() -> None:
     # `_canonical` refuses userinfo and over-length shapes, so `check_answer_links` reports them
     # unverified as written. The strip must remove exactly that as-written string — these are the
-    # shapes a reader must never be handed.
+    # shapes a reader must never be handed. Issue #991: the label ("paper") goes with it.
     phishing = "https://arxiv.org@evil.example/paper"
     result = _strip(f"[paper]({phishing}) is the source.", [phishing])
-    assert result == "paper is the source."
+    assert result == " is the source."
 
 
 async def test_stripping_inside_a_json_string_leaves_the_document_parseable() -> None:
@@ -778,7 +789,10 @@ async def test_stripping_inside_a_json_string_leaves_the_document_parseable() ->
     parsed = json.loads(result)
     assert _FABRICATED not in parsed["summary"]
     assert f"[Ars]({_REG_A})" in parsed["summary"]
-    assert parsed["summary"].endswith("- Okta")
+    # Issue #991: the whole `[Okta](...)` link goes, label included — the line keeps its leading
+    # bullet dash but ends with nothing after it.
+    assert parsed["summary"].endswith("- ")
+    assert "Okta" not in parsed["summary"]
 
 
 # --- the two passes composed: expansion output is never a strip target ----------------------------
@@ -787,10 +801,11 @@ async def test_stripping_inside_a_json_string_leaves_the_document_parseable() ->
 async def test_an_expanded_link_survives_a_strip_that_names_only_the_fabricated_url() -> None:
     # The loop runs expand, then `check_answer_links` on what remains, then strip on the
     # unverified survivors. A registry URL inserted by expansion is by construction fetched, so it
-    # is never in `unverified` — and the strip must leave the angle-bracket link intact.
+    # is never in `unverified` — and the strip must leave the angle-bracket link intact. Issue #991:
+    # the fabricated `[Okta]` link is removed WHOLE, label included.
     expanded, _ = _expand(f"Costs fell [S1]. [Okta]({_FABRICATED})", [_REG_A])
     result = _strip(expanded, [_FABRICATED])
-    assert result == f"Costs fell [S1](<{_REG_A}>). Okta"
+    assert result == f"Costs fell [S1](<{_REG_A}>). "
 
 
 # =================================================================================================
@@ -861,10 +876,10 @@ async def test_b1_a_leaking_link_shape_never_survives_the_pipeline(text: str) ->
 async def test_b1_the_ok_control_still_strips_a_plain_unverified_link() -> None:
     # The companion property: an ordinary, non-adversarial unverified link must still be stripped —
     # the fix must not turn every link into a survivor, only the ones today's string-equality check
-    # cannot see.
+    # cannot see. Issue #991: the whole link goes, label included.
     out = _pipeline("See [Source](https://evil.example/report).", _B1_REG)
     assert "evil" not in out
-    assert out == "See Source."
+    assert out == "See ."
 
 
 async def test_b1_check_answer_links_reports_the_real_target_for_adjacent_links() -> None:

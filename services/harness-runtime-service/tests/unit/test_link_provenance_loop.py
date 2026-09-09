@@ -258,7 +258,9 @@ async def test_a_tool_less_members_fabricated_raw_url_is_stripped_and_flagged() 
     assert _steps(result, _CORRECTION_STATUS) == []  # empty registry — nothing to correct against
     assert result.unverified_links == [_REAL]  # flagged — never silently trusted
     assert _REAL not in (result.output or "")  # stripped — #944 shipped this intact
-    assert result.output == "The standard reference is here."
+    # Issue #991 (owner ruling, 2026-09-09): the whole link goes, label included — a surviving
+    # "here" reads as dead text once its link is gone.
+    assert result.output == "The standard reference is "
 
 
 # --- criterion 2: every link invented → back to the member --------------------------------------
@@ -317,7 +319,8 @@ async def test_an_answer_with_one_bad_link_among_good_ones_is_corrected_then_shi
     # first, bounded at `_LINK_CORRECTION_MAX`. This member never fixes its own draft (the script
     # repeats it forever), so after the bound the SAME draft ships — and ruling 2 hardens the
     # consequence: the bad link is STRIPPED, never shipped intact, while the two good links survive
-    # byte-identical.
+    # byte-identical. Issue #991 (owner ruling, 2026-09-09) hardens it further: the bad link's LABEL
+    # goes with it too — a surviving "B" reads as dead text.
     answer = f"[A]({_REAL}) and [B]({_FABRICATED}) and [C]({_ALSO_REAL})"
     llm = _Scripted(_Scripted.SEARCH, answer)
     result = await _run(llm, _returning(_REAL, _ALSO_REAL), policy=_TIGHT)
@@ -325,7 +328,7 @@ async def test_an_answer_with_one_bad_link_among_good_ones_is_corrected_then_shi
     assert len(_steps(result, _CORRECTION_STATUS)) == 2  # bounded, not shipped on the first offence
     assert result.unverified_links == [_FABRICATED]
     assert _FABRICATED not in (result.output or "")  # stripped — #944 shipped this intact
-    assert result.output == f"[A]({_REAL}) and B and [C]({_ALSO_REAL})"
+    assert result.output == f"[A]({_REAL}) and  and [C]({_ALSO_REAL})"
 
 
 async def test_the_flag_is_recorded_as_a_gate_step_naming_the_bad_link() -> None:
@@ -375,7 +378,9 @@ async def test_a_url_from_an_ERRORED_call_does_not_count_as_fetched() -> None:
     assert _steps(result, _CORRECTION_STATUS) == []
     assert result.unverified_links == [_REAL]  # flagged — never silently trusted
     assert _REAL not in (result.output or "")  # stripped — #944 shipped this intact
-    assert result.output == "Source"
+    # Issue #991 (owner ruling, 2026-09-09): a stripped link takes its label with it too — a
+    # surviving "Source" reads as dead text and duplicated a story on the console.
+    assert result.output == ""
     assert _REAL not in result.fetched_urls
 
 
@@ -441,7 +446,8 @@ async def test_a_member_that_never_stops_inventing_ships_flagged_after_the_bound
     result = await _run(llm, _returning(_REAL), policy=_TIGHT)
     assert result.status is HarnessStatus.SUCCEEDED
     assert _FABRICATED not in (result.output or "")  # stripped — #944 shipped this intact
-    assert result.output == "Source"
+    # Issue #991: the whole link goes, label included — a surviving "Source" is dead text.
+    assert result.output == ""
     assert result.unverified_links == [_FABRICATED]  # flagged — never silently trusted
     assert len(_steps(result, _CORRECTION_STATUS)) == 2  # bounded, not one per iteration
 
@@ -460,7 +466,8 @@ async def test_a_budget_that_runs_out_mid_correction_still_degrades_rather_than_
     assert result.error_type == _EXHAUSTED_ERROR_TYPE
     assert result.output is not None  # the last draft is carried out, flagged, never discarded
     assert _FABRICATED not in result.output  # stripped — #944 shipped this intact
-    assert result.output == "Source"
+    # Issue #991: the whole link goes, label included.
+    assert result.output == ""
     assert result.unverified_links == [_FABRICATED]
 
 
@@ -622,7 +629,8 @@ async def test_a_url_smuggled_through_a_non_url_named_argument_is_not_credited()
     # #975 ruling 2 hardens the consequence: the smuggled URL is STRIPPED, absent from
     # `fetched_urls`, not shipped intact the way #944 did.
     assert _FABRICATED not in (result.output or "")  # stripped — #944 shipped this intact
-    assert result.output == "Source"
+    # Issue #991: the whole link goes, label included.
+    assert result.output == ""
     assert _FABRICATED not in result.fetched_urls
 
 
@@ -815,7 +823,9 @@ async def test_a_persistent_raw_fabricated_url_is_stripped_and_the_flag_step_is_
     llm = _Scripted(_Scripted.SEARCH, f"Prices fell. [Source]({_FABRICATED})")
     result = await _run(llm, _returning(_REAL), policy=_TIGHT, prior_fetched_urls=[_ALSO_REAL])
     assert result.status is HarnessStatus.SUCCEEDED
-    assert result.output == "Prices fell. Source"  # stripped — #944 shipped this intact
+    # Issue #991 (owner ruling, 2026-09-09): the whole link goes, label included — a surviving
+    # "Source" is dead text the console showed as a duplicate bullet.
+    assert result.output == "Prices fell. "
     assert result.unverified_links == [_FABRICATED]
     flags = _steps(result, _FLAG_STATUS)
     assert len(flags) == 1
