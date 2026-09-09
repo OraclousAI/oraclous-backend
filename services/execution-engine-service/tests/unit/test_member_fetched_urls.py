@@ -146,9 +146,13 @@ async def test_diamond_isolation_and_manifest_declaration_order() -> None:
     assert harness.calls["a"].get("prior_fetched_urls") == []  # the entrypoint: nothing upstream
     assert harness.calls["b"].get("prior_fetched_urls") == [_A1, _A2]  # a's contribution only
     assert harness.calls["c"].get("prior_fetched_urls") == [_A1, _A2]  # a's contribution only, too
-    # d: manifest declaration order (depends_on=["b", "c"]) — NEVER completion order (b finished
-    # last above, yet b's contribution still leads).
-    assert harness.calls["d"].get("prior_fetched_urls") == [_B1, _C1]
+    # #989 ruling (owner-approved 2026-09-09, supersedes the #975 direct-upstream-only composition):
+    # d's seed is the union of ALL its ANCESTORS' contributions, transitively — a is d's ancestor
+    # twice over (a->b->d and a->c->d), not only b and c. Composed in MANIFEST DECLARATION ORDER
+    # (a, b, c — never completion order; b finished last above, yet a's/b's contributions still
+    # lead). Live run 57eb8029 lost every real link past the second hop under the old direct-only
+    # rule; this is the closure that fix requires.
+    assert harness.calls["d"].get("prior_fetched_urls") == [_A1, _A2, _B1, _C1]
 
 
 async def test_a_shared_url_is_deduped_only_when_composing_the_downstream_seed() -> None:
@@ -162,8 +166,10 @@ async def test_a_shared_url_is_deduped_only_when_composing_the_downstream_seed()
 
     assert res.results["b"]["fetched_urls"] == [_B1, shared]  # b's own report keeps the shared URL
     assert res.results["c"]["fetched_urls"] == [_C1, shared]  # so does c's — no cross-dedup here
-    # d's composed seed dedupes only when UNIONING the two contributions (b's entries, then c's)
-    assert harness.calls["d"].get("prior_fetched_urls") == [_B1, shared, _C1]
+    # #989 ruling (owner-approved 2026-09-09, supersedes the #975 direct-upstream-only composition):
+    # d's seed is the transitive-closure union of ALL its ancestors' contributions (a, then b, then
+    # c — manifest declaration order), deduping `shared` only when composing this one seed.
+    assert harness.calls["d"].get("prior_fetched_urls") == [_A1, _B1, shared, _C1]
 
 
 async def test_a_composed_seed_over_the_cap_is_truncated_head_preserving_across_upstreams() -> None:
@@ -189,21 +195,132 @@ async def test_a_composed_seed_over_the_cap_is_truncated_head_preserving_across_
     assert seed[1500:] == c_urls[:500]  # the SECOND's is truncated at the tail, not dropped whole
 
 
+# ── 1b. Transitive ancestors — the #989 fix (a chain deeper than two) ──────────────────────────
+#
+# #975 shipped DIRECT-upstream-only seeding. Live run 57eb8029 ("Daily AI News Digest": researcher
+# -> synthesizer -> linker) showed the gap: the synthesizer has no tools, so its own contribution is
+# empty, and the linker (whose only DIRECT upstream is the synthesizer) received an EMPTY seed —
+# never the researcher's real URLs, even though the researcher is its ancestor two hops up. The
+# fix: a member's seed is the union of the contributions of ALL its ancestors, transitively over
+# `depends_on`, composed in MANIFEST DECLARATION ORDER, deduped at composition (orchestrator ruling,
+# owner-approved 2026-09-09).
+
+
+async def test_a_tool_less_pass_through_member_still_relays_its_ancestors_seed() -> None:
+    # a -> b -> c ; b has no tools (reports no fetched_urls at all — the synthesizer's real shape).
+    # c's only DIRECT upstream is b, whose own contribution is empty, but a is c's ancestor too.
+    team = _team([_m("a"), _m("b", depends_on=["a"]), _m("c", depends_on=["b"])])
+    harness = _RecordingHarness(fetched_urls={"a": [_A1, _A2]})  # b, c report nothing themselves
+    await run_team_harness(team, harness)
+
+    assert harness.calls["b"].get("prior_fetched_urls") == [_A1, _A2]  # b's only ancestor is a
+    # the bug this fix closes: c must still see a's URLs even though b (its direct upstream)
+    # contributed nothing of its own.
+    assert harness.calls["c"].get("prior_fetched_urls") == [_A1, _A2]
+
+
+async def test_a_three_hop_chain_composes_every_ancestors_contribution_in_manifest_order() -> None:
+    # a -> b -> c ; this time b ALSO fetches something of its own. c's seed is a's contribution THEN
+    # b's delta, in manifest declaration order (a declared before b) — never completion order.
+    team = _team([_m("a"), _m("b", depends_on=["a"]), _m("c", depends_on=["b"])])
+    harness = _RecordingHarness(fetched_urls={"a": [_A1, _A2], "b": [_A1, _A2, _B1]})
+    res = await run_team_harness(team, harness)
+
+    assert harness.calls["b"].get("prior_fetched_urls") == [_A1, _A2]
+    assert res.results["b"]["fetched_urls"] == [_A1, _A2, _B1]  # b's full report, unchanged
+    # b's DELTA (A10, unchanged) is [_B1] (it already had _A1, _A2 seeded); c's seed is a's whole
+    # contribution followed by b's delta — manifest order, a before b.
+    assert harness.calls["c"].get("prior_fetched_urls") == [_A1, _A2, _B1]
+
+
+async def test_a_gate_resume_rebuilds_the_same_transitive_closure_for_the_next_dispatch() -> None:
+    # a -> b -> c, resumed after a HITL gate: a and b already ran in a PRIOR drive (`completed`);
+    # only c is dispatched now. The contribution map rebuilt from `completed` (A4) must still
+    # compose c's seed as the FULL transitive closure — a's contribution then b's delta — exactly
+    # as a single unbroken drive would, never only b's (direct-upstream-only) contribution.
+    team = _team([_m("a"), _m("b", depends_on=["a"]), _m("c", depends_on=["b"])])
+    completed = {
+        "a": {
+            "output": "a-out",
+            "status": "SUCCEEDED",
+            "steps": [],
+            "driving_signals": [],
+            "simulated": False,
+            "unverified_links": [],
+            "fetched_urls": [_A1, _A2],
+        },
+        "b": {
+            "output": "b-out",
+            "status": "SUCCEEDED",
+            "steps": [],
+            "driving_signals": [],
+            "simulated": False,
+            "unverified_links": [],
+            "fetched_urls": [_B1],
+        },
+    }
+    harness = _RecordingHarness()
+    await run_team_harness(team, harness, completed=completed)
+
+    assert "a" not in harness.calls  # neither already-completed member is re-dispatched
+    assert "b" not in harness.calls
+    # #989: the SAME closure a live drive would compose — a's contribution first, then b's delta
+    # (here b's whole reported registry, since `completed` carries no record of what b was SENT, so
+    # its full report stands as its contribution — matching A4's existing `run_team_harness` rebuild
+    # convention pinned in `test_gate_resume_seeds_downstream_from_completed_without_redispatching_
+    # upstream`).
+    assert harness.calls["c"].get("prior_fetched_urls") == [_A1, _A2, _B1]
+
+
+async def test_the_transitive_closure_is_capped_at_2000_head_preserving() -> None:
+    # a -> b -> c -> d ; three ancestors of d, each contributing a large delta. The COMPOSED
+    # closure must be capped at exactly 2000, HEAD-PRESERVING, in manifest declaration order (a,
+    # then b, then c) — the same convention the direct-upstream cap test pins, now proven across a
+    # transitive chain rather than only direct fan-in.
+    a_urls = [f"https://source.test/a/{i}" for i in range(800)]
+    b_urls = [f"https://source.test/b/{i}" for i in range(800)]
+    c_urls = [f"https://source.test/c/{i}" for i in range(800)]
+    team = _team(
+        [
+            _m("a"),
+            _m("b", depends_on=["a"]),
+            _m("c", depends_on=["b"]),
+            _m("d", depends_on=["c"]),
+        ]
+    )
+    harness = _RecordingHarness(
+        fetched_urls={"a": a_urls, "b": a_urls + b_urls, "c": a_urls + b_urls + c_urls}
+    )
+    await run_team_harness(team, harness)
+
+    seed = harness.calls["d"].get("prior_fetched_urls")
+    assert seed is not None
+    assert len(seed) == 2000  # never over the schema's max_length
+    assert seed[:800] == a_urls  # a's whole contribution survives (head)
+    assert seed[800:1600] == b_urls  # b's whole delta survives next
+    assert seed[1600:] == c_urls[:400]  # c's delta is truncated at the tail, not dropped whole
+
+
 # ── 2. Delta collect, never re-seeded transitively (A10) ────────────────────────────────────────
 
 
 async def test_a_members_contribution_is_the_delta_it_added_not_its_full_return() -> None:
     # p -> mid -> down. mid is SENT p's contribution and echoes it back plus one genuinely new entry
-    # — only that new entry is mid's OWN contribution, so `down` (mid's only direct upstream) is
-    # never re-seeded with p's URL transitively; it only ever sees what mid itself added.
+    # — only that new entry is mid's OWN contribution (A10: the delta-collection mechanism this test
+    # pins is UNCHANGED by #989). What CHANGED (#989 ruling, owner-approved 2026-09-09, supersedes
+    # the #975 direct-upstream-only composition): `down`'s SEED is the transitive-closure union of
+    # ALL its ancestors' contributions — p AND mid, manifest order — not mid's delta alone. Live run
+    # 57eb8029 showed exactly this two-hop loss: a tool-less pass-through member's empty delta made
+    # the next member's seed empty, even though a real ancestor further up had fetched real URLs.
     team = _team([_m("p"), _m("mid", depends_on=["p"]), _m("down", depends_on=["mid"])])
     harness = _RecordingHarness(fetched_urls={"p": [_A1], "mid": [_A1, _B1]})
     res = await run_team_harness(team, harness)
 
     assert harness.calls["mid"].get("prior_fetched_urls") == [_A1]  # seeded from p
     assert res.results["mid"]["fetched_urls"] == [_A1, _B1]  # the FULL registry lift, unchanged
-    # down's seed is mid's DELTA only ([_B1]) — never _A1, which down must never see transitively
-    assert harness.calls["down"].get("prior_fetched_urls") == [_B1]
+    # down's seed is the closure of p's contribution ([_A1]) + mid's DELTA ([_B1]) — mid's delta
+    # excludes _A1 (A10, unchanged), but down still sees it because p is its ancestor too.
+    assert harness.calls["down"].get("prior_fetched_urls") == [_A1, _B1]
 
 
 # ── 3. person_supplied_text: task + answers, to every member, nothing member-authored (A10/S7) ─
