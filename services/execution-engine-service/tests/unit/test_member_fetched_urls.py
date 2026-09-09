@@ -234,13 +234,19 @@ async def test_person_supplied_text_over_the_cap_is_truncated_head_preserving_be
 
     assert _PERSON_SUPPLIED_TEXT_MAX == 8000  # the same number the schema names (T4's pin)
 
-    long_task = "T" * 9000
+    # be-test-reviewer (PR #976): a body built from one repeated character can't distinguish
+    # head-preserving truncation from tail-preserving truncation, since [:8000] == [-8000:].
+    # Distinct head/tail markers make the two truncation directions produce different results.
+    long_task = "HEAD-" + "x" * 8990 + "-TAIL"
+    assert len(long_task) == 9000
     manifest = _task_team([_m("p"), _m("q", depends_on=["p"])])
     harness = _RecordingHarness()
     await run_team_harness(manifest, harness, inputs={"task": long_task})
 
     expected = long_task[:8000]
     assert len(expected) == 8000
+    assert expected.startswith("HEAD-")
+    assert "-TAIL" not in expected  # the tail marker sits past the cap and must not survive
     assert harness.calls["p"].get("person_supplied_text") == expected  # the entrypoint too
     assert harness.calls["q"].get("person_supplied_text") == expected  # and every downstream member
 
