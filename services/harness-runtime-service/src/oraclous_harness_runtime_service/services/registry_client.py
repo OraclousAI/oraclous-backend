@@ -35,6 +35,14 @@ _CODE_MEANINGS = {
     ),
     "pending_approval": "this tool is imported but not yet approved by an organisation admin",
     "no_executor": "this tool has no runnable implementation in this deployment",
+    # #1004: the registry now checks the requested operation against the operations the instance's
+    # DESCRIPTOR declares. A bare token would tell a member the call failed, not that this tool
+    # cannot do that thing at all and another one has to be chosen — which is the whole point of
+    # #692's lesson: an unactionable error gets repeated.
+    "unsupported_operation": (
+        "this tool does not offer the operation the call asked for — use one of the operations "
+        "the tool declares, or a different tool"
+    ),
 }
 
 
