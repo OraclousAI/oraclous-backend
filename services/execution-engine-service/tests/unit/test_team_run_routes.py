@@ -151,6 +151,29 @@ async def test_get_tree_cross_org_is_404() -> None:  # H1/H4
     assert resp.status_code == 404  # a cross-org tree id is not-found, never a leak
 
 
+async def test_get_team_run_includes_answer_roles() -> None:  # #995
+    manifest = {
+        "kind": "team",
+        "members": [
+            {"role": "researcher", "kind": "agent", "depends_on": []},
+            {"role": "synthesizer", "kind": "agent", "depends_on": ["researcher"]},
+            {"role": "linker", "kind": "agent", "depends_on": ["synthesizer"]},
+        ],
+    }
+    row = _queued_row(manifest)
+    row.state = "SUCCEEDED"
+    row.results = {"researcher": {}, "synthesizer": {}, "linker": {"summary": "done"}}
+
+    class FakeService:
+        async def get(self, run_id: uuid.UUID, principal: Principal) -> EngineTeamRun:
+            return row
+
+    async with await _client(FakeService()) as c:
+        resp = await c.get(f"/v1/engine/team-runs/{row.id}")
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["answer_roles"] == ["linker"]
+
+
 async def test_get_status_returns_progress_health_cost() -> None:  # ADR-037 D5 / #472
     from oraclous_execution_engine_service.services.team_run_service import TeamRunStatus
 
