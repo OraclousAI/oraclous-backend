@@ -47,10 +47,20 @@ def _refused(c: httpx.Client, iid: str, payload: dict) -> dict:
     FAILED execution row (the connector's own whitelist answering `INVALID_OPERATION` after the
     executor had already been created); the registry now checks the requested operation against
     `spec.capabilities` and answers a coded 409 with no execution row at all.
+
+    What a real user sees is the GATEWAY's view of that refusal, which is not the registry's. The
+    proxy drains every upstream error body (it may carry internals) and re-mints the canonical
+    envelope, relaying an upstream `error_code` only for the three allow-listed taxonomy values
+    (`validation_passthrough._RELAYABLE_CODES`). `unsupported_operation` is a registry-local token,
+    not a taxonomy value, so through `:8006` this arrives as a plain `CONFLICT` — the registry's
+    token and the refused operation's NAME both stop at the wall. The harness is unaffected: it
+    calls the registry directly, so it still gets the token and turns it into words for its member.
     """
     ex = c.post(f"/api/v1/instances/{iid}/execute", json={"input_data": payload})
     assert ex.status_code == 409, ex.text
-    return ex.json()
+    body = ex.json()
+    assert body["error"]["code"] == "CONFLICT", ex.text
+    return body
 
 
 def test_curated_library_operations_run_and_land_on_the_execution_row(
@@ -84,9 +94,17 @@ def test_unknown_operation_fails_closed(
     cap = _text_tools_cap(c)
     iid = _instantiate(c, cap["id"])
     out = _refused(c, iid, {"operation": "rm_rf", "text": "x"})
-    assert out["error_code"] == "unsupported_operation"
-    # the refusal names WHICH operation was wrong (#692) without echoing it unbounded (#956)
-    assert "rm_rf" in out["detail"] and len(out["detail"]) <= 300
+    # Fail-closed all the way to the user: nothing the caller wrote comes back. The registry's own
+    # message DOES name `rm_rf` (#692 actionability), but the gateway's wall drops it with the rest
+    # of the upstream body — the known cost of moving this refusal to a 409, recorded on #1007.
+    # Pinned so a later change that starts relaying it has to be a deliberate one.
+    assert "rm_rf" not in str(out)
+
+    # …and fail-closed means no execution happened at all: the refusal is not a FAILED run, so the
+    # instance's counters never moved. This is the property the old 201 + FAILED row could not have.
+    inst = c.get(f"/api/v1/instances/{iid}")
+    assert inst.status_code == 200, inst.text
+    assert inst.json()["execution_count"] == 0
 
 
 def test_oversized_text_is_capped_and_an_adversarial_input_is_fast(
