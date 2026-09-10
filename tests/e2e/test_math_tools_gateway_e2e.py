@@ -61,6 +61,18 @@ def _run(c: httpx.Client, iid: str, payload: dict) -> dict:
     return ex.json()
 
 
+def _refused(c: httpx.Client, iid: str, payload: dict) -> dict:
+    """An operation this instance's descriptor does not declare — refused before any executor.
+
+    #1004: the registry now checks the requested operation against `spec.capabilities`, so a
+    cross-group call is a coded 409 rather than a 201 carrying a FAILED row. The separation being
+    proven is the same one, caught one step earlier and with no execution written.
+    """
+    ex = c.post(f"/api/v1/instances/{iid}/execute", json={"input_data": payload})
+    assert ex.status_code == 409, ex.text
+    return ex.json()
+
+
 def test_the_curated_arithmetic_runs_and_lands_on_the_execution_row(
     math_client: httpx.Client,
 ) -> None:
@@ -161,8 +173,8 @@ def test_the_groups_are_separate_and_the_period_count_is_bounded(
     assert "Text Tools" in by_name, f"text-tools not seeded; got {sorted(by_name)}"
     math_iid = _instantiate(c, _math_tools_cap(c)["id"])
 
-    leaked = _run(c, math_iid, {"operation": "word_count", "text": "a b"})
-    assert leaked["status"] == "FAILED" and leaked["error_type"] == "INVALID_OPERATION"
+    leaked = _refused(c, math_iid, {"operation": "word_count", "text": "a b"})
+    assert leaked["error_code"] == "unsupported_operation"
 
     bounded = _run(
         c, math_iid, {"operation": "compound_growth", "start": 2, "rate": 1.0, "periods": 10**9}

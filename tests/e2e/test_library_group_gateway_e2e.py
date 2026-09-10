@@ -40,6 +40,19 @@ def _run(c: httpx.Client, iid: str, payload: dict) -> dict:
     return ex.json()
 
 
+def _refused(c: httpx.Client, iid: str, payload: dict) -> dict:
+    """An operation the instance's descriptor does not declare — refused BEFORE any executor.
+
+    #1004 moved this refusal one step earlier and one service down. It used to be a 201 carrying a
+    FAILED execution row (the connector's own whitelist answering `INVALID_OPERATION` after the
+    executor had already been created); the registry now checks the requested operation against
+    `spec.capabilities` and answers a coded 409 with no execution row at all.
+    """
+    ex = c.post(f"/api/v1/instances/{iid}/execute", json={"input_data": payload})
+    assert ex.status_code == 409, ex.text
+    return ex.json()
+
+
 def test_curated_library_operations_run_and_land_on_the_execution_row(
     register: Callable[..., dict], gateway_client: Callable[[str], httpx.Client]
 ) -> None:
@@ -70,8 +83,10 @@ def test_unknown_operation_fails_closed(
     c = gateway_client(user["token"])
     cap = _text_tools_cap(c)
     iid = _instantiate(c, cap["id"])
-    out = _run(c, iid, {"operation": "rm_rf", "text": "x"})
-    assert out["status"] == "FAILED" and out["error_type"] == "INVALID_OPERATION"
+    out = _refused(c, iid, {"operation": "rm_rf", "text": "x"})
+    assert out["error_code"] == "unsupported_operation"
+    # the refusal names WHICH operation was wrong (#692) without echoing it unbounded (#956)
+    assert "rm_rf" in out["detail"] and len(out["detail"]) <= 300
 
 
 def test_oversized_text_is_capped_and_an_adversarial_input_is_fast(
