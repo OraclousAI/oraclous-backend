@@ -63,25 +63,43 @@ paths, is:
 1. **At dispatch** (`services/harness_execution_service.py` → `domain/tool_schemas.dispatch_payload`)
    the registry payload is `{"operation": spec.operation, **args}` with the model's own `operation`
    key removed first. A key equal to the bound operation is stripped and the call proceeds. A key that
-   differs — any value, any type, exact match with no case folding — raises `OperationOverrideRefused`
-   **before the registry is called**: the loop feeds it back to the model as a coded tool error
-   (`operation_override_refused`, no echo of the supplied value) and the run goes on; the service logs
-   the attempt at WARNING with at most 64 characters of the value. The strip is shallow: a nested
-   `operation` is the tool's own argument.
-2. **At the schema** a first-party operation's schema carries `additionalProperties: false`, so a
-   schema-honouring provider refuses an undeclared key before the runtime sees it. An imported MCP
-   operation's schema is the **server's** contract and is passed through as it came (#698 D1), open or
-   closed; its no-schema fallback stays open.
+   differs — any value, any type; the **value** is matched exactly, with no case folding — raises
+   `OperationOverrideRefused` **before the registry is called**: the loop feeds it back to the model as
+   a coded tool error (`operation_override_refused`, no echo of the supplied value) and the run goes
+   on; the service logs the attempt at WARNING with at most 64 characters of the value. The **key** is
+   matched case-INsensitively (#1004 item 3), so `Operation` / `OPERATION` are the operation key too,
+   and a payload carrying two spellings that disagree is refused rather than resolved by ordering. The
+   strip is shallow: a nested `operation` is the tool's own argument. `args` that is not a JSON object
+   raises the sibling `NonObjectArgumentsRefused` (#1004 item 4) — both share a `ToolDispatchRefused`
+   base — rather than a bare `TypeError` from the payload builder.
+2. **At the schema** a first-party operation's schema carries `additionalProperties: false`. This is a
+   **hint to the provider, not a server-side check**: nothing in this service re-validates a model's
+   arguments against the schema, so a schema-honouring provider refuses an undeclared key before the
+   runtime sees it and a provider that ignores the hint sends it straight through. `dispatch_payload`
+   passes such a key on unchanged and logs it at WARNING by **name** — never its value, at most 5
+   names, at most 64 rendered characters — and only for a schema that closed itself (#1004 item 2).
+   Real argument enforcement is **#898** (strict schemas) and **#911** (`required`); until those land,
+   read "closed schema" as advisory. An imported MCP operation's schema is the **server's** contract
+   and is passed through as it came (#698 D1), open or closed; its no-schema fallback stays open, and
+   an open schema declares extra keys legal, so nothing is reported for it.
 3. **At the connector** the imported-server path strips `operation` again in the registry's mcp
    connector (#698 D3) because the key means nothing to a third-party server; a first-party connector
    that does not implement the operation answers `unsupported operation '<name>'` with the echoed name
    capped at `executors.base.TOOL_ERROR_CHARS` (300) — the same bound the mcp connector caps a tool's
    own error text at, one constant for both paths.
+4. **At the registry** (#1004 item 1, defence in depth) `ToolExecutionService` checks the requested
+   `operation` against the operations the **instance's descriptor** declares (`spec.capabilities`,
+   read by `domain/operations.py`) before any executor is created, and refuses an undeclared one with
+   a coded 409 (`unsupported_operation`) whose whole message is bounded by `TOOL_ERROR_CHARS`. A call
+   with **no** `operation` is not refused: the connector's own default stands, and that default is
+   connector code rather than caller input. An imported MCP instance is checked too, not exempt — its
+   declared set is the single server tool name it was imported and approved as.
 
 So the internal path and the imported path **agree**: the harness enforces the binding once for every
-tool, the schema closes the first-party surface, and neither path reflects unbounded model text into a
-persisted error. Known limit: an imported MCP tool whose own input schema declares a parameter named
-`operation` cannot receive it (rule 1 refuses a differing value; the mcp connector strips it anyway).
+tool, the registry re-checks it against the descriptor without trusting the harness, and neither path
+reflects unbounded model text into a persisted error. Known limit: an imported MCP tool whose own input
+schema declares a parameter named `operation` cannot receive it (rule 1 refuses a differing value; the
+mcp connector strips it anyway).
 
 ## Definition of Done (8 gates)
 
