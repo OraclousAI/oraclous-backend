@@ -44,6 +44,15 @@ def test_none_and_prefix_only_bindings_are_unpriced() -> None:
     assert price("openrouter", 100, 100).priced is False  # no model id after the provider → no key
 
 
+def test_free_e2e_default_model_prices_to_zero_not_unpriced() -> None:
+    # #1000: the e2e suite's default model is free on OpenRouter. It MUST be in the table so a run
+    # on it is priced at $0 (priced=True) rather than UNPRICED — unpriced is the fail-closed signal
+    # for an UNKNOWN model, and a known free model is not unknown.
+    result = price("openrouter/nvidia/nemotron-3-super-120b-a12b:free", 1_000_000, 1_000_000)
+    assert result.priced is True
+    assert result.usd == pytest.approx(0.0)
+
+
 def test_table_seeds_the_documented_models() -> None:
     assert "openai/gpt-4o-mini" in RATES
     assert RATES["anthropic/claude-3.5-sonnet"]["output_per_mtok"] == 15.00

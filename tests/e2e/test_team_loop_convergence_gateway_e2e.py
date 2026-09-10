@@ -41,7 +41,7 @@ requires_byom = pytest.mark.skipif(
     not _OR_KEY, reason="OPENROUTER_API_KEY unset (the real-model convergence proof)"
 )
 
-_MODEL = "openrouter/openai/gpt-4o-mini"  # cheap-but-capable; a 2-round writer↔critic can clear it
+_MODEL = os.environ["E2E_MODEL"]  # the suite model (#1000); a 2-round writer↔critic can clear it
 
 
 def _cred(c: httpx.Client, user_id: str, key: str, name: str) -> str:

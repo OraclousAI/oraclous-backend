@@ -33,7 +33,7 @@ _OR_KEY = os.environ.get("OPENROUTER_API_KEY")
 requires_byom = pytest.mark.skipif(
     not _OR_KEY, reason="OPENROUTER_API_KEY unset (the real-model HITL/resume proof)"
 )
-_MODEL = "openrouter/openai/gpt-4o-mini"
+_MODEL = os.environ["E2E_MODEL"]
 
 
 def _cred(c: httpx.Client, user_id: str, key: str, name: str) -> str:

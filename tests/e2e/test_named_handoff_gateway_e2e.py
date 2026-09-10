@@ -28,7 +28,7 @@ pytestmark = [pytest.mark.e2e, pytest.mark.integration]
 
 _OR_KEY = os.environ.get("OPENROUTER_API_KEY")
 requires_byom = pytest.mark.skipif(_OR_KEY is None, reason="OPENROUTER_API_KEY unset (real BYOM)")
-_MODEL = "openrouter/openai/gpt-4o-mini"
+_MODEL = os.environ["E2E_MODEL"]
 _OBJECTIVE = (
     "Research this week's most-cited AI papers, then write a short plain-text digest of them."
 )

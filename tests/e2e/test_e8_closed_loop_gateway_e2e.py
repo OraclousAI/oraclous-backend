@@ -42,7 +42,7 @@ _IMPOSSIBLE = "ZZQX9_IMPOSSIBLE_TOKEN_7K7K"
 def _byom_model(credential_id: str) -> dict:
     return {
         "role": "primary",
-        "binding": "openrouter/openai/gpt-4o-mini",
+        "binding": os.environ["E2E_MODEL"],
         "protocol_shape": "openai-compatible",
         "config": {"credential_id": credential_id},
     }

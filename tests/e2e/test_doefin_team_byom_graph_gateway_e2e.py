@@ -160,7 +160,7 @@ def test_doefin_team_imports_from_github_runs_on_real_model_and_serves_artifacts
     #    tools the platform has
     model = {
         "role": "primary",
-        "binding": "openrouter/openai/gpt-4o-mini",
+        "binding": os.environ["E2E_MODEL"],
         "protocol_shape": "openai-compatible",
         "config": {"credential_id": or_cred},
     }

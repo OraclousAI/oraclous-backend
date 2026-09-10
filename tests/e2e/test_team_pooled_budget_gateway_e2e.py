@@ -34,7 +34,7 @@ _OR_KEY = os.environ.get("OPENROUTER_API_KEY")
 requires_byom = pytest.mark.skipif(
     not _OR_KEY, reason="OPENROUTER_API_KEY unset (the real-model pooled-budget proof)"
 )
-_MODEL = "openrouter/openai/gpt-4o-mini"
+_MODEL = os.environ["E2E_MODEL"]
 _CHAIN = ["alpha", "bravo", "charlie", "delta", "echo"]
 _POOL_TOKENS = 300  # low enough that the chain's running spend crosses it before every member runs
 

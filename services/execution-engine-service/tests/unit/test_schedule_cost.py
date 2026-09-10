@@ -95,6 +95,26 @@ def test_single_priced_member_exact_usd_math() -> None:
     assert proj.unpriced_members == []
 
 
+def test_free_model_member_is_priced_at_zero_not_unpriced() -> None:
+    # #1000: the e2e suite's default model is free. The pre-flight must show it as PRICED at $0.00,
+    # never list it under unpriced_members — that list is the fail-closed signal for an UNKNOWN
+    # model, and a known free model is not unknown.
+    team = _team([_agent("a")])
+    proj = project_schedule_cost(
+        team,
+        {"a": _sub("openrouter/nvidia/nemotron-3-super-120b-a12b:free")},
+        "0 * * * *",
+        expected_in=1_000_000,
+        expected_out=1_000_000,
+    )
+    m = proj.per_member[0]
+    assert m.priced is True
+    assert m.usd_per_fire == pytest.approx(0.0)
+    assert m.usd_per_day == pytest.approx(0.0)
+    assert proj.unpriced_members == []
+    assert proj.fleet_usd_per_day == pytest.approx(0.0)
+
+
 def test_unknown_binding_is_unpriced_never_zero_dollars() -> None:
     team = _team([_agent("a")])
     proj = project_schedule_cost(

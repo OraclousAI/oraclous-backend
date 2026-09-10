@@ -31,7 +31,7 @@ _OR_KEY = os.environ.get("OPENROUTER_API_KEY")
 requires_byom = pytest.mark.skipif(
     not _OR_KEY, reason="OPENROUTER_API_KEY unset (the real-model on_exhaustion proof)"
 )
-_MODEL = "openrouter/openai/gpt-4o-mini"
+_MODEL = os.environ["E2E_MODEL"]
 _CAP_TOKENS = 40  # a per-member token cap a single real response exceeds → the loop exhausts
 
 
