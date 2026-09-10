@@ -38,6 +38,10 @@ RATES: dict[str, dict[str, float]] = {
     "google/gemini-1.5-flash": {"input_per_mtok": 0.075, "output_per_mtok": 0.30},
     "meta-llama/llama-3.1-8b-instruct": {"input_per_mtok": 0.05, "output_per_mtok": 0.08},
     "mistralai/mistral-small": {"input_per_mtok": 0.20, "output_per_mtok": 0.60},
+    # #1000: the e2e suite's default model. Free on OpenRouter, so a run on it prices to $0 with
+    # priced=True; leaving it OUT would report the very model the suite runs on as UNPRICED, which
+    # is the fail-closed signal for an UNKNOWN model, not for a known free one.
+    "nvidia/nemotron-3-super-120b-a12b:free": {"input_per_mtok": 0.0, "output_per_mtok": 0.0},
 }
 
 _PER_MTOK = 1_000_000
