@@ -351,28 +351,32 @@ def _link_correction(
     return "\n\n".join(parts)
 
 
-# ── #993: a declared output key holds the answer DIRECTLY, guaranteed on the way out ─────────────
+# ── #993/#994 regression → #1005 ruling: the declared-key guarantee is UNWRAP ONLY ────────────────
 #
 # Contract ruling (owner, 2026-09-10, made in the issue's own terms — "whichever you judge right"):
 # a key in ``outputs_schema.required`` holds the member's answer as a string or a list of strings —
 # never a nested object. Live evidence: the SAME team, run twice, shipped
 # ``{"linked_summary": {"summary": [...], "artifact_refs": []}}`` once and
 # ``{"linked_summary": [...], "artifact_refs": []}`` the next — the console can read one shape,
-# never both, and the compiler's own directive (which tells a member "`summary` is what you would
-# have written") is exactly what invites a model to nest a literal ``summary`` key under whatever
-# the REAL declared key is named.
+# never both.
 #
-# So the shape is guaranteed here, not merely asked for: (a) a vacuous wrapper — every key besides
-# ``summary`` is an empty list or ``None`` — is unwrapped SILENTLY, no correction spent; (b)
-# anything still not a string/list-of-strings earns ONE bounded correction turn, and past that
-# budget ships JSON-serialised as a string, so the key ALWAYS reads as text rather than being
-# dropped or nested; (c) ``artifact_refs`` is exempt — a bookkeeping list of refs, never text, and
-# it stays wherever it was declared rather than being coerced.
+# #994 first tried to guarantee that shape by force: a correction turn for anything not already a
+# string/list-of-strings, then a JSON-string fallback past budget. That fired on a researcher's
+# ``articles`` key — legitimately a list of RECORDS, never text — on every run. Live regression, run
+# ``8c0d0bc7-c659-4379-a567-eebc8c28fa90`` ("Daily AI News Digest"): the model answered the
+# correction with a top-level JSON array; `_extract_answer_object` returned ``{}`` (an array is not
+# an object), the forced fallback never fired because it only runs on the correction/budget path,
+# and the loop shipped SUCCEEDED with no ``articles`` key at all — the engine failed the member for
+# an output contract it did not deliver. The SAME answer shipped fine before #994.
+#
+# Re-ruled the same day: the guarantee is UNWRAP ONLY. (a) A vacuous wrapper — ``{"summary": v}``,
+# every OTHER key an empty list or ``None`` — is unwrapped SILENTLY to ``v``, no correction spent.
+# (b) Anything else — a list of records, a dict carrying real data — ships UNTOUCHED. Structured
+# keys are legitimate for downstream members; the console shows "not plain text" for them rather
+# than the platform mangling or dropping them. (c) ``artifact_refs`` stays exempt — a bookkeeping
+# list of refs, never text. The pre-existing #697 rule (a missing required key fails the member) is
+# unchanged.
 _ARTIFACT_REFS_KEY = "artifact_refs"
-_DECLARED_KEY_CORRECTION_MAX = 1
-_DECLARED_OUTPUT_GATE_NAME = "declared_output_shape"
-_DECLARED_OUTPUT_CORRECTION_STATUS = "declared_output_correction"
-_DECLARED_OUTPUT_FLAG_STATUS = "declared_output_forced"
 
 
 def _extract_answer_object(text: str) -> dict[str, Any]:
@@ -389,13 +393,6 @@ def _extract_answer_object(text: str) -> dict[str, Any]:
     return parsed if isinstance(parsed, dict) else {}
 
 
-def _is_text_shape(value: Any) -> bool:
-    """A string, or a list where every element is a string (an empty list included)."""
-    return isinstance(value, str) or (
-        isinstance(value, list) and all(isinstance(item, str) for item in value)
-    )
-
-
 def _unwrap_declared_value(value: Any) -> Any:
     """Ruling (a): a ``{"summary": v}`` wrapper — or ``{"summary": v, "artifact_refs": [...]}``
     where every OTHER key is an empty list or ``None`` — unwraps to ``v``. A wrapper carrying REAL
@@ -409,16 +406,13 @@ def _unwrap_declared_value(value: Any) -> Any:
     return value["summary"] if others_vacuous else value
 
 
-def _normalize_declared_output(
-    obj: dict[str, Any], declared_keys: tuple[str, ...], *, force: bool
-) -> tuple[list[str], bool]:
-    """Unwrap every declared key's value in place (ruling a); with ``force=True``, additionally
-    JSON-serialise whatever is still not a string/list-of-strings (ruling b's fallback — used once
-    the correction budget is spent, and on a terminal path that gets no correction turn at all).
-    Returns the keys still violating the shape (empty when ``force``, since it fixes them all) and
-    whether ``obj`` changed, so the caller re-serialises it only when something actually did.
-    ``artifact_refs`` (ruling c) is exempt — a list of refs, never text."""
-    violations: list[str] = []
+def _normalize_declared_output(obj: dict[str, Any], declared_keys: tuple[str, ...]) -> bool:
+    """Unwrap every declared key's value in place (ruling a) — the ONLY shape guarantee left after
+    the #994 regression ruling. Anything that is not the vacuous ``{"summary": v}`` wrapper ships
+    UNTOUCHED: a list of records, a dict carrying real data, is legitimate structured output for a
+    downstream member, never coerced or dropped. Returns whether ``obj`` changed, so the caller
+    re-serialises it only when something actually did. ``artifact_refs`` (ruling c) is exempt — a
+    list of refs, never text."""
     changed = False
     for key in declared_keys:
         if key == _ARTIFACT_REFS_KEY or key not in obj:
@@ -428,23 +422,7 @@ def _normalize_declared_output(
         if candidate is not original:
             obj[key] = candidate
             changed = True
-        if not _is_text_shape(candidate):
-            if force:
-                obj[key] = json.dumps(candidate, default=str)
-                changed = True
-            else:
-                violations.append(key)
-    return violations, changed
-
-
-def _declared_output_correction(keys: list[str]) -> str:
-    named = ", ".join(repr(k) for k in keys)
-    plural = "s" if len(keys) > 1 else ""
-    return (
-        f"Your declared key{plural} {named} must hold your answer DIRECTLY as a JSON string or a "
-        "JSON array of strings — never a nested object. Rewrite your JSON reply so that value sits "
-        "plainly under the key, with no wrapper object around it."
-    )
+    return changed
 
 
 # ── #961: a person's list of websites BINDS the run ──────────────────────────────────────────────
@@ -1208,9 +1186,6 @@ async def run_tool_use_loop(
     # correction before a HITL pause gets its full allowance again after — a known, accepted minor
     # generosity (never a cost — degrade-not-crash), not a cascade.
     link_corrections_used = 0
-    # #993: how many declared-output-shape corrections this run has already spent — bounded by
-    # `_DECLARED_KEY_CORRECTION_MAX`. A fresh count on a resume, matching `link_corrections_used`.
-    declared_key_corrections_used = 0
     # #944: the unverified URLs of the last draft the link check sent BACK to the member, or None if
     # it never fired. Like `citation_blocked` it is what turns a spent budget into a typed terminal
     # rather than an anonymous "did not converge", and it is cleared wherever that one is.
@@ -1253,15 +1228,15 @@ async def run_tool_use_loop(
         # URL list), so gating the call on it skipped exactly the shape M1 exists to catch. Passing
         # `fetched=fetched_urls` is what lets the label be judged on its own terms.
         stripped = strip_unverified_links(expanded, check.unverified, fetched=fetched_urls)
-        # #993: a terminal that never reaches the ordinary acceptance block (an escalation, a
-        # degrade, a failure) still gets the shape guarantee — forced immediately (no correction
-        # turn to spend on a run that is already ending).
+        # #993/#994: a terminal that never reaches the ordinary acceptance block (an escalation, a
+        # degrade, a failure) still gets the unwrap-only guarantee. `_extract_answer_object`
+        # returns `{}` when `stripped` does not parse as a JSON object (ruling 4) — the `if obj:`
+        # guard below is what keeps that from ever discarding a previously parsed object:
+        # `stripped` ships exactly as it already stood, never blanked.
         if policy.declared_output_keys:
             obj = _extract_answer_object(stripped)
             if obj:
-                _, changed = _normalize_declared_output(
-                    obj, policy.declared_output_keys, force=True
-                )
+                changed = _normalize_declared_output(obj, policy.declared_output_keys)
                 if changed:
                     stripped = json.dumps(obj)
         return stripped
@@ -1961,45 +1936,17 @@ async def run_tool_use_loop(
                 return _degrade(
                     "dependency", _SITES_EMPTY_ERROR_TYPE, _SITES_EMPTY_MESSAGE, iteration
                 )
-            # #993: the shape guarantee, last — the member's answer is otherwise settled (citation
-            # + link gates already ran, above). A genuine SUCCEEDED completion is the only path that
-            # gets the interactive correction turn; a degrade/escalation/failure gets the same
-            # guarantee for free, forced, via `_shipped` (no extra turn to spend on an ending run).
+            # #993/#994 ruling: the shape guarantee is UNWRAP ONLY, last — the member's answer is
+            # otherwise settled (citation + link gates already ran, above). No correction turn is
+            # spent here any more: a declared key holding a list of records or a dict with real data
+            # ships exactly as the member wrote it. `_extract_answer_object` returns `{}` when
+            # `last_text` does not parse as a JSON object (ruling 4) — the `if answer_obj:` guard is
+            # what keeps that from ever discarding a previously parsed object: `last_text` ships
+            # unchanged rather than being blanked.
             if policy.declared_output_keys:
                 answer_obj = _extract_answer_object(last_text)
                 if answer_obj:
-                    violations, changed = _normalize_declared_output(
-                        answer_obj, policy.declared_output_keys, force=False
-                    )
-                    if violations and declared_key_corrections_used < _DECLARED_KEY_CORRECTION_MAX:
-                        declared_key_corrections_used += 1
-                        messages.append({"role": "assistant", "content": last_text})
-                        messages.append(
-                            {"role": "user", "content": _declared_output_correction(violations)}
-                        )
-                        steps.append(
-                            LoopStep(
-                                len(steps),
-                                StepKind.GATE,
-                                _DECLARED_OUTPUT_GATE_NAME,
-                                _DECLARED_OUTPUT_CORRECTION_STATUS,
-                                _truncate(json.dumps({"keys": violations})),
-                            )
-                        )
-                        continue
-                    if violations:  # budget spent, still wrong → force it, never drop the key
-                        _, changed = _normalize_declared_output(
-                            answer_obj, policy.declared_output_keys, force=True
-                        )
-                        steps.append(
-                            LoopStep(
-                                len(steps),
-                                StepKind.GATE,
-                                _DECLARED_OUTPUT_GATE_NAME,
-                                _DECLARED_OUTPUT_FLAG_STATUS,
-                                _truncate(json.dumps({"keys": violations})),
-                            )
-                        )
+                    changed = _normalize_declared_output(answer_obj, policy.declared_output_keys)
                     if changed:
                         last_text = json.dumps(answer_obj)
             return LoopResult(
