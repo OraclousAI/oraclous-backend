@@ -17,7 +17,8 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-COMPOSE="docker compose --env-file deploy/.env -f deploy/docker-compose.yml -f deploy/docker-compose.dev-ports.yml"
+# #850: docker-compose.e2e.yml exempts this host from the gateway's per-IP limiter (e2e stack only).
+COMPOSE="docker compose --env-file deploy/.env -f deploy/docker-compose.yml -f deploy/docker-compose.dev-ports.yml -f deploy/docker-compose.e2e.yml"
 
 # --- test-only key sources (#724) -------------------------------------------------------------
 # deploy/.env.test holds the keys a TEST brings (OPENROUTER_API_KEY, TAVILY_API_KEY). They are
