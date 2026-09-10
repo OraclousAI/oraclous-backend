@@ -8,10 +8,14 @@ retarget, and the #602 5-way delta's record source) before it was ALSO exposed r
 
 Pure; accepts either already-validated ``OHMMember`` objects (the four existing engine call
 sites, which pass ``OHMManifest.members``) or raw manifest dicts (``TeamRunOut``'s read-side
-derivation off the stored snapshot, which must never re-validate it). Fail-closed to ``[]`` on
-anything that does not look like a valid, acyclic member list — a non-list ``members``, a missing/
-non-string ``role``, a non-list (or non-str-elements) ``depends_on``, a member that is neither an
-``OHMMember`` nor a ``dict``, or a ``depends_on`` cycle among the given members. Never raises.
+derivation off the stored snapshot, which must never re-validate it). A raw dict member omitting
+``depends_on`` entirely (or storing it as JSON ``null``) is a normal stage-0 member — it defaults
+to no dependencies, exactly like ``OHMMember``'s own ``default_factory=list`` — never a fail-closed
+shape (live proof #995: a real imported manifest omits the key rather than storing ``[]``).
+Fail-closed to ``[]`` on anything that does not look like a valid, acyclic member list — a non-list
+``members``, a missing/non-string ``role``, a ``depends_on`` that IS present but is neither a list
+nor ``null`` (or contains a non-str element), a member that is neither an ``OHMMember`` nor a
+``dict``, or a ``depends_on`` cycle among the given members. Never raises.
 
 #995 point 7: a ``kind: "human"`` member is never a sink — a terminal approval gate's payload is a
 decision object, not an answer.
@@ -44,10 +48,14 @@ def _parse(members: object) -> list[_ParsedMember] | None:
         if not isinstance(m, dict):
             return None
         role = m.get("role")
-        deps = m.get("depends_on")
         if not isinstance(role, str) or not role:
             return None
-        if not isinstance(deps, list) or not all(isinstance(d, str) for d in deps):
+        deps_raw = m.get("depends_on")
+        if deps_raw is None:  # omitted, or explicit JSON null — a normal stage-0 member
+            deps: list[str] = []
+        elif isinstance(deps_raw, list) and all(isinstance(d, str) for d in deps_raw):
+            deps = deps_raw
+        else:  # present but the wrong shape — genuinely malformed, fail closed
             return None
         kind = m.get("kind")
         out.append((role, deps, kind if isinstance(kind, str) else None))

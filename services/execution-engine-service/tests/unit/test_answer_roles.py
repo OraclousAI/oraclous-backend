@@ -104,3 +104,26 @@ def test_raw_dicts_agree_with_ohmmember_objects() -> None:
     obj_members = [_agent("researcher"), _agent("synthesizer", ["researcher"])]
     dict_members = [_d("researcher"), _d("synthesizer", ["researcher"])]
     assert sink_roles(obj_members) == sink_roles(dict_members) == ["synthesizer"]
+
+
+# ── regression (live proof #995): a real imported manifest OMITS depends_on on a stage-0 member,
+# it does not store it as []. Caught live: a researcher -> synthesizer -> linker run's stored
+# manifest had no "depends_on" key at all on "researcher", and the naive "not a list -> fail
+# closed" rule wrongly treated that as malformed, returning [] instead of ["linker"].
+
+
+def test_a_missing_depends_on_key_defaults_to_no_dependencies() -> None:
+    members = [
+        {"role": "researcher", "kind": "agent"},  # no "depends_on" key at all
+        {"role": "synthesizer", "kind": "agent", "depends_on": ["researcher"]},
+        {"role": "linker", "kind": "agent", "depends_on": ["synthesizer"]},
+    ]
+    assert sink_roles(members) == ["linker"]
+
+
+def test_an_explicit_null_depends_on_defaults_to_no_dependencies() -> None:
+    members = [
+        {"role": "a", "kind": "agent", "depends_on": None},
+        {"role": "b", "kind": "agent", "depends_on": ["a"]},
+    ]
+    assert sink_roles(members) == ["b"]
