@@ -9,9 +9,10 @@ These are pytest fixtures (auto-discovered) rather than importable helpers on pu
 never `from tests.e2e.conftest import ...` (that import is not portable under collection — CLAUDE.md
 §4.1). Take `register` / `gateway_client` / `gateway_url` as fixture arguments instead.
 
-Fixture note (#921 owns the sweep): two draft-validation rules block a team manifest outright, so a
-new fixture must give every member tool a `tool_rationale` (`F-TOOL-UNJUSTIFIED`) and declare each
-member's output keys (`F-NO-OUTPUT-CONTRACT`).
+Fixture note: two draft-validation rules block a team manifest outright, so a new fixture must give
+every member tool a `tool_rationale` (`F-TOOL-UNJUSTIFIED`) and declare each member's output keys
+(`F-NO-OUTPUT-CONTRACT`). The shapes, the markers per leg, and which key comes from where are in
+`tests/e2e/README.md` (#921).
 """
 
 from __future__ import annotations
@@ -130,9 +131,15 @@ def register() -> Callable[..., dict]:
         )
         assert reg.status_code == 201, f"register failed: {reg.status_code} {reg.text}"
         token = reg.json()["access_token"]
-        me = httpx.get(
+        me_response = httpx.get(
             f"{GATEWAY}/v1/auth/me", headers={"Authorization": f"Bearer {token}"}, timeout=15.0
-        ).json()
+        )
+        # #850: a throttled read-back used to surface as `KeyError: 'organisation_id'` several
+        # lines later, in a test that had nothing to do with auth. Name the status here instead.
+        assert me_response.status_code == 200, (
+            f"/v1/auth/me failed: {me_response.status_code} {me_response.text}"
+        )
+        me = me_response.json()
         return {
             "token": token,
             "org_id": me["organisation_id"],
