@@ -14,6 +14,7 @@ from typing import Any, Literal
 from oraclous_ohm.gate import GateDecision
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from oraclous_execution_engine_service.domain.answer_roles import sink_roles
 from oraclous_execution_engine_service.domain.schedule_cost import (
     DEFAULT_EXPECTED_INPUT_TOKENS,
     DEFAULT_EXPECTED_OUTPUT_TOKENS,
@@ -476,9 +477,17 @@ class TeamRunOut(BaseModel):
     # its tool-declaring members). None when the team declares no tools — nothing to ground — and on
     # pre-#642 rows. Read beside the cost so a green run can't hide an ungrounded one.
     grounding_score: float | None = None
-    # the source for ``team_name`` (metadata.name is not itself a TeamRunOut field). Loaded from the
-    # row via from_attributes, read by the validator below, then EXCLUDED from the response — the
-    # detail read never carries the raw manifest (leanness + no accidental leak).
+    # #995: the plan's ANSWER members — its sink roles (every member no other member `depends_on`),
+    # in manifest declaration order, derived read-side off the stored manifest snapshot below
+    # (structural, never re-derived from completion order or which member ran last — that is #870's
+    # concern, not this one). A `kind: "human"` sink is excluded (its payload is a decision, not an
+    # answer). Fail-closed to [] on a missing/malformed/cyclic snapshot — never raises, never gates
+    # on `results` (a listed role may still be absent/failed/skipped, #995 point 8).
+    answer_roles: list[str] = Field(default_factory=list)
+    # the source for ``team_name``/``answer_roles`` (metadata.name / members are not themselves
+    # TeamRunOut fields). Loaded from the row via from_attributes, read by the validator below, then
+    # EXCLUDED from the response — the detail read never carries the raw manifest (leanness + no
+    # accidental leak).
     manifest: dict[str, Any] | None = Field(default=None, exclude=True, repr=False)
 
     @field_validator("member_status", "loop_state", "revision_rounds", mode="before")
@@ -503,6 +512,9 @@ class TeamRunOut(BaseModel):
         # #638: dig the team name from the stored manifest (metadata.name) so every read carries it.
         if self.team_name is None and isinstance(self.manifest, dict):
             self.team_name = ((self.manifest.get("metadata") or {}).get("name")) or None
+        # #995: the plan's answer (sink) members, off the same stored manifest snapshot.
+        manifest_members = self.manifest.get("members") if isinstance(self.manifest, dict) else None
+        self.answer_roles = sink_roles(manifest_members)
         # #907: simulated if ANY member's result says so — a blocked/skipped member's result is
         # None, never a dict, so `.get` is guarded rather than called directly on every value.
         self.simulated = any(
