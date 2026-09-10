@@ -282,6 +282,9 @@ jobs:
       - name: BYOM real-LLM e2e (only when the model-key secret is set)
         env:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          # #1000: the ONE model every e2e binds. Optional repo variable; the fallback is the SAME
+          # default as tests/e2e/conftest.py so the two never drift. Free on OpenRouter.
+          E2E_MODEL: ${{ vars.E2E_MODEL || 'openrouter/nvidia/nemotron-3-super-120b-a12b:free' }}
         run: |
           if [ -z "${OPENROUTER_API_KEY:-}" ]; then
             echo "OPENROUTER_API_KEY secret not set — skipping the BYOM real-LLM leg"; exit 0
