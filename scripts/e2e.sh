@@ -41,6 +41,17 @@ _load_test_key() {  # _load_test_key VAR — export VAR from deploy/.env.test un
   return 0
 }
 _load_test_key E2E_MODEL  # every mode binds this model (#1000); absent → the conftest default
+
+_load_search_key() {  # TAVILY_API_KEY from deploy/.env (#886), falling back to deploy/.env.test
+  # #886 (ruled 2026-09-09): the web-search e2e tests bring the LIVE search key from deploy/.env —
+  # the deploy/.env.test one is out of credit, and no code change can make a spent key return
+  # hits. Still a BYOM source: a test pastes it through the credentials API, never a service env.
+  local val
+  [ -n "${TAVILY_API_KEY:-}" ] && return 0
+  val=$(grep -E '^TAVILY_API_KEY=' deploy/.env 2>/dev/null | head -1 | cut -d= -f2-) || true
+  [ -n "$val" ] && export TAVILY_API_KEY="$val" && return 0
+  _load_test_key TAVILY_API_KEY
+}
 OAUTH_COMPOSE="$COMPOSE -f deploy/docker-compose.e2e-oauth.yml"
 
 run_oauth() {
@@ -101,7 +112,7 @@ _require_gateway
 run_deterministic() {
   _recreate_harness fake
   _setup_gitea
-  _load_test_key TAVILY_API_KEY   # a BYOM source an e2e pastes through the credentials API
+  _load_search_key   # a BYOM source an e2e pastes through the credentials API (deploy/.env, #886)
   # #724: on a stack running a REAL extractor (KGS_EXTRACTOR=openai) every ingest needs the ORG to
   # have designated a model credential — no platform key exists any more. The conftest pastes this
   # through the credentials API at registration. Absent is fine: the compose default extractor is
