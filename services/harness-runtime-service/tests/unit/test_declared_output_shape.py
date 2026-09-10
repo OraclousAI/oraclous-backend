@@ -1,20 +1,33 @@
-"""#993 — a declared output key holds the member's answer DIRECTLY as a string or a list of
-strings, never a nested object (Contract ruling, owner 2026-09-10, made in the issue's own terms).
+"""#993/#994 → #996 ruling: the declared-key shape guarantee is UNWRAP ONLY.
 
 Live evidence, app ``c3462066-bcf3-4756-8bdf-cbc9d21873d0`` ("Daily AI News Digest"): run
 ``57eb8029`` shipped ``{"linked_summary": {"summary": [...], "artifact_refs": []}}``; run
 ``b9c54e61`` shipped ``{"linked_summary": [...], "artifact_refs": []}`` for the SAME team. The
-console can read one shape, never both — so the platform now guarantees one, on the way out:
+console can read one shape, never both — so the platform guarantees one, on the way out:
 
 1. A wrapper of the vacuous shape ``{"summary": v}`` / ``{"summary": v, "artifact_refs": []}``
    (every OTHER key empty-list/None) is UNWRAPPED to ``v`` — silently, no correction turn spent.
 2. A bare string or list of strings ships unchanged.
-3. Anything else (a nested object carrying REAL extra data, a number, a list of non-strings) earns
-   ONE bounded correction turn; if the model repeats the offence, it ships JSON-serialised as a
-   string, so the declared key ALWAYS reads as text — never dropped, never nested.
-4. ``artifact_refs`` is exempt (a bookkeeping list, never text) and always stays as declared.
+3. ``artifact_refs`` is exempt (a bookkeeping list, never text) and always stays as declared.
 
-RED until the [impl] adds this shape guarantee to ``run_tool_use_loop`` (``tool_use.py``).
+**#994 regression, superseded here.** #994 additionally spent ONE bounded correction turn on
+anything still not a string/list-of-strings, then forced a JSON-string fallback past that budget.
+Live run ``8c0d0bc7-c659-4379-a567-eebc8c28fa90``: the researcher's ``articles`` key is legitimately
+a list of RECORDS, so the correction fired on every run; when the model answered the correction with
+a top-level JSON array, ``_extract_answer_object`` returned ``{}`` (an array is not an object), the
+forced fallback never ran (it only lives on the correction/budget path), and the loop shipped
+SUCCEEDED with no ``articles`` key at all. Re-ruled 2026-09-10: the guarantee never touches a
+non-wrapper shape at all — a list of records, a dict with real data, ships UNTOUCHED, no correction
+turn, no extra LLM call. Structured keys are legitimate for downstream members; the console shows
+"not plain text" for them. The pre-existing #697 rule (a missing required key fails the member) is
+unchanged.
+
+Tests superseded by this ruling and rewritten below (no longer pin the correction turn / JSON-string
+fallback):
+- ``test_a_genuinely_nested_answer_gets_one_correction_then_ships_as_text``
+- ``test_the_correction_fixes_it_and_the_run_ships_clean``
+
+RED until the [impl] removes the correction turn from ``run_tool_use_loop`` (``tool_use.py``).
 """
 
 from __future__ import annotations
@@ -79,10 +92,6 @@ def _shape_gate_steps(result: Any) -> list[Any]:
     return [s for s in result.steps if s.name == _GATE_NAME]
 
 
-def _corrections(result: Any) -> list[Any]:
-    return [s for s in _shape_gate_steps(result) if s.status == "declared_output_correction"]
-
-
 async def test_a_vacuous_summary_wrapper_unwraps_to_the_bare_list() -> None:
     answer = json.dumps(
         {"linked_summary": {"summary": ["line one", "line two"], "artifact_refs": []}}
@@ -136,29 +145,51 @@ async def test_artifact_refs_is_exempt_and_stays_top_level() -> None:
     assert shipped["artifact_refs"] == ["doc:1", "doc:2"]
 
 
-async def test_a_genuinely_nested_answer_gets_one_correction_then_ships_as_text() -> None:
-    # Real extra data beside `summary` (`confidence`) — not the vacuous {}/[]/None wrapper — so it
-    # cannot be silently unwrapped without losing data. The model repeats the offence verbatim, so
-    # past the one-turn budget it ships JSON-serialised as a string rather than being dropped.
-    bad = json.dumps({"linked_summary": {"summary": "x", "confidence": 0.9}})
-    llm = _Scripted(bad, bad)
+async def test_a_genuinely_nested_answer_ships_untouched_no_correction_spent() -> None:
+    # #994 regression, re-ruled: real extra data beside `summary` (`confidence`) — not the vacuous
+    # {}/[]/None wrapper — is NOT the guarantee's business any more. It ships exactly as the member
+    # wrote it: no correction turn, no second LLM call, no JSON-string coercion.
+    answer = json.dumps({"linked_summary": {"summary": "x", "confidence": 0.9}})
+    llm = _Scripted(answer)
     result = await _run(llm, policy=_envelope(declared_output_keys=("linked_summary",)))
     assert result.status is HarnessStatus.SUCCEEDED
-    assert len(_corrections(result)) == 1  # exactly one correction turn spent, never a second
+    assert llm.turns == 1  # never re-prompted
+    assert _shape_gate_steps(result) == []
     shipped = json.loads(result.output or "")
-    assert isinstance(shipped["linked_summary"], str)
-    # the key reads as text, and the original data survives, readable inside it
-    assert json.loads(shipped["linked_summary"]) == {"summary": "x", "confidence": 0.9}
+    assert shipped == {"linked_summary": {"summary": "x", "confidence": 0.9}}
 
 
-async def test_the_correction_fixes_it_and_the_run_ships_clean() -> None:
-    bad = json.dumps({"linked_summary": {"summary": "x", "confidence": 0.9}})
-    fixed = json.dumps({"linked_summary": "x"})
-    llm = _Scripted(bad, fixed)
-    result = await _run(llm, policy=_envelope(declared_output_keys=("linked_summary",)))
+async def test_a_list_of_records_ships_untouched_no_correction_spent() -> None:
+    # The live regression itself (run 8c0d0bc7-c659-4379-a567-eebc8c28fa90, "Daily AI News Digest"):
+    # a researcher's `articles` key legitimately holds a list of RECORDS, never text. Before #994 it
+    # shipped fine; #994 spent a correction turn on it every run and the fix is to never do that.
+    # Deliberately no `http(s)://` field: the link-provenance gate (#944/#975) strips a raw URL the
+    # run never fetched, which would confound this test with a DIFFERENT gate's behaviour.
+    articles = [
+        {"title": "A", "id": "article-1"},
+        {"title": "B", "id": "article-2"},
+    ]
+    answer = json.dumps({"articles": articles})
+    llm = _Scripted(answer)
+    result = await _run(llm, policy=_envelope(declared_output_keys=("articles",)))
     assert result.status is HarnessStatus.SUCCEEDED
-    assert len(_corrections(result)) == 1
-    assert json.loads(result.output or "") == {"linked_summary": "x"}
+    assert llm.turns == 1  # never re-prompted — the #994 bug required a second turn to trigger
+    assert _shape_gate_steps(result) == []
+    assert json.loads(result.output or "")["articles"] == articles
+
+
+async def test_a_bare_top_level_json_array_answer_ships_as_is() -> None:
+    # #994 regression ruling 4: `_extract_answer_object` returns `{}` for text that is not a JSON
+    # OBJECT at all (a bare array has no `{`). That must never discard or blank a previously parsed
+    # answer — the pre-#994 behaviour (no declared-key handling existed at all) shipped the raw text
+    # untouched, and that is exactly what must still happen: never a silently key-less SUCCEEDED
+    # manufactured by the guarantee itself.
+    bare_array = json.dumps(["line one", "line two"])
+    llm = _Scripted(bare_array)
+    result = await _run(llm, policy=_envelope(declared_output_keys=("articles",)))
+    assert result.status is HarnessStatus.SUCCEEDED
+    assert result.output == bare_array
+    assert _shape_gate_steps(result) == []
 
 
 async def test_a_member_with_no_declared_keys_is_never_checked() -> None:

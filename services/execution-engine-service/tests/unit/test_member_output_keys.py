@@ -145,6 +145,25 @@ async def test_a_declared_key_holding_a_list_of_strings_reaches_the_result_uncha
     assert res.results["linker"]["artifact_refs"] == []
 
 
+async def test_a_declared_key_holding_a_list_of_records_reaches_the_result_unchanged() -> None:
+    # #994 regression → #996 ruling: the harness loop's shape guarantee is UNWRAP ONLY — a list of
+    # RECORDS (not strings) is never coerced or dropped. Live regression, run
+    # `8c0d0bc7-c659-4379-a567-eebc8c28fa90` ("Daily AI News Digest"): a researcher's `articles`
+    # key legitimately holds a list of article records; the engine's lift stays a plain read, so
+    # whatever shape the loop shipped under the key is exactly what a consumer sees.
+    articles = [
+        {"title": "A", "url": "https://a.example/1"},
+        {"title": "B", "url": "https://a.example/2"},
+    ]
+    answer = json.dumps({"articles": articles})
+    harness = _ScriptedHarness({"researcher": answer})
+    team = _team([_m("researcher", outputs_schema={"required": ["articles"]})])
+    res = await run_team_harness(team, harness)
+
+    assert res.member_status["researcher"] == "succeeded"
+    assert res.results["researcher"]["articles"] == articles
+
+
 async def test_a_declared_contract_sends_its_keys_to_the_harness() -> None:
     # #993: the harness loop can only guarantee a key's SHAPE if it knows which keys were
     # declared — so the engine threads the same `declared_keys` it already lifts from, through to
