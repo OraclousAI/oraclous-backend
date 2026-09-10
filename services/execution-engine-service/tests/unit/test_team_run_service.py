@@ -14,9 +14,14 @@ from typing import Any
 import pytest
 from oraclous_execution_engine_service.models.team_run import EngineTeamRun
 from oraclous_execution_engine_service.schema.engine_schemas import AdvanceTeamRunRequest
-from oraclous_execution_engine_service.services.team_run_service import TeamRunError, TeamRunService
+from oraclous_execution_engine_service.services.team_run_service import (
+    TeamRunError,
+    TeamRunService,
+    load_team_manifest,
+)
 from oraclous_governance import Principal, PrincipalType
 from oraclous_ohm.gate import GateDecision
+from oraclous_ohm.manifest import OHMManifest
 from pydantic import ValidationError
 
 pytestmark = pytest.mark.unit
@@ -1797,3 +1802,92 @@ async def test_no_tool_members_leave_grounding_score_unset() -> None:
     )
     assert row.state == "SUCCEEDED"
     assert row.grounding_score is None
+
+
+# ── #995: the sink-rule refactor is behaviour-preserving for its 4 existing call sites ──────────
+# Each function's sink identification now goes through the shared `sink_roles` helper instead of
+# its own inline `depended = {...}` set comprehension. These pin the OLD inline formula against the
+# (refactored) function for every manifest shape the four callers were already exercised on —
+# straight pipeline, two independent sinks, and a no-single-sink team — proving the swap changed
+# nothing observable for real (agent-only) manifests.
+
+
+def _old_sink_roles(team: OHMManifest) -> set[str]:
+    """The pre-#995 inline formula every one of the 4 sites duplicated."""
+    depended = {d for m in team.members for d in m.depends_on}
+    return {m.role for m in team.members if m.role not in depended}
+
+
+def test_sink_roles_matches_the_old_inline_formula_for_a_single_sink() -> None:
+    from oraclous_execution_engine_service.services.team_run_service import _sink_roles
+
+    team = load_team_manifest(_team([_agent("a"), _agent("b", ["a"])]))
+    results = {"a": {}, "b": {}}
+    assert _sink_roles(team, results) == _old_sink_roles(team) == {"b"}
+
+
+def test_sink_roles_matches_the_old_inline_formula_for_two_independent_sinks() -> None:
+    from oraclous_execution_engine_service.services.team_run_service import _sink_roles
+
+    team = load_team_manifest(_team([_agent("a"), _agent("b")]))
+    results = {"a": {}, "b": {}}
+    assert _sink_roles(team, results) == _old_sink_roles(team) == {"a", "b"}
+
+
+def test_grade_target_matches_the_old_inline_formula_for_a_single_sink() -> None:
+    from oraclous_execution_engine_service.services.team_run_service import _grade_target
+
+    team = load_team_manifest(_team([_agent("a"), _agent("b", ["a"])]))
+    results = {"a": "upstream", "b": "the answer"}
+    assert _grade_target(team, results) == "the answer"
+    assert _old_sink_roles(team) == {"b"}  # the target the old formula would have picked too
+
+
+def test_grade_target_matches_the_old_inline_formula_for_no_single_sink() -> None:
+    from oraclous_execution_engine_service.services.team_run_service import _grade_target
+
+    team = load_team_manifest(_team([_agent("a"), _agent("b")]))  # 2 independent sinks
+    results = {"a": "x", "b": "y"}
+    assert _old_sink_roles(team) == {"a", "b"}
+    # both the pre- and post-refactor code fall to the multi-sink JSON-of-the-subset branch
+    import json
+
+    assert json.loads(_grade_target(team, results)) == {"a": "x", "b": "y"}
+
+
+def test_refresh_records_matches_the_old_inline_formula_for_a_single_sink() -> None:
+    from oraclous_execution_engine_service.services.team_run_service import _refresh_records
+
+    team = load_team_manifest(_team([_agent("a"), _agent("b", ["a"])]))
+    results = {"a": "ignored", "b": '[{"id": "x"}]'}
+    assert _old_sink_roles(team) == {"b"}
+    assert _refresh_records(team, results) == [{"id": "x"}]
+
+
+def test_refresh_records_matches_the_old_inline_formula_for_no_single_sink() -> None:
+    from oraclous_execution_engine_service.services.team_run_service import _refresh_records
+
+    team = load_team_manifest(_team([_agent("a"), _agent("b")]))  # 2 independent sinks
+    results = {"a": '[{"id": "x"}]', "b": '[{"id": "y"}]'}
+    assert _old_sink_roles(team) == {"a", "b"}
+    assert _refresh_records(team, results) is None  # ambiguous, unchanged before/after
+
+
+def test_refresh_dispatch_args_matches_the_old_inline_formula_for_a_single_sink() -> None:
+    from oraclous_execution_engine_service.domain.refresh import REFRESH_SEED_KEY
+    from oraclous_execution_engine_service.services.team_run import refresh_dispatch_args
+
+    team = load_team_manifest(_team([_agent("a"), _agent("b", ["a"])]))
+    inputs = {REFRESH_SEED_KEY: {"records": [{"id": "z"}], "seed_records_parsed": True}}
+    assert _old_sink_roles(team) == {"b"}
+    assert refresh_dispatch_args(team, inputs) == ([{"id": "z"}], "b")
+
+
+def test_refresh_dispatch_args_matches_the_old_inline_formula_for_no_single_sink() -> None:
+    from oraclous_execution_engine_service.domain.refresh import REFRESH_SEED_KEY
+    from oraclous_execution_engine_service.services.team_run import refresh_dispatch_args
+
+    team = load_team_manifest(_team([_agent("a"), _agent("b")]))  # 2 independent sinks
+    inputs = {REFRESH_SEED_KEY: {"records": [{"id": "z"}], "seed_records_parsed": True}}
+    assert _old_sink_roles(team) == {"a", "b"}
+    assert refresh_dispatch_args(team, inputs) == (None, None)  # ambiguous, unchanged before/after

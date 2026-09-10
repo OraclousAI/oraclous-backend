@@ -2319,7 +2319,7 @@ paths:
   /v1/engine/team-runs/{teamRunId}:
     get:
       tags: [engine]
-      summary: Read a team run (state, per-role results, member_status, verdict, revision_rounds, refresh_delta, plus the bound graph_id and team_name for the Results tab — #638). `simulated` (#907) is true when any member ran on the scripted stand-in LLM (HARNESS_LLM_MODE=fake).
+      summary: Read a team run (state, per-role results, member_status, verdict, revision_rounds, refresh_delta, plus the bound graph_id and team_name for the Results tab — #638). `simulated` (#907) is true when any member ran on the scripted stand-in LLM (HARNESS_LLM_MODE=fake). `answer_roles` (#995) names the plan's answer (sink) member(s), in manifest declaration order, derived read-side off the stored manifest; a `kind: human` sink is excluded.
       operationId: getTeamRun
       x-stability: provisional
       parameters:

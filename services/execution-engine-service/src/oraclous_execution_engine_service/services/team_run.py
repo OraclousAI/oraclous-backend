@@ -52,6 +52,7 @@ from oraclous_ohm.orchestrate import (
 )
 from oraclous_ohm.sites import InvalidSiteError, normalise_sites
 
+from oraclous_execution_engine_service.domain.answer_roles import sink_roles
 from oraclous_execution_engine_service.domain.app_answers import parse_answers
 from oraclous_execution_engine_service.domain.app_form import SITE_RESTRICTION_KEY
 from oraclous_execution_engine_service.domain.refresh import REFRESH_SEED_KEY
@@ -301,12 +302,16 @@ def _ancestor_roles(members: Sequence[OHMMember]) -> dict[str, list[str]]:
     before ``b`` before ``c`` regardless of which upstream finished first, or which edge is walked
     first).
 
-    Cycle-safe: a genuine loop's members (ADR-043) declare intra-loop ``depends_on`` edges among
-    themselves, so the traversal below tracks ``seen`` per role and never revisits a role already in
-    that role's own closure — a cycle simply stops expanding rather than recursing forever. This is
-    the SAME ``by_role``/``depends_on`` structure ``_condense`` reads (the pre-condensing, real
-    manifest), so a loop member's ancestors correctly include everything upstream of the loop as a
-    whole, not only its condensed inter-SCC edge."""
+    Cycle-safe defensively, though never actually cyclic in practice (#995 point 11): a genuine
+    loop's members (ADR-043) carry NO intra-loop ``depends_on`` edges in the STORED manifest — the
+    importer strips them before storage, and ``_condense`` only re-adds the loop's aggregate
+    inter-SCC upstream at dispatch time via its synthetic node (``_condense``'s
+    "the importer already stripped the intra-loop edges" comment). So this traversal never actually
+    walks a ``depends_on`` cycle; the ``seen`` tracking below is a defensive guard against a
+    malformed manifest, not a requirement of the real data. This reads the SAME ``by_role``/
+    ``depends_on`` structure ``_condense`` reads (the pre-condensing, real manifest), so a loop
+    member's ancestors correctly include everything upstream of the loop as a whole, not only its
+    condensed inter-SCC edge."""
     by_role = {m.role: m for m in members}
     declared_order = [m.role for m in members]
 
@@ -548,24 +553,25 @@ def refresh_dispatch_args(
     on a seeded refresh, or ``(None, None)`` for a normal run (default-OFF). The seed rides
     ``inputs["_refresh_seed"]`` (threaded at create by ``thread_refresh_seed``); the sink is the
     single producing member (no other member depends on it — the same member whose deliverable the
-    settle-time delta parses). A non-refresh run, an empty/unparseable seed, a team with no single
-    sink, or a ``fan_out`` sink threads nothing, so its dispatch is byte-for-byte unchanged."""
+    settle-time delta parses; #995 the shared ``sink_roles`` rule). A non-refresh run, an empty/
+    unparseable seed, a team with no single sink, or a ``fan_out`` sink threads nothing, so its
+    dispatch is byte-for-byte unchanged."""
     seed = (inputs or {}).get(REFRESH_SEED_KEY)
     if not isinstance(seed, dict):
         return None, None
     records = seed.get("records")
     if not isinstance(records, list) or not records:  # unparseable/empty seed → no carry-forward
         return None, None
-    depended = {d for m in manifest.members for d in m.depends_on}
-    sinks = [m for m in manifest.members if m.role not in depended]
+    sinks = sink_roles(manifest.members)
     if len(sinks) != 1:  # only a single-sink producer carries forward (the settle delta's shape)
         return None, None
+    sink = next(m for m in manifest.members if m.role == sinks[0])
     # #602 review Finding 1: never carry-forward into a fan_out sink — the seed would be re-rendered
     # per fan-item (multiplying the input cost), which can INVERT the saving. A fan-out refresh
     # re-derives (the delta still computes at settle); the lever targets a plain single producer.
-    if sinks[0].fan_out is not None:
+    if sink.fan_out is not None:
         return None, None
-    return [r for r in records if isinstance(r, dict)], sinks[0].role
+    return [r for r in records if isinstance(r, dict)], sink.role
 
 
 def _declared_output_keys(member: OHMMember) -> list[str]:

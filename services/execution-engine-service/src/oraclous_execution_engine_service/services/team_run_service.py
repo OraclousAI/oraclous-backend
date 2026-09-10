@@ -46,6 +46,7 @@ from oraclous_ohm.sites import InvalidSiteError, normalise_sites
 
 from oraclous_execution_engine_service.core.rls import org_scope
 from oraclous_execution_engine_service.domain import verdict_consumption as vc
+from oraclous_execution_engine_service.domain.answer_roles import sink_roles
 from oraclous_execution_engine_service.domain.app_answers import ANSWERS_KEY, parse_answers
 from oraclous_execution_engine_service.domain.app_form import SITE_RESTRICTION_KEY
 from oraclous_execution_engine_service.domain.refresh import (
@@ -660,9 +661,8 @@ def _verdict_score(verdict: Any) -> float | None:
 def _sink_roles(team: OHMManifest, results: dict[str, Any]) -> set[str]:
     """#604: the deliverable-producer (sink) members — those nothing depends on, present in
     ``results``. re_task forces these to re-run so a SUCCEEDED-but-below-threshold run regenerates
-    output. (Mirrors #602's sink identification.)"""
-    depended = {d for m in team.members for d in m.depends_on}
-    return {m.role for m in team.members if m.role not in depended and m.role in results}
+    output. (#995: the shared ``sink_roles`` rule + this call's own ``role in results`` gate.)"""
+    return {r for r in sink_roles(team.members) if r in results}
 
 
 def _verdict_reason(verdict: Any) -> str | None:  # noqa: ANN401
@@ -810,10 +810,9 @@ def _member_completion_progress(row: EngineTeamRun) -> int:
 
 def _grade_target(team: OHMManifest, results: dict[str, Any]) -> str:
     """Reduce the per-member results to ONE string to grade — the team's terminal (sink) members'
-    output (the roles no other member depends on). One sink → its output; several → a deterministic
+    output (#995: the shared ``sink_roles`` rule). One sink → its output; several → a deterministic
     JSON of the sink subset; none identifiable → a JSON of all results (fail-safe, never empty)."""
-    depended = {d for m in team.members for d in m.depends_on}
-    sinks = [m.role for m in team.members if m.role not in depended and m.role in results]
+    sinks = [r for r in sink_roles(team.members) if r in results]
     if len(sinks) == 1:
         out = results.get(sinks[0])
         return out if isinstance(out, str) else json.dumps(out, default=str, sort_keys=True)
@@ -822,12 +821,12 @@ def _grade_target(team: OHMManifest, results: dict[str, Any]) -> str:
 
 
 def _refresh_records(team: OHMManifest, results: dict[str, Any]) -> list[dict[str, Any]] | None:
-    """#602: the producing (sink) member's deliverable parsed into records for the 5-way delta. A
-    single sink → its output UNWRAPPED (the engine wraps a member's dispatch result as
-    ``{"output": <raw>, ...}``) → parsed as a JSON record array. Multiple/no sinks, or a deliverable
-    that is not a JSON record-set → None (no per-record delta)."""
-    depended = {d for m in team.members for d in m.depends_on}
-    sinks = [m.role for m in team.members if m.role not in depended and m.role in results]
+    """#602: the producing (sink) member's deliverable parsed into records for the 5-way delta
+    (#995: the shared ``sink_roles`` rule). A single sink → its output UNWRAPPED (the engine wraps
+    a member's dispatch result as ``{"output": <raw>, ...}``) → parsed as a JSON record array.
+    Multiple/no sinks, or a deliverable that is not a JSON record-set → None (no per-record delta).
+    """
+    sinks = [r for r in sink_roles(team.members) if r in results]
     if len(sinks) != 1:
         return None
     out: Any = results.get(sinks[0])
