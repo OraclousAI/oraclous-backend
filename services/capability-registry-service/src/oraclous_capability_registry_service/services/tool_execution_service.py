@@ -27,6 +27,12 @@ from oraclous_capability_registry_service.domain.executors.factory import (
     create_executor,
     has_executor,
 )
+from oraclous_capability_registry_service.domain.operations import (
+    OPERATION_KEY,
+    UNSUPPORTED_OPERATION,
+    operation_is_declared,
+    unsupported_operation_message,
+)
 from oraclous_capability_registry_service.models.enums import ExecutionStatus, InstanceStatus
 from oraclous_capability_registry_service.repositories.capability_repository import (
     CapabilityRepository,
@@ -109,6 +115,19 @@ class ToolExecutionService:
             raise ExecutionNotReadyError(
                 "this imported MCP tool is pending admin approval",
                 error_code="pending_approval",
+            )
+
+        # #1004 item 1 — defence in depth for #956. The harness runtime binds the operation at
+        # dispatch, but the registry used to run whatever `operation` arrived and let each
+        # connector's own hardcoded whitelist be the only check. Now the operation a caller CHOSE
+        # must be one the INSTANCE's descriptor declares; the two services agree independently, and
+        # a caller that chose nothing still gets the connector's default (see `domain.operations`).
+        # Placed before the executor lookup: what the descriptor declares is the authority, whether
+        # or not this deployment happens to ship an executor for the tool.
+        if not operation_is_declared(descriptor, body.input_data):
+            raise ExecutionNotReadyError(
+                unsupported_operation_message(body.input_data.get(OPERATION_KEY)),
+                error_code=UNSUPPORTED_OPERATION,
             )
 
         if not has_executor(descriptor):
