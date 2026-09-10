@@ -51,7 +51,11 @@ from oraclous_harness_runtime_service.domain.policy import (
     enforce_load_policy,
     resolve_policy_set,
 )
-from oraclous_harness_runtime_service.domain.tool_schemas import tool_specs_for
+from oraclous_harness_runtime_service.domain.tool_schemas import (
+    OperationOverrideRefused,
+    dispatch_payload,
+    tool_specs_for,
+)
 from oraclous_harness_runtime_service.models.enums import HarnessStatus, StepKind
 from oraclous_harness_runtime_service.models.execution import HarnessExecution
 from oraclous_harness_runtime_service.repositories.assignment_repository import AssignmentRepository
@@ -1099,9 +1103,24 @@ class HarnessExecutionService:
             instance_id = instance_by_binding.get(spec.binding)
             if instance_id is None:  # invariant: every emitted tool_spec.binding was materialised
                 raise RegistryError(f"no instance for capability binding {spec.binding!r}")
-            execution = await self._registry.execute(
-                instance_id, {"operation": spec.operation, **args}
-            )
+            # #956 ruling 1: the BOUND operation is what runs. `{"operation": ..., **args}` let a
+            # model-supplied key spread over the literal and pick the operation itself; the
+            # payload builder strips an equal key and refuses a differing one before the
+            # registry is ever called. The refusal propagates to the loop's dispatch `except`,
+            # which feeds it back to the model as a coded tool error and lets the run go on.
+            try:
+                payload = dispatch_payload(spec, args)
+            except OperationOverrideRefused as exc:
+                logger.warning(
+                    "tool %s: model-supplied operation refused, bound operation %r wins "
+                    "(supplied, first %d chars: %s)",
+                    exc.tool,
+                    exc.bound,
+                    len(exc.supplied_preview),
+                    exc.supplied_preview,
+                )
+                raise
+            execution = await self._registry.execute(instance_id, payload)
             if execution.get("status") != "SUCCESS":
                 detail = execution.get("error_message") or execution.get("status")
                 raise RegistryError(f"tool execution failed: {detail}")
