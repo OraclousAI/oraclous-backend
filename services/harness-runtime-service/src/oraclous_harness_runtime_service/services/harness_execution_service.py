@@ -53,6 +53,7 @@ from oraclous_harness_runtime_service.domain.policy import (
 )
 from oraclous_harness_runtime_service.domain.tool_schemas import (
     OperationOverrideRefused,
+    ToolDispatchRefused,
     dispatch_payload,
     tool_specs_for,
 )
@@ -1118,6 +1119,16 @@ class HarnessExecutionService:
                     exc.bound,
                     len(exc.supplied_preview),
                     exc.supplied_preview,
+                )
+                raise
+            except ToolDispatchRefused as exc:
+                # #1004 item 4: the other refusal the payload builder can raise (arguments that
+                # were not a JSON object). A refusal that leaves no trace is worse than one that
+                # does; the class name is ours, so nothing model-authored is logged.
+                logger.warning(
+                    "tool %s: dispatch refused before the registry (%s)",
+                    spec.name,
+                    type(exc).__name__,
                 )
                 raise
             execution = await self._registry.execute(instance_id, payload)

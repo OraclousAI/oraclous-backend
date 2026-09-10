@@ -35,6 +35,11 @@ _DESCRIPTOR = {
     "metadata": {"name": "core/web-research"},
     "spec": {
         "type": "web_research",
+        # #1004: the registry checks a requested operation against what the descriptor declares, so
+        # the fixture has to declare the one it calls — as the real WebResearchPlugin does. Without
+        # it this stand-in refused its own call before reaching the credential-resolve loop these
+        # tests are about.
+        "capabilities": [{"name": "search"}],
         "credential_requirements": [
             {"type": "api_key", "provider": "web_search", "required": True},
         ],
@@ -87,6 +92,7 @@ async def test_needs_credential_provider_is_capped_by_construction() -> None:
         "metadata": {"name": "core/web-research"},
         "spec": {
             "type": "web_research",
+            "capabilities": [{"name": "search"}],  # #1004, as above
             "credential_requirements": [
                 {"type": "api_key", "provider": "p" * 5000, "required": True},
             ],

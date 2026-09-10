@@ -13,6 +13,7 @@ registry payload with the BOUND operation, never one the model chose.
 from __future__ import annotations
 
 import hashlib
+import logging
 import re
 from typing import Any
 
@@ -134,12 +135,33 @@ _OPERATION_KEY = "operation"
 #: to the model — the way #692's registry codes do. A token, so the model can act on it.
 OPERATION_OVERRIDE_REFUSED = "operation_override_refused"
 
+#: Closed-vocabulary code for #1004 item 4: the model returned something that is not a JSON object
+#: where its tool's arguments belong.
+NON_OBJECT_ARGUMENTS_REFUSED = "tool_arguments_not_an_object"
+
 #: How much of the model-supplied value a log line may carry. Enough to recognise a prompt
 #: injection in a trace, too little to be a channel.
 _SUPPLIED_PREVIEW_CHARS = 64
 
+#: #1004 item 2: how many undeclared argument NAMES one warning may carry, and how long the
+#: rendered list may be. A key name is itself model-authored text, so it is bounded as well as
+#: counted — five 10,000-character names would be the channel the count alone did not close.
+_MAX_UNKNOWN_NAMES = 5
+_MAX_UNKNOWN_NAME_CHARS = 64
 
-class OperationOverrideRefused(Exception):
+logger = logging.getLogger(__name__)
+
+
+class ToolDispatchRefused(Exception):
+    """A tool call was refused HERE, before the registry was ever called.
+
+    #1004 item 4: both refusals are the same kind of event, so the dispatch closure can catch and
+    log them under one name. ``OperationOverrideRefused`` keeps its own identity (and its own
+    fields) for the call sites and tests that name it directly.
+    """
+
+
+class OperationOverrideRefused(ToolDispatchRefused):
     """The model put an ``operation`` in its arguments that is not the one its tool is bound to.
 
     Fail-closed (CLAUDE.md §3.5): the call is refused BEFORE the registry, not corrected. A
@@ -161,6 +183,72 @@ class OperationOverrideRefused(Exception):
         )
 
 
+class NonObjectArgumentsRefused(ToolDispatchRefused):
+    """The model's tool-call arguments were not a JSON object (#1004 item 4).
+
+    ``args`` is the raw ``json.loads`` of what the model returned, so it can be a list, a string,
+    a number or ``None``. That used to raise a ``TypeError`` out of a dict comprehension, which the
+    loop's broad handler turned into a generic tool error naming nothing the model could fix
+    (#693's lesson). Fail-closed by accident is not fail-closed by contract.
+
+    The message names the shape that was expected and never the arguments themselves — it is the
+    ``detail`` fed back to the model and persisted into the run transcript.
+    """
+
+    def __init__(self, *, tool: str) -> None:
+        self.tool = tool
+        super().__init__(
+            f"{NON_OBJECT_ARGUMENTS_REFUSED}: this tool takes a JSON object of named arguments; "
+            "the call supplied something else — send an object, even an empty one"
+        )
+
+
+def _operation_keys(args: dict[str, Any]) -> list[str]:
+    """Every top-level key that MEANS ``operation``, however the model spelled its case.
+
+    #1004 item 3: the match used to be exact, so ``Operation`` / ``OPERATION`` rode through as
+    ordinary extra keys — harmless only because the sampled connectors read the lowercase
+    spelling. Whether a given connector happens to read a variant is not the runtime's business:
+    a key that means "pick the operation" is the binding's business however it is written.
+    """
+    return [k for k in args if isinstance(k, str) and k.lower() == _OPERATION_KEY]
+
+
+def _report_unknown_keys(spec: ToolSpec, args: dict[str, Any]) -> None:
+    """Log the NAMES of arguments a CLOSED schema did not declare (#1004 item 2).
+
+    ``additionalProperties: false`` is a hint to the PROVIDER, not a server-side check: nothing on
+    our side re-validates the model's arguments, and the ruling keeps it that way — real
+    enforcement belongs with #898 (strict schemas) and #911 (``required``). What the runtime owes
+    is visibility, so an operator can see a provider that ignored the hint instead of guessing.
+
+    Only a schema that CLOSED itself is reported. An imported MCP operation's schema is the
+    server's own contract, passed through as it came (#698 D1); an open schema declares extra keys
+    legal, so warning on every argument of every imported tool would be noise, not signal.
+
+    Names only, never values: a value is model-authored content, a key name is what an operator
+    needs to diagnose. Bounded twice — at most ``_MAX_UNKNOWN_NAMES`` names, rendered into at most
+    ``_MAX_UNKNOWN_NAME_CHARS`` characters — because a key name is model-authored text too.
+    """
+    schema = spec.parameters
+    if not isinstance(schema, dict) or schema.get("additionalProperties") is not False:
+        return
+    properties = schema.get("properties")
+    declared = set(properties) if isinstance(properties, dict) else set()
+    unknown = sorted(k for k in args if k not in declared)
+    if not unknown:
+        return
+    rendered = ", ".join(unknown[:_MAX_UNKNOWN_NAMES])[:_MAX_UNKNOWN_NAME_CHARS]
+    logger.warning(
+        "tool %s: %d argument(s) its closed schema does not declare were passed through "
+        "unchecked (the schema is a provider hint, not a server-side check); first names, "
+        "bounded: %s",
+        spec.name,
+        len(unknown),
+        rendered,
+    )
+
+
 def dispatch_payload(spec: ToolSpec, args: dict[str, Any]) -> dict[str, Any]:
     """``{"operation": spec.operation, **args}`` with the model's own ``operation`` key removed.
 
@@ -170,14 +258,29 @@ def dispatch_payload(spec: ToolSpec, args: dict[str, Any]) -> dict[str, Any]:
 
     * a key equal to the bound operation is stripped and the call proceeds — the model changed
       nothing, and refusing would cost it a turn for no gain;
-    * a key that differs (any value, any type; exact match, no case folding) raises
-      ``OperationOverrideRefused`` and nothing is dispatched;
+    * a key that differs (any value, any type; the VALUE is matched exactly, with no case folding)
+      raises ``OperationOverrideRefused`` and nothing is dispatched;
     * the strip is SHALLOW, matching the mcp connector's ``_arguments`` (#698 D3): a nested
       ``operation`` is the tool's own argument and travels intact.
+
+    #1004 tightens three edges of the same rule. The KEY is matched case-insensitively (item 3), so
+    ``Operation`` is not an ordinary extra key — and a payload carrying two spellings that disagree
+    is refused rather than resolved by ordering. ``args`` that is not a JSON object is refused
+    explicitly (item 4) rather than raising a ``TypeError`` from the comprehension below. And a key
+    a CLOSED schema never declared is logged by name (item 2) while still travelling — the closed
+    schema stays advisory.
+
+    ``args`` is annotated ``dict`` because that is what a well-behaved provider sends; it is the
+    raw ``json.loads`` of model output, so the annotation is a promise the input does not keep and
+    the guard below is load-bearing.
     """
-    if _OPERATION_KEY in args:
-        supplied = args[_OPERATION_KEY]
+    if not isinstance(args, dict):
+        raise NonObjectArgumentsRefused(tool=spec.name)
+    keys = _operation_keys(args)
+    for key in keys:
+        supplied = args[key]
         if supplied != spec.operation:
             raise OperationOverrideRefused(tool=spec.name, bound=spec.operation, supplied=supplied)
-        args = {k: v for k, v in args.items() if k != _OPERATION_KEY}
-    return {_OPERATION_KEY: spec.operation, **args}
+    rest = {k: v for k, v in args.items() if k not in keys}
+    _report_unknown_keys(spec, rest)
+    return {_OPERATION_KEY: spec.operation, **rest}
