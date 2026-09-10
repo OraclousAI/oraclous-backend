@@ -23,6 +23,10 @@ COMPOSE="docker compose --env-file deploy/.env -f deploy/docker-compose.yml -f d
 # deploy/.env.test holds the keys a TEST brings (OPENROUTER_API_KEY, TAVILY_API_KEY). They are
 # never service environment: an e2e reads one here and pastes it through the gateway credentials
 # API so it becomes an ORG credential, which is the BYOM path the product actually uses.
+# It may also hold E2E_MODEL (#1000): the ONE model binding every e2e uses, e.g.
+#   E2E_MODEL=openrouter/nvidia/nemotron-3-super-120b-a12b:free
+# Optional and untracked like the keys: absent, tests/e2e/conftest.py defaults to that free
+# OpenRouter model, so the real-LLM leg costs nothing unless you point it elsewhere.
 # deploy/.env stays deployment config; since #724 it carries no model key at all, and the
 # check_byom_model_keys guardrail fails the build if one reappears in a service env.
 TEST_ENV_FILE="deploy/.env.test"
@@ -35,6 +39,7 @@ _load_test_key() {  # _load_test_key VAR — export VAR from deploy/.env.test un
   [ -n "$val" ] && export "$var=$val"
   return 0
 }
+_load_test_key E2E_MODEL  # every mode binds this model (#1000); absent → the conftest default
 OAUTH_COMPOSE="$COMPOSE -f deploy/docker-compose.e2e-oauth.yml"
 
 run_oauth() {
