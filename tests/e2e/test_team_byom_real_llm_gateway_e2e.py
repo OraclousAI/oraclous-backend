@@ -63,7 +63,7 @@ def _byom_model(credential_id: str) -> dict:
     """The user's own model binding — a cheap OpenRouter model resolved via their credential."""
     return {
         "role": "primary",
-        "binding": "openrouter/openai/gpt-4o-mini",
+        "binding": os.environ["E2E_MODEL"],
         "protocol_shape": "openai-compatible",
         "config": {"credential_id": credential_id},
     }

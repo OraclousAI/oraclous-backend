@@ -32,7 +32,7 @@ _OR_KEY = os.environ.get("OPENROUTER_API_KEY")
 requires_byom = pytest.mark.skipif(
     not _OR_KEY, reason="OPENROUTER_API_KEY unset (the real-model handoff-objective proof)"
 )
-_MODEL = "openrouter/openai/gpt-4o-mini"
+_MODEL = os.environ["E2E_MODEL"]
 _MARKER = "HANDOFF_SCOPE_577_OK"
 
 

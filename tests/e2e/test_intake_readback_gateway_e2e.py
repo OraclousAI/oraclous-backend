@@ -47,7 +47,7 @@ def _models(credential_id: str) -> list[dict]:
     return [
         {
             "role": "primary",
-            "binding": "openrouter/openai/gpt-4o-mini",
+            "binding": os.environ["E2E_MODEL"],
             "protocol_shape": "openai-compatible",
             "config": {"credential_id": credential_id},
         }

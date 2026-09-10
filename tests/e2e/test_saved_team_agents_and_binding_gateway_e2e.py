@@ -45,7 +45,7 @@ pytestmark = [pytest.mark.e2e, pytest.mark.integration, pytest.mark.byom]
 
 _OR_KEY = os.environ.get("OPENROUTER_API_KEY")
 requires_byom = pytest.mark.skipif(_OR_KEY is None, reason="OPENROUTER_API_KEY unset (real BYOM)")
-_MODEL = "openrouter/openai/gpt-4o-mini"
+_MODEL = os.environ["E2E_MODEL"]
 
 #: the one seeded graph write capability — where a member's deliverable belongs under the cloud
 #: default (ADR-040 D7 / ADR-041 D3). The team declares it by name; the engine resolves the ref.

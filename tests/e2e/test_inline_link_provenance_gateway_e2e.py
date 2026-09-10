@@ -176,7 +176,7 @@ def _linker_sub(org: str, credential_id: str) -> dict:
         tools=["web-research"],
         model=OHMModel(
             role="primary",
-            binding="openrouter/openai/gpt-4o-mini",
+            binding=os.environ["E2E_MODEL"],
             protocol_shape="openai-compatible",
             config={"credential_id": credential_id},
         ),
@@ -307,7 +307,7 @@ def _byom_model(credential_id: str) -> dict:
 
     return OHMModel(
         role="primary",
-        binding="openrouter/openai/gpt-4o-mini",
+        binding=os.environ["E2E_MODEL"],
         protocol_shape="openai-compatible",
         config={"credential_id": credential_id},
     )

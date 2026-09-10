@@ -67,7 +67,7 @@ def test_a_user_brings_their_own_model_token_and_runs_a_real_agent(
         "models": [
             {
                 "role": "primary",
-                "binding": "openrouter/openai/gpt-4o-mini",
+                "binding": os.environ["E2E_MODEL"],
                 "protocol_shape": "openai-compatible",
                 "config": {"credential_id": credential_id},  # the USER's stored credential
             }

@@ -44,7 +44,7 @@ requires_byom_key = pytest.mark.skipif(
     _USER_MODEL_KEY is None, reason="OPENROUTER_API_KEY unset (the real-model agent-write proof)"
 )
 
-_MODEL = "openrouter/openai/gpt-4o-mini"
+_MODEL = os.environ["E2E_MODEL"]
 
 
 # --------------------------------------------------------------------------------------------

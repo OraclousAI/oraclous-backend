@@ -38,7 +38,7 @@ pytestmark = [pytest.mark.e2e, pytest.mark.integration]
 _OR_KEY = os.environ.get("OPENROUTER_API_KEY")
 _TAVILY_KEY = os.environ.get("TAVILY_API_KEY")
 requires_byom = pytest.mark.skipif(_OR_KEY is None, reason="OPENROUTER_API_KEY unset (real BYOM)")
-_MODEL = "openrouter/openai/gpt-4o-mini"
+_MODEL = os.environ["E2E_MODEL"]
 
 #: The slug the engine seeds its first Oraclous-provided app under. The console deep-links to it,
 #: so it is part of the contract rather than an implementation detail.

@@ -8,6 +8,10 @@ when the gateway is unreachable (the `_require_gateway` autouse fixture), so uni
 These are pytest fixtures (auto-discovered) rather than importable helpers on purpose: a test must
 never `from tests.e2e.conftest import ...` (that import is not portable under collection — CLAUDE.md
 §4.1). Take `register` / `gateway_client` / `gateway_url` as fixture arguments instead.
+
+Fixture note (#921 owns the sweep): two draft-validation rules block a team manifest outright, so a
+new fixture must give every member tool a `tool_rationale` (`F-TOOL-UNJUSTIFIED`) and declare each
+member's output keys (`F-NO-OUTPUT-CONTRACT`).
 """
 
 from __future__ import annotations
@@ -27,6 +31,18 @@ GATEWAY = "http://localhost:8006"  # the application-gateway — the ONLY extern
 #: reaches the extractor fails closed with ``model_credential_not_configured``. The compose DEFAULT
 #: is ``KGS_EXTRACTOR=null``, which needs no credential, so CI and a key-free stack are unaffected.
 _MODEL_KEY = os.getenv("OPENROUTER_API_KEY", "").strip()
+
+#: The ONE model the suite binds (#1000). A test reads it back as ``os.environ["E2E_MODEL"]`` rather
+#: than importing this module (see the docstring: conftest is not importable under collection);
+#: pytest loads this conftest before any test module in the directory, so by then the env holds
+#: either the caller's value or the default set here. Keep the ``openrouter/`` prefix: the harness
+#: splits the binding at the FIRST ``/`` for the provider (base URL, policy ``allowed_providers``)
+#: and sends the rest (``nvidia/...:free``) to OpenRouter as the model id. The default is a FREE
+#: OpenRouter model so the real-LLM leg costs nothing; scripts/e2e.sh exports ``E2E_MODEL`` from
+#: deploy/.env.test and CI from ``vars.E2E_MODEL`` (both optional, both fall back to this default).
+_DEFAULT_E2E_MODEL = "openrouter/nvidia/nemotron-3-super-120b-a12b:free"
+E2E_MODEL = os.getenv("E2E_MODEL", "").strip() or _DEFAULT_E2E_MODEL
+os.environ["E2E_MODEL"] = E2E_MODEL
 
 
 def _gateway_up() -> bool:

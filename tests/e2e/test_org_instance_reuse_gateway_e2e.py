@@ -125,7 +125,7 @@ def _team(org: str, model_credential_id: str) -> tuple[dict, dict]:
         "models": [
             {
                 "role": "primary",
-                "binding": "openrouter/openai/gpt-4o-mini",
+                "binding": os.environ["E2E_MODEL"],
                 "protocol_shape": "openai-compatible",
                 "config": {"credential_id": model_credential_id},
             }

@@ -130,7 +130,7 @@ def test_a_user_publishes_a_real_agent_and_invokes_it_with_their_model(
         "models": [
             {
                 "role": "primary",
-                "binding": "openrouter/openai/gpt-4o-mini",
+                "binding": os.environ["E2E_MODEL"],
                 "protocol_shape": "openai-compatible",
                 "config": {"credential_id": cred},
             }
