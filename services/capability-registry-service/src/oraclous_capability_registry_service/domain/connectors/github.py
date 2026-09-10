@@ -17,6 +17,7 @@ from oraclous_capability_registry_service.domain.executors.base import (
     ExecutionContext,
     ExecutionResult,
     InternalTool,
+    unsupported_operation,
 )
 
 _GITHUB_BASE = "https://api.github.com"
@@ -54,11 +55,7 @@ class GitHubReader(InternalTool):
             if operation in ("list_files", "read_file"):
                 resp = await client.get(f"/repos/{repo}/contents/{path}")
             else:
-                return ExecutionResult(
-                    success=False,
-                    error_message=f"unsupported operation '{operation}'",
-                    error_type="INVALID_OPERATION",
-                )
+                return unsupported_operation(operation)
         if resp.status_code != 200:
             return ExecutionResult(
                 success=False,

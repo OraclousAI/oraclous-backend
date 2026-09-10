@@ -17,6 +17,7 @@ from oraclous_capability_registry_service.domain.executors.base import (
     DatabaseTool,
     ExecutionContext,
     ExecutionResult,
+    unsupported_operation,
 )
 
 
@@ -61,10 +62,6 @@ class PostgreSQLReader(DatabaseTool):
                     data={"rows": data, "headers": list(data[0].keys()) if data else []},
                     metadata={"row_count": len(data)},
                 )
-            return ExecutionResult(
-                success=False,
-                error_message=f"unsupported operation '{operation}'",
-                error_type="INVALID_OPERATION",
-            )
+            return unsupported_operation(operation)
         finally:
             await conn.close()
