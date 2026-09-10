@@ -63,6 +63,52 @@ def _cred(c: httpx.Client, user: dict) -> str:
     return r.json()["id"]
 
 
+#: the search key a compiled researcher may need (#881) — a BYOM source, pasted through the
+#: credentials API like the model key; scripts/e2e.sh exports it from deploy/.env (#886).
+_TAVILY = os.environ.get("TAVILY_API_KEY", "")
+
+
+def _slug(name: str) -> str:
+    import re
+
+    return re.sub(r"[^a-z0-9]+", "-", name.strip().lower()).strip("-")
+
+
+def _connect_declared_tools(c: httpx.Client, user: dict, manifest: dict) -> None:
+    """#881: a compiled team is not runnable until its user connects what it declared — the same
+    connect step the console runs before GO. Every tool slug in ``members[].tools`` gets an
+    organisation instance; ``web-research`` also gets the user's search key bound, because the
+    dispatch fails closed on a required ``api_key`` that nobody mapped."""
+    rows = c.get("/api/v1/capabilities", params={"kind": "tool"}).json()["capabilities"]
+    by_slug = {_slug(str(r["name"])): r for r in rows}
+    for slug in sorted({t for m in manifest["members"] for t in m.get("tools", [])}):
+        cap = by_slug.get(_slug(slug))
+        assert cap is not None, f"{slug!r} is not a registered capability in this organisation"
+        inst = c.post(
+            "/api/v1/instances",
+            json={"capability_id": cap["id"], "name": slug, "configuration": {}, "settings": {}},
+        )
+        assert inst.status_code == 201, inst.text
+        if _slug(slug) == "web-research" and _TAVILY:
+            cred = c.post(
+                "/credentials/",
+                json={
+                    "tool_id": cap["id"],
+                    "user_id": user["user_id"],
+                    "name": "search key",
+                    "provider": "tavily",
+                    "cred_type": "api_key",
+                    "credential": {"api_key": _TAVILY},
+                },
+            )
+            assert cred.status_code == 201, cred.text
+            bound = c.post(
+                f"/api/v1/instances/{inst.json()['id']}/configure-credentials",
+                json={"credential_mappings": {"api_key": cred.json()["id"]}},
+            )
+            assert bound.status_code == 200, bound.text
+
+
 def _team(org: str, members: list[dict]) -> dict:
     return {
         "ohm_version": "1.1",
@@ -615,9 +661,22 @@ def test_the_whole_loop_compile_draft_refine_go_through_the_gateway(
     doc = final["manifest"]
     doc["models"] = [_model(cred)]
     subs = {role: {**sub, "models": [_model(cred)]} for role, sub in final["sub_harnesses"].items()}
+    # #881: two things GO must send that this step never did. Since #714 every compiled team
+    # declares a `task_input`, and a required one is refused at 422 (MISSING_TASK_INPUT) without a
+    # task under its key — so the objective rides under the declared key. And the tools the
+    # drafter chose have to be connected for the organisation, or the first dispatch fails closed.
+    task_input = doc.get("task_input") or {}
+    inputs = {task_input["key"]: _OBJECTIVE} if task_input.get("key") else {}
+    _connect_declared_tools(c, user, doc)
     go = c.post(
         "/v1/engine/team-runs",
-        json={"manifest": doc, "sub_harnesses": subs, "gate_decisions": {}, "graph_id": gid},
+        json={
+            "manifest": doc,
+            "sub_harnesses": subs,
+            "gate_decisions": {},
+            "graph_id": gid,
+            "inputs": inputs,
+        },
     )
     assert go.status_code == 202, go.text
     finished = _poll(c, go.json()["id"])

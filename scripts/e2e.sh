@@ -126,6 +126,7 @@ run_deterministic() {
 run_byom() {
   _load_test_key OPENROUTER_API_KEY
   : "${OPENROUTER_API_KEY:?set OPENROUTER_API_KEY in deploy/.env.test for --byom}"
+  _load_search_key   # #881: a compiled team's researcher may need the live search key connected
   _recreate_harness live
   echo ">> BYOM real-LLM e2e through the gateway (live LLM, user-supplied key)…"
   uv run pytest tests/e2e -m byom -v -p no:cacheprovider && _banner "BYOM real-LLM"
