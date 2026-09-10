@@ -106,6 +106,10 @@ def _team(org: str, nonce: str) -> dict[str, Any]:
                 ),
                 "depends_on": [],
                 "tools": ["graph-ingest"],
+                # the two declarations every drafted member needs (tests/e2e/README.md): without
+                # them the save is blocked before the binding under test is ever reached.
+                "outputs_schema": {"required": ["summary"]},
+                "tool_rationale": {"graph-ingest": "the writer files its note on the shared graph"},
             }
         ],
         "runtime": {"entrypoint": "writer"},
