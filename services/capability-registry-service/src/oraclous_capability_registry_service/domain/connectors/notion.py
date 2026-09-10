@@ -20,6 +20,7 @@ from oraclous_capability_registry_service.domain.executors.base import (
     ExecutionContext,
     ExecutionResult,
     InternalTool,
+    unsupported_operation,
 )
 
 _NOTION_BASE = "https://api.notion.com"
@@ -63,11 +64,7 @@ class NotionReader(InternalTool):
                         error_type="INVALID_INPUT",
                     )
                 return await self._read_page(client, str(page_id))
-            return ExecutionResult(
-                success=False,
-                error_message=f"unsupported operation '{operation}'",
-                error_type="INVALID_OPERATION",
-            )
+            return unsupported_operation(operation)
 
     async def _read_page(self, client: httpx.AsyncClient, page_id: str) -> ExecutionResult:
         page_resp = await client.get(f"/v1/pages/{page_id}")

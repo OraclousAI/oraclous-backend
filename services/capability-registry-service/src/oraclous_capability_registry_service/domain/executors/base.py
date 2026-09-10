@@ -23,6 +23,12 @@ from oraclous_capability_registry_service.domain.executors.input_validation impo
 
 _DEFAULT_TIMEOUT_S = 30.0
 
+#: The run page's per-step budget — how much of a caller-supplied or tool-supplied text an error
+#: message may carry (#697 for a tool's own words; #956 for an echoed ``operation``). ONE number,
+#: shared by the mcp connector and every first-party connector that names a bad operation, so the
+#: imported-server path and the internal path cannot drift apart.
+TOOL_ERROR_CHARS = 300
+
 #: Exception types whose message is derived from the caller's own data rather than written for a
 #: caller: ``str(KeyError("path"))`` is ``"'path'"``. Surfacing one names no argument and no
 #: expectation, so the caller cannot repair the call — and a KeyError's message is caller-supplied
@@ -87,6 +93,21 @@ def _safe_message(exc: Exception) -> str:
             "against the tool's declared input schema"
         )
     return str(exc)
+
+
+def unsupported_operation(operation: object) -> ExecutionResult:
+    """The uniform refusal for an operation a connector does not implement.
+
+    #956 ruling 3: the name is echoed so the caller can see WHICH name was wrong (#692's lesson —
+    an unactionable error gets repeated), but bounded at ``TOOL_ERROR_CHARS``: this message is fed
+    back to the model and persisted into the run transcript, and an unbounded ``f"…'{operation}'"``
+    was a general echo channel for arbitrary model text.
+    """
+    return ExecutionResult(
+        success=False,
+        error_message=f"unsupported operation '{str(operation)[:TOOL_ERROR_CHARS]}'",
+        error_type="INVALID_OPERATION",
+    )
 
 
 class BaseToolExecutor(ABC):

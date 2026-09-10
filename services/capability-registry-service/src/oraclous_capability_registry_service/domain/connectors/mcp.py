@@ -29,6 +29,7 @@ from oraclous_capability_registry_service.domain.connectors.mcp_protocol import 
 )
 from oraclous_capability_registry_service.domain.egress import egress_allowed
 from oraclous_capability_registry_service.domain.executors.base import (
+    TOOL_ERROR_CHARS,
     ExecutionContext,
     ExecutionResult,
     InternalTool,
@@ -49,9 +50,6 @@ def _arguments(input_data: dict[str, Any]) -> dict[str, Any]:
     return {k: v for k, v in input_data.items() if k != "operation"}
 
 
-_TOOL_ERROR_CHARS = 300  # the run page's per-step budget; a tool may answer with a wall of text
-
-
 def _tool_error_message(content: Any) -> str:
     """WHY the MCP tool refused, in the tool's own words, bounded (#697's live blocker).
 
@@ -63,7 +61,9 @@ def _tool_error_message(content: Any) -> str:
     A tool result's ``content`` is the tool's ANSWER to its caller, not an internal detail, which
     is why it is surfaced where the JSON-RPC transport error is still withheld (that one can carry
     the server's own internals). Text blocks only, joined and capped; a non-text block (an image, a
-    resource handle) is not a reason and is skipped.
+    resource handle) is not a reason and is skipped. The cap is ``executors.base.TOOL_ERROR_CHARS``
+    (#956: hoisted so the first-party connectors' ``unsupported operation`` echo shares it — one
+    number for both dispatch paths).
     """
     base = "the MCP tool reported a failure"
     if not isinstance(content, list):
@@ -78,7 +78,7 @@ def _tool_error_message(content: Any) -> str:
     )
     if not said:
         return base
-    return f"{base}: {said[:_TOOL_ERROR_CHARS]}"
+    return f"{base}: {said[:TOOL_ERROR_CHARS]}"
 
 
 class McpToolExecutor(InternalTool):
