@@ -53,6 +53,36 @@ executions` (list) + `GET /v1/harnesses/assignments` (the task board).
 retrieval — a later capability; deliberately the same provenance write path, not a privileged one).
 This completes the R4 build.
 
+## Tool dispatch: the runtime binds the operation, never the model (#956)
+
+Every LLM-callable tool is one capability **operation** (`<binding>__<operation>`, built by
+`domain/tool_schemas.py`). Which operation runs is decided by **which tool the model called** — the
+`ToolSpec.operation` the runtime bound — and never by an argument. The rule, shared by both dispatch
+paths, is:
+
+1. **At dispatch** (`services/harness_execution_service.py` → `domain/tool_schemas.dispatch_payload`)
+   the registry payload is `{"operation": spec.operation, **args}` with the model's own `operation`
+   key removed first. A key equal to the bound operation is stripped and the call proceeds. A key that
+   differs — any value, any type, exact match with no case folding — raises `OperationOverrideRefused`
+   **before the registry is called**: the loop feeds it back to the model as a coded tool error
+   (`operation_override_refused`, no echo of the supplied value) and the run goes on; the service logs
+   the attempt at WARNING with at most 64 characters of the value. The strip is shallow: a nested
+   `operation` is the tool's own argument.
+2. **At the schema** a first-party operation's schema carries `additionalProperties: false`, so a
+   schema-honouring provider refuses an undeclared key before the runtime sees it. An imported MCP
+   operation's schema is the **server's** contract and is passed through as it came (#698 D1), open or
+   closed; its no-schema fallback stays open.
+3. **At the connector** the imported-server path strips `operation` again in the registry's mcp
+   connector (#698 D3) because the key means nothing to a third-party server; a first-party connector
+   that does not implement the operation answers `unsupported operation '<name>'` with the echoed name
+   capped at `executors.base.TOOL_ERROR_CHARS` (300) — the same bound the mcp connector caps a tool's
+   own error text at, one constant for both paths.
+
+So the internal path and the imported path **agree**: the harness enforces the binding once for every
+tool, the schema closes the first-party surface, and neither path reflects unbounded model text into a
+persisted error. Known limit: an imported MCP tool whose own input schema declares a parameter named
+`operation` cannot receive it (rule 1 refuses a differing value; the mcp connector strips it anyway).
+
 ## Definition of Done (8 gates)
 
 | # | Gate | Status |
