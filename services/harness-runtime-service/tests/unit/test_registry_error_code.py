@@ -35,6 +35,10 @@ pytestmark = pytest.mark.unit
 _INSTANCE = uuid.UUID("40f596f9-4aed-4aed-9d7d-b830cb2e8b70")
 _CUSTOMER_TEXT = "the reviewer said the manuscript's third act drags"
 
+#: #1004 item 1 — the registry's coded refusal for an operation the instance's descriptor does not
+#: declare, the newest member of the same closed token vocabulary.
+_UNSUPPORTED = "unsupported_operation"
+
 
 def _client(status_code: int, body: dict) -> RegistryClient:
     def handler(request: httpx.Request) -> httpx.Response:  # noqa: ARG001
@@ -119,3 +123,27 @@ async def test_a_non_json_error_body_does_not_break_the_client() -> None:
     assert ei.value.error_code is None
     assert "502" in str(ei.value)
     assert "html" not in str(ei.value).lower()
+
+
+# --- #1004 item 1: the registry's declared-operation refusal is actionable, not a bare token -----
+
+
+async def test_the_unsupported_operation_refusal_is_carried() -> None:
+    """#1004: the registry now validates the requested ``operation`` against the operations the
+    instance's DESCRIPTOR declares, and refuses an undeclared one with a coded 409. The token has
+    to cross the same way ``pending_approval`` / ``no_executor`` do."""
+    exc = await _execute(409, {"detail": "unsupported operation", "error_code": _UNSUPPORTED})
+    assert exc.error_code == _UNSUPPORTED
+
+
+async def test_the_unsupported_operation_refusal_says_what_to_do_about_it() -> None:
+    """#692 AC4 applied to the new code: a bare ``unsupported_operation`` tells a member the call
+    failed, not that this tool does not do that thing and another must be chosen. The words are
+    owned HERE, never echoed from the registry's body, so the token is not a relay channel."""
+    exc = await _execute(409, {"detail": "unsupported operation", "error_code": _UNSUPPORTED})
+
+    message = str(exc)
+    assert _UNSUPPORTED in message
+    bare = f"POST /api/v1/instances/{_INSTANCE}/execute → 409 ({_UNSUPPORTED})"
+    assert len(message) > len(bare), "the code crossed with no meaning attached to it"
+    assert _CUSTOMER_TEXT not in message
