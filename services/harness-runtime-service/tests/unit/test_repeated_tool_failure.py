@@ -1164,3 +1164,249 @@ def test_an_ordinary_response_keeps_its_ids_untouched() -> None:
     )
 
     assert _safe_tool_call_ids(["call_abc123", "call_def456"]) == ["call_abc123", "call_def456"]
+
+
+# --- #958: a duplicate id reaching the TRANSCRIPT READERS, not the live parse path ----------------
+#
+# `_safe_tool_call_ids` (above, #955/#946) already deduplicates every id within ONE model response
+# before the live loop ever sees it — "the same shape reaching the readers by other routes is #958"
+# per its own docstring. This section is that other route: a HITL resume rebuilds
+# `_repeated_failures_from_transcript` and `_fetched_urls_from_transcript`'s id→args maps by
+# scanning an already-PERSISTED transcript, and a persisted checkpoint need not have passed through
+# the cleaner at all — it can predate #955, or be a directly crafted/replayed one. Both readers
+# build their map with a flat, transcript-wide ``dict[call_id] = args``, last write wins, with no
+# scoping to the assistant turn the id came from. Two calls that share an id — in one turn, because
+# the cleaner never ran, or across two turns, where nothing has ever required uniqueness — silently
+# let one call's arguments answer for the other's result.
+#
+# The harm named in the issue: a genuinely fetched URL is dropped and a never-fetched, attacker-
+# chosen one is credited into the run's own link provenance, so a citation pointing at it stops
+# being flagged as unverified.
+
+_GENUINE_URL = "https://real.example/genuine"
+_INVENTED_URL = "https://attacker.example/invented"
+_GOOD_SEARCH_ARGS = {"query": "weather", "provider": "NOAA"}
+_BAD_SEARCH_ARGS = {"query": "bad", "provider": "The Verge"}
+
+
+def _receipt(call_id: str, *, status: str) -> str:
+    return f"\n[receipt: source_tool_call_id={call_id} status={status}]"
+
+
+def _transcript_with_one_id_shared_within_a_turn() -> list[Message]:
+    """One assistant turn emits two ``read`` calls sharing the literal id ``"dup1"`` — the
+    endpoint's own duplicate, never having passed through ``_safe_tool_call_ids`` (a persisted or
+    directly crafted checkpoint need not have). The genuine call fetches a real address and
+    succeeds; the invented one names an address the run never legitimately fetched and fails."""
+    return [
+        {"role": "user", "content": "go"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {"id": "dup1", "name": _READ.name, "args": {"url": _GENUINE_URL}},
+                {"id": "dup1", "name": _READ.name, "args": {"url": _INVENTED_URL}},
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "dup1",
+            "name": _READ.name,
+            "content": json.dumps({"text": "the real page body"}) + _receipt("dup1", status="ok"),
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "dup1",
+            "name": _READ.name,
+            "content": json.dumps({"error": "RuntimeError", "detail": "404 not found"})
+            + _receipt("dup1", status="error"),
+        },
+    ]
+
+
+@pytest.mark.security
+def test_a_duplicate_id_within_one_turn_does_not_credit_the_never_fetched_address() -> None:
+    """Both tool-role messages answer to the same id, so the id→args map built across the WHOLE
+    assistant turn cannot tell which entry belongs to which reply. A last-write-wins map hands both
+    replies the invented call's arguments: the successful reply is read with the invented URL (and
+    credits it), and the failed reply is skipped regardless — so the genuinely fetched address never
+    enters the set at all."""
+    from oraclous_harness_runtime_service.domain.loop.tool_use import (
+        _fetched_urls_from_transcript,
+    )
+
+    fetched = _fetched_urls_from_transcript(
+        _transcript_with_one_id_shared_within_a_turn(), {_READ.name: _READ}, []
+    )
+    assert _GENUINE_URL in fetched, "the address the run actually fetched must be credited"
+    assert _INVENTED_URL not in fetched, (
+        "an address only the failed twin named must never be credited"
+    )
+
+
+def _transcript_with_one_id_shared_across_two_turns() -> list[Message]:
+    """The same collision, spread across two otherwise well-formed turns instead of one message's
+    ``tool_calls`` list. Nothing anywhere enforces that an id is unique ACROSS turns of the same
+    conversation — only within one model response does #955's cleaner apply."""
+    return [
+        {"role": "user", "content": "go"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{"id": "dup2", "name": _READ.name, "args": {"url": _GENUINE_URL}}],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "dup2",
+            "name": _READ.name,
+            "content": json.dumps({"text": "the real page body"}) + _receipt("dup2", status="ok"),
+        },
+        {"role": "user", "content": "keep going"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{"id": "dup2", "name": _READ.name, "args": {"url": _INVENTED_URL}}],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "dup2",
+            "name": _READ.name,
+            "content": json.dumps({"error": "RuntimeError", "detail": "404 not found"})
+            + _receipt("dup2", status="error"),
+        },
+    ]
+
+
+@pytest.mark.security
+def test_a_duplicate_id_across_two_turns_does_not_credit_the_never_fetched_address() -> None:
+    """Same defect as the single-turn case, reached the other way: the id is reused by an
+    UNRELATED later turn rather than repeated within one response. The reader's map is built by
+    scanning every assistant message in the whole transcript, so it cannot tell these two calls
+    apart either."""
+    from oraclous_harness_runtime_service.domain.loop.tool_use import (
+        _fetched_urls_from_transcript,
+    )
+
+    fetched = _fetched_urls_from_transcript(
+        _transcript_with_one_id_shared_across_two_turns(), {_READ.name: _READ}, []
+    )
+    assert _GENUINE_URL in fetched, "the address the run actually fetched must be credited"
+    assert _INVENTED_URL not in fetched, (
+        "an address only the failed twin named must never be credited"
+    )
+
+
+def _transcript_with_a_ledger_id_collision() -> list[Message]:
+    """One turn, two ``search`` calls sharing id ``"dup3"``: a genuine query that succeeds, and a
+    differently-argued query that fails. Mirrors the fetched-URL fixtures above, aimed at the
+    repeated-failure ledger instead."""
+    return [
+        {"role": "user", "content": "go"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {"id": "dup3", "name": _SEARCH.name, "args": dict(_GOOD_SEARCH_ARGS)},
+                {"id": "dup3", "name": _SEARCH.name, "args": dict(_BAD_SEARCH_ARGS)},
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "dup3",
+            "name": _SEARCH.name,
+            "content": json.dumps({"hits": ["forecast"]}) + _receipt("dup3", status="ok"),
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "dup3",
+            "name": _SEARCH.name,
+            "content": json.dumps(
+                {"error": "RuntimeError", "detail": "unknown search provider 'The Verge'"}
+            )
+            + _receipt("dup3", status="error"),
+        },
+    ]
+
+
+@pytest.mark.security
+def test_a_ledger_id_collision_keeps_the_two_calls_true_signatures_apart() -> None:
+    """The ledger must track "the same call failing/succeeding the same way" per call, not per id.
+    With the id shared, the flat last-write-wins map answers every reply with ONE call's arguments —
+    so the successful call's own true signature never gets an entry at all, and the failed call's
+    error is recorded under whichever arguments happened to win the overwrite rather than its own.
+    Both true signatures must be present, each carrying its own outcome, for the ledger to mean what
+    it claims to."""
+    from oraclous_harness_runtime_service.domain.loop.tool_use import (
+        _call_signature,
+        _repeated_failures_from_transcript,
+    )
+
+    ledger = _repeated_failures_from_transcript(_transcript_with_a_ledger_id_collision())
+    good_signature = _call_signature(_SEARCH.name, _GOOD_SEARCH_ARGS)
+    bad_signature = _call_signature(_SEARCH.name, _BAD_SEARCH_ARGS)
+    assert good_signature in ledger, (
+        "the successful call's own signature must carry its own outcome"
+    )
+    assert bad_signature in ledger, "the failed call's own signature must carry its own outcome"
+    assert ledger[good_signature][2] == "result"
+    assert ledger[bad_signature][2] == "error"
+
+
+# --- #958 (folded in): a PRUNED call falls back to an EMPTY, not a lost, argument set -------------
+#
+# A checkpoint can be compacted so an old assistant turn is dropped while its answering `tool`-role
+# message is kept (or a resume simply never saw the assistant turn for another reason). Both
+# readers already handle a missing NAME gracefully by falling back to the `tool`-role message's own
+# `name` field. Arguments have no such fallback on the message itself, so a missing assistant entry
+# silently reads as `{}` — every pruned call to the SAME tool computes the identical signature
+# `_call_signature(name, {})`, regardless of what its real, now-unrecoverable arguments were. Two
+# independent one-off failures collapse onto that one key, and a LIVE call that genuinely has no
+# arguments computes that exact same key — so it inherits a count it never earned.
+
+
+def _transcript_with_two_pruned_calls_to_the_same_tool() -> list[Message]:
+    """Two ``tool``-role replies whose assistant turns are gone from the transcript entirely — no
+    ``tool_calls`` entry anywhere names either id. Both happen to have failed with the same generic
+    error text, which is exactly the case that matters: two calls that were never "the same call" (
+    their real, now-lost arguments differed) collapse onto one signature only because neither's
+    arguments survived to tell them apart."""
+    error = json.dumps({"error": "RuntimeError", "detail": "temporarily unavailable"})
+    return [
+        {"role": "user", "content": "go"},
+        {
+            "role": "tool",
+            "tool_call_id": "pruned-1",
+            "name": _SEARCH.name,
+            "content": error + _receipt("pruned-1", status="error"),
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "pruned-2",
+            "name": _SEARCH.name,
+            "content": error + _receipt("pruned-2", status="error"),
+        },
+    ]
+
+
+@pytest.mark.security
+def test_two_pruned_calls_to_the_same_tool_do_not_exhaust_the_empty_args_allowance() -> None:
+    """The signature ``_call_signature(name, {})`` is exactly what a LIVE call with genuinely empty
+    arguments would also compute. If two pruned, unrelated failures are enough to reach
+    ``_REPEATED_FAILURE_MAX`` on their own, a live call that was never dispatched before is refused
+    as a repeat it never made — a false refusal, the opposite-direction twin of the false credit
+    proven above."""
+    from oraclous_harness_runtime_service.domain.loop.tool_use import (
+        _REPEATED_FAILURE_MAX,
+        _call_signature,
+        _repeated_failures_from_transcript,
+    )
+
+    ledger = _repeated_failures_from_transcript(
+        _transcript_with_two_pruned_calls_to_the_same_tool()
+    )
+    signature = _call_signature(_SEARCH.name, {})
+    count = ledger[signature][1] if signature in ledger else 0
+    assert count < _REPEATED_FAILURE_MAX, (
+        "two pruned calls whose real arguments are gone must not, by themselves, exhaust the "
+        "allowance a live empty-argument call would need"
+    )
