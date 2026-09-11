@@ -176,6 +176,12 @@ def build_compiler_team(
             # reviewer over-validate past the cap; a compile must finish with a best-effort partial
             # (#587 degrade), NEVER fail the whole compile because the model double-checked.
             on_exhaustion="degrade",
+            # #834/#835: the reviewer's output IS the compile's deliverable (the assembled team) —
+            # when it degrades with no repaired draft, engine_team_drafts gets zero rows, yet
+            # before this the run reported SUCCEEDED. `on_exhaustion`/`max_tool_calls` above are
+            # UNCHANGED — this does not touch retry behaviour.
+            outcome_critical=True,
+            outputs_schema={"required": ["members"]},
         ),
     ]
     manifest = OHMManifest(
