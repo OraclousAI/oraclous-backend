@@ -6,6 +6,7 @@
 #   scripts/e2e.sh            # deterministic suite (fake LLM): -m "e2e and not byom"
 #   scripts/e2e.sh --up       # bring the stack up (fake LLM) first, then run the deterministic suite
 #   scripts/e2e.sh --byom     # BYOM real-LLM run: harness -> LIVE, -m byom (OPENROUTER_API_KEY in deploy/.env.test)
+#   scripts/e2e.sh --byom-smoke  # the five-test real-model SUBSET a pull request runs (#1012), harness -> LIVE
 #   scripts/e2e.sh --oauth    # OAuth login: bring up a real dex OIDC provider, -m oauth
 #   scripts/e2e.sh --github   # real-github.com deliver-back O7 proof (#542), -m github (deploy/.env PAT)
 #   scripts/e2e.sh --doefin   # #543 DoefinGPT use-case proof: github-tool import + real OpenRouter + /v1/artifacts
@@ -123,13 +124,24 @@ run_deterministic() {
     && _banner "deterministic"
 }
 
-run_byom() {
+run_byom() {  # the FULL real-model leg — ~60 real team runs, hours; CI runs this nightly, not per-PR
   _load_test_key OPENROUTER_API_KEY
   : "${OPENROUTER_API_KEY:?set OPENROUTER_API_KEY in deploy/.env.test for --byom}"
   _load_search_key   # #881: a compiled team's researcher may need the live search key connected
   _recreate_harness live
   echo ">> BYOM real-LLM e2e through the gateway (live LLM, user-supplied key)…"
   uv run pytest tests/e2e -m byom -v -p no:cacheprovider && _banner "BYOM real-LLM"
+}
+
+run_byom_smoke() {  # the SUBSET a pull request runs (#1012) — the same selection as the CI e2e job
+  # ~5 tests, targeted under ten minutes: one agent, a team run, a model-issued tool call, the
+  # citation path, prose→team. The subset is the `byom_smoke` marker, so it is edited by moving a
+  # marker in a test (tests/e2e/README.md), never by editing this script or a workflow file.
+  _load_test_key OPENROUTER_API_KEY
+  : "${OPENROUTER_API_KEY:?set OPENROUTER_API_KEY in deploy/.env.test for --byom-smoke}"
+  _recreate_harness live
+  echo ">> BYOM real-LLM SUBSET through the gateway (live LLM, the PR-gate five)…"
+  uv run pytest tests/e2e -m "byom and byom_smoke" -v -p no:cacheprovider && _banner "BYOM real-LLM subset"
 }
 
 run_github() {  # the real-github.com keyed O7 proof (#542) — human-gated, deselected in CI like byom
@@ -165,6 +177,7 @@ run_doefin() {  # the #543 DoefinGPT real-model use-case proof (import via githu
 
 case "$MODE" in
   --byom)   run_byom ;;
+  --byom-smoke) run_byom_smoke ;;
   --oauth)  run_oauth ;;
   --github) run_github ;;
   --doefin) run_doefin ;;
