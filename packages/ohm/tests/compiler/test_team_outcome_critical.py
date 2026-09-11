@@ -68,6 +68,32 @@ def test_max_tool_calls_is_unchanged() -> None:
 # ── DESIGN §D end-to-end shapes — driven through the REAL compiler manifest + run_team ─────────
 
 
+# Second occurrence in this issue (the original #834 tests PR hit the same trap in its commit 5,
+# fixing it the same way there): ANY stand-in dispatch for the reviewer role must carry this
+# receipt, because the compiler manifest's reviewer declares the ``manifest-validate`` tool
+# (`compiler/team.py`). A tool-declaring member is graded by #642's ``_grade_grounding``
+# (`orchestrate.py`) BEFORE #834/#835's own rule ever runs: with no ``tool``-kind step whose
+# ``status`` is ``"ok"`` and no ``driving_signal`` whose ``source_tool_call_id`` resolves to it,
+# ``validate_grounding`` (`envelope.py`) fails the member on an unrelated "no receipt" error — and
+# whatever terminal status the stand-in meant to produce (partial, succeeded, whatever) never
+# survives to be asserted on. Reuse this constant in every new reviewer stand-in here rather than
+# writing the steps/driving_signals shape out by hand again; unpack it into the payload (e.g.
+# ``{"members": [...], **_REVIEWER_TOOL_RECEIPT}``) so ``_grade_grounding``'s ``pop`` on the
+# dispatched dict never mutates this shared constant.
+_REVIEWER_TOOL_RECEIPT: dict[str, Any] = {
+    "steps": [
+        {
+            "index": 1,
+            "kind": "tool",
+            "name": "manifest-validate",
+            "status": "ok",
+            "tool_call_id": "tc-1",
+        }
+    ],
+    "driving_signals": [{"signal": "validated", "value": True, "source_tool_call_id": "tc-1"}],
+}
+
+
 def _dispatch_reviewer_degrades(members_value: Any):
     """A dispatch stand-in: planner + manifest-drafter succeed normally; the reviewer degrades
     (PARTIAL) with its declared ``members`` key set to ``members_value`` — either missing/empty
@@ -75,10 +101,8 @@ def _dispatch_reviewer_degrades(members_value: Any):
     (case b: a clean team the reviewer benignly re-validated past its cap, #596's own
     ``_REVIEWER_OVERCHECK_SLACK`` scenario).
 
-    The reviewer declares the ``manifest-validate`` tool, so #642's grounding grade requires a
-    receipt — a real ``tool``-kind step + a ``driving_signal`` backed by it — or the member fails
-    on grounding BEFORE this issue's own rule ever runs. Both are included so these tests isolate
-    the #834/#835 rule, not an unrelated #642 concern."""
+    Carries ``_REVIEWER_TOOL_RECEIPT`` (see its comment) so these tests isolate the #834/#835 rule,
+    not an unrelated #642 grounding failure."""
 
     async def dispatch(member: OHMMember, envs: list[HandoffEnvelope], item: Any) -> dict:
         if member.role != "reviewer":
@@ -86,18 +110,7 @@ def _dispatch_reviewer_degrades(members_value: Any):
         payload: dict[str, Any] = {
             "status": "PARTIAL",
             "output": "gave up after re-validating",
-            "steps": [
-                {
-                    "index": 1,
-                    "kind": "tool",
-                    "name": "manifest-validate",
-                    "status": "ok",
-                    "tool_call_id": "tc-1",
-                }
-            ],
-            "driving_signals": [
-                {"signal": "validated", "value": True, "source_tool_call_id": "tc-1"}
-            ],
+            **_REVIEWER_TOOL_RECEIPT,
         }
         if members_value is not _ABSENT:
             payload["members"] = members_value
@@ -165,7 +178,11 @@ async def test_criterion5_the_reviewer_that_succeeds_with_an_empty_members_list_
     async def dispatch(member: OHMMember, envs: list[HandoffEnvelope], item: Any) -> dict:
         if member.role != "reviewer":
             return {"output": f"{member.role}-done"}
-        return {"members": []}  # no "status" key at all -> settles "succeeded", not "partial"
+        # No "status" key at all -> settles "succeeded", not "partial". Carries
+        # _REVIEWER_TOOL_RECEIPT (see its comment above _dispatch_reviewer_degrades) so #642's
+        # grounding grade — the reviewer declares the manifest-validate tool — doesn't fail this
+        # member before the #834/#835 rule under test ever runs.
+        return {"members": [], **_REVIEWER_TOOL_RECEIPT}
 
     res = await run_team(manifest, dispatch, cost_so_far=lambda: 0)
     assert res.member_status["reviewer"] == "succeeded"  # never relabelled
