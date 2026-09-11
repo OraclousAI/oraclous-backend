@@ -2362,11 +2362,23 @@ class TeamRunService:
         # with an empty member_status that /rerun answers 409 nothing_to_rerun. ``checkpoint`` is a
         # write on the live row, NOT a transition — the run stays RUNNING throughout.
         settled_status: dict[str, str] = {}
-        # §3.7 (#826): which roles have already had an "engine.team_run.member" event emitted — a
-        # checkpoint's ``member_status`` is the settled-so-far snapshot (it only grows), so without
-        # this a role already settled on an earlier checkpoint would be re-emitted on every later
-        # one. A role fires exactly once, the moment it first appears settled.
-        emitted_members: set[str] = set()
+        # §3.7 (#826): which (role, status, output_hash) settles have already had an
+        # "engine.team_run.member" event emitted — a checkpoint's ``member_status`` is the
+        # settled-so-far snapshot (it only grows), so without this a role already settled on an
+        # earlier checkpoint would be re-emitted on every later one. Keying on the role ALONE is
+        # wrong for a loop: a conductor can re-route a previously-failed loop member, so the same
+        # role can genuinely re-settle (e.g. failed then succeeded) within one drive — role-only
+        # dedupe would suppress the second, real settle. Keying on the full (role, status,
+        # output_hash) triple fires once per DISTINCT settle: an unchanged repeat (same role, same
+        # status, same output, seen again only because the snapshot is cumulative) stays
+        # suppressed, while a genuine re-settle (new status, or same status with different output —
+        # e.g. two different failure attempts) is recorded.
+        #
+        # KNOWN LIMITATION: this set is rebuilt fresh each ``drive()`` call, so a resumed run can
+        # re-emit a settle that was already recorded in a prior drive. The composite key below only
+        # prevents duplicates WITHIN one drive. Left unfixed; flagged so the next reader doesn't
+        # think it was missed.
+        emitted_settles: set[tuple[str, str, str | None]] = set()
 
         async def _checkpoint(results: dict[str, Any], member_status: dict[str, str]) -> None:
             settled_status.clear()
@@ -2409,22 +2421,27 @@ class TeamRunService:
                         # here would be counted twice across a resume.
                         cost_tokens=prior_cost + sum(cost_deltas),
                     )
-            # §3.7 (#826): one event per member, the FIRST time it appears settled — never on a
-            # later checkpoint that merely carries it forward. The member's identity lives ONLY in
-            # context["member"]; outcome carries its terminal status alone. Like ``_on_dispatch``,
-            # this hook is invoked by the orchestrator inside ``contextlib.suppress`` (BLOCKING fix,
-            # review on #1027) — the non-aborting sibling, not the fail-closed ``_emit``.
-            newly_settled = [role for role in member_status if role not in emitted_members]
-            for role in newly_settled:
-                emitted_members.add(role)
+            # §3.7 (#826): one event per DISTINCT settle — never on a later checkpoint that merely
+            # carries an unchanged settle forward, but a genuine re-settle of the same role (a loop
+            # re-routing a previously-failed member, which then settles again with a new status or
+            # different output) IS recorded. The member's identity lives ONLY in context["member"];
+            # outcome carries its terminal status alone. Like ``_on_dispatch``, this hook is invoked
+            # by the orchestrator inside ``contextlib.suppress`` (BLOCKING fix, review on #1027) —
+            # the non-aborting sibling, not the fail-closed ``_emit``.
+            for role, status in member_status.items():
+                output_hash = hash_payload(results.get(role))
+                key = (role, status, output_hash)
+                if key in emitted_settles:
+                    continue
+                emitted_settles.add(key)
                 await self._emit_best_effort(
                     org,
                     row.user_id,
                     row.id,
                     "engine.team_run.member",
-                    member_status[role],
+                    status,
                     context={"member": role},
-                    output_hash=hash_payload(results.get(role)),
+                    output_hash=output_hash,
                 )
 
         try:
