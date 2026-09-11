@@ -127,8 +127,15 @@ async def test_critical_member_partial_with_empty_declared_key_fails_run(empty_v
 
 
 async def test_critical_member_partial_with_missing_declared_key_fails_run() -> None:
-    # the key is absent altogether, not merely empty — also covered by the rule (§A.1: "missing OR
-    # empty"), distinct from validate_payload's existing presence-only check on the SUCCEEDED path.
+    # Correction (be-test-reviewer, PR #1016 comment): this passes TODAY, before the [impl], via
+    # the PRE-EXISTING #697 `validate_payload` presence check — not via this issue's new rule. That
+    # check runs UNCONDITIONALLY at `orchestrate.py:574-587`, before the branch that splits
+    # "succeeded" from "did its best" (partial), so a MISSING required key already fails a member
+    # today regardless of outcome_critical or status. A green run here is therefore evidence the
+    # #697 contract check still fires on a critical member exactly as it did before this issue —
+    # NOT evidence of the new rule, which only starts to matter once the key is PRESENT-BUT-EMPTY
+    # (§A.2: what the flag adds that #697 could not already see). Kept anyway as a guard that the
+    # new code path does not accidentally weaken #697's existing, unconditional behaviour.
     async def dispatch(member: OHMMember, envs: list[HandoffEnvelope], item: Any) -> dict:
         return {"status": "PARTIAL"}  # no "members" key at all
 
