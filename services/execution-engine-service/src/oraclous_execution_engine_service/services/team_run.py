@@ -47,6 +47,7 @@ from oraclous_ohm.orchestrate import (
     RecalDirective,
     RecalibrateFn,
     TeamRunResult,
+    critical_deliverable_loss_present,
     run_loop_seam,
     run_team,
 )
@@ -1277,8 +1278,14 @@ async def run_team_hybrid(
         skeleton.status = "paused"
         skeleton.paused_at = sorted(set(skeleton.paused_at) | set(paused_gates))
         return skeleton
-    # the team SUCCEEDS only when every member delivered (ADR-042); any failed/blocked → FAILED
-    if any(s in ("failed", "blocked") for s in skeleton.member_status.values()):
+    # the team SUCCEEDS only when every member delivered (ADR-042); any failed/blocked → FAILED.
+    # #834 DESIGN §C site 3: a loop member's per-round status is recorded "partial" INSIDE
+    # run_loop_seam and merged into skeleton.member_status above — it never re-enters
+    # orchestrate.py's own has_failure computation, so the SAME outcome_critical rule must be
+    # applied here, independently, against the merged status + results.
+    if any(
+        s in ("failed", "blocked") for s in skeleton.member_status.values()
+    ) or critical_deliverable_loss_present(skeleton.member_status, skeleton.results, by_role):
         skeleton.status = "failed"
     return skeleton
 
