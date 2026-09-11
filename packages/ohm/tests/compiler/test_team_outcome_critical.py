@@ -110,13 +110,24 @@ _ABSENT = object()
 
 
 async def test_case_a_a_broken_draft_the_reviewer_could_not_repair_fails_the_run() -> None:
+    # Correction (three independent reviewers on PR #1017, reproduced against unmodified code):
+    # this dispatch has the declared "members" key ABSENT, not present-and-empty. A missing
+    # declared required key trips the PRE-EXISTING #697 `validate_payload` check
+    # (`envelope.py:74-86`), which runs unconditionally BEFORE the "did its best" (partial) branch
+    # (`orchestrate.py:574-587`) and records the member "failed" — not #834/#835's new rule, which
+    # only starts to matter once the key is PRESENT but empty (DESIGN §A.2). The implementation's
+    # own docstring on `critical_member_lost_deliverable` says the same thing.
     manifest, _subs = build_compiler_team(_ORG)
     res = await run_team(manifest, _dispatch_reviewer_degrades(_ABSENT), cost_so_far=lambda: 0)
-    assert res.member_status["reviewer"] == "partial"
+    assert res.member_status["reviewer"] == "failed"
     assert res.status == "failed"  # no team exists — the run must not report SUCCEEDED
 
 
 async def test_case_a_variant_an_empty_members_list_also_fails_the_run() -> None:
+    # This is the case the #834/#835 rule itself adds (present-but-empty, not missing) — the
+    # declared "members" key IS present here, so #697's presence check passes and the run's
+    # failure comes only from the new emptiness rule. The member therefore stays "partial", unlike
+    # the case-a test above.
     manifest, _subs = build_compiler_team(_ORG)
     res = await run_team(manifest, _dispatch_reviewer_degrades([]), cost_so_far=lambda: 0)
     assert res.member_status["reviewer"] == "partial"
@@ -135,3 +146,27 @@ async def test_case_b_a_clean_team_over_checked_past_the_cap_still_completes() -
     )
     assert res.member_status["reviewer"] == "partial"
     assert res.status == "completed"  # a real team was delivered — the run still completes
+
+
+# ══ Part 2 (#834 follow-up, criterion 5) — the real compiler manifest, driven through "succeeded" ══  # noqa: E501
+#
+# The exact original #749 shape: the reviewer answers ``{"members": []}`` with no degrade at all —
+# it settles SUCCEEDED, not PARTIAL. As shipped (PR #1017), the rule only checks a member recorded
+# "partial", so this run still reports SUCCEEDED with zero rows in ``engine_team_drafts`` today.
+# The orchestrator ruled this a blocker on #1017's security review. RED until the implementer
+# widens the rule to check emptiness regardless of which terminal status it arrived on.
+
+
+async def test_criterion5_the_reviewer_that_succeeds_with_an_empty_members_list_also_fails_the_run() -> (  # noqa: E501
+    None
+):
+    manifest, _subs = build_compiler_team(_ORG)
+
+    async def dispatch(member: OHMMember, envs: list[HandoffEnvelope], item: Any) -> dict:
+        if member.role != "reviewer":
+            return {"output": f"{member.role}-done"}
+        return {"members": []}  # no "status" key at all -> settles "succeeded", not "partial"
+
+    res = await run_team(manifest, dispatch, cost_so_far=lambda: 0)
+    assert res.member_status["reviewer"] == "succeeded"  # never relabelled
+    assert res.status == "failed"  # no team exists — must not report SUCCEEDED

@@ -184,6 +184,15 @@ async def test_a_blocked_downstream_of_a_critical_members_empty_partial_is_uncha
 ):
     # today, a failed/blocked upstream blocks its downstream transitively (test_orchestrate.py).
     # the SAME shape must hold when the "failure" is this new empty-critical-output rule.
+    #
+    # Correction (three independent reviewers on PR #1017, reproduced against unmodified code):
+    # the pre-existing, untouched blocked-member shape (`orchestrate.py`) has ALWAYS set
+    # `results[role] = None` for a blocked downstream — the key is PRESENT with a None value, it
+    # is never omitted. The comment above (and this test's own name) says "the SAME shape must
+    # hold" — that is the key-present/value-None shape, so the original assertion
+    # (`"publisher" not in res.results`) was an inversion of the test's own stated intent, not
+    # evidence of a different shape on this path. `"not in"` only holds on the paused/rejected
+    # early-return path, which this test does not exercise.
     async def dispatch(member: OHMMember, envs: list[HandoffEnvelope], item: Any) -> dict:
         if member.role == "reviewer":
             return {"status": "PARTIAL", "members": []}
@@ -193,7 +202,7 @@ async def test_a_blocked_downstream_of_a_critical_members_empty_partial_is_uncha
         _team([_critical_reviewer(), _m("publisher", depends_on=["reviewer"])]), dispatch
     )
     assert res.status == "failed"
-    assert "publisher" not in res.results  # downstream never dispatched
+    assert res.results.get("publisher") is None  # downstream never dispatched, key present
 
 
 # ── orchestrate.py:725-727 — the budget-halt terminal is still outranked by a real failure ─────
@@ -245,3 +254,114 @@ async def test_critical_member_empty_output_failure_outranks_a_pending_gate() ->
     assert res.status == "failed"  # NOT "paused" — the recorded failure outranks the pending gate
     assert res.member_status["reviewer"] == "partial"
     assert res.paused_at == []  # the run did not pause on the gate
+
+
+# ══ Part 2 (#834 follow-up, criterion 5) — the rule is still reachable through "succeeded" ══════
+#
+# The security review on PR #1017 found this gap and the orchestrator ruled it a blocker: as
+# shipped, the rule only fires when the member settles "partial". A member marked outcome_critical
+# that settles SUCCEEDED with a declared required key present-but-empty still produces a SUCCEEDED
+# run — the original #749 shape (a reviewer answering {"members": []}), reached with no degrade at
+# all.
+#
+# The corrected rule: the EMPTINESS CONDITION decides, and the terminal status it arrived on is
+# incidental. A critical member's declared required output missing/empty fails the run whether the
+# member settled "partial" OR "succeeded". The member keeps its own settled status either way — it
+# is never relabelled, exactly as ruling §A already established for the "partial" case.
+#
+# RED until the implementer widens `critical_member_lost_deliverable` past the
+# `status != "partial"` early-exit — these currently fail because a "succeeded" critical member is
+# never checked for emptiness at all.
+
+
+@pytest.mark.parametrize(
+    "empty_value",
+    [None, "", "   ", [], {}],
+    ids=["none", "empty_str", "whitespace_str", "empty_list", "empty_dict"],
+)
+async def test_critical_member_succeeded_with_empty_declared_key_fails_run(
+    empty_value: Any,
+) -> None:
+    # the #749 shape, reached with NO degrade: the reviewer never returns "status": "PARTIAL" at
+    # all — it settles "succeeded" outright, with its declared required key present but empty.
+    async def dispatch(member: OHMMember, envs: list[HandoffEnvelope], item: Any) -> dict:
+        return {"members": empty_value}  # no "status" key -> settles "succeeded"
+
+    res = await run_team(_team([_critical_reviewer()]), dispatch)
+    assert res.member_status["reviewer"] == "succeeded"  # settled status is NEVER relabelled
+    assert res.status == "failed"  # but the run still fails: the emptiness condition decides
+
+
+async def test_regression_criterion5_critical_member_succeeded_with_delivered_output_still_completes() -> (  # noqa: E501
+    None
+):
+    # regression guard for the widened rule (mirrors the existing RULING-1 guard for "partial"): a
+    # critical member that genuinely delivers its declared output while settling "succeeded" must
+    # not fail the run just because it is critical.
+    async def dispatch(member: OHMMember, envs: list[HandoffEnvelope], item: Any) -> dict:
+        return {"members": ["a", "b"]}
+
+    res = await run_team(_team([_critical_reviewer()]), dispatch)
+    assert res.member_status["reviewer"] == "succeeded"
+    assert res.status == "completed"
+
+
+async def test_non_critical_member_succeeded_with_empty_output_still_completes() -> None:
+    # acceptance criterion 4, restated for the succeeded path: a NON-critical member is untouched
+    # in every respect, on every path. This assertion already holds today (the rule has never
+    # touched non-critical members) — kept here as the explicit regression guard for this path,
+    # not because it is expected to be red.
+    async def dispatch(member: OHMMember, envs: list[HandoffEnvelope], item: Any) -> dict:
+        return {"members": []}
+
+    res = await run_team(
+        _team([_m("reviewer", outputs_schema={"required": ["members"]})]), dispatch
+    )
+    assert res.member_status["reviewer"] == "succeeded"
+    assert res.status == "completed"
+
+
+# ══ Part 3 (#834 follow-up) — falsy-but-present values are DELIVERED, never treated as empty ═══
+#
+# An over-broad predicate here is the worst possible regression for this feature: it would fail a
+# HEALTHY run. Pins the emptiness predicate against every falsy-but-real value, on BOTH paths the
+# widened rule now has to cover.
+
+
+@pytest.mark.parametrize(
+    "delivered_value",
+    [0, False, [0], {"a": None}, " \t \n mixed whitespace, real content \t "],
+    ids=["zero", "false", "list_of_zero", "dict_with_none_value", "mixed_whitespace_string"],
+)
+async def test_critical_member_succeeded_with_falsy_but_present_output_still_completes(
+    delivered_value: Any,
+) -> None:
+    # RED alongside the rest of Part 2: today a "succeeded" critical member is never checked for
+    # emptiness at all, so this passes today for the wrong reason (nothing fires) — once the rule
+    # is widened, it must keep passing for the RIGHT reason (falsy is not empty).
+    async def dispatch(member: OHMMember, envs: list[HandoffEnvelope], item: Any) -> dict:
+        return {"members": delivered_value}
+
+    res = await run_team(_team([_critical_reviewer()]), dispatch)
+    assert res.member_status["reviewer"] == "succeeded"
+    assert res.status == "completed"  # falsy is not empty — this must never fail the run
+
+
+@pytest.mark.parametrize(
+    "delivered_value",
+    [0, False, [0], {"a": None}, " \t \n mixed whitespace, real content \t "],
+    ids=["zero", "false", "list_of_zero", "dict_with_none_value", "mixed_whitespace_string"],
+)
+async def test_critical_member_partial_with_falsy_but_present_output_still_completes(
+    delivered_value: Any,
+) -> None:
+    # same predicate, on the already-built "partial" path (PR #1017's own
+    # `is_empty_output_value`/`critical_member_lost_deliverable`). Pinned here because a reviewer
+    # flagged this exact edge as correct by reading but never tested (QA gap 1 on PR #1017) — this
+    # is the addition that closes it.
+    async def dispatch(member: OHMMember, envs: list[HandoffEnvelope], item: Any) -> dict:
+        return {"status": "PARTIAL", "members": delivered_value}
+
+    res = await run_team(_team([_critical_reviewer()]), dispatch)
+    assert res.member_status["reviewer"] == "partial"
+    assert res.status == "completed"
