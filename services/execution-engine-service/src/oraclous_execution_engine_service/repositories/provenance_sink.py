@@ -42,6 +42,10 @@ class PostgresProvenanceSink(ProvenanceSink):
             action=record.action,
             resource=record.resource,
             outcome=record.outcome,
+            # #826: additive extension fields — None on a plain lifecycle event.
+            context=dict(record.context) if record.context is not None else None,
+            input_hash=record.input_hash,
+            output_hash=record.output_hash,
         )
         async with self._session() as session:
             async with session.begin():
