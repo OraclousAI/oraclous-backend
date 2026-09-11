@@ -1,7 +1,7 @@
 """#594 — a prose objective COMPILES to a runnable Team Harness, proven on the LIVE stack (ADR-047).
 
-The Harness Compiler is itself an OHM v1.1 Team Harness (planner → capability-surveyor →
-manifest-drafter → reviewer). Given ONLY a prose objective + a seeded tool catalog, it runs through
+The Harness Compiler is itself an OHM v1.1 Team Harness (planner → manifest-drafter → reviewer;
+#709 dropped the surveyor). Given ONLY a prose objective + a seeded tool catalog, it runs through
 the gateway — real registration → JWT → credential → engine → worker → LIVE harness → real
 OpenRouter (no fakes) — and the reviewer emits a drafted team that the SAME #593 validator
 (assemble_and_report) confirms is assemblable (would_block False): prose → runnable team. The
@@ -92,8 +92,10 @@ def test_a_prose_objective_compiles_to_a_runnable_team(
     cred = _cred(c, user)
     org = uuid.UUID(user["org_id"])
 
-    # the compiler team, seeded with the prose objective + the surveyed catalog (slice-1 baked)
-    manifest, subs = build_compiler_team(org, objective=_OBJECTIVE, catalog=_CATALOG)
+    # the compiler team, seeded with the prose objective + the surveyed catalog (slice-1 baked).
+    # #915: the keyword is `catalog_descriptions` — #709 dropped the surveyor member and with it
+    # the `catalog` parameter, and this call site was never updated.
+    manifest, subs = build_compiler_team(org, objective=_OBJECTIVE, catalog_descriptions=_CATALOG)
     doc = manifest.model_dump(mode="json")
     doc["models"] = [_model(cred)]
     gid = c.post("/api/v1/graphs", json={"name": "compiler-run"}).json()["id"]

@@ -147,7 +147,8 @@ def test_a_prose_objective_compiles_and_runs_to_a_deliverable_that_clears_a_qa_l
     catalog = survey_catalog(seed_capability_inventory(), live)
 
     # STEP 1: compile the PROSE objective (no import anywhere) → the compiler-team runs on :8006.
-    manifest, subs = build_compiler_team(org, objective=_OBJECTIVE, catalog=catalog)
+    # #915: the keyword is `catalog_descriptions` — #709 removed `catalog` with the surveyor.
+    manifest, subs = build_compiler_team(org, objective=_OBJECTIVE, catalog_descriptions=catalog)
     doc = manifest.model_dump(mode="json")
     doc["models"] = [_model(cred)]
     gid = c.post("/api/v1/graphs", json={"name": "from-prose-compile"}).json()["id"]

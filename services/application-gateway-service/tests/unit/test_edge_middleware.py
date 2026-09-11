@@ -10,6 +10,7 @@ from oraclous_application_gateway_service.core.edge_middleware import (
     RateLimitMiddleware,
     SizeGuardMiddleware,
 )
+from oraclous_application_gateway_service.domain.edge_protection import parse_exempt_networks
 
 pytestmark = pytest.mark.unit
 
@@ -233,3 +234,72 @@ async def test_fail_open_when_redis_raises() -> None:
     sent = await _drive(mw, app=_app_with_redis(_RaisingRedis()))
     assert _status(sent) == 200
     assert stub.called is True  # connect-on-use error -> fail open
+
+
+# ---- #850: the e2e overlay's client exemption ---------------------------------------------------
+
+
+async def test_an_exempt_client_bypasses_the_limiter_entirely() -> None:
+    redis = _FakeRedis()
+    redis.counts["rl:edge:ip:127.0.0.1"] = 10_000  # already way over any limit
+    stub = _StubApp()
+    mw = RateLimitMiddleware(
+        stub,
+        limit=1,
+        window_seconds=60,
+        trusted_proxy_count=0,
+        exempt_networks=parse_exempt_networks("127.0.0.0/8"),
+    )
+    sent = await _drive(mw, app=_app_with_redis(redis), client=("127.0.0.1", 0))
+    assert _status(sent) == 200
+    assert stub.called is True
+    assert redis.keys_seen == []  # the limiter was not even consulted
+
+
+async def test_a_client_outside_the_exempt_list_is_still_limited() -> None:
+    redis = _FakeRedis(ttl=30)
+    redis.counts["rl:edge:ip:1.2.3.4"] = 10_000
+    stub = _StubApp()
+    mw = RateLimitMiddleware(
+        stub,
+        limit=1,
+        window_seconds=60,
+        trusted_proxy_count=0,
+        exempt_networks=parse_exempt_networks("127.0.0.0/8"),
+    )
+    sent = await _drive(mw, app=_app_with_redis(redis), client=("1.2.3.4", 0))
+    assert _status(sent) == 429
+    assert stub.called is False
+
+
+async def test_no_exempt_list_means_nobody_is_exempt() -> None:
+    # the default: a loopback peer is limited like any other client
+    redis = _FakeRedis(ttl=30)
+    redis.counts["rl:edge:ip:127.0.0.1"] = 10_000
+    stub = _StubApp()
+    mw = RateLimitMiddleware(stub, limit=1, window_seconds=60, trusted_proxy_count=0)
+    sent = await _drive(mw, app=_app_with_redis(redis), client=("127.0.0.1", 0))
+    assert _status(sent) == 429
+    assert stub.called is False
+
+
+async def test_a_spoofed_xff_cannot_claim_the_exemption_when_no_proxy_is_trusted() -> None:
+    # tpc=0 keys on the socket peer, so the exemption is judged on the peer too
+    redis = _FakeRedis(ttl=30)
+    redis.counts["rl:edge:ip:1.2.3.4"] = 10_000
+    stub = _StubApp()
+    mw = RateLimitMiddleware(
+        stub,
+        limit=1,
+        window_seconds=60,
+        trusted_proxy_count=0,
+        exempt_networks=parse_exempt_networks("127.0.0.0/8"),
+    )
+    sent = await _drive(
+        mw,
+        app=_app_with_redis(redis),
+        client=("1.2.3.4", 0),
+        headers=[(b"x-forwarded-for", b"127.0.0.1")],
+    )
+    assert _status(sent) == 429
+    assert stub.called is False

@@ -26,6 +26,7 @@ from oraclous_application_gateway_service.core.edge_middleware import (
     SizeGuardMiddleware,
 )
 from oraclous_application_gateway_service.core.middleware import RequestIdMiddleware
+from oraclous_application_gateway_service.domain.edge_protection import parse_exempt_networks
 from oraclous_application_gateway_service.domain.errors import (
     RouteNotFoundError,
     UpstreamTimeoutError,
@@ -88,6 +89,7 @@ def create_app(*, lifespan=None) -> FastAPI:
         limit=settings.EDGE_RATE_LIMIT,
         window_seconds=settings.EDGE_RATE_WINDOW_SECONDS,
         trusted_proxy_count=settings.TRUSTED_PROXY_COUNT,
+        exempt_networks=parse_exempt_networks(settings.EDGE_RATE_LIMIT_EXEMPT_CIDRS),
     )
     # allow_credentials=False: the platform authenticates with an `Authorization: Bearer` (the
     # FE never relies on cookies to the gateway), so CORS credentials are not needed — and dropping

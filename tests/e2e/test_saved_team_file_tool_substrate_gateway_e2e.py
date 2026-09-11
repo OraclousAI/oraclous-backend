@@ -43,6 +43,10 @@ def _library(c: httpx.Client) -> list[dict[str, Any]]:
 
 
 def _team(org: str, tool: str) -> dict[str, Any]:
+    """One member holding one tool. It carries the two declarations every drafted member needs
+    (tests/e2e/README.md — ``outputs_schema.required`` for F-NO-OUTPUT-CONTRACT, a
+    ``tool_rationale`` entry per tool for F-TOOL-UNJUSTIFIED), so the only verdict a test reads is
+    the one it is about: F-SUBSTRATE-FILE for ``write``, a clean save for ``graph-ingest``."""
     return {
         "ohm_version": "1.1",
         "metadata": {
@@ -59,6 +63,8 @@ def _team(org: str, tool: str) -> dict[str, Any]:
                 "subgoal": "write the note",
                 "depends_on": [],
                 "tools": [tool],
+                "outputs_schema": {"required": ["summary"]},
+                "tool_rationale": {tool: f"the writer saves the note with {tool}"},
             }
         ],
         "runtime": {"entrypoint": "writer"},

@@ -91,7 +91,8 @@ def test_a_fresh_org_compile_bootstraps_against_the_seeds_governed_by_default(
     assert catalog, "the seed inventory must make a fresh org's survey non-empty"
 
     objective = "Research the week's top AI news and write a short plain-text digest."
-    manifest, subs = build_compiler_team(org, objective=objective, catalog=catalog)
+    # #915: the keyword is `catalog_descriptions` — #709 removed `catalog` with the surveyor.
+    manifest, subs = build_compiler_team(org, objective=objective, catalog_descriptions=catalog)
     doc = manifest.model_dump(mode="json")
     doc["models"] = [_model(cred)]
     gid = c.post("/api/v1/graphs", json={"name": "seed-bootstrap"}).json()["id"]

@@ -6,8 +6,10 @@ import pytest
 from oraclous_application_gateway_service.domain.edge_protection import (
     client_ip,
     content_length_exceeds,
+    is_exempt_client,
     is_malformed_path,
     is_rate_limit_exempt,
+    parse_exempt_networks,
 )
 
 pytestmark = pytest.mark.unit
@@ -81,3 +83,33 @@ def test_content_length_exceeds() -> None:
     assert content_length_exceeds("0", 10) is False
     assert content_length_exceeds(None, 10) is False  # missing -> defer to the byte counter
     assert content_length_exceeds("not-a-number", 10) is False  # unparseable -> defer
+
+
+# ---- #850: the e2e overlay's client exemption ---------------------------------------------------
+
+
+def test_exempt_networks_default_to_nothing() -> None:
+    assert parse_exempt_networks("") == ()
+    assert parse_exempt_networks(" , ,") == ()
+    assert is_exempt_client("127.0.0.1", ()) is False  # nothing configured → nobody is exempt
+
+
+def test_exempt_networks_parse_a_cidr_list_and_match_by_membership() -> None:
+    networks = parse_exempt_networks("127.0.0.0/8, ::1/128,172.16.0.0/12")
+    assert is_exempt_client("127.0.0.1", networks) is True
+    assert is_exempt_client("::1", networks) is True
+    assert is_exempt_client("172.21.0.1", networks) is True  # the docker bridge gateway
+    assert is_exempt_client("8.8.8.8", networks) is False
+    assert is_exempt_client("192.168.65.1", networks) is False  # not listed → still limited
+
+
+def test_an_unparseable_or_missing_peer_is_never_exempt() -> None:
+    networks = parse_exempt_networks("0.0.0.0/0")  # even the widest list
+    assert is_exempt_client("", networks) is False
+    assert is_exempt_client("not-an-ip", networks) is False
+
+
+def test_a_malformed_cidr_fails_closed_at_parse_time() -> None:
+    # a typo must surface at startup, never be skipped (and never widen the list)
+    with pytest.raises(ValueError, match="EDGE_RATE_LIMIT_EXEMPT_CIDRS"):
+        parse_exempt_networks("127.0.0.0/8,loopback")

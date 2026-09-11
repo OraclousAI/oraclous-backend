@@ -6,12 +6,48 @@ fast-path check, and the rate-limit decision shape. Pure, testable without Redis
 
 from __future__ import annotations
 
+import ipaddress
 from typing import NamedTuple
+
+IPNetwork = ipaddress.IPv4Network | ipaddress.IPv6Network
 
 
 class RateLimitDecision(NamedTuple):
     allowed: bool
     retry_after: int  # seconds; meaningful only when not allowed
+
+
+def parse_exempt_networks(raw: str) -> tuple[IPNetwork, ...]:
+    """The client networks the edge limiter never throttles (#850), from a comma-separated CIDR
+    list.
+
+    Empty (the default) exempts nothing. FAIL-CLOSED on a bad entry: a typo raises at startup rather
+    than being skipped, because a silently dropped entry would hide a mis-configured exemption
+    behind a limiter that still bites — and a silently WIDENED one would be worse. Only the docker
+    e2e overlay (``deploy/docker-compose.e2e.yml``) sets this; a production gateway leaves it empty.
+    """
+    networks: list[IPNetwork] = []
+    for entry in raw.split(","):
+        cidr = entry.strip()
+        if not cidr:
+            continue
+        try:
+            networks.append(ipaddress.ip_network(cidr, strict=False))
+        except ValueError as exc:
+            raise ValueError(f"EDGE_RATE_LIMIT_EXEMPT_CIDRS: {cidr!r} is not a CIDR") from exc
+    return tuple(networks)
+
+
+def is_exempt_client(ip: str, networks: tuple[IPNetwork, ...]) -> bool:
+    """True only when ``ip`` parses AND lies inside one of ``networks``. An empty or unparseable
+    peer is never exempt (fail-closed: the limiter still keys it)."""
+    if not networks or not ip:
+        return False
+    try:
+        address = ipaddress.ip_address(ip)
+    except ValueError:
+        return False
+    return any(address in network for network in networks)
 
 
 # The gateway's own liveness + published-contract probes are never rate-limited — throttling them

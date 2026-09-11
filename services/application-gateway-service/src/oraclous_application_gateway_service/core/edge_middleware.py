@@ -27,8 +27,10 @@ from oraclous_telemetry import Severity, alert
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from oraclous_application_gateway_service.domain.edge_protection import (
+    IPNetwork,
     client_ip,
     content_length_exceeds,
+    is_exempt_client,
     is_malformed_path,
     is_rate_limit_exempt,
 )
@@ -151,12 +153,23 @@ class RateLimitMiddleware:
     """FAIL-OPEN edge-wide rate limit, keyed by client IP (per-key limits are a later slice)."""
 
     def __init__(
-        self, app: ASGIApp, *, limit: int, window_seconds: int, trusted_proxy_count: int
+        self,
+        app: ASGIApp,
+        *,
+        limit: int,
+        window_seconds: int,
+        trusted_proxy_count: int,
+        exempt_networks: tuple[IPNetwork, ...] = (),
     ) -> None:
         self._app = app
         self._limit = limit
         self._window = window_seconds
         self._trusted_proxy_count = trusted_proxy_count
+        # #850: the client networks never throttled — EMPTY by default (nothing is exempt); only
+        # the docker e2e overlay names the host the suite runs from, so its ~100 registrations do
+        # not spend the per-IP window. Decided on the SAME client_ip the bucket is keyed by, so a
+        # spoofed X-Forwarded-For cannot claim the exemption when no proxy is trusted.
+        self._exempt_networks = exempt_networks
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http" or is_rate_limit_exempt(scope.get("path", "")):
@@ -190,6 +203,9 @@ class RateLimitMiddleware:
             _header(scope, b"x-forwarded-for"),
             trusted_proxy_count=self._trusted_proxy_count,
         )
+        if is_exempt_client(ip, self._exempt_networks):
+            await self._app(scope, receive, send)
+            return
         try:
             decision = await RateLimitStore(redis).hit(
                 ip, limit=self._limit, window_seconds=self._window

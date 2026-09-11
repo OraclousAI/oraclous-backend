@@ -53,6 +53,11 @@ class Settings(BaseSettings):
     # edge-wide per-client-IP fixed window (ops-tunable; not the auth limiter's hard 10/60).
     EDGE_RATE_LIMIT: int = 600
     EDGE_RATE_WINDOW_SECONDS: int = 60
+    # #850: comma-separated CIDRs the edge limiter never throttles. EMPTY by default — nothing is
+    # exempt on a real deployment. Only the docker e2e overlay (deploy/docker-compose.e2e.yml) sets
+    # it, to the host the gateway e2e suite registers ~100 organisations from. A malformed entry
+    # fails startup (parse_exempt_networks), never silently widens or narrows the list.
+    EDGE_RATE_LIMIT_EXEMPT_CIDRS: str = ""
     # per-subscription webhook-ingress limit (R7-SEC S3) — above the per-IP edge floor; one abused
     # subscription is throttled independently. Fail-open, like the edge limiter.
     WEBHOOK_RATE_LIMIT: int = 600

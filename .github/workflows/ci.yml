@@ -248,8 +248,10 @@ jobs:
       # only (single-tenant; default-OFF in prod; IMDS/link-local stay blocked in either mode). The
       # forge admin/token is minted by the "Arm the gitea deliver-back forge" step below.
       CAPABILITY_REGISTRY_ALLOW_PRIVATE_EGRESS: "true"
-      COMPOSE: "docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.dev-ports.yml"
-      COMPOSE_OAUTH: "docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.dev-ports.yml -f deploy/docker-compose.e2e-oauth.yml"
+      # #850: the e2e overlay exempts the runner's own connections from the edge limiter (the suite
+      # registers an org per test and the per-IP window is smaller than that). E2E stack only.
+      COMPOSE: "docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.dev-ports.yml -f deploy/docker-compose.e2e.yml"
+      COMPOSE_OAUTH: "docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.dev-ports.yml -f deploy/docker-compose.e2e.yml -f deploy/docker-compose.e2e-oauth.yml"
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5

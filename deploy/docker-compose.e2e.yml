@@ -1,0 +1,21 @@
+# docker-compose.e2e.yml — the deployed-stack e2e overlay (#850).
+#
+# The gateway e2e suite (tests/e2e, through :8006 only) registers an organisation per test — well
+# over a hundred sign-ups from ONE host in a few minutes — and the edge limiter's per-IP window
+# (EDGE_RATE_LIMIT, 600/60s) is smaller than that. Owner ruling on #850: the e2e stack exempts the
+# host the suite runs from; the gateway DEFAULT stays untouched (EDGE_RATE_LIMIT_EXEMPT_CIDRS is
+# empty in docker-compose.yml, so a real deployment exempts nothing).
+#
+# "Loopback" here is what the gateway container actually sees as the peer of a host-originated
+# connection: 127.0.0.1 when the daemon proxies locally, the bridge gateway (172.x.0.1) on a Linux
+# runner, 192.168.65.1 under Docker Desktop. All of those are private ranges, none is routable from
+# the internet, and this file is only ever layered on the e2e stack:
+#
+#   docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.dev-ports.yml \
+#       -f deploy/docker-compose.e2e.yml up -d --build --wait
+#
+# CI's e2e job and scripts/e2e.sh both apply it; nothing else should.
+services:
+  application-gateway-service:
+    environment:
+      EDGE_RATE_LIMIT_EXEMPT_CIDRS: "127.0.0.0/8,::1/128,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"

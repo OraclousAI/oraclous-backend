@@ -38,6 +38,8 @@ pytestmark = [pytest.mark.e2e, pytest.mark.integration]
 _OR_KEY = os.environ.get("OPENROUTER_API_KEY")
 _TAVILY_KEY = os.environ.get("TAVILY_API_KEY")
 requires_byom = pytest.mark.skipif(_OR_KEY is None, reason="OPENROUTER_API_KEY unset (real BYOM)")
+# Every test below that binds a model ALSO carries `pytest.mark.byom`: the deterministic leg runs a
+# FAKE harness, and a real-model test selected into it ends FAILED for an environment reason (#921).
 _MODEL = os.environ["E2E_MODEL"]
 
 #: The slug the engine seeds its first Oraclous-provided app under. The console deep-links to it,
@@ -195,6 +197,7 @@ def test_a_run_with_no_model_is_a_plain_validation_failure(
 
 
 @requires_byom
+@pytest.mark.byom  # a real model runs: the real-LLM leg, never the fake harness (#921)
 def test_an_unconnected_tool_is_a_connect_prompt_not_a_started_run(
     register: Callable[..., dict], gateway_client: Callable[[str], httpx.Client]
 ) -> None:
@@ -253,6 +256,7 @@ def test_an_unconnected_tool_is_a_connect_prompt_not_a_started_run(
 
 
 @requires_byom
+@pytest.mark.byom  # a real model runs: the real-LLM leg, never the fake harness (#921)
 def test_an_apps_run_history_is_not_shared_between_organisations(
     register: Callable[..., dict], gateway_client: Callable[[str], httpx.Client]
 ) -> None:
@@ -313,6 +317,7 @@ def test_an_apps_run_history_is_not_shared_between_organisations(
 
 
 @requires_byom
+@pytest.mark.byom  # a real model runs: the real-LLM leg, never the fake harness (#921)
 def test_the_app_runs_on_the_callers_own_key_and_the_run_belongs_to_them(
     register: Callable[..., dict], gateway_client: Callable[[str], httpx.Client]
 ) -> None:
@@ -366,6 +371,7 @@ def test_the_app_runs_on_the_callers_own_key_and_the_run_belongs_to_them(
 
 
 @requires_byom
+@pytest.mark.byom  # a real model runs: the real-LLM leg, never the fake harness (#921)
 @pytest.mark.skipif(_TAVILY_KEY is None, reason="TAVILY_API_KEY unset (the desk searches the web)")
 def test_the_desk_reaches_a_real_answer_for_a_fully_connected_organisation(
     register: Callable[..., dict], gateway_client: Callable[[str], httpx.Client]
