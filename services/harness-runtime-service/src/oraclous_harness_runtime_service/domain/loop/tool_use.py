@@ -792,6 +792,15 @@ def _repeated_failures_from_transcript(messages: list[Message]) -> RepeatedFailu
     correction. Only the refusal note is filtered out explicitly, because only it can do harm.
     None of the other three can reach the refusal branch on the resumed segment:
 
+    #834 DESIGN §E extends this to the RESULT axis too: a message carrying an EXPLICIT status
+    marker (#944; every message the live dispatch path itself writes carries one) is recorded
+    regardless of ok/error — the live path now records a successful dispatch's own content into
+    the SAME ledger (see the call site beside ``status = "ok"``), so a resume must re-derive that
+    entry the same way or it would silently re-grant two dispatches the live run had already spent.
+    A message with NO explicit marker predates #944 and falls back to the original error-only
+    heuristic below, unchanged — it is never read as a recordable "ok" outcome, which only costs a
+    resumed pre-#944 transcript two extra allowed dispatches before the bound re-engages.
+
     * a ceiling denial and an unknown tool are decided from the policy envelope and the tool set,
       both fixed for the run, so their own branches short-circuit ahead of the refusal check every
       time that signature comes round again;
@@ -824,12 +833,15 @@ def _repeated_failures_from_transcript(messages: list[Message]) -> RepeatedFailu
         if not isinstance(raw_content, str) or not isinstance(call_id, str):
             continue
         content, explicit_status = _split_receipt(raw_content)
-        failed = (
-            explicit_status == "error"
-            if explicit_status is not None
-            else _is_failed_tool_content(content)
-        )
-        if not failed:
+        # #834 DESIGN §E: the ledger now tracks BOTH axes — an identical ERROR (unchanged, #946
+        # T2) and an identical successful RESULT (new). A message with no explicit status marker
+        # predates #944 and carries no reliable "this was ok" signal to re-derive the result axis
+        # from, so it falls back to the pre-#834 error-only heuristic (`_is_failed_tool_content`)
+        # exactly as it always has — an "ok" message from that era is simply never recorded here,
+        # which only means a HITL resume on a pre-#944 transcript re-allows two more identical
+        # results before the bound re-engages, never a correctness break.
+        recordable = explicit_status is not None or _is_failed_tool_content(content)
+        if not recordable:
             continue
         # #946 review round 2, C1: a REFUSAL is not a failure of the call — nothing was dispatched,
         # so there is no error to count. It is written with `status=error` so the fetched-URL reader
@@ -1605,6 +1617,16 @@ async def run_tool_use_loop(
                                     served_citation_ids.append(citation_id)
                     content = _redact(json.dumps(result, default=str), redactors)
                     status = "ok"
+                    # #834 DESIGN §E: extend the SAME ledger to an identical (tool, arguments,
+                    # RESULT) triple, not only an identical ERROR — `manifest-validate` returns
+                    # SUCCESSFULLY with `would_block: true`, an unchanged verdict rather than an
+                    # error, so the pre-#834 error-only ledger never fired for a member benignly
+                    # re-validating the same already-blocked draft. `_record_failure`'s own
+                    # "a DIFFERENT [outcome] resets the count to one" semantics already separate a
+                    # genuinely evolving result from a stuck one, and already separate an error
+                    # outcome from a result outcome (their content strings never collide) — no
+                    # second mechanism, no second ledger.
+                    _record_failure(repeated_failures, signature, content)
                 except Exception as exc:  # noqa: BLE001 — feed the error back so the model can adapt
                     content = _redact(
                         json.dumps({"error": type(exc).__name__, "detail": str(exc)}), redactors
