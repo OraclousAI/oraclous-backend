@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import uuid
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 from oraclous_harness_runtime_service.domain.llm.openai_compatible import OpenAICompatibleClient
@@ -49,6 +50,14 @@ def _manifest(*, binding: str = "openrouter/anthropic/claude-3.5") -> SimpleName
     return SimpleNamespace(primary_model=lambda: model)
 
 
+class _FakeProvenance:
+    """#826 cleanup: a real recording double instead of `None` against a non-optional
+    ``provenance: ProvenanceCollector`` parameter — this test never inspects emissions."""
+
+    async def emit(self, record: Any) -> None:
+        return None
+
+
 def _service(
     *, broker: _FakeBroker, base_urls: dict[str, str], allow_private: bool = True
 ) -> HarnessExecutionService:
@@ -58,7 +67,7 @@ def _service(
         executions=None,
         assignments=None,
         checkpoints=None,
-        provenance=None,
+        provenance=_FakeProvenance(),
         trust=TrustStore({}),
         require_signature=False,
         force_policy_set=None,

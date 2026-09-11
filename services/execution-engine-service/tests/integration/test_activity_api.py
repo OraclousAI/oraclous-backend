@@ -77,6 +77,14 @@ _OTHER_ACTIONS = ["engine.schedule.fire", "engine.schedule.fire"]
 _BASE = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
 
 
+# #826 (24 Aug / 11 Sep rulings): the newest dev-org row (job.cancel) also carries the three new
+# additive fields, so the /activity read-back can be pinned against a known context/hash — not just
+# asserted non-null. `input_hash` stays None on purpose: a lifecycle event (no input payload) has
+# nothing to attest, which is exactly why the field is nullable.
+_NEWEST_CONTEXT = {"member": "writer", "note": "seeded for #826 read-back"}
+_NEWEST_OUTPUT_HASH = "sha256:81b4abe52993268c55004ce91400ef9fd0817b85aa7806ec2d8ccff6dbeee33a"
+
+
 async def _seed(async_dsn: str) -> None:
     from oraclous_execution_engine_service.models.provenance import EngineProvenanceEvent
     from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
@@ -86,6 +94,7 @@ async def _seed(async_dsn: str) -> None:
     async with session_factory() as session:
         async with session.begin():
             for i, action in enumerate(_DEV_ACTIONS):
+                is_newest = i == len(_DEV_ACTIONS) - 1
                 session.add(
                     EngineProvenanceEvent(
                         id=uuid.uuid4(),
@@ -95,6 +104,10 @@ async def _seed(async_dsn: str) -> None:
                         resource=f"engine_job:{uuid.uuid4()}",
                         outcome="SUCCEEDED",
                         created_at=_BASE + timedelta(minutes=i),  # ascending; last = newest
+                        # RED until the model gains these columns (#826 item 4).
+                        context=_NEWEST_CONTEXT if is_newest else None,
+                        input_hash=None,
+                        output_hash=_NEWEST_OUTPUT_HASH if is_newest else None,
                     )
                 )
             for action in _OTHER_ACTIONS:
@@ -128,9 +141,30 @@ async def test_activity_returns_only_callers_rows_newest_first(client: AsyncClie
     assert actions[-1] == "engine.job.submit"
     # never another tenant's event:
     assert all(a != "engine.schedule.fire" for a in actions)
-    # the DTO is the read projection (no organisation_id/principal leaked into the feed body).
+    # #826 (11 Sep ruling): the DTO widens ADDITIVELY — every field present today is unchanged, and
+    # principal/context/input_hash/output_hash are newly exposed (org-scoped: never another
+    # tenant's principal). The newest row (job.cancel) was seeded with real context/output_hash so
+    # this pins exact read-back, not just "the key exists".
     first = body["events"][0]
-    assert set(first) == {"id", "action", "resource", "outcome", "created_at"}
+    assert set(first) == {
+        "id",
+        "action",
+        "resource",
+        "outcome",
+        "created_at",
+        "principal",
+        "context",
+        "input_hash",
+        "output_hash",
+    }
+    assert first["action"] == "engine.job.cancel"
+    assert first["principal"] == "user-1"
+    assert first["context"] == _NEWEST_CONTEXT
+    assert first["input_hash"] is None  # a lifecycle event has no input to attest
+    assert first["output_hash"] == _NEWEST_OUTPUT_HASH
+    # an OLDER row was seeded with no context/hashes at all — nullable, not defaulted to {}/"".
+    older = body["events"][-1]
+    assert older["context"] is None and older["output_hash"] is None
 
 
 async def test_activity_honours_limit(client: AsyncClient) -> None:
