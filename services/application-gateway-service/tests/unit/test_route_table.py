@@ -77,6 +77,17 @@ def test_build_from_settings_maps_all_upstreams() -> None:
     assert all(not e.upstream_url.endswith("/") for e in table.entries)
 
 
+def test_provenance_route_reaches_the_capability_registry() -> None:
+    # #826 (11 September ruling, Decision 1): GET /api/v1/provenance is the registry's new
+    # provenance read surface — it must resolve to CAPABILITY_REGISTRY_URL, same as the sibling
+    # /api/v1/executions route, and must NOT be swallowed by /api/v1/graphs or any other prefix.
+    settings = Settings()
+    entry = build_route_table(settings).resolve("/api/v1/provenance")
+    assert entry is not None
+    assert entry.prefix == "/api/v1/provenance"
+    assert entry.upstream_url == settings.CAPABILITY_REGISTRY_URL.rstrip("/")
+
+
 def test_agent_bindings_route_to_registry_not_graphs() -> None:
     # Contract G2 / ADR-029 §6: /api/v1/agent-bindings must reach the capability-registry, and must
     # NOT be swallowed by /api/v1/graphs → knowledge-graph-service (the rev2 routing fix).
