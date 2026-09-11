@@ -184,6 +184,15 @@ async def test_a_blocked_downstream_of_a_critical_members_empty_partial_is_uncha
 ):
     # today, a failed/blocked upstream blocks its downstream transitively (test_orchestrate.py).
     # the SAME shape must hold when the "failure" is this new empty-critical-output rule.
+    #
+    # Correction (three independent reviewers on PR #1017, reproduced against unmodified code):
+    # the pre-existing, untouched blocked-member shape (`orchestrate.py`) has ALWAYS set
+    # `results[role] = None` for a blocked downstream — the key is PRESENT with a None value, it
+    # is never omitted. The comment above (and this test's own name) says "the SAME shape must
+    # hold" — that is the key-present/value-None shape, so the original assertion
+    # (`"publisher" not in res.results`) was an inversion of the test's own stated intent, not
+    # evidence of a different shape on this path. `"not in"` only holds on the paused/rejected
+    # early-return path, which this test does not exercise.
     async def dispatch(member: OHMMember, envs: list[HandoffEnvelope], item: Any) -> dict:
         if member.role == "reviewer":
             return {"status": "PARTIAL", "members": []}
@@ -193,7 +202,7 @@ async def test_a_blocked_downstream_of_a_critical_members_empty_partial_is_uncha
         _team([_critical_reviewer(), _m("publisher", depends_on=["reviewer"])]), dispatch
     )
     assert res.status == "failed"
-    assert "publisher" not in res.results  # downstream never dispatched
+    assert res.results.get("publisher") is None  # downstream never dispatched, key present
 
 
 # ── orchestrate.py:725-727 — the budget-halt terminal is still outranked by a real failure ─────

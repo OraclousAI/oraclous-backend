@@ -148,6 +148,18 @@ async def test_the_third_identical_result_is_refused_and_recorded_repeated_failu
 async def test_the_refusal_still_answers_the_model_not_only_the_operator_trace() -> None:
     # #946 T2's own invariant, unchanged: a provider rejects a tool_call with no answering message,
     # so a refused-for-repetition call must still get a tool-role reply.
+    #
+    # Correction (three independent reviewers on PR #1017, reproduced against unmodified code):
+    # the original `len(replies) == llm.turns` was off by one BY CONSTRUCTION, not a loop bug.
+    # `_StubbornLLM.seen` snapshots `messages` at the START of `complete()`, before that same
+    # turn's own reply is appended — so the loop's very last turn's own reply is never observable
+    # through this stub, at any iteration budget (verified exactly at 3, 5, 8, 12). Rather than pin
+    # `llm.turns - 1` (still coupled to the stub's snapshot timing), assert the actual PROPERTY
+    # this test is named for directly: every tool_call the model issued has a matching answering
+    # reply. This is a set-subset check, not a count, so it holds regardless of when the stub last
+    # snapshotted — it mirrors `test_repeated_tool_failure.py`'s own
+    # `test_every_call_the_member_made_has_an_answering_message` (the #946 T2 precedent this file
+    # is modelled on), which asserts the same invariant the same way for exactly this reason.
     llm = _StubbornLLM()
     await run_tool_use_loop(
         llm=llm,
@@ -157,8 +169,14 @@ async def test_the_refusal_still_answers_the_model_not_only_the_operator_trace()
         dispatch=_OutcomeDispatcher([("ok", dict(_SAME_VERDICT))]),
         policy=_env(max_iterations=8),
     )
-    replies = _tool_replies(llm)
-    assert len(replies) == llm.turns  # every turn's tool_call got an answering tool-role message
+    called = {
+        call["id"]
+        for message in llm.seen
+        if message.get("role") == "assistant"
+        for call in (message.get("tool_calls") or [])
+    }
+    answered = {m.get("tool_call_id") for m in _tool_replies(llm)}
+    assert called and called <= answered
 
 
 async def test_a_call_returning_a_different_result_each_time_is_always_dispatched() -> None:
