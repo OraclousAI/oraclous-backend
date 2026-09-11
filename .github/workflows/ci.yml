@@ -262,6 +262,7 @@ jobs:
       - name: Build + start the deployed stack (keyless)
         run: $COMPOSE up -d --build --wait
       - name: Wait for the gateway (a skip is NOT a pass — fail if it never comes up)
+        id: gateway  # the BYOM subset step below runs whenever the stack came up, whatever the legs did
         run: |
           for _ in $(seq 1 60); do curl -fsS localhost:8006/health >/dev/null 2>&1 && exit 0; sleep 2; done
           echo "::error::gateway :8006 never became healthy"; exit 1
@@ -281,7 +282,15 @@ jobs:
           $COMPOSE_OAUTH up -d --force-recreate --no-deps auth-service
           for _ in $(seq 1 30); do curl -fsS localhost:8006/oauth/providers 2>/dev/null | grep -q '"dex"' && break; sleep 1; done
           uv run pytest tests/e2e -m oauth -v -p no:cacheprovider
-      - name: BYOM real-LLM e2e (only when the model-key secret is set)
+      # #1012: a PULL REQUEST runs the SUBSET (`byom_smoke`, ~5 tests), never the full leg. The full
+      # leg is ~60 real team runs — hours — and the first day the secret existed it was silently
+      # cancelled on the job time limit. It now runs nightly (.github/workflows/e2e-nightly.yml).
+      # The subset is a marker, so editing it is a one-line change in a test: see tests/e2e/README.md.
+      - name: BYOM real-LLM e2e — the PR subset (only when the model-key secret is set)
+        # a failure in the deterministic leg above must not HIDE the real-model smoke: the job still
+        # fails (this `if` never turns a red job green), but one run reports on all three legs.
+        if: ${{ !cancelled() && steps.gateway.outcome == 'success' }}
+        timeout-minutes: 15  # the subset targets <10 min; a hang is a bounded failure, not a cancel
         env:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           # #1000: the ONE model every e2e binds. Optional repo variable; the fallback is the SAME
@@ -293,7 +302,7 @@ jobs:
           fi
           HARNESS_LLM_MODE=live $COMPOSE up -d --force-recreate --no-deps harness-runtime-service
           for _ in $(seq 1 30); do curl -fsS localhost:8007/health >/dev/null 2>&1 && break; sleep 1; done
-          uv run pytest tests/e2e -m byom -v -p no:cacheprovider
+          uv run pytest tests/e2e -m "byom and byom_smoke" -v -p no:cacheprovider
       - name: Stack logs on failure
         if: failure()
         run: $COMPOSE_OAUTH logs --tail 200

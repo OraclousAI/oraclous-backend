@@ -22,6 +22,7 @@ required:
   security: security-relevant tests mapped to the Structured Threat Catalogue (T1-T7)
   isolation: cross-tenant isolation tests
   byom: bring-your-own-model credential-path tests (T6 / broker resolve + connection base_url)
+  byom_smoke: the T6 real-model subset a PR runs (#1012) — required so the PR gate can never empty itself
   organization_isolation: substrate-level per-organisation isolation tests (ADR-006)
   rebac: ReBAC access-decision / relation tests (T1-M2, T2)
   audit: audit-event emission tests (T7)

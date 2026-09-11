@@ -1,0 +1,97 @@
+### The FULL real-model e2e leg (#1012) — nightly, never on a pull request.
+#
+# The `e2e` job in ci.yml runs the deterministic leg, the OAuth leg, and a five-test real-model
+# SUBSET (`byom and byom_smoke`) on every pull request. The full `byom` leg is ~60 real team runs of
+# several model rounds each — hours of wall clock — so it lives here: once a night, off-peak, plus
+# workflow_dispatch for an on-demand run. It blocks nothing; when it fails, the job is simply red.
+#
+# Failure triage: a red nightly is either a real regression in the real-model path or an environment
+# one (a spent provider key, a free-model rate limit — OpenRouter caps free models at ~1000
+# requests/day per key, and one full pass is a large fraction of that). Read the step log before
+# filing; tests/e2e/README.md says which key each test brings.
+name: Nightly full real-model e2e
+
+on:
+  schedule:
+    # 03:17 UTC — off-peak, and deliberately off the top of the hour (scheduled runs queue behind
+    # everyone else's `0 * * * *`). Scheduled runs only ever use the default branch.
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+concurrency:
+  # never let two full legs share one OpenRouter key; a running pass finishes rather than being cut
+  group: e2e-nightly
+  cancel-in-progress: false
+
+jobs:
+  byom-full:
+    name: "Full BYOM real-LLM e2e through the gateway (no fakes; rules 3-5)"
+    # forks inherit the schedule but not the secret, where every run would be a pointless skip
+    if: github.repository == 'OraclousAI/oraclous-backend'
+    runs-on: ubuntu-latest
+    timeout-minutes: 330  # generous on purpose: ~60 real team runs; the hosted-runner ceiling is 360
+    env:
+      # the whole point of this workflow: a REAL model, never the fake harness (rule 8)
+      HARNESS_LLM_MODE: live
+      # The application services sit behind `profiles: [services]`; without this, `up` brings up ONLY
+      # the infra (postgres/redis/neo4j) and the gateway never starts.
+      COMPOSE_PROFILES: services
+      # Edge-auth (ADR-018), as deploy/.env sets for a real deployment: the gateway VALIDATES the user
+      # JWT and downstream services TRUST the forwarded X-Principal. The compose default is `dev` (only
+      # the fixed dev-token), which rejects the real JWTs the e2e registers — so wire the real chain.
+      GATEWAY_AUTH_MODE: jwt
+      ENGINE_AUTH_MODE: gateway
+      HARNESS_AUTH_MODE: gateway
+      KGS_AUTH_MODE: gateway
+      KRS_AUTH_MODE: gateway
+      CRED_BROKER_AUTH_MODE: gateway
+      CAPABILITY_REGISTRY_AUTH_MODE: gateway
+      CAPABILITY_REGISTRY_BROKER_MODE: real
+      # This stack is single-tenant and disposable; IMDS/link-local stay blocked in either mode.
+      CAPABILITY_REGISTRY_ALLOW_PRIVATE_EGRESS: "true"
+      # Keep this compose invocation identical to the `e2e` job's in ci.yml — the two stacks must not
+      # drift, or a nightly red means nothing to a pull request. The e2e overlay exempts the runner
+      # from the edge limiter (#850); this leg registers an organisation per test, which is exactly
+      # what trips it.
+      COMPOSE: "docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.dev-ports.yml -f deploy/docker-compose.e2e.yml"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          version: "0.11.7"
+      - run: uv python install 3.12
+      - run: uv sync --all-packages --frozen
+      - name: Build + start the deployed stack (live harness)
+        run: $COMPOSE up -d --build --wait
+      - name: Wait for the gateway (a skip is NOT a pass — fail if it never comes up)
+        run: |
+          for _ in $(seq 1 60); do curl -fsS localhost:8006/health >/dev/null 2>&1 && exit 0; sleep 2; done
+          echo "::error::gateway :8006 never became healthy"; exit 1
+      - name: Confirm the harness really is live (the stale-environment trap)
+        run: |
+          mode=$($COMPOSE exec -T harness-runtime-service printenv HARNESS_LLM_MODE 2>/dev/null | tr -d '\r' || true)
+          echo "harness HARNESS_LLM_MODE=${mode:-<unreadable>}"
+          if [ "$mode" = "fake" ]; then
+            echo "::error::the harness is in fake mode — a fake-LLM run is never a real-model proof (rule 8)"; exit 1
+          elif [ -z "$mode" ]; then
+            echo "::warning::could not read the harness mode from the container; the compose default is live"
+          fi
+      - name: Full BYOM real-LLM e2e (only when the model-key secret is set)
+        timeout-minutes: 300  # a hang is a bounded failure, never a silent job cancellation
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          # #1000: the ONE model every e2e binds. Optional repo variable; the fallback is the SAME
+          # default as tests/e2e/conftest.py so the two never drift. Free on OpenRouter.
+          E2E_MODEL: ${{ vars.E2E_MODEL || 'openrouter/nvidia/nemotron-3-super-120b-a12b:free' }}
+        # the SAME selection scripts/e2e.sh --byom runs: the full leg, not the PR subset
+        run: |
+          if [ -z "${OPENROUTER_API_KEY:-}" ]; then
+            echo "OPENROUTER_API_KEY secret not set — skipping the BYOM real-LLM leg"; exit 0
+          fi
+          uv run pytest tests/e2e -m byom -v -p no:cacheprovider
+      - name: Stack logs on failure
+        if: failure()
+        run: $COMPOSE logs --tail 200
+      - name: Tear down
+        if: always()
+        run: $COMPOSE down -v

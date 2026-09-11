@@ -102,6 +102,7 @@ def _seed_graph(c: httpx.Client, marker: str) -> str:
 
 
 @requires_byom_key
+@pytest.mark.byom_smoke  # #1012: the PR-gate subset — a model-issued tool call, mid-loop
 def test_a_member_retrieves_from_the_bound_graph_mid_loop(
     tmp_path: Path,
     register: Callable[..., dict],

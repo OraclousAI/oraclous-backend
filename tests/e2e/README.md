@@ -46,9 +46,10 @@ alone. A test that deliberately proves a gate is never "healed" into passing.
 
 | Marker | Leg | Harness | Runs in CI |
 | --- | --- | --- | --- |
-| `e2e` only | deterministic (`scripts/e2e.sh`) | `HARNESS_LLM_MODE=fake` | yes |
-| `byom` | real-LLM (`scripts/e2e.sh --byom`) | `live`, the caller's OpenRouter key | only with the `OPENROUTER_API_KEY` secret |
-| `oauth` | real dex provider (`--oauth`) | fake | yes |
+| `e2e` only | deterministic (`scripts/e2e.sh`) | `HARNESS_LLM_MODE=fake` | yes, every PR |
+| `oauth` | real dex provider (`--oauth`) | fake | yes, every PR |
+| `byom` + `byom_smoke` | the real-model **subset** (`--byom-smoke`) | `live`, the caller's OpenRouter key | every PR, with the `OPENROUTER_API_KEY` secret |
+| `byom` | the **full** real-LLM leg (`--byom`) | `live` | nightly only (`.github/workflows/e2e-nightly.yml`) |
 | `github` | real github.com (`--github`) | fake | no (human-gated) |
 
 **A test that binds a model carries `pytest.mark.byom`, not only a `skipif` on the key.** The
@@ -60,6 +61,40 @@ were red, #921).
 Verify the harness mode **inside the container** before trusting a run
 (`docker compose … exec harness-runtime-service env | grep HARNESS_LLM_MODE`): a deterministic
 run against a live model is the stale-environment trap CLAUDE.md warns about.
+
+## `byom_smoke` — the subset a pull request runs (#1012)
+
+The full `byom` leg is ~60 real team runs, several model rounds each: hours of wall clock. It was
+cancelled on the job time limit the first day the `OPENROUTER_API_KEY` secret existed, which told
+nobody anything. So a pull request runs a **named subset** instead — about five tests, targeted
+under ten minutes — and the full leg runs nightly.
+
+The subset is a marker, not a `-k` expression in a workflow file, so changing it is a one-line edit
+in a test. Today it is:
+
+| Test | Real-model surface it holds |
+| --- | --- |
+| `test_byom_real_llm_gateway_e2e.py` | one agent, the user's own stored credential → a real OpenRouter call |
+| `test_team_byom_real_llm_gateway_e2e.py` | a team run: engine → Celery worker → live harness, per-member credentials |
+| `test_team_run_graph_retrieval_byom_gateway_e2e.py` | a model-issued **tool call** mid-loop, against the bound graph |
+| `test_agent_write_citation_gateway_e2e.py` | citation/provenance: what a member writes is cited as `agent` |
+
+The fifth belongs here and is not: `test_compiler_prose_to_team_gateway_e2e.py` (prose → a runnable
+team) peels the reviewer's JSON with a greedy regex that a real model's trailing block breaks
+(#1014). Put `byom_smoke` back on it in the PR that fixes the peel; until then the nightly leg is the
+only place that surface runs.
+
+**When you move the marker, keep those surfaces covered** — a subset that drops tool calling or the
+team loop stops being a smoke test of the real-model path. Keep it near five tests: the step has an
+explicit `timeout-minutes`, and a subset that outgrows it is a cancelled job again.
+
+Run it locally exactly as CI does:
+
+```
+scripts/e2e.sh --up          # the stack, fake harness
+scripts/e2e.sh --byom-smoke  # harness → live, the same five tests
+scripts/e2e.sh --byom        # the full leg, as the nightly workflow runs it
+```
 
 ## Keys a test brings (never a service env)
 

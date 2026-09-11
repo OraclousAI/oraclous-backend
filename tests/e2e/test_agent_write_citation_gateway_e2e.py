@@ -136,6 +136,7 @@ def _poll(c: httpx.Client, run_id: str, tries: int = 90) -> dict:
 
 @requires_byom_key
 @pytest.mark.byom
+@pytest.mark.byom_smoke  # #1012: the PR-gate subset — the citation/provenance surface
 def test_a_members_own_writing_is_cited_as_agent_not_as_an_upload(
     tmp_path: Path,
     register: Callable[..., dict],

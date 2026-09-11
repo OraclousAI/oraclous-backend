@@ -79,6 +79,9 @@ def _poll(c: httpx.Client, run_id: str, tries: int = 160) -> dict:
 
 
 @requires_byom
+# #1012: this belongs in the PR-gate subset (prose → a runnable team is the compiler surface), but
+# its JSON peel below breaks on a real model's trailing block (#1014). Restore `byom_smoke` here in
+# the PR that fixes the peel; until then the surface is covered by the nightly full leg.
 def test_a_prose_objective_compiles_to_a_runnable_team(
     register: Callable[..., dict], gateway_client: Callable[[str], httpx.Client]
 ) -> None:
