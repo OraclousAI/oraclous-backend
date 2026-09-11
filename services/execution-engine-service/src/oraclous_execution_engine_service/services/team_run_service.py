@@ -615,18 +615,39 @@ def _named_members(names: list[str]) -> str:
 
 
 def summarise_failed_run(
-    *, failed: list[str], blocked: list[str], member_errors: Mapping[str, str]
+    *,
+    failed: list[str],
+    blocked: list[str],
+    member_errors: Mapping[str, str],
+    outcome_blockers: Sequence[OutcomeBlocker] = (),
 ) -> str:
     """The sentence a person reads when a team run did not finish.
 
     A member that FAILED tried and could not; a member that was BLOCKED never got to try, because
     something it depended on failed first. Both are named, because "re-run it" is only actionable
     if you can see what will be re-run.
+
+    #834: a run can now be FAILED with BOTH lists empty — an outcome-critical member stayed
+    recorded "partial" (never relabelled "failed") but lost its declared deliverable. The
+    unconditional pre-#834 first sentence ("0 of its members failed and 0 could not start") would
+    tell the reader nothing failed on a run the platform just reported FAILED — the same class of
+    defect as #749's "Complete — nothing is silently dropped." ``outcome_blockers`` is empty on
+    every call this function used to see (default ``()``, byte-identical output); a caller passes
+    it only when `failed`/`blocked` might legitimately both be empty.
     """
-    parts = [
-        f"This run did not finish: {len(failed)} of its members failed and "
-        f"{len(blocked)} could not start. It can be re-run."
-    ]
+    if failed or blocked:
+        parts = [
+            f"This run did not finish: {len(failed)} of its members failed and "
+            f"{len(blocked)} could not start. It can be re-run."
+        ]
+    else:
+        # `outcome_blockers` is guaranteed non-empty here — a "failed" run always has SOME
+        # recorded reason: an ordinary failure/block, or this rule.
+        names = _named_members([b.role for b in outcome_blockers])
+        parts = [
+            f"This run did not finish: {names} did not deliver its declared output. "
+            "It can be re-run."
+        ]
     if failed:
         parts.append(f"Failed: {_named_members(failed)}.")
     if blocked:
@@ -639,6 +660,10 @@ def summarise_failed_run(
         reason = _plain_reason(recorded) if isinstance(recorded, str) else None
         if reason:
             reasons.append(f"{role} stopped because {reason}")
+    for blocker in outcome_blockers:
+        if len(reasons) >= _FAILURE_SUMMARY_MAX_DETAILS:
+            break
+        reasons.append(f"{blocker.role} lost {blocker.capability_lost} — {blocker.message}")
     if reasons:
         parts.append("; ".join(reasons) + ".")
     summary = " ".join(parts)
@@ -2332,13 +2357,24 @@ class TeamRunService:
         if result.status == "failed":
             failed = sorted(r for r, s in member_status.items() if s == "failed")
             blocked = sorted(r for r, s in member_status.items() if s == "blocked")
+            # #834: the SAME derivation TeamRunOut.outcome_blockers uses, off this settle's own
+            # results/member_status/manifest — so the free-text reason and the structured surface
+            # never disagree (pinned by test_new_failure_mode_message_names_member_agrees_with_
+            # outcome_blockers). Both lists above can be empty when this is non-empty: the outcome-
+            # critical rule fails the RUN without relabelling the member "failed".
+            outcome_blockers = derive_outcome_blockers(
+                results=result.results, member_status=member_status, manifest=row.manifest
+            )
             # #946 T3: curate at this seam. The recorded per-member error is the JSON blob the loop
             # fed back to the MODEL; this text is read by a PERSON. `summarise_failed_run` unwraps
             # it — dropping the exception class name, keeping the sentence — and stays leak-safe:
             # only `detail` is ever read, never a sibling key. The untouched raw detail is still on
             # the run's step trace, which is what a debugging operator reads.
             failed_summary = summarise_failed_run(
-                failed=failed, blocked=blocked, member_errors=result.member_errors
+                failed=failed,
+                blocked=blocked,
+                member_errors=result.member_errors,
+                outcome_blockers=outcome_blockers,
             )
         with org_scope(org):
             updated, _ = await self._team_runs.transition(
