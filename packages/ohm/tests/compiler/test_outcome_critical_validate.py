@@ -49,14 +49,23 @@ def test_outcome_critical_with_empty_required_blocks_f_draft_invalid() -> None:
 
 def test_the_blocking_reason_names_the_reviewer_role() -> None:
     # #751: the reviewer's repair loop only has something to edit if the reason names the member.
+    #
+    # Scoped to the F-DRAFT-INVALID entry SPECIFICALLY (be-test-reviewer, PR #1016 blocker): this
+    # same draft ALSO blocks today for an unrelated, pre-existing reason —
+    # F-NO-OUTPUT-CONTRACT's own message is "member 'reviewer' declares no output keys", which
+    # already contains "reviewer". An unscoped `any("reviewer" in b for b in v["blocking"])` would
+    # pass on that message alone and never exercise this issue's own F-DRAFT-INVALID naming at all.
     v = validate_draft(_draft_with_reviewer(None), ["web-search"], owner_organization_id=_ORG)
     assert v["would_block"] is True
-    assert any("reviewer" in b for b in v["blocking"])
+    draft_invalid = [b for b in v["blocking"] if "F-DRAFT-INVALID" in b]
+    assert draft_invalid, "expected an F-DRAFT-INVALID entry for the outcome_critical refusal"
+    assert any("reviewer" in b for b in draft_invalid)
 
 
 def test_outcome_critical_with_a_non_empty_required_list_does_not_block_on_this_rule() -> None:
     draft = _draft_with_reviewer({"required": ["members"]})
     v = validate_draft(draft, ["web-search"], owner_organization_id=_ORG)
-    # would_block may still be False here — nothing else in this minimal draft should block it.
-    assert v["would_block"] is False
+    # Scoped to THIS rule's own flag (be-test-reviewer, PR #1016) rather than the whole verdict —
+    # decoupled from any other, unrelated flag a future check might add to this minimal draft,
+    # which would otherwise flip `would_block` for a reason that has nothing to do with #834.
     assert not any("F-DRAFT-INVALID" in b for b in v["blocking"])
