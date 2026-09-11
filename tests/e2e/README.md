@@ -78,11 +78,15 @@ in a test. Today it is:
 | `test_team_byom_real_llm_gateway_e2e.py` | a team run: engine → Celery worker → live harness, per-member credentials |
 | `test_team_run_graph_retrieval_byom_gateway_e2e.py` | a model-issued **tool call** mid-loop, against the bound graph |
 | `test_agent_write_citation_gateway_e2e.py` | citation/provenance: what a member writes is cited as `agent` |
-| `test_compiler_prose_to_team_gateway_e2e.py` | the compiler harness: prose → a runnable, assemblable team |
 
-**When you move the marker, keep those five surfaces covered** — a subset that drops tool calling or
-the team loop stops being a smoke test of the real-model path. Keep it near five tests: the step has
-an explicit `timeout-minutes`, and a subset that outgrows it is a cancelled job again.
+The fifth belongs here and is not: `test_compiler_prose_to_team_gateway_e2e.py` (prose → a runnable
+team) peels the reviewer's JSON with a greedy regex that a real model's trailing block breaks
+(#1014). Put `byom_smoke` back on it in the PR that fixes the peel; until then the nightly leg is the
+only place that surface runs.
+
+**When you move the marker, keep those surfaces covered** — a subset that drops tool calling or the
+team loop stops being a smoke test of the real-model path. Keep it near five tests: the step has an
+explicit `timeout-minutes`, and a subset that outgrows it is a cancelled job again.
 
 Run it locally exactly as CI does:
 
