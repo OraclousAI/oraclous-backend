@@ -121,7 +121,7 @@ async def _reap_async() -> dict[str, int]:
             maintenance=maintenance,
         ).reap_stale(older_than=older_than)
         # and FAIL team runs whose driver died mid-drive (FAIL, not re-queue — no re-execution).
-        tr_reaped = await TeamRunService(team_runs=team_runs).reap_stale(
+        tr_reaped = await TeamRunService(team_runs=team_runs, provenance=collector).reap_stale(
             maintenance, older_than=older_than
         )
         # #501: re-fire adopted-tool windows whose dedupe row committed but whose dispatch never
@@ -436,9 +436,13 @@ async def _drive_team_run_async(run_id_s: str, org_id_s: str, user_id_s: str) ->
         # #601: a SCHEDULED team-run's settled cost accrues into its schedule's per-cadence
         # accumulator (the #598 cap reads it) — the worker drive is where cost settles.
         schedules = ScheduleRepository(settings.database_url, worker_pool=True)
+        # §3.7 (#826): the flagship runtime's own worker drive needs a collector too — unlike
+        # JobService/RoundtableService/ScheduleService, this was omitted entirely.
+        sink = PostgresProvenanceSink(settings.database_url, worker_pool=True)
         try:
             service = TeamRunService(
                 team_runs=team_runs,
+                provenance=ProvenanceCollector(sink),
                 harness=harness,
                 evaluate=evaluate,
                 artifacts=artifacts,
@@ -457,6 +461,7 @@ async def _drive_team_run_async(run_id_s: str, org_id_s: str, user_id_s: str) ->
             await artifacts.aclose()
             await team_runs.close()
             await schedules.close()
+            await sink.close()
 
 
 def enqueue_team_run(run_id: uuid.UUID, organisation_id: uuid.UUID, user_id: uuid.UUID) -> None:
