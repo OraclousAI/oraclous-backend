@@ -21,7 +21,7 @@ import os
 import re
 import uuid
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -49,6 +49,10 @@ from oraclous_execution_engine_service.domain import verdict_consumption as vc
 from oraclous_execution_engine_service.domain.answer_roles import sink_roles
 from oraclous_execution_engine_service.domain.app_answers import ANSWERS_KEY, parse_answers
 from oraclous_execution_engine_service.domain.app_form import SITE_RESTRICTION_KEY
+from oraclous_execution_engine_service.domain.outcome_blockers import (
+    OutcomeBlocker,
+    derive_outcome_blockers,
+)
 from oraclous_execution_engine_service.domain.refresh import (
     REFRESH_SEED_KEY,
     compute_delta,
@@ -425,6 +429,9 @@ class TeamRunStatus:
     # same guard as `simulated`) — a caller polling this light status must not disagree with one
     # reading the full run detail about whether an answer is trustworthy.
     has_unverified_links: bool = False
+    # #834 ruling §B.1: mirrors TeamRunOut.outcome_blockers — the same derivation, so a caller
+    # polling this light status never disagrees with one reading the full run detail.
+    outcome_blockers: list[OutcomeBlocker] = field(default_factory=list)
 
 
 # ── #946 T3: a failed run's message reads as a sentence, not as an exception ──────────────────────
@@ -1482,6 +1489,10 @@ class TeamRunService:
             has_unverified_links=any(
                 isinstance(r, dict) and r.get("unverified_links")
                 for r in (row.results or {}).values()
+            ),
+            # #834 ruling §B.1: mirrors TeamRunOut's derivation off the same stored snapshot.
+            outcome_blockers=derive_outcome_blockers(
+                results=row.results, member_status=row.member_status, manifest=row.manifest
             ),
         )
 

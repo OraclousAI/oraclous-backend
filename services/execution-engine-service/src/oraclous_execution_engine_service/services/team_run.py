@@ -827,6 +827,19 @@ def make_harness_dispatch(
             # on a pre-#975 harness response (back-compat, the #907/#944 posture).
             "fetched_urls": _clean_fetched_urls(result.get("fetched_urls")),
         }
+        # #834 ruling §B.2: lift the harness's OWN error_type/error_message onto the stored result
+        # the same way #907's `simulated`/#944's `unverified_links` are lifted — today they are
+        # read (line ~787 above) only on the fail-closed branch (neither SUCCEEDED nor PARTIAL) and
+        # then discarded; a PARTIAL member's degrade reason never reached its stored result at all.
+        # `outcome_blockers` (domain.outcome_blockers) reads them from here. Conditionally included
+        # — absent, never a bare None key, on an older harness response that carries neither
+        # (back-compat, the #907/#944 posture).
+        harness_error_type = result.get("error_type")
+        if isinstance(harness_error_type, str) and harness_error_type.strip():
+            payload["error_type"] = harness_error_type
+        harness_error_message = result.get("error_message")
+        if isinstance(harness_error_message, str) and harness_error_message.strip():
+            payload["error_message"] = harness_error_message
         # #975 A10: this member's CONTRIBUTION to a downstream member's seed is the DELTA it
         # genuinely added — its reported registry minus what it was itself handed — never its full
         # return. Without this, a downstream member would be re-seeded TRANSITIVELY with an

@@ -15,6 +15,7 @@ from oraclous_ohm.gate import GateDecision
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from oraclous_execution_engine_service.domain.answer_roles import sink_roles
+from oraclous_execution_engine_service.domain.outcome_blockers import derive_outcome_blockers
 from oraclous_execution_engine_service.domain.schedule_cost import (
     DEFAULT_EXPECTED_INPUT_TOKENS,
     DEFAULT_EXPECTED_OUTPUT_TOKENS,
@@ -417,6 +418,22 @@ class AdvanceTeamRunRequest(BaseModel):
     gate_decisions: dict[str, GateDecision] = Field(min_length=1)
 
 
+class MemberOutcomeBlock(BaseModel):
+    """One outcome-critical member that did not deliver, and why (#834 ruling §B.1). ``code`` is
+    the harness's own ``error_type`` (or a platform fallback when the harness gave none);
+    ``message`` is the harness's own ``error_message``, capped; ``capability_lost`` names the
+    declared ``outputs_schema.required`` key(s) the member did not deliver — never a step-trace
+    parse (DESIGN §B.2). The API-facing twin of the pure
+    ``domain.outcome_blockers.OutcomeBlocker``."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    role: str
+    code: str
+    message: str
+    capability_lost: str
+
+
 class TeamRunOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -484,6 +501,11 @@ class TeamRunOut(BaseModel):
     # answer). Fail-closed to [] on a missing/malformed/cyclic snapshot — never raises, never gates
     # on `results` (a listed role may still be absent/failed/skipped, #995 point 8).
     answer_roles: list[str] = Field(default_factory=list)
+    # #834 ruling §B.1: which outcome-critical member(s) lost the run's deliverable, and why —
+    # empty when clean and NEVER absent (the #944 `has_unverified_links` posture: a missing key
+    # would make "nothing was lost" indistinguishable from "not checked"). Derived read-side below
+    # off the same `results`/`member_status`/`manifest` snapshot, mirroring `answer_roles`.
+    outcome_blockers: list[MemberOutcomeBlock] = Field(default_factory=list)
     # the source for ``team_name``/``answer_roles`` (metadata.name / members are not themselves
     # TeamRunOut fields). Loaded from the row via from_attributes, read by the validator below, then
     # EXCLUDED from the response — the detail read never carries the raw manifest (leanness + no
@@ -525,6 +547,16 @@ class TeamRunOut(BaseModel):
         self.has_unverified_links = any(
             isinstance(r, dict) and r.get("unverified_links") for r in self.results.values()
         )
+        # #834 ruling §B: same derivation the service's O4 status() uses, so the two surfaces
+        # never disagree.
+        self.outcome_blockers = [
+            MemberOutcomeBlock(
+                role=b.role, code=b.code, message=b.message, capability_lost=b.capability_lost
+            )
+            for b in derive_outcome_blockers(
+                results=self.results, member_status=self.member_status, manifest=self.manifest
+            )
+        ]
         return self
 
 
@@ -661,6 +693,11 @@ class TeamRunStatusOut(BaseModel):
     # precedent immediately above — a caller polling this light status must not disagree with one
     # reading the full run detail about whether an answer is trustworthy. Computed by the service.
     has_unverified_links: bool = False
+    # #834 ruling §B.1, #944 review OPTIONAL-13: mirrors TeamRunOut.outcome_blockers — a caller
+    # polling this light status must not disagree with one reading the full run detail about
+    # whether the run produced its deliverable. Computed by the service (status()), not derived
+    # here.
+    outcome_blockers: list[MemberOutcomeBlock] = Field(default_factory=list)
 
     # A real flushed row holds {} (the migration 0025 server_default); this coerces None from a
     # pre-migration row / a hypothetical unflushed row — fail-soft, mirroring TeamRunOut's precedent
