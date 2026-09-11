@@ -31,9 +31,16 @@ APP_PASSWORD = "app"  # noqa: S105 — ephemeral test-container role, not a real
 # migration's literal so the test's widened policy matches the deployed one.
 PLATFORM_ORG_ID = "00000000-0000-0000-0000-0000000000a0"
 
-# The capability-registry's org-scoped tables. The three strict ones get the plain policy; the
+# The capability-registry's org-scoped tables. The strict ones get the plain policy; the
 # widened-read table is RLS-enabled with the platform-org read-widening (matching 0006_enable_rls).
-STRICT_RLS_TABLES = ("tool_instances", "executions", "harness_graph_binding", "delivery_state")
+# registry_provenance (#826) is strict, like executions — not a widened-read table.
+STRICT_RLS_TABLES = (
+    "tool_instances",
+    "executions",
+    "harness_graph_binding",
+    "delivery_state",
+    "registry_provenance",
+)
 WIDENED_READ_TABLE = "capability_descriptors"
 
 
