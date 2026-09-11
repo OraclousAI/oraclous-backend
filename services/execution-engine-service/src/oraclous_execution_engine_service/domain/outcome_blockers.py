@@ -24,10 +24,12 @@ Sourcing (DESIGN §B.2, no step-trace parsing):
   * ``capability_lost``  <- named from the member's OWN declaration: the declared
                            ``outputs_schema.required`` key(s) it did not deliver.
 
-A member surfaces here iff it is recorded ``"partial"`` (#834: the member itself is never
-relabelled "failed"), is declared ``outcome_critical``, and at least one of its declared
+A member surfaces here iff it is recorded ``"succeeded"`` OR ``"partial"`` (#834 criterion 5: the
+emptiness condition decides regardless of which terminal status the member arrived on; the member
+itself is never relabelled), is declared ``outcome_critical``, and at least one of its declared
 ``outputs_schema.required`` keys is missing or empty in its stored result — the SAME emptiness
-rule ``packages/ohm/orchestrate.py`` uses to fail the run (ruling §A.1), applied read-side.
+rule ``packages/ohm/orchestrate.py`` uses to fail the run (ruling §A.1, widened by criterion 5),
+applied read-side.
 """
 
 from __future__ import annotations
@@ -87,7 +89,12 @@ def derive_outcome_blockers(
         role = raw.get("role")
         if not isinstance(role, str) or not role:
             continue
-        if member_status.get(role) != "partial" or not raw.get("outcome_critical"):
+        # #834 criterion 5: the emptiness condition decides regardless of which terminal status
+        # the member arrived on — "succeeded" as much as "partial" (the original #749 shape: a
+        # reviewer answering {"members": []} with no degrade at all still settles "succeeded").
+        if member_status.get(role) not in ("succeeded", "partial") or not raw.get(
+            "outcome_critical"
+        ):
             continue
         outputs_schema = raw.get("outputs_schema")
         required = outputs_schema.get("required") if isinstance(outputs_schema, dict) else None

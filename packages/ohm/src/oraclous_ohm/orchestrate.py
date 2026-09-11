@@ -303,15 +303,20 @@ def critical_deliverable_loss_present(
     results: dict[str, Any],
     by_role: dict[str, OHMMember],
 ) -> bool:
-    """#834: True iff any member currently recorded ``"partial"`` is an ``outcome_critical``
-    member whose declared required output is missing/empty — the condition that fails the whole
-    RUN even though the member itself stays recorded ``"partial"`` (never relabelled "failed").
+    """#834 criterion 5 (security review on PR #1017 — the orchestrator's own design had left this
+    reachable): True iff any member currently recorded ``"succeeded"`` OR ``"partial"`` is an
+    ``outcome_critical`` member whose declared required output is missing/empty — the condition
+    that fails the whole RUN, whatever terminal status the member itself arrived on. THE EMPTINESS
+    CONDITION DECIDES; the terminal status is incidental — it is never relabelled ("succeeded"
+    stays "succeeded", "partial" stays "partial"). Originally gated to "partial" only, which left
+    the ORIGINAL #749 shape open: a reviewer answering ``{"members": []}`` with no degrade at all
+    still settles "succeeded" and the run reported SUCCEEDED.
 
     Public (no leading underscore) — DESIGN §C site 3 (the execution-engine's hybrid/loop
     verdict, ``team_run.py:run_team_hybrid``) applies this SAME rule to its own merged
     ``member_status``, which never re-enters this module's own verdict computation."""
     for role, status in member_status.items():
-        if status != "partial":
+        if status not in ("succeeded", "partial"):
             continue
         member = by_role.get(role)
         if member is None:
@@ -402,14 +407,15 @@ async def run_team(
     budget_exhausted = False
 
     def _upstream_faulted(role: str) -> bool:
-        """True when ``role`` itself is a dead producer: recorded FAILED/BLOCKED, or (#834) an
-        ``outcome_critical`` member recorded "partial" whose declared required output came back
-        empty — that member's own status stays "partial", but a downstream consumer depending on
-        its (missing) deliverable can no more honour its contract than if it had failed outright."""
+        """True when ``role`` itself is a dead producer: recorded FAILED/BLOCKED, or (#834
+        criterion 5) an ``outcome_critical`` member recorded "succeeded" OR "partial" whose
+        declared required output came back empty — that member's own status is never relabelled,
+        but a downstream consumer depending on its (missing) deliverable can no more honour its
+        contract than if it had failed outright."""
         status = member_status.get(role)
         if status in ("failed", "blocked"):
             return True
-        if status == "partial":
+        if status in ("succeeded", "partial"):
             member = by_role.get(role)
             if member is not None and critical_member_lost_deliverable(member, results.get(role)):
                 return True
