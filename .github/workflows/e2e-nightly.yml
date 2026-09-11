@@ -50,10 +50,10 @@ jobs:
       # This stack is single-tenant and disposable; IMDS/link-local stay blocked in either mode.
       CAPABILITY_REGISTRY_ALLOW_PRIVATE_EGRESS: "true"
       # Keep this compose invocation identical to the `e2e` job's in ci.yml — the two stacks must not
-      # drift, or a nightly red means nothing to a pull request. In particular, when the #850
-      # edge-limiter exemption overlay (deploy/docker-compose.e2e.yml, open in #1010) lands, add it
-      # to BOTH: this leg registers an organisation per test, which is what trips the limiter.
-      COMPOSE: "docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.dev-ports.yml"
+      # drift, or a nightly red means nothing to a pull request. The e2e overlay exempts the runner
+      # from the edge limiter (#850); this leg registers an organisation per test, which is exactly
+      # what trips it.
+      COMPOSE: "docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.dev-ports.yml -f deploy/docker-compose.e2e.yml"
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5

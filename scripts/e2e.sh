@@ -139,6 +139,7 @@ run_byom_smoke() {  # the SUBSET a pull request runs (#1012) — the same select
   # marker in a test (tests/e2e/README.md), never by editing this script or a workflow file.
   _load_test_key OPENROUTER_API_KEY
   : "${OPENROUTER_API_KEY:?set OPENROUTER_API_KEY in deploy/.env.test for --byom-smoke}"
+  _load_search_key   # #881: a compiled team's researcher may need the live search key connected
   _recreate_harness live
   echo ">> BYOM real-LLM SUBSET through the gateway (live LLM, the PR-gate five)…"
   uv run pytest tests/e2e -m "byom and byom_smoke" -v -p no:cacheprovider && _banner "BYOM real-LLM subset"
