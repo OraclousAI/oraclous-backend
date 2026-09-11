@@ -44,6 +44,7 @@ from oraclous_substrate.provenance import (
     ProvenanceCollector,
     ProvenanceRecord,
     ProvenanceSink,
+    hash_payload,
 )
 from oraclous_substrate.rebac import (
     AccessDecision,
@@ -87,6 +88,7 @@ __all__ = [
     "bind_organisation_guc",
     "build_rls_engine",
     "enforced_organisation_id",
+    "hash_payload",
     "install_org_guc_guard",
     "org_scope",
     "org_scoped_cypher",
