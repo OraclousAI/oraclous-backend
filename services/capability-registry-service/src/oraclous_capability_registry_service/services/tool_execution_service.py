@@ -1,16 +1,26 @@
 """Synchronous tool execution (services layer; reshape of legacy
 ``oraclous-core-service/app/services/tool_execution_service.py``).
 
-The execution spine: validate readiness → resolve credentials via the broker seam → record a QUEUED
-provenance row → dispatch the executor (hard timeout in the executor) → persist the outcome with
-``credential_refs`` (types/scopes used, never the secret) and scrub the in-memory credentials → bump
-the instance counters. Async/queued execution is out of scope (→ R5); this is sync only.
+The execution spine: validate readiness → resolve credentials via the broker seam → record a
+QUEUED execution row (the service's own operational bookkeeping, not the §3.7 audit record —
+see ``ExecutionRepository``) → dispatch the executor (hard timeout in the executor) → persist
+the outcome with ``credential_refs`` (types/scopes used, never the secret) and scrub the
+in-memory credentials → bump the instance counters. Async/queued execution is out of scope
+(→ R5); this is sync only.
+
+Every dispatch AND every pre-dispatch refusal emits one ``ProvenanceCollector`` record
+(CLAUDE.md §3.7; the 24 August ruling): a successful/failed executor result emits
+``capability.invoke``; each of the five readiness gates that raise before the operational row
+is written emits ``capability.refused`` — before the exception propagates, and without ever
+touching ``ExecutionRepository`` (24 August ruling §2).
 """
 
 from __future__ import annotations
 
 import uuid
 from typing import Any, cast
+
+from oraclous_substrate import ProvenanceCollector, ProvenanceRecord, hash_payload
 
 from oraclous_capability_registry_service.domain.connectors.github_sink import GitHubSinkConnector
 from oraclous_capability_registry_service.domain.connectors.manifest_refine import (
@@ -81,15 +91,34 @@ class ToolExecutionService:
         capabilities: CapabilityRepository,
         executions: ExecutionRepository,
         broker: CredentialBrokerPort,
+        provenance: ProvenanceCollector,
         delivery_state: DeliveryStateRepository | None = None,
     ) -> None:
         self._instances = instances
         self._capabilities = capabilities
         self._executions = executions
         self._broker = broker
+        self._provenance = provenance
         # the deliver-back clean-delta store, injected into a GitHubSinkConnector at execute time
         # (None on a unit/test construction → the sink first-delivers everything, no persistence).
         self._delivery_state = delivery_state
+
+    async def _emit_refused(
+        self, *, instance_id: uuid.UUID, organisation_id: uuid.UUID, user_id: uuid.UUID, code: str
+    ) -> None:
+        """A pre-dispatch readiness gate refused the call — record it BEFORE the caller's exception
+        propagates. Never touches ``ExecutionRepository`` (24 August ruling §2: a refusal is not
+        operational execution state)."""
+        await self._provenance.emit(
+            ProvenanceRecord(
+                organisation_id=str(organisation_id),
+                principal=str(user_id),
+                action="capability.refused",
+                resource=f"tool_instance:{instance_id}",
+                outcome=code,
+                context={"error_code": code},
+            )
+        )
 
     async def execute_sync(
         self,
@@ -102,6 +131,12 @@ class ToolExecutionService:
     ) -> ExecutionOut:
         instance = await self._instances.get_by_id(instance_id, organisation_id)
         if instance is None:
+            await self._emit_refused(
+                instance_id=instance_id,
+                organisation_id=organisation_id,
+                user_id=user_id,
+                code="instance_not_found",
+            )
             raise InstanceNotFoundError("instance not found")
         descriptor_row = await self._capabilities.get_by_id(instance.capability_id, organisation_id)
         if descriptor_row is None:
@@ -112,6 +147,12 @@ class ToolExecutionService:
         # until an org admin has approved it (status pending_approval -> active). Fail-closed.
         spec = descriptor.get("spec") or {}
         if spec.get("type") == "mcp" and descriptor_row.status != "active":
+            await self._emit_refused(
+                instance_id=instance_id,
+                organisation_id=organisation_id,
+                user_id=user_id,
+                code="pending_approval",
+            )
             raise ExecutionNotReadyError(
                 "this imported MCP tool is pending admin approval",
                 error_code="pending_approval",
@@ -125,12 +166,24 @@ class ToolExecutionService:
         # Placed before the executor lookup: what the descriptor declares is the authority, whether
         # or not this deployment happens to ship an executor for the tool.
         if not operation_is_declared(descriptor, body.input_data):
+            await self._emit_refused(
+                instance_id=instance_id,
+                organisation_id=organisation_id,
+                user_id=user_id,
+                code=UNSUPPORTED_OPERATION,
+            )
             raise ExecutionNotReadyError(
                 unsupported_operation_message(body.input_data.get(OPERATION_KEY)),
                 error_code=UNSUPPORTED_OPERATION,
             )
 
         if not has_executor(descriptor):
+            await self._emit_refused(
+                instance_id=instance_id,
+                organisation_id=organisation_id,
+                user_id=user_id,
+                code="no_executor",
+            )
             raise ExecutionNotReadyError(
                 "no executor is available for this tool",
                 error_code="no_executor",
@@ -164,6 +217,12 @@ class ToolExecutionService:
                 # + provider ONLY, NEVER a value or credential_id (#483 envelope discipline).
                 # The store (POST /credentials/) + resolve path are already built; this completes
                 # the signal on the miss so the user can paste the key once and re-run.
+                await self._emit_refused(
+                    instance_id=instance_id,
+                    organisation_id=organisation_id,
+                    user_id=user_id,
+                    code=exc.error_code,
+                )
                 raise ExecutionNotReadyError(
                     str(exc),
                     error_code=exc.error_code,
@@ -250,4 +309,15 @@ class ToolExecutionService:
             credits_consumed=result.credits_consumed,
         )
         assert finalized is not None  # noqa: S101 — just created in this txn
+        await self._provenance.emit(
+            ProvenanceRecord(
+                organisation_id=str(organisation_id),
+                principal=str(user_id),
+                action="capability.invoke",
+                resource=f"tool_instance:{instance_id}",
+                outcome="succeeded" if result.success else "failed",
+                input_hash=hash_payload(body.input_data),
+                output_hash=hash_payload(output),
+            )
+        )
         return ExecutionOut.model_validate(finalized)

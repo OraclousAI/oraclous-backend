@@ -39,6 +39,14 @@ _IMPORT_CREDENTIAL = "cred-imported-at-import-time"
 _INSTANCE_CREDENTIAL = "cred-mapped-on-the-instance"
 
 
+class _NoopProvenance:
+    """Not under test here (#826 owns provenance emit coverage) — a discard sink so the
+    now-mandatory constructor kwarg does not force this file to assert on it."""
+
+    async def emit(self, record: Any) -> None:  # noqa: ANN401
+        return None
+
+
 def _mcp_descriptor(**spec_extra: Any) -> dict[str, Any]:
     """An approved imported MCP tool, in the shape #698 D1/D2/D4 leave behind."""
     spec: dict[str, Any] = {
@@ -127,6 +135,7 @@ def _svc(
         capabilities=_FakeCaps(descriptor, kwargs.pop("status", "active")),
         executions=_HaltingExecutions(),
         broker=broker,
+        provenance=_NoopProvenance(),  # type: ignore[arg-type]
     )
     return svc, broker
 

@@ -115,12 +115,21 @@ class _TripwireBroker:
         raise _PastTheGate("a credential was resolved")
 
 
+class _NoopProvenance:
+    """Not under test here (#826 owns provenance emit coverage) — a discard sink so the
+    now-mandatory constructor kwarg does not force this file to assert on it."""
+
+    async def emit(self, record: Any) -> None:  # noqa: ANN401
+        return None
+
+
 def _svc(descriptor: dict[str, Any]) -> ToolExecutionService:
     return ToolExecutionService(
         instances=_FakeInstances(),
         capabilities=_FakeCaps(descriptor),
         executions=_TripwireExecutions(),
         broker=_TripwireBroker(),
+        provenance=_NoopProvenance(),  # type: ignore[arg-type]
     )
 
 

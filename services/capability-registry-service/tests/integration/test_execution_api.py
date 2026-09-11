@@ -51,11 +51,15 @@ async def ctx(postgres_dsn: str, monkeypatch: pytest.MonkeyPatch) -> AsyncIterat
     from oraclous_capability_registry_service.repositories.instance_repository import (
         InstanceRepository,
     )
+    from oraclous_capability_registry_service.repositories.registry_provenance_sink import (
+        PostgresProvenanceSink,
+    )
     from oraclous_capability_registry_service.services.credential_client import (
         FakeCredentialBroker,
         _libpq_dsn,
     )
     from oraclous_capability_registry_service.services.plugin_sync import sync_plugins
+    from oraclous_substrate import ProvenanceCollector
 
     app = create_app(lifespan=None)
     repo = CapabilityRepository(async_dsn)
@@ -64,6 +68,7 @@ async def ctx(postgres_dsn: str, monkeypatch: pytest.MonkeyPatch) -> AsyncIterat
     app.state.capability_repository = repo
     app.state.instance_repository = inst_repo
     app.state.execution_repository = exec_repo
+    app.state.provenance = ProvenanceCollector(PostgresProvenanceSink(async_dsn))
     # Fake broker mints a connection_string pointing at THIS test database → real query, key-free.
     app.state.credential_broker = FakeCredentialBroker(fake_db_dsn=_libpq_dsn(async_dsn))
     await sync_plugins(repository=repo, organisation_id=uuid.UUID(_DEV_ORG))
