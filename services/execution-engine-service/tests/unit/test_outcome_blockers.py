@@ -201,6 +201,60 @@ def test_outcome_blockers_stays_empty_for_an_ordinary_failed_blocked_run() -> No
     assert out.error_message is not None  # unchanged existing surface, unchanged meaning
 
 
+# ══ Part 2 (#834 follow-up, criterion 5) — the reason surfaces the same way on "succeeded" too ══
+#
+# `derive_outcome_blockers` gates on `member_status.get(role) != "partial"` — so a critical member
+# that settled SUCCEEDED with an empty declared output produces no blocker today, even though the
+# orchestrator's own run verdict (once widened) fails the run for exactly this member. A caller
+# reading `outcome_blockers` on a FAILED run must always be told which member and what was lost —
+# criterion 3 — regardless of which terminal status the member itself settled on. RED until the
+# implementer widens the same gate this file's own module docstring names.
+
+
+def test_outcome_blockers_names_the_member_when_it_succeeded_with_an_empty_declared_output() -> (
+    None
+):
+    manifest = {
+        "members": [
+            {
+                "role": "reviewer",
+                "kind": "agent",
+                "outcome_critical": True,
+                "outputs_schema": {"required": ["members"]},
+            }
+        ]
+    }
+    results = {"reviewer": {"members": []}}  # settled succeeded, no error_type/error_message
+    out = _run_out(
+        results, member_status={"reviewer": "succeeded"}, manifest=manifest, state="FAILED"
+    )
+    blockers = out.outcome_blockers
+    assert len(blockers) == 1
+    block = blockers[0]
+    assert block.role == "reviewer"
+    assert "members" in block.capability_lost  # names the declared key it did not deliver
+
+
+def test_outcome_blockers_stays_empty_for_a_succeeded_member_that_delivered() -> None:
+    # regression guard: a critical member that settled "succeeded" and genuinely delivered its
+    # declared output must not spuriously populate outcome_blockers.
+    manifest = {
+        "members": [
+            {
+                "role": "reviewer",
+                "kind": "agent",
+                "outcome_critical": True,
+                "outputs_schema": {"required": ["members"]},
+            }
+        ]
+    }
+    results = {"reviewer": {"members": ["a", "b"]}}
+    out = _run_out(
+        results, member_status={"reviewer": "succeeded"}, manifest=manifest, state="SUCCEEDED"
+    )
+    assert out.outcome_blockers == []
+
+
 # --- mirrored onto TeamRunStatusOut (the #944 OPTIONAL-13 rule) ---------------------------------
 
 

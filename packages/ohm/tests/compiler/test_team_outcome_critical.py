@@ -146,3 +146,27 @@ async def test_case_b_a_clean_team_over_checked_past_the_cap_still_completes() -
     )
     assert res.member_status["reviewer"] == "partial"
     assert res.status == "completed"  # a real team was delivered — the run still completes
+
+
+# ══ Part 2 (#834 follow-up, criterion 5) — the real compiler manifest, driven through "succeeded" ══  # noqa: E501
+#
+# The exact original #749 shape: the reviewer answers ``{"members": []}`` with no degrade at all —
+# it settles SUCCEEDED, not PARTIAL. As shipped (PR #1017), the rule only checks a member recorded
+# "partial", so this run still reports SUCCEEDED with zero rows in ``engine_team_drafts`` today.
+# The orchestrator ruled this a blocker on #1017's security review. RED until the implementer
+# widens the rule to check emptiness regardless of which terminal status it arrived on.
+
+
+async def test_criterion5_the_reviewer_that_succeeds_with_an_empty_members_list_also_fails_the_run() -> (  # noqa: E501
+    None
+):
+    manifest, _subs = build_compiler_team(_ORG)
+
+    async def dispatch(member: OHMMember, envs: list[HandoffEnvelope], item: Any) -> dict:
+        if member.role != "reviewer":
+            return {"output": f"{member.role}-done"}
+        return {"members": []}  # no "status" key at all -> settles "succeeded", not "partial"
+
+    res = await run_team(manifest, dispatch, cost_so_far=lambda: 0)
+    assert res.member_status["reviewer"] == "succeeded"  # never relabelled
+    assert res.status == "failed"  # no team exists — must not report SUCCEEDED

@@ -254,3 +254,68 @@ async def test_critical_member_empty_output_failure_outranks_a_pending_gate() ->
     assert res.status == "failed"  # NOT "paused" — the recorded failure outranks the pending gate
     assert res.member_status["reviewer"] == "partial"
     assert res.paused_at == []  # the run did not pause on the gate
+
+
+# ══ Part 2 (#834 follow-up, criterion 5) — the rule is still reachable through "succeeded" ══════
+#
+# The security review on PR #1017 found this gap and the orchestrator ruled it a blocker: as
+# shipped, the rule only fires when the member settles "partial". A member marked outcome_critical
+# that settles SUCCEEDED with a declared required key present-but-empty still produces a SUCCEEDED
+# run — the original #749 shape (a reviewer answering {"members": []}), reached with no degrade at
+# all.
+#
+# The corrected rule: the EMPTINESS CONDITION decides, and the terminal status it arrived on is
+# incidental. A critical member's declared required output missing/empty fails the run whether the
+# member settled "partial" OR "succeeded". The member keeps its own settled status either way — it
+# is never relabelled, exactly as ruling §A already established for the "partial" case.
+#
+# RED until the implementer widens `critical_member_lost_deliverable` past the
+# `status != "partial"` early-exit — these currently fail because a "succeeded" critical member is
+# never checked for emptiness at all.
+
+
+@pytest.mark.parametrize(
+    "empty_value",
+    [None, "", "   ", [], {}],
+    ids=["none", "empty_str", "whitespace_str", "empty_list", "empty_dict"],
+)
+async def test_critical_member_succeeded_with_empty_declared_key_fails_run(
+    empty_value: Any,
+) -> None:
+    # the #749 shape, reached with NO degrade: the reviewer never returns "status": "PARTIAL" at
+    # all — it settles "succeeded" outright, with its declared required key present but empty.
+    async def dispatch(member: OHMMember, envs: list[HandoffEnvelope], item: Any) -> dict:
+        return {"members": empty_value}  # no "status" key -> settles "succeeded"
+
+    res = await run_team(_team([_critical_reviewer()]), dispatch)
+    assert res.member_status["reviewer"] == "succeeded"  # settled status is NEVER relabelled
+    assert res.status == "failed"  # but the run still fails: the emptiness condition decides
+
+
+async def test_regression_criterion5_critical_member_succeeded_with_delivered_output_still_completes() -> (  # noqa: E501
+    None
+):
+    # regression guard for the widened rule (mirrors the existing RULING-1 guard for "partial"): a
+    # critical member that genuinely delivers its declared output while settling "succeeded" must
+    # not fail the run just because it is critical.
+    async def dispatch(member: OHMMember, envs: list[HandoffEnvelope], item: Any) -> dict:
+        return {"members": ["a", "b"]}
+
+    res = await run_team(_team([_critical_reviewer()]), dispatch)
+    assert res.member_status["reviewer"] == "succeeded"
+    assert res.status == "completed"
+
+
+async def test_non_critical_member_succeeded_with_empty_output_still_completes() -> None:
+    # acceptance criterion 4, restated for the succeeded path: a NON-critical member is untouched
+    # in every respect, on every path. This assertion already holds today (the rule has never
+    # touched non-critical members) — kept here as the explicit regression guard for this path,
+    # not because it is expected to be red.
+    async def dispatch(member: OHMMember, envs: list[HandoffEnvelope], item: Any) -> dict:
+        return {"members": []}
+
+    res = await run_team(
+        _team([_m("reviewer", outputs_schema={"required": ["members"]})]), dispatch
+    )
+    assert res.member_status["reviewer"] == "succeeded"
+    assert res.status == "completed"
