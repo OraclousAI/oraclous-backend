@@ -319,3 +319,49 @@ async def test_non_critical_member_succeeded_with_empty_output_still_completes()
     )
     assert res.member_status["reviewer"] == "succeeded"
     assert res.status == "completed"
+
+
+# ══ Part 3 (#834 follow-up) — falsy-but-present values are DELIVERED, never treated as empty ═══
+#
+# An over-broad predicate here is the worst possible regression for this feature: it would fail a
+# HEALTHY run. Pins the emptiness predicate against every falsy-but-real value, on BOTH paths the
+# widened rule now has to cover.
+
+
+@pytest.mark.parametrize(
+    "delivered_value",
+    [0, False, [0], {"a": None}, " \t \n mixed whitespace, real content \t "],
+    ids=["zero", "false", "list_of_zero", "dict_with_none_value", "mixed_whitespace_string"],
+)
+async def test_critical_member_succeeded_with_falsy_but_present_output_still_completes(
+    delivered_value: Any,
+) -> None:
+    # RED alongside the rest of Part 2: today a "succeeded" critical member is never checked for
+    # emptiness at all, so this passes today for the wrong reason (nothing fires) — once the rule
+    # is widened, it must keep passing for the RIGHT reason (falsy is not empty).
+    async def dispatch(member: OHMMember, envs: list[HandoffEnvelope], item: Any) -> dict:
+        return {"members": delivered_value}
+
+    res = await run_team(_team([_critical_reviewer()]), dispatch)
+    assert res.member_status["reviewer"] == "succeeded"
+    assert res.status == "completed"  # falsy is not empty — this must never fail the run
+
+
+@pytest.mark.parametrize(
+    "delivered_value",
+    [0, False, [0], {"a": None}, " \t \n mixed whitespace, real content \t "],
+    ids=["zero", "false", "list_of_zero", "dict_with_none_value", "mixed_whitespace_string"],
+)
+async def test_critical_member_partial_with_falsy_but_present_output_still_completes(
+    delivered_value: Any,
+) -> None:
+    # same predicate, on the already-built "partial" path (PR #1017's own
+    # `is_empty_output_value`/`critical_member_lost_deliverable`). Pinned here because a reviewer
+    # flagged this exact edge as correct by reading but never tested (QA gap 1 on PR #1017) — this
+    # is the addition that closes it.
+    async def dispatch(member: OHMMember, envs: list[HandoffEnvelope], item: Any) -> dict:
+        return {"status": "PARTIAL", "members": delivered_value}
+
+    res = await run_team(_team([_critical_reviewer()]), dispatch)
+    assert res.member_status["reviewer"] == "partial"
+    assert res.status == "completed"
