@@ -27,6 +27,7 @@ from oraclous_execution_engine_service.schema.engine_schemas import (
     AdvanceTeamRunRequest,
     AppFormField,
     CreateTeamRunRequest,
+    MemberOutcomeBlock,
     SuggestedFormOut,
     SuggestedFormPendingOut,
     SuggestedFormRequest,
@@ -178,6 +179,13 @@ async def get_team_run_status(
         simulated=s.simulated,
         # #944 review, OPTIONAL-13: mirrors `simulated` immediately above.
         has_unverified_links=s.has_unverified_links,
+        # #834 ruling §B.1: the domain OutcomeBlocker -> its API-facing pydantic twin.
+        outcome_blockers=[
+            MemberOutcomeBlock(
+                role=b.role, code=b.code, message=b.message, capability_lost=b.capability_lost
+            )
+            for b in s.outcome_blockers
+        ],
     )
 
 

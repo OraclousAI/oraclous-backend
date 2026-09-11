@@ -267,6 +267,65 @@ async def _admit_fan_out(
     return outputs, False
 
 
+def is_empty_output_value(value: Any) -> bool:
+    """#834 ruling §A.1: empty means ``None``, ``""``, a whitespace-only string, ``[]``, or
+    ``{}``. A present, non-empty value means delivered."""
+    if value is None:
+        return True
+    if isinstance(value, str):
+        return value.strip() == ""
+    if isinstance(value, (list, dict)):
+        return len(value) == 0
+    return False
+
+
+def critical_member_lost_deliverable(member: OHMMember, out: Any) -> bool:
+    """#834 ruling §A.1/§A.2: True when ``member`` is ``outcome_critical`` and at least one of
+    its declared ``outputs_schema.required`` keys is present but EMPTY in its settled output.
+
+    A MISSING required key already fails the member via the pre-existing #697
+    ``validate_payload`` contract check (unconditional, runs before a member can ever settle
+    "partial" — recorded "failed" instead), so this only has to cover what that check cannot
+    see: a key that is present and empty. Non-critical members, or a critical member with no
+    declared ``required`` output, never fail on this rule (load-time §A.3 rejects a critical
+    member with nothing to check, so a loaded manifest never hits that case either)."""
+    if not member.outcome_critical:
+        return False
+    required = member.outputs_schema.get("required") if member.outputs_schema else None
+    if not isinstance(required, list) or not required:
+        return False
+    payload = out if isinstance(out, dict) else {"output": out}
+    return any(is_empty_output_value(payload.get(key)) for key in required)
+
+
+def critical_deliverable_loss_present(
+    member_status: dict[str, str],
+    results: dict[str, Any],
+    by_role: dict[str, OHMMember],
+) -> bool:
+    """#834 criterion 5 (security review on PR #1017 — the orchestrator's own design had left this
+    reachable): True iff any member currently recorded ``"succeeded"`` OR ``"partial"`` is an
+    ``outcome_critical`` member whose declared required output is missing/empty — the condition
+    that fails the whole RUN, whatever terminal status the member itself arrived on. THE EMPTINESS
+    CONDITION DECIDES; the terminal status is incidental — it is never relabelled ("succeeded"
+    stays "succeeded", "partial" stays "partial"). Originally gated to "partial" only, which left
+    the ORIGINAL #749 shape open: a reviewer answering ``{"members": []}`` with no degrade at all
+    still settles "succeeded" and the run reported SUCCEEDED.
+
+    Public (no leading underscore) — DESIGN §C site 3 (the execution-engine's hybrid/loop
+    verdict, ``team_run.py:run_team_hybrid``) applies this SAME rule to its own merged
+    ``member_status``, which never re-enters this module's own verdict computation."""
+    for role, status in member_status.items():
+        if status not in ("succeeded", "partial"):
+            continue
+        member = by_role.get(role)
+        if member is None:
+            continue
+        if critical_member_lost_deliverable(member, results.get(role)):
+            return True
+    return False
+
+
 async def run_team(
     manifest: OHMManifest,
     dispatch: DispatchFn,
@@ -347,13 +406,29 @@ async def run_team(
     )
     budget_exhausted = False
 
+    def _upstream_faulted(role: str) -> bool:
+        """True when ``role`` itself is a dead producer: recorded FAILED/BLOCKED, or (#834
+        criterion 5) an ``outcome_critical`` member recorded "succeeded" OR "partial" whose
+        declared required output came back empty — that member's own status is never relabelled,
+        but a downstream consumer depending on its (missing) deliverable can no more honour its
+        contract than if it had failed outright."""
+        status = member_status.get(role)
+        if status in ("failed", "blocked"):
+            return True
+        if status in ("succeeded", "partial"):
+            member = by_role.get(role)
+            if member is not None and critical_member_lost_deliverable(member, results.get(role)):
+                return True
+        return False
+
     def _blocked_by_upstream(role: str) -> bool:
         """ADR-042 (#551): True when a member's upstream dependency FAILED or is itself BLOCKED — it
         can't honour its inbound contract. Deps are in EARLIER topological stages, so their terminal
         status is already recorded here; this propagates BLOCKED transitively down the DAG. Applies
         to a human GATE too (a gate with a failed upstream is unproducible input — BLOCK, never
-        PAUSE the run on it)."""
-        return any(member_status.get(d) in ("failed", "blocked") for d in by_role[role].depends_on)
+        PAUSE the run on it). #834: an outcome_critical upstream that lost its deliverable (still
+        recorded "partial") blocks its consumers the same way."""
+        return any(_upstream_faulted(d) for d in by_role[role].depends_on)
 
     def _grade_grounding(role: str, *, handed: str = "") -> None:
         """#642: grade a member on its receipts, after it dispatched successfully.
@@ -659,7 +734,9 @@ async def run_team(
         # unrecoverable until the gate resolves). The run stops at the gate either way; reporting
         # "failed" makes the failed member re-runnable (the re-run re-drives it, then the run
         # reaches the gate and PAUSES normally). A gate with no recorded failure pauses as before.
-        already_failed = any(s in ("failed", "blocked") for s in member_status.values())
+        already_failed = any(
+            s in ("failed", "blocked") for s in member_status.values()
+        ) or critical_deliverable_loss_present(member_status, results, by_role)
         # A gate PAUSES the run when it is undecided (no decision yet) OR REVISE (ADR-046 §2, #578):
         # a `revise` re-pauses at the SAME gate after its invalidated producer sub-tree re-runs (the
         # service re-seeds ``completed = results − invalidation_set`` + threads the human's feedback
@@ -721,7 +798,9 @@ async def run_team(
         for stage in stages:
             for role in stage:
                 member_status.setdefault(role, "budget_skipped")
-    has_failure = any(s in ("failed", "blocked") for s in member_status.values())
+    has_failure = any(
+        s in ("failed", "blocked") for s in member_status.values()
+    ) or critical_deliverable_loss_present(member_status, results, by_role)
     # #585: a real member FAILURE outranks the budget halt (mirrors the gate-vs-failure precedence
     # above) — else a failed member would be masked as the healthy/non-re-runnable COST_BUDGET and
     # stranded (re-run needs FAILED). A budget halt on an otherwise-clean run is the partial.

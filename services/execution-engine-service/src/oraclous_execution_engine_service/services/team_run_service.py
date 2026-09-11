@@ -21,7 +21,7 @@ import os
 import re
 import uuid
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -49,6 +49,10 @@ from oraclous_execution_engine_service.domain import verdict_consumption as vc
 from oraclous_execution_engine_service.domain.answer_roles import sink_roles
 from oraclous_execution_engine_service.domain.app_answers import ANSWERS_KEY, parse_answers
 from oraclous_execution_engine_service.domain.app_form import SITE_RESTRICTION_KEY
+from oraclous_execution_engine_service.domain.outcome_blockers import (
+    OutcomeBlocker,
+    derive_outcome_blockers,
+)
 from oraclous_execution_engine_service.domain.refresh import (
     REFRESH_SEED_KEY,
     compute_delta,
@@ -425,6 +429,9 @@ class TeamRunStatus:
     # same guard as `simulated`) — a caller polling this light status must not disagree with one
     # reading the full run detail about whether an answer is trustworthy.
     has_unverified_links: bool = False
+    # #834 ruling §B.1: mirrors TeamRunOut.outcome_blockers — the same derivation, so a caller
+    # polling this light status never disagrees with one reading the full run detail.
+    outcome_blockers: list[OutcomeBlocker] = field(default_factory=list)
 
 
 # ── #946 T3: a failed run's message reads as a sentence, not as an exception ──────────────────────
@@ -608,18 +615,39 @@ def _named_members(names: list[str]) -> str:
 
 
 def summarise_failed_run(
-    *, failed: list[str], blocked: list[str], member_errors: Mapping[str, str]
+    *,
+    failed: list[str],
+    blocked: list[str],
+    member_errors: Mapping[str, str],
+    outcome_blockers: Sequence[OutcomeBlocker] = (),
 ) -> str:
     """The sentence a person reads when a team run did not finish.
 
     A member that FAILED tried and could not; a member that was BLOCKED never got to try, because
     something it depended on failed first. Both are named, because "re-run it" is only actionable
     if you can see what will be re-run.
+
+    #834: a run can now be FAILED with BOTH lists empty — an outcome-critical member stayed
+    recorded "partial" (never relabelled "failed") but lost its declared deliverable. The
+    unconditional pre-#834 first sentence ("0 of its members failed and 0 could not start") would
+    tell the reader nothing failed on a run the platform just reported FAILED — the same class of
+    defect as #749's "Complete — nothing is silently dropped." ``outcome_blockers`` is empty on
+    every call this function used to see (default ``()``, byte-identical output); a caller passes
+    it only when `failed`/`blocked` might legitimately both be empty.
     """
-    parts = [
-        f"This run did not finish: {len(failed)} of its members failed and "
-        f"{len(blocked)} could not start. It can be re-run."
-    ]
+    if failed or blocked:
+        parts = [
+            f"This run did not finish: {len(failed)} of its members failed and "
+            f"{len(blocked)} could not start. It can be re-run."
+        ]
+    else:
+        # `outcome_blockers` is guaranteed non-empty here — a "failed" run always has SOME
+        # recorded reason: an ordinary failure/block, or this rule.
+        names = _named_members([b.role for b in outcome_blockers])
+        parts = [
+            f"This run did not finish: {names} did not deliver its declared output. "
+            "It can be re-run."
+        ]
     if failed:
         parts.append(f"Failed: {_named_members(failed)}.")
     if blocked:
@@ -632,6 +660,10 @@ def summarise_failed_run(
         reason = _plain_reason(recorded) if isinstance(recorded, str) else None
         if reason:
             reasons.append(f"{role} stopped because {reason}")
+    for blocker in outcome_blockers:
+        if len(reasons) >= _FAILURE_SUMMARY_MAX_DETAILS:
+            break
+        reasons.append(f"{blocker.role} lost {blocker.capability_lost} — {blocker.message}")
     if reasons:
         parts.append("; ".join(reasons) + ".")
     summary = " ".join(parts)
@@ -1441,10 +1473,22 @@ class TeamRunService:
         member_status = row.member_status or {}
         if not member_status:
             return dict(row.results or {})  # pre-ADR-042 resume semantics (in-flight PAUSED rows)
+        # #834 DESIGN §C site 4: a "partial" member the outcome_critical rule faulted (its declared
+        # required output was empty — the reason the RUN is FAILED) must NOT be seeded, or a re-run
+        # would re-seed the same empty output forever and the member would never actually
+        # re-dispatch. An ORDINARY #587 partial member (delivered, just degraded) is unaffected.
+        outcome_faulted = {
+            b.role
+            for b in derive_outcome_blockers(
+                results=row.results, member_status=member_status, manifest=row.manifest
+            )
+        }
         return {
             role: row.results[role]
             for role, status in member_status.items()
-            if status in ("succeeded", "partial") and role in (row.results or {})
+            if status in ("succeeded", "partial")
+            and role not in outcome_faulted
+            and role in (row.results or {})
         }
 
     async def get(self, team_run_id: uuid.UUID, principal: Principal) -> EngineTeamRun:
@@ -1482,6 +1526,10 @@ class TeamRunService:
             has_unverified_links=any(
                 isinstance(r, dict) and r.get("unverified_links")
                 for r in (row.results or {}).values()
+            ),
+            # #834 ruling §B.1: mirrors TeamRunOut's derivation off the same stored snapshot.
+            outcome_blockers=derive_outcome_blockers(
+                results=row.results, member_status=row.member_status, manifest=row.manifest
             ),
         )
 
@@ -1613,7 +1661,15 @@ class TeamRunService:
         'succeeded') still REGENERATES its output instead of re-seeding everything complete (a no-op
         spin the pool would drain)."""
         failed = {r for r, s in (row.member_status or {}).items() if s in ("failed", "blocked")}
-        return failed | _sink_roles(team, row.results or {})
+        # #834 DESIGN §C site 4: a "partial" member the outcome_critical rule faulted is re-run
+        # ground the same way a genuinely failed/blocked one is.
+        outcome_faulted = {
+            b.role
+            for b in derive_outcome_blockers(
+                results=row.results, member_status=row.member_status, manifest=row.manifest
+            )
+        }
+        return failed | outcome_faulted | _sink_roles(team, row.results or {})
 
     async def _resume_verdict_escalation(
         self, row: EngineTeamRun, org: uuid.UUID, principal: Principal
@@ -1995,7 +2051,14 @@ class TeamRunService:
                 error_type="not_failed",
             )
         rerunnable = [s for s in (row.member_status or {}).values() if s in ("failed", "blocked")]
-        if not rerunnable:  # a FAILED run with no recorded member failure (e.g. a hard drive crash)
+        # #834 DESIGN §C site 4: a member the outcome_critical rule faulted stays recorded
+        # "partial" (never relabelled "failed") — without this, the ONLY faulted member on a run
+        # failed this way would 409 nothing_to_rerun forever, even though the run is FAILED.
+        outcome_faulted = derive_outcome_blockers(
+            results=row.results, member_status=row.member_status, manifest=row.manifest
+        )
+        if not rerunnable and not outcome_faulted:
+            # a FAILED run with no recorded member failure (e.g. a hard drive crash) — a no-op
             raise TeamRunError(
                 "team run has no failed or blocked members to re-run",
                 409,
@@ -2294,13 +2357,24 @@ class TeamRunService:
         if result.status == "failed":
             failed = sorted(r for r, s in member_status.items() if s == "failed")
             blocked = sorted(r for r, s in member_status.items() if s == "blocked")
+            # #834: the SAME derivation TeamRunOut.outcome_blockers uses, off this settle's own
+            # results/member_status/manifest — so the free-text reason and the structured surface
+            # never disagree (pinned by test_new_failure_mode_message_names_member_agrees_with_
+            # outcome_blockers). Both lists above can be empty when this is non-empty: the outcome-
+            # critical rule fails the RUN without relabelling the member "failed".
+            outcome_blockers = derive_outcome_blockers(
+                results=result.results, member_status=member_status, manifest=row.manifest
+            )
             # #946 T3: curate at this seam. The recorded per-member error is the JSON blob the loop
             # fed back to the MODEL; this text is read by a PERSON. `summarise_failed_run` unwraps
             # it — dropping the exception class name, keeping the sentence — and stays leak-safe:
             # only `detail` is ever read, never a sibling key. The untouched raw detail is still on
             # the run's step trace, which is what a debugging operator reads.
             failed_summary = summarise_failed_run(
-                failed=failed, blocked=blocked, member_errors=result.member_errors
+                failed=failed,
+                blocked=blocked,
+                member_errors=result.member_errors,
+                outcome_blockers=outcome_blockers,
             )
         with org_scope(org):
             updated, _ = await self._team_runs.transition(

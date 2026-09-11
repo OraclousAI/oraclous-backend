@@ -207,6 +207,13 @@ class OHMMember(BaseModel):
     # pre-#730 behaviour (decision 4); never inherited from the team, never implied by
     # requires_valid_json (decision 5).
     deliverable_format: str | None = None
+    # #834: this member's output IS the run's actual deliverable — declared, not inferred. A
+    # `partial` (degraded) settle on a critical member fails the whole RUN when its declared
+    # `outputs_schema.required` key(s) come back missing or empty (orchestrate.py's verdict);
+    # a non-critical member is completely unaffected. Default False → every manifest stored
+    # before #834 is unchanged. Enforced fail-closed at load (parse.py): `True` with no non-empty
+    # `outputs_schema.required` gives the rule nothing to check and is a manifest error.
+    outcome_critical: bool = False
 
     @model_validator(mode="after")
     def _human_requires_role(self) -> OHMMember:

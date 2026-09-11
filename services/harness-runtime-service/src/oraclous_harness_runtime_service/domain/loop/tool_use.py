@@ -704,8 +704,34 @@ _REPEATED_FAILURE_NOTE = (
     "Either change the arguments — a different value, or the same call without the argument that "
     "is being rejected — or drop this call and answer with what you already have."
 )
-#: The per-member ledger: a call signature → (the error it produced, how many times in a row).
-RepeatedFailures = dict[str, tuple[str, int]]
+#: #834 DESIGN §E — the RESULT-axis twin of the error-axis note above, own prefix and own wording.
+#: A security review on PR #1017 caught the two axes sharing one message: the error-axis sentence
+#: ("this exact call... could not work") is a true root cause on the error axis, and a FALSE one on
+#: the result axis — the call worked perfectly; it simply returned the same answer twice. That
+#: sentence flows straight into `outcome_blockers[].message` (services/execution-engine-service),
+#: so an operator can be handed a specific, WRONG root cause by the exact field this issue's other
+#: half exists to make trustworthy — the same class of defect as #749's "Complete — nothing is
+#: silently dropped." Never let the two axes share a message again.
+#:
+#: Own prefix (matched the same way `_REPEATED_FAILURE_NOTE_PREFIX` is, for the same reason: a run
+#: paused before a reword resumes carrying the old wording).
+_REPEATED_RESULT_NOTE_PREFIX = "This exact call has already returned"
+#: THE COST THIS BOUND ACCEPTS on the result axis (mirrors the error-axis disclosure above, same
+#: place a reader would look for it): a genuinely still-pending POLL that happens to answer
+#: identically twice in a row — "not ready yet" from a status-check tool, say — is cut off after
+#: its second try exactly like a stuck one. The bound cannot tell "stuck" from "polled too fast"
+#: any more than the error axis can tell "permanently wrong" from "transient"; the fix in both
+#: cases is the same two-dispatch allowance, not a smarter classifier.
+_REPEATED_RESULT_NOTE = (
+    "This exact call has already returned the same result twice in a row, so it was not sent "
+    "again — the call worked; sending it again will not change the answer. Either use what you "
+    "already have, or call something else if you need different information."
+)
+#: The per-member ledger: a call signature → (the content it produced, how many times in a row,
+#: which axis that content came from — "error" or "result"). The axis rides in the tuple so a
+#: refusal can pick the CORRECT one of the two notes above without re-deriving it from the content
+#: string's shape (fragile: a legitimate result can coincidentally look error-shaped).
+RepeatedFailures = dict[str, tuple[str, int, str]]
 
 
 def _call_signature(name: str, args: Any) -> str:
@@ -722,17 +748,19 @@ def _call_signature(name: str, args: Any) -> str:
     return f"{name}\x00{rendered}"
 
 
-def _record_failure(ledger: RepeatedFailures, signature: str, error: str) -> None:
-    """Count consecutive identical failures. A DIFFERENT error resets the count to one — the call
-    is the same but the world changed, and the second failure has not yet proven anything."""
+def _record_failure(ledger: RepeatedFailures, signature: str, content: str, kind: str) -> None:
+    """Count consecutive identical outcomes (``kind`` is ``"error"`` or ``"result"``). A DIFFERENT
+    outcome resets the count to one — the call is the same but the world (or the answer) changed,
+    and the second occurrence has not yet proven anything. An outcome on one axis never counts
+    toward the other's allowance: their content strings never collide (an error blob is always
+    ``{"error": ..., "detail": ...}``; a genuine result almost never is), and the axis rides
+    alongside the content in the ledger so a switch between axes is always a reset, never a
+    carry."""
     prior = ledger.get(signature)
     ledger[signature] = (
-        (error, prior[1] + 1)
-        if prior is not None and prior[0] == error
-        else (
-            error,
-            1,
-        )
+        (content, prior[1] + 1, kind)
+        if prior is not None and prior[0] == content and prior[2] == kind
+        else (content, 1, kind)
     )
 
 
@@ -792,6 +820,15 @@ def _repeated_failures_from_transcript(messages: list[Message]) -> RepeatedFailu
     correction. Only the refusal note is filtered out explicitly, because only it can do harm.
     None of the other three can reach the refusal branch on the resumed segment:
 
+    #834 DESIGN §E extends this to the RESULT axis too: a message carrying an EXPLICIT status
+    marker (#944; every message the live dispatch path itself writes carries one) is recorded
+    regardless of ok/error — the live path now records a successful dispatch's own content into
+    the SAME ledger (see the call site beside ``status = "ok"``), so a resume must re-derive that
+    entry the same way or it would silently re-grant two dispatches the live run had already spent.
+    A message with NO explicit marker predates #944 and falls back to the original error-only
+    heuristic below, unchanged — it is never read as a recordable "ok" outcome, which only costs a
+    resumed pre-#944 transcript two extra allowed dispatches before the bound re-engages.
+
     * a ceiling denial and an unknown tool are decided from the policy envelope and the tool set,
       both fixed for the run, so their own branches short-circuit ahead of the refusal check every
       time that signature comes round again;
@@ -824,20 +861,28 @@ def _repeated_failures_from_transcript(messages: list[Message]) -> RepeatedFailu
         if not isinstance(raw_content, str) or not isinstance(call_id, str):
             continue
         content, explicit_status = _split_receipt(raw_content)
-        failed = (
-            explicit_status == "error"
-            if explicit_status is not None
-            else _is_failed_tool_content(content)
-        )
-        if not failed:
+        # #834 DESIGN §E: the ledger now tracks BOTH axes — an identical ERROR (unchanged, #946
+        # T2) and an identical successful RESULT (new). A message with no explicit status marker
+        # predates #944 and carries no reliable "this was ok" signal to re-derive the result axis
+        # from, so it falls back to the pre-#834 error-only heuristic (`_is_failed_tool_content`)
+        # exactly as it always has — an "ok" message from that era is simply never recorded here,
+        # which only means a HITL resume on a pre-#944 transcript re-allows two more identical
+        # results before the bound re-engages, never a correctness break.
+        recordable = explicit_status is not None or _is_failed_tool_content(content)
+        if not recordable:
             continue
         # #946 review round 2, C1: a REFUSAL is not a failure of the call — nothing was dispatched,
         # so there is no error to count. It is written with `status=error` so the fetched-URL reader
         # never credits it (see the receipt line in `_run_tool_calls`), which brings it here too.
         # Counting it would record the note prose as that call's error; the note differs from the
         # real error, `_record_failure` would reset the count to one, and the resumed run would
-        # re-dispatch the very call the bound had already proven dead.
-        if content.strip().startswith(_REPEATED_FAILURE_NOTE_PREFIX):
+        # re-dispatch the very call the bound had already proven dead. #834 DESIGN §E: the SAME
+        # reasoning holds for the result-axis note — both prefixes are refusals, neither is a real
+        # outcome to count.
+        stripped = content.strip()
+        if stripped.startswith(_REPEATED_FAILURE_NOTE_PREFIX) or stripped.startswith(
+            _REPEATED_RESULT_NOTE_PREFIX
+        ):
             continue
         name = names_by_call_id.get(call_id)
         if name is None:
@@ -845,7 +890,14 @@ def _repeated_failures_from_transcript(messages: list[Message]) -> RepeatedFailu
             if not isinstance(message_name, str):
                 continue
             name = message_name
-        _record_failure(ledger, _call_signature(name, args_by_call_id.get(call_id, {})), content)
+        # #834 DESIGN §E: the axis this message came from — an explicit `status=ok` marker means a
+        # genuine dispatched result; anything else (an explicit `status=error`, or the legacy
+        # content-shape fallback below, which only ever recognised failures) is the error axis,
+        # unchanged from before this extension.
+        kind = "result" if explicit_status == "ok" else "error"
+        _record_failure(
+            ledger, _call_signature(name, args_by_call_id.get(call_id, {})), content, kind
+        )
     return ledger
 
 
@@ -1508,7 +1560,7 @@ async def run_tool_use_loop(
                 status = "error"
                 step_name = tc["name"]
                 step_detail = content
-            elif (repeated_failures.get(signature) or ("", 0))[1] >= _REPEATED_FAILURE_MAX:
+            elif (repeated_failures.get(signature) or ("", 0, "error"))[1] >= _REPEATED_FAILURE_MAX:
                 # #946 T2: this exact call already failed twice the same way. It is NOT dispatched —
                 # the member is handed the note instead, so the turn still gets its tool-role reply
                 # (a provider REJECTS a tool_call with no answering message, so skipping the reply
@@ -1536,7 +1588,18 @@ async def run_tool_use_loop(
                 # Not passed through `_redact`, unlike every sibling branch, and deliberately:
                 # this is platform-authored text with nothing in it to redact, and the stored form
                 # has to stay byte-identical for the transcript reader above to recognise it.
-                content = _REPEATED_FAILURE_NOTE
+                #
+                # #834 DESIGN §E / security review on PR #1017: the ledger entry's own recorded
+                # `kind` ("error" or "result") picks the note — NEVER the error-axis wording on a
+                # result-axis refusal. The two are not interchangeable: "could not work" is TRUE for
+                # an error and FALSE for a call that dispatched fine and simply repeated its answer.
+                # This message flows straight into `outcome_blockers[].message`
+                # (execution-engine-service) on a critical member, so a wrong root cause here is
+                # handed to the exact field #834's other half exists to make trustworthy.
+                repeated_kind = (repeated_failures.get(signature) or ("", 0, "error"))[2]
+                content = (
+                    _REPEATED_FAILURE_NOTE if repeated_kind == "error" else _REPEATED_RESULT_NOTE
+                )
                 status = _REPEATED_FAILURE_STATUS
                 # #946 review round 3, N1: the STEP records why the call failed; the MESSAGE
                 # carries the advice. They have different readers and they must not be the same
@@ -1552,7 +1615,7 @@ async def run_tool_use_loop(
                 # nothing. Precedent for a step detail diverging from its message: the #853
                 # JSON-repair branch records the parse error while its message carries the
                 # correction prose.
-                step_detail = (repeated_failures.get(signature) or ("", 0))[0] or content
+                step_detail = (repeated_failures.get(signature) or ("", 0, "error"))[0] or content
             else:
                 step_name = f"{spec.binding}.{spec.operation}"
                 tool_calls_made += 1
@@ -1605,6 +1668,17 @@ async def run_tool_use_loop(
                                     served_citation_ids.append(citation_id)
                     content = _redact(json.dumps(result, default=str), redactors)
                     status = "ok"
+                    # #834 DESIGN §E: extend the SAME ledger to an identical (tool, arguments,
+                    # RESULT) triple, not only an identical ERROR — `manifest-validate` returns
+                    # SUCCESSFULLY with `would_block: true`, an unchanged verdict rather than an
+                    # error, so the pre-#834 error-only ledger never fired for a member benignly
+                    # re-validating the same already-blocked draft. `_record_failure`'s own
+                    # "a DIFFERENT [outcome] resets the count to one" semantics already separate a
+                    # genuinely evolving result from a stuck one, and already separate an error
+                    # outcome from a result outcome (their content strings never collide) — no
+                    # second mechanism, no second ledger. kind="result" so a refusal built off THIS
+                    # entry reaches for `_REPEATED_RESULT_NOTE`, never the error-axis wording.
+                    _record_failure(repeated_failures, signature, content, "result")
                 except Exception as exc:  # noqa: BLE001 — feed the error back so the model can adapt
                     content = _redact(
                         json.dumps({"error": type(exc).__name__, "detail": str(exc)}), redactors
@@ -1613,7 +1687,7 @@ async def run_tool_use_loop(
                     # #946 T2: count it against this exact call. A DIFFERENT error resets the count
                     # — see `_record_failure`. Recorded on the redacted content, so the ledger key
                     # is the same string a resumed run reads back out of the transcript.
-                    _record_failure(repeated_failures, signature, content)
+                    _record_failure(repeated_failures, signature, content, "error")
                 finally:
                     tool_ended = datetime.now(UTC)
                 step_detail = content

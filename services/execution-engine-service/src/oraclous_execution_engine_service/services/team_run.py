@@ -47,6 +47,7 @@ from oraclous_ohm.orchestrate import (
     RecalDirective,
     RecalibrateFn,
     TeamRunResult,
+    critical_deliverable_loss_present,
     run_loop_seam,
     run_team,
 )
@@ -827,6 +828,19 @@ def make_harness_dispatch(
             # on a pre-#975 harness response (back-compat, the #907/#944 posture).
             "fetched_urls": _clean_fetched_urls(result.get("fetched_urls")),
         }
+        # #834 ruling §B.2: lift the harness's OWN error_type/error_message onto the stored result
+        # the same way #907's `simulated`/#944's `unverified_links` are lifted — today they are
+        # read (line ~787 above) only on the fail-closed branch (neither SUCCEEDED nor PARTIAL) and
+        # then discarded; a PARTIAL member's degrade reason never reached its stored result at all.
+        # `outcome_blockers` (domain.outcome_blockers) reads them from here. Conditionally included
+        # — absent, never a bare None key, on an older harness response that carries neither
+        # (back-compat, the #907/#944 posture).
+        harness_error_type = result.get("error_type")
+        if isinstance(harness_error_type, str) and harness_error_type.strip():
+            payload["error_type"] = harness_error_type
+        harness_error_message = result.get("error_message")
+        if isinstance(harness_error_message, str) and harness_error_message.strip():
+            payload["error_message"] = harness_error_message
         # #975 A10: this member's CONTRIBUTION to a downstream member's seed is the DELTA it
         # genuinely added — its reported registry minus what it was itself handed — never its full
         # return. Without this, a downstream member would be re-seeded TRANSITIVELY with an
@@ -1264,8 +1278,14 @@ async def run_team_hybrid(
         skeleton.status = "paused"
         skeleton.paused_at = sorted(set(skeleton.paused_at) | set(paused_gates))
         return skeleton
-    # the team SUCCEEDS only when every member delivered (ADR-042); any failed/blocked → FAILED
-    if any(s in ("failed", "blocked") for s in skeleton.member_status.values()):
+    # the team SUCCEEDS only when every member delivered (ADR-042); any failed/blocked → FAILED.
+    # #834 DESIGN §C site 3: a loop member's per-round status is recorded "partial" INSIDE
+    # run_loop_seam and merged into skeleton.member_status above — it never re-enters
+    # orchestrate.py's own has_failure computation, so the SAME outcome_critical rule must be
+    # applied here, independently, against the merged status + results.
+    if any(
+        s in ("failed", "blocked") for s in skeleton.member_status.values()
+    ) or critical_deliverable_loss_present(skeleton.member_status, skeleton.results, by_role):
         skeleton.status = "failed"
     return skeleton
 
