@@ -33,6 +33,9 @@ from oraclous_capability_registry_service.repositories.execution_repository impo
     ExecutionRepository,
 )
 from oraclous_capability_registry_service.repositories.instance_repository import InstanceRepository
+from oraclous_capability_registry_service.repositories.registry_provenance_repository import (
+    RegistryProvenanceRepository,
+)
 from oraclous_capability_registry_service.services.binding_service import BindingService
 from oraclous_capability_registry_service.services.capability_registry_service import (
     CapabilityRegistryService,
@@ -43,6 +46,9 @@ from oraclous_capability_registry_service.services.graph_membership_client impor
 )
 from oraclous_capability_registry_service.services.instance_manager import InstanceManager
 from oraclous_capability_registry_service.services.mcp_import_service import McpImportService
+from oraclous_capability_registry_service.services.registry_provenance_service import (
+    RegistryProvenanceService,
+)
 from oraclous_capability_registry_service.services.tool_execution_service import (
     ToolExecutionService,
 )
@@ -148,6 +154,26 @@ def get_provenance(request: Request) -> ProvenanceCollector:
             detail="provenance sink unavailable (DATABASE_URL not reachable)",
         )
     return collector
+
+
+def get_registry_provenance_repository(request: Request) -> RegistryProvenanceRepository:
+    """The provenance read repository, built once in ``lifespan`` onto ``app.state``. Same
+    fail-closed shape as ``get_provenance`` above."""
+    repo = getattr(request.app.state, "provenance_repository", None)
+    if repo is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="provenance store unavailable (DATABASE_URL not reachable)",
+        )
+    return repo
+
+
+def get_registry_provenance_service(
+    provenance: Annotated[
+        RegistryProvenanceRepository, Depends(get_registry_provenance_repository)
+    ],
+) -> RegistryProvenanceService:
+    return RegistryProvenanceService(provenance=provenance)
 
 
 def get_credential_broker(request: Request) -> CredentialBrokerPort:
@@ -270,6 +296,9 @@ ValidationServiceDep = Annotated[ValidationService, Depends(get_validation_servi
 ToolExecutionServiceDep = Annotated[ToolExecutionService, Depends(get_tool_execution_service)]
 ExecutionRepositoryDep = Annotated[ExecutionRepository, Depends(get_execution_repository)]
 ProvenanceCollectorDep = Annotated[ProvenanceCollector, Depends(get_provenance)]
+RegistryProvenanceServiceDep = Annotated[
+    RegistryProvenanceService, Depends(get_registry_provenance_service)
+]
 
 
 async def require_admin(principal: Annotated[Principal, Depends(get_principal)]) -> Principal:
