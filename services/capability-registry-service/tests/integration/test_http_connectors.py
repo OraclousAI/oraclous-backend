@@ -51,14 +51,19 @@ async def client(postgres_dsn: str, monkeypatch: pytest.MonkeyPatch) -> AsyncIte
     from oraclous_capability_registry_service.repositories.instance_repository import (
         InstanceRepository,
     )
+    from oraclous_capability_registry_service.repositories.registry_provenance_sink import (
+        PostgresProvenanceSink,
+    )
     from oraclous_capability_registry_service.services.credential_client import FakeCredentialBroker
     from oraclous_capability_registry_service.services.plugin_sync import sync_plugins
+    from oraclous_substrate import ProvenanceCollector
 
     app = create_app(lifespan=None)
     repo = CapabilityRepository(async_dsn)
     app.state.capability_repository = repo
     app.state.instance_repository = InstanceRepository(async_dsn)
     app.state.execution_repository = ExecutionRepository(async_dsn)
+    app.state.provenance = ProvenanceCollector(PostgresProvenanceSink(async_dsn))
     app.state.credential_broker = FakeCredentialBroker(fake_db_dsn="unused")
     await sync_plugins(repository=repo, organisation_id=uuid.UUID(_DEV_ORG))
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://cr.test") as c:
