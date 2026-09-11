@@ -14,6 +14,19 @@ delivered — the verdict is unchanged. A NON-critical member is untouched in ev
 regression guard the design doc calls out by name and is NOT optional: it is what stops this issue
 from re-litigating the ruling by failing a compile that really did produce a usable team.
 
+**RATIFIED (orchestrator, on review of PR #1016): the member itself stays recorded
+``member_status == "partial"`` — it is NEVER relabelled ``"failed"`` — even on a run whose overall
+verdict is ``"failed"`` because of it.** Every test below asserts this explicitly rather than
+leaving it implicit, so a reviewer does not have to re-derive it. Two independent reasons back
+this, both already in the design: (1) DESIGN §C names ``_faulted_roles``, ``rerun()``'s
+``nothing_to_rerun`` 409, and ``_completed_for_resume`` as SEPARATE sites that must independently
+learn to treat a "partial but critical-and-empty" member as faulted/re-runnable — if the member
+were simply relabelled ``"failed"`` instead, none of those three sites would need any change at
+all (they already treat ``"failed"`` as re-runnable), so DESIGN would not have called them out.
+(2) Relabelling would contradict #587's own pin that a PARTIAL dispatch always records
+``"partial"`` (``test_orchestrate_partial_verdict.py``) — this issue narrows WHEN a ``partial``
+also fails the RUN, it does not change what a PARTIAL dispatch is recorded as.
+
 RED until the [impl] extends ``has_failure`` at ``orchestrate.py:724`` (and the same rule at the
 ``already_failed`` gate-precedence check, ``orchestrate.py:662``) to read the emptiness of a
 critical member's declared output.
