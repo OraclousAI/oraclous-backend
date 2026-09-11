@@ -367,3 +367,33 @@ async def test_a_failed_member_in_a_parallel_branch_outranks_a_pending_gate() ->
     assert res.status == "failed"  # NOT "paused" — the recorded failure outranks the pending gate
     assert res.member_status["a"] == "failed"
     assert res.paused_at == []  # the run did not pause on the gate
+
+
+# ── #834 acceptance criterion 5 — THE GUARDRAIL ─────────────────────────────────────────────────
+#
+# Deliberately placed in THIS file, the orchestrator's own foundational suite, rather than in a
+# feature-scoped file (packages/ohm/tests/test_orchestrate_outcome_critical.py carries the full
+# behavioural spec) — a topic file can be pruned once its issue is old history; this one file is not
+# going anywhere as long as run_team exists. "A guardrail or test fails when a terminal SUCCEEDED
+# can be reached with an empty required output from a critical member" is #834's own acceptance
+# criterion, verbatim. If this test is ever deleted or weakened, that IS the regression.
+
+
+async def test_guardrail_834_no_succeeded_with_empty_required_output_from_critical() -> None:
+    reviewer = OHMMember(
+        role="reviewer",
+        kind="agent",
+        manifest_ref="org:x/reviewer@1",
+        outcome_critical=True,
+        outputs_schema={"required": ["members"]},
+    )
+
+    async def dispatch(member: OHMMember, envs: list[HandoffEnvelope], item: Any) -> dict:
+        # a critical member that degrades with its declared required key present but EMPTY — the
+        # exact live-defect shape (#749: run 2d24b128-...): the reviewer answers, the draft is
+        # broken, no team exists.
+        return {"status": "PARTIAL", "members": []}
+
+    res = await run_team(_team([reviewer]), dispatch)
+    assert res.status != "completed"  # THE GUARDRAIL: this terminal must never be "completed"
+    assert res.status == "failed"
