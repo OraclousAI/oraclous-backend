@@ -24,3 +24,13 @@ seams:
       and the absence of one DENIES it. Before #446 the engine fired on zero request paths — a
       built-but-unwired security control that fails OPEN on cross-org reads. If this symbol
       disappears from every service src, the gate is gone: fail CI.
+  provenance-on-dispatch:
+    symbol: emit_dispatch_provenance
+    rationale: >
+      #826 (24 August 2026 solution-architect ruling, item 5): every capability dispatch must
+      produce a provenance record through the runtime's single collector (CLAUDE.md §3.7), never a
+      direct database write. The execution-engine's adopted-tool dispatch
+      (``tasks/run_tasks.py::_run_adopted_tool_async``) wires this via ``emit_dispatch_provenance``;
+      the capability-registry's own ``execute_sync`` dispatch wires the same seam on its path. If
+      this symbol disappears from every service src, a capability dispatch is once again emitting
+      nothing: fail CI.
