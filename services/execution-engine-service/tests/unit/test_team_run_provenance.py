@@ -268,6 +268,30 @@ async def test_a_start_emit_failure_fails_the_row_and_reraises() -> None:
     assert repo.rows[row.id].state == "FAILED"  # never stuck RUNNING
 
 
+async def test_a_failed_dispatch_audit_write_does_not_fail_a_healthy_run() -> None:
+    """BLOCKING fix (review on #1027): ``_on_dispatch`` is a best-effort hook the orchestrator
+    (``oraclous_ohm.orchestrate``) invokes inside ``contextlib.suppress(Exception)``. Before this
+    fix, its dispatch emit went through the fail-closed ``_emit`` — so a transient sink error there
+    CAS-ed the row RUNNING -> FAILED mid-drive, the orchestrator silently swallowed the re-raise and
+    kept driving to a real success, and the later terminal ``transition(...)`` call became a no-op
+    (CAS mismatch: the row was already FAILED, not RUNNING) — discarding the drive's real results.
+    A healthy run must still reach SUCCEEDED with its real member output intact."""
+    repo = FakeTeamRunRepo()
+    prov = _FakeProvenance(raise_on={"engine.team_run.dispatch"})
+    svc, _ = _svc(repo, ScriptedHarness(), provenance=prov)
+    row = await _run(
+        svc, _principal(), manifest=_team([_agent("a")]), sub_harnesses={}, gate_decisions={}
+    )
+
+    assert row.state == "SUCCEEDED"  # NOT "FAILED" — the crux of the bug
+    assert row.results["a"]["output"] == "a-out"  # the real member output, not blanked
+
+    settled = [e for e in prov.events if e.action == "engine.team_run.member"]
+    assert len(settled) == 1, prov.events  # the settle checkpoint event still fired
+    finishes = [e for e in prov.events if e.action == "engine.team_run.finish"]
+    assert len(finishes) == 1 and finishes[0].outcome == "SUCCEEDED", prov.events
+
+
 # ── lifecycle point 2: member dispatch admitted (_on_dispatch, :2143-2154) ───────────────────────
 
 

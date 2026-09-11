@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import logging
 import os
 import re
 import uuid
@@ -84,6 +85,8 @@ from oraclous_execution_engine_service.services.team_run import (
     make_recalibration_coordinator,
     run_team_hybrid,
 )
+
+logger = logging.getLogger(__name__)
 
 # orchestrator status -> persisted team-run state. ADR-042 (#551): "failed" (one or more members
 # did not deliver — the non-aborting failure path now records per-member status instead of raising)
@@ -1026,7 +1029,7 @@ class TeamRunService:
         input_hash: str | None = None,
         output_hash: str | None = None,
     ) -> None:
-        """§3.7 (#826): the single emit path for every team-run provenance event. A member's
+        """§3.7 (#826): the single FAIL-CLOSED emit path for team-run provenance. A member's
         identity NEVER goes into ``outcome`` by string concatenation — it lives structured in
         ``context["member"]``; ``outcome`` carries the status alone (24 August ruling §3).
 
@@ -1034,6 +1037,22 @@ class TeamRunService:
         best-effort CAS of the row from RUNNING to FAILED (a no-op once the row is already
         terminal — e.g. the ``finish`` emit, which fires after the terminal state is already
         persisted) and re-raises, so a failed audit never leaves a phantom RUNNING row.
+
+        Two-path contract (BLOCKING fix, review on #1027/#826): this method is used ONLY where a
+        raise genuinely ABORTS the drive — the run-start emit (``engine.team_run.start``, claim ->
+        RUNNING) — or fires AFTER the row's real terminal state is already durable, so the CAS is a
+        harmless no-op — the two ``engine.team_run.finish`` emits (the normal exception-handling
+        path and the normal success path). Everywhere else use ``_emit_best_effort`` instead:
+        ``_on_dispatch`` and ``_checkpoint`` are best-effort hooks the orchestrator
+        (``oraclous_ohm.orchestrate``) invokes inside ``contextlib.suppress(Exception)``, so a raise
+        from THIS method there is silently swallowed by the caller — the drive continues to
+        completion having already CAS-ed a perfectly healthy row to FAILED, and the later real
+        terminal ``transition(...)`` call becomes a no-op (CAS mismatch: the row is already FAILED,
+        not RUNNING), discarding the drive's real results. ``_emit_judge`` (called from
+        ``_grade_gate``) must also use ``_emit_best_effort``: ``_grade_gate``'s own contract forbids
+        stranding or failing the run on a grader-side problem, which a raise out of THIS method
+        would violate. Do not merge the two paths back together — a raise inside ``_emit`` when
+        nothing downstream will observe it only corrupts a healthy run's state.
         """
         try:
             # ADR-030 §2: engine_provenance is FORCE'd-RLS too — bind the org so the sink's own
@@ -1063,6 +1082,52 @@ class TeamRunService:
                     error_message="provenance emit failed",
                 )
             raise
+
+    async def _emit_best_effort(
+        self,
+        org_id: uuid.UUID,
+        principal_id: uuid.UUID,
+        team_run_id: uuid.UUID,
+        action: str,
+        outcome: str,
+        *,
+        context: Mapping[str, Any] | None = None,
+        input_hash: str | None = None,
+        output_hash: str | None = None,
+    ) -> None:
+        """§3.7 (#826): the NON-aborting sibling of ``_emit`` (BLOCKING fix, review on #1027).
+
+        Same construction/binding as ``_emit`` (``org_scope(org_id)`` + the same
+        ``ProvenanceRecord`` shape), but on a sink failure it does NOT touch the run row (no CAS,
+        no ``transition`` call)
+        and does NOT re-raise — it logs and returns normally. Use this wherever the caller is a
+        best-effort hook the orchestrator invokes inside ``contextlib.suppress`` (``_on_dispatch``,
+        ``_checkpoint``), a grader-side emit whose contract forbids stranding/failing the run
+        (``_emit_judge``), or a cancellation-path emit that must not block propagation. See the
+        two-path contract on ``_emit``'s docstring for why the split exists: a raise here, from
+        inside a hook nothing downstream observes, would only corrupt a healthy run's state.
+        """
+        try:
+            with org_scope(org_id):
+                await self._provenance.emit(
+                    ProvenanceRecord(
+                        organisation_id=str(org_id),
+                        principal=str(principal_id),
+                        action=action,
+                        resource=f"engine_team_run:{team_run_id}",
+                        outcome=outcome,
+                        context=context,
+                        input_hash=input_hash,
+                        output_hash=output_hash,
+                    )
+                )
+        except Exception:
+            logger.exception(
+                "provenance emit failed (best-effort): team_run_id=%s action=%s org_id=%s",
+                team_run_id,
+                action,
+                org_id,
+            )
 
     def _enforce_member_ceilings(
         self, team: OHMManifest, sub_harnesses: Mapping[str, dict]
@@ -1788,12 +1853,17 @@ class TeamRunService:
         """§3.7 (#826): the real credentialed model call the judge makes gets an audit event too.
         ``outcome`` carries the verdict itself: ``grader_unavailable`` for the fail-closed path
         (the judge never ran — distinct from a genuine below-threshold ``fail``), else ``pass``/
-        ``fail`` off the verdict's own ``pass`` flag."""
+        ``fail`` off the verdict's own ``pass`` flag.
+
+        Uses ``_emit_best_effort`` (BLOCKING fix, review on #1027): ``_grade_gate``'s own contract
+        is that a grader-side failure must NEVER fail or strand the run — a raise out of this emit
+        would violate that by CAS-ing the row to FAILED before ``_grade_gate`` can keep it
+        SUCCEEDED."""
         if verdict.get("grader_unavailable"):
             outcome = "grader_unavailable"
         else:
             outcome = "pass" if verdict.get("pass") else "fail"
-        await self._emit(org, principal_id, run_id, "llm.judge", outcome)
+        await self._emit_best_effort(org, principal_id, run_id, "llm.judge", outcome)
 
     async def _grade_gate(
         self,
@@ -2242,9 +2312,10 @@ class TeamRunService:
                     )
             # §3.7 (#826): the member's identity lives structured in context["member"] — never
             # concatenated into outcome. This hook is best-effort from the orchestrator's own
-            # perspective (packages/ohm suppresses a raising hook), so a failure here cannot abort
-            # the run; the shared ``_emit`` still attempts the fail-closed CAS before re-raising.
-            await self._emit(
+            # perspective (packages/ohm suppresses a raising hook, :orchestrate.py ~698), so a
+            # raise here would never abort the drive — it would just CAS a healthy row to FAILED
+            # out from under it (BLOCKING fix, review on #1027). Use the non-aborting sibling.
+            await self._emit_best_effort(
                 org,
                 row.user_id,
                 row.id,
@@ -2340,11 +2411,13 @@ class TeamRunService:
                     )
             # §3.7 (#826): one event per member, the FIRST time it appears settled — never on a
             # later checkpoint that merely carries it forward. The member's identity lives ONLY in
-            # context["member"]; outcome carries its terminal status alone.
+            # context["member"]; outcome carries its terminal status alone. Like ``_on_dispatch``,
+            # this hook is invoked by the orchestrator inside ``contextlib.suppress`` (BLOCKING fix,
+            # review on #1027) — the non-aborting sibling, not the fail-closed ``_emit``.
             newly_settled = [role for role in member_status if role not in emitted_members]
             for role in newly_settled:
                 emitted_members.add(role)
-                await self._emit(
+                await self._emit_best_effort(
                     org,
                     row.user_id,
                     row.id,
@@ -2448,15 +2521,11 @@ class TeamRunService:
                     )
                 )
                 # §3.7 (#826): best-effort, like the transition above — a cancellation must still
-                # propagate even if this write fails.
-                await self._provenance.emit(
-                    ProvenanceRecord(
-                        organisation_id=str(org),
-                        principal=str(row.user_id),
-                        action="engine.team_run.finish",
-                        resource=f"engine_team_run:{row.id}",
-                        outcome="FAILED",
-                    )
+                # propagate even if this write fails. Routed through ``_emit_best_effort`` (BLOCKING
+                # fix, review on #1027) so every emit in this file goes through one of exactly two
+                # paths, rather than calling ``self._provenance.emit`` directly.
+                await self._emit_best_effort(
+                    org, row.user_id, row.id, "engine.team_run.finish", "FAILED"
                 )
             raise
         # flow-evaluation gate (#477): grade ONLY a completed run; PRODUCE + STORE the verdict on
