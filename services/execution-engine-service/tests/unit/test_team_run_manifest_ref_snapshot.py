@@ -131,10 +131,19 @@ class _FakeRegistry:
         return []
 
 
+class _NoopProvenance:
+    """#826: ``provenance`` is now a non-optional TeamRunService kwarg; unrelated here (the
+    manifest-ref snapshot behaviour), so a no-op stand-in is enough."""
+
+    async def emit(self, record: Any) -> None:
+        return None
+
+
 def _service(registry: _FakeRegistry | None = None) -> tuple[TeamRunService, _FakeRunRepo]:
     repo = _FakeRunRepo()
     svc = TeamRunService(
         team_runs=repo,  # type: ignore[arg-type] — duck-typed seam in unit tests
+        provenance=_NoopProvenance(),  # type: ignore[arg-type]
         enqueue=lambda _rid, _org, _user: None,
         registry=registry,  # type: ignore[call-arg] — the new seam this slice adds
     )

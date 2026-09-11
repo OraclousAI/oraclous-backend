@@ -44,8 +44,16 @@ class _FakeRepo:
         return [{"id": uuid.uuid4()}], 42
 
 
+class _NoopProvenance:
+    """#826: ``provenance`` is now a non-optional TeamRunService kwarg; unrelated here (list/clamp
+    behaviour), so a no-op stand-in is enough."""
+
+    async def emit(self, record: Any) -> None:
+        return None
+
+
 def _service(repo: _FakeRepo) -> TeamRunService:
-    return TeamRunService(team_runs=repo)  # type: ignore[arg-type]
+    return TeamRunService(team_runs=repo, provenance=_NoopProvenance())  # type: ignore[arg-type]
 
 
 async def test_returns_repo_rows_and_total_unchanged() -> None:

@@ -79,6 +79,14 @@ def _principal() -> Principal:
     return Principal(principal_id=_USER, principal_type=PrincipalType.USER, organisation_id=_ORG)
 
 
+class _NoopProvenance:
+    """#826: ``provenance`` is now a non-optional TeamRunService kwarg; these tests exercise
+    unrelated (preflight-credential) behaviour, so a no-op stand-in is enough."""
+
+    async def emit(self, record: Any) -> None:
+        return None
+
+
 class _RunRow:
     def __init__(self, **kw: Any) -> None:
         self.id = uuid.uuid4()
@@ -225,6 +233,7 @@ def _service(registry: Any) -> tuple[TeamRunService, _FakeRunRepo, list[uuid.UUI
     enqueued: list[uuid.UUID] = []
     svc = TeamRunService(
         team_runs=repo,  # type: ignore[arg-type] — duck-typed seam in unit tests
+        provenance=_NoopProvenance(),  # type: ignore[arg-type]
         enqueue=lambda rid, _org, _user: enqueued.append(rid),
         registry=registry,
     )

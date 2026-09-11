@@ -165,8 +165,21 @@ class ScriptedHarness:
         }
 
 
+class _NoopProvenance:
+    """#826: ``provenance`` is now a non-optional TeamRunService kwarg; unrelated here (the mid-run
+    dispatch/timing signals), so a no-op stand-in is enough."""
+
+    async def emit(self, record: Any) -> None:
+        return None
+
+
 def _svc(repo: FakeTeamRunRepo, harness: Any) -> TeamRunService:
-    return TeamRunService(team_runs=repo, harness=harness, enqueue=lambda _r, _o, _u: None)
+    return TeamRunService(
+        team_runs=repo,
+        provenance=_NoopProvenance(),
+        harness=harness,
+        enqueue=lambda _r, _o, _u: None,
+    )
 
 
 def _agent(role: str, deps: list[str] | None = None) -> dict[str, Any]:

@@ -43,6 +43,7 @@ from oraclous_ohm.manifest import OHMLoop, OHMManifest
 from oraclous_ohm.orchestrate import DoneCheckFn, TeamRunResult
 from oraclous_ohm.parse import load_ohm
 from oraclous_ohm.sites import InvalidSiteError, normalise_sites
+from oraclous_substrate import ProvenanceCollector, ProvenanceRecord, hash_payload
 
 from oraclous_execution_engine_service.core.rls import org_scope
 from oraclous_execution_engine_service.domain import verdict_consumption as vc
@@ -971,6 +972,7 @@ class TeamRunService:
         self,
         *,
         team_runs: TeamRunRepository,
+        provenance: ProvenanceCollector,
         harness: HarnessClient | None = None,
         enqueue: EnqueueFn | None = None,
         evaluate: EvaluateClient | None = None,
@@ -987,6 +989,9 @@ class TeamRunService:
         # existence check for a graph-bound run — None ⇒ no fail-fast check (KGS RLS still scopes
         # the tools mid-run), so a wired client is how a cross-org graph_id is rejected at create.
         self._team_runs = team_runs
+        # §3.7: one provenance event per lifecycle transition/dispatch/judge call (#826) — non-
+        # optional, unlike the collaborators below, which are None on paths that do not need them.
+        self._provenance = provenance
         self._harness = harness
         self._enqueue = enqueue
         self._evaluate = evaluate
@@ -1008,6 +1013,56 @@ class TeamRunService:
 
     def _load_team(self, document: dict) -> OHMManifest:
         return load_team_manifest(document)
+
+    async def _emit(
+        self,
+        org_id: uuid.UUID,
+        principal_id: uuid.UUID,
+        team_run_id: uuid.UUID,
+        action: str,
+        outcome: str,
+        *,
+        context: Mapping[str, Any] | None = None,
+        input_hash: str | None = None,
+        output_hash: str | None = None,
+    ) -> None:
+        """§3.7 (#826): the single emit path for every team-run provenance event. A member's
+        identity NEVER goes into ``outcome`` by string concatenation — it lives structured in
+        ``context["member"]``; ``outcome`` carries the status alone (24 August ruling §3).
+
+        Mirrors ``job_service.py:99-112``'s fail-closed contract: an emit failure attempts a
+        best-effort CAS of the row from RUNNING to FAILED (a no-op once the row is already
+        terminal — e.g. the ``finish`` emit, which fires after the terminal state is already
+        persisted) and re-raises, so a failed audit never leaves a phantom RUNNING row.
+        """
+        try:
+            # ADR-030 §2: engine_provenance is FORCE'd-RLS too — bind the org so the sink's own
+            # engine's GUC guard admits the INSERT (the worker task already binds the ambient
+            # OrganisationContext for the whole drive; this local bind is the same belt-and-braces
+            # every other DB op in this method takes).
+            with org_scope(org_id):
+                await self._provenance.emit(
+                    ProvenanceRecord(
+                        organisation_id=str(org_id),
+                        principal=str(principal_id),
+                        action=action,
+                        resource=f"engine_team_run:{team_run_id}",
+                        outcome=outcome,
+                        context=context,
+                        input_hash=input_hash,
+                        output_hash=output_hash,
+                    )
+                )
+        except Exception:
+            with contextlib.suppress(Exception), org_scope(org_id):
+                await self._team_runs.transition(
+                    team_run_id,
+                    org_id,
+                    new_state="FAILED",
+                    allowed_from=frozenset({"RUNNING"}),
+                    error_message="provenance emit failed",
+                )
+            raise
 
     def _enforce_member_ceilings(
         self, team: OHMManifest, sub_harnesses: Mapping[str, dict]
@@ -1723,8 +1778,31 @@ class TeamRunService:
                 raise
         return claimed
 
+    async def _emit_judge(
+        self,
+        org: uuid.UUID,
+        principal_id: uuid.UUID,
+        run_id: uuid.UUID,
+        verdict: dict[str, Any],
+    ) -> None:
+        """§3.7 (#826): the real credentialed model call the judge makes gets an audit event too.
+        ``outcome`` carries the verdict itself: ``grader_unavailable`` for the fail-closed path
+        (the judge never ran — distinct from a genuine below-threshold ``fail``), else ``pass``/
+        ``fail`` off the verdict's own ``pass`` flag."""
+        if verdict.get("grader_unavailable"):
+            outcome = "grader_unavailable"
+        else:
+            outcome = "pass" if verdict.get("pass") else "fail"
+        await self._emit(org, principal_id, run_id, "llm.judge", outcome)
+
     async def _grade_gate(
-        self, team: OHMManifest, run_id: uuid.UUID, result: Any
+        self,
+        team: OHMManifest,
+        run_id: uuid.UUID,
+        result: Any,
+        *,
+        org: uuid.UUID,
+        principal_id: uuid.UUID,
     ) -> dict[str, Any] | None:
         """Grade a COMPLETED run at the ``success_criteria`` gate (#477). PRODUCES + returns the
         verdict dict; the caller STORES it on the SUCCEEDED row. This NEVER branches the run state
@@ -1771,7 +1849,9 @@ class TeamRunService:
                     return None
                 # #636 (CTO ruling): a DECLARED battery that resolved and was judged is the
                 # escalation-grade gate — mark it SCORED so #604 consumption may branch on it.
-                return {**battery_verdict.model_dump(), "scored": True}
+                verdict = {**battery_verdict.model_dump(), "scored": True}
+                await self._emit_judge(org, principal_id, run_id, verdict)
+                return verdict
             prose_verdict = await self._evaluate.evaluate(
                 target_ref=str(run_id),
                 target_output=grade_target,
@@ -1782,14 +1862,16 @@ class TeamRunService:
             # #636 (CTO ruling): bare prose success_criteria are ADVISORY — the verdict is
             # produced + stored and the run SUCCEEDS (#477), but it is not escalation-grade
             # (scored=False → decide_action STORE_ONLYs; a declared battery is the opt-in).
-            return {**prose_verdict, "scored": False}
+            verdict = {**prose_verdict, "scored": False}
+            await self._emit_judge(org, principal_id, run_id, verdict)
+            return verdict
         except Exception as exc:  # noqa: BLE001 — ANY grader-side failure fails CLOSED, never strands
             # The grade runs OUTSIDE _drive's try/except, so an escaping error would fail the Celery
             # task and strand the run RUNNING. The contract (docstring) is absolute: a grader error
             # → a recorded pass=false verdict and the run STILL SUCCEEDS. So catch everything here —
             # EvaluateRejected/EvaluateClientError, an UnknownBattery from a stray battery ref, a
             # decode/shape bug, anything — the run's success is independent of the grader.
-            return {  # fail-closed verdict; the run still SUCCEEDS (state unchanged)
+            verdict = {  # fail-closed verdict; the run still SUCCEEDS (state unchanged)
                 "pass": False,
                 "score": 0.0,
                 "recommended_action": "escalate_human",
@@ -1803,6 +1885,8 @@ class TeamRunService:
                 # with grader_unavailable; either marker alone STORE_ONLYs).
                 "scored": False,
             }
+            await self._emit_judge(org, principal_id, run_id, verdict)
+            return verdict
 
     def _make_loop_done_check(
         self,
@@ -2105,6 +2189,10 @@ class TeamRunService:
             )
         if not applied or claimed is None:  # a concurrent driver owns it — no-op
             return claimed or row
+        # §3.7 (#826): the run's own claim is a provenance event too — the flagship runtime must
+        # not appear in neither /v1/engine/activity nor /v1/engine/usage. An emit failure here
+        # fails the row CLOSED (never stuck RUNNING as a phantom claim) and re-raises.
+        await self._emit(org, claimed.user_id, claimed.id, "engine.team_run.start", "RUNNING")
         harness = self._harness
         if harness is None:  # only the reaper builds a harness-less service, and it never drives
             raise RuntimeError("team-run drive requires a harness client")
@@ -2152,6 +2240,18 @@ class TeamRunService:
                         member_status=dict(live_status),
                         member_timings=dict(member_timings),
                     )
+            # §3.7 (#826): the member's identity lives structured in context["member"] — never
+            # concatenated into outcome. This hook is best-effort from the orchestrator's own
+            # perspective (packages/ohm suppresses a raising hook), so a failure here cannot abort
+            # the run; the shared ``_emit`` still attempts the fail-closed CAS before re-raising.
+            await self._emit(
+                org,
+                row.user_id,
+                row.id,
+                "engine.team_run.dispatch",
+                "dispatched",
+                context={"member": role},
+            )
 
         # O4 metering (#472): this drive's per-member token costs, summed onto the prior cost on
         # resume (succeeded members are not re-dispatched, so their cost is counted once). NB on an
@@ -2191,6 +2291,11 @@ class TeamRunService:
         # with an empty member_status that /rerun answers 409 nothing_to_rerun. ``checkpoint`` is a
         # write on the live row, NOT a transition — the run stays RUNNING throughout.
         settled_status: dict[str, str] = {}
+        # §3.7 (#826): which roles have already had an "engine.team_run.member" event emitted — a
+        # checkpoint's ``member_status`` is the settled-so-far snapshot (it only grows), so without
+        # this a role already settled on an earlier checkpoint would be re-emitted on every later
+        # one. A role fires exactly once, the moment it first appears settled.
+        emitted_members: set[str] = set()
 
         async def _checkpoint(results: dict[str, Any], member_status: dict[str, str]) -> None:
             settled_status.clear()
@@ -2233,6 +2338,21 @@ class TeamRunService:
                         # here would be counted twice across a resume.
                         cost_tokens=prior_cost + sum(cost_deltas),
                     )
+            # §3.7 (#826): one event per member, the FIRST time it appears settled — never on a
+            # later checkpoint that merely carries it forward. The member's identity lives ONLY in
+            # context["member"]; outcome carries its terminal status alone.
+            newly_settled = [role for role in member_status if role not in emitted_members]
+            for role in newly_settled:
+                emitted_members.add(role)
+                await self._emit(
+                    org,
+                    row.user_id,
+                    row.id,
+                    "engine.team_run.member",
+                    member_status[role],
+                    context={"member": role},
+                    output_hash=hash_payload(results.get(role)),
+                )
 
         try:
             result = await run_team_hybrid(
@@ -2307,6 +2427,9 @@ class TeamRunService:
             await self._accrue_schedule_cost(
                 row, org, sum(cost_deltas)
             )  # #601: cost even on FAILED
+            # §3.7 (#826): the terminal event fires on this fail-closed path too, not only the
+            # happy one — a caller reading /v1/engine/activity must see the run reached FAILED.
+            await self._emit(org, row.user_id, row.id, "engine.team_run.finish", "FAILED")
             return updated or claimed
         except BaseException as exc:
             # NOT a normal error — task cancellation (ASGI client disconnect / worker SIGTERM) or
@@ -2324,13 +2447,26 @@ class TeamRunService:
                         error_message=f"cancelled mid-drive: {type(exc).__name__}",
                     )
                 )
+                # §3.7 (#826): best-effort, like the transition above — a cancellation must still
+                # propagate even if this write fails.
+                await self._provenance.emit(
+                    ProvenanceRecord(
+                        organisation_id=str(org),
+                        principal=str(row.user_id),
+                        action="engine.team_run.finish",
+                        resource=f"engine_team_run:{row.id}",
+                        outcome="FAILED",
+                    )
+                )
             raise
         # flow-evaluation gate (#477): grade ONLY a completed run; PRODUCE + STORE the verdict on
         # the SUCCEEDED row. The run STATE is NOT branched on the verdict and NOTHING is enqueued
         # off it — consuming it (re-dispatch / termination) is E8 (ADR-037 §4). A grader failure
         # yields a fail-closed verdict and the run still SUCCEEDS (handled inside _grade_gate).
         verdict = (
-            await self._grade_gate(team, row.id, result) if result.status == "completed" else None
+            await self._grade_gate(team, row.id, result, org=org, principal_id=row.user_id)
+            if result.status == "completed"
+            else None
         )
         # #602 seeded-refresh: the first-class 5-way delta, beside the verdict (None on a normal
         # run — default-OFF — or a non-completed run). Gated on seed_from_run_id so a normal run is
@@ -2393,6 +2529,10 @@ class TeamRunService:
                 refresh_delta=refresh_delta,  # #602: the 5-way delta (None on a non-refresh run)
                 loop_state=dict(result.loop_state),  # PR-C: the per-loop checkpoint (resume cursor)
             )
+        # §3.7 (#826): the run's terminal outcome, whichever state it settled into (SUCCEEDED,
+        # FAILED-via-ADR-042, PAUSED, REJECTED, COST_BUDGET) — one event per drive, always.
+        final_state = (updated or claimed).state
+        await self._emit(org, row.user_id, row.id, "engine.team_run.finish", final_state)
         await self._accrue_schedule_cost(row, org, sum(cost_deltas))  # #601: per-cadence accrual
         # #604 closed-loop verdict-consumption (ADR-048 dec 5): branch the just-settled run on its
         # stored verdict — STORE_ONLY (unchanged) / RE_TASK (re-dispatch faulted members) / ESCALATE

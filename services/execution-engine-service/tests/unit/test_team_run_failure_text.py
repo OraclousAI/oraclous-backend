@@ -871,6 +871,14 @@ def _principal_834() -> Any:
     )
 
 
+class _NoopProvenance834:
+    """#826: ``provenance`` is now a non-optional TeamRunService kwarg; unrelated here (the
+    failure-text curation this file tests), so a no-op stand-in is enough."""
+
+    async def emit(self, record: Any) -> None:
+        return None
+
+
 class _CriticalPartialHarness834:
     """Every member SUCCEEDS except "reviewer", which degrades PARTIAL with its declared
     ``members`` key present but EMPTY — the live #749 defect shape."""
@@ -894,7 +902,11 @@ async def _drive_critical_partial_run() -> Any:
 
     repo = _FaultedRepo834()
     svc = TeamRunService(
-        team_runs=repo, harness=_CriticalPartialHarness834(), enqueue=None, evaluate=None
+        team_runs=repo,
+        provenance=_NoopProvenance834(),
+        harness=_CriticalPartialHarness834(),
+        enqueue=None,
+        evaluate=None,
     )
     row = await svc.create(
         _principal_834(),
@@ -966,7 +978,11 @@ async def test_the_existing_cap_and_per_detail_bounds_still_hold_with_the_new_re
 
     repo = _FaultedRepo834()
     svc = TeamRunService(
-        team_runs=repo, harness=_LongCriticalPartialHarness(), enqueue=None, evaluate=None
+        team_runs=repo,
+        provenance=_NoopProvenance834(),
+        harness=_LongCriticalPartialHarness(),
+        enqueue=None,
+        evaluate=None,
     )
     row = await svc.create(
         _principal_834(),
