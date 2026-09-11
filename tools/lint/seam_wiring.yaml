@@ -29,8 +29,11 @@ seams:
     rationale: >
       #826 (24 August 2026 solution-architect ruling, item 5): every capability dispatch must
       produce a provenance record through the runtime's single collector (CLAUDE.md §3.7), never a
-      direct database write. The execution-engine's adopted-tool dispatch
-      (``tasks/run_tasks.py::_run_adopted_tool_async``) wires this via ``emit_dispatch_provenance``;
-      the capability-registry's own ``execute_sync`` dispatch wires the same seam on its path. If
-      this symbol disappears from every service src, a capability dispatch is once again emitting
-      nothing: fail CI.
+      direct database write. Both real dispatch paths wire this through a function literally named
+      ``emit_dispatch_provenance``: the execution-engine's adopted-tool dispatch
+      (``tasks/run_tasks.py::_run_adopted_tool_async``) and the capability-registry's own
+      ``execute_sync`` dispatch (``services/tool_execution_service.py``) each define and call their
+      own copy of it. This checker is a PRESENCE scan (see its own module docstring): it proves the
+      symbol exists on at least one service path, not that both call it — if this symbol disappears
+      from EVERY service src, a capability dispatch is once again emitting nothing through the
+      collector: fail CI.

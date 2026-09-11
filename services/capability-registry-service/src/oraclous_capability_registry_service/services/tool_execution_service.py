@@ -83,6 +83,35 @@ def _capped(value: object, *, limit: int = 64) -> object:
     return value[:limit] if isinstance(value, str) else value
 
 
+async def emit_dispatch_provenance(
+    provenance: ProvenanceCollector,
+    *,
+    organisation_id: uuid.UUID,
+    principal_id: uuid.UUID,
+    resource: str,
+    outcome: str,
+    input_hash: str | None = None,
+    output_hash: str | None = None,
+) -> None:
+    """``provenance-on-dispatch`` seam (``tools/lint/seam_wiring.yaml``, #826 solution-architect
+    ruling item 5): a capability dispatch on a service request path must produce a provenance
+    record through the runtime's single collector (CLAUDE.md §3.7), never a direct database write.
+    Wired here on the registry's own ``execute_sync`` dispatch (below); the execution-engine's
+    adopted-tool dispatch (``tasks/run_tasks.py::_run_adopted_tool_async``) wires the same seam on
+    its own dispatch path."""
+    await provenance.emit(
+        ProvenanceRecord(
+            organisation_id=str(organisation_id),
+            principal=str(principal_id),
+            action="capability.invoke",
+            resource=resource,
+            outcome=outcome,
+            input_hash=input_hash,
+            output_hash=output_hash,
+        )
+    )
+
+
 class ToolExecutionService:
     def __init__(
         self,
@@ -309,15 +338,13 @@ class ToolExecutionService:
             credits_consumed=result.credits_consumed,
         )
         assert finalized is not None  # noqa: S101 — just created in this txn
-        await self._provenance.emit(
-            ProvenanceRecord(
-                organisation_id=str(organisation_id),
-                principal=str(user_id),
-                action="capability.invoke",
-                resource=f"tool_instance:{instance_id}",
-                outcome="succeeded" if result.success else "failed",
-                input_hash=hash_payload(body.input_data),
-                output_hash=hash_payload(output),
-            )
+        await emit_dispatch_provenance(
+            self._provenance,
+            organisation_id=organisation_id,
+            principal_id=user_id,
+            resource=f"tool_instance:{instance_id}",
+            outcome="succeeded" if result.success else "failed",
+            input_hash=hash_payload(body.input_data),
+            output_hash=hash_payload(output),
         )
         return ExecutionOut.model_validate(finalized)
