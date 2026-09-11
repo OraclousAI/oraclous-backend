@@ -372,6 +372,58 @@ async def test_run_terminal_failure_emits_finish() -> None:
     assert finishes[0].outcome == "FAILED"
 
 
+# ── the stale-run sweep (reap_stale, BLOCKING fix on #1027) ─────────────────────────────────────
+
+
+async def test_reap_stale_emits_finish_for_each_row_it_fails() -> None:
+    """``reap_stale``'s own docstring calls this sweep "the one case nothing else can recover" — a
+    driver killed mid-drive (Celery SIGKILLs the child past the soft-timeout) leaves no in-process
+    ``except`` clause to emit the terminal record. Before this fix the swept row transitions to
+    FAILED with zero provenance, so it is invisible on ``/v1/engine/activity`` even though every
+    OTHER path to FAILED (the exception handler, the cancellation handler, the run-start CAS) emits
+    a finish record. One event per row this sweep actually transitions."""
+    repo, prov = FakeTeamRunRepo(), _FakeProvenance()
+
+    def _stranded() -> EngineTeamRun:
+        row = EngineTeamRun(
+            id=uuid.uuid4(),
+            organisation_id=_ORG,
+            user_id=_USER,
+            manifest={},
+            sub_harnesses={},
+            gate_decisions={},
+            state="RUNNING",
+            results={},
+            paused_at=[],
+        )
+        repo.rows[row.id] = row
+        return row
+
+    stranded_rows = [_stranded(), _stranded()]
+
+    class FakeMaintenance:
+        async def list_stale_team_runs(self, older_than: Any, *, limit: int = 100) -> list:
+            return stranded_rows
+
+    svc, _ = _svc(repo, ScriptedHarness(), provenance=prov)
+
+    import datetime as _dt
+
+    reaped = await svc.reap_stale(
+        FakeMaintenance(),  # type: ignore[arg-type]
+        older_than=_dt.datetime(2026, 1, 1, tzinfo=_dt.UTC),
+    )
+
+    assert reaped == 2
+    for row in stranded_rows:
+        assert repo.rows[row.id].state == "FAILED"
+
+    finishes = [e for e in prov.events if e.action == "engine.team_run.finish"]
+    assert len(finishes) == 2, prov.events
+    assert {e.outcome for e in finishes} == {"FAILED"}
+    assert {e.resource for e in finishes} == {f"engine_team_run:{row.id}" for row in stranded_rows}
+
+
 # ── the LLM-judge gate (_grade_gate, ~L1726-1805) ────────────────────────────────────────────────
 
 

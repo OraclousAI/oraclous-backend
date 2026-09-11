@@ -2707,7 +2707,17 @@ class TeamRunService:
         process, so NO except clause runs and the blanket handler above never fires — the row simply
         sits RUNNING until this sweep fails it. Without the backfill here, the HARDER of the two
         kills would be the one that stays unrecoverable, and the same run would answer /rerun
-        differently depending on which clock got to it first."""
+        differently depending on which clock got to it first.
+
+        §3.7 (#826, BLOCKING fix on #1027): this is the one case nothing else can recover — a
+        driver killed mid-drive leaves no in-process handler to emit the terminal record, so
+        without this the run's failure is invisible to ``/v1/engine/activity``. Each row this sweep
+        actually transitions (``applied`` true — never a row that raced and was no longer RUNNING
+        by the time we got here) gets its own ``engine.team_run.finish`` record, via
+        ``_emit_best_effort``: the sweep processes many rows in one pass, so one failed audit write
+        must not abort the rest of the loop, and the row is already being CAS-ed to FAILED here, so
+        a fail-closed ``_emit``'s own redundant CAS-to-FAILED side effect would be at best a no-op
+        and at worst a race against whatever failed this row next."""
         stale = await maintenance.list_stale_team_runs(older_than)
         reaped = 0
         for row in stale:
@@ -2729,5 +2739,13 @@ class TeamRunService:
                     error_message="reaped: stale RUNNING past lease (driver died mid-drive)",
                     **fields,
                 )
+                if applied:
+                    await self._emit_best_effort(
+                        row.organisation_id,
+                        row.user_id,
+                        row.id,
+                        "engine.team_run.finish",
+                        "FAILED",
+                    )
             reaped += int(applied)
         return reaped
