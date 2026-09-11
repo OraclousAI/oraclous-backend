@@ -392,6 +392,29 @@ def validate_draft(
             )
         )
 
+    # #834 ruling §A.3: outcome_critical=true with no non-empty outputs_schema.required gives the
+    # run-verdict rule nothing to check — the SAME fail-closed cross-check `load_ohm` runs,
+    # surfaced here so a drafted member (the reviewer never calls load_ohm directly) is caught on
+    # its real-world path. Member role rides in the message (#751) so the reviewer's repair loop
+    # has something to edit.
+    for m in members:
+        if not m.outcome_critical:
+            continue
+        required = m.outputs_schema.get("required") if m.outputs_schema else None
+        if isinstance(required, list) and required:
+            continue
+        flags.append(
+            ImportFlag(
+                code="F-DRAFT-INVALID",
+                severity="blocking",
+                member_role=m.role,
+                message=(
+                    f"member {m.role!r} is outcome_critical but declares no non-empty"
+                    " outputs_schema.required — the flag would have nothing to check"
+                ),
+            )
+        )
+
     # #718 F-TEAM-NO-TOOLS (confirm, non-blocking): every member declared tools: [] while the
     # surveyed catalog offered something. Never drives would_block — worth a human's look, not a
     # block. An empty catalog means nothing was on offer, so an empty tools[] is not a signal.
