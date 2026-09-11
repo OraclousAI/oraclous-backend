@@ -72,6 +72,18 @@ def load_ohm(raw: str | dict[str, Any]) -> OHMManifest:
     _reject_duplicates([p.role for p in manifest.prompts], "prompts[].role")
     _reject_duplicates([a.role for a in manifest.actors], "actors[].role")
 
+    # #834 ruling §A.3: a member marked outcome_critical with no non-empty
+    # outputs_schema.required gives the run-verdict rule nothing to check — reject it fail-closed
+    # (CLAUDE.md §3.5) rather than silently accepting a flag that can never be honoured.
+    for member in manifest.members:
+        if member.outcome_critical:
+            required = member.outputs_schema.get("required")
+            if not required:
+                raise OHMSchemaError(
+                    f"member {member.role!r} is outcome_critical but declares no non-empty "
+                    "outputs_schema.required — the flag would have nothing to check"
+                )
+
     # a v1.1 team's member DAG must be acyclic, reference only declared members, and carry no
     # duplicate roles — reject a malformed topology at load (fail-closed) rather than at run time.
     if manifest.members:
