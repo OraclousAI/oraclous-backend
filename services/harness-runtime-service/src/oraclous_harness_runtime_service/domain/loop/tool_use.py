@@ -805,6 +805,40 @@ def _split_receipt(raw_content: str) -> tuple[str, str | None]:
     return head, "error"
 
 
+def _correlate_tool_replies(messages: list[Message]) -> dict[int, dict[str, Any]]:
+    """Pair each ``tool``-role message with the ``tool_calls`` entry it answers, by POSITION within
+    the assistant turn it immediately follows — never by ``call_id`` (#958).
+
+    A call id is only guaranteed unique within the ONE model response ``_safe_tool_call_ids``
+    cleans (#955/#946); nothing anywhere requires it to stay unique across turns of the same
+    conversation, and a persisted or directly crafted checkpoint need not have passed through that
+    cleaner at all. The live dispatch loop (``_run_tool_calls``) emits exactly one ``tool``-role
+    reply per ``tool_call``, in list order, within the turn that dispatched it — so pairing by
+    position, scoped to the turn currently in flight, finds the call a reply actually answers even
+    when its id collides with another call's, whether that collision is within one turn or across
+    two.
+
+    Keyed by ``id(message)`` — the ``tool``-role message's own object identity, not its
+    ``tool_call_id`` — so two colliding ids can never overwrite each other's entry the way a flat
+    ``dict[call_id]`` did. A ``tool``-role message left over once its turn's ``tool_calls`` are
+    exhausted (fewer calls than replies), or one with no preceding assistant turn at all (the turn
+    was pruned from the transcript), is simply absent from the map: its true arguments are gone,
+    not ``{}``, and callers must treat absence as unrecoverable rather than empty.
+    """
+    resolved: dict[int, dict[str, Any]] = {}
+    pending_calls: list[dict[str, Any]] = []
+    cursor = 0
+    for message in messages:
+        role = message.get("role")
+        if role == "assistant":
+            pending_calls = list(message.get("tool_calls") or [])
+            cursor = 0
+        elif role == "tool" and cursor < len(pending_calls):
+            resolved[id(message)] = pending_calls[cursor]
+            cursor += 1
+    return resolved
+
+
 def _repeated_failures_from_transcript(messages: list[Message]) -> RepeatedFailures:
     """Re-derive the ledger from an already-restored transcript, at a HITL resume.
 
@@ -840,17 +874,10 @@ def _repeated_failures_from_transcript(messages: list[Message]) -> RepeatedFailu
     Filtering them here would therefore be three more content-sniffing prefix checks buying nothing,
     and each one a new way for the reader to disagree with the live path.
     """
-    args_by_call_id: dict[str, dict[str, Any]] = {}
-    names_by_call_id: dict[str, str] = {}
-    for message in messages:
-        if message.get("role") != "assistant":
-            continue
-        for call in message.get("tool_calls") or []:
-            call_id = call.get("id")
-            if isinstance(call_id, str):
-                args_by_call_id[call_id] = call.get("args") or {}
-                if isinstance(call.get("name"), str):
-                    names_by_call_id[call_id] = call["name"]
+    # #958: the call each `tool`-role message answers is resolved by POSITION within its turn
+    # (`_correlate_tool_replies`), never by a flat, transcript-wide `dict[call_id]` — an id is only
+    # unique within the one turn #955's cleaner ran on, never across the whole transcript.
+    resolved_calls = _correlate_tool_replies(messages)
 
     ledger: RepeatedFailures = {}
     for message in messages:
@@ -884,7 +911,9 @@ def _repeated_failures_from_transcript(messages: list[Message]) -> RepeatedFailu
             _REPEATED_RESULT_NOTE_PREFIX
         ):
             continue
-        name = names_by_call_id.get(call_id)
+        call = resolved_calls.get(id(message))
+        raw_call_name = call.get("name") if call is not None else None
+        name = raw_call_name if isinstance(raw_call_name, str) else None
         if name is None:
             message_name = message.get("name")
             if not isinstance(message_name, str):
@@ -895,9 +924,18 @@ def _repeated_failures_from_transcript(messages: list[Message]) -> RepeatedFailu
         # content-shape fallback below, which only ever recognised failures) is the error axis,
         # unchanged from before this extension.
         kind = "result" if explicit_status == "ok" else "error"
-        _record_failure(
-            ledger, _call_signature(name, args_by_call_id.get(call_id, {})), content, kind
-        )
+        if call is not None:
+            signature = _call_signature(name, call.get("args") or {})
+        else:
+            # #958 (folded in): the assistant turn carrying this call's real arguments is gone from
+            # the transcript (pruned, or never present) — the arguments are UNRECOVERABLE, not `{}`.
+            # Keyed on the message's own identity so two independent unrecoverable calls to the same
+            # tool never collapse onto the shared, guessable `_call_signature(name, {})` a live,
+            # genuinely-empty-argument call would also produce (mirrors the name fallback just
+            # above, which can recover the name from the message itself — arguments have no such
+            # recoverable source, so they get a signature that can never be mistaken for real ones).
+            signature = f"{name}\x00__unrecoverable_args__:{id(message)}"
+        _record_failure(ledger, signature, content, kind)
     return ledger
 
 
@@ -947,14 +985,10 @@ def _fetched_urls_from_transcript(
     ``fetched_urls`` unredacted, because that list is echoed verbatim into a later correction
     message if one fires.
     """
-    args_by_call_id: dict[str, dict[str, Any]] = {}
-    for message in messages:
-        if message.get("role") != "assistant":
-            continue
-        for call in message.get("tool_calls") or []:
-            call_id = call.get("id")
-            if isinstance(call_id, str):
-                args_by_call_id[call_id] = call.get("args") or {}
+    # #958: resolved by POSITION within the turn (`_correlate_tool_replies`), never by a flat,
+    # transcript-wide `dict[call_id]` — an id repeated within one turn or reused by a later,
+    # unrelated one must not let one call's arguments answer for the other's reply.
+    resolved_calls = _correlate_tool_replies(messages)
 
     out: list[str] = []
     seen: set[str] = set()
@@ -972,8 +1006,8 @@ def _fetched_urls_from_transcript(
         )
         if failed:
             continue
-        call_id = message.get("tool_call_id")
-        args = args_by_call_id.get(call_id, {}) if isinstance(call_id, str) else {}
+        call = resolved_calls.get(id(message))
+        args = (call.get("args") or {}) if call is not None else {}
         message_name = message.get("name")
         spec = by_name.get(message_name) if isinstance(message_name, str) else None
         arg_urls = [
