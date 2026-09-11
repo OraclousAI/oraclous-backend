@@ -121,6 +121,14 @@ def _manifest(*bindings: tuple[str, str]) -> OHMManifest:
     )
 
 
+class _FakeProvenance:
+    """#826 cleanup: a real recording double instead of `None` against a non-optional
+    ``provenance: ProvenanceCollector`` parameter — this test never inspects emissions."""
+
+    async def emit(self, record: Any) -> None:
+        return None
+
+
 async def _trust(manifest: OHMManifest, resolved: dict[str, dict[str, Any]]) -> Any:
     """Run the real ``_build_runnable`` over a canned resolution and return its trust sets."""
     service = HarnessExecutionService(
@@ -129,7 +137,7 @@ async def _trust(manifest: OHMManifest, resolved: dict[str, dict[str, Any]]) -> 
         executions=None,
         assignments=None,
         checkpoints=None,
-        provenance=None,
+        provenance=_FakeProvenance(),
         trust=TrustStore({}),
         require_signature=False,
         force_policy_set=None,

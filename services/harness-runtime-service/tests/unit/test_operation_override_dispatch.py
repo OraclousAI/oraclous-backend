@@ -103,6 +103,14 @@ def _manifest() -> OHMManifest:
 Dispatch = Callable[[ToolSpec, dict[str, Any]], Awaitable[dict[str, Any]]]
 
 
+class _FakeProvenance:
+    """#826 cleanup: a real recording double instead of `None` against a non-optional
+    ``provenance: ProvenanceCollector`` parameter — this test never inspects emissions."""
+
+    async def emit(self, record: Any) -> None:
+        return None
+
+
 async def _runnable(registry: _Registry) -> tuple[Dispatch, dict[str, ToolSpec]]:
     """The REAL dispatch closure + the specs the model is offered, over a canned resolution."""
     service = HarnessExecutionService(
@@ -111,7 +119,7 @@ async def _runnable(registry: _Registry) -> tuple[Dispatch, dict[str, ToolSpec]]
         executions=None,
         assignments=None,
         checkpoints=None,
-        provenance=None,
+        provenance=_FakeProvenance(),
         trust=TrustStore({}),
         require_signature=False,
         force_policy_set=None,

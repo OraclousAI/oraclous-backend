@@ -88,6 +88,14 @@ class _Registry:
         return {}
 
 
+class _FakeProvenance:
+    """#826 cleanup: a real recording double instead of `None` against a non-optional
+    ``provenance: ProvenanceCollector`` parameter — this test never inspects emissions."""
+
+    async def emit(self, record: Any) -> None:
+        return None
+
+
 def _service(registry: _Registry) -> HarnessExecutionService:
     return HarnessExecutionService(
         registry=registry,
@@ -95,7 +103,7 @@ def _service(registry: _Registry) -> HarnessExecutionService:
         executions=None,
         assignments=None,
         checkpoints=None,
-        provenance=None,
+        provenance=_FakeProvenance(),
         trust=TrustStore({}),
         require_signature=False,
         force_policy_set=None,

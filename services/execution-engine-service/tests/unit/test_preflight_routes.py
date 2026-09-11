@@ -71,9 +71,17 @@ def _team_manifest(roles: list[str]) -> dict:
     }
 
 
+class _FakeProvenance:
+    """#826 cleanup: a real recording double instead of `None` against a non-optional
+    ``provenance: ProvenanceCollector`` parameter — preflight is read-only and never emits."""
+
+    async def emit(self, record: object) -> None:
+        return None
+
+
 async def _client(repo: _RecordingSchedRepo, *, org: uuid.UUID | None = _ORG) -> AsyncClient:
     app = create_app()  # construction only — ASGITransport does not trigger the DB-bind lifespan
-    svc = ScheduleService(schedules=repo, jobs=None, provenance=None)  # type: ignore[arg-type]
+    svc = ScheduleService(schedules=repo, jobs=None, provenance=_FakeProvenance())
     app.dependency_overrides[get_schedule_service] = lambda: svc
     app.dependency_overrides[get_principal] = lambda: Principal(
         principal_id=_USER, principal_type=PrincipalType.USER, organisation_id=org

@@ -140,6 +140,15 @@ def _manifest(*bindings: tuple[str, str]) -> OHMManifest:
     )
 
 
+class _FakeProvenance:
+    """#826 cleanup: a real recording double instead of `None` against a non-optional
+    ``provenance: ProvenanceCollector`` parameter. ``_run_status`` overrides this with its own
+    local ``_Provenance`` before ``execute()`` runs; the other callers never emit at all."""
+
+    async def emit(self, record: Any) -> None:
+        return None
+
+
 def _service(registry: _Registry | None = None) -> HarnessExecutionService:
     return HarnessExecutionService(
         registry=registry or _Registry(),
@@ -147,7 +156,7 @@ def _service(registry: _Registry | None = None) -> HarnessExecutionService:
         executions=None,
         assignments=None,
         checkpoints=None,
-        provenance=None,
+        provenance=_FakeProvenance(),
         trust=TrustStore({}),
         require_signature=False,
         force_policy_set=None,
