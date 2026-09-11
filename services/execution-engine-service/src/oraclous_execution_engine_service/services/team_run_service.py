@@ -1448,10 +1448,22 @@ class TeamRunService:
         member_status = row.member_status or {}
         if not member_status:
             return dict(row.results or {})  # pre-ADR-042 resume semantics (in-flight PAUSED rows)
+        # #834 DESIGN §C site 4: a "partial" member the outcome_critical rule faulted (its declared
+        # required output was empty — the reason the RUN is FAILED) must NOT be seeded, or a re-run
+        # would re-seed the same empty output forever and the member would never actually
+        # re-dispatch. An ORDINARY #587 partial member (delivered, just degraded) is unaffected.
+        outcome_faulted = {
+            b.role
+            for b in derive_outcome_blockers(
+                results=row.results, member_status=member_status, manifest=row.manifest
+            )
+        }
         return {
             role: row.results[role]
             for role, status in member_status.items()
-            if status in ("succeeded", "partial") and role in (row.results or {})
+            if status in ("succeeded", "partial")
+            and role not in outcome_faulted
+            and role in (row.results or {})
         }
 
     async def get(self, team_run_id: uuid.UUID, principal: Principal) -> EngineTeamRun:
@@ -1624,7 +1636,15 @@ class TeamRunService:
         'succeeded') still REGENERATES its output instead of re-seeding everything complete (a no-op
         spin the pool would drain)."""
         failed = {r for r, s in (row.member_status or {}).items() if s in ("failed", "blocked")}
-        return failed | _sink_roles(team, row.results or {})
+        # #834 DESIGN §C site 4: a "partial" member the outcome_critical rule faulted is re-run
+        # ground the same way a genuinely failed/blocked one is.
+        outcome_faulted = {
+            b.role
+            for b in derive_outcome_blockers(
+                results=row.results, member_status=row.member_status, manifest=row.manifest
+            )
+        }
+        return failed | outcome_faulted | _sink_roles(team, row.results or {})
 
     async def _resume_verdict_escalation(
         self, row: EngineTeamRun, org: uuid.UUID, principal: Principal
@@ -2006,7 +2026,14 @@ class TeamRunService:
                 error_type="not_failed",
             )
         rerunnable = [s for s in (row.member_status or {}).values() if s in ("failed", "blocked")]
-        if not rerunnable:  # a FAILED run with no recorded member failure (e.g. a hard drive crash)
+        # #834 DESIGN §C site 4: a member the outcome_critical rule faulted stays recorded
+        # "partial" (never relabelled "failed") — without this, the ONLY faulted member on a run
+        # failed this way would 409 nothing_to_rerun forever, even though the run is FAILED.
+        outcome_faulted = derive_outcome_blockers(
+            results=row.results, member_status=row.member_status, manifest=row.manifest
+        )
+        if not rerunnable and not outcome_faulted:
+            # a FAILED run with no recorded member failure (e.g. a hard drive crash) — a no-op
             raise TeamRunError(
                 "team run has no failed or blocked members to re-run",
                 409,
