@@ -14,6 +14,8 @@ rule that no upstream body is ever echoed. The raw per-member detail is untouche
 from __future__ import annotations
 
 import json
+import uuid
+from typing import Any
 
 import pytest
 
@@ -772,3 +774,207 @@ def test_a_long_whitespace_run_does_not_stall_the_run_page() -> None:
     elapsed = time.monotonic() - started
     # measured at 0.00001s bounded against 2.8s lazy; 0.5s is a regression, not a slow machine
     assert elapsed < 0.5
+
+
+# --- #834 (orchestrator gap, 2026-09-11): the "why" field must not lie under the new rule ---------
+#
+# Under #834's rule an outcome-critical member that loses its deliverable stays recorded
+# member_status == "partial" (ratified — see test_orchestrate_outcome_critical.py's module
+# docstring), never "failed"/"blocked". summarise_failed_run is fed the FAILED/BLOCKED role lists,
+# which are both EMPTY in exactly this case — so its unconditional first sentence, "This run did
+# not finish: 0 of its members failed and 0 could not start. It can be re-run.", is the message a
+# reader sees on a run the platform just reported FAILED. That is the same class of defect as
+# #749's "Complete — nothing is silently dropped": true at the member level, false at the outcome
+# level, on the field a person reads first. `outcome_blockers` carrying the real answer elsewhere
+# does not excuse the primary field contradicting it (acceptance criterion 2).
+#
+# These tests drive the REAL settle path (TeamRunService.create + .drive, a FakeHarness, the same
+# shape test_team_run_service.py itself uses) rather than calling summarise_failed_run directly
+# with a guessed new signature — how the fix is wired (a new parameter, a wrapping call, a second
+# function) is an implementation choice this PR does not make. Only the observable properties are
+# pinned, never one exact sentence, so the impl is free to choose the wording.
+
+
+def _critical_reviewer_manifest() -> dict[str, Any]:
+    return {
+        "ohm_version": "1.1",
+        "metadata": {
+            "id": str(uuid.uuid4()),
+            "name": "compiler",
+            "owner_organization_id": str(_ORG_834),
+            "kind": "team",
+        },
+        "members": [
+            {
+                "role": "reviewer",
+                "kind": "agent",
+                "manifest_ref": "org:x/reviewer@1",
+                "outcome_critical": True,
+                "outputs_schema": {"required": ["members"]},
+            }
+        ],
+        "runtime": {"entrypoint": "reviewer"},
+    }
+
+
+class _FaultedRepo834:
+    """In-memory mirror of TeamRunRepository's create/get/transition — verbatim shape from
+    test_team_run_service.py's own FakeTeamRunRepo, kept local so this section is self-contained."""
+
+    def __init__(self) -> None:
+        self.rows: dict[Any, Any] = {}
+
+    async def create(self, **kw: Any) -> Any:
+        from oraclous_execution_engine_service.models.team_run import EngineTeamRun
+
+        row = EngineTeamRun(
+            id=uuid.uuid4(),
+            state="QUEUED",
+            results={},
+            paused_at=[],
+            **kw,
+        )
+        self.rows[row.id] = row
+        return row
+
+    async def get(self, team_run_id: Any, organisation_id: Any) -> Any:
+        row = self.rows.get(team_run_id)
+        return row if row is not None and row.organisation_id == organisation_id else None
+
+    async def transition(
+        self,
+        team_run_id: Any,
+        organisation_id: Any,
+        *,
+        new_state: str,
+        allowed_from: Any,
+        **fields: Any,
+    ) -> tuple[Any, bool]:
+        row = self.rows.get(team_run_id)
+        if row is None or row.organisation_id != organisation_id or row.state not in allowed_from:
+            return row, False
+        row.state = new_state
+        for key, value in fields.items():
+            setattr(row, key, value)
+        return row, True
+
+
+_ORG_834 = uuid.uuid4()
+_USER_834 = uuid.uuid4()
+
+
+def _principal_834() -> Any:
+    from oraclous_governance import Principal, PrincipalType
+
+    return Principal(
+        principal_id=_USER_834, principal_type=PrincipalType.USER, organisation_id=_ORG_834
+    )
+
+
+class _CriticalPartialHarness834:
+    """Every member SUCCEEDS except "reviewer", which degrades PARTIAL with its declared
+    ``members`` key present but EMPTY — the live #749 defect shape."""
+
+    async def execute(self, **kw: Any) -> dict[str, Any]:
+        ref = str(kw.get("manifest_ref") or "")
+        role = ref.split("/")[-1].split("@")[0]
+        if role != "reviewer":
+            return {"id": str(uuid.uuid4()), "status": "SUCCEEDED", "output": "ok"}
+        return {
+            "id": str(uuid.uuid4()),
+            "status": "PARTIAL",
+            "output": {"members": []},
+            "error_type": "reviewer_degraded",
+            "error_message": "the reviewer could not repair the draft within its budget",
+        }
+
+
+async def _drive_critical_partial_run() -> Any:
+    from oraclous_execution_engine_service.services.team_run_service import TeamRunService
+
+    repo = _FaultedRepo834()
+    svc = TeamRunService(
+        team_runs=repo, harness=_CriticalPartialHarness834(), enqueue=None, evaluate=None
+    )
+    row = await svc.create(
+        _principal_834(),
+        manifest=_critical_reviewer_manifest(),
+        sub_harnesses={},
+        gate_decisions={},
+    )
+    return await svc.drive(row.id, _principal_834())
+
+
+async def test_the_new_failure_mode_does_not_claim_nothing_failed() -> None:
+    row = await _drive_critical_partial_run()
+    assert row.state == "FAILED"
+    assert row.error_message is not None
+    # the exact broken sentence today's unconditional first line would produce for empty
+    # failed/blocked lists — the property is that the reader is never told this on a FAILED run.
+    assert "0 of its members failed and 0 could not start" not in row.error_message
+
+
+async def test_new_failure_mode_message_names_member_agrees_with_outcome_blockers() -> None:
+    from oraclous_execution_engine_service.schema.engine_schemas import TeamRunOut
+
+    row = await _drive_critical_partial_run()
+    assert row.state == "FAILED"
+    detail = TeamRunOut.model_validate(row)
+    assert detail.outcome_blockers  # the matching structured entry exists
+    block = detail.outcome_blockers[0]
+    # the two surfaces must not disagree: the free-text reason names the same member and the same
+    # lost capability the structured surface already carries.
+    assert block.role in row.error_message
+    assert block.capability_lost in row.error_message
+
+
+async def test_an_ordinary_failed_blocked_runs_message_is_unchanged_by_this_rule() -> None:
+    # PIN HARD: this is 40 tests' worth of existing behaviour (this file) — the impl must not
+    # drift it while teaching summarise_failed_run (or its caller) about the new failure mode.
+    text = summarise_failed_run(
+        failed=["researcher"],
+        blocked=["writer"],
+        member_errors={"researcher": "the registry was unreachable"},
+    )
+    assert text == (
+        "This run did not finish: 1 of its members failed and 1 could not start. It can be "
+        "re-run. Failed: researcher. Could not start: writer. researcher stopped because the "
+        "registry was unreachable."
+    )
+
+
+async def test_the_existing_cap_and_per_detail_bounds_still_hold_with_the_new_reason_present() -> (
+    None
+):
+    from oraclous_execution_engine_service.services.team_run_service import _FAILURE_SUMMARY_CAP
+
+    class _LongCriticalPartialHarness:
+        async def execute(self, **kw: Any) -> dict[str, Any]:
+            ref = str(kw.get("manifest_ref") or "")
+            role = ref.split("/")[-1].split("@")[0]
+            if role != "reviewer":
+                return {"id": str(uuid.uuid4()), "status": "SUCCEEDED", "output": "ok"}
+            return {
+                "id": str(uuid.uuid4()),
+                "status": "PARTIAL",
+                "output": {"members": []},
+                "error_type": "reviewer_degraded",
+                "error_message": "y" * 5000,  # a runaway reason — must still be bounded
+            }
+
+    from oraclous_execution_engine_service.services.team_run_service import TeamRunService
+
+    repo = _FaultedRepo834()
+    svc = TeamRunService(
+        team_runs=repo, harness=_LongCriticalPartialHarness(), enqueue=None, evaluate=None
+    )
+    row = await svc.create(
+        _principal_834(),
+        manifest=_critical_reviewer_manifest(),
+        sub_harnesses={},
+        gate_decisions={},
+    )
+    row = await svc.drive(row.id, _principal_834())
+    assert row.state == "FAILED"
+    assert row.error_message is not None
+    assert len(row.error_message) <= _FAILURE_SUMMARY_CAP
