@@ -33,6 +33,7 @@ requires_byom_key = pytest.mark.skipif(
 
 
 @requires_byom_key
+@pytest.mark.byom_smoke  # #1012: the PR-gate subset — the single-agent BYOM surface
 def test_a_user_brings_their_own_model_token_and_runs_a_real_agent(
     register: Callable[..., dict], gateway_client: Callable[[str], httpx.Client]
 ) -> None:

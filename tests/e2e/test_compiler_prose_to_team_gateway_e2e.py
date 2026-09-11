@@ -79,6 +79,7 @@ def _poll(c: httpx.Client, run_id: str, tries: int = 160) -> dict:
 
 
 @requires_byom
+@pytest.mark.byom_smoke  # #1012: the PR-gate subset — prose compiles to a runnable team
 def test_a_prose_objective_compiles_to_a_runnable_team(
     register: Callable[..., dict], gateway_client: Callable[[str], httpx.Client]
 ) -> None:

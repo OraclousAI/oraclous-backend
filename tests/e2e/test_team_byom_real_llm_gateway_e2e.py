@@ -80,6 +80,7 @@ def _poll(client: httpx.Client, run_id: str, until: set[str], tries: int = 30) -
 
 
 @requires_byom_key
+@pytest.mark.byom_smoke  # #1012: the PR-gate subset — the team-run surface (engine → worker → live)
 def test_a_team_of_agents_runs_on_the_users_own_model_through_the_gateway(
     tmp_path: Path,
     register: Callable[..., dict],
