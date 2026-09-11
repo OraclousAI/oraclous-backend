@@ -79,7 +79,8 @@ def _compile_team(c: httpx.Client, cred: str, org: uuid.UUID, catalog: list, pro
     (the reviewer's validated team, or the drafter's on a reviewer degrade)."""
     from oraclous_ohm.compiler import build_compiler_team
 
-    manifest, subs = build_compiler_team(org, objective=prose, catalog=catalog)
+    # #915: the keyword is `catalog_descriptions` — #709 removed `catalog` with the surveyor.
+    manifest, subs = build_compiler_team(org, objective=prose, catalog_descriptions=catalog)
     doc = manifest.model_dump(mode="json")
     doc["models"] = [_model(cred)]
     gid = c.post("/api/v1/graphs", json={"name": "evalset-compile"}).json()["id"]
