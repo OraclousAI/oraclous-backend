@@ -1,7 +1,10 @@
 """Execution repository (repositories layer).
 
-The only DB seam for execution provenance. Every read/write is org-scoped (ADR-006). Stores the
-credential *refs* (types/scopes) used, never the secret material.
+The only DB seam for the registry's own operational execution state (NOT the §3.7 provenance
+record — that is the collector emit in ``services/tool_execution_service.py``, sunk into
+``registry_provenance`` via ``repositories/registry_provenance_sink.py``; 24 August ruling §2).
+Every read/write is org-scoped (ADR-006). Stores the credential *refs* (types/scopes) used, never
+the secret material.
 """
 
 from __future__ import annotations

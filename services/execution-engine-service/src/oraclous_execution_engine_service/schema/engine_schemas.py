@@ -297,7 +297,13 @@ class ScheduledTeamRunListResponse(BaseModel):
 
 class ActivityEvent(BaseModel):
     """One provenance/audit event in the org's activity feed (read-only projection of
-    ``engine_provenance``). Org-scoped to the caller — never another tenant's row."""
+    ``engine_provenance``). Org-scoped to the caller — never another tenant's row.
+
+    #826 (11 September 2026 CTO ruling): ``principal``/``context``/``input_hash``/``output_hash``
+    are ADDITIVE — every field present before this ruling is unchanged, so no existing consumer
+    breaks. ``context``/``input_hash``/``output_hash`` are nullable: a lifecycle event with no
+    per-call detail or input/output to attest carries ``None``, never a defaulted ``{}``/``""``.
+    """
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -306,6 +312,10 @@ class ActivityEvent(BaseModel):
     resource: str
     outcome: str
     created_at: datetime | None
+    principal: str
+    context: dict[str, Any] | None
+    input_hash: str | None
+    output_hash: str | None
 
 
 class ActivityResponse(BaseModel):

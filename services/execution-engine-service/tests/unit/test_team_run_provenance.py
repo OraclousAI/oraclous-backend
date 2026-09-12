@@ -268,6 +268,30 @@ async def test_a_start_emit_failure_fails_the_row_and_reraises() -> None:
     assert repo.rows[row.id].state == "FAILED"  # never stuck RUNNING
 
 
+async def test_a_failed_dispatch_audit_write_does_not_fail_a_healthy_run() -> None:
+    """BLOCKING fix (review on #1027): ``_on_dispatch`` is a best-effort hook the orchestrator
+    (``oraclous_ohm.orchestrate``) invokes inside ``contextlib.suppress(Exception)``. Before this
+    fix, its dispatch emit went through the fail-closed ``_emit`` — so a transient sink error there
+    CAS-ed the row RUNNING -> FAILED mid-drive, the orchestrator silently swallowed the re-raise and
+    kept driving to a real success, and the later terminal ``transition(...)`` call became a no-op
+    (CAS mismatch: the row was already FAILED, not RUNNING) — discarding the drive's real results.
+    A healthy run must still reach SUCCEEDED with its real member output intact."""
+    repo = FakeTeamRunRepo()
+    prov = _FakeProvenance(raise_on={"engine.team_run.dispatch"})
+    svc, _ = _svc(repo, ScriptedHarness(), provenance=prov)
+    row = await _run(
+        svc, _principal(), manifest=_team([_agent("a")]), sub_harnesses={}, gate_decisions={}
+    )
+
+    assert row.state == "SUCCEEDED"  # NOT "FAILED" — the crux of the bug
+    assert row.results["a"]["output"] == "a-out"  # the real member output, not blanked
+
+    settled = [e for e in prov.events if e.action == "engine.team_run.member"]
+    assert len(settled) == 1, prov.events  # the settle checkpoint event still fired
+    finishes = [e for e in prov.events if e.action == "engine.team_run.finish"]
+    assert len(finishes) == 1 and finishes[0].outcome == "SUCCEEDED", prov.events
+
+
 # ── lifecycle point 2: member dispatch admitted (_on_dispatch, :2143-2154) ───────────────────────
 
 
@@ -348,6 +372,58 @@ async def test_run_terminal_failure_emits_finish() -> None:
     assert finishes[0].outcome == "FAILED"
 
 
+# ── the stale-run sweep (reap_stale, BLOCKING fix on #1027) ─────────────────────────────────────
+
+
+async def test_reap_stale_emits_finish_for_each_row_it_fails() -> None:
+    """``reap_stale``'s own docstring calls this sweep "the one case nothing else can recover" — a
+    driver killed mid-drive (Celery SIGKILLs the child past the soft-timeout) leaves no in-process
+    ``except`` clause to emit the terminal record. Before this fix the swept row transitions to
+    FAILED with zero provenance, so it is invisible on ``/v1/engine/activity`` even though every
+    OTHER path to FAILED (the exception handler, the cancellation handler, the run-start CAS) emits
+    a finish record. One event per row this sweep actually transitions."""
+    repo, prov = FakeTeamRunRepo(), _FakeProvenance()
+
+    def _stranded() -> EngineTeamRun:
+        row = EngineTeamRun(
+            id=uuid.uuid4(),
+            organisation_id=_ORG,
+            user_id=_USER,
+            manifest={},
+            sub_harnesses={},
+            gate_decisions={},
+            state="RUNNING",
+            results={},
+            paused_at=[],
+        )
+        repo.rows[row.id] = row
+        return row
+
+    stranded_rows = [_stranded(), _stranded()]
+
+    class FakeMaintenance:
+        async def list_stale_team_runs(self, older_than: Any, *, limit: int = 100) -> list:
+            return stranded_rows
+
+    svc, _ = _svc(repo, ScriptedHarness(), provenance=prov)
+
+    import datetime as _dt
+
+    reaped = await svc.reap_stale(
+        FakeMaintenance(),  # type: ignore[arg-type]
+        older_than=_dt.datetime(2026, 1, 1, tzinfo=_dt.UTC),
+    )
+
+    assert reaped == 2
+    for row in stranded_rows:
+        assert repo.rows[row.id].state == "FAILED"
+
+    finishes = [e for e in prov.events if e.action == "engine.team_run.finish"]
+    assert len(finishes) == 2, prov.events
+    assert {e.outcome for e in finishes} == {"FAILED"}
+    assert {e.resource for e in finishes} == {f"engine_team_run:{row.id}" for row in stranded_rows}
+
+
 # ── the LLM-judge gate (_grade_gate, ~L1726-1805) ────────────────────────────────────────────────
 
 
@@ -375,6 +451,125 @@ async def test_grade_gate_below_threshold_emits_fail() -> None:
     judged = [e for e in prov.events if e.action == "llm.judge"]
     assert len(judged) == 1, prov.events
     assert judged[0].outcome == "fail"
+
+
+class _LoopHarness:
+    """A tool-less loop harness: a coordinator call (``manifest_inline`` present, named
+    "loop-coordinator") routes to every declared member not yet produced — tracked directly off
+    this harness's own dispatch outcomes, never by parsing the coordinator's rendered prompt. A
+    normal member dispatch (``manifest_ref`` set, no ``manifest_inline``) raises on a role's FIRST
+    attempt if that role is in ``fail_first``; every attempt after succeeds."""
+
+    def __init__(self, members: list[str], fail_first: set[str] | None = None) -> None:
+        self._members = members
+        self._fail_first = fail_first or set()
+        self._attempts: dict[str, int] = dict.fromkeys(members, 0)
+        self._produced: dict[str, bool] = dict.fromkeys(members, False)
+
+    async def execute(
+        self,
+        *,
+        input_text: str,
+        manifest_ref: str | None = None,
+        manifest_inline: dict[str, Any] | None = None,
+        **kw: Any,
+    ) -> dict[str, Any]:
+        if (
+            manifest_inline is not None
+            and manifest_inline.get("metadata", {}).get("name") == "loop-coordinator"
+        ):
+            next_roles = [r for r in self._members if not self._produced[r]]
+            return {
+                "id": str(uuid.uuid4()),
+                "status": "SUCCEEDED",
+                "output": " ".join(next_roles) or "DONE",
+                "total_tokens": 10,
+            }
+        role = (manifest_ref or input_text).split("/")[-1].split("@")[0]
+        self._attempts[role] += 1
+        if role in self._fail_first and self._attempts[role] == 1:
+            raise RuntimeError("boom")
+        self._produced[role] = True
+        return {
+            "id": str(uuid.uuid4()),
+            "status": "SUCCEEDED",
+            "output": f"{role}-out",
+            "total_tokens": 100,
+        }
+
+
+def _loop_team(members: list[dict[str, Any]], loop_members: list[str]) -> dict[str, Any]:
+    """A team whose declared members form ONE loop (ADR-043 #552) — the only topology in which a
+    role can dispatch/settle more than once within a single ``drive()``."""
+    team = _team(members)
+    team["orchestration"] = {
+        "loops": [{"members": loop_members, "routing": dict.fromkeys(loop_members, "keep trying")}],
+        "termination": {"max_rounds": 5},
+    }
+    return team
+
+
+# ── BLOCKING fix, review on #1027: settle-emit dedup keys on (role, status, output_hash) ────────
+
+
+async def test_a_loop_members_genuine_re_settle_is_recorded_not_suppressed() -> None:
+    """A role-only dedup (``emitted_members: set[str]``) would suppress role "a"'s SECOND settle
+    (succeeded) because "a" was already recorded once (failed) on an earlier checkpoint — a loop's
+    conductor can re-route a previously-failed member, so the same role genuinely re-settles within
+    one drive. The fix keys on (role, status, output_hash): a new status/output is always recorded.
+    """
+    repo, prov = FakeTeamRunRepo(), _FakeProvenance()
+    harness = _LoopHarness(members=["a"], fail_first={"a"})
+    svc, _ = _svc(repo, harness, provenance=prov)
+    row = await _run(
+        svc,
+        _principal(),
+        manifest=_loop_team([_agent("a")], loop_members=["a"]),
+        sub_harnesses={},
+        gate_decisions={},
+    )
+
+    assert row.state == "SUCCEEDED", (row.state, row.results, row.member_status)
+    assert row.results["a"]["output"] == "a-out"
+
+    settled_a = [
+        e
+        for e in prov.events
+        if e.action == "engine.team_run.member" and e.context["member"] == "a"
+    ]
+    assert len(settled_a) == 2, prov.events  # the genuine re-settle IS recorded, not suppressed
+    assert {e.outcome for e in settled_a} == {"failed", "succeeded"}, settled_a
+
+
+async def test_an_unchanged_repeat_settle_is_recorded_only_once() -> None:
+    """The other half of the ruling: role "a" converges on round 1 and never changes again, but the
+    checkpoint fires again on round 2 (the loop's snapshot is cumulative, so "a" carries forward
+    unchanged) while role "b" transitions failed -> succeeded. "a"'s settle count must stay at 1
+    across both rounds; "b" genuinely re-settles, so its count goes to 2."""
+    repo, prov = FakeTeamRunRepo(), _FakeProvenance()
+    harness = _LoopHarness(members=["a", "b"], fail_first={"b"})
+    svc, _ = _svc(repo, harness, provenance=prov)
+    row = await _run(
+        svc,
+        _principal(),
+        manifest=_loop_team([_agent("a"), _agent("b")], loop_members=["a", "b"]),
+        sub_harnesses={},
+        gate_decisions={},
+    )
+
+    assert row.state == "SUCCEEDED", (row.state, row.results, row.member_status)
+
+    def _settled(role: str) -> list[Any]:
+        return [
+            e
+            for e in prov.events
+            if e.action == "engine.team_run.member" and e.context["member"] == role
+        ]
+
+    assert len(_settled("a")) == 1, prov.events  # unchanged repeat stays suppressed
+    assert {e.outcome for e in _settled("a")} == {"succeeded"}
+    assert len(_settled("b")) == 2, prov.events  # genuine re-settle IS recorded
+    assert {e.outcome for e in _settled("b")} == {"failed", "succeeded"}
 
 
 async def test_grade_gate_fail_closed_path_also_emits_and_says_the_judge_failed() -> None:

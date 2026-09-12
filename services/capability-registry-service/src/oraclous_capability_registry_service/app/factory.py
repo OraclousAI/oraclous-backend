@@ -25,6 +25,9 @@ from oraclous_capability_registry_service.routes.capability_routes import (
 )
 from oraclous_capability_registry_service.routes.execution_routes import router as execution_router
 from oraclous_capability_registry_service.routes.instance_routes import router as instance_router
+from oraclous_capability_registry_service.routes.provenance_routes import (
+    router as provenance_router,
+)
 from oraclous_capability_registry_service.routes.tool_routes import router as tool_router
 from oraclous_capability_registry_service.services.graph_membership_client import (
     GraphMembershipError,
@@ -52,6 +55,7 @@ def create_app(*, lifespan=None) -> FastAPI:
     app.include_router(instance_router)
     app.include_router(execution_router)
     app.include_router(binding_router)
+    app.include_router(provenance_router)
 
     @app.exception_handler(CapabilityNotFoundError)
     async def _on_not_found(_: Request, exc: CapabilityNotFoundError) -> JSONResponse:

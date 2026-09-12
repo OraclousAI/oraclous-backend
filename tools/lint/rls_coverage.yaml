@@ -107,6 +107,9 @@ services:
       - harness_graph_binding
       - delivery_state
       - capability_descriptors
+      # #826: registry_provenance is the service's own §3.7 audit sink (capability.invoke /
+      # capability.refused), STRICT org-isolated like executions — not a widened-read table.
+      - registry_provenance
   # Slice (harness-runtime) — OHM agent runtime. All four org-scoped tables carry a uuid
   # organisation_id and every runtime accessor binds the org via org_scope before any query (the
   # engine's org-GUC begin-guard then sets it per transaction), so RLS the full set (no exclusions).

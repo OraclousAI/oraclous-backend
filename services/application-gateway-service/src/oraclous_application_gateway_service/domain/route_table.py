@@ -39,6 +39,9 @@ _ROUTES: tuple[tuple[str, str], ...] = (
     ("/api/v1/tools", "CAPABILITY_REGISTRY_URL"),
     ("/api/v1/instances", "CAPABILITY_REGISTRY_URL"),
     ("/api/v1/executions", "CAPABILITY_REGISTRY_URL"),
+    # the registry's §3.7 audit read surface (#826, 11 September ruling): every capability.invoke /
+    # capability.refused event, org-scoped, newest-first.
+    ("/api/v1/provenance", "CAPABILITY_REGISTRY_URL"),
     # workspace<->harness bindings (Contract G2 / ADR-029 §6) — a new registry prefix so the static
     # leading-prefix router reaches it; /api/v1/graphs/* stays wholly on knowledge-graph-service.
     ("/api/v1/agent-bindings", "CAPABILITY_REGISTRY_URL"),

@@ -15,6 +15,7 @@ import asyncio
 import uuid
 from datetime import datetime, timedelta
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 from oraclous_execution_engine_service.tasks import run_tasks
@@ -77,9 +78,34 @@ class _FakeRegistry:
         self.closed = True
 
 
+class _FakeSink:
+    """#826: stands in for ``PostgresProvenanceSink`` — never opens a real connection."""
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        self.closed = False
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+class _FakeCollector:
+    """#826: stands in for ``ProvenanceCollector`` — records nothing this file cares about (its
+    own dedicated suite is ``test_adopted_tool_provenance.py``)."""
+
+    def __init__(self, sink: Any) -> None:
+        self.sink = sink
+
+    async def emit(self, record: Any) -> None:
+        return None
+
+
 def _wire(monkeypatch: pytest.MonkeyPatch, jobs: _FakeJobs, registry: _FakeRegistry) -> None:
     monkeypatch.setattr(run_tasks, "JobRepository", lambda *a, **k: jobs)
     monkeypatch.setattr(run_tasks, "RegistryClient", lambda *a, **k: registry)
+    # #826: the dispatch now builds a provenance collector too — fake both so this file's exactly-
+    # once/redelivery assertions stay the point, never a real Postgres connection.
+    monkeypatch.setattr(run_tasks, "PostgresProvenanceSink", lambda *a, **k: _FakeSink())
+    monkeypatch.setattr(run_tasks, "ProvenanceCollector", _FakeCollector)
     # keep the identity-header build broker/settings-agnostic here (it is not under test)
     monkeypatch.setattr(run_tasks, "build_downstream_headers", lambda principal, settings: {})
 

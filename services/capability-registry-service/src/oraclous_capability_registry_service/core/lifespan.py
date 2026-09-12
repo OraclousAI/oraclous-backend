@@ -12,6 +12,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from oraclous_substrate import ProvenanceCollector
 from oraclous_telemetry import Severity, alert, evaluate_readiness, exit_on_degrade_enabled
 
 from oraclous_capability_registry_service.core.config import Settings, get_settings
@@ -31,6 +32,12 @@ from oraclous_capability_registry_service.repositories.execution_repository impo
     ExecutionRepository,
 )
 from oraclous_capability_registry_service.repositories.instance_repository import InstanceRepository
+from oraclous_capability_registry_service.repositories.registry_provenance_repository import (
+    RegistryProvenanceRepository,
+)
+from oraclous_capability_registry_service.repositories.registry_provenance_sink import (
+    PostgresProvenanceSink,
+)
 from oraclous_capability_registry_service.services.credential_client import (
     CredentialBrokerPort,
     FakeCredentialBroker,
@@ -74,6 +81,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     execution_repo: ExecutionRepository | None = None
     binding_repo: BindingRepository | None = None
     delivery_state_repo: DeliveryStateRepository | None = None
+    provenance_repo: RegistryProvenanceRepository | None = None
+    sink: PostgresProvenanceSink | None = None
     broker: CredentialBrokerPort | None = None
     try:
         repo = CapabilityRepository(
@@ -83,12 +92,16 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         execution_repo = ExecutionRepository(settings.DATABASE_URL)
         binding_repo = BindingRepository(settings.DATABASE_URL)
         delivery_state_repo = DeliveryStateRepository(settings.DATABASE_URL)
+        provenance_repo = RegistryProvenanceRepository(settings.DATABASE_URL)
+        sink = PostgresProvenanceSink(settings.DATABASE_URL)
         broker = build_credential_broker(settings)
         app.state.capability_repository = repo
         app.state.instance_repository = instance_repo
         app.state.execution_repository = execution_repo
         app.state.binding_repository = binding_repo
         app.state.delivery_state_repository = delivery_state_repo
+        app.state.provenance_repository = provenance_repo
+        app.state.provenance = ProvenanceCollector(sink)
         app.state.credential_broker = broker
     except Exception as exc:  # noqa: BLE001 — degrade: data routes 503, /health reflects it
         app.state.capability_repository = None
@@ -96,6 +109,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         app.state.execution_repository = None
         app.state.binding_repository = None
         app.state.delivery_state_repository = None
+        app.state.provenance_repository = None
+        app.state.provenance = None
         app.state.credential_broker = None
         alert(
             Severity.ERROR,
@@ -168,5 +183,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             await binding_repo.close()
         if delivery_state_repo is not None:
             await delivery_state_repo.close()
+        if provenance_repo is not None:
+            await provenance_repo.close()
+        if sink is not None:
+            await sink.close()
         if broker is not None:
             await broker.aclose()

@@ -14,8 +14,8 @@ stage + ``fan_out``), and ``conditional`` (a skip predicate) are the three patte
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import json
+import logging
 import os
 import re
 import time
@@ -38,6 +38,8 @@ from oraclous_ohm.errors import OHMError
 from oraclous_ohm.gate import gate_verb
 from oraclous_ohm.manifest import OHMLoop, OHMManifest, OHMMember, OHMOrchestration, OHMRunIf
 from oraclous_ohm.precedence_resolution import clamp_member_source
+
+logger = logging.getLogger(__name__)
 
 # Dispatch one member (+ optional fan-out item) given its inbound hand-offs -> output payload.
 # LEAK-SAFETY CONTRACT (ADR-042 / CLAUDE.md §11): when dispatch RAISES, ``str(exc)`` is recorded in
@@ -502,8 +504,10 @@ async def run_team(
         # other two hooks below.
         if on_child is None or not isinstance(out, dict) or out.get("id") is None:
             return
-        with contextlib.suppress(Exception):
+        try:
             on_child(str(out["id"]), role)
+        except Exception:
+            logger.exception("on_child hook failed for role %s; continuing best-effort", role)
 
     async def run_member(role: str) -> None:
         nonlocal budget_exhausted
@@ -683,8 +687,10 @@ async def run_team(
         if on_checkpoint is None:
             return
         async with _checkpoint_lock:  # #832: snapshot + emit as ONE ordered critical section
-            with contextlib.suppress(Exception):
+            try:
                 await on_checkpoint(dict(results), dict(member_status))
+            except Exception:
+                logger.exception("on_checkpoint hook failed; continuing best-effort")
 
     # Stage fan-out cap (#543): bound how many members dispatch concurrently so a wide stage cannot
     # self-throttle the shared BYOM key. Wraps the run_member calls (NOT the inner fan_out dispatch,
@@ -695,8 +701,10 @@ async def run_team(
         # #828: best-effort, same posture as the checkpoint emit — a raising hook never aborts run.
         if on_dispatch is None:
             return
-        with contextlib.suppress(Exception):
+        try:
             await on_dispatch(role)
+        except Exception:
+            logger.exception("on_dispatch hook failed for role %s; continuing best-effort", role)
 
     async def _bounded(role: str) -> None:
         async with stage_sem:
@@ -1092,8 +1100,10 @@ async def run_loop_seam(
         """#819: the round-boundary durability snapshot — a COPY, best-effort (see ``run_team``)."""
         if on_checkpoint is None:
             return
-        with contextlib.suppress(Exception):
+        try:
             await on_checkpoint(dict(results), dict(member_status))
+        except Exception:
+            logger.exception("on_checkpoint hook failed; continuing best-effort")
 
     def _diagnose(stall_kind: str) -> Diagnostic:
         # #553: the CODED, external read of the stall — coverage gaps + failed members from the

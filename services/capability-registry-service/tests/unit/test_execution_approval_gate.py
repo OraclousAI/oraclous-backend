@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import uuid
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 from oraclous_capability_registry_service.schema.execution_schema import ExecuteRequest
@@ -40,6 +41,14 @@ class _FakeCaps:
         )
 
 
+class _NoopProvenance:
+    """Not under test here (#826 owns provenance emit coverage) — a discard sink so the
+    now-mandatory constructor kwarg does not force this file to assert on it."""
+
+    async def emit(self, record: Any) -> None:  # noqa: ANN401
+        return None
+
+
 def _svc(status: str) -> ToolExecutionService:
     # executions + broker are never reached — the gate raises before them.
     return ToolExecutionService(
@@ -47,6 +56,7 @@ def _svc(status: str) -> ToolExecutionService:
         capabilities=_FakeCaps(status=status),
         executions=None,
         broker=None,
+        provenance=_NoopProvenance(),  # type: ignore[arg-type]
     )
 
 

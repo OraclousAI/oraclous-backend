@@ -358,7 +358,17 @@ async def test_status_surface_agrees_with_detail_read_on_deliverable_loss() -> N
         async def get(self, team_run_id: uuid.UUID, organisation_id: uuid.UUID) -> EngineTeamRun:
             return row
 
-    svc = TeamRunService(team_runs=_Repo(), harness=None, enqueue=None, evaluate=None)
+    class _NoopProvenance:
+        async def emit(self, record: Any) -> None:
+            return None
+
+    svc = TeamRunService(
+        team_runs=_Repo(),
+        provenance=_NoopProvenance(),  # type: ignore[arg-type]
+        harness=None,
+        enqueue=None,
+        evaluate=None,
+    )
     from oraclous_governance import Principal, PrincipalType
 
     principal = Principal(

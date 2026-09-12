@@ -56,10 +56,23 @@ class _Evaluate:
         return {"score": 0.9, "pass": True}
 
 
+class _NoopProvenance:
+    """#826: ``provenance`` is now a non-optional TeamRunService kwarg; unrelated here (the
+    run-scoped artifacts baseline), so a no-op stand-in is enough."""
+
+    async def emit(self, record: Any) -> None:
+        return None
+
+
 def _svc(*, artifacts: Any):
     from oraclous_execution_engine_service.services.team_run_service import TeamRunService
 
-    return TeamRunService(team_runs=object(), evaluate=_Evaluate(), artifacts=artifacts)
+    return TeamRunService(
+        team_runs=object(),
+        provenance=_NoopProvenance(),  # type: ignore[arg-type]
+        evaluate=_Evaluate(),
+        artifacts=artifacts,
+    )
 
 
 def _both() -> dict[str, Any]:

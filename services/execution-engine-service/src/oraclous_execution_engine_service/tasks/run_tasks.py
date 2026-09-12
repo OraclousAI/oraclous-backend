@@ -21,7 +21,7 @@ from oraclous_governance import (
     PrincipalType,
     use_organisation_context,
 )
-from oraclous_substrate import ProvenanceCollector
+from oraclous_substrate import ProvenanceCollector, ProvenanceRecord, hash_payload
 
 from oraclous_execution_engine_service.core.auth import build_downstream_headers
 from oraclous_execution_engine_service.core.config import get_settings
@@ -121,7 +121,7 @@ async def _reap_async() -> dict[str, int]:
             maintenance=maintenance,
         ).reap_stale(older_than=older_than)
         # and FAIL team runs whose driver died mid-drive (FAIL, not re-queue — no re-execution).
-        tr_reaped = await TeamRunService(team_runs=team_runs).reap_stale(
+        tr_reaped = await TeamRunService(team_runs=team_runs, provenance=collector).reap_stale(
             maintenance, older_than=older_than
         )
         # #501: re-fire adopted-tool windows whose dedupe row committed but whose dispatch never
@@ -239,6 +239,32 @@ def enqueue_job(job_id: uuid.UUID, organisation_id: uuid.UUID, user_id: uuid.UUI
     run_engine_job_task.delay(str(job_id), str(organisation_id), str(user_id))
 
 
+async def emit_dispatch_provenance(
+    provenance: ProvenanceCollector,
+    *,
+    organisation_id: uuid.UUID,
+    principal_id: uuid.UUID,
+    resource: str,
+    outcome: str,
+    input_hash: str | None = None,
+) -> None:
+    """``provenance-on-dispatch`` seam (``tools/lint/seam_wiring.yaml``, #826 solution-architect
+    ruling item 5): a capability dispatch on a service request path must produce a provenance
+    record through the runtime's single collector (CLAUDE.md §3.7), never a direct database write.
+    Wired here on the engine's own adopted-tool dispatch (``_run_adopted_tool_async`` below); the
+    capability-registry's ``execute_sync`` wires the same seam on its own dispatch path."""
+    await provenance.emit(
+        ProvenanceRecord(
+            organisation_id=str(organisation_id),
+            principal=str(principal_id),
+            action="capability.invoke",
+            resource=resource,
+            outcome=outcome,
+            input_hash=input_hash,
+        )
+    )
+
+
 @celery_app.task(bind=True, name="engine.run_adopted_tool")
 def run_adopted_tool_task(  # noqa: ANN001, ANN201
     self,
@@ -285,6 +311,12 @@ async def _run_adopted_tool_async(
             headers=build_downstream_headers(principal, settings),
             timeout=settings.capability_registry_request_timeout,
         )
+        # §3.7 (#826): the engine's own dispatch of a capability invocation emits through the
+        # collector too — unlike ``_run_async``/``_fire_schedules_async``, this worker previously
+        # built no collector at all, so a background adopted-tool run appeared nowhere in
+        # /v1/engine/activity.
+        sink = PostgresProvenanceSink(settings.database_url, worker_pool=True)
+        provenance = ProvenanceCollector(sink)
         try:
             # #501 (exactly-once): task_acks_late redelivers this task if a worker dies AFTER the
             # registry dispatch succeeded but BEFORE the ack — short-circuit a redelivery whose run
@@ -312,7 +344,26 @@ async def _run_adopted_tool_async(
                 # another copy holds the dispatch — short-circuit (execution_id: None for a uniform
                 # result shape with the other branches; the result is unread, fire-and-forget).
                 return {"run_id": run_id_s, "execution_id": None, "deduped": True}
-            result = await registry.execute(instance_id, input_data)
+            try:
+                result = await registry.execute(instance_id, input_data)
+            except Exception:
+                await emit_dispatch_provenance(
+                    provenance,
+                    organisation_id=org_id,
+                    principal_id=user_id,
+                    resource=f"tool_instance:{instance_id}",
+                    outcome="FAILED",
+                    input_hash=hash_payload(input_data),
+                )
+                raise
+            await emit_dispatch_provenance(
+                provenance,
+                organisation_id=org_id,
+                principal_id=user_id,
+                resource=f"tool_instance:{instance_id}",
+                outcome=str(result.get("status", "")),
+                input_hash=hash_payload(input_data),
+            )
             execution_id = result.get("id")
             if execution_id is not None:
                 await jobs.set_adopted_execution_id(run_id, org_id, uuid.UUID(str(execution_id)))
@@ -320,6 +371,7 @@ async def _run_adopted_tool_async(
         finally:
             await registry.aclose()
             await jobs.close()
+            await sink.close()
 
 
 def enqueue_roundtable(rt_id: uuid.UUID, organisation_id: uuid.UUID, user_id: uuid.UUID) -> None:
@@ -384,9 +436,13 @@ async def _drive_team_run_async(run_id_s: str, org_id_s: str, user_id_s: str) ->
         # #601: a SCHEDULED team-run's settled cost accrues into its schedule's per-cadence
         # accumulator (the #598 cap reads it) — the worker drive is where cost settles.
         schedules = ScheduleRepository(settings.database_url, worker_pool=True)
+        # §3.7 (#826): the flagship runtime's own worker drive needs a collector too — unlike
+        # JobService/RoundtableService/ScheduleService, this was omitted entirely.
+        sink = PostgresProvenanceSink(settings.database_url, worker_pool=True)
         try:
             service = TeamRunService(
                 team_runs=team_runs,
+                provenance=ProvenanceCollector(sink),
                 harness=harness,
                 evaluate=evaluate,
                 artifacts=artifacts,
@@ -405,6 +461,7 @@ async def _drive_team_run_async(run_id_s: str, org_id_s: str, user_id_s: str) ->
             await artifacts.aclose()
             await team_runs.close()
             await schedules.close()
+            await sink.close()
 
 
 def enqueue_team_run(run_id: uuid.UUID, organisation_id: uuid.UUID, user_id: uuid.UUID) -> None:

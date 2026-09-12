@@ -33,6 +33,14 @@ def _principal(org: uuid.UUID, user: uuid.UUID) -> Principal:
     return Principal(principal_id=user, principal_type=PrincipalType.USER, organisation_id=org)
 
 
+class _NoopProvenance:
+    """#826: ``provenance`` is now a non-optional TeamRunService kwarg; unrelated here (the #633
+    org-scoped list), so a no-op stand-in is enough."""
+
+    async def emit(self, record: Any) -> None:
+        return None
+
+
 def _manifest(name: str, org: uuid.UUID) -> dict[str, Any]:
     return {
         "ohm_version": "1.1",
@@ -77,7 +85,7 @@ async def _seed(
 
 
 async def test_lists_the_orgs_runs_newest_first_with_team_name(repo: TeamRunRepository) -> None:
-    svc = TeamRunService(team_runs=repo)
+    svc = TeamRunService(team_runs=repo, provenance=_NoopProvenance())  # type: ignore[arg-type]
     ids = [await _seed(repo, ORG_A, USER_A, f"studio-{i}") for i in range(3)]
 
     rows, total = await svc.list_for_org(_principal(ORG_A, USER_A))
@@ -92,7 +100,7 @@ async def test_lists_the_orgs_runs_newest_first_with_team_name(repo: TeamRunRepo
 
 
 async def test_state_filter_returns_only_the_matching_runs(repo: TeamRunRepository) -> None:
-    svc = TeamRunService(team_runs=repo)
+    svc = TeamRunService(team_runs=repo, provenance=_NoopProvenance())  # type: ignore[arg-type]
     paused = await _seed(repo, ORG_A, USER_A, "paused-one", state="PAUSED")
     await _seed(repo, ORG_A, USER_A, "queued-one")  # stays QUEUED
     await _seed(repo, ORG_A, USER_A, "done-one", state="SUCCEEDED")
@@ -105,7 +113,7 @@ async def test_state_filter_returns_only_the_matching_runs(repo: TeamRunReposito
 async def test_pagination_bounds_the_page_and_total_is_the_full_count(
     repo: TeamRunRepository,
 ) -> None:
-    svc = TeamRunService(team_runs=repo)
+    svc = TeamRunService(team_runs=repo, provenance=_NoopProvenance())  # type: ignore[arg-type]
     for i in range(5):
         await _seed(repo, ORG_A, USER_A, f"run-{i}")
 
@@ -122,7 +130,7 @@ async def test_pagination_bounds_the_page_and_total_is_the_full_count(
 @pytest.mark.security
 @pytest.mark.isolation
 async def test_a_second_org_sees_zero(repo: TeamRunRepository) -> None:
-    svc = TeamRunService(team_runs=repo)
+    svc = TeamRunService(team_runs=repo, provenance=_NoopProvenance())  # type: ignore[arg-type]
     await _seed(repo, ORG_A, USER_A, "org-a-run")
     await _seed(repo, ORG_A, USER_A, "org-a-run-2", state="PAUSED")
 

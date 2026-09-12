@@ -70,9 +70,18 @@ class FakeTeamRunRepo:
         return row, True
 
 
+class _NoopProvenance:
+    """#826: ``provenance`` is now a non-optional TeamRunService kwarg; unrelated here (the
+    outcome-critical rerun rule), so a no-op stand-in is enough."""
+
+    async def emit(self, record: Any) -> None:
+        return None
+
+
 def _svc(repo: FakeTeamRunRepo) -> TeamRunService:
     return TeamRunService(
         team_runs=repo,
+        provenance=_NoopProvenance(),
         harness=None,
         enqueue=lambda rid, org, user: None,
         evaluate=None,

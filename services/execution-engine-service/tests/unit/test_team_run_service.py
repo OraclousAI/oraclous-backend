@@ -34,6 +34,15 @@ def _principal(org: uuid.UUID | None = _ORG) -> Principal:
     return Principal(principal_id=_USER, principal_type=PrincipalType.USER, organisation_id=org)
 
 
+class _NoopProvenance:
+    """#826: ``provenance`` is now a non-optional TeamRunService kwarg; these tests exercise
+    unrelated behaviour, so a no-op stand-in is enough (mirrors the substrate ProvenanceCollector's
+    ``emit`` shape without asserting on it)."""
+
+    async def emit(self, record: Any) -> None:
+        return None
+
+
 class FakeTeamRunRepo:
     """In-memory mirror of TeamRunRepository's create/get/transition (CAS) semantics."""
 
@@ -206,6 +215,7 @@ def _svc(
     enqueued: list[uuid.UUID] = []
     svc = TeamRunService(
         team_runs=repo,
+        provenance=_NoopProvenance(),
         harness=harness,
         enqueue=lambda rid, _org, _user: enqueued.append(rid),
         evaluate=evaluate,
@@ -1223,7 +1233,9 @@ async def test_reap_stale_fails_stranded_running_team_runs() -> None:
         async def list_stale_team_runs(self, older_than: Any, *, limit: int = 100) -> list:
             return [stranded]
 
-    svc = TeamRunService(team_runs=repo)  # reaper path: no harness, no enqueue
+    svc = TeamRunService(
+        team_runs=repo, provenance=_NoopProvenance()
+    )  # reaper path: no harness, no enqueue
     import datetime as _dt
 
     reaped = await svc.reap_stale(
@@ -1316,7 +1328,7 @@ async def test_scheduled_run_accrues_its_cost_into_the_schedule() -> None:
     from types import SimpleNamespace
 
     sched = _FakeSchedAccrual()
-    svc = TeamRunService(team_runs=FakeTeamRunRepo(), schedules=sched)  # type: ignore[arg-type]
+    svc = TeamRunService(team_runs=FakeTeamRunRepo(), provenance=_NoopProvenance(), schedules=sched)  # type: ignore[arg-type]
     sid = uuid.uuid4()
     row = SimpleNamespace(id=uuid.uuid4(), organisation_id=_ORG, schedule_id=sid)
     await svc._accrue_schedule_cost(row, _ORG, 1234)  # type: ignore[arg-type]
@@ -1327,7 +1339,7 @@ async def test_non_scheduled_run_accrues_nothing() -> None:
     from types import SimpleNamespace
 
     sched = _FakeSchedAccrual()
-    svc = TeamRunService(team_runs=FakeTeamRunRepo(), schedules=sched)  # type: ignore[arg-type]
+    svc = TeamRunService(team_runs=FakeTeamRunRepo(), provenance=_NoopProvenance(), schedules=sched)  # type: ignore[arg-type]
     row = SimpleNamespace(id=uuid.uuid4(), organisation_id=_ORG, schedule_id=None)
     await svc._accrue_schedule_cost(row, _ORG, 1234)  # type: ignore[arg-type]
     assert sched.accrued == []  # a direct (request-path) run carries no schedule_id → no accrual
@@ -1338,7 +1350,7 @@ async def test_stamp_schedule_seed_records_a_scheduled_run_as_the_next_seed() ->
     from types import SimpleNamespace
 
     sched = _FakeSchedAccrual()
-    svc = TeamRunService(team_runs=FakeTeamRunRepo(), schedules=sched)  # type: ignore[arg-type]
+    svc = TeamRunService(team_runs=FakeTeamRunRepo(), provenance=_NoopProvenance(), schedules=sched)  # type: ignore[arg-type]
     sid, rid = uuid.uuid4(), uuid.uuid4()
     row = SimpleNamespace(id=rid, organisation_id=_ORG, schedule_id=sid)
     await svc._stamp_schedule_seed(row, _ORG)  # type: ignore[arg-type]
@@ -1350,7 +1362,7 @@ async def test_stamp_schedule_seed_noop_for_a_direct_run() -> None:
     from types import SimpleNamespace
 
     sched = _FakeSchedAccrual()
-    svc = TeamRunService(team_runs=FakeTeamRunRepo(), schedules=sched)  # type: ignore[arg-type]
+    svc = TeamRunService(team_runs=FakeTeamRunRepo(), provenance=_NoopProvenance(), schedules=sched)  # type: ignore[arg-type]
     row = SimpleNamespace(id=uuid.uuid4(), organisation_id=_ORG, schedule_id=None)
     await svc._stamp_schedule_seed(row, _ORG)  # type: ignore[arg-type]
     assert sched.seeded == []
@@ -1367,6 +1379,7 @@ async def _drive_scheduled(
     sched = _FakeSchedAccrual()
     svc = TeamRunService(
         team_runs=repo,
+        provenance=_NoopProvenance(),
         harness=harness,
         enqueue=lambda *_a: None,
         evaluate=evaluate,
@@ -1633,7 +1646,13 @@ async def test_re_task_enqueue_failure_fails_the_run_not_phantom_queued() -> Non
         if calls["n"] >= 2:  # the create's enqueue works; the re_task hand-off (the 2nd) fails
             raise RuntimeError("broker down")
 
-    svc = TeamRunService(team_runs=repo, harness=harness, enqueue=flaky, evaluate=evaluate)
+    svc = TeamRunService(
+        team_runs=repo,
+        provenance=_NoopProvenance(),
+        harness=harness,
+        enqueue=flaky,
+        evaluate=evaluate,
+    )
     manifest = _add_battery(_team([_agent("a")], success_criteria="battery:gate"), "MAJOR")
     created = await svc.create(_principal(), manifest=manifest, sub_harnesses={}, gate_decisions={})
     with pytest.raises(RuntimeError):
@@ -1702,7 +1721,13 @@ async def test_resume_verdict_escalation_enqueue_failure_fails_the_run_not_phant
         if calls["n"] >= 2:  # create's enqueue works; the human-resume re_task hand-off fails
             raise RuntimeError("broker down")
 
-    svc = TeamRunService(team_runs=repo, harness=harness, enqueue=flaky, evaluate=evaluate)
+    svc = TeamRunService(
+        team_runs=repo,
+        provenance=_NoopProvenance(),
+        harness=harness,
+        enqueue=flaky,
+        evaluate=evaluate,
+    )
     manifest = _add_battery(
         _team([_agent("a"), _agent("b", ["a"])], success_criteria="battery:gate"), "CRITICAL"
     )

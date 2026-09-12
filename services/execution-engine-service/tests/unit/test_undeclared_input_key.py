@@ -39,6 +39,14 @@ def _principal() -> Principal:
     return Principal(principal_id=_USER, principal_type=PrincipalType.USER, organisation_id=_ORG)
 
 
+class _NoopProvenance:
+    """#826: ``provenance`` is now a non-optional TeamRunService kwarg; unrelated here (the
+    undeclared-input-key 422), so a no-op stand-in is enough."""
+
+    async def emit(self, record: Any) -> None:
+        return None
+
+
 def _team(
     *,
     task_input: dict[str, Any] | None = None,
@@ -197,6 +205,7 @@ async def test_create_rejects_before_persisting_or_enqueueing() -> None:
     enqueued: list[uuid.UUID] = []
     svc = TeamRunService(
         team_runs=_RefusingRepo(),  # type: ignore[arg-type] — duck-typed seam in unit tests
+        provenance=_NoopProvenance(),  # type: ignore[arg-type]
         harness=None,
         enqueue=lambda rid, _org, _user: enqueued.append(rid),
     )

@@ -46,6 +46,14 @@ def _principal(org: uuid.UUID) -> Principal:
     return Principal(principal_id=USER_A, principal_type=PrincipalType.USER, organisation_id=org)
 
 
+class _NoopProvenance:
+    """#826: ``provenance`` is now a non-optional TeamRunService kwarg; unrelated here (the #828/
+    #832 mid-run columns), so a no-op stand-in is enough."""
+
+    async def emit(self, record: Any) -> None:
+        return None
+
+
 class _HarnessFailingB:
     """Every member succeeds except 'b'. The drive then takes its non-aborting failure path, which
     is the shape that leaves ``results`` and ``member_status`` free to disagree."""
@@ -100,7 +108,11 @@ async def team_run_service(engine_dsns) -> AsyncIterator[TeamRunService]:  # noq
     _owner_dsn, app_dsn = engine_dsns
     app_repo = TeamRunRepository(app_dsn)
     try:
-        yield TeamRunService(team_runs=app_repo, harness=_HarnessFailingB())
+        yield TeamRunService(
+            team_runs=app_repo,
+            provenance=_NoopProvenance(),  # type: ignore[arg-type]
+            harness=_HarnessFailingB(),
+        )
     finally:
         await app_repo.close()
 

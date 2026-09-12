@@ -85,6 +85,14 @@ class _FakeExecutions:
         )
 
 
+class _NoopProvenance:
+    """Not under test here (#826 owns provenance emit coverage) — a discard sink so the
+    now-mandatory constructor kwarg does not force this file to assert on it."""
+
+    async def emit(self, record: Any) -> None:  # noqa: ANN401
+        return None
+
+
 async def test_the_execution_service_injects_the_capability_repository(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -102,7 +110,11 @@ async def test_the_execution_service_injects_the_capability_repository(
 
     monkeypatch.setattr(svc_mod, "create_executor", _spy)
     svc = ToolExecutionService(
-        instances=_FakeInstances(), capabilities=caps, executions=_FakeExecutions(), broker=None
+        instances=_FakeInstances(),
+        capabilities=caps,
+        executions=_FakeExecutions(),
+        broker=None,
+        provenance=_NoopProvenance(),  # type: ignore[arg-type]
     )
     await svc.execute_sync(
         instance_id=_INST,

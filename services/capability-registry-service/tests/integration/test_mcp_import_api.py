@@ -90,11 +90,15 @@ async def client(postgres_dsn: str, monkeypatch: pytest.MonkeyPatch) -> AsyncIte
     from oraclous_capability_registry_service.repositories.instance_repository import (
         InstanceRepository,
     )
+    from oraclous_capability_registry_service.repositories.registry_provenance_sink import (
+        PostgresProvenanceSink,
+    )
     from oraclous_capability_registry_service.services.credential_client import (
         FakeCredentialBroker,
         _libpq_dsn,
     )
     from oraclous_capability_registry_service.services.mcp_import_service import McpImportService
+    from oraclous_substrate import ProvenanceCollector
 
     app = create_app(lifespan=None)
     repo = CapabilityRepository(async_dsn, platform_org_id=_uuid.UUID(_PLATFORM_ORG))
@@ -105,6 +109,7 @@ async def client(postgres_dsn: str, monkeypatch: pytest.MonkeyPatch) -> AsyncIte
     app.state.capability_repository = repo
     app.state.instance_repository = inst_repo
     app.state.execution_repository = exec_repo
+    app.state.provenance = ProvenanceCollector(PostgresProvenanceSink(async_dsn))
     broker = FakeCredentialBroker(fake_db_dsn=_libpq_dsn(async_dsn))
     app.state.credential_broker = broker
 

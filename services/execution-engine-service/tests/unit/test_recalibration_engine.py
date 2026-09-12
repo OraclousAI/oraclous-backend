@@ -187,6 +187,14 @@ class _Evaluate:
         return {"score": self.score, "pass": self.score >= 0.8}
 
 
+class _NoopProvenance:
+    """#826: ``provenance`` is now a non-optional TeamRunService kwarg; unrelated here (the
+    recalibration coordinator), so a no-op stand-in is enough."""
+
+    async def emit(self, record: Any) -> None:
+        return None
+
+
 async def test_done_check_writes_the_diagnosis_side_channel() -> None:
     from oraclous_execution_engine_service.services.team_run_service import TeamRunService
 
@@ -199,7 +207,12 @@ async def test_done_check_writes_the_diagnosis_side_channel() -> None:
     )
     # re-declare with the convergence threshold (the helper sets termination separately)
     team.orchestration.termination.convergence = "evaluator>=0.8"
-    svc = TeamRunService(team_runs=object(), evaluate=_Evaluate(0.4), artifacts=_Artifacts(1))
+    svc = TeamRunService(
+        team_runs=object(),
+        provenance=_NoopProvenance(),  # type: ignore[arg-type]
+        evaluate=_Evaluate(0.4),
+        artifacts=_Artifacts(1),
+    )
     diag: dict[str, Any] = {}
     done = svc._make_loop_done_check(
         team, uuid.uuid4(), str(uuid.uuid4()), loop, artifacts_baseline=0, diag=diag
@@ -299,7 +312,12 @@ async def test_done_check_diag_resets_between_rounds() -> None:
     loop = OHMLoop(members=["writer", "critic"], routing={})
     team = _team([_m("writer"), _m("critic")], [loop], success_criteria="an accurate draft")
     team.orchestration.termination.convergence = "evaluator>=0.8"
-    svc = TeamRunService(team_runs=object(), evaluate=_Evaluate(0.4), artifacts=_Artifacts(1))
+    svc = TeamRunService(
+        team_runs=object(),
+        provenance=_NoopProvenance(),  # type: ignore[arg-type]
+        evaluate=_Evaluate(0.4),
+        artifacts=_Artifacts(1),
+    )
     diag: dict[str, Any] = {}
     done = svc._make_loop_done_check(team, uuid.uuid4(), str(uuid.uuid4()), loop, diag=diag)
     # round 1: all produced → the evaluator runs, writing evaluator_score into diag

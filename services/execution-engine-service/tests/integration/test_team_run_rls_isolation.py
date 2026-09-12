@@ -36,6 +36,14 @@ def _principal(org: uuid.UUID, user: uuid.UUID) -> Principal:
     return Principal(principal_id=user, principal_type=PrincipalType.USER, organisation_id=org)
 
 
+class _NoopProvenance:
+    """#826: ``provenance`` is now a non-optional TeamRunService kwarg; unrelated here (the
+    team_runs table's own RLS isolation), so a no-op stand-in is enough."""
+
+    async def emit(self, record: Any) -> None:
+        return None
+
+
 class _FakeHarness:
     """Every member 'executes' to SUCCEEDED — tests persistence + RLS, not the loop. Records each
     member input so a test can assert WHO ran (and that a resumed member is not re-executed)."""
@@ -113,7 +121,11 @@ async def team_run_service(engine_dsns) -> AsyncIterator[TeamRunService]:  # noq
     _owner_async_dsn, app_async_dsn = engine_dsns
     repo = TeamRunRepository(app_async_dsn)
     try:
-        yield TeamRunService(team_runs=repo, harness=_FakeHarness())
+        yield TeamRunService(
+            team_runs=repo,
+            provenance=_NoopProvenance(),  # type: ignore[arg-type]
+            harness=_FakeHarness(),
+        )
     finally:
         await repo.close()
 
@@ -204,7 +216,11 @@ async def test_cross_request_gate_resume_against_real_db(engine_dsns) -> None:  
     harness1 = _FakeHarness()
     try:
         paused = await _run(
-            TeamRunService(team_runs=repo1, harness=harness1),
+            TeamRunService(
+                team_runs=repo1,
+                provenance=_NoopProvenance(),
+                harness=harness1,  # type: ignore[arg-type]
+            ),
             _principal(ORG_A, USER_A),
             manifest=manifest,
             sub_harnesses={},
@@ -222,7 +238,11 @@ async def test_cross_request_gate_resume_against_real_db(engine_dsns) -> None:  
     repo2 = TeamRunRepository(app_dsn)
     harness2 = _FakeHarness()
     try:
-        svc2 = TeamRunService(team_runs=repo2, harness=harness2)
+        svc2 = TeamRunService(
+            team_runs=repo2,
+            provenance=_NoopProvenance(),
+            harness=harness2,  # type: ignore[arg-type]
+        )
         refetched = await svc2.get(run_id, _principal(ORG_A, USER_A))
         assert refetched.state == "PAUSED"  # the pause survived across the request boundary (DB)
         assert "researcher" in refetched.results  # the pre-gate result is durably persisted

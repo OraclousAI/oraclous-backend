@@ -1,9 +1,12 @@
 """Execution ORM (models layer; reshape of legacy
 ``oraclous-core-service/app/models/execution.py``).
 
-Provenance of every tool dispatch. Org-scoped (ADR-006/ORG002). ``credential_refs`` records which
-credential types/scopes were used for audit lineage — **never the secret material** itself. The
-legacy ``workflow_id`` and async ``jobs`` are dropped (ADR-005; async execution → R5).
+The registry's own operational execution state for every tool dispatch (NOT the §3.7 provenance
+record — see ``models/registry_provenance.py`` / the collector emit in
+``services/tool_execution_service.py``; 24 August ruling §2). Org-scoped (ADR-006/ORG002).
+``credential_refs`` records which credential types/scopes were used for audit lineage — **never the
+secret material** itself. The legacy ``workflow_id`` and async ``jobs`` are dropped (ADR-005; async
+execution → R5).
 
 No ``from __future__ import annotations`` — SQLAlchemy resolves the ``Mapped[...]`` annotations at
 mapper configuration, so they must be real types.
