@@ -23,10 +23,10 @@ from oraclous_execution_engine_service.services.team_run import _parse_member_ob
 
 pytestmark = pytest.mark.unit
 
-_TEAM = {
-    "members": [{"role": "researcher", "kind": "agent", "manifest_ref": "org:x/researcher@1"}]
+_TEAM = {"members": [{"role": "researcher", "kind": "agent", "manifest_ref": "org:x/researcher@1"}]}
+_RECEIPT = {
+    "driving_signals": [{"signal": "validated", "value": True, "source_tool_call_id": "c1"}]
 }
-_RECEIPT = {"driving_signals": [{"signal": "validated", "value": True, "source_tool_call_id": "c1"}]}
 
 
 def test_team_json_followed_by_a_separate_receipt_object_is_peeled() -> None:
