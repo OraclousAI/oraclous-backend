@@ -19,7 +19,6 @@ manifest with just ``members`` replaced (NOT the assembler's transformed output)
 from __future__ import annotations
 
 import json
-import re
 import uuid
 from typing import Annotated, Any, Literal
 
@@ -122,13 +121,31 @@ _OP_ADAPTER: TypeAdapter[RefineOp] = TypeAdapter(RefineOp)
 def parse_op(data: dict[str, Any] | str) -> RefineOp:
     """Parse an op-drafter's output into exactly ONE typed ``RefineOp`` (the ``op`` key routes the
     discriminated union). Accepts a dict OR the LLM's text — the JSON object is PEELED out of the
-    model's prose / ```json fence (#599), so a valid op wrapped in chatter still parses. Raises on a
-    malformed / unknown op (the caller fails closed)."""
+    model's prose / ```json fence (#599), so a valid op wrapped in chatter still parses. The FIRST
+    well-formed top-level JSON object wins (scanning forward from each ``{`` with
+    ``json.JSONDecoder.raw_decode``) rather than the widest ``{...}`` regex match — which would span
+    past the op into a second, separate JSON object trailing it. Raises on a malformed / unknown op
+    (the caller fails closed)."""
     if isinstance(data, str):
-        match = re.search(r"\{.*\}", data, re.DOTALL)
-        if match is None:
+        decoder = json.JSONDecoder()
+        parsed_op: Any = None
+        start = data.find("{")
+        while start != -1:
+            try:
+                candidate, _end = decoder.raw_decode(data, start)
+            except json.JSONDecodeError as exc:
+                # Skip past wherever the decoder gave up, not one character at a time — a
+                # failed attempt has already ruled out this whole span, so re-walking it `{`
+                # by `{` is quadratic on brace-dense input.
+                start = data.find("{", max(start + 1, exc.pos))
+                continue
+            if isinstance(candidate, dict):
+                parsed_op = candidate
+                break
+            start = data.find("{", start + 1)
+        if parsed_op is None:
             raise ValueError("no JSON op object found in the draft")
-        data = json.loads(match.group(0))
+        data = parsed_op
     return _OP_ADAPTER.validate_python(data)
 
 

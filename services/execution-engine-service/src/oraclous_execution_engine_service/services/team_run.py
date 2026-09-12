@@ -408,12 +408,20 @@ def resolve_run_task(manifest: OHMManifest, inputs: dict[str, Any] | None) -> st
 #: the pull request, wrote a real review, and failed its own contract because nothing had said the
 #: answer must carry `summary` and `artifact_refs`. Enforcing a promise the member never heard is
 #: worse than not enforcing it — it turns a member that worked into one that fails.
+#:
+#: #1043 — this used to end with "Reply with the JSON object and nothing else." That sentence
+#: contradicted GROUNDING_DIRECTIVE, which separately asks a tool-using member for a second,
+#: distinct receipt object — no model can honestly satisfy both "nothing else" and "also send a
+#: receipt". Dropping it is safe: the opening sentence already establishes the single-object
+#: constraint on its own, and the tolerant JSON-object reader (_parse_member_object /
+#: _first_json_object_text) peels the wanted object out of prose or a trailing second object
+#: regardless, so nothing here still depends on the reply containing only that one object.
 OUTPUT_CONTRACT_DIRECTIVE = (
     "Your answer MUST be a single JSON object carrying exactly these keys, because the next member "
     "reads them BY NAME and never reads your prose: {keys}. Put your real work IN those values — "
     "`summary` is what you would have written as your answer, and `artifact_refs` is a list naming "
     "WHERE you persisted anything (the ids or references your persistence tool returned; an empty "
-    "list if you persisted nothing). Reply with the JSON object and nothing else."
+    "list if you persisted nothing)."
 )
 
 
@@ -517,6 +525,29 @@ def _producer_ref(
     return ref
 
 
+def _first_json_object_text(text: str) -> str | None:
+    """The source span of the first well-formed top-level JSON object in ``text`` — scanning
+    forward from each ``{`` and decoding with ``json.JSONDecoder.raw_decode``, the same technique
+    ``_parse_member_object`` below uses. Unlike a widest-match ``{.*}`` regex, this never spans past
+    the first object into a second, separate one that trails it (e.g. a ``driving_signals`` receipt
+    object following a member's team/answer JSON). ``None`` when no ``{`` in the text decodes."""
+    decoder = json.JSONDecoder()
+    start = text.find("{")
+    while start != -1:
+        try:
+            parsed, end = decoder.raw_decode(text, start)
+        except json.JSONDecodeError as exc:
+            # Skip past wherever the decoder gave up, not one character at a time — a failed
+            # attempt has already ruled out this whole span, so re-walking it `{` by `{` is
+            # quadratic on brace-dense input.
+            start = text.find("{", max(start + 1, exc.pos))
+            continue
+        if isinstance(parsed, dict):
+            return text[start:end]
+        start = text.find("{", start + 1)
+    return None
+
+
 def parse_driving_signals(output: Any) -> list[dict[str, Any]]:
     """#642: the member's claims, out of its real harness output (text, or an already-parsed dict).
 
@@ -531,9 +562,9 @@ def parse_driving_signals(output: Any) -> list[dict[str, Any]]:
     if not isinstance(output, str) or "driving_signals" not in output:
         return []
     candidates: list[str] = []
-    match = re.search(r"\{.*\}", output, re.DOTALL)  # the widest embedded JSON object
-    if match is not None:
-        candidates.append(match.group(0))
+    first_object = _first_json_object_text(output)  # the first well-formed embedded JSON object
+    if first_object is not None:
+        candidates.append(first_object)
     array = re.search(r'"driving_signals"\s*:\s*(\[.*?\])', output, re.DOTALL)
     if array is not None:
         candidates.append('{"driving_signals": ' + array.group(1) + "}")
@@ -586,25 +617,41 @@ def _declared_output_keys(member: OHMMember) -> list[str]:
     return [k for k in required if isinstance(k, str)] if isinstance(required, list) else []
 
 
-def _parse_member_object(output: Any) -> dict[str, Any]:
+def _parse_member_object(output: Any, *, declared_keys: list[str] | None = None) -> dict[str, Any]:
     """The JSON object a member answered with, or {} when it did not answer with one.
 
     A real model wraps its JSON in prose or a fence, so the object is PEELED rather than parsed
-    whole (the same reason ``validate_draft`` peels the drafter's reply). Never raises: a member
-    that answered with prose simply declared keys it did not deliver, and the orchestrator fails it
-    on its own contract with a readable reason — a parse crash would say nothing."""
+    whole (the same reason ``validate_draft`` peels the drafter's reply). A real reply can also
+    carry MULTIPLE top-level JSON objects back to back (e.g. REVIEWER_PROMPT's team JSON followed
+    by a separate ``driving_signals`` receipt object) — a single greedy regex spanning first-`{` to
+    last-`}` would swallow both and fail to parse. So every well-formed top-level object in the text
+    is decoded in order; when ``declared_keys`` is given, the FIRST object carrying ALL of those
+    keys wins, otherwise the first object decoded wins. Never raises: a member that answered with
+    prose simply declared keys it did not deliver, and the orchestrator fails it on its own contract
+    with a readable reason — a parse crash would say nothing."""
     if isinstance(output, dict):
         return output
     if not isinstance(output, str):
         return {}
-    match = re.search(r"\{.*\}", output, re.DOTALL)
-    if match is None:
-        return {}
-    try:
-        parsed = json.loads(match.group(0))
-    except ValueError:
-        return {}
-    return parsed if isinstance(parsed, dict) else {}
+    decoder = json.JSONDecoder()
+    first_object: dict[str, Any] | None = None
+    start = output.find("{")
+    while start != -1:
+        try:
+            parsed, end = decoder.raw_decode(output, start)
+        except json.JSONDecodeError as exc:
+            # Skip past wherever the decoder gave up, not one character at a time — a failed
+            # attempt has already ruled out this whole span, so re-walking it `{` by `{` is
+            # quadratic on brace-dense input.
+            start = output.find("{", max(start + 1, exc.pos))
+            continue
+        if isinstance(parsed, dict):
+            if first_object is None:
+                first_object = parsed
+            if declared_keys and all(key in parsed for key in declared_keys):
+                return parsed
+        start = output.find("{", end)
+    return first_object if first_object is not None else {}
 
 
 def make_harness_dispatch(
@@ -859,7 +906,7 @@ def make_harness_dispatch(
         # Only the DECLARED keys are lifted, and never over the envelope's own four: a member
         # cannot rename its status or forge its trace by answering with those keys.
         if declared_keys:
-            answered = _parse_member_object(result.get("output"))
+            answered = _parse_member_object(result.get("output"), declared_keys=declared_keys)
             for key in declared_keys:
                 if key in answered and key not in payload:
                     payload[key] = answered[key]
