@@ -14,13 +14,11 @@ import uuid
 from datetime import UTC, datetime
 from typing import Protocol
 
-import bcrypt
-
+from oraclous_auth_service.core.password_hashing import bcrypt_hash, bcrypt_verify
 from oraclous_auth_service.models.agent_model import Agent, AgentCredential
 
 _CREDENTIAL_PREFIX = "oag_"
 _PREFIX_INDEX_LEN = 12  # "oag_" + 8 chars — mirrors the legacy 12-char key prefix
-_BCRYPT_ROUNDS = 12
 _BASE62 = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
 _TOKEN_BYTES = 32
 _TOKEN_LEN = 43  # base62 width of 32 random bytes
@@ -77,9 +75,7 @@ class AgentRepository:
         record holds a bcrypt hash and a prefix index, never the secret.
         """
         raw, prefix = _generate_credential()
-        credential_hash = bcrypt.hashpw(
-            raw.encode(), bcrypt.gensalt(rounds=_BCRYPT_ROUNDS)
-        ).decode()
+        credential_hash = (await bcrypt_hash(raw.encode())).decode()
 
         agent = Agent(
             id=str(uuid.uuid4()),
@@ -117,7 +113,7 @@ class AgentRepository:
         for candidate in candidates:
             if candidate.expires_at is not None and candidate.expires_at < now:
                 continue
-            if bcrypt.checkpw(raw_credential.encode(), candidate.credential_hash.encode()):
+            if await bcrypt_verify(raw_credential.encode(), candidate.credential_hash.encode()):
                 return candidate.agent_id
         return None
 
