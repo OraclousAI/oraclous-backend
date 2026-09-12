@@ -586,25 +586,38 @@ def _declared_output_keys(member: OHMMember) -> list[str]:
     return [k for k in required if isinstance(k, str)] if isinstance(required, list) else []
 
 
-def _parse_member_object(output: Any) -> dict[str, Any]:
+def _parse_member_object(output: Any, *, declared_keys: list[str] | None = None) -> dict[str, Any]:
     """The JSON object a member answered with, or {} when it did not answer with one.
 
     A real model wraps its JSON in prose or a fence, so the object is PEELED rather than parsed
-    whole (the same reason ``validate_draft`` peels the drafter's reply). Never raises: a member
-    that answered with prose simply declared keys it did not deliver, and the orchestrator fails it
-    on its own contract with a readable reason — a parse crash would say nothing."""
+    whole (the same reason ``validate_draft`` peels the drafter's reply). A real reply can also
+    carry MULTIPLE top-level JSON objects back to back (e.g. REVIEWER_PROMPT's team JSON followed
+    by a separate ``driving_signals`` receipt object) — a single greedy regex spanning first-`{` to
+    last-`}` would swallow both and fail to parse. So every well-formed top-level object in the text
+    is decoded in order; when ``declared_keys`` is given, the FIRST object carrying ALL of those
+    keys wins, otherwise the first object decoded wins. Never raises: a member that answered with
+    prose simply declared keys it did not deliver, and the orchestrator fails it on its own contract
+    with a readable reason — a parse crash would say nothing."""
     if isinstance(output, dict):
         return output
     if not isinstance(output, str):
         return {}
-    match = re.search(r"\{.*\}", output, re.DOTALL)
-    if match is None:
-        return {}
-    try:
-        parsed = json.loads(match.group(0))
-    except ValueError:
-        return {}
-    return parsed if isinstance(parsed, dict) else {}
+    decoder = json.JSONDecoder()
+    first_object: dict[str, Any] | None = None
+    start = output.find("{")
+    while start != -1:
+        try:
+            parsed, end = decoder.raw_decode(output, start)
+        except ValueError:
+            start = output.find("{", start + 1)
+            continue
+        if isinstance(parsed, dict):
+            if first_object is None:
+                first_object = parsed
+            if declared_keys and all(key in parsed for key in declared_keys):
+                return parsed
+        start = output.find("{", end)
+    return first_object if first_object is not None else {}
 
 
 def make_harness_dispatch(
@@ -859,7 +872,7 @@ def make_harness_dispatch(
         # Only the DECLARED keys are lifted, and never over the envelope's own four: a member
         # cannot rename its status or forge its trace by answering with those keys.
         if declared_keys:
-            answered = _parse_member_object(result.get("output"))
+            answered = _parse_member_object(result.get("output"), declared_keys=declared_keys)
             for key in declared_keys:
                 if key in answered and key not in payload:
                     payload[key] = answered[key]
