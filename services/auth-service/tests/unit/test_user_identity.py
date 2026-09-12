@@ -78,12 +78,12 @@ def test_empty_org_is_refused_fail_closed() -> None:
 
 
 # --- password domain ----------------------------------------------------------
-def test_password_round_trips() -> None:
-    h = hash_password("Sup3rStrong")
+async def test_password_round_trips() -> None:
+    h = await hash_password("Sup3rStrong")
     assert h != "Sup3rStrong"
-    assert verify_password("Sup3rStrong", h)
-    assert not verify_password("wrong", h)
-    assert not verify_password("anything", None)  # OAuth-only user
+    assert await verify_password("Sup3rStrong", h)
+    assert not await verify_password("wrong", h)
+    assert not await verify_password("anything", None)  # OAuth-only user
 
 
 @pytest.mark.parametrize("bad", ["short1A", "alllowercase1", "ALLUPPERCASE1", "NoDigitsHere"])
