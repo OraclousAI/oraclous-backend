@@ -626,6 +626,8 @@ def test_parse_op_still_peels_the_op_when_a_second_json_object_trails_it() -> No
     # #1043 — parse_op's peel is the SAME greedy regex; a reply carrying the op JSON followed by a
     # second, unrelated JSON object must still parse the op. RED until the [impl] fixes the peel.
     trailer = {"driving_signals": [{"signal": "ok", "value": True, "source_tool_call_id": "c1"}]}
-    text = '{"op": "add_member", "role": "fact-checker"}' + "\n\n" + __import__("json").dumps(trailer)
+    text = (
+        '{"op": "add_member", "role": "fact-checker"}' + "\n\n" + __import__("json").dumps(trailer)
+    )
     op = parse_op(text)
     assert isinstance(op, AddMember) and op.role == "fact-checker"

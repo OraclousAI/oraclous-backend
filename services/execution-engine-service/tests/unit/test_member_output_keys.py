@@ -236,7 +236,9 @@ async def test_a_two_object_reviewer_reply_still_lifts_the_declared_key() -> Non
 
     RED until the [impl] fixes the peel so the declared key still reaches the hand-off.
     """
-    team = {"members": [{"role": "researcher", "kind": "agent", "manifest_ref": "org:x/researcher@1"}]}
+    team = {
+        "members": [{"role": "researcher", "kind": "agent", "manifest_ref": "org:x/researcher@1"}]
+    }
     receipt = {"driving_signals": [{"signal": "ok", "value": True, "source_tool_call_id": "c1"}]}
     answer = json.dumps(team) + "\n\n" + json.dumps(receipt)
     harness = _ScriptedHarness({"reviewer": answer})
@@ -252,7 +254,9 @@ async def test_the_receipt_before_the_team_json_still_lifts_the_declared_key() -
 
     RED until the [impl] chooses the intended object by the declared key rather than by position.
     """
-    team = {"members": [{"role": "researcher", "kind": "agent", "manifest_ref": "org:x/researcher@1"}]}
+    team = {
+        "members": [{"role": "researcher", "kind": "agent", "manifest_ref": "org:x/researcher@1"}]
+    }
     receipt = {"driving_signals": [{"signal": "ok", "value": True, "source_tool_call_id": "c1"}]}
     answer = json.dumps(receipt) + "\n\n" + json.dumps(team)
     harness = _ScriptedHarness({"reviewer": answer})
@@ -279,7 +283,9 @@ async def test_a_two_object_reviewer_reply_settles_succeeded_not_failed() -> Non
 
     RED until the [impl] fixes the peel so the declared key survives to settle-time.
     """
-    team = {"members": [{"role": "researcher", "kind": "agent", "manifest_ref": "org:x/researcher@1"}]}
+    team = {
+        "members": [{"role": "researcher", "kind": "agent", "manifest_ref": "org:x/researcher@1"}]
+    }
     receipt = {"driving_signals": [{"signal": "ok", "value": True, "source_tool_call_id": "c1"}]}
     answer = json.dumps(team) + "\n\n" + json.dumps(receipt)
     harness = _ScriptedHarness({"reviewer": answer})

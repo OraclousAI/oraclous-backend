@@ -1,4 +1,4 @@
-"""#1043 — auditing the six duplicated greedy `re.search(r"\{.*\}", ..., re.DOTALL)` JSON-peel
+r"""#1043 — auditing the six duplicated greedy `re.search(r"\{.*\}", ..., re.DOTALL)` JSON-peel
 sites for the same bug. `_extract_answer_object` (tool_use.py:382) is its own copy of the SAME
 regex ("the same lenient 'widest {...}' peel the engine's `_parse_member_object` uses ... duplicated
 rather than imported" — its own docstring), so it has the identical failure mode: a reply carrying

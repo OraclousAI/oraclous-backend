@@ -1,4 +1,4 @@
-"""#1043 — auditing the six duplicated greedy `re.search(r"\{.*\}", ..., re.DOTALL)` JSON-peel
+r"""#1043 — auditing the six duplicated greedy `re.search(r"\{.*\}", ..., re.DOTALL)` JSON-peel
 sites for the same bug (see `test_parse_member_object_peel.py` for the live-broken one,
 `_parse_member_object`). `parse_driving_signals` (team_run.py:520) is a SIBLING peel in the same
 file, but it already carries a SECOND fallback regex — `r'"driving_signals"\s*:\s*(\[.*?\])'` —
@@ -19,9 +19,7 @@ from oraclous_execution_engine_service.services.team_run import parse_driving_si
 
 pytestmark = pytest.mark.unit
 
-_TEAM = {
-    "members": [{"role": "researcher", "kind": "agent", "manifest_ref": "org:x/researcher@1"}]
-}
+_TEAM = {"members": [{"role": "researcher", "kind": "agent", "manifest_ref": "org:x/researcher@1"}]}
 _SIGNALS = [{"signal": "validated", "value": True, "source_tool_call_id": "c1"}]
 _RECEIPT = {"driving_signals": _SIGNALS}
 

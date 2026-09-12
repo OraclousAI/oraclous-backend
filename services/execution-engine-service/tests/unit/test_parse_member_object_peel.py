@@ -1,4 +1,4 @@
-"""#1043 — `_parse_member_object`'s greedy `re.search(r"\{.*\}", ..., re.DOTALL)` spans from the
+r"""#1043 — `_parse_member_object`'s greedy `re.search(r"\{.*\}", ..., re.DOTALL)` spans from the
 model's FIRST `{` to its LAST `}`. The reviewer's real reply (`REVIEWER_PROMPT`,
 packages/ohm/src/oraclous_ohm/compiler/prompts.py) is REQUIRED to carry the team JSON followed by a
 SEPARATE `driving_signals` receipt object — "The team JSON and the receipt are BOTH required" — so
