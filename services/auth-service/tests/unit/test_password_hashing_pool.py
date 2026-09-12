@@ -43,8 +43,20 @@ import os
 import threading
 
 import pytest
+from oraclous_telemetry import DegradationEvent, register_sink, reset_sinks
 
 pytestmark = pytest.mark.unit
+
+
+@pytest.fixture
+def captured_alerts():
+    """Capture every ``alert(...)`` fired during a test (mirrors the pattern in
+    ``services/application-gateway-service/tests/unit/test_rate_limit_store.py``)."""
+    events: list[DegradationEvent] = []
+    reset_sinks()
+    register_sink(events.append)
+    yield events
+    reset_sinks()
 
 
 async def test_bcrypt_hash_reuses_one_shared_executor_instance() -> None:
@@ -129,3 +141,56 @@ async def test_env_var_overrides_the_default_worker_bound(
         # test-only value of 3 into any test that runs after this one in the
         # same process.
         importlib.reload(password_hashing)
+
+
+async def test_zero_workers_clamps_to_the_override_floor_of_one(
+    monkeypatch: pytest.MonkeyPatch, captured_alerts: list[DegradationEvent]
+) -> None:
+    from oraclous_auth_service.core import password_hashing
+
+    monkeypatch.setenv("AUTH_PASSWORD_HASH_WORKERS", "0")
+    importlib.reload(password_hashing)
+
+    assert password_hashing.password_hash_max_workers() == 1
+
+    fired = [e for e in captured_alerts if e.code == "password_hash_workers_invalid"]
+    assert len(fired) == 1, "an out-of-range override must be reported, not silently clamped"
+    assert fired[0].context["raw_value"] == "0"
+    assert fired[0].context["effective_value"] == 1
+    assert fired[0].context["reason"] == "out_of_range"
+
+
+async def test_500_workers_clamps_to_the_override_ceiling_of_64(
+    monkeypatch: pytest.MonkeyPatch, captured_alerts: list[DegradationEvent]
+) -> None:
+    from oraclous_auth_service.core import password_hashing
+
+    monkeypatch.setenv("AUTH_PASSWORD_HASH_WORKERS", "500")
+    importlib.reload(password_hashing)
+
+    assert password_hashing.password_hash_max_workers() == 64
+
+    fired = [e for e in captured_alerts if e.code == "password_hash_workers_invalid"]
+    assert len(fired) == 1, "an out-of-range override must be reported, not silently clamped"
+    assert fired[0].context["raw_value"] == "500"
+    assert fired[0].context["effective_value"] == 64
+    assert fired[0].context["reason"] == "out_of_range"
+
+
+async def test_unparseable_value_falls_back_to_the_cpu_derived_default(
+    monkeypatch: pytest.MonkeyPatch, captured_alerts: list[DegradationEvent]
+) -> None:
+    from oraclous_auth_service.core import password_hashing
+
+    monkeypatch.setenv("AUTH_PASSWORD_HASH_WORKERS", "notanumber")
+    importlib.reload(password_hashing)
+
+    bound = password_hashing.password_hash_max_workers()
+
+    assert 2 <= bound <= 8, "a rejected override must fall back to the CPU-derived default"
+
+    fired = [e for e in captured_alerts if e.code == "password_hash_workers_invalid"]
+    assert len(fired) == 1, "a rejected override must be reported, not silently ignored"
+    assert fired[0].context["raw_value"] == "notanumber"
+    assert fired[0].context["effective_value"] == bound
+    assert fired[0].context["reason"] == "not_an_integer"
