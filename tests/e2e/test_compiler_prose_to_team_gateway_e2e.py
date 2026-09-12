@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import time
 import uuid
 from collections.abc import Callable
@@ -79,9 +78,11 @@ def _poll(c: httpx.Client, run_id: str, tries: int = 160) -> dict:
 
 
 @requires_byom
-# #1012: this belongs in the PR-gate subset (prose → a runnable team is the compiler surface), but
-# its JSON peel below breaks on a real model's trailing block (#1014). Restore `byom_smoke` here in
-# the PR that fixes the peel; until then the surface is covered by the nightly full leg.
+# #1012/#1014: this belongs in the PR-gate subset by surface (prose → a runnable team is the
+# compiler surface) — its JSON peel below is fixed by #1043 (decodes the first JSON value; the
+# REVIEWER_PROMPT-mandated trailing driving_signals receipt no longer breaks it). Ruling (owner,
+# 2026-09-12): even so, this test stays OUT of `byom_smoke` — the compiler runs in the nightly
+# real-model leg only, never the per-pull-request subset.
 def test_a_prose_objective_compiles_to_a_runnable_team(
     register: Callable[..., dict], gateway_client: Callable[[str], httpx.Client]
 ) -> None:
@@ -121,9 +122,15 @@ def test_a_prose_objective_compiles_to_a_runnable_team(
     raw = (row.get("results") or {}).get("reviewer")
     assert raw, f"the reviewer produced the compiled team — {row}"
     reviewer_text = raw["output"] if isinstance(raw, dict) else raw
-    match = re.search(r"\{.*\}", reviewer_text, re.DOTALL)
-    assert match, f"the reviewer's output carries a JSON team — {reviewer_text!r}"
-    compiled = json.loads(match.group(0))
+    decoder = json.JSONDecoder()
+    start = reviewer_text.find("{")
+    assert start != -1, f"the reviewer's output carries a JSON team — {reviewer_text!r}"
+    try:
+        compiled, _ = decoder.raw_decode(reviewer_text, start)
+    except json.JSONDecodeError as exc:
+        raise AssertionError(
+            f"the reviewer's output carries a JSON team — {reviewer_text!r}"
+        ) from exc
     assert isinstance(compiled.get("members"), list) and compiled["members"], compiled
 
     # RUNNABLE: the SAME validator the importer uses confirms the compiled team is assemblable
