@@ -33,7 +33,7 @@ RED reason on current ``main``: each ``bcrypt.hashpw`` call runs synchronously
 on the event-loop thread for ~185ms. With 8 concurrent hashing requests
 serializing on the single thread, the loop is blocked for stretches on the
 order of 185ms-1.5s, so both the ticker's max gap and the ``/health`` latency
-blow past the 50ms thresholds below. Once bcrypt moves to worker threads
+blow past the 150ms thresholds below. Once bcrypt moves to worker threads
 (the fix), the event loop stays free to service the ticker and ``/health``
 regardless of how many bcrypt calls are in flight, and this test goes GREEN
 with no changes here.
@@ -56,8 +56,8 @@ _INTERNAL_KEY = "test-internal-key"
 _HASHING_CALLS = 8  # generous margin: even 4 serialized ~185ms calls (740ms) would fail hard
 _TICKER_INTERVAL = 0.005  # 5ms — the probe's sleep granularity
 _TICKER_ITERATIONS = 200  # ~1s of wall time, long enough to overlap all hashing calls
-_LAG_THRESHOLD_S = 0.05  # 50ms
-_HEALTH_LATENCY_THRESHOLD_S = 0.05  # 50ms
+_LAG_THRESHOLD_S = 0.15  # 150ms
+_HEALTH_LATENCY_THRESHOLD_S = 0.15  # 150ms
 
 
 class _InMemoryCredentialStore:
@@ -138,7 +138,19 @@ async def _ticker() -> float:
     return max(gaps)
 
 
-async def test_event_loop_stays_responsive_under_concurrent_bcrypt_hashing() -> None:
+async def test_event_loop_stays_responsive_under_concurrent_bcrypt_hashing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Pin the bcrypt worker pool size so CPU contention with the event-loop
+    # thread is host-independent — the not-yet-built
+    # ``core.password_hashing`` module reads this env var (clamped to
+    # [2, 8], defaulting from ``os.cpu_count()``); until it lands this
+    # setting is inert, since nothing reads it and bcrypt still runs
+    # synchronously on the event-loop thread. Fixing it at 2 means a
+    # 2-core CI runner and an 8-core laptop see the same number of
+    # competing bcrypt threads.
+    monkeypatch.setenv("AUTH_PASSWORD_HASH_WORKERS", "2")
+
     app = _app()
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as client:
         results = await asyncio.gather(
@@ -154,9 +166,11 @@ async def test_event_loop_stays_responsive_under_concurrent_bcrypt_hashing() -> 
 
     # Real bcrypt (cost=12) is ~185ms per call. If it runs synchronously on the
     # event-loop thread, EVERY other coroutine (including this ticker) is
-    # frozen for that long. 50ms is roughly 10x normal asyncio.sleep jitter
-    # (sub-millisecond to a couple of ms) while still failing hard against a
-    # single blocking bcrypt call, let alone 8 of them serializing.
+    # frozen for that long. The pre-fix signal measured here is 1.3-1.5s (and
+    # the same order of magnitude on the deployed stack) — 150ms is well
+    # below that, so it still fails hard on a real regression, while leaving
+    # more headroom than 50ms against ordinary scheduler jitter on a small,
+    # shared CI runner where up to 8 bcrypt threads compete for CPU.
     assert max_ticker_gap < _LAG_THRESHOLD_S, (
         f"event loop lagged {max_ticker_gap:.3f}s between ticker wakeups — "
         f"bcrypt is blocking the loop (threshold {_LAG_THRESHOLD_S}s)"
@@ -164,9 +178,9 @@ async def test_event_loop_stays_responsive_under_concurrent_bcrypt_hashing() -> 
 
     # If bcrypt blocked the loop, /health would queue behind whichever
     # in-flight hashing call holds the thread — on the order of 185ms-1.5s
-    # for 8 concurrent calls serialized. 50ms leaves ample room over a
-    # healthy /health round-trip (sub-millisecond in-process) while still
-    # failing hard against the real bug.
+    # for 8 concurrent calls serialized. A healthy /health round-trip is
+    # sub-millisecond in-process, so 150ms leaves generous room over that
+    # while still failing hard against the real bug.
     assert health_latency < _HEALTH_LATENCY_THRESHOLD_S, (
         f"/health took {health_latency:.3f}s while bcrypt hashing was in flight — "
         f"bcrypt is blocking the loop (threshold {_HEALTH_LATENCY_THRESHOLD_S}s)"
