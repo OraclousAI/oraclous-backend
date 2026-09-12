@@ -153,3 +153,14 @@ def test_garbage_fails_closed() -> None:
     )
     assert v["would_block"] is True
     assert any("F-DRAFT-INVALID" in b for b in v["blocking"])
+
+
+def test_a_team_json_followed_by_a_separate_receipt_object_is_still_peeled() -> None:
+    # #1043 — validate_draft's peel is the SAME greedy regex that breaks on a real reviewer reply:
+    # the drafted team JSON followed by a SEPARATE `driving_signals` receipt object (the
+    # REVIEWER_PROMPT-mandated shape). RED until the [impl] fixes the peel to find the team object
+    # even when a second JSON object trails it.
+    receipt = {"driving_signals": [{"signal": "ok", "value": True, "source_tool_call_id": "c1"}]}
+    draft = json.dumps(_draft("web-search")) + "\n\n" + json.dumps(receipt)
+    v = validate_draft(draft, ["web-search"], owner_organization_id=_ORG)
+    assert v["would_block"] is False, v  # peeled + validated, NOT F-DRAFT-INVALID

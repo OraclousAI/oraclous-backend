@@ -620,3 +620,14 @@ def test_a_blocked_removal_does_not_mutate_the_input() -> None:
     res = apply_refine(m, RemoveMember(role="writer"), catalog=_CATALOG, owner_organization_id=_ORG)
     assert res.manifest is None and res.report.would_block is True
     assert {x.role for x in m.members} == before_roles  # unmutated
+
+
+def test_parse_op_still_peels_the_op_when_a_second_json_object_trails_it() -> None:
+    # #1043 — parse_op's peel is the SAME greedy regex; a reply carrying the op JSON followed by a
+    # second, unrelated JSON object must still parse the op. RED until the [impl] fixes the peel.
+    trailer = {"driving_signals": [{"signal": "ok", "value": True, "source_tool_call_id": "c1"}]}
+    text = (
+        '{"op": "add_member", "role": "fact-checker"}' + "\n\n" + __import__("json").dumps(trailer)
+    )
+    op = parse_op(text)
+    assert isinstance(op, AddMember) and op.role == "fact-checker"

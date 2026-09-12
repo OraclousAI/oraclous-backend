@@ -220,3 +220,13 @@ def test_a_ceiling_widening_sub_harness_blocks() -> None:
     report = _run(draft, sub_harnesses={"w": sub})
     assert report.would_block is True
     assert any("F-CEILING-EXCEEDED" in b for b in report.blocking)
+
+
+def test_a_good_draft_followed_by_a_second_json_object_still_passes() -> None:
+    # #1043 — the guardrails' internal `_to_data` peel is the SAME greedy regex; a good draft
+    # followed by a separate trailing JSON object (the REVIEWER_PROMPT-mandated receipt shape) must
+    # still be recognised as the manifest it is. RED until the [impl] fixes the peel.
+    trailer = {"driving_signals": [{"signal": "ok", "value": True, "source_tool_call_id": "c1"}]}
+    prose = __import__("json").dumps(_GOOD) + "\n\n" + __import__("json").dumps(trailer)
+    report = _run(prose)
+    assert report.passed is True, report.render()

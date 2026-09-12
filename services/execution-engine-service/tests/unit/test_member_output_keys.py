@@ -226,3 +226,96 @@ async def test_a_member_that_declared_nothing_is_told_nothing() -> None:
     # Assert the ABSENCE of the same substring the positive test above requires, so an
     # implementation that appends the directive to every member's input cannot pass both.
     assert "JSON object" not in _call(harness, "a")["input_text"]
+
+
+async def test_a_two_object_reviewer_reply_still_lifts_the_declared_key() -> None:
+    """#1043 — REVIEWER_PROMPT (compiler/prompts.py) mandates the receipt as "a SEPARATE object"
+    AFTER the team JSON; `_parse_member_object`'s greedy regex spans both, `json.loads` raises, and
+    the declared key is never lifted. Live evidence: run `cf50f9ea-13b7-4529-bd91-24d13d5eaacb`,
+    terminal FAILED.
+
+    RED until the [impl] fixes the peel so the declared key still reaches the hand-off.
+    """
+    team = {
+        "members": [{"role": "researcher", "kind": "agent", "manifest_ref": "org:x/researcher@1"}]
+    }
+    receipt = {"driving_signals": [{"signal": "ok", "value": True, "source_tool_call_id": "c1"}]}
+    answer = json.dumps(team) + "\n\n" + json.dumps(receipt)
+    harness = _ScriptedHarness({"reviewer": answer})
+    team_manifest = _team([_m("reviewer", outputs_schema={"required": ["members"]})])
+    res = await run_team_harness(team_manifest, harness)
+
+    assert res.results["reviewer"]["members"] == team["members"]
+
+
+async def test_the_receipt_before_the_team_json_still_lifts_the_declared_key() -> None:
+    """A real model is free to reorder its reply; the declared key must be found by NAME, not by
+    which object happens to come first in the text.
+
+    RED until the [impl] chooses the intended object by the declared key rather than by position.
+    """
+    team = {
+        "members": [{"role": "researcher", "kind": "agent", "manifest_ref": "org:x/researcher@1"}]
+    }
+    receipt = {"driving_signals": [{"signal": "ok", "value": True, "source_tool_call_id": "c1"}]}
+    answer = json.dumps(receipt) + "\n\n" + json.dumps(team)
+    harness = _ScriptedHarness({"reviewer": answer})
+    team_manifest = _team([_m("reviewer", outputs_schema={"required": ["members"]})])
+    res = await run_team_harness(team_manifest, harness)
+
+    assert res.results["reviewer"]["members"] == team["members"]
+
+
+async def test_a_two_object_reviewer_reply_settles_succeeded_not_failed() -> None:
+    """#1043 live bug, reproduced: run `cf50f9ea-13b7-4529-bd91-24d13d5eaacb` terminated FAILED with
+    "member 'reviewer' declared an output contract it did not deliver: missing required output
+    'members'" — solely because the two-object reply (team JSON, then a separate `driving_signals`
+    receipt object, exactly as REVIEWER_PROMPT requires) was never peeled correctly. Once peeled,
+    the run must settle exactly as #834's `outcome_critical` rule intends: delivered content, not a
+    failure.
+
+    Note (test-author judgement call, flagged for be-test-reviewer): this exercises `orchestrate.py`
+    's `critical_member_lost_deliverable` rule, but is placed here rather than in
+    `packages/ohm/tests/test_orchestrate_outcome_critical.py` because `orchestrate.run_team`'s
+    `dispatch` is fully caller-supplied and never peels text itself — only `team_run.py`'s real
+    dispatch closure does, via `_parse_member_object`. A hand-written `packages/ohm`-level dispatch
+    stub would just return the correct dict directly and never exercise the actual bug.
+
+    RED until the [impl] fixes the peel so the declared key survives to settle-time.
+    """
+    team = {
+        "members": [{"role": "researcher", "kind": "agent", "manifest_ref": "org:x/researcher@1"}]
+    }
+    receipt = {"driving_signals": [{"signal": "ok", "value": True, "source_tool_call_id": "c1"}]}
+    answer = json.dumps(team) + "\n\n" + json.dumps(receipt)
+    harness = _ScriptedHarness({"reviewer": answer})
+    team_manifest = _team(
+        [_m("reviewer", outcome_critical=True, outputs_schema={"required": ["members"]})]
+    )
+    res = await run_team_harness(team_manifest, harness)
+
+    assert res.member_status["reviewer"] == "succeeded"
+    assert res.status == "completed"
+    assert res.results["reviewer"]["members"] == team["members"]
+
+
+async def test_a_member_with_tools_and_declared_keys_is_not_told_conflicting_things() -> None:
+    """#1043 — a member that BOTH holds tools (GROUNDING_DIRECTIVE asks for a trailing
+    `driving_signals` receipt "alongside your substantive output") AND declares output keys
+    (OUTPUT_CONTRACT_DIRECTIVE says "Reply with the JSON object and nothing else") receives BOTH
+    instructions today (team_run.py render_member_input, lines ~478-483) — a model cannot honestly
+    satisfy both at once. The compiler's real `reviewer` member is exactly this shape: tools +
+    declared output keys.
+
+    RED until the [impl] resolves the contradiction: the member must still be told its declared
+    key(s) and still be told to emit the grounding receipt, but must no longer be told to reply
+    with ONE object and "nothing else" while also being asked for a second, separate object.
+    """
+    harness = _ScriptedHarness({"reviewer": json.dumps({"summary": "s"})})
+    team = _team([_m("reviewer", tools=["store"], outputs_schema={"required": ["summary"]})])
+    await run_team_harness(team, harness)
+
+    sent = _call(harness, "reviewer")["input_text"]
+    assert "summary" in sent  # still told its declared key
+    assert "driving_signals" in sent  # still told to emit the grounding receipt
+    assert "nothing else" not in sent  # no longer told to reply with ONE object only

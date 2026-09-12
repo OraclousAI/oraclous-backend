@@ -79,10 +79,9 @@ in a test. Today it is:
 | `test_team_run_graph_retrieval_byom_gateway_e2e.py` | a model-issued **tool call** mid-loop, against the bound graph |
 | `test_agent_write_citation_gateway_e2e.py` | citation/provenance: what a member writes is cited as `agent` |
 
-The fifth belongs here and is not: `test_compiler_prose_to_team_gateway_e2e.py` (prose → a runnable
-team) peels the reviewer's JSON with a greedy regex that a real model's trailing block breaks
-(#1014). Put `byom_smoke` back on it in the PR that fixes the peel; until then the nightly leg is the
-only place that surface runs.
+`test_compiler_prose_to_team_gateway_e2e.py` (prose → a runnable team) is not here, and it stays that
+way: #1043 fixed its JSON peel, but the owner ruled (2026-09-12) that the compiler stays in the
+nightly real-model leg only — never the per-pull-request subset — so this file carries `byom` alone.
 
 **When you move the marker, keep those surfaces covered** — a subset that drops tool calling or the
 team loop stops being a smoke test of the real-model path. Keep it near five tests: the step has an
