@@ -15,6 +15,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import re
+from collections.abc import Mapping
 from typing import Any
 
 from oraclous_harness_runtime_service.domain.llm.base import ToolSpec
@@ -54,27 +55,102 @@ def _json_schema(parameters: Any, *, closed: bool) -> dict[str, Any]:
 
 _MCP_SPEC_TYPE = "mcp"
 
+#: The one field the registry dispatches on, never one a model may fill in itself (see the
+#: ``dispatch_payload`` section below for the full rule). Defined here because the #911 projection
+#: needs it too; the constant is not redefined further down.
+_OPERATION_KEY = "operation"
 
-def _parameters_for(op: dict[str, Any], *, imported: bool) -> dict[str, Any]:
-    """The operation's JSON schema for the model.
 
-    #698 D1: an MCP-imported operation carries the server's own ``inputSchema`` verbatim as
-    ``parameters_schema``. That schema is nested (objects inside objects, enums, ``required``
-    lists) and the flat ``parameters`` hint map cannot express it, so it is passed through
-    UNCHANGED. A first-party descriptor declares no ``parameters_schema`` and keeps the hint-map
-    path. ``tools/list`` is untrusted input, so a non-dict schema degrades to an empty object
-    rather than reaching the model or raising.
+def _project_input_schema(
+    op: dict[str, Any], input_schema: dict[str, Any], bound_config: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Project the plugin-level ``spec.input_schema`` onto ONE operation (#911).
 
-    #956 ruling 2: a first-party schema is CLOSED (``additionalProperties: false``). An imported
-    server's schema is that server's contract and is not rewritten — open or closed as it came,
-    and its no-schema fallback stays open, because a schema-less server tool takes whatever
-    arguments the server accepts. The ``operation`` key is stripped for both at dispatch
-    (``dispatch_payload``) and, for the imported path, again in the mcp connector (#698 D3).
+    A plugin declares a single ``INPUT_SCHEMA`` for the whole class, but each operation only takes
+    the arguments named in ITS OWN ``parameters`` hint map — restricting by those keys is what
+    stops, e.g., the Postgres reader's ``query``/``params`` from leaking onto ``list_tables``,
+    which takes no arguments at all.
+    """
+    parameters = op.get("parameters")
+    hints: dict[str, Any] = parameters if isinstance(parameters, dict) else {}
+    # Defence in depth, not a guard against any shipped descriptor: no first-party operation's own
+    # hint map declares "operation" today (confirmed against the shipped connectors), but a
+    # hypothetical future one might, so it is excluded from the op's own key set here too — never
+    # relying solely on the "minus operation" subtraction in ``required`` below.
+    op_keys = [str(k) for k in hints if str(k) != _OPERATION_KEY]
+    op_key_set = set(op_keys)
+
+    declared_properties = input_schema.get("properties")
+    declared_properties = declared_properties if isinstance(declared_properties, dict) else {}
+    declared_required = input_schema.get("required")
+    declared_required = declared_required if isinstance(declared_required, list) else []
+
+    properties: dict[str, Any] = {}
+    for key in op_keys:
+        if key in declared_properties:
+            # Verbatim: union `type` lists, `description`, `enum`, `minLength`, `items`, anything
+            # else the plugin declared travels unchanged.
+            properties[key] = declared_properties[key]
+        else:
+            # A hint-map key the declared schema doesn't cover must never silently disappear from
+            # the model's view — it keeps its current hint-mapped shape.
+            hint = hints[key]
+            properties[key] = {"type": _TYPE_MAP.get(str(hint).lower(), "string")}
+
+    # A required key that the DISPATCHING INSTANCE already binds (run-time harness config or an
+    # operator's tool-instance config, both arrive here as `bound_config`) must not be advertised
+    # as required — the model is never asked to supply an argument it cannot see and does not
+    # control. This is the outbound mirror of the capability registry's own inbound check
+    # (`services/capability-registry-service/src/oraclous_capability_registry_service/domain/
+    # executors/input_validation.py:92-98`, the `bound` set in `_check`), which already treats a
+    # `configuration` key as satisfying `required` server-side; the two live in separate, untied
+    # test suites, so treat that file/line as a live cross-reference to keep in sync, not
+    # decoration. `!= _OPERATION_KEY` is redundant with `op_key_set`'s exclusion above — kept
+    # anyway as the second, independent line of defence.
+    required = [
+        k
+        for k in declared_required
+        if k in op_key_set and k not in bound_config and k != _OPERATION_KEY
+    ]
+
+    return {
+        "type": "object",
+        "properties": properties,
+        "required": required,
+        "additionalProperties": False,
+    }
+
+
+def _parameters_for(
+    op: dict[str, Any],
+    *,
+    imported: bool,
+    input_schema: Any,
+    bound_config: Mapping[str, Any],
+) -> dict[str, Any]:
+    """The operation's JSON schema for the model, in priority order (#698 D1, #911).
+
+    1. A per-operation ``parameters_schema`` override wins outright, unchanged — existing
+       behaviour, untouched by #911.
+    2. An MCP-imported operation carries the server's own ``inputSchema`` verbatim (nested objects,
+       enums, ``required`` lists the flat hint map cannot express) and is NEVER projected from
+       ``spec.input_schema`` — that field belongs to a first-party plugin, not an imported server.
+       ``tools/list`` is untrusted input, so a non-dict schema degrades to an empty object rather
+       than reaching the model or raising.
+    3. A first-party (non-MCP) operation with a dict-valued plugin-level ``spec.input_schema`` gets
+       that schema PROJECTED onto its own hint-map keys (#911) — carrying ``required``, union
+       types, ``enum``, ``minLength``, ``items``, etc. that the flat hint map alone cannot express.
+    4. Otherwise (no ``spec.input_schema``, or a hostile non-dict value) falls back to exactly
+       today's hint-map-only dict, closed (#956 ruling 2). Never raises on a hostile value.
     """
     schema = op.get("parameters_schema")
     if isinstance(schema, dict):
         return schema
-    return _json_schema(op.get("parameters"), closed=not imported)
+    if imported:
+        return _json_schema(op.get("parameters"), closed=False)
+    if isinstance(input_schema, dict):
+        return _project_input_schema(op, input_schema, bound_config)
+    return _json_schema(op.get("parameters"), closed=True)
 
 
 #: Providers accept a function name of at most 64 characters, matching ``[A-Za-z0-9_-]``.
@@ -100,12 +176,26 @@ def _function_name(binding: str, op_name: str) -> str:
     return f"{name[: _LLM_NAME_MAX - _NAME_HASH_LEN - 1]}_{digest}"
 
 
-def tool_specs_for(binding: str, descriptor: dict[str, Any]) -> list[ToolSpec]:
-    """One ``ToolSpec`` per operation declared by the capability ``descriptor``."""
+def tool_specs_for(
+    binding: str,
+    descriptor: dict[str, Any],
+    *,
+    bound_config: Mapping[str, Any] | None = None,
+) -> list[ToolSpec]:
+    """One ``ToolSpec`` per operation declared by the capability ``descriptor``.
+
+    ``bound_config`` (#911) names the arguments the DISPATCHING INSTANCE already supplies — run-time
+    harness config or an operator's tool-instance config — so they are dropped from the projected
+    ``required`` list without hiding the property itself. Defaults to ``None`` (treated as empty) so
+    every existing call site keeps working unchanged; only a first-party projection (priority 3 in
+    ``_parameters_for``) ever consults it.
+    """
     spec = descriptor.get("spec") or {}
     operations = spec.get("capabilities") or []
     name = (descriptor.get("metadata") or {}).get("name") or binding
     imported = spec.get("type") == _MCP_SPEC_TYPE
+    input_schema = spec.get("input_schema")
+    effective_bound_config: Mapping[str, Any] = bound_config if bound_config is not None else {}
     out: list[ToolSpec] = []
     for op in operations:
         if not isinstance(op, dict) or not op.get("name"):
@@ -115,7 +205,12 @@ def tool_specs_for(binding: str, descriptor: dict[str, Any]) -> list[ToolSpec]:
             ToolSpec(
                 name=_function_name(binding, op_name),
                 description=op.get("description") or f"{name}: {op_name}",
-                parameters=_parameters_for(op, imported=imported),
+                parameters=_parameters_for(
+                    op,
+                    imported=imported,
+                    input_schema=input_schema,
+                    bound_config=effective_bound_config,
+                ),
                 binding=binding,
                 # the registry dispatches on this and the external server expects its own
                 # spelling, so it keeps the server's name however the LLM-facing one was sanitised
@@ -126,10 +221,9 @@ def tool_specs_for(binding: str, descriptor: dict[str, Any]) -> list[ToolSpec]:
 
 
 # ── #956: the model's call → the registry payload, with the BOUND operation ────────────────────
-
-#: The one field the registry dispatches on. A model that writes it into its arguments is trying
-#: to pick the operation itself; the binding the runtime made decides, never the argument.
-_OPERATION_KEY = "operation"
+#
+# ``_OPERATION_KEY`` is defined earlier in the file (next to ``_MCP_SPEC_TYPE``), reused here
+# unchanged.
 
 #: Closed-vocabulary code the refusal carries in ``str(exc)`` — the ``detail`` the loop feeds back
 #: to the model — the way #692's registry codes do. A token, so the model can act on it.
