@@ -413,7 +413,7 @@ OUTPUT_CONTRACT_DIRECTIVE = (
     "reads them BY NAME and never reads your prose: {keys}. Put your real work IN those values — "
     "`summary` is what you would have written as your answer, and `artifact_refs` is a list naming "
     "WHERE you persisted anything (the ids or references your persistence tool returned; an empty "
-    "list if you persisted nothing). Reply with the JSON object and nothing else."
+    "list if you persisted nothing)."
 )
 
 
