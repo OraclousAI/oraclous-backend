@@ -58,15 +58,30 @@ from __future__ import annotations
 import asyncio
 import atexit
 import concurrent.futures
+import logging
 import os
 import threading
 
 import bcrypt
+from oraclous_telemetry import Severity, alert
+
+logger = logging.getLogger(__name__)
+
+_SERVICE = "auth-service"
 
 BCRYPT_ROUNDS = 12
 
 _DEFAULT_MIN_WORKERS = 2
 _DEFAULT_MAX_WORKERS = 8
+
+# An explicit AUTH_PASSWORD_HASH_WORKERS override gets a wider band than the CPU-derived
+# default: an operator who sets it is asserting they know their container's real budget (a
+# 32+-core box may legitimately want more than 8). The floor of 1 is the only value
+# ThreadPoolExecutor accepts as "minimum useful pool"; the ceiling of 64 stops a fat-fingered
+# value (or "more is always faster") from recreating the CPU-thrashing stampede this module
+# exists to prevent, while still comfortably covering any real deployment target.
+_OVERRIDE_MIN_WORKERS = 1
+_OVERRIDE_MAX_WORKERS = 64
 
 _max_workers_lock = threading.Lock()
 _max_workers: int | None = None
@@ -75,16 +90,45 @@ _executor_lock = threading.Lock()
 _executor: concurrent.futures.ThreadPoolExecutor | None = None
 
 
-def _resolve_max_workers() -> int:
-    raw = os.environ.get("AUTH_PASSWORD_HASH_WORKERS")
-    if raw is not None:
-        try:
-            return int(raw)
-        except ValueError:
-            pass  # nosec B112 - fall through to the CPU-derived default below
+def _alert_bad_worker_config(*, raw: str, effective: int, reason: str) -> None:
+    """Make a rejected or out-of-range ``AUTH_PASSWORD_HASH_WORKERS`` loud instead of the silent
+    ``except ValueError: pass`` this replaces (CLAUDE.md §3.5 — a config mistake must not
+    disappear). Mirrors the fail-open alert pattern in ``core/rate_limiter.py``."""
+    logger.warning(
+        "password_hashing: AUTH_PASSWORD_HASH_WORKERS=%r rejected (%s); using %d instead",
+        raw,
+        reason,
+        effective,
+    )
+    alert(
+        Severity.WARNING,
+        "password_hash_workers_invalid",
+        _SERVICE,
+        "AUTH_PASSWORD_HASH_WORKERS rejected or out of range; falling back to a safe value",
+        raw_value=raw,
+        effective_value=effective,
+        reason=reason,
+    )
 
+
+def _resolve_max_workers() -> int:
     cpu_count = os.cpu_count() or _DEFAULT_MIN_WORKERS
-    return min(_DEFAULT_MAX_WORKERS, max(_DEFAULT_MIN_WORKERS, cpu_count))
+    default = min(_DEFAULT_MAX_WORKERS, max(_DEFAULT_MIN_WORKERS, cpu_count))
+
+    raw = os.environ.get("AUTH_PASSWORD_HASH_WORKERS")
+    if raw is None:
+        return default
+
+    try:
+        value = int(raw)
+    except ValueError:
+        _alert_bad_worker_config(raw=raw, effective=default, reason="not_an_integer")
+        return default
+
+    clamped = min(_OVERRIDE_MAX_WORKERS, max(_OVERRIDE_MIN_WORKERS, value))
+    if clamped != value:
+        _alert_bad_worker_config(raw=raw, effective=clamped, reason="out_of_range")
+    return clamped
 
 
 def password_hash_max_workers() -> int:
