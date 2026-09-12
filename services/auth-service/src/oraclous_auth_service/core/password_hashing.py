@@ -17,10 +17,12 @@ This module owns one shared, explicitly bounded
 ``concurrent.futures.ThreadPoolExecutor`` instead, sized by
 ``password_hash_max_workers()`` (default: ``os.cpu_count()`` clamped into
 ``[2, 8]``; overridable via ``AUTH_PASSWORD_HASH_WORKERS`` for operators who
-know their container's real budget). Every bcrypt call in the service —
-hashing and verifying alike — is routed through this one pool, so the total
-number of concurrent bcrypt threads is bounded regardless of how many
-requests arrive at once.
+know their container's real budget). The expensive key-derivation work —
+``bcrypt.hashpw`` and ``bcrypt.checkpw``, hashing and verifying alike — is
+routed through this one pool, so the total number of concurrent bcrypt
+threads is bounded regardless of how many requests arrive at once.
+``bcrypt.gensalt`` still runs inline on the event loop before dispatch — it's
+cheap, not the key-derivation work this pool exists to bound.
 
 Public contract:
 
@@ -31,7 +33,7 @@ Public contract:
   the shared pool; returns ``False`` on a malformed hash (``ValueError``),
   matching the pre-existing ``domain.passwords.verify_password`` behaviour.
 - ``password_hash_max_workers()`` — the resolved worker-pool bound, read
-  once (at import time) and cached; ``importlib.reload()`` forces
+  once on first call and cached; ``importlib.reload()`` forces
   re-resolution.
 - ``get_executor()`` — the one shared, lazily-created executor instance
   every call above runs through.
@@ -44,13 +46,14 @@ the test suite does — is observed at call time.
 The executor is a module-level singleton, built lazily under a lock and torn
 down via ``atexit`` rather than owned by the FastAPI app's lifespan. It has
 to be reachable from ``domain/`` and ``repositories/`` — layers with no
-access to the ``app`` object — so a lifespan-owned executor would need to be
-threaded down through every call site as an extra parameter, or stashed on
-some other ambient singleton. A lazily-created module-level executor,
-shut down at process exit, gives every caller the same bounded pool without
-that plumbing, at the cost of not being explicitly closed on a graceful
-FastAPI shutdown — an acceptable trade for a pool of daemon-adjacent worker
-threads whose only job is to finish in-flight bcrypt calls.
+access to the ``app`` object — so an app-owned executor would still need a
+module-level accessor for those layers to reach it; the lifespan could then
+call a single module-level shutdown function on teardown instead of relying
+on ``atexit``. That's a real option, not a forced one: ``atexit`` gives every
+caller the same bounded pool with no lifespan wiring at all, at the cost of
+not being explicitly closed on a graceful FastAPI shutdown — an acceptable
+trade for a pool of daemon-adjacent worker threads whose only job is to
+finish in-flight bcrypt calls.
 """
 
 from __future__ import annotations
@@ -132,7 +135,7 @@ def _resolve_max_workers() -> int:
 
 
 def password_hash_max_workers() -> int:
-    """Return the resolved worker-pool bound, computed once and cached at import time.
+    """Return the resolved worker-pool bound, computed lazily on first call and cached.
 
     Reload this module (``importlib.reload``) to force re-resolution after changing
     ``AUTH_PASSWORD_HASH_WORKERS``; mutating the environment variable alone has no effect on an
