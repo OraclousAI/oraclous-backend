@@ -226,3 +226,37 @@ async def test_a_member_that_declared_nothing_is_told_nothing() -> None:
     # Assert the ABSENCE of the same substring the positive test above requires, so an
     # implementation that appends the directive to every member's input cannot pass both.
     assert "JSON object" not in _call(harness, "a")["input_text"]
+
+
+async def test_a_two_object_reviewer_reply_still_lifts_the_declared_key() -> None:
+    """#1043 — REVIEWER_PROMPT (compiler/prompts.py) mandates the receipt as "a SEPARATE object"
+    AFTER the team JSON; `_parse_member_object`'s greedy regex spans both, `json.loads` raises, and
+    the declared key is never lifted. Live evidence: run `cf50f9ea-13b7-4529-bd91-24d13d5eaacb`,
+    terminal FAILED.
+
+    RED until the [impl] fixes the peel so the declared key still reaches the hand-off.
+    """
+    team = {"members": [{"role": "researcher", "kind": "agent", "manifest_ref": "org:x/researcher@1"}]}
+    receipt = {"driving_signals": [{"signal": "ok", "value": True, "source_tool_call_id": "c1"}]}
+    answer = json.dumps(team) + "\n\n" + json.dumps(receipt)
+    harness = _ScriptedHarness({"reviewer": answer})
+    team_manifest = _team([_m("reviewer", outputs_schema={"required": ["members"]})])
+    res = await run_team_harness(team_manifest, harness)
+
+    assert res.results["reviewer"]["members"] == team["members"]
+
+
+async def test_the_receipt_before_the_team_json_still_lifts_the_declared_key() -> None:
+    """A real model is free to reorder its reply; the declared key must be found by NAME, not by
+    which object happens to come first in the text.
+
+    RED until the [impl] chooses the intended object by the declared key rather than by position.
+    """
+    team = {"members": [{"role": "researcher", "kind": "agent", "manifest_ref": "org:x/researcher@1"}]}
+    receipt = {"driving_signals": [{"signal": "ok", "value": True, "source_tool_call_id": "c1"}]}
+    answer = json.dumps(receipt) + "\n\n" + json.dumps(team)
+    harness = _ScriptedHarness({"reviewer": answer})
+    team_manifest = _team([_m("reviewer", outputs_schema={"required": ["members"]})])
+    res = await run_team_harness(team_manifest, harness)
+
+    assert res.results["reviewer"]["members"] == team["members"]
