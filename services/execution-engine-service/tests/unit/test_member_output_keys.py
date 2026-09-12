@@ -297,3 +297,25 @@ async def test_a_two_object_reviewer_reply_settles_succeeded_not_failed() -> Non
     assert res.member_status["reviewer"] == "succeeded"
     assert res.status == "completed"
     assert res.results["reviewer"]["members"] == team["members"]
+
+
+async def test_a_member_with_tools_and_declared_keys_is_not_told_conflicting_things() -> None:
+    """#1043 — a member that BOTH holds tools (GROUNDING_DIRECTIVE asks for a trailing
+    `driving_signals` receipt "alongside your substantive output") AND declares output keys
+    (OUTPUT_CONTRACT_DIRECTIVE says "Reply with the JSON object and nothing else") receives BOTH
+    instructions today (team_run.py render_member_input, lines ~478-483) — a model cannot honestly
+    satisfy both at once. The compiler's real `reviewer` member is exactly this shape: tools +
+    declared output keys.
+
+    RED until the [impl] resolves the contradiction: the member must still be told its declared
+    key(s) and still be told to emit the grounding receipt, but must no longer be told to reply
+    with ONE object and "nothing else" while also being asked for a second, separate object.
+    """
+    harness = _ScriptedHarness({"reviewer": json.dumps({"summary": "s"})})
+    team = _team([_m("reviewer", tools=["store"], outputs_schema={"required": ["summary"]})])
+    await run_team_harness(team, harness)
+
+    sent = _call(harness, "reviewer")["input_text"]
+    assert "summary" in sent  # still told its declared key
+    assert "driving_signals" in sent  # still told to emit the grounding receipt
+    assert "nothing else" not in sent  # no longer told to reply with ONE object only
