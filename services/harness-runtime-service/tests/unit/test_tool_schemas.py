@@ -442,6 +442,50 @@ def test_the_operation_key_is_never_advertised_as_required_or_present() -> None:
     assert "operation" not in params["properties"]
 
 
+# ── same guarantee, but where rule 1's restriction alone cannot be the reason it holds ───────────
+#
+# No SHIPPED operation's own hint map actually contains "operation" (the delivery sink's `deliver`
+# declares `{"repo","base_branch","head_branch","files"}`; the library groups generate their hint
+# maps from the Python function's own argument names, which never include the dispatch key) — so
+# the test above only ever exercises rule 1 (operation is excluded because it isn't one of the
+# op's own hint-map keys to begin with). It would still pass if the explicit "minus operation"
+# subtraction were never implemented at all. This fixture manufactures the case rule 1 alone
+# cannot catch: an operation whose OWN `parameters` hint map — and whose declared
+# `input_schema.required` — both name "operation". Only the explicit subtraction keeps it out
+# here. Defence in depth against a FUTURE descriptor shaped this way, not a guard against current
+# data — do not delete this as "redundant" with the test above.
+
+_LIBRARY_GROUP_WITH_OPERATION_HINT_DESCRIPTOR = {
+    "id": "core-library-group-operation-hint",
+    "metadata": {"name": "Library Group (hypothetical operation-in-hint-map shape)"},
+    "spec": {
+        "type": "LIBRARY",
+        "capabilities": [
+            {
+                "name": "word_count",
+                "description": "Count words in text",
+                "parameters": {"operation": "string", "text": "string"},
+            }
+        ],
+        "input_schema": {
+            "type": "object",
+            "required": ["operation", "text"],
+            "properties": {
+                "operation": {"type": "string", "enum": ["word_count", "char_count"]},
+                "text": {"type": "string"},
+            },
+        },
+    },
+}
+
+
+def test_operation_is_subtracted_even_when_its_own_hint_map_declares_it() -> None:
+    spec = tool_specs_for("library-group-2", _LIBRARY_GROUP_WITH_OPERATION_HINT_DESCRIPTOR)[0]
+    params = spec.parameters
+    assert "operation" not in params["required"]
+    assert "operation" not in params["properties"]
+
+
 # ── config subtraction: a required key bound by the dispatching instance's config drops out of
 # ``required`` but the property itself stays, so the model still sees the argument exists ─────────
 
