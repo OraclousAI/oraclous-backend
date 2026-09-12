@@ -381,16 +381,24 @@ _ARTIFACT_REFS_KEY = "artifact_refs"
 
 def _extract_answer_object(text: str) -> dict[str, Any]:
     """The JSON object inside a member's free-form answer, or ``{}`` when there is none. The same
-    lenient "widest ``{...}``" peel the engine's ``_parse_member_object`` uses (a different service,
-    duplicated rather than imported — a real model wraps its JSON in prose or a fence)."""
-    match = re.search(r"\{.*\}", text, re.DOTALL)
-    if match is None:
-        return {}
-    try:
-        parsed = json.loads(match.group(0))
-    except ValueError:
-        return {}
-    return parsed if isinstance(parsed, dict) else {}
+    lenient peel the engine's ``_parse_member_object`` uses (a different service, duplicated rather
+    than imported — a real model wraps its JSON in prose or a fence): the FIRST well-formed
+    top-level JSON object, scanning forward from each ``{`` with ``json.JSONDecoder.raw_decode``,
+    rather than the widest ``{...}`` regex match — which would span past the first object into a
+    second, separate one trailing it (e.g. a ``driving_signals`` receipt object after the
+    answer)."""
+    decoder = json.JSONDecoder()
+    start = text.find("{")
+    while start != -1:
+        try:
+            parsed, _end = decoder.raw_decode(text, start)
+        except ValueError:
+            start = text.find("{", start + 1)
+            continue
+        if isinstance(parsed, dict):
+            return parsed
+        start = text.find("{", start + 1)
+    return {}
 
 
 def _unwrap_declared_value(value: Any) -> Any:

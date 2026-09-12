@@ -23,7 +23,6 @@ importer's ``GO: BLOCKED`` surface — the Layer-1 harness the eval-set runner c
 from __future__ import annotations
 
 import json
-import re
 import uuid
 from typing import Any
 
@@ -75,17 +74,24 @@ _ORG_NS = uuid.UUID("00000000-0000-0000-0000-000000000000")
 
 def _to_data(draft: str | dict[str, Any]) -> dict[str, Any] | None:
     """Normalise a draft to a dict — peel the JSON team out of a member's prose output (#599), pass
-    a dict through. Returns ``None`` when no JSON team manifest is present (blocked upstream)."""
+    a dict through. The FIRST well-formed top-level JSON object wins (scanning forward from each
+    ``{`` with ``json.JSONDecoder.raw_decode``) rather than the widest ``{...}`` regex match — which
+    would span past the drafted team JSON into a second, separate object trailing it. Returns
+    ``None`` when no JSON team manifest is present (blocked upstream)."""
     if isinstance(draft, dict):
         return draft
-    match = re.search(r"\{.*\}", draft, re.DOTALL)
-    if match is None:
-        return None
-    try:
-        parsed = json.loads(match.group(0))
-    except ValueError:
-        return None
-    return parsed if isinstance(parsed, dict) else None
+    decoder = json.JSONDecoder()
+    start = draft.find("{")
+    while start != -1:
+        try:
+            parsed, _end = decoder.raw_decode(draft, start)
+        except ValueError:
+            start = draft.find("{", start + 1)
+            continue
+        if isinstance(parsed, dict):
+            return parsed
+        start = draft.find("{", start + 1)
+    return None
 
 
 def _parse_members(raw_members: list[Any]) -> tuple[list[OHMMember], str | None]:

@@ -517,6 +517,26 @@ def _producer_ref(
     return ref
 
 
+def _first_json_object_text(text: str) -> str | None:
+    """The source span of the first well-formed top-level JSON object in ``text`` — scanning
+    forward from each ``{`` and decoding with ``json.JSONDecoder.raw_decode``, the same technique
+    ``_parse_member_object`` below uses. Unlike a widest-match ``{.*}`` regex, this never spans past
+    the first object into a second, separate one that trails it (e.g. a ``driving_signals`` receipt
+    object following a member's team/answer JSON). ``None`` when no ``{`` in the text decodes."""
+    decoder = json.JSONDecoder()
+    start = text.find("{")
+    while start != -1:
+        try:
+            parsed, end = decoder.raw_decode(text, start)
+        except ValueError:
+            start = text.find("{", start + 1)
+            continue
+        if isinstance(parsed, dict):
+            return text[start:end]
+        start = text.find("{", start + 1)
+    return None
+
+
 def parse_driving_signals(output: Any) -> list[dict[str, Any]]:
     """#642: the member's claims, out of its real harness output (text, or an already-parsed dict).
 
@@ -531,9 +551,9 @@ def parse_driving_signals(output: Any) -> list[dict[str, Any]]:
     if not isinstance(output, str) or "driving_signals" not in output:
         return []
     candidates: list[str] = []
-    match = re.search(r"\{.*\}", output, re.DOTALL)  # the widest embedded JSON object
-    if match is not None:
-        candidates.append(match.group(0))
+    first_object = _first_json_object_text(output)  # the first well-formed embedded JSON object
+    if first_object is not None:
+        candidates.append(first_object)
     array = re.search(r'"driving_signals"\s*:\s*(\[.*?\])', output, re.DOTALL)
     if array is not None:
         candidates.append('{"driving_signals": ' + array.group(1) + "}")

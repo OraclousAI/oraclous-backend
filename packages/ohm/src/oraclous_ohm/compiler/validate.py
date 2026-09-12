@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import difflib
 import json
-import re
 from typing import Any, Literal
 
 from pydantic import ValidationError
@@ -246,14 +245,27 @@ def validate_draft(
     if isinstance(draft, str):
         # a member's harness output is TEXT (#599): peel the JSON object out of the drafter LLM's
         # prose / ```json fence rather than json.loads the whole string (a real LLM never returns
-        # bare JSON), so a valid draft wrapped in prose is not mis-blocked F-DRAFT-INVALID.
-        match = re.search(r"\{.*\}", draft, re.DOTALL)
-        if match is None:
+        # bare JSON), so a valid draft wrapped in prose is not mis-blocked F-DRAFT-INVALID. The
+        # FIRST well-formed top-level JSON object wins (scanning forward from each ``{`` with
+        # ``json.JSONDecoder.raw_decode``) rather than the widest ``{...}`` regex match — which
+        # would span past the drafted team JSON into a second, separate object trailing it (e.g. a
+        # ``driving_signals`` receipt object, the REVIEWER_PROMPT-mandated shape).
+        decoder = json.JSONDecoder()
+        parsed_draft: Any = None
+        start = draft.find("{")
+        while start != -1:
+            try:
+                candidate, _end = decoder.raw_decode(draft, start)
+            except ValueError:
+                start = draft.find("{", start + 1)
+                continue
+            if isinstance(candidate, dict):
+                parsed_draft = candidate
+                break
+            start = draft.find("{", start + 1)
+        if parsed_draft is None:
             return _blocked("F-DRAFT-INVALID", "the draft has no JSON team manifest")
-        try:
-            data = json.loads(match.group(0))
-        except ValueError:
-            return _blocked("F-DRAFT-INVALID", "the draft is not valid JSON")
+        data = parsed_draft
     else:
         data = draft
     if not isinstance(data, dict) or not isinstance(data.get("members"), list):
