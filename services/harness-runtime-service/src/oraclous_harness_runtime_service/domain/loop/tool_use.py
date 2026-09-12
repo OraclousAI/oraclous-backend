@@ -398,7 +398,7 @@ def _extract_answer_object(
     start = text.find("{")
     while start != -1:
         try:
-            parsed, _end = decoder.raw_decode(text, start)
+            parsed, end = decoder.raw_decode(text, start)
         except json.JSONDecodeError as exc:
             # Skip past wherever the decoder gave up, not one character at a time — a failed
             # attempt has already ruled out this whole span, so re-walking it `{` by `{` is
@@ -410,7 +410,11 @@ def _extract_answer_object(
                 first_object = parsed
             if declared_keys and all(key in parsed for key in declared_keys):
                 return parsed
-        start = text.find("{", start + 1)
+        # Advance PAST the object just parsed (not start + 1) — otherwise the next search would
+        # re-enter its own nested content and treat an inner `{...}` as a second top-level
+        # candidate, which could wrongly satisfy `declared_keys` on a nested value that was never
+        # actually a sibling answer object.
+        start = text.find("{", end)
     return first_object if first_object is not None else {}
 
 
