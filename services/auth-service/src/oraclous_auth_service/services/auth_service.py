@@ -138,7 +138,7 @@ class AuthService:
         user = await self._users.create_user(
             id=user_id,
             email=email,
-            password_hash=hash_password(password),
+            password_hash=await hash_password(password),
             default_organisation_id=org.id,
         )
         bundle = await self._issue_pair(user, organisation_id=org.id, family_id=str(uuid.uuid4()))
@@ -150,7 +150,7 @@ class AuthService:
     ) -> TokenBundle:
         user = await self._users.get_by_email(email)
         # Generic failure on both unknown-email and bad-password (no enumeration, T-ENUM).
-        if user is None or not verify_password(password, user.password_hash):
+        if user is None or not await verify_password(password, user.password_hash):
             raise AuthenticationError("invalid email or password")
         if not user.is_active:
             raise AuthenticationError("account is disabled")
@@ -207,7 +207,7 @@ class AuthService:
 
     async def change_password(self, *, user_id: str, new_password: str) -> None:
         validate_password_strength(new_password)
-        user = await self._users.set_password(user_id, hash_password(new_password))
+        user = await self._users.set_password(user_id, await hash_password(new_password))
         if user is None:
             raise AuthenticationError("user not found")
 
