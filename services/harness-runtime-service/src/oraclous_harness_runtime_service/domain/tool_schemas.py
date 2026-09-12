@@ -110,7 +110,7 @@ def _project_input_schema(
     required = [
         k
         for k in declared_required
-        if k in op_key_set and k not in bound_config and k != _OPERATION_KEY
+        if isinstance(k, str) and k in op_key_set and k not in bound_config and k != _OPERATION_KEY
     ]
 
     return {
