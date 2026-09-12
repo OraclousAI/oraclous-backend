@@ -1,7 +1,9 @@
-"""#911 nightly real-model regression guard: a real model's ``core/rest-connector@1.0.0`` calls
-must actually succeed once the fix lands — retargeted from an earlier ``manifest-validate`` draft
-of this guard after a deployed-stack failure hunt found a cleaner, reproducible real-model failure
-here instead (full evidence: issue #911, the comment following #1041's Tests Review round).
+"""#911 nightly real-model regression guard: a real model must no longer INVENT a source outside
+``core/rest-connector@1.0.0``'s declared ``source_id`` enum once the fix lands — retargeted from an
+earlier ``manifest-validate`` draft of this guard after a deployed-stack failure hunt found a
+cleaner, reproducible real-model failure here instead (full evidence: issue #911, the comment
+following #1041's Tests Review round). This is a narrower claim than "the call succeeds" — see the
+test's own docstring and the OUT OF SCOPE section below for exactly where the line is drawn.
 
 CAUSE, PRECISELY: this is about the dropped ALLOWED-VALUES list, not the dropped ``required`` list.
 ``core/rest-connector@1.0.0``'s ``fetch`` operation declares (``domain/plugins/builtin.py:800-810``)
@@ -25,17 +27,25 @@ earlier ``manifest-validate`` draft of this guard, the step trace is not a relia
 also sidesteps #1042 (a member that fails its declared output contract has its whole step-trace
 record deleted) by declaring NO ``outputs_schema``/body-contract on the member at all. Instead:
 ``GET /api/v1/instances`` to find the auto-minted tool instance's ``last_execution_id``, then
-``GET /api/v1/executions/{id}`` — both real gateway routes — asserting the execution's ``status``
-is not ``FAILED`` and its ``error_type`` is not ``UNKNOWN_SOURCE``. No manual instance-connect step
-is needed first: ``rest-connector`` is keyless (``CREDENTIAL_REQUIREMENTS`` is empty), so the
-harness's find-or-create (``_materialise``) auto-mints an instance on first dispatch — the same
+``GET /api/v1/executions/{id}`` — both real gateway routes — asserting the execution's
+``error_type`` is not ``UNKNOWN_SOURCE`` (deliberately NOT that its ``status`` is not ``FAILED`` —
+see the test's own docstring: ``endpoint`` carries no allowed-values list either, so a real model
+can still fail the call a different way, #1046, without the #911 bug having recurred). No manual
+instance-connect step is needed first: ``rest-connector`` is keyless
+(``CREDENTIAL_REQUIREMENTS`` is empty), so the harness's find-or-create (``_materialise``)
+auto-mints an instance on first dispatch — the same
 posture the existing ``core/knowledge-retriever`` in-loop test relies on
 (``test_team_run_graph_retrieval_byom_gateway_e2e.py``, also keyless, also no pre-connect step).
 
 OUT OF SCOPE, DELIBERATELY: the refusal message itself does not name the legal sources, which is
 why the model kept repeating the same wrong guess — filed separately as #1044. Fixing both at once
 here would make this test's before/after proof ambiguous, so nothing in this file asserts on the
-wording of the refusal, only on whether the call succeeded.
+wording of the refusal. Also out of scope: ``endpoint``'s legal values depend on which
+``source_id`` was chosen, so the declared schema cannot carry a static allowed-values list for it
+either — a real model can still choose a legal ``source_id`` and then a wrong ``endpoint`` for it
+(observed live: ``source_id="alternative_me"`` with the wrong ``endpoint``, failing
+``INVALID_INPUT``, not ``UNKNOWN_SOURCE``). That is a separate, real gap, filed as #1046. This
+test's only claim is that the model no longer invents a source outside the declared set.
 
 Model non-determinism: pinned to the one model that reproduced the failure
 (``openrouter/openai/gpt-4o-mini``), and only the outcome of the call is asserted — never an exact
@@ -122,18 +132,30 @@ def test_a_real_models_rest_connector_call_does_not_invent_an_unknown_source(
     register: Callable[..., dict],
     gateway_client: Callable[[str], httpx.Client],
 ) -> None:
-    """#911 regression guard: the real model's tool call must not fail with ``UNKNOWN_SOURCE`` —
-    proving it actually saw and used the schema's ``source_id``/``endpoint`` enum, rather than
-    inventing a source name (the deployed-stack failure this guards against: 3/3 real runs on
-    ``openrouter/openai/gpt-4o-mini`` invented ``source_id="blockchain_info"`` on every call).
+    """#911 regression guard — PROVES ONE THING ONLY: the real model does not invent a source
+    outside the declared ``source_id`` enum (the deployed-stack failure this guards against: 3/3
+    real runs on ``openrouter/openai/gpt-4o-mini`` invented ``source_id="blockchain_info"`` on
+    every call, an error_type of ``UNKNOWN_SOURCE``). That is the #911 claim, precisely: the
+    projection lands the ``source_id`` enum, and the model uses it.
+
+    DELIBERATELY DOES NOT PROVE the model gets the whole call right. ``endpoint``'s legal values
+    depend on which ``source_id`` was chosen (``mempool`` -> ``tip_height``, ``alternative_me`` ->
+    ``fear_greed``), and that dependency has no static allowed-values list for the projection to
+    carry — the declared schema can only say ``{"type": "string", "minLength": 1}`` for it. The
+    model still has to guess ``endpoint`` and sometimes guesses wrong (observed live: a LEGAL
+    ``source_id`` of ``alternative_me`` paired with the wrong ``endpoint``, failing with
+    ``error_type: "INVALID_INPUT"``, ``error_message: "'endpoint' must be one of ['fear_greed']"``)
+    — a separate, real gap this test does not assert on and is not the #911 fix's job to close.
+    Filed as #1046 ("The data-source reader's endpoint argument has no declared legal values, so
+    a model guesses it").
 
     Deliberately does NOT read ``results[<role>]["steps"]`` — that trace came back empty for this
     member in every failure-hunt run — and instead reads the auto-minted tool instance's
     ``last_execution_id`` and the execution record behind it, both real gateway routes.
     Deliberately does NOT assert on the refusal message's wording (#1044 is the separate, in-scope
-    follow-up for that); only whether the call succeeded. Deliberately does NOT assert the run's
-    overall terminal ``state`` either — a failure anywhere else in the run must not mask what this
-    test actually checks: whether THIS tool call, specifically, saw a legal source."""
+    follow-up for that). Deliberately does NOT assert the run's overall terminal ``state`` or the
+    execution's overall ``status`` either — only ``error_type != "UNKNOWN_SOURCE"``, which isolates
+    the ONE claim #911 actually makes from the separate ``endpoint``-guessing gap above."""
     user = register(f"restconn{uuid.uuid4().hex[:10]} user")
     c = gateway_client(user["token"])
 
@@ -200,10 +222,9 @@ def test_a_real_models_rest_connector_call_does_not_invent_an_unknown_source(
     execution = c.get(f"/api/v1/executions/{execution_id}")
     assert execution.status_code == 200, execution.text
     body = execution.json()
-    assert body["status"] != "FAILED", (
-        f"the real model's rest-connector call failed (today's reproduced bug: "
-        f'{{"error": "RegistryError", "detail": "tool execution failed: unknown source '
-        f"'blockchain_info'\"}} — the model invents a source because the schema carries no "
-        f"enum). execution={body}"
+    assert body.get("error_type") != "UNKNOWN_SOURCE", (
+        f"the real model invented a source outside the declared enum (today's reproduced bug: "
+        f"{{'error': 'RegistryError', 'detail': \"tool execution failed: unknown source "
+        f"'blockchain_info'\"}} — the model guesses because the schema carries no enum for "
+        f"source_id). execution={body}"
     )
-    assert body.get("error_type") != "UNKNOWN_SOURCE", f"execution={body}"
