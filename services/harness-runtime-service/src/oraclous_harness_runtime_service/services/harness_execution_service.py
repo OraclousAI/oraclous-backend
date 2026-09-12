@@ -1364,6 +1364,10 @@ class HarnessExecutionService:
                 ):
                     instance_id = uuid.UUID(str(prior["id"]))
                     reused_mappings = prior.get("credential_mappings") or {}
+                    # #911: the reused instance's own configuration is what it will dispatch
+                    # with — carry it into the model-facing schema below (see the comment at the
+                    # `tool_specs_for` call for why).
+                    bound_config: dict[str, Any] = prior.get("configuration") or {}
                 elif needed and not all(t in mappings for t in needed):
                     # #663: a fresh mint could never be configured (creation takes no credentials
                     # and nothing here could bind them) — bind the org's configured instance.
@@ -1385,6 +1389,9 @@ class HarnessExecutionService:
                         )
                     instance_id = uuid.UUID(str(sibling["id"]))
                     reused_mappings = sibling.get("credential_mappings") or {}
+                    # #911: same reasoning as the deterministic-reuse branch above — the sibling's
+                    # own configuration is what this run will actually dispatch with.
+                    bound_config = sibling.get("configuration") or {}
                 else:
                     cap_config = {
                         k: v for k, v in cap.config.items() if k not in _RESERVED_CONFIG_KEYS
@@ -1419,6 +1426,9 @@ class HarnessExecutionService:
                         configuration=cap_config,
                     )
                     instance_id = uuid.UUID(str(instance["id"]))
+                    # #911: the fresh mint's effective configuration is this same merged dict —
+                    # not a second, independently-built one.
+                    bound_config = cap_config
                 instance_by_binding[cap.binding] = instance_id
                 if mappings:
                     # configure-credentials REPLACES the whole map in the registry, so a reused
@@ -1428,7 +1438,13 @@ class HarnessExecutionService:
                         instance_id, {**reused_mappings, **mappings}
                     )
                 descriptor = item.get("descriptor") or {}
-                specs = tool_specs_for(cap.binding, descriptor)
+                # #911: the dispatching instance's effective configuration (whichever of the three
+                # branches above supplied it) must agree with what the model is asked for — a
+                # required argument already bound on the instance is dropped from the projected
+                # `required` list without hiding the property. Outbound mirror of the registry's
+                # own inbound check at
+                # capability-registry-service/.../domain/executors/input_validation.py:92-98.
+                specs = tool_specs_for(cap.binding, descriptor, bound_config=bound_config)
                 # #698 AC6: a resolved kind=tool capability that yields no callable spec is a
                 # BROKEN binding, not an empty one. This is how the whole #698 chain stayed
                 # invisible — an imported MCP tool stored no operations, the model was handed an

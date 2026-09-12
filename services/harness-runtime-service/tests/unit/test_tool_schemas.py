@@ -840,3 +840,125 @@ def test_a_hint_map_key_the_declared_schema_does_not_cover_keeps_its_hint_mapped
     params = tool_specs_for("partial", descriptor)[0].parameters
     assert params["properties"]["timeout"] == {"type": "integer"}
     assert params["properties"]["query"]["description"] == "the SQL"
+
+
+# ── a malformed ELEMENT inside an otherwise-valid declared schema must never raise ───────────────
+#
+# The hostile-schema tests above cover a malformed TOP-LEVEL `input_schema` (a string, a list, an
+# int). `_project_input_schema` checks that `required` IS a list, but never checks what's IN it: an
+# element that is itself a list or a dict is unhashable, so `k in op_key_set` raises `TypeError` —
+# and nothing catches it (`tool_specs_for` doesn't, and its caller in
+# `harness_execution_service.py` catches only the registry's own error type). A malformed declared
+# schema then kills tool-schema building for the WHOLE run, before the model is ever built —
+# violating the ruled contract the implementation's own docstring restates: a descriptor is data,
+# validation may only reject what it positively understands to be wrong, nothing may raise on a
+# hostile value.
+
+_REQUIRED_LIST_WITH_UNHASHABLE_ELEMENTS_DESCRIPTOR = {
+    "id": "core-required-list-hostile-elements",
+    "metadata": {"name": "Hostile Required Elements"},
+    "spec": {
+        "type": "API",
+        "capabilities": [{"name": "op", "description": "op", "parameters": {"q": "str"}}],
+        "input_schema": {
+            "type": "object",
+            # a nested list, a dict, and an int alongside one genuinely valid string key — the
+            # non-string entries must be silently ignored, matching how the rest of this code
+            # treats data it does not understand.
+            "required": ["q", ["nested"], {"a": 1}, 123],
+            "properties": {"q": {"type": "string"}},
+        },
+    },
+}
+
+
+def test_a_required_list_with_unhashable_elements_never_raises() -> None:
+    """RED against the current implementation: ``k in op_key_set`` hashes every declared
+    ``required`` element unconditionally, so a nested list or dict in that list raises
+    ``TypeError`` before the model is ever built — for the WHOLE run, not just this tool. The fix
+    must silently ignore any non-string (or otherwise unusable) element and keep the valid ones."""
+    spec = tool_specs_for("hostile-required", _REQUIRED_LIST_WITH_UNHASHABLE_ELEMENTS_DESCRIPTOR)[0]
+    assert spec.parameters["required"] == ["q"]
+
+
+# ── sibling degenerate cases (review-flagged): each must not raise, degradation shape unasserted
+# where it is not obvious what "sensible" means ────────────────────────────────────────────────
+#
+# Unlike the test above, NONE of the three below are RED against the current implementation — each
+# already degrades without raising, verified directly against `tool_schemas.py` before writing
+# these. They are kept as permanent regression guards rather than dropped, since the review named
+# them explicitly as untested degenerate inputs. Where "sensible" degradation is not obvious (a
+# malformed `properties` value; a non-dict `parameters`), only "does not raise" is asserted — a
+# narrow true assertion beats a wide guessed one.
+
+
+def test_a_non_dict_properties_value_falls_back_to_the_hint_mapped_form() -> None:
+    """A declared ``properties`` entry whose VALUE is not itself a schema object (a corrupted
+    registry write, say) must not travel to the model verbatim — every other hostile-input path in
+    this file degrades safely, this one does not: ``properties[key] = declared_properties[key]``
+    copies the entry with no check. RED against the current implementation, which copies the
+    hostile value through unchanged.
+
+    The natural degradation is the SAME fallback already used for a hint-map key the declared
+    schema does not cover at all (``test_a_hint_map_key_the_declared_schema_does_not_cover_keeps_
+    its_hint_mapped_form`` above): the hint-mapped ``{"type": ...}`` shape, derived from the
+    operation's own ``parameters`` hint for that key. Asserting that exact shape rather than only
+    "does not raise" because it is consistent with surrounding code, not invented."""
+    descriptor = {
+        "id": "core-non-dict-property-value",
+        "metadata": {"name": "Non-dict Property Value"},
+        "spec": {
+            "type": "API",
+            "capabilities": [{"name": "op", "description": "op", "parameters": {"q": "str"}}],
+            "input_schema": {
+                "type": "object",
+                "properties": {"q": "a string, not a schema object"},
+            },
+        },
+    }
+    params = tool_specs_for("non-dict-property", descriptor)[0].parameters
+    assert params["properties"]["q"] == {"type": "string"}
+
+
+def test_an_operations_parameters_as_a_list_never_raises() -> None:
+    """An operation whose ``parameters`` hint map is a list rather than a dict (malformed registry
+    data) must not crash schema building. Already does not raise today — a non-dict ``parameters``
+    degrades to an empty hint map, the same as no ``parameters`` at all. What "sensible"
+    degradation looks like beyond "does not raise" is deliberately NOT asserted here."""
+    descriptor = {
+        "id": "core-parameters-as-list",
+        "metadata": {"name": "Parameters As List"},
+        "spec": {
+            "type": "API",
+            "capabilities": [{"name": "op", "description": "op", "parameters": ["q", "r"]}],
+            "input_schema": {
+                "type": "object",
+                "properties": {"q": {"type": "string"}},
+                "required": ["q"],
+            },
+        },
+    }
+    tool_specs_for("parameters-as-list", descriptor)  # must not raise
+
+
+def test_an_operation_with_no_parameters_key_and_a_declared_input_schema_never_raises() -> None:
+    """An operation that declares no ``parameters`` key at all, alongside a plugin-level
+    ``spec.input_schema`` that DOES exist — distinct from the pre-existing MCP-only
+    ``test_an_operation_with_neither_schema_nor_parameters_is_still_callable``, whose descriptor
+    has no ``input_schema`` either, so it never reaches the #911 projection path at all. Already
+    does not raise today. What "sensible" degradation looks like beyond "does not raise" is
+    deliberately NOT asserted here."""
+    descriptor = {
+        "id": "core-no-parameters-key",
+        "metadata": {"name": "No Parameters Key"},
+        "spec": {
+            "type": "API",
+            "capabilities": [{"name": "op", "description": "op"}],
+            "input_schema": {
+                "type": "object",
+                "properties": {"q": {"type": "string"}},
+                "required": ["q"],
+            },
+        },
+    }
+    tool_specs_for("no-parameters-key", descriptor)  # must not raise
