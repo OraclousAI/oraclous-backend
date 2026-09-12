@@ -133,8 +133,11 @@ def parse_op(data: dict[str, Any] | str) -> RefineOp:
         while start != -1:
             try:
                 candidate, _end = decoder.raw_decode(data, start)
-            except ValueError:
-                start = data.find("{", start + 1)
+            except json.JSONDecodeError as exc:
+                # Skip past wherever the decoder gave up, not one character at a time — a
+                # failed attempt has already ruled out this whole span, so re-walking it `{`
+                # by `{` is quadratic on brace-dense input.
+                start = data.find("{", max(start + 1, exc.pos))
                 continue
             if isinstance(candidate, dict):
                 parsed_op = candidate

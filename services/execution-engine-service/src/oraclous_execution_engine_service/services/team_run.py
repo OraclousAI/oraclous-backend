@@ -408,6 +408,14 @@ def resolve_run_task(manifest: OHMManifest, inputs: dict[str, Any] | None) -> st
 #: the pull request, wrote a real review, and failed its own contract because nothing had said the
 #: answer must carry `summary` and `artifact_refs`. Enforcing a promise the member never heard is
 #: worse than not enforcing it — it turns a member that worked into one that fails.
+#:
+#: #1043 — this used to end with "Reply with the JSON object and nothing else." That sentence
+#: contradicted GROUNDING_DIRECTIVE, which separately asks a tool-using member for a second,
+#: distinct receipt object — no model can honestly satisfy both "nothing else" and "also send a
+#: receipt". Dropping it is safe: the opening sentence already establishes the single-object
+#: constraint on its own, and the tolerant JSON-object reader (_parse_member_object /
+#: _first_json_object_text) peels the wanted object out of prose or a trailing second object
+#: regardless, so nothing here still depends on the reply containing only that one object.
 OUTPUT_CONTRACT_DIRECTIVE = (
     "Your answer MUST be a single JSON object carrying exactly these keys, because the next member "
     "reads them BY NAME and never reads your prose: {keys}. Put your real work IN those values — "
@@ -528,8 +536,11 @@ def _first_json_object_text(text: str) -> str | None:
     while start != -1:
         try:
             parsed, end = decoder.raw_decode(text, start)
-        except ValueError:
-            start = text.find("{", start + 1)
+        except json.JSONDecodeError as exc:
+            # Skip past wherever the decoder gave up, not one character at a time — a failed
+            # attempt has already ruled out this whole span, so re-walking it `{` by `{` is
+            # quadratic on brace-dense input.
+            start = text.find("{", max(start + 1, exc.pos))
             continue
         if isinstance(parsed, dict):
             return text[start:end]
@@ -628,8 +639,11 @@ def _parse_member_object(output: Any, *, declared_keys: list[str] | None = None)
     while start != -1:
         try:
             parsed, end = decoder.raw_decode(output, start)
-        except ValueError:
-            start = output.find("{", start + 1)
+        except json.JSONDecodeError as exc:
+            # Skip past wherever the decoder gave up, not one character at a time — a failed
+            # attempt has already ruled out this whole span, so re-walking it `{` by `{` is
+            # quadratic on brace-dense input.
+            start = output.find("{", max(start + 1, exc.pos))
             continue
         if isinstance(parsed, dict):
             if first_object is None:

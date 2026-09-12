@@ -256,8 +256,11 @@ def validate_draft(
         while start != -1:
             try:
                 candidate, _end = decoder.raw_decode(draft, start)
-            except ValueError:
-                start = draft.find("{", start + 1)
+            except json.JSONDecodeError as exc:
+                # Skip past wherever the decoder gave up, not one character at a time — a
+                # failed attempt has already ruled out this whole span, so re-walking it `{`
+                # by `{` is quadratic on brace-dense input.
+                start = draft.find("{", max(start + 1, exc.pos))
                 continue
             if isinstance(candidate, dict):
                 parsed_draft = candidate
