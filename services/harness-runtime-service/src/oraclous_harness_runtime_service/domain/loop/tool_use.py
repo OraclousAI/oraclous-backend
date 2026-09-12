@@ -379,15 +379,22 @@ def _link_correction(
 _ARTIFACT_REFS_KEY = "artifact_refs"
 
 
-def _extract_answer_object(text: str) -> dict[str, Any]:
+def _extract_answer_object(
+    text: str, *, declared_keys: tuple[str, ...] | None = None
+) -> dict[str, Any]:
     """The JSON object inside a member's free-form answer, or ``{}`` when there is none. The same
     lenient peel the engine's ``_parse_member_object`` uses (a different service, duplicated rather
-    than imported — a real model wraps its JSON in prose or a fence): the FIRST well-formed
-    top-level JSON object, scanning forward from each ``{`` with ``json.JSONDecoder.raw_decode``,
-    rather than the widest ``{...}`` regex match — which would span past the first object into a
-    second, separate one trailing it (e.g. a ``driving_signals`` receipt object after the
-    answer)."""
+    than imported — a real model wraps its JSON in prose or a fence): scanning forward from each
+    ``{`` with ``json.JSONDecoder.raw_decode`` rather than the widest ``{...}`` regex match — which
+    would span past the first object into a second, separate one trailing it (e.g. a
+    ``driving_signals`` receipt object after the answer). A real answer can also carry multiple
+    top-level objects back to back where an earlier one is a decoy that happens to carry the
+    declared key in a vacuous wrapper shape rather than the member's real, later answer — so every
+    well-formed top-level object is decoded in order; when ``declared_keys`` is given and
+    non-empty, the FIRST object that carries ALL of those keys wins, falling back to the first
+    object decoded when none match or no keys were declared."""
     decoder = json.JSONDecoder()
+    first_object: dict[str, Any] | None = None
     start = text.find("{")
     while start != -1:
         try:
@@ -396,9 +403,12 @@ def _extract_answer_object(text: str) -> dict[str, Any]:
             start = text.find("{", start + 1)
             continue
         if isinstance(parsed, dict):
-            return parsed
+            if first_object is None:
+                first_object = parsed
+            if declared_keys and all(key in parsed for key in declared_keys):
+                return parsed
         start = text.find("{", start + 1)
-    return {}
+    return first_object if first_object is not None else {}
 
 
 def _unwrap_declared_value(value: Any) -> Any:
@@ -1328,7 +1338,7 @@ async def run_tool_use_loop(
         # guard below is what keeps that from ever discarding a previously parsed object:
         # `stripped` ships exactly as it already stood, never blanked.
         if policy.declared_output_keys:
-            obj = _extract_answer_object(stripped)
+            obj = _extract_answer_object(stripped, declared_keys=policy.declared_output_keys)
             if obj:
                 changed = _normalize_declared_output(obj, policy.declared_output_keys)
                 if changed:
@@ -2060,7 +2070,9 @@ async def run_tool_use_loop(
             # what keeps that from ever discarding a previously parsed object: `last_text` ships
             # unchanged rather than being blanked.
             if policy.declared_output_keys:
-                answer_obj = _extract_answer_object(last_text)
+                answer_obj = _extract_answer_object(
+                    last_text, declared_keys=policy.declared_output_keys
+                )
                 if answer_obj:
                     changed = _normalize_declared_output(answer_obj, policy.declared_output_keys)
                     if changed:
