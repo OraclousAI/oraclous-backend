@@ -260,3 +260,34 @@ async def test_the_receipt_before_the_team_json_still_lifts_the_declared_key() -
     res = await run_team_harness(team_manifest, harness)
 
     assert res.results["reviewer"]["members"] == team["members"]
+
+
+async def test_a_two_object_reviewer_reply_settles_succeeded_not_failed() -> None:
+    """#1043 live bug, reproduced: run `cf50f9ea-13b7-4529-bd91-24d13d5eaacb` terminated FAILED with
+    "member 'reviewer' declared an output contract it did not deliver: missing required output
+    'members'" — solely because the two-object reply (team JSON, then a separate `driving_signals`
+    receipt object, exactly as REVIEWER_PROMPT requires) was never peeled correctly. Once peeled,
+    the run must settle exactly as #834's `outcome_critical` rule intends: delivered content, not a
+    failure.
+
+    Note (test-author judgement call, flagged for be-test-reviewer): this exercises `orchestrate.py`
+    's `critical_member_lost_deliverable` rule, but is placed here rather than in
+    `packages/ohm/tests/test_orchestrate_outcome_critical.py` because `orchestrate.run_team`'s
+    `dispatch` is fully caller-supplied and never peels text itself — only `team_run.py`'s real
+    dispatch closure does, via `_parse_member_object`. A hand-written `packages/ohm`-level dispatch
+    stub would just return the correct dict directly and never exercise the actual bug.
+
+    RED until the [impl] fixes the peel so the declared key survives to settle-time.
+    """
+    team = {"members": [{"role": "researcher", "kind": "agent", "manifest_ref": "org:x/researcher@1"}]}
+    receipt = {"driving_signals": [{"signal": "ok", "value": True, "source_tool_call_id": "c1"}]}
+    answer = json.dumps(team) + "\n\n" + json.dumps(receipt)
+    harness = _ScriptedHarness({"reviewer": answer})
+    team_manifest = _team(
+        [_m("reviewer", outcome_critical=True, outputs_schema={"required": ["members"]})]
+    )
+    res = await run_team_harness(team_manifest, harness)
+
+    assert res.member_status["reviewer"] == "succeeded"
+    assert res.status == "completed"
+    assert res.results["reviewer"]["members"] == team["members"]
