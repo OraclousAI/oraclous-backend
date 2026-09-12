@@ -87,13 +87,15 @@ def _project_input_schema(
 
     properties: dict[str, Any] = {}
     for key in op_keys:
-        if key in declared_properties:
+        declared_value = declared_properties.get(key)
+        if key in declared_properties and isinstance(declared_value, dict):
             # Verbatim: union `type` lists, `description`, `enum`, `minLength`, `items`, anything
             # else the plugin declared travels unchanged.
-            properties[key] = declared_properties[key]
+            properties[key] = declared_value
         else:
-            # A hint-map key the declared schema doesn't cover must never silently disappear from
-            # the model's view — it keeps its current hint-mapped shape.
+            # A hint-map key the declared schema doesn't cover — or one whose declared VALUE is
+            # not itself a schema object (a corrupted registry write) — must never silently
+            # disappear or travel to the model verbatim: it keeps its current hint-mapped shape.
             hint = hints[key]
             properties[key] = {"type": _TYPE_MAP.get(str(hint).lower(), "string")}
 
