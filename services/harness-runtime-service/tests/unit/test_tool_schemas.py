@@ -539,6 +539,61 @@ def test_an_unbound_required_key_stays_required_beside_the_dropped_one() -> None
     assert "query" in spec.parameters["required"]
 
 
+# ── #542: a second, differently-sourced bound-key case (the delivery sink's ``repo``) ────────────
+#
+# ``graph_id`` above is bound by the HARNESS at run time (``_materialise``'s fresh-mint branch
+# merges it into ``cap_config``). ``repo`` is bound a different way: an OPERATOR configures the
+# tool instance with it once, before any run — the "configured, not passed" shape (#542). From
+# ``tool_specs_for``'s point of view both arrive identically, as a key of ``bound_config`` — but
+# #911 names both explicitly, and they differ in KIND (harness-bound vs operator-bound), so both
+# get their own fixture rather than treating one as redundant with the other.
+
+_GITHUB_SINK_DESCRIPTOR = {
+    "id": "core-github-sink",
+    "metadata": {"name": "GitHub Sink"},
+    "spec": {
+        "type": "API",
+        "capabilities": [
+            {
+                "name": "deliver",
+                "description": "Write changed files to a head branch + open a PR",
+                "parameters": {
+                    "repo": "str",
+                    "base_branch": "str",
+                    "head_branch": "str",
+                    "files": "list",
+                },
+            }
+        ],
+        "input_schema": {
+            "type": "object",
+            "required": ["repo", "files"],
+            "properties": {
+                "repo": {"type": "string"},
+                "base_branch": {"type": "string"},
+                "head_branch": {"type": "string"},
+                "files": {"type": "array", "items": {"type": "object"}},
+            },
+        },
+    },
+}
+
+
+def test_an_operator_configured_key_is_dropped_from_required_too() -> None:
+    """``repo`` is bound once, by an operator configuring the tool instance — never supplied by the
+    harness at run time the way ``graph_id`` is — but it reaches ``tool_specs_for`` the same way,
+    as a ``bound_config`` key, and must be dropped from ``required`` the same way."""
+    spec = tool_specs_for(
+        "github-sink",
+        _GITHUB_SINK_DESCRIPTOR,
+        bound_config={"repo": "octocat/example"},
+    )[0]
+    params = spec.parameters
+    assert "repo" not in params["required"]
+    assert "repo" in params["properties"]
+    assert "files" in params["required"]  # unbound, stays required — subtraction not blanket
+
+
 # ── enum / minLength / items survive the projection verbatim ────────────────────────────────────
 
 _RECALL_MEMORY_WITH_TYPE_DESCRIPTOR = {
@@ -609,6 +664,61 @@ def test_items_survives_the_projection_verbatim() -> None:
 
 
 # ── regression guards: what must NOT change ──────────────────────────────────────────────────────
+
+
+def test_bound_config_does_not_alter_an_mcp_schema_passthrough() -> None:
+    """MCP passthrough is untouched by #911 (AC3) — a ``bound_config`` naming a key that happens to
+    also appear in the server's declared ``inputSchema`` must not strip it out of ``required``. The
+    projection/subtraction only ever applies to a FIRST-PARTY (non-MCP) operation; an imported
+    server's schema is its own contract (#698 D1) and this must hold even when the caller passes a
+    ``bound_config`` that would matter for a first-party operation.
+
+    RED today for the same reason as every other ``bound_config=`` call in this file:
+    ``tool_specs_for`` does not accept the keyword yet, so this raises ``TypeError`` — it is not
+    yet passing "by luck," it cannot run at all until the kwarg exists, and it must still hold once
+    it does."""
+    spec = tool_specs_for(
+        "github-mcp",
+        _MCP_DESCRIPTOR,
+        bound_config={"owner": "should-not-matter"},
+    )[0]
+    assert spec.parameters == _MCP_INPUT_SCHEMA
+
+
+def test_bound_config_does_not_alter_a_per_op_parameters_schema_override() -> None:
+    """A declared per-operation ``parameters_schema`` wins outright and is returned unchanged
+    (test below). This pins that a ``bound_config`` naming one of ITS required keys does not leak
+    a subtraction into that override either — the override is a promise to hand the model exactly
+    what it declares, untouched by config-binding logic altogether.
+
+    RED today: ``tool_specs_for`` does not accept ``bound_config`` yet, so this raises
+    ``TypeError`` — same posture as every other ``bound_config=`` test in this file."""
+    op_schema = {
+        "type": "object",
+        "required": ["only_this_field"],
+        "properties": {"only_this_field": {"type": "string"}},
+    }
+    descriptor = {
+        "id": "core-conflicting-schemas-bound-config",
+        "metadata": {"name": "Conflicting Schemas (bound_config)"},
+        "spec": {
+            "type": "API",
+            "capabilities": [
+                {
+                    "name": "op",
+                    "description": "op",
+                    "parameters": {"only_this_field": "str"},
+                    "parameters_schema": op_schema,
+                }
+            ],
+        },
+    }
+    spec = tool_specs_for(
+        "conflict-bound-config",
+        descriptor,
+        bound_config={"only_this_field": "should-not-matter"},
+    )[0]
+    assert spec.parameters == op_schema
 
 
 def test_a_per_op_parameters_schema_still_wins_outright_over_the_plugin_level_projection() -> None:

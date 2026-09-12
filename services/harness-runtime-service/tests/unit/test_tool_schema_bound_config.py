@@ -213,7 +213,12 @@ async def test_a_fresh_mint_drops_the_bound_graph_id_from_required_but_keeps_the
 async def test_a_fresh_mint_bound_config_is_the_merged_cap_config_sent_to_create_instance() -> None:
     """Companion assertion: the SAME dict the branch sends to ``create_instance`` (carrying
     ``graph_id`` merged in) is what must have reached ``tool_specs_for`` as ``bound_config`` — pins
-    that the threading uses the branch's actual effective configuration, not some other value."""
+    that the threading uses the branch's actual effective configuration, not some other value.
+
+    NOTE: unlike every other test in this file, this one is GREEN today — it pins pre-existing
+    ``create_instance`` wiring that this change does not touch, not the new ``bound_config``
+    threading itself. It lives in this file (rather than a differently-labelled one) because it is
+    a direct companion to the RED test right above it and the two are easiest to read together."""
     registry = _Registry([])
     manifest = _manifest()
     await _service(registry)._materialise(manifest, _RESOLVED, graph_id="g-123")
