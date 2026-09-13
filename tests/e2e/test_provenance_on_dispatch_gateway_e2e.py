@@ -87,6 +87,7 @@ def test_a_team_runs_lifecycle_is_visible_on_the_activity_feed_through_the_gatew
     tmp_path: Path,
     register: Callable[..., dict],
     gateway_client: Callable[[str], httpx.Client],
+    assert_run_succeeded: Callable[..., None],
 ) -> None:
     user = register(f"provdispatch{uuid.uuid4().hex[:10]} user")
     c = gateway_client(user["token"])
@@ -130,7 +131,7 @@ def test_a_team_runs_lifecycle_is_visible_on_the_activity_feed_through_the_gatew
     run_id = created.json()["id"]
 
     done = _poll(c, run_id, {"SUCCEEDED", "FAILED", "REJECTED"})
-    assert done["state"] == "SUCCEEDED", done
+    assert_run_succeeded(done, state_key="state")
     assert nonce in str(done["results"]), f"nonce {nonce!r} missing — is the harness LIVE?"
 
     # 4) THE PROOF: the run's lifecycle is on the activity feed, through the gateway, not the DB.
