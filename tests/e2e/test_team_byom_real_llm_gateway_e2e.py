@@ -85,6 +85,7 @@ def test_a_team_of_agents_runs_on_the_users_own_model_through_the_gateway(
     tmp_path: Path,
     register: Callable[..., dict],
     gateway_client: Callable[[str], httpx.Client],
+    assert_run_succeeded: Callable[..., None],
 ) -> None:
     user = register(f"teambyomuser{uuid.uuid4().hex[:10]} user")
     c = gateway_client(user["token"])
@@ -129,7 +130,7 @@ def test_a_team_of_agents_runs_on_the_users_own_model_through_the_gateway(
     run_id = created.json()["id"]
 
     done = _poll(c, run_id, {"SUCCEEDED", "FAILED", "REJECTED"})
-    assert done["state"] == "SUCCEEDED", done  # every member's live harness call succeeded
+    assert_run_succeeded(done, state_key="state")  # every member's live harness call succeeded
     assert set(done["results"]) == {"researcher", "writer"}
     # only real LLM calls following the prompt produce the per-run nonce (fake mode cannot)
     assert nonce in str(done["results"]), (

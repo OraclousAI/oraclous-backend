@@ -78,6 +78,7 @@ in a test. Today it is:
 | `test_team_byom_real_llm_gateway_e2e.py` | a team run: engine → Celery worker → live harness, per-member credentials |
 | `test_team_run_graph_retrieval_byom_gateway_e2e.py` | a model-issued **tool call** mid-loop, against the bound graph |
 | `test_agent_write_citation_gateway_e2e.py` | citation/provenance: what a member writes is cited as `agent` |
+| `test_provenance_on_dispatch_gateway_e2e.py` | team-run dispatch: a real capability invocation writes a provenance record (#826) |
 
 `test_compiler_prose_to_team_gateway_e2e.py` (prose → a runnable team) is not here, and it stays that
 way: #1043 fixed its JSON peel, but the owner ruled (2026-09-12) that the compiler stays in the
@@ -94,6 +95,63 @@ scripts/e2e.sh --up          # the stack, fake harness
 scripts/e2e.sh --byom-smoke  # harness → live, the same five tests
 scripts/e2e.sh --byom        # the full leg, as the nightly workflow runs it
 ```
+
+### The owner ruled (2026-09-13): the per-PR subset should stop running at all (#1049)
+
+The exhausted free-model quota (below) made the per-PR `byom_smoke` step fail on every branch for an
+environment reason, not a product one. The owner's ruling: "I cannot afford running real e2e test per
+PR. the nightly test that takes place daily is enough." This reverses #1012 as implemented by #1013 —
+the real-model subset should not run on every pull request at all; the nightly full `byom` leg is
+sufficient on its own.
+
+**This is ruled but not yet mechanically implemented.** The obvious way to carry it out — drop
+`@pytest.mark.byom_smoke` from the five tests above so `.github/workflows/ci.yml`'s
+`-m "byom and byom_smoke"` selection is empty — was deliberately NOT done: that workflow step invokes
+`pytest` directly with no handling for exit code 5 ("no tests collected"), so an empty selection
+would fail the step for a new, equally confusing reason instead of the old one. Editing that workflow
+step is `devops-implementer` territory (`.github/workflows/*`, CLAUDE.md §10), not something a
+`[tests]`/docs change here can carry out. So the marker deliberately stays on all five tests for now.
+**This is a known, open, tracked gap** (#1049) — either drop or rework the PR-gate step, or make it
+tolerate zero-collection, before the marker itself is removed.
+
+### The owner ruled (2026-09-13): fall back to a cheap, strong paid model (#1049)
+
+The default real-model binding was a FREE OpenRouter model whose daily quota ran out for days
+straight, failing every real-model e2e test on `main` and every branch with `LLM call → 429` — an
+environment failure, not a regression, but one that looked identical to a real one until someone
+opened the run body. The owner's ruling: "if nightly failed, use a cheap, but strong enough model
+instead." The default is now `openrouter/deepseek/deepseek-v4-flash`; the full reasoning, evidence,
+and fallback order live in `tests/e2e/conftest.py` next to `_DEFAULT_E2E_MODEL` — read there rather
+than here.
+
+**This changes the default, not what CI or nightly actually run.** `.github/workflows/ci.yml` and
+`.github/workflows/e2e-nightly.yml` each hardcode their own `E2E_MODEL` fallback literal
+(`openrouter/nvidia/nemotron-3-super-120b-a12b:free`), independent of this file's default — so
+nightly keeps hitting the exhausted free tier until the `vars.E2E_MODEL` GitHub Actions repository
+variable is set, or those workflow files are edited (`devops-implementer` territory, same as above).
+That is a separate, still-open problem this change does not close.
+
+**Validation before trusting deepseek as the default:** a ~20-test representative slice of the full
+`byom` marker, run live against the deployed stack with `E2E_MODEL=openrouter/deepseek/deepseek-v4-flash`.
+17/20 reached a terminal state (15 PASS, 2 FAIL, 0 ERROR; 3 never terminated within a 45-minute
+patience budget — inconclusive, not failures). Zero PRODUCT-class failures and zero classic
+weak-model failures (no broken instruction-following, no malformed structured output, no wrong tool
+calls). The 2 real failures were both WEAK_MODEL, not PRODUCT: a team run that mechanically succeeded
+but scored `0.0` on its own self-judged success criteria (`test_cyclic_team_converges_on_a_real_model_and_lands_artifacts`),
+and a Researcher member exhausting its token budget mid-loop in a tool-heavy research team
+(`test_the_whole_loop_compile_draft_refine_go_through_the_gateway`). Verdict: cautiously positive,
+moderate confidence — an 88% pass rate with no blanket instruction-following breakage, but two real,
+narrow weak spots (self-judging harshness, token efficiency under a tool-heavy loop) worth watching.
+
+**What one full run of the `byom_smoke` subset costs:** measured live, one pass of the five scenarios
+above (7 harness executions total; one scenario needs 2 member executions plus a tool-call member)
+used 5291 input / 1162 output tokens, read off `GET /v1/harnesses/spend`. The service's own rate
+table has no entry for deepseek yet (`priced: false`), so the dollar figures below are computed
+independently from those raw counts: `deepseek/deepseek-v4-flash` **$0.000501**, versus
+`gemini-2.5-flash-lite` $0.000994 and `gpt-4o-mini` $0.001491 for the same pass. Caveat: this likely
+slightly under-counts a typical run — the citation/provenance scenario retries up to 3 times when a
+weak model answers without calling its tool, and this run's model complied on the first try, so no
+retry fired; a less cooperative day could cost up to ~4x more on that one scenario alone.
 
 ## Keys a test brings (never a service env)
 

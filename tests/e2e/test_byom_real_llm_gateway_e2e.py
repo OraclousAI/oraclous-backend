@@ -35,7 +35,9 @@ requires_byom_key = pytest.mark.skipif(
 @requires_byom_key
 @pytest.mark.byom_smoke  # #1012: the PR-gate subset — the single-agent BYOM surface
 def test_a_user_brings_their_own_model_token_and_runs_a_real_agent(
-    register: Callable[..., dict], gateway_client: Callable[[str], httpx.Client]
+    register: Callable[..., dict],
+    gateway_client: Callable[[str], httpx.Client],
+    assert_run_succeeded: Callable[..., None],
 ) -> None:
     user = register(f"byomuser{uuid.uuid4().hex[:10]} user")
     c = gateway_client(user["token"])
@@ -86,7 +88,7 @@ def test_a_user_brings_their_own_model_token_and_runs_a_real_agent(
     run = c.post("/v1/harnesses/execute", json={"manifest": manifest, "input": "Echo the token."})
     assert run.status_code in (200, 201), run.text
     body = run.json()
-    assert body["status"] == "SUCCEEDED", body
+    assert_run_succeeded(body, state_key="status")
     # only a real LLM that read the prompt produces the per-run nonce (fake/scripted mode cannot)
     assert nonce in str(body.get("output") or ""), (
         f"nonce {nonce!r} not echoed — is the harness in LIVE mode? output={body.get('output')!r}"

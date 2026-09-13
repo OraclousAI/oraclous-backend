@@ -141,6 +141,7 @@ def test_a_members_own_writing_is_cited_as_agent_not_as_an_upload(
     tmp_path: Path,
     register: Callable[..., dict],
     gateway_client: Callable[[str], httpx.Client],
+    assert_run_succeeded: Callable[..., None],
 ) -> None:
     user = register(f"agentwrite{uuid.uuid4().hex[:10]} owner")
     c = gateway_client(user["token"])
@@ -210,7 +211,7 @@ def test_a_members_own_writing_is_cited_as_agent_not_as_an_upload(
         rerun = c.post(f"/v1/engine/team-runs/{run_id}/rerun")
         assert rerun.status_code == 202, rerun.text
         done = _poll(c, run_id)
-    assert done["state"] == "SUCCEEDED", f"the run never succeeded: {done}"
+    assert_run_succeeded(done, state_key="state")
     # RULE 8: only a real LLM echoes the per-run nonce — a fake-mode run cannot.
     assert nonce in str(done["results"]), (
         f"nonce {nonce!r} in no result — was the harness LIVE? results={done['results']!r}"

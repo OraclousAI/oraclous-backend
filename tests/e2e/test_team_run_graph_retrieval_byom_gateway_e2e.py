@@ -107,6 +107,7 @@ def test_a_member_retrieves_from_the_bound_graph_mid_loop(
     tmp_path: Path,
     register: Callable[..., dict],
     gateway_client: Callable[[str], httpx.Client],
+    assert_run_succeeded: Callable[..., None],
 ) -> None:
     # a unique first token → the auth-service personal-org slug is unique (never piles onto a
     # shared, retry-exhaustible slug space across repeated e2e runs)
@@ -158,7 +159,7 @@ def test_a_member_retrieves_from_the_bound_graph_mid_loop(
     run_id = created.json()["id"]
 
     done = _poll(c, run_id, {"SUCCEEDED", "FAILED", "REJECTED"})
-    assert done["state"] == "SUCCEEDED", done
+    assert_run_succeeded(done, state_key="state")
     # only a genuine in-loop retrieval of the BOUND graph can surface the seeded marker
     assert marker in str(done["results"]), (
         f"marker {marker!r} not in results — did the member retrieve from the bound graph? "
