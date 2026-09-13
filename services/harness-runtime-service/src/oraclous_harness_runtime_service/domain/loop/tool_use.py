@@ -1913,6 +1913,10 @@ async def run_tool_use_loop(
         attempt = 0
         while True:
             remaining = _remaining_wall_time()
+            # belt and braces, not load-bearing: `asyncio.wait_for(call, timeout=remaining)`
+            # below already fails instantly on a zero/negative timeout, so this guard is
+            # redundant with it — kept for clarity (an explicit, named exhaustion rather than a
+            # timeout of 0 tripping the wait_for machinery), not because it does independent work.
             if remaining is not None and remaining <= 0:
                 raise _WallTimeBudgetExhausted
             call = llm.complete(messages=messages, system=system, tools=tool_specs)
