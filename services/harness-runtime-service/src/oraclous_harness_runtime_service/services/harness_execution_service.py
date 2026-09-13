@@ -320,6 +320,7 @@ def _cursor(
     member_max_tool_calls: int | None = None,
     member_on_exhaustion: str | None = None,
     member_requires_valid_json: bool = False,
+    member_answer_from_tool: str | None = None,
     json_repair_used: bool = False,
     json_repair_grant: int = 0,
     required_sites: tuple[str, ...] = (),
@@ -339,6 +340,8 @@ def _cursor(
         # meets a budget gate on resume; a spent one-shot must come back too, or every pause renews
         # it. The checkpoint carries both — this only writes them where they survive the pause.
         "member_requires_valid_json": member_requires_valid_json,
+        # #900: persist the declared answer tool so a resumed run still ends on it.
+        "member_answer_from_tool": member_answer_from_tool,
         "json_repair_used": json_repair_used,
         "json_repair_grant": json_repair_grant,
         # #961: the run's restriction survives a HITL pause. Without it a paused run comes back
@@ -496,6 +499,7 @@ class HarnessExecutionService:
         max_tool_calls: int | None = None,
         on_exhaustion: Literal["escalate", "degrade"] | None = None,
         requires_valid_json: bool = False,
+        answer_from_tool: str | None = None,
         required_sites: list[str] | None = None,
         declared_output_keys: list[str] | None = None,
         producer: dict[str, Any] | None = None,
@@ -553,6 +557,7 @@ class HarnessExecutionService:
             member_max_tool_calls=max_tool_calls,
             member_on_exhaustion=on_exhaustion,
             member_requires_valid_json=requires_valid_json,  # #853: one repair turn on bad JSON
+            member_answer_from_tool=answer_from_tool,  # #900: a tool call that IS the answer
             required_sites=tuple(required_sites or ()),  # #961: the websites this run is held to
             declared_output_keys=tuple(declared_output_keys or ()),  # #993: guarantee their shape
             producer=(
@@ -631,16 +636,19 @@ class HarnessExecutionService:
                 # resume re-applies the user's budget rather than reverting to the policy tier.
                 resume_cursor=_cursor(
                     cp,
-                    max_tokens,
-                    max_tool_calls,
-                    on_exhaustion,
+                    member_max_tokens=max_tokens,
+                    member_max_tool_calls=max_tool_calls,
+                    member_on_exhaustion=on_exhaustion,
                     # #853: the declaration AND the repair state, or the first pause of a declared
                     # member comes back undeclared and its earned repair slot is gone.
-                    requires_valid_json,
-                    cp.json_repair_used,
-                    cp.json_repair_grant,
-                    tuple(required_sites or ()),  # #961: across the pause
-                    tuple(declared_output_keys or ()),  # #993: across the pause
+                    member_requires_valid_json=requires_valid_json,
+                    # #900: the declared answer tool survives the pause the same way.
+                    member_answer_from_tool=answer_from_tool,
+                    json_repair_used=cp.json_repair_used,
+                    json_repair_grant=cp.json_repair_grant,
+                    required_sites=tuple(required_sites or ()),  # #961: across the pause
+                    # #993: across the pause
+                    declared_output_keys=tuple(declared_output_keys or ()),
                 ),
                 redact_patterns=cp.redact_patterns,
             )
@@ -875,6 +883,9 @@ class HarnessExecutionService:
             member_on_exhaustion=cursor.get("member_on_exhaustion"),  # #587: re-apply on resume
             # #853: re-apply on resume. Old checkpoints lack the key → False → unchanged.
             member_requires_valid_json=bool(cursor.get("member_requires_valid_json")),
+            # #900: re-apply the declared answer tool. Old checkpoints lack the key → None →
+            # unchanged (a pre-#900 paused run resumes exactly as it does today).
+            member_answer_from_tool=cursor.get("member_answer_from_tool"),
             # #961: re-apply the run's site restriction. Old checkpoints lack the key → () → a
             # pre-#961 paused run is unchanged.
             required_sites=tuple(cursor.get("required_sites") or ()),
@@ -945,14 +956,20 @@ class HarnessExecutionService:
                 # it too (a heavy member can cross more than one HITL gate).
                 resume_cursor=_cursor(
                     new_cp,
-                    cursor.get("member_max_tokens"),
-                    cursor.get("member_max_tool_calls"),
-                    cursor.get("member_on_exhaustion"),
-                    bool(cursor.get("member_requires_valid_json")),  # #853: across a chained gate
-                    new_cp.json_repair_used,
-                    new_cp.json_repair_grant,
-                    tuple(cursor.get("required_sites") or ()),  # #961: across a chained gate
-                    tuple(cursor.get("declared_output_keys") or ()),  # #993: across a chained gate
+                    member_max_tokens=cursor.get("member_max_tokens"),
+                    member_max_tool_calls=cursor.get("member_max_tool_calls"),
+                    member_on_exhaustion=cursor.get("member_on_exhaustion"),
+                    member_requires_valid_json=bool(
+                        cursor.get("member_requires_valid_json")
+                    ),  # #853: across a chained gate
+                    # #900: across a chained gate, same as every other declaration above.
+                    member_answer_from_tool=cursor.get("member_answer_from_tool"),
+                    json_repair_used=new_cp.json_repair_used,
+                    json_repair_grant=new_cp.json_repair_grant,
+                    required_sites=tuple(cursor.get("required_sites") or ()),  # #961: chained gate
+                    declared_output_keys=tuple(
+                        cursor.get("declared_output_keys") or ()
+                    ),  # #993: across a chained gate
                 ),
                 redact_patterns=new_cp.redact_patterns,
             )
@@ -1093,6 +1110,7 @@ class HarnessExecutionService:
         member_max_tool_calls: int | None = None,
         member_on_exhaustion: Literal["escalate", "degrade"] | None = None,
         member_requires_valid_json: bool = False,
+        member_answer_from_tool: str | None = None,
         required_sites: tuple[str, ...] = (),
         declared_output_keys: tuple[str, ...] = (),
         producer: dict[str, Any] | None = None,
@@ -1113,6 +1131,7 @@ class HarnessExecutionService:
             max_tool_calls_ceiling=self._max_tool_calls_per_member_ceiling,
             member_on_exhaustion=member_on_exhaustion,  # #587: degrade vs escalate at a budget gate
             member_requires_valid_json=member_requires_valid_json,  # #853: one JSON repair turn
+            member_answer_from_tool=member_answer_from_tool,  # #900: a tool call that IS the answer
             required_sites=required_sites,  # #961: the websites this run is held to
             declared_output_keys=declared_output_keys,  # #993: guarantee their shape on the way out
         )

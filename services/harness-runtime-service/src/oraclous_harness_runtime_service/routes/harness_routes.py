@@ -73,6 +73,7 @@ async def execute_harness(
             max_tool_calls=body.max_tool_calls,
             on_exhaustion=body.on_exhaustion,
             requires_valid_json=body.requires_valid_json,
+            answer_from_tool=body.answer_from_tool,
             required_sites=body.required_sites,
             declared_output_keys=body.declared_output_keys,
             prior_fetched_urls=body.prior_fetched_urls,
