@@ -91,7 +91,13 @@ POLICY_SETS: dict[str, PolicySet] = {
         id="policy-set:development-default@1.0.0",
         require_signature=False,
         max_tokens=200_000,
-        max_wall_time_seconds=600,
+        # #1067: was 600 — lowered so the loop's OWN graceful wall-time stop (tool_use.py's
+        # _budget_gate, which ships whatever partial output the run already produced) fires
+        # BEFORE the execution engine's hard per-member dispatch cut-off (240s, ordinarily
+        # tighter than a real caller's own patience of 270s). At 600 the engine's cut-off fired
+        # first on this profile — the platform's own default — throwing away partial output the
+        # graceful path would have shipped, for a wait nobody actually tolerates anyway.
+        max_wall_time_seconds=200,
         max_tool_calls=200,
         allowed_registries=("core", "org:*"),
     ),
