@@ -60,6 +60,13 @@ _MODEL_KEY = os.getenv("OPENROUTER_API_KEY", "").strip()
 #: ($0.10 / $0.40), then ``openai/gpt-4o-mini`` ($0.15 / $0.60). Do not silently switch off
 #: deepseek -- if you move to a fallback, record why here and what specifically failed.
 #:
+#: Also on 2026-09-13: a ~20-test slice of the full ``byom`` marker was run live on this model as a
+#: broader check before trusting it as the default. 15/17 tests that reached a terminal state
+#: PASSED; the 2 failures were both a weak-model mechanism (self-judging harshness in a convergence
+#: loop, token-budget exhaustion in a tool-heavy research loop), zero were PRODUCT-class or
+#: instruction-following breaks. Verdict: cautiously positive, moderate confidence -- worth watching
+#: those two mechanisms. Full numbers and the cost measurement: tests/e2e/README.md, #1049.
+#:
 #: Changing this default does NOT by itself change what CI or the nightly job run: both
 #: `.github/workflows/ci.yml` and `.github/workflows/e2e-nightly.yml` set their own ``E2E_MODEL``
 #: env var independently as a hardcoded literal fallback --
