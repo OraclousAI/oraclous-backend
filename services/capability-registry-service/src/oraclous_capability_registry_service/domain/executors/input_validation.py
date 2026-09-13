@@ -22,6 +22,12 @@ Two deliberate limits, both about not breaking calls that work today:
   call. Several tools bind an argument on the instance rather than passing it per call — the sink's
   ``repo`` (the "configured, not passed" shape, #542) and recall-memory's ``graph_id``. Nested
   ``required`` (the ``files[]`` items, where the bug lives) is enforced strictly.
+* A **top-level** ``required`` field is also scoped to the CALLED operation's own arguments when
+  the caller can resolve them (#898): a plugin declares one ``input_schema`` for the whole class,
+  but each operation only takes the arguments named in its own ``parameters`` hint map (the
+  Postgres reader's zero-argument ``list_tables`` beside its own ``query``/``params``-taking
+  ``query``) — enforcing the full class-level list against every operation would reject a call for
+  missing an argument it never takes.
 
 An unknown keyword or an unparseable schema fragment is ignored rather than treated as a failure: a
 descriptor is data, and an MCP import carries a remote server's schema. Validation may only reject
@@ -77,11 +83,21 @@ def _expected_of(schema: Any) -> str | None:
     return None
 
 
-def _check(schema: Any, value: Any, path: str, *, bound: set[str] | None = None) -> str | None:
+def _check(
+    schema: Any,
+    value: Any,
+    path: str,
+    *,
+    bound: set[str] | None = None,
+    operation_keys: set[str] | None = None,
+) -> str | None:
     """The first problem in ``value`` under ``schema``, as a caller-repairable sentence, else None.
 
-    ``bound`` is the set of names supplied elsewhere than the call (the instance configuration); it
-    applies to this level's ``required`` only, never to nested objects.
+    ``bound`` is the set of names supplied elsewhere than the call (the instance configuration);
+    ``operation_keys`` (#898) is the CALLED operation's own argument names, or ``None`` when it
+    could not be resolved (enforce the full list, as before #898). Both apply to this level's
+    ``required`` only — never to a nested object's, which is a schema of its own with no operation
+    of its own to scope by.
     """
     if not isinstance(schema, dict):
         return None
@@ -94,6 +110,8 @@ def _check(schema: Any, value: Any, path: str, *, bound: set[str] | None = None)
     if isinstance(value, dict):
         for name in schema.get("required") or []:
             if not isinstance(name, str) or name in value or (bound and name in bound):
+                continue
+            if operation_keys is not None and name not in operation_keys:
                 continue
             field = f"{path}.{name}" if path else name
             declared = _expected_of((schema.get("properties") or {}).get(name))
@@ -118,11 +136,21 @@ def _check(schema: Any, value: Any, path: str, *, bound: set[str] | None = None)
 
 
 def validate_input(
-    schema: dict[str, Any], input_data: Any, *, configuration: dict[str, Any] | None = None
+    schema: dict[str, Any],
+    input_data: Any,
+    *,
+    configuration: dict[str, Any] | None = None,
+    operation_keys: set[str] | None = None,
 ) -> str | None:
     """The first way ``input_data`` violates ``schema``, phrased so a caller can repair the call.
 
     Returns ``None`` when the input is acceptable. Only the FIRST problem is reported: a model
     repairs one argument at a time, and a list of every fault is harder to act on than one sentence.
+
+    ``operation_keys`` (#898) scopes the TOP-LEVEL ``required`` check to one operation's own
+    arguments — see ``_check`` and ``InternalTool._operation_argument_names``. ``None`` (the
+    default) enforces the schema's full ``required`` list, exactly the pre-#898 behaviour.
     """
-    return _check(schema, input_data, "", bound=set(configuration or {}))
+    return _check(
+        schema, input_data, "", bound=set(configuration or {}), operation_keys=operation_keys
+    )
