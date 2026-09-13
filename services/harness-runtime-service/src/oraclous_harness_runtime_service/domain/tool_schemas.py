@@ -486,6 +486,17 @@ def dispatch_payload(spec: ToolSpec, args: dict[str, Any]) -> dict[str, Any]:
     a CLOSED schema never declared is logged by name (item 2) while still travelling — the closed
     schema stays advisory.
 
+    #898: a key in ``spec.nullable_keys`` — one the PLATFORM itself widened to accept null when
+    rendering the schema, because the property was genuinely optional or an instance-bound
+    argument the model cannot know a value for — has an explicit ``null`` STRIPPED here, before the
+    registry ever sees it. Every connector reads an optional argument with
+    ``input_data.get(key, default)``, and that returns the default only when the key is ABSENT;
+    present with value ``null`` it returns ``None``, silently destroying the connector's own
+    default. A null on any OTHER key (one the descriptor's own schema genuinely accepts, never
+    widened by the platform) passes through untouched — this strip is opt-in per key, never a
+    blanket null filter, and never mistakes a falsy-but-present value (``""``, ``0``, ``False``)
+    for null.
+
     ``args`` is annotated ``dict`` because that is what a well-behaved provider sends; it is the
     raw ``json.loads`` of model output, so the annotation is a promise the input does not keep and
     the guard below is load-bearing.
@@ -497,6 +508,10 @@ def dispatch_payload(spec: ToolSpec, args: dict[str, Any]) -> dict[str, Any]:
         supplied = args[key]
         if supplied != spec.operation:
             raise OperationOverrideRefused(tool=spec.name, bound=spec.operation, supplied=supplied)
-    rest = {k: v for k, v in args.items() if k not in keys}
+    rest = {
+        k: v
+        for k, v in args.items()
+        if k not in keys and not (v is None and k in spec.nullable_keys)
+    }
     _report_unknown_keys(spec, rest)
     return {_OPERATION_KEY: spec.operation, **rest}
