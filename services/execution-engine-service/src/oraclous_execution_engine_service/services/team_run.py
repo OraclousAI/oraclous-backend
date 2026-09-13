@@ -855,8 +855,20 @@ def make_harness_dispatch(
             # generic `except Exception` -> `str(exc)`, the run-page curation) only has the message
             # text to work with, and the transport exception's bare class name says nothing a
             # person can act on.
+            #
+            # Security review (PR #1071): NEVER interpolate `member.role` (or any other
+            # manifest-authored text) into this message. The curation step at
+            # team_run_service.py's `summarise_failed_run` only strips a member's role name via
+            # `_ORCHESTRATOR_WRAPPER`, which is anchored on the literal phrase "harness did not
+            # succeed:" — the sibling raise site a few lines above this one matches that pattern
+            # and gets its role name stripped with the rest of the prefix; this message does not
+            # contain that phrase, so nothing here would be stripped and an author-controlled role
+            # (min-length only, no max, no character restriction — packages/ohm/manifest.py) would
+            # reach the run page verbatim through `repr`, which does not escape angle
+            # brackets/quotes. The layer above already names the member (it composes "{role}
+            # stopped because {reason}"), so repeating it here is redundant as well as unsafe.
             raise HarnessClientError(
-                f"member {member.role!r} timed out: it exceeded its wall-clock time limit "
+                "timed out: it exceeded its wall-clock time limit "
                 f"({member_timeout:.0f}s) before the harness answered"
             ) from exc
         status = result.get("status")
