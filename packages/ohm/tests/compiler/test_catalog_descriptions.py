@@ -98,3 +98,24 @@ def test_no_descriptions_leaves_the_drafter_subgoal_as_it_was() -> None:
     """A caller that passes none (the unit path, or a registry outage degrading to seed-only) gets
     byte-identical behaviour to today."""
     assert _drafter_subgoal() == _drafter_subgoal(catalog_descriptions=None)
+
+
+# ── #900 (ADR-053): the new resolved_schema/tool-call answer mechanism must not regress this ──
+
+
+def test_resolved_schema_addition_does_not_change_the_drafter_prompt_text() -> None:
+    """#900 gives the manifest-drafter a real ``draft-manifest`` tool and a schema-level enum
+    constraint on its sub-harness capability (``packages/ohm/tests/compiler/test_team.py``) — it
+    must NOT touch the drafter's PROMPT text, i.e. this file's existing catalog-menu-in-prompt
+    behaviour (#713). Both coexist: the prose menu here, the schema-level enum on the sub-harness
+    capability tested elsewhere. Expected GREEN already: ``_drafter_governance_subgoal``/
+    ``_catalog_menu`` (what builds this subgoal string) are untouched by #900 — the same
+    ``catalog_descriptions`` list is now ALSO fed to a new, separate resolved_schema computation,
+    but that is additive, not a rewrite of the subgoal path."""
+    subgoal = _drafter_subgoal(
+        objective="Review a GitHub pull request and post the review as a comment.",
+        catalog_descriptions=_DESCRIBED,
+    )
+    assert "Read a pull request" in subgoal
+    assert "indexed knowledge graph" in subgoal
+    assert "github-mcp-pull-request-read" in subgoal
