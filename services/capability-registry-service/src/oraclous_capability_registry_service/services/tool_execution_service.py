@@ -22,6 +22,9 @@ from typing import Any, cast
 
 from oraclous_substrate import ProvenanceCollector, ProvenanceRecord, hash_payload
 
+from oraclous_capability_registry_service.domain.connectors.draft_manifest import (
+    DraftManifestConnector,
+)
 from oraclous_capability_registry_service.domain.connectors.github_sink import GitHubSinkConnector
 from oraclous_capability_registry_service.domain.connectors.manifest_refine import (
     ManifestRefineConnector,
@@ -311,6 +314,10 @@ class ToolExecutionService:
                 executor.capability_repo = self._capabilities
             if isinstance(executor, ManifestRefineConnector):
                 # #708: the identical fix for the refine gate — same reasoning as #705 above.
+                executor.capability_repo = self._capabilities
+            if isinstance(executor, DraftManifestConnector):
+                # #900: same reasoning as ManifestValidateConnector above — the compile gate's
+                # allowed set is READ from the org's registry, never relayed by the drafter LLM.
                 executor.capability_repo = self._capabilities
             result = await executor.execute(body.input_data, context)
         except NoExecutorError as exc:  # defensive — has_executor already gated this

@@ -970,6 +970,54 @@ class ManifestRefinePlugin(_ConnectorToolPlugin):
 
 
 @plugin_registry.register
+class DraftManifestPlugin(_ConnectorToolPlugin):
+    """Compiler manifest-drafter's own structured-answer tool (#900 / ADR-053 decision 2) — opted
+    into as ``core/draft-manifest@1``. Calling it with the drafted team's fields IS the drafter's
+    answer: ``run_tool_use_loop`` turns this call's own arguments into the run's output, byte for
+    byte — there is no wrapper key. Wraps the SAME ohm ``validate_draft`` dry-run
+    ``ManifestValidatePlugin`` uses, so the draft still gets a coded ``would_block`` verdict before
+    being accepted. First-party, in-process; keyless; no net."""
+
+    NAME = "Draft Manifest"  # slug ``draft-manifest`` MUST match the ref's name slug
+    CATEGORY = "EXECUTION"
+    DESCRIPTION = (
+        "The compiler manifest-drafter's own structured-answer tool — calling it with the "
+        "drafted team's fields IS the drafter's answer. First-party, in-process, org-scoped, "
+        "keyless."
+    )
+    TYPE = "INTERNAL"
+    TAGS = ["compiler", "draft", "manifest", "ohm"]
+    CAPABILITIES = [
+        {
+            "name": "draft_manifest",
+            "description": "Submit the drafted OHM Team Harness as this tool's own call — the "
+            "call's arguments ARE the compiler drafter's structured answer.",
+            "parameters": {"members": "array"},
+            "result_kind": "status",
+        },
+    ]
+    CREDENTIAL_REQUIREMENTS: list[dict] = []  # first-party: pure in-process validation, keyless
+    INPUT_SCHEMA = {
+        "type": "object",
+        "required": ["members"],
+        "properties": {
+            "members": {
+                "type": "array",
+                "description": "the drafted OHM Team Harness's members[]",
+            },
+        },
+    }
+    OUTPUT_SCHEMA = {
+        "type": "object",
+        "properties": {
+            "would_block": {"type": "boolean"},
+            "blocking": {"type": "array", "items": {"type": "string"}},
+            "report": {"type": "string"},
+        },
+    }
+
+
+@plugin_registry.register
 class ReadToolPlugin(_ConnectorToolPlugin):
     """Standard agent toolset (#440 / #507) — ``Read``, bound ``core/read@1``. Reads a UTF-8 text
     file from the per-org sandbox workspace. ``NAME`` slugifies to exactly ``read`` so the
