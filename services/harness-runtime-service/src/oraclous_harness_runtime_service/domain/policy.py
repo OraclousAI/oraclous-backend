@@ -60,6 +60,11 @@ class PolicyEnvelope:
     # exactly one repair turn (the parser's own error handed back to the member) instead of losing
     # the whole run. Default False so an envelope built the old way is byte-for-byte unchanged.
     requires_valid_json: bool = False
+    # #900 (ADR-053 decisions 2/3): the name of the tool binding whose successful dispatch IS the
+    # acting member's answer — the loop stops asking the model for another turn and takes that
+    # call's own arguments as the final output, verbatim. Default None so an envelope built the old
+    # way is byte-for-byte unchanged (no member declares this today).
+    answer_from_tool: str | None = None
     # #961 rulings 1+2: the websites this RUN is restricted to — a person's own list, arriving from
     # the app form the run was started from, already cleaned to bare hostnames. When set, the loop
     # refuses a first-party web search whose `sites` argument does not honour it, BEFORE the call is
@@ -232,6 +237,7 @@ def build_envelope(
     max_tool_calls_ceiling: int | None = None,
     member_on_exhaustion: Literal["escalate", "degrade"] | None = None,
     member_requires_valid_json: bool | None = None,
+    member_answer_from_tool: str | None = None,
     required_sites: tuple[str, ...] = (),
     declared_output_keys: tuple[str, ...] = (),
 ) -> PolicyEnvelope:
@@ -281,6 +287,7 @@ def build_envelope(
         redact_patterns=redact,
         on_exhaustion=member_on_exhaustion or "escalate",  # #587: degrade vs escalate at a gate
         requires_valid_json=bool(member_requires_valid_json),  # #853: one repair turn on bad JSON
+        answer_from_tool=member_answer_from_tool,  # #900: a tool call that IS the answer
         required_sites=required_sites,  # #961: the websites this run is held to
         declared_output_keys=declared_output_keys,  # #993: guarantee each key's own shape
     )
