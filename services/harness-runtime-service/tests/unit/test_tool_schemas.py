@@ -1143,6 +1143,76 @@ def test_a_nested_object_inside_an_array_is_closed_too_on_a_real_shape() -> None
     assert spec.strict is True
 
 
+# ── #1059 quality-review follow-up: a nested object DECLARED in the widened list form ────────────
+#
+# The nested-closing walk matched a schema's ``type`` as the exact string ``"object"``/``"array"``.
+# ``render_strict_schema`` itself produces the list form (``["object", "null"]``) for an optional
+# top-level object argument, so that exact shape is a certainty somewhere in a real schema, not a
+# contrived one — and a NESTED property one level inside an already-required object (declared that
+# way directly by a plugin author, the same idiom the renderer itself uses) hits the exact-match gap
+# for real: the exact-match check never recognises it as an object at all, so it skips closing it
+# to unknown keys AND skips recursing into ITS OWN children, leaving both silently open.
+
+_NESTED_LIST_TYPED_OBJECT_DESCRIPTOR = {
+    "id": "core-nested-list-typed-object",
+    "metadata": {"name": "Nested List-Typed Object"},
+    "spec": {
+        "type": "API",
+        "capabilities": [
+            {
+                "name": "deliver",
+                "description": "Write changed files",
+                "parameters": {"files": "list"},
+            }
+        ],
+        "input_schema": {
+            "type": "object",
+            "required": ["files"],
+            "properties": {
+                "files": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "required": ["path"],
+                        "properties": {
+                            "path": {"type": "string"},
+                            # Declared directly in the widened union form — a legitimate JSON-schema
+                            # idiom for "this nested object is optional", and the exact shape #898's
+                            # own renderer produces one level up for a top-level optional argument.
+                            "metadata": {
+                                "type": ["object", "null"],
+                                "properties": {
+                                    "encoding": {"type": "string"},
+                                    "detail": {
+                                        "type": "object",
+                                        "properties": {"note": {"type": "string"}},
+                                    },
+                                },
+                            },
+                        },
+                    },
+                },
+            },
+        },
+    },
+}
+
+
+def test_a_nested_object_typed_as_a_list_still_gets_closed_and_so_do_its_children() -> None:
+    """``files[].metadata`` is object-typed but written as ``["object", "null"]`` — it must be
+    closed to unknown keys, and ``files[].metadata.detail`` (its own child, one level deeper) must
+    ALSO be closed: recursion has to resume past the union-typed level, not just tolerate it
+    once."""
+    spec = tool_specs_for("nested-list-typed", _NESTED_LIST_TYPED_OBJECT_DESCRIPTOR)[0]
+    metadata_schema = spec.parameters["properties"]["files"]["items"]["properties"]["metadata"]
+    assert metadata_schema["additionalProperties"] is False, (
+        "a nested object declared in the ['object', 'null'] form was never closed"
+    )
+    assert metadata_schema["properties"]["detail"]["additionalProperties"] is False, (
+        "closing did not recurse past a union-typed nested object into its own children"
+    )
+
+
 # ── #898: a parameterless operation still renders a valid strict schema ──────────────────────────
 
 _PARAMETERLESS_WITH_INPUT_SCHEMA_DESCRIPTOR = {
