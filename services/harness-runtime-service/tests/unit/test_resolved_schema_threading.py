@@ -368,15 +368,15 @@ async def test_resolved_schema_never_reaches_configure_credentials_either() -> N
 
 # ── 5. a resolved-schema-derived tool spec is marked strict ─────────────────────────────────
 #
-# UPDATED 2026-09-13 against #898's real, now-known mechanism (its [tests] PRs #1057/#1060 merged
-# to `main` at 3b124cac; its [impl] PR #1059 has not). #898 does NOT add a bare ``strict=True``
-# kwarg straight onto ``ToolSpec`` inferred from a schema's shape — strictness is carried
-# EXPLICITLY, on the DESCRIPTOR'S OP, as a sibling key to ``parameters_schema`` named
-# ``parameters_schema_strict`` (confirmed verbatim in #898's own
+# #898 does NOT add a bare ``strict=True`` kwarg straight onto ``ToolSpec`` inferred from a
+# schema's shape — strictness is carried EXPLICITLY, on the DESCRIPTOR'S OP, as a sibling key to
+# ``parameters_schema`` named ``parameters_schema_strict`` (confirmed verbatim in #898's own
 # ``test_first_party_declared_schema.py``: ``test_the_explicit_marker_makes_a_first_party_declared_
 # override_strict``, ``test_a_declared_schema_with_no_explicit_strict_marker_stays_non_strict``).
 # ``tool_specs_for``/``_parameters_for`` reading that marker and setting the resulting
-# ``ToolSpec.strict`` is #898's own scope and is pinned in #898's own suite, not duplicated here.
+# ``ToolSpec.strict`` is #898's own scope, pinned in #898's own suite and not duplicated here —
+# and, as of this branch's rebase onto `main` at `98aafe0d`, #898's [impl] (PR #1059) has MERGED,
+# so that reading mechanism is now real production code, not a hypothesis.
 #
 # What is uniquely #900's gap, and what this test pins: ``_materialise``'s threading of
 # ``cap.resolved_schema`` onto the descriptor's op (test 1, above) must ALSO set
@@ -388,37 +388,33 @@ async def test_resolved_schema_never_reaches_configure_credentials_either() -> N
 
 
 async def test_the_threaded_override_also_carries_the_explicit_strict_marker() -> None:
-    """RED for two independent, converging reasons — neither is #900 inventing new machinery:
-
-    1. #900's own gap (this file's whole subject): nothing in ``_materialise`` threads
-       ``cap.resolved_schema`` onto the descriptor's op at all yet (test 1).
-    2. Even once it does, ``[impl]`` must remember to ALSO set the sibling
-       ``parameters_schema_strict: True`` key #898 defines — the schema alone is not enough.
-
-    Asserting ``spec.strict is True`` additionally depends on #898's own ``[impl]`` (PR #1059,
-    not yet merged) actually reading that marker inside ``tool_specs_for`` — today ``ToolSpec`` has
-    no ``strict`` field at all (confirmed: ``grep -n strict`` on this branch's ``llm/base.py`` finds
-    nothing), so the attribute access itself raises ``AttributeError`` before the marker-check can
-    even matter. Whichever of the two lands first, this test only goes green once BOTH #900's
-    threading AND #898's marker-reading are in place together — which is the correct, narrow claim
-    the issue brief actually makes ("a specification carrying a resolved schema is marked strict"),
-    not a claim #900 can satisfy alone."""
+    """RED today, entirely on #900's own gap — #898's own piece of this mechanism (reading
+    ``parameters_schema_strict`` and setting ``ToolSpec.strict``) is now real, merged production
+    code (`main` at `98aafe0d`, PR #1059). Nothing in ``_materialise`` threads
+    ``cap.resolved_schema`` (or the ``parameters_schema_strict`` marker) onto the descriptor's op
+    at all yet, so this fails on the FIRST assertion (``spec.parameters`` is still the descriptor's
+    own projected schema, not ``_OVERRIDE_SCHEMA``) — the same failure as test 1, above — never
+    reaching the ``.strict`` assertion. Both assertions are kept in one test deliberately: the
+    issue brief's own claim is the CONJUNCTION ("a specification carrying a resolved schema is
+    marked strict"), and splitting them would let a future ``[impl]`` satisfy the schema half while
+    forgetting the marker half and still see this specific test go green on a partial fix."""
     registry = _Registry([])
     manifest = _manifest_with_resolved_schema(_OVERRIDE_SCHEMA)
     _, tool_specs = await _service(registry)._materialise(manifest, _RESOLVED_SINGLE)
     spec = _spec_for(tool_specs, "recall_memory")
     assert spec.parameters == _OVERRIDE_SCHEMA
-    assert spec.strict is True  # AttributeError today — ToolSpec has no `strict` field (#898)
+    assert spec.strict is True
 
 
 def test_a_first_party_override_with_no_marker_stays_non_strict_the_898_way() -> None:
-    """Regression guard, using #898's OWN already-real mechanism directly (no #900 involved): a
-    descriptor op that carries a ``parameters_schema`` override but NO ``parameters_schema_strict``
-    key stays non-strict, however closed/required the schema looks — mirrors #898's own
-    ``test_a_declared_schema_with_no_explicit_strict_marker_stays_non_strict`` verbatim, run again
-    here so a reader of THIS file sees the contrast with the test above without having to cross-
-    reference another service's test suite. RED today for the same root reason: ``ToolSpec`` has no
-    ``strict`` field to read at all yet (#898's own [impl], PR #1059, not merged)."""
+    """GREEN today — #898's [impl] (PR #1059) has merged, so this exercises real production code,
+    not a hypothesis. A descriptor op that carries a ``parameters_schema`` override but NO
+    ``parameters_schema_strict`` key stays non-strict, however closed/required the schema looks —
+    mirrors #898's own ``test_a_declared_schema_with_no_explicit_strict_marker_stays_non_strict``
+    verbatim, run again here so a reader of THIS file sees the contrast with the test above without
+    having to cross-reference another service's test suite. Kept as a live regression pin: #900's
+    own threading (test 1/the test above) must always set the marker explicitly precisely because
+    this is the real, unforgiving default it would otherwise fall back to."""
     from oraclous_harness_runtime_service.domain.tool_schemas import tool_specs_for
 
     descriptor = {
