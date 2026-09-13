@@ -507,3 +507,61 @@ def test_the_incident_payload_that_broke_a_live_compile_is_rejected_by_the_schem
         f"expected the payload to be rejected for a MISSING required property, got validator "
         f"{exc_info.value.validator!r}: {exc_info.value.message}"
     )
+
+
+def _minimal_valid_value(prop_schema: dict) -> Any:
+    """A minimal value satisfying `prop_schema`'s own declared type/enum. Used to fill EVERY
+    member property except the one under test (``outputs_schema``), so the schema's own
+    ``required``/``additionalProperties`` on the surrounding member object never independently
+    cause the rejection this test asserts — only the empty-list defect should."""
+    if "enum" in prop_schema:
+        return prop_schema["enum"][0]
+    kind = prop_schema.get("type")
+    if isinstance(kind, list):
+        kind = next((k for k in kind if k != "null"), kind[0] if kind else None)
+    if kind == "string":
+        return "x"
+    if kind == "array":
+        return []
+    if kind == "boolean":
+        return False
+    if kind == "object":
+        return {}
+    return None
+
+
+def test_an_empty_outputs_schema_required_list_is_not_a_real_output_contract() -> None:
+    """Code-reviewer, PR #1065 (SHOULD-FIX-3): forcing the ``outputs_schema.required`` KEY to be
+    present is not enough on its own — an empty array still satisfies a bare
+    ``{"type": "array", "items": {"type": "string"}}``, yet still trips ``validate.py``'s
+    ``F-NO-OUTPUT-CONTRACT`` downstream (which needs a NON-EMPTY required list), a failure class
+    the reviewer's own repair prompt does not cover either. The schema must reject an empty list
+    BY CONSTRUCTION, never by hoping the model fills in real content. RED today: ``resolved_schema``
+    does not exist on ``main`` at all, so there is no schema for a validator to reject anything
+    against."""
+    manifest, subs = build_compiler_team(_ORG, catalog_descriptions=_CATALOG_SMALL)
+    cap = _drafter_capability(subs, "draft-manifest")
+    assert cap is not None
+    schema = cap.get("resolved_schema")
+    assert schema is not None
+    member_schema = schema["properties"]["members"]["items"]
+    properties = member_schema.get("properties", {})
+    assert isinstance(properties, dict) and "outputs_schema" in properties
+
+    # every OTHER declared member property gets a minimal valid filler, so only the empty
+    # required-list below can be the cause of rejection.
+    member = {
+        key: _minimal_valid_value(prop_schema)
+        for key, prop_schema in properties.items()
+        if key != "outputs_schema"
+    }
+    member["outputs_schema"] = {"required": []}  # present, but EMPTY — the residual gap
+
+    with pytest.raises(jsonschema.exceptions.ValidationError) as exc_info:
+        jsonschema.validate(member, member_schema)
+    assert "outputs_schema" in str(exc_info.value.absolute_path) or "required" in str(
+        exc_info.value.message
+    ), (
+        "expected the rejection to be about the empty outputs_schema.required list, got: "
+        f"{exc_info.value.message} (path: {list(exc_info.value.absolute_path)})"
+    )
