@@ -362,6 +362,33 @@ async def test_dispatch_threads_on_exhaustion_to_the_harness() -> None:
     assert harness.kwargs[0].get("on_exhaustion") == "degrade"
 
 
+async def test_dispatch_threads_answer_from_tool_to_the_harness() -> None:
+    # #900 (ADR-053 decision 2): a member's declared answer_from_tool rides to harness.execute
+    # the same send-only-when-set way on_exhaustion/requires_valid_json already do. RED today:
+    # OHMMember has no answer_from_tool field yet, so the constructor kwarg below is silently
+    # dropped (pydantic extra="ignore") and dispatch never reads it — this fails as a clean
+    # assertion (None != "web.search"), not a collection/import error.
+    harness = _RecordingHarness()
+    member = OHMMember(
+        role="a",
+        kind="agent",
+        manifest_ref="org:x/a@1",
+        tools=["web.search"],
+        answer_from_tool="web.search",
+    )
+    await run_team_harness(_team([member]), harness)
+    assert harness.kwargs[0].get("answer_from_tool") == "web.search"
+
+
+async def test_dispatch_omits_answer_from_tool_when_the_member_declares_none() -> None:
+    # Back-compat: a member built the OLD way (no answer_from_tool) is unaffected — the same
+    # send-only-when-set posture #576/#587/#853 already established.
+    harness = _RecordingHarness()
+    member = OHMMember(role="a", kind="agent", manifest_ref="org:x/a@1")
+    await run_team_harness(_team([member]), harness)
+    assert harness.kwargs[0].get("answer_from_tool") is None
+
+
 class _PartialHarness:
     """A member whose loop DEGRADED — a flagged PARTIAL (best-effort output), not a fault."""
 

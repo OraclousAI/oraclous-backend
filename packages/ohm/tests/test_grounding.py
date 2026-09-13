@@ -742,3 +742,132 @@ async def test_zero_tool_member_still_contributes_no_grounding_bucket() -> None:
     )
     assert res.member_status == {"reviewer": "failed"}
     assert res.member_grounding == {}
+
+
+# --- #900 / ADR-053 decision 3: a platform-derived receipt already satisfies grounding ---------
+#
+# ADR-053 decision 3 lets a member answer BY calling a tool (``answer_from_tool``) instead of
+# writing prose. Before any of that field or any new minting/grading code exists, this pins a fact
+# confirmed by reading the code, not by guessing: ``HarnessExecutionOut.driving_signals``
+# (harness-runtime-service, a ``@computed_field``) already derives one grounded receipt —
+# ``{"signal": f"tool {name} succeeded", "value": True, "source_tool_call_id": <id>}`` — per
+# successful ``StepKind.TOOL`` step of a run's OWN trace, for every harness run, generically, no
+# new code. ``team_run.py`` already prefers that reported/derived list over anything parsed from
+# the member's free text. So: if a tool-declaring member's stored result carries exactly that
+# shape — an ``ok`` TOOL step for the terminating call to the tool it was told to answer through,
+# plus the matching receipt — THIS module's ``_grade_grounding``, completely unmodified, already
+# grades the member succeeded. No new code is needed in ``orchestrate.py``, ``envelope.py``, or
+# anywhere in ``packages/ohm`` for decision 3's grading leg to work. None of this needs the
+# not-yet-existing ``OHMMember.answer_from_tool`` / ``PolicyEnvelope.answer_from_tool`` fields
+# pinned elsewhere on this issue — ``tools[]``, ``steps``, and ``driving_signals`` already exist.
+
+
+def _harness_derived_signal(tool_name: str, call_id: str) -> dict[str, Any]:
+    """Exactly the shape ``HarnessExecutionOut.driving_signals`` computes for one ok TOOL step
+    (harness_schemas.py's computed field) — hand-built here to the same shape rather than imported,
+    since ``packages/ohm`` does not depend on ``harness-runtime-service``; a shape drift in that
+    property is a contract break this test is meant to catch on the ``orchestrate.py`` side."""
+    return {"signal": f"tool {tool_name} succeeded", "value": True, "source_tool_call_id": call_id}
+
+
+async def test_answer_from_tool_shaped_receipt_already_grades_succeeded() -> None:
+    """The big discovery (#900 / ADR-053 decision 3). A member's recorded result carries the EXACT
+    steps/driving_signals shape a real harness run already produces for a terminating tool call —
+    one ``status="ok"`` TOOL step for the named answer tool, and one driving_signal whose
+    ``source_tool_call_id`` matches that step's ``tool_call_id``. Nothing here needs an
+    ``answer_from_tool`` manifest field: an ordinary ``tools=[...]`` declaration is enough for
+    today's grading path to see it.
+
+    This test is GREEN today — that is the point, not an accident. It is the regression pin
+    against anyone later "helpfully" adding new minting/grading code for decision 3 that this
+    proves is unnecessary: the platform-derived receipt already satisfies grounding.
+    """
+    res = await run_team(
+        _team([_m("drafter", tools=["docs.answer"])]),
+        _dispatch_returning(
+            {
+                "output": "the wiring change is described in RFC-118",
+                "status": "SUCCEEDED",
+                "steps": [
+                    {
+                        "index": 1,
+                        "kind": "tool",
+                        "name": "docs.answer",
+                        "status": "ok",
+                        "tool_call_id": "tc-answer-1",
+                    }
+                ],
+                "driving_signals": [_harness_derived_signal("docs.answer", "tc-answer-1")],
+            }
+        ),
+    )
+    assert res.member_status == {"drafter": "succeeded"}
+    assert res.member_errors == {}
+    assert res.status == "completed"
+    assert res.member_grounding == {"drafter": {"grounded": 1, "total": 1}}
+
+
+# Negative case "a receipt for tool A does not ground a claim needing tool B" is already covered,
+# framed generically rather than answer_from_tool-specifically, by two existing tests in this file:
+# ``test_validate_grounding_rejects_an_unresolved_source_id`` (a claim's source_tool_call_id that
+# resolves to no ok call at all) and ``test_one_unresolved_claim_fails_the_member_strictly`` (one
+# grounded claim plus one claim citing an invented id fails the whole member, strictly). Both
+# already exercise exactly the mechanism an answer_from_tool receipt would rely on — a claim is
+# grounded ONLY by an ok step whose OWN tool_call_id it cites, never by "a call happened" in
+# general — so no duplicate test is added here.
+
+
+async def test_answer_from_tool_named_but_no_matching_ok_step_fails_the_member() -> None:
+    """A model-claimed receipt with nothing behind it. The member declares its answer tool, and its
+    result carries a ``driving_signals`` entry (the shape ``parse_driving_signals`` would have
+    produced from free text, upstream of this call — not invoked here, only its output shape) that
+    NAMES the answer tool's call id, but the member's own ``steps`` show no ``ok`` TOOL step for
+    it at all (steps is empty: the platform's own trace never ran the call). ADR-053 decision 3
+    does not change this: a claimed-but-unbacked receipt still fails the member (#641)."""
+    res = await run_team(
+        _team([_m("drafter", tools=["docs.answer"])]),
+        _dispatch_returning(
+            {
+                "output": "the wiring change is described in RFC-118",
+                "status": "SUCCEEDED",
+                "steps": [],
+                "driving_signals": [_harness_derived_signal("docs.answer", "tc-fabricated")],
+            }
+        ),
+    )
+    assert res.member_status == {"drafter": "failed"}
+    assert "grounding" in res.member_errors["drafter"].lower()
+    assert "tc-fabricated" in res.member_errors["drafter"]
+
+
+async def test_answer_from_tool_named_tool_errors_earns_no_receipt_and_fails_the_member() -> None:
+    """ADR-053 decision 3's own carve-out: 'a member configured with answer_from_tool naming a
+    tool it never calls [successfully] is not given a platform-minted receipt — that failure mode
+    is unchanged from today's grounding check.' Here the member DOES call its named answer tool,
+    but the dispatch errors — no ok step, so ``HarnessExecutionOut.driving_signals`` would derive
+    nothing for it, and there is no driving_signals entry at all. Unchanged, pre-#900 behaviour:
+    the existing 'no successful call' message family (``_no_successful_call_message``) fires."""
+    res = await run_team(
+        _team([_m("drafter", tools=["docs.answer"])]),
+        _dispatch_returning(
+            {
+                "output": "",
+                "status": "SUCCEEDED",
+                "steps": [
+                    {
+                        "index": 1,
+                        "kind": "tool",
+                        "name": "docs.answer",
+                        "status": "error",
+                        "tool_call_id": "tc-answer-1",
+                        "detail": '{"error":"rate_limited"}',
+                    }
+                ],
+                "driving_signals": [],
+            }
+        ),
+    )
+    assert res.member_status == {"drafter": "failed"}
+    message = res.member_errors["drafter"]
+    assert "no tool call succeeded" in message
+    assert "docs.answer" in message

@@ -164,3 +164,97 @@ def test_a_team_json_followed_by_a_separate_receipt_object_is_still_peeled() -> 
     draft = json.dumps(_draft("web-search")) + "\n\n" + json.dumps(receipt)
     v = validate_draft(draft, ["web-search"], owner_organization_id=_ORG)
     assert v["would_block"] is False, v  # peeled + validated, NOT F-DRAFT-INVALID
+
+
+# ── #900: the catalogue check and the free-text fallback are UNCHANGED — explicit regression pin ──
+#
+# #900 gives the manifest-drafter member its own tool call (`draft-manifest`) as its structured
+# answer mechanism, so a drafted team commonly carries a different tool shape than it did before.
+# The issue's acceptance criteria say plainly: "the existing fail-closed catalogue check must stay
+# UNCHANGED. It blocks any tool not in the surveyed catalogue. This issue reduces how often that
+# check fires; it never replaces it" — and separately that the free-text fallback (a model that
+# answers in prose anyway) stays. Neither test below is a bug hunt: nothing in validate.py changes
+# for #900, so both are expected to PASS today. They exist so that a LATER [impl] PR for #900
+# cannot silently weaken or delete either path (e.g. by reasoning "the drafter calls a real tool
+# now, the free-text catalogue diff is redundant") without turning this file red immediately.
+
+
+def test_900_catalogue_check_still_blocks_a_hallucinated_tool_beside_a_real_one() -> None:
+    """#900 acceptance-criterion regression pin, not a bug hunt — expected GREEN today.
+
+    Pins the SAME coded verdict shape (``would_block: True``, ``F-CAPABILITY-MISSING`` naming the
+    blocking tool) the existing single-tool tests already cover, but against a more realistic
+    POST-#900 draft: a member holding a real surveyed tool ALONGSIDE a hallucinated one, the mixed
+    shape #900 makes common once a drafted team's members carry more than one tool each. A future
+    [impl] PR that weakens or removes the catalogue-absence check must turn this red immediately.
+    """
+    catalog = {"tools": [{"name": "web-search", "ref": "core/web-search@1"}]}
+    draft = {
+        "members": [
+            {
+                "role": "researcher",
+                "kind": "agent",
+                "manifest_ref": "org:x/r@1",
+                "tools": ["web-search", "teleport"],
+                "tool_rationale": {
+                    "web-search": "needs web-search to cover this sub-goal",
+                    "teleport": "needs teleport to cover this sub-goal",
+                },
+                "outputs_schema": {"required": ["summary"]},
+            },
+            {
+                "role": "writer",
+                "kind": "agent",
+                "manifest_ref": "org:x/w@1",
+                "depends_on": ["researcher"],
+                "outputs_schema": {"required": ["summary"]},
+            },
+        ]
+    }
+    v = validate_draft(draft, catalog, owner_organization_id=_ORG)
+    assert v["would_block"] is True  # 'teleport' is not surveyed — blocks despite 'web-search'
+    assert any("F-CAPABILITY-MISSING" in b for b in v["blocking"])
+    assert "GO: BLOCKED" in v["report"]  # render_report still surfaces the block to the reviewer
+
+
+def test_900_prose_wrapped_draft_with_the_new_drafter_and_reviewer_tools_still_validates() -> None:
+    """#900 acceptance-criterion regression pin, not a bug hunt — expected GREEN today.
+
+    Pins that the free-text fallback stays: the greedy text-scraping bug this issue's brief
+    complains about was already fixed by #1043 (51c054cd, an ancestor of this branch's base) —
+    ``validate_draft`` now peels the FIRST well-formed JSON object with a forward-scanning
+    ``json.JSONDecoder().raw_decode``, not a greedy regex. Rather than duplicate the existing
+    ``test_prose_wrapped_json_is_peeled_not_misblocked`` pin verbatim, this ties the same fallback
+    path to #900 directly: the wrapped JSON team carries the new ``manifest-drafter`` role holding
+    its ``draft-manifest`` tool call next to a ``manifest-validate``-tooled ``reviewer`` role
+    (see ``packages/ohm/src/oraclous_ohm/compiler/team.py``) — the exact shape #900 introduces.
+    """
+    catalog = {"tools": [{"name": "draft-manifest"}, {"name": "manifest-validate"}]}
+    draft_dict = {
+        "members": [
+            {
+                "role": "manifest-drafter",
+                "kind": "agent",
+                "manifest_ref": "org:x/d@1",
+                "tools": ["draft-manifest"],
+                "tool_rationale": {
+                    "draft-manifest": "needs draft-manifest to emit its structured answer"
+                },
+                "outputs_schema": {"required": ["summary"]},
+            },
+            {
+                "role": "reviewer",
+                "kind": "agent",
+                "manifest_ref": "org:x/rv@1",
+                "depends_on": ["manifest-drafter"],
+                "tools": ["manifest-validate"],
+                "tool_rationale": {
+                    "manifest-validate": "needs manifest-validate to check the draft"
+                },
+                "outputs_schema": {"required": ["summary"]},
+            },
+        ]
+    }
+    draft = "Here is the compiled team:\n```json\n" + json.dumps(draft_dict) + "\n```\nLet me know!"
+    v = validate_draft(draft, catalog, owner_organization_id=_ORG)
+    assert v["would_block"] is False, v  # peeled by raw_decode + validated, NOT F-DRAFT-INVALID
