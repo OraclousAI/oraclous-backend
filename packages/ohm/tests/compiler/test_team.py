@@ -12,7 +12,9 @@ directly (#705). The chain is now planner -> manifest-drafter -> reviewer.
 from __future__ import annotations
 
 import uuid
+from typing import Any
 
+import jsonschema
 import pytest
 from oraclous_ohm.compiler.team import build_compiler_team
 from oraclous_ohm.compiler.validate import _catalog_slugs
@@ -444,3 +446,64 @@ def test_planner_and_reviewer_are_unaffected_when_a_catalog_is_given() -> None:
     assert by["reviewer"].outcome_critical is True
     assert subs["planner"]["capabilities"] == []
     assert [c["binding"] for c in subs["reviewer"]["capabilities"]] == ["manifest-validate"]
+
+
+# ── the live regression this file's own shape-only tests could not catch (PR #1065 review) ──────
+#
+# The CTO's PR #1065 review comment (2026-09-13) recorded a real, live compile failure: an earlier
+# revision of ``_drafter_resolved_schema`` closed the TOP-LEVEL object (this file's own
+# ``_assert_top_level_closed_and_fully_required``) but left each drafted MEMBER's own object with
+# no ``required`` list and no ``additionalProperties: False``. A real model answered with a member
+# carrying only 3 of its 11 declared fields — ``role``, ``subgoal``, ``tools`` — and the compile
+# died: the reviewer's repair prompt covers a hallucinated TOOL, not a missing STRUCTURAL field.
+#
+# The qa-engineer review on the same PR proved, independently, that NOTHING in this file's existing
+# suite would have caught it: checking out the pre-fix commit and re-running all four unit suites
+# gave 3569 passed, 0 failed — identical to the post-fix run. Every assertion here is scoped to the
+# top-level object (deliberately, per ``_assert_top_level_closed_and_fully_required``'s own
+# docstring); nothing inspects the MEMBER object's own ``required``/``additionalProperties``.
+#
+# So this test does not add another shape assertion — that is exactly the kind of test that failed
+# to catch the incident. It takes the incident's own payload shape (the 3 fields the CTO's comment
+# named — the literal captured draft was not preserved in the issue thread, so this reconstructs it
+# field-for-field from that comment rather than inventing a fresh hypothetical) and asks a REAL JSON
+# Schema validator whether the schema this function actually produces accepts it. The broken
+# revision accepted it silently (qa-engineer reran this exact check against it: silently accepted).
+# The fixed one must reject it, naming what is missing.
+
+#: The incident payload, reconstructed field-for-field from the CTO's PR #1065 review comment
+#: (2026-09-13): "the schema constrained the outer object but left each team member's own object
+#: with no required list and no closure, so the model emitted three of eleven fields and the
+#: compile died" — the three named fields, and nothing else.
+_INCIDENT_MEMBER_PAYLOAD: dict[str, Any] = {
+    "role": "scout",
+    "subgoal": "Find and summarise the most relevant prior art for the objective.",
+    "tools": ["web-search"],
+}
+
+
+def test_the_incident_payload_that_broke_a_live_compile_is_rejected_by_the_schema() -> None:
+    """Consequence check, not a shape check (see the block comment above): a member payload
+    carrying only ``role``/``subgoal``/``tools`` — the exact incident shape — must be REJECTED by
+    the schema ``_drafter_resolved_schema`` actually produces, with a real JSON Schema validator,
+    naming a missing required property. RED today for two independent reasons: ``resolved_schema``
+    does not exist on ``OHMCapability`` at all on ``main`` yet, and a schema that only closes the
+    OUTER object (the incident's own root cause) would still accept this payload silently — which
+    is exactly what let the live compile fail with every unit test green."""
+    manifest, subs = build_compiler_team(_ORG, catalog_descriptions=_CATALOG_SMALL)
+    cap = _drafter_capability(subs, "draft-manifest")
+    assert cap is not None, "the manifest-drafter must carry a draft-manifest capability"
+    schema = cap.get("resolved_schema")
+    assert schema is not None, "a surveyed catalog must produce a resolved_schema"
+    member_schema = schema["properties"]["members"]["items"]
+
+    with pytest.raises(jsonschema.exceptions.ValidationError) as exc_info:
+        jsonschema.validate(_INCIDENT_MEMBER_PAYLOAD, member_schema)
+    # the incident was a MISSING field, not a wrong-typed one — the rejection must name that, or a
+    # schema that merely rejects the payload for some unrelated reason would pass this test while
+    # still shipping the exact bug (e.g. still accepting a member with a wrong-typed 12th field
+    # while remaining silent about the other 8 legitimately-missing ones).
+    assert exc_info.value.validator == "required", (
+        f"expected the payload to be rejected for a MISSING required property, got validator "
+        f"{exc_info.value.validator!r}: {exc_info.value.message}"
+    )
