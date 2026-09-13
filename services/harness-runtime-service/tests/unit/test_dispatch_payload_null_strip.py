@@ -103,6 +103,64 @@ def test_a_key_never_marked_nullable_by_anyone_is_never_stripped_on_null() -> No
     assert payload["top_k"] is None
 
 
+# ── #1059 quality-review follow-up: nullable_keys must reflect what actually changed ─────────────
+#
+# ``_project_input_schema`` recomputes which keys are nullable from a condition COPIED from inside
+# the renderer ("not in the pre-render required set, or force-nullable") rather than reading back
+# what the renderer itself actually widened. The two usually agree, but drift on a property with NO
+# declared ``type`` at all (a bare ``enum``, or an either-or ``anyOf``/``oneOf`` shape): the
+# renderer's own widening step only ever touches a ``type`` key, so a schema-less property is left
+# completely untouched by it — the copied condition still calls it "made nullable" whenever it is
+# optional, and ``dispatch_payload`` then strips a value on it the caller genuinely sent.
+
+_NO_DECLARED_TYPE_DESCRIPTOR = {
+    "id": "core-no-declared-type",
+    "metadata": {"name": "No Declared Type"},
+    "spec": {
+        "type": "API",
+        "capabilities": [
+            {
+                "name": "op",
+                "description": "op",
+                "parameters": {"query": "string", "mode": "string"},
+            }
+        ],
+        "input_schema": {
+            "type": "object",
+            "required": ["query"],
+            "properties": {
+                "query": {"type": "string"},
+                # No "type" key at all — a bare enum. There is nothing here for the renderer's own
+                # widening step to touch, so this property reaches the model completely unchanged.
+                "mode": {"enum": ["fast", "slow"]},
+            },
+        },
+    },
+}
+
+
+def test_a_property_with_no_declared_type_is_not_reported_as_nullable() -> None:
+    spec = tool_specs_for("no-declared-type", _NO_DECLARED_TYPE_DESCRIPTOR)[0]
+    assert spec.parameters["properties"]["mode"] == {"enum": ["fast", "slow"]}, (
+        "the renderer touched a property it had nothing (no 'type' key) to widen"
+    )
+    assert "mode" not in spec.nullable_keys, (
+        "nullable_keys claims 'mode' was made nullable, but the renderer left it untouched"
+    )
+
+
+def test_a_null_on_that_property_is_never_stripped_as_though_it_were_platform_made_nullable() -> (
+    None
+):
+    """The consequence, pinned end to end: even while the bug above stands, a caller's null on
+    ``mode`` must survive dispatch — the descriptor never declared it nullable and the platform
+    never made it nullable either, so ``dispatch_payload`` has no licence to drop it."""
+    spec = tool_specs_for("no-declared-type", _NO_DECLARED_TYPE_DESCRIPTOR)[0]
+    payload = dispatch_payload(spec, {"query": "q", "mode": None})
+    assert "mode" in payload
+    assert payload["mode"] is None
+
+
 # ── a non-null value is never touched, whether or not the key is in nullable_keys ─────────────────
 
 
