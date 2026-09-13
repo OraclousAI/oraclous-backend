@@ -366,26 +366,77 @@ async def test_resolved_schema_never_reaches_configure_credentials_either() -> N
     assert "resolved_schema" not in mappings
 
 
-# ── 5. #898-dependent: a resolved-schema-derived tool spec is marked strict ─────────────────
+# ── 5. a resolved-schema-derived tool spec is marked strict ─────────────────────────────────
+#
+# UPDATED 2026-09-13 against #898's real, now-known mechanism (its [tests] PRs #1057/#1060 merged
+# to `main` at 3b124cac; its [impl] PR #1059 has not). #898 does NOT add a bare ``strict=True``
+# kwarg straight onto ``ToolSpec`` inferred from a schema's shape — strictness is carried
+# EXPLICITLY, on the DESCRIPTOR'S OP, as a sibling key to ``parameters_schema`` named
+# ``parameters_schema_strict`` (confirmed verbatim in #898's own
+# ``test_first_party_declared_schema.py``: ``test_the_explicit_marker_makes_a_first_party_declared_
+# override_strict``, ``test_a_declared_schema_with_no_explicit_strict_marker_stays_non_strict``).
+# ``tool_specs_for``/``_parameters_for`` reading that marker and setting the resulting
+# ``ToolSpec.strict`` is #898's own scope and is pinned in #898's own suite, not duplicated here.
+#
+# What is uniquely #900's gap, and what this test pins: ``_materialise``'s threading of
+# ``cap.resolved_schema`` onto the descriptor's op (test 1, above) must ALSO set
+# ``parameters_schema_strict: True`` on that SAME op — never just the schema alone. Skipping the
+# marker would silently leave #900's authored override NON-strict (per #898's own "no explicit
+# marker → stays non-strict, regardless of how closed the schema looks" rule), which is exactly the
+# fail-open #898 was built to close. This is the reason the issue brief calls out explicitly: "use
+# it rather than inventing a parallel mechanism" — there is no separate #900-owned carrier.
 
 
-def test_a_toolspec_carrying_a_resolved_schema_override_is_marked_strict() -> None:
-    """RED, pending #898 — the ``strict`` carrier on ``ToolSpec`` is #898's scope, not #900's; this
-    pins only the OBSERVABLE cross-issue claim the #900 brief makes: a tool specification built
-    from a ``resolved_schema`` override is marked strict.
+async def test_the_threaded_override_also_carries_the_explicit_strict_marker() -> None:
+    """RED for two independent, converging reasons — neither is #900 inventing new machinery:
 
-    ``ToolSpec`` (``domain/llm/base.py``) is a frozen dataclass with no ``strict`` field today —
-    confirmed by ``grep -n strict`` on this branch's ``llm/base.py`` turning up nothing. Passing
-    ``strict=True`` to its constructor therefore raises ``TypeError`` (frozen dataclasses reject
-    unknown keyword arguments the same as any other ``__init__``) — that is the correct RED here.
-    Do NOT build the ``strict`` carrier to make this pass in this issue; it stays red until #898
-    lands elsewhere, and #900's ``[impl]`` is responsible only for setting it once it exists."""
-    with pytest.raises(TypeError):
-        ToolSpec(
-            name="recall-memory__recall_memory",
-            description="Recall from a knowledge graph",
-            parameters=_OVERRIDE_SCHEMA,
-            binding="recall-memory",
-            operation="recall_memory",
-            strict=True,  # type: ignore[call-arg]
-        )
+    1. #900's own gap (this file's whole subject): nothing in ``_materialise`` threads
+       ``cap.resolved_schema`` onto the descriptor's op at all yet (test 1).
+    2. Even once it does, ``[impl]`` must remember to ALSO set the sibling
+       ``parameters_schema_strict: True`` key #898 defines — the schema alone is not enough.
+
+    Asserting ``spec.strict is True`` additionally depends on #898's own ``[impl]`` (PR #1059,
+    not yet merged) actually reading that marker inside ``tool_specs_for`` — today ``ToolSpec`` has
+    no ``strict`` field at all (confirmed: ``grep -n strict`` on this branch's ``llm/base.py`` finds
+    nothing), so the attribute access itself raises ``AttributeError`` before the marker-check can
+    even matter. Whichever of the two lands first, this test only goes green once BOTH #900's
+    threading AND #898's marker-reading are in place together — which is the correct, narrow claim
+    the issue brief actually makes ("a specification carrying a resolved schema is marked strict"),
+    not a claim #900 can satisfy alone."""
+    registry = _Registry([])
+    manifest = _manifest_with_resolved_schema(_OVERRIDE_SCHEMA)
+    _, tool_specs = await _service(registry)._materialise(manifest, _RESOLVED_SINGLE)
+    spec = _spec_for(tool_specs, "recall_memory")
+    assert spec.parameters == _OVERRIDE_SCHEMA
+    assert spec.strict is True  # AttributeError today — ToolSpec has no `strict` field (#898)
+
+
+def test_a_first_party_override_with_no_marker_stays_non_strict_the_898_way() -> None:
+    """Regression guard, using #898's OWN already-real mechanism directly (no #900 involved): a
+    descriptor op that carries a ``parameters_schema`` override but NO ``parameters_schema_strict``
+    key stays non-strict, however closed/required the schema looks — mirrors #898's own
+    ``test_a_declared_schema_with_no_explicit_strict_marker_stays_non_strict`` verbatim, run again
+    here so a reader of THIS file sees the contrast with the test above without having to cross-
+    reference another service's test suite. RED today for the same root reason: ``ToolSpec`` has no
+    ``strict`` field to read at all yet (#898's own [impl], PR #1059, not merged)."""
+    from oraclous_harness_runtime_service.domain.tool_schemas import tool_specs_for
+
+    descriptor = {
+        "kind": "tool",
+        "metadata": {"name": "Recall Memory"},
+        "spec": {
+            "type": "MEMORY",
+            "capabilities": [
+                {
+                    "name": "recall_memory",
+                    "description": "Recall from a knowledge graph",
+                    "parameters": {"graph_id": "str", "query": "str"},
+                    "parameters_schema": _OVERRIDE_SCHEMA,
+                    # deliberately no "parameters_schema_strict" key
+                }
+            ],
+        },
+    }
+    spec = tool_specs_for("recall-memory", descriptor)[0]
+    assert spec.parameters == _OVERRIDE_SCHEMA
+    assert spec.strict is False
