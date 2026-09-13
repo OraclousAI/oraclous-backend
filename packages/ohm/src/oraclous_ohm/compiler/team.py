@@ -139,14 +139,28 @@ def _drafter_resolved_schema(catalog_descriptions: list[Any] | None) -> dict[str
     its arguments ARE the drafted OHM Team Harness (ADR-053: the tool call IS the answer).
 
     Measured, live-verified fact: the provider's strict mode only actually suppresses a forbidden
-    enum value when EVERY property of the constrained object's OWN schema is also in that object's
+    enum VALUE when EVERY property of the constrained object's OWN schema is also in that object's
     OWN `required` list — a partial `required` left it silently inert (7/10 forbidden values got
     through; 0/10 with a complete list). So the TOP LEVEL here is closed
-    (`additionalProperties: False`) with every top-level property required. Nesting does NOT need
-    the same treatment (0/5 forbidden even with a partial nested `required`, same probe) — #898's
-    `render_strict_schema` already closes a nested object's `additionalProperties` at render time
-    and deliberately leaves its own `required` alone, so this schema does not pre-close nested
-    structure itself.
+    (`additionalProperties: False`) with every top-level property required.
+
+    CORRECTION (live-run defect found post-merge, 2026-09-13): an earlier version of this
+    docstring over-read the same probe's nested-object result as license to leave a nested
+    object's `required` incomplete. That is wrong, and the two claims are NOT the same thing.
+    What the probe actually showed is narrower: a nested object with a partial `required` still
+    suppressed a FORBIDDEN VALUE on a property that WAS present (0/5 forbidden values got through
+    either way). It says nothing about whether a property absent from `required` is still
+    DELIVERED — and on a live compile it was not: with `member_schema` carrying no `required` at
+    all, the model omitted `depends_on`, `kind`, and most of the other declared member fields
+    entirely (3 of 11 properties came back, on more than one live run), which the downstream
+    reviewer then could not repair (its own instructions cover a hallucinated TOOL, not a missing
+    STRUCTURAL field) and the compile failed. #898's `render_strict_schema` closes a nested
+    object's `additionalProperties` at render time regardless of what this function declares, but
+    it deliberately leaves a nested `required` exactly as declared — so a schema that wants a
+    nested property actually PRESENT must say so itself, here, the same way the top level does.
+    `member_schema` therefore lists every property in its own `required`, widening the genuinely
+    optional ones (`manifest_ref`, `subgoal`, `human_role`) to accept `null` rather than dropping
+    them, mirroring the top-level pattern and #898's own established one.
 
     Below `_DRAFTER_ENUM_CEILING`, each member's `tools[]` entries are constrained to the surveyed
     catalog's names via a closed `enum`, in menu order (the same order `_catalog_menu` renders).
@@ -163,6 +177,20 @@ def _drafter_resolved_schema(catalog_descriptions: list[Any] | None) -> dict[str
         tool_item_schema["enum"] = names
     member_schema = {
         "type": "object",
+        "additionalProperties": False,
+        "required": [
+            "role",
+            "kind",
+            "manifest_ref",
+            "tools",
+            "tool_rationale",
+            "subgoal",
+            "depends_on",
+            "outputs_schema",
+            "human_role",
+            "requires_valid_json",
+            "outcome_critical",
+        ],
         "properties": {
             "role": {"type": "string"},
             "kind": {"type": "string", "enum": ["agent", "human"]},
@@ -171,7 +199,15 @@ def _drafter_resolved_schema(catalog_descriptions: list[Any] | None) -> dict[str
             "tool_rationale": {"type": "object"},
             "subgoal": {"type": ["string", "null"]},
             "depends_on": {"type": "array", "items": {"type": "string"}},
-            "outputs_schema": {"type": "object"},
+            # validate.py's F-NO-OUTPUT-CONTRACT blocks a member with no non-empty
+            # outputs_schema.required — force the "required" key present (still object-typed, so
+            # OHMMember(**m) accepts it unchanged) rather than leaving it a bare, satisfiable-empty
+            # `{"type": "object"}` the model can omit content from.
+            "outputs_schema": {
+                "type": "object",
+                "required": ["required"],
+                "properties": {"required": {"type": "array", "items": {"type": "string"}}},
+            },
             "human_role": {"type": ["string", "null"]},
             "requires_valid_json": {"type": "boolean"},
             "outcome_critical": {"type": "boolean"},
