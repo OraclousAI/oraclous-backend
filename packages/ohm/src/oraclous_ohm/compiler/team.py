@@ -221,7 +221,14 @@ def _drafter_resolved_schema(catalog_descriptions: list[Any] | None) -> dict[str
                 "type": "object",
                 "additionalProperties": False,
                 "required": ["required"],
-                "properties": {"required": {"type": "array", "items": {"type": "string"}}},
+                "properties": {
+                    # minItems: 1 — validate.py's F-NO-OUTPUT-CONTRACT specifically blocks a
+                    # NON-EMPTY required list's absence; the "required" key merely being present
+                    # with an empty array satisfies this schema's own type check while still
+                    # tripping that gate, which the reviewer's repair prompt does not cover. Close
+                    # by construction rather than by hoping the model fills it in.
+                    "required": {"type": "array", "items": {"type": "string"}, "minItems": 1}
+                },
             },
             "human_role": {"type": ["string", "null"]},
             "requires_valid_json": {"type": "boolean"},
