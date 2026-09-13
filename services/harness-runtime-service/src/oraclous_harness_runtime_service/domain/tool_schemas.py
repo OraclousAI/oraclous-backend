@@ -169,10 +169,10 @@ def _project_input_schema(
     widened to accept null, so the model satisfies the schema without guessing. This is the
     outbound mirror of the capability registry's own inbound check
     (`services/capability-registry-service/src/oraclous_capability_registry_service/domain/
-    executors/input_validation.py:92-98`, the `bound` set in `_check`), which already treats a
-    `configuration` key as satisfying `required` server-side; the two live in separate, untied
-    test suites, so treat that file/line as a live cross-reference to keep in sync, not
-    decoration.
+    executors/input_validation.py:91-112`, the `bound` parameter and its use in `_check`), which
+    already treats a `configuration` key as satisfying `required` server-side; the two live in
+    separate, untied test suites, so treat that file/line as a live cross-reference to keep in
+    sync, not decoration.
 
     Returns the rendered schema and ``nullable_keys`` — every property the render widened, whether
     because the plugin's own declared schema left it genuinely optional or because ``bound_config``
