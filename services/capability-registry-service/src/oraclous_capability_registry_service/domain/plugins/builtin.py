@@ -584,7 +584,9 @@ _WEB_SEARCH_PARAMETERS_SCHEMA = {
             "type": ["integer", "null"],
             "minimum": 1,
             "maximum": 20,
-            "description": "How many results to return. Defaults to 5. Send null to use the default.",
+            "description": (
+                "How many results to return. Defaults to 5. Send null to use the default."
+            ),
         },
         "sites": {
             "type": ["array", "null"],

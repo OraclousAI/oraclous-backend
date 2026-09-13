@@ -214,7 +214,9 @@ def _project_input_schema(
     # (a nested list/dict — unhashable, from a corrupted registry write) is silently ignored
     # rather than raising, matching how every other hostile value in this module degrades.
     pre_required = [
-        k for k in declared_required if isinstance(k, str) and k in op_key_set and k != _OPERATION_KEY
+        k
+        for k in declared_required
+        if isinstance(k, str) and k in op_key_set and k != _OPERATION_KEY
     ]
     force_nullable = frozenset(k for k in op_key_set if k in bound_config)
 
