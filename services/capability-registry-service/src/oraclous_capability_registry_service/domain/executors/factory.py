@@ -10,6 +10,9 @@ from __future__ import annotations
 
 from typing import Any, cast
 
+from oraclous_capability_registry_service.domain.connectors.draft_manifest import (
+    DraftManifestConnector,
+)
 from oraclous_capability_registry_service.domain.connectors.federated_search import (
     FederatedSearchConnector,
 )
@@ -18,9 +21,6 @@ from oraclous_capability_registry_service.domain.connectors.find_similar import 
 )
 from oraclous_capability_registry_service.domain.connectors.generic_rest import (
     GenericRestConnector,
-)
-from oraclous_capability_registry_service.domain.connectors.draft_manifest import (
-    DraftManifestConnector,
 )
 from oraclous_capability_registry_service.domain.connectors.github import GitHubReader
 from oraclous_capability_registry_service.domain.connectors.github_sink import GitHubSinkConnector
