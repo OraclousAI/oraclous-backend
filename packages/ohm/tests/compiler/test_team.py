@@ -77,9 +77,9 @@ def _assert_top_level_closed_and_fully_required(schema: dict) -> None:
     EVERY top-level property key also appears in ``required``.
 
     Scoped to the TOP LEVEL ONLY — corrected 2026-09-13 against #898's real, measured renderer
-    behaviour (``render_strict_schema`` in ``tool_schemas.py``, landing as #898's own [tests] PRs
-    #1057/#1060 on ``main``; its [impl] PR #1059 is not merged yet). Two things drive this
-    narrowing, not a relaxation of rigor:
+    behaviour (``render_strict_schema`` in ``tool_schemas.py``, landed on ``main`` via its [tests]
+    PRs #1057/#1060 and its [impl] PR #1059). Two things drive this narrowing, not a relaxation of
+    rigor:
 
     1. The provider-probe fact that actually matters here does NOT generalise the way an earlier
        draft of this test assumed: nesting a partial ``required`` list on an object INSIDE an
