@@ -53,6 +53,94 @@ def _json_schema(parameters: Any, *, closed: bool) -> dict[str, Any]:
     return schema
 
 
+def _widen_type_to_nullable(prop: dict[str, Any]) -> dict[str, Any]:
+    """Widen ``prop``'s declared ``type`` to also accept ``null``, leaving every other keyword
+    (``minLength``, ``format``, ``minimum``, ``maximum``, ``default``, ``enum``, ``description``,
+    …) untouched (#898 probe fact 3). A bare type becomes a two-element list; an existing type
+    list gets ``"null"`` appended only if it is not already present, so a genuinely-nullable
+    property (``["object", "null"]``) is never doubled up."""
+    widened = dict(prop)
+    current = widened.get("type")
+    if isinstance(current, list):
+        if "null" not in current:
+            widened["type"] = [*current, "null"]
+    elif isinstance(current, str):
+        widened["type"] = [current, "null"]
+    return widened
+
+
+def _close_nested_object_schemas(value: Any) -> Any:
+    """Recursively set ``additionalProperties: false`` on every NESTED object schema — a directly
+    nested object property, or the item schema of an array — without touching that nested
+    object's own ``required``/``type``. Only the top-level render (``render_strict_schema``)
+    recomputes ``required``/nullability; an already-well-formed nested contract is left as its
+    author wrote it, just closed."""
+    if not isinstance(value, dict):
+        return value
+    out = dict(value)
+    if out.get("type") == "object":
+        nested_properties = out.get("properties")
+        if isinstance(nested_properties, dict):
+            out["properties"] = {
+                key: _close_nested_object_schemas(nested_value)
+                for key, nested_value in nested_properties.items()
+            }
+        out["additionalProperties"] = False
+    elif out.get("type") == "array":
+        items = out.get("items")
+        if isinstance(items, dict):
+            out["items"] = _close_nested_object_schemas(items)
+    return out
+
+
+def render_strict_schema(schema: Any, *, force_nullable: frozenset[str] = frozenset()) -> Any:
+    """Render ``schema`` into the dialect a provider's ``strict`` function-calling flag needs to
+    actually bind (#898 — real-provider probe, OpenRouter, 2026-09-13).
+
+    Fact 2 of the probe: the flag is SILENTLY INERT unless every declared property is in
+    ``required`` (a partial ``required`` list let a forbidden value through 7/10 times with the
+    flag set; a complete one, 0/10 — no error either way). So every top-level property here ends
+    up in ``required``, unconditionally. A property that was not already required — or is named in
+    ``force_nullable`` (the #911 instance-bound-argument case: the model cannot know the value at
+    all, so it must never be *asked* for it) — is instead widened to accept ``null`` rather than
+    dropped, so the model can satisfy the requirement without guessing. A property already
+    required and not force-nullable reaches the model as its plain, unwidened type: there is no
+    null escape hatch for something the caller must always supply.
+
+    ``additionalProperties: false`` is set at the top level and at every nested object schema too
+    (see ``_close_nested_object_schemas``); a nested object's own ``required``/``type`` are left
+    exactly as declared.
+
+    A non-object schema — anything without ``{"type": "object"}``, including a non-dict value —
+    passes through completely unchanged: this renderer only ever applies to the shape
+    ``required``/``additionalProperties`` mean anything for.
+
+    Pure and idempotent: rendering an already-rendered schema with the same ``force_nullable``
+    reproduces it exactly.
+    """
+    if not isinstance(schema, dict) or schema.get("type") != "object":
+        return schema
+
+    declared_properties = schema.get("properties")
+    declared_properties = declared_properties if isinstance(declared_properties, dict) else {}
+    original_required = set(schema.get("required") or [])
+
+    rendered_properties: dict[str, Any] = {}
+    required: list[str] = []
+    for key, prop in declared_properties.items():
+        required.append(key)
+        closed = _close_nested_object_schemas(prop)
+        if isinstance(closed, dict) and (key in force_nullable or key not in original_required):
+            closed = _widen_type_to_nullable(closed)
+        rendered_properties[key] = closed
+
+    rendered = dict(schema)
+    rendered["properties"] = rendered_properties
+    rendered["required"] = required
+    rendered["additionalProperties"] = False
+    return rendered
+
+
 _MCP_SPEC_TYPE = "mcp"
 
 #: The one field the registry dispatches on, never one a model may fill in itself (see the

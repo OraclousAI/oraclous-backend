@@ -19,13 +19,23 @@ Message = dict[str, Any]
 @dataclass(frozen=True, slots=True)
 class ToolSpec:
     """One LLM-callable tool = one capability operation. ``name`` is what the model calls;
-    ``binding``/``operation`` are how the loop dispatches it to the registry."""
+    ``binding``/``operation`` are how the loop dispatches it to the registry.
+
+    ``strict``/``nullable_keys`` (#898) are carried EXPLICITLY, never inferred from ``parameters``'
+    own shape — a schema that already looks fully-required-and-closed must still stay non-strict
+    unless something upstream set the marker. ``strict`` tells the wire client to set the
+    provider's strict function-calling flag; ``nullable_keys`` names every property the PLATFORM
+    itself widened to accept ``null`` when rendering ``parameters`` (a previously optional or
+    instance-bound argument) — ``dispatch_payload`` strips a null on exactly those keys, and only
+    those, before the registry ever sees the call."""
 
     name: str
     description: str
     parameters: dict[str, Any]
     binding: str
     operation: str
+    strict: bool = False
+    nullable_keys: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True, slots=True)
