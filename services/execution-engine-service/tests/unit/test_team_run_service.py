@@ -140,6 +140,7 @@ class FakeHarness:
         graph_authoritative: bool = False,
         prior_fetched_urls: list[str] | None = None,  # additive (#975) — accepted, ignored here
         person_supplied_text: str | None = None,  # additive (#975) — accepted, ignored here
+        timeout: float | None = None,  # noqa: ASYNC109 — additive (#1067), accepted+ignored
     ) -> dict[str, Any]:
         self.inputs.append(input_text)
         eid = uuid.uuid4()  # each member 'execution' gets an id → the engine records the tree
