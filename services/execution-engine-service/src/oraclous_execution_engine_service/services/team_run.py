@@ -53,7 +53,9 @@ from oraclous_ohm.orchestrate import (
 )
 from oraclous_ohm.sites import InvalidSiteError, normalise_sites
 
-from oraclous_execution_engine_service.core.config import get_settings
+from oraclous_execution_engine_service.core.config import (
+    HARNESS_MEMBER_CALL_TIMEOUT_CEILING_SECONDS,
+)
 from oraclous_execution_engine_service.domain.answer_roles import sink_roles
 from oraclous_execution_engine_service.domain.app_answers import parse_answers
 from oraclous_execution_engine_service.domain.app_form import SITE_RESTRICTION_KEY
@@ -682,6 +684,15 @@ def make_harness_dispatch(
     contributions: dict[str, list[str]] | None = None,
     ancestors: dict[str, list[str]] | None = None,
     person_supplied_text: str = "",
+    # #1067 (R1, item 4): the bound threaded onto EVERY member's harness call. An explicit
+    # parameter, not a `get_settings()` read in here — the effective, already-clamped value is
+    # resolved ONCE at the wiring boundary (``tasks/run_tasks.py``, the same place
+    # `HarnessClient`'s own flat timeout is read) and passed down through `TeamRunService` ->
+    # `run_team_hybrid`/`run_team_harness` -> here, so a caller or a test can override it without
+    # patching a global. The literal default is the code-level ceiling itself
+    # (`HARNESS_MEMBER_CALL_TIMEOUT_CEILING_SECONDS`), for a direct call to this factory that
+    # supplies no run-specific value.
+    member_call_timeout: float = HARNESS_MEMBER_CALL_TIMEOUT_CEILING_SECONDS,
 ) -> DispatchFn:
     """Build a ``run_team`` dispatch that runs each member as a real harness execution.
 
@@ -705,11 +716,7 @@ def make_harness_dispatch(
     _text`` is the already-composed, already-truncated citable text (#975 ruling 4/6), sent
     UNCHANGED to every member — the entrypoint included."""
     contrib_map: dict[str, list[str]] = contributions if contributions is not None else {}
-    # #1067 (R1, item 4): the bound actually threaded onto EVERY member's harness call — read once
-    # per drive, strictly under a real caller's own patience (Settings.harness_member_call_timeout),
-    # unlike the harness client's flat fallback (Settings.harness_request_timeout), which is already
-    # bigger than a known caller's window.
-    member_timeout = get_settings().harness_member_call_timeout
+    member_timeout = member_call_timeout
 
     async def dispatch(member: OHMMember, envelopes: list[HandoffEnvelope], fan_item: Any) -> Any:
         sub = sub_harnesses.get(member.role)
@@ -970,6 +977,7 @@ async def run_team_harness(
     graph_authoritative: bool = False,
     on_checkpoint: CheckpointFn | None = None,
     on_dispatch: DispatchAnnounceFn | None = None,
+    member_call_timeout: float = HARNESS_MEMBER_CALL_TIMEOUT_CEILING_SECONDS,
 ) -> TeamRunResult:
     """Run a Team Harness member DAG, dispatching each member as a real harness execution.
 
@@ -1029,6 +1037,7 @@ async def run_team_harness(
         contributions=contributions,  # #975: shared + mutated across every dispatch of this run
         ancestors=ancestors,  # #989: the transitive-closure map every dispatch composes a seed from
         person_supplied_text=_person_supplied_text(task, answers),  # #975 ruling 4/6
+        member_call_timeout=member_call_timeout,
     )
     return await run_team(
         manifest,
@@ -1122,6 +1131,7 @@ async def run_team_hybrid(
     graph_authoritative: bool = False,
     on_checkpoint: CheckpointFn | None = None,
     on_dispatch: DispatchAnnounceFn | None = None,
+    member_call_timeout: float = HARNESS_MEMBER_CALL_TIMEOUT_CEILING_SECONDS,
 ) -> TeamRunResult:
     """Drive a Team Harness whose handoff graph has GENUINE loops (ADR-043 #552): the acyclic
     skeleton runs on ``run_team`` and each loop SCC runs the bounded ``run_loop_seam`` conductor,
@@ -1159,6 +1169,7 @@ async def run_team_hybrid(
             graph_authoritative=graph_authoritative,
             on_checkpoint=on_checkpoint,  # #819: per-member durability
             on_dispatch=on_dispatch,  # #828: fires before a member's dispatch runs
+            member_call_timeout=member_call_timeout,
         )
     if coordinate is None or done_check_for is None:  # fail-closed (ADR-043 invariant)
         raise OHMError("team has loops but no coordinator/done-check wired")
@@ -1198,6 +1209,7 @@ async def run_team_hybrid(
         task=hybrid_task,  # Contract §TASK (#674): to every member
         answers=hybrid_answers,  # #846: the app's intake answers, to every member
         required_sites=resolve_run_sites(inputs),  # #961: the sites this run is held to
+        member_call_timeout=member_call_timeout,
     )
     termination = manifest.orchestration.termination if manifest.orchestration else None
     max_rounds = (termination.max_rounds if termination else None) or _DEFAULT_MAX_ROUNDS
