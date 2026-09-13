@@ -69,16 +69,41 @@ def _widen_type_to_nullable(prop: dict[str, Any]) -> dict[str, Any]:
     return widened
 
 
+def _is_object_type(type_value: Any) -> bool:
+    """True for a schema's bare ``"object"`` type OR a type union that includes it
+    (``["object", "null"]``) — the shape ``_widen_type_to_nullable`` itself produces when an
+    optional, object-typed property is widened. Matching only the bare string would silently skip
+    closing (and recursing into) exactly the properties this renderer just made nullable."""
+    return type_value == "object" or (isinstance(type_value, list) and "object" in type_value)
+
+
+def _is_array_type(type_value: Any) -> bool:
+    """The array counterpart of ``_is_object_type``, same reason: a widened array-typed property
+    carries ``["array", "null"]``, not the bare string."""
+    return type_value == "array" or (isinstance(type_value, list) and "array" in type_value)
+
+
 def _close_nested_object_schemas(value: Any) -> Any:
     """Recursively set ``additionalProperties: false`` on every NESTED object schema — a directly
     nested object property, or the item schema of an array — without touching that nested
     object's own ``required``/``type``. Only the top-level render (``render_strict_schema``)
     recomputes ``required``/nullability; an already-well-formed nested contract is left as its
-    author wrote it, just closed."""
+    author wrote it, just closed.
+
+    Nested ``required`` is left untouched deliberately, and this is now MEASURED, not assumed: a
+    second real-provider probe (OpenRouter, 2026-09-13) built a nested object inside an array
+    whose OWN ``required`` named only one of its two properties, with an ``enum`` on the other,
+    and pushed hard for a value outside that enum. A partial nested ``required`` did not make the
+    constraint inert — 0/5 forbidden values with a partial nested ``required``, 0/5 with a
+    complete one — unlike probe fact 2 at the TOP level, where a partial list let 7/10 through. So
+    only the top-level ``required`` needs forcing; a nested object's own partial ``required`` is
+    left exactly as its author wrote it.
+    """
     if not isinstance(value, dict):
         return value
     out = dict(value)
-    if out.get("type") == "object":
+    type_value = out.get("type")
+    if _is_object_type(type_value):
         nested_properties = out.get("properties")
         if isinstance(nested_properties, dict):
             out["properties"] = {
@@ -86,7 +111,7 @@ def _close_nested_object_schemas(value: Any) -> Any:
                 for key, nested_value in nested_properties.items()
             }
         out["additionalProperties"] = False
-    elif out.get("type") == "array":
+    if _is_array_type(type_value):
         items = out.get("items")
         if isinstance(items, dict):
             out["items"] = _close_nested_object_schemas(items)
@@ -118,7 +143,7 @@ def render_strict_schema(schema: Any, *, force_nullable: frozenset[str] = frozen
     Pure and idempotent: rendering an already-rendered schema with the same ``force_nullable``
     reproduces it exactly.
     """
-    if not isinstance(schema, dict) or schema.get("type") != "object":
+    if not isinstance(schema, dict) or not _is_object_type(schema.get("type")):
         return schema
 
     declared_properties = schema.get("properties")
