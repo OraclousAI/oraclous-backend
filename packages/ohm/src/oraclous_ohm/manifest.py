@@ -36,6 +36,17 @@ class OHMCapability(BaseModel):
     ref: str = Field(min_length=1)  # core/<name>@<version> | org:<org-id>/<name>@<version>
     binding: str = Field(min_length=1)
     config: dict[str, Any] = Field(default_factory=dict)
+    # #900 (ADR-053 decision 1): a per-run, per-organisation JSON Schema for this capability's
+    # tool-call parameters, computed by the compiler at compile time. When present it OVERRIDES the
+    # schema on the capability's stored registry descriptor for THIS run only; absent (None, the
+    # default) means resolution behaves exactly as it does today, byte-identical. Deliberately a
+    # SIBLING of `config`, never merged into it — `config` is copied into the persisted registry
+    # instance row (`_materialise`), and every compile would otherwise write a copy of the calling
+    # organisation's whole tool catalogue into the database. Deliberately NOT named
+    # `parameters_schema` — that name already carries a different meaning on the frontend's tool
+    # descriptor (`oraclous-frontend`'s `packages/api-client/src/tools.ts`), written only by the
+    # MCP importer.
+    resolved_schema: dict[str, Any] | None = None
 
 
 class OHMModel(BaseModel):
@@ -214,6 +225,17 @@ class OHMMember(BaseModel):
     # before #834 is unchanged. Enforced fail-closed at load (parse.py): `True` with no non-empty
     # `outputs_schema.required` gives the rule nothing to check and is a manifest error.
     outcome_critical: bool = False
+    # #900 (ADR-053 decision 2): names one of this member's OWN tools[] whose terminating call
+    # constitutes the member's structured answer — never free text the platform tries to peel JSON
+    # out of. Declared HERE, on the member, not on the runtime policy envelope, because a saved
+    # team must be self-describing: every other per-member behaviour (tools, max_tokens/
+    # max_tool_calls, on_exhaustion, requires_valid_json, outputs_schema, outcome_critical) already
+    # lives here. Threads to the runtime the same way those already do — see
+    # `PolicyEnvelope.answer_from_tool` / `build_envelope`'s `member_answer_from_tool`. None (the
+    # default) → byte-identical to today. Not cross-checked against `tools[]` here (ADR-053 does
+    # not rule that a validator must exist); what happens when the loop ends without ever calling
+    # the named tool is existing on_exhaustion/grounding behaviour, unchanged.
+    answer_from_tool: str | None = None
 
     @model_validator(mode="after")
     def _human_requires_role(self) -> OHMMember:
