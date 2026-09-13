@@ -729,6 +729,10 @@ def make_harness_dispatch(
         # were declared — sent only when there are any, the same send-only-when-set pattern.
         if declared_keys:
             caps["declared_output_keys"] = list(declared_keys)
+        # #900 (ADR-053 decision 2): the member's declared answer tool rides to the harness the same
+        # send-only-when-set way on_exhaustion/requires_valid_json already do.
+        if member.answer_from_tool:
+            caps["answer_from_tool"] = member.answer_from_tool
         # #961 rulings 1+2: the websites this run is restricted to, so the harness can refuse a
         # search that leaves the restriction out. Sent ONLY when the person actually named some —
         # the #576 send-only-when-set pattern, and here it is load-bearing rather than tidy: most
