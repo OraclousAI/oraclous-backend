@@ -144,7 +144,7 @@ def _drafter_resolved_schema(catalog_descriptions: list[Any] | None) -> dict[str
     through; 0/10 with a complete list). So the TOP LEVEL here is closed
     (`additionalProperties: False`) with every top-level property required.
 
-    CORRECTION (live-run defect found post-merge, 2026-09-13): an earlier version of this
+    CORRECTION 1 (live-run defect found post-merge, 2026-09-13): an earlier version of this
     docstring over-read the same probe's nested-object result as license to leave a nested
     object's `required` incomplete. That is wrong, and the two claims are NOT the same thing.
     What the probe actually showed is narrower: a nested object with a partial `required` still
@@ -154,13 +154,24 @@ def _drafter_resolved_schema(catalog_descriptions: list[Any] | None) -> dict[str
     all, the model omitted `depends_on`, `kind`, and most of the other declared member fields
     entirely (3 of 11 properties came back, on more than one live run), which the downstream
     reviewer then could not repair (its own instructions cover a hallucinated TOOL, not a missing
-    STRUCTURAL field) and the compile failed. #898's `render_strict_schema` closes a nested
-    object's `additionalProperties` at render time regardless of what this function declares, but
-    it deliberately leaves a nested `required` exactly as declared — so a schema that wants a
-    nested property actually PRESENT must say so itself, here, the same way the top level does.
-    `member_schema` therefore lists every property in its own `required`, widening the genuinely
-    optional ones (`manifest_ref`, `subgoal`, `human_role`) to accept `null` rather than dropping
-    them, mirroring the top-level pattern and #898's own established one.
+    STRUCTURAL field) and the compile failed. `member_schema` therefore lists every property in
+    its own `required`, widening the genuinely optional ones (`manifest_ref`, `subgoal`,
+    `human_role`) to accept `null` rather than dropping them, mirroring the top-level pattern and
+    #898's own established one.
+
+    CORRECTION 2 (review finding, same day): CORRECTION 1 above still asserted that "#898's
+    `render_strict_schema` closes a nested object's `additionalProperties` at render time
+    regardless of what this function declares" — that is FALSE on this path and must not be
+    relied on anywhere in this function. `render_strict_schema`/`_close_nested_object_schemas`
+    is reached ONLY from `_project_input_schema` (`tool_schemas.py`'s priority-3 branch, a
+    plugin's own `spec.input_schema` PROJECTED onto one operation). This schema instead rides
+    `_parameters_for`'s priority-1 branch — a per-operation `parameters_schema` override, which
+    that function returns "outright, unchanged": no renderer, no closer, nothing downstream ever
+    touches it again before it reaches the model. Every closure this schema needs, at EVERY
+    level it needs it, has to be authored here, explicitly — nothing will do it after the fact.
+    `member_schema` closes itself (`additionalProperties: False` + full `required`, above); its
+    own nested `outputs_schema` property closes itself the same way, for the same reason, since
+    nothing else in the pipeline ever will.
 
     Below `_DRAFTER_ENUM_CEILING`, each member's `tools[]` entries are constrained to the surveyed
     catalog's names via a closed `enum`, in menu order (the same order `_catalog_menu` renders).
@@ -202,9 +213,13 @@ def _drafter_resolved_schema(catalog_descriptions: list[Any] | None) -> dict[str
             # validate.py's F-NO-OUTPUT-CONTRACT blocks a member with no non-empty
             # outputs_schema.required — force the "required" key present (still object-typed, so
             # OHMMember(**m) accepts it unchanged) rather than leaving it a bare, satisfiable-empty
-            # `{"type": "object"}` the model can omit content from.
+            # `{"type": "object"}` the model can omit content from. Closed explicitly
+            # (`additionalProperties: False`) — this schema rides the raw parameters_schema
+            # override path (CORRECTION 2 above), so nothing downstream closes a nested object
+            # for us; a nested object we want closed has to say so itself, here.
             "outputs_schema": {
                 "type": "object",
+                "additionalProperties": False,
                 "required": ["required"],
                 "properties": {"required": {"type": "array", "items": {"type": "string"}}},
             },
