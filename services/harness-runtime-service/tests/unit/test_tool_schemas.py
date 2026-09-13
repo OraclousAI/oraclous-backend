@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import pytest
-from oraclous_harness_runtime_service.domain.tool_schemas import tool_specs_for
+from oraclous_harness_runtime_service.domain.tool_schemas import dispatch_payload, tool_specs_for
 
 pytestmark = pytest.mark.unit
 
@@ -411,10 +411,27 @@ def test_an_operations_own_hint_map_keys_bound_the_projection_not_the_whole_plug
 
 
 def test_the_sibling_operation_still_gets_its_own_declared_properties() -> None:
+    """``_MULTI_OP_DESCRIPTOR``'s ``input_schema`` declares no ``required`` list at all, so under
+    #898's strict rendering BOTH ``query`` and ``params`` are genuinely optional and get widened
+    to accept ``null`` rather than dropped (probe fact 2: the provider's ``strict`` flag is
+    silently inert unless every property is in ``required``, so an optional one is kept in
+    ``required`` and made nullable instead of omitted). This test's purpose predates that rule and
+    is unaffected by it: it protects that ``query``'s own declared type survives the per-operation
+    projection at all — asserting the full property dict (union type included), not a loose
+    membership check, so a future change that flattened or dropped the type would still fail here.
+
+    NOTE for review: this fixture's own ``input_schema`` carries no ``required`` list, so it does
+    not exercise the "genuinely mandatory property stays plain, unwidened" half of the rule — only
+    ``test_naming_sites_is_required_but_nullable_so_search_stays_optional`` (capability-registry)
+    and the strict-schema unit tests cover that half. Left as-is rather than silently strengthened:
+    this test's stated purpose (cross-operation leakage) never depended on optionality."""
     specs = {s.name: s for s in tool_specs_for("pg2", _MULTI_OP_DESCRIPTOR)}
     query_props = specs["pg2__query"].parameters["properties"]
-    assert query_props["query"] == {"type": "string"}
-    assert query_props["params"] == {"type": "object"}
+    assert query_props["query"] == {"type": ["string", "null"]}
+    assert query_props["params"] == {
+        "type": ["object", "null"],
+        "additionalProperties": False,
+    }
 
 
 # ── #956: ``operation`` is never advertised as required, or even present ────────────────────────
@@ -856,7 +873,13 @@ def test_a_hostile_non_dict_input_schema_never_raises_and_falls_back(
 def test_a_hint_map_key_the_declared_schema_does_not_cover_keeps_its_hint_mapped_form() -> None:
     """The op's hint map may declare a key the plugin's ``input_schema.properties`` does not
     describe. That key must not silently vanish from the model's view — it keeps its current
-    hint-mapped ``{"type": ...}`` shape."""
+    hint-mapped ``{"type": ...}`` shape.
+
+    #898: ``timeout`` is not named in this fixture's ``required`` list, so the strict render also
+    widens it to accept ``null`` (probe fact 2 — see the sibling-operation test above for the full
+    rationale). This test's own purpose — the hint-mapped type surviving projection at all — is
+    unaffected: the full property dict (union type included) is asserted, not a loose membership
+    check, so a future change that dropped or flattened the type still fails here."""
     descriptor = {
         "id": "core-partial-schema",
         "metadata": {"name": "Partial Schema"},
@@ -877,7 +900,7 @@ def test_a_hint_map_key_the_declared_schema_does_not_cover_keeps_its_hint_mapped
         },
     }
     params = tool_specs_for("partial", descriptor)[0].parameters
-    assert params["properties"]["timeout"] == {"type": "integer"}
+    assert params["properties"]["timeout"] == {"type": ["integer", "null"]}
     assert params["properties"]["query"]["description"] == "the SQL"
 
 
@@ -942,7 +965,12 @@ def test_a_non_dict_properties_value_falls_back_to_the_hint_mapped_form() -> Non
     schema does not cover at all (``test_a_hint_map_key_the_declared_schema_does_not_cover_keeps_
     its_hint_mapped_form`` above): the hint-mapped ``{"type": ...}`` shape, derived from the
     operation's own ``parameters`` hint for that key. Asserting that exact shape rather than only
-    "does not raise" because it is consistent with surrounding code, not invented."""
+    "does not raise" because it is consistent with surrounding code, not invented.
+
+    #898: this fixture's ``input_schema`` declares no ``required`` list, so ``q`` is genuinely
+    optional and the strict render widens it to accept ``null`` too — same rationale as the sibling
+    test above. The property protected here is the same one: the hint-mapped type surviving at
+    all, asserted as the full property dict rather than a loose membership check."""
     descriptor = {
         "id": "core-non-dict-property-value",
         "metadata": {"name": "Non-dict Property Value"},
@@ -956,7 +984,7 @@ def test_a_non_dict_properties_value_falls_back_to_the_hint_mapped_form() -> Non
         },
     }
     params = tool_specs_for("non-dict-property", descriptor)[0].parameters
-    assert params["properties"]["q"] == {"type": "string"}
+    assert params["properties"]["q"] == {"type": ["string", "null"]}
 
 
 def test_an_operations_parameters_as_a_list_never_raises() -> None:
@@ -1069,6 +1097,85 @@ def test_an_mcp_operation_never_becomes_strict_even_with_the_marker_and_a_strict
     assert spec.parameters == _STRICT_SHAPED_OVERRIDE_SCHEMA
 
 
+# ── #1059 quality-review follow-up: an override can declare its own nullable keys ────────────────
+#
+# Priority 1 in ``_parameters_for`` (the ``parameters_schema`` override branch) reports an EMPTY
+# ``nullable_keys`` unconditionally, even when the override's own rendered schema genuinely has
+# nullable properties. Safe today only by coincidence — the two connectors reachable through this
+# path happen to read with a plain lookup rather than a defaulted one — and there is no way for an
+# override author to declare a nullable key at all. #900 (landing next) uses exactly this path, so
+# #898's own bug (a null silently destroying a connector's default) would quietly reappear there
+# the moment an authored override's optional argument needs the strict flag to bind.
+#
+# The declaration is carried EXPLICITLY, the same way ``strict`` already is via
+# ``parameters_schema_strict`` (see the section above) — a sibling ``parameters_schema_nullable_
+# keys`` marker on the op, never inferred from the override schema's own shape. That is the
+# existing mechanism extended, not a second one invented alongside it.
+
+_OVERRIDE_WITH_NULLABLE_SITES_SCHEMA = {
+    "type": "object",
+    "required": ["query", "sites"],
+    "additionalProperties": False,
+    "properties": {
+        "query": {"type": "string"},
+        "sites": {"type": ["array", "null"], "items": {"type": "string"}},
+    },
+}
+
+
+def test_an_override_that_declares_a_nullable_key_has_it_honoured_end_to_end() -> None:
+    """The declared key reaches ``ToolSpec.nullable_keys`` — and, because that is the only thing
+    ``dispatch_payload`` consults, a null the model sends on it is actually stripped before
+    dispatch, exactly as a projected (non-override) schema's own optional keys already are."""
+    descriptor = {
+        "id": "core-override-nullable-keys",
+        "metadata": {"name": "Override Nullable Keys"},
+        "spec": {
+            "type": "API",
+            "capabilities": [
+                {
+                    "name": "search",
+                    "description": "search",
+                    "parameters": {"query": "str", "sites": "list"},
+                    "parameters_schema": _OVERRIDE_WITH_NULLABLE_SITES_SCHEMA,
+                    "parameters_schema_strict": True,
+                    "parameters_schema_nullable_keys": ["sites"],
+                }
+            ],
+        },
+    }
+    spec = tool_specs_for("override-nullable-keys", descriptor)[0]
+    assert spec.nullable_keys == frozenset({"sites"})
+
+    payload = dispatch_payload(spec, {"query": "q", "sites": None})
+    assert "sites" not in payload
+    assert payload["query"] == "q"
+
+
+def test_an_override_that_declares_no_nullable_keys_behaves_as_it_does_today() -> None:
+    """The regression guard: an override with no ``parameters_schema_nullable_keys`` marker at all
+    (the ``_STRICT_SHAPED_OVERRIDE_SCHEMA`` fixture above, unmodified) must keep reporting an empty
+    ``nullable_keys`` — nothing about extending the mechanism may change the default."""
+    descriptor = {
+        "id": "core-explicit-strict-override-no-nullable",
+        "metadata": {"name": "Explicit Strict Override No Nullable"},
+        "spec": {
+            "type": "API",
+            "capabilities": [
+                {
+                    "name": "op",
+                    "description": "op",
+                    "parameters": {"q": "str"},
+                    "parameters_schema": _STRICT_SHAPED_OVERRIDE_SCHEMA,
+                    "parameters_schema_strict": True,
+                }
+            ],
+        },
+    }
+    spec = tool_specs_for("explicit-strict-no-nullable", descriptor)[0]
+    assert spec.nullable_keys == frozenset()
+
+
 # ── #898: additionalProperties: false at every nested object level, on a real shape ──────────────
 
 _GITHUB_SINK_FILES_DESCRIPTOR = {
@@ -1113,6 +1220,76 @@ def test_a_nested_object_inside_an_array_is_closed_too_on_a_real_shape() -> None
     assert params["additionalProperties"] is False
     assert params["properties"]["files"]["items"]["additionalProperties"] is False
     assert spec.strict is True
+
+
+# ── #1059 quality-review follow-up: a nested object DECLARED in the widened list form ────────────
+#
+# The nested-closing walk matched a schema's ``type`` as the exact string ``"object"``/``"array"``.
+# ``render_strict_schema`` itself produces the list form (``["object", "null"]``) for an optional
+# top-level object argument, so that exact shape is a certainty somewhere in a real schema, not a
+# contrived one — and a NESTED property one level inside an already-required object (declared that
+# way directly by a plugin author, the same idiom the renderer itself uses) hits the exact-match gap
+# for real: the exact-match check never recognises it as an object at all, so it skips closing it
+# to unknown keys AND skips recursing into ITS OWN children, leaving both silently open.
+
+_NESTED_LIST_TYPED_OBJECT_DESCRIPTOR = {
+    "id": "core-nested-list-typed-object",
+    "metadata": {"name": "Nested List-Typed Object"},
+    "spec": {
+        "type": "API",
+        "capabilities": [
+            {
+                "name": "deliver",
+                "description": "Write changed files",
+                "parameters": {"files": "list"},
+            }
+        ],
+        "input_schema": {
+            "type": "object",
+            "required": ["files"],
+            "properties": {
+                "files": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "required": ["path"],
+                        "properties": {
+                            "path": {"type": "string"},
+                            # Declared directly in the widened union form — a legitimate JSON-schema
+                            # idiom for "this nested object is optional", and the exact shape #898's
+                            # own renderer produces one level up for a top-level optional argument.
+                            "metadata": {
+                                "type": ["object", "null"],
+                                "properties": {
+                                    "encoding": {"type": "string"},
+                                    "detail": {
+                                        "type": "object",
+                                        "properties": {"note": {"type": "string"}},
+                                    },
+                                },
+                            },
+                        },
+                    },
+                },
+            },
+        },
+    },
+}
+
+
+def test_a_nested_object_typed_as_a_list_still_gets_closed_and_so_do_its_children() -> None:
+    """``files[].metadata`` is object-typed but written as ``["object", "null"]`` — it must be
+    closed to unknown keys, and ``files[].metadata.detail`` (its own child, one level deeper) must
+    ALSO be closed: recursion has to resume past the union-typed level, not just tolerate it
+    once."""
+    spec = tool_specs_for("nested-list-typed", _NESTED_LIST_TYPED_OBJECT_DESCRIPTOR)[0]
+    metadata_schema = spec.parameters["properties"]["files"]["items"]["properties"]["metadata"]
+    assert metadata_schema["additionalProperties"] is False, (
+        "a nested object declared in the ['object', 'null'] form was never closed"
+    )
+    assert metadata_schema["properties"]["detail"]["additionalProperties"] is False, (
+        "closing did not recurse past a union-typed nested object into its own children"
+    )
 
 
 # ── #898: a parameterless operation still renders a valid strict schema ──────────────────────────

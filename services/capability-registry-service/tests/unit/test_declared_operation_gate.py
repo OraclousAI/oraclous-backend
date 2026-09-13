@@ -115,6 +115,28 @@ class _TripwireBroker:
         raise _PastTheGate("a credential was resolved")
 
 
+class _ExecutorFactoryTripwire:
+    """Stands in for ``create_executor`` itself (#898 security-review follow-up).
+
+    #898 commit 283b5638 scoped ``InternalTool``'s required-argument check to the CALLED
+    operation's own declared keys; an operation matching none of the descriptor's capabilities
+    resolves that scope to an EMPTY set, so no required-argument check runs at all for that call.
+    Safe today for exactly one reason: this gate (``operation_is_declared``) refuses an undeclared
+    operation before ``create_executor`` is ever reached, and ``create_executor`` has exactly one
+    production call site — the one in ``tool_execution_service.execute_sync`` this file drives.
+    Nothing previously tested either half of that claim; asserting the final error code alone would
+    still pass if the refusal moved to AFTER the executor was built, so this records whether the
+    factory function itself ran at all.
+    """
+
+    def __init__(self) -> None:
+        self.called = False
+
+    def __call__(self, descriptor: dict[str, Any]) -> Any:  # noqa: ANN401
+        self.called = True
+        raise _PastTheGate("create_executor was called")
+
+
 class _NoopProvenance:
     """Not under test here (#826 owns provenance emit coverage) — a discard sink so the
     now-mandatory constructor kwarg does not force this file to assert on it."""
@@ -170,6 +192,47 @@ async def test_a_declared_operation_passes_the_gate() -> None:
     assert ei.value.error_code == "no_executor", (
         "a DECLARED operation did not reach the executor lookup"
     )
+
+
+async def test_an_undeclared_operation_never_reaches_the_executor_factory(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#898 security-review follow-up: proves the ordering observably rather than trusting the
+    error code alone. See ``_ExecutorFactoryTripwire`` for why this matters — the narrowed
+    required-argument check inside the executor is skipped entirely for an operation the
+    descriptor never declared, so THIS gate running strictly before ``create_executor`` is the
+    only thing standing between that skip and a connector."""
+    tripwire = _ExecutorFactoryTripwire()
+    monkeypatch.setattr(
+        "oraclous_capability_registry_service.services.tool_execution_service.create_executor",
+        tripwire,
+    )
+
+    with pytest.raises(ExecutionNotReadyError) as ei:
+        await _execute(_descriptor(capabilities=_TWO_OPS), {"operation": "drop_table"})
+
+    _refusal(ei.value)
+    assert tripwire.called is False, "create_executor ran for an undeclared operation"
+
+
+async def test_an_operation_belonging_to_a_different_tool_never_reaches_the_executor_factory(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Same guard, a sharper input: ``list_files`` is a REAL declared operation — just not on
+    THIS descriptor (it belongs to ``GitHubReaderPlugin``, not the two-op reader under test here).
+    A gate that only refused names that look invented everywhere would still leave the skip open
+    for a name that is merely wrong FOR THIS TOOL."""
+    tripwire = _ExecutorFactoryTripwire()
+    monkeypatch.setattr(
+        "oraclous_capability_registry_service.services.tool_execution_service.create_executor",
+        tripwire,
+    )
+
+    with pytest.raises(ExecutionNotReadyError) as ei:
+        await _execute(_descriptor(capabilities=_TWO_OPS), {"operation": "list_files"})
+
+    _refusal(ei.value)
+    assert tripwire.called is False, "create_executor ran for an operation of a different tool"
 
 
 async def test_an_absent_operation_is_not_a_refusal() -> None:

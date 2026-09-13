@@ -28,13 +28,40 @@ keyword-argument call to an EXISTING, already-imported dataclass, so per
 not subject to the function-local-import rule — it fails at TEST RUNTIME with ``TypeError``
 (unexpected keyword argument), not at collection time, exactly like every ``bound_config=`` call in
 ``test_tool_schemas.py`` before #911 landed.
+
+QUALITY-REVIEW FOLLOW-UP (#1059): every test above, including the "end-to-end" one, stops at the
+``payload`` dict — ``test_the_connectors_own_default_applies_once_the_null_is_stripped`` calls
+``payload.get("top_k", 10)`` ITSELF rather than handing ``payload`` to the real connector, so it
+proves ``dispatch_payload``'s own contract, not that the real ``KnowledgeRetrieverConnector`` (or
+any other real connector) actually reads the stripped payload the way this file assumes it does. A
+review of the two *connector-level* tests that do touch a null (the web-search "no sites" test, and
+this module's own knowledge-retriever peers) found neither would go red if the strip were deleted
+outright, because both connectors happen to read that particular optional argument in a way that
+already tolerates ``None``. The last section below closes that gap: it drives a null through
+``tool_specs_for`` → ``dispatch_payload`` (the exact function the dispatch closure in
+``harness_execution_service.py`` around line 1113 calls) → the REAL, unmocked
+``KnowledgeRetrieverConnector`` — a connector whose default (``top_k``) a stripped-vs-not null
+genuinely changes — with only the connector's own outbound HTTP call swapped for a MockTransport
+(no live stack). Cross-service import, deliberately, same as
+``test_tool_schemas_against_real_plugins.py``: ``harness-runtime-service`` (Layer 3) importing
+``capability-registry-service`` (Layer 2) is a DOWNWARD import under ADR-001.
 """
 
 from __future__ import annotations
 
+import json
+import uuid
+from collections.abc import Callable
 from typing import Any
 
+import httpx
 import pytest
+from oraclous_capability_registry_service.core.config import get_settings
+from oraclous_capability_registry_service.domain.connectors.knowledge_retriever import (
+    KnowledgeRetrieverConnector,
+)
+from oraclous_capability_registry_service.domain.executors.base import ExecutionContext
+from oraclous_capability_registry_service.domain.plugins.builtin import KnowledgeRetrieverPlugin
 from oraclous_harness_runtime_service.domain.llm.base import ToolSpec
 from oraclous_harness_runtime_service.domain.tool_schemas import dispatch_payload, tool_specs_for
 
@@ -101,6 +128,64 @@ def test_a_key_never_marked_nullable_by_anyone_is_never_stripped_on_null() -> No
     payload = dispatch_payload(spec, {"query": "revenue", "top_k": None})
     assert "top_k" in payload
     assert payload["top_k"] is None
+
+
+# ── #1059 quality-review follow-up: nullable_keys must reflect what actually changed ─────────────
+#
+# ``_project_input_schema`` recomputes which keys are nullable from a condition COPIED from inside
+# the renderer ("not in the pre-render required set, or force-nullable") rather than reading back
+# what the renderer itself actually widened. The two usually agree, but drift on a property with NO
+# declared ``type`` at all (a bare ``enum``, or an either-or ``anyOf``/``oneOf`` shape): the
+# renderer's own widening step only ever touches a ``type`` key, so a schema-less property is left
+# completely untouched by it — the copied condition still calls it "made nullable" whenever it is
+# optional, and ``dispatch_payload`` then strips a value on it the caller genuinely sent.
+
+_NO_DECLARED_TYPE_DESCRIPTOR = {
+    "id": "core-no-declared-type",
+    "metadata": {"name": "No Declared Type"},
+    "spec": {
+        "type": "API",
+        "capabilities": [
+            {
+                "name": "op",
+                "description": "op",
+                "parameters": {"query": "string", "mode": "string"},
+            }
+        ],
+        "input_schema": {
+            "type": "object",
+            "required": ["query"],
+            "properties": {
+                "query": {"type": "string"},
+                # No "type" key at all — a bare enum. There is nothing here for the renderer's own
+                # widening step to touch, so this property reaches the model completely unchanged.
+                "mode": {"enum": ["fast", "slow"]},
+            },
+        },
+    },
+}
+
+
+def test_a_property_with_no_declared_type_is_not_reported_as_nullable() -> None:
+    spec = tool_specs_for("no-declared-type", _NO_DECLARED_TYPE_DESCRIPTOR)[0]
+    assert spec.parameters["properties"]["mode"] == {"enum": ["fast", "slow"]}, (
+        "the renderer touched a property it had nothing (no 'type' key) to widen"
+    )
+    assert "mode" not in spec.nullable_keys, (
+        "nullable_keys claims 'mode' was made nullable, but the renderer left it untouched"
+    )
+
+
+def test_a_null_on_that_property_is_never_stripped_as_though_it_were_platform_made_nullable() -> (
+    None
+):
+    """The consequence, pinned end to end: even while the bug above stands, a caller's null on
+    ``mode`` must survive dispatch — the descriptor never declared it nullable and the platform
+    never made it nullable either, so ``dispatch_payload`` has no licence to drop it."""
+    spec = tool_specs_for("no-declared-type", _NO_DECLARED_TYPE_DESCRIPTOR)[0]
+    payload = dispatch_payload(spec, {"query": "q", "mode": None})
+    assert "mode" in payload
+    assert payload["mode"] is None
 
 
 # ── a non-null value is never touched, whether or not the key is in nullable_keys ─────────────────
@@ -179,3 +264,108 @@ def test_a_bound_argument_the_model_sends_as_null_is_stripped_so_the_binding_win
     payload = dispatch_payload(spec, {"graph_id": None, "query": "who approved this"})
     assert "graph_id" not in payload
     assert payload["query"] == "who approved this"
+
+
+# ── end-to-end through the REAL connector (#1059 quality-review follow-up) ───────────────────────
+#
+# Everything above proves ``dispatch_payload``'s own contract, or inspects the ``payload`` dict
+# itself — never a real connector reading it. The two tests below drive an explicit null through
+# the actual production chain a model call takes: ``tool_specs_for`` builds the REAL ``ToolSpec``
+# for the shipped ``core/knowledge-retriever`` descriptor (real schema render, real
+# ``nullable_keys``); ``dispatch_payload`` is the EXACT function
+# ``harness_execution_service.py``'s ``dispatch`` closure (around line 1113) calls before
+# ``self._registry.execute(instance_id, payload)``; the resulting payload is then handed to the
+# REAL ``KnowledgeRetrieverConnector.execute`` — unmocked except for its own outbound HTTP
+# transport, exactly as ``test_knowledge_retriever_connector.py`` already does. The two hops this
+# skips (the harness's in-process call crossing the wire into the registry's own ``/execute`` route,
+# and the registry's instance/credential lookup) require a live stack and add nothing #898 itself
+# changed; the schema, the strip, and the connector's own default read — everything this issue
+# touches — are all real here.
+
+_GRAPH = "22222222-2222-2222-2222-222222222222"
+
+
+@pytest.fixture(autouse=True)
+def _knowledge_retriever_settings(monkeypatch: pytest.MonkeyPatch):  # noqa: ANN201
+    monkeypatch.setenv("DATABASE_URL", "postgresql+asyncpg://x:x@localhost/x")
+    monkeypatch.setenv("INTERNAL_SERVICE_KEY", "dev-internal-key")
+    monkeypatch.setenv("AUTH_MODE", "gateway")
+    monkeypatch.setenv("KNOWLEDGE_RETRIEVER_URL", "http://knowledge-retriever-service:8000")
+    get_settings.cache_clear()
+    yield
+    get_settings.cache_clear()
+
+
+def _retriever_ctx() -> ExecutionContext:
+    return ExecutionContext(
+        instance_id=uuid.uuid4(),
+        organisation_id=uuid.uuid4(),
+        user_id=uuid.uuid4(),
+        execution_id=uuid.uuid4(),
+    )
+
+
+def _retriever_connector(handler: Callable[[httpx.Request], httpx.Response]) -> Any:
+    ex = KnowledgeRetrieverConnector({"id": "x"})
+    ex.transport = httpx.MockTransport(handler)
+    return ex
+
+
+def _real_search_spec() -> Any:
+    descriptor = KnowledgeRetrieverPlugin.descriptor()
+    specs = tool_specs_for(KnowledgeRetrieverPlugin.plugin_id(), descriptor)
+    return next(s for s in specs if s.operation == "search")
+
+
+async def test_the_real_connector_gets_its_own_default_when_the_model_sends_null() -> None:
+    """The positive case. ``top_k`` is genuinely optional on the shipped descriptor, so #898 renders
+    it required-but-nullable and the model sends ``top_k: null`` rather than omitting it.
+    ``dispatch_payload`` must strip that null so the connector's own
+    ``input_data.get("top_k", _DEFAULT_TOP_K)`` (``knowledge_retriever.py:93``) sees an ABSENT key
+    and applies its default (``10``) — never ``None``."""
+    spec = _real_search_spec()
+    assert "top_k" in spec.nullable_keys, (
+        "top_k is not schema-optional any more on the shipped descriptor — fixture drifted"
+    )
+
+    payload = dispatch_payload(
+        spec, {"query": "who approved this", "graph_id": _GRAPH, "top_k": None}
+    )
+
+    seen: dict = {}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        seen["body"] = json.loads(req.content)
+        return httpx.Response(200, json=[])
+
+    res = await _retriever_connector(handler).execute(payload, _retriever_ctx())
+    assert res.success
+    assert seen["body"]["top_k"] == 10, "the real connector received None instead of its default"
+
+
+async def test_bypassing_the_strip_lets_the_null_reach_the_connector_as_none() -> None:
+    """The negative twin, side by side with the test above so a future reader sees exactly what it
+    protects. This builds the payload the way ``dispatch_payload`` did before #898 — and the way it
+    would again if its null-strip were ever deleted — ``{"operation": spec.operation, **args}``,
+    with NO strip at all. The model's null then reaches the real connector unchanged, and the
+    connector's own default is destroyed: this is the platform-wide fail-open #898 exists to close.
+    """
+    spec = _real_search_spec()
+    naive_payload = {
+        "operation": spec.operation,
+        "query": "who approved this",
+        "graph_id": _GRAPH,
+        "top_k": None,
+    }
+
+    seen: dict = {}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        seen["body"] = json.loads(req.content)
+        return httpx.Response(200, json=[])
+
+    res = await _retriever_connector(handler).execute(naive_payload, _retriever_ctx())
+    assert res.success
+    assert seen["body"]["top_k"] is None, (
+        "expected the UNSTRIPPED counterfactual to reach the connector as None"
+    )
