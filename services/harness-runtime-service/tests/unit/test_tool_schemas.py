@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import pytest
-from oraclous_harness_runtime_service.domain.tool_schemas import tool_specs_for
+from oraclous_harness_runtime_service.domain.tool_schemas import dispatch_payload, tool_specs_for
 
 pytestmark = pytest.mark.unit
 
@@ -1095,6 +1095,85 @@ def test_an_mcp_operation_never_becomes_strict_even_with_the_marker_and_a_strict
     assert spec.strict is False
     # still byte-identical to the server's contract, just not strict
     assert spec.parameters == _STRICT_SHAPED_OVERRIDE_SCHEMA
+
+
+# ── #1059 quality-review follow-up: an override can declare its own nullable keys ────────────────
+#
+# Priority 1 in ``_parameters_for`` (the ``parameters_schema`` override branch) reports an EMPTY
+# ``nullable_keys`` unconditionally, even when the override's own rendered schema genuinely has
+# nullable properties. Safe today only by coincidence — the two connectors reachable through this
+# path happen to read with a plain lookup rather than a defaulted one — and there is no way for an
+# override author to declare a nullable key at all. #900 (landing next) uses exactly this path, so
+# #898's own bug (a null silently destroying a connector's default) would quietly reappear there
+# the moment an authored override's optional argument needs the strict flag to bind.
+#
+# The declaration is carried EXPLICITLY, the same way ``strict`` already is via
+# ``parameters_schema_strict`` (see the section above) — a sibling ``parameters_schema_nullable_
+# keys`` marker on the op, never inferred from the override schema's own shape. That is the
+# existing mechanism extended, not a second one invented alongside it.
+
+_OVERRIDE_WITH_NULLABLE_SITES_SCHEMA = {
+    "type": "object",
+    "required": ["query", "sites"],
+    "additionalProperties": False,
+    "properties": {
+        "query": {"type": "string"},
+        "sites": {"type": ["array", "null"], "items": {"type": "string"}},
+    },
+}
+
+
+def test_an_override_that_declares_a_nullable_key_has_it_honoured_end_to_end() -> None:
+    """The declared key reaches ``ToolSpec.nullable_keys`` — and, because that is the only thing
+    ``dispatch_payload`` consults, a null the model sends on it is actually stripped before
+    dispatch, exactly as a projected (non-override) schema's own optional keys already are."""
+    descriptor = {
+        "id": "core-override-nullable-keys",
+        "metadata": {"name": "Override Nullable Keys"},
+        "spec": {
+            "type": "API",
+            "capabilities": [
+                {
+                    "name": "search",
+                    "description": "search",
+                    "parameters": {"query": "str", "sites": "list"},
+                    "parameters_schema": _OVERRIDE_WITH_NULLABLE_SITES_SCHEMA,
+                    "parameters_schema_strict": True,
+                    "parameters_schema_nullable_keys": ["sites"],
+                }
+            ],
+        },
+    }
+    spec = tool_specs_for("override-nullable-keys", descriptor)[0]
+    assert spec.nullable_keys == frozenset({"sites"})
+
+    payload = dispatch_payload(spec, {"query": "q", "sites": None})
+    assert "sites" not in payload
+    assert payload["query"] == "q"
+
+
+def test_an_override_that_declares_no_nullable_keys_behaves_as_it_does_today() -> None:
+    """The regression guard: an override with no ``parameters_schema_nullable_keys`` marker at all
+    (the ``_STRICT_SHAPED_OVERRIDE_SCHEMA`` fixture above, unmodified) must keep reporting an empty
+    ``nullable_keys`` — nothing about extending the mechanism may change the default."""
+    descriptor = {
+        "id": "core-explicit-strict-override-no-nullable",
+        "metadata": {"name": "Explicit Strict Override No Nullable"},
+        "spec": {
+            "type": "API",
+            "capabilities": [
+                {
+                    "name": "op",
+                    "description": "op",
+                    "parameters": {"q": "str"},
+                    "parameters_schema": _STRICT_SHAPED_OVERRIDE_SCHEMA,
+                    "parameters_schema_strict": True,
+                }
+            ],
+        },
+    }
+    spec = tool_specs_for("explicit-strict-no-nullable", descriptor)[0]
+    assert spec.nullable_keys == frozenset()
 
 
 # ── #898: additionalProperties: false at every nested object level, on a real shape ──────────────
