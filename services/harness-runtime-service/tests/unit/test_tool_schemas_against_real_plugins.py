@@ -93,12 +93,15 @@ def test_every_shipped_plugins_operations_produce_a_usable_spec(plugin_cls: Any)
 # ── #898 full scope: every shipped operation is strict, and a strict schema is fully closed ──────
 #
 # Ruled by the owner: ALL first-party built-in operations get the rendered schema and the flag —
-# roughly 26 plugins, 38 operations, no exceptions (including the two that declare their own
+# roughly 26 plugins, 38 operations, no exceptions. That INCLUDES the two that declare their own
 # ``parameters_schema`` override today, ``core/web-research@1.0.0``'s ``search`` and
-# ``core/websearch@1``'s ``search`` — #900's own #901 note is exactly why strictness must be an
-# EXPLICIT marker rather than something the projection infers, so these two need the marker added
-# alongside their override, not a shape change). RED against every currently-shipped plugin: none
-# is strict today.
+# ``core/websearch@1``'s ``search``. Those two need BOTH halves, not just the marker:
+# ``_WEB_SEARCH_PARAMETERS_SCHEMA`` (``builtin.py``) declares ``required: ["query"]`` only and
+# carries no ``additionalProperties: false``, so a marker alone would leave it partially required
+# — which probe fact 2 measured as SILENTLY INERT (7/10 escapes). The marker must be explicit
+# rather than inferred from the schema's shape (#901 / #900), and the shape must also be rendered.
+# ``test_a_strict_specs_properties_are_all_required_and_the_schema_is_closed`` below is what
+# enforces the second half. RED against every currently-shipped plugin: none is strict today.
 
 
 @pytest.mark.parametrize("plugin_cls", _PLUGINS, ids=[p.NAME for p in _PLUGINS])
