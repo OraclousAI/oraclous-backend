@@ -88,3 +88,59 @@ def test_dispatch_still_maps_back_to_the_operation() -> None:
     assert spec.name == "web-research__search"
     assert spec.binding == "web-research"
     assert spec.operation == "search"
+
+
+def test_a_declared_schema_with_no_explicit_strict_marker_stays_non_strict() -> None:
+    """#898: strictness is carried EXPLICITLY, never inferred — this fixture's schema is a
+    perfectly ordinary object schema (not even closed), so there is no shape to infer from either
+    way, but the point holds regardless of shape (see the MCP counterpart in
+    ``test_tool_schemas.py``, where the schema DOES look strict-shaped and still stays non-strict
+    without the marker)."""
+    assert _search_spec().strict is False
+
+
+# ── #898: the explicit "parameters_schema_strict" carrier ─────────────────────────────────────────
+#
+# #900 (landing next) will inject a platform-AUTHORED schema onto a first-party descriptor, exactly
+# the shape this file already exercises. Priority 1 in ``_parameters_for`` returns an op's
+# ``parameters_schema`` verbatim regardless of whether the descriptor is first-party or MCP-imported
+# (#698 D1 reuses the very same key for the remote server's own ``inputSchema``) — so the ONLY thing
+# that can tell "ours, and meant to be strict" apart from "an untrusted server's contract" is an
+# explicit marker on the op, never the schema's own shape. This is what stops #900's authored
+# override from silently inheriting `strict` the moment it lands on an MCP descriptor.
+
+_STRICT_SEARCH_SCHEMA = {
+    "type": "object",
+    "required": ["query"],
+    "properties": {"query": {"type": "string", "description": "What to search the web for."}},
+    "additionalProperties": False,
+}
+
+_FIRST_PARTY_DESCRIPTOR_WITH_STRICT_MARKER = {
+    "kind": "tool",
+    "metadata": {"name": "Web Research"},
+    "spec": {
+        "type": "API",
+        "capabilities": [
+            {
+                "name": "search",
+                "description": "Search the live web and return ranked hits.",
+                "parameters": {"query": "str"},
+                "parameters_schema": _STRICT_SEARCH_SCHEMA,
+                "parameters_schema_strict": True,
+            }
+        ],
+    },
+}
+
+
+def test_the_explicit_marker_makes_a_first_party_declared_override_strict() -> None:
+    spec = tool_specs_for("web-research", _FIRST_PARTY_DESCRIPTOR_WITH_STRICT_MARKER)[0]
+    assert spec.strict is True
+
+
+def test_the_marker_does_not_disturb_the_declared_schema_itself() -> None:
+    """The override still wins outright, unchanged (#951 T6) — marking it strict is metadata about
+    it, never a rewrite of it."""
+    spec = tool_specs_for("web-research", _FIRST_PARTY_DESCRIPTOR_WITH_STRICT_MARKER)[0]
+    assert spec.parameters == _STRICT_SEARCH_SCHEMA

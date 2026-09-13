@@ -107,13 +107,18 @@ def test_a_builtin_descriptor_still_uses_the_hint_map_path() -> None:
     platform owns a first-party schema and closes it. The D1 point (hint map, not pass-through) is
     unchanged; the exact-equality pin is updated so it does not contradict ruling 2's tests below.
     """
-    params = {s.name: s for s in tool_specs_for("pg", _DESCRIPTOR)}["pg__query"].parameters
-    assert params == {
+    spec = {s.name: s for s in tool_specs_for("pg", _DESCRIPTOR)}["pg__query"]
+    assert spec.parameters == {
         "type": "object",
         "properties": {"query": {"type": "string"}},
         "required": [],
         "additionalProperties": False,
     }
+    # #898: the hint-map-only path carries no optionality information at all (the issue's own
+    # "option A is wrong" finding), so it is never eligible for strict rendering — guessing "every
+    # key is required" here would be exactly the mistake the issue rejected.
+    assert spec.strict is False
+    assert spec.nullable_keys == frozenset()
 
 
 @pytest.mark.parametrize(
@@ -357,6 +362,16 @@ def test_a_first_party_schema_projects_required_and_union_types() -> None:
     assert params["properties"]["draft"]["description"].strip()
 
 
+def test_a_projected_first_party_schema_is_strict_and_the_sole_property_is_not_nullable() -> None:
+    """#898: every first-party operation projected from ``spec.input_schema`` is strict. ``draft``
+    is the operation's ONLY argument and is genuinely required (declared, unbound) — it must reach
+    the model as its plain union type, with no null escape hatch for something the caller must
+    always supply."""
+    spec = tool_specs_for("core-manifest-validate", _MANIFEST_VALIDATE_DESCRIPTOR)[0]
+    assert spec.strict is True
+    assert "draft" not in spec.nullable_keys
+
+
 # ── cross-operation leakage guard ────────────────────────────────────────────────────────────────
 #
 # A plugin declares ONE ``INPUT_SCHEMA`` for the whole class (``PostgreSQLReaderPlugin`` shape:
@@ -513,30 +528,41 @@ _RECALL_MEMORY_DESCRIPTOR = {
 }
 
 
-def test_a_bound_config_key_is_dropped_from_required_but_the_property_survives() -> None:
-    """``graph_id`` is bound by the dispatching instance's config, so the model must not be asked
-    to supply it — but it must still see the property so it understands what the tool does with
-    it. ``bound_config`` does not exist on ``tool_specs_for`` yet, so this raises ``TypeError``
-    today — that is the RED failure this test asserts (see the section note above)."""
+def test_a_bound_config_key_is_forced_back_into_required_but_rendered_nullable() -> None:
+    """#898 supersedes the pre-strict #911 behaviour (bare subtraction from ``required``): a
+    strict schema needs EVERY property in ``required`` for the provider's own strict mode to bind
+    at all (probe fact 2 — a partial ``required`` list makes the flag silently inert), so
+    ``graph_id`` cannot simply be left out. Instead it is forced back into ``required`` AND
+    widened to accept ``null`` — the model satisfies the schema by sending null, never by
+    guessing a value it cannot know, and the platform strips that null before dispatch (see
+    ``test_dispatch_payload_null_strip.py``) so the connector's own default/binding applies.
+    ``bound_config`` already exists (#911); RED today because ``ToolSpec`` has no ``nullable_keys``
+    field yet and ``_project_input_schema`` still subtracts a bound key rather than widening it."""
     spec = tool_specs_for(
         "recall-memory",
         _RECALL_MEMORY_DESCRIPTOR,
         bound_config={"graph_id": "some-uuid"},
     )[0]
     params = spec.parameters
-    assert "graph_id" not in params["required"]
+    assert "graph_id" in params["required"]
+    assert "graph_id" in spec.nullable_keys
+    assert params["properties"]["graph_id"]["type"] == ["string", "null"]
+    assert params["properties"]["graph_id"]["format"] == "uuid"  # annotation survives the widening
     assert "graph_id" in params["properties"]
 
 
-def test_an_unbound_required_key_stays_required_beside_the_dropped_one() -> None:
-    """Same descriptor, same call: proves SUBTRACTION of exactly the bound key, not a blanket
-    clearing of ``required`` — ``query`` is not in ``bound_config`` and must remain required."""
+def test_an_unbound_required_key_stays_required_and_is_not_nullable() -> None:
+    """Same descriptor, same call: proves the widening is exactly the bound key, not a blanket
+    change to every property — ``query`` is not in ``bound_config``, is genuinely required by the
+    plugin's own declared schema, and must stay a plain non-nullable string."""
     spec = tool_specs_for(
         "recall-memory",
         _RECALL_MEMORY_DESCRIPTOR,
         bound_config={"graph_id": "some-uuid"},
     )[0]
     assert "query" in spec.parameters["required"]
+    assert "query" not in spec.nullable_keys
+    assert spec.parameters["properties"]["query"]["type"] == "string"
 
 
 # ── #542: a second, differently-sourced bound-key case (the delivery sink's ``repo``) ────────────
@@ -579,19 +605,26 @@ _GITHUB_SINK_DESCRIPTOR = {
 }
 
 
-def test_an_operator_configured_key_is_dropped_from_required_too() -> None:
+def test_an_operator_configured_key_is_forced_back_into_required_but_rendered_nullable_too() -> (
+    None
+):
     """``repo`` is bound once, by an operator configuring the tool instance — never supplied by the
     harness at run time the way ``graph_id`` is — but it reaches ``tool_specs_for`` the same way,
-    as a ``bound_config`` key, and must be dropped from ``required`` the same way."""
+    as a ``bound_config`` key, and gets the same #898 treatment: forced back into ``required``
+    (the strict flag needs every property there) and widened to accept ``null`` so the model is
+    never asked to guess it."""
     spec = tool_specs_for(
         "github-sink",
         _GITHUB_SINK_DESCRIPTOR,
         bound_config={"repo": "octocat/example"},
     )[0]
     params = spec.parameters
-    assert "repo" not in params["required"]
+    assert "repo" in params["required"]
+    assert "repo" in spec.nullable_keys
+    assert params["properties"]["repo"]["type"] == ["string", "null"]
     assert "repo" in params["properties"]
-    assert "files" in params["required"]  # unbound, stays required — subtraction not blanket
+    assert "files" in params["required"]  # unbound, stays required
+    assert "files" not in spec.nullable_keys  # unbound, stays non-nullable — widening not blanket
 
 
 # ── enum / minLength / items survive the projection verbatim ────────────────────────────────────
@@ -719,6 +752,9 @@ def test_bound_config_does_not_alter_a_per_op_parameters_schema_override() -> No
         bound_config={"only_this_field": "should-not-matter"},
     )[0]
     assert spec.parameters == op_schema
+    # #898: strictness is carried EXPLICITLY (a sibling "parameters_schema_strict" key on the op),
+    # never inferred from the override's shape — this descriptor never sets that marker.
+    assert spec.strict is False
 
 
 def test_a_per_op_parameters_schema_still_wins_outright_over_the_plugin_level_projection() -> None:
@@ -753,6 +789,7 @@ def test_a_per_op_parameters_schema_still_wins_outright_over_the_plugin_level_pr
     }
     spec = tool_specs_for("conflict", descriptor)[0]
     assert spec.parameters == op_schema
+    assert spec.strict is False  # no explicit "parameters_schema_strict" marker on this op
 
 
 def test_a_descriptor_with_no_input_schema_at_all_yields_todays_exact_fallback_dict() -> None:
@@ -771,13 +808,14 @@ def test_a_descriptor_with_no_input_schema_at_all_yields_todays_exact_fallback_d
             ],
         },
     }
-    params = tool_specs_for("no-schema", descriptor)[0].parameters
-    assert params == {
+    spec = tool_specs_for("no-schema", descriptor)[0]
+    assert spec.parameters == {
         "type": "object",
         "properties": {"query": {"type": "string"}},
         "required": [],
         "additionalProperties": False,
     }
+    assert spec.strict is False
 
 
 @pytest.mark.parametrize(
@@ -805,13 +843,14 @@ def test_a_hostile_non_dict_input_schema_never_raises_and_falls_back(
             "input_schema": hostile_input_schema,
         },
     }
-    params = tool_specs_for("hostile", descriptor)[0].parameters
-    assert params == {
+    spec = tool_specs_for("hostile", descriptor)[0]
+    assert spec.parameters == {
         "type": "object",
         "properties": {"query": {"type": "string"}},
         "required": [],
         "additionalProperties": False,
     }
+    assert spec.strict is False
 
 
 def test_a_hint_map_key_the_declared_schema_does_not_cover_keeps_its_hint_mapped_form() -> None:
@@ -962,3 +1001,142 @@ def test_an_operation_with_no_parameters_key_and_a_declared_input_schema_never_r
         },
     }
     tool_specs_for("no-parameters-key", descriptor)  # must not raise
+
+
+# ── #898: strictness is carried EXPLICITLY, never inferred from a schema's shape ─────────────────
+#
+# #900 (landing next) will inject a platform-authored ``parameters_schema`` onto a first-party
+# descriptor. Priority 1 in ``_parameters_for`` returns an op's ``parameters_schema`` verbatim
+# REGARDLESS of ``imported`` — that is also how #698 D1 implements MCP pass-through (the importer
+# stores the remote server's ``inputSchema`` under the very same ``parameters_schema`` key). So the
+# only thing standing between #900's authored schema silently inheriting `strict` on an MCP
+# descriptor, and it never doing so, is an EXPLICIT sibling marker on the op — ``parameters_schema_
+# strict`` — that ``imported`` overrides unconditionally. A schema that already LOOKS strict
+# (every property required, ``additionalProperties: false``) must never become strict by shape
+# alone.
+
+_STRICT_SHAPED_OVERRIDE_SCHEMA = {
+    "type": "object",
+    "required": ["q"],
+    "properties": {"q": {"type": "string"}},
+    "additionalProperties": False,
+}
+
+
+def test_an_explicit_marker_makes_a_first_party_override_strict() -> None:
+    descriptor = {
+        "id": "core-explicit-strict-override",
+        "metadata": {"name": "Explicit Strict Override"},
+        "spec": {
+            "type": "API",
+            "capabilities": [
+                {
+                    "name": "op",
+                    "description": "op",
+                    "parameters": {"q": "str"},
+                    "parameters_schema": _STRICT_SHAPED_OVERRIDE_SCHEMA,
+                    "parameters_schema_strict": True,
+                }
+            ],
+        },
+    }
+    spec = tool_specs_for("explicit-strict", descriptor)[0]
+    assert spec.strict is True
+    assert spec.parameters == _STRICT_SHAPED_OVERRIDE_SCHEMA  # unchanged — the override still wins
+
+
+def test_an_mcp_operation_never_becomes_strict_even_with_the_marker_and_a_strict_shape() -> None:
+    """The imported branch overrides the marker unconditionally — an untrusted server's schema
+    must never be treated as ours to constrain, however strict it happens to look, and however the
+    op dict happens to be annotated."""
+    descriptor = {
+        "kind": "tool",
+        "metadata": {"name": "acme-mcp-op"},
+        "spec": {
+            "type": "mcp",
+            "capabilities": [
+                {
+                    "name": "op",
+                    "parameters_schema": _STRICT_SHAPED_OVERRIDE_SCHEMA,
+                    "parameters_schema_strict": True,
+                }
+            ],
+        },
+    }
+    spec = tool_specs_for("acme-mcp", descriptor)[0]
+    assert spec.strict is False
+    # still byte-identical to the server's contract, just not strict
+    assert spec.parameters == _STRICT_SHAPED_OVERRIDE_SCHEMA
+
+
+# ── #898: additionalProperties: false at every nested object level, on a real shape ──────────────
+
+_GITHUB_SINK_FILES_DESCRIPTOR = {
+    "id": "core-github-sink-nested",
+    "metadata": {"name": "GitHub Sink"},
+    "spec": {
+        "type": "API",
+        "capabilities": [
+            {
+                "name": "deliver",
+                "description": "Write changed files to a head branch + open a PR",
+                "parameters": {"repo": "str", "files": "list"},
+            }
+        ],
+        "input_schema": {
+            "type": "object",
+            "required": ["repo", "files"],
+            "properties": {
+                "repo": {"type": "string"},
+                "files": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "required": ["path", "content"],
+                        "properties": {
+                            "path": {"type": "string"},
+                            "content": {"type": "string"},
+                        },
+                    },
+                },
+            },
+        },
+    },
+}
+
+
+def test_a_nested_object_inside_an_array_is_closed_too_on_a_real_shape() -> None:
+    """The github-sink ``deliver`` shape: a model could otherwise invent a third key inside one
+    ``files`` array element and a schema-honouring provider would accept it."""
+    spec = tool_specs_for("github-sink-nested", _GITHUB_SINK_FILES_DESCRIPTOR)[0]
+    params = spec.parameters
+    assert params["additionalProperties"] is False
+    assert params["properties"]["files"]["items"]["additionalProperties"] is False
+    assert spec.strict is True
+
+
+# ── #898: a parameterless operation still renders a valid strict schema ──────────────────────────
+
+_PARAMETERLESS_WITH_INPUT_SCHEMA_DESCRIPTOR = {
+    "id": "core-parameterless-strict",
+    "metadata": {"name": "Parameterless Strict"},
+    "spec": {
+        "type": "DATABASE",
+        "capabilities": [
+            {"name": "list_tables", "description": "List the tables", "parameters": {}},
+        ],
+        "input_schema": {
+            "type": "object",
+            "properties": {"query": {"type": "string"}, "params": {"type": "object"}},
+        },
+    },
+}
+
+
+def test_a_parameterless_operation_is_still_strict_and_does_not_crash() -> None:
+    spec = tool_specs_for("parameterless-strict", _PARAMETERLESS_WITH_INPUT_SCHEMA_DESCRIPTOR)[0]
+    assert spec.parameters["properties"] == {}
+    assert spec.parameters["required"] == []
+    assert spec.parameters["additionalProperties"] is False
+    assert spec.strict is True
+    assert spec.nullable_keys == frozenset()
