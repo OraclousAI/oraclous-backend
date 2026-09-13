@@ -71,6 +71,9 @@ RULED: dict[tuple[str, str], str] = {
     ("Script Ingestion", "run"): "status",
     ("Manifest Validate", "validate_manifest"): "status",
     ("Manifest Refine", "refine_manifest"): "status",
+    # #900: identical class as the two rows above — a verdict on the caller's own submitted draft,
+    # nothing that exists independently of the call.
+    ("Draft Manifest", "draft_manifest"): "status",
     # Transforms of input the caller already holds.
     ("Text Tools", "word_count"): "status",
     ("Text Tools", "to_upper"): "status",
@@ -149,7 +152,8 @@ def test_the_ruled_table_covers_the_catalogue_exactly() -> None:
     catalogue = set(_operations())
     assert catalogue - set(RULED) == set(), "catalogue operations with no ruled result_kind"
     assert set(RULED) - catalogue == set(), "ruled operations that are not in the catalogue"
-    assert len(catalogue) == 38, f"expected 38 operations, found {len(catalogue)}"
+    # #900 added one operation (Draft Manifest / draft_manifest) to the catalogue.
+    assert len(catalogue) == 39, f"expected 39 operations, found {len(catalogue)}"
 
 
 @pytest.mark.parametrize(("tool", "operation"), sorted(RULED), ids=lambda p: p)
