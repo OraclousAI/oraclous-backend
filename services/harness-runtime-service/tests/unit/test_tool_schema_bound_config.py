@@ -12,18 +12,17 @@ configuration":
 3. a FRESH MINT (``else`` branch) — the inline ``cap_config`` dict, already carrying
    ``working_dir``/``graph_id``/``precedence``/producer keys by the time ``create_instance`` runs.
 
-The fix under test (not written here) makes all three call
+All three branches already call
 ``tool_specs_for(cap.binding, descriptor, bound_config=<that branch's effective configuration>)``
-so a declared-required argument that is ALREADY bound on the instance drops out of the model-facing
-``required`` list — while the property itself stays, so the model still understands the tool's
-shape. Today (as of `main`) none of the three branches pass ``bound_config`` at all, and
-``tool_specs_for`` does not accept the keyword yet, and ALSO does not yet project
-``spec.input_schema`` onto the operation at all (#911's other half, covered in
-``test_tool_schemas.py``) — so ``required`` is unconditionally ``[]`` regardless of what the
-descriptor declares. Every assertion below that expects a NON-empty ``required`` is RED against
-today's code for that reason: it needs BOTH #911 halves (the input_schema projection AND this
-call-site threading) to land together before it can go green. See each test's docstring for the
-precise failure this predicts.
+(#911, merged) so a declared-required argument that is ALREADY bound on the instance is known to
+``tool_specs_for`` — that threading is GREEN today. What is RED (#898): ``_project_input_schema``
+currently SUBTRACTS a bound key from ``required`` outright, which used to be correct but is now
+wrong — probe fact 2 (a real-provider measurement, 2026-09-13) established that the provider's
+``strict`` flag is silently inert unless EVERY declared property is in ``required``, so a bound key
+must be forced back INTO ``required`` and rendered nullable instead (the model satisfies the schema
+with null; the platform strips that null before dispatch — see
+``test_dispatch_payload_null_strip.py``). ``ToolSpec`` has no ``nullable_keys`` field yet, so every
+assertion on it below is RED for that reason alone. See each test's docstring for specifics.
 
 Follows the fake-registry / fake-provenance / ``_service()`` idiom of
 ``test_org_instance_reuse.py`` and ``test_precedence_instance_binding.py`` verbatim.
@@ -182,10 +181,13 @@ def _spec_for(tool_specs: list[ToolSpec], operation: str) -> ToolSpec:
     raise AssertionError(f"no ToolSpec for operation {operation!r} in {tool_specs!r}")
 
 
-async def test_a_fresh_mint_drops_the_bound_graph_id_from_required_but_keeps_the_property() -> None:
-    """The observable end-state (#911 brief, verbatim framing): a capability whose declared schema
-    marks ``graph_id`` required, run with a harness that binds ``graph_id``, produces a ``ToolSpec``
-    that does not advertise ``graph_id`` as required.
+async def test_a_fresh_mint_forces_the_bound_graph_id_back_into_required_as_nullable() -> None:
+    """The observable end-state (#911 brief, then superseded by #898): a capability whose declared
+    schema marks ``graph_id`` required, run with a harness that binds ``graph_id``, produces a
+    ``ToolSpec`` that still advertises ``graph_id`` as required — a strict schema needs EVERY
+    property there for the provider's own strict mode to bind at all (probe fact 2: a partial
+    ``required`` list makes the flag silently inert) — but rendered NULLABLE, so the model can
+    satisfy the requirement by sending null rather than guessing a value it cannot know.
 
     Fresh-mint branch: no prior/sibling row exists, so ``_materialise`` takes the ``else`` mint
     path and builds ``cap_config`` inline, merging in ``graph_id="g-123"`` (the #524 bind) before
@@ -193,21 +195,22 @@ async def test_a_fresh_mint_drops_the_bound_graph_id_from_required_but_keeps_the
     reach ``tool_specs_for`` as ``bound_config``.
 
     RED today for two compounding reasons: (1) ``_materialise`` does not pass ``bound_config`` to
-    ``tool_specs_for`` at this call site at all, and (2) even if it did, ``tool_specs_for`` does not
-    yet project ``spec.input_schema`` onto the operation — so ``required`` is unconditionally ``[]``
-    today and this assertion cannot yet distinguish "subtracted" from "never projected". Both
-    ``query in required`` (never bound) and the negative ``graph_id not in required`` currently pass
-    only by coincidence of the empty list; the real signal is
-    ``test_the_same_descriptor_with_nothing_bound_keeps_graph_id_required`` below, which pins the
-    contrast this test alone cannot.
+    ``tool_specs_for`` at this call site at all, and (2) even where it does, ``ToolSpec`` has no
+    ``nullable_keys`` field yet and ``_project_input_schema`` still SUBTRACTS a bound key from
+    ``required`` instead of widening it (#898). The real signal distinguishing "widened" from
+    "never bound at all" is
+    ``test_the_same_descriptor_with_nothing_bound_keeps_graph_id_required_and_non_nullable`` below.
     """
     registry = _Registry([])
     manifest = _manifest()
     _, tool_specs = await _service(registry)._materialise(manifest, _RESOLVED, graph_id="g-123")
     spec = _spec_for(tool_specs, "recall_memory")
-    assert "graph_id" not in spec.parameters["required"]
+    assert "graph_id" in spec.parameters["required"]
+    assert "graph_id" in spec.nullable_keys
+    assert spec.parameters["properties"]["graph_id"]["type"] == ["string", "null"]
     assert "query" in spec.parameters["required"]
-    assert "graph_id" in spec.parameters["properties"]  # the property is not removed, only required
+    assert "query" not in spec.nullable_keys
+    assert "graph_id" in spec.parameters["properties"]  # the property is not removed, only widened
 
 
 async def test_a_fresh_mint_bound_config_is_the_merged_cap_config_sent_to_create_instance() -> None:
@@ -226,17 +229,19 @@ async def test_a_fresh_mint_bound_config_is_the_merged_cap_config_sent_to_create
     assert registry.created[0]["configuration"]["graph_id"] == "g-123"
 
 
-async def test_reused_deterministic_prior_instance_drops_its_bound_key_from_required() -> None:
+async def test_reused_deterministic_prior_instance_forces_its_bound_key_to_nullable_required() -> (
+    None
+):
     """Reuse branch 1 (the ``prior is not None`` branch): a prior instance already exists at the
     deterministic name for this manifest+binding, its ``configuration`` (the registry's
     ``InstanceOut.configuration`` field) already carries ``graph_id`` — bound by an earlier run —
     and this capability needs no credential (``recall_memory`` is keyless, so ``needed`` is empty
     and the reuse condition is trivially satisfied). The prior's ``configuration`` must reach
-    ``tool_specs_for`` as ``bound_config``.
+    ``tool_specs_for`` as ``bound_config``, and (#898) the bound key must be forced back into
+    ``required`` (nullable) rather than dropped, so the strict flag still binds.
 
-    RED today: ``_materialise`` never reads ``prior.get("configuration")`` into ``bound_config`` at
-    all, compounded by ``tool_specs_for`` not yet projecting ``spec.input_schema`` (see the module
-    docstring)."""
+    RED today: ``ToolSpec`` has no ``nullable_keys`` field yet and ``_project_input_schema`` still
+    subtracts a bound key from ``required`` instead of widening it."""
     manifest = _manifest()
     prior_row = {
         "id": str(uuid.uuid4()),
@@ -250,25 +255,29 @@ async def test_reused_deterministic_prior_instance_drops_its_bound_key_from_requ
     registry = _Registry([prior_row])
     _, tool_specs = await _service(registry)._materialise(manifest, _RESOLVED)
     spec = _spec_for(tool_specs, "recall_memory")
-    assert "graph_id" not in spec.parameters["required"]
+    assert "graph_id" in spec.parameters["required"]
+    assert "graph_id" in spec.nullable_keys
+    assert spec.parameters["properties"]["graph_id"]["type"] == ["string", "null"]
     assert "query" in spec.parameters["required"]
+    assert "query" not in spec.nullable_keys
     assert "graph_id" in spec.parameters["properties"]
     assert registry.created == []  # confirms the reuse branch fired, not a fresh mint
 
 
-async def test_reused_org_sibling_instance_drops_its_bound_key_from_required() -> None:
+async def test_reused_org_sibling_instance_forces_its_bound_key_to_nullable_required() -> None:
     """Reuse branch 2 (#663, the org-sibling branch): no deterministic prior row exists, so the
     first branch is skipped; the capability is KEYED (``credential_requirements`` set) so ``needed``
     is non-empty and the #663 sibling lookup fires; one sibling row matches on ``capability_id``
     and covers ``needed`` via ``credential_mappings``, and its own ``configuration`` carries
     ``graph_id``. That sibling's ``configuration`` must reach ``tool_specs_for`` as
-    ``bound_config``.
+    ``bound_config``, and (#898) get the same nullable-required treatment as the other two branches.
 
     The credential-requirements + ``graph_id`` combination is artificial (see
     ``_KEYED_RECALL_DESCRIPTOR``'s comment) — it exists only to force this specific branch, not to
     model a real plugin.
 
-    RED today for the same two compounding reasons as the other two branches."""
+    RED today for the same reason as the other two branches: no ``nullable_keys`` field yet, and
+    the bound key is subtracted rather than widened."""
     manifest = _manifest()
     sibling_row = {
         "id": str(uuid.uuid4()),
@@ -282,28 +291,31 @@ async def test_reused_org_sibling_instance_drops_its_bound_key_from_required() -
     registry = _Registry([sibling_row])
     _, tool_specs = await _service(registry)._materialise(manifest, _RESOLVED_KEYED)
     spec = _spec_for(tool_specs, "recall_memory")
-    assert "graph_id" not in spec.parameters["required"]
+    assert "graph_id" in spec.parameters["required"]
+    assert "graph_id" in spec.nullable_keys
+    assert spec.parameters["properties"]["graph_id"]["type"] == ["string", "null"]
     assert "query" in spec.parameters["required"]
+    assert "query" not in spec.nullable_keys
     assert "graph_id" in spec.parameters["properties"]
     assert registry.created == []  # confirms the reuse branch fired, not a fresh mint
 
 
-async def test_the_same_descriptor_with_nothing_bound_keeps_graph_id_required() -> None:
+async def test_the_same_descriptor_with_nothing_bound_keeps_graph_id_required_and_non_nullable() -> (
+    None
+):
     """Control / contrast case: the identical descriptor, fresh-minted with NO ``graph_id`` bound
     anywhere (no kwarg to ``_materialise``, no prior/sibling row carrying it) — ``required`` must
-    still contain ``graph_id``. This proves the subtraction only happens when something is actually
-    bound, not a blanket clearing of ``required``.
+    still contain ``graph_id``, and (#898) it must NOT be nullable: nothing bound it, so the model
+    both must supply it and can actually know it. This proves the nullable-widening only happens
+    when something is actually bound, not a blanket change to every property.
 
-    RED today, but for a DIFFERENT reason than the other four tests: today ``required`` is always
-    ``[]`` regardless of binding (``tool_specs_for`` does not yet project ``spec.input_schema`` at
-    all), so this assertion — which needs ``graph_id`` to be PRESENT in ``required`` — fails now for
-    the opposite reason it will need to fail for later if the subtraction is ever implemented too
-    eagerly. Once the #911 projection lands (with no config-threading yet), this test alone would
-    go green; it only stays meaningfully RED-then-GREEN alongside the other four once both halves
-    land together."""
+    RED today: ``ToolSpec`` has no ``nullable_keys`` field yet."""
     registry = _Registry([])
     manifest = _manifest()
     _, tool_specs = await _service(registry)._materialise(manifest, _RESOLVED)
     spec = _spec_for(tool_specs, "recall_memory")
     assert "graph_id" in spec.parameters["required"]
+    assert "graph_id" not in spec.nullable_keys
+    assert spec.parameters["properties"]["graph_id"]["type"] == "string"
     assert "query" in spec.parameters["required"]
+    assert "query" not in spec.nullable_keys
