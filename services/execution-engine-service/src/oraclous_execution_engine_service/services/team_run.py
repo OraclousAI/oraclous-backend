@@ -522,8 +522,23 @@ def _producer_ref(
     ``ordinal`` disambiguates a FAN-OUT member, whose sub-runs share one role: without it the
     per-item outputs would be named identically. It is the fan index when the item carries one and
     is otherwise omitted, so a plain single dispatch is unchanged.
+
+    Security review (PR #1071, interim fix — the full fix is a real cancellation path, filed
+    separately): today, when the engine gives up on a member's harness call (its own
+    ``timeout=`` firing, or any other HarnessClientError), NOTHING tells the harness service to
+    stop — that member's loop keeps running inside the harness, orphaned, bounded only by ITS OWN
+    separate budget. A later retry/re-dispatch of the SAME role in the SAME run used to build the
+    IDENTICAL producer identity (keyed only by role + run), so the retry's writes and the orphan's
+    still-in-flight writes could land under one indistinguishable identity. ``attempt_id`` — a
+    fresh value on EVERY call to this function, i.e. every dispatch, whether the first attempt or
+    a later retry — makes that collision impossible: an orphan and its retry now write under
+    different identities even though they share a role and a run.
     """
-    ref: dict[str, Any] = {"producer_kind": "team-member", "member_role": member.role}
+    ref: dict[str, Any] = {
+        "producer_kind": "team-member",
+        "member_role": member.role,
+        "attempt_id": str(uuid.uuid4()),
+    }
     if trace_id is not None:
         ref["team_run_id"] = str(trace_id)
     if team_id is not None:
