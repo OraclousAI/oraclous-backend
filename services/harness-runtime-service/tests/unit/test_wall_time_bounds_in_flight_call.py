@@ -24,11 +24,19 @@ from typing import Any
 
 import pytest
 from oraclous_harness_runtime_service.domain.llm.base import LLMResponse, ToolCall, ToolSpec
+from oraclous_harness_runtime_service.domain.llm.openai_compatible import LLMClientError
+from oraclous_harness_runtime_service.domain.loop import tool_use
 from oraclous_harness_runtime_service.domain.loop.tool_use import run_tool_use_loop
 from oraclous_harness_runtime_service.domain.policy import PolicyEnvelope
 from oraclous_harness_runtime_service.models.enums import HarnessStatus
 
 pytestmark = [pytest.mark.unit, pytest.mark.tool_dispatch]
+
+
+async def _no_sleep(_seconds: float) -> None:
+    """A no-op stand-in for asyncio.sleep so retry backoff is deterministic + fast (matches the
+    pattern in test_tool_use_loop.py's ADR-042 retry tests)."""
+
 
 _SPEC = ToolSpec(
     name="pg__list_tables",
@@ -184,3 +192,76 @@ async def test_in_flight_call_is_bounded_by_the_remaining_budget_not_a_fresh_win
     )
     # sanity: the loop cannot possibly return before the time already spent on the first dispatch.
     assert elapsed > _FIRST_DISPATCH_SECONDS
+
+
+# ── be-test-reviewer (PR #1070, FIX 2): a per-call bound must not silently defeat the EXISTING
+# transient-error retry (ADR-042 #551). tool_use.py:68 allows _LLM_MAX_RETRIES retries (default 4)
+# and :1894 already refuses to retry past the run's own wall-time budget; if the per-call bound
+# this issue adds is derived carelessly (e.g. dividing the budget by the retry count, or reusing a
+# single deadline that does not account for how many attempts are still owed), a real transient
+# provider error (rate-limit / 5xx) can stop being recoverable even though the run's OVERALL budget
+# would easily have covered every attempt. This is a regression GUARD, not a pin on a defect that
+# exists today (no per-call bound exists yet to interact with retries, so this currently PASSES) —
+# it exists so the fix for items 1/2 cannot ship a per-call bound that quietly breaks retries. ────
+
+
+class _FlakyThenSucceedsLLM:
+    """Raises a TRANSIENT error ``fail_n`` times, each attempt taking ``call_seconds`` (models real
+    network latency per attempt), then answers — mirrors test_tool_use_loop.py's ``_FlakyLLM`` but
+    with a non-zero per-call duration so a per-call bound has something to actually interact with.
+    """
+
+    protocol_shape = "fake"
+
+    def __init__(self, *, fail_n: int, call_seconds: float) -> None:
+        self.calls = 0
+        self._fail_n = fail_n
+        self._call_seconds = call_seconds
+
+    async def complete(self, *, messages: Any, system: str, tools: list[ToolSpec]) -> LLMResponse:
+        self.calls += 1
+        await asyncio.sleep(self._call_seconds)
+        if self.calls <= self._fail_n:
+            raise LLMClientError("LLM call → 429: rate limited", status_code=429, transient=True)
+        return LLMResponse(text="done")
+
+
+async def test_bounded_retries_still_get_to_run_under_a_per_call_bound(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A per-call wall-clock bound must leave room for the FULL retry budget when the run's own
+    overall wall-time budget can plainly afford it. Exhausts every retry slot
+    (``tool_use._LLM_MAX_RETRIES``) and succeeds only on the very last allowed attempt — asserting
+    the BEHAVIOUR (every attempt gets to run, and the call eventually succeeds), never a specific
+    constant or a specific derivation of the per-call bound.
+    """
+    monkeypatch.setattr(tool_use, "_async_sleep", _no_sleep)  # deterministic + fast backoff
+
+    fail_n = tool_use._LLM_MAX_RETRIES  # use every retry slot, then clear on the LAST attempt
+    per_call_seconds = 0.05
+    total_attempts = fail_n + 1
+    # A generous margin: even with a per-call bound in play, `total_attempts` attempts at
+    # `per_call_seconds` each must comfortably fit inside the run's own overall budget.
+    max_wall_seconds = int(per_call_seconds * total_attempts * 10) + 1
+
+    llm = _FlakyThenSucceedsLLM(fail_n=fail_n, call_seconds=per_call_seconds)
+    policy = PolicyEnvelope(
+        max_iterations=6,
+        max_tool_calls=None,
+        max_wall_time_seconds=max_wall_seconds,
+        max_tokens=None,
+    )
+    result = await run_tool_use_loop(
+        llm=llm,
+        system="",
+        user_input="go",
+        tool_specs=[_SPEC],
+        dispatch=_ok_dispatch,
+        policy=policy,
+    )
+    assert result.status is HarnessStatus.SUCCEEDED, result
+    assert llm.calls == total_attempts, (
+        f"expected every retry slot to run ({total_attempts} attempts total: {fail_n} transient "
+        f"failures + 1 success), got {llm.calls} — a per-call bound derived without regard for how "
+        "many attempts are still owed can starve the existing transient-error retry."
+    )
