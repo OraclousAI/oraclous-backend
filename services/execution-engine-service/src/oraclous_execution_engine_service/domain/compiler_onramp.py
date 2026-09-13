@@ -19,7 +19,7 @@ from __future__ import annotations
 import json
 from typing import Any, Literal
 
-from oraclous_ohm._slug import FILE_SUBSTRATE_TOOLS
+from oraclous_ohm._slug import COMPILER_INTERNAL_TOOLS, FILE_SUBSTRATE_TOOLS
 from oraclous_ohm.seeds import catalog_slug, default_seed_set, survey_catalog
 
 Substrate = Literal["graph", "file"]
@@ -45,11 +45,20 @@ def draft_catalog(
     withheld — including one arriving from the org's live registry under a colliding name, which
     would otherwise smuggle the same failure back in. The default is what actually ships: every
     existing caller passes no substrate, so a default of ``file`` would reintroduce #694 silently.
+
+    Regardless of ``substrate``, the compiler's OWN internal tools (``manifest-validate``,
+    ``manifest-refine``, ``draft-manifest``) are always excluded (#1063). The reviewer/drafter hold
+    these unconditionally, hardcoded in the compiler team assembly, regardless of what the survey
+    contains — an ordinary drafted team member must never be offered one of them to pick from its
+    own ``tools[]`` menu.
     """
     slugs = survey_catalog(default_seed_set().inventory, registered or [])
-    if substrate == "file":
-        return slugs
-    return [s for s in slugs if s not in _FILE_SUBSTRATE_TOOLS]
+    if substrate != "file":
+        slugs = [s for s in slugs if s not in _FILE_SUBSTRATE_TOOLS]
+    # #1063: the compiler's own tools must never appear in an ordinary drafted team member's own
+    # tools[] menu — the reviewer/drafter hold them unconditionally, hardcoded, regardless of what
+    # the survey contains (see the module docstring's investigation finding on this exact leak).
+    return [s for s in slugs if s not in COMPILER_INTERNAL_TOOLS]
 
 
 def draft_catalog_described(
