@@ -1428,6 +1428,28 @@ async def run_tool_use_loop(
         gate = _escalate if policy.on_exhaustion == "escalate" else _degrade
         return gate(name, reason, message, iterations)
 
+    def _answered(args: dict[str, Any], iterations: int) -> LoopResult:
+        """ADR-053 decision 3: the loop terminates on the member's own ``answer_from_tool`` call —
+        that call's arguments ARE the member's structured answer, verbatim, never routed through
+        the free-text citation/link/declared-output gates below (there is no free text to gate,
+        nothing was written by the model as prose). The terminating call is recorded, immediately
+        before this is called, as an ordinary ``ok`` ``StepKind.TOOL`` step carrying its real
+        ``tool_call_id`` — ``HarnessExecutionOut.driving_signals`` mints the ADR-053 receipt from
+        that step for free (no new minting code needed anywhere)."""
+        output = _redact(json.dumps(args), redactors)
+        return LoopResult(
+            status=HarnessStatus.SUCCEEDED,
+            output=output,
+            steps=steps,
+            iterations=iterations,
+            total_tokens=tokens_used,
+            input_tokens=input_used,
+            output_tokens=output_used,
+            served_citation_ids=list(served_citation_ids),
+            fetched_urls=list(fetched_urls),
+            protocol_shape=protocol_shape,
+        )
+
     async def _run_tool_calls(
         tool_calls: list[dict[str, Any]], iteration: int, approved_id: str | None
     ) -> LoopResult | None:
@@ -1835,6 +1857,19 @@ async def run_tool_use_loop(
                     ended_at=tool_ended,
                 )
             )
+            # #900 (ADR-053 decision 3): a successful dispatch of the member's OWN declared answer
+            # tool ends the loop right here — its arguments ARE the answer, and any further calls
+            # in this same turn (tool_calls[i+1:]) are never even reached. Matched on the capability
+            # BINDING (never `spec.name`/`spec.operation` — see the module docstring for why), and
+            # gated on `status == "ok"` so a failed dispatch of the named tool falls through to
+            # exactly today's ordinary error-retry handling.
+            if (
+                policy.answer_from_tool is not None
+                and spec is not None
+                and spec.binding == policy.answer_from_tool
+                and status == "ok"
+            ):
+                return _answered(tc["args"], iteration)
         return None
 
     # Resume: finish the paused turn (the approved gated call + any remaining), then continue.
