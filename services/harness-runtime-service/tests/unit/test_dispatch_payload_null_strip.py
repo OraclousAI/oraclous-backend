@@ -116,9 +116,9 @@ def test_a_non_null_value_on_a_nullable_key_is_never_touched() -> None:
 
 
 @pytest.mark.parametrize("falsy_but_not_none", ["", 0, False, []])
-def test_a_falsy_non_none_value_on_a_nullable_key_is_never_stripped(falsy_but_not_none: object) -> (
-    None
-):
+def test_a_falsy_non_none_value_on_a_nullable_key_is_never_stripped(
+    falsy_but_not_none: object,
+) -> None:
     spec = _spec(nullable_keys=frozenset({"top_k"}))
     payload = dispatch_payload(spec, {"query": "revenue", "top_k": falsy_but_not_none})
     assert "top_k" in payload

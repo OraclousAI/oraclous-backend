@@ -168,8 +168,7 @@ def test_additional_properties_is_closed_at_the_top_level() -> None:
     assert rendered["additionalProperties"] is False
 
 
-def test_additional_properties_is_closed_on_a_nested_object_inside_an_array(
-) -> None:
+def test_additional_properties_is_closed_on_a_nested_object_inside_an_array() -> None:
     """The real shape: ``core/github-sink@1.0.0``'s ``deliver`` operation takes ``files``, an array
     of ``{path, content}`` objects. A model could otherwise invent a third key (``sha``, say)
     inside one array element and the provider would accept it."""

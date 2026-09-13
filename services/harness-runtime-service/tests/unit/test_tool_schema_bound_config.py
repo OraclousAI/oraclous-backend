@@ -300,9 +300,7 @@ async def test_reused_org_sibling_instance_forces_its_bound_key_to_nullable_requ
     assert registry.created == []  # confirms the reuse branch fired, not a fresh mint
 
 
-async def test_the_same_descriptor_with_nothing_bound_keeps_graph_id_required_and_non_nullable() -> (
-    None
-):
+async def test_nothing_bound_keeps_graph_id_required_and_non_nullable() -> None:
     """Control / contrast case: the identical descriptor, fresh-minted with NO ``graph_id`` bound
     anywhere (no kwarg to ``_materialise``, no prior/sibling row carrying it) — ``required`` must
     still contain ``graph_id``, and (#898) it must NOT be nullable: nothing bound it, so the model

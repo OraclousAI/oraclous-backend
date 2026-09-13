@@ -1045,9 +1045,7 @@ def test_an_explicit_marker_makes_a_first_party_override_strict() -> None:
     assert spec.parameters == _STRICT_SHAPED_OVERRIDE_SCHEMA  # unchanged — the override still wins
 
 
-def test_an_mcp_operation_never_becomes_strict_even_with_the_marker_and_a_strict_shaped_schema() -> (
-    None
-):
+def test_an_mcp_operation_never_becomes_strict_even_with_the_marker_and_a_strict_shape() -> None:
     """The imported branch overrides the marker unconditionally — an untrusted server's schema
     must never be treated as ours to constrain, however strict it happens to look, and however the
     op dict happens to be annotated."""
@@ -1067,7 +1065,8 @@ def test_an_mcp_operation_never_becomes_strict_even_with_the_marker_and_a_strict
     }
     spec = tool_specs_for("acme-mcp", descriptor)[0]
     assert spec.strict is False
-    assert spec.parameters == _STRICT_SHAPED_OVERRIDE_SCHEMA  # still byte-identical, just not strict
+    # still byte-identical to the server's contract, just not strict
+    assert spec.parameters == _STRICT_SHAPED_OVERRIDE_SCHEMA
 
 
 # ── #898: additionalProperties: false at every nested object level, on a real shape ──────────────

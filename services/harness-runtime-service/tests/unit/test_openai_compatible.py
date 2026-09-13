@@ -264,8 +264,8 @@ async def test_non_numeric_usage_does_not_fail_the_run() -> None:
 # here as the "not strict" case so the two wire shapes are contrasted directly. ``ToolSpec`` has no
 # ``strict`` field yet, so constructing one with ``strict=True`` is an ordinary keyword call to an
 # EXISTING dataclass that fails with ``TypeError`` at test runtime (not a not-yet-built intra-repo
-# seam import — see ``.claude/rules/tests-seam-imports.md``), same posture as every ``nullable_keys=``
-# construction in ``test_dispatch_payload_null_strip.py``.
+# seam import — see ``.claude/rules/tests-seam-imports.md``), same posture as every
+# ``nullable_keys=`` construction in ``test_dispatch_payload_null_strip.py``.
 
 
 async def test_a_strict_spec_sends_the_flag_inside_the_function_object() -> None:
