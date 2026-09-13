@@ -18,6 +18,7 @@ every member tool a `tool_rationale` (`F-TOOL-UNJUSTIFIED`) and declare each mem
 from __future__ import annotations
 
 import os
+import re
 import uuid
 from collections.abc import Callable, Iterator
 
@@ -194,3 +195,70 @@ def gateway_client() -> Iterator[Callable[[str], httpx.Client]]:
     yield _client
     for c in opened:
         c.close()
+
+
+# ── Legible environment failures (#1049) ──────────────────────────────────────────────────────────
+#
+# A provider refusal (rate limit / auth / timeout / 5xx) that happens before the model ever gets to
+# exercise product logic must not present as a bare product assertion failure. Before this, a FAILED
+# run showed as `assert 'FAILED' == 'SUCCEEDED'` and a reviewer had to open the run body, find
+# `error_message`, and manually recognise `LLM call → 429` as "not our bug" — every single time. The
+# harness's own `LLMClientError` (domain/llm/openai_compatible.py) already names this precisely:
+# `f"LLM call → {sc}"` for a non-2xx, or `"LLM call transport error: ..."` for a network failure.
+# That message reaches a run's `error_message` verbatim or wrapped in a curated sentence
+# (execution-engine-service's failure-summary seam), never the provider's raw body (leak-safety), so
+# matching the coarse shape below is reliable without needing the body.
+_PROVIDER_REFUSAL_RE = re.compile(r"LLM call → (\d{3})|LLM call transport error")
+
+
+def _provider_refusal_reason(error_message: str | None) -> str | None:
+    """None when ``error_message`` looks like a product failure; else a short, human reason.
+
+    A non-2xx/transport failure that reached the harness's own ``LLMClientError`` (rate limit,
+    auth, timeout, 5xx) is an ENVIRONMENT condition (#1049), not a defect in the code under test —
+    the call never got far enough to exercise product logic.
+    """
+    if not error_message:
+        return None
+    match = _PROVIDER_REFUSAL_RE.search(error_message)
+    if not match:
+        return None
+    code = match.group(1)
+    if code == "429":
+        return f"the provider rate-limited the request (429) — {error_message}"
+    if code and code.startswith("5"):
+        return f"a provider/upstream error ({code}) — {error_message}"
+    if code:
+        return f"the provider rejected the request ({code}) — {error_message}"
+    return f"a transport failure reaching the provider — {error_message}"
+
+
+@pytest.fixture
+def assert_run_succeeded() -> Callable[..., None]:
+    """Assert a run/agent-execute response reached SUCCEEDED — legibly telling an upstream provider
+    refusal (ENVIRONMENT, #1049) apart from a genuine product failure.
+
+    Pass the parsed JSON body and the key holding its terminal state: ``state_key="status"`` for
+    ``POST /v1/harnesses/execute``'s response, ``state_key="state"`` for a polled team-run. A
+    provider refusal (429 / 5xx / transport, matched against the harness's own ``LLMClientError``
+    message shape) fails loudly with an ``[ENVIRONMENT]``-tagged message naming the reason,
+    instead of the bare ``assert 'FAILED' == 'SUCCEEDED'`` a reviewer used to have to re-derive by
+    hand every time (#1049). Anything else still fails as a normal assertion — this never turns a
+    real failure green, it only makes an environmental one look different from a product one.
+    """
+
+    def _assert(body: dict, *, state_key: str = "status", succeeded: str = "SUCCEEDED") -> None:
+        state = body.get(state_key)
+        if state != succeeded:
+            reason = _provider_refusal_reason(body.get("error_message"))
+            if reason is not None:
+                pytest.fail(
+                    f"[ENVIRONMENT] not a product failure — {reason}. The model provider refused "
+                    "the call before product logic ran; this is the test model's quota or "
+                    "availability, not a regression (see tests/e2e/README.md, issue #1049). "
+                    f"Full body: {body}",
+                    pytrace=False,
+                )
+        assert state == succeeded, body
+
+    return _assert
