@@ -103,6 +103,18 @@ class FakeTeamRunRepo:
         return row, True
 
 
+class _RepoWithCheckpoint(FakeTeamRunRepo):
+    """#819's best-effort mid-drive checkpoint hook calls ``checkpoint(...)`` on the repo. The
+    plain ``FakeTeamRunRepo`` above doesn't implement it — most tests here never drive a member far
+    enough to reach it. A no-op is enough for tests that assert on the FINAL settled row rather than
+    a mid-drive checkpoint."""
+
+    async def checkpoint(
+        self, team_run_id: uuid.UUID, organisation_id: uuid.UUID, **fields: Any
+    ) -> None:
+        return None
+
+
 class FakeHarness:
     """A stand-in HarnessClient: every member 'execution' SUCCEEDS (the real loop is proven in the
     harness-runtime real-execution test). Records each member input so we can assert who ran."""
@@ -997,6 +1009,45 @@ async def test_non_harness_error_mid_drive_fails_run_not_strands_it() -> None:
     )
     assert row.state == "FAILED"  # not stranded in RUNNING
     assert "decode blew up" in (row.error_message or "")
+
+
+async def test_harness_timeout_settles_terminal_with_a_readable_reason() -> None:
+    """#1067 (R1, item 3): a harness call that exceeded its wall-clock budget must leave the run row
+    TERMINAL (not stranded RUNNING — G-C already proves that generically) with an ``error_message``
+    a PERSON can read: it must name that a TIME LIMIT was exceeded, not merely carry the transport
+    exception's bare class name.
+
+    RED by design: ``HarnessClient.execute`` (harness_client.py:219-220) constructs
+    ``HarnessTimeout(f"harness call timed out: {type(exc).__name__}")`` — for a real
+    ``httpx.ReadTimeout`` this message ends in the literal string ``"ReadTimeout"``, the transport
+    exception's bare class name, not a sentence naming a TIME LIMIT. Nothing along this path (the
+    member dispatch in team_run.py, nor the outer ``except Exception`` in team_run_service.py's
+    ``drive()``, which just does ``str(exc)[:2000]``) rewords it into something a person reads as
+    "this member ran out of time" rather than a transport-error dump.
+    """
+    from oraclous_execution_engine_service.services.harness_client import HarnessTimeout
+
+    class TimeoutHarness:
+        async def execute(self, **kwargs: Any) -> dict[str, Any]:
+            # exactly what HarnessClient.execute raises today for a real httpx.ReadTimeout
+            raise HarnessTimeout("harness call timed out: ReadTimeout")
+
+    repo = _RepoWithCheckpoint()
+    svc, _ = _svc(repo, TimeoutHarness())
+    row = await _run(
+        svc, _principal(), manifest=_team([_agent("a")]), sub_harnesses={}, gate_decisions={}
+    )
+    assert row.state == "FAILED"  # not stranded in RUNNING
+    message = row.error_message or ""
+    assert message, "a run that timed out must carry a reason"
+    assert "timed out" in message.lower()
+    # readable by a person: names it was a TIME LIMIT, not just a transport exception's class name
+    assert "time limit" in message.lower() or "wall-clock" in message.lower(), (
+        f"error_message does not name a time limit for a person to read: {message!r}"
+    )
+    assert "readtimeout" not in message.lower(), (
+        f"error_message leaks the transport exception's bare class name: {message!r}"
+    )
 
 
 async def test_member_failure_persists_per_member_status_and_keeps_independent_output() -> None:
@@ -1916,3 +1967,79 @@ def test_refresh_dispatch_args_matches_the_old_inline_formula_for_no_single_sink
     inputs = {REFRESH_SEED_KEY: {"records": [{"id": "z"}], "seed_records_parsed": True}}
     assert _old_sink_roles(team) == {"a", "b"}
     assert refresh_dispatch_args(team, inputs) == (None, None)  # ambiguous, unchanged before/after
+
+
+def _e2e_citation_caller_patience_seconds() -> int:
+    """The citation e2e's own caller-side patience, read off its ACTUAL source (never retyped) so
+    a test built on it cannot silently drift from the real window if tries/interval ever change
+    there. Plain (non-async) so it can do ordinary blocking file I/O without tripping ASYNC240."""
+    import re
+    from pathlib import Path
+
+    e2e_path = (
+        Path(__file__).resolve().parents[4]
+        / "tests"
+        / "e2e"
+        / "test_agent_write_citation_gateway_e2e.py"
+    )
+    e2e_source = e2e_path.read_text()
+    poll_def_match = re.search(r"def _poll\([\s\S]*?raise AssertionError", e2e_source)
+    assert poll_def_match, "could not find the _poll helper in the e2e file's source"
+    poll_source = poll_def_match.group(0)
+    tries_match = re.search(r"tries:\s*int\s*=\s*(\d+)", poll_source)
+    sleep_match = re.search(r"time\.sleep\((\d+)\)", poll_source)
+    assert tries_match and sleep_match, "could not read the e2e poll window off _poll's own source"
+    return int(tries_match.group(1)) * int(sleep_match.group(1))
+
+
+async def test_engine_bounds_its_own_wait_below_the_callers_patience() -> None:
+    """#1067 (R1, item 4): the engine must not out-wait its own caller silently. Its per-member
+    harness call needs a real bound well under a caller's patience — not the harness client's flat
+    600s default (``Settings.harness_request_timeout``, config.py:97), which is ALREADY bigger than
+    the citation e2e's own 270s poll window (``tests/e2e/test_agent_write_citation_gateway_e2e.py``:
+    ``_poll(tries=90)`` * ``time.sleep(3)``).
+
+    Asserts the BEHAVIOUR (a bounded per-call timeout is actually threaded to the harness client on
+    dispatch) and the NUMERIC RELATIONSHIP it must satisfy — read off the real value on each side
+    (``Settings`` for context, the e2e file's own source for the caller's window) rather than two
+    independently hand-typed numbers that could quietly drift apart.
+
+    RED by design: ``dispatch()`` (team_run.py, the ``caps`` dict built ~line 711) never sets a
+    ``timeout`` kwarg when calling ``harness.execute(...)`` — the call always falls through to the
+    client's flat default, unrelated to the run's own wall-clock budget or any caller's patience.
+    """
+    from oraclous_execution_engine_service.core.config import Settings
+
+    caller_patience_seconds = _e2e_citation_caller_patience_seconds()
+    # sanity: the flat client default ALONE already breaks the relationship this issue exists to
+    # fix — if this ever stops being true the fixture and the defect it documents have drifted.
+    assert Settings().harness_request_timeout > caller_patience_seconds
+
+    class RecordingHarness:
+        def __init__(self) -> None:
+            self.timeouts: list[float | None] = []
+
+        async def execute(self, **kwargs: Any) -> dict[str, Any]:
+            self.timeouts.append(kwargs.get("timeout"))
+            return {"status": "SUCCEEDED", "output": "ok"}
+
+    harness = RecordingHarness()
+    repo = _RepoWithCheckpoint()
+    svc, _ = _svc(repo, harness)
+    row = await _run(
+        svc, _principal(), manifest=_team([_agent("a")]), sub_harnesses={}, gate_decisions={}
+    )
+    assert row.state == "SUCCEEDED"
+    assert harness.timeouts, "the member never dispatched"
+    per_call_timeout = harness.timeouts[-1]
+    assert per_call_timeout is not None, (
+        "the engine dispatched with no timeout override at all — it falls through to the harness "
+        f"client's flat default ({Settings().harness_request_timeout}s), which does not reflect "
+        f"the run's own wall-clock budget and already exceeds the caller's own patience "
+        f"({caller_patience_seconds}s)"
+    )
+    assert per_call_timeout < caller_patience_seconds, (
+        f"the engine's per-call timeout ({per_call_timeout}s) is not strictly under the caller's "
+        f"own patience window ({caller_patience_seconds}s) — a caller can still observe the run "
+        "hanging past its own patience"
+    )
