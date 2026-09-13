@@ -14,6 +14,7 @@ OHM errors (parse/schema/version/reference/signature) propagate to the route (42
 
 from __future__ import annotations
 
+import copy
 import logging
 import uuid
 from collections.abc import Awaitable, Callable, Collection
@@ -278,6 +279,31 @@ def _primary_model_binding(manifest) -> str | None:  # noqa: ANN001
     the client that ran was the scripted stand-in."""
     model = manifest.primary_model()
     return model.binding if model is not None else None
+
+
+def _project_resolved_schema(
+    descriptor: dict[str, Any], resolved_schema: dict[str, Any] | None
+) -> dict[str, Any]:
+    """#900 (ADR-053 decision 1): thread a capability's per-run ``resolved_schema`` onto its
+    descriptor's operation as the existing ``parameters_schema`` override key
+    (``tool_schemas.py``'s ``_parameters_for`` priority-1 branch already returns it unchanged,
+    outright) — plus the explicit ``parameters_schema_strict`` marker (#898): a resolved_schema
+    with no marker would stay NON-strict regardless of how closed it looks, which is exactly the
+    fail-open #898 closed. Applies ONLY when the descriptor declares EXACTLY ONE operation on
+    ``spec.capabilities`` — ambiguous with two or more (CLAUDE.md fail-closed default: ignore,
+    never guess). Returns a FRESH dict; never mutates the caller's descriptor, which may be a
+    shared/cached object.
+    """
+    if resolved_schema is None:
+        return descriptor
+    capabilities = (descriptor.get("spec") or {}).get("capabilities") or []
+    if len(capabilities) != 1:
+        return descriptor
+    projected = copy.deepcopy(descriptor)
+    op = projected["spec"]["capabilities"][0]
+    op["parameters_schema"] = resolved_schema
+    op["parameters_schema_strict"] = True
+    return projected
 
 
 def _is_hitl_pause(result: LoopResult) -> bool:
@@ -1437,7 +1463,9 @@ class HarnessExecutionService:
                     await self._registry.configure_credentials(
                         instance_id, {**reused_mappings, **mappings}
                     )
-                descriptor = item.get("descriptor") or {}
+                descriptor = _project_resolved_schema(
+                    item.get("descriptor") or {}, cap.resolved_schema
+                )
                 # #911: the dispatching instance's effective configuration (whichever of the three
                 # branches above supplied it) must agree with what the model is asked for — a
                 # required argument already bound on the instance is dropped from the projected
