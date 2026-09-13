@@ -256,3 +256,76 @@ async def test_non_numeric_usage_does_not_fail_the_run() -> None:
     assert resp.total_tokens == 10
     assert resp.input_tokens == 0
     assert resp.output_tokens == 0
+
+
+# ── #898: the wire carries the strict flag exactly when the spec says so ────────────────────────
+#
+# ``_SPEC`` above never sets ``strict`` (it predates #898 and defaults to ``False``); it is reused
+# here as the "not strict" case so the two wire shapes are contrasted directly. ``ToolSpec`` has no
+# ``strict`` field yet, so constructing one with ``strict=True`` is an ordinary keyword call to an
+# EXISTING dataclass that fails with ``TypeError`` at test runtime (not a not-yet-built intra-repo
+# seam import — see ``.claude/rules/tests-seam-imports.md``), same posture as every ``nullable_keys=``
+# construction in ``test_dispatch_payload_null_strip.py``.
+
+
+async def test_a_strict_spec_sends_the_flag_inside_the_function_object() -> None:
+    strict_spec = ToolSpec(
+        name="knowledge-retriever__search",
+        description="Search a knowledge graph",
+        parameters={
+            "type": "object",
+            "properties": {"query": {"type": "string"}},
+            "required": ["query"],
+            "additionalProperties": False,
+        },
+        binding="knowledge-retriever",
+        operation="search",
+        strict=True,
+    )
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}]})
+
+    await _client(handler).complete(
+        messages=[{"role": "user", "content": "go"}], system="", tools=[strict_spec]
+    )
+    assert captured["body"]["tools"][0]["function"]["strict"] is True
+
+
+async def test_a_non_strict_spec_sends_no_strict_key_at_all() -> None:
+    """Absent, never ``false`` — the two must be distinguishable on the wire."""
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}]})
+
+    await _client(handler).complete(
+        messages=[{"role": "user", "content": "go"}], system="", tools=[_SPEC]
+    )
+    assert "strict" not in captured["body"]["tools"][0]["function"]
+
+
+async def test_an_imported_mcp_spec_never_carries_the_strict_key() -> None:
+    """An MCP-imported spec's ``strict`` is always ``False`` (never inferred — #898/#900), so its
+    wire shape must be indistinguishable from any other non-strict tool."""
+    mcp_spec = ToolSpec(
+        name="github-mcp__pull_request_read",
+        description="Read a pull request",
+        parameters={"type": "object", "properties": {"repo": {"type": "string"}}},
+        binding="github-mcp",
+        operation="pull_request_read",
+        strict=False,
+    )
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}]})
+
+    await _client(handler).complete(
+        messages=[{"role": "user", "content": "go"}], system="", tools=[mcp_spec]
+    )
+    assert "strict" not in captured["body"]["tools"][0]["function"]
