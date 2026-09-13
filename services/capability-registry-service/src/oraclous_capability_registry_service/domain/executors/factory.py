@@ -10,6 +10,9 @@ from __future__ import annotations
 
 from typing import Any, cast
 
+from oraclous_capability_registry_service.domain.connectors.draft_manifest import (
+    DraftManifestConnector,
+)
 from oraclous_capability_registry_service.domain.connectors.federated_search import (
     FederatedSearchConnector,
 )
@@ -66,6 +69,7 @@ from oraclous_capability_registry_service.domain.connectors.web_research import 
 from oraclous_capability_registry_service.domain.executors.base import BaseToolExecutor
 from oraclous_capability_registry_service.domain.plugins.builtin import (
     BashToolPlugin,
+    DraftManifestPlugin,
     EditToolPlugin,
     FederatedSearchPlugin,
     FindSimilarPlugin,
@@ -111,6 +115,7 @@ _EXECUTORS: dict[str, type[BaseToolExecutor]] = {
     RecallMemoryPlugin.plugin_id(): RecallMemoryConnector,
     ManifestValidatePlugin.plugin_id(): ManifestValidateConnector,
     ManifestRefinePlugin.plugin_id(): ManifestRefineConnector,
+    DraftManifestPlugin.plugin_id(): DraftManifestConnector,
     FederatedSearchPlugin.plugin_id(): FederatedSearchConnector,
     WebResearchPlugin.plugin_id(): WebResearchConnector,
     ScriptIngestionPlugin.plugin_id(): ScriptIngestionConnector,

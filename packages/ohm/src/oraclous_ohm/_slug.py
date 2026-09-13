@@ -22,6 +22,7 @@ from __future__ import annotations
 import re
 
 __all__ = [
+    "COMPILER_INTERNAL_TOOLS",
     "FILE_SUBSTRATE_READ_TOOLS",
     "FILE_SUBSTRATE_TOOLS",
     "FILE_SUBSTRATE_WRITE_TOOLS",
@@ -54,6 +55,18 @@ FILE_SUBSTRATE_TOOLS = FILE_SUBSTRATE_WRITE_TOOLS | FILE_SUBSTRATE_READ_TOOLS
 GRAPH_WRITE_TOOLS = frozenset({"graph-ingest"})
 #: The graph read side: what other members have already published.
 GRAPH_READ_TOOLS = frozenset({"knowledge-retriever", "find-similar", "recall-memory"})
+
+#: #900/#1063: tool names the COMPILER holds unconditionally on its own team members (the
+#: reviewer's `manifest-validate`, its `manifest-refine` NL-edit sibling, and the drafter's own
+#: `draft-manifest` answer tool) — never something an ordinary drafted team MEMBER should be able
+#: to pick from its own surveyed tools[] menu. `sync_plugins` (capability-registry-service) seeds
+#: every built-in plugin into an org's registry with no system/internal flag distinguishing it, so
+#: these leak into the live-registry union unless excluded explicitly. One canonical set here, the
+#: same reasoning FILE_SUBSTRATE_TOOLS above already established, so `compiler/team.py` (which
+#: hardcodes these exact tool names when building the compiler's own members) and
+#: execution-engine-service's survey filter (which must exclude them from an ORDINARY member's
+#: menu) cannot silently disagree about what a compiler-internal tool IS.
+COMPILER_INTERNAL_TOOLS = frozenset({"manifest-validate", "manifest-refine", "draft-manifest"})
 
 
 def basic_slug(text: str) -> str:

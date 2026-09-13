@@ -93,6 +93,24 @@ _REVIEWER_TOOL_RECEIPT: dict[str, Any] = {
     "driving_signals": [{"signal": "validated", "value": True, "source_tool_call_id": "tc-1"}],
 }
 
+# #900: third occurrence of the same trap the comment above already documents (the #834 tests PR's
+# own commit 5, then this file's original _REVIEWER_TOOL_RECEIPT) — #900 gives the manifest-drafter
+# a real tool too (``draft-manifest``, its structured-answer tool), so ANY stand-in dispatch for
+# that role now also needs a receipt or #642's ``_grade_grounding`` fails it before these tests'
+# own #834/#835 rule ever runs. Same shape, same reasoning, a different tool name/call id.
+_DRAFTER_TOOL_RECEIPT: dict[str, Any] = {
+    "steps": [
+        {
+            "index": 1,
+            "kind": "tool",
+            "name": "draft-manifest",
+            "status": "ok",
+            "tool_call_id": "tc-0",
+        }
+    ],
+    "driving_signals": [{"signal": "drafted", "value": True, "source_tool_call_id": "tc-0"}],
+}
+
 
 def _dispatch_reviewer_degrades(members_value: Any):
     """A dispatch stand-in: planner + manifest-drafter succeed normally; the reviewer degrades
@@ -102,9 +120,12 @@ def _dispatch_reviewer_degrades(members_value: Any):
     ``_REVIEWER_OVERCHECK_SLACK`` scenario).
 
     Carries ``_REVIEWER_TOOL_RECEIPT`` (see its comment) so these tests isolate the #834/#835 rule,
-    not an unrelated #642 grounding failure."""
+    not an unrelated #642 grounding failure. #900: the manifest-drafter now needs the same
+    treatment (``_DRAFTER_TOOL_RECEIPT``) for the identical reason."""
 
     async def dispatch(member: OHMMember, envs: list[HandoffEnvelope], item: Any) -> dict:
+        if member.role == "manifest-drafter":
+            return {"output": f"{member.role}-done", **_DRAFTER_TOOL_RECEIPT}
         if member.role != "reviewer":
             return {"output": f"{member.role}-done"}
         payload: dict[str, Any] = {
@@ -176,6 +197,9 @@ async def test_criterion5_the_reviewer_that_succeeds_with_an_empty_members_list_
     manifest, _subs = build_compiler_team(_ORG)
 
     async def dispatch(member: OHMMember, envs: list[HandoffEnvelope], item: Any) -> dict:
+        if member.role == "manifest-drafter":
+            # #900: same reasoning as _dispatch_reviewer_degrades above.
+            return {"output": f"{member.role}-done", **_DRAFTER_TOOL_RECEIPT}
         if member.role != "reviewer":
             return {"output": f"{member.role}-done"}
         # No "status" key at all -> settles "succeeded", not "partial". Carries

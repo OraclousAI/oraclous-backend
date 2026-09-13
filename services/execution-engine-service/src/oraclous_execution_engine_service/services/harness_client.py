@@ -122,6 +122,9 @@ class HarnessClient:
         # #993: this member's own declared output keys, so the harness loop can guarantee their
         # SHAPE (string or list of strings) on the way out.
         declared_output_keys: list[str] | None = None,
+        # #900 (ADR-053 decision 2): the member's declared answer tool, sent only when set — an
+        # undeclared member adds zero keys and behaves exactly as it does today (the #576 pattern).
+        answer_from_tool: str | None = None,
         # #975 (cite-by-reference): the run's own fetch registry seed (this member's direct
         # upstream contributions, composed engine-side) and the person-supplied citable text.
         # Trusted exactly as `input_text` is (ruling 6/S2). NEVER omitted from the body — a
@@ -196,6 +199,10 @@ class HarnessClient:
         # #993: sent only when there ARE declared keys — an undeclared member adds zero keys.
         if declared_output_keys:
             body["declared_output_keys"] = list(declared_output_keys)
+        # #900 (ADR-053 decision 2): the member's declared answer tool. Sent only when set — an
+        # undeclared member adds zero keys and behaves exactly as it does today.
+        if answer_from_tool is not None:
+            body["answer_from_tool"] = answer_from_tool
         # #975: NEVER conditionally added (unlike the send-only-when-set fields above) — ruling 6/S7
         # requires these two to always be present in the body, defaulting to the empty seed.
         body["prior_fetched_urls"] = (

@@ -80,6 +80,10 @@ class ExecuteHarnessRequest(BaseModel):
     # a JSON graph-ingest call before dispatching it and grants exactly one repair turn on a
     # malformed one. False ⇒ unchanged behaviour (every pre-#853 caller omits the key).
     requires_valid_json: bool = Field(default=False)
+    # #900 (ADR-053 decision 2): the name of the dispatching member's own answer tool — a successful
+    # call to it IS the member's final answer, and the loop stops asking for another turn. None ⇒
+    # unchanged behaviour (no member declares this today).
+    answer_from_tool: str | None = Field(default=None)
     # #961 rulings 1+2: the websites this run is restricted to, as bare hostnames the engine already
     # cleaned. The tool-use loop refuses a web search that leaves the restriction out, BEFORE the
     # call is dispatched — checking the finished run was offered to the owner and refused, because

@@ -360,6 +360,49 @@ def validate_draft(
                     )
                 )
 
+    # #900 security review finding: a member's own answer_from_tool is reachable through DRAFTED
+    # CONTENT — the reviewing step's output is model-authored text this function parses
+    # (OHMMember.model_validate(raw) above), so a compliant or non-compliant model can write this
+    # field onto an ORDINARY member, naming one of that member's real tools. The moment that tool
+    # fires once, the whole member's answer becomes the raw tool-call arguments and the platform
+    # mints a grounding receipt for it automatically (ADR-053 decision 3) — skipping the citation
+    # and output-shape checks this validator never chose to waive for it. Fail closed
+    # (CLAUDE.md §3.5): checked in two parts, each with its own coded reason.
+    for m in members:
+        if m.answer_from_tool is None:
+            continue
+        if m.answer_from_tool not in m.tools:
+            # Checked first, and independently of the restriction below: a member naming a tool
+            # it does not even hold is wrong regardless of whether the mode is ever permitted.
+            flags.append(
+                ImportFlag(
+                    code="F-ANSWER-FROM-TOOL-NOT-HELD",
+                    severity="blocking",
+                    member_role=m.role,
+                    message=(
+                        f"member {m.role!r} declares answer_from_tool={m.answer_from_tool!r} but"
+                        " does not hold that tool in its own tools[]"
+                    ),
+                )
+            )
+            continue
+        # A drafted/imported team has no legitimate use for this mode today — it exists ONLY for
+        # the compiler's own internal manifest-drafter (built directly by build_compiler_team,
+        # never validated through this gate). No member of a team THIS validator checks may
+        # declare it, full stop; widening that is a new decision, not an extension of this check.
+        flags.append(
+            ImportFlag(
+                code="F-ANSWER-FROM-TOOL-NOT-ALLOWED",
+                severity="blocking",
+                member_role=m.role,
+                message=(
+                    f"member {m.role!r} declares answer_from_tool={m.answer_from_tool!r} — a"
+                    " drafted or imported team member may not declare this; it is reserved for"
+                    " the compiler's own internal drafting step"
+                ),
+            )
+        )
+
     # #730 (§DELIV decision 3): the declared FORM of a deliverable is refused at DEFINITION time,
     # never at run's end. Team-level (member_role="") reads straight off the raw draft dict — the
     # team-level field lives on the MANIFEST, which this loop never builds — while member-level

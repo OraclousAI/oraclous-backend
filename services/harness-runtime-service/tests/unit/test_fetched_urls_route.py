@@ -46,6 +46,7 @@ def _body(**overrides: Any) -> SimpleNamespace:
         max_tool_calls=None,
         on_exhaustion=None,
         requires_valid_json=False,
+        answer_from_tool=None,
         required_sites=[],
         declared_output_keys=[],
         prior_fetched_urls=[_A],
