@@ -194,35 +194,54 @@ async def test_in_flight_call_is_bounded_by_the_remaining_budget_not_a_fresh_win
     assert elapsed > _FIRST_DISPATCH_SECONDS
 
 
-# ── be-test-reviewer (PR #1070, FIX 2): a per-call bound must not silently defeat the EXISTING
-# transient-error retry (ADR-042 #551). tool_use.py:68 allows _LLM_MAX_RETRIES retries (default 4)
-# and :1894 already refuses to retry past the run's own wall-time budget; if the per-call bound
-# this issue adds is derived carelessly (e.g. dividing the budget by the retry count, or reusing a
-# single deadline that does not account for how many attempts are still owed), a real transient
-# provider error (rate-limit / 5xx) can stop being recoverable even though the run's OVERALL budget
-# would easily have covered every attempt. This is a regression GUARD, not a pin on a defect that
-# exists today (no per-call bound exists yet to interact with retries, so this currently PASSES) —
-# it exists so the fix for items 1/2 cannot ship a per-call bound that quietly breaks retries. ────
+# ── be-test-reviewer (PR #1070, FIX 2, round 2): a per-call bound must not silently defeat the
+# EXISTING transient-error retry (ADR-042 #551). tool_use.py:68 allows _LLM_MAX_RETRIES retries
+# (default 4) and :1894 already refuses to retry past the run's own wall-time budget; if the
+# per-call bound this issue adds is derived carelessly (e.g. dividing the budget EQUALLY across
+# every attempt, ignoring how much of it earlier attempts already spent), a real transient provider
+# error (rate-limit / 5xx) can stop being recoverable even though the run's OVERALL budget would
+# easily have covered every attempt.
+#
+# Round 1 gave every attempt the SAME duration ``d`` — mathematically impossible as a discriminator:
+# for N attempts of equal duration, catching a careless ``budget / N`` per-call bound needs
+# ``d > budget / N``, while a CORRECT implementation completing all N attempts needs
+# ``N * d <= budget``. No choice of ``d`` satisfies both at once, so nothing could ever go RED under
+# the careless implementation this test exists to catch.
+#
+# The fix is ASYMMETRY, which also matches reality: a rate-limit/5xx rejection comes back almost
+# instantly; a real completion is the slow part. The failing attempts are near-instant; ONLY the
+# final, successful attempt is slow. Keep this asymmetry EXPLICIT — an "obvious" refactor back to
+# uniform durations would silently make the test unable to catch anything again. Self-checked below
+# (``assert careless_equal_division_bound < _FINAL_CALL_SECONDS`` etc.) so that regression is loud,
+# not silent, if the constants ever drift. ─────────────────────────────────────────────────────────
+
+# A rate-limit/5xx rejection: near-instant.
+_FAILING_CALL_SECONDS = 0.01
+# A real completion: the slow part, by design.
+_FINAL_CALL_SECONDS = 2.0
+# The run's own wall-clock budget — deliberately sized so the two candidate per-call bounds
+# (checked below) land on opposite sides of `_FINAL_CALL_SECONDS`.
+_RUN_BUDGET_SECONDS = 3
 
 
 class _FlakyThenSucceedsLLM:
-    """Raises a TRANSIENT error ``fail_n`` times, each attempt taking ``call_seconds`` (models real
-    network latency per attempt), then answers — mirrors test_tool_use_loop.py's ``_FlakyLLM`` but
-    with a non-zero per-call duration so a per-call bound has something to actually interact with.
+    """Fails ``fail_n`` times near-instantly (``_FAILING_CALL_SECONDS`` each — a rejection bounces
+    back fast), then takes ``_FINAL_CALL_SECONDS`` to actually answer (a real completion is slow).
+    Mirrors test_tool_use_loop.py's ``_FlakyLLM``, but with the asymmetric durations FIX 2 needs.
     """
 
     protocol_shape = "fake"
 
-    def __init__(self, *, fail_n: int, call_seconds: float) -> None:
+    def __init__(self, *, fail_n: int) -> None:
         self.calls = 0
         self._fail_n = fail_n
-        self._call_seconds = call_seconds
 
     async def complete(self, *, messages: Any, system: str, tools: list[ToolSpec]) -> LLMResponse:
         self.calls += 1
-        await asyncio.sleep(self._call_seconds)
         if self.calls <= self._fail_n:
+            await asyncio.sleep(_FAILING_CALL_SECONDS)
             raise LLMClientError("LLM call → 429: rate limited", status_code=429, transient=True)
+        await asyncio.sleep(_FINAL_CALL_SECONDS)
         return LLMResponse(text="done")
 
 
@@ -231,24 +250,52 @@ async def test_bounded_retries_still_get_to_run_under_a_per_call_bound(
 ) -> None:
     """A per-call wall-clock bound must leave room for the FULL retry budget when the run's own
     overall wall-time budget can plainly afford it. Exhausts every retry slot
-    (``tool_use._LLM_MAX_RETRIES``) and succeeds only on the very last allowed attempt — asserting
-    the BEHAVIOUR (every attempt gets to run, and the call eventually succeeds), never a specific
-    constant or a specific derivation of the per-call bound.
+    (``tool_use._LLM_MAX_RETRIES``) with near-instant transient failures, then succeeds on the very
+    last allowed attempt — which is the SLOW one. Asserts the BEHAVIOUR (every attempt gets to run,
+    and the call eventually succeeds), never a specific constant or a specific derivation of the
+    per-call bound.
+
+    The asymmetric durations make two candidate per-call bounds disagree:
+
+    - a CARELESS one that divides the budget EQUALLY across every attempt
+      (``_RUN_BUDGET_SECONDS / total_attempts``) lands well UNDER ``_FINAL_CALL_SECONDS`` — it would
+      cut off the slow final call, and the run would never reach SUCCEEDED.
+    - a CORRECT one that bounds each call at what actually REMAINS lands, by the time the final call
+      starts, at ``_RUN_BUDGET_SECONDS`` minus the (near-instant) failing attempts already spent —
+      comfortably OVER ``_FINAL_CALL_SECONDS`` — so the final call is left alone and succeeds.
+
+    This test currently PASSES: no per-call bound exists yet (item 1/2's own gap), so nothing bounds
+    ANY call today and the final attempt simply gets to run. It exists to catch, once a per-call
+    bound is wired in, the SPECIFIC careless mistake of deriving it as ``budget / attempt_count``
+    (or any other bound that ignores how much of the budget earlier attempts already spent) rather
+    than off the time that actually REMAINS.
     """
     monkeypatch.setattr(tool_use, "_async_sleep", _no_sleep)  # deterministic + fast backoff
 
-    fail_n = tool_use._LLM_MAX_RETRIES  # use every retry slot, then clear on the LAST attempt
-    per_call_seconds = 0.05
+    fail_n = tool_use._LLM_MAX_RETRIES  # exhaust every retry slot, then clear on the LAST attempt
     total_attempts = fail_n + 1
-    # A generous margin: even with a per-call bound in play, `total_attempts` attempts at
-    # `per_call_seconds` each must comfortably fit inside the run's own overall budget.
-    max_wall_seconds = int(per_call_seconds * total_attempts * 10) + 1
 
-    llm = _FlakyThenSucceedsLLM(fail_n=fail_n, call_seconds=per_call_seconds)
+    # Self-check: confirm the chosen constants actually discriminate the two implementations, so a
+    # future edit (e.g. "simplifying" the durations back to uniform, or drifting the budget) cannot
+    # silently turn this back into an impossible — always-passing-for-the-wrong-reason — test.
+    careless_equal_division_bound = _RUN_BUDGET_SECONDS / total_attempts
+    correct_remaining_time_at_final_call = _RUN_BUDGET_SECONDS - fail_n * _FAILING_CALL_SECONDS
+    assert careless_equal_division_bound < _FINAL_CALL_SECONDS, (
+        f"scenario no longer discriminates: an equal-division bound "
+        f"({careless_equal_division_bound}s) would not cut off the {_FINAL_CALL_SECONDS}s final "
+        "call, so this test could never catch that mistake"
+    )
+    assert correct_remaining_time_at_final_call > _FINAL_CALL_SECONDS, (
+        f"scenario no longer discriminates: even a CORRECT remaining-time bound "
+        f"({correct_remaining_time_at_final_call}s) would cut off the {_FINAL_CALL_SECONDS}s final "
+        "call, so a correct implementation would fail this test too"
+    )
+
+    llm = _FlakyThenSucceedsLLM(fail_n=fail_n)
     policy = PolicyEnvelope(
         max_iterations=6,
         max_tool_calls=None,
-        max_wall_time_seconds=max_wall_seconds,
+        max_wall_time_seconds=_RUN_BUDGET_SECONDS,
         max_tokens=None,
     )
     result = await run_tool_use_loop(
@@ -261,7 +308,8 @@ async def test_bounded_retries_still_get_to_run_under_a_per_call_bound(
     )
     assert result.status is HarnessStatus.SUCCEEDED, result
     assert llm.calls == total_attempts, (
-        f"expected every retry slot to run ({total_attempts} attempts total: {fail_n} transient "
-        f"failures + 1 success), got {llm.calls} — a per-call bound derived without regard for how "
-        "many attempts are still owed can starve the existing transient-error retry."
+        f"expected every retry slot to run ({total_attempts} attempts total: {fail_n} "
+        f"near-instant transient failures + 1 slow success), got {llm.calls} — a per-call bound "
+        "that ignores how much of the budget the earlier (fast) failures already spent can "
+        "starve the slow final attempt that would otherwise have succeeded."
     )
