@@ -97,10 +97,10 @@ async def test_a_single_model_call_is_bounded_by_wall_clock_not_per_read_time() 
                     f"the call was still hanging after {_OUTER_DEADLINE_SECONDS}s (outer test "
                     f"deadline), even though it was configured with a {_BOUND_SECONDS}s bound — a "
                     f"keep-alive drip every {_DRIP_INTERVAL_SECONDS}s (shorter than the bound) "
-                    "keeps resetting httpx's per-read timeout forever. There is no wall-clock bound "
-                    "on a single model call (openai_compatible.py:185-197 passes `timeout` as a "
-                    "bare scalar, which httpx expands into a READ timeout that restarts on every "
-                    "received chunk)."
+                    "keeps resetting httpx's per-read timeout forever. There is no wall-clock "
+                    "bound on a single model call (openai_compatible.py:185-197 passes `timeout` "
+                    "as a bare scalar, which httpx expands into a READ timeout that restarts on "
+                    "every received chunk)."
                 )
             elapsed = time.monotonic() - started
             # transient: a bounded retry may recover from a call that merely ran long.
