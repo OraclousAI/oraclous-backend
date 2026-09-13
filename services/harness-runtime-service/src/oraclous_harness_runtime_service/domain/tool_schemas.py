@@ -302,6 +302,29 @@ def _project_input_schema(
     return rendered, widened_keys
 
 
+def _explicit_nullable_keys(op: dict[str, Any]) -> frozenset[str]:
+    """The op's own explicit ``parameters_schema_nullable_keys`` declaration (#898), carried
+    exactly the way ``parameters_schema_strict`` is: a sibling marker on the op, never inferred
+    from the override schema's own shape.
+
+    A hand-authored ``parameters_schema`` override (priority 1 in ``_parameters_for``) is the
+    platform's own schema too — #900 lands next and authors overrides on exactly this path — so it
+    must be able to say which of ITS OWN properties the platform rendered nullable, the same way
+    ``_project_input_schema`` reports ``widened_keys`` for a projected one. Without this, an
+    override with a genuinely nullable property is safe only by coincidence (today's two
+    hand-authored overrides happen to be read with a plain, non-defaulted lookup); the moment one
+    is read with ``input_data.get(key, default)``, an unstripped null silently destroys the
+    default — the exact platform-wide fail-open this issue exists to close, reappearing on this
+    path. An override declaring none behaves exactly as before. A hostile or non-iterable value
+    (not a list/set/tuple, or containing a non-string) degrades to no declared keys rather than
+    raising — a descriptor is data, same posture as every other hostile value in this module.
+    """
+    declared = op.get("parameters_schema_nullable_keys")
+    if not isinstance(declared, list | set | frozenset | tuple):
+        return frozenset()
+    return frozenset(key for key in declared if isinstance(key, str))
+
+
 def _parameters_for(
     op: dict[str, Any],
     *,
@@ -318,12 +341,16 @@ def _parameters_for(
        ``parameters_schema_strict`` marker on the op, never inferred from the override's own shape
        (#898/#900 — a platform-authored override landing on a descriptor must not silently inherit
        or lose strictness via a schema that merely happens to look closed+required already).
+       ``nullable_keys`` is carried the same explicit way, via ``parameters_schema_nullable_keys``
+       (see ``_explicit_nullable_keys``) — so the override's own genuinely-nullable properties get
+       the dispatch-time null strip too, without inferring anything from the schema's shape.
     2. An MCP-imported operation carries the server's own ``inputSchema`` verbatim (nested objects,
        enums, ``required`` lists the flat hint map cannot express) and is NEVER projected from
        ``spec.input_schema`` — that field belongs to a first-party plugin, not an imported server.
        ``tools/list`` is untrusted input, so a non-dict schema degrades to an empty object rather
-       than reaching the model or raising. Always ``strict=False`` — an imported server's schema is
-       its own untrusted contract, never ours to constrain, however strict it happens to look.
+       than reaching the model or raising. Always ``strict=False`` and ``nullable_keys=frozenset()``
+       — an imported server's schema is its own untrusted contract, never ours to constrain or
+       manage nulls for, however strict or nullable it happens to look.
     3. A first-party (non-MCP) operation with a dict-valued plugin-level ``spec.input_schema`` gets
        that schema PROJECTED onto its own hint-map keys (#911) and rendered strict (#898).
     4. Otherwise (no ``spec.input_schema``, or a hostile non-dict value) falls back to exactly
@@ -334,7 +361,8 @@ def _parameters_for(
     schema = op.get("parameters_schema")
     if isinstance(schema, dict):
         strict = bool(op.get("parameters_schema_strict")) and not imported
-        return schema, strict, frozenset()
+        nullable_keys = _explicit_nullable_keys(op) if not imported else frozenset()
+        return schema, strict, nullable_keys
     if imported:
         return _json_schema(op.get("parameters"), closed=False), False, frozenset()
     if isinstance(input_schema, dict):
