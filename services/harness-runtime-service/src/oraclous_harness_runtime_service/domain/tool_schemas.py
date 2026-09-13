@@ -53,20 +53,31 @@ def _json_schema(parameters: Any, *, closed: bool) -> dict[str, Any]:
     return schema
 
 
-def _widen_type_to_nullable(prop: dict[str, Any]) -> dict[str, Any]:
+def _widen_type_to_nullable(prop: dict[str, Any]) -> tuple[dict[str, Any], bool]:
     """Widen ``prop``'s declared ``type`` to also accept ``null``, leaving every other keyword
     (``minLength``, ``format``, ``minimum``, ``maximum``, ``default``, ``enum``, ``description``,
     …) untouched (#898 probe fact 3). A bare type becomes a two-element list; an existing type
     list gets ``"null"`` appended only if it is not already present, so a genuinely-nullable
-    property (``["object", "null"]``) is never doubled up."""
+    property (``["object", "null"]``) is never doubled up.
+
+    Returns ``(widened_prop, changed)`` — ``changed`` is ``True`` only when a ``type`` was actually
+    modified to add null-acceptance. It is ``False`` when the type already accepted null (nothing
+    to change) and, notably, when ``prop`` has no ``type`` key at all — a bare ``enum`` or an
+    ``anyOf``/``oneOf`` shape — because there is nothing for this function to widen. ``changed`` is
+    ``render_strict_schema``'s single source of truth for "the platform made this key nullable";
+    see its docstring for why that distinction matters.
+    """
     widened = dict(prop)
     current = widened.get("type")
     if isinstance(current, list):
         if "null" not in current:
             widened["type"] = [*current, "null"]
-    elif isinstance(current, str):
+            return widened, True
+        return widened, False
+    if isinstance(current, str):
         widened["type"] = [current, "null"]
-    return widened
+        return widened, True
+    return widened, False
 
 
 def _is_object_type(type_value: Any) -> bool:
@@ -118,7 +129,9 @@ def _close_nested_object_schemas(value: Any) -> Any:
     return out
 
 
-def render_strict_schema(schema: Any, *, force_nullable: frozenset[str] = frozenset()) -> Any:
+def render_strict_schema(
+    schema: Any, *, force_nullable: frozenset[str] = frozenset()
+) -> tuple[Any, frozenset[str]]:
     """Render ``schema`` into the dialect a provider's ``strict`` function-calling flag needs to
     actually bind (#898 — real-provider probe, OpenRouter, 2026-09-13).
 
@@ -142,9 +155,21 @@ def render_strict_schema(schema: Any, *, force_nullable: frozenset[str] = frozen
 
     Pure and idempotent: rendering an already-rendered schema with the same ``force_nullable``
     reproduces it exactly.
+
+    Returns ``(rendered_schema, widened_keys)``. ``widened_keys`` is the SOLE source of truth for
+    "the platform made this key nullable" — every property whose ``type`` this call actually
+    changed to accept null, per ``_widen_type_to_nullable``'s own ``changed`` flag. A caller must
+    use it directly rather than recomputing "not in the pre-render required set, or force-nullable"
+    independently: that condition and this function's own widening decision can drift, and one case
+    already does — a property with no declared ``type`` at all (a bare ``enum``, an
+    ``anyOf``/``oneOf`` shape) satisfies the recomputed condition when it is optional, but
+    ``_widen_type_to_nullable`` leaves it completely untouched (there is no ``type`` to widen), so a
+    caller trusting its own copy of the condition would wrongly call it "made nullable" and a
+    dispatch-time strip would then drop a value the caller legitimately sent. A non-object schema
+    returns an empty ``widened_keys`` alongside the unchanged ``schema``.
     """
     if not isinstance(schema, dict) or not _is_object_type(schema.get("type")):
-        return schema
+        return schema, frozenset()
 
     declared_properties = schema.get("properties")
     declared_properties = declared_properties if isinstance(declared_properties, dict) else {}
@@ -152,18 +177,21 @@ def render_strict_schema(schema: Any, *, force_nullable: frozenset[str] = frozen
 
     rendered_properties: dict[str, Any] = {}
     required: list[str] = []
+    widened_keys: set[str] = set()
     for key, prop in declared_properties.items():
         required.append(key)
         closed = _close_nested_object_schemas(prop)
         if isinstance(closed, dict) and (key in force_nullable or key not in original_required):
-            closed = _widen_type_to_nullable(closed)
+            closed, changed = _widen_type_to_nullable(closed)
+            if changed:
+                widened_keys.add(key)
         rendered_properties[key] = closed
 
     rendered = dict(schema)
     rendered["properties"] = rendered_properties
     rendered["required"] = required
     rendered["additionalProperties"] = False
-    return rendered
+    return rendered, frozenset(widened_keys)
 
 
 _MCP_SPEC_TYPE = "mcp"
@@ -245,15 +273,15 @@ def _project_input_schema(
     ]
     force_nullable = frozenset(k for k in op_key_set if k in bound_config)
 
-    rendered = render_strict_schema(
+    # `widened_keys` is render_strict_schema's OWN account of which properties it actually made
+    # nullable — never recomputed here from `pre_required`/`force_nullable` independently. See its
+    # docstring: a property with no declared `type` at all would wrongly count as "made nullable"
+    # under a recomputed condition even though the renderer left it completely untouched.
+    rendered, widened_keys = render_strict_schema(
         {"type": "object", "properties": properties, "required": pre_required},
         force_nullable=force_nullable,
     )
-    pre_required_set = set(pre_required)
-    nullable_keys = frozenset(
-        key for key in properties if key not in pre_required_set or key in force_nullable
-    )
-    return rendered, nullable_keys
+    return rendered, widened_keys
 
 
 def _parameters_for(
