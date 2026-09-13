@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import uuid
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -172,6 +172,7 @@ def build_subharness(
     source: str = "<import>",
     substrate: Substrate = "graph",
     driver: OHMSkillDriver | None = None,
+    resolved_schemas: dict[str, dict[str, Any]] | None = None,
 ) -> OHMManifest:
     """Build a loadable sub-harness via the actors path (entrypoint -> a 'primary' agent actor).
 
@@ -179,9 +180,17 @@ def build_subharness(
     so this never leans on an arbitrary tool to satisfy the loader. ``tools`` populate the sub-
     harness ``capabilities[]``; the parent member's ``tools`` ceiling is set separately. Under the
     default graph ``substrate`` file tools remap onto the seeded graph capabilities (#509).
+    ``resolved_schemas`` (#900, ADR-053 decision 1) is an optional map of tool name -> a per-run
+    JSON Schema; a tool present in the map gets that schema on its ``OHMCapability.resolved_
+    schema``, everything else keeps the default ``None`` — omitting it is byte-identical to today.
     """
     capabilities = [
-        OHMCapability(ref=_capability_ref(t, substrate), binding=t) for t in (tools or [])
+        OHMCapability(
+            ref=_capability_ref(t, substrate),
+            binding=t,
+            resolved_schema=(resolved_schemas or {}).get(t),
+        )
+        for t in (tools or [])
     ]
     prompts = [OHMPrompt(role="primary", source="inline", body=body)] if body.strip() else []
     return OHMManifest(

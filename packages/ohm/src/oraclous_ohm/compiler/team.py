@@ -11,6 +11,11 @@ own output, and nothing read that output any more — the drafter gets the descr
 directly into its own sub-goal (#713 ``_drafter_governance_subgoal``/``_catalog_menu``), and the
 reviewer's ``manifest-validate`` (``ManifestValidateConnector``) reads the org's live tool list
 directly from the registry, never from anything the surveyor produced.
+
+#900 (ADR-053) gives the drafter its own real tool call, ``draft-manifest`` — its structured answer
+(the drafted team) is enforced as that tool's arguments, never free text the platform peels JSON
+out of, mirroring the reviewer's own ``manifest-validate`` precedent. Only the planner is left
+reasoning-only now.
 """
 
 from __future__ import annotations
@@ -32,6 +37,11 @@ from oraclous_ohm.seeds import seed_policy_template, seed_reference_topologies
 
 #: the reviewer's validate capability — the registered ``manifest-validate`` connector (slice-1).
 _VALIDATE_TOOL = "manifest-validate"
+#: #900 (ADR-053 decisions 1+2): the drafter's own answer tool — its structured answer (a drafted
+#: OHM Team Harness) IS this tool call's arguments, never free text the platform tries to peel JSON
+#: out of. Built in capability-registry-service (a sibling PR); referenced here only by binding
+#: string, exactly like ``_VALIDATE_TOOL`` above.
+_DRAFT_TOOL = "draft-manifest"
 
 
 def _planner_topology_subgoal(objective: str) -> str:
@@ -117,6 +127,65 @@ _REPAIR_ATTEMPTS = 2
 _REVIEWER_OVERCHECK_SLACK = 5
 _REVIEWER_VALIDATE_CALLS = _REPAIR_ATTEMPTS + 1 + _REVIEWER_OVERCHECK_SLACK
 
+#: #900: the ceiling above which the drafter's allowed-tool-name enum is OMITTED ENTIRELY rather
+#: than truncated to a subset — a truncated list would make a legitimately registered tool
+#: impossible for the drafter to ever emit. Measured on the deployed stack: a fresh org carries 11
+#: tools, a fully seeded deployed org 21, a large MCP import lands near 80-100.
+_DRAFTER_ENUM_CEILING = 100
+
+
+def _drafter_resolved_schema(catalog_descriptions: list[Any] | None) -> dict[str, Any]:
+    """#900 (ADR-053 decision 1): the per-run schema for the drafter's `draft-manifest` tool call —
+    its arguments ARE the drafted OHM Team Harness (ADR-053: the tool call IS the answer).
+
+    Measured, live-verified fact: the provider's strict mode only actually suppresses a forbidden
+    enum value when EVERY property of the constrained object's OWN schema is also in that object's
+    OWN `required` list — a partial `required` left it silently inert (7/10 forbidden values got
+    through; 0/10 with a complete list). So the TOP LEVEL here is closed
+    (`additionalProperties: False`) with every top-level property required. Nesting does NOT need
+    the same treatment (0/5 forbidden even with a partial nested `required`, same probe) — #898's
+    `render_strict_schema` already closes a nested object's `additionalProperties` at render time
+    and deliberately leaves its own `required` alone, so this schema does not pre-close nested
+    structure itself.
+
+    Below `_DRAFTER_ENUM_CEILING`, each member's `tools[]` entries are constrained to the surveyed
+    catalog's names via a closed `enum`, in menu order (the same order `_catalog_menu` renders).
+    At/above the ceiling the enum is OMITTED ENTIRELY from that property — never truncated to a
+    subset, and no catalogue name survives anywhere else in the schema either.
+    """
+    names = [
+        str(entry["name"])
+        for entry in (catalog_descriptions or [])
+        if isinstance(entry, dict) and entry.get("name")
+    ]
+    tool_item_schema: dict[str, Any] = {"type": "string"}
+    if names and len(names) <= _DRAFTER_ENUM_CEILING:
+        tool_item_schema["enum"] = names
+    member_schema = {
+        "type": "object",
+        "properties": {
+            "role": {"type": "string"},
+            "kind": {"type": "string", "enum": ["agent", "human"]},
+            "manifest_ref": {"type": ["string", "null"]},
+            "tools": {"type": "array", "items": tool_item_schema},
+            "tool_rationale": {"type": "object"},
+            "subgoal": {"type": ["string", "null"]},
+            "depends_on": {"type": "array", "items": {"type": "string"}},
+            "outputs_schema": {"type": "object"},
+            "human_role": {"type": ["string", "null"]},
+            "requires_valid_json": {"type": "boolean"},
+            "outcome_critical": {"type": "boolean"},
+        },
+    }
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["members"],
+        "properties": {
+            "members": {"type": "array", "items": member_schema},
+        },
+    }
+
 
 def build_compiler_team(
     owner_organization_id: uuid.UUID,
@@ -157,7 +226,10 @@ def build_compiler_team(
             role="manifest-drafter",
             kind="agent",
             manifest_ref="org:compiler/drafter@1",
-            tools=[],
+            # #900 (ADR-053 decisions 1+2): the drafter's structured answer is enforced by a real
+            # tool call, never free text the platform tries to peel JSON out of.
+            tools=[_DRAFT_TOOL],
+            answer_from_tool=_DRAFT_TOOL,
             depends_on=["planner"],
             # #596: emit the seed governance + budget. NOTE: this rides the static sub-goal; the
             # compiler's planner emits NO ## Handoff objective_slice (#577), so nothing shadows it
@@ -198,14 +270,25 @@ def build_compiler_team(
         budget=OHMBudget(max_tokens_total=200_000, max_sub_runs=20, max_tokens_per_member=60_000),
     )
 
-    def _sub(role: str, body: str, tools: list[str]) -> dict:
+    def _sub(
+        role: str, body: str, tools: list[str], *, resolved_schemas: dict[str, Any] | None = None
+    ) -> dict:
         return build_subharness(
-            role, owner_organization_id=owner_organization_id, body=body, tools=tools
+            role,
+            owner_organization_id=owner_organization_id,
+            body=body,
+            tools=tools,
+            resolved_schemas=resolved_schemas,
         ).model_dump(mode="json")
 
     sub_harnesses = {
         "planner": _sub("planner", PLANNER_PROMPT, []),
-        "manifest-drafter": _sub("manifest-drafter", DRAFTER_PROMPT, []),
+        "manifest-drafter": _sub(
+            "manifest-drafter",
+            DRAFTER_PROMPT,
+            [_DRAFT_TOOL],
+            resolved_schemas={_DRAFT_TOOL: _drafter_resolved_schema(catalog_descriptions)},
+        ),
         "reviewer": _sub("reviewer", REVIEWER_PROMPT, [_VALIDATE_TOOL]),
     }
     return manifest, sub_harnesses
