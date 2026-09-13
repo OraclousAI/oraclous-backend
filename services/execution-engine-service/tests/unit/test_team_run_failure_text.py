@@ -994,3 +994,115 @@ async def test_the_existing_cap_and_per_detail_bounds_still_hold_with_the_new_re
     assert row.state == "FAILED"
     assert row.error_message is not None
     assert len(row.error_message) <= _FAILURE_SUMMARY_CAP
+
+
+# ── security review (PR #1071): the readable reason must carry no UNCONTROLLED manifest-authored
+# text. summarise_failed_run's own template intentionally names a failed role TWICE by design —
+# once in "Failed: {role}." and once in "{role} stopped because {reason}" — both CONTROLLED,
+# both required for the message to be actionable. What must never happen is a THIRD,
+# UNCONTROLLED copy arriving via `repr()` embedded inside the "reason" half itself, which is
+# exactly what the raw exception message used to do at the timeout raise site. The baseline below
+# is derived (never hand-typed) from the template's own behaviour on an ordinary, already-plain
+# reason, so a future change to how many times the template names a role updates the baseline
+# automatically instead of silently breaking this test's arithmetic. ────────────────────────────
+#
+# ``OHMMember.role`` (packages/ohm/manifest.py) has a min_length and NO other restriction — fully
+# author-controlled. Every raise site in team_run.py's dispatch() that can end up in a member's
+# recorded error is exercised below with a role built to be unmistakable if it leaks beyond that
+# baseline: HTML-special characters (an unescaped-output canary — `repr()` does not HTML-escape
+# angle brackets) and a double quote (survives `repr()`'s own single-quote-delimited escaping
+# unchanged, unlike an apostrophe would).
+_MALICIOUS_ROLE = 'evil<script>role"with-a-double-quote'
+
+
+def _baseline_role_mentions(role: str) -> int:
+    """How many times summarise_failed_run's own template names a role for an ORDINARY, already-
+    plain reason with no manifest text embedded in it (the CONTROLLED naming baseline). A real
+    raise site's message counting MORE than this means a second, uncontrolled copy leaked through
+    the reason text itself."""
+    text = summarise_failed_run(failed=[role], blocked=[], member_errors={role: "a plain reason"})
+    return text.count(role)
+
+
+def _malicious_role_manifest() -> dict[str, Any]:
+    return {
+        "ohm_version": "1.1",
+        "metadata": {
+            "id": str(uuid.uuid4()),
+            "name": "t",
+            "owner_organization_id": str(_ORG_834),
+            "kind": "team",
+        },
+        "members": [{"role": _MALICIOUS_ROLE, "kind": "agent", "manifest_ref": "org:x/a@1"}],
+        "runtime": {"entrypoint": _MALICIOUS_ROLE},
+    }
+
+
+async def _drive_malicious_role_manifest(harness: Any) -> Any:
+    from oraclous_execution_engine_service.services.team_run_service import TeamRunService
+
+    repo = _FaultedRepo834()
+    svc = TeamRunService(
+        team_runs=repo,
+        provenance=_NoopProvenance834(),
+        harness=harness,
+        enqueue=None,
+        evaluate=None,
+    )
+    row = await svc.create(
+        _principal_834(),
+        manifest=_malicious_role_manifest(),
+        sub_harnesses={},
+        gate_decisions={},
+    )
+    return await svc.drive(row.id, _principal_834())
+
+
+class _AlwaysTimesOutHarness1067:
+    """Every member's harness call exceeds its wall-clock time limit (team_run.py's
+    ``except HarnessTimeout`` raise site)."""
+
+    async def execute(self, **kw: Any) -> dict[str, Any]:
+        from oraclous_execution_engine_service.services.harness_client import HarnessTimeout
+
+        raise HarnessTimeout("harness call timed out: exceeded its wall-clock time limit")
+
+
+async def test_a_member_timeout_never_leaks_its_manifest_authored_role_a_second_time() -> None:
+    """The fix: this raise site used to interpolate `member.role` into a message that does not
+    match the curation step's `_ORCHESTRATOR_WRAPPER` pattern (anchored on the literal phrase
+    "harness did not succeed:"), so nothing stripped it before it reached the run page verbatim
+    through `repr` — which does not escape angle brackets or quotes. The role is still named the
+    template's own baseline number of times ("Failed: {role}." + "{role} stopped because
+    {reason}") — that is intentional and required for the message to be actionable — but it must
+    never appear a THIRD (or more) time via an uncontrolled repr() embedded in the reason half."""
+    row = await _drive_malicious_role_manifest(_AlwaysTimesOutHarness1067())
+    assert row.state == "FAILED"
+    assert row.error_message is not None
+    assert row.error_message.count(_MALICIOUS_ROLE) == _baseline_role_mentions(_MALICIOUS_ROLE)
+    # the terminal must still be readable, not merely scrubbed to nothing
+    message = row.error_message.lower()
+    assert "timed out" in message
+    assert "time limit" in message or "wall-clock" in message
+
+
+class _AlwaysNonSucceedingHarness1067:
+    """Every member's harness call returns a non-SUCCEEDED/PARTIAL status (team_run.py's
+    "member {role!r} harness did not succeed: ..." raise site)."""
+
+    async def execute(self, **kw: Any) -> dict[str, Any]:
+        return {"id": str(uuid.uuid4()), "status": "FAILED", "output": None}
+
+
+async def test_a_non_succeeding_status_never_leaks_its_manifest_authored_role_a_second_time() -> (
+    None
+):
+    """Regression guard on the SIBLING raise site: it also interpolates `member.role`, and today
+    that copy is safe only because it matches `_ORCHESTRATOR_WRAPPER`'s literal "harness did not
+    succeed:" anchor and gets stripped with the rest of the prefix — leaving exactly the template's
+    own baseline naming. If that literal phrase or the wrapper regex ever drifts, this test catches
+    an extra, uncontrolled copy reappearing."""
+    row = await _drive_malicious_role_manifest(_AlwaysNonSucceedingHarness1067())
+    assert row.state == "FAILED"
+    assert row.error_message is not None
+    assert row.error_message.count(_MALICIOUS_ROLE) == _baseline_role_mentions(_MALICIOUS_ROLE)

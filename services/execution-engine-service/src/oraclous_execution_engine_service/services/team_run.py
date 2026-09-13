@@ -53,11 +53,17 @@ from oraclous_ohm.orchestrate import (
 )
 from oraclous_ohm.sites import InvalidSiteError, normalise_sites
 
+from oraclous_execution_engine_service.core.config import (
+    HARNESS_MEMBER_CALL_TIMEOUT_CEILING_SECONDS,
+)
 from oraclous_execution_engine_service.domain.answer_roles import sink_roles
 from oraclous_execution_engine_service.domain.app_answers import parse_answers
 from oraclous_execution_engine_service.domain.app_form import SITE_RESTRICTION_KEY
 from oraclous_execution_engine_service.domain.refresh import REFRESH_SEED_KEY
-from oraclous_execution_engine_service.services.harness_client import HarnessClientError
+from oraclous_execution_engine_service.services.harness_client import (
+    HarnessClientError,
+    HarnessTimeout,
+)
 
 
 class _Harness(Protocol):
@@ -87,6 +93,8 @@ class _Harness(Protocol):
         # #993: this member's own declared keys, so the harness loop can guarantee their SHAPE
         # (string or list of strings) on the way out — see `_declared_output_keys`.
         declared_output_keys: list[str] | None = ...,
+        # #1067 (R1, item 4): the per-call bound below any real caller's own patience.
+        timeout: float | None = ...,  # noqa: ASYNC109 — forwarded to httpx, not an asyncio cancel
     ) -> dict[str, Any]: ...
 
 
@@ -514,8 +522,23 @@ def _producer_ref(
     ``ordinal`` disambiguates a FAN-OUT member, whose sub-runs share one role: without it the
     per-item outputs would be named identically. It is the fan index when the item carries one and
     is otherwise omitted, so a plain single dispatch is unchanged.
+
+    Security review (PR #1071, interim fix — the full fix is a real cancellation path, filed
+    separately): today, when the engine gives up on a member's harness call (its own
+    ``timeout=`` firing, or any other HarnessClientError), NOTHING tells the harness service to
+    stop — that member's loop keeps running inside the harness, orphaned, bounded only by ITS OWN
+    separate budget. A later retry/re-dispatch of the SAME role in the SAME run used to build the
+    IDENTICAL producer identity (keyed only by role + run), so the retry's writes and the orphan's
+    still-in-flight writes could land under one indistinguishable identity. ``attempt_id`` — a
+    fresh value on EVERY call to this function, i.e. every dispatch, whether the first attempt or
+    a later retry — makes that collision impossible: an orphan and its retry now write under
+    different identities even though they share a role and a run.
     """
-    ref: dict[str, Any] = {"producer_kind": "team-member", "member_role": member.role}
+    ref: dict[str, Any] = {
+        "producer_kind": "team-member",
+        "member_role": member.role,
+        "attempt_id": str(uuid.uuid4()),
+    }
     if trace_id is not None:
         ref["team_run_id"] = str(trace_id)
     if team_id is not None:
@@ -676,6 +699,15 @@ def make_harness_dispatch(
     contributions: dict[str, list[str]] | None = None,
     ancestors: dict[str, list[str]] | None = None,
     person_supplied_text: str = "",
+    # #1067 (R1, item 4): the bound threaded onto EVERY member's harness call. An explicit
+    # parameter, not a `get_settings()` read in here — the effective, already-clamped value is
+    # resolved ONCE at the wiring boundary (``tasks/run_tasks.py``, the same place
+    # `HarnessClient`'s own flat timeout is read) and passed down through `TeamRunService` ->
+    # `run_team_hybrid`/`run_team_harness` -> here, so a caller or a test can override it without
+    # patching a global. The literal default is the code-level ceiling itself
+    # (`HARNESS_MEMBER_CALL_TIMEOUT_CEILING_SECONDS`), for a direct call to this factory that
+    # supplies no run-specific value.
+    member_call_timeout: float = HARNESS_MEMBER_CALL_TIMEOUT_CEILING_SECONDS,
 ) -> DispatchFn:
     """Build a ``run_team`` dispatch that runs each member as a real harness execution.
 
@@ -699,6 +731,7 @@ def make_harness_dispatch(
     _text`` is the already-composed, already-truncated citable text (#975 ruling 4/6), sent
     UNCHANGED to every member — the entrypoint included."""
     contrib_map: dict[str, list[str]] = contributions if contributions is not None else {}
+    member_timeout = member_call_timeout
 
     async def dispatch(member: OHMMember, envelopes: list[HandoffEnvelope], fan_item: Any) -> Any:
         sub = sub_harnesses.get(member.role)
@@ -764,62 +797,95 @@ def make_harness_dispatch(
         # ``person_supplied_text`` uses below: the first ancestor (in manifest declaration order)
         # survives whole; a later one is truncated at the tail rather than the seed being dropped.
         prior_fetched_urls = prior_fetched_urls[:_MAX_MEMBER_FETCHED_URLS]
-        result = await harness.execute(
-            input_text=render_member_input(
-                member,
-                envelopes,
-                fan_item,
-                # #602 cost lever: only the SINK member of a seeded refresh receives its prior
-                # records + the carry-forward directive; every other dispatch is unchanged.
-                refresh_records=(
-                    refresh_seed_records if member.role == refresh_sink_role else None
+        try:
+            result = await harness.execute(
+                input_text=render_member_input(
+                    member,
+                    envelopes,
+                    fan_item,
+                    # #602 cost lever: only the SINK member of a seeded refresh receives its prior
+                    # records + the carry-forward directive; every other dispatch is unchanged.
+                    refresh_records=(
+                        refresh_seed_records if member.role == refresh_sink_role else None
+                    ),
+                    # Contract §TASK (#674): the run's task, delivered to EVERY member verbatim.
+                    task=task,
+                    # #846: and the app's intake answers, to every member for the same reason — a
+                    # downstream member must not have to reconstruct what was assumed from a
+                    # hand-off.
+                    answers=answers,
+                    # #694: the member's OWN resolved capability refs, so the run directive states
+                    # where its output actually persists rather than asserting the graph for
+                    # everyone.
+                    capability_refs=_capability_refs(sub),
                 ),
-                # Contract §TASK (#674): the run's task, delivered to EVERY member verbatim.
-                task=task,
-                # #846: and the app's intake answers, to every member for the same reason — a
-                # downstream member must not have to reconstruct what was assumed from a hand-off.
-                answers=answers,
-                # #694: the member's OWN resolved capability refs, so the run directive states
-                # where its output actually persists rather than asserting the graph for everyone.
-                capability_refs=_capability_refs(sub),
-            ),
-            manifest_inline=sub,
-            manifest_ref=(member.manifest_ref if sub is None else None),
-            # the member's tools[] is the authoritative ceiling (ADR-032/035 §5) — it caps the
-            # harness fail-closed for BOTH the inline AND the manifest_ref path, so a registered
-            # manifest_ref harness can never exceed what the member declared (red-team G-A).
-            capability_ceiling=list(member.tools),
-            **caps,
-            parent_execution_id=parent_execution_id,
-            trace_id=trace_id,
-            # file-native blackboard (#518): the trusted per-run working tree every member's file
-            # tools operate on in place (the harness sets it on each file-tool instance's config).
-            workspace_root=workspace_root,
-            # graph substrate (#524): the per-run graph the graph tools (knowledge-retriever /
-            # graph-ingest / find-similar) target — set on each instance's config so the model
-            # never invents a UUID. org-scoped at create (cross-org rejected).
-            graph_id=graph_id,
-            # team-scope blackboard (#513): the stable team identity (team-manifest id) every member
-            # shares — the harness writes/reads team-scope memory under it, so concurrent members +
-            # future runs of the same team see one blackboard (the adopted-graph world-model).
-            team_id=team_id,
-            # #728: WHO is writing. An artifact used to record nothing about its producer, so a
-            # run's outputs were indistinguishable and — because the lexical document node keys on
-            # the filename, which was the constant `inline.txt` — every write in a run collapsed
-            # onto ONE node (run dc167d8e landed 7 artifacts and kept 1). Bound here, on the same
-            # trusted path as graph_id, so the model can neither supply nor forge its identity.
-            producer=_producer_ref(member, trace_id, team_id, fan_item),
-            # Hierarchy of Truth (#538): the team's precedence + authoritative flag, bound onto
-            # each knowledge-retriever instance so a member's in-loop read is auto-ranked (#514).
-            precedence_order=precedence_order,
-            graph_authoritative=graph_authoritative,
-            # #975 (cite-by-reference): the run's fetch registry seed (this member's direct upstream
-            # contributions, composed above) and the person-supplied citable text — sent to EVERY
-            # member, the entrypoint included, and NEVER omitted (ruling 6/S7: a caller must not be
-            # able to launder a missing value into "not sent").
-            prior_fetched_urls=prior_fetched_urls,
-            person_supplied_text=person_supplied_text,
-        )
+                manifest_inline=sub,
+                manifest_ref=(member.manifest_ref if sub is None else None),
+                # the member's tools[] is the authoritative ceiling (ADR-032/035 §5) — it caps the
+                # harness fail-closed for BOTH the inline AND the manifest_ref path, so a registered
+                # manifest_ref harness can never exceed what the member declared (red-team G-A).
+                capability_ceiling=list(member.tools),
+                **caps,
+                parent_execution_id=parent_execution_id,
+                trace_id=trace_id,
+                # file-native blackboard (#518): the trusted per-run working tree every member's
+                # file tools operate on in place (the harness sets it on each file-tool instance's
+                # config).
+                workspace_root=workspace_root,
+                # graph substrate (#524): the per-run graph the graph tools (knowledge-retriever /
+                # graph-ingest / find-similar) target — set on each instance's config so the model
+                # never invents a UUID. org-scoped at create (cross-org rejected).
+                graph_id=graph_id,
+                # team-scope blackboard (#513): the stable team identity (team-manifest id) every
+                # member shares — the harness writes/reads team-scope memory under it, so
+                # concurrent members + future runs of the same team see one blackboard (the
+                # adopted-graph world-model).
+                team_id=team_id,
+                # #728: WHO is writing. An artifact used to record nothing about its producer, so a
+                # run's outputs were indistinguishable and — because the lexical document node keys
+                # on the filename, which was the constant `inline.txt` — every write in a run
+                # collapsed onto ONE node (run dc167d8e landed 7 artifacts and kept 1). Bound here,
+                # on the same trusted path as graph_id, so the model can neither supply nor forge
+                # its identity.
+                producer=_producer_ref(member, trace_id, team_id, fan_item),
+                # Hierarchy of Truth (#538): the team's precedence + authoritative flag, bound onto
+                # each knowledge-retriever instance so a member's in-loop read is auto-ranked
+                # (#514).
+                precedence_order=precedence_order,
+                graph_authoritative=graph_authoritative,
+                # #975 (cite-by-reference): the run's fetch registry seed (this member's direct
+                # upstream contributions, composed above) and the person-supplied citable text —
+                # sent to EVERY member, the entrypoint included, and NEVER omitted (ruling 6/S7: a
+                # caller must not be able to launder a missing value into "not sent").
+                prior_fetched_urls=prior_fetched_urls,
+                person_supplied_text=person_supplied_text,
+                # #1067 (R1, item 4): the per-call bound below any real caller's own patience — see
+                # `member_timeout` above. Always sent (never conditional), the same way the harness
+                # client's own `timeout` kwarg is documented to override its flat default.
+                timeout=member_timeout,
+            )
+        except HarnessTimeout as exc:
+            # #1067 (R1, item 3): reworded HERE, at the one place the engine still holds structured
+            # context (which member, what kind of call) — everything downstream (the orchestrator's
+            # generic `except Exception` -> `str(exc)`, the run-page curation) only has the message
+            # text to work with, and the transport exception's bare class name says nothing a
+            # person can act on.
+            #
+            # Security review (PR #1071): NEVER interpolate `member.role` (or any other
+            # manifest-authored text) into this message. The curation step at
+            # team_run_service.py's `summarise_failed_run` only strips a member's role name via
+            # `_ORCHESTRATOR_WRAPPER`, which is anchored on the literal phrase "harness did not
+            # succeed:" — the sibling raise site a few lines above this one matches that pattern
+            # and gets its role name stripped with the rest of the prefix; this message does not
+            # contain that phrase, so nothing here would be stripped and an author-controlled role
+            # (min-length only, no max, no character restriction — packages/ohm/manifest.py) would
+            # reach the run page verbatim through `repr`, which does not escape angle
+            # brackets/quotes. The layer above already names the member (it composes "{role}
+            # stopped because {reason}"), so repeating it here is redundant as well as unsafe.
+            raise HarnessClientError(
+                "timed out: it exceeded its wall-clock time limit "
+                f"({member_timeout:.0f}s) before the harness answered"
+            ) from exc
         status = result.get("status")
         # #907: whether the harness's OWN LLM client was the scripted stand-in
         # (HarnessExecutionOut.simulated) — absent on a pre-#907 harness response (back-compat).
@@ -938,6 +1004,7 @@ async def run_team_harness(
     graph_authoritative: bool = False,
     on_checkpoint: CheckpointFn | None = None,
     on_dispatch: DispatchAnnounceFn | None = None,
+    member_call_timeout: float = HARNESS_MEMBER_CALL_TIMEOUT_CEILING_SECONDS,
 ) -> TeamRunResult:
     """Run a Team Harness member DAG, dispatching each member as a real harness execution.
 
@@ -997,6 +1064,7 @@ async def run_team_harness(
         contributions=contributions,  # #975: shared + mutated across every dispatch of this run
         ancestors=ancestors,  # #989: the transitive-closure map every dispatch composes a seed from
         person_supplied_text=_person_supplied_text(task, answers),  # #975 ruling 4/6
+        member_call_timeout=member_call_timeout,
     )
     return await run_team(
         manifest,
@@ -1090,6 +1158,7 @@ async def run_team_hybrid(
     graph_authoritative: bool = False,
     on_checkpoint: CheckpointFn | None = None,
     on_dispatch: DispatchAnnounceFn | None = None,
+    member_call_timeout: float = HARNESS_MEMBER_CALL_TIMEOUT_CEILING_SECONDS,
 ) -> TeamRunResult:
     """Drive a Team Harness whose handoff graph has GENUINE loops (ADR-043 #552): the acyclic
     skeleton runs on ``run_team`` and each loop SCC runs the bounded ``run_loop_seam`` conductor,
@@ -1127,6 +1196,7 @@ async def run_team_hybrid(
             graph_authoritative=graph_authoritative,
             on_checkpoint=on_checkpoint,  # #819: per-member durability
             on_dispatch=on_dispatch,  # #828: fires before a member's dispatch runs
+            member_call_timeout=member_call_timeout,
         )
     if coordinate is None or done_check_for is None:  # fail-closed (ADR-043 invariant)
         raise OHMError("team has loops but no coordinator/done-check wired")
@@ -1166,6 +1236,7 @@ async def run_team_hybrid(
         task=hybrid_task,  # Contract §TASK (#674): to every member
         answers=hybrid_answers,  # #846: the app's intake answers, to every member
         required_sites=resolve_run_sites(inputs),  # #961: the sites this run is held to
+        member_call_timeout=member_call_timeout,
     )
     termination = manifest.orchestration.termination if manifest.orchestration else None
     max_rounds = (termination.max_rounds if termination else None) or _DEFAULT_MAX_ROUNDS

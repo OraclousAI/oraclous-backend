@@ -68,6 +68,7 @@ class _FakeHarness:
         graph_authoritative: bool = False,
         prior_fetched_urls: list[str] | None = None,  # additive (#975) — accepted, ignored here
         person_supplied_text: str | None = None,  # additive (#975) — accepted, ignored here
+        timeout: float | None = None,  # noqa: ASYNC109 — additive (#1067), accepted+ignored
     ) -> dict[str, Any]:
         self.inputs.append(input_text)
         # #471: a real execution id per member → the engine records child_execution_ids (the tree).

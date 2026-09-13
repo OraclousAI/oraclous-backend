@@ -47,6 +47,7 @@ class _RecordingHarness:
         max_tool_calls: int | None = None,
         prior_fetched_urls: list[str] | None = None,  # additive (#975) — accepted, ignored here
         person_supplied_text: str | None = None,  # additive (#975) — accepted, ignored here
+        timeout: float | None = None,  # noqa: ASYNC109 — additive (#1067), accepted+ignored
     ) -> dict[str, Any]:
         self.calls.append({"producer": producer})
         return {"id": str(uuid.uuid4()), "status": "SUCCEEDED", "output": "ran"}
@@ -121,3 +122,23 @@ async def test_the_producer_is_never_absent_for_a_team_member() -> None:
     await run_team_harness(_team([_m("a"), _m("b", ["a"])]), harness)
     assert all(c["producer"] is not None for c in harness.calls)
     assert all(c["producer"].get("member_role") for c in harness.calls)
+
+
+async def test_every_dispatch_of_the_same_role_gets_a_distinct_attempt_id() -> None:
+    """Security review (PR #1071, interim fix): today NOTHING cancels an orphaned harness call the
+    engine gave up on (see the filed follow-up on the missing cancel endpoint) — it keeps running,
+    bounded only by its own separate budget. Before this, a later retry/re-dispatch of the SAME
+    role in the SAME run built the IDENTICAL producer identity (keyed only by role + run), so an
+    orphan's still-in-flight writes and a retry's writes could land under one indistinguishable
+    identity. Two dispatches sharing a role (here, two fan-out items — the same mechanism a
+    role-level re-dispatch would hit) must never share an ``attempt_id``."""
+    harness = _RecordingHarness()
+    member = _m("Researcher", fan=OHMFanOut(over="$.items", max_parallel=2))
+    await run_team_harness(
+        _team([member]),
+        harness,
+        inputs={"items": [{"index": 0}, {"index": 1}]},
+    )
+    attempt_ids = [c["producer"].get("attempt_id") for c in harness.calls]
+    assert all(attempt_ids), "every dispatch must carry an attempt_id"
+    assert len(set(attempt_ids)) == len(attempt_ids), "attempt_ids collided across dispatches"

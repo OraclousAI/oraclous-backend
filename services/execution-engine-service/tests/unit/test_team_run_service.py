@@ -140,6 +140,7 @@ class FakeHarness:
         graph_authoritative: bool = False,
         prior_fetched_urls: list[str] | None = None,  # additive (#975) — accepted, ignored here
         person_supplied_text: str | None = None,  # additive (#975) — accepted, ignored here
+        timeout: float | None = None,  # noqa: ASYNC109 — additive (#1067), accepted+ignored
     ) -> dict[str, Any]:
         self.inputs.append(input_text)
         eid = uuid.uuid4()  # each member 'execution' gets an id → the engine records the tree
@@ -2026,20 +2027,27 @@ async def test_engine_bounds_its_own_wait_below_the_callers_patience() -> None:
     harness = RecordingHarness()
     repo = _RepoWithCheckpoint()
     svc, _ = _svc(repo, harness)
+    # test-quality review (PR #1071): TWO members, not one — a future edit that dropped the bound
+    # from one dispatch path but not another (e.g. only the entrypoint, or only a fan-out branch)
+    # would still pass a test that inspects only the LAST recorded dispatch.
     row = await _run(
-        svc, _principal(), manifest=_team([_agent("a")]), sub_harnesses={}, gate_decisions={}
+        svc,
+        _principal(),
+        manifest=_team([_agent("a"), _agent("b", ["a"])]),
+        sub_harnesses={},
+        gate_decisions={},
     )
     assert row.state == "SUCCEEDED"
-    assert harness.timeouts, "the member never dispatched"
-    per_call_timeout = harness.timeouts[-1]
-    assert per_call_timeout is not None, (
-        "the engine dispatched with no timeout override at all — it falls through to the harness "
-        f"client's flat default ({Settings().harness_request_timeout}s), which does not reflect "
-        f"the run's own wall-clock budget and already exceeds the caller's own patience "
-        f"({caller_patience_seconds}s)"
-    )
-    assert per_call_timeout < caller_patience_seconds, (
-        f"the engine's per-call timeout ({per_call_timeout}s) is not strictly under the caller's "
-        f"own patience window ({caller_patience_seconds}s) — a caller can still observe the run "
-        "hanging past its own patience"
-    )
+    assert len(harness.timeouts) == 2, "expected both members to have dispatched"
+    for per_call_timeout in harness.timeouts:
+        assert per_call_timeout is not None, (
+            "a member dispatched with no timeout override at all — it falls through to the "
+            f"harness client's flat default ({Settings().harness_request_timeout}s), which does "
+            f"not reflect the run's own wall-clock budget and already exceeds the caller's own "
+            f"patience ({caller_patience_seconds}s)"
+        )
+        assert per_call_timeout < caller_patience_seconds, (
+            f"a member's per-call timeout ({per_call_timeout}s) is not strictly under the "
+            f"caller's own patience window ({caller_patience_seconds}s) — a caller can still "
+            "observe the run hanging past its own patience"
+        )

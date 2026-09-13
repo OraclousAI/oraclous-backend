@@ -9,6 +9,7 @@ Holds the BYOM key in memory only for the request; never logs or persists it.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 from typing import Any
@@ -186,6 +187,15 @@ class OpenAICompatibleClient:
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
         self._model = model
+        # #1067 (R1, item 1): kept separately from the httpx client's own timeout so `complete` can
+        # additionally wrap the whole call in a wall-clock deadline (see below). httpx expands a
+        # scalar `timeout` into connect/read/write/pool timeouts of that same value, and the READ
+        # timeout it applies restarts on every chunk received — a slow provider that keeps the
+        # connection alive with small keep-alive packets (measured: OpenRouter answers with headers
+        # in ~1s, then drips ~35 bytes every ~3s while it queues the real completion, arriving
+        # minutes later) never trips it, however small it is set. That leaves no bound on the WHOLE
+        # call, only on the gap between reads.
+        self._timeout = timeout
         self._client = httpx.AsyncClient(
             base_url=base_url.rstrip("/"),
             headers={
@@ -209,7 +219,18 @@ class OpenAICompatibleClient:
             body["tools"] = _tools_payload(tools)
             body["tool_choice"] = "auto"
         try:
-            resp = await self._client.post("/chat/completions", json=body)
+            # #1067 (R1, item 1): bound the WHOLE call by wall-clock time, not the per-read timeout
+            # httpx derives from a scalar `timeout` (which a keep-alive drip resets forever — see
+            # `__init__`). `asyncio.wait_for` cancels the request outright once `self._timeout`
+            # elapses, regardless of how recently a chunk arrived.
+            resp = await asyncio.wait_for(
+                self._client.post("/chat/completions", json=body), timeout=self._timeout
+            )
+        except TimeoutError as exc:
+            # the wall-clock bound fired — transient: a bounded retry may still get a fast provider.
+            raise LLMClientError(
+                f"LLM call exceeded its {self._timeout:.0f}s wall-clock time limit", transient=True
+            ) from exc
         except (httpx.TimeoutException, httpx.TransportError) as exc:
             # a network timeout / transport error is transient — the loop retries it (ADR-042 #551)
             raise LLMClientError(

@@ -452,6 +452,11 @@ async def _drive_team_run_async(run_id_s: str, org_id_s: str, user_id_s: str) ->
                 # the request path had it, the worker did not). Without it a re_task advances the
                 # loop state + CAS→QUEUED but never re-drive — a stuck QUEUED run.
                 enqueue=enqueue_team_run,
+                # #1067 (R1, item 4; craft review): read once, right here — the same place
+                # `harness`'s own `timeout=settings.harness_request_timeout` is read above — and
+                # threaded down explicitly, instead of the drive reaching for `get_settings()`
+                # itself mid-dispatch.
+                harness_member_call_timeout=settings.harness_member_call_timeout,
             )
             result = await service.drive(run_id, principal)
             return {"team_run_id": run_id_s, "state": result.state}

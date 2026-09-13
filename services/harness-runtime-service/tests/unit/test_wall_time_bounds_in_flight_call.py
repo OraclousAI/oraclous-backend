@@ -117,9 +117,13 @@ _MULTI_MAX_WALL_SECONDS = 3
 _FIRST_DISPATCH_SECONDS = 2.0
 # Iteration 2's model call takes longer than what's actually LEFT of the budget (1s) but
 # comfortably less than a FRESH copy of the full window (3s) — the exact gap a "bound every call at
-# a constant max_wall_time_seconds" implementation cannot see, because 2.5 < 3 lets it complete
-# unchecked, silently defeating the fix once a run has more than one iteration.
-_SECOND_CALL_SECONDS = 2.5
+# a constant max_wall_time_seconds" implementation cannot see, because 3.0 < the full window lets
+# it complete unchecked, silently defeating the fix once a run has more than one iteration.
+#
+# Test-quality review (PR #1071): raised from 2.5s so the CORRECT-run threshold below carries a
+# third of headroom instead of a quarter — the prior margin (25%) was measured rock-solid on a
+# twelve-core machine, but a two-core CI runner's scheduling jitter is a different environment.
+_SECOND_CALL_SECONDS = 3.0
 
 
 async def _slow_tool_dispatch(spec: ToolSpec, args: dict) -> dict:

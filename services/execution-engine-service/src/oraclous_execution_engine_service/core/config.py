@@ -13,7 +13,24 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import Literal
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# #1067 part 2: two independent numbers guard the same thing today — how long a harness run may
+# take. A run's own wall-clock budget is locked in the harness's reviewed policy catalogue
+# (harness-runtime-service's domain/policy.py) with NO environment override. The engine's
+# per-member dispatch bound below is an `ENGINE_`-prefixed settings field an operator CAN raise
+# from the environment — and raising it would silently defeat the locked-down budget it exists to
+# sit inside of, making the locked one meaningless. This ceiling closes that gap: it carries no
+# environment override of its own, and `Settings._clamp_harness_member_call_timeout` (below) makes
+# it the one place that decides the EFFECTIVE per-member bound — lowering the configured field is
+# honoured (a stricter operator), raising it past this number is clamped back down, never honoured.
+#
+# Sized so this ordering holds for every profile in the harness's built-in policy catalogue: a
+# run's own wall-clock budget <= this ceiling < a real caller's own patience for an answer — with
+# one accepted, deliberate exception (staging-default, ruled to stay at 300s; pinned together with
+# this ceiling in test_settings_env.py so neither can drift without the test noticing).
+HARNESS_MEMBER_CALL_TIMEOUT_CEILING_SECONDS: float = 240.0
 
 
 class Settings(BaseSettings):
@@ -95,6 +112,27 @@ class Settings(BaseSettings):
     harness_runtime_url: str = "http://harness-runtime-service:8000"
     # an out-of-request harness run can be long (an LLM loop) — generous default.
     harness_request_timeout: float = 600.0
+    # #1067 (R1, item 3/4): the bound actually threaded onto EACH per-member dispatch call
+    # (team_run.py's `make_harness_dispatch`), unlike `harness_request_timeout` above, which is
+    # only the client's flat, uninvolved fallback. The code guarantees: a run's own wall-clock
+    # budget, then this bound, then a real caller's own patience for an answer — so a run that
+    # would otherwise out-wait its caller now hits this bound first and settles TERMINAL with a
+    # readable reason, instead of leaving the caller to give up on a row still silently RUNNING.
+    # Lowering this is a legitimate operator choice; `_clamp_harness_member_call_timeout` below
+    # (part 2) makes raising it past `HARNESS_MEMBER_CALL_TIMEOUT_CEILING_SECONDS` impossible.
+    harness_member_call_timeout: float = HARNESS_MEMBER_CALL_TIMEOUT_CEILING_SECONDS
+
+    @field_validator("harness_member_call_timeout")
+    @classmethod
+    def _clamp_harness_member_call_timeout(cls, value: float) -> float:
+        """#1067 part 2: the ONE place that decides the EFFECTIVE per-member bound. An operator
+        raising `ENGINE_HARNESS_MEMBER_CALL_TIMEOUT` from the environment must never be able to
+        push the effective bound past the code-level ceiling — that would silently defeat the
+        run's own wall-time budget, which is locked in reviewed code with no such override.
+        Lowering the configured value is honoured unchanged; only a raise past the ceiling is
+        clamped down."""
+        return min(value, HARNESS_MEMBER_CALL_TIMEOUT_CEILING_SECONDS)
+
     # the knowledge-retriever hosts core/evaluate (the flow judge) — the engine grades a completed
     # team run at the gate (ADR-037 / #477). Bounded UNDER the harness budget; the judge's own
     # 25s deadline returns partial rather than 504-burning (ADR-037 Decision 5).

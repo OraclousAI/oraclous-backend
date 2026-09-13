@@ -92,6 +92,14 @@ def _is_transient(exc: BaseException) -> bool:
     return bool(getattr(exc, "transient", False))
 
 
+class _WallTimeBudgetExhausted(Exception):
+    """#1067 (R1, item 2): internal signal — an in-flight ``llm.complete`` call was cut off because
+    the run's OWN wall-clock budget ran out while it was awaiting, not because the retry loop chose
+    to give up. Raised only by ``_complete_with_retry``'s wait_for guard and caught at its single
+    call site, so it surfaces as the same ``wall_time`` budget gate the between-iteration checks
+    already produce, never a generic FAILED with an exception class name for its reason."""
+
+
 def _retry_delay(attempt: int, retry_after: float | None = None) -> float:
     """Exponential backoff with FULL jitter for retry ``attempt`` (0-based), capped. Honours a
     server ``Retry-After`` hint (429/503) when present — wait at least that long, but still capped
@@ -1323,6 +1331,15 @@ async def run_tool_use_loop(
             time.monotonic() - started > policy.max_wall_time_seconds
         )
 
+    def _remaining_wall_time() -> float | None:
+        """#1067 (R1, item 2): what actually REMAINS of the run's own wall-clock budget, right now
+        — never a fresh copy of the full window, never the budget divided by an attempt count. Used
+        to bound an IN-FLIGHT model call so one slow call cannot run straight through the budget;
+        None means the run has no wall-time budget at all (nothing to bound the call by)."""
+        if policy.max_wall_time_seconds is None:
+            return None
+        return policy.max_wall_time_seconds - (time.monotonic() - started)
+
     def _shipped(text: str) -> str:
         """#975 (A1/T3): the SAME expand-then-strip pass every terminal's output goes through — a
         budget-exhausted PARTIAL, an escalation, a failure, must never ship a raw fabrication or a
@@ -1883,11 +1900,33 @@ async def run_tool_use_loop(
     async def _complete_with_retry(iteration: int) -> Any:
         """Call the model, retrying ONLY transient errors (backoff+jitter, bounded). Raises the
         last exception when retries are exhausted, the error is permanent, or the wall-time budget
-        is spent — so a retry storm can never run past max_wall_time_seconds (ADR-042 #551)."""
+        is spent — so a retry storm can never run past max_wall_time_seconds (ADR-042 #551).
+
+        #1067 (R1, item 2): each attempt is itself bounded by what actually REMAINS of the run's
+        wall-time budget right now — recomputed fresh every attempt, never a static full-window
+        timeout and never the budget divided by an attempt count (both would either let one slow
+        call run straight through the budget, or starve a later attempt the overall budget could
+        plainly still afford). A cutoff that lands because the budget itself ran out raises
+        ``_WallTimeBudgetExhausted`` — not counted against the retry budget, and not classified via
+        ``_is_transient`` — so it reaches the caller as the run's own wall-time exhaustion, not a
+        generic transient/permanent LLM error."""
         attempt = 0
         while True:
+            remaining = _remaining_wall_time()
+            # belt and braces, not load-bearing: `asyncio.wait_for(call, timeout=remaining)`
+            # below already fails instantly on a zero/negative timeout, so this guard is
+            # redundant with it — kept for clarity (an explicit, named exhaustion rather than a
+            # timeout of 0 tripping the wait_for machinery), not because it does independent work.
+            if remaining is not None and remaining <= 0:
+                raise _WallTimeBudgetExhausted
+            call = llm.complete(messages=messages, system=system, tools=tool_specs)
             try:
-                return await llm.complete(messages=messages, system=system, tools=tool_specs)
+                if remaining is None:
+                    return await call
+                return await asyncio.wait_for(call, timeout=remaining)
+            except TimeoutError as exc:
+                # the run's own wall-clock budget ran out while this call was still in flight.
+                raise _WallTimeBudgetExhausted from exc
             except Exception as exc:  # noqa: BLE001
                 # do NOT retry past the wall-time budget — otherwise N retries (each up to the LLM
                 # timeout) + their backoff could run several× past max_wall_time_seconds.
@@ -1921,6 +1960,11 @@ async def run_tool_use_loop(
         llm_started = datetime.now(UTC)
         try:
             resp = await _complete_with_retry(iteration)
+        except _WallTimeBudgetExhausted:
+            # #1067 (R1, item 2): the in-flight call itself ran out of the run's own wall-clock
+            # budget — the same terminal the between-iteration checks already produce, not a
+            # generic FAILED naming an exception class.
+            return _budget_gate("budget", "wall_time", "wall-time budget exhausted", iteration)
         except Exception as exc:  # noqa: BLE001 — transient exhausted, or a permanent error → FAILED
             steps.append(
                 LoopStep(len(steps), StepKind.LLM, "primary", "error", _truncate(str(exc)))
