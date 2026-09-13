@@ -125,13 +125,38 @@ def _registry_capable(c: httpx.Client, sub: dict) -> list[dict]:
 
 
 def _poll(c: httpx.Client, run_id: str, tries: int = 90) -> dict:
+    """Poll for a terminal team-run state within the caller's own patience (270s @ 90*3s).
+
+    #1067 (R2): a run that exhausts its own wall-clock budget must reach a TERMINAL state — FAILED,
+    with a readable ``error_message`` naming the timeout — well inside this window (the loop's own
+    ceiling, 60-600s by policy, plus the engine's own per-call bound must both undercut it). A
+    FAILED/REJECTED/PAUSED/SUCCEEDED row is returned normally here; the caller's existing
+    retry-then-``assert_run_succeeded`` machinery is what reports WHY it wasn't SUCCEEDED, including
+    a timeout's own ``error_message`` — this is already "a readable reason", never a bare crash.
+
+    A row STILL RUNNING at the end of the window is a DIFFERENT failure: the engine never bounded
+    the harness call at all, so no reason was ever produced to report. That is the actual hang
+    defect this issue exists to fix, so it earns its own distinct, clearly-worded assertion rather
+    than sharing wording with "the run settled and it wasn't SUCCEEDED".
+    """
     row: dict = {}
     for _ in range(tries):
         row = c.get(f"/v1/engine/team-runs/{run_id}").json()
         if row["state"] in {"SUCCEEDED", "FAILED", "REJECTED", "PAUSED"}:
             return row
         time.sleep(3)
-    raise AssertionError(f"run {run_id} never terminated (last: {row.get('state')})")
+    window_seconds = tries * 3
+    if row.get("state") == "RUNNING":
+        raise AssertionError(
+            f"run {run_id} is still RUNNING after {window_seconds}s — the engine never bounded "
+            "the harness call to a terminal state (the #1067 timeout-enforcement gap), not a run "
+            "that legitimately needed more time. A run exhausting its own wall-clock budget must "
+            "settle FAILED with a readable error_message well inside this window."
+        )
+    raise AssertionError(
+        f"run {run_id} never reached a terminal state within {window_seconds}s "
+        f"(last observed state: {row.get('state')!r})"
+    )
 
 
 @requires_byom_key
