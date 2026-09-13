@@ -75,9 +75,7 @@ async def _drip_forever(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
             writer.close()
 
 
-async def test_the_loops_own_bound_wins_when_smaller_and_reports_wall_time_not_a_transient_error() -> (
-    None
-):
+async def test_the_smaller_loop_bound_wins_and_reports_wall_time_not_a_transient_error() -> None:
     server = await asyncio.start_server(_drip_forever, "127.0.0.1", 0)
     port = server.sockets[0].getsockname()[1]
     async with server:
