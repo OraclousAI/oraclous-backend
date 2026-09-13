@@ -128,6 +128,35 @@ class InternalTool(BaseToolExecutor):
 
     timeout_s: float = _DEFAULT_TIMEOUT_S
 
+    def _operation_argument_names(self, operation: Any) -> set[str] | None:
+        """The CALLED operation's own ``parameters`` hint-map keys, or ``None`` when the caller
+        cannot be scoped at all (a descriptor with no ``capabilities`` list, or a non-string
+        ``operation``) — in which case the full declared ``required`` list is enforced, exactly
+        the pre-#898 behaviour.
+
+        #898: a plugin declares ONE ``input_schema`` for the whole class, but each operation only
+        takes the arguments named in its OWN ``parameters`` hint map — the same fact
+        ``tool_schemas.py``'s ``_project_input_schema`` already restricts by on the model-facing
+        side. Once a plugin's ``input_schema.required`` names an argument that is genuinely
+        mandatory for ONE operation but absent from another (``PostgreSQLReaderPlugin.query``'s
+        ``query`` vs. its own zero-argument ``list_tables``), the top-level check below must scope
+        to this operation's own keys or it would reject every OTHER operation's call for missing an
+        argument it never takes.
+
+        An ``operation`` that names none of this descriptor's own capabilities returns an EMPTY
+        set, not ``None``: checking a schema built for a DIFFERENT operation is meaningless, and
+        must not reject the call on a coincidentally-missing argument before dispatch's own
+        operation-validity check gets to run and report the real problem (``INVALID_OPERATION``).
+        """
+        capabilities = (self.descriptor.get("spec") or {}).get("capabilities")
+        if not isinstance(capabilities, list) or not isinstance(operation, str):
+            return None
+        for op in capabilities:
+            if isinstance(op, dict) and op.get("name") == operation:
+                parameters = op.get("parameters")
+                return set(parameters) if isinstance(parameters, dict) else set()
+        return set()
+
     def _schema_problem(self, input_data: dict[str, Any], context: ExecutionContext) -> str | None:
         """The call's first violation of the descriptor's declared ``input_schema``, else None.
 
@@ -140,7 +169,12 @@ class InternalTool(BaseToolExecutor):
         schema = (self.descriptor.get("spec") or {}).get("input_schema")
         if not isinstance(schema, dict):
             return None
-        return validate_input(schema, input_data, configuration=context.configuration)
+        return validate_input(
+            schema,
+            input_data,
+            configuration=context.configuration,
+            operation_keys=self._operation_argument_names(input_data.get("operation")),
+        )
 
     async def execute(self, input_data: Any, context: ExecutionContext) -> ExecutionResult:
         started = time.monotonic()

@@ -107,13 +107,20 @@ def _to_wire(messages: list[Message], system: str) -> list[dict[str, Any]]:
 
 
 def _tools_payload(tools: list[ToolSpec]) -> list[dict[str, Any]]:
-    return [
-        {
-            "type": "function",
-            "function": {"name": t.name, "description": t.description, "parameters": t.parameters},
+    payload = []
+    for t in tools:
+        function: dict[str, Any] = {
+            "name": t.name,
+            "description": t.description,
+            "parameters": t.parameters,
         }
-        for t in tools
-    ]
+        if t.strict:
+            # #898: the flag genuinely constrains a model's tool arguments, but only when the
+            # spec says so explicitly — absent, never `false`, so a non-strict tool is
+            # indistinguishable on the wire from one built before #898 existed.
+            function["strict"] = True
+        payload.append({"type": "function", "function": function})
+    return payload
 
 
 #: A tool call's id is an opaque handle and a receipt token, nothing more. It is taken verbatim from

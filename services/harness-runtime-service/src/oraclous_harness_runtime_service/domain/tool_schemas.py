@@ -53,6 +53,163 @@ def _json_schema(parameters: Any, *, closed: bool) -> dict[str, Any]:
     return schema
 
 
+def _widen_type_to_nullable(prop: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+    """Widen ``prop``'s declared ``type`` to also accept ``null``, leaving every other keyword
+    (``minLength``, ``format``, ``minimum``, ``maximum``, ``default``, ``enum``, ``description``,
+    …) untouched (#898 probe fact 3). A bare type becomes a two-element list; an existing type
+    list gets ``"null"`` appended only if it is not already present, so a genuinely-nullable
+    property (``["object", "null"]``) is never doubled up.
+
+    Returns ``(widened_prop, changed)`` — ``changed`` is ``True`` only when a ``type`` was actually
+    modified to add null-acceptance. It is ``False`` when the type already accepted null (nothing
+    to change) and, notably, when ``prop`` has no ``type`` key at all — a bare ``enum`` or an
+    ``anyOf``/``oneOf`` shape — because there is nothing for this function to widen. ``changed`` is
+    ``render_strict_schema``'s single source of truth for "the platform made this key nullable";
+    see its docstring for why that distinction matters.
+    """
+    widened = dict(prop)
+    current = widened.get("type")
+    if isinstance(current, list):
+        if "null" not in current:
+            widened["type"] = [*current, "null"]
+            return widened, True
+        return widened, False
+    if isinstance(current, str):
+        widened["type"] = [current, "null"]
+        return widened, True
+    return widened, False
+
+
+def _is_object_type(type_value: Any) -> bool:
+    """True for a schema's bare ``"object"`` type OR a type union that includes it
+    (``["object", "null"]``) — the shape ``_widen_type_to_nullable`` itself produces when an
+    optional, object-typed property is widened. Matching only the bare string would silently skip
+    closing (and recursing into) exactly the properties this renderer just made nullable."""
+    return type_value == "object" or (isinstance(type_value, list) and "object" in type_value)
+
+
+def _is_array_type(type_value: Any) -> bool:
+    """The array counterpart of ``_is_object_type``, same reason: a widened array-typed property
+    carries ``["array", "null"]``, not the bare string."""
+    return type_value == "array" or (isinstance(type_value, list) and "array" in type_value)
+
+
+def _close_nested_object_schemas(value: Any) -> Any:
+    """Recursively set ``additionalProperties: false`` on every NESTED object schema — a directly
+    nested object property, or the item schema of an array — without touching that nested
+    object's own ``required``/``type``. Only the top-level render (``render_strict_schema``)
+    recomputes ``required``/nullability; an already-well-formed nested contract is left as its
+    author wrote it, just closed.
+
+    Nested ``required`` is left untouched deliberately, and this is now MEASURED, not assumed: a
+    second real-provider probe (OpenRouter, 2026-09-13) built a nested object inside an array
+    whose OWN ``required`` named only one of its two properties, with an ``enum`` on the other,
+    and pushed hard for a value outside that enum. A partial nested ``required`` did not make the
+    constraint inert — 0/5 forbidden values with a partial nested ``required``, 0/5 with a
+    complete one — unlike probe fact 2 at the TOP level, where a partial list let 7/10 through. So
+    only the top-level ``required`` needs forcing; a nested object's own partial ``required`` is
+    left exactly as its author wrote it.
+    """
+    if not isinstance(value, dict):
+        return value
+    out = dict(value)
+    type_value = out.get("type")
+    if _is_object_type(type_value):
+        nested_properties = out.get("properties")
+        if isinstance(nested_properties, dict):
+            out["properties"] = {
+                key: _close_nested_object_schemas(nested_value)
+                for key, nested_value in nested_properties.items()
+            }
+        out["additionalProperties"] = False
+    if _is_array_type(type_value):
+        items = out.get("items")
+        if isinstance(items, dict):
+            out["items"] = _close_nested_object_schemas(items)
+    return out
+
+
+def _render_strict_schema(
+    schema: Any, *, force_nullable: frozenset[str] = frozenset()
+) -> tuple[Any, frozenset[str]]:
+    """Shared implementation behind ``render_strict_schema`` (the public, schema-only entry point
+    below) and ``_project_input_schema`` (which also needs the widened-keys half). One
+    implementation, one source of truth — see ``render_strict_schema``'s docstring for the full
+    rationale and the probe facts driving it.
+
+    Returns ``(rendered_schema, widened_keys)``. ``widened_keys`` is the SOLE source of truth for
+    "the platform made this key nullable" — every property whose ``type`` this call actually
+    changed to accept null, per ``_widen_type_to_nullable``'s own ``changed`` flag. A caller must
+    use it directly rather than recomputing "not in the pre-render required set, or force-nullable"
+    independently: that condition and this function's own widening decision can drift, and one case
+    already does — a property with no declared ``type`` at all (a bare ``enum``, an
+    ``anyOf``/``oneOf`` shape) satisfies the recomputed condition when it is optional, but
+    ``_widen_type_to_nullable`` leaves it completely untouched (there is no ``type`` to widen), so a
+    caller trusting its own copy of the condition would wrongly call it "made nullable" and a
+    dispatch-time strip would then drop a value the caller legitimately sent. A non-object schema
+    returns an empty ``widened_keys`` alongside the unchanged ``schema``.
+    """
+    if not isinstance(schema, dict) or not _is_object_type(schema.get("type")):
+        return schema, frozenset()
+
+    declared_properties = schema.get("properties")
+    declared_properties = declared_properties if isinstance(declared_properties, dict) else {}
+    original_required = set(schema.get("required") or [])
+
+    rendered_properties: dict[str, Any] = {}
+    required: list[str] = []
+    widened_keys: set[str] = set()
+    for key, prop in declared_properties.items():
+        required.append(key)
+        closed = _close_nested_object_schemas(prop)
+        if isinstance(closed, dict) and (key in force_nullable or key not in original_required):
+            closed, changed = _widen_type_to_nullable(closed)
+            if changed:
+                widened_keys.add(key)
+        rendered_properties[key] = closed
+
+    rendered = dict(schema)
+    rendered["properties"] = rendered_properties
+    rendered["required"] = required
+    rendered["additionalProperties"] = False
+    return rendered, frozenset(widened_keys)
+
+
+def render_strict_schema(schema: Any, *, force_nullable: frozenset[str] = frozenset()) -> Any:
+    """Render ``schema`` into the dialect a provider's ``strict`` function-calling flag needs to
+    actually bind (#898 — real-provider probe, OpenRouter, 2026-09-13).
+
+    Fact 2 of the probe: the flag is SILENTLY INERT unless every declared property is in
+    ``required`` (a partial ``required`` list let a forbidden value through 7/10 times with the
+    flag set; a complete one, 0/10 — no error either way). So every top-level property here ends
+    up in ``required``, unconditionally. A property that was not already required — or is named in
+    ``force_nullable`` (the #911 instance-bound-argument case: the model cannot know the value at
+    all, so it must never be *asked* for it) — is instead widened to accept ``null`` rather than
+    dropped, so the model can satisfy the requirement without guessing. A property already
+    required and not force-nullable reaches the model as its plain, unwidened type: there is no
+    null escape hatch for something the caller must always supply.
+
+    ``additionalProperties: false`` is set at the top level and at every nested object schema too
+    (see ``_close_nested_object_schemas``); a nested object's own ``required``/``type`` are left
+    exactly as declared.
+
+    A non-object schema — anything without ``{"type": "object"}``, including a non-dict value —
+    passes through completely unchanged: this renderer only ever applies to the shape
+    ``required``/``additionalProperties`` mean anything for.
+
+    Pure and idempotent: rendering an already-rendered schema with the same ``force_nullable``
+    reproduces it exactly.
+
+    Returns the rendered schema alone. A caller that also needs to know WHICH keys were widened
+    (``_project_input_schema``, for ``ToolSpec.nullable_keys``) uses the shared private helper
+    ``_render_strict_schema`` directly rather than recomputing that set independently — see its
+    docstring for why a recomputed copy of the condition can drift from what this function actually
+    did.
+    """
+    rendered, _widened_keys = _render_strict_schema(schema, force_nullable=force_nullable)
+    return rendered
+
+
 _MCP_SPEC_TYPE = "mcp"
 
 #: The one field the registry dispatches on, never one a model may fill in itself (see the
@@ -63,13 +220,33 @@ _OPERATION_KEY = "operation"
 
 def _project_input_schema(
     op: dict[str, Any], input_schema: dict[str, Any], bound_config: Mapping[str, Any]
-) -> dict[str, Any]:
-    """Project the plugin-level ``spec.input_schema`` onto ONE operation (#911).
+) -> tuple[dict[str, Any], frozenset[str]]:
+    """Project the plugin-level ``spec.input_schema`` onto ONE operation (#911), then render it
+    strict (#898).
 
     A plugin declares a single ``INPUT_SCHEMA`` for the whole class, but each operation only takes
     the arguments named in ITS OWN ``parameters`` hint map — restricting by those keys is what
     stops, e.g., the Postgres reader's ``query``/``params`` from leaking onto ``list_tables``,
     which takes no arguments at all.
+
+    A key the DISPATCHING INSTANCE already binds (run-time harness config or an operator's
+    tool-instance config, both arrive here as ``bound_config``) is never something the model can
+    see a value for. Pre-#898 this was subtracted from ``required`` outright; probe fact 2 (a
+    partial ``required`` list makes the provider's strict flag silently inert) means that would
+    now break strict binding for every OTHER property on the same operation, so it is instead
+    passed to ``render_strict_schema`` as ``force_nullable`` — forced back into ``required`` AND
+    widened to accept null, so the model satisfies the schema without guessing. This is the
+    outbound mirror of the capability registry's own inbound check
+    (`services/capability-registry-service/src/oraclous_capability_registry_service/domain/
+    executors/input_validation.py:91-112`, the `bound` parameter and its use in `_check`), which
+    already treats a `configuration` key as satisfying `required` server-side; the two live in
+    separate, untied test suites, so treat that file/line as a live cross-reference to keep in
+    sync, not decoration.
+
+    Returns the rendered schema and ``nullable_keys`` — every property the render widened, whether
+    because the plugin's own declared schema left it genuinely optional or because ``bound_config``
+    forced it — so the caller can populate ``ToolSpec.nullable_keys`` for the dispatch-time null
+    strip (see ``dispatch_payload`` below).
     """
     parameters = op.get("parameters")
     hints: dict[str, Any] = parameters if isinstance(parameters, dict) else {}
@@ -99,28 +276,53 @@ def _project_input_schema(
             hint = hints[key]
             properties[key] = {"type": _TYPE_MAP.get(str(hint).lower(), "string")}
 
-    # A required key that the DISPATCHING INSTANCE already binds (run-time harness config or an
-    # operator's tool-instance config, both arrive here as `bound_config`) must not be advertised
-    # as required — the model is never asked to supply an argument it cannot see and does not
-    # control. This is the outbound mirror of the capability registry's own inbound check
-    # (`services/capability-registry-service/src/oraclous_capability_registry_service/domain/
-    # executors/input_validation.py:92-98`, the `bound` set in `_check`), which already treats a
-    # `configuration` key as satisfying `required` server-side; the two live in separate, untied
-    # test suites, so treat that file/line as a live cross-reference to keep in sync, not
-    # decoration. `!= _OPERATION_KEY` is redundant with `op_key_set`'s exclusion above — kept
-    # anyway as the second, independent line of defence.
-    required = [
+    # The declared-required keys that are genuinely this operation's own, BEFORE the strict
+    # render forces every property into `required` — this pre-render list is what tells a
+    # genuinely-mandatory property (stays plain) from an optional-or-bound one (gets widened).
+    # `isinstance(k, str)` short-circuits before any hashing, so a malformed `required` element
+    # (a nested list/dict — unhashable, from a corrupted registry write) is silently ignored
+    # rather than raising, matching how every other hostile value in this module degrades.
+    pre_required = [
         k
         for k in declared_required
-        if isinstance(k, str) and k in op_key_set and k not in bound_config and k != _OPERATION_KEY
+        if isinstance(k, str) and k in op_key_set and k != _OPERATION_KEY
     ]
+    force_nullable = frozenset(k for k in op_key_set if k in bound_config)
 
-    return {
-        "type": "object",
-        "properties": properties,
-        "required": required,
-        "additionalProperties": False,
-    }
+    # `widened_keys` is the shared renderer's OWN account of which properties it actually made
+    # nullable — never recomputed here from `pre_required`/`force_nullable` independently. Calls
+    # the private `_render_strict_schema` (not the public `render_strict_schema`, which returns
+    # only the schema) specifically to get that account without a second, driftable copy of its
+    # condition. See its docstring: a property with no declared `type` at all would wrongly count
+    # as "made nullable" under a recomputed condition even though the renderer left it untouched.
+    rendered, widened_keys = _render_strict_schema(
+        {"type": "object", "properties": properties, "required": pre_required},
+        force_nullable=force_nullable,
+    )
+    return rendered, widened_keys
+
+
+def _explicit_nullable_keys(op: dict[str, Any]) -> frozenset[str]:
+    """The op's own explicit ``parameters_schema_nullable_keys`` declaration (#898), carried
+    exactly the way ``parameters_schema_strict`` is: a sibling marker on the op, never inferred
+    from the override schema's own shape.
+
+    A hand-authored ``parameters_schema`` override (priority 1 in ``_parameters_for``) is the
+    platform's own schema too — #900 lands next and authors overrides on exactly this path — so it
+    must be able to say which of ITS OWN properties the platform rendered nullable, the same way
+    ``_project_input_schema`` reports ``widened_keys`` for a projected one. Without this, an
+    override with a genuinely nullable property is safe only by coincidence (today's two
+    hand-authored overrides happen to be read with a plain, non-defaulted lookup); the moment one
+    is read with ``input_data.get(key, default)``, an unstripped null silently destroys the
+    default — the exact platform-wide fail-open this issue exists to close, reappearing on this
+    path. An override declaring none behaves exactly as before. A hostile or non-iterable value
+    (not a list/set/tuple, or containing a non-string) degrades to no declared keys rather than
+    raising — a descriptor is data, same posture as every other hostile value in this module.
+    """
+    declared = op.get("parameters_schema_nullable_keys")
+    if not isinstance(declared, list | set | frozenset | tuple):
+        return frozenset()
+    return frozenset(key for key in declared if isinstance(key, str))
 
 
 def _parameters_for(
@@ -129,30 +331,44 @@ def _parameters_for(
     imported: bool,
     input_schema: Any,
     bound_config: Mapping[str, Any],
-) -> dict[str, Any]:
-    """The operation's JSON schema for the model, in priority order (#698 D1, #911).
+) -> tuple[dict[str, Any], bool, frozenset[str]]:
+    """The operation's JSON schema for the model, in priority order (#698 D1, #911, #898).
+
+    Returns ``(parameters, strict, nullable_keys)``.
 
     1. A per-operation ``parameters_schema`` override wins outright, unchanged — existing
-       behaviour, untouched by #911.
+       behaviour, untouched by #911. ``strict`` is carried EXPLICITLY here too: a sibling
+       ``parameters_schema_strict`` marker on the op, never inferred from the override's own shape
+       (#898/#900 — a platform-authored override landing on a descriptor must not silently inherit
+       or lose strictness via a schema that merely happens to look closed+required already).
+       ``nullable_keys`` is carried the same explicit way, via ``parameters_schema_nullable_keys``
+       (see ``_explicit_nullable_keys``) — so the override's own genuinely-nullable properties get
+       the dispatch-time null strip too, without inferring anything from the schema's shape.
     2. An MCP-imported operation carries the server's own ``inputSchema`` verbatim (nested objects,
        enums, ``required`` lists the flat hint map cannot express) and is NEVER projected from
        ``spec.input_schema`` — that field belongs to a first-party plugin, not an imported server.
        ``tools/list`` is untrusted input, so a non-dict schema degrades to an empty object rather
-       than reaching the model or raising.
+       than reaching the model or raising. Always ``strict=False`` and ``nullable_keys=frozenset()``
+       — an imported server's schema is its own untrusted contract, never ours to constrain or
+       manage nulls for, however strict or nullable it happens to look.
     3. A first-party (non-MCP) operation with a dict-valued plugin-level ``spec.input_schema`` gets
-       that schema PROJECTED onto its own hint-map keys (#911) — carrying ``required``, union
-       types, ``enum``, ``minLength``, ``items``, etc. that the flat hint map alone cannot express.
+       that schema PROJECTED onto its own hint-map keys (#911) and rendered strict (#898).
     4. Otherwise (no ``spec.input_schema``, or a hostile non-dict value) falls back to exactly
-       today's hint-map-only dict, closed (#956 ruling 2). Never raises on a hostile value.
+       today's hint-map-only dict, closed (#956 ruling 2), ``strict=False`` — the hint map alone
+       carries no optionality information, so guessing "every key is required" here would be
+       exactly the mistake the issue rejected. Never raises on a hostile value.
     """
     schema = op.get("parameters_schema")
     if isinstance(schema, dict):
-        return schema
+        strict = bool(op.get("parameters_schema_strict")) and not imported
+        nullable_keys = _explicit_nullable_keys(op) if not imported else frozenset()
+        return schema, strict, nullable_keys
     if imported:
-        return _json_schema(op.get("parameters"), closed=False)
+        return _json_schema(op.get("parameters"), closed=False), False, frozenset()
     if isinstance(input_schema, dict):
-        return _project_input_schema(op, input_schema, bound_config)
-    return _json_schema(op.get("parameters"), closed=True)
+        rendered, nullable_keys = _project_input_schema(op, input_schema, bound_config)
+        return rendered, True, nullable_keys
+    return _json_schema(op.get("parameters"), closed=True), False, frozenset()
 
 
 #: Providers accept a function name of at most 64 characters, matching ``[A-Za-z0-9_-]``.
@@ -187,9 +403,11 @@ def tool_specs_for(
     """One ``ToolSpec`` per operation declared by the capability ``descriptor``.
 
     ``bound_config`` (#911) names the arguments the DISPATCHING INSTANCE already supplies — run-time
-    harness config or an operator's tool-instance config — so they are dropped from the projected
-    ``required`` list without hiding the property itself. Defaults to ``None`` (treated as empty) so
-    every existing call site keeps working unchanged; only a first-party projection (priority 3 in
+    harness config or an operator's tool-instance config. The model cannot see a value for one of
+    these, so (#898) it is forced back into ``required`` and rendered nullable rather than hidden
+    outright — a partial ``required`` list would silently defeat the provider's strict flag for
+    every OTHER property on the same operation. Defaults to ``None`` (treated as empty) so every
+    existing call site keeps working unchanged; only a first-party projection (priority 3 in
     ``_parameters_for``) ever consults it.
     """
     spec = descriptor.get("spec") or {}
@@ -203,20 +421,23 @@ def tool_specs_for(
         if not isinstance(op, dict) or not op.get("name"):
             continue
         op_name = str(op["name"])
+        parameters, strict, nullable_keys = _parameters_for(
+            op,
+            imported=imported,
+            input_schema=input_schema,
+            bound_config=effective_bound_config,
+        )
         out.append(
             ToolSpec(
                 name=_function_name(binding, op_name),
                 description=op.get("description") or f"{name}: {op_name}",
-                parameters=_parameters_for(
-                    op,
-                    imported=imported,
-                    input_schema=input_schema,
-                    bound_config=effective_bound_config,
-                ),
+                parameters=parameters,
                 binding=binding,
                 # the registry dispatches on this and the external server expects its own
                 # spelling, so it keeps the server's name however the LLM-facing one was sanitised
                 operation=op_name,
+                strict=strict,
+                nullable_keys=nullable_keys,
             )
         )
     return out
@@ -366,6 +587,17 @@ def dispatch_payload(spec: ToolSpec, args: dict[str, Any]) -> dict[str, Any]:
     a CLOSED schema never declared is logged by name (item 2) while still travelling — the closed
     schema stays advisory.
 
+    #898: a key in ``spec.nullable_keys`` — one the PLATFORM itself widened to accept null when
+    rendering the schema, because the property was genuinely optional or an instance-bound
+    argument the model cannot know a value for — has an explicit ``null`` STRIPPED here, before the
+    registry ever sees it. Every connector reads an optional argument with
+    ``input_data.get(key, default)``, and that returns the default only when the key is ABSENT;
+    present with value ``null`` it returns ``None``, silently destroying the connector's own
+    default. A null on any OTHER key (one the descriptor's own schema genuinely accepts, never
+    widened by the platform) passes through untouched — this strip is opt-in per key, never a
+    blanket null filter, and never mistakes a falsy-but-present value (``""``, ``0``, ``False``)
+    for null.
+
     ``args`` is annotated ``dict`` because that is what a well-behaved provider sends; it is the
     raw ``json.loads`` of model output, so the annotation is a promise the input does not keep and
     the guard below is load-bearing.
@@ -377,6 +609,10 @@ def dispatch_payload(spec: ToolSpec, args: dict[str, Any]) -> dict[str, Any]:
         supplied = args[key]
         if supplied != spec.operation:
             raise OperationOverrideRefused(tool=spec.name, bound=spec.operation, supplied=supplied)
-    rest = {k: v for k, v in args.items() if k not in keys}
+    rest = {
+        k: v
+        for k, v in args.items()
+        if k not in keys and not (v is None and k in spec.nullable_keys)
+    }
     _report_unknown_keys(spec, rest)
     return {_OPERATION_KEY: spec.operation, **rest}

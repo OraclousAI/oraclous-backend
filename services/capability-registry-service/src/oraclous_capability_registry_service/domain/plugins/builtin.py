@@ -104,8 +104,13 @@ class PostgreSQLReaderPlugin(_ConnectorToolPlugin):
     CREDENTIAL_REQUIREMENTS = [
         {"type": "connection_string", "provider": "postgresql", "required": True}
     ]
+    # #898: `query` is genuinely mandatory (the connector raises when it is missing); `params` is
+    # not declared here at all — the strict-schema renderer forces every property into `required`
+    # regardless, so an undeclared one still ends up required-but-nullable (nullable_keys), never a
+    # bare non-nullable requirement for something the connector itself treats as optional.
     INPUT_SCHEMA = {
         "type": "object",
+        "required": ["query"],
         "properties": {"query": {"type": "string"}, "params": {"type": "object"}},
     }
     OUTPUT_SCHEMA = _ROWS_OUTPUT
@@ -132,8 +137,11 @@ class MySQLReaderPlugin(_ConnectorToolPlugin):
         },
     ]
     CREDENTIAL_REQUIREMENTS = [{"type": "connection_string", "provider": "mysql", "required": True}]
+    # #898: same shape as PostgreSQLReaderPlugin above — `query` is genuinely mandatory, `params`
+    # is not declared required and so is rendered required-but-nullable instead.
     INPUT_SCHEMA = {
         "type": "object",
+        "required": ["query"],
         "properties": {"query": {"type": "string"}, "params": {"type": "object"}},
     }
     OUTPUT_SCHEMA = _ROWS_OUTPUT
@@ -162,7 +170,12 @@ class NotionReaderPlugin(_ConnectorToolPlugin):
         },
     ]
     CREDENTIAL_REQUIREMENTS = [{"type": "api_key", "provider": "notion", "required": True}]
-    INPUT_SCHEMA = {"type": "object", "properties": {"page_id": {"type": "string"}}}
+    # #898: `page_id` is genuinely mandatory for `read_page` (the connector raises without it).
+    INPUT_SCHEMA = {
+        "type": "object",
+        "required": ["page_id"],
+        "properties": {"page_id": {"type": "string"}},
+    }
     OUTPUT_SCHEMA = _DOCS_OUTPUT
 
 
@@ -189,8 +202,11 @@ class GitHubReaderPlugin(_ConnectorToolPlugin):
         },
     ]
     CREDENTIAL_REQUIREMENTS = [{"type": "api_key", "provider": "github", "required": True}]
+    # #898: `repo` is genuinely mandatory on both operations; `path` stays optional (the connector
+    # defaults it to the repository root when absent) and so is rendered required-but-nullable.
     INPUT_SCHEMA = {
         "type": "object",
+        "required": ["repo"],
         "properties": {"repo": {"type": "string"}, "path": {"type": "string"}},
     }
     OUTPUT_SCHEMA = _DOCS_OUTPUT
@@ -548,30 +564,40 @@ _SITES_INPUT = {"anyOf": [{"type": "array", "items": {"type": "string"}}, {"type
 # hostname is a guess, and a plausible wrong guess (`bbc.com` for `bbc.co.uk`) cannot be told from a
 # right one — both return real pages — so there is deliberately no name-to-hostname table anywhere.
 # The description carries an example because an example is what stops a model inventing a shape.
+#: #898: this schema is handed to `render_strict_schema`'s marker path unchanged (never rendered by
+#: the platform), so it must already BE the closed+fully-required shape the strict flag needs to
+#: bind at all (probe fact 2) — declaring `required: ["query"]` alone left `max_results`/`sites`
+#: optional, which measured as SILENTLY INERT. `max_results`/`sites` are genuinely optional (the
+#: connector defaults both when absent — `clamp_max_results`/`normalise_sites` already treat a
+#: missing OR null value as "use the default"), so they are required-but-nullable here by hand,
+#: the same shape `render_strict_schema` would produce for a projected schema.
 _WEB_SEARCH_PARAMETERS_SCHEMA = {
     "type": "object",
-    "required": ["query"],
+    "required": ["query", "max_results", "sites"],
+    "additionalProperties": False,
     "properties": {
         "query": {
             "type": "string",
             "description": "What to search the live web for.",
         },
         "max_results": {
-            "type": "integer",
+            "type": ["integer", "null"],
             "minimum": 1,
             "maximum": 20,
-            "description": "How many results to return. Defaults to 5.",
+            "description": (
+                "How many results to return. Defaults to 5. Send null to use the default."
+            ),
         },
         "sites": {
-            "type": "array",
+            "type": ["array", "null"],
             "items": {"type": "string"},
             "description": (
                 "Optional. Website addresses to search within, so the results can only come from "
                 'those sites — for example ["theverge.com", "bbc.co.uk"]. Give each site\'s '
                 "address (its hostname), never its name: 'BBC News' is a guess, 'bbc.co.uk' is "
-                "not. A pasted link works too and is reduced to its address. Leave it out to "
-                "search the whole web. At most 20 sites. The result tells you which addresses "
-                "were actually searched — report those, not the ones you were asked for."
+                "not. A pasted link works too and is reduced to its address. Send null (or leave "
+                "it out) to search the whole web. At most 20 sites. The result tells you which "
+                "addresses were actually searched — report those, not the ones you were asked for."
             ),
         },
     },
@@ -613,6 +639,9 @@ class WebResearchPlugin(_ConnectorToolPlugin):
             # this is where an argument gets told what it is for. Both are kept and must agree:
             # the map is the descriptor's older surface, the schema is what a member actually sees.
             "parameters_schema": _WEB_SEARCH_PARAMETERS_SCHEMA,
+            # #898: strictness is carried EXPLICITLY, never inferred from the override's shape —
+            # this marker is what makes `_parameters_for` treat it as strict.
+            "parameters_schema_strict": True,
             # §CITE rev6 names `core/web-research.search` as THE collection case
             "result_kind": "collection",
         },
@@ -706,9 +735,11 @@ class LibraryGroupPlugin(_ConnectorToolPlugin):
     # one per function, generated from the registry — named group, never the default (#822)
     CAPABILITIES = library_registry.capabilities(library_registry.TEXT_TOOLS)
     CREDENTIAL_REQUIREMENTS: list[dict] = []  # curated, in-process, keyless
+    # #898: every text-tools operation's sole argument, `text`, is genuinely mandatory — none of
+    # word_count/to_upper/extract_emails has an optional argument.
     INPUT_SCHEMA = {
         "type": "object",
-        "required": ["operation"],
+        "required": ["operation", "text"],
         "properties": {
             "operation": {
                 "type": "string",
@@ -742,9 +773,29 @@ class MathToolsPlugin(_ConnectorToolPlugin):
     TAGS = ["library", "transform", "math", "finance", "curated"]
     CAPABILITIES = library_registry.capabilities(library_registry.MATH_TOOLS)
     CREDENTIAL_REQUIREMENTS: list[dict] = []  # curated, in-process, keyless
+    # #898: every argument any math-tools operation declares is already rejected as invalid input
+    # when missing (#822) — none is genuinely optional, so every one is required here. Each
+    # operation's own hint map still restricts which of these actually reach a given operation's
+    # schema (`_project_input_schema`); listing the full set here just means whichever subset an
+    # operation declares is entirely covered by this required list.
     INPUT_SCHEMA = {
         "type": "object",
-        "required": ["operation"],
+        "required": [
+            "operation",
+            "start",
+            "end",
+            "rate",
+            "periods",
+            "fixed_costs",
+            "price_per_unit",
+            "variable_cost_per_unit",
+            "initial_investment",
+            "cash_flow_per_period",
+            "numerator",
+            "denominator",
+            "numerator_unit",
+            "denominator_unit",
+        ],
         "properties": {
             "operation": {
                 "type": "string",
@@ -1127,6 +1178,8 @@ class WebSearchToolPlugin(_ConnectorToolPlugin):
             # #951: the same declared schema Web Research's `search` uses, so the two curated
             # search tools can never offer a member a different set of arguments.
             "parameters_schema": _WEB_SEARCH_PARAMETERS_SCHEMA,
+            # #898: explicit marker, never inferred — see the Web Research `search` comment above.
+            "parameters_schema_strict": True,
             "result_kind": "collection",
         },
     ]
