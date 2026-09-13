@@ -288,3 +288,157 @@ async def test_answer_from_tool_unset_leaves_ordinary_tool_calling_unaffected() 
     assert llm.calls == 2
     assert result.status is HarnessStatus.SUCCEEDED
     assert result.output == "ordinary free-text final answer"
+
+
+# ── multi-call turn ordering — RULED outside ADR-053/#901, closing a gap the accepted record ─────
+# left open ───────────────────────────────────────────────────────────────────────────────────────
+#
+# Neither ADR-053 nor #901 says anything about a model issuing SEVERAL tool calls in a single
+# turn. The loop walks a turn's calls in order, so there are three distinct positions a call
+# naming the answer tool can sit in relative to the others, and they behave differently. Ruled
+# directly (not inferred, not left to `[impl]` to guess), so recorded here as a RULING, not a
+# reading of the accepted record:
+#
+# 1. A call ordered BEFORE the named answer tool in the same turn is real work the member did and
+#    is dispatched + recorded exactly as it would be today — the answer-tool exception does not
+#    retroactively erase or skip it.
+# 2. The loop ends the moment the named tool's OWN dispatch completes successfully, and that
+#    call's arguments become the member's answer — the plain reading of "the loop ends on that
+#    call", now shown specifically inside a multi-call turn, not just the single-call case above.
+# 3. A call ordered AFTER the named answer tool in the SAME turn is never dispatched at all. The
+#    member has answered; continuing to act past its own answer is incoherent, and dispatching a
+#    call whose result nothing will ever read is work nobody asked for.
+# 4. If the named tool's dispatch FAILS, none of the above applies: the loop falls through to
+#    exactly today's multi-call handling — every call in the turn is dispatched in order,
+#    including any ordered after the failing one — and the failure is fed back for a retry turn,
+#    the same as boundary condition 3 above, now shown inside a multi-call turn.
+
+
+class _MultiCallScriptedLLM:
+    """Like ``_ScriptedLLM`` above, but each scripted turn may carry SEVERAL tool calls at once —
+    a model issuing more than one call in a single completion, which the single-call-per-turn
+    ``_ScriptedLLM`` cannot express. ``turns`` is a list of tool-call LISTS; each ``complete()``
+    pops and returns one whole turn's calls together."""
+
+    protocol_shape = "fake"
+
+    def __init__(
+        self, turns: list[list[ToolCall]], final: str = "the model's own final answer"
+    ) -> None:
+        self._turns = list(turns)
+        self.final = final
+        self.calls = 0
+
+    async def complete(
+        self, *, messages: list[Message], system: str, tools: list[ToolSpec]
+    ) -> LLMResponse:
+        self.calls += 1
+        if self._turns:
+            return LLMResponse(text="", tool_calls=self._turns.pop(0))
+        return LLMResponse(text=self.final)
+
+
+# One turn, three calls, in order: an ordinary call, the named answer-tool call, another ordinary
+# call — the exact shape the ruling above distinguishes position-by-position.
+_BEFORE_CALL = ToolCall("c-before", _OTHER_TOOL.name, {"note": "real work, before the answer"})
+_ANSWER_CALL = ToolCall("c-answer", _ANSWER_TOOL.name, {"result": "the member's real answer"})
+_AFTER_CALL = ToolCall("c-after", _OTHER_TOOL.name, {"note": "must never be dispatched"})
+
+
+def _three_call_turn_llm(
+    final: str = "unreachable if the loop correctly ends on c-answer",
+) -> _MultiCallScriptedLLM:
+    return _MultiCallScriptedLLM([[_BEFORE_CALL, _ANSWER_CALL, _AFTER_CALL]], final=final)
+
+
+async def test_calls_before_the_named_tool_in_the_same_turn_are_dispatched_normally() -> None:
+    """Ruling point 1. RED for the same root reason as every test above: ``PolicyEnvelope`` has no
+    ``answer_from_tool`` field yet."""
+    llm = _three_call_turn_llm()
+    result = await run_tool_use_loop(
+        llm=llm,
+        system="",
+        user_input="go",
+        tool_specs=[_ANSWER_TOOL, _OTHER_TOOL],
+        dispatch=_ok_dispatch,
+        policy=_env(answer_from_tool=_ANSWER_TOOL.binding),
+    )
+    tool_steps = {s.tool_call_id: s for s in result.steps if s.kind is StepKind.TOOL}
+    assert "c-before" in tool_steps
+    assert tool_steps["c-before"].status == "ok"
+
+
+async def test_the_loop_ends_on_the_named_tools_own_dispatch_within_a_multi_call_turn() -> None:
+    """Ruling point 2 — the single-call case is already pinned above
+    (``test_a_successful_call_to_the_named_tool_ends_the_loop_and_becomes_the_answer``); this is
+    the same fact proven specifically INSIDE a turn that also carries other calls, which is not
+    the same claim (a naive `[impl]` could special-case "the turn's only call" and miss this)."""
+    llm = _three_call_turn_llm()
+    result = await run_tool_use_loop(
+        llm=llm,
+        system="",
+        user_input="go",
+        tool_specs=[_ANSWER_TOOL, _OTHER_TOOL],
+        dispatch=_ok_dispatch,
+        policy=_env(answer_from_tool=_ANSWER_TOOL.binding),
+    )
+    assert llm.calls == 1  # the model is never asked for a further turn
+    assert result.status is HarnessStatus.SUCCEEDED
+    assert json.loads(result.output or "") == {"result": "the member's real answer"}
+    tool_steps = {s.tool_call_id: s for s in result.steps if s.kind is StepKind.TOOL}
+    assert tool_steps["c-answer"].status == "ok"
+
+
+async def test_calls_after_the_named_tool_in_the_same_turn_are_not_dispatched() -> None:
+    """Ruling point 3. The member has answered; a call ordered after it in the same turn is work
+    nobody asked for and nothing will ever read — it must not even be dispatched, not merely
+    dispatched-and-ignored (a real dispatch has side effects a caller cannot always undo)."""
+    llm = _three_call_turn_llm()
+    result = await run_tool_use_loop(
+        llm=llm,
+        system="",
+        user_input="go",
+        tool_specs=[_ANSWER_TOOL, _OTHER_TOOL],
+        dispatch=_ok_dispatch,
+        policy=_env(answer_from_tool=_ANSWER_TOOL.binding),
+    )
+    tool_call_ids = {s.tool_call_id for s in result.steps if s.kind is StepKind.TOOL}
+    assert "c-after" not in tool_call_ids
+    assert tool_call_ids == {"c-before", "c-answer"}  # exactly the two calls that should ever run
+
+
+async def test_a_failed_named_tool_call_in_a_multi_call_turn_falls_through() -> None:
+    """Ruling point 4 — the multi-call restatement of boundary condition 3
+    (``test_a_failed_dispatch_of_the_named_tool_does_not_end_the_loop_or_mint_a_receipt`` above).
+    When the named tool's OWN dispatch fails, none of ruling points 1-3 apply: the loop falls
+    through to exactly TODAY'S multi-call handling — every call in the turn dispatches, in order,
+    including ``c-after`` (which a correct "stop after the named tool" implementation would only
+    ever skip on a SUCCESSFUL named-tool call) — and the failure is fed back for a retry turn."""
+
+    async def _dispatch_answer_fails(spec: ToolSpec, args: dict) -> dict:
+        if spec.binding == _ANSWER_TOOL.binding:
+            raise RuntimeError("boom")
+        return {"received": args}
+
+    llm = _MultiCallScriptedLLM(
+        [[_BEFORE_CALL, _ANSWER_CALL, _AFTER_CALL]],
+        final="the model's real, later, free-text answer",
+    )
+    result = await run_tool_use_loop(
+        llm=llm,
+        system="",
+        user_input="go",
+        tool_specs=[_ANSWER_TOOL, _OTHER_TOOL],
+        dispatch=_dispatch_answer_fails,
+        policy=_env(max_iterations=6, answer_from_tool=_ANSWER_TOOL.binding),
+    )
+    tool_steps = {s.tool_call_id: s for s in result.steps if s.kind is StepKind.TOOL}
+    # nothing was skipped — every call in the turn ran, including the one AFTER the failing call
+    assert set(tool_steps) == {"c-before", "c-answer", "c-after"}
+    assert tool_steps["c-before"].status == "ok"
+    assert tool_steps["c-answer"].status == "error"
+    assert tool_steps["c-after"].status == "ok"
+    # the loop continued to a further turn, exactly as today's ordinary tool-error handling does
+    assert llm.calls == 2
+    assert result.status is HarnessStatus.SUCCEEDED
+    assert result.output == "the model's real, later, free-text answer"
