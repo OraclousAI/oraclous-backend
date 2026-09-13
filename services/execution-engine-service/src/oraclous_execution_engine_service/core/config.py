@@ -95,6 +95,13 @@ class Settings(BaseSettings):
     harness_runtime_url: str = "http://harness-runtime-service:8000"
     # an out-of-request harness run can be long (an LLM loop) — generous default.
     harness_request_timeout: float = 600.0
+    # #1067 (R1, item 3/4): the bound actually threaded onto EACH per-member dispatch call
+    # (team_run.py's `make_harness_dispatch`) — strictly under a real caller's own patience (e.g.
+    # the citation e2e's 270s poll window), unlike `harness_request_timeout` above, which is the
+    # client's flat fallback and is already bigger than that window. A run that would otherwise
+    # out-wait its caller now hits this bound first and settles TERMINAL with a readable reason,
+    # instead of leaving the caller to give up on a row that is still silently RUNNING.
+    harness_member_call_timeout: float = 240.0
     # the knowledge-retriever hosts core/evaluate (the flow judge) — the engine grades a completed
     # team run at the gate (ADR-037 / #477). Bounded UNDER the harness budget; the judge's own
     # 25s deadline returns partial rather than 504-burning (ADR-037 Decision 5).

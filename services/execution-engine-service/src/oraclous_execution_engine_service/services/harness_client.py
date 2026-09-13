@@ -217,7 +217,10 @@ class HarnessClient:
         try:
             resp = await self._client.post("/v1/harnesses/execute", **kwargs)
         except httpx.ReadTimeout as exc:  # the run exceeded the declared wall-clock → TIMED_OUT
-            raise HarnessTimeout(f"harness call timed out: {type(exc).__name__}") from exc
+            # #1067 (R1, item 3): a readable reason, not the transport exception's bare class
+            # name — this message can reach a person via team_run_service's error_message.
+            msg = "harness call timed out: exceeded its wall-clock time limit"
+            raise HarnessTimeout(msg) from exc
         except (
             httpx.HTTPError
         ) as exc:  # transport (incl. connect/pool timeouts) → unreachable, FAILED
