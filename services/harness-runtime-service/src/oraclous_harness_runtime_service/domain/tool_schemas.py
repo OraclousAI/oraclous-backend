@@ -129,32 +129,13 @@ def _close_nested_object_schemas(value: Any) -> Any:
     return out
 
 
-def render_strict_schema(
+def _render_strict_schema(
     schema: Any, *, force_nullable: frozenset[str] = frozenset()
 ) -> tuple[Any, frozenset[str]]:
-    """Render ``schema`` into the dialect a provider's ``strict`` function-calling flag needs to
-    actually bind (#898 — real-provider probe, OpenRouter, 2026-09-13).
-
-    Fact 2 of the probe: the flag is SILENTLY INERT unless every declared property is in
-    ``required`` (a partial ``required`` list let a forbidden value through 7/10 times with the
-    flag set; a complete one, 0/10 — no error either way). So every top-level property here ends
-    up in ``required``, unconditionally. A property that was not already required — or is named in
-    ``force_nullable`` (the #911 instance-bound-argument case: the model cannot know the value at
-    all, so it must never be *asked* for it) — is instead widened to accept ``null`` rather than
-    dropped, so the model can satisfy the requirement without guessing. A property already
-    required and not force-nullable reaches the model as its plain, unwidened type: there is no
-    null escape hatch for something the caller must always supply.
-
-    ``additionalProperties: false`` is set at the top level and at every nested object schema too
-    (see ``_close_nested_object_schemas``); a nested object's own ``required``/``type`` are left
-    exactly as declared.
-
-    A non-object schema — anything without ``{"type": "object"}``, including a non-dict value —
-    passes through completely unchanged: this renderer only ever applies to the shape
-    ``required``/``additionalProperties`` mean anything for.
-
-    Pure and idempotent: rendering an already-rendered schema with the same ``force_nullable``
-    reproduces it exactly.
+    """Shared implementation behind ``render_strict_schema`` (the public, schema-only entry point
+    below) and ``_project_input_schema`` (which also needs the widened-keys half). One
+    implementation, one source of truth — see ``render_strict_schema``'s docstring for the full
+    rationale and the probe facts driving it.
 
     Returns ``(rendered_schema, widened_keys)``. ``widened_keys`` is the SOLE source of truth for
     "the platform made this key nullable" — every property whose ``type`` this call actually
@@ -192,6 +173,41 @@ def render_strict_schema(
     rendered["required"] = required
     rendered["additionalProperties"] = False
     return rendered, frozenset(widened_keys)
+
+
+def render_strict_schema(schema: Any, *, force_nullable: frozenset[str] = frozenset()) -> Any:
+    """Render ``schema`` into the dialect a provider's ``strict`` function-calling flag needs to
+    actually bind (#898 — real-provider probe, OpenRouter, 2026-09-13).
+
+    Fact 2 of the probe: the flag is SILENTLY INERT unless every declared property is in
+    ``required`` (a partial ``required`` list let a forbidden value through 7/10 times with the
+    flag set; a complete one, 0/10 — no error either way). So every top-level property here ends
+    up in ``required``, unconditionally. A property that was not already required — or is named in
+    ``force_nullable`` (the #911 instance-bound-argument case: the model cannot know the value at
+    all, so it must never be *asked* for it) — is instead widened to accept ``null`` rather than
+    dropped, so the model can satisfy the requirement without guessing. A property already
+    required and not force-nullable reaches the model as its plain, unwidened type: there is no
+    null escape hatch for something the caller must always supply.
+
+    ``additionalProperties: false`` is set at the top level and at every nested object schema too
+    (see ``_close_nested_object_schemas``); a nested object's own ``required``/``type`` are left
+    exactly as declared.
+
+    A non-object schema — anything without ``{"type": "object"}``, including a non-dict value —
+    passes through completely unchanged: this renderer only ever applies to the shape
+    ``required``/``additionalProperties`` mean anything for.
+
+    Pure and idempotent: rendering an already-rendered schema with the same ``force_nullable``
+    reproduces it exactly.
+
+    Returns the rendered schema alone. A caller that also needs to know WHICH keys were widened
+    (``_project_input_schema``, for ``ToolSpec.nullable_keys``) uses the shared private helper
+    ``_render_strict_schema`` directly rather than recomputing that set independently — see its
+    docstring for why a recomputed copy of the condition can drift from what this function actually
+    did.
+    """
+    rendered, _widened_keys = _render_strict_schema(schema, force_nullable=force_nullable)
+    return rendered
 
 
 _MCP_SPEC_TYPE = "mcp"
@@ -273,11 +289,13 @@ def _project_input_schema(
     ]
     force_nullable = frozenset(k for k in op_key_set if k in bound_config)
 
-    # `widened_keys` is render_strict_schema's OWN account of which properties it actually made
-    # nullable — never recomputed here from `pre_required`/`force_nullable` independently. See its
-    # docstring: a property with no declared `type` at all would wrongly count as "made nullable"
-    # under a recomputed condition even though the renderer left it completely untouched.
-    rendered, widened_keys = render_strict_schema(
+    # `widened_keys` is the shared renderer's OWN account of which properties it actually made
+    # nullable — never recomputed here from `pre_required`/`force_nullable` independently. Calls
+    # the private `_render_strict_schema` (not the public `render_strict_schema`, which returns
+    # only the schema) specifically to get that account without a second, driftable copy of its
+    # condition. See its docstring: a property with no declared `type` at all would wrongly count
+    # as "made nullable" under a recomputed condition even though the renderer left it untouched.
+    rendered, widened_keys = _render_strict_schema(
         {"type": "object", "properties": properties, "required": pre_required},
         force_nullable=force_nullable,
     )
