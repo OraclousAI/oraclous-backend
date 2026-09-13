@@ -999,6 +999,56 @@ async def test_non_harness_error_mid_drive_fails_run_not_strands_it() -> None:
     assert "decode blew up" in (row.error_message or "")
 
 
+async def test_harness_timeout_settles_terminal_with_a_readable_reason() -> None:
+    """#1067 (R1, item 3): a harness call that exceeded its wall-clock budget must leave the run row
+    TERMINAL (not stranded RUNNING — G-C already proves that generically) with an ``error_message``
+    a PERSON can read: it must name that a TIME LIMIT was exceeded, not merely carry the transport
+    exception's bare class name.
+
+    RED by design: ``HarnessClient.execute`` (harness_client.py:219-220) constructs
+    ``HarnessTimeout(f"harness call timed out: {type(exc).__name__}")`` — for a real
+    ``httpx.ReadTimeout`` this message ends in the literal string ``"ReadTimeout"``, the transport
+    exception's bare class name, not a sentence naming a TIME LIMIT. Nothing along this path (the
+    member dispatch in team_run.py, nor the outer ``except Exception`` in team_run_service.py's
+    ``drive()``, which just does ``str(exc)[:2000]``) rewords it into something a person reads as
+    "this member ran out of time" rather than a transport-error dump.
+    """
+    from oraclous_execution_engine_service.services.harness_client import HarnessTimeout
+
+    class TimeoutHarness:
+        async def execute(self, **kwargs: Any) -> dict[str, Any]:
+            # exactly what HarnessClient.execute raises today for a real httpx.ReadTimeout
+            raise HarnessTimeout("harness call timed out: ReadTimeout")
+
+    class _RepoWithCheckpoint(FakeTeamRunRepo):
+        """The orchestrator's best-effort mid-drive checkpoint hook (#819) calls
+        ``checkpoint(...)`` on the repo; the shared ``FakeTeamRunRepo`` doesn't implement it (no
+        other test here exercises the per-member-failure path far enough to reach it). A no-op is
+        enough — this test asserts on the FINAL settled row, not the mid-drive checkpoint."""
+
+        async def checkpoint(
+            self, team_run_id: uuid.UUID, organisation_id: uuid.UUID, **fields: Any
+        ) -> None:
+            return None
+
+    repo = _RepoWithCheckpoint()
+    svc, _ = _svc(repo, TimeoutHarness())
+    row = await _run(
+        svc, _principal(), manifest=_team([_agent("a")]), sub_harnesses={}, gate_decisions={}
+    )
+    assert row.state == "FAILED"  # not stranded in RUNNING
+    message = row.error_message or ""
+    assert message, "a run that timed out must carry a reason"
+    assert "timed out" in message.lower()
+    # readable by a person: names it was a TIME LIMIT, not just a transport exception's class name
+    assert "time limit" in message.lower() or "wall-clock" in message.lower(), (
+        f"error_message does not name a time limit for a person to read: {message!r}"
+    )
+    assert "readtimeout" not in message.lower(), (
+        f"error_message leaks the transport exception's bare class name: {message!r}"
+    )
+
+
 async def test_member_failure_persists_per_member_status_and_keeps_independent_output() -> None:
     # ADR-042 (#551): member 'b' fails; the independent 'a' (same stage, no dep) still SUCCEEDS. The
     # drive persists each member's terminal status, the run verdict is FAILED (not SUCCEEDED), 'a''s
