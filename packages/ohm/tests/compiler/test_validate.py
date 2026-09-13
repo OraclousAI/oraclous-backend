@@ -147,6 +147,65 @@ def test_prose_wrapped_json_is_peeled_not_misblocked() -> None:
     assert v["would_block"] is False  # peeled + validated, NOT F-DRAFT-INVALID
 
 
+# ── BLOCKING-1 (security-architect, PR #1065): answer_from_tool was an unguarded field ───────────
+#
+# The compiled team still arrives as model-authored text this validator parses
+# (``OHMMember.model_validate(raw)`` above). ``answer_from_tool`` (ADR-053 decision 2) is a real
+# field on ``OHMMember``, but nothing here cross-checked it against that member's own ``tools[]``
+# or restricted which members may carry it — a compliant OR non-compliant drafter/reviewer model
+# could write it onto an ORDINARY member naming one of that member's real tools. On execution, the
+# first successful call to that tool would silently become the member's whole "answer"
+# (``json.dumps(tool_call.args)``) and the platform would auto-mint a grounding receipt for it
+# (ADR-053 decision 3) — skipping every citation/output-shape check this validator never chose to
+# waive for that member.
+#
+# RED today for the mundane reason that ``answer_from_tool`` does not exist as a field on
+# ``OHMMember`` at all on ``main`` yet (``model_config = ConfigDict(extra="ignore")`` silently
+# drops the key), so ``validate_draft`` has nothing to check and never blocks.
+
+
+def _draft_with_answer_from_tool(tool: str, answer_from_tool: str) -> dict:
+    draft = _draft(tool)
+    draft["members"][0]["answer_from_tool"] = answer_from_tool
+    return draft
+
+
+def test_a_member_naming_a_tool_it_does_not_hold_as_its_answer_is_blocked() -> None:
+    """A member whose ``answer_from_tool`` names a tool outside its own ``tools[]`` must fail
+    closed (CLAUDE.md §3.5) — it is not even a tool this member could dispatch, so nothing could
+    legitimately terminate its loop on it."""
+    draft = _draft_with_answer_from_tool("web-search", "a-tool-this-member-never-held")
+    v = validate_draft(
+        draft, ["web-search", "a-tool-this-member-never-held"], owner_organization_id=_ORG
+    )
+    assert v["would_block"] is True
+    assert any("F-ANSWER-FROM-TOOL" in b for b in v["blocking"])
+
+
+def test_a_member_naming_a_tool_it_does_hold_as_its_answer_is_still_blocked() -> None:
+    """The other half, and the one that matters most: even a member naming ONE OF ITS OWN HELD
+    tools is blocked. This is a deliberate, narrower ruling than "refuse only an unheld name" —
+    ``answer_from_tool`` has no legitimate use on any member a drafted/refined/imported team can
+    produce; it exists solely for the compiler's own internal manifest-drafter, which is built
+    directly by ``build_compiler_team`` and never passes through this validator at all. So this is
+    still a REFUSAL with its own coded reason (not the same one as the not-held case above), never
+    a silent drop of the field — pinned separately from the not-held case so the two paths cannot
+    collapse into one and lose their distinct reasons."""
+    draft = _draft_with_answer_from_tool("web-search", "web-search")
+    v = validate_draft(draft, ["web-search"], owner_organization_id=_ORG)
+    assert v["would_block"] is True
+    assert any("F-ANSWER-FROM-TOOL" in b for b in v["blocking"])
+
+
+def test_a_member_with_no_answer_from_tool_declared_is_unaffected() -> None:
+    """Regression pin: an ordinary draft that never touches ``answer_from_tool`` at all must not
+    be blocked by this new check — it is a refusal aimed at the field's presence, not a new tax on
+    every draft."""
+    v = validate_draft(_draft("web-search"), ["web-search"], owner_organization_id=_ORG)
+    assert v["would_block"] is False
+    assert not any("F-ANSWER-FROM-TOOL" in b for b in v["blocking"])
+
+
 def test_garbage_fails_closed() -> None:
     v = validate_draft(
         "Sorry, I could not build a team.", ["web-search"], owner_organization_id=_ORG
