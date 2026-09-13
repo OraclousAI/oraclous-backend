@@ -720,12 +720,41 @@ def test_the_search_operation_declares_a_real_schema_for_the_model() -> None:
     assert set(schema["properties"]) == {"query", "max_results", "sites"}
 
 
-def test_naming_sites_stays_optional() -> None:
-    """Only ``query`` is required. If ``sites`` were required, every model call would have to name
-    websites and an ordinary unrestricted search would become impossible — a change no other test
-    in this file would notice, because they all reach the connector directly and skip the schema."""
+def test_naming_sites_is_required_but_nullable_so_search_stays_optional() -> None:
+    """#898: the provider's ``strict`` function-calling flag is measured to be SILENTLY INERT
+    unless EVERY declared property is in ``required`` — so ``max_results``/``sites`` must now be
+    named in ``required`` too, or the flag does nothing for this operation at all. "Optional" no
+    longer means "absent from ``required``" — it means the model may answer ``null`` and still
+    satisfy the schema, so both are also widened to accept ``null``. ``query`` alone stays plain:
+    it is genuinely mandatory, so there is no null escape hatch for it.
+
+    If ``sites`` could only ever be a bare ``array``, every model call would have to name websites
+    and an ordinary unrestricted search would become impossible — a change no other test in this
+    file would notice, because they all reach the connector directly and skip the schema. See
+    ``test_a_null_sites_argument_leaves_the_search_unrestricted`` below for the end-to-end half of
+    this promise: a model that actually sends the ``null`` this schema demands must still get an
+    unrestricted search."""
     for plugin in (WebResearchPlugin, WebSearchToolPlugin):
-        assert _search_operation(plugin)["parameters_schema"]["required"] == ["query"]
+        schema = _search_operation(plugin)["parameters_schema"]
+        assert schema["required"] == ["query", "max_results", "sites"]
+        assert schema["properties"]["query"]["type"] == "string"
+        assert schema["properties"]["sites"]["type"] == ["array", "null"]
+        assert schema["properties"]["max_results"]["type"] == ["integer", "null"]
+
+
+async def test_a_null_sites_argument_leaves_the_search_unrestricted() -> None:
+    """The end-to-end half of the promise above: a strict schema forces the model to SEND the
+    ``sites`` key on every call, never omit it, so the case this file must actually prove is a
+    caller sending ``sites: null`` — not an absent key. ``normalise_sites`` already treats ``None``
+    as "no restriction" (T5's own contract), so this must reach the vendor exactly as an
+    unrestricted search does today: no ``include_domains`` at all."""
+    seen: dict = {}
+    ex = _connector(_recording_handler(seen, hits=[{"title": "T", "url": "https://a.test/1"}]))
+    res = await ex.execute({"operation": "search", "query": "ai news", "sites": None}, _ctx())
+    assert res.success
+    assert "include_domains" not in seen["body"]
+    assert res.data is not None
+    assert "searched_sites" not in res.data
 
 
 def test_every_argument_the_model_is_offered_carries_a_description() -> None:
@@ -736,9 +765,14 @@ def test_every_argument_the_model_is_offered_carries_a_description() -> None:
 
 
 def test_the_sites_argument_is_typed_as_a_list_of_strings() -> None:
+    """#898 widens ``sites`` to accept ``null`` alongside its array type (see the required-but-
+    nullable test above) — asserting the full ``type`` value here, not just membership, so a
+    future change that drops the array half entirely still fails this test. The ``items`` half is
+    untouched by that widening and must still say string, or a regression there would slip past a
+    test that only checked the outer type."""
     for plugin in (WebResearchPlugin, WebSearchToolPlugin):
         sites = _search_operation(plugin)["parameters_schema"]["properties"]["sites"]
-        assert sites["type"] == "array"
+        assert sites["type"] == ["array", "null"]
         assert sites["items"] == {"type": "string"}
 
 
