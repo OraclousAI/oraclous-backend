@@ -38,10 +38,36 @@ _MODEL_KEY = os.getenv("OPENROUTER_API_KEY", "").strip()
 #: pytest loads this conftest before any test module in the directory, so by then the env holds
 #: either the caller's value or the default set here. Keep the ``openrouter/`` prefix: the harness
 #: splits the binding at the FIRST ``/`` for the provider (base URL, policy ``allowed_providers``)
-#: and sends the rest (``nvidia/...:free``) to OpenRouter as the model id. The default is a FREE
-#: OpenRouter model so the real-LLM leg costs nothing; scripts/e2e.sh exports ``E2E_MODEL`` from
-#: deploy/.env.test and CI from ``vars.E2E_MODEL`` (both optional, both fall back to this default).
-_DEFAULT_E2E_MODEL = "openrouter/nvidia/nemotron-3-super-120b-a12b:free"
+#: and sends the rest to OpenRouter as the model id.
+#:
+#: As of 2026-09-13 (#1049) the previous default, a FREE OpenRouter model
+#: (``nvidia/nemotron-3-super-120b-a12b:free``), had its daily quota exhausted for days straight,
+#: failing every real-model e2e test on `main` and every branch with ``LLM call -> 429``. The repo
+#: owner ruled: if the free tier is unreliable, default to a cheap but demonstrably strong paid
+#: model instead of chasing free-tier availability. The owner picked
+#: ``deepseek/deepseek-v4-flash`` ($0.066 in / $0.131 out per million tokens, OpenRouter pricing)
+#: with evidence from using it that same day for the #1043 diagnosis and deployed-stack proof: on
+#: this repo's deployed stack, through the gateway, it issued a correct real tool call
+#: (``manifest-validate``, verdict returned and acted on) and followed a two-part instruction
+#: exactly (team JSON, then a separate receipt object) -- precisely the compliance that reproduces
+#: #1043 rather than accidentally dodging it. One full compiler replay cost ~4,500 tokens across two
+#: model turns, ~16 seconds. That instruction-following point is the one that matters for a *test*
+#: model: a model too weak to follow instructions produces FALSE PASSES, not just failures -- it
+#: skips the hard shape and the assertion never fires, so "cheap" alone is not the bar.
+#:
+#: Fallback order if this model proves too weak, in order: ``google/gemini-2.5-flash-lite``
+#: ($0.10 / $0.40), then ``openai/gpt-4o-mini`` ($0.15 / $0.60). Do not silently switch off
+#: deepseek -- if you move to a fallback, record why here and what specifically failed.
+#:
+#: Changing this default does NOT by itself change what CI or the nightly job run: both
+#: `.github/workflows/ci.yml` and `.github/workflows/e2e-nightly.yml` set their own ``E2E_MODEL``
+#: env var independently as a hardcoded literal fallback --
+#: ``${{ vars.E2E_MODEL || 'openrouter/nvidia/nemotron-3-super-120b-a12b:free' }}`` -- not derived
+#: from this file. This default only takes effect for a local run with no ``E2E_MODEL`` env var set
+#: at all (e.g. `scripts/e2e.sh` with no `deploy/.env.test` value). Making CI/nightly pick up the
+#: new default needs either the `vars.E2E_MODEL` GitHub Actions repository variable set, or a
+#: workflow-file edit (devops-implementer territory) -- tracked as a follow-up on #1049.
+_DEFAULT_E2E_MODEL = "openrouter/deepseek/deepseek-v4-flash"
 E2E_MODEL = os.getenv("E2E_MODEL", "").strip() or _DEFAULT_E2E_MODEL
 os.environ["E2E_MODEL"] = E2E_MODEL
 
