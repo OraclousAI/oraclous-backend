@@ -411,10 +411,27 @@ def test_an_operations_own_hint_map_keys_bound_the_projection_not_the_whole_plug
 
 
 def test_the_sibling_operation_still_gets_its_own_declared_properties() -> None:
+    """``_MULTI_OP_DESCRIPTOR``'s ``input_schema`` declares no ``required`` list at all, so under
+    #898's strict rendering BOTH ``query`` and ``params`` are genuinely optional and get widened
+    to accept ``null`` rather than dropped (probe fact 2: the provider's ``strict`` flag is
+    silently inert unless every property is in ``required``, so an optional one is kept in
+    ``required`` and made nullable instead of omitted). This test's purpose predates that rule and
+    is unaffected by it: it protects that ``query``'s own declared type survives the per-operation
+    projection at all — asserting the full property dict (union type included), not a loose
+    membership check, so a future change that flattened or dropped the type would still fail here.
+
+    NOTE for review: this fixture's own ``input_schema`` carries no ``required`` list, so it does
+    not exercise the "genuinely mandatory property stays plain, unwidened" half of the rule — only
+    ``test_naming_sites_is_required_but_nullable_so_search_stays_optional`` (capability-registry)
+    and the strict-schema unit tests cover that half. Left as-is rather than silently strengthened:
+    this test's stated purpose (cross-operation leakage) never depended on optionality."""
     specs = {s.name: s for s in tool_specs_for("pg2", _MULTI_OP_DESCRIPTOR)}
     query_props = specs["pg2__query"].parameters["properties"]
-    assert query_props["query"] == {"type": "string"}
-    assert query_props["params"] == {"type": "object"}
+    assert query_props["query"] == {"type": ["string", "null"]}
+    assert query_props["params"] == {
+        "type": ["object", "null"],
+        "additionalProperties": False,
+    }
 
 
 # ── #956: ``operation`` is never advertised as required, or even present ────────────────────────
@@ -856,7 +873,13 @@ def test_a_hostile_non_dict_input_schema_never_raises_and_falls_back(
 def test_a_hint_map_key_the_declared_schema_does_not_cover_keeps_its_hint_mapped_form() -> None:
     """The op's hint map may declare a key the plugin's ``input_schema.properties`` does not
     describe. That key must not silently vanish from the model's view — it keeps its current
-    hint-mapped ``{"type": ...}`` shape."""
+    hint-mapped ``{"type": ...}`` shape.
+
+    #898: ``timeout`` is not named in this fixture's ``required`` list, so the strict render also
+    widens it to accept ``null`` (probe fact 2 — see the sibling-operation test above for the full
+    rationale). This test's own purpose — the hint-mapped type surviving projection at all — is
+    unaffected: the full property dict (union type included) is asserted, not a loose membership
+    check, so a future change that dropped or flattened the type still fails here."""
     descriptor = {
         "id": "core-partial-schema",
         "metadata": {"name": "Partial Schema"},
@@ -877,7 +900,7 @@ def test_a_hint_map_key_the_declared_schema_does_not_cover_keeps_its_hint_mapped
         },
     }
     params = tool_specs_for("partial", descriptor)[0].parameters
-    assert params["properties"]["timeout"] == {"type": "integer"}
+    assert params["properties"]["timeout"] == {"type": ["integer", "null"]}
     assert params["properties"]["query"]["description"] == "the SQL"
 
 
@@ -942,7 +965,12 @@ def test_a_non_dict_properties_value_falls_back_to_the_hint_mapped_form() -> Non
     schema does not cover at all (``test_a_hint_map_key_the_declared_schema_does_not_cover_keeps_
     its_hint_mapped_form`` above): the hint-mapped ``{"type": ...}`` shape, derived from the
     operation's own ``parameters`` hint for that key. Asserting that exact shape rather than only
-    "does not raise" because it is consistent with surrounding code, not invented."""
+    "does not raise" because it is consistent with surrounding code, not invented.
+
+    #898: this fixture's ``input_schema`` declares no ``required`` list, so ``q`` is genuinely
+    optional and the strict render widens it to accept ``null`` too — same rationale as the sibling
+    test above. The property protected here is the same one: the hint-mapped type surviving at
+    all, asserted as the full property dict rather than a loose membership check."""
     descriptor = {
         "id": "core-non-dict-property-value",
         "metadata": {"name": "Non-dict Property Value"},
@@ -956,7 +984,7 @@ def test_a_non_dict_properties_value_falls_back_to_the_hint_mapped_form() -> Non
         },
     }
     params = tool_specs_for("non-dict-property", descriptor)[0].parameters
-    assert params["properties"]["q"] == {"type": "string"}
+    assert params["properties"]["q"] == {"type": ["string", "null"]}
 
 
 def test_an_operations_parameters_as_a_list_never_raises() -> None:
