@@ -151,13 +151,33 @@ _OPERATION_KEY = "operation"
 
 def _project_input_schema(
     op: dict[str, Any], input_schema: dict[str, Any], bound_config: Mapping[str, Any]
-) -> dict[str, Any]:
-    """Project the plugin-level ``spec.input_schema`` onto ONE operation (#911).
+) -> tuple[dict[str, Any], frozenset[str]]:
+    """Project the plugin-level ``spec.input_schema`` onto ONE operation (#911), then render it
+    strict (#898).
 
     A plugin declares a single ``INPUT_SCHEMA`` for the whole class, but each operation only takes
     the arguments named in ITS OWN ``parameters`` hint map — restricting by those keys is what
     stops, e.g., the Postgres reader's ``query``/``params`` from leaking onto ``list_tables``,
     which takes no arguments at all.
+
+    A key the DISPATCHING INSTANCE already binds (run-time harness config or an operator's
+    tool-instance config, both arrive here as ``bound_config``) is never something the model can
+    see a value for. Pre-#898 this was subtracted from ``required`` outright; probe fact 2 (a
+    partial ``required`` list makes the provider's strict flag silently inert) means that would
+    now break strict binding for every OTHER property on the same operation, so it is instead
+    passed to ``render_strict_schema`` as ``force_nullable`` — forced back into ``required`` AND
+    widened to accept null, so the model satisfies the schema without guessing. This is the
+    outbound mirror of the capability registry's own inbound check
+    (`services/capability-registry-service/src/oraclous_capability_registry_service/domain/
+    executors/input_validation.py:92-98`, the `bound` set in `_check`), which already treats a
+    `configuration` key as satisfying `required` server-side; the two live in separate, untied
+    test suites, so treat that file/line as a live cross-reference to keep in sync, not
+    decoration.
+
+    Returns the rendered schema and ``nullable_keys`` — every property the render widened, whether
+    because the plugin's own declared schema left it genuinely optional or because ``bound_config``
+    forced it — so the caller can populate ``ToolSpec.nullable_keys`` for the dispatch-time null
+    strip (see ``dispatch_payload`` below).
     """
     parameters = op.get("parameters")
     hints: dict[str, Any] = parameters if isinstance(parameters, dict) else {}
@@ -187,28 +207,26 @@ def _project_input_schema(
             hint = hints[key]
             properties[key] = {"type": _TYPE_MAP.get(str(hint).lower(), "string")}
 
-    # A required key that the DISPATCHING INSTANCE already binds (run-time harness config or an
-    # operator's tool-instance config, both arrive here as `bound_config`) must not be advertised
-    # as required — the model is never asked to supply an argument it cannot see and does not
-    # control. This is the outbound mirror of the capability registry's own inbound check
-    # (`services/capability-registry-service/src/oraclous_capability_registry_service/domain/
-    # executors/input_validation.py:92-98`, the `bound` set in `_check`), which already treats a
-    # `configuration` key as satisfying `required` server-side; the two live in separate, untied
-    # test suites, so treat that file/line as a live cross-reference to keep in sync, not
-    # decoration. `!= _OPERATION_KEY` is redundant with `op_key_set`'s exclusion above — kept
-    # anyway as the second, independent line of defence.
-    required = [
-        k
-        for k in declared_required
-        if isinstance(k, str) and k in op_key_set and k not in bound_config and k != _OPERATION_KEY
+    # The declared-required keys that are genuinely this operation's own, BEFORE the strict
+    # render forces every property into `required` — this pre-render list is what tells a
+    # genuinely-mandatory property (stays plain) from an optional-or-bound one (gets widened).
+    # `isinstance(k, str)` short-circuits before any hashing, so a malformed `required` element
+    # (a nested list/dict — unhashable, from a corrupted registry write) is silently ignored
+    # rather than raising, matching how every other hostile value in this module degrades.
+    pre_required = [
+        k for k in declared_required if isinstance(k, str) and k in op_key_set and k != _OPERATION_KEY
     ]
+    force_nullable = frozenset(k for k in op_key_set if k in bound_config)
 
-    return {
-        "type": "object",
-        "properties": properties,
-        "required": required,
-        "additionalProperties": False,
-    }
+    rendered = render_strict_schema(
+        {"type": "object", "properties": properties, "required": pre_required},
+        force_nullable=force_nullable,
+    )
+    pre_required_set = set(pre_required)
+    nullable_keys = frozenset(
+        key for key in properties if key not in pre_required_set or key in force_nullable
+    )
+    return rendered, nullable_keys
 
 
 def _parameters_for(
@@ -217,30 +235,39 @@ def _parameters_for(
     imported: bool,
     input_schema: Any,
     bound_config: Mapping[str, Any],
-) -> dict[str, Any]:
-    """The operation's JSON schema for the model, in priority order (#698 D1, #911).
+) -> tuple[dict[str, Any], bool, frozenset[str]]:
+    """The operation's JSON schema for the model, in priority order (#698 D1, #911, #898).
+
+    Returns ``(parameters, strict, nullable_keys)``.
 
     1. A per-operation ``parameters_schema`` override wins outright, unchanged — existing
-       behaviour, untouched by #911.
+       behaviour, untouched by #911. ``strict`` is carried EXPLICITLY here too: a sibling
+       ``parameters_schema_strict`` marker on the op, never inferred from the override's own shape
+       (#898/#900 — a platform-authored override landing on a descriptor must not silently inherit
+       or lose strictness via a schema that merely happens to look closed+required already).
     2. An MCP-imported operation carries the server's own ``inputSchema`` verbatim (nested objects,
        enums, ``required`` lists the flat hint map cannot express) and is NEVER projected from
        ``spec.input_schema`` — that field belongs to a first-party plugin, not an imported server.
        ``tools/list`` is untrusted input, so a non-dict schema degrades to an empty object rather
-       than reaching the model or raising.
+       than reaching the model or raising. Always ``strict=False`` — an imported server's schema is
+       its own untrusted contract, never ours to constrain, however strict it happens to look.
     3. A first-party (non-MCP) operation with a dict-valued plugin-level ``spec.input_schema`` gets
-       that schema PROJECTED onto its own hint-map keys (#911) — carrying ``required``, union
-       types, ``enum``, ``minLength``, ``items``, etc. that the flat hint map alone cannot express.
+       that schema PROJECTED onto its own hint-map keys (#911) and rendered strict (#898).
     4. Otherwise (no ``spec.input_schema``, or a hostile non-dict value) falls back to exactly
-       today's hint-map-only dict, closed (#956 ruling 2). Never raises on a hostile value.
+       today's hint-map-only dict, closed (#956 ruling 2), ``strict=False`` — the hint map alone
+       carries no optionality information, so guessing "every key is required" here would be
+       exactly the mistake the issue rejected. Never raises on a hostile value.
     """
     schema = op.get("parameters_schema")
     if isinstance(schema, dict):
-        return schema
+        strict = bool(op.get("parameters_schema_strict")) and not imported
+        return schema, strict, frozenset()
     if imported:
-        return _json_schema(op.get("parameters"), closed=False)
+        return _json_schema(op.get("parameters"), closed=False), False, frozenset()
     if isinstance(input_schema, dict):
-        return _project_input_schema(op, input_schema, bound_config)
-    return _json_schema(op.get("parameters"), closed=True)
+        rendered, nullable_keys = _project_input_schema(op, input_schema, bound_config)
+        return rendered, True, nullable_keys
+    return _json_schema(op.get("parameters"), closed=True), False, frozenset()
 
 
 #: Providers accept a function name of at most 64 characters, matching ``[A-Za-z0-9_-]``.
@@ -275,9 +302,11 @@ def tool_specs_for(
     """One ``ToolSpec`` per operation declared by the capability ``descriptor``.
 
     ``bound_config`` (#911) names the arguments the DISPATCHING INSTANCE already supplies — run-time
-    harness config or an operator's tool-instance config — so they are dropped from the projected
-    ``required`` list without hiding the property itself. Defaults to ``None`` (treated as empty) so
-    every existing call site keeps working unchanged; only a first-party projection (priority 3 in
+    harness config or an operator's tool-instance config. The model cannot see a value for one of
+    these, so (#898) it is forced back into ``required`` and rendered nullable rather than hidden
+    outright — a partial ``required`` list would silently defeat the provider's strict flag for
+    every OTHER property on the same operation. Defaults to ``None`` (treated as empty) so every
+    existing call site keeps working unchanged; only a first-party projection (priority 3 in
     ``_parameters_for``) ever consults it.
     """
     spec = descriptor.get("spec") or {}
@@ -291,20 +320,23 @@ def tool_specs_for(
         if not isinstance(op, dict) or not op.get("name"):
             continue
         op_name = str(op["name"])
+        parameters, strict, nullable_keys = _parameters_for(
+            op,
+            imported=imported,
+            input_schema=input_schema,
+            bound_config=effective_bound_config,
+        )
         out.append(
             ToolSpec(
                 name=_function_name(binding, op_name),
                 description=op.get("description") or f"{name}: {op_name}",
-                parameters=_parameters_for(
-                    op,
-                    imported=imported,
-                    input_schema=input_schema,
-                    bound_config=effective_bound_config,
-                ),
+                parameters=parameters,
                 binding=binding,
                 # the registry dispatches on this and the external server expects its own
                 # spelling, so it keeps the server's name however the LLM-facing one was sanitised
                 operation=op_name,
+                strict=strict,
+                nullable_keys=nullable_keys,
             )
         )
     return out
