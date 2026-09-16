@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import uuid
 
 import httpx
 import pytest
@@ -150,3 +151,112 @@ async def test_default_precedence_is_omitted_from_the_execute_body() -> None:
     await _client(handler).execute(input_text="go", manifest_inline={"ohm_version": "1.0"})
     assert "precedence_order" not in captured["body"]
     assert "graph_authoritative" not in captured["body"]
+
+
+async def test_execute_sends_execution_id() -> None:
+    """#1072: the engine mints ``execution_id`` per dispatch so it can cancel before any response
+    arrives; ``execute`` marshals it into the POST body as a string (matching the existing
+    ``parent_execution_id``/``trace_id`` UUID-serialisation convention)."""
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"id": "x", "status": "SUCCEEDED"})
+
+    eid = uuid.uuid4()
+    await _client(handler).execute(
+        input_text="go", manifest_inline={"ohm_version": "1.0"}, execution_id=eid
+    )
+    assert captured["body"]["execution_id"] == str(eid)
+
+
+async def test_cancel_posts_cancel_path_returns_row() -> None:
+    """#1072: a 200 cancel response is the same ``HarnessExecutionOut`` shape ``execute`` returns
+    (carrying ``total_tokens``, the true spend), and the request carries the same auth/principal
+    headers ``execute`` sends so the harness sees the same tenant (ADR-018). ``cancel`` must
+    forward the client's own ``self._headers`` unchanged — never re-derive a narrower set — so
+    this asserts the full ``build_downstream_headers``-shaped dict (principal + org + internal
+    key), not just the internal key."""
+    captured: dict = {}
+    principal_id = uuid.uuid4()
+    org_id = uuid.uuid4()
+    headers = {
+        "X-Internal-Key": "k",
+        "X-Principal-Id": str(principal_id),
+        "X-Principal-Type": "user",
+        "X-Organisation-Id": str(org_id),
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["path"] = request.url.path
+        captured["internal"] = request.headers.get("X-Internal-Key")
+        captured["principal_id"] = request.headers.get("X-Principal-Id")
+        captured["principal_type"] = request.headers.get("X-Principal-Type")
+        captured["organisation_id"] = request.headers.get("X-Organisation-Id")
+        return httpx.Response(200, json={"id": "x", "status": "CANCELLED", "total_tokens": 100})
+
+    client = HarnessClient(
+        "http://harness", headers=headers, transport=httpx.MockTransport(handler)
+    )
+    eid = uuid.uuid4()
+    out = await client.cancel(eid, timeout=5.0)
+    assert captured["path"] == f"/v1/harnesses/{eid}/cancel"
+    assert captured["internal"] == "k"
+    assert captured["principal_id"] == str(principal_id)
+    assert captured["principal_type"] == "user"
+    assert captured["organisation_id"] == str(org_id)
+    assert out == {"id": "x", "status": "CANCELLED", "total_tokens": 100}
+
+
+async def test_cancel_202_returns_none() -> None:
+    """#1072: a 202 (harness still winding the loop down) → ``cancel`` returns ``None`` rather
+    than a partial/synthetic row, so the caller knows to fall back to its own budget handling."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(202, json={"execution_id": "x", "status": "CANCEL_REQUESTED"})
+
+    out = await _client(handler).cancel(uuid.uuid4(), timeout=5.0)
+    assert out is None
+
+
+async def test_cancel_404_raises_harness_rejected() -> None:
+    """#1072: an unknown execution id or another org's id → ``HarnessRejected`` (#251) — reachable
+    but refused, distinct from a transport failure."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(404, json={"detail": "not found"})
+
+    with pytest.raises(HarnessRejected) as exc_info:
+        await _client(handler).cancel(uuid.uuid4(), timeout=5.0)
+    assert exc_info.value.status_code == 404
+
+
+async def test_cancel_transport_error_raises_client_error() -> None:
+    """#1072: the harness unreachable during cancel → ``HarnessClientError``, matching ``execute``
+    so the engine's fail-closed budget path (charge ``member_max_tokens``) can key off one type."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("connection refused")
+
+    with pytest.raises(HarnessClientError):
+        await _client(handler).cancel(uuid.uuid4(), timeout=5.0)
+
+
+async def test_cancel_uses_own_timeout() -> None:
+    """#1072: ``cancel``'s own ``timeout`` argument governs the request — never the client's
+    member-``execute`` timeout — so a fast cancel is never held hostage by a long-running job's
+    wall-clock budget."""
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["timeout"] = request.extensions.get("timeout")
+        return httpx.Response(200, json={"id": "x", "status": "CANCELLED", "total_tokens": 0})
+
+    client = HarnessClient(
+        "http://harness",
+        headers={"X-Internal-Key": "k"},
+        timeout=600.0,  # the member-execute default — cancel must not inherit this
+        transport=httpx.MockTransport(handler),
+    )
+    await client.cancel(uuid.uuid4(), timeout=3.0)
+    assert captured["timeout"] == {"connect": 3.0, "read": 3.0, "write": 3.0, "pool": 3.0}

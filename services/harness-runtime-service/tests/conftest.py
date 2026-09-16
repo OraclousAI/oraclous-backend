@@ -7,8 +7,16 @@ Requires Docker; the unit suite needs none of this.
 ADR-030: ``harness_dsns`` derives a NOSUPERUSER/NOBYPASSRLS ``oraclous_app`` DSN (asyncpg) from the
 superuser container so the RLS isolation suite exercises the **real runtime role** — proving the
 GRANTs are complete and the RLS policy actually bites (a superuser would bypass it). Schema DDL +
-RLS enablement run as the superuser owner (all four harness tables get the plain strict policy via
+RLS enablement run as the superuser owner (all five harness tables get the plain strict policy via
 ``enable_rls_on``); the app role only gets SELECT/INSERT/UPDATE/DELETE.
+
+#1072: ``harness_execution_leases`` is pinned into ``RLS_TABLES`` below ahead of its migration
+(0010, not yet built) — the same "pin the table list, let the missing table hard-fail RED" the
+``0006_enable_rls`` / ``bootstrap_rls_role._RLS_TABLES`` docstrings already describe. Until the
+``[impl]`` adds the model + migration, ``Base.metadata.create_all`` has no such table, so
+``enable_rls_on`` raises ``UndefinedTable`` for every test that depends on ``harness_dsns`` /
+``app_engine`` in ``test_harness_rls_backstop_isolation.py`` — not just the new
+``harness_execution_leases`` cases. That is the intended RED, not a broken fixture (ADR-010).
 """
 
 from __future__ import annotations
@@ -27,12 +35,15 @@ PG_DB = "oraclous"
 APP_ROLE = "oraclous_app"
 APP_PASSWORD = "app"  # noqa: S105 — ephemeral test-container role, not a real secret
 
-# The harness's four org-scoped tables — all get the plain strict policy (no read-widening). Matches
-# 0006_enable_rls + bootstrap_rls_role._RLS_TABLES.
+# The harness's org-scoped tables — all get the plain strict policy (no read-widening). Matches
+# 0006_enable_rls + bootstrap_rls_role._RLS_TABLES, plus harness_execution_leases (#1072). Its
+# migration 0010 is not built yet, so the table doesn't exist until the [impl] lands — module
+# docstring above.
 RLS_TABLES = (
     "harness_executions",
     "harness_checkpoints",
     "harness_assignments",
+    "harness_execution_leases",
     "harness_provenance",
 )
 

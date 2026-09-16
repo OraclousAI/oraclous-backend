@@ -1,27 +1,35 @@
-"""Data-layer proof that the Postgres RLS backstop isolates the harness-runtime-service's four
-org-scoped tables on its own — the app-layer ``WHERE organisation_id`` removed (ADR-030 / #353).
+"""Data-layer proof that the Postgres RLS backstop isolates the harness-runtime-service's org-scoped
+tables on its own — the app-layer ``WHERE organisation_id`` removed (ADR-030 / #353).
 
 Distinct from the API/unit tests (which prove the app-layer scoping behaves): here we go under the
 repositories and prove the *backstop* — that even with the app-layer predicate gone, RLS alone
 scopes reads and denies cross-org writes. This is the real point of the backstop: a bug that drops a
 ``WHERE`` clause no longer leaks cross-org rows.
 
-All four harness tables (``harness_executions``, ``harness_checkpoints``, ``harness_assignments``,
-``harness_provenance``) share ONE policy shape (matching 0006_enable_rls): ``USING`` == ``WITH
-CHECK`` == strict caller-org equality — a cross-org read returns zero rows, a cross-org write raises
-42501, and an unbound GUC fails closed to zero rows (T1-M1). The harness has no shared
-platform-catalogue case, so there is no read-widening.
+All five harness tables (``harness_executions``, ``harness_checkpoints``, ``harness_assignments``,
+``harness_provenance``, and, from #1072, ``harness_execution_leases``) share ONE policy shape
+(matching 0006_enable_rls): ``USING`` == ``WITH CHECK`` == strict caller-org equality — a cross-org
+read returns zero rows, a cross-org write raises 42501, and an unbound GUC fails closed to zero rows
+(T1-M1). The harness has no shared platform-catalogue case, so there is no read-widening.
 
 ``harness_provenance`` is the INSERT-ONLY runtime path (``PostgresProvenanceSink.write`` only ever
-inserts); its WITH CHECK is proven directly — a cross-org provenance INSERT is denied. The four
-tables are owned by four independent repositories that each build their engine via
-``build_rls_engine``; this test binds the org exactly as those repositories do (``org_scope`` +
-the engine ``begin`` guard ``install_org_guc_guard`` installs, the same guard ``build_rls_engine``
-installs), never via a hand-written WHERE.
+inserts); its WITH CHECK is proven directly — a cross-org provenance INSERT is denied. The five
+tables are each owned by an independent repository that builds its engine via ``build_rls_engine``
+(``harness_execution_leases`` via the not-yet-built ``ExecutionLeaseRepository``, #1072); this test
+binds the org exactly as those repositories do (``org_scope`` + the engine ``begin`` guard
+``install_org_guc_guard`` installs, the same guard ``build_rls_engine`` installs), never via a
+hand-written WHERE.
 
 Run as the NOSUPERUSER/NOBYPASSRLS ``oraclous_app`` role (the deployed runtime role) — RLS only
 bites a non-superuser, so the isolation proven here is real. Mirrors the credential-broker /
 knowledge-graph / capability-registry ``test_rls_backstop_isolation``.
+
+#1072: ``harness_execution_leases`` is pinned into ``conftest.RLS_TABLES`` ahead of its migration
+(0010) and model, both not yet built — so the shared ``harness_dsns``/``app_engine`` fixture chain
+this whole module uses hard-fails (``UndefinedTable``) for every test here, not only the new
+``test_execution_leases_table_isolates_reads_and_denies_cross_org_writes`` below, until the
+``[impl]`` lands. That is the intended RED (ADR-010), not a broken fixture — see
+``tests/conftest.py``'s module docstring.
 
 Threats: T1-M1, T1-M3. ADR-006; ADR-012 §2; ADR-030.
 """
@@ -68,6 +76,15 @@ _INSERT_EXECUTION = (
     "(id, organisation_id, user_id, harness_id, harness_name, status, input, iterations, "
     "total_tokens, input_tokens, output_tokens, steps) "
     "VALUES (:id, :org, :user, :harness, :name, 'SUCCEEDED', :input, 0, 0, 0, 0, '[]'::jsonb)"
+)
+
+# --- harness_execution_leases (#1072, not yet built — migration 0010): a read/update table, the
+# cross-replica cancel-lease row. organisation_id NOT NULL; created_at carries a server default,
+# cancel_requested_at stays NULL here (the RLS proof doesn't need the flag flipped). Proves the same
+# strict policy on the fifth table (one ``ExecutionLeaseRepository`` reads and updates per request).
+_SELECT_LEASE_ORGS = "SELECT organisation_id FROM harness_execution_leases"
+_INSERT_LEASE = (
+    "INSERT INTO harness_execution_leases (execution_id, organisation_id) VALUES (:id, :org)"
 )
 
 
@@ -207,6 +224,50 @@ async def test_executions_table_isolates_reads_and_denies_cross_org_writes(
     # FAIL-CLOSED: with NO org context bound, the guard binds the empty GUC → zero rows (T1-M1).
     async with app_engine.begin() as conn:
         assert (await conn.execute(text(_SELECT_EXECUTION_USERS))).all() == []
+
+
+async def test_execution_leases_table_isolates_reads_and_denies_cross_org_writes(
+    app_engine: AsyncEngine,
+) -> None:
+    """The same strict policy on ``harness_execution_leases`` (#1072's cross-replica cancel lease):
+    read filtered to the bound org, a cross-org write denied (42501), an unbound GUC fails closed to
+    zero rows. Proves the RLS backstop holds for this table independent of
+    ``ExecutionLeaseRepository``'s own app-layer ``organisation_id`` filtering."""
+    from oraclous_governance import use_organisation_context
+
+    execution_id = uuid.uuid4()
+
+    # WRITE org A's lease, org A bound.
+    with use_organisation_context(_ctx(ORG_A)):
+        async with app_engine.begin() as conn:
+            await conn.execute(text(_INSERT_LEASE), {"id": execution_id, "org": ORG_A})
+
+    # READ under org A: visible (RLS alone scopes — no WHERE in the SELECT).
+    with use_organisation_context(_ctx(ORG_A)):
+        async with app_engine.begin() as conn:
+            a_rows = [r[0] for r in (await conn.execute(text(_SELECT_LEASE_ORGS))).all()]
+    assert a_rows == [ORG_A]
+
+    # READ under org B: org A's lease row is INVISIBLE.
+    with use_organisation_context(_ctx(ORG_B)):
+        async with app_engine.begin() as conn:
+            b_rows = [r[0] for r in (await conn.execute(text(_SELECT_LEASE_ORGS))).all()]
+    assert b_rows == []
+
+    # CROSS-ORG WRITE: org B bound, stamping org A's id → 42501 — the same guard a forged/guessed
+    # execution_id from another org would hit trying to request a cancel on someone else's run.
+    with pytest.raises(ProgrammingError) as exc_info:
+        with use_organisation_context(_ctx(ORG_B)):
+            async with app_engine.begin() as conn:
+                await conn.execute(
+                    text(_INSERT_LEASE),
+                    {"id": uuid.uuid4(), "org": ORG_A},  # smuggled
+                )
+    assert getattr(exc_info.value.orig, "sqlstate", None) == "42501"
+
+    # FAIL-CLOSED: with NO org context bound, the guard binds the empty GUC → zero rows (T1-M1).
+    async with app_engine.begin() as conn:
+        assert (await conn.execute(text(_SELECT_LEASE_ORGS))).all() == []
 
 
 async def test_runtime_role_is_non_bypassing(app_engine: AsyncEngine) -> None:
