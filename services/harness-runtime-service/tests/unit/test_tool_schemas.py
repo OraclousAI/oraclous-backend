@@ -582,14 +582,20 @@ def test_an_unbound_required_key_stays_required_and_is_not_nullable() -> None:
     assert spec.parameters["properties"]["query"]["type"] == "string"
 
 
-# ── #542: a second, differently-sourced bound-key case (the delivery sink's ``repo``) ────────────
+# ── #1047 ruling Q2: ``repo`` leaves the sink's model-facing schema entirely ──────────────────────
 #
-# ``graph_id`` above is bound by the HARNESS at run time (``_materialise``'s fresh-mint branch
-# merges it into ``cap_config``). ``repo`` is bound a different way: an OPERATOR configures the
-# tool instance with it once, before any run — the "configured, not passed" shape (#542). From
-# ``tool_specs_for``'s point of view both arrive identically, as a key of ``bound_config`` — but
-# #911 names both explicitly, and they differ in KIND (harness-bound vs operator-bound), so both
-# get their own fixture rather than treating one as redundant with the other.
+# This fixture used to be the SECOND #911 bound-key example (an operator-configured value, forced
+# back into ``required`` and widened nullable like ``graph_id`` above) — see #542. #1047 supersedes
+# that for ``repo`` specifically: a call-supplied ``repo`` is never legitimate on its own (the same
+# confused-deputy defence as ``graph_id`` in #524 and ``provider`` in #946 D1), so the capability
+# registry's own descriptor for ``deliver`` drops ``repo`` from its hint map entirely
+# (``GitHubSinkPlugin.CAPABILITIES``, capability-registry-service — see
+# ``test_github_sink_plugin_descriptor.py``'s
+# ``test_deliver_operation_no_longer_advertises_repo_as_a_call_parameter``)
+# — and ``_project_input_schema`` only ever projects keys from that hint map, so there is nothing
+# left here for ``bound_config`` to widen. The #911 "operator-bound, not harness-bound" mechanism
+# itself is untouched and still exercised by ``graph_id`` above; the code path never distinguished
+# the two KINDS of bound key, only ``repo``'s own eligibility changed.
 
 _GITHUB_SINK_DESCRIPTOR = {
     "id": "core-github-sink",
@@ -601,7 +607,6 @@ _GITHUB_SINK_DESCRIPTOR = {
                 "name": "deliver",
                 "description": "Write changed files to a head branch + open a PR",
                 "parameters": {
-                    "repo": "str",
                     "base_branch": "str",
                     "head_branch": "str",
                     "files": "list",
@@ -610,7 +615,7 @@ _GITHUB_SINK_DESCRIPTOR = {
         ],
         "input_schema": {
             "type": "object",
-            "required": ["repo", "files"],
+            "required": ["files"],
             "properties": {
                 "repo": {"type": "string"},
                 "base_branch": {"type": "string"},
@@ -622,26 +627,41 @@ _GITHUB_SINK_DESCRIPTOR = {
 }
 
 
-def test_an_operator_configured_key_is_forced_back_into_required_but_rendered_nullable_too() -> (
-    None
-):
-    """``repo`` is bound once, by an operator configuring the tool instance — never supplied by the
-    harness at run time the way ``graph_id`` is — but it reaches ``tool_specs_for`` the same way,
-    as a ``bound_config`` key, and gets the same #898 treatment: forced back into ``required``
-    (the strict flag needs every property there) and widened to accept ``null`` so the model is
-    never asked to guess it."""
+def test_a_repo_property_never_reaches_the_model_with_no_bound_config() -> None:
+    spec = tool_specs_for("github-sink", _GITHUB_SINK_DESCRIPTOR)[0]
+    params = spec.parameters
+    assert "repo" not in params["properties"]
+    assert "repo" not in params["required"]
+    assert "repo" not in spec.nullable_keys
+
+
+def test_a_repo_property_never_reaches_the_model_even_when_the_instance_binds_one() -> None:
+    """The #946 D1 pattern: an operator-configured value the model could never supply correctly
+    anyway (it cannot know what it is) is excluded from the schema outright, not merely widened
+    nullable — mirrors ``test_a_search_operation_offers_the_model_no_vendor_property`` above."""
     spec = tool_specs_for(
         "github-sink",
         _GITHUB_SINK_DESCRIPTOR,
         bound_config={"repo": "octocat/example"},
     )[0]
     params = spec.parameters
-    assert "repo" in params["required"]
-    assert "repo" in spec.nullable_keys
-    assert params["properties"]["repo"]["type"] == ["string", "null"]
-    assert "repo" in params["properties"]
-    assert "files" in params["required"]  # unbound, stays required
-    assert "files" not in spec.nullable_keys  # unbound, stays non-nullable — widening not blanket
+    assert "repo" not in params["properties"]
+    assert "repo" not in params["required"]
+    assert "repo" not in spec.nullable_keys
+
+
+def test_the_arguments_a_model_does_need_are_still_projected_around_the_dropped_repo() -> None:
+    """The regression guard: removing ``repo`` must not silently drop the operation's OTHER
+    arguments, bound or not."""
+    spec = tool_specs_for(
+        "github-sink",
+        _GITHUB_SINK_DESCRIPTOR,
+        bound_config={"repo": "octocat/example"},
+    )[0]
+    params = spec.parameters
+    assert "files" in params["required"]
+    assert "base_branch" in params["properties"]
+    assert "head_branch" in params["properties"]
 
 
 # ── enum / minLength / items survive the projection verbatim ────────────────────────────────────
@@ -1178,6 +1198,9 @@ def test_an_override_that_declares_no_nullable_keys_behaves_as_it_does_today() -
 
 # ── #898: additionalProperties: false at every nested object level, on a real shape ──────────────
 
+# ``repo`` is left out of ``parameters``/``input_schema`` here (#1047 ruling Q2 — see the fixture
+# comment above): this test exercises the nested ``files`` closing only and never asserted anything
+# about ``repo``, so keeping the pre-#1047 shape would just be a stale, invalidated example.
 _GITHUB_SINK_FILES_DESCRIPTOR = {
     "id": "core-github-sink-nested",
     "metadata": {"name": "GitHub Sink"},
@@ -1187,14 +1210,13 @@ _GITHUB_SINK_FILES_DESCRIPTOR = {
             {
                 "name": "deliver",
                 "description": "Write changed files to a head branch + open a PR",
-                "parameters": {"repo": "str", "files": "list"},
+                "parameters": {"files": "list"},
             }
         ],
         "input_schema": {
             "type": "object",
-            "required": ["repo", "files"],
+            "required": ["files"],
             "properties": {
-                "repo": {"type": "string"},
                 "files": {
                     "type": "array",
                     "items": {
