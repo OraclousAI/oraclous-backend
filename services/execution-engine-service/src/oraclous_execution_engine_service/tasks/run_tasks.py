@@ -457,6 +457,8 @@ async def _drive_team_run_async(run_id_s: str, org_id_s: str, user_id_s: str) ->
                 # threaded down explicitly, instead of the drive reaching for `get_settings()`
                 # itself mid-dispatch.
                 harness_member_call_timeout=settings.harness_member_call_timeout,
+                # #1072: same wiring-boundary read as the line above, for the cancel call.
+                harness_cancel_timeout=settings.harness_cancel_timeout_seconds,
             )
             result = await service.drive(run_id, principal)
             return {"team_run_id": run_id_s, "state": result.state}

@@ -225,6 +225,17 @@ class _Pool:
         the count is known before dispatch (unlike tokens), so it must never overshoot."""
         return None if self._max_sub_runs is None else max(0, self._max_sub_runs - self.sub_runs)
 
+    def remaining_tokens(self) -> int | None:
+        """Token headroom still available under the pooled ceiling (None = unbounded). Mirrors
+        ``would_exceed``'s fail-closed posture (#1072): an unmeasurable tally (no ``cost_so_far``
+        wired) reads as already exhausted, never as free headroom (CLAUDE.md §3.5) — used to charge
+        an unconfirmed cancel the worst the pool could still absorb, exhausting it in the same
+        direction ``would_exceed`` already halts admission."""
+        if self._max_tokens is None:
+            return None
+        spent = self._cost_so_far() if self._cost_so_far is not None else self._max_tokens
+        return max(0, self._max_tokens - spent)
+
     def would_exceed(self) -> bool:
         """True iff admitting one MORE dispatch would cross a resolved ceiling (FAIL-CLOSED)."""
         if self._max_sub_runs is not None and self.sub_runs >= self._max_sub_runs:

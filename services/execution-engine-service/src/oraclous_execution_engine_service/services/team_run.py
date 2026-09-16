@@ -47,6 +47,7 @@ from oraclous_ohm.orchestrate import (
     RecalDirective,
     RecalibrateFn,
     TeamRunResult,
+    _Pool,  # #1072: reuse its remaining_tokens() formula for an unconfirmed cancel's pool charge
     critical_deliverable_loss_present,
     run_loop_seam,
     run_team,
@@ -54,6 +55,7 @@ from oraclous_ohm.orchestrate import (
 from oraclous_ohm.sites import InvalidSiteError, normalise_sites
 
 from oraclous_execution_engine_service.core.config import (
+    HARNESS_CANCEL_TIMEOUT_SECONDS,
     HARNESS_MEMBER_CALL_TIMEOUT_CEILING_SECONDS,
 )
 from oraclous_execution_engine_service.domain.answer_roles import sink_roles
@@ -62,6 +64,7 @@ from oraclous_execution_engine_service.domain.app_form import SITE_RESTRICTION_K
 from oraclous_execution_engine_service.domain.refresh import REFRESH_SEED_KEY
 from oraclous_execution_engine_service.services.harness_client import (
     HarnessClientError,
+    HarnessRejected,
     HarnessTimeout,
 )
 
@@ -76,6 +79,8 @@ class _Harness(Protocol):
         manifest_inline: dict[str, Any] | None = ...,
         manifest_ref: str | None = ...,
         capability_ceiling: list[str] | None = ...,
+        # #1072: the id THIS dispatch mints, so a timed-out call can be cancelled by the same id.
+        execution_id: uuid.UUID | None = ...,
         parent_execution_id: uuid.UUID | None = ...,
         trace_id: uuid.UUID | None = ...,
         workspace_root: str | None = ...,
@@ -96,6 +101,14 @@ class _Harness(Protocol):
         # #1067 (R1, item 4): the per-call bound below any real caller's own patience.
         timeout: float | None = ...,  # noqa: ASYNC109 — forwarded to httpx, not an asyncio cancel
     ) -> dict[str, Any]: ...
+
+    async def cancel(
+        self,
+        execution_id: uuid.UUID,
+        *,
+        # #1072: forwarded to httpx, not an asyncio cancel — matches `execute`'s own `timeout`.
+        timeout: float,  # noqa: ASYNC109
+    ) -> dict[str, Any] | None: ...
 
 
 # Imported Claude-Code "conductor" agents are written to PROPOSE a `## Handoff` for a human to
@@ -685,6 +698,9 @@ def make_harness_dispatch(
     parent_execution_id: uuid.UUID | None = None,
     on_child: Callable[[str, str], None] | None = None,
     on_cost: Callable[[int], None] | None = None,
+    # #1072: the live pooled tally (mirrors `run_team`'s own `cost_so_far`) — read ONLY to charge
+    # an unconfirmed cancel's fail-closed headroom; never mutated here (on_cost still owns writes).
+    cost_so_far: Callable[[], int] | None = None,
     workspace_root: str | None = None,
     graph_id: str | None = None,
     team_id: str | None = None,
@@ -708,6 +724,9 @@ def make_harness_dispatch(
     # (`HARNESS_MEMBER_CALL_TIMEOUT_CEILING_SECONDS`), for a direct call to this factory that
     # supplies no run-specific value.
     member_call_timeout: float = HARNESS_MEMBER_CALL_TIMEOUT_CEILING_SECONDS,
+    # #1072: how long `dispatch` waits on `harness.cancel()` after a timeout, threaded the same
+    # explicit way as `member_call_timeout` above (settings -> TeamRunService -> here).
+    cancel_timeout: float = HARNESS_CANCEL_TIMEOUT_SECONDS,
 ) -> DispatchFn:
     """Build a ``run_team`` dispatch that runs each member as a real harness execution.
 
@@ -797,8 +816,12 @@ def make_harness_dispatch(
         # ``person_supplied_text`` uses below: the first ancestor (in manifest declaration order)
         # survives whole; a later one is truncated at the tail rather than the seed being dropped.
         prior_fetched_urls = prior_fetched_urls[:_MAX_MEMBER_FETCHED_URLS]
+        # #1072: minted FRESH per dispatch (never reused across two dispatches of the same member)
+        # so a timeout can cancel the SAME in-flight execution without racing a later one.
+        execution_id = uuid.uuid4()
         try:
             result = await harness.execute(
+                execution_id=execution_id,
                 input_text=render_member_input(
                     member,
                     envelopes,
@@ -882,6 +905,37 @@ def make_harness_dispatch(
             # reach the run page verbatim through `repr`, which does not escape angle
             # brackets/quotes. The layer above already names the member (it composes "{role}
             # stopped because {reason}"), so repeating it here is redundant as well as unsafe.
+            #
+            # #1072: the timed-out execution is still running server-side unless cancelled — ask
+            # the harness to stop the SAME execution_id, exactly once. A CONFIRMED cancel (200-
+            # shaped) folds its real total_tokens/id in exactly like the success path below; an
+            # UNCONFIRMED one (a 202 -> None, or the cancel call itself being rejected/unreachable)
+            # cannot measure the true spend, so it fails closed (CLAUDE.md §3.5, #1072 ruling):
+            # charge the member's own resolved cap if one exists, else the team pool's remaining
+            # headroom if a pooled ceiling exists, else nothing (no ceiling to protect).
+            try:
+                cancel_result = await harness.cancel(execution_id, timeout=cancel_timeout)
+            except (HarnessRejected, HarnessClientError):
+                cancel_result = None
+            if cancel_result is not None:
+                cancelled_id = cancel_result.get("id")
+                if on_child is not None and cancelled_id is not None:
+                    on_child(str(cancelled_id), member.role)
+                if on_cost is not None:
+                    on_cost(int(cancel_result.get("total_tokens") or 0))
+            elif on_cost is not None:
+                if member_max_tokens is not None:
+                    on_cost(member_max_tokens)
+                elif budget is not None and budget.max_tokens_total is not None:
+                    pool = _Pool(
+                        max_tokens=budget.max_tokens_total,
+                        max_sub_runs=None,
+                        max_usd=None,
+                        cost_so_far=cost_so_far,
+                    )
+                    headroom = pool.remaining_tokens()
+                    if headroom is not None:
+                        on_cost(headroom)
             raise HarnessClientError(
                 "timed out: it exceeded its wall-clock time limit "
                 f"({member_timeout:.0f}s) before the harness answered"
@@ -1005,6 +1059,7 @@ async def run_team_harness(
     on_checkpoint: CheckpointFn | None = None,
     on_dispatch: DispatchAnnounceFn | None = None,
     member_call_timeout: float = HARNESS_MEMBER_CALL_TIMEOUT_CEILING_SECONDS,
+    cancel_timeout: float = HARNESS_CANCEL_TIMEOUT_SECONDS,
 ) -> TeamRunResult:
     """Run a Team Harness member DAG, dispatching each member as a real harness execution.
 
@@ -1050,6 +1105,9 @@ async def run_team_harness(
         parent_execution_id=parent_execution_id,
         on_child=on_child,
         on_cost=_on_cost,
+        # #1072: the same pooled tally `run_team` gets below — so an unconfirmed cancel's
+        # fail-closed pool charge reads the live tally, not a stale/zero one.
+        cost_so_far=pooled_cost,
         workspace_root=workspace_root,
         graph_id=graph_id,
         team_id=team_id,
@@ -1065,6 +1123,7 @@ async def run_team_harness(
         ancestors=ancestors,  # #989: the transitive-closure map every dispatch composes a seed from
         person_supplied_text=_person_supplied_text(task, answers),  # #975 ruling 4/6
         member_call_timeout=member_call_timeout,
+        cancel_timeout=cancel_timeout,
     )
     return await run_team(
         manifest,
@@ -1159,6 +1218,7 @@ async def run_team_hybrid(
     on_checkpoint: CheckpointFn | None = None,
     on_dispatch: DispatchAnnounceFn | None = None,
     member_call_timeout: float = HARNESS_MEMBER_CALL_TIMEOUT_CEILING_SECONDS,
+    cancel_timeout: float = HARNESS_CANCEL_TIMEOUT_SECONDS,
 ) -> TeamRunResult:
     """Drive a Team Harness whose handoff graph has GENUINE loops (ADR-043 #552): the acyclic
     skeleton runs on ``run_team`` and each loop SCC runs the bounded ``run_loop_seam`` conductor,
@@ -1197,6 +1257,7 @@ async def run_team_hybrid(
             on_checkpoint=on_checkpoint,  # #819: per-member durability
             on_dispatch=on_dispatch,  # #828: fires before a member's dispatch runs
             member_call_timeout=member_call_timeout,
+            cancel_timeout=cancel_timeout,
         )
     if coordinate is None or done_check_for is None:  # fail-closed (ADR-043 invariant)
         raise OHMError("team has loops but no coordinator/done-check wired")
@@ -1222,6 +1283,9 @@ async def run_team_hybrid(
         parent_execution_id=parent_execution_id,
         on_child=on_child,
         on_cost=on_cost,
+        # #1072: the same pooled tally threaded to `run_team`/`run_loop_seam` below (this param
+        # already existed on this function) — so an unconfirmed cancel's pool charge stays live.
+        cost_so_far=cost_so_far,
         workspace_root=workspace_root,
         graph_id=graph_id,
         team_id=team_id,
@@ -1237,6 +1301,7 @@ async def run_team_hybrid(
         answers=hybrid_answers,  # #846: the app's intake answers, to every member
         required_sites=resolve_run_sites(inputs),  # #961: the sites this run is held to
         member_call_timeout=member_call_timeout,
+        cancel_timeout=cancel_timeout,
     )
     termination = manifest.orchestration.termination if manifest.orchestration else None
     max_rounds = (termination.max_rounds if termination else None) or _DEFAULT_MAX_ROUNDS
