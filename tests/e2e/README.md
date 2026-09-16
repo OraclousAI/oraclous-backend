@@ -161,6 +161,10 @@ retry fired; a less cooperative day could cost up to ~4x more on that one scenar
 - `TAVILY_API_KEY` — from `deploy/.env` (the live key, #886); the `deploy/.env.test` key is out of
   credit and only a fallback. A spent key fails as `PROVIDER_QUOTA_EXHAUSTED`, which is the
   environment, not a regression.
+- `E2E_LOOP_ROUND_CEILING_S` (optional, default `180`) — per-round seconds the four `team_loop_*`/
+  `team_consciousness_compounding` tests budget for polling a real-model loop run to a terminal
+  state (`conftest.py`'s `loop_poll_budget_s`, #921); the deadline is `max_rounds * this + a fixed
+  startup allowance`, not a fixed try count, since each loop round costs 2-3 min on the real model.
 
 ## The edge limiter
 

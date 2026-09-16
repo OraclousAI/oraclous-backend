@@ -35,6 +35,8 @@ requires_byom = pytest.mark.skipif(
 )
 _MODEL = os.environ["E2E_MODEL"]
 
+_MAX_ROUNDS = 6  # the gated loop's convergence bound (also the poll budget's basis, #921)
+
 
 def _cred(c: httpx.Client, user_id: str, key: str, name: str) -> str:
     r = c.post(
@@ -105,25 +107,35 @@ def _gated_loop_team(c: httpx.Client, user: dict, nonce: str, or_cred: str) -> t
     doc["orchestration"]["loops"][0]["members"].insert(0, "gate")
     doc["orchestration"]["loops"][0].setdefault("routing", {})["gate"] = "approve to continue"
     doc["orchestration"]["success_criteria"] = "a short, accurate, clear paragraph on the topic"
-    doc["orchestration"]["termination"] = {"convergence": "evaluator>=0.8", "max_rounds": 6}
+    doc["orchestration"]["termination"] = {
+        "convergence": "evaluator>=0.8",
+        "max_rounds": _MAX_ROUNDS,
+    }
     doc["models"] = [{**model, "role": "coordinator"}, {**model, "role": "evaluator"}, model]
     return doc, subs
 
 
-def _poll(c: httpx.Client, run_id: str, tries: int = 150) -> dict:
+def _poll(c: httpx.Client, run_id: str, budget_s: float) -> dict:
     row: dict = {}
-    for _ in range(tries):
+    started = time.monotonic()
+    deadline = started + budget_s
+    while time.monotonic() < deadline:
         row = c.get(f"/v1/engine/team-runs/{run_id}").json()
         if row["state"] in {"SUCCEEDED", "FAILED", "REJECTED", "PAUSED"}:
             return row
         time.sleep(3)
-    raise AssertionError(f"run {run_id} never terminated (last: {row.get('state')})")
+    elapsed = time.monotonic() - started
+    raise AssertionError(
+        f"run {run_id} never terminated (last: {row.get('state')}) after {elapsed:.0f}s "
+        f"(budget {budget_s:.0f}s)"
+    )
 
 
 @requires_byom
 def test_looping_team_pauses_on_a_gate_then_a_human_approve_resumes_to_convergence(
     register: Callable[..., dict],
     gateway_client: Callable[[str], httpx.Client],
+    loop_poll_budget: Callable[[int], float],
 ) -> None:
     user = register(f"loophitl{uuid.uuid4().hex[:10]} owner")
     c = gateway_client(user["token"])
@@ -139,9 +151,10 @@ def test_looping_team_pauses_on_a_gate_then_a_human_approve_resumes_to_convergen
     )
     assert created.status_code == 202, created.text
     run_id = created.json()["id"]
+    budget = loop_poll_budget(_MAX_ROUNDS)
 
     # 1) the loop PAUSES before its first round on the undecided gate — no auto-skip
-    paused = _poll(c, run_id)
+    paused = _poll(c, run_id, budget)
     assert paused["state"] == "PAUSED", (
         f"the gated loop must PAUSE, not {paused['state']}: {paused}"
     )
@@ -155,14 +168,14 @@ def test_looping_team_pauses_on_a_gate_then_a_human_approve_resumes_to_convergen
 
     # 3) the resumed loop iterates writer↔critic on the REAL model + converges (ADR-042: re-run any
     # member a weak model fails, bounded, until SUCCEEDED)
-    done = _poll(c, run_id)
+    done = _poll(c, run_id, budget)
     for _ in range(4):
         if done["state"] == "SUCCEEDED":
             break
         assert done["state"] == "FAILED", done
         rr = c.post(f"/v1/engine/team-runs/{run_id}/rerun")
         assert rr.status_code == 202, rr.text
-        done = _poll(c, run_id)
+        done = _poll(c, run_id, budget)
     assert done["state"] == "SUCCEEDED", (
         f"the loop did not converge after the gate approval: {done}"
     )

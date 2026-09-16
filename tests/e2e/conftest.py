@@ -240,6 +240,35 @@ def _provider_refusal_reason(error_message: str | None) -> str | None:
     return f"a transport failure reaching the provider — {error_message}"
 
 
+# ── Loop poll budgets scale with max_rounds, not a fixed try count (#921) ─────────────────────────
+#
+# Nightly service logs showed each loop member turn taking 2-3 min on the real model, with the
+# first evaluation landing ~7 min in — a fixed try-count poll (e.g. 150 tries * 3s = 450s) declares
+# the run failed while it is still progressing. Scale the deadline with the loop's own declared
+# max_rounds instead. Per-round ceiling defaults to 180s, overridable via
+# E2E_LOOP_ROUND_CEILING_S for a slower model. The nightly job budget is 300 min
+# (.github/workflows/e2e-nightly.yml) — keep this default well inside it across the whole
+# loop-marked slice.
+_LOOP_ROUND_CEILING_S = float(os.getenv("E2E_LOOP_ROUND_CEILING_S", "180"))
+_LOOP_POLL_STARTUP_ALLOWANCE_S = 60.0
+
+
+def loop_poll_budget_s(max_rounds: int) -> float:
+    """Deadline (seconds) for polling a real-model loop run to a terminal state (#921).
+
+    ``max_rounds * per-round ceiling + a fixed startup allowance`` — see the module comment above
+    for why a fixed try count undercounts a real model.
+    """
+    return max_rounds * _LOOP_ROUND_CEILING_S + _LOOP_POLL_STARTUP_ALLOWANCE_S
+
+
+@pytest.fixture
+def loop_poll_budget() -> Callable[[int], float]:
+    """Fixture form of ``loop_poll_budget_s`` — take this instead of importing the module (the
+    package docstring above: a test must never ``from tests.e2e.conftest import ...``)."""
+    return loop_poll_budget_s
+
+
 @pytest.fixture
 def assert_run_succeeded() -> Callable[..., None]:
     """Assert a run/agent-execute response reached SUCCEEDED — legibly telling an upstream provider
