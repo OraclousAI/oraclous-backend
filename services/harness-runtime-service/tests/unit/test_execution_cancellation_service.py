@@ -19,9 +19,12 @@ so most of the seams below surface as ``TypeError``/``AttributeError`` at the ca
   ``DuplicateExecutionId`` (raised by ``create()`` on a PK conflict — "a duplicate id returns 409
   (global primary key)", design doc). This file uses only the SHAPE (an
   ``ExecutionLeaseRepository``-like fake: ``create(execution_id, organisation_id)``,
-  ``request_cancel(execution_id, organisation_id) -> bool``, ``is_cancel_requested(execution_id) ->
-  bool``, ``release(execution_id)``) and imports the real ``DuplicateExecutionId`` only where a test
-  asserts the service actually raises it.
+  ``request_cancel(execution_id, organisation_id) -> bool``, ``is_cancel_requested(execution_id,
+  organisation_id) -> bool``, ``release(execution_id, organisation_id)``) and imports the real
+  ``DuplicateExecutionId`` only where a test asserts the service actually raises it. Every method
+  is org-scoped — the lease table carries forced RLS, so an unbound or wrong org sees zero rows
+  under the real ``oraclous_app`` role; the watcher and ``release`` must present the execution's
+  OWN org (known from the run's principal), never call org-blind.
 * ``HarnessExecutionService.__init__`` gains ``leases: ExecutionLeaseRepository`` (alongside the
   existing ``executions``/``checkpoints`` repos), ``cancel_poll_seconds: float`` and
   ``cancel_wait_seconds: float`` (the ``HARNESS_CANCEL_POLL_SECONDS`` /
@@ -166,16 +169,20 @@ class _FakeExecutions:
 
 class _FakeLeases:
     """``ExecutionLeaseRepository``-shaped fake (design doc: the Postgres lease row that carries a
-    cancel request across replicas). ``request_cancel`` and ``is_cancel_requested`` are both
-    org-blind in the sense that ``is_cancel_requested`` takes no org (the OWNING replica's watcher
-    already trusts the PK it inserted); ``request_cancel`` IS org-scoped — a wrong-org caller gets
-    ``False`` and the flag is left untouched, never leaking whether the id exists at all."""
+    cancel request across replicas). Every method is org-scoped, mirroring the real table's forced
+    RLS: ``is_cancel_requested`` and ``release`` take the CALLER's org and see/affect nothing when
+    it does not match the row's own org — an unbound or wrong org sees zero rows under the real
+    ``oraclous_app`` role, so the watcher and ``release`` must present the execution's OWN org
+    (known from the run's principal), never call org-blind. ``request_cancel`` was already
+    org-scoped — a wrong-org caller gets ``False`` and the flag is left untouched, never leaking
+    whether the id exists at all."""
 
     def __init__(self) -> None:
         self._owner: dict[uuid.UUID, uuid.UUID] = {}
         self._cancel_requested: set[uuid.UUID] = set()
-        self.released: list[uuid.UUID] = []
+        self.released: list[tuple[uuid.UUID, uuid.UUID]] = []
         self.request_cancel_calls: list[tuple[uuid.UUID, uuid.UUID]] = []
+        self.is_cancel_requested_calls: list[tuple[uuid.UUID, uuid.UUID]] = []
 
     async def create(self, execution_id: uuid.UUID, organisation_id: uuid.UUID) -> None:
         from oraclous_harness_runtime_service.repositories.execution_lease_repository import (
@@ -193,13 +200,20 @@ class _FakeLeases:
         self._cancel_requested.add(execution_id)
         return True
 
-    async def is_cancel_requested(self, execution_id: uuid.UUID) -> bool:
+    async def is_cancel_requested(
+        self, execution_id: uuid.UUID, organisation_id: uuid.UUID
+    ) -> bool:
+        self.is_cancel_requested_calls.append((execution_id, organisation_id))
+        if self._owner.get(execution_id) != organisation_id:
+            return False  # wrong/unbound org: zero rows visible under RLS
         return execution_id in self._cancel_requested
 
-    async def release(self, execution_id: uuid.UUID) -> None:
+    async def release(self, execution_id: uuid.UUID, organisation_id: uuid.UUID) -> None:
+        self.released.append((execution_id, organisation_id))
+        if self._owner.get(execution_id) != organisation_id:
+            return  # wrong/unbound org: DELETE affects zero rows under RLS
         self._owner.pop(execution_id, None)
         self._cancel_requested.discard(execution_id)
-        self.released.append(execution_id)
 
 
 class _FakeProv:
@@ -333,8 +347,9 @@ async def test_execute_uses_caller_supplied_execution_id(monkeypatch: pytest.Mon
     assert execs.created is not None
     assert execs.created["execution_id"] == execution_id
     # the lease's whole lifecycle (design doc: inserted before the loop, deleted after the terminal
-    # row persists) applies to EVERY terminal outcome, not only a cancelled one.
-    assert leases.released == [execution_id]
+    # row persists) applies to EVERY terminal outcome, not only a cancelled one — released with the
+    # RUN's own org, never org-blind (the delete is a no-op under RLS otherwise).
+    assert leases.released == [(execution_id, _ORG)]
 
 
 async def test_duplicate_execution_id_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -479,8 +494,11 @@ async def test_lease_released_after_terminal_row(monkeypatch: pytest.MonkeyPatch
     await svc.cancel(execution_id=execution_id, organisation_id=_ORG)
     await asyncio.wait_for(exec_task, timeout=5.0)
 
-    assert leases.released == [execution_id]
+    assert leases.released == [(execution_id, _ORG)]
     assert execution_id not in leases._owner  # the row itself is gone once the terminal row lands
+    # the watcher itself polled with the RUN's own org — org-blind would see zero rows under RLS.
+    assert leases.is_cancel_requested_calls
+    assert all(org == _ORG for _eid, org in leases.is_cancel_requested_calls)
 
 
 # ------------------------------------------------------------- cancel(): the non-loop scenarios --
@@ -516,7 +534,9 @@ async def test_cancel_other_org_not_found_and_flag_untouched(
     # wrong org must learn nothing about whether the id exists at all.
     assert wrong_org_exc.value.status_code == unknown_id_exc.value.status_code == 404
     assert str(wrong_org_exc.value) == str(unknown_id_exc.value)
-    assert await leases.is_cancel_requested(execution_id) is False  # never set across orgs
+    # never set across orgs — checked with the TRUE owning org so a False here cannot be an
+    # artifact of asking the fake with the wrong org itself.
+    assert await leases.is_cancel_requested(execution_id, _ORG) is False
 
 
 async def test_cancel_terminal_returns_row_without_flag(monkeypatch: pytest.MonkeyPatch) -> None:
