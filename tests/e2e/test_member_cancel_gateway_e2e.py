@@ -3,9 +3,10 @@
 The user mints an ``execution_id`` client-side, starts a real ``POST /v1/harnesses/execute`` whose
 task needs TEN sequential tool/LLM round-trips (deterministically outlasting both the client's own
 short timeout and the time it takes cancel polling to land — a fast three-step task risked settling
-SUCCEEDED before cancel ever reached it), then cancels it with
-``POST /v1/harnesses/{execution_id}/cancel``, polling every ~0.5s from the moment execute is fired
-rather than waiting on the client's own give-up timeout. Design (#1072, backend-implementer ruling):
+SUCCEEDED before cancel ever reached it), waits a bounded delay for a real model turn to book
+tokens, then cancels it with ``POST /v1/harnesses/{execution_id}/cancel``, polling every ~0.5s
+rather than waiting on the client's own give-up timeout. Design (#1072, backend-implementer
+ruling):
 
   * ``execute`` accepts an optional caller-supplied ``execution_id`` so a client can cancel a run
     before any response ever arrives.
@@ -15,7 +16,9 @@ rather than waiting on the client's own give-up timeout. Design (#1072, backend-
   * a re-read 20s later must show the SAME status and the SAME ``total_tokens`` — proof the loop
     really stopped rather than continuing to spend in the background.
   * an unknown id, or another organisation's id, gets an identical 404 — the cancel flag is never
-    set across a tenant boundary.
+    set across a tenant boundary. Checked WHILE the run is still in flight (not after it settles),
+    and the owner's own cancel afterwards still lands CANCELLED — the other org's attempt had no
+    effect.
 
 None of this exists yet (no ``execution_id`` field, no cancel route) — every assertion below is
 expected to fail RED against the current stack. Real registration -> real JWT -> the user's OWN
@@ -47,16 +50,30 @@ requires_byom_key = pytest.mark.skipif(
 
 #: A short client-side timeout on the BACKGROUND thread's own request only — realism (a dropped
 #: client connection, e.g. a closed browser tab, must not keep charging the user). Cancel timing
-#: below never waits on this; it starts polling immediately.
+#: below never waits on THIS timeout — it runs on its own bounded schedule (see
+#: _MIN_WORK_BOOKED_WAIT_SECONDS below).
 _CLIENT_GIVES_UP_AFTER = 8.0
 #: Cancel is polled frequently and independently of the client timeout above.
 _CANCEL_POLL_INTERVAL = 0.5
+#: Bounded wait after firing execute, BEFORE the first cancel attempt, so at least one real LLM
+#: turn has landed and booked tokens before cancel can land. Cancel starting the instant execute
+#: fires usually beats the first model reply; the design (#1072) says tokens from a call cut
+#: mid-flight are never reported, so `total_tokens > 0` would flake for a timing reason, not a
+#: product one. There is no gateway-visible progress signal to poll instead of a fixed delay:
+#: `GET /v1/harnesses/executions/{execution_id}` 404s for the whole run — the execution row is
+#: written once, at the end, when the loop finishes (see `harness_execution_service.execute`),
+#: never at dispatch — so it cannot tell us a turn has landed. Kept well under the ten-step task's
+#: total wall time so the run is still in flight when we use it below.
+_MIN_WORK_BOOKED_WAIT_SECONDS = 6.0
 #: A 404 is read as "the run hasn't started yet" only inside this window from the first poll; past
 #: it, a persistent 404 is a real failure (unknown id / no cancel route), not a startup race.
 _NOT_YET_STARTED_WINDOW_SECONDS = 15.0
-#: Overall bound on 202 (CANCEL_REQUESTED, still tearing down) -> settled — generous: ten real,
-#: sequential tool/LLM round-trips can legitimately take a while before the loop even notices the
-#: cancel flag between iterations.
+#: Overall bound on 202 (CANCEL_REQUESTED, still tearing down) -> settled — generous: cancellation
+#: is a Postgres lease flag (`cancel_requested_at`) that the owning replica's watcher polls
+#: (~1s) and, on seeing it, cancels the loop's asyncio task — interrupting an in-flight LLM call,
+#: rather than waiting for the loop to notice between iterations. Still generous because tearing
+#: down (closing the LLM client, persisting the CANCELLED row, emitting provenance) after ten
+#: real, sequential tool/LLM round-trips can legitimately take a while.
 _CANCEL_SETTLE_TIMEOUT_SECONDS = 120.0
 #: How long to wait before re-reading the execution, to prove nothing kept spending after CANCELLED.
 _SETTLE_WAIT_SECONDS = 20.0
@@ -83,8 +100,8 @@ def _store_model_credential(c: httpx.Client, user: dict) -> str:
 #: Deliberately MANY steps, not three: three real sequential round-trips with a fast/cheap model
 #: can finish close to or under the client's own give-up window, which would let the run settle
 #: SUCCEEDED before cancel ever lands — flaky for the wrong reason. Ten forces enough wall time
-#: that the cancel call (which starts polling immediately, not after any timeout) reliably lands
-#: mid-run.
+#: that the cancel call (which never waits on the client's own give-up timeout) reliably lands
+#: mid-run, well after _MIN_WORK_BOOKED_WAIT_SECONDS but well before the task could finish.
 _MATH_STEPS = [
     "compound_growth with start=1000, rate=0.01, periods=1",
     "percentage_change with start=1000, end=1010",
@@ -173,13 +190,22 @@ def _fire_execute_in_background(
     return thread
 
 
+def _drop_request_id(body: dict) -> dict:
+    """The gateway's own-error envelope (``{"error": {..., "requestId": ...}}``) mints a fresh
+    ``requestId`` per response — strip it before comparing two error bodies for equality."""
+    error = dict(body.get("error", {}))
+    error.pop("requestId", None)
+    return {**body, "error": error}
+
+
 def _cancel_until_settled(c: httpx.Client, execution_id: uuid.UUID) -> httpx.Response:
     """Poll POST .../cancel every ``_CANCEL_POLL_INTERVAL`` — independent of the background
-    request's own client timeout, so cancel is attempted from the moment execute is fired, not
-    after some fixed delay. A 404 is tolerated only inside ``_NOT_YET_STARTED_WINDOW_SECONDS`` (the
-    execution row/lease may not exist yet); a 202 (CANCEL_REQUESTED, still tearing down) is polled
-    until settled or ``_CANCEL_SETTLE_TIMEOUT_SECONDS`` runs out. Mirrors the route's documented
-    200/202/404 contract (#1072 design)."""
+    request's own client timeout (callers wait out ``_MIN_WORK_BOOKED_WAIT_SECONDS`` before the
+    first call, so real work is already booked; this loop only paces the calls after that). A 404
+    is tolerated only inside ``_NOT_YET_STARTED_WINDOW_SECONDS`` (the execution row/lease may not
+    exist yet); a 202 (CANCEL_REQUESTED, still tearing down) is polled until settled or
+    ``_CANCEL_SETTLE_TIMEOUT_SECONDS`` runs out. Mirrors the route's documented 200/202/404
+    contract (#1072 design)."""
     start = time.monotonic()
     while True:
         elapsed = time.monotonic() - start
@@ -216,13 +242,36 @@ def test_a_cancelled_execution_stops_spending_and_is_org_scoped(
 
     # 1) start a real run whose task needs ten sequential tool/LLM iterations. The background
     #    client gives up after ~8s (realism — a closed tab must not keep charging the user), but
-    #    cancel polling below starts immediately and does NOT wait on that timeout.
+    #    cancel polling below does NOT wait on that timeout.
     _fire_execute_in_background(gateway_url, user["token"], execution_id, manifest)
 
-    # 2) cancel it — THE PROOF. A settled 200 must carry the CANCELLED status and the real,
-    #    nonzero spend the loop had already made before it stopped. If the ten-step task still
-    #    finished (SUCCEEDED/FAILED) before cancel ever landed, that is a timing defect in the test
-    #    itself (not the feature) — fail loudly and distinctly from a real product assertion.
+    # 1b) wait until real work is booked (see _MIN_WORK_BOOKED_WAIT_SECONDS) before touching cancel
+    #    at all — otherwise cancel routinely lands before any LLM reply, and an interrupted call's
+    #    tokens are never reported, making the total_tokens > 0 check below flake on timing rather
+    #    than proving anything about the product. The ten-step task is still well in flight here.
+    time.sleep(_MIN_WORK_BOOKED_WAIT_SECONDS)
+
+    # 2) a second organisation cancelling the SAME execution_id, WHILE it is still in flight, gets
+    #    a 404 identical (module requestId) to a 404 for a freshly minted unknown id from that same
+    #    org/user — the cancel flag is never set across a tenant boundary (ADR-006), and org B gets
+    #    no signal distinguishing "exists but not yours" from "doesn't exist".
+    other = register(f"cancelother{uuid.uuid4().hex[:10]} user")
+    other_c = gateway_client(other["token"])
+    cross_org = other_c.post(f"/v1/harnesses/{execution_id}/cancel")
+    assert cross_org.status_code == 404, cross_org.text
+    unknown = other_c.post(f"/v1/harnesses/{uuid.uuid4()}/cancel")
+    assert unknown.status_code == 404, unknown.text
+    assert _drop_request_id(cross_org.json()) == _drop_request_id(unknown.json()), (
+        cross_org.json(),
+        unknown.json(),
+    )
+
+    # 3) cancel it (as the OWNER) — THE PROOF. A settled 200 must carry the CANCELLED status and
+    #    the real, nonzero spend the loop had already made before it stopped. If the ten-step task
+    #    still finished (SUCCEEDED/FAILED) before cancel ever landed, that is a timing defect in
+    #    the test itself (not the feature) — fail loudly and distinctly from a real product
+    #    assertion. A CANCELLED (not some already-cancelled variant) also proves org B's attempt
+    #    above had no effect on this run.
     cancelled = _cancel_until_settled(c, execution_id)
     assert cancelled.status_code == 200, cancelled.text
     body = cancelled.json()
@@ -234,7 +283,7 @@ def test_a_cancelled_execution_stops_spending_and_is_org_scoped(
     )
     assert body["total_tokens"] > 0, body  # a real LLM turn happened before the cancel landed
 
-    # 3) nothing kept spending after CANCELLED: a re-read well after settling shows the SAME row.
+    # 4) nothing kept spending after CANCELLED: a re-read well after settling shows the SAME row.
     time.sleep(_SETTLE_WAIT_SECONDS)
     reread = c.get(f"/v1/harnesses/executions/{execution_id}")
     assert reread.status_code == 200, reread.text
@@ -245,16 +294,9 @@ def test_a_cancelled_execution_stops_spending_and_is_org_scoped(
         f"{settled['total_tokens']}) — the loop kept running/spending after the cancel settled"
     )
 
-    # 4) the confirmed spend is reflected on the org's own spend read, through the gateway — an
+    # 5) the confirmed spend is reflected on the org's own spend read, through the gateway — an
     #    org must be able to see what a cancelled run really cost, not just SUCCEEDED ones.
     spend = c.get("/v1/harnesses/spend")
     assert spend.status_code == 200, spend.text
     spend_body = spend.json()
     assert spend_body["total_input_tokens"] + spend_body["total_output_tokens"] > 0, spend_body
-
-    # 5) a second organisation cancelling the SAME execution_id gets an identical 404 — the cancel
-    #    flag is never set across a tenant boundary (ADR-006).
-    other = register(f"cancelother{uuid.uuid4().hex[:10]} user")
-    other_c = gateway_client(other["token"])
-    cross_org = other_c.post(f"/v1/harnesses/{execution_id}/cancel")
-    assert cross_org.status_code == 404, cross_org.text
