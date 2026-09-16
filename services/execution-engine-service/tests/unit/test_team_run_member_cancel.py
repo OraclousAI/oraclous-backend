@@ -101,6 +101,36 @@ class _RoleAwareOrphanSpendHarness:
         return {"id": str(execution_id), "status": "CANCELLED", "total_tokens": self._orphan_tokens}
 
 
+class _EarlyBookThenUnconfirmedCancelHarness:
+    """One member succeeds and books its own ``total_tokens``; an independent second member times
+    out and its cancel never CONFIRMS (202 -> ``None``) — used to prove what an unconfirmed cancel
+    charges when the team has ONLY a pooled ``max_tokens_total`` and no resolved per-member cap
+    (#1072 ruling, case 2:
+    https://github.com/OraclousAI/oraclous-backend/issues/1072#issuecomment-5701622081)."""
+
+    def __init__(self, *, booked_role: str, booked_tokens: int, timeout_role: str) -> None:
+        self.execute_calls: list[dict[str, Any]] = []
+        self.cancel_calls: list[dict[str, Any]] = []
+        self._booked_role = booked_role
+        self._booked_tokens = booked_tokens
+        self._timeout_role = timeout_role
+
+    async def execute(self, **kwargs: Any) -> dict[str, Any]:
+        self.execute_calls.append(kwargs)
+        if kwargs.get("manifest_ref") == f"org:x/{self._timeout_role}@1":
+            raise HarnessTimeout("harness call timed out: exceeded its wall-clock time limit")
+        return {
+            "id": str(uuid.uuid4()),
+            "status": "SUCCEEDED",
+            "output": "ran",
+            "total_tokens": self._booked_tokens,
+        }
+
+    async def cancel(self, execution_id: uuid.UUID, **kwargs: Any) -> dict[str, Any] | None:
+        self.cancel_calls.append({"execution_id": execution_id, **kwargs})
+        return None  # 202: still winding down, the cancel never confirms
+
+
 async def test_timeout_cancels_dispatched_execution_id() -> None:
     """On a timeout, dispatch cancels the SAME execution_id it minted and sent to execute() —
     exactly once, never a fresh/different id and never zero calls."""
@@ -164,14 +194,44 @@ async def test_unconfirmed_cancel_charges_member_cap(cancel_outcome: Any) -> Non
     assert costs == [5_000]
 
 
-async def test_unconfirmed_cancel_without_member_cap_charges_nothing() -> None:
-    """Owner ruling (#1072, fail-closed default): an unconfirmed cancel (here a 202 -> None) still
-    fails closed when there IS a resolved cap to protect (the case above). But when the member has
-    NO resolved cap at all — no member-level max_tokens override AND no team budget block to fall
-    back to, so resolve_member_caps(member, None) yields (None, None) — there is no pool to
-    protect, so the dispatch charges nothing: on_cost is never called (not even on_cost(None),
-    which would crash any real caller expecting an int), and the #1067 timeout message is still
-    raised unchanged."""
+async def test_unconfirmed_cancel_with_pool_only_charges_remaining_headroom() -> None:
+    """Owner ruling (#1072, case 2:
+    https://github.com/OraclousAI/oraclous-backend/issues/1072#issuecomment-5701622081): the
+    earlier "no member cap means no pool" premise was false — a team with ONLY
+    ``budget.max_tokens_total`` (no per-member cap, no member override) resolves every member's cap
+    to ``(None, None)`` via ``resolve_member_caps``, yet the pool is still live. An unconfirmed
+    cancel (here a 202 -> None) then charges the pool's REMAINING HEADROOM
+    (``max_tokens_total`` minus what is already booked), exhausting the pool so no later stage is
+    dispatched — the fail-closed direction, since the orphan's real spend cannot be measured. An
+    independent, earlier member ("a") succeeds first and books its own tokens; "b" depends on "a"
+    (which succeeded), never on the timed-out member, so only the pool — never a
+    blocked-by-upstream-failure path — can be what stops it."""
+    costs: list[int] = []
+    team = _team(
+        [
+            OHMMember(role="a", kind="agent", manifest_ref="org:x/a@1"),
+            OHMMember(role="t", kind="agent", manifest_ref="org:x/t@1"),
+            OHMMember(role="b", kind="agent", manifest_ref="org:x/b@1", depends_on=["a"]),
+        ],
+        budget=OHMBudget(max_tokens_total=1_000),
+    )
+    harness = _EarlyBookThenUnconfirmedCancelHarness(
+        booked_role="a", booked_tokens=300, timeout_role="t"
+    )
+    result = await run_team_harness(team, harness, on_cost=costs.append)
+    assert len(harness.cancel_calls) == 1  # "t"'s timeout attempted exactly one cancel
+    # "a"'s real spend (300), then "t"'s charged headroom: 1_000 - 300 = 700, exhausting the pool.
+    assert costs == [300, 700]
+    assert result.member_status["b"] == "budget_skipped"  # the pool stopped it, not a block
+
+
+async def test_unconfirmed_cancel_without_any_token_ceiling_charges_nothing() -> None:
+    """Owner ruling (#1072, case 3:
+    https://github.com/OraclousAI/oraclous-backend/issues/1072#issuecomment-5701622081): when the
+    member has NO resolved cap at all AND the team has no pooled ``max_tokens_total`` either, there
+    is no ceiling to protect, so an unconfirmed cancel (here a 202 -> None) charges nothing:
+    on_cost is never called (not even on_cost(None), which would crash any real caller expecting an
+    int), and the #1067 timeout message is still raised unchanged."""
     costs: list[int] = []
     harness = _TimeoutThenCancelHarness(cancel_results=[None])  # 202: cancel never confirms
     dispatch = make_harness_dispatch(harness, {}, on_cost=costs.append)
