@@ -67,6 +67,13 @@ def _cred(c: httpx.Client, user: dict) -> str:
 #: credentials API like the model key; scripts/e2e.sh exports it from deploy/.env (#886).
 _TAVILY = os.environ.get("TAVILY_API_KEY", "")
 
+#: seeded tool slugs whose CREDENTIAL_REQUIREMENTS declares a required `web_search` api_key
+#: (WebResearchPlugin / WebSearchToolPlugin in services/capability-registry-service/src/
+#: oraclous_capability_registry_service/domain/plugins/builtin.py); `webfetch` is keyless. The
+#: compiler may pick either seeded search tool (packages/ohm/src/oraclous_ohm/seeds.py), so both
+#: need the key bound or dispatch fails closed (#921).
+_SEARCH_TOOLS_NEEDING_KEY = {"web-research", "websearch"}
+
 
 def _slug(name: str) -> str:
     import re
@@ -77,8 +84,9 @@ def _slug(name: str) -> str:
 def _connect_declared_tools(c: httpx.Client, user: dict, manifest: dict) -> None:
     """#881: a compiled team is not runnable until its user connects what it declared — the same
     connect step the console runs before GO. Every tool slug in ``members[].tools`` gets an
-    organisation instance; ``web-research`` also gets the user's search key bound, because the
-    dispatch fails closed on a required ``api_key`` that nobody mapped."""
+    organisation instance; a seeded search tool (see ``_SEARCH_TOOLS_NEEDING_KEY``) also gets the
+    user's search key bound, because the dispatch fails closed on a required ``api_key`` that
+    nobody mapped."""
     rows = c.get("/api/v1/capabilities", params={"kind": "tool"}).json()["capabilities"]
     by_slug = {_slug(str(r["name"])): r for r in rows}
     for slug in sorted({t for m in manifest["members"] for t in m.get("tools", [])}):
@@ -89,7 +97,7 @@ def _connect_declared_tools(c: httpx.Client, user: dict, manifest: dict) -> None
             json={"capability_id": cap["id"], "name": slug, "configuration": {}, "settings": {}},
         )
         assert inst.status_code == 201, inst.text
-        if _slug(slug) == "web-research" and _TAVILY:
+        if _slug(slug) in _SEARCH_TOOLS_NEEDING_KEY and _TAVILY:
             cred = c.post(
                 "/credentials/",
                 json={
