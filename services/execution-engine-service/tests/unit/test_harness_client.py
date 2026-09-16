@@ -173,18 +173,38 @@ async def test_execute_sends_execution_id() -> None:
 async def test_cancel_posts_cancel_path_returns_row() -> None:
     """#1072: a 200 cancel response is the same ``HarnessExecutionOut`` shape ``execute`` returns
     (carrying ``total_tokens``, the true spend), and the request carries the same auth/principal
-    headers ``execute`` sends so the harness sees the same tenant (ADR-018)."""
+    headers ``execute`` sends so the harness sees the same tenant (ADR-018). ``cancel`` must
+    forward the client's own ``self._headers`` unchanged — never re-derive a narrower set — so
+    this asserts the full ``build_downstream_headers``-shaped dict (principal + org + internal
+    key), not just the internal key."""
     captured: dict = {}
+    principal_id = uuid.uuid4()
+    org_id = uuid.uuid4()
+    headers = {
+        "X-Internal-Key": "k",
+        "X-Principal-Id": str(principal_id),
+        "X-Principal-Type": "user",
+        "X-Organisation-Id": str(org_id),
+    }
 
     def handler(request: httpx.Request) -> httpx.Response:
         captured["path"] = request.url.path
         captured["internal"] = request.headers.get("X-Internal-Key")
+        captured["principal_id"] = request.headers.get("X-Principal-Id")
+        captured["principal_type"] = request.headers.get("X-Principal-Type")
+        captured["organisation_id"] = request.headers.get("X-Organisation-Id")
         return httpx.Response(200, json={"id": "x", "status": "CANCELLED", "total_tokens": 100})
 
+    client = HarnessClient(
+        "http://harness", headers=headers, transport=httpx.MockTransport(handler)
+    )
     eid = uuid.uuid4()
-    out = await _client(handler).cancel(eid, timeout=5.0)
+    out = await client.cancel(eid, timeout=5.0)
     assert captured["path"] == f"/v1/harnesses/{eid}/cancel"
     assert captured["internal"] == "k"
+    assert captured["principal_id"] == str(principal_id)
+    assert captured["principal_type"] == "user"
+    assert captured["organisation_id"] == str(org_id)
     assert out == {"id": "x", "status": "CANCELLED", "total_tokens": 100}
 
 

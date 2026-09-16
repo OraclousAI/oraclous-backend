@@ -164,6 +164,24 @@ async def test_unconfirmed_cancel_charges_member_cap(cancel_outcome: Any) -> Non
     assert costs == [5_000]
 
 
+async def test_unconfirmed_cancel_without_member_cap_charges_nothing() -> None:
+    """Owner ruling (#1072, fail-closed default): an unconfirmed cancel (here a 202 -> None) still
+    fails closed when there IS a resolved cap to protect (the case above). But when the member has
+    NO resolved cap at all — no member-level max_tokens override AND no team budget block to fall
+    back to, so resolve_member_caps(member, None) yields (None, None) — there is no pool to
+    protect, so the dispatch charges nothing: on_cost is never called (not even on_cost(None),
+    which would crash any real caller expecting an int), and the #1067 timeout message is still
+    raised unchanged."""
+    costs: list[int] = []
+    harness = _TimeoutThenCancelHarness(cancel_results=[None])  # 202: cancel never confirms
+    dispatch = make_harness_dispatch(harness, {}, on_cost=costs.append)
+    with pytest.raises(HarnessClientError) as exc_info:
+        await dispatch(_member(max_tokens=None), [], None)  # no override, no team budget → no pool
+    assert "timed out:" in str(exc_info.value)
+    assert len(harness.cancel_calls) == 1  # the timeout still attempts a cancel, cap or no cap
+    assert costs == []  # nothing to protect => nothing charged, and on_cost(None) never happens
+
+
 async def test_fresh_execution_id_per_dispatch() -> None:
     """Each dispatch mints its OWN execution_id — two dispatches of the same member never reuse an
     id, so a cancel sent for the first can never race a second dispatch's in-flight execution."""

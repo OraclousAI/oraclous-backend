@@ -85,10 +85,6 @@ _USER = uuid.uuid4()
 # here will wait before it must have been cancelled out from under it.
 _HANG_SECONDS = 60.0
 
-# The watcher's own poll interval vs. cancel()'s wait budget, chosen with a wide margin so a wait
-# that is meant to expire genuinely cannot be confused with a watcher that just hadn't polled yet,
-# regardless of whether an implementation checks-then-sleeps or sleeps-then-checks.
-_SLOW_POLL_SECONDS = 2.0
 _FAST_POLL_SECONDS = 0.01
 _SHORT_WAIT_SECONDS = 0.02
 _LONG_WAIT_SECONDS = 2.0
@@ -585,21 +581,33 @@ async def test_cancel_inflight_sets_flag_and_returns_terminal(
     assert result.status == HarnessStatus.CANCELLED.value
 
 
+class _NeverNoticingLeases(_FakeLeases):
+    """``is_cancel_requested`` blocks on ``unblock`` (never set by the test until AFTER the
+    ``CancelPending`` assertion below) instead of ever returning a value. A watcher that awaits
+    this call is provably stuck mid-check for as long as the test holds ``unblock`` closed — it
+    can never observe the flag and so can never cancel the hanging loop, no matter how the real
+    implementation schedules its poll (check-then-sleep, sleep-then-check, any interval). This
+    makes the expiry a hard gate, not a race against relative sleep durations."""
+
+    def __init__(self, unblock: asyncio.Event) -> None:
+        super().__init__()
+        self._unblock = unblock
+
+    async def is_cancel_requested(
+        self, execution_id: uuid.UUID, organisation_id: uuid.UUID
+    ) -> bool:
+        await self._unblock.wait()
+        return await super().is_cancel_requested(execution_id, organisation_id)
+
+
 async def test_cancel_wait_expiry_returns_pending(monkeypatch: pytest.MonkeyPatch) -> None:
     started = asyncio.Event()
+    unblock_watcher = asyncio.Event()
     _stub_hanging_loop(monkeypatch, started)
     execs = _FakeExecutions()
-    leases = _FakeLeases()
+    leases = _NeverNoticingLeases(unblock_watcher)
     execution_id = uuid.uuid4()
-    # A watcher poll interval far longer than the wait budget below: no reasonable implementation
-    # (check-then-sleep or sleep-then-check) can complete a notice-cancel-persist cycle inside the
-    # wait, so the expiry below is genuinely a TIMEOUT, never a lucky race.
-    svc = _service(
-        execs,
-        leases=leases,
-        cancel_poll_seconds=_SLOW_POLL_SECONDS,
-        cancel_wait_seconds=_SHORT_WAIT_SECONDS,
-    )
+    svc = _service(execs, leases=leases, cancel_wait_seconds=_SHORT_WAIT_SECONDS)
 
     exec_task = asyncio.create_task(
         svc.execute(
@@ -624,6 +632,7 @@ async def test_cancel_wait_expiry_returns_pending(monkeypatch: pytest.MonkeyPatc
         assert result.status == "CANCEL_REQUESTED"
         assert execs.create_calls == 0  # the wait gave up before any terminal row could land
     finally:
+        unblock_watcher.set()  # release any watcher stuck mid-check before tearing the task down
         exec_task.cancel()
         with contextlib.suppress(BaseException):
             await exec_task
