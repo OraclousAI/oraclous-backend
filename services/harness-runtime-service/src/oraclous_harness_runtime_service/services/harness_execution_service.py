@@ -14,10 +14,13 @@ OHM errors (parse/schema/version/reference/signature) propagate to the route (42
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import copy
 import logging
 import uuid
 from collections.abc import Awaitable, Callable, Collection
+from dataclasses import dataclass
 from typing import Any, Literal, NamedTuple
 
 import yaml
@@ -40,6 +43,7 @@ from oraclous_harness_runtime_service.domain.llm.factory import (
     build_fake_client,
     build_live_client,
 )
+from oraclous_harness_runtime_service.domain.loop.progress import LoopProgress
 from oraclous_harness_runtime_service.domain.loop.tool_use import (
     _REPEATED_FAILURE_STATUS,
     LoopCheckpoint,
@@ -62,6 +66,10 @@ from oraclous_harness_runtime_service.models.enums import HarnessStatus, StepKin
 from oraclous_harness_runtime_service.models.execution import HarnessExecution
 from oraclous_harness_runtime_service.repositories.assignment_repository import AssignmentRepository
 from oraclous_harness_runtime_service.repositories.checkpoint_repository import CheckpointRepository
+from oraclous_harness_runtime_service.repositories.execution_lease_repository import (
+    DuplicateExecutionId,
+    ExecutionLeaseRepository,
+)
 from oraclous_harness_runtime_service.repositories.execution_repository import ExecutionRepository
 from oraclous_harness_runtime_service.services.broker_client import BrokerClient, BrokerError
 from oraclous_harness_runtime_service.services.memory_client import MemoryReader, MemoryWriter
@@ -239,6 +247,26 @@ class ResumeError(Exception):
     def __init__(self, message: str, status_code: int = 409) -> None:
         super().__init__(message)
         self.status_code = status_code
+
+
+class CancelError(Exception):
+    """``cancel()`` found nothing it may act on for this ``(execution_id, organisation_id)`` pair —
+    an unknown id, or one that belongs to another organisation (#1072 design ruling: identical in
+    both cases, so a wrong-org caller learns nothing about whether the id exists at all). Carries
+    the HTTP status (404 for both)."""
+
+    def __init__(self, message: str, status_code: int = 404) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+
+
+@dataclass(slots=True)
+class CancelPending:
+    """``cancel()``'s answer when the cancel flag was set but no terminal row landed before
+    ``cancel_wait_seconds`` elapsed (#1072 design ruling) — the route maps this to 202."""
+
+    execution_id: uuid.UUID
+    status: str = "CANCEL_REQUESTED"
 
 
 def _serialize_steps(
@@ -454,6 +482,12 @@ class HarnessExecutionService:
         max_tool_calls_per_member_ceiling: int | None = None,
         memory: MemoryWriter | None = None,
         memory_reader: MemoryReader | None = None,
+        # #1072: the cross-replica cancel lease (design doc). None (the default) is the pre-#1072
+        # shape — no lease, no watcher, no pre-loop duplicate-id rejection; a caller that has not
+        # been updated for #1072 (deployment DI always wires a real repository) is unaffected.
+        leases: ExecutionLeaseRepository | None = None,
+        cancel_poll_seconds: float = 1.0,
+        cancel_wait_seconds: float = 10.0,
     ) -> None:
         self._registry = registry
         self._broker = broker
@@ -479,6 +513,10 @@ class HarnessExecutionService:
         # The team-scope blackboard READ (#513). None → no in-loop team-memory injection (a
         # single-agent run, or memory off). Fail-soft, so a present reader never risks the run.
         self._memory_reader = memory_reader
+        # #1072: the cross-replica cancel lease + its poll/wait tuning (None → the pre-#1072 shape).
+        self._leases = leases
+        self._cancel_poll_seconds = cancel_poll_seconds
+        self._cancel_wait_seconds = cancel_wait_seconds
 
     async def execute(
         self,
@@ -505,6 +543,7 @@ class HarnessExecutionService:
         producer: dict[str, Any] | None = None,
         prior_fetched_urls: Collection[str] | None = None,
         person_supplied_text: str | None = None,
+        execution_id: uuid.UUID | None = None,
     ) -> HarnessExecution:
         # Fail-closed tenancy (ADR-006/T1-M1): org is the principal's ONLY, never the manifest's.
         if principal.organisation_id is None:
@@ -543,45 +582,70 @@ class HarnessExecutionService:
         # Minted BEFORE the runnable is built so #728 provenance can carry it: an artifact this run
         # writes records the execution that produced it, and the instances are configured inside
         # _build_runnable. Generation is pure, so hoisting it changes nothing else.
-        execution_id = uuid.uuid4()
-        envelope, tool_specs, dispatch, llm, trust = await self._build_runnable(
-            manifest,
-            policy,
-            org_id,
-            external_ceiling=ext_ceiling,
-            workspace_root=workspace_root,
-            graph_id=graph_id,
-            precedence_order=precedence_order,
-            graph_authoritative=graph_authoritative,
-            member_max_tokens=max_tokens,
-            member_max_tool_calls=max_tool_calls,
-            member_on_exhaustion=on_exhaustion,
-            member_requires_valid_json=requires_valid_json,  # #853: one repair turn on bad JSON
-            member_answer_from_tool=answer_from_tool,  # #900: a tool call that IS the answer
-            required_sites=tuple(required_sites or ()),  # #961: the websites this run is held to
-            declared_output_keys=tuple(declared_output_keys or ()),  # #993: guarantee their shape
-            producer=(
-                {**producer, "execution_id": str(execution_id)} if producer is not None else None
-            ),
-        )
-        resource = f"harness_execution:{execution_id}"
-        prompt = manifest.primary_prompt()
-        # team-scope blackboard READ (#513): when a team member is bound to a graph and a reader
-        # is wired, give the loop a fail-soft fetch of the team's current memory (the adopted graph,
-        # scope=team for THIS team) to inject before the first LLM turn — concurrent + cross-run
-        # visibility. None otherwise → the loop reasons exactly as before (zero behaviour change).
-        memory_context: Callable[[], Awaitable[str | None]] | None = None
-        reader = self._memory_reader
-        if reader is not None and team_id is not None and graph_id is not None:
-            bound_graph, bound_team, bound_query = graph_id, team_id, user_input
+        # #1072: the engine may supply its own id so it can cancel before any response arrives; the
+        # service still mints one itself when the caller omits it.
+        execution_id = execution_id if execution_id is not None else uuid.uuid4()
 
-            async def memory_context() -> str | None:
-                return await reader.team_context(
-                    graph_id=bound_graph, team_id=bound_team, query=bound_query
-                )
-
+        # #1072 (design doc: "a duplicate id returns 409"): reject a REUSED id BEFORE the loop ever
+        # runs, never after paying for a whole loop run and only then hitting a PK conflict. Two
+        # checks, together covering both directions without leaking which org holds a foreign id:
+        # an org-scoped read catches a same-org replay of an id whose lease was already released
+        # (the terminal row still exists); the lease's own INSERT — a GLOBAL primary key, checked
+        # below — catches an id still actively leased by any org, including another one.
+        if self._leases is not None:
+            if await self._executions.get(execution_id, org_id) is not None:
+                raise DuplicateExecutionId(execution_id)
+            await self._leases.create(execution_id, org_id)
         try:
-            result = await run_tool_use_loop(
+            envelope, tool_specs, dispatch, llm, trust = await self._build_runnable(
+                manifest,
+                policy,
+                org_id,
+                external_ceiling=ext_ceiling,
+                workspace_root=workspace_root,
+                graph_id=graph_id,
+                precedence_order=precedence_order,
+                graph_authoritative=graph_authoritative,
+                member_max_tokens=max_tokens,
+                member_max_tool_calls=max_tool_calls,
+                member_on_exhaustion=on_exhaustion,
+                member_requires_valid_json=requires_valid_json,  # #853: one repair turn on bad JSON
+                member_answer_from_tool=answer_from_tool,  # #900: a tool call that IS the answer
+                # #961: the websites this run is held to
+                required_sites=tuple(required_sites or ()),
+                declared_output_keys=tuple(
+                    declared_output_keys or ()
+                ),  # #993: guarantee their shape
+                producer=(
+                    {**producer, "execution_id": str(execution_id)}
+                    if producer is not None
+                    else None
+                ),
+            )
+            resource = f"harness_execution:{execution_id}"
+            prompt = manifest.primary_prompt()
+            # team-scope blackboard READ (#513): when a team member is bound to a graph and a reader
+            # is wired, give the loop a fail-soft fetch of the team's current memory (the adopted
+            # graph, scope=team for THIS team) to inject before the first LLM turn — concurrent +
+            # cross-run visibility. None otherwise → the loop reasons exactly as before (zero
+            # behaviour change).
+            memory_context: Callable[[], Awaitable[str | None]] | None = None
+            reader = self._memory_reader
+            if reader is not None and team_id is not None and graph_id is not None:
+                bound_graph, bound_team, bound_query = graph_id, team_id, user_input
+
+                async def memory_context() -> str | None:
+                    return await reader.team_context(
+                        graph_id=bound_graph, team_id=bound_team, query=bound_query
+                    )
+
+            # #1072: run the loop as a cancellable task while a watcher polls the lease's cancel
+            # flag on THIS (owning) replica — a `leases`-less service (pre-#1072 callers) runs the
+            # loop directly, unchanged. On a cancellation `result` is a CANCELLED LoopResult built
+            # from whatever `LoopProgress` had already booked, never a crash and never nothing.
+            result = await self._run_loop_cancellable(
+                execution_id=execution_id,
+                organisation_id=org_id,
                 llm=llm,
                 system=prompt.body if prompt else "",
                 user_input=user_input,
@@ -602,9 +666,133 @@ class HarnessExecutionService:
                 prior_fetched_urls=prior_fetched_urls,
                 person_supplied_text=effective_person_supplied_text,
             )
+            row = await self._finish_execute(
+                execution_id=execution_id,
+                org_id=org_id,
+                principal=principal,
+                manifest=manifest,
+                document=document,
+                chash=chash,
+                user_input=user_input,
+                result=result,
+                resource=resource,
+                trace_id=trace_id,
+                parent_execution_id=parent_execution_id,
+                graph_id=graph_id,
+                team_id=team_id,
+                max_tokens=max_tokens,
+                max_tool_calls=max_tool_calls,
+                on_exhaustion=on_exhaustion,
+                requires_valid_json=requires_valid_json,
+                answer_from_tool=answer_from_tool,
+                required_sites=required_sites,
+                declared_output_keys=declared_output_keys,
+            )
+            return row
         finally:
+            if self._leases is not None:
+                await self._leases.release(execution_id, org_id)
+
+    async def _run_loop_cancellable(
+        self,
+        *,
+        execution_id: uuid.UUID,
+        organisation_id: uuid.UUID,
+        llm: LLMClient,
+        **loop_kwargs: Any,
+    ) -> LoopResult:
+        """Run ``run_tool_use_loop`` (#1072 design doc). With no lease repository wired (the
+        pre-#1072 shape) this is a plain awaited call, unchanged. With one wired, the loop runs as
+        an ``asyncio.Task`` alongside a watcher that cancels ONLY the loop task when the lease's
+        cancel flag is set — a cancellation is caught HERE, not propagated: the run is not a crash,
+        it is a ``CANCELLED`` terminal built from whatever ``LoopProgress`` had already booked
+        before the cut ("Spend survives cancellation")."""
+        progress = LoopProgress()
+        leases = self._leases
+        if leases is None:
+            try:
+                return await run_tool_use_loop(llm=llm, progress=progress, **loop_kwargs)
+            finally:
+                await self._aclose_llm(llm)
+
+        loop_task: asyncio.Task[LoopResult] = asyncio.create_task(
+            run_tool_use_loop(llm=llm, progress=progress, **loop_kwargs)
+        )
+        watcher_task = asyncio.create_task(
+            self._watch_for_cancel(
+                leases, execution_id, organisation_id, loop_task, self._cancel_poll_seconds
+            )
+        )
+        try:
+            try:
+                return await loop_task
+            except asyncio.CancelledError:
+                return LoopResult(
+                    status=HarnessStatus.CANCELLED,
+                    output=None,
+                    steps=progress.steps,
+                    iterations=progress.iterations,
+                    total_tokens=progress.total_tokens,
+                    input_tokens=progress.prompt_tokens,
+                    output_tokens=progress.completion_tokens,
+                    error_type="cancelled",
+                    error_message="execution cancelled before it reached a terminal outcome",
+                    served_citation_ids=progress.served_citation_ids,
+                    protocol_shape=progress.protocol_shape,
+                    fetched_urls=progress.fetched_urls,
+                )
+        finally:
+            watcher_task.cancel()
+            with contextlib.suppress(BaseException):
+                await watcher_task
             await self._aclose_llm(llm)
 
+    @staticmethod
+    async def _watch_for_cancel(
+        leases: ExecutionLeaseRepository,
+        execution_id: uuid.UUID,
+        organisation_id: uuid.UUID,
+        loop_task: asyncio.Task[Any],
+        poll_seconds: float,
+    ) -> None:
+        """Poll the lease's cancel flag on the OWNING replica (#1072 design doc) and cancel the
+        loop task the moment it is set — this is what interrupts an in-flight LLM call. Polls with
+        the RUN's own org (never org-blind: a wrong/unbound org sees zero rows under the lease
+        table's forced RLS, so an org-blind poll could never observe its own run's flag)."""
+        while not loop_task.done():
+            if await leases.is_cancel_requested(execution_id, organisation_id):
+                loop_task.cancel()
+                return
+            await asyncio.sleep(poll_seconds)
+
+    async def _finish_execute(
+        self,
+        *,
+        execution_id: uuid.UUID,
+        org_id: uuid.UUID,
+        principal: Principal,
+        manifest,  # noqa: ANN001
+        document,  # noqa: ANN001
+        chash: str | None,
+        user_input: str,
+        result: LoopResult,
+        resource: str,
+        trace_id: uuid.UUID | None,
+        parent_execution_id: uuid.UUID | None,
+        graph_id: str | None,
+        team_id: str | None,
+        max_tokens: int | None,
+        max_tool_calls: int | None,
+        on_exhaustion: Literal["escalate", "degrade"] | None,
+        requires_valid_json: bool,
+        answer_from_tool: str | None,
+        required_sites: list[str] | None,
+        declared_output_keys: list[str] | None,
+    ) -> HarnessExecution:
+        """Persist the terminal row + provenance + the post-run memory hook for one loop `result` —
+        shared by the normal path and the #1072 CANCELLED path (`_run_loop_cancellable` builds a
+        CANCELLED `LoopResult` from `LoopProgress`, so this is the SAME code either way: the memory
+        hook already skips a non-terminal status, so CANCELLED needs no separate branch there)."""
         # #580 (ADR-021 never-silently): a retrieval reported data-absence and the member degraded
         # to PARTIAL — surface a structured degradation alert (not just a quiet PARTIAL result), so
         # an operator sees a from-scratch/empty-graph run proceeding without its expected data.
@@ -730,6 +918,36 @@ class HarnessExecutionService:
         except Exception:  # noqa: BLE001 — the run is done; the memory hook can never undo it
             logger.warning("post-run memory hook failed; run unaffected")
         return row
+
+    async def cancel(
+        self, *, execution_id: uuid.UUID, organisation_id: uuid.UUID
+    ) -> HarnessExecution | CancelPending:
+        """Request cancellation of a run (#1072 design doc). A terminal row for
+        ``(execution_id, organisation_id)`` already exists → returned untouched, idempotent — the
+        lease is never consulted (a finished run's cancel never even looks at one). Otherwise a
+        lease for the pair → the cancel flag is set and this waits up to ``cancel_wait_seconds`` for
+        the terminal row to land, returning it if it does, else a :class:`CancelPending` (the route
+        maps this to 202). An unknown id, or a lease belonging to a DIFFERENT org, both raise
+        :class:`CancelError` (404) — identical in both cases, so a wrong-org caller learns nothing
+        about whether the id exists at all; the flag is never set across orgs."""
+        existing = await self._executions.get(execution_id, organisation_id)
+        if existing is not None:
+            return existing
+        if self._leases is None:  # a service built without #1072 wiring cancels nothing in-flight
+            raise CancelError("execution not found")
+        requested = await self._leases.request_cancel(execution_id, organisation_id)
+        if not requested:
+            raise CancelError("execution not found")
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + self._cancel_wait_seconds
+        while True:
+            row = await self._executions.get(execution_id, organisation_id)
+            if row is not None:
+                return row
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                return CancelPending(execution_id=execution_id)
+            await asyncio.sleep(min(self._cancel_poll_seconds, remaining))
 
     async def resume(
         self,

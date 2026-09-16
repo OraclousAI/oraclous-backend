@@ -154,8 +154,7 @@ def get_checkpoint_repository(request: Request) -> CheckpointRepository:
 
 
 def get_lease_repository(request: Request) -> ExecutionLeaseRepository:
-    """#1072: the cross-replica cancel lease repository. Not yet wired into
-    ``get_harness_service`` — the cancel route/service behaviour lands in a later commit."""
+    """#1072: the cross-replica cancel lease repository, wired into ``get_harness_service``."""
     repo = getattr(request.app.state, "lease_repository", None)
     if repo is None:
         raise HTTPException(
@@ -224,6 +223,7 @@ def get_harness_service(
     trust: Annotated[TrustStore, Depends(get_trust_store)],
     memory: Annotated[MemoryWriter | None, Depends(get_memory_writer)],
     memory_reader: Annotated[MemoryReader | None, Depends(get_memory_reader)],
+    leases: Annotated[ExecutionLeaseRepository, Depends(get_lease_repository)],
 ) -> HarnessExecutionService:
     settings = get_settings()
     return HarnessExecutionService(
@@ -245,6 +245,10 @@ def get_harness_service(
         max_tool_calls_per_member_ceiling=settings.max_tool_calls_per_member_ceiling,
         memory=memory,
         memory_reader=memory_reader,
+        # #1072: the cross-replica cancel lease + its poll/wait tuning.
+        leases=leases,
+        cancel_poll_seconds=settings.cancel_poll_seconds,
+        cancel_wait_seconds=settings.cancel_wait_seconds,
     )
 
 

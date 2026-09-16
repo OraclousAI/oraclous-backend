@@ -45,8 +45,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         assignment_repo = AssignmentRepository(settings.database_url)
         checkpoint_repo = CheckpointRepository(settings.database_url)
         # #1072: the cross-replica cancel lease. Constructed here alongside the other three
-        # tenant-scoped repositories; wiring it into HarnessExecutionService's own cancel behaviour
-        # is a later commit.
+        # tenant-scoped repositories; wired into HarnessExecutionService via get_harness_service.
         lease_repo = ExecutionLeaseRepository(settings.database_url)
         sink = PostgresProvenanceSink(settings.database_url)
         app.state.execution_repository = execution_repo
