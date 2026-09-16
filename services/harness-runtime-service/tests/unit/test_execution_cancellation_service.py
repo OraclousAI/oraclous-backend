@@ -369,6 +369,69 @@ async def test_duplicate_execution_id_rejected(monkeypatch: pytest.MonkeyPatch) 
         )
 
 
+async def test_execute_with_id_of_existing_terminal_row_rejected_before_loop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A replay of an ``execution_id`` whose LEASE was already released (an earlier run finished
+    and the lease's normal end-of-run cleanup fired) but whose TERMINAL ``executions`` row still
+    exists must be rejected as a duplicate BEFORE the loop runs — never after paying for a whole
+    loop run and only then hitting the executions table's PK conflict at the very end (PR #1084
+    round-2 review, non-blocking item 3: that late failure means spend with no row and a 500)."""
+    loop_calls = 0
+
+    async def fake_run_tool_use_loop(**kwargs: Any) -> SimpleNamespace:
+        nonlocal loop_calls
+        loop_calls += 1
+        return SimpleNamespace(
+            status=HarnessStatus.SUCCEEDED,
+            error_type=None,
+            error_message=None,
+            checkpoint=None,
+            output="done",
+            steps=[],
+            total_tokens=0,
+            iterations=1,
+            input_tokens=0,
+            output_tokens=0,
+            protocol_shape="fake",
+            served_citation_ids=[],
+            fetched_urls=[],
+        )
+
+    import oraclous_harness_runtime_service.services.harness_execution_service as svc_mod
+
+    monkeypatch.setattr(svc_mod, "run_tool_use_loop", fake_run_tool_use_loop)
+
+    execution_id = uuid.uuid4()
+    execs = _FakeExecutions()
+    execs.rows[execution_id] = SimpleNamespace(
+        id=execution_id,
+        execution_id=execution_id,
+        organisation_id=_ORG,
+        status=HarnessStatus.SUCCEEDED.value,
+        total_tokens=5,
+        input_tokens=3,
+        output_tokens=2,
+    )
+    leases = _FakeLeases()  # no lease row — already released once the earlier run completed
+    svc = _service(execs, leases=leases)
+
+    from oraclous_harness_runtime_service.repositories.execution_lease_repository import (
+        DuplicateExecutionId,
+    )
+
+    with pytest.raises(DuplicateExecutionId):
+        await svc.execute(
+            manifest_inline=_manifest(),
+            manifest_ref=None,
+            user_input="go",
+            principal=_principal(),
+            execution_id=execution_id,
+        )
+
+    assert loop_calls == 0  # rejected up front — the loop must never have been entered
+
+
 # ------------------------------------------------------- execute() + cancel(): the in-flight run --
 
 
@@ -405,6 +468,11 @@ async def test_cancel_flag_stops_in_flight_loop_and_persists_cancelled_row(
     # spent before the watcher cut it off — never nothing, never a crash.
     assert finished_row.status == HarnessStatus.CANCELLED.value
     assert finished_row.total_tokens == 100
+    # the org spend endpoint (execution_repository.spend_by_model, /v1/harnesses/spend) sums
+    # input_tokens + output_tokens, NOT total_tokens — an implementation that only books
+    # total_tokens from LoopProgress would leave both at 0 and silently undercount org spend.
+    assert finished_row.input_tokens == 60
+    assert finished_row.output_tokens == 40
     assert cancel_result.status == HarnessStatus.CANCELLED.value  # cancel() saw the SAME terminal
     assert execs.create_calls == 1  # exactly one terminal row — no separate "started" placeholder
 
@@ -495,6 +563,36 @@ async def test_lease_released_after_terminal_row(monkeypatch: pytest.MonkeyPatch
     # the watcher itself polled with the RUN's own org — org-blind would see zero rows under RLS.
     assert leases.is_cancel_requested_calls
     assert all(org == _ORG for _eid, org in leases.is_cancel_requested_calls)
+
+
+async def test_lease_released_when_loop_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The "released on every terminal outcome" guarantee (``test_execute_uses_caller_supplied_
+    execution_id``) must hold when the loop raises an ordinary exception too, not only on success
+    or cancellation — an unreleased lease on a crashed run would wedge every future ``cancel()``
+    against a lease whose run no longer exists."""
+
+    async def fake_run_tool_use_loop(**kwargs: Any) -> SimpleNamespace:
+        raise RuntimeError("boom")
+
+    import oraclous_harness_runtime_service.services.harness_execution_service as svc_mod
+
+    monkeypatch.setattr(svc_mod, "run_tool_use_loop", fake_run_tool_use_loop)
+
+    execs = _FakeExecutions()
+    leases = _FakeLeases()
+    execution_id = uuid.uuid4()
+    svc = _service(execs, leases=leases)
+
+    with pytest.raises(RuntimeError):
+        await svc.execute(
+            manifest_inline=_manifest(),
+            manifest_ref=None,
+            user_input="go",
+            principal=_principal(),
+            execution_id=execution_id,
+        )
+
+    assert leases.released == [(execution_id, _ORG)]
 
 
 # ------------------------------------------------------------- cancel(): the non-loop scenarios --

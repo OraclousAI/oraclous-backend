@@ -270,8 +270,10 @@ def test_a_cancelled_execution_stops_spending_and_is_org_scoped(
     #    the real, nonzero spend the loop had already made before it stopped. If the ten-step task
     #    still finished (SUCCEEDED/FAILED) before cancel ever landed, that is a timing defect in
     #    the test itself (not the feature) — fail loudly and distinctly from a real product
-    #    assertion. A CANCELLED (not some already-cancelled variant) also proves org B's attempt
-    #    above had no effect on this run.
+    #    assertion. This does not, by itself, prove org B's attempt above had no effect: step 2
+    #    already proved that (org B got the SAME 404 as an unknown id, never a signal that the run
+    #    exists). What this step shows is that the OWNER's own cancel still succeeds normally —
+    #    org B's earlier, rejected attempt did not wedge the run's cancel path.
     cancelled = _cancel_until_settled(c, execution_id)
     assert cancelled.status_code == 200, cancelled.text
     body = cancelled.json()

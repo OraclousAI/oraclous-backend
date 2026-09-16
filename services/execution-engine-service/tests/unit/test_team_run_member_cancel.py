@@ -22,6 +22,7 @@ test of this factory (e.g. ``test_team_per_member_cap.py``).
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from typing import Any
 
@@ -106,7 +107,14 @@ class _EarlyBookThenUnconfirmedCancelHarness:
     out and its cancel never CONFIRMS (202 -> ``None``) — used to prove what an unconfirmed cancel
     charges when the team has ONLY a pooled ``max_tokens_total`` and no resolved per-member cap
     (#1072 ruling, case 2:
-    https://github.com/OraclousAI/oraclous-backend/issues/1072#issuecomment-5701622081)."""
+    https://github.com/OraclousAI/oraclous-backend/issues/1072#issuecomment-5701622081). The
+    scheduler may dispatch "a" and the timeout role concurrently (they are siblings, not
+    dependents) — the timeout role's ``execute()`` blocks on ``booked_event`` until "a"'s own
+    ``execute()`` has returned, so "a" always books its spend BEFORE the timeout role's cancel is
+    charged. Without this gate a concurrent scheduler could charge the timeout role against the
+    pool's FULL headroom (never having seen "a"'s booking yet), making the expected charged amount
+    meaningless.
+    """
 
     def __init__(self, *, booked_role: str, booked_tokens: int, timeout_role: str) -> None:
         self.execute_calls: list[dict[str, Any]] = []
@@ -114,17 +122,21 @@ class _EarlyBookThenUnconfirmedCancelHarness:
         self._booked_role = booked_role
         self._booked_tokens = booked_tokens
         self._timeout_role = timeout_role
+        self.booked_event = asyncio.Event()
 
     async def execute(self, **kwargs: Any) -> dict[str, Any]:
         self.execute_calls.append(kwargs)
         if kwargs.get("manifest_ref") == f"org:x/{self._timeout_role}@1":
+            await asyncio.wait_for(self.booked_event.wait(), timeout=5.0)
             raise HarnessTimeout("harness call timed out: exceeded its wall-clock time limit")
-        return {
+        result = {
             "id": str(uuid.uuid4()),
             "status": "SUCCEEDED",
             "output": "ran",
             "total_tokens": self._booked_tokens,
         }
+        self.booked_event.set()  # "a" has booked — safe now for the timeout role to be charged
+        return result
 
     async def cancel(self, execution_id: uuid.UUID, **kwargs: Any) -> dict[str, Any] | None:
         self.cancel_calls.append({"execution_id": execution_id, **kwargs})
@@ -205,7 +217,12 @@ async def test_unconfirmed_cancel_with_pool_only_charges_remaining_headroom() ->
     dispatched — the fail-closed direction, since the orphan's real spend cannot be measured. An
     independent, earlier member ("a") succeeds first and books its own tokens; "b" depends on "a"
     (which succeeded), never on the timed-out member, so only the pool — never a
-    blocked-by-upstream-failure path — can be what stops it."""
+    blocked-by-upstream-failure path — can be what stops it. "a" and "t" are siblings the
+    scheduler may dispatch concurrently, so the two on_cost calls can land in either order — the
+    ORDER is not asserted, only the two amounts. The 700 figure stays meaningful (not a race
+    artifact) because the fake harness gates "t"'s execute() on an event "a" sets only once it has
+    already booked (see ``_EarlyBookThenUnconfirmedCancelHarness``), so "t" is always charged
+    AFTER "a"'s 300 has landed, regardless of which on_cost call the scheduler runs first."""
     costs: list[int] = []
     team = _team(
         [
@@ -220,8 +237,9 @@ async def test_unconfirmed_cancel_with_pool_only_charges_remaining_headroom() ->
     )
     result = await run_team_harness(team, harness, on_cost=costs.append)
     assert len(harness.cancel_calls) == 1  # "t"'s timeout attempted exactly one cancel
-    # "a"'s real spend (300), then "t"'s charged headroom: 1_000 - 300 = 700, exhausting the pool.
-    assert costs == [300, 700]
+    # "a"'s real spend (300) and "t"'s charged headroom (1_000 - 300 = 700, exhausting the pool),
+    # in either order — see the docstring for why 700 is still meaningful under concurrency.
+    assert sorted(costs) == [300, 700]
     assert result.member_status["b"] == "budget_skipped"  # the pool stopped it, not a block
 
 
