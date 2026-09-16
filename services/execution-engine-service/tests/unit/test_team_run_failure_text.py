@@ -1067,6 +1067,11 @@ class _AlwaysTimesOutHarness1067:
 
         raise HarnessTimeout("harness call timed out: exceeded its wall-clock time limit")
 
+    async def cancel(self, execution_id: uuid.UUID, **kw: Any) -> dict[str, Any] | None:
+        # additive (#1072) — a 202: the cancel itself never confirms, matching this fake's prior
+        # (pre-#1072) behaviour of charging nothing extra beyond the raised timeout.
+        return None
+
 
 async def test_a_member_timeout_never_leaks_its_manifest_authored_role_a_second_time() -> None:
     """The fix: this raise site used to interpolate `member.role` into a message that does not

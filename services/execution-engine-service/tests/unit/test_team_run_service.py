@@ -130,6 +130,7 @@ class FakeHarness:
         manifest_inline: dict[str, Any] | None = None,
         manifest_ref: str | None = None,
         capability_ceiling: list[str] | None = None,
+        execution_id: uuid.UUID | None = None,  # additive (#1072) — accepted, ignored here
         parent_execution_id: uuid.UUID | None = None,
         trace_id: uuid.UUID | None = None,
         workspace_root: str | None = None,
@@ -1032,6 +1033,10 @@ async def test_harness_timeout_settles_terminal_with_a_readable_reason() -> None
         async def execute(self, **kwargs: Any) -> dict[str, Any]:
             # exactly what HarnessClient.execute raises today for a real httpx.ReadTimeout
             raise HarnessTimeout("harness call timed out: ReadTimeout")
+
+        async def cancel(self, execution_id: uuid.UUID, **kwargs: Any) -> dict[str, Any] | None:
+            # additive (#1072) — a 202: never confirms, matching this fake's prior behaviour.
+            return None
 
     repo = _RepoWithCheckpoint()
     svc, _ = _svc(repo, TimeoutHarness())

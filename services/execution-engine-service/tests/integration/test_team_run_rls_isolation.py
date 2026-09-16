@@ -58,6 +58,7 @@ class _FakeHarness:
         manifest_inline: dict[str, Any] | None = None,
         manifest_ref: str | None = None,
         capability_ceiling: list[str] | None = None,
+        execution_id: uuid.UUID | None = None,  # additive (#1072) — accepted, ignored here
         parent_execution_id: uuid.UUID | None = None,
         trace_id: uuid.UUID | None = None,
         workspace_root: str | None = None,
