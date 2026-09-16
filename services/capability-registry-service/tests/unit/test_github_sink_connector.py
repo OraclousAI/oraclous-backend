@@ -14,6 +14,16 @@ Oraclous owns the clean-delta/idempotency (`delivery_state`) — see test_delive
 
 RED until #515 [impl] lands `GitHubSinkConnector` + `GitHubSinkPlugin`. The not-yet-built seam is
 imported FUNCTION-LOCALLY (§4.1) so collection stays green and only these tests fail at runtime.
+
+#1047 (owner ruling, 16 Sep) narrows the "configured, not passed" shape further: `repo` becomes
+operator-configured ONLY. A call-supplied `repo` that differs from the bound instance configuration
+is refused (`REPO_OVERRIDE_REFUSED`, no network) — defence in depth against a confused-deputy model
+call, mirrored by the harness-side pre-dispatch refusal (#956 shape, tested elsewhere). A sink with
+no configured `repo` fails closed (`REPO_NOT_CONFIGURED`) even when the call supplies one — a
+call-supplied `repo` is never on its own legitimate. `_ctx()`/`_deliver()` below default to the
+POST-#1047 shape (repo bound on configuration, never in the deliver input) so every pre-existing
+test keeps asserting today's real behaviour; the repo-binding tests further down assert the new
+edges directly.
 """
 
 from __future__ import annotations
@@ -28,16 +38,24 @@ from oraclous_capability_registry_service.domain.executors.base import Execution
 pytestmark = pytest.mark.unit
 
 _REPO = "octo/book"
+#: a DIFFERENT repo than `_REPO`, for the override-refusal tests (#1047)
+_OTHER_REPO = "acme/secret"
 
 
-def _ctx(*, forge: str = "github", with_token: bool = True) -> ExecutionContext:
+def _ctx(
+    *, forge: str = "github", with_token: bool = True, repo: str | None = _REPO
+) -> ExecutionContext:
+    # the run binds the forge + (for gitea) GITHUB_API_BASE + (#1047) repo on the instance config;
+    # repo=None models an instance with no configured repo at all.
+    configuration: dict[str, str] = {"forge": forge}
+    if repo is not None:
+        configuration["repo"] = repo
     return ExecutionContext(
         instance_id=uuid.uuid4(),
         organisation_id=uuid.uuid4(),
         user_id=uuid.uuid4(),
         execution_id=uuid.uuid4(),
-        # the run binds the forge + (for gitea) GITHUB_API_BASE on the instance config
-        configuration={"forge": forge},
+        configuration=configuration,
         # the broker-resolved shape: credentials["api_key"]["api_key"] (mirrors GitHubReader._token)
         credentials={"api_key": {"api_key": "ghp_dummy"}} if with_token else {},
     )
@@ -84,9 +102,10 @@ def _forge_handler(seen: list[tuple[str, str]]) -> Callable[[httpx.Request], htt
 
 
 def _deliver(files: list[dict]) -> dict:
+    # #1047: `repo` left the model-facing deliver input — it is bound on the instance
+    # configuration via `_ctx(repo=...)`, never carried in the call by default any more.
     return {
         "operation": "deliver",
-        "repo": _REPO,
         "base_branch": "main",
         "head_branch": "deliver/book",
         "files": files,
@@ -146,23 +165,71 @@ async def test_deliver_writes_changed_files_via_contents_api_and_opens_a_pr(forg
 
 
 async def test_repo_can_be_bound_on_the_instance_configuration_not_the_input() -> None:
-    """The instance can be CONFIGURED for a repo (the "configured, not passed" shape, #542): a
-    deliver with no explicit ``repo`` falls back to the instance configuration's repo, and every
-    forge call targets that bound repo."""
+    """The instance can be CONFIGURED for a repo (the "configured, not passed" shape, #542, and —
+    post-#1047 — the ONLY way a deliver ever reaches a repo at all): a deliver with no repo in the
+    call falls back to the instance configuration's repo, and every forge call targets that bound
+    repo."""
     seen: list[tuple[str, str]] = []
-    ctx = ExecutionContext(
-        instance_id=uuid.uuid4(),
-        organisation_id=uuid.uuid4(),
-        user_id=uuid.uuid4(),
-        execution_id=uuid.uuid4(),
-        configuration={"forge": "github", "repo": _REPO},
-        credentials={"api_key": {"api_key": "ghp_dummy"}},
+    res = await _sink(_forge_handler(seen)).execute(
+        _deliver([{"path": "a.md", "content": "x"}]), _ctx()
     )
-    deliver = {k: v for k, v in _deliver([{"path": "a.md", "content": "x"}]).items() if k != "repo"}
-    res = await _sink(_forge_handler(seen)).execute(deliver, ctx)
     assert res.success, res.error_message
     assert res.data["status"] == "DELIVERED"
     assert seen and all(_REPO in p for _, p in seen)  # every forge call hit the bound config repo
+
+
+# --------------------------------------------------- repo binding is exclusive to config (#1047)
+
+
+async def test_a_call_supplied_repo_that_differs_from_configuration_is_refused() -> None:
+    """#1047 Q1 ruling: defence in depth at the connector (covers every caller, not only the
+    harness's own pre-dispatch refusal). A call-supplied ``repo`` that differs from the bound
+    instance configuration is refused before any network call, and the error never echoes either
+    repo name verbatim — it must not help a caller enumerate which repos an instance can reach."""
+    seen: list[tuple[str, str]] = []
+    deliver = {**_deliver([{"path": "a.md", "content": "x"}]), "repo": _OTHER_REPO}
+    res = await _sink(_forge_handler(seen)).execute(deliver, _ctx(repo=_REPO))
+    assert not res.success
+    assert res.error_type == "REPO_OVERRIDE_REFUSED"
+    assert not seen, "a refused override must make zero forge calls"
+    detail = res.error_message or ""
+    assert _REPO not in detail
+    assert _OTHER_REPO not in detail
+
+
+async def test_a_call_supplied_repo_matching_configuration_is_accepted() -> None:
+    """#1047 Q1 ruling: a call-supplied ``repo`` that MATCHES the bound configuration passes
+    through unchanged — the refusal only trips on a mismatch, never on the mere presence of an
+    explicit ``repo`` in the call."""
+    seen: list[tuple[str, str]] = []
+    deliver = {**_deliver([{"path": "a.md", "content": "x"}]), "repo": _REPO}
+    res = await _sink(_forge_handler(seen)).execute(deliver, _ctx(repo=_REPO))
+    assert res.success, res.error_message
+    assert res.data["status"] == "DELIVERED"
+    assert seen and all(_REPO in p for _, p in seen)
+
+
+async def test_an_unconfigured_instance_refuses_a_call_supplied_repo() -> None:
+    """#1047 Q2 ruling: ``repo`` is operator-configured only — a call-supplied ``repo`` is never
+    legitimate on its own, so an instance with no configured repo fails closed even when the call
+    supplies one, rather than falling back to it."""
+    seen: list[tuple[str, str]] = []
+    deliver = {**_deliver([{"path": "a.md", "content": "x"}]), "repo": _OTHER_REPO}
+    res = await _sink(_forge_handler(seen)).execute(deliver, _ctx(repo=None))
+    assert not res.success
+    assert res.error_type == "REPO_NOT_CONFIGURED"
+    assert not seen
+
+
+async def test_an_unconfigured_instance_fails_closed_with_no_repo_at_all() -> None:
+    """#1047 Q2 ruling, the baseline case: no configured repo and none supplied in the call."""
+    seen: list[tuple[str, str]] = []
+    res = await _sink(_forge_handler(seen)).execute(
+        _deliver([{"path": "a.md", "content": "x"}]), _ctx(repo=None)
+    )
+    assert not res.success
+    assert res.error_type == "REPO_NOT_CONFIGURED"
+    assert not seen
 
 
 # ----------------------------------------------------------------- fail-closed

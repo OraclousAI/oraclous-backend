@@ -130,17 +130,28 @@ def test_validate_input_accepts_a_well_formed_call() -> None:
 
 
 def test_a_top_level_required_field_may_be_bound_on_the_instance_configuration() -> None:
-    """`repo` is `required` in the sink's INPUT_SCHEMA but the connector also accepts it bound on
-    the instance configuration (the "configured, not passed" shape, #542). Validation must honour
-    that, or every configured sink instance starts failing a call that works today."""
+    """A top-level `required` field may be satisfied by the instance configuration instead of the
+    call — the "configured, not passed" shape (#542), exercised here via recall-memory's
+    `graph_id` (the run's bound graph substrate). Validation must honour that, or every configured
+    instance starts failing a call that works today.
+
+    Not exercised via the sink's own `repo` any more: #1047 moved `repo` off the sink's
+    `INPUT_SCHEMA.required` onto its `CONFIGURATION_SCHEMA` (a call can no longer supply it at
+    all as the ONLY source — see test_github_sink_plugin_descriptor.py and
+    test_github_sink_connector.py for the sink's own post-#1047 shape)."""
     from oraclous_capability_registry_service.domain.executors.input_validation import (
         validate_input,
     )
+    from oraclous_capability_registry_service.domain.plugins.builtin import RecallMemoryPlugin
 
-    call = {"operation": "deliver", "files": [{"path": "a.md", "content": "hello"}]}
-    assert validate_input(GitHubSinkPlugin.INPUT_SCHEMA, call) is not None  # nothing supplies repo
+    call = {"query": "prior decisions"}
+    # nothing supplies graph_id
+    assert validate_input(RecallMemoryPlugin.INPUT_SCHEMA, call) is not None
     assert (
-        validate_input(GitHubSinkPlugin.INPUT_SCHEMA, call, configuration={"repo": _REPO}) is None
+        validate_input(
+            RecallMemoryPlugin.INPUT_SCHEMA, call, configuration={"graph_id": str(uuid.uuid4())}
+        )
+        is None
     )
 
 
