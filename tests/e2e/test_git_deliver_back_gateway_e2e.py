@@ -62,7 +62,11 @@ def _file_on_branch(g: httpx.Client, repo: str, path: str, branch: str) -> str |
 
 
 def _instance(c: httpx.Client, user: dict, repo: str) -> str:
-    """A `core/github-sink` instance bound to the Gitea forge + the user's PAT (via the broker)."""
+    """A `core/github-sink` instance bound to the Gitea forge + the user's PAT (via the broker).
+
+    #1047 ruling Q2: `repo` is operator-configured only — it lives on the instance
+    `configuration`, never in a `deliver` call (see `_deliver` below and
+    `test_github_sink_plugin_descriptor.py`, capability-registry-service)."""
     cred = c.post(
         "/credentials/",
         json={
@@ -81,7 +85,7 @@ def _instance(c: httpx.Client, user: dict, repo: str) -> str:
         json={
             "capability_id": caps["GitHub Sink"]["id"],
             "name": f"sink-{uuid.uuid4().hex[:8]}",
-            "configuration": {"forge": "gitea", "base_url": _GITEA_INTERNAL},
+            "configuration": {"forge": "gitea", "base_url": _GITEA_INTERNAL, "repo": repo},
         },
     )
     assert inst.status_code in (200, 201), inst.text
@@ -93,15 +97,22 @@ def _instance(c: httpx.Client, user: dict, repo: str) -> str:
     return instance_id
 
 
-def _deliver(c: httpx.Client, instance_id: str, repo: str, files: list[dict]) -> dict:
+def _deliver(
+    c: httpx.Client,
+    instance_id: str,
+    files: list[dict],
+    *,
+    head_branch: str = "deliver/book",
+) -> dict:
+    # #1047 ruling Q2: repo is NOT passed here — it is bound on the instance configuration
+    # (configured, not passed), exactly like test_git_deliver_back_real_github_e2e.py.
     r = c.post(
         f"/api/v1/instances/{instance_id}/execute",
         json={
             "input_data": {
                 "operation": "deliver",
-                "repo": repo,
                 "base_branch": "main",
-                "head_branch": "deliver/book",
+                "head_branch": head_branch,
                 "files": files,
                 "commit_message": "deliver",
                 "pr_title": "Book delivery",
@@ -113,6 +124,13 @@ def _deliver(c: httpx.Client, instance_id: str, repo: str, files: list[dict]) ->
     body = r.json()
     assert body.get("status") == "SUCCESS", body
     return body.get("output_data") or {}
+
+
+def _execute(c: httpx.Client, instance_id: str, input_data: dict) -> dict:
+    """Raw execute, no success assertion — used to observe a FAILED/coded outcome."""
+    r = c.post(f"/api/v1/instances/{instance_id}/execute", json={"input_data": input_data})
+    assert r.status_code in (200, 201), r.text
+    return r.json()
 
 
 @requires_gitea
@@ -128,19 +146,65 @@ def test_a_recurring_refresh_writes_a_clean_delta_not_a_clobber(
     nonce = uuid.uuid4().hex[:8]
 
     # (1) first deliver → all files written, a PR opened, and they REALLY land in gitea
-    out = _deliver(c, instance_id, repo, [{"path": "bible/canon.md", "content": f"V1 {nonce}"}])
+    out = _deliver(c, instance_id, [{"path": "bible/canon.md", "content": f"V1 {nonce}"}])
     assert out["status"] == "DELIVERED"
     assert out["changed_paths"] == ["bible/canon.md"]
     assert out.get("pr_url")
     assert _file_on_branch(g, repo, "bible/canon.md", "deliver/book") == f"V1 {nonce}"
 
     # (2) re-deliver IDENTICAL content → NO_OP, nothing written (the clean-delta proof, no clobber)
-    out2 = _deliver(c, instance_id, repo, [{"path": "bible/canon.md", "content": f"V1 {nonce}"}])
+    out2 = _deliver(c, instance_id, [{"path": "bible/canon.md", "content": f"V1 {nonce}"}])
     assert out2["status"] == "NO_OP"
     assert out2["changed_paths"] == []
 
     # (3) re-deliver a CHANGED file → only that diff is written (deterministic delta)
-    out3 = _deliver(c, instance_id, repo, [{"path": "bible/canon.md", "content": f"V2 {nonce}"}])
+    out3 = _deliver(c, instance_id, [{"path": "bible/canon.md", "content": f"V2 {nonce}"}])
     assert out3["status"] == "DELIVERED"
     assert out3["changed_paths"] == ["bible/canon.md"]
     assert _file_on_branch(g, repo, "bible/canon.md", "deliver/book") == f"V2 {nonce}"
+
+
+@requires_gitea
+def test_a_call_naming_a_different_repo_than_the_instance_is_refused(
+    register: Callable[..., dict],
+    gateway_client: Callable[[str], httpx.Client],
+) -> None:
+    """#1047 (Q1/Q2, defence in depth at the connector): the instance binds one repo in its
+    configuration; a call naming a DIFFERENT repo is refused with the coded
+    ``REPO_OVERRIDE_REFUSED`` error and touches Gitea not at all — no branch, no commit, no PR on
+    either the bound repo or the one the call named. Goes straight at the registry's `/execute`
+    (not through a harness run), so this exercises the connector's own confused-deputy defence
+    (``GitHubSinkConnector``, capability-registry-service), the second of the two layers the owner
+    ruled on — the harness-dispatch layer (#1047 Q1) is pinned at the unit level
+    (``test_repo_override_dispatch.py``, harness-runtime-service)."""
+    user = register(f"deliverrefuse{uuid.uuid4().hex[:10]} owner")
+    c = gateway_client(user["token"])
+    g = _gitea()
+    bound_repo = _fresh_repo(g)
+    other_repo = _fresh_repo(g)
+    instance_id = _instance(c, user, bound_repo)
+    nonce = uuid.uuid4().hex[:8]
+    head_branch = f"deliver/refused-{nonce}"
+
+    out = _execute(
+        c,
+        instance_id,
+        {
+            "operation": "deliver",
+            "repo": other_repo,
+            "base_branch": "main",
+            "head_branch": head_branch,
+            "files": [{"path": "bible/canon.md", "content": f"V1 {nonce}"}],
+            "commit_message": "deliver",
+            "pr_title": "Book delivery",
+            "pr_body": "automated",
+        },
+    )
+    assert out.get("status") == "FAILED", out
+    assert out.get("error_type") == "REPO_OVERRIDE_REFUSED", out
+
+    # nothing landed on EITHER repo — the call is refused before any Gitea write
+    assert g.get(f"/repos/{bound_repo}/branches/{head_branch}").status_code == 404
+    assert g.get(f"/repos/{other_repo}/branches/{head_branch}").status_code == 404
+    assert g.get(f"/repos/{bound_repo}/pulls").json() == []
+    assert g.get(f"/repos/{other_repo}/pulls").json() == []
