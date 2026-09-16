@@ -85,17 +85,33 @@ class _TimeoutThenCancelHarness:
 
 class _RoleAwareOrphanSpendHarness:
     """Member ``a`` always times out and its cancel CONFIRMS an orphan spend; any other role
-    (only ``b`` in the pooled-ceiling test below) would succeed — used to prove it is never
-    dispatched at all."""
+    (only ``c`` in the pooled-ceiling test below — a SIBLING of "a", not a dependent) would
+    succeed — used to prove "a" is never allowed to gate "c" out of the harness, only "b" (which
+    depends on "c") is.
+
+    "a" and "c" have no dependency between them, so a correct scheduler dispatches both
+    concurrently. Nothing here awaits anything by itself, so without an explicit yield point a
+    single-threaded event loop would run whichever coroutine starts first straight through to
+    completion — including "a" raising and its cancel charging the pool — before the other ever
+    gets a turn; that would make "c" reach the harness only by accident of scheduling order, not
+    because the implementation actually dispatches siblings concurrently. ``c_dispatched`` forces
+    "a" to always wait until "c"'s ``execute()`` call has actually been recorded before "a" raises
+    its timeout, regardless of which coroutine the loop happens to start first — if "c" already
+    set the event, ``Event.wait()`` returns immediately with no suspension, so this never adds
+    latency to the case the scheduler already gets right.
+    """
 
     def __init__(self, orphan_tokens: int) -> None:
         self.execute_calls: list[dict[str, Any]] = []
         self._orphan_tokens = orphan_tokens
+        self.c_dispatched = asyncio.Event()
 
     async def execute(self, **kwargs: Any) -> dict[str, Any]:
         self.execute_calls.append(kwargs)
         if kwargs.get("manifest_ref") == "org:x/a@1":
+            await asyncio.wait_for(self.c_dispatched.wait(), timeout=5.0)
             raise HarnessTimeout("harness call timed out: exceeded its wall-clock time limit")
+        self.c_dispatched.set()  # "c" has reached the harness — safe now for "a" to raise
         return {"id": str(uuid.uuid4()), "status": "SUCCEEDED", "output": "ran"}
 
     async def cancel(self, execution_id: uuid.UUID, **kwargs: Any) -> dict[str, Any] | None:
