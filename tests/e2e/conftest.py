@@ -154,7 +154,7 @@ _REFRESH_TOKENS: dict[str, str] = {}
 
 
 @pytest.fixture
-def register() -> Callable[..., dict]:
+def register(fail_as: Callable[[str, str], None]) -> Callable[..., dict]:
     """Factory: register a fresh user through the gateway → {token, org_id, user_id, email}.
 
     ``with_model_credential=True`` also designates the caller's key as the org's default model
@@ -178,11 +178,15 @@ def register() -> Callable[..., dict]:
         me_response = httpx.get(
             f"{GATEWAY}/v1/auth/me", headers={"Authorization": f"Bearer {token}"}, timeout=15.0
         )
-        # #850: a throttled read-back used to surface as `KeyError: 'organisation_id'` several
-        # lines later, in a test that had nothing to do with auth. Name the status here instead.
-        assert me_response.status_code == 200, (
-            f"/v1/auth/me failed: {me_response.status_code} {me_response.text}"
-        )
+        # #850 / #1061: a throttled read-back (the sign-up rate limiter) used to surface as
+        # `KeyError: 'organisation_id'` several lines later, in a test that had nothing to do with
+        # auth. Name the status here instead — the test's own scaffolding hit a limiter, not a
+        # product bug (#921 TEST-SETUP).
+        if me_response.status_code != 200:
+            fail_as(
+                "TEST-SETUP",
+                f"/v1/auth/me failed: {me_response.status_code} {me_response.text}",
+            )
         me = me_response.json()
         return {
             "token": token,
@@ -264,6 +268,44 @@ def gateway_client() -> Iterator[Callable[[str], httpx.Client]]:
         c.close()
 
 
+# ── Failure-class taxonomy (#921) ─────────────────────────────────────────────────────────────────
+#
+# A real-model e2e failure that is not a product bug must still fail the run -- it is never
+# skipped, xfailed, or swallowed -- but it must be LABELLED, so a reviewer does not have to
+# re-derive "not our bug" by hand every time. Four classes, PRODUCT is the default:
+#   PRODUCT       -- any unlabelled failure (the default: an author who forgets to classify a new
+#                    failure gets the conservative "assume it's our bug" reading).
+#   PROVIDER      -- the model provider itself refused the call (#1049: rate limit / auth / timeout
+#                    / 5xx), before product logic ever ran.
+#   MODEL-QUALITY -- the product worked, but the real model's answer fell short of the test's bar
+#                    (an evaluator score below threshold, a loop that never converged).
+#   TEST-SETUP    -- the test's own scaffolding broke, not the product under test (a poll got a
+#                    non-2xx, registration hit the sign-up limiter).
+# See tests/e2e/README.md for the full rules on when a test author may use each.
+_FAILURE_TAG_RE = re.compile(r"\[e2e-failure:([A-Za-z-]+)\]")
+_KNOWN_FAILURE_CLASSES = ("PROVIDER", "MODEL-QUALITY", "TEST-SETUP")
+_PRODUCT_CLASS = "PRODUCT"
+
+
+@pytest.fixture
+def fail_as() -> Callable[[str, str], None]:
+    """Factory: ``fail_as(kind, message)`` raises an AssertionError tagged for the failure-class
+    taxonomy above (#921). It still fails the test -- the tag only tells the terminal summary and
+    junit XML *why*, so a provider refusal or a real model's weak answer is not read as a product
+    bug. ``kind`` is one of PROVIDER / MODEL-QUALITY / TEST-SETUP -- never pass PRODUCT, it is the
+    default for anything left untagged.
+    """
+
+    def _fail(kind: str, message: str) -> None:
+        if kind not in _KNOWN_FAILURE_CLASSES:
+            raise ValueError(
+                f"unknown e2e failure class {kind!r} -- want one of {_KNOWN_FAILURE_CLASSES}"
+            )
+        pytest.fail(f"[e2e-failure:{kind}] {message}", pytrace=False)
+
+    return _fail
+
+
 # ── Legible environment failures (#1049) ──────────────────────────────────────────────────────────
 #
 # A provider refusal (rate limit / auth / timeout / 5xx) that happens before the model ever gets to
@@ -330,14 +372,14 @@ def loop_poll_budget() -> Callable[[int], float]:
 
 
 @pytest.fixture
-def assert_run_succeeded() -> Callable[..., None]:
+def assert_run_succeeded(fail_as: Callable[[str, str], None]) -> Callable[..., None]:
     """Assert a run/agent-execute response reached SUCCEEDED — legibly telling an upstream provider
-    refusal (ENVIRONMENT, #1049) apart from a genuine product failure.
+    refusal (PROVIDER, #1049) apart from a genuine product failure.
 
     Pass the parsed JSON body and the key holding its terminal state: ``state_key="status"`` for
     ``POST /v1/harnesses/execute``'s response, ``state_key="state"`` for a polled team-run. A
     provider refusal (429 / 5xx / transport, matched against the harness's own ``LLMClientError``
-    message shape) fails loudly with an ``[ENVIRONMENT]``-tagged message naming the reason,
+    message shape) fails loudly with a ``[e2e-failure:PROVIDER]``-tagged message naming the reason,
     instead of the bare ``assert 'FAILED' == 'SUCCEEDED'`` a reviewer used to have to re-derive by
     hand every time (#1049). Anything else still fails as a normal assertion — this never turns a
     real failure green, it only makes an environmental one look different from a product one.
@@ -348,13 +390,61 @@ def assert_run_succeeded() -> Callable[..., None]:
         if state != succeeded:
             reason = _provider_refusal_reason(body.get("error_message"))
             if reason is not None:
-                pytest.fail(
-                    f"[ENVIRONMENT] not a product failure — {reason}. The model provider refused "
-                    "the call before product logic ran; this is the test model's quota or "
-                    "availability, not a regression (see tests/e2e/README.md, issue #1049). "
-                    f"Full body: {body}",
-                    pytrace=False,
+                fail_as(
+                    "PROVIDER",
+                    f"not a product failure — {reason}. The model provider refused the call "
+                    "before product logic ran; this is the test model's quota or availability, "
+                    f"not a regression (see tests/e2e/README.md, issue #1049). Full body: {body}",
                 )
         assert state == succeeded, body
 
     return _assert
+
+
+# ── Group failed e2e tests by class in the terminal summary (#921) ───────────────────────────────
+#
+# Every class above still counts as a FAILURE in the exit code and the counts pytest prints — this
+# hook only adds a grouped breakdown afterwards so a reviewer can tell, at a glance, whether a red
+# run needs a product fix or is a labelled provider/model-quality/setup condition. The class is also
+# recorded as a `user_properties` entry so junit XML (CI's artifact) carries it too.
+
+
+def _failure_class_of(report: pytest.TestReport) -> str:
+    """PRODUCT unless the failure's own message carries a known ``[e2e-failure:*]`` tag."""
+    longrepr = str(getattr(report, "longrepr", "") or "")
+    match = _FAILURE_TAG_RE.search(longrepr)
+    if match and match.group(1) in _KNOWN_FAILURE_CLASSES:
+        return match.group(1)
+    return _PRODUCT_CLASS
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_makereport(
+    item: pytest.Item, call: pytest.CallInfo
+) -> Generator[None, None, None]:
+    outcome = yield
+    report = outcome.get_result()
+    if report.when == "call" and report.failed:
+        report.user_properties.append(("e2e_failure_class", _failure_class_of(report)))
+
+
+def pytest_terminal_summary(
+    terminalreporter: pytest.TerminalReporter, exitstatus: int, config: pytest.Config
+) -> None:
+    """Print failed e2e tests grouped by failure class (#921), PRODUCT first."""
+    failed = terminalreporter.stats.get("failed", [])
+    if not failed:
+        return
+    by_class: dict[str, list[str]] = {}
+    for report in failed:
+        cls = dict(report.user_properties).get("e2e_failure_class", _PRODUCT_CLASS)
+        by_class.setdefault(cls, []).append(report.nodeid)
+    terminalreporter.write_sep("=", "e2e failures by class (#921)")
+    ordered_classes = [_PRODUCT_CLASS, *sorted(c for c in by_class if c != _PRODUCT_CLASS)]
+    for cls in ordered_classes:
+        nodeids = by_class.get(cls)
+        if not nodeids:
+            continue
+        terminalreporter.write_line(f"{cls}: {len(nodeids)}")
+        for nodeid in nodeids:
+            terminalreporter.write_line(f"  {nodeid}")

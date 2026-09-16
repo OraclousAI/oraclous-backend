@@ -131,10 +131,12 @@ def _poll(c: httpx.Client, run_id: str, budget_s: float) -> dict:
     while time.monotonic() < deadline:
         resp = c.get(f"/v1/engine/team-runs/{run_id}")
         # #921: a non-2xx (e.g. a stale-token 401) or a body with no 'state' used to surface as a
-        # bare KeyError several lines away from the real cause. Name the status + body instead.
+        # bare KeyError several lines away from the real cause. Name the status + body instead —
+        # the test's own polling scaffolding broke, not the product under test (TEST-SETUP).
         if resp.status_code != 200:
             raise AssertionError(
-                f"poll GET /v1/engine/team-runs/{run_id} -> {resp.status_code}: {resp.text[:500]}"
+                f"[e2e-failure:TEST-SETUP] poll GET /v1/engine/team-runs/{run_id} -> "
+                f"{resp.status_code}: {resp.text[:500]}"
             )
         row = resp.json()
         if "state" not in row:

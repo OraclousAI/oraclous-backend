@@ -166,6 +166,25 @@ retry fired; a less cooperative day could cost up to ~4x more on that one scenar
   state (`conftest.py`'s `loop_poll_budget_s`, #921); the deadline is `max_rounds * this + a fixed
   startup allowance`, not a fixed try count, since each loop round costs 2-3 min on the real model.
 
+## Failure-class taxonomy (#921)
+
+A real-model e2e failure that is not a product bug must still FAIL the run — never skip, xfail, or
+otherwise soften it — but it should be LABELLED, so a reviewer does not have to open the run body
+and re-derive "not our bug" by hand. Four classes, `conftest.py`'s `fail_as(kind, message)` fixture
+and `pytest_terminal_summary` hook:
+
+| Class | Meaning | Use it when... |
+| --- | --- | --- |
+| `PRODUCT` | Default — any unlabelled failure | Never pass this explicitly; it's what an author gets for forgetting to classify a new failure |
+| `PROVIDER` | The model provider itself refused the call (#1049) | A 429 / 5xx / transport error reached the harness's own `LLMClientError` before product logic ran |
+| `MODEL-QUALITY` | The product worked, but the real model's answer fell short of the test's bar | An evaluator score below a threshold, a loop that ran to its bound without converging — **never** for a crash, a wrong terminal state, or a member left in a bad status |
+| `TEST-SETUP` | The test's own scaffolding broke, not the product | A poll got a non-2xx response, registration hit the sign-up rate limiter (#1061) |
+
+Every class still counts as a failed test and a non-zero exit code — this only changes how the
+failure is labelled in the terminal summary and in `user_properties` (so junit XML carries it too).
+A poll that reaches its deadline still `RUNNING` stays `PRODUCT` (untagged): a genuine timeout is
+not the same claim as "the model answered, just not well enough."
+
 ## The edge limiter
 
 The suite registers an organisation per test, and the gateway's per-IP window is smaller than that.

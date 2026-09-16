@@ -122,10 +122,12 @@ def _poll(c: httpx.Client, run_id: str, budget_s: float) -> dict:
     while time.monotonic() < deadline:
         resp = c.get(f"/v1/engine/team-runs/{run_id}")
         # #921: a non-2xx (e.g. a stale-token 401) or a body with no 'state' used to surface as a
-        # bare KeyError several lines away from the real cause. Name the status + body instead.
+        # bare KeyError several lines away from the real cause. Name the status + body instead —
+        # the test's own polling scaffolding broke, not the product under test (TEST-SETUP).
         if resp.status_code != 200:
             raise AssertionError(
-                f"poll GET /v1/engine/team-runs/{run_id} -> {resp.status_code}: {resp.text[:500]}"
+                f"[e2e-failure:TEST-SETUP] poll GET /v1/engine/team-runs/{run_id} -> "
+                f"{resp.status_code}: {resp.text[:500]}"
             )
         row = resp.json()
         if "state" not in row:
@@ -145,6 +147,7 @@ def test_looping_team_pauses_on_a_gate_then_a_human_approve_resumes_to_convergen
     register: Callable[..., dict],
     gateway_client: Callable[[str], httpx.Client],
     loop_poll_budget: Callable[[int], float],
+    fail_as: Callable[[str, str], None],
 ) -> None:
     user = register(f"loophitl{uuid.uuid4().hex[:10]} owner")
     c = gateway_client(user["token"])
@@ -185,9 +188,10 @@ def test_looping_team_pauses_on_a_gate_then_a_human_approve_resumes_to_convergen
         rr = c.post(f"/v1/engine/team-runs/{run_id}/rerun")
         assert rr.status_code == 202, rr.text
         done = _poll(c, run_id, budget)
-    assert done["state"] == "SUCCEEDED", (
-        f"the loop did not converge after the gate approval: {done}"
-    )
+    # the gate resumed the loop and it ran to a terminal state — a loop that ran out its bound
+    # without converging is the real model's own performance, not a defect (#921 MODEL-QUALITY).
+    if done["state"] != "SUCCEEDED":
+        fail_as("MODEL-QUALITY", f"the loop did not converge after the gate approval: {done}")
 
     member_status = done.get("member_status") or {}
     assert member_status.get("gate") == "succeeded", member_status  # the gate decision was recorded

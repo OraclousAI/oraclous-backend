@@ -149,10 +149,12 @@ def _poll(c: httpx.Client, run_id: str, budget_s: float) -> dict:
     while time.monotonic() < deadline:
         resp = c.get(f"/v1/engine/team-runs/{run_id}")
         # #921: a non-2xx (e.g. a stale-token 401) or a body with no 'state' used to surface as a
-        # bare KeyError several lines away from the real cause. Name the status + body instead.
+        # bare KeyError several lines away from the real cause. Name the status + body instead —
+        # the test's own polling scaffolding broke, not the product under test (TEST-SETUP).
         if resp.status_code != 200:
             raise AssertionError(
-                f"poll GET /v1/engine/team-runs/{run_id} -> {resp.status_code}: {resp.text[:500]}"
+                f"[e2e-failure:TEST-SETUP] poll GET /v1/engine/team-runs/{run_id} -> "
+                f"{resp.status_code}: {resp.text[:500]}"
             )
         row = resp.json()
         if "state" not in row:
@@ -172,6 +174,7 @@ def test_cyclic_team_converges_on_a_real_model_and_lands_artifacts(
     register: Callable[..., dict],
     gateway_client: Callable[[str], httpx.Client],
     loop_poll_budget: Callable[[int], float],
+    fail_as: Callable[[str, str], None],
 ) -> None:
     user = register(f"loopconv{uuid.uuid4().hex[:10]} owner")
     c = gateway_client(user["token"])
@@ -210,10 +213,12 @@ def test_cyclic_team_converges_on_a_real_model_and_lands_artifacts(
     assert nonce in str(done["results"]), (
         f"nonce in no result — was the harness LIVE? {done['results']}"
     )
-    # the coded done-check's evaluator gate stored a passing grade
+    # the coded done-check's evaluator gate stored a passing grade. The product worked (the loop
+    # ran, the gate stored a score) — a below-threshold score is the real model's own answer
+    # falling short of the test's bar, not a defect (#921 MODEL-QUALITY).
     verdict = done.get("verdict") or {}
-    if verdict.get("score") is not None:
-        assert float(verdict["score"]) >= 0.8, verdict
+    if verdict.get("score") is not None and float(verdict["score"]) < 0.8:
+        fail_as("MODEL-QUALITY", f"evaluator score below 0.8 threshold: {verdict}")
 
     # the loop's work LANDED on the bound graph + serves verbatim through /v1/artifacts (the
     # coverage-floor's landed-artifacts half — the graph is fresh per-run, so it's from this run)
