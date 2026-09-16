@@ -26,6 +26,9 @@ from oraclous_harness_runtime_service.core.auth import (
 from oraclous_harness_runtime_service.core.config import Settings, get_settings
 from oraclous_harness_runtime_service.repositories.assignment_repository import AssignmentRepository
 from oraclous_harness_runtime_service.repositories.checkpoint_repository import CheckpointRepository
+from oraclous_harness_runtime_service.repositories.execution_lease_repository import (
+    ExecutionLeaseRepository,
+)
 from oraclous_harness_runtime_service.repositories.execution_repository import ExecutionRepository
 from oraclous_harness_runtime_service.services.assignment_service import AssignmentService
 from oraclous_harness_runtime_service.services.broker_client import BrokerClient
@@ -142,6 +145,18 @@ def get_assignment_repository(request: Request) -> AssignmentRepository:
 
 def get_checkpoint_repository(request: Request) -> CheckpointRepository:
     repo = getattr(request.app.state, "checkpoint_repository", None)
+    if repo is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="harness store unavailable (DATABASE_URL not reachable)",
+        )
+    return repo
+
+
+def get_lease_repository(request: Request) -> ExecutionLeaseRepository:
+    """#1072: the cross-replica cancel lease repository. Not yet wired into
+    ``get_harness_service`` — the cancel route/service behaviour lands in a later commit."""
+    repo = getattr(request.app.state, "lease_repository", None)
     if repo is None:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,

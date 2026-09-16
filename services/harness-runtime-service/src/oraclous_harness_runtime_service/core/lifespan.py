@@ -22,6 +22,9 @@ from oraclous_harness_runtime_service.core.rls import (
 )
 from oraclous_harness_runtime_service.repositories.assignment_repository import AssignmentRepository
 from oraclous_harness_runtime_service.repositories.checkpoint_repository import CheckpointRepository
+from oraclous_harness_runtime_service.repositories.execution_lease_repository import (
+    ExecutionLeaseRepository,
+)
 from oraclous_harness_runtime_service.repositories.execution_repository import ExecutionRepository
 from oraclous_harness_runtime_service.repositories.provenance_sink import PostgresProvenanceSink
 from oraclous_harness_runtime_service.services.memory_client import drain_pending_writes
@@ -35,20 +38,27 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     execution_repo: ExecutionRepository | None = None
     assignment_repo: AssignmentRepository | None = None
     checkpoint_repo: CheckpointRepository | None = None
+    lease_repo: ExecutionLeaseRepository | None = None
     sink: PostgresProvenanceSink | None = None
     try:
         execution_repo = ExecutionRepository(settings.database_url)
         assignment_repo = AssignmentRepository(settings.database_url)
         checkpoint_repo = CheckpointRepository(settings.database_url)
+        # #1072: the cross-replica cancel lease. Constructed here alongside the other three
+        # tenant-scoped repositories; wiring it into HarnessExecutionService's own cancel behaviour
+        # is a later commit.
+        lease_repo = ExecutionLeaseRepository(settings.database_url)
         sink = PostgresProvenanceSink(settings.database_url)
         app.state.execution_repository = execution_repo
         app.state.assignment_repository = assignment_repo
         app.state.checkpoint_repository = checkpoint_repo
+        app.state.lease_repository = lease_repo
         app.state.provenance = ProvenanceCollector(sink)
     except Exception as exc:  # noqa: BLE001 — degrade: data routes 503, /health reflects it
         app.state.execution_repository = None
         app.state.assignment_repository = None
         app.state.checkpoint_repository = None
+        app.state.lease_repository = None
         app.state.provenance = None
         alert(
             Severity.ERROR,
@@ -121,5 +131,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             await assignment_repo.close()
         if checkpoint_repo is not None:
             await checkpoint_repo.close()
+        if lease_repo is not None:
+            await lease_repo.close()
         if sink is not None:
             await sink.close()
