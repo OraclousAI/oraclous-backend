@@ -217,6 +217,9 @@ _MCP_SPEC_TYPE = "mcp"
 #: needs it too; the constant is not redefined further down.
 _OPERATION_KEY = "operation"
 
+#: The key #1047's bound-repo refusal matches, case- and whitespace-insensitively.
+_REPO_KEY = "repo"
+
 
 def _project_input_schema(
     op: dict[str, Any], input_schema: dict[str, Any], bound_config: Mapping[str, Any]
@@ -416,6 +419,11 @@ def tool_specs_for(
     imported = spec.get("type") == _MCP_SPEC_TYPE
     input_schema = spec.get("input_schema")
     effective_bound_config: Mapping[str, Any] = bound_config if bound_config is not None else {}
+    # #1047: the dispatching instance's own bound repository, carried out-of-band on every
+    # produced spec exactly like ``nullable_keys`` — ``dispatch_payload`` uses it to refuse a
+    # model-supplied ``repo`` that disagrees, before the registry is ever called.
+    repo_value = effective_bound_config.get("repo")
+    bound_repo = repo_value if isinstance(repo_value, str) else None
     out: list[ToolSpec] = []
     for op in operations:
         if not isinstance(op, dict) or not op.get("name"):
@@ -438,6 +446,7 @@ def tool_specs_for(
                 operation=op_name,
                 strict=strict,
                 nullable_keys=nullable_keys,
+                bound_repo=bound_repo,
             )
         )
     return out
@@ -500,6 +509,31 @@ class OperationOverrideRefused(ToolDispatchRefused):
         )
 
 
+#: Closed-vocabulary code for #1047: a model-supplied ``repo`` disagrees with the one the
+#: dispatching instance binds.
+REPO_OVERRIDE_REFUSED = "repo_override_refused"
+
+
+class RepoOverrideRefused(ToolDispatchRefused):
+    """The model put a ``repo`` in its arguments that disagrees with the one the dispatching
+    instance binds (#1047, mirroring ``OperationOverrideRefused`` one layer up).
+
+    Fail-closed (CLAUDE.md §3.5): refused before the registry, not corrected or resolved by
+    ordering. A repository name is more identifying than an operation name (owner ruling on
+    #1047), so — stricter than ``OperationOverrideRefused`` — the message echoes NEITHER the
+    bound nor the supplied repository; only the coded token and enough shape for the model to
+    act on it (drop the argument and retry).
+    """
+
+    def __init__(self, *, tool: str) -> None:
+        self.tool = tool
+        super().__init__(
+            f"{REPO_OVERRIDE_REFUSED}: this tool runs against the repository its dispatching "
+            "instance is already bound to; a 'repo' argument is not accepted — call the tool "
+            "without it"
+        )
+
+
 class NonObjectArgumentsRefused(ToolDispatchRefused):
     """The model's tool-call arguments were not a JSON object (#1004 item 4).
 
@@ -529,6 +563,13 @@ def _operation_keys(args: dict[str, Any]) -> list[str]:
     a key that means "pick the operation" is the binding's business however it is written.
     """
     return [k for k in args if isinstance(k, str) and k.lower() == _OPERATION_KEY]
+
+
+def _repo_keys(args: dict[str, Any]) -> list[str]:
+    """Every top-level key that MEANS ``repo``, matched case- AND whitespace-insensitively —
+    stricter than ``_operation_keys`` (#1004's own hardening only folded case), per the #1047
+    owner ruling."""
+    return [k for k in args if isinstance(k, str) and k.strip().lower() == _REPO_KEY]
 
 
 def _report_unknown_keys(spec: ToolSpec, args: dict[str, Any]) -> None:
@@ -601,6 +642,15 @@ def dispatch_payload(spec: ToolSpec, args: dict[str, Any]) -> dict[str, Any]:
     ``args`` is annotated ``dict`` because that is what a well-behaved provider sends; it is the
     raw ``json.loads`` of model output, so the annotation is a promise the input does not keep and
     the guard below is load-bearing.
+
+    #1047: when ``spec.bound_repo`` is set, a ``repo`` key (matched case- AND whitespace-
+    insensitively, per the owner ruling — stricter than ``operation``'s case-only fold) is
+    resolved the same shape as ``operation`` above: a ``None`` value is stripped as noise, not an
+    override attempt; a value equal to the bound repo is stripped and the call proceeds; any other
+    value — including two spellings that disagree with each other — raises
+    ``RepoOverrideRefused`` before the registry is ever called. A tool whose instance binds no
+    repo (``bound_repo is None``) leaves ``repo`` completely untouched — it is that tool's own,
+    unprotected call argument.
     """
     if not isinstance(args, dict):
         raise NonObjectArgumentsRefused(tool=spec.name)
@@ -609,10 +659,19 @@ def dispatch_payload(spec: ToolSpec, args: dict[str, Any]) -> dict[str, Any]:
         supplied = args[key]
         if supplied != spec.operation:
             raise OperationOverrideRefused(tool=spec.name, bound=spec.operation, supplied=supplied)
+    repo_keys: list[str] = []
+    if spec.bound_repo is not None:
+        repo_keys = _repo_keys(args)
+        for repo_key in repo_keys:
+            supplied_repo = args[repo_key]
+            if supplied_repo is None:
+                continue
+            if supplied_repo != spec.bound_repo:
+                raise RepoOverrideRefused(tool=spec.name)
     rest = {
         k: v
         for k, v in args.items()
-        if k not in keys and not (v is None and k in spec.nullable_keys)
+        if k not in keys and k not in repo_keys and not (v is None and k in spec.nullable_keys)
     }
     _report_unknown_keys(spec, rest)
     return {_OPERATION_KEY: spec.operation, **rest}

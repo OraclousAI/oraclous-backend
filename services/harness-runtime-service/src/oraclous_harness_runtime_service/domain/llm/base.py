@@ -27,7 +27,13 @@ class ToolSpec:
     provider's strict function-calling flag; ``nullable_keys`` names every property the PLATFORM
     itself widened to accept ``null`` when rendering ``parameters`` (a previously optional or
     instance-bound argument) — ``dispatch_payload`` strips a null on exactly those keys, and only
-    those, before the registry ever sees the call."""
+    those, before the registry ever sees the call.
+
+    ``bound_repo`` (#1047) names the repository the DISPATCHING INSTANCE itself binds, when the
+    tool is a repo-scoped sink/connector configured with one. Unset (``None``) for every tool
+    whose instance binds no repo — ``repo`` then remains, if the schema declares it at all, an
+    ordinary call argument. When set, ``dispatch_payload`` refuses a model-supplied ``repo`` that
+    disagrees with it instead of letting the call reach the registry."""
 
     name: str
     description: str
@@ -36,6 +42,7 @@ class ToolSpec:
     operation: str
     strict: bool = False
     nullable_keys: frozenset[str] = frozenset()
+    bound_repo: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
