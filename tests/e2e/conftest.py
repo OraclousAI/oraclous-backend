@@ -20,7 +20,7 @@ from __future__ import annotations
 import os
 import re
 import uuid
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Generator, Iterator
 
 import httpx
 import pytest
@@ -145,6 +145,14 @@ def _designate_org_model_credential(token: str, user_id: str) -> str | None:
     return str(credential_id)
 
 
+#: Maps an access token back to the refresh token it was issued with (#921), so `gateway_client`
+#: can renew a login it did not itself mint. Keyed by access token because every call site passes
+#: `gateway_client(user["token"])` — a string, not the whole `register()` dict — and changing that
+#: 80+ call-site signature is out of scope here. Populated by `register()`; never cleared (each
+#: registration's token is unique for the process lifetime, so this only ever grows within a run).
+_REFRESH_TOKENS: dict[str, str] = {}
+
+
 @pytest.fixture
 def register() -> Callable[..., dict]:
     """Factory: register a fresh user through the gateway → {token, org_id, user_id, email}.
@@ -164,7 +172,9 @@ def register() -> Callable[..., dict]:
             timeout=15.0,
         )
         assert reg.status_code == 201, f"register failed: {reg.status_code} {reg.text}"
-        token = reg.json()["access_token"]
+        reg_body = reg.json()
+        token = reg_body["access_token"]
+        _REFRESH_TOKENS[token] = reg_body["refresh_token"]
         me_response = httpx.get(
             f"{GATEWAY}/v1/auth/me", headers={"Authorization": f"Bearer {token}"}, timeout=15.0
         )
@@ -176,6 +186,7 @@ def register() -> Callable[..., dict]:
         me = me_response.json()
         return {
             "token": token,
+            "refresh_token": reg_body["refresh_token"],
             "org_id": me["organisation_id"],
             "user_id": me["id"],
             "email": email,
@@ -187,15 +198,64 @@ def register() -> Callable[..., dict]:
     return _register
 
 
+class _RenewingAuth(httpx.Auth):
+    """Bearer auth that renews the access token through the gateway's public refresh endpoint on a
+    401 (#921), the same way a real user's client would — never a server-minted token.
+
+    Some e2e tests (the real-model loop tests) poll for 20+ minutes, which outlives the 30-min
+    access token (`USER_ACCESS_TOKEN_TTL_MINUTES`). On a 401 this calls ``POST /v1/auth/refresh``
+    with the refresh token issued at registration, swaps in the fresh access/refresh pair (the
+    refresh token rotates — auth-service revokes the whole family on reuse), and retries the ONE
+    failed request once. If the refresh itself fails, the original 401 is returned unchanged —
+    never masked.
+    """
+
+    def __init__(self, gateway: str, access_token: str, refresh_token: str) -> None:
+        self._gateway = gateway
+        self._access_token = access_token
+        self._refresh_token = refresh_token
+
+    def auth_flow(self, request: httpx.Request) -> Generator[httpx.Request, httpx.Response, None]:
+        request.headers["Authorization"] = f"Bearer {self._access_token}"
+        response = yield request
+        if response.status_code != 401:
+            return
+        response.read()  # drain the failed response before issuing a new request on the same conn
+        refreshed = httpx.post(
+            f"{self._gateway}/v1/auth/refresh",
+            json={"refresh_token": self._refresh_token},
+            timeout=15.0,
+        )
+        if refreshed.status_code != 200:
+            return  # refresh itself failed — surface the original 401, never mask it
+        body = refreshed.json()
+        self._access_token = body["access_token"]
+        self._refresh_token = body["refresh_token"]
+        request.headers["Authorization"] = f"Bearer {self._access_token}"
+        yield request
+
+
 @pytest.fixture
 def gateway_client() -> Iterator[Callable[[str], httpx.Client]]:
-    """Factory for httpx clients bound to the gateway + a JWT; all are closed at teardown."""
+    """Factory for httpx clients bound to the gateway + a JWT; all are closed at teardown.
+
+    When ``token`` came from ``register()`` the client renews its own login on a 401 via
+    ``_RenewingAuth`` instead of failing outright (#921). A token this fixture has no refresh
+    token for (e.g. a deliberately invalid one in an auth-failure test) keeps today's behaviour: a
+    plain, non-renewing bearer header.
+    """
     opened: list[httpx.Client] = []
 
     def _client(token: str) -> httpx.Client:
-        c = httpx.Client(
-            base_url=GATEWAY, headers={"Authorization": f"Bearer {token}"}, timeout=30.0
-        )
+        refresh_token = _REFRESH_TOKENS.get(token)
+        if refresh_token is not None:
+            c = httpx.Client(
+                base_url=GATEWAY, auth=_RenewingAuth(GATEWAY, token, refresh_token), timeout=30.0
+            )
+        else:
+            c = httpx.Client(
+                base_url=GATEWAY, headers={"Authorization": f"Bearer {token}"}, timeout=30.0
+            )
         opened.append(c)
         return c
 
