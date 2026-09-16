@@ -168,6 +168,36 @@ class _EarlyBookThenUnconfirmedCancelHarness:
         return None  # 202: still winding down, the cancel never confirms
 
 
+class _AdmittedThenOverBudgetBookThenUnconfirmedCancelHarness(
+    _EarlyBookThenUnconfirmedCancelHarness
+):
+    """Like ``_EarlyBookThenUnconfirmedCancelHarness``, but for the case where the booked role's
+    OWN spend alone already exceeds the pool's whole ceiling. If "a" booked first (as the parent
+    class allows), the pool would already read as exhausted by the time "t" reaches its
+    pre-dispatch ``pool.would_exceed()`` gate — "t" would be skipped as ``budget_skipped`` and
+    would never call ``execute``/``cancel`` at all, so the clamp this test exists to pin would
+    never be exercised.
+
+    A second gate (``timeout_admitted``) fixes the ordering: "t"'s ``execute()`` sets it the
+    instant it is entered — BEFORE it waits on the parent's ``booked_event`` — so admission is
+    recorded while the pool still has headroom; "a"'s ``execute()`` waits on it before booking.
+    That guarantees "t" is admitted first, books nothing itself, then blocks on ``booked_event``
+    until "a"'s over-budget booking lands, and only then times out and cancels."""
+
+    def __init__(self, *, booked_role: str, booked_tokens: int, timeout_role: str) -> None:
+        super().__init__(
+            booked_role=booked_role, booked_tokens=booked_tokens, timeout_role=timeout_role
+        )
+        self.timeout_admitted = asyncio.Event()
+
+    async def execute(self, **kwargs: Any) -> dict[str, Any]:
+        if kwargs.get("manifest_ref") == f"org:x/{self._timeout_role}@1":
+            self.timeout_admitted.set()  # "t" is admitted while the pool still has headroom
+            return await super().execute(**kwargs)
+        await asyncio.wait_for(self.timeout_admitted.wait(), timeout=5.0)  # "t" admits first
+        return await super().execute(**kwargs)
+
+
 async def test_timeout_cancels_dispatched_execution_id() -> None:
     """On a timeout, dispatch cancels the SAME execution_id it minted and sent to execute() —
     exactly once, never a fresh/different id and never zero calls."""
@@ -269,15 +299,25 @@ async def test_unconfirmed_cancel_with_pool_only_charges_remaining_headroom() ->
 
 
 async def test_unconfirmed_cancel_never_charges_negative_when_pool_already_over_budget() -> None:
-    """#1072 review finding C3 (PR #1094, qa-engineer): ``_Pool.remaining_tokens()`` must clamp to
-    ``max(0, max_tokens - spent)`` so an unconfirmed cancel's fail-closed pool charge is NEVER
-    negative — a negative charge would LOWER the pool's recorded spend below what is already
-    booked, undoing the exhaustion the pool exists to enforce. Here "a" alone books MORE than the
-    whole pooled ceiling (1_500 against a 1_000 ``max_tokens_total``), so by the time "t" times out
-    the pool is already over budget; its unconfirmed cancel (202 -> None) must still charge exactly
-    0, never a negative number that would claw the recorded spend back down. "b" depends on "a"
-    only (never on "t"), so the pool — never a blocked-by-upstream-failure path — is what gates it,
-    proving the pool really did stay exhausted rather than being clawed back under its ceiling."""
+    """#1072 review finding C3 (PR #1094, qa-engineer; corrected per be-test-reviewer hand-back on
+    PR #1096): ``_Pool.remaining_tokens()`` must clamp to ``max(0, max_tokens - spent)`` so an
+    unconfirmed cancel's fail-closed pool charge is NEVER negative — a negative charge would LOWER
+    the pool's recorded spend below what is already booked, undoing the exhaustion the pool exists
+    to enforce. Here "a" alone books MORE than the whole pooled ceiling (1_500 against a 1_000
+    ``max_tokens_total``); its unconfirmed cancel (202 -> None) must still charge exactly 0, never
+    a negative number that would claw the recorded spend back down.
+
+    "a" and "t" are siblings, so a naive scheduler could let "a" book its over-budget spend BEFORE
+    "t" is ever admitted — the pool would then already read as exhausted at "t"'s pre-dispatch
+    ``pool.would_exceed()`` gate, "t" would be skipped as ``budget_skipped``, and it would never
+    reach ``execute``/``cancel`` at all (there would be nothing to clamp).
+    ``_AdmittedThenOverBudgetBookThenUnconfirmedCancelHarness`` closes that gap: "t" is admitted
+    (its ``execute()`` entered, while the pool still has headroom) BEFORE "a" is allowed to book,
+    so "t" is always dispatched, always times out, and always reaches the clamp under test.
+
+    "b" depends on "a" only (never on "t"); it stays ``budget_skipped`` either way (-500 + 1_500 =
+    1_000 also exhausts the pool), so that assert alone cannot tell the clamp apart from its
+    absence — the ``costs`` asserts below are what actually proves the clamp."""
     costs: list[int] = []
     team = _team(
         [
@@ -287,7 +327,7 @@ async def test_unconfirmed_cancel_never_charges_negative_when_pool_already_over_
         ],
         budget=OHMBudget(max_tokens_total=1_000),
     )
-    harness = _EarlyBookThenUnconfirmedCancelHarness(
+    harness = _AdmittedThenOverBudgetBookThenUnconfirmedCancelHarness(
         booked_role="a", booked_tokens=1_500, timeout_role="t"
     )
     result = await run_team_harness(team, harness, on_cost=costs.append)
@@ -296,7 +336,7 @@ async def test_unconfirmed_cancel_never_charges_negative_when_pool_already_over_
     # a negative number (which would read as -500, clawing the recorded spend back down to 1_000).
     assert sorted(costs) == [0, 1_500]
     assert sum(costs) == 1_500  # recorded pool spend never DECREASES from what "a" already booked
-    assert result.member_status["b"] == "budget_skipped"  # the pool stayed exhausted, not clawed
+    assert result.member_status["b"] == "budget_skipped"  # pool stays exhausted either way
 
 
 async def test_unconfirmed_cancel_without_any_token_ceiling_charges_nothing() -> None:
