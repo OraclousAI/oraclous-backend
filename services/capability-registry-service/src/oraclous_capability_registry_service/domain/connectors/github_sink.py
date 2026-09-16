@@ -69,14 +69,24 @@ class GitHubSinkConnector(InternalTool):
                 error_message="a github/gitea api_key (PAT) credential is required",
                 error_type="INVALID_INPUT",
             )
-        # repo may be bound on the instance configuration (the sink IS for that repo — the
-        # "configured, not passed" shape, #542) or passed per deliver; configuration takes the bind.
-        repo = input_data.get("repo") or context.configuration.get("repo")
+        # #1047 (owner ruling, 16 Sep): `repo` is operator-configured ONLY — the instance
+        # configuration decides the target, never the call. A call-supplied `repo` is accepted
+        # only when it matches the configured one (defence in depth against a confused-deputy
+        # model call); an unconfigured instance fails closed regardless of what the call supplies.
+        # Both fail-closed paths return before any network call and never echo either repo name.
+        repo = context.configuration.get("repo")
         if not isinstance(repo, str) or not repo:
             return ExecutionResult(
                 success=False,
-                error_message="'repo' is required (deliver input or instance configuration)",
-                error_type="INVALID_INPUT",
+                error_message="the sink instance has no configured repo",
+                error_type="REPO_NOT_CONFIGURED",
+            )
+        called_repo = input_data.get("repo")
+        if called_repo is not None and called_repo != repo:
+            return ExecutionResult(
+                success=False,
+                error_message="the deliver call's repo does not match the configured target",
+                error_type="REPO_OVERRIDE_REFUSED",
             )
         files = input_data.get("files") or []
         for f in files:

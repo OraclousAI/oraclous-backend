@@ -1337,7 +1337,6 @@ class GitHubSinkPlugin(_ConnectorToolPlugin):
             "name": "deliver",
             "description": "Write changed files to a head branch + open a PR (clean-delta).",
             "parameters": {
-                "repo": "str",
                 "base_branch": "str",
                 "head_branch": "str",
                 "files": "list",
@@ -1351,14 +1350,16 @@ class GitHubSinkPlugin(_ConnectorToolPlugin):
     ]
     CONFIGURATION_SCHEMA = {
         "type": "object",
+        "required": ["repo"],
         "properties": {
+            "repo": {"type": "string"},
             "forge": {"type": "string", "enum": ["github", "gitea"], "default": "github"},
             "base_url": {"type": "string"},
         },
     }
     INPUT_SCHEMA = {
         "type": "object",
-        "required": ["operation", "repo", "files"],
+        "required": ["operation", "files"],
         "properties": {
             "operation": {"type": "string", "enum": ["deliver"]},
             "repo": {"type": "string"},
