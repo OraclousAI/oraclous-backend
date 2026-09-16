@@ -143,3 +143,70 @@ async def test_a_changed_manifest_is_picked_up_and_bumps_the_pinned_version(
     assert after.id == before.id
     assert after.pinned_version == before.pinned_version + 1
     assert after.manifest_fingerprint != before.manifest_fingerprint
+
+
+# ── #1085: every seeded member declares a description, and the app read shows it ────────────
+
+
+@pytest.fixture
+async def app_service(app_repository: Any) -> Any:
+    from oraclous_execution_engine_service.services.app_service import AppService
+
+    return AppService(
+        apps=app_repository,
+        team_runs=object(),  # type: ignore[arg-type]
+        team_run_repository=object(),  # type: ignore[arg-type]
+        platform_org_id=PLATFORM_ORG,
+    )
+
+
+async def test_every_seeded_member_carries_a_non_blank_description(app_repository: Any) -> None:
+    """#1085 (CTO ruling): 'The seeded Validation Desk manifest gets one plain sentence per
+    member.' ``manifest.json`` is the committed source of truth
+    (``domain/seed_apps/__init__.py``), so the sentence has to be declared there — not invented
+    downstream by the plan or the route."""
+    from oraclous_execution_engine_service.domain.seed_apps import build_seed_apps
+
+    [validation_desk] = build_seed_apps(PLATFORM_ORG)
+
+    for member in validation_desk.manifest["members"]:
+        description = member.get("description")
+        assert description is not None, member["role"]
+        assert description.strip(), member["role"]
+
+
+async def test_the_seeded_apps_plan_shows_every_step_description_and_the_wall_ceiling(
+    app_service: Any,
+) -> None:
+    """The other half: what the app READ shows, not just what the manifest declares. Every step's
+    description must be the member's own declared sentence — never equal to, or containing, its
+    private ``subgoal`` — and the plan's wall-clock ceiling must be the exact positive integer the
+    seed manifest declares (read off the manifest itself, never hard-coded), copied straight from
+    ``orchestration.termination.max_wall_seconds``."""
+    from oraclous_execution_engine_service.core.rls import org_scope
+    from oraclous_execution_engine_service.domain.seed_apps import build_seed_apps
+    from oraclous_execution_engine_service.services.app_seed_service import seed_platform_apps
+    from oraclous_governance import Principal, PrincipalType
+
+    [validation_desk] = build_seed_apps(PLATFORM_ORG)
+    subgoals_by_role = {m["role"]: m["subgoal"] for m in validation_desk.manifest["members"]}
+    expected_ceiling = validation_desk.manifest["orchestration"]["termination"]["max_wall_seconds"]
+
+    await seed_platform_apps(app_service._apps, platform_org_id=PLATFORM_ORG)
+    principal = Principal(
+        principal_id=uuid.uuid4(), principal_type=PrincipalType.USER, organisation_id=ORG_A
+    )
+    with org_scope(ORG_A):
+        rows, _ = await app_service._apps.list_for_org(ORG_A)
+    detail = await app_service.get(rows[0]["id"], principal)
+
+    assert detail["plan"]["steps"], "the seeded app has steps"
+    for step in detail["plan"]["steps"]:
+        description = step["description"]
+        subgoal = subgoals_by_role[step["role"]]
+        assert description and description.strip(), step["role"]
+        assert description != subgoal, step["role"]
+        assert subgoal not in description, step["role"]
+
+    assert isinstance(expected_ceiling, int) and expected_ceiling > 0
+    assert detail["plan"]["limits"]["max_wall_seconds"] == expected_ceiling
