@@ -147,7 +147,16 @@ def _poll(c: httpx.Client, run_id: str, budget_s: float) -> dict:
     started = time.monotonic()
     deadline = started + budget_s
     while time.monotonic() < deadline:
-        row = c.get(f"/v1/engine/team-runs/{run_id}").json()
+        resp = c.get(f"/v1/engine/team-runs/{run_id}")
+        # #921: a non-2xx (e.g. a stale-token 401) or a body with no 'state' used to surface as a
+        # bare KeyError several lines away from the real cause. Name the status + body instead.
+        if resp.status_code != 200:
+            raise AssertionError(
+                f"poll GET /v1/engine/team-runs/{run_id} -> {resp.status_code}: {resp.text[:500]}"
+            )
+        row = resp.json()
+        if "state" not in row:
+            raise AssertionError(f"poll response for run {run_id} has no 'state': {row}")
         if row["state"] in {"SUCCEEDED", "FAILED", "REJECTED", "PAUSED"}:
             return row
         time.sleep(3)
