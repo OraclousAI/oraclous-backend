@@ -25,6 +25,7 @@ environment.
 
 from __future__ import annotations
 
+import json
 import os
 import time
 import uuid
@@ -172,6 +173,42 @@ def test_a_tenant_cannot_rename_or_delete_the_shared_app(
 
     still = _find(client.get("/v1/engine/apps").json()["apps"], _DESK_SLUG)
     assert still is not None and still["name"] == desk["name"]
+
+
+def test_the_apps_plan_names_what_each_member_does_and_the_wall_clock_ceiling(
+    register: Callable[..., dict], gateway_client: Callable[[str], httpx.Client]
+) -> None:
+    """#1085 (CTO ruling): the same read that already withholds `subgoal` must now carry each
+    step's own declared `description` and the plan's `max_wall_seconds` ceiling — for a brand-new
+    organisation, through the gateway, with no key of any kind.
+
+    Nothing here is hard-coded: the seed can change its wording or its ceiling and this test still
+    passes, because every assertion is a shape/absence check, never a pinned value.
+    """
+    client = gateway_client(register("Plan Reader")["token"])
+
+    detail = client.get(f"/v1/engine/apps/by-slug/{_DESK_SLUG}")
+    assert detail.status_code == 200, detail.text
+    body = detail.json()
+
+    assert body["origin"] == "platform"
+    plan = body["plan"]
+    assert plan["steps"], "the seeded desk has steps"
+
+    for step in plan["steps"]:
+        description = step["description"]
+        assert isinstance(description, str), step
+        assert description.strip(), f"a blank description on step {step!r}"
+
+    # The plan withholds `subgoal` entirely — through the gateway there is no way to see the
+    # private prompt to compare a description against, so the strongest available check is that
+    # the key itself never appears anywhere in the serialised body a description could have leaked
+    # it into.
+    assert "subgoal" not in json.dumps(body)
+
+    ceiling = plan["limits"]["max_wall_seconds"]
+    assert isinstance(ceiling, int) and not isinstance(ceiling, bool)
+    assert ceiling > 0
 
 
 def test_a_run_with_no_model_is_a_plain_validation_failure(
