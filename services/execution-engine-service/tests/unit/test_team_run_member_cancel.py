@@ -259,6 +259,37 @@ async def test_unconfirmed_cancel_with_pool_only_charges_remaining_headroom() ->
     assert result.member_status["b"] == "budget_skipped"  # the pool stopped it, not a block
 
 
+async def test_unconfirmed_cancel_never_charges_negative_when_pool_already_over_budget() -> None:
+    """#1072 review finding C3 (PR #1094, qa-engineer): ``_Pool.remaining_tokens()`` must clamp to
+    ``max(0, max_tokens - spent)`` so an unconfirmed cancel's fail-closed pool charge is NEVER
+    negative — a negative charge would LOWER the pool's recorded spend below what is already
+    booked, undoing the exhaustion the pool exists to enforce. Here "a" alone books MORE than the
+    whole pooled ceiling (1_500 against a 1_000 ``max_tokens_total``), so by the time "t" times out
+    the pool is already over budget; its unconfirmed cancel (202 -> None) must still charge exactly
+    0, never a negative number that would claw the recorded spend back down. "b" depends on "a"
+    only (never on "t"), so the pool — never a blocked-by-upstream-failure path — is what gates it,
+    proving the pool really did stay exhausted rather than being clawed back under its ceiling."""
+    costs: list[int] = []
+    team = _team(
+        [
+            OHMMember(role="a", kind="agent", manifest_ref="org:x/a@1"),
+            OHMMember(role="t", kind="agent", manifest_ref="org:x/t@1"),
+            OHMMember(role="b", kind="agent", manifest_ref="org:x/b@1", depends_on=["a"]),
+        ],
+        budget=OHMBudget(max_tokens_total=1_000),
+    )
+    harness = _EarlyBookThenUnconfirmedCancelHarness(
+        booked_role="a", booked_tokens=1_500, timeout_role="t"
+    )
+    result = await run_team_harness(team, harness, on_cost=costs.append)
+    assert len(harness.cancel_calls) == 1  # "t"'s timeout attempted exactly one cancel
+    # "a"'s real spend (1_500, already over the 1_000 ceiling) and "t"'s charge clamped to 0 — never
+    # a negative number (which would read as -500, clawing the recorded spend back down to 1_000).
+    assert sorted(costs) == [0, 1_500]
+    assert sum(costs) == 1_500  # recorded pool spend never DECREASES from what "a" already booked
+    assert result.member_status["b"] == "budget_skipped"  # the pool stayed exhausted, not clawed
+
+
 async def test_unconfirmed_cancel_without_any_token_ceiling_charges_nothing() -> None:
     """Owner ruling (#1072, case 3:
     https://github.com/OraclousAI/oraclous-backend/issues/1072#issuecomment-5701622081): when the
