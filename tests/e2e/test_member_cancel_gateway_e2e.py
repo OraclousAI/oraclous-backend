@@ -1,9 +1,11 @@
 """#1072 harness cancel-path DEPLOYED-STACK proof through the API GATEWAY — real-LLM (BYOM).
 
 The user mints an ``execution_id`` client-side, starts a real ``POST /v1/harnesses/execute`` whose
-task needs several sequential tool/LLM round-trips (so it outlives a short client-side timeout —
-the browser tab closing must NOT keep spending the user's model tokens forever), then cancels it
-with ``POST /v1/harnesses/{execution_id}/cancel``. Design (#1072, backend-implementer ruling):
+task needs TEN sequential tool/LLM round-trips (deterministically outlasting both the client's own
+short timeout and the time it takes cancel polling to land — a fast three-step task risked settling
+SUCCEEDED before cancel ever reached it), then cancels it with
+``POST /v1/harnesses/{execution_id}/cancel``, polling every ~0.5s from the moment execute is fired
+rather than waiting on the client's own give-up timeout. Design (#1072, backend-implementer ruling):
 
   * ``execute`` accepts an optional caller-supplied ``execution_id`` so a client can cancel a run
     before any response ever arrives.
@@ -43,12 +45,19 @@ requires_byom_key = pytest.mark.skipif(
     not _USER_MODEL_KEY, reason="OPENROUTER_API_KEY not set (the user's BYOM model key)"
 )
 
-#: A short client-side timeout: the request MUST still be running server-side when this expires
-#: (the whole point of the feature — a dropped client connection must not keep charging the user).
+#: A short client-side timeout on the BACKGROUND thread's own request only — realism (a dropped
+#: client connection, e.g. a closed browser tab, must not keep charging the user). Cancel timing
+#: below never waits on this; it starts polling immediately.
 _CLIENT_GIVES_UP_AFTER = 8.0
-#: Bounded polling for the cancel call's own 202 (still tearing down) -> 200 (settled) transition.
-_CANCEL_POLL_TRIES = 8
-_CANCEL_POLL_SLEEP = 3.0
+#: Cancel is polled frequently and independently of the client timeout above.
+_CANCEL_POLL_INTERVAL = 0.5
+#: A 404 is read as "the run hasn't started yet" only inside this window from the first poll; past
+#: it, a persistent 404 is a real failure (unknown id / no cancel route), not a startup race.
+_NOT_YET_STARTED_WINDOW_SECONDS = 15.0
+#: Overall bound on 202 (CANCEL_REQUESTED, still tearing down) -> settled — generous: ten real,
+#: sequential tool/LLM round-trips can legitimately take a while before the loop even notices the
+#: cancel flag between iterations.
+_CANCEL_SETTLE_TIMEOUT_SECONDS = 120.0
 #: How long to wait before re-reading the execution, to prove nothing kept spending after CANCELLED.
 _SETTLE_WAIT_SECONDS = 20.0
 
@@ -69,11 +78,34 @@ def _store_model_credential(c: httpx.Client, user: dict) -> str:
     return cred.json()["id"]
 
 
+#: Ten fixed, self-contained math-tools calls (no step depends on a prior result, so a model never
+#: needs to read a tool's output to keep going) cycling through all five curated operations twice.
+#: Deliberately MANY steps, not three: three real sequential round-trips with a fast/cheap model
+#: can finish close to or under the client's own give-up window, which would let the run settle
+#: SUCCEEDED before cancel ever lands — flaky for the wrong reason. Ten forces enough wall time
+#: that the cancel call (which starts polling immediately, not after any timeout) reliably lands
+#: mid-run.
+_MATH_STEPS = [
+    "compound_growth with start=1000, rate=0.01, periods=1",
+    "percentage_change with start=1000, end=1010",
+    "break_even_units with fixed_costs=10000, price_per_unit=50, variable_cost_per_unit=30",
+    "payback_period with initial_investment=50000, cash_flow_per_period=10000",
+    'ratio with numerator=100, denominator=4, numerator_unit="USD", denominator_unit="unit"',
+    "compound_growth with start=2000, rate=0.02, periods=2",
+    "percentage_change with start=2000, end=2200",
+    "break_even_units with fixed_costs=20000, price_per_unit=60, variable_cost_per_unit=35",
+    "payback_period with initial_investment=80000, cash_flow_per_period=16000",
+    'ratio with numerator=200, denominator=8, numerator_unit="USD", denominator_unit="unit"',
+]
+
+
 def _multi_step_manifest(org: str, credential_id: str) -> dict:
-    """A harness manifest whose task needs several sequential tool round-trips (the seeded, keyless
-    ``Math Tools`` group, #822): one LLM turn to plan, then a tool call and an LLM turn per step,
-    three steps — enough real network + generation latency to reliably outlive an 8s client
-    timeout, without depending on a second BYOM provider (Tavily etc)."""
+    """A harness manifest whose task needs MANY sequential tool round-trips (the seeded, keyless
+    ``Math Tools`` group, #822) — one LLM turn to plan, then a tool call and an LLM turn per step,
+    ten steps, so real network + generation latency across the whole loop reliably outlasts the
+    time it takes an independently-polling cancel call to land, without depending on a second BYOM
+    provider (Tavily etc)."""
+    steps = "\n".join(f"{i}. Call operation {step}." for i, step in enumerate(_MATH_STEPS, 1))
     return {
         "ohm_version": "1.0",
         "metadata": {
@@ -86,15 +118,12 @@ def _multi_step_manifest(org: str, credential_id: str) -> dict:
                 "role": "primary",
                 "source": "inline",
                 "body": (
-                    "You have a tool group named math-tools. Complete these three steps IN ORDER, "
-                    "calling exactly one math-tools operation per step and waiting for each result "
-                    "before the next call:\n"
-                    "1. Call operation compound_growth with start=1000, rate=0.02, periods=6.\n"
-                    "2. Call operation percentage_change with start=1000, end=1200.\n"
-                    "3. Call operation ratio with numerator=180, denominator=12, "
-                    'numerator_unit="USD", denominator_unit="unit".\n'
-                    "Only after all three calls have returned, reply with one sentence naming all "
-                    "three numeric results."
+                    "You have a tool group named math-tools. Complete these ten steps IN ORDER, "
+                    "calling exactly ONE math-tools operation per turn and waiting for its result "
+                    "before calling the next one — never call more than one tool in the same "
+                    f"turn:\n{steps}\n"
+                    "Only after all ten calls have returned, reply with one sentence naming the "
+                    "results."
                 ),
             }
         ],
@@ -130,7 +159,7 @@ def _fire_execute_in_background(
                     "/v1/harnesses/execute",
                     json={
                         "manifest": manifest,
-                        "input": "Run the three math-tools steps and summarise.",
+                        "input": "Run the ten math-tools steps and summarise.",
                         "execution_id": str(execution_id),
                     },
                 )
@@ -145,16 +174,31 @@ def _fire_execute_in_background(
 
 
 def _cancel_until_settled(c: httpx.Client, execution_id: uuid.UUID) -> httpx.Response:
-    """Poll POST .../cancel through 202 (CANCEL_REQUESTED, still tearing down) until 200 (settled),
-    bounded — mirrors the route's own documented 200/202/404 contract (#1072 design)."""
-    last: httpx.Response | None = None
-    for _ in range(_CANCEL_POLL_TRIES):
-        last = c.post(f"/v1/harnesses/{execution_id}/cancel")
-        if last.status_code != 202:
-            return last
-        time.sleep(_CANCEL_POLL_SLEEP)
-    assert last is not None
-    return last
+    """Poll POST .../cancel every ``_CANCEL_POLL_INTERVAL`` — independent of the background
+    request's own client timeout, so cancel is attempted from the moment execute is fired, not
+    after some fixed delay. A 404 is tolerated only inside ``_NOT_YET_STARTED_WINDOW_SECONDS`` (the
+    execution row/lease may not exist yet); a 202 (CANCEL_REQUESTED, still tearing down) is polled
+    until settled or ``_CANCEL_SETTLE_TIMEOUT_SECONDS`` runs out. Mirrors the route's documented
+    200/202/404 contract (#1072 design)."""
+    start = time.monotonic()
+    while True:
+        elapsed = time.monotonic() - start
+        resp = c.post(f"/v1/harnesses/{execution_id}/cancel")
+        if resp.status_code == 404:
+            assert elapsed < _NOT_YET_STARTED_WINDOW_SECONDS, (
+                f"cancel still 404 after {elapsed:.1f}s — the execution never started (or the "
+                f"cancel route / execution_id wiring doesn't exist yet): {resp.text}"
+            )
+            time.sleep(_CANCEL_POLL_INTERVAL)
+            continue
+        if resp.status_code == 202:
+            assert elapsed < _CANCEL_SETTLE_TIMEOUT_SECONDS, (
+                f"cancel still 202 CANCEL_REQUESTED after {elapsed:.1f}s — never settled: "
+                f"{resp.text}"
+            )
+            time.sleep(_CANCEL_POLL_INTERVAL)
+            continue
+        return resp
 
 
 @requires_byom_key
@@ -170,16 +214,24 @@ def test_a_cancelled_execution_stops_spending_and_is_org_scoped(
     execution_id = uuid.uuid4()
     manifest = _multi_step_manifest(user["org_id"], credential_id)
 
-    # 1) start a real run whose task needs several tool/LLM iterations, with a client that gives up
-    #    (~8s) long before a three-step tool loop against a real model finishes.
+    # 1) start a real run whose task needs ten sequential tool/LLM iterations. The background
+    #    client gives up after ~8s (realism — a closed tab must not keep charging the user), but
+    #    cancel polling below starts immediately and does NOT wait on that timeout.
     _fire_execute_in_background(gateway_url, user["token"], execution_id, manifest)
 
     # 2) cancel it — THE PROOF. A settled 200 must carry the CANCELLED status and the real,
-    #    nonzero spend the loop had already made before it stopped.
+    #    nonzero spend the loop had already made before it stopped. If the ten-step task still
+    #    finished (SUCCEEDED/FAILED) before cancel ever landed, that is a timing defect in the test
+    #    itself (not the feature) — fail loudly and distinctly from a real product assertion.
     cancelled = _cancel_until_settled(c, execution_id)
     assert cancelled.status_code == 200, cancelled.text
     body = cancelled.json()
-    assert body["status"] == "CANCELLED", body
+    assert body["status"] == "CANCELLED", (
+        f"the run settled as {body.get('status')!r} before cancel could land "
+        f"(iterations={body.get('iterations')}, total_tokens={body.get('total_tokens')}) — "
+        "the ten-step task finished too fast; this is a test-timing issue, not proof the cancel "
+        f"path works. body={body}"
+    )
     assert body["total_tokens"] > 0, body  # a real LLM turn happened before the cancel landed
 
     # 3) nothing kept spending after CANCELLED: a re-read well after settling shows the SAME row.
