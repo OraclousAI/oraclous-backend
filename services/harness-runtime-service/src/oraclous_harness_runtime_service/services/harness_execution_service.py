@@ -782,9 +782,25 @@ class HarnessExecutionService:
         the RUN's own org (never org-blind: a wrong/unbound org sees zero rows under the lease
         table's forced RLS, so an org-blind poll could never observe its own run's flag). Sets
         ``requested_cancel`` BEFORE cancelling so the caller can tell a watcher-driven cancel apart
-        from the handler task's own cancellation (#1072 PR #1094 review, blocker B1)."""
+        from the handler task's own cancellation (#1072 PR #1094 review, blocker B1).
+
+        A poll that raises (a DB blip) does not kill the watcher: that run would otherwise never be
+        cancellable again for the rest of its execution (#1072 PR #1094 review, non-blocking note
+        2). Log a warning keyed on the execution id only — never customer content — and keep
+        polling. ``asyncio.CancelledError`` (the ``finally`` in ``_run_loop_cancellable`` cancelling
+        this task) still propagates."""
         while not loop_task.done():
-            if await leases.is_cancel_requested(execution_id, organisation_id):
+            try:
+                cancel_requested = await leases.is_cancel_requested(execution_id, organisation_id)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.warning(
+                    "cancel-lease poll failed for execution %s; will retry", execution_id
+                )
+                await asyncio.sleep(poll_seconds)
+                continue
+            if cancel_requested:
                 requested_cancel.set()
                 loop_task.cancel()
                 return
