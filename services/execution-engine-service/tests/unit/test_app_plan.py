@@ -202,6 +202,85 @@ def test_a_team_with_no_declared_budget_reports_no_limits_rather_than_zeroes() -
     assert limits["max_sub_runs"] is None
 
 
+def test_a_members_declared_description_appears_on_its_step_matched_by_role() -> None:
+    """#1085 (CTO ruling on the app-read plan contract): a member's own one-sentence, declared
+    ``description`` is exactly what a reader is owed — distinct from the ``subgoal`` this plan
+    otherwise withholds. Matched by role, not position, and the steps still come back in run
+    order."""
+    from oraclous_execution_engine_service.domain.apps import plan_summary
+
+    manifest = _team()
+    manifest["members"][0]["description"] = "Searches the web for competitor signals."
+    manifest["members"][1]["description"] = "Writes one decision brief."
+
+    plan = plan_summary(manifest)
+    by_role = {s["role"]: s for s in plan["steps"]}
+
+    assert by_role["researcher"]["description"] == "Searches the web for competitor signals."
+    assert by_role["synthesizer"]["description"] == "Writes one decision brief."
+    assert [s["role"] for s in plan["steps"]] == ["researcher", "synthesizer"]
+
+
+def test_a_member_with_no_description_and_one_with_a_blank_description_both_read_none() -> None:
+    """Absence and a whitespace-only value are the same claim: nothing was declared. Neither
+    should read back as an empty string a screen would render as a blank line."""
+    from oraclous_execution_engine_service.domain.apps import plan_summary
+
+    manifest = _team()
+    # researcher declares no description key at all; synthesizer declares whitespace only.
+    manifest["members"][1]["description"] = "   "
+
+    plan = plan_summary(manifest)
+    by_role = {s["role"]: s for s in plan["steps"]}
+
+    assert by_role["researcher"]["description"] is None
+    assert by_role["synthesizer"]["description"] is None
+
+
+def test_description_is_never_derived_from_subgoal_when_absent() -> None:
+    """A screen must not backfill a step's blurb from the member's private ``subgoal`` — that
+    would leak exactly the content this plan is designed to withhold. With no description
+    declared, the subgoal text must not surface anywhere in the plan, including as a stand-in
+    description value."""
+    import json
+
+    from oraclous_execution_engine_service.domain.apps import plan_summary
+
+    plan = plan_summary(_team())
+    researcher_step = next(s for s in plan["steps"] if s["role"] == "researcher")
+
+    assert researcher_step["description"] is None
+    assert _PRIVATE_PROMPT not in json.dumps(plan)
+
+
+def test_limits_max_wall_seconds_equals_the_declared_termination_ceiling() -> None:
+    """The other ceiling the ruling adds: copied straight from
+    ``orchestration.termination.max_wall_seconds``, the same field the runtime's own termination
+    check already reads."""
+    from oraclous_execution_engine_service.domain.apps import plan_summary
+
+    manifest = _team()
+    manifest["orchestration"] = {"termination": {"max_wall_seconds": 900}}
+
+    limits = plan_summary(manifest)["limits"]
+
+    assert limits["max_wall_seconds"] == 900
+
+
+def test_limits_max_wall_seconds_is_none_not_zero_when_undeclared() -> None:
+    """A missing ceiling is unlimited, not zero — the same rule the file's other limits already
+    follow. The key must still be present on the read, just with a ``None`` value."""
+    from oraclous_execution_engine_service.domain.apps import plan_summary
+
+    manifest = _team()
+    assert "orchestration" not in manifest
+
+    limits = plan_summary(manifest)["limits"]
+
+    assert "max_wall_seconds" in limits
+    assert limits["max_wall_seconds"] is None
+
+
 def test_a_human_step_is_shown_as_a_step_a_person_has_to_take() -> None:
     """A team can pause for a person. Hiding that would let someone start a run expecting it to
     finish on its own."""
