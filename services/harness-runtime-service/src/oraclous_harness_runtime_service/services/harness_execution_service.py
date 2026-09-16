@@ -718,32 +718,53 @@ class HarnessExecutionService:
         loop_task: asyncio.Task[LoopResult] = asyncio.create_task(
             run_tool_use_loop(llm=llm, progress=progress, **loop_kwargs)
         )
+        watcher_requested_cancel = asyncio.Event()
         watcher_task = asyncio.create_task(
             self._watch_for_cancel(
-                leases, execution_id, organisation_id, loop_task, self._cancel_poll_seconds
+                leases,
+                execution_id,
+                organisation_id,
+                loop_task,
+                self._cancel_poll_seconds,
+                watcher_requested_cancel,
             )
         )
         try:
             try:
                 return await loop_task
             except asyncio.CancelledError:
-                return LoopResult(
-                    status=HarnessStatus.CANCELLED,
-                    output=None,
-                    steps=progress.steps,
-                    iterations=progress.iterations,
-                    total_tokens=progress.total_tokens,
-                    input_tokens=progress.prompt_tokens,
-                    output_tokens=progress.completion_tokens,
-                    error_type="cancelled",
-                    error_message="execution cancelled before it reached a terminal outcome",
-                    served_citation_ids=progress.served_citation_ids,
-                    protocol_shape=progress.protocol_shape,
-                    fetched_urls=progress.fetched_urls,
-                )
+                current_task = asyncio.current_task()
+                being_cancelled = current_task is not None and current_task.cancelling() > 0
+                if watcher_requested_cancel.is_set() and not being_cancelled:
+                    # The watcher asked for this cancel and nobody is cancelling the
+                    # handler itself: this is a genuine user/timeout cancel of the run.
+                    return LoopResult(
+                        status=HarnessStatus.CANCELLED,
+                        output=None,
+                        steps=progress.steps,
+                        iterations=progress.iterations,
+                        total_tokens=progress.total_tokens,
+                        input_tokens=progress.prompt_tokens,
+                        output_tokens=progress.completion_tokens,
+                        error_type="cancelled",
+                        error_message="execution cancelled before it reached a terminal outcome",
+                        served_citation_ids=progress.served_citation_ids,
+                        protocol_shape=progress.protocol_shape,
+                        fetched_urls=progress.fetched_urls,
+                    )
+                # Either the watcher never asked (something else cancelled loop_task),
+                # or the handler task itself is being cancelled (shutdown, an outer
+                # `asyncio.timeout()`/TaskGroup). Neither is a run cancel: finish
+                # tearing the loop task down, then propagate so the caller sees the
+                # real cancellation instead of a fabricated CANCELLED row.
+                if not loop_task.done():
+                    loop_task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await loop_task
+                raise
         finally:
             watcher_task.cancel()
-            with contextlib.suppress(BaseException):
+            with contextlib.suppress(asyncio.CancelledError):
                 await watcher_task
             await self._aclose_llm(llm)
 
@@ -754,13 +775,17 @@ class HarnessExecutionService:
         organisation_id: uuid.UUID,
         loop_task: asyncio.Task[Any],
         poll_seconds: float,
+        requested_cancel: asyncio.Event,
     ) -> None:
         """Poll the lease's cancel flag on the OWNING replica (#1072 design doc) and cancel the
         loop task the moment it is set — this is what interrupts an in-flight LLM call. Polls with
         the RUN's own org (never org-blind: a wrong/unbound org sees zero rows under the lease
-        table's forced RLS, so an org-blind poll could never observe its own run's flag)."""
+        table's forced RLS, so an org-blind poll could never observe its own run's flag). Sets
+        ``requested_cancel`` BEFORE cancelling so the caller can tell a watcher-driven cancel apart
+        from the handler task's own cancellation (#1072 PR #1094 review, blocker B1)."""
         while not loop_task.done():
             if await leases.is_cancel_requested(execution_id, organisation_id):
+                requested_cancel.set()
                 loop_task.cancel()
                 return
             await asyncio.sleep(poll_seconds)
