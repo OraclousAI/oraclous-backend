@@ -143,6 +143,19 @@ MODEL_CREDENTIAL_REQUIRED_DETAIL = {
     ),
 }
 
+# The sibling refusal for a credential that IS stored and designated, and that the provider then
+# refused (#1109 ruling 3). Kept apart from the one above because the advice there — store a
+# credential and designate it — is exactly what the organisation already did, so repeating it
+# sends them looking in the wrong place. The provider's own words are never relayed (rule 8).
+MODEL_CREDENTIAL_REJECTED_DETAIL = {
+    "error_code": "MODEL_CREDENTIAL_REJECTED",
+    "type": "model_credential_rejected",
+    "msg": (
+        "the model provider refused your organisation's model credential, so meaning-based search"
+        " could not run: replace it through the credentials API and try again."
+    ),
+}
+
 
 async def _embedder_for_request(settings: Settings) -> Embedder:
     """The query embedder for THIS request's organisation, or the typed 422 refusal (#949 Q4).

@@ -44,6 +44,7 @@ from oraclous_ohm.manifest import (
 from pydantic import ValidationError
 
 from oraclous_execution_engine_service.core.rls import org_scope
+from oraclous_execution_engine_service.domain.member_error_codes import LLM_CREDENTIAL_REJECTED
 from oraclous_execution_engine_service.domain.model_answer import first_json_object
 from oraclous_execution_engine_service.models.team_draft import EngineTeamDraft
 from oraclous_execution_engine_service.models.team_run import EngineTeamRun
@@ -807,6 +808,23 @@ class TeamDraftService:
                 checked_shape = True
             if run.state in _TERMINAL_RUN_STATES:
                 if run.state != "SUCCEEDED":
+                    # ``getattr``: rows built before #1108's column existed lack the attribute
+                    # outright, and absence must read the same as an empty map.
+                    codes = getattr(run, "member_error_codes", None) or {}
+                    if (
+                        run.state == "FAILED"
+                        and codes.get(_OP_DRAFTER_ROLE) == LLM_CREDENTIAL_REJECTED
+                    ):
+                        # The provider refused the caller's OWN key mid-draft. That is fixable,
+                        # unlike a model that answered badly, so it is named rather than folded
+                        # into the generic refusal. Only the allow-listed code crosses the gateway
+                        # (#1108); the provider's own text never travels.
+                        raise TeamRunError(
+                            "the model provider refused the op-drafter's credential",
+                            422,
+                            error_type="op_drafter_failed",
+                            error_code="MODEL_CREDENTIAL_REJECTED",
+                        )
                     raise TeamRunError(
                         f"the op-drafter run did not succeed (state {run.state})",
                         422,

@@ -470,6 +470,12 @@ class TeamRunOut(BaseModel):
     # A run is SUCCEEDED only when EVERY member is "succeeded"; on a FAILED run this is how a caller
     # sees which members to re-run (POST .../rerun re-drives the failed+blocked, keeping succeeded).
     member_status: dict[str, str] = Field(default_factory=dict)
+    # #1108 ruling 2c / #1109 item 1: role -> the curated token for why that member's harness run
+    # FAILED (e.g. "llm_credential_rejected", `domain.member_error_codes`) — never provider text,
+    # so a caller can branch on it and the gateway can relay it. Empty when nothing failed and
+    # NEVER absent (the #944 `has_unverified_links` posture: a missing key would make "no failures"
+    # indistinguishable from "not checked"). Detail read only — never on the list row.
+    member_error_codes: dict[str, str] = Field(default_factory=dict)
     # ADR-046 (#578): role -> how many times this human gate was REVISED. Surfaced read-side so a
     # caller (and the deployed e2e) sees a run was revised + on which gate; the revision loop
     # fail-closes to terminal REJECTED once a gate exceeds max_revisions. Empty until a revise.
@@ -522,7 +528,9 @@ class TeamRunOut(BaseModel):
     # accidental leak).
     manifest: dict[str, Any] | None = Field(default=None, exclude=True, repr=False)
 
-    @field_validator("member_status", "loop_state", "revision_rounds", mode="before")
+    @field_validator(
+        "member_status", "loop_state", "revision_rounds", "member_error_codes", mode="before"
+    )
     @classmethod
     def _coerce_member_status(cls, v: Any) -> Any:
         # A real flushed row already holds {} (the column default + migration 0012 server_default),

@@ -43,6 +43,11 @@ router = APIRouter(prefix="/v1/engine", tags=["engine-team-drafts"])
 
 
 def _http(exc: TeamRunError) -> HTTPException:
+    if exc.error_code is not None:
+        # #1109, mirroring `intake_routes.py`'s `_http`: the one shape the gateway's allow-list
+        # reads. Nothing else from this body crosses the edge, so the code has to carry the whole
+        # meaning of the refusal on its own — including instead of the structured array below.
+        return HTTPException(status_code=exc.status_code, detail={"error_code": exc.error_code})
     # #483 Option A: a STRUCTURED 422 detail (leak-safe machine token in `type`) so the gateway
     # maps it to VALIDATION_FAILED + a field-level issue; other statuses keep a plain detail.
     if exc.status_code == 422:

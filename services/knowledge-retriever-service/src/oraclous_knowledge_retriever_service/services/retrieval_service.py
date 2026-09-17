@@ -15,7 +15,7 @@ import uuid
 
 from oraclous_citation import Citation, citation_from_properties
 from oraclous_citation.graph_properties import is_citation_property
-from oraclous_embedding import is_credential_failure
+from oraclous_embedding import is_credential_failure, is_credential_rejection
 from oraclous_ohm.precedence_resolution import rank_hits_by_precedence
 from oraclous_substrate.access import enforced_organisation_id
 
@@ -56,12 +56,23 @@ class QueryEmbeddingUnavailable(Exception):
 
 
 class QueryEmbeddingCredentialRejected(QueryEmbeddingUnavailable):
-    """The provider REJECTED this organisation's credential during the embed call (401/403/429).
+    """The provider REFUSED this organisation's credential during the embed call (401/403).
 
     Split from its parent because the two need different answers: an unreachable provider is a
     transient platform fault the caller can only retry, while a rejected key is something the
-    organisation itself must fix, and it is the one case where the cached credential is now
-    known-bad and has to be dropped.
+    organisation itself must fix, and it is one of the two cases where the cached credential is now
+    known-suspect and has to be dropped.
+    """
+
+
+class QueryEmbeddingCredentialExhausted(QueryEmbeddingUnavailable):
+    """The provider ACCEPTED the credential and then refused for quota (429) — #1109 ruling 3.
+
+    A sibling of the rejection rather than a subclass of it: both are credential faults, and both
+    drop the cached credential, but the advice a caller acts on differs — an exhausted key is waited
+    on or upgraded, never replaced, so telling an organisation to store a new credential (which is
+    what the rejection's message says) would be wrong here. Still a `QueryEmbeddingUnavailable`, so
+    every existing caller that catches the parent keeps catching it.
     """
 
 
@@ -249,19 +260,28 @@ class RetrievalService:
         The shared seam (`packages/embedding`) is batch-shaped — `embed(texts) -> vectors`. One
         query is a one-element batch; the write side has always called it this way.
 
-        A rejection (401/403/429) also DROPS this organisation's cached credential. The cache
-        documents itself as flushed-on-rejection, and the write side has always honoured that; the
-        read side did not, so a rotated or revoked key kept being reused on the hottest path in the
-        service for the rest of the TTL. Classified by the SAME shared helper the write side uses,
-        so the two sides cannot disagree about what counts as a credential fault.
+        ANY credential fault (401/403/429/quota) DROPS this organisation's cached credential. The
+        cache documents itself as flushed-on-rejection, and the write side has always honoured that;
+        the read side did not, so a rotated or revoked key kept being reused on the hottest path in
+        the service for the rest of the TTL. Classified by the SAME shared helper the write side
+        uses, so the two sides cannot disagree about what counts as a credential fault.
+
+        The refusal it raises is then narrowed once more (#1109 ruling 3): a REFUSED key (401/403)
+        and an EXHAUSTED one (429/quota) both invalidate the cache, but the caller's fix differs —
+        replace the credential versus wait or upgrade — so the route answers them with different
+        error codes and cannot do that from one collapsed exception.
         """
         try:
             (qvec,) = self._embedder.embed([query])
         except Exception as exc:
             if is_credential_failure(exc):
                 credential_cache.invalidate(uuid.UUID(enforced_organisation_id()))
-                raise QueryEmbeddingCredentialRejected(
-                    "the model provider rejected this organisation's model credential"
+                if is_credential_rejection(exc):
+                    raise QueryEmbeddingCredentialRejected(
+                        "the model provider rejected this organisation's model credential"
+                    ) from exc
+                raise QueryEmbeddingCredentialExhausted(
+                    "this organisation's model credential has no embedding quota left"
                 ) from exc
             # The provider's own text is deliberately not relayed — it can name internal hosts
             # (rule 8). The route renders a curated line.

@@ -593,7 +593,18 @@ paths:
                 type: array
                 items: { $ref: "#/components/schemas/NodeResult" }
         "401": { $ref: "#/components/responses/Unauthenticated" }
-        "422": { $ref: "#/components/responses/ValidationFailed" }
+        "422":
+          description: >-
+            VALIDATION_FAILED — the request did not validate. The semantic and hybrid modes embed
+            the query, so they add two more: MODEL_CREDENTIAL_REJECTED — the embedding provider
+            refused the model key the organisation designated, which has to be replaced;
+            MODEL_CREDENTIAL_REQUIRED — the organisation designated no model key, or the one it
+            designated is out of quota. Meaning-based search refuses either way rather than
+            degrading to keyless word overlap under a "semantic" label. Full-text embeds nothing
+            and carries neither.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
   /v1/graph/{graphId}/temporal:
     get:
       tags: [knowledge-retriever]
@@ -2319,13 +2330,24 @@ paths:
   /v1/engine/team-runs/{teamRunId}:
     get:
       tags: [engine]
-      summary: Read a team run (state, per-role results, member_status, verdict, revision_rounds, refresh_delta, plus the bound graph_id and team_name for the Results tab — #638). `simulated` (#907) is true when any member ran on the scripted stand-in LLM (HARNESS_LLM_MODE=fake). `answer_roles` (#995) names the plan's answer (sink) member(s), in manifest declaration order, derived read-side off the stored manifest; a `kind: human` sink is excluded.
+      summary: Read a team run (state, per-role results, member_status, member_error_codes, verdict, revision_rounds, refresh_delta, plus the bound graph_id and team_name for the Results tab — #638). `simulated` (#907) is true when any member ran on the scripted stand-in LLM (HARNESS_LLM_MODE=fake). `answer_roles` (#995) names the plan's answer (sink) member(s), in manifest declaration order, derived read-side off the stored manifest; a `kind: human` sink is excluded.
+      description: >-
+        `member_error_codes` (#1109) maps a member's role to a curated token for why that member's
+        run FAILED, so a caller can branch on the reason instead of parsing prose. Only the tokens
+        listed in this operation's `x-stable-member-error-codes` are a stable contract — today just
+        `llm_credential_rejected`, the provider refusing the key bound to that member, which the
+        user fixes by replacing the key and re-running. Any other token may change without notice.
       operationId: getTeamRun
       x-stability: provisional
+      x-stable-member-error-codes: [llm_credential_rejected]
       parameters:
         - { name: teamRunId, in: path, required: true, schema: { type: string } }
       responses:
-        "200": { $ref: "#/components/responses/UpstreamJson" }
+        "200":
+          description: The team run, read back.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TeamRunRead" }
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "403": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/NotFound" }
@@ -2699,7 +2721,15 @@ paths:
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "403": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/NotFound" }
-        "422": { $ref: "#/components/responses/ValidationFailed" }
+        "422":
+          description: >-
+            VALIDATION_FAILED — the request, or the op the drafter produced, did not validate
+            (op_drafter_unparseable, op_drafter_simulated). MODEL_CREDENTIAL_REJECTED — the
+            op-drafter's model provider refused the connected model key; the user replaces the key
+            and tries again.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
   /v1/engine/intake/readback:
     post:
       tags: [engine]
@@ -3934,6 +3964,24 @@ components:
           type: object
           minProperties: 1
           additionalProperties: { $ref: "#/components/schemas/GateDecision" }
+    TeamRunRead:
+      type: object
+      description: >-
+        A team run as `getTeamRun` reads it back. The engine owns the body; this contract pins only
+        `member_error_codes` (#1109) and passes every other field through as the engine wrote it —
+        the operation's summary lists what to expect there.
+      required: [member_error_codes]
+      additionalProperties: true
+      properties:
+        member_error_codes:
+          type: object
+          additionalProperties: { type: string }
+          description: >-
+            Member role -> a curated token for why that member's run FAILED, e.g.
+            `llm_credential_rejected` when the provider refused the key bound to that member. Never
+            the provider's own message, which can name an internal host. Empty when nothing failed,
+            and never absent — so "no member failed" is never mistaken for "not checked". See the
+            operation's `x-stable-member-error-codes` for which tokens are a stable contract.
   responses:
     UpstreamJson:
       description: Success — a JSON body produced and owned by the upstream service, streamed through unchanged.
