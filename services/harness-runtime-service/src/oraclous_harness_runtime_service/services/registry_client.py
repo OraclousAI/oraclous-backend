@@ -146,6 +146,12 @@ class RegistryClient:
         # taken the key explicitly rather than inferring it from the auth mode. A caller-supplied
         # header still wins, so nothing already sending its own key changes.
         key_header = {"X-Internal-Key": internal_key} if internal_key else {}
+        # #1130 compare-and-set: the configuration document this client last SAW for an instance,
+        # keyed by instance id and filled by ``list_instances``. ``update_configuration`` sends it
+        # as the precondition for its replace, so a write built on a read another writer has since
+        # superseded is refused instead of silently resurrecting the stale document. Scoped to one
+        # client, which the runtime builds per request — exactly the read-modify-write window.
+        self._seen_configuration: dict[str, dict[str, Any]] = {}
         self._client = httpx.AsyncClient(
             base_url=base_url.rstrip("/"),
             headers={"Content-Type": "application/json", **key_header, **headers},
@@ -196,7 +202,14 @@ class RegistryClient:
     async def list_instances(self) -> list[dict[str, Any]]:
         """List the caller-org's tool instances (used to find-or-reuse a harness's instances)."""
         body = await self._json(await self._client.get("/api/v1/instances"))
-        return body.get("instances") or []
+        rows: list[dict[str, Any]] = body.get("instances") or []
+        for row in rows:
+            instance_id = row.get("id")
+            if instance_id is not None:
+                # #1130: remember what each configuration looked like at this read, so a replace
+                # built on it can name the read it was built on (see ``_seen_configuration``).
+                self._seen_configuration[str(instance_id)] = dict(row.get("configuration") or {})
+        return rows
 
     async def resolve_capability(
         self, ref: str, *, explicit_id: str | None = None
@@ -253,12 +266,23 @@ class RegistryClient:
         the document replaced here carries the producer identity, and the gateway never routes
         ``/internal``, so no human caller can reach it to forge one. A full replace: the caller
         merges onto what it read, exactly as ``configure_credentials`` requires for mappings.
+
+        Conditional on that read: the document ``list_instances`` last returned for this instance
+        rides along as the compare-and-set precondition, so a replace whose base another writer
+        has already superseded comes back ``409 configuration_conflict`` (fail-closed) instead of
+        clobbering it. No prior read → nothing to compare → an unconditional write.
         """
+        body: dict[str, Any] = {"configuration": configuration}
+        expected = self._seen_configuration.get(str(instance_id))
+        if expected is not None:
+            body["expected_configuration"] = expected
         resp = await self._client.put(
-            f"/internal/v1/instances/{instance_id}/configuration",
-            json={"configuration": configuration},
+            f"/internal/v1/instances/{instance_id}/configuration", json=body
         )
-        return await self._json(resp)
+        result = await self._json(resp)
+        # the write landed, so this is now the document a further replace would be built on
+        self._seen_configuration[str(instance_id)] = dict(configuration)
+        return result
 
     async def execute(
         self,

@@ -91,9 +91,16 @@ class InstanceManager:
         reuses a deterministically-named instance rebinds its own per-run keys here rather than
         inheriting whichever run minted the instance first. Credential mappings and lifecycle
         status are untouched — this writes configuration only.
+
+        ``expected_configuration`` makes the write a compare-and-set against the document the
+        caller read; a writer that got in between raises ``ConfigurationConflictError`` (409) and
+        nothing is written.
         """
         row = await self._instances.set_configuration(
-            instance_id, organisation_id, body.configuration
+            instance_id,
+            organisation_id,
+            body.configuration,
+            expected=body.expected_configuration,
         )
         if row is None:
             raise InstanceNotFoundError("instance not found")

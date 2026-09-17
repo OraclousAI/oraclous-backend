@@ -14,6 +14,7 @@ from oraclous_telemetry import evaluate_readiness, install_telemetry, instrument
 from oraclous_capability_registry_service.core.config import get_settings
 from oraclous_capability_registry_service.domain.errors import (
     CapabilityNotFoundError,
+    ConfigurationConflictError,
     InvalidDescriptorError,
 )
 from oraclous_capability_registry_service.repositories.capability_repository import (
@@ -78,6 +79,17 @@ def create_app(*, lifespan=None) -> FastAPI:
     @app.exception_handler(CapabilityConflictError)
     async def _on_conflict(_: Request, exc: CapabilityConflictError) -> JSONResponse:
         return JSONResponse(status_code=status.HTTP_409_CONFLICT, content={"detail": str(exc)})
+
+    @app.exception_handler(ConfigurationConflictError)
+    async def _on_configuration_conflict(
+        _: Request, exc: ConfigurationConflictError
+    ) -> JSONResponse:
+        # #1130: the replace lost a compare-and-set against a concurrent writer. Nothing was
+        # written; the typed code is what tells the caller to re-read rather than retry blindly.
+        return JSONResponse(
+            status_code=status.HTTP_409_CONFLICT,
+            content={"detail": str(exc), "error_code": "configuration_conflict"},
+        )
 
     @app.exception_handler(InstanceNotFoundError)
     async def _on_instance_not_found(_: Request, exc: InstanceNotFoundError) -> JSONResponse:

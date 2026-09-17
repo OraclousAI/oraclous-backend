@@ -293,6 +293,17 @@ def _mapped_credential_types(descriptor: dict[str, Any]) -> list[str]:
     return out
 
 
+#: The registry's typed refusal when a configuration replace lost its compare-and-set (#1130):
+#: another run rebound the shared instance row between this run's read and its write.
+_CONFIGURATION_CONFLICT = "configuration_conflict"
+
+#: How many times a reuse rebind re-reads and merges again after losing that race before it gives
+#: up and fails the run. Three, not one: the loser of a genuine race succeeds on its next read, so
+#: a single attempt would fail runs for a condition that resolves itself in milliseconds — while
+#: an unbounded retry would hide a row being rewritten continuously.
+_REBIND_ATTEMPTS = 3
+
+
 def _per_run_configuration(
     *,
     workspace_root: str | None,
@@ -1766,6 +1777,50 @@ class HarnessExecutionService:
 
         return await resolve_capabilities(manifest, resolve)  # OHMReferenceError → 422
 
+    async def _rebind_stored_configuration(
+        self,
+        instance_id: uuid.UUID,
+        stored: dict[str, Any],
+        per_run: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Merge this run's per-run keys onto a reused instance's stored configuration (#1130).
+
+        The write is a compare-and-set against the document that was read (the registry client
+        carries the precondition), so the concurrent case is handled rather than raced: two runs
+        of the same seeded app materialise onto the SAME row, and whoever gets there second is
+        told its base is stale instead of resurrecting the first run's document. A conflict is
+        answered by re-reading and merging again — never by writing over the winner blindly — and
+        after ``_REBIND_ATTEMPTS`` tries it FAILS CLOSED, raising out into ``_materialise``'s
+        ``except RegistryError`` so the run stops before it dispatches.
+
+        Nothing to change → no write at all, so a repeat run of an unchanged binding is untouched.
+        """
+        for attempt in range(_REBIND_ATTEMPTS):
+            if not per_run or all(stored.get(key) == value for key, value in per_run.items()):
+                return stored
+            merged = {**stored, **per_run}
+            try:
+                await self._registry.update_configuration(instance_id, merged)
+            except RegistryError as exc:
+                if exc.error_code != _CONFIGURATION_CONFLICT or attempt == _REBIND_ATTEMPTS - 1:
+                    raise
+                logger.info(
+                    "instance %s was rebound by a concurrent run; re-reading and merging again "
+                    "(attempt %d of %d)",
+                    instance_id,
+                    attempt + 2,
+                    _REBIND_ATTEMPTS,
+                )
+                rows = await self._registry.list_instances()
+                fresh = next((r for r in rows if str(r.get("id")) == str(instance_id)), None)
+                stored = dict((fresh or {}).get("configuration") or {})
+                continue
+            return merged
+        raise RegistryError(
+            f"instance {instance_id} could not be rebound to this run after "
+            f"{_REBIND_ATTEMPTS} attempts"
+        )
+
     async def _materialise(
         self,
         manifest,
@@ -1839,15 +1894,14 @@ class HarnessExecutionService:
                     bound_config: dict[str, Any] = prior.get("configuration") or {}
                     # #1130: that stored configuration was written by whichever run minted this
                     # instance, and a seeded app's sub-harness id is the SAME on every run, so
-                    # without this the second and every later run writes its artifacts under the
-                    # first run's producer/graph/working tree. Merge — never replace — so keys the
-                    # manifest or the org authored survive; push it back, because the dispatch
-                    # reads the registry's PERSISTED row, not anything computed here. A failure
-                    # raises RegistryError out of this block, which fails the whole setup: the run
-                    # never dispatches under a stale identity.
-                    if per_run and any(bound_config.get(k) != v for k, v in per_run.items()):
-                        bound_config = {**bound_config, **per_run}
-                        await self._registry.update_configuration(instance_id, bound_config)
+                    # without this the second and every later run shows the first run's
+                    # producer/graph/working tree. Merge — never replace — so keys the manifest or
+                    # the org authored survive. What DISPATCH trusts is the run context carried on
+                    # each execute (`_build_runnable`), not this row; the push keeps the stored
+                    # state coherent and feeds the model-facing schema below.
+                    bound_config = await self._rebind_stored_configuration(
+                        instance_id, bound_config, per_run
+                    )
                 elif needed and not all(t in mappings for t in needed):
                     # #663: a fresh mint could never be configured (creation takes no credentials
                     # and nothing here could bind them) — bind the org's configured instance.
