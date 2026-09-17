@@ -2719,7 +2719,14 @@ paths:
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "403": { $ref: "#/components/responses/Unauthorized" }
         "409": { $ref: "#/components/responses/ModelNotConnected" }
-        "422": { $ref: "#/components/responses/IdeaTooVague" }
+        "422":
+          description: >-
+            IDEA_TOO_VAGUE — the submitted text is below the deterministic length floor, checked
+            before any model call. MODEL_CREDENTIAL_REJECTED — the reader's model provider refused
+            the connected model key; the user replaces the key and tries again.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
   /v1/engine/compiler-runs:
     post:
       tags: [engine]
@@ -3436,6 +3443,7 @@ components:
                 - MODEL_NOT_CONNECTED
                 - IDEA_TOO_VAGUE
                 - MODEL_CREDENTIAL_REQUIRED
+                - MODEL_CREDENTIAL_REJECTED
             message:
               type: string
               minLength: 1
@@ -3970,6 +3978,15 @@ components:
         search refuses rather than degrading to keyless word-overlap under a "semantic" label.
         Distinct from MODEL_NOT_CONNECTED, which is about a model the REQUEST did not name: here
         the request is fine and the organisation's standing configuration is what is missing.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+    ModelCredentialRejected:
+      description: >-
+        A model credential is connected, but the model provider refused the key (401/403 from the
+        provider) (MODEL_CREDENTIAL_REJECTED). Distinct from MODEL_CREDENTIAL_REQUIRED, which means
+        no credential is connected: here the user has to replace the key, not connect one. The
+        message names no key and no credential.
       content:
         application/json:
           schema: { $ref: "#/components/schemas/ErrorEnvelope" }
