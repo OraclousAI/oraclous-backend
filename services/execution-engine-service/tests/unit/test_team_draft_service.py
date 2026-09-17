@@ -149,18 +149,29 @@ class _FakeDraftRepo:
         return True
 
 
+#: Distinguishes "no ``member_error_codes`` kwarg was passed" (the attribute must not exist at all
+#: — old fakes, and any row built before #1108's column existed, lack it outright) from an explicit
+#: ``None`` or ``{}`` (mirrors ``test_app_form_draft_service.py``'s ``_UNSET``, #1109).
+_UNSET: Any = object()
+
+_OP_DRAFTER_ROLE = "op-drafter"
+
+
 class _RunRow:
     def __init__(
         self,
         state: str,
         results: dict[str, Any] | None = None,
         manifest: dict[str, Any] | None = None,
+        member_error_codes: dict[str, str] | None = _UNSET,
     ) -> None:
         self.id = uuid.uuid4()
         self.state = state
         self.results = results or {}
         # the collect token's identity check reads the run's manifest name
         self.manifest = manifest or {"metadata": {"name": "refine-op-drafter"}}
+        if member_error_codes is not _UNSET:
+            self.member_error_codes = member_error_codes
 
 
 class _FakeTeamRuns:
@@ -178,8 +189,9 @@ class _FakeTeamRuns:
         state: str,
         results: dict[str, Any] | None = None,
         manifest: dict[str, Any] | None = None,
+        member_error_codes: dict[str, str] | None = _UNSET,
     ) -> _RunRow:
-        row = _RunRow(state, results, manifest)
+        row = _RunRow(state, results, manifest, member_error_codes)
         self.runs[row.id] = row
         return row
 
@@ -719,6 +731,107 @@ async def test_refine_nl_failed_drafter_run_is_a_422() -> None:
     with pytest.raises(TeamRunError) as exc:
         await svc.refine_nl(row.id, _principal(), op_drafter_run_id=failed.id)
     assert exc.value.status_code == 422
+
+
+# ── the op-drafter's own run failing on a refused key (#1109) ────────────────
+#
+# Same matrix as #1108/#1109's form-drafter check (``test_app_form_draft_service.py``), applied to
+# ``_await_op_drafter`` — reached through ``refine_nl``'s collect path the same way the identity
+# and generic-failure checks above are.
+
+
+async def test_the_op_drafters_credential_rejection_is_named_not_generic() -> None:
+    """The provider refused the caller's OWN key mid-draft. That is fixable, unlike a model that
+    answered badly, so it gets a code the console can act on rather than the generic
+    ``op_drafter_failed`` 422 every other failed-drafter-run gets."""
+    svc, _repo, team_runs = _service()
+    row, _ = await svc.create(
+        _principal(), name="d", manifest=_team([_member("a")]), sub_harnesses={}
+    )
+    failed = team_runs.seed(
+        "FAILED", member_error_codes={_OP_DRAFTER_ROLE: "llm_credential_rejected"}
+    )
+    with pytest.raises(TeamRunError) as exc:
+        await svc.refine_nl(row.id, _principal(), op_drafter_run_id=failed.id)
+    assert exc.value.status_code == 422
+    assert getattr(exc.value, "error_code", None) == "MODEL_CREDENTIAL_REJECTED"
+
+
+async def test_a_different_token_on_the_op_drafter_role_stays_the_generic_refusal() -> None:
+    svc, _repo, team_runs = _service()
+    row, _ = await svc.create(
+        _principal(), name="d", manifest=_team([_member("a")]), sub_harnesses={}
+    )
+    failed = team_runs.seed("FAILED", member_error_codes={_OP_DRAFTER_ROLE: "some_other_failure"})
+    with pytest.raises(TeamRunError) as exc:
+        await svc.refine_nl(row.id, _principal(), op_drafter_run_id=failed.id)
+    assert exc.value.status_code == 422
+    assert getattr(exc.value, "error_code", None) is None
+
+
+async def test_an_empty_member_error_codes_on_the_op_drafter_stays_the_generic_refusal() -> None:
+    svc, _repo, team_runs = _service()
+    row, _ = await svc.create(
+        _principal(), name="d", manifest=_team([_member("a")]), sub_harnesses={}
+    )
+    failed = team_runs.seed("FAILED", member_error_codes={})
+    with pytest.raises(TeamRunError) as exc:
+        await svc.refine_nl(row.id, _principal(), op_drafter_run_id=failed.id)
+    assert exc.value.status_code == 422
+    assert getattr(exc.value, "error_code", None) is None
+
+
+async def test_an_op_drafter_row_with_no_member_error_codes_attr_stays_the_generic_refusal() -> (
+    None
+):
+    """Old fakes (and any row built before #1108's column existed) lack the attribute outright —
+    the check has to tolerate absence, not just an empty dict or ``None``."""
+    svc, _repo, team_runs = _service()
+    row, _ = await svc.create(
+        _principal(), name="d", manifest=_team([_member("a")]), sub_harnesses={}
+    )
+    failed = team_runs.seed("FAILED")
+    assert not hasattr(failed, "member_error_codes")
+    with pytest.raises(TeamRunError) as exc:
+        await svc.refine_nl(row.id, _principal(), op_drafter_run_id=failed.id)
+    assert exc.value.status_code == 422
+    assert getattr(exc.value, "error_code", None) is None
+
+
+async def test_the_token_on_a_different_role_stays_the_op_drafter_generic_refusal() -> None:
+    """The rejection names some OTHER member of the drafting team — the op-drafter team only ever
+    has one member today, but the check has to key off the role, not "any rejection happened"."""
+    svc, _repo, team_runs = _service()
+    row, _ = await svc.create(
+        _principal(), name="d", manifest=_team([_member("a")]), sub_harnesses={}
+    )
+    failed = team_runs.seed(
+        "FAILED", member_error_codes={"some-other-role": "llm_credential_rejected"}
+    )
+    with pytest.raises(TeamRunError) as exc:
+        await svc.refine_nl(row.id, _principal(), op_drafter_run_id=failed.id)
+    assert exc.value.status_code == 422
+    assert getattr(exc.value, "error_code", None) is None
+
+
+async def test_other_terminal_op_drafter_states_are_unaffected_even_with_the_token_present() -> (
+    None
+):
+    """REJECTED / COST_BUDGET are unrelated to a credential refusal — the new check is scoped to
+    FAILED only, so a same-token row in either state still gets the generic refusal, not the
+    named one (``_await_op_drafter`` already treats any non-SUCCEEDED terminal generically)."""
+    svc, _repo, team_runs = _service()
+    row, _ = await svc.create(
+        _principal(), name="d", manifest=_team([_member("a")]), sub_harnesses={}
+    )
+    for state in ("REJECTED", "COST_BUDGET"):
+        failed = team_runs.seed(
+            state, member_error_codes={_OP_DRAFTER_ROLE: "llm_credential_rejected"}
+        )
+        with pytest.raises(TeamRunError) as exc:
+            await svc.refine_nl(row.id, _principal(), op_drafter_run_id=failed.id)
+        assert exc.value.status_code == 422, state
+        assert getattr(exc.value, "error_code", None) is None, state
 
 
 async def test_refine_nl_collect_rejects_a_non_op_drafter_run() -> None:

@@ -192,6 +192,41 @@ def test_answer_roles_is_absent_from_the_list_item() -> None:
     assert "answer_roles" not in TeamRunListItem.model_fields
 
 
+# ── #1109: member_error_codes — per-member curated failure token, additive on the detail read ──
+# RED until the [impl] adds the field + the None→{} coercion (mirrors member_status). Item 1 ruling:
+# NEVER on TeamRunListItem, and the key is ALWAYS present on the detail read (never missing/null) so
+# a caller can tell "no failures" from "not checked".
+
+
+def test_member_error_codes_is_carried_on_the_detail_read() -> None:
+    row = _Row(manifest=None)
+    row.member_error_codes = {"reader": "llm_credential_rejected"}
+    out = TeamRunOut.model_validate(row)
+    assert out.member_error_codes == {"reader": "llm_credential_rejected"}
+    assert out.model_dump()["member_error_codes"] == {"reader": "llm_credential_rejected"}
+
+
+def test_member_error_codes_none_degrades_to_empty_dict() -> None:
+    row = _Row(manifest=None)
+    row.member_error_codes = None  # an unflushed/Python-constructed row (route unit tests)
+    out = TeamRunOut.model_validate(row)
+    assert out.member_error_codes == {}
+    assert "member_error_codes" in out.model_dump()  # key present, never missing
+
+
+def test_member_error_codes_missing_attribute_defaults_to_empty_dict() -> None:
+    # a pre-#1108 row (member_error_codes never populated) never 500s the detail read.
+    row = _Row(manifest=None)
+    out = TeamRunOut.model_validate(row)
+    assert out.member_error_codes == {}
+
+
+def test_member_error_codes_is_absent_from_the_list_item() -> None:
+    from oraclous_execution_engine_service.schema.engine_schemas import TeamRunListItem
+
+    assert "member_error_codes" not in TeamRunListItem.model_fields
+
+
 def test_status_out_carries_grounding_score_next_to_cost() -> None:
     from datetime import UTC, datetime
 

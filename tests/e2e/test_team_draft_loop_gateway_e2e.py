@@ -685,6 +685,84 @@ def test_the_whole_loop_compile_draft_refine_go_through_the_gateway(
     assert {m["role"] for m in doc["members"]} <= peeled_roles
 
 
+def _bogus_credential(c: httpx.Client, user: dict) -> tuple[str, str]:
+    """#1109: a key the provider will actually reject, stored through the real credential API —
+    mirrors #1108's ``test_a_key_the_provider_refuses_is_named_as_such``."""
+    bogus_key = "sk-or-v1-" + uuid.uuid4().hex + uuid.uuid4().hex
+    cred = c.post(
+        "/credentials/",
+        json={
+            "tool_id": str(uuid.uuid4()),
+            "user_id": user["user_id"],
+            "name": "refused model key",
+            "provider": "openrouter",
+            "cred_type": "api_key",
+            "credential": {"api_key": bogus_key},
+        },
+    )
+    assert cred.status_code == 201, cred.text
+    return str(cred.json()["id"]), bogus_key
+
+
+def _refine_nl_collect(
+    c: httpx.Client, draft_id: str, payload: dict, tries: int = 40
+) -> httpx.Response:
+    """Same 202-collect protocol as ``_refine_nl``, but returns the raw response on ANY settled
+    status (200 or an error) instead of failing on a non-200 — needed to inspect a refusal."""
+    resp = c.post(f"/v1/engine/team-drafts/{draft_id}/refine-nl", json=payload)
+    for _ in range(tries):
+        if resp.status_code != 202:
+            return resp
+        run_id = resp.json()["op_drafter_run_id"]
+        time.sleep(3)
+        resp = c.post(
+            f"/v1/engine/team-drafts/{draft_id}/refine-nl",
+            json={"op_drafter_run_id": run_id, "dry_run": payload.get("dry_run", False)},
+        )
+    pytest.fail(f"the op-drafter never settled: {resp.status_code} {resp.text}")
+
+
+@requires_byom
+@pytest.mark.byom
+def test_refine_nl_with_a_refused_model_key_is_a_credential_rejected_422(
+    register: Callable[..., dict], gateway_client: Callable[[str], httpx.Client]
+) -> None:
+    """#1109: the op-drafter's OWN run fails because the provider refuses the caller's key —
+    ``refine-nl`` answers 422 ``MODEL_CREDENTIAL_REJECTED`` (never the generic
+    ``op_drafter_failed`` 422 every other failed-drafter-run gets), and neither the rejected key
+    nor its credential id ever reach the caller. The draft itself is entirely deterministic (no LLM
+    needed to create it) — only ``refine-nl``'s model call needs the harness LIVE."""
+    user = register(f"nlrefused{uuid.uuid4().hex[:10]} u")
+    c = gateway_client(user["token"])
+    credential_id, bogus_key = _bogus_credential(c, user)
+
+    created = c.post(
+        "/v1/engine/team-drafts",
+        json={
+            "name": "refused-key-check",
+            "manifest": _team(user["org_id"], [_agent("researcher")]),
+            "sub_harnesses": {},
+        },
+    )
+    assert created.status_code == 201, created.text
+    draft = created.json()["draft"]
+
+    resp = _refine_nl_collect(
+        c,
+        draft["id"],
+        {
+            "instruction": "Add a reasoning-only member named 'fact-checker' that runs after"
+            " every other member.",
+            "models": [_model(credential_id)],
+        },
+    )
+
+    assert resp.status_code == 422, resp.text
+    assert resp.json()["error"]["code"] == "MODEL_CREDENTIAL_REJECTED", resp.text
+    assert bogus_key not in resp.text, resp.text
+    assert credential_id not in resp.text, resp.text
+
+
 @requires_byom
 @pytest.mark.byom
 def test_refine_nl_blocked_op_leaves_the_draft_untouched_end_to_end(

@@ -10,6 +10,14 @@ ported into this service but never called, while the module's own docstring prom
 
 Both halves are pinned here: the refusal is typed and carries none of the provider's own words
 (rule 8), and a rejection actually drops the cached credential so the next search re-resolves.
+
+#1109 ruling 3 splits a THIRD case out of the same call: a 429/quota EXHAUSTED credential is
+neither "bad key" (401/403) nor "provider unreachable" — it raises a new
+``QueryEmbeddingCredentialExhausted`` (a sibling of ``QueryEmbeddingCredentialRejected``, both under
+``QueryEmbeddingUnavailable``) and still drops the cached credential, same as a rejection.
+``QueryEmbeddingCredentialExhausted`` does not exist yet; every reference to it is FUNCTION-LOCAL
+(`.claude/rules/tests-seam-imports.md`) so this module collects cleanly and hard-fails RED
+(ImportError) until the `[impl]` lands.
 """
 
 from __future__ import annotations
@@ -151,3 +159,63 @@ async def test_a_rejection_of_one_organisation_leaves_another_organisations_cred
 
     assert credential_cache.get_credential(_ORG, "cred-1") is None
     assert credential_cache.get_credential(other, "cred-1") is not None
+
+
+# ── an EXHAUSTED credential is a distinct refusal from a REJECTED one (#1109 ruling 3) ──────────
+
+#: Shaped like the real thing — a 429/quota provider message, which must classify differently from
+#: a 401/403 one even though both currently trip the SAME shared `is_credential_failure` marker
+#: list this service's embed call is gated on.
+_LEAKY_429 = "RateLimitError: 429 insufficient_quota from http://broker.internal:8004/v1/embeddings"
+
+
+def _exhausted_exception_class():
+    from oraclous_knowledge_retriever_service.services.retrieval_service import (  # noqa: PLC0415
+        QueryEmbeddingCredentialExhausted,
+    )
+
+    return QueryEmbeddingCredentialExhausted
+
+
+async def test_a_quota_exhausted_credential_raises_a_distinct_refusal_from_a_rejected_one() -> None:
+    """The fix for the two differs — replace the key vs. wait/upgrade — so the caller must be able
+    to tell them apart rather than both collapsing into one "credential is bad" refusal."""
+    exhausted = _exhausted_exception_class()
+    svc = _service(RuntimeError(_LEAKY_429))
+    with _ctx(), pytest.raises(exhausted) as caught:
+        await svc.semantic(graph_id="g1", query="anything", top_k=10)
+
+    assert not isinstance(caught.value, QueryEmbeddingCredentialRejected)
+
+
+async def test_the_exhausted_refusal_is_still_a_queryembeddingunavailable() -> None:
+    """A caller catching the parent (as the route already does) must still catch this new sibling
+    — it is a NARROWER `QueryEmbeddingUnavailable`, never a disjoint exception hierarchy."""
+    exhausted = _exhausted_exception_class()
+    assert issubclass(exhausted, QueryEmbeddingUnavailable)
+
+    svc = _service(RuntimeError(_LEAKY_429))
+    with _ctx(), pytest.raises(QueryEmbeddingUnavailable):
+        await svc.semantic(graph_id="g1", query="anything", top_k=10)
+
+
+async def test_an_exhausted_credential_also_drops_the_cached_credential() -> None:
+    """Same self-healing promise as a rejection: an exhausted key is still resolved fresh next
+    call, in case the org has since rotated it."""
+    exhausted = _exhausted_exception_class()
+    credential_cache.put_credential(_ORG, _StubCredential())
+    credential_cache.put_default_id(_ORG, "model", "cred-1")
+
+    svc = _service(RuntimeError(_LEAKY_429))
+    with _ctx(), pytest.raises(exhausted):
+        await svc.semantic(graph_id="g1", query="anything", top_k=10)
+
+    assert credential_cache.get_credential(_ORG, "cred-1") is None
+    assert credential_cache.get_default_id(_ORG, "model") is None
+
+
+async def test_hybrid_also_raises_the_exhausted_refusal_rather_than_a_generic_one() -> None:
+    exhausted = _exhausted_exception_class()
+    svc = _service(RuntimeError(_LEAKY_429))
+    with _ctx(), pytest.raises(exhausted):
+        await svc.hybrid(graph_id="g1", query="anything", top_k=10)
