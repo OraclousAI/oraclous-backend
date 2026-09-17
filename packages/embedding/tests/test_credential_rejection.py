@@ -16,7 +16,10 @@ hard-fails RED (ImportError) until the `[impl]` lands.
 
 from __future__ import annotations
 
+import pytest
 from oraclous_embedding import CREDENTIAL_FAULT_MARKERS, is_credential_failure
+
+pytestmark = pytest.mark.unit
 
 # Realistic wrapped-exception text — the marker survives only in the stringified message (both the
 # provider SDKs and the extraction library wrap the original exception in their own type), matching
