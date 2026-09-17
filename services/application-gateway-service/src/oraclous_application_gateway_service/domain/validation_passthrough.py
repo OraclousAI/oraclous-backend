@@ -51,6 +51,8 @@ _RELAYABLE_CODES: frozenset[str] = frozenset(
         # refusal was added to remove. Still just the token: the upstream's own message can name
         # an internal host, and none of it crosses.
         ErrorCode.MODEL_CREDENTIAL_REQUIRED.value,
+        # #1108: the provider refused the connected key — "replace the key", not "connect one".
+        ErrorCode.MODEL_CREDENTIAL_REJECTED.value,
     }
 )
 _NON_TOKEN = re.compile(r"[^A-Z0-9_]")
