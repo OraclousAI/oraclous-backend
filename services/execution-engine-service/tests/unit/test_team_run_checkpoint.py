@@ -22,6 +22,15 @@ The owner's ruling on the issue (2026-08-16) settles the four open decisions:
 RED until the ``checkpoint`` repository method and the drive-side wiring land. The engine's own
 modules already exist, so they are imported at module level; nothing here reaches for an unbuilt
 package.
+
+#1069 (CTO ruling, 2026-09-17) later drops decision 2's own "at least one settled member" guard:
+``_backfill_unreached`` no longer withholds the backfill from a drive that dies before anything
+settles. Every member with no terminal status — no entry, or a durable "running" one — is rewritten
+to "failed", even when ``member_status`` is empty, and ``/rerun`` transitions the run to QUEUED
+instead of answering 409. The run row already carries the manifest, inputs and model binding, so a
+re-run is exactly what the user would otherwise rebuild by hand with a fresh POST. Only a FAILED run
+whose members all settled ``succeeded``/``partial`` with no outcome-critical fault (a revision-limit
+rejection, a budget halt) still answers 409 — that path never reaches this backfill at all.
 """
 
 from __future__ import annotations
@@ -35,7 +44,7 @@ from typing import Any
 import pytest
 from celery.exceptions import SoftTimeLimitExceeded
 from oraclous_execution_engine_service.models.team_run import EngineTeamRun
-from oraclous_execution_engine_service.services.team_run_service import TeamRunError, TeamRunService
+from oraclous_execution_engine_service.services.team_run_service import TeamRunService
 from oraclous_governance import Principal, PrincipalType
 
 pytestmark = pytest.mark.unit
@@ -439,15 +448,24 @@ async def test_a_wall_clock_breach_is_rerunnable_and_resumes_only_the_unfinished
     assert harness.roles == ["a", "b", "b"]  # 'a' was NOT re-dispatched; only 'b' re-ran
 
 
-def _kill_after_one_checkpoint(monkeypatch: Any, exc: BaseException) -> dict[str, Any]:
-    """Stand in for the worker being killed mid-drive: the orchestrator checkpoints one finished
-    member, then ``exc`` is raised into the running task.
+def _kill_after_one_checkpoint(
+    monkeypatch: Any,
+    exc: BaseException,
+    *,
+    checkpoint_call: tuple[dict[str, Any], dict[str, str]] | None = None,
+) -> dict[str, Any]:
+    """Stand in for the worker being killed mid-drive: the orchestrator checkpoints once, then
+    ``exc`` is raised into the running task.
 
     The orchestrator is replaced rather than driven to a real timeout because the two kills this
     issue is about arrive from OUTSIDE the DAG — a Celery signal, not a member failing — and there
     is no honest way to make a member's own error escape ``run_team``'s per-member handler. What is
     under test here is the DRIVE's handling of a mid-run death; the orchestrator's own checkpoint
     emission is proven for real in ``packages/ohm/tests/test_orchestrate_checkpoint.py``.
+
+    ``checkpoint_call`` is the ``(results, member_status)`` pair handed to the checkpoint hook —
+    defaults to one finished member ('a' succeeded). A caller can instead hand it a non-terminal
+    shape (e.g. ``{"a": "running"}``) to pin #1069's drive-death backfill on that exact shape.
 
     Returns a dict the test can inspect afterwards. ``wired`` records whether the drive passed a
     checkpoint hook down at all — asserted OUTSIDE the stub, because an assertion raised inside it
@@ -456,12 +474,16 @@ def _kill_after_one_checkpoint(monkeypatch: Any, exc: BaseException) -> dict[str
     from oraclous_execution_engine_service.services import team_run_service as trs
 
     seen: dict[str, Any] = {"wired": False}
+    results, member_status = checkpoint_call or (
+        {"a": {"output": "a-out", "status": "SUCCEEDED"}},
+        {"a": "succeeded"},
+    )
 
     async def _killed(*args: Any, **kw: Any) -> Any:
         hook = kw.get("on_checkpoint")
         seen["wired"] = hook is not None
         if hook is not None:
-            await hook({"a": {"output": "a-out", "status": "SUCCEEDED"}}, {"a": "succeeded"})
+            await hook(results, member_status)
         raise exc
 
     monkeypatch.setattr(trs, "run_team_hybrid", _killed)
@@ -588,12 +610,12 @@ async def test_a_reaped_run_never_strands_a_member_on_running() -> None:
     assert requeued.state == "QUEUED"
 
 
-async def test_a_run_reaped_with_only_a_running_member_is_still_a_409() -> None:
-    # The guard's half of the same bug. "at least one settled member" must mean SETTLED — a lone
-    # "running" entry is a member that was dispatched and delivered nothing, which is exactly the
-    # no-partial-work case ADR-042 answers 409 on. Counting it as settled would let #828's
-    # dispatch-time write silently narrow that 409 on the commonest failure path of all: a run that
-    # dies before its first member delivers.
+async def test_a_reaped_run_with_only_a_running_member_backfills_and_is_rerunnable() -> None:
+    # #1069 ruling: the old guard treated "at least one settled member" as the bar for a re-run
+    # target, so a lone "running" entry — dispatched, then killed, nothing delivered — stayed a
+    # 409 forever. The ruling drops that guard: "running" is rewritten to "failed" regardless, and
+    # /rerun requeues rather than refusing. The run row already carries the manifest, inputs and
+    # model binding a fresh POST would rebuild by hand, so re-running it is the cheaper recovery.
     repo = FakeTeamRunRepo()
     svc, _ = _svc(repo, ScriptedHarness())
     killed = EngineTeamRun(
@@ -612,16 +634,17 @@ async def test_a_run_reaped_with_only_a_running_member_is_still_a_409() -> None:
 
     await svc.reap_stale(FakeMaintenance([killed]), older_than=_dt.datetime.now(_dt.UTC))
     assert killed.state == "FAILED"
+    assert killed.member_status == {"a": "failed"}
 
-    with pytest.raises(TeamRunError) as ei:
-        await svc.rerun(killed.id, _principal())
-    assert ei.value.status_code == 409 and ei.value.error_type == "nothing_to_rerun"
+    requeued = await svc.rerun(killed.id, _principal())
+    assert requeued.state == "QUEUED"
 
 
-async def test_a_run_reaped_before_any_member_finished_is_still_a_409() -> None:
-    # The backfill must not manufacture a re-run target out of nothing. A run killed before ANY
-    # member settled has no partial work to keep, so a fresh POST is the right recovery and
-    # /rerun stays a 409 — the ADR-042 nothing_to_rerun path is narrowed, not deleted.
+async def test_a_reaped_run_with_no_checkpointed_member_backfills_and_is_rerunnable() -> None:
+    # #1069 ruling: even a run killed before ANY member ever checkpointed anything —
+    # ``member_status`` still ``{}`` — gets every manifest member backfilled to "failed". The guard
+    # that reserved 409 for exactly this case ("no partial work to keep") is gone: the row already
+    # has everything a fresh POST would need, so a deterministic re-run replaces it.
     repo = FakeTeamRunRepo()
     svc, _ = _svc(repo, ScriptedHarness())
     killed = EngineTeamRun(
@@ -640,22 +663,18 @@ async def test_a_run_reaped_before_any_member_finished_is_still_a_409() -> None:
 
     await svc.reap_stale(FakeMaintenance([killed]), older_than=_dt.datetime.now(_dt.UTC))
     assert killed.state == "FAILED"
+    assert killed.member_status == {"a": "failed"}
 
-    with pytest.raises(TeamRunError) as ei:
-        await svc.rerun(killed.id, _principal())
-    assert ei.value.status_code == 409 and ei.value.error_type == "nothing_to_rerun"
+    requeued = await svc.rerun(killed.id, _principal())
+    assert requeued.state == "QUEUED"
 
 
-async def test_a_drive_that_dies_before_any_member_settles_is_still_a_409() -> None:
-    # The in-process twin of the test above, and they must agree. The 50-minute soft limit and the
-    # 60-minute SIGKILL are the same event on two clocks; if the handler backfills unconditionally
-    # while the reaper backfills only over real work, the same run answers /rerun differently
-    # depending on which one got to it.
-    #
-    # The answer pinned here is the reaper's: backfill only when at least one member was
-    # checkpointed. A drive that dies before member 1 — an unreachable harness, an immediate kill —
-    # has no partial work to recover, so a fresh POST is the right recovery and today's
-    # nothing_to_rerun behaviour on the commonest failure path is preserved.
+async def test_a_drive_that_dies_before_any_member_settles_backfills_and_is_rerunnable() -> None:
+    # The in-process twin of the "no checkpointed member" reaper test above, and per the ruling
+    # they now agree: the 50-minute soft limit and the 60-minute SIGKILL are the same event on two
+    # clocks, and neither withholds the backfill just because nothing settled first. 'a' is still
+    # in flight when the wall clock breaches, so ``settled_status`` (the except handler's own
+    # terminal-only accumulator) is empty — every declared member is still backfilled to "failed".
     repo = FakeTeamRunRepo()
     svc, _ = _svc(
         repo, ScriptedHarness(delays={"a": 2.0})
@@ -670,15 +689,40 @@ async def test_a_drive_that_dies_before_any_member_settles_is_still_a_409() -> N
     )
 
     assert row.state == "FAILED"
-    # #828: 'a' was dispatched (so it reads "running", not absent), but never SETTLED — the
-    # backfill guard keys off settled work (``settled_status``, terminal statuses only), which stays
-    # empty here, so nothing_to_rerun below is unchanged.
-    assert row.member_status == {"a": "running"}
+    assert row.member_status == {"a": "failed", "b": "failed"}
     assert not (row.results or {})
 
-    with pytest.raises(TeamRunError) as ei:
-        await svc.rerun(row.id, _principal())
-    assert ei.value.status_code == 409 and ei.value.error_type == "nothing_to_rerun"
+    requeued = await svc.rerun(row.id, _principal())
+    assert requeued.state == "QUEUED"
+
+
+async def test_a_drive_that_dies_with_only_a_running_member_backfills_and_is_rerunnable(
+    monkeypatch: Any,
+) -> None:
+    # The in-process twin of the "only a running member" reaper test above. The except handler's own
+    # ``settled_status`` can itself hold a non-terminal "running" entry (mirroring the durable row's
+    # #828 shape); per the ruling it is rewritten to "failed" the same as an absent entry, with no
+    # special case for "was anything ever settled".
+    repo = FakeTeamRunRepo()
+    svc, _ = _svc(repo, ScriptedHarness())
+    seen = _kill_after_one_checkpoint(
+        monkeypatch, SoftTimeLimitExceeded(), checkpoint_call=({}, {"a": "running"})
+    )
+
+    row = await _run(
+        svc,
+        _principal(),
+        manifest=_team([_agent("a")]),
+        sub_harnesses={},
+        gate_decisions={},
+    )
+
+    assert seen["wired"], "the drive did not wire a checkpoint hook into the orchestrator"
+    assert row.state == "FAILED"
+    assert row.member_status == {"a": "failed"}
+
+    requeued = await svc.rerun(row.id, _principal())
+    assert requeued.state == "QUEUED"
 
 
 # ── decision 4: loop teams get the same durability ───────────────────────────────────────────────
