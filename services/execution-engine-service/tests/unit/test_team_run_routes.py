@@ -206,6 +206,22 @@ async def test_get_team_run_includes_answer_roles() -> None:  # #995
     assert resp.json()["answer_roles"] == ["linker"]
 
 
+async def test_get_team_run_includes_member_error_codes() -> None:  # #1109
+    manifest = {"kind": "team", "members": [{"role": "reader", "kind": "agent", "depends_on": []}]}
+    row = _queued_row(manifest)
+    row.state = "FAILED"
+    row.member_error_codes = {"reader": "llm_credential_rejected"}
+
+    class FakeService:
+        async def get(self, run_id: uuid.UUID, principal: Principal) -> EngineTeamRun:
+            return row
+
+    async with await _client(FakeService()) as c:
+        resp = await c.get(f"/v1/engine/team-runs/{row.id}")
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["member_error_codes"] == {"reader": "llm_credential_rejected"}
+
+
 async def test_get_status_returns_progress_health_cost() -> None:  # ADR-037 D5 / #472
     from oraclous_execution_engine_service.services.team_run_service import TeamRunStatus
 
