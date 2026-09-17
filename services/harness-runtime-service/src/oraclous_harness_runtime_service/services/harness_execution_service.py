@@ -157,13 +157,33 @@ class TrustedBindings(NamedTuple):
 #: #1111: the shape a tool execution's curated ``error_type`` may take (the registry's connectors
 #: spell them ``PROVIDER_RATE_LIMITED``, ``INVALID_INPUT``, ...). Anything else is not carried.
 _EXECUTION_ERROR_TYPE = re.compile(r"^[A-Z0-9_]{1,64}$")
+class _ProviderError(NamedTuple):
+    """How one curated provider token is classified, plus this service's own words for it.
+
+    ``effect_unknown`` (#1111 review round 1, B1) says whether the failing call MAY ALREADY have
+    taken effect at the provider — see ``RegistryError``. It is separate from ``transient``: a
+    refusal is transient AND provably inert, while a lost answer is transient and ambiguous.
+    """
+
+    transient: bool
+    effect_unknown: bool
+    meaning: str
+
+
 #: #1111 decision 2: the curated provider tokens the loop acts on, with whether a retry may clear
 #: them and this service's own words for each. For these the registry's ``error_message`` is not
 #: relayed — the token says everything a caller needs, and nothing upstream-authored crosses.
-_PROVIDER_ERROR_TYPES: dict[str, tuple[bool, str]] = {
-    "PROVIDER_RATE_LIMITED": (True, "the tool's provider is rate-limiting this organisation"),
-    "PROVIDER_QUOTA_EXHAUSTED": (False, "the tool's credential has no remaining quota"),
-    "PROVIDER_AUTH_FAILED": (False, "the tool's credential was rejected by its provider"),
+_PROVIDER_ERROR_TYPES: dict[str, _ProviderError] = {
+    # The provider refused the call outright, before doing any of the work it asks for.
+    "PROVIDER_RATE_LIMITED": _ProviderError(
+        True, False, "the tool's provider is rate-limiting this organisation"
+    ),
+    "PROVIDER_QUOTA_EXHAUSTED": _ProviderError(
+        False, False, "the tool's credential has no remaining quota"
+    ),
+    "PROVIDER_AUTH_FAILED": _ProviderError(
+        False, False, "the tool's credential was rejected by its provider"
+    ),
 }
 
 
@@ -180,11 +200,11 @@ def _tool_execution_error(execution: dict[str, Any]) -> RegistryError:
     )
     provider = _PROVIDER_ERROR_TYPES.get(error_type) if error_type is not None else None
     if provider is not None:
-        transient, meaning = provider
         return RegistryError(
-            f"tool execution failed ({error_type}): {meaning}",
+            f"tool execution failed ({error_type}): {provider.meaning}",
             error_code=error_type,
-            transient=transient,
+            transient=provider.transient,
+            effect_unknown=provider.effect_unknown,
         )
     detail = execution.get("error_message") or execution.get("status")
     return RegistryError(f"tool execution failed: {detail}", error_code=error_type)

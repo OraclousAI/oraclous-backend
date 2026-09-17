@@ -33,7 +33,14 @@ class ToolSpec:
     tool is a repo-scoped sink/connector configured with one. Unset (``None``) for every tool
     whose instance binds no repo — ``repo`` then remains, if the schema declares it at all, an
     ordinary call argument. When set, ``dispatch_payload`` refuses a model-supplied ``repo`` that
-    disagrees with it instead of letting the call reach the registry."""
+    disagrees with it instead of letting the call reach the registry.
+
+    ``result_kind`` (#804, §CITE rev6) is the operation's OWN declaration of what its result is —
+    ``"single"``/``"collection"`` for content that exists independently of the call, ``"status"``
+    for a receipt that names nothing outside it. Carried here verbatim, never invented: ``None``
+    means the descriptor declared nothing (every MCP-imported operation), which is a different
+    fact from ``"status"`` and must stay distinguishable from it. The loop reads it as the only
+    available read-only signal when deciding whether a half-finished call may be re-dispatched."""
 
     name: str
     description: str
@@ -43,6 +50,7 @@ class ToolSpec:
     strict: bool = False
     nullable_keys: frozenset[str] = frozenset()
     bound_repo: str | None = None
+    result_kind: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

@@ -143,6 +143,55 @@ def _is_transient(exc: BaseException) -> bool:
     return bool(getattr(exc, "transient", False))
 
 
+#: #1111 (review round 1, B1): the ``result_kind`` values that prove an operation only READS.
+#: §CITE rev6 (#804) defines these two as "the result names content that exists independently of
+#: the call" — a retrieval, whose warrant is a source the call did not create. Every mutating
+#: operation in the catalogue declares ``status`` instead (``write``, ``edit``, ``bash``, ``send``,
+#: ``deliver``, ``run``, ``ingest``), because what a write returns is a receipt of the action.
+#:
+#: ``status`` is deliberately NOT read as the other side of that split: it also covers harmless
+#: listings and pure computations, so it conflates "this changed nothing" with "this changed
+#: something and told you so", and only one of those may be re-dispatched. There is no dedicated
+#: side-effect / idempotency marker anywhere on the descriptor, the OHM binding or the registry's
+#: execute contract to read instead (searched; none exists), so this is the whole of the available
+#: signal — and everything it does not positively clear stays unretryable.
+_READ_ONLY_RESULT_KINDS = frozenset({"single", "collection"})
+
+
+def _effect_unknown(exc: BaseException) -> bool:
+    """Whether a failed dispatch MAY ALREADY have taken effect at the provider.
+
+    Defaults to ``True`` for an exception that does not say. Only a dispatch layer that marked the
+    failure ``transient`` can reach a retry at all, and every such layer here sets this field
+    explicitly; anything else claiming transience without classifying its effect is exactly the
+    case that must not be re-dispatched.
+    """
+    return bool(getattr(exc, "effect_unknown", True))
+
+
+def _safe_to_retry(exc: BaseException, spec: ToolSpec) -> bool:
+    """#1111 (review round 1, B1): whether this failed tool call may be dispatched AGAIN.
+
+    ``transient`` alone is not enough. It says a retry *could* succeed; it does not say the first
+    call did nothing. A write-capable connector whose answer was lost after the provider already
+    acted is transient and duplicating — a second row appended, a second message sent, with
+    nothing in the transcript to show it happened. So a retry needs one of two proofs:
+
+    * the failure provably took no effect (a refusal before dispatch: a 429, a connection that was
+      never established, a provider that rate-limited the call outright), or
+    * the operation itself cannot take an effect — it only reads (``_READ_ONLY_RESULT_KINDS``).
+
+    With neither, the call is not retried and falls through to today's feed-back-to-the-model path,
+    where the member sees the failure once and decides for itself. Duplicating a customer's write
+    is worse than surfacing a transient error.
+    """
+    if not _is_transient(exc):
+        return False
+    if not _effect_unknown(exc):
+        return True
+    return spec.result_kind in _READ_ONLY_RESULT_KINDS
+
+
 class _WallTimeBudgetExhausted(Exception):
     """#1067 (R1, item 2): internal signal — an in-flight ``llm.complete`` call was cut off because
     the run's OWN wall-clock budget ran out while it was awaiting, not because the retry loop chose
@@ -1623,17 +1672,22 @@ async def run_tool_use_loop(
         )
 
     async def _dispatch_with_retry(spec: ToolSpec, args: dict[str, Any]) -> dict[str, Any]:
-        """#1111 decision 2: dispatch one tool call, retrying a TRANSIENT failure (the dispatch
-        marks it ``transient``: a rate-limited provider, a registry 5xx/timeout/reset) with the
-        same backoff and bound as a transient LLM-call error, before the model sees any error.
-        A permanent failure, an exhausted bound, or a spent wall-time budget re-raises."""
+        """#1111 decision 2: dispatch one tool call, retrying a failure that is transient AND
+        SAFE TO REPEAT (``_safe_to_retry``) with the same backoff shape as a transient LLM-call
+        error, before the model sees any error. A permanent failure, one whose effect is unknown
+        for an operation that may write, an exhausted bound, or a spent wall-time budget
+        re-raises — and then follows today's feed-back-to-the-model path unchanged."""
         nonlocal recovery_retries
         attempt = 0
         while True:
             try:
                 return await dispatch(spec, args)
             except Exception as exc:  # noqa: BLE001
-                if attempt >= _LLM_MAX_RETRIES or not _is_transient(exc) or _over_wall_time():
+                if (
+                    attempt >= _LLM_MAX_RETRIES
+                    or not _safe_to_retry(exc, spec)
+                    or _over_wall_time()
+                ):
                     raise
                 await _async_sleep(_retry_delay(attempt, getattr(exc, "retry_after", None)))
                 if _over_wall_time():
