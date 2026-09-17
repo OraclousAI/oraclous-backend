@@ -103,6 +103,12 @@ def _source_manifest() -> dict[str, Any]:
     }
 
 
+#: Distinguishes "no ``member_error_codes`` kwarg was passed" (the attribute must not exist at all
+#: — old fakes, and any row built before #1108's column existed, lack it outright) from an explicit
+#: ``None`` or ``{}``.
+_UNSET: Any = object()
+
+
 class _RunRow:
     def __init__(
         self,
@@ -112,6 +118,7 @@ class _RunRow:
         manifest: dict[str, Any] | None = None,
         inputs: dict[str, Any] | None = None,
         organisation_id: uuid.UUID = _ORG,
+        member_error_codes: dict[str, str] | None = _UNSET,
     ) -> None:
         self.id = uuid.uuid4()
         self.state = state
@@ -119,6 +126,8 @@ class _RunRow:
         self.manifest = manifest or {"metadata": {"name": _DRAFTER_TEAM_NAME}}
         self.inputs = inputs
         self.organisation_id = organisation_id
+        if member_error_codes is not _UNSET:
+            self.member_error_codes = member_error_codes
 
 
 class _FakeTeamRuns:
@@ -389,3 +398,96 @@ async def test_collecting_a_token_that_names_no_run_is_a_404() -> None:
         await svc.suggest(_principal(), form_draft_run_id=uuid.uuid4())
 
     assert getattr(caught.value, "status_code", None) == 404
+
+
+# ── the drafter's own run failing (#1109) ─────────────────────────────────────
+#
+# These are about the DRAFTING run's own terminal state, not the source run's (the earlier
+# "a run that did not succeed is refused before the model" test) — reached via the collect path
+# the same way the identity checks above are, since the drafter is a real run the caller polls.
+
+
+async def test_the_drafters_credential_rejection_is_named_not_generic() -> None:
+    """The provider refused the caller's OWN key mid-draft. That is fixable, unlike a model that
+    answered badly, so it gets a code the console can act on rather than the generic
+    ``draft_failed`` 422 every other failed-drafter-run gets."""
+    svc, team_runs, _repo = _service()
+    failed = team_runs.seed(
+        _RunRow("FAILED", member_error_codes={_DRAFTER_ROLE: "llm_credential_rejected"})
+    )
+
+    with pytest.raises(_error()) as caught:
+        await svc.suggest(_principal(), form_draft_run_id=failed.id)
+
+    assert getattr(caught.value, "status_code", None) == 422
+    assert getattr(caught.value, "error_code", None) == "MODEL_CREDENTIAL_REJECTED"
+
+
+async def test_a_different_token_on_the_drafter_role_stays_the_generic_refusal() -> None:
+    svc, team_runs, _repo = _service()
+    failed = team_runs.seed(
+        _RunRow("FAILED", member_error_codes={_DRAFTER_ROLE: "some_other_failure"})
+    )
+
+    with pytest.raises(_error()) as caught:
+        await svc.suggest(_principal(), form_draft_run_id=failed.id)
+
+    assert getattr(caught.value, "status_code", None) == 422
+    assert getattr(caught.value, "error_code", None) is None
+
+
+async def test_an_empty_member_error_codes_stays_the_generic_refusal() -> None:
+    svc, team_runs, _repo = _service()
+    failed = team_runs.seed(_RunRow("FAILED", member_error_codes={}))
+
+    with pytest.raises(_error()) as caught:
+        await svc.suggest(_principal(), form_draft_run_id=failed.id)
+
+    assert getattr(caught.value, "status_code", None) == 422
+    assert getattr(caught.value, "error_code", None) is None
+
+
+async def test_a_row_with_no_member_error_codes_attribute_stays_the_generic_refusal() -> None:
+    """Old fakes (and any row built before #1108's column existed) lack the attribute outright —
+    the check has to tolerate absence, not just an empty dict or ``None``."""
+    svc, team_runs, _repo = _service()
+    failed = team_runs.seed(_RunRow("FAILED"))
+    assert not hasattr(failed, "member_error_codes")
+
+    with pytest.raises(_error()) as caught:
+        await svc.suggest(_principal(), form_draft_run_id=failed.id)
+
+    assert getattr(caught.value, "status_code", None) == 422
+    assert getattr(caught.value, "error_code", None) is None
+
+
+async def test_the_token_on_a_different_role_stays_the_generic_refusal() -> None:
+    """The rejection names some OTHER member of the drafting team — the drafting team only ever
+    has one member today, but the check has to key off the role, not "any rejection happened"."""
+    svc, team_runs, _repo = _service()
+    failed = team_runs.seed(
+        _RunRow("FAILED", member_error_codes={"some-other-role": "llm_credential_rejected"})
+    )
+
+    with pytest.raises(_error()) as caught:
+        await svc.suggest(_principal(), form_draft_run_id=failed.id)
+
+    assert getattr(caught.value, "status_code", None) == 422
+    assert getattr(caught.value, "error_code", None) is None
+
+
+async def test_other_terminal_states_are_unaffected_even_with_the_token_present() -> None:
+    """REJECTED / COST_BUDGET are unrelated to a credential refusal — the new check is scoped to
+    FAILED only, so a rejected or cost-capped run carrying the same token still gets the generic
+    refusal, not the new named one."""
+    svc, team_runs, _repo = _service()
+    for state in ("REJECTED", "COST_BUDGET"):
+        failed = team_runs.seed(
+            _RunRow(state, member_error_codes={_DRAFTER_ROLE: "llm_credential_rejected"})
+        )
+
+        with pytest.raises(_error()) as caught:
+            await svc.suggest(_principal(), form_draft_run_id=failed.id)
+
+        assert getattr(caught.value, "status_code", None) == 422, state
+        assert getattr(caught.value, "error_code", None) is None, state
