@@ -104,6 +104,40 @@ def _llm_error_type(exc: BaseException) -> str:
     return type(exc).__name__
 
 
+#: #1111 decision 3: the member ``error_type`` for a tool whose provider refused its credential for
+#: good — a spent quota, or a rejected key. Keyed by the registry's curated token, which the
+#: dispatch carries on the raised error's ``error_code`` (read by attribute: the domain layer never
+#: imports the registry client). A retry cannot clear either, and feeding the error back only lets
+#: the model call the same refused tool again, so the member fails on the first refused call.
+TOOL_QUOTA_EXHAUSTED = "tool_quota_exhausted"
+TOOL_CREDENTIAL_REJECTED = "tool_credential_rejected"
+_TOOL_REFUSALS: dict[str, tuple[str, str]] = {
+    "PROVIDER_QUOTA_EXHAUSTED": (
+        TOOL_QUOTA_EXHAUSTED,
+        "the credential connected to the tool {tool} has no remaining quota",
+    ),
+    "PROVIDER_AUTH_FAILED": (
+        TOOL_CREDENTIAL_REJECTED,
+        "the credential connected to the tool {tool} was rejected by its provider",
+    ),
+}
+
+
+def _tool_refusal(exc: BaseException, tool: str) -> tuple[str, str] | None:
+    """``(error_type, error_message)`` for a curated, non-transient tool refusal, else ``None``.
+
+    The message is built from this module's own words and the tool's ``binding.operation`` name
+    only — never from the exception text, which may carry provider or customer content."""
+    if _is_transient(exc):
+        return None
+    code = getattr(exc, "error_code", None)
+    refusal = _TOOL_REFUSALS.get(code) if isinstance(code, str) else None
+    if refusal is None:
+        return None
+    error_type, template = refusal
+    return error_type, template.format(tool=tool)
+
+
 def _is_transient(exc: BaseException) -> bool:
     """An LLM-call error a bounded retry may recover (the client marks it ``transient``)."""
     return bool(getattr(exc, "transient", False))
@@ -1575,6 +1609,42 @@ async def run_tool_use_loop(
             )
         )
 
+    async def _dispatch_with_retry(spec: ToolSpec, args: dict[str, Any]) -> dict[str, Any]:
+        """#1111 decision 2: dispatch one tool call, retrying a TRANSIENT failure (the dispatch
+        marks it ``transient``: a rate-limited provider, a registry 5xx/timeout/reset) with the
+        same backoff and bound as a transient LLM-call error, before the model sees any error.
+        A permanent failure, an exhausted bound, or a spent wall-time budget re-raises."""
+        attempt = 0
+        while True:
+            try:
+                return await dispatch(spec, args)
+            except Exception as exc:  # noqa: BLE001
+                if attempt >= _LLM_MAX_RETRIES or not _is_transient(exc) or _over_wall_time():
+                    raise
+                await _async_sleep(_retry_delay(attempt, getattr(exc, "retry_after", None)))
+                if _over_wall_time():
+                    raise
+                attempt += 1
+
+    def _tool_refused(error_type: str, error_message: str, iterations: int) -> LoopResult:
+        """#1111 decision 3: the member FAILED on a curated, non-transient tool refusal — the same
+        typed terminal as a rejected model key, settled and recorded by the caller like any other
+        FAILED result."""
+        return LoopResult(
+            status=HarnessStatus.FAILED,
+            output=_shipped(last_text) if last_text else None,
+            steps=steps,
+            iterations=iterations,
+            total_tokens=tokens_used,
+            input_tokens=input_used,
+            output_tokens=output_used,
+            error_type=error_type,
+            error_message=error_message,
+            served_citation_ids=list(served_citation_ids),
+            fetched_urls=list(fetched_urls),
+            protocol_shape=protocol_shape,
+        )
+
     async def _run_tool_calls(
         tool_calls: list[dict[str, Any]], iteration: int, approved_id: str | None
     ) -> LoopResult | None:
@@ -1756,6 +1826,7 @@ async def run_tool_use_loop(
 
             tool_started: datetime | None = None
             tool_ended: datetime | None = None
+            refusal: tuple[str, str] | None = None
             # Hoisted above the chain (#946 review round 5, LOW-5). Two of the three branches below
             # need it, and computing it twice inside the refusal condition read as if the two calls
             # might differ. Binding it in only some branches was the real hazard: a later edit that
@@ -1840,7 +1911,7 @@ async def run_tool_use_loop(
                 tool_calls_made += 1
                 tool_started = datetime.now(UTC)
                 try:
-                    result = await dispatch(spec, tc["args"])
+                    result = await _dispatch_with_retry(spec, tc["args"])
                     # #580: a retrieval that found nothing flags `data_absent` — a RESERVED result
                     # key set ONLY by the knowledge-retriever connector on an empty result (no other
                     # tool may emit it). Strip the private flag, swap in a clear proceed-note so the
@@ -1903,6 +1974,9 @@ async def run_tool_use_loop(
                         json.dumps({"error": type(exc).__name__, "detail": str(exc)}), redactors
                     )
                     status = "error"
+                    # #1111: a curated, non-transient refusal ends the member once its step is
+                    # recorded below; every other error keeps today's feed-back path.
+                    refusal = _tool_refusal(exc, step_name)
                     # #946 T2: count it against this exact call. A DIFFERENT error resets the count
                     # — see `_record_failure`. Recorded on the redacted content, so the ledger key
                     # is the same string a resumed run reads back out of the transcript.
@@ -1995,6 +2069,8 @@ async def run_tool_use_loop(
                     ended_at=tool_ended,
                 )
             )
+            if refusal is not None:
+                return _tool_refused(*refusal, iteration)
             # #900 (ADR-053 decision 3): a successful dispatch of the member's OWN declared answer
             # tool ends the loop right here — its arguments ARE the answer, and any further calls
             # in this same turn (tool_calls[i+1:]) are never even reached. Matched on the capability
