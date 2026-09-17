@@ -76,11 +76,15 @@ class _RunRow:
         state: str,
         results: dict[str, Any] | None = None,
         manifest: dict[str, Any] | None = None,
+        member_error_codes: dict[str, str] | None = None,
     ) -> None:
         self.id = uuid.uuid4()
         self.state = state
         self.results = results
         self.manifest = manifest or {"metadata": {"name": "intake-reader"}}
+        # #1108: the curated per-member failure token the engine persists at settle (ruling 2c).
+        # Real ``EngineTeamRun`` rows default this JSONB column to ``{}``, never ``None``.
+        self.member_error_codes = member_error_codes or {}
 
 
 class _FakeTeamRuns:
@@ -97,8 +101,9 @@ class _FakeTeamRuns:
         state: str,
         results: dict[str, Any] | None = None,
         manifest: dict[str, Any] | None = None,
+        member_error_codes: dict[str, str] | None = None,
     ) -> _RunRow:
-        row = _RunRow(state, results, manifest)
+        row = _RunRow(state, results, manifest, member_error_codes)
         self.runs[row.id] = row
         return row
 
@@ -286,6 +291,42 @@ async def test_a_failed_run_is_a_curated_refusal() -> None:
     with pytest.raises(_error()) as exc:
         await svc.readback(_principal(), readback_run_id=failed.id)
     assert exc.value.status_code == 422
+
+
+# ── #1108: a provider-refused reader key is named, not just "failed" ────────
+
+
+async def test_a_provider_refused_reader_key_is_named_by_its_own_code() -> None:
+    # Ruling 3: the ONE curated member_error_codes token this endpoint knows about is the
+    # reader's own credential rejection — everything else keeps today's generic readback_failed.
+    svc, team_runs = _service()
+    failed = team_runs.seed("FAILED", member_error_codes={"reader": "llm_credential_rejected"})
+    with pytest.raises(_error()) as exc:
+        await svc.readback(_principal(), readback_run_id=failed.id)
+    assert exc.value.status_code == 422
+    assert exc.value.error_code == "MODEL_CREDENTIAL_REJECTED"
+
+
+@pytest.mark.parametrize(
+    "member_error_codes",
+    [
+        None,
+        {},
+        {"reader": "some_other_failure"},
+        {"primary": "llm_credential_rejected"},
+    ],
+    ids=["no-codes", "empty-codes", "different-token", "token-under-a-different-role"],
+)
+async def test_a_failed_run_without_a_matching_reader_token_keeps_the_generic_refusal(
+    member_error_codes: dict[str, str] | None,
+) -> None:
+    svc, team_runs = _service()
+    failed = team_runs.seed("FAILED", member_error_codes=member_error_codes)
+    with pytest.raises(_error()) as exc:
+        await svc.readback(_principal(), readback_run_id=failed.id)
+    assert exc.value.status_code == 422
+    assert exc.value.error_code is None
+    assert exc.value.error_type == "readback_failed"
 
 
 async def test_a_run_id_that_is_not_a_read_back_run_is_refused_on_the_first_read() -> None:
